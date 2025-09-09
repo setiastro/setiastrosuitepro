@@ -1,0 +1,9 @@
+{
+  "version": "1.0.0",
+  "downloads": {
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.0.0/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.0.0/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.0.0/setiastrosuitepro_linux.tar.xz"
+  },
+  "notes": "Initial Release of Seti Astro Suite Pro"
+}
