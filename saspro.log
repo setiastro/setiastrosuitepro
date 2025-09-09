@@ -1,0 +1,624 @@
+2025-09-02 06:58:24,140 - ERROR - Unhandled exception occurred
+Traceback (most recent call last):
+  File "C:\Users\Gaming\Desktop\Python Code\setiastrosuitepro\setiastrosuitepro.py", line 2791, in <module>
+    win = AstroSuiteProMainWindow(image_manager=imgr)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Gaming\Desktop\Python Code\setiastrosuitepro\setiastrosuitepro.py", line 682, in __init__
+    self.addDockWidget(Qt.DockWidgetAreaBottomDockWidgetArea, self.window_shelf)
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: type object 'Qt' has no attribute 'DockWidgetAreaBottomDockWidgetArea'
+2025-09-02 09:30:44,209 - ERROR - Unhandled exception occurred
+Traceback (most recent call last):
+  File "C:\Users\Gaming\Desktop\Python Code\setiastrosuitepro\setiastrosuitepro.py", line 2851, in <module>
+    win = AstroSuiteProMainWindow(image_manager=imgr)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Gaming\Desktop\Python Code\setiastrosuitepro\setiastrosuitepro.py", line 699, in __init__
+    self._init_toolbar()
+  File "C:\Users\Gaming\Desktop\Python Code\setiastrosuitepro\setiastrosuitepro.py", line 772, in _init_toolbar
+    tb_fn.addAction(self.act_background_neutralization)
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'AstroSuiteProMainWindow' object has no attribute 'act_background_neutralization'. Did you mean: 'act_background_neutral'?
+2025-09-02 12:49:37,108 - ERROR - Unhandled exception occurred
+Traceback (most recent call last):
+  File "C:\Users\Gaming\Desktop\Python Code\setiastrosuitepro\setiastrosuitepro.py", line 2752, in <module>
+    win = AstroSuiteProMainWindow(image_manager=imgr)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Gaming\Desktop\Python Code\setiastrosuitepro\setiastrosuitepro.py", line 534, in __init__
+    self._create_actions()
+  File "C:\Users\Gaming\Desktop\Python Code\setiastrosuitepro\setiastrosuitepro.py", line 838, in _create_actions
+    reg("sfcc", self.SFCC_show)
+  File "C:\Users\Gaming\Desktop\Python Code\setiastrosuitepro\setiastrosuitepro.py", line 802, in reg
+    act.setProperty("command_id", cid)
+    ^^^^^^^^^^^^^^^
+AttributeError: 'function' object has no attribute 'setProperty'
+2025-09-02 13:21:20,958 - WARNING - FITSFixedWarning: RADECSYS= 'ICRS ' 
+the RADECSYS keyword is deprecated, use RADESYSa.
+2025-09-02 13:28:05,984 - WARNING - FITSFixedWarning: RADECSYS= 'ICRS ' 
+the RADECSYS keyword is deprecated, use RADESYSa.
+2025-09-02 13:32:13,304 - WARNING - FITSFixedWarning: RADECSYS= 'ICRS ' 
+the RADECSYS keyword is deprecated, use RADESYSa.
+2025-09-02 14:08:20,852 - WARNING - FITSFixedWarning: RADECSYS= 'ICRS ' 
+the RADECSYS keyword is deprecated, use RADESYSa.
+2025-09-02 14:11:10,205 - WARNING - FITSFixedWarning: RADECSYS= 'ICRS ' 
+the RADECSYS keyword is deprecated, use RADESYSa.
+2025-09-02 14:25:44,883 - WARNING - FITSFixedWarning: RADECSYS= 'ICRS ' 
+the RADECSYS keyword is deprecated, use RADESYSa.
+2025-09-03 19:54:53,128 - ERROR - Unhandled exception occurred
+Traceback (most recent call last):
+  File "C:\Users\Gaming\Desktop\Python Code\setiastrosuitepro\setiastrosuitepro.py", line 4300, in <module>
+    win = AstroSuiteProMainWindow(image_manager=imgr)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Gaming\Desktop\Python Code\setiastrosuitepro\setiastrosuitepro.py", line 546, in __init__
+    self._init_header_viewer_dock()
+  File "C:\Users\Gaming\Desktop\Python Code\setiastrosuitepro\setiastrosuitepro.py", line 3631, in _init_header_viewer_dock
+    self.currentDocumentChanged.connect(self.header_viewer.set_document)
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'AstroSuiteProMainWindow' object has no attribute 'currentDocumentChanged'
+2025-09-04 14:17:30,570 - ERROR - Unhandled exception occurred
+Traceback (most recent call last):
+  File "C:\Users\Gaming\Desktop\Python Code\setiastrosuitepro\setiastrosuitepro.py", line 4441, in <module>
+    win = AstroSuiteProMainWindow(image_manager=imgr)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Gaming\Desktop\Python Code\setiastrosuitepro\setiastrosuitepro.py", line 573, in __init__
+    self._create_actions()
+  File "C:\Users\Gaming\Desktop\Python Code\setiastrosuitepro\setiastrosuitepro.py", line 935, in _create_actions
+    self.act_invert_mask.setShortcut("Ctrl+Shift+I")
+    ^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'AstroSuiteProMainWindow' object has no attribute 'act_invert_mask'. Did you mean: '_invert_mask'?
+2025-09-04 15:36:08,823 - WARNING - VerifyWarning: Keyword name 'file_path' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-04 15:36:08,827 - WARNING - VerifyWarning: Keyword name 'original_header' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-04 15:36:08,830 - WARNING - VerifyWarning: Keyword name 'bit_depth' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-04 15:36:08,832 - WARNING - VerifyWarning: Keyword name 'original_format' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-04 15:36:34,969 - WARNING - FITSFixedWarning: RADECSYS= 'ICRS ' 
+the RADECSYS keyword is deprecated, use RADESYSa.
+2025-09-04 15:54:49,789 - WARNING - VerifyWarning: Keyword name 'file_path' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-04 15:54:49,792 - WARNING - VerifyWarning: Keyword name 'original_header' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-04 15:54:49,794 - WARNING - VerifyWarning: Keyword name 'bit_depth' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-04 15:54:49,797 - WARNING - VerifyWarning: Keyword name 'original_format' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-04 15:56:16,417 - WARNING - VerifyWarning: Keyword name 'file_path' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-04 15:56:16,420 - WARNING - VerifyWarning: Keyword name 'original_header' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-04 15:56:16,422 - WARNING - VerifyWarning: Keyword name 'bit_depth' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-04 15:56:16,425 - WARNING - VerifyWarning: Keyword name 'original_format' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-04 15:56:41,026 - WARNING - FITSFixedWarning: RADECSYS= 'ICRS ' 
+the RADECSYS keyword is deprecated, use RADESYSa.
+2025-09-04 15:57:21,819 - WARNING - VerifyWarning: Keyword name 'file_path' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-04 15:57:21,821 - WARNING - VerifyWarning: Keyword name 'original_header' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-04 15:57:21,824 - WARNING - VerifyWarning: Keyword name 'bit_depth' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-04 15:57:21,826 - WARNING - VerifyWarning: Keyword name 'original_format' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-04 15:57:45,573 - WARNING - FITSFixedWarning: RADECSYS= 'ICRS ' 
+the RADECSYS keyword is deprecated, use RADESYSa.
+2025-09-04 16:00:02,175 - WARNING - VerifyWarning: Keyword name 'file_path' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-04 16:00:02,179 - WARNING - VerifyWarning: Keyword name 'original_header' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-04 16:00:02,182 - WARNING - VerifyWarning: Keyword name 'bit_depth' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-04 16:00:02,185 - WARNING - VerifyWarning: Keyword name 'original_format' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-04 16:00:26,109 - WARNING - FITSFixedWarning: RADECSYS= 'ICRS ' 
+the RADECSYS keyword is deprecated, use RADESYSa.
+2025-09-04 16:02:40,210 - WARNING - VerifyWarning: Keyword name 'file_path' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-04 16:02:40,213 - WARNING - VerifyWarning: Keyword name 'original_header' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-04 16:02:40,215 - WARNING - VerifyWarning: Keyword name 'bit_depth' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-04 16:02:40,218 - WARNING - VerifyWarning: Keyword name 'original_format' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-04 16:03:04,015 - WARNING - FITSFixedWarning: RADECSYS= 'ICRS ' 
+the RADECSYS keyword is deprecated, use RADESYSa.
+2025-09-04 16:32:52,155 - WARNING - VerifyWarning: Keyword name 'FILE_PATH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-04 16:32:52,158 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_HEADER' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-04 16:32:52,161 - WARNING - VerifyWarning: Keyword name 'BIT_DEPTH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-04 16:32:52,163 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_FORMAT' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-04 16:33:15,998 - WARNING - FITSFixedWarning: RADECSYS= 'ICRS ' 
+the RADECSYS keyword is deprecated, use RADESYSa.
+2025-09-04 16:40:48,473 - WARNING - VerifyWarning: Keyword name 'FILE_PATH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-04 16:40:48,476 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_HEADER' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-04 16:40:48,479 - WARNING - VerifyWarning: Keyword name 'BIT_DEPTH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-04 16:40:48,481 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_FORMAT' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-04 16:41:12,750 - WARNING - FITSFixedWarning: RADECSYS= 'ICRS ' 
+the RADECSYS keyword is deprecated, use RADESYSa.
+2025-09-04 19:19:35,088 - WARNING - VerifyWarning: Keyword name 'FILE_PATH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-04 19:19:35,091 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_HEADER' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-04 19:19:35,093 - WARNING - VerifyWarning: Keyword name 'BIT_DEPTH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-04 19:19:35,095 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_FORMAT' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-04 19:20:07,857 - WARNING - FITSFixedWarning: RADECSYS= 'ICRS ' 
+the RADECSYS keyword is deprecated, use RADESYSa.
+2025-09-04 19:32:16,697 - WARNING - VerifyWarning: Keyword name 'FILE_PATH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-04 19:32:16,705 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_HEADER' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-04 19:32:16,712 - WARNING - VerifyWarning: Keyword name 'BIT_DEPTH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-04 19:32:16,719 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_FORMAT' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-04 19:32:49,982 - WARNING - FITSFixedWarning: RADECSYS= 'ICRS ' 
+the RADECSYS keyword is deprecated, use RADESYSa.
+2025-09-05 07:47:38,826 - WARNING - VerifyWarning: Keyword name 'FILE_PATH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 07:47:38,828 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_HEADER' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 07:47:38,830 - WARNING - VerifyWarning: Keyword name 'BIT_DEPTH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 07:47:38,833 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_FORMAT' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 09:15:13,928 - WARNING - VerifyWarning: Keyword name 'FILE_PATH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 09:15:13,930 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_HEADER' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 09:15:13,933 - WARNING - VerifyWarning: Keyword name 'BIT_DEPTH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 09:15:13,935 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_FORMAT' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 09:35:32,299 - WARNING - VerifyWarning: Keyword name 'FILE_PATH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 09:35:32,302 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_HEADER' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 09:35:32,305 - WARNING - VerifyWarning: Keyword name 'BIT_DEPTH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 09:35:32,307 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_FORMAT' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 09:36:44,237 - WARNING - VerifyWarning: Keyword name 'FILE_PATH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 09:36:44,240 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_HEADER' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 09:36:44,243 - WARNING - VerifyWarning: Keyword name 'BIT_DEPTH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 09:36:44,246 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_FORMAT' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 09:37:18,248 - WARNING - VerifyWarning: Keyword name 'SIMPLESIMPLE' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 09:37:18,273 - WARNING - FITSFixedWarning: RADECSYS= 'ICRS ' 
+the RADECSYS keyword is deprecated, use RADESYSa.
+2025-09-05 09:48:10,604 - WARNING - VerifyWarning: Keyword name 'FILE_PATH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 09:48:10,608 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_HEADER' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 09:48:10,610 - WARNING - VerifyWarning: Keyword name 'BIT_DEPTH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 09:48:10,613 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_FORMAT' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 09:48:34,522 - WARNING - VerifyWarning: Keyword name 'SIMPLESIMPLE' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 09:48:34,550 - WARNING - FITSFixedWarning: RADECSYS= 'ICRS ' 
+the RADECSYS keyword is deprecated, use RADESYSa.
+2025-09-05 09:57:39,089 - WARNING - VerifyWarning: Keyword name 'FILE_PATH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 09:57:39,093 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_HEADER' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 09:57:39,095 - WARNING - VerifyWarning: Keyword name 'BIT_DEPTH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 09:57:39,098 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_FORMAT' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 09:58:03,554 - WARNING - VerifyWarning: Keyword name 'SIMPLESIMPLE' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 09:58:03,584 - WARNING - FITSFixedWarning: RADECSYS= 'ICRS ' 
+the RADECSYS keyword is deprecated, use RADESYSa.
+2025-09-05 10:44:59,960 - WARNING - VerifyWarning: Keyword name 'SIMPLESIMPLE' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 10:44:59,992 - WARNING - FITSFixedWarning: RADECSYS= 'ICRS ' 
+the RADECSYS keyword is deprecated, use RADESYSa.
+2025-09-05 10:50:13,820 - WARNING - VerifyWarning: Keyword name 'SIMPLESIMPLE' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 11:02:51,642 - WARNING - VerifyWarning: Keyword name 'SIMPLESIMPLE' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 11:02:51,683 - WARNING - FITSFixedWarning: RADECSYS= 'ICRS ' 
+the RADECSYS keyword is deprecated, use RADESYSa.
+2025-09-05 11:18:56,097 - WARNING - FITSFixedWarning: RADECSYS= 'ICRS ' 
+the RADECSYS keyword is deprecated, use RADESYSa.
+2025-09-05 11:23:44,509 - WARNING - VerifyWarning: Keyword name 'FILE_PATH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 11:23:44,511 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_HEADER' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 11:23:44,514 - WARNING - VerifyWarning: Keyword name 'BIT_DEPTH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 11:23:44,517 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_FORMAT' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 11:26:23,159 - WARNING - FITSFixedWarning: RADECSYS= 'ICRS ' 
+the RADECSYS keyword is deprecated, use RADESYSa.
+2025-09-05 11:28:42,109 - WARNING - FITSFixedWarning: RADECSYS= 'ICRS ' 
+the RADECSYS keyword is deprecated, use RADESYSa.
+2025-09-05 11:28:42,113 - WARNING - FITSFixedWarning: The WCS transformation has more axes (2) than the image it is associated with (0)
+2025-09-05 11:29:44,749 - WARNING - VerifyWarning: Keyword name 'FILE_PATH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 11:29:44,751 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_HEADER' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 11:29:44,753 - WARNING - VerifyWarning: Keyword name 'BIT_DEPTH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 11:29:44,756 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_FORMAT' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 11:35:05,294 - WARNING - FITSFixedWarning: RADECSYS= 'ICRS ' 
+the RADECSYS keyword is deprecated, use RADESYSa.
+2025-09-05 11:35:05,297 - WARNING - FITSFixedWarning: The WCS transformation has more axes (2) than the image it is associated with (0)
+2025-09-05 11:35:15,683 - WARNING - VerifyWarning: Keyword name 'FILE_PATH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 11:35:15,686 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_HEADER' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 11:35:15,688 - WARNING - VerifyWarning: Keyword name 'BIT_DEPTH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 11:35:15,707 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_FORMAT' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 11:36:29,858 - WARNING - VerifyWarning: Keyword name 'FILE_PATH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 11:36:29,861 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_HEADER' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 11:36:29,862 - WARNING - VerifyWarning: Keyword name 'BIT_DEPTH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 11:36:29,865 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_FORMAT' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 11:39:01,789 - WARNING - VerifyWarning: Keyword name 'FILE_PATH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 11:39:01,792 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_HEADER' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 11:39:01,794 - WARNING - VerifyWarning: Keyword name 'BIT_DEPTH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 11:39:01,797 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_FORMAT' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 11:39:25,185 - WARNING - FITSFixedWarning: RADECSYS= 'ICRS ' 
+the RADECSYS keyword is deprecated, use RADESYSa.
+2025-09-05 11:39:25,191 - WARNING - FITSFixedWarning: The WCS transformation has more axes (2) than the image it is associated with (0)
+2025-09-05 11:40:23,350 - WARNING - VerifyWarning: Keyword name 'FILE_PATH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 11:40:23,353 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_HEADER' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 11:40:23,355 - WARNING - VerifyWarning: Keyword name 'BIT_DEPTH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 11:40:23,357 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_FORMAT' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 11:40:46,760 - WARNING - FITSFixedWarning: RADECSYS= 'ICRS ' 
+the RADECSYS keyword is deprecated, use RADESYSa.
+2025-09-05 11:40:46,763 - WARNING - FITSFixedWarning: The WCS transformation has more axes (2) than the image it is associated with (0)
+2025-09-05 11:46:30,656 - WARNING - VerifyWarning: Keyword name 'FILE_PATH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 11:46:30,659 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_HEADER' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 11:46:30,662 - WARNING - VerifyWarning: Keyword name 'BIT_DEPTH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 11:46:30,663 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_FORMAT' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 11:46:54,197 - WARNING - FITSFixedWarning: RADECSYS= 'ICRS ' 
+the RADECSYS keyword is deprecated, use RADESYSa.
+2025-09-05 11:47:26,094 - WARNING - VerifyWarning: Keyword name 'FILE_PATH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 11:47:26,097 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_HEADER' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 11:47:26,099 - WARNING - VerifyWarning: Keyword name 'BIT_DEPTH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 11:47:26,101 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_FORMAT' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 11:47:49,351 - WARNING - FITSFixedWarning: RADECSYS= 'ICRS ' 
+the RADECSYS keyword is deprecated, use RADESYSa.
+2025-09-05 11:50:24,444 - WARNING - VerifyWarning: Keyword name 'FILE_PATH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 11:50:24,447 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_HEADER' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 11:50:24,449 - WARNING - VerifyWarning: Keyword name 'BIT_DEPTH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 11:50:24,452 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_FORMAT' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 11:50:47,791 - WARNING - FITSFixedWarning: RADECSYS= 'ICRS ' 
+the RADECSYS keyword is deprecated, use RADESYSa.
+2025-09-05 11:54:28,373 - WARNING - VerifyWarning: Keyword name 'FILE_PATH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 11:54:28,376 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_HEADER' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 11:54:28,378 - WARNING - VerifyWarning: Keyword name 'BIT_DEPTH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 11:54:28,381 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_FORMAT' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 12:00:40,279 - WARNING - FITSFixedWarning: RADECSYS= 'ICRS ' 
+the RADECSYS keyword is deprecated, use RADESYSa.
+2025-09-05 12:01:19,872 - WARNING - VerifyWarning: Keyword name 'SIMPLESIMPLE' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 12:01:19,903 - WARNING - FITSFixedWarning: RADECSYS= 'ICRS ' 
+the RADECSYS keyword is deprecated, use RADESYSa.
+2025-09-05 12:01:49,305 - WARNING - VerifyWarning: Keyword name 'SIMPLESIMPLE' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 12:01:49,339 - WARNING - FITSFixedWarning: RADECSYS= 'ICRS ' 
+the RADECSYS keyword is deprecated, use RADESYSa.
+2025-09-05 12:02:24,465 - WARNING - VerifyWarning: Keyword name 'SIMPLESIMPLE' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 12:02:24,498 - WARNING - FITSFixedWarning: RADECSYS= 'ICRS ' 
+the RADECSYS keyword is deprecated, use RADESYSa.
+2025-09-05 12:03:10,839 - WARNING - VerifyWarning: Keyword name 'SIMPLESIMPLE' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 12:03:10,872 - WARNING - FITSFixedWarning: RADECSYS= 'ICRS ' 
+the RADECSYS keyword is deprecated, use RADESYSa.
+2025-09-05 12:06:36,797 - WARNING - VerifyWarning: Keyword name 'SIMPLESIMPLE' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 12:06:36,830 - WARNING - FITSFixedWarning: RADECSYS= 'ICRS ' 
+the RADECSYS keyword is deprecated, use RADESYSa.
+2025-09-05 12:07:41,490 - WARNING - VerifyWarning: Keyword name 'SIMPLESIMPLE' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 12:07:41,524 - WARNING - FITSFixedWarning: RADECSYS= 'ICRS ' 
+the RADECSYS keyword is deprecated, use RADESYSa.
+2025-09-05 12:08:08,619 - WARNING - VerifyWarning: Keyword name 'SIMPLESIMPLE' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 12:08:08,651 - WARNING - FITSFixedWarning: RADECSYS= 'ICRS ' 
+the RADECSYS keyword is deprecated, use RADESYSa.
+2025-09-05 12:08:41,489 - WARNING - VerifyWarning: Keyword name 'SIMPLESIMPLE' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 12:08:41,519 - WARNING - FITSFixedWarning: RADECSYS= 'ICRS ' 
+the RADECSYS keyword is deprecated, use RADESYSa.
+2025-09-05 12:11:23,501 - WARNING - FITSFixedWarning: The WCS transformation has more axes (2) than the image it is associated with (0)
+2025-09-05 12:11:42,279 - WARNING - VerifyWarning: Keyword name 'FILE_PATH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 12:11:42,282 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_HEADER' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 12:11:42,284 - WARNING - VerifyWarning: Keyword name 'BIT_DEPTH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 12:11:42,286 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_FORMAT' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 12:13:54,412 - WARNING - VerifyWarning: Keyword name 'STEP_NAME' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 12:13:54,415 - WARNING - VerifyWarning: Keyword name 'DISPLAY_NAME' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 12:17:02,509 - WARNING - VerifyWarning: Keyword name 'FILE_PATH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 12:17:02,512 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_HEADER' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 12:17:02,514 - WARNING - VerifyWarning: Keyword name 'BIT_DEPTH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 12:17:02,516 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_FORMAT' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-05 12:17:25,880 - WARNING - FITSFixedWarning: The WCS transformation has more axes (2) than the image it is associated with (0)
+2025-09-05 12:22:12,568 - WARNING - File may have been truncated: actual file length (16035579) is smaller than the expected size (93562560)
+2025-09-05 12:22:15,584 - WARNING - File may have been truncated: actual file length (16649969) is smaller than the expected size (93562560)
+2025-09-05 12:22:18,598 - WARNING - File may have been truncated: actual file length (17264359) is smaller than the expected size (93562560)
+2025-09-05 13:01:05,218 - WARNING - FITSFixedWarning: The WCS transformation has more axes (2) than the image it is associated with (0)
+2025-09-05 13:01:05,222 - WARNING - FITSFixedWarning: 'datfix' made the change 'Set MJD-OBS to 60923.315799 from DATE-OBS'.
+2025-09-05 21:43:00,427 - WARNING - FITSFixedWarning: EQUINOX = '2000.0 ' 
+a floating-point value was expected.
+2025-09-05 21:43:00,431 - WARNING - FITSFixedWarning: CROTA1 = '-8.905398650127E+001' 
+a floating-point value was expected.
+2025-09-05 21:43:00,434 - WARNING - FITSFixedWarning: CROTA2 = '-8.904312847906E+001' 
+a floating-point value was expected.
+2025-09-05 21:43:00,438 - WARNING - FITSFixedWarning: RADECSYS= 'ICRS ' 
+the RADECSYS keyword is deprecated, use RADESYSa.
+2025-09-05 21:43:00,441 - WARNING - FITSFixedWarning: The WCS transformation has more axes (2) than the image it is associated with (0)
+2025-09-05 21:43:27,007 - WARNING - FITSFixedWarning: CROTA1 = '9.078769834918E+001' 
+a floating-point value was expected.
+2025-09-05 21:43:27,009 - WARNING - FITSFixedWarning: CROTA2 = '9.078496912936E+001' 
+a floating-point value was expected.
+2025-09-05 21:45:45,515 - WARNING - FITSFixedWarning: EQUINOX = '2000.0 ' 
+a floating-point value was expected.
+2025-09-05 21:45:45,519 - WARNING - FITSFixedWarning: CROTA1 = '-8.905398650127E+001' 
+a floating-point value was expected.
+2025-09-05 21:45:45,522 - WARNING - FITSFixedWarning: CROTA2 = '-8.904312847906E+001' 
+a floating-point value was expected.
+2025-09-05 21:45:45,526 - WARNING - FITSFixedWarning: RADECSYS= 'ICRS ' 
+the RADECSYS keyword is deprecated, use RADESYSa.
+2025-09-05 21:45:45,529 - WARNING - FITSFixedWarning: The WCS transformation has more axes (2) than the image it is associated with (0)
+2025-09-05 21:46:12,722 - WARNING - FITSFixedWarning: CROTA1 = '9.078769834918E+001' 
+a floating-point value was expected.
+2025-09-05 21:46:12,726 - WARNING - FITSFixedWarning: CROTA2 = '9.078496912936E+001' 
+a floating-point value was expected.
+2025-09-05 21:46:12,775 - WARNING - Some non-standard WCS keywords were excluded: A_ORDER, A_0_0, A_0_1, A_0_2, A_0_3, A_1_0, A_1_1, A_1_2, A_2_0, A_2_1, A_3_0, B_ORDER, B_0_0, B_0_1, B_0_2, B_0_3, B_1_0, B_1_1, B_1_2, B_2_0, B_2_1, B_3_0, AP_ORDER, AP_0_0, AP_0_1, AP_0_2, AP_0_3, AP_1_0, AP_1_1, AP_1_2, AP_2_0, AP_2_1, AP_3_0, BP_ORDER, BP_0_0, BP_0_1, BP_0_2, BP_0_3, BP_1_0, BP_1_1, BP_1_2, BP_2_0, BP_2_1, BP_3_0 Use the ``relax`` kwarg to control this.
+2025-09-05 21:48:49,830 - WARNING - FITSFixedWarning: EQUINOX = '2000.0 ' 
+a floating-point value was expected.
+2025-09-05 21:48:49,833 - WARNING - FITSFixedWarning: CROTA1 = '-8.905398650127E+001' 
+a floating-point value was expected.
+2025-09-05 21:48:49,836 - WARNING - FITSFixedWarning: CROTA2 = '-8.904312847906E+001' 
+a floating-point value was expected.
+2025-09-05 21:48:49,840 - WARNING - FITSFixedWarning: RADECSYS= 'ICRS ' 
+the RADECSYS keyword is deprecated, use RADESYSa.
+2025-09-05 21:48:49,843 - WARNING - FITSFixedWarning: The WCS transformation has more axes (2) than the image it is associated with (0)
+2025-09-05 21:49:17,494 - WARNING - FITSFixedWarning: CROTA1 = '9.078769834918E+001' 
+a floating-point value was expected.
+2025-09-05 21:49:17,497 - WARNING - FITSFixedWarning: CROTA2 = '9.078496912936E+001' 
+a floating-point value was expected.
+2025-09-05 21:49:17,552 - WARNING - Some non-standard WCS keywords were excluded: A_ORDER, A_0_0, A_0_1, A_0_2, A_0_3, A_1_0, A_1_1, A_1_2, A_2_0, A_2_1, A_3_0, B_ORDER, B_0_0, B_0_1, B_0_2, B_0_3, B_1_0, B_1_1, B_1_2, B_2_0, B_2_1, B_3_0, AP_ORDER, AP_0_0, AP_0_1, AP_0_2, AP_0_3, AP_1_0, AP_1_1, AP_1_2, AP_2_0, AP_2_1, AP_3_0, BP_ORDER, BP_0_0, BP_0_1, BP_0_2, BP_0_3, BP_1_0, BP_1_1, BP_1_2, BP_2_0, BP_2_1, BP_3_0 Use the ``relax`` kwarg to control this.
+2025-09-05 21:52:21,406 - WARNING - FITSFixedWarning: EQUINOX = '2000.0 ' 
+a floating-point value was expected.
+2025-09-05 21:52:21,409 - WARNING - FITSFixedWarning: CROTA1 = '-8.905398650127E+001' 
+a floating-point value was expected.
+2025-09-05 21:52:21,412 - WARNING - FITSFixedWarning: CROTA2 = '-8.904312847906E+001' 
+a floating-point value was expected.
+2025-09-05 21:52:21,416 - WARNING - FITSFixedWarning: RADECSYS= 'ICRS ' 
+the RADECSYS keyword is deprecated, use RADESYSa.
+2025-09-05 21:52:21,419 - WARNING - FITSFixedWarning: The WCS transformation has more axes (2) than the image it is associated with (0)
+2025-09-05 21:52:47,968 - WARNING - FITSFixedWarning: CROTA1 = '9.078769834918E+001' 
+a floating-point value was expected.
+2025-09-05 21:52:47,971 - WARNING - FITSFixedWarning: CROTA2 = '9.078496912936E+001' 
+a floating-point value was expected.
+2025-09-05 21:52:47,988 - WARNING - Some non-standard WCS keywords were excluded: A_ORDER, A_0_0, A_0_1, A_0_2, A_0_3, A_1_0, A_1_1, A_1_2, A_2_0, A_2_1, A_3_0, B_ORDER, B_0_0, B_0_1, B_0_2, B_0_3, B_1_0, B_1_1, B_1_2, B_2_0, B_2_1, B_3_0, AP_ORDER, AP_0_0, AP_0_1, AP_0_2, AP_0_3, AP_1_0, AP_1_1, AP_1_2, AP_2_0, AP_2_1, AP_3_0, BP_ORDER, BP_0_0, BP_0_1, BP_0_2, BP_0_3, BP_1_0, BP_1_1, BP_1_2, BP_2_0, BP_2_1, BP_3_0 Use the ``relax`` kwarg to control this.
+2025-09-05 21:56:10,273 - WARNING - FITSFixedWarning: EQUINOX = '2000.0 ' 
+a floating-point value was expected.
+2025-09-05 21:56:10,275 - WARNING - FITSFixedWarning: CROTA1 = '-8.905398650127E+001' 
+a floating-point value was expected.
+2025-09-05 21:56:10,278 - WARNING - FITSFixedWarning: CROTA2 = '-8.904312847906E+001' 
+a floating-point value was expected.
+2025-09-05 21:56:10,283 - WARNING - FITSFixedWarning: RADECSYS= 'ICRS ' 
+the RADECSYS keyword is deprecated, use RADESYSa.
+2025-09-05 21:56:10,286 - WARNING - FITSFixedWarning: The WCS transformation has more axes (2) than the image it is associated with (0)
+2025-09-05 21:56:36,791 - WARNING - FITSFixedWarning: CROTA1 = '9.078769834918E+001' 
+a floating-point value was expected.
+2025-09-05 21:56:36,794 - WARNING - FITSFixedWarning: CROTA2 = '9.078496912936E+001' 
+a floating-point value was expected.
+2025-09-05 21:56:36,857 - WARNING - Some non-standard WCS keywords were excluded: A_ORDER, A_0_0, A_0_1, A_0_2, A_0_3, A_1_0, A_1_1, A_1_2, A_2_0, A_2_1, A_3_0, B_ORDER, B_0_0, B_0_1, B_0_2, B_0_3, B_1_0, B_1_1, B_1_2, B_2_0, B_2_1, B_3_0, AP_ORDER, AP_0_0, AP_0_1, AP_0_2, AP_0_3, AP_1_0, AP_1_1, AP_1_2, AP_2_0, AP_2_1, AP_3_0, BP_ORDER, BP_0_0, BP_0_1, BP_0_2, BP_0_3, BP_1_0, BP_1_1, BP_1_2, BP_2_0, BP_2_1, BP_3_0 Use the ``relax`` kwarg to control this.
+2025-09-05 22:00:29,636 - WARNING - FITSFixedWarning: EQUINOX = '2000.0 ' 
+a floating-point value was expected.
+2025-09-05 22:00:29,640 - WARNING - FITSFixedWarning: CROTA1 = '-8.905398650127E+001' 
+a floating-point value was expected.
+2025-09-05 22:00:29,643 - WARNING - FITSFixedWarning: CROTA2 = '-8.904312847906E+001' 
+a floating-point value was expected.
+2025-09-05 22:00:29,647 - WARNING - FITSFixedWarning: RADECSYS= 'ICRS ' 
+the RADECSYS keyword is deprecated, use RADESYSa.
+2025-09-05 22:00:29,650 - WARNING - FITSFixedWarning: The WCS transformation has more axes (2) than the image it is associated with (0)
+2025-09-05 22:00:56,400 - WARNING - FITSFixedWarning: CROTA1 = '9.078769834918E+001' 
+a floating-point value was expected.
+2025-09-05 22:00:56,404 - WARNING - FITSFixedWarning: CROTA2 = '9.078496912936E+001' 
+a floating-point value was expected.
+2025-09-05 22:00:56,467 - WARNING - Some non-standard WCS keywords were excluded: A_ORDER, A_0_0, A_0_1, A_0_2, A_0_3, A_1_0, A_1_1, A_1_2, A_2_0, A_2_1, A_3_0, B_ORDER, B_0_0, B_0_1, B_0_2, B_0_3, B_1_0, B_1_1, B_1_2, B_2_0, B_2_1, B_3_0, AP_ORDER, AP_0_0, AP_0_1, AP_0_2, AP_0_3, AP_1_0, AP_1_1, AP_1_2, AP_2_0, AP_2_1, AP_3_0, BP_ORDER, BP_0_0, BP_0_1, BP_0_2, BP_0_3, BP_1_0, BP_1_1, BP_1_2, BP_2_0, BP_2_1, BP_3_0 Use the ``relax`` kwarg to control this.
+2025-09-06 07:23:11,473 - WARNING - FITSFixedWarning: EQUINOX = '2000.0 ' 
+a floating-point value was expected.
+2025-09-06 07:23:11,477 - WARNING - FITSFixedWarning: CROTA1 = '-8.905398638120E+001' 
+a floating-point value was expected.
+2025-09-06 07:23:11,479 - WARNING - FITSFixedWarning: CROTA2 = '-8.904312762868E+001' 
+a floating-point value was expected.
+2025-09-06 07:23:11,482 - WARNING - FITSFixedWarning: RADECSYS= 'ICRS ' 
+the RADECSYS keyword is deprecated, use RADESYSa.
+2025-09-06 07:23:11,486 - WARNING - FITSFixedWarning: 'cdfix' made the change 'Success'.
+2025-09-06 07:23:11,495 - WARNING - FITSFixedWarning: CROTA1 = '9.078769723715E+001' 
+a floating-point value was expected.
+2025-09-06 07:23:11,498 - WARNING - FITSFixedWarning: CROTA2 = '9.078496344319E+001' 
+a floating-point value was expected.
+2025-09-06 07:45:04,113 - WARNING - FITSFixedWarning: 'datfix' made the change 'Set MJD-OBS to 60920.000000 from DATE-OBS'.
+2025-09-06 07:46:43,850 - WARNING - FITSFixedWarning: 'datfix' made the change 'Set MJD-OBS to 60920.000000 from DATE-OBS'.
+2025-09-06 07:47:38,594 - WARNING - FITSFixedWarning: 'datfix' made the change 'Set MJD-OBS to 60920.000000 from DATE-OBS'.
+2025-09-06 07:49:36,446 - WARNING - FITSFixedWarning: 'datfix' made the change 'Set MJD-OBS to 60920.000000 from DATE-OBS'.
+2025-09-06 07:51:27,502 - WARNING - FITSFixedWarning: 'datfix' made the change 'Set MJD-OBS to 60920.000000 from DATE-OBS'.
+2025-09-06 08:04:40,714 - WARNING - FITSFixedWarning: 'datfix' made the change 'Set MJD-OBS to 60920.000000 from DATE-OBS'.
+2025-09-06 08:05:01,685 - WARNING - FITSFixedWarning: 'datfix' made the change 'Set MJD-OBS to 60920.000000 from DATE-OBS'.
+2025-09-06 09:52:02,341 - ERROR - Unhandled exception occurred
+Traceback (most recent call last):
+  File "C:\Users\Gaming\Desktop\Python Code\setiastrosuitepro\setiastrosuitepro.py", line 4742, in <module>
+    win = AstroSuiteProMainWindow(image_manager=imgr)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Gaming\Desktop\Python Code\setiastrosuitepro\setiastrosuitepro.py", line 599, in __init__
+    self._create_actions()
+  File "C:\Users\Gaming\Desktop\Python Code\setiastrosuitepro\setiastrosuitepro.py", line 1027, in _create_actions
+    self.act_iamge_peeker.setStatusTip("Image Inspector and Focal Plane Analysis")
+    ^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'AstroSuiteProMainWindow' object has no attribute 'act_iamge_peeker'. Did you mean: 'act_image_peeker'?
+2025-09-06 09:52:36,911 - ERROR - Unhandled exception occurred
+Traceback (most recent call last):
+  File "C:\Users\Gaming\Desktop\Python Code\setiastrosuitepro\setiastrosuitepro.py", line 4742, in <module>
+    win = AstroSuiteProMainWindow(image_manager=imgr)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Gaming\Desktop\Python Code\setiastrosuitepro\setiastrosuitepro.py", line 599, in __init__
+    self._create_actions()
+  File "C:\Users\Gaming\Desktop\Python Code\setiastrosuitepro\setiastrosuitepro.py", line 1146, in _create_actions
+    red("image_peeker", self.act_image_peeker)
+    ^^^
+NameError: name 'red' is not defined. Did you mean: 'reg'?
+2025-09-06 12:29:33,585 - WARNING - VerifyWarning: Keyword name 'FILE_PATH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 12:29:33,588 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_HEADER' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 12:29:33,590 - WARNING - VerifyWarning: Keyword name 'BIT_DEPTH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 12:29:33,593 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_FORMAT' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 12:29:34,920 - WARNING - VerifyWarning: Keyword name 'FILE_PATH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 12:29:34,922 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_HEADER' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 12:29:34,925 - WARNING - VerifyWarning: Keyword name 'BIT_DEPTH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 12:29:34,928 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_FORMAT' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 12:49:58,940 - WARNING - VerifyWarning: Keyword name 'FILE_PATH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 12:49:58,943 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_HEADER' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 12:49:58,945 - WARNING - VerifyWarning: Keyword name 'BIT_DEPTH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 12:49:58,948 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_FORMAT' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 12:50:00,786 - WARNING - VerifyWarning: Keyword name 'FILE_PATH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 12:50:00,789 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_HEADER' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 12:50:00,792 - WARNING - VerifyWarning: Keyword name 'BIT_DEPTH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 12:50:00,795 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_FORMAT' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 12:50:51,630 - WARNING - FITSFixedWarning: RADECSYS= 'ICRS ' 
+the RADECSYS keyword is deprecated, use RADESYSa.
+2025-09-06 12:50:51,633 - WARNING - FITSFixedWarning: The WCS transformation has more axes (2) than the image it is associated with (0)
+2025-09-06 12:52:12,273 - WARNING - VerifyWarning: Keyword name 'STEP_NAME' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 12:52:12,276 - WARNING - VerifyWarning: Keyword name 'DISPLAY_NAME' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 12:52:15,027 - WARNING - VerifyWarning: Keyword name 'STEP_NAME' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 12:52:15,029 - WARNING - VerifyWarning: Keyword name 'DISPLAY_NAME' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:00:13,360 - WARNING - VerifyWarning: Keyword name 'FILE_PATH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:00:13,363 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_HEADER' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:00:13,365 - WARNING - VerifyWarning: Keyword name 'BIT_DEPTH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:00:13,369 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_FORMAT' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:00:15,869 - WARNING - VerifyWarning: Keyword name 'FILE_PATH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:00:15,873 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_HEADER' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:00:15,878 - WARNING - VerifyWarning: Keyword name 'BIT_DEPTH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:00:15,884 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_FORMAT' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:13:19,048 - WARNING - VerifyWarning: Keyword name 'STEP_NAME' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:13:19,054 - WARNING - VerifyWarning: Keyword name 'DISPLAY_NAME' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:13:22,624 - WARNING - VerifyWarning: Keyword name 'STEP_NAME' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:13:22,627 - WARNING - VerifyWarning: Keyword name 'DISPLAY_NAME' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:14:03,509 - WARNING - FITSFixedWarning: RADECSYS= 'ICRS ' 
+the RADECSYS keyword is deprecated, use RADESYSa.
+2025-09-06 13:14:03,538 - WARNING - FITSFixedWarning: The WCS transformation has more axes (2) than the image it is associated with (0)
+2025-09-06 13:28:38,137 - WARNING - VerifyWarning: Keyword name 'FILE_PATH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:28:38,140 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_HEADER' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:28:38,142 - WARNING - VerifyWarning: Keyword name 'BIT_DEPTH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:28:38,147 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_FORMAT' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:28:40,099 - WARNING - VerifyWarning: Keyword name 'FILE_PATH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:28:40,102 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_HEADER' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:28:40,105 - WARNING - VerifyWarning: Keyword name 'BIT_DEPTH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:28:40,108 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_FORMAT' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:29:27,021 - WARNING - VerifyWarning: Keyword name 'FILE_PATH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:29:27,024 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_HEADER' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:29:27,026 - WARNING - VerifyWarning: Keyword name 'BIT_DEPTH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:29:27,030 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_FORMAT' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:29:28,985 - WARNING - VerifyWarning: Keyword name 'FILE_PATH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:29:28,988 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_HEADER' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:29:28,991 - WARNING - VerifyWarning: Keyword name 'BIT_DEPTH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:29:28,994 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_FORMAT' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:30:56,145 - WARNING - VerifyWarning: Keyword name 'FILE_PATH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:30:56,148 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_HEADER' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:30:56,150 - WARNING - VerifyWarning: Keyword name 'BIT_DEPTH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:30:56,153 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_FORMAT' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:30:57,997 - WARNING - VerifyWarning: Keyword name 'FILE_PATH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:30:58,000 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_HEADER' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:30:58,003 - WARNING - VerifyWarning: Keyword name 'BIT_DEPTH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:30:58,005 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_FORMAT' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:32:54,105 - WARNING - VerifyWarning: Keyword name 'FILE_PATH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:32:54,107 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_HEADER' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:32:54,110 - WARNING - VerifyWarning: Keyword name 'BIT_DEPTH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:32:54,113 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_FORMAT' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:42:06,165 - WARNING - VerifyWarning: Keyword name 'FILE_PATH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:42:06,166 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_HEADER' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:42:06,169 - WARNING - VerifyWarning: Keyword name 'BIT_DEPTH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:42:06,172 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_FORMAT' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:45:14,805 - WARNING - VerifyWarning: Keyword name 'FILE_PATH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:45:14,808 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_HEADER' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:45:14,810 - WARNING - VerifyWarning: Keyword name 'BIT_DEPTH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:45:14,813 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_FORMAT' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:47:31,883 - WARNING - VerifyWarning: Keyword name 'FILE_PATH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:47:31,886 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_HEADER' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:47:31,889 - WARNING - VerifyWarning: Keyword name 'BIT_DEPTH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:47:31,891 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_FORMAT' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:47:31,893 - WARNING - VerifyWarning: Keyword name 'STEP_NAME' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:50:06,494 - WARNING - VerifyWarning: Keyword name 'FILE_PATH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:50:06,497 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_HEADER' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:50:06,499 - WARNING - VerifyWarning: Keyword name 'BIT_DEPTH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:50:06,503 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_FORMAT' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:51:24,521 - WARNING - VerifyWarning: Keyword name 'FILE_PATH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:51:24,523 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_HEADER' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:51:24,526 - WARNING - VerifyWarning: Keyword name 'BIT_DEPTH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:51:24,529 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_FORMAT' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:51:48,456 - WARNING - FITSFixedWarning: The WCS transformation has more axes (2) than the image it is associated with (0)
+2025-09-06 13:54:18,080 - WARNING - VerifyWarning: Keyword name 'FILE_PATH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:54:18,084 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_HEADER' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:54:18,086 - WARNING - VerifyWarning: Keyword name 'BIT_DEPTH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:54:18,090 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_FORMAT' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:56:31,924 - WARNING - VerifyWarning: Keyword name 'FILE_PATH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:56:31,926 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_HEADER' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:56:31,929 - WARNING - VerifyWarning: Keyword name 'BIT_DEPTH' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:56:31,933 - WARNING - VerifyWarning: Keyword name 'ORIGINAL_FORMAT' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 13:56:56,122 - WARNING - FITSFixedWarning: The WCS transformation has more axes (2) than the image it is associated with (0)
+2025-09-06 16:05:51,242 - ERROR - Unhandled exception occurred
+Traceback (most recent call last):
+  File "C:\Users\Gaming\Desktop\Python Code\setiastrosuitepro\setiastrosuitepro.py", line 4807, in <module>
+    win = AstroSuiteProMainWindow(image_manager=imgr)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Gaming\Desktop\Python Code\setiastrosuitepro\setiastrosuitepro.py", line 601, in __init__
+    self._create_actions()
+  File "C:\Users\Gaming\Desktop\Python Code\setiastrosuitepro\setiastrosuitepro.py", line 1162, in _create_actions
+    ref("stacking_suite", self.act_stacking_suite)
+    ^^^
+NameError: name 'ref' is not defined. Did you mean: 'reg'?
+2025-09-06 17:46:37,754 - WARNING - VerifyWarning: Keyword name 'DEBAYERED' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 17:49:07,005 - WARNING - VerifyWarning: Keyword name 'DEBAYERED' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 17:49:51,330 - WARNING - MergeConflictWarning: Cannot merge meta key 'date' types <class 'str'> and <class 'str'>, choosing date='2025-09-06 17:49:26 Central Daylight Time'
+2025-09-06 17:49:51,333 - WARNING - MergeConflictWarning: Cannot merge meta key 'date' types <class 'str'> and <class 'str'>, choosing date='2025-09-06 17:49:29 Central Daylight Time'
+2025-09-06 17:49:51,335 - WARNING - MergeConflictWarning: Cannot merge meta key 'date' types <class 'str'> and <class 'str'>, choosing date='2025-09-06 17:49:34 Central Daylight Time'
+2025-09-06 17:49:51,337 - WARNING - MergeConflictWarning: Cannot merge meta key 'date' types <class 'str'> and <class 'str'>, choosing date='2025-09-06 17:49:39 Central Daylight Time'
+2025-09-06 17:49:51,340 - WARNING - MergeConflictWarning: Cannot merge meta key 'date' types <class 'str'> and <class 'str'>, choosing date='2025-09-06 17:49:44 Central Daylight Time'
+2025-09-06 17:49:51,342 - WARNING - MergeConflictWarning: Cannot merge meta key 'date' types <class 'str'> and <class 'str'>, choosing date='2025-09-06 17:49:51 Central Daylight Time'
+2025-09-06 17:49:58,028 - WARNING - VerifyWarning: Keyword name 'DEBAYERED' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 18:10:14,618 - WARNING - VerifyWarning: Keyword name 'DEBAYERED' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 18:11:01,067 - WARNING - MergeConflictWarning: Cannot merge meta key 'date' types <class 'str'> and <class 'str'>, choosing date='2025-09-06 18:10:36 Central Daylight Time'
+2025-09-06 18:11:01,069 - WARNING - MergeConflictWarning: Cannot merge meta key 'date' types <class 'str'> and <class 'str'>, choosing date='2025-09-06 18:10:39 Central Daylight Time'
+2025-09-06 18:11:01,072 - WARNING - MergeConflictWarning: Cannot merge meta key 'date' types <class 'str'> and <class 'str'>, choosing date='2025-09-06 18:10:43 Central Daylight Time'
+2025-09-06 18:11:01,074 - WARNING - MergeConflictWarning: Cannot merge meta key 'date' types <class 'str'> and <class 'str'>, choosing date='2025-09-06 18:10:48 Central Daylight Time'
+2025-09-06 18:11:01,077 - WARNING - MergeConflictWarning: Cannot merge meta key 'date' types <class 'str'> and <class 'str'>, choosing date='2025-09-06 18:10:54 Central Daylight Time'
+2025-09-06 18:11:01,079 - WARNING - MergeConflictWarning: Cannot merge meta key 'date' types <class 'str'> and <class 'str'>, choosing date='2025-09-06 18:11:01 Central Daylight Time'
+2025-09-06 18:11:07,489 - WARNING - VerifyWarning: Keyword name 'DEBAYERED' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 18:19:30,426 - WARNING - VerifyWarning: Keyword name 'DEBAYERED' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 18:20:16,348 - WARNING - MergeConflictWarning: Cannot merge meta key 'date' types <class 'str'> and <class 'str'>, choosing date='2025-09-06 18:19:50 Central Daylight Time'
+2025-09-06 18:20:16,351 - WARNING - MergeConflictWarning: Cannot merge meta key 'date' types <class 'str'> and <class 'str'>, choosing date='2025-09-06 18:19:54 Central Daylight Time'
+2025-09-06 18:20:16,354 - WARNING - MergeConflictWarning: Cannot merge meta key 'date' types <class 'str'> and <class 'str'>, choosing date='2025-09-06 18:19:58 Central Daylight Time'
+2025-09-06 18:20:16,356 - WARNING - MergeConflictWarning: Cannot merge meta key 'date' types <class 'str'> and <class 'str'>, choosing date='2025-09-06 18:20:03 Central Daylight Time'
+2025-09-06 18:20:16,359 - WARNING - MergeConflictWarning: Cannot merge meta key 'date' types <class 'str'> and <class 'str'>, choosing date='2025-09-06 18:20:09 Central Daylight Time'
+2025-09-06 18:20:16,361 - WARNING - MergeConflictWarning: Cannot merge meta key 'date' types <class 'str'> and <class 'str'>, choosing date='2025-09-06 18:20:16 Central Daylight Time'
+2025-09-06 18:20:22,961 - WARNING - VerifyWarning: Keyword name 'DEBAYERED' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 18:24:53,987 - WARNING - VerifyWarning: Keyword name 'DEBAYERED' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 19:05:13,872 - WARNING - VerifyWarning: Keyword name 'DEBAYERED' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 19:05:58,365 - WARNING - MergeConflictWarning: Cannot merge meta key 'date' types <class 'str'> and <class 'str'>, choosing date='2025-09-06 19:05:33 Central Daylight Time'
+2025-09-06 19:05:58,368 - WARNING - MergeConflictWarning: Cannot merge meta key 'date' types <class 'str'> and <class 'str'>, choosing date='2025-09-06 19:05:37 Central Daylight Time'
+2025-09-06 19:05:58,370 - WARNING - MergeConflictWarning: Cannot merge meta key 'date' types <class 'str'> and <class 'str'>, choosing date='2025-09-06 19:05:41 Central Daylight Time'
+2025-09-06 19:05:58,373 - WARNING - MergeConflictWarning: Cannot merge meta key 'date' types <class 'str'> and <class 'str'>, choosing date='2025-09-06 19:05:46 Central Daylight Time'
+2025-09-06 19:05:58,376 - WARNING - MergeConflictWarning: Cannot merge meta key 'date' types <class 'str'> and <class 'str'>, choosing date='2025-09-06 19:05:51 Central Daylight Time'
+2025-09-06 19:05:58,379 - WARNING - MergeConflictWarning: Cannot merge meta key 'date' types <class 'str'> and <class 'str'>, choosing date='2025-09-06 19:05:58 Central Daylight Time'
+2025-09-06 19:06:04,849 - WARNING - VerifyWarning: Keyword name 'DEBAYERED' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 19:10:05,190 - WARNING - VerifyWarning: Keyword name 'DEBAYERED' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 19:12:13,196 - WARNING - VerifyWarning: Keyword name 'DEBAYERED' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 19:12:57,558 - WARNING - MergeConflictWarning: Cannot merge meta key 'date' types <class 'str'> and <class 'str'>, choosing date='2025-09-06 19:12:32 Central Daylight Time'
+2025-09-06 19:12:57,561 - WARNING - MergeConflictWarning: Cannot merge meta key 'date' types <class 'str'> and <class 'str'>, choosing date='2025-09-06 19:12:36 Central Daylight Time'
+2025-09-06 19:12:57,564 - WARNING - MergeConflictWarning: Cannot merge meta key 'date' types <class 'str'> and <class 'str'>, choosing date='2025-09-06 19:12:40 Central Daylight Time'
+2025-09-06 19:12:57,566 - WARNING - MergeConflictWarning: Cannot merge meta key 'date' types <class 'str'> and <class 'str'>, choosing date='2025-09-06 19:12:45 Central Daylight Time'
+2025-09-06 19:12:57,569 - WARNING - MergeConflictWarning: Cannot merge meta key 'date' types <class 'str'> and <class 'str'>, choosing date='2025-09-06 19:12:50 Central Daylight Time'
+2025-09-06 19:12:57,571 - WARNING - MergeConflictWarning: Cannot merge meta key 'date' types <class 'str'> and <class 'str'>, choosing date='2025-09-06 19:12:57 Central Daylight Time'
+2025-09-06 19:13:04,276 - WARNING - VerifyWarning: Keyword name 'DEBAYERED' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 19:17:06,286 - WARNING - VerifyWarning: Keyword name 'DEBAYERED' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 19:18:00,805 - WARNING - VerifyWarning: Keyword name 'DEBAYERED' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 19:18:48,426 - WARNING - MergeConflictWarning: Cannot merge meta key 'date' types <class 'str'> and <class 'str'>, choosing date='2025-09-06 19:18:23 Central Daylight Time'
+2025-09-06 19:18:48,429 - WARNING - MergeConflictWarning: Cannot merge meta key 'date' types <class 'str'> and <class 'str'>, choosing date='2025-09-06 19:18:27 Central Daylight Time'
+2025-09-06 19:18:48,432 - WARNING - MergeConflictWarning: Cannot merge meta key 'date' types <class 'str'> and <class 'str'>, choosing date='2025-09-06 19:18:31 Central Daylight Time'
+2025-09-06 19:18:48,434 - WARNING - MergeConflictWarning: Cannot merge meta key 'date' types <class 'str'> and <class 'str'>, choosing date='2025-09-06 19:18:36 Central Daylight Time'
+2025-09-06 19:18:48,436 - WARNING - MergeConflictWarning: Cannot merge meta key 'date' types <class 'str'> and <class 'str'>, choosing date='2025-09-06 19:18:41 Central Daylight Time'
+2025-09-06 19:18:48,439 - WARNING - MergeConflictWarning: Cannot merge meta key 'date' types <class 'str'> and <class 'str'>, choosing date='2025-09-06 19:18:48 Central Daylight Time'
+2025-09-06 19:18:55,014 - WARNING - VerifyWarning: Keyword name 'DEBAYERED' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-06 19:22:36,958 - WARNING - VerifyWarning: Keyword name 'DEBAYERED' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-07 15:56:58,030 - WARNING - FITSFixedWarning: 'datfix' made the change 'Set MJD-OBS to 60727.195084 from DATE-OBS'.
+2025-09-07 15:56:58,037 - WARNING - VerifyWarning: Keyword name 'SOLVE_HINTS' is greater than 8 characters or contains characters not allowed by the FITS standard; a HIERARCH card will be created.
+2025-09-07 15:57:37,576 - WARNING - FITSFixedWarning: The WCS transformation has more axes (2) than the image it is associated with (0)
+2025-09-07 16:24:23,835 - WARNING - FITSFixedWarning: The WCS transformation has more axes (2) than the image it is associated with (0)
+2025-09-08 16:03:29,933 - ERROR - Unhandled exception occurred
+Traceback (most recent call last):
+  File "C:\Users\Gaming\Desktop\Python Code\setiastrosuitepro\setiastrosuitepro.py", line 5018, in <module>
+    win = AstroSuiteProMainWindow(image_manager=imgr)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Gaming\Desktop\Python Code\setiastrosuitepro\setiastrosuitepro.py", line 634, in __init__
+    install_wims_action(self, tb_wim, m_wim, reg, wims_path=wims_path, wrench_path=wrench_path)
+                              ^^^^^^
+NameError: name 'tb_wim' is not defined
+2025-09-08 16:05:19,626 - ERROR - Unhandled exception occurred
+Traceback (most recent call last):
+  File "C:\Users\Gaming\Desktop\Python Code\setiastrosuitepro\setiastrosuitepro.py", line 5019, in <module>
+    win = AstroSuiteProMainWindow(image_manager=imgr)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Gaming\Desktop\Python Code\setiastrosuitepro\setiastrosuitepro.py", line 614, in __init__
+    self._init_menubar()
+  File "C:\Users\Gaming\Desktop\Python Code\setiastrosuitepro\setiastrosuitepro.py", line 1325, in _init_menubar
+    install_wims_action(self, tb_wim, m_wim, reg, wims_path=wims_path, wrench_path=wrench_path)
+                              ^^^^^^
+NameError: name 'tb_wim' is not defined. Did you mean: 'm_wim'?
+2025-09-08 19:17:48,935 - ERROR - Unhandled exception occurred
+Traceback (most recent call last):
+  File "C:\Users\Gaming\Desktop\Python Code\setiastrosuitepro\setiastrosuitepro.py", line 5103, in <module>
+    win = AstroSuiteProMainWindow(image_manager=imgr)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Gaming\Desktop\Python Code\setiastrosuitepro\setiastrosuitepro.py", line 619, in __init__
+    self._init_menubar()
+  File "C:\Users\Gaming\Desktop\Python Code\setiastrosuitepro\setiastrosuitepro.py", line 1358, in _init_menubar
+    m_about.addAction("About...", self._about)
+                                  ^^^^^^^^^^^
+AttributeError: 'AstroSuiteProMainWindow' object has no attribute '_about'. Did you mean: 'layout'?
+2025-09-08 20:25:46,129 - ERROR - Unhandled exception occurred
+Traceback (most recent call last):
+  File "C:\Users\Gaming\Desktop\Python Code\setiastrosuitepro\setiastrosuitepro.py", line 5167, in <module>
+    win = AstroSuiteProMainWindow(image_manager=imgr)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Gaming\Desktop\Python Code\setiastrosuitepro\setiastrosuitepro.py", line 622, in __init__
+    self._create_actions()
+  File "C:\Users\Gaming\Desktop\Python Code\setiastrosuitepro\setiastrosuitepro.py", line 881, in _create_actions
+    self.act_linear_fit.setShortcut("Ctrl+P")
+    ^^^^^^^^^^^^^^^^^^^
+AttributeError: 'AstroSuiteProMainWindow' object has no attribute 'act_linear_fit'. Did you mean: '_open_linear_fit'?
+2025-09-08 20:26:53,947 - ERROR - Unhandled exception occurred
+Traceback (most recent call last):
+  File "C:\Users\Gaming\Desktop\Python Code\setiastrosuitepro\setiastrosuitepro.py", line 5167, in <module>
+    win = AstroSuiteProMainWindow(image_manager=imgr)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Gaming\Desktop\Python Code\setiastrosuitepro\setiastrosuitepro.py", line 622, in __init__
+    self._create_actions()
+  File "C:\Users\Gaming\Desktop\Python Code\setiastrosuitepro\setiastrosuitepro.py", line 881, in _create_actions
+    self.act_linear_fit.setShortcut("Ctrl+P")
+    ^^^^^^^^^^^^^^^^^^^
+AttributeError: 'AstroSuiteProMainWindow' object has no attribute 'act_linear_fit'. Did you mean: '_open_linear_fit'?
+2025-09-08 20:27:42,893 - ERROR - Unhandled exception occurred
+Traceback (most recent call last):
+  File "C:\Users\Gaming\Desktop\Python Code\setiastrosuitepro\setiastrosuitepro.py", line 5167, in <module>
+    win = AstroSuiteProMainWindow(image_manager=imgr)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Gaming\Desktop\Python Code\setiastrosuitepro\setiastrosuitepro.py", line 623, in __init__
+    self._init_menubar()
+  File "C:\Users\Gaming\Desktop\Python Code\setiastrosuitepro\setiastrosuitepro.py", line 1383, in _init_menubar
+    m_about.addAction("About...", self._about)
+                                  ^^^^^^^^^^^
+AttributeError: 'AstroSuiteProMainWindow' object has no attribute '_about'. Did you mean: 'layout'?
