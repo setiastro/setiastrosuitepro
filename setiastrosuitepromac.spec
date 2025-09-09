@@ -258,14 +258,14 @@ exe = EXE(
     a.binaries,       # include binaries directly
     a.datas,          # include data directly
     [],               # (legacy slot; keep empty list)
-    name='setiastrosuitepro',
-    debug=True,
+    name='SetiAstroSuitePro',
+    debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,        # UPX is usually unavailable on macOS; keep False
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=True,    # windowed
+    console=False,    # windowed
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
