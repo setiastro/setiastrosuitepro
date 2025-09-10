@@ -144,9 +144,18 @@ class MetricsPanel(QWidget):
 
 
     def compute_all_metrics(self, loaded_images):
-        # ─── HEADS-UP DIALOG ───────────────────────────────────────────
+        """Run SEP over the full list in parallel using threads and cache results."""
+        n = len(loaded_images)
+        if n == 0:
+            # Clear any previous state and bail
+            self._orig_images = []
+            self.metrics_data = [np.array([])]*4
+            self.flags = []
+            self._threshold_initialized = [False]*4
+            return
+
+        # Heads-up dialog (as you already had)
         settings = QSettings()
-        # default to True (i.e. show warning) if the key isn't there yet
         show = settings.value("metrics/showWarning", True, type=bool)
         if show:
             msg = QMessageBox(self)
@@ -159,48 +168,54 @@ class MetricsPanel(QWidget):
                                 QMessageBox.StandardButton.No)
             cb = QCheckBox("Don't show again", msg)
             msg.setCheckBox(cb)
-            answer = msg.exec()
-            if answer != QMessageBox.StandardButton.Yes:
+            if msg.exec() != QMessageBox.StandardButton.Yes:
                 return
             if cb.isChecked():
-                settings.setValue("metrics/showWarning", False)  
-        """Run SEP over the full list in parallel using threads and cache results."""
-        n = len(loaded_images)
+                settings.setValue("metrics/showWarning", False)
+
         # pre-allocate result arrays
-        m0 = np.full(n, np.nan)
-        m1 = np.full(n, np.nan)
-        m2 = np.full(n, np.nan)
-        m3 = np.full(n, np.nan)
+        m0 = np.full(n, np.nan, dtype=np.float32)  # FWHM
+        m1 = np.full(n, np.nan, dtype=np.float32)  # Eccentricity
+        m2 = np.full(n, np.nan, dtype=np.float32)  # Background (cached)
+        m3 = np.full(n, np.nan, dtype=np.float32)  # Star count
         flags = [e.get('flagged', False) for e in loaded_images]
 
-        # set up a cancelable progress dialog
+        # progress dialog
         prog = QProgressDialog("Computing frame metrics…", "Cancel", 0, n, self)
         prog.setWindowModality(Qt.WindowModality.WindowModal)
         prog.setMinimumDuration(0)
+        prog.setValue(0)
         prog.show()
         QApplication.processEvents()
 
-        workers = min((os.cpu_count() or 1), 60)
-        tasks   = [(i, loaded_images[i]) for i in range(n)]
-        max_workers = min(workers, (os.cpu_count() or 1))  # keep your current cap logic
-        with ThreadPoolExecutor(max_workers=max_workers) as exe:
-            futures = {exe.submit(self._compute_one, t): t[0] for t in tasks}
-            for fut in as_completed(futures):
-                if prog.wasCanceled():
-                    break
-                idx, fwhm, ecc, orig_back, star_cnt = fut.result()
-                m0[idx], m1[idx], m2[idx], m3[idx] = fwhm, ecc, orig_back, star_cnt
-                done += 1
-                prog.setValue(done)
-                QApplication.processEvents()
+        workers = min(os.cpu_count() or 1, 60)
+        tasks = [(i, loaded_images[i]) for i in range(n)]
+        done = 0  # <-- FIX: initialize before incrementing
 
-        prog.close()
+        try:
+            with ThreadPoolExecutor(max_workers=workers) as exe:
+                futures = {exe.submit(self._compute_one, t): t[0] for t in tasks}
+                for fut in as_completed(futures):
+                    if prog.wasCanceled():
+                        break
+                    try:
+                        idx, fwhm, ecc, orig_back, star_cnt = fut.result()
+                    except Exception:
+                        # On failure, leave NaNs/sentinels and continue
+                        idx, fwhm, ecc, orig_back, star_cnt = futures[fut], np.nan, np.nan, np.nan, 0
+                    m0[idx], m1[idx], m2[idx], m3[idx] = fwhm, ecc, orig_back, float(star_cnt)
+                    done += 1
+                    prog.setValue(done)
+                    QApplication.processEvents()
+        finally:
+            prog.close()
 
         # stash results
         self._orig_images = loaded_images
-        self.metrics_data  = [m0, m1, m2, m3]
-        self.flags         = flags
+        self.metrics_data = [m0, m1, m2, m3]
+        self.flags = flags
         self._threshold_initialized = [False]*4
+
 
     def plot(self, loaded_images, indices=None):
         """
@@ -248,20 +263,20 @@ class MetricsPanel(QWidget):
                 self._threshold_initialized[m] = True
 
     def _refresh_scatter_colors(self):
-        """Re-color your dots without re-computing SEP, even in subset mode."""
-        # For each scatter, its x‐values are local positions into self._cur_indices,
-        # so we must map them back to the original-frame index before pulling flags.
+        if not hasattr(self, "_cur_indices") or self._cur_indices is None:
+            # default to all indices
+            self._cur_indices = np.arange(len(self.flags or []), dtype=int)
+
         for scat in self.scats:
             x, y = scat.getData()[:2]
             brushes = []
             for xi in x:
-                li = int(xi)                    # local index in this subset
-                gi = self._cur_indices[li]     # global frame index
-                if self.flags[gi]:
-                    brushes.append(pg.mkBrush(255,0,0,200))
-                else:
-                    brushes.append(pg.mkBrush(100,100,255,200))
+                li = int(xi)
+                gi = self._cur_indices[li] if 0 <= li < len(self._cur_indices) else 0
+                brushes.append(pg.mkBrush(255,0,0,200) if (self.flags and gi < len(self.flags) and self.flags[gi])
+                            else pg.mkBrush(100,100,255,200))
             scat.setData(x=x, y=y, brush=brushes)
+
 
     def _on_point_click(self, metric_idx, points):
         for pt in points:
