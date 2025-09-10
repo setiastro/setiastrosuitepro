@@ -327,31 +327,26 @@ def abe_run(
     return corrected.astype(np.float32, copy=False)
 
 def siril_style_autostretch(image: np.ndarray, sigma: float = 3.0) -> np.ndarray:
-    """
-    'Siril-style' histogram stretch using MAD around the median.
-    Input/Output in [0, 1].
-    """
-    def stretch_channel(ch: np.ndarray) -> np.ndarray:
-        median = np.median(ch)
-        mad = np.median(np.abs(ch - median))
-        mad_std = mad * 1.4826  # approx std
-
-        # robust black/white points
-        black = max(float(ch.min()), median - sigma * mad_std)
-        white = min(float(ch.max()), median + sigma * mad_std)
-
-        if white - black <= 1e-6:
-            return np.zeros_like(ch, dtype=np.float32)
-
-        out = (ch - black) / (white - black)
+    def stretch_channel(c):
+        med = np.median(c); mad = np.median(np.abs(c - med))
+        mad_std = mad * 1.4826
+        mn, mx = float(c.min()), float(c.max())
+        bp = max(mn, med - sigma * mad_std)
+        wp = min(mx, med + 0.5*sigma * mad_std)
+        if wp - bp <= 1e-8:
+            return np.zeros_like(c, dtype=np.float32)
+        out = (c - bp) / (wp - bp)
         return np.clip(out, 0.0, 1.0).astype(np.float32)
 
     if image.ndim == 2:
-        return stretch_channel(image.astype(np.float32))
-    elif image.ndim == 3 and image.shape[2] == 3:
-        return np.dstack([stretch_channel(image[..., c].astype(np.float32)) for c in range(3)])
-    else:
-        raise ValueError("Unsupported image format for histogram stretch.")
+        return stretch_channel(image.astype(np.float32, copy=False))
+    if image.ndim == 3 and image.shape[2] == 3:
+        return np.stack([stretch_channel(image[..., i].astype(np.float32, copy=False))
+                         for i in range(3)], axis=-1)
+    raise ValueError("Unsupported image format for autostretch.")
+
+
+
 
 
 # =============================================================================
@@ -380,6 +375,7 @@ class ABEDialog(QDialog):
         self._drawing_poly: list[QPointF] | None = None
         self._panning = False
         self._pan_last = None
+        self._preview_source_f01 = None 
 
         # ---------------- Controls ----------------
         self.sp_degree = QSpinBox(); self.sp_degree.setRange(1, 6); self.sp_degree.setValue(2)
@@ -483,17 +479,17 @@ class ABEDialog(QDialog):
         bar.addWidget(self.btn_autostr)
         return bar
 
+
     # ----- data helpers -----
     def _get_source_float(self) -> np.ndarray | None:
         src = np.asarray(self.doc.image)
         if src is None or src.size == 0:
             return None
         if np.issubdtype(src.dtype, np.integer):
-            scale = 65535.0 if src.dtype.itemsize >= 2 else 255.0
-            return (src.astype(np.float32) / scale).clip(0, 1)
-        f = src.astype(np.float32)
-        mx = float(f.max()) if f.size else 1.0
-        return f / mx if mx > 5.0 else f
+            scale = float(np.iinfo(src.dtype).max)
+            return (src.astype(np.float32) / scale).clip(0.0, 1.0)
+        # float path: do NOT normalize; just clip to [0,1] like Crop does upstream
+        return np.clip(src.astype(np.float32, copy=False), 0.0, 1.0)
 
     # ----- preview/applier -----
     def _run_abe(self, excl_mask: np.ndarray | None, progress=None):
@@ -661,30 +657,43 @@ class ABEDialog(QDialog):
         return mask.astype(bool)
 
     # ----- preview rendering helpers -----
+
     def _set_preview_pixmap(self, arr: np.ndarray):
-        vis = arr
-        if vis is None or vis.size == 0:
-            self.preview_label.clear(); self._overlay = None
+        if arr is None or arr.size == 0:
+            self.preview_label.clear(); self._overlay = None; self._preview_source_f01 = None
             return
 
-        if vis.ndim == 2:
-            vis3 = np.stack([vis] * 3, axis=-1)
-        elif vis.ndim == 3 and vis.shape[2] == 1:
-            vis3 = np.repeat(vis, 3, axis=2)
+        # keep the float source for autostretch toggling (no re-normalization)
+        a = np.asarray(arr, dtype=np.float32, copy=False)
+        self._preview_source_f01 = a  # ← no np.clip here
+
+        # show autostretched or raw; siril_style_autostretch() already clips its result
+        src_to_show = siril_style_autostretch(self._preview_source_f01, sigma=3.0) \
+                    if getattr(self, "_autostretch_on", False) else self._preview_source_f01
+
+        if src_to_show.ndim == 2 or (src_to_show.ndim == 3 and src_to_show.shape[2] == 1):
+            # MONO path — match Crop: use Grayscale8 QImage; keep 3-ch backing for rebuild
+            mono = src_to_show if src_to_show.ndim == 2 else src_to_show[..., 0]
+            buf8_mono = (mono * 255.0).astype(np.uint8)               # ← no np.clip here
+            buf8_mono = np.ascontiguousarray(buf8_mono)
+            h, w = buf8_mono.shape
+
+            # for the toggle/rebuild code which expects 3-ch bytes
+            self._last_preview = np.ascontiguousarray(np.stack([buf8_mono]*3, axis=-1))
+
+            qimg = QImage(buf8_mono.data, w, h, w, QImage.Format.Format_Grayscale8)
         else:
-            vis3 = vis
+            # RGB path
+            buf8 = (src_to_show * 255.0).astype(np.uint8)             # ← no np.clip here
+            buf8 = np.ascontiguousarray(buf8)
+            h, w, _ = buf8.shape
+            self._last_preview = buf8
+            qimg = QImage(buf8.data, w, h, buf8.strides[0], QImage.Format.Format_RGB888)
 
-        buf8 = (np.clip(vis3, 0.0, 1.0) * 255.0).astype(np.uint8)
-        buf8 = np.ascontiguousarray(buf8)
-        h, w, _ = buf8.shape
-        bytes_per_line = buf8.strides[0]
-
-        self._last_preview = buf8
-        ptr = sip.voidptr(self._last_preview.ctypes.data)
-        qimg = QImage(ptr, w, h, bytes_per_line, QImage.Format.Format_RGB888)
         self._preview_qimg = qimg
         self._update_preview_scaled()
         self._redraw_overlay()
+
 
     def _update_preview_scaled(self):
         if self._preview_qimg is None:
@@ -929,28 +938,30 @@ class ABEDialog(QDialog):
         self.preview_scroll.horizontalScrollBar().installEventFilter(self)
         self.preview_scroll.verticalScrollBar().installEventFilter(self)
         self.preview_label.installEventFilter(self)
-
+        
     def _set_preview_from_float(self, arr: np.ndarray):
-        """
-        Accepts float image in [0..1], mono or RGB.
-        Updates self._last_preview and refreshes the label/scroll preview.
-        """
         if arr is None or arr.size == 0:
             return
+        a = np.asarray(arr, dtype=np.float32, copy=False)
+        self._preview_source_f01 = a  # ← no np.clip
 
-        if arr.ndim == 2:
-            vis3 = np.stack([arr] * 3, axis=-1)
-        elif arr.ndim == 3 and arr.shape[2] == 1:
-            vis3 = np.repeat(arr, 3, axis=2)
+        src_to_show = siril_style_autostretch(self._preview_source_f01, sigma=3.0) \
+                    if getattr(self, "_autostretch_on", False) else self._preview_source_f01
+
+        if src_to_show.ndim == 2 or (src_to_show.ndim == 3 and src_to_show.shape[2] == 1):
+            mono = src_to_show if src_to_show.ndim == 2 else src_to_show[..., 0]
+            buf8_mono = (mono * 255.0).astype(np.uint8)               # ← no np.clip
+            buf8_mono = np.ascontiguousarray(buf8_mono)
+            self._last_preview = np.ascontiguousarray(np.stack([buf8_mono]*3, axis=-1))
+            h, w = buf8_mono.shape
+            qimg = QImage(buf8_mono.data, w, h, w, QImage.Format.Format_Grayscale8)
         else:
-            vis3 = arr
+            buf8 = (src_to_show * 255.0).astype(np.uint8)             # ← no np.clip
+            buf8 = np.ascontiguousarray(buf8)
+            self._last_preview = buf8
+            h, w, _ = buf8.shape
+            qimg = QImage(buf8.data, w, h, buf8.strides[0], QImage.Format.Format_RGB888)
 
-        buf8 = (np.clip(vis3, 0.0, 1.0) * 255.0).astype(np.uint8)
-        buf8 = np.ascontiguousarray(buf8)
-        self._last_preview = buf8
-
-        h, w, _ = buf8.shape
-        qimg = QImage(buf8.data, w, h, buf8.strides[0], QImage.Format.Format_RGB888)
         self._preview_qimg = qimg
         self._update_preview_scaled()
         self._redraw_overlay()
@@ -1019,28 +1030,26 @@ class ABEDialog(QDialog):
         """
         Toggle Siril-style MAD autostretch on the *preview only* (non-destructive).
         First press applies; second press restores the original preview.
-        Compatible with QLabel/QScrollArea rendering.
+        Works from the float [0..1] preview source to avoid double-clipping.
         """
-        if self._last_preview is None:
+        if self._preview_source_f01 is None and self._last_preview is None:
             return
 
-        # Lazy-init toggle state without changing __init__
+        # Lazy init toggle state
         if not hasattr(self, "_autostretch_on"):
             self._autostretch_on = False
         if not hasattr(self, "_orig_preview8"):
             self._orig_preview8 = None
 
         def _rebuild_from_last():
-            """Rebuild QImage/QPixmap from self._last_preview and repaint overlays."""
-            h, w, _ = self._last_preview.shape
-            # Wrap numpy buffer without copying (lifetime owned by self._last_preview)
+            h, w = self._last_preview.shape[:2]
             ptr = sip.voidptr(self._last_preview.ctypes.data)
             qimg = QImage(ptr, w, h, self._last_preview.strides[0], QImage.Format.Format_RGB888)
             self._preview_qimg = qimg
             self._update_preview_scaled()
             self._redraw_overlay()
 
-        # ----- Toggle OFF: restore original buffer -----
+        # Toggle OFF → restore original preview bytes
         if self._autostretch_on and self._orig_preview8 is not None:
             self._last_preview = np.ascontiguousarray(self._orig_preview8)
             _rebuild_from_last()
@@ -1049,15 +1058,15 @@ class ABEDialog(QDialog):
                 self.btn_autostr.setText("Autostretch")
             return
 
-        # ----- Toggle ON: cache original and apply stretch -----
-        self._orig_preview8 = np.ascontiguousarray(self._last_preview)
+        # Toggle ON → cache original and apply stretch from float source
+        if self._last_preview is not None:
+            self._orig_preview8 = np.ascontiguousarray(self._last_preview)
 
-        # Convert 8-bit preview -> float [0,1]
-        arr = self._orig_preview8.astype(np.float32) / 255.0
-        if arr.ndim == 2:
-            arr = np.stack([arr] * 3, axis=-1)
-        elif arr.ndim == 3 and arr.shape[2] == 1:
-            arr = np.repeat(arr, 3, axis=2)
+        # Prefer float source (avoids 8-bit clipping); fall back to decoding _last_preview if needed
+        if self._preview_source_f01 is None:
+            arr = (self._last_preview.astype(np.float32) / 255.0)
+        else:
+            arr = self._preview_source_f01
 
         # Siril-style stretch with robust fallback
         def _percentile_fallback(a: np.ndarray):
@@ -1075,7 +1084,6 @@ class ABEDialog(QDialog):
             return out
 
         stretched = siril_style_autostretch(arr, sigma=sigma)
-        # If MAD stretch collapses to near-black or NaNs, fall back
         if not np.isfinite(stretched).all() or np.max(stretched) <= 1e-6:
             stretched = _percentile_fallback(arr)
 
@@ -1090,3 +1098,17 @@ class ABEDialog(QDialog):
             self.btn_autostr.setText("Autostretch (On)")
 
 
+    def _apply_autostretch_inplace(self, sigma: float = 3.0):
+        # Apply autostretch directly from current float preview source without toggling state.
+        if self._preview_source_f01 is None:
+            return
+        stretched = siril_style_autostretch(self._preview_source_f01, sigma=sigma)
+        buf8 = (np.clip(stretched, 0.0, 1.0) * 255.0).astype(np.uint8)
+        if buf8.ndim == 2:
+            buf8 = np.stack([buf8] * 3, axis=-1)
+        self._last_preview = np.ascontiguousarray(buf8)
+        h, w = buf8.shape[:2]
+        qimg = QImage(buf8.data, w, h, buf8.strides[0], QImage.Format.Format_RGB888)
+        self._preview_qimg = qimg
+        self._update_preview_scaled()
+        self._redraw_overlay()
