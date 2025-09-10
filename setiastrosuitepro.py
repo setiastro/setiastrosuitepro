@@ -4758,37 +4758,62 @@ class AstroSuiteProMainWindow(QMainWindow):
             else:
                 yield act
 
+    # --- Command palette helpers (safe: no receivers/emit on Qt signals) ---
+
+    def _iter_menu_actions(self, menu: QMenu):
+        """Depth-first iterator over all actions inside a QMenu tree."""
+        for act in menu.actions():
+            yield act
+            sub = act.menu()
+            if sub is not None:
+                yield from self._iter_menu_actions(sub)
+
+    def _is_action_commandy(self, act: QAction) -> bool:
+        """Heuristic: action is a real, user-triggerable command."""
+        if act is None:
+            return False
+        if act.isSeparator():
+            return False
+        # Exclude submenu containers — we want leaf commands only
+        if act.menu() is not None:
+            return False
+        # Text visible to users?
+        txt = (act.text() or "").strip().replace("&", "")
+        if not txt:
+            return False
+        # Optional heuristics:
+        if not act.isEnabled():
+            return False
+        # Allow opt-out per action if you ever need it:
+        if bool(act.property("cmdp_exclude")):
+            return False
+        return True
+
     def _collect_all_qactions(self) -> list[QAction]:
-        """Gather every actionable QAction from menubar + toolbars."""
+        """Gather every 'leaf' QAction from menubar + toolbars without using receivers()."""
+        from PyQt6.QtWidgets import QToolBar, QMenu
         seen, out = set(), []
 
-        # Menubar
-        for top in self.menuBar().actions():
-            m = top.menu()
+        # Menus: recurse into each top-level QMenu
+        for top_act in self.menuBar().actions():
+            m = top_act.menu()
             if m is None:
-                if not top.isSeparator() and int(top.receivers(top.triggered)) > 0:
-                    if id(top) not in seen:
-                        out.append(top); seen.add(id(top))
+                # Top-level action without a submenu (rare) — include if commandy
+                if self._is_action_commandy(top_act) and id(top_act) not in seen:
+                    out.append(top_act); seen.add(id(top_act))
                 continue
             for act in self._iter_menu_actions(m):
-                if act.isSeparator(): 
-                    continue
-                if int(act.receivers(act.triggered)) == 0:
-                    continue
-                if id(act) not in seen:
+                if self._is_action_commandy(act) and id(act) not in seen:
                     out.append(act); seen.add(id(act))
 
         # Toolbars
         for tb in self.findChildren(QToolBar):
             for act in tb.actions():
-                if act.isSeparator() or act.menu() is not None:
-                    continue
-                if int(act.receivers(act.triggered)) == 0:
-                    continue
-                if id(act) not in seen:
+                if self._is_action_commandy(act) and id(act) not in seen:
                     out.append(act); seen.add(id(act))
 
         return out
+
 
     def _install_command_search(self):
         mb = self.menuBar()
@@ -5745,6 +5770,55 @@ class _ProjectSaveWorker(QThread):
         except Exception as e:
             self.error.emit(str(e))
 
+# --- Global crash/exception handlers (Qt-safe) ---
+def install_crash_handlers(app):
+    import sys, threading, traceback, faulthandler, atexit, logging
+    from PyQt6.QtWidgets import QMessageBox
+    from PyQt6.QtCore import QTimer
+
+    # 1) Hard crashes (segfaults, access violations) → saspro_crash.log
+    try:
+        _crash_log = open("saspro_crash.log", "w", encoding="utf-8", errors="replace")
+        faulthandler.enable(file=_crash_log, all_threads=True)
+        atexit.register(_crash_log.close)
+    except Exception:
+        logging.exception("Failed to enable faulthandler")
+
+    def _show_dialog(title: str, head: str, details: str):
+        # Always marshal UI to the main thread
+        def _ui():
+            m = QMessageBox(app.activeWindow())
+            m.setIcon(QMessageBox.Icon.Critical)
+            m.setWindowTitle(title)
+            m.setText(head)
+            m.setInformativeText("Details are available below and in saspro.log.")
+            if details:
+                m.setDetailedText(details)
+            m.setStandardButtons(QMessageBox.StandardButton.Ok)
+            m.exec()
+        QTimer.singleShot(0, _ui)
+
+    # 2) Any uncaught exception on the main thread
+    def _excepthook(exc_type, exc_value, exc_tb):
+        tb = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+        logging.error("Uncaught exception:\n%s", tb)
+        _show_dialog("Unhandled Exception",
+                     f"{exc_type.__name__}: {exc_value}",
+                     tb)
+    sys.excepthook = _excepthook
+
+    # 3) Any uncaught exception in background threads (Py3.8+)
+    def _threadhook(args: threading.ExceptHookArgs):
+        tb = "".join(traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback))
+        logging.error("Uncaught thread exception (%s):\n%s", args.thread.name, tb)
+        _show_dialog("Unhandled Thread Exception",
+                     f"{args.exc_type.__name__}: {args.exc_value}",
+                     tb)
+    try:
+        threading.excepthook = _threadhook  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
 
 if __name__ == "__main__":
     # --- Logging (catch unhandled exceptions to a file) ---
@@ -5776,6 +5850,7 @@ if __name__ == "__main__":
     QCoreApplication.setApplicationName("Seti Astro Suite Pro")
 
     app = QApplication(sys.argv)
+    install_crash_handlers(app) 
     app.setWindowIcon(QIcon(windowslogo_path if os.path.exists(windowslogo_path) else icon_path))
 
     # Helper: build QPixmap for the splash from icon_path (fallback to windowslogo_path)
@@ -5839,17 +5914,25 @@ if __name__ == "__main__":
         print(f"Seti Astro Suite Pro v{VERSION} up and running!")
         sys.exit(app.exec())
 
-    except Exception as e:
+    except Exception:
+        import traceback
         try:
             splash.close()
         except Exception:
             pass
-        logging.error("Unhandled exception occurred", exc_info=True)
-        QMessageBox.critical(
-            None,
-            "Application Error",
-            f"An unexpected error occurred:\n{str(e)}\n\nPlease check saspro.log for details."
-        )
+        tb = traceback.format_exc()
+        logging.error("Unhandled exception occurred\n%s", tb)
+        msg = QMessageBox(None)
+        msg.setIcon(QMessageBox.Icon.Critical)
+        msg.setWindowTitle("Application Error")
+        # Short headline:
+        msg.setText("An unexpected error occurred.")
+        # One-line summary:
+        msg.setInformativeText(tb.splitlines()[-1] if tb else "See details.")
+        # Full traceback:
+        msg.setDetailedText(tb)
+        msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+        msg.exec()
         sys.exit(1)
 
 
