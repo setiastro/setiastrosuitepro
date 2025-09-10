@@ -2120,6 +2120,166 @@ def resource_path(relative_path):
 
     return os.path.join(base_path, relative_path)
 
+class CustomDoubleSpinBox(QWidget):
+    valueChanged = pyqtSignal(float)
+
+    def __init__(self, minimum=0.0, maximum=10.0, initial=0.0, step=0.1,
+                 suffix: str = "", parent=None):
+        super().__init__(parent)
+        self.minimum = minimum
+        self.maximum = maximum
+        self.step = step
+        self._value = initial
+        self.suffix = suffix
+
+        # Line edit
+        self.lineEdit = QLineEdit(f"{initial:.3f}")
+        self.lineEdit.setAlignment(Qt.AlignmentFlag.AlignRight)
+        validator = QDoubleValidator(self.minimum, self.maximum, 3, self)
+        validator.setNotation(QDoubleValidator.Notation.StandardNotation)
+        self.lineEdit.setValidator(validator)
+        self.lineEdit.editingFinished.connect(self.onEditingFinished)
+
+        # Up/down buttons
+        self.upButton = QToolButton(); self.upButton.setText("▲")
+        self.downButton = QToolButton(); self.downButton.setText("▼")
+        self.upButton.clicked.connect(self.increaseValue)
+        self.downButton.clicked.connect(self.decreaseValue)
+
+        # Buttons layout
+        buttonLayout = QVBoxLayout()
+        buttonLayout.addWidget(self.upButton)
+        buttonLayout.addWidget(self.downButton)
+        buttonLayout.setSpacing(0)
+        buttonLayout.setContentsMargins(0, 0, 0, 0)
+
+        # Optional suffix label
+        self.suffixLabel = QLabel(self.suffix) if self.suffix else None
+        if self.suffixLabel:
+            self.suffixLabel.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+
+        # Main layout
+        mainLayout = QHBoxLayout()
+        mainLayout.setSpacing(2)
+        mainLayout.setContentsMargins(0, 0, 0, 0)
+        mainLayout.addWidget(self.lineEdit)
+        mainLayout.addLayout(buttonLayout)
+        if self.suffixLabel:
+            mainLayout.addWidget(self.suffixLabel)
+        self.setLayout(mainLayout)
+
+        self.updateButtonStates()
+
+    def updateButtonStates(self):
+        self.upButton.setEnabled(self._value < self.maximum)
+        self.downButton.setEnabled(self._value > self.minimum)
+
+    def increaseValue(self):
+        self.setValue(self._value + self.step)
+
+    def decreaseValue(self):
+        self.setValue(self._value - self.step)
+
+    def onEditingFinished(self):
+        try:
+            new_val = float(self.lineEdit.text())
+        except ValueError:
+            new_val = self._value
+        self.setValue(new_val)
+
+    def setValue(self, val: float):
+        if val < self.minimum:
+            val = self.minimum
+        elif val > self.maximum:
+            val = self.maximum
+        if abs(val - self._value) > 1e-9:
+            self._value = val
+            self.lineEdit.setText(f"{val:.3f}")
+            self.valueChanged.emit(val)
+            self.updateButtonStates()
+
+    def value(self) -> float:
+        return self._value
+
+class CustomSpinBox(QWidget):
+    """
+    A simple custom spin box that mimics QSpinBox functionality.
+    Emits valueChanged(int) when the value changes.
+    """
+    valueChanged = pyqtSignal(int)
+
+    def __init__(self, minimum=0, maximum=100, initial=0, step=1, parent=None):
+        super().__init__(parent)
+        self.minimum = minimum
+        self.maximum = maximum
+        self.step = step
+        self._value = initial
+
+        # Create a line edit to show the value.
+        self.lineEdit = QLineEdit(str(initial))
+        self.lineEdit.setAlignment(Qt.AlignmentFlag.AlignRight)
+        # Optionally, restrict input to integers using a validator.
+        
+        self.lineEdit.setValidator(QIntValidator(self.minimum, self.maximum, self))
+        self.lineEdit.editingFinished.connect(self.editingFinished)
+
+        # Create up and down buttons with arrow text or icons.
+        self.upButton = QToolButton()
+        self.upButton.setText("▲")
+        self.downButton = QToolButton()
+        self.downButton.setText("▼")
+        self.upButton.clicked.connect(self.increaseValue)
+        self.downButton.clicked.connect(self.decreaseValue)
+
+        # Arrange the buttons vertically.
+        buttonLayout = QVBoxLayout()
+        buttonLayout.addWidget(self.upButton)
+        buttonLayout.addWidget(self.downButton)
+        buttonLayout.setSpacing(0)
+        buttonLayout.setContentsMargins(0, 0, 0, 0)
+
+        # Arrange the line edit and buttons horizontally.
+        mainLayout = QHBoxLayout()
+        mainLayout.addWidget(self.lineEdit)
+        mainLayout.addLayout(buttonLayout)
+        mainLayout.setSpacing(0)
+        mainLayout.setContentsMargins(0, 0, 0, 0)
+        self.setLayout(mainLayout)
+
+        self.updateButtonStates()
+
+    @property
+    def value(self):
+        return self._value
+
+    def setValue(self, val):
+        if val < self.minimum:
+            val = self.minimum
+        elif val > self.maximum:
+            val = self.maximum
+        if val != self._value:
+            self._value = val
+            self.lineEdit.setText(str(val))
+            self.valueChanged.emit(val)
+            self.updateButtonStates()
+
+    def updateButtonStates(self):
+        self.upButton.setEnabled(self._value < self.maximum)
+        self.downButton.setEnabled(self._value > self.minimum)
+
+    def increaseValue(self):
+        self.setValue(self._value + self.step)
+
+    def decreaseValue(self):
+        self.setValue(self._value - self.step)
+
+    def editingFinished(self):
+        try:
+            newVal = int(self.lineEdit.text())
+        except ValueError:
+            newVal = self._value
+        self.setValue(newVal)
+
 
 class WIMIDialog(QDialog):
     def __init__(self, parent=None, settings=None, doc_manager=None, wimi_path: Optional[str] = None, wrench_path: Optional[str] = None):
