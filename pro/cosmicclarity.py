@@ -373,16 +373,16 @@ class CosmicClarityDialogPro(QDialog):
         dest = img.astype(np.float32, copy=False)
 
         # Apply to document (so the user sees the step result immediately)
-        if self.cmb_target.currentIndex() == 0 or not hasattr(self.parent(), "_spawn_new_view_from_numpy"):
-            if hasattr(self.doc, "set_image"):
-                self.doc.set_image(dest, step_name=f"Cosmic Clarity – {mode.title()}")
-            elif hasattr(self.doc, "apply_numpy"):
-                self.doc.apply_numpy(dest, step_name=f"Cosmic Clarity – {mode.title()}")
-            else:
-                self.doc.image = dest
+        step_title = f"Cosmic Clarity – {mode.title()}"
+        create_new = (self.cmb_target.currentIndex() == 1)
+
+        if create_new:
+            ok = self._spawn_new_doc_from_numpy(dest, step_title)
+            if not ok:
+                # fall back to overwriting if we couldn’t spawn a new doc
+                self._apply_to_active(dest, step_title)
         else:
-            title = getattr(self.doc, "display_name", lambda: "Image")()
-            self.parent()._spawn_new_view_from_numpy(dest, f"{title} [Cosmic Clarity – {mode.title()}]")
+            self._apply_to_active(dest, step_title)
 
         # Will we run another step (i.e., we're in "Both")?
         has_more = bool(self._op_queue)
@@ -442,6 +442,45 @@ class CosmicClarityDialogPro(QDialog):
         if isinstance(fp, str) and fp:
             return os.path.splitext(os.path.basename(fp))[0]
         return "image"
+
+
+    def _apply_to_active(self, arr: np.ndarray, step_title: str):
+        """Overwrite the active document image."""
+        if hasattr(self.doc, "set_image"):
+            self.doc.set_image(arr, step_name=step_title)
+        elif hasattr(self.doc, "apply_numpy"):
+            self.doc.apply_numpy(arr, step_name=step_title)
+        else:
+            self.doc.image = arr
+
+    def _spawn_new_doc_from_numpy(self, arr: np.ndarray, step_title: str) -> bool:
+        """Create a brand-new document + view from a numpy array. Returns True on success."""
+        mw = self.parent()
+        dm = getattr(mw, "docman", None)
+        if dm is None:
+            return False
+
+        # build a reasonable title and metadata
+        base_name = getattr(self.doc, "display_name", None)
+        base = base_name() if callable(base_name) else (base_name or "Image")
+        title = f"{base} [{step_title}]"
+
+        meta = {
+            "bit_depth": "32-bit floating point",
+            "is_mono": (arr.ndim == 2) or (arr.ndim == 3 and arr.shape[2] == 1),
+            "source": "Cosmic Clarity",
+            "original_header": getattr(self.doc, "original_header", None),
+        }
+
+        try:
+            new_doc = dm.open_array(arr.astype(np.float32, copy=False), metadata=meta, title=title)
+            if hasattr(mw, "_spawn_subwindow_for"):   # same hook used in ABE
+                mw._spawn_subwindow_for(new_doc)
+            return True
+        except Exception as e:
+            QMessageBox.critical(self, "Cosmic Clarity", f"Failed to create new view:\n{e}")
+            return False
+
 
     # ----- Super-resolution -----
     def _run_superres(self):
@@ -513,16 +552,15 @@ class CosmicClarityDialogPro(QDialog):
             return
 
         dest = img.astype(np.float32, copy=False)
-        if self.cmb_target.currentIndex() == 0 or not hasattr(self.parent(), "_spawn_new_view_from_numpy"):
-            if hasattr(self.doc, "set_image"):
-                self.doc.set_image(dest, step_name="Cosmic Clarity – Super Resolution")
-            elif hasattr(self.doc, "apply_numpy"):
-                self.doc.apply_numpy(dest, step_name="Cosmic Clarity – Super Resolution")
-            else:
-                self.doc.image = dest
+        step_title = "Cosmic Clarity – Super Resolution"
+        create_new = (self.cmb_target.currentIndex() == 1)
+
+        if create_new:
+            ok = self._spawn_new_doc_from_numpy(dest, step_title)
+            if not ok:
+                self._apply_to_active(dest, step_title)
         else:
-            title = getattr(self.doc, "display_name", lambda: "Image")()
-            self.parent()._spawn_new_view_from_numpy(dest, f"{title} [Cosmic Clarity – Super Resolution]")
+            self._apply_to_active(dest, step_title)
 
         # cleanup
         try:
