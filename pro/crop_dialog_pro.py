@@ -222,6 +222,9 @@ class CropDialogPro(QDialog):
             arr = arr.astype(np.float32) / np.iinfo(self.doc.image.dtype).max
         else:
             arr = arr.astype(np.float32, copy=False)
+        # ⬇️ Treat mono with a trailing channel as true mono
+        if arr.ndim == 3 and arr.shape[2] == 1:
+            arr = arr[..., 0]
         return np.clip(arr, 0.0, 1.0)
 
     def _load_from_doc(self):
@@ -239,13 +242,23 @@ class CropDialogPro(QDialog):
 
     @staticmethod
     def _to_qimage(img01: np.ndarray) -> QImage:
+        # Ensure shapes we expect
+        if img01.ndim == 3 and img01.shape[2] == 1:
+            img01 = img01[..., 0]
+
         if img01.ndim == 2:
-            h, w = img01.shape
-            buf = (img01 * 255).astype(np.uint8)
-            return QImage(buf.data, w, h, w, QImage.Format.Format_Grayscale8)
-        h, w, _ = img01.shape
-        buf = (img01 * 255).astype(np.uint8)
-        return QImage(buf.data, w, h, 3 * w, QImage.Format.Format_RGB888)
+            buf = np.ascontiguousarray((img01 * 255).astype(np.uint8))
+            h, w = buf.shape
+            bpl = buf.strides[0]  # == w for contiguous grayscale
+            return QImage(buf.tobytes(), w, h, bpl, QImage.Format.Format_Grayscale8)
+
+        if img01.ndim == 3 and img01.shape[2] == 3:
+            buf = np.ascontiguousarray((img01 * 255).astype(np.uint8))
+            h, w, _ = buf.shape
+            bpl = buf.strides[0]  # == 3*w for contiguous RGB
+            return QImage(buf.tobytes(), w, h, bpl, QImage.Format.Format_RGB888)
+
+        raise ValueError(f"Unsupported image shape for preview: {img01.shape}")
 
     # ---------- aspect ratio ----------
     def _on_ar_changed(self, txt: str):
