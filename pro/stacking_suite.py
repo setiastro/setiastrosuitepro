@@ -1,12 +1,13 @@
 from __future__ import annotations
 import os, glob, shutil, tempfile, datetime as _dt
+from time import perf_counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy as np
 import re
 import math            # used in compute_safe_chunk
 import psutil          # used in bytes_available / compute_safe_chunk
 from typing import List 
-from PyQt6.QtCore import Qt, QTimer, QSettings, pyqtSignal, QObject, pyqtSlot, QThread, QEvent, QPoint, QSize
+from PyQt6.QtCore import Qt, QTimer, QSettings, pyqtSignal, QObject, pyqtSlot, QThread, QEvent, QPoint, QSize, QEventLoop
 from PyQt6.QtGui import QIcon, QImage, QPixmap, QAction, QIntValidator, QDoubleValidator, QFontMetrics, QTextCursor
 from PyQt6.QtWidgets import (QDialog, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QLineEdit, QTreeWidget, QHeaderView, QTreeWidgetItem, QProgressBar, QProgressDialog,
                              QFormLayout, QDialogButtonBox, QToolBar, QToolButton, QFileDialog, QTabWidget, QAbstractItemView, QSpinBox, QDoubleSpinBox,
@@ -438,7 +439,7 @@ def compute_safe_chunk(height, width, N, channels, dtype, pref_h, pref_w):
     workers = os.cpu_count() or 1
 
     # budget *all* float64 copies (master + per-thread)
-    bytes_per_pixel = (N + workers) * channels * bpe64
+    bytes_per_pixel = (N + workers) * channels * bpe64 / 2
     max_pixels      = int(avail // bytes_per_pixel)
     if max_pixels < 1:
         raise MemoryError("Not enough RAM for even a 1×1 tile")
@@ -577,6 +578,20 @@ class StatusLogWindow(QDialog):
         sb = self.view.verticalScrollBar()
         sb.setValue(sb.maximum())
 
+    @pyqtSlot(str)
+    def _on_post_status(self, msg: str):
+        # update small “last status” indicator in the dialog (GUI thread slot)
+        self._update_status_gui(msg)
+        # append to the shared log window
+        self.status_signal.emit(msg)
+        # reflect in progress dialog label if it exists
+        try:
+            if getattr(self, "post_progress", None):
+                self.post_progress.setLabelText(msg)
+                QApplication.processEvents()
+        except Exception:
+            pass
+
 
 
 class StackingSuiteDialog(QDialog):
@@ -588,6 +603,7 @@ class StackingSuiteDialog(QDialog):
         self.settings = QSettings()         
         self._wrench_path = wrench_path
         self._spinner_path = spinner_path
+        self._post_progress_label = None
         # ...
         self.wrench_button = QPushButton()
         self.wrench_button.setIcon(QIcon(self._wrench_path))
@@ -1078,6 +1094,18 @@ class StackingSuiteDialog(QDialog):
             self.status_signal.emit(message)
         else:
             self.status_signal.emit(message)
+
+    @pyqtSlot(str)
+    def _on_post_status(self, msg: str):
+        # 1) your central logger
+        self.update_status(msg)
+        # 2) also reflect in the progress dialog label if it exists
+        try:
+            if getattr(self, "post_progress", None):
+                self.post_progress.setLabelText(msg)
+                QApplication.processEvents()
+        except Exception:
+            pass
 
 
     def _norm_dir(self, p: str) -> str:
@@ -2068,32 +2096,267 @@ class StackingSuiteDialog(QDialog):
         _, x0, y0, x1, y1 = best
         return (x0, y0, x1, y1)
 
-    def _compute_common_autocrop_rect(self, grouped_files: dict, coverage_pct: float):
-        transforms_path = os.path.join(self.stacking_directory, "alignment_transforms.sasd")
-        common_mask = None
-        for group_key, file_list in grouped_files.items():
-            if not file_list:
-                continue
-            mask = self._compute_coverage_mask(file_list, transforms_path, coverage_pct)
-            if mask is None:
-                self.update_status(f"✂️ Global crop: no mask for '{group_key}' → disabling global crop.")
-                return None
-            if common_mask is None:
-                common_mask = mask.astype(bool, copy=True)
-            else:
-                if mask.shape != common_mask.shape:
-                    self.update_status("✂️ Global crop: mask shapes differ across groups.")
-                    return None
-                np.logical_and(common_mask, mask, out=common_mask)
+    def _compute_common_autocrop_rect(self, grouped_files: dict, coverage_pct: float, status_cb=None):
+        """
+        Fast global crop using alignment transforms only.
 
-        if common_mask is None or not common_mask.any():
+        - If coverage_pct >= 99: exact convex intersection of all transformed rectangles (no black edges).
+        - If coverage_pct < 99: fast percentile-based AABB approximation (very quick; good in practice).
+
+        Returns (x0, y0, x1, y1) in *aligned/reference* pixel coords, or None if not computable.
+        """
+        import math
+        import json
+        from time import perf_counter
+        import numpy as np
+        from astropy.io import fits
+
+        def log(msg: str):
+            try:
+                (status_cb or self.update_status)(msg)
+            except Exception:
+                pass
+
+        t0 = perf_counter()
+        transforms_path = os.path.join(self.stacking_directory, "alignment_transforms.sasd")
+
+        # ---- Helpers -----------------------------------------------------------
+        def _load_transforms(path: str):
+            """
+            Returns dict {normalized_path: 3x3 float64 affine matrix}
+            Tries your existing loader if present; otherwise tries JSON / pickle / npy/npz.
+            """
+            # Prefer your existing method if available
+            if hasattr(self, "load_alignment_matrices_sasd"):
+                try:
+                    d = self.load_alignment_matrices_sasd(path)
+                    # normalize into numpy arrays
+                    out = {}
+                    for k, v in (d or {}).items():
+                        M = np.asarray(v, dtype=np.float64)
+                        if M.shape == (3, 3):
+                            out[os.path.normpath(k)] = M
+                    return out
+                except Exception:
+                    pass
+
+            # Fallbacks
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    raw = json.load(f)
+                out = {}
+                for k, v in raw.items():
+                    M = np.asarray(v, dtype=np.float64)
+                    if M.shape == (3, 3):
+                        out[os.path.normpath(k)] = M
+                return out
+            except Exception:
+                pass
+
+            try:
+                import pickle
+                with open(path, "rb") as f:
+                    raw = pickle.load(f)
+                out = {}
+                for k, v in raw.items():
+                    M = np.asarray(v, dtype=np.float64)
+                    if M.shape == (3, 3):
+                        out[os.path.normpath(k)] = M
+                return out
+            except Exception:
+                pass
+
+            try:
+                npz = np.load(path, allow_pickle=True)
+                out = {}
+                # support either dict-like npz or (keys, mats)
+                if hasattr(npz, "files") and "keys" in npz.files and "mats" in npz.files:
+                    keys = npz["keys"]
+                    mats = npz["mats"]
+                    for k, M in zip(keys, mats):
+                        M = np.asarray(M, dtype=np.float64)
+                        if M.shape == (3, 3):
+                            out[os.path.normpath(str(k))] = M
+                    return out
+            except Exception:
+                pass
+            return {}
+
+        def _infer_dims_from_any_aligned_file() -> tuple[int, int] | None:
+            for _g, lst in grouped_files.items():
+                for p in lst:
+                    if os.path.exists(p):
+                        try:
+                            hdr = fits.getheader(p, ext=0)
+                            W = int(hdr.get("NAXIS1") or 0)
+                            H = int(hdr.get("NAXIS2") or 0)
+                            if W > 0 and H > 0:
+                                return (W, H)
+                        except Exception:
+                            pass
             return None
 
-        rect = self._max_rectangle_in_binary(common_mask)
-        if rect:
-            x0,y0,x1,y1 = rect
-            self.update_status(f"✂️ Global crop rect={rect} → size {x1-x0}×{y1-y0}")
-        return rect
+        def _rev_map_aligned_to_normalized() -> dict:
+            """
+            Map aligned path -> normalized path using either self.valid_transforms or filename pattern.
+            """
+            rev = {}
+            vt = getattr(self, "valid_transforms", None)
+            if isinstance(vt, dict) and vt:
+                for norm_p, aligned_p in vt.items():
+                    rev[os.path.normpath(aligned_p)] = os.path.normpath(norm_p)
+            else:
+                # best-effort: derive from naming convention
+                for _g, lst in grouped_files.items():
+                    for aligned in lst:
+                        base = os.path.basename(aligned)
+                        if base.endswith("_n_r.fit"):
+                            nn = base.replace("_n_r.fit", "_n.fit")
+                        elif base.endswith("_r.fit"):
+                            nn = base.replace("_r.fit", "_n.fit")
+                        else:
+                            continue
+                        rev[os.path.normpath(aligned)] = os.path.normpath(
+                            os.path.join(self.stacking_directory, "Normalized_Images", nn)
+                        )
+            return rev
+
+        def _transform_rect(M: np.ndarray, W: int, H: int):
+            # Apply 3x3 affine to the 4 corners of the source image (0,0)-(W,H)
+            corners = np.array([[0, 0, 1],
+                                [W, 0, 1],
+                                [W, H, 1],
+                                [0, H, 1]], dtype=np.float64)
+            tp = (M @ corners.T).T
+            # assume affine (no perspective), ignore homogeneous w if present
+            return [(float(tp[i, 0]), float(tp[i, 1])) for i in range(4)]
+
+        # Sutherland–Hodgman convex polygon intersection
+        def _poly_intersection(subject, clip):
+            def _inside(p, a, b):
+                # keep left of directed edge a->b
+                return (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]) >= 0.0
+            def _intersection(a1, a2, b1, b2):
+                # line-line intersection
+                x1,y1 = a1; x2,y2 = a2; x3,y3 = b1; x4,y4 = b2
+                den = (x1-x2)*(y3-y4) - (y1-y2)*(x3-x4)
+                if abs(den) < 1e-12:
+                    return a2  # parallel; fallback
+                px = ((x1*y2 - y1*x2)*(x3 - x4) - (x1 - x2)*(x3*y4 - y3*x4)) / den
+                py = ((x1*y2 - y1*x2)*(y3 - y4) - (y1 - y2)*(x3*y4 - y3*x4)) / den
+                return (px, py)
+
+            output = subject
+            if not output:
+                return []
+            for i in range(len(clip)):
+                input_list = output
+                output = []
+                A = clip[i]
+                B = clip[(i+1) % len(clip)]
+                if not input_list:
+                    break
+                S = input_list[-1]
+                for E in input_list:
+                    if _inside(E, A, B):
+                        if not _inside(S, A, B):
+                            output.append(_intersection(S, E, A, B))
+                        output.append(E)
+                    elif _inside(S, A, B):
+                        output.append(_intersection(S, E, A, B))
+                    S = E
+                if not output:
+                    break
+            return output
+
+        # ---- Load transforms + dims -------------------------------------------
+        log("✂️ Auto-crop: loading transforms…")
+        transforms = _load_transforms(transforms_path)
+        if not transforms:
+            log("✂️ Auto-crop: no transforms found → disabling global crop.")
+            return None
+
+        dims = _infer_dims_from_any_aligned_file()
+        if not dims:
+            log("✂️ Auto-crop: could not infer image dimensions → disabling global crop.")
+            return None
+        W, H = dims
+
+        rev_map = _rev_map_aligned_to_normalized()
+
+        # ---- Build per-frame polygons (transformed corners on the reference grid) ----
+        polys = []
+        n_frames = 0
+        for _g, flist in grouped_files.items():
+            for aligned_path in flist:
+                n_frames += 1
+                norm_p = rev_map.get(os.path.normpath(aligned_path))
+                if not norm_p:
+                    continue
+                M = transforms.get(os.path.normpath(norm_p))
+                if M is None or np.asarray(M).shape != (3, 3):
+                    continue
+                polys.append(_transform_rect(np.asarray(M, dtype=np.float64), W, H))
+
+        if not polys:
+            log("✂️ Auto-crop: no usable polygons from transforms → disabling global crop.")
+            return None
+
+        # ---- Exact 100% coverage (convex intersection) ----
+        base_rect = [(0.0, 0.0), (W*1.0, 0.0), (W*1.0, H*1.0), (0.0, H*1.0)]
+        inter_poly = base_rect
+        for p in polys:
+            inter_poly = _poly_intersection(inter_poly, p)
+            if len(inter_poly) < 3:
+                inter_poly = []
+                break
+
+        # If user wants ≈100% coverage, prefer exact polygon intersection (fast & safe).
+        if coverage_pct >= 99 or not polys:
+            if not inter_poly:
+                log("✂️ Auto-crop: empty intersection at 100% coverage.")
+                return None
+            xs = [pt[0] for pt in inter_poly]
+            ys = [pt[1] for pt in inter_poly]
+            x0 = max(0, int(math.floor(min(xs))))
+            y0 = max(0, int(math.floor(min(ys))))
+            x1 = min(W, int(math.ceil(max(xs))))
+            y1 = min(H, int(math.ceil(max(ys))))
+            if x1 - x0 <= 4 or y1 - y0 <= 4:
+                log("✂️ Auto-crop: intersection too small to be useful.")
+                return None
+            log(f"✂️ Global crop (100% coverage): {x0},{y0} → {x1},{y1}  "
+                f"({x1-x0}×{y1-y0})  in {perf_counter()-t0:.1f}s")
+            return (x0, y0, x1, y1)
+
+        # ---- Fast percentile AABB fallback for coverage_pct < 99 ---------------
+        # This is a conservative, very fast approximation (no per-pixel masks).
+        xmins = np.array([min(x for x, _ in p) for p in polys], dtype=np.float64)
+        xmaxs = np.array([max(x for x, _ in p) for p in polys], dtype=np.float64)
+        ymins = np.array([min(y for _, y in p) for p in polys], dtype=np.float64)
+        ymaxs = np.array([max(y for _, y in p) for p in polys], dtype=np.float64)
+
+        k = max(1, int(math.ceil((coverage_pct / 100.0) * len(polys))))
+        # k-th largest for mins, k-th smallest for maxes
+        # (np.partition is O(n) and fast)
+        x0 = float(np.partition(xmins, -k)[-k])   # k-th largest left boundary
+        y0 = float(np.partition(ymins, -k)[-k])
+        x1 = float(np.partition(xmaxs,  k-1)[k-1])  # k-th smallest right boundary
+        y1 = float(np.partition(ymaxs,  k-1)[k-1])
+
+        x0 = max(0, int(math.floor(x0)))
+        y0 = max(0, int(math.floor(y0)))
+        x1 = min(W, int(math.ceil(x1)))
+        y1 = min(H, int(math.ceil(y1)))
+
+        if x1 - x0 <= 4 or y1 - y0 <= 4 or x0 >= x1 or y0 >= y1:
+            log("✂️ Auto-crop: percentile AABB produced too small/invalid rect → disabling global crop.")
+            return None
+
+        log(f"✂️ Global crop (~{coverage_pct:.0f}% coverage): {x0},{y0} → {x1},{y1}  "
+            f"({x1-x0}×{y1-y0})  in {perf_counter()-t0:.1f}s")
+        return (x0, y0, x1, y1)
+
 
     def _first_non_none(self, *vals):
         for v in vals:
@@ -5083,8 +5346,22 @@ class StackingSuiteDialog(QDialog):
         # Show review dialog; if user changes reference, redo debayer+median
         stats_payload = {"star_count": ref_count, "eccentricity": ref_ecc, "mean": ref_median}
         dialog = ReferenceFrameReviewDialog(self.reference_frame, stats_payload, parent=self)
-        result = dialog.exec()
-        user_choice = dialog.getUserChoice()  # "use", "select_other", or None
+
+        # Make it non-modal but raised/focused
+        dialog.setModal(False)
+        dialog.setWindowModality(Qt.WindowModality.NonModal)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+        # Wait here without freezing UI (modeless pseudo-modal)
+        _loop = QEventLoop(self)
+        dialog.finished.connect(_loop.quit)   # finished(int) -> quit loop
+        _loop.exec()
+
+        # After the user closes the dialog, proceed exactly as before:
+        result = dialog.result()
+        user_choice = dialog.getUserChoice()   # "use", "select_other", or None
 
         if result == QDialog.DialogCode.Accepted:
             self.update_status("User accepted the reference frame.")
@@ -5634,7 +5911,16 @@ class StackingSuiteDialog(QDialog):
             autocrop_enabled=autocrop_enabled,
             autocrop_pct=autocrop_pct,
         )
-        self.post_worker.progress.connect(self.update_status)
+
+
+        def _post_progress_label(self, text: str):
+            try:
+                if getattr(self, "post_progress", None):
+                    self.post_progress.setLabelText(text)
+            except Exception:
+                pass
+
+        self.post_worker.progress.connect(self._on_post_status)
         self.post_worker.finished.connect(self._on_post_pipeline_finished)
 
         self.post_worker.moveToThread(self.post_thread)
@@ -5651,12 +5937,12 @@ class StackingSuiteDialog(QDialog):
 
     @pyqtSlot(bool, str)
     def _on_post_pipeline_finished(self, ok: bool, message: str):
-        if hasattr(self, "post_progress") and self.post_progress:
-            try:
+        try:
+            if getattr(self, "post_progress", None):
                 self.post_progress.close()
-            except Exception:
-                pass
-            self.post_progress = None
+                self.post_progress = None
+        except Exception:
+            pass
 
         try:
             self.post_thread.quit()
@@ -5744,28 +6030,35 @@ class StackingSuiteDialog(QDialog):
         """
         log = status_cb or (lambda *_: None)
 
-        log("🔄 Running normal integration to record rejected pixel positions...")
+        n_groups = len(grouped_files)
+        n_frames = sum(len(v) for v in grouped_files.values())
+        log(f"📁 Post-align: {n_groups} group(s), {n_frames} aligned frame(s).")
 
         # Precompute a single global crop rect if enabled (pure computation, no UI).
         global_rect = None
         if autocrop_enabled:
-            log("✂️ Auto Crop Enabled. Calculating bounding box…")
-            global_rect = self._compute_common_autocrop_rect(grouped_files, autocrop_pct)
+            t0 = perf_counter()
+            log("✂️ Auto-crop: computing common bounding box…")
+            global_rect = self._compute_common_autocrop_rect(grouped_files, autocrop_pct,
+                                                            status_cb=log)  # ← pass logger in
+            dt = perf_counter() - t0
             if global_rect is None:
-                log("✂️ Global crop disabled; falling back to per-group.")
+                log(f"✂️ Auto-crop: no common box (took {dt:.1f}s) — will crop per group.")
             else:
-                log("✂️ Auto Crop Bounding Box Calculated")
+                log(f"✂️ Auto-crop: bounding box ready (took {dt:.1f}s).")
 
         group_integration_data = {}
         summary_lines = []
         autocrop_outputs = []
 
-        for group_key, file_list in grouped_files.items():
-            log(f"Integration for group '{group_key}' with {len(file_list)} file(s).")
+        for gi, (group_key, file_list) in enumerate(grouped_files.items(), 1):
+            t_g = perf_counter()
+            log(f"🔹 [{gi}/{n_groups}] Integrating '{group_key}' with {len(file_list)} file(s)…")
 
             integrated_image, rejection_map, ref_header = self.normal_integration_with_rejection(
-                group_key, file_list, frame_weights, status_cb=log
+                group_key, file_list, frame_weights, status_cb=log  # ensure inner loop emits!
             )
+            log(f"   ↳ Integration done in {perf_counter() - t_g:.1f}s.")
             if integrated_image is None:
                 continue
 
