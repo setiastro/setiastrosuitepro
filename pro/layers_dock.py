@@ -98,7 +98,10 @@ class _LayerRow(QWidget):
         self._name = name
         self.lbl.setText(name)
 
-
+    def _on_clear_mask(self):
+        # select the explicit "(none)" entry
+        self.mask_combo.setCurrentIndex(0)
+        self._emit()
 
 # ---------- The Dock ----------
 class LayersDock(QDockWidget):
@@ -148,6 +151,8 @@ class LayersDock(QDockWidget):
 
         # initial
         self._refresh_views()
+
+
 
     # ---------- helpers ----------
     def _mask_choices(self):
@@ -214,10 +219,25 @@ class LayersDock(QDockWidget):
             visible = bool(getattr(lyr, "visible", True))
             roww = _LayerRow(name, mode, opacity, visible)
             # fill mask list
+            # fill mask list
             roww.mask_combo.blockSignals(True)
             roww.mask_combo.clear()
+
+            # first item = no mask
+            roww.mask_combo.addItem("(none)", userData=None)
+
             for title, doc in choices:
                 roww.mask_combo.addItem(title, userData=doc)
+
+            # select existing (shift by +1 to account for "(none)")
+            if getattr(lyr, "mask_doc", None) in docs:
+                roww.mask_combo.setCurrentIndex(1 + docs.index(lyr.mask_doc))
+            else:
+                roww.mask_combo.setCurrentIndex(0)  # "(none)"
+
+            roww.mask_src.setCurrentIndex(1 if getattr(lyr, "mask_use_luma", False) else 0)
+            roww.mask_invert.setChecked(bool(getattr(lyr, "mask_invert", False)))
+            roww.mask_combo.blockSignals(False)
             # select existing
             if getattr(lyr, "mask_doc", None) in docs:
                 roww.mask_combo.setCurrentIndex(docs.index(lyr.mask_doc))
@@ -319,8 +339,8 @@ class LayersDock(QDockWidget):
 
             # mask selection
             mi = p["mask_index"]
-            if mi is not None and mi >= 0:
-                doc = roww.mask_combo.itemData(mi)  # the ImageDocument we stored
+            if mi is not None and mi > 0:
+                doc = roww.mask_combo.itemData(mi)
                 lyr.mask_doc = doc
             else:
                 lyr.mask_doc = None
