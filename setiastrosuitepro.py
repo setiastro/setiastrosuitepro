@@ -153,9 +153,9 @@ from collections import defaultdict
 from PyQt6 import sip
 
 # ----- QtWidgets -----
-from PyQt6.QtWidgets import (QDialog, QApplication, QMainWindow, QWidget, QHBoxLayout, QFileDialog, QMessageBox, QSizePolicy, QToolBar,
+from PyQt6.QtWidgets import (QDialog, QApplication, QMainWindow, QWidget, QHBoxLayout, QFileDialog, QMessageBox, QSizePolicy, QToolBar, QPushButton,
     QLineEdit, QMenu, QListWidget, QListWidgetItem, QSplashScreen, QDockWidget, QListView, QCompleter, QMdiArea, QMdiArea, QMdiSubWindow, 
-    QInputDialog, QVBoxLayout, QLabel, QCheckBox, QProgressBar, QProgressDialog, QGraphicsItem
+    QInputDialog, QVBoxLayout, QLabel, QCheckBox, QProgressBar, QProgressDialog, QGraphicsItem, QTabWidget, QTableWidget, QHeaderView, QTableWidgetItem
 )
 
 # ----- QtGui -----
@@ -247,7 +247,7 @@ from pro.debayer import DebayerDialog, apply_debayer_preset_to_doc
 from pro.copyastro import CopyAstrometryDialog
 from pro.layers_dock import LayersDock
 
-VERSION = "1.0.1"
+VERSION = "1.0.2"
 
 
 if hasattr(sys, '_MEIPASS'):
@@ -692,6 +692,7 @@ class AstroSuiteProMainWindow(QMainWindow):
         tb.addSeparator()
         tb.addAction(self.act_autostretch)
         tb.addAction(self.act_zoom_1_1) 
+        tb.addAction(self.act_zoom_fit)    
         # color the Display-Stretch button when checked
         btn = tb.widgetForAction(self.act_autostretch)
         if btn:
@@ -699,9 +700,7 @@ class AstroSuiteProMainWindow(QMainWindow):
             QToolButton { color: #dcdcdc; }
             QToolButton:checked { color: #DAA520; font-weight: 600; }
             """)
-        #tb.addSeparator()
-        #tb.addAction(self.act_copy_view)
-        #tb.addAction(self.act_paste_view)
+
 
 
         # Functions toolbar
@@ -837,7 +836,13 @@ class AstroSuiteProMainWindow(QMainWindow):
 
         self.act_zoom_1_1 = QAction("1:1", self)
         self.act_zoom_1_1.setStatusTip("Zoom to 100% (pixel-for-pixel)")
+        self.act_zoom_1_1.setShortcut(QKeySequence("Ctrl+1"))    
         self.act_zoom_1_1.triggered.connect(self._zoom_active_1_1)
+
+        self.act_zoom_fit = QAction("Fit", self)
+        self.act_zoom_fit.setStatusTip("Fit image to current window")
+        self.act_zoom_fit.setShortcut(QKeySequence("Ctrl+0"))
+        self.act_zoom_fit.triggered.connect(self._zoom_active_fit)
 
         # View state copy/paste (optional quick commands)
         self._copied_view_state = None
@@ -1410,6 +1415,11 @@ class AstroSuiteProMainWindow(QMainWindow):
         m_hist.addAction(self.act_history_explorer)
 
         m_short = mb.addMenu("&Shortcuts")
+
+        act_cheats = QAction("Keyboard Shortcut Cheat Sheet…", self)
+        act_cheats.triggered.connect(self._show_cheat_sheet)
+        m_short.addAction(act_cheats)
+
         act_save_sc = QAction("Save Shortcuts Now", self, triggered=self.shortcuts.save_shortcuts)
         act_clear_sc = QAction("Clear All Shortcuts", self, triggered=self.shortcuts.clear)
         m_short.addAction(act_save_sc)
@@ -1424,6 +1434,77 @@ class AstroSuiteProMainWindow(QMainWindow):
 
         # initialize enabled state + names
         self.update_undo_redo_action_labels()
+
+    def _build_cheats_keyboard_rows(self):
+        rows = []
+
+        # 1) All QActions (you already have a collector; fall back if missing)
+        try:
+            actions = self._collect_all_qactions()
+        except Exception:
+            actions = self.findChildren(QAction)
+        for act in actions:
+            for seq in _seqs_for_action(act):
+                rows.append((_qs_to_str(seq), _describe_action(act), _where_for_action(act)))
+
+        # 2) Ad-hoc QShortcuts created in code
+        for sc in self.findChildren(QShortcut):
+            seq = sc.key()
+            if seq and not seq.isEmpty():
+                rows.append((_qs_to_str(seq), _describe_shortcut(sc), _where_for_shortcut(sc)))
+
+        # De-duplicate and sort by shortcut text
+        rows = _uniq_keep_order(rows)
+        rows.sort(key=lambda r: (r[0].lower(), r[1].lower()))
+        return rows
+
+    def _build_cheats_gesture_rows(self):
+        # Manual list (extend anytime). Format: (Gesture, Context, Effect)
+        rows = [
+            # Command search
+            ("A", "Display Stretch", "Toggle Display Auto-Stretch"),
+            ("Ctrl+I", "Invert", "Invert the Image"),
+            ("Ctrl+Shift+P", "Command Search", "Focus the command search bar; Enter runs first match"),
+
+            # View Icon
+            ("Drag view → Off to Canvas", "View", "Duplicate Image"),
+            ("Drag view → On to Other Image", "View", "Copy Zoom and Pan"),
+            ("Shift+Drag → On to Other Image", "View", "Apply that image to the other as a mask"), 
+            ("Ctrl+Drag → On to Other Image", "View", "Copy Astrometric Solution"),            
+
+            # View zoom
+            ("Ctrl+1", "View", "Zoom to 100% (1:1)"),
+            ("Ctrl+0", "View", "Fit image to current window"),
+
+            # Window switching
+            ("Ctrl+PgDown", "MDI", "Switch to previously active view"),
+            ("Ctrl+PgUp",   "MDI", "Switch to next active view"),
+
+            # Shortcuts canvas + buttons
+            ("Alt+Drag (toolbar button)", "Toolbar", "Create a desktop shortcut for that action"),
+            ("Alt+Drag (shortcut button → view)", "Shortcuts", "Headless apply the shortcut’s command/preset to a view"),
+            ("Ctrl/Shift+Click", "Shortcuts", "Multi-select shortcut buttons"),
+            ("Drag (selection)", "Shortcuts", "Move selected shortcut buttons"),
+            ("Delete / Backspace", "Shortcuts", "Delete selected shortcut buttons"),
+            ("Ctrl+A", "Shortcuts", "Select all shortcut buttons"),
+            ("Double-click empty area", "MDI background", "Open files dialog"),
+
+            # Layers dock
+            ("Drag view → Layers list", "Layers", "Add dragged view as a new layer (on top)"),
+            ("Shift+Drag mask → Layers list", "Layers", "Attach dragged image as mask to the selected layer"),
+
+            # Crop tool
+            ("Click-drag", "Crop Tool", "Draw a crop rectangle"),
+            ("Drag corner handles", "Crop Tool", "Resize crop rectangle"),
+            ("Shift+Drag on box", "Crop Tool", "Rotate crop rectangle"),
+        ]
+        return rows
+
+    def _show_cheat_sheet(self):
+        kb = self._build_cheats_keyboard_rows()
+        gs = self._build_cheats_gesture_rows()
+        dlg = _CheatSheetDialog(self, kb, gs)
+        dlg.exec()
 
     def _parse_version_tuple(self, s: str) -> tuple[int, ...]:
         nums = re.findall(r"\d+", s or "")
@@ -3294,6 +3375,103 @@ class AstroSuiteProMainWindow(QMainWindow):
         except Exception:
             pass
 
+    def _infer_image_size(self, view):
+        """Return (img_w, img_h) in device-independent pixels (ints), best-effort."""
+        # Preferred: from the label's pixmap
+        try:
+            pm = getattr(view, "label", None).pixmap() if hasattr(view, "label") else None
+            if pm and not pm.isNull():
+                dpr = max(1.0, float(pm.devicePixelRatio()))
+                return int(round(pm.width() / dpr)), int(round(pm.height() / dpr))
+        except Exception:
+            pass
+
+        # Next: from the document image
+        try:
+            doc = getattr(view, "document", None)
+            if doc and getattr(doc, "image", None) is not None:
+                import numpy as np
+                h, w = np.asarray(doc.image).shape[:2]
+                return int(w), int(h)
+        except Exception:
+            pass
+
+        # Fallback: from attributes some views keep
+        for w_key, h_key in (("image_width","image_height"), ("_img_w","_img_h")):
+            w = getattr(view, w_key, None); h = getattr(view, h_key, None)
+            if isinstance(w, (int,float)) and isinstance(h, (int,float)) and w>0 and h>0:
+                return int(w), int(h)
+
+        return None, None
+
+
+    def _viewport_widget(self, view):
+        """Return the viewport widget used to display the image."""
+        try:
+            if hasattr(view, "scroll") and hasattr(view.scroll, "viewport"):
+                return view.scroll.viewport()
+            # Some views are QGraphicsView/QAbstractScrollArea-like
+            if hasattr(view, "viewport"):
+                return view.viewport()
+        except Exception:
+            pass
+        # Worst case: the view itself
+        return view
+
+    def _zoom_active_fit(self):
+        sw = self.mdi.activeSubWindow()
+        if not sw:
+            return
+        view = sw.widget()
+
+        # Get sizes
+        img_w, img_h = self._infer_image_size(view)
+        if not img_w or not img_h:
+            return
+
+        vp = self._viewport_widget(view)
+        vw, vh = max(1, vp.width()), max(1, vp.height())
+
+        # Compute uniform scale (minus a hair to avoid scrollbars fighting)
+        scale = min((vw - 2) / img_w, (vh - 2) / img_h)
+        # Clamp to sane bounds
+        scale = max(1e-4, min(32.0, scale))
+
+        # Apply using view API if available
+        if hasattr(view, "set_scale") and callable(view.set_scale):
+            try:
+                view.set_scale(float(scale))
+                self._center_view(view)
+                return
+            except Exception:
+                pass
+
+        # Fallback: relative zoom using _zoom_at_anchor
+        try:
+            cur = float(getattr(view, "scale", 1.0))
+            factor = scale / max(cur, 1e-12)
+            if hasattr(view, "_zoom_at_anchor") and callable(view._zoom_at_anchor):
+                view._zoom_at_anchor(float(factor))  # most implementations anchor on cursor/center
+                self._center_view(view)
+                return
+        except Exception:
+            pass
+
+    def _center_view(self, view):
+        """Center the content after a zoom change, if possible."""
+        try:
+            vp = self._viewport_widget(view)
+            hbar = view.scroll.horizontalScrollBar() if hasattr(view, "scroll") else None
+            vbar = view.scroll.verticalScrollBar() if hasattr(view, "scroll") else None
+            lbl  = getattr(view, "label", None)
+            if vp and hbar and vbar and lbl:
+                cx = max(0, lbl.width()  // 2 - vp.width()  // 2)
+                cy = max(0, lbl.height() // 2 - vp.height() // 2)
+                hbar.setValue(min(hbar.maximum(), cx))
+                vbar.setValue(min(vbar.maximum(), cy))
+        except Exception:
+            pass
+
     def _toggle_autostretch(self, on: bool):
         sw = self.mdi.activeSubWindow()
         if sw:
@@ -4816,32 +4994,70 @@ class AstroSuiteProMainWindow(QMainWindow):
 
 
     def _install_command_search(self):
+
+        # Clean up any old placement (corner widget / toolbar / dock)
         mb = self.menuBar()
-        mb.setNativeMenuBar(False)  # needed so the corner widget shows on all OSes
-
-        # Remove any previous corner widget
+        mb.setNativeMenuBar(False)
         old = mb.cornerWidget(Qt.Corner.TopRightCorner)
-        if old is not None:
+        if old:
             old.deleteLater()
+            mb.setCornerWidget(None, Qt.Corner.TopRightCorner)
 
-        # Holder + line edit in the menubar corner
-        holder = QWidget(mb)
+        tb = getattr(self, "_search_tb", None)
+        if tb:
+            try: self.removeToolBar(tb)
+            except Exception: pass
+            tb.deleteLater()
+            self._search_tb = None
+
+        old_dock = getattr(self, "_search_dock", None)
+        if old_dock:
+            try: old_dock.hide(); old_dock.setParent(None)
+            except Exception: pass
+            old_dock.deleteLater()
+            self._search_dock = None
+
+        # --- Right-side mini dock with the search box ---
+        self._search_dock = QDockWidget("Command Search", self)
+        self._search_dock.setObjectName("CommandSearchDock")
+        self._search_dock.setAllowedAreas(Qt.DockWidgetArea.RightDockWidgetArea)
+        # Keep it pinned and always visible
+        self._search_dock.setFeatures(QDockWidget.DockWidgetFeature.NoDockWidgetFeatures)
+
+        holder = QWidget(self._search_dock)
         lay = QHBoxLayout(holder)
-        lay.setContentsMargins(0, 0, 6, 0)
+        lay.setContentsMargins(6, 6, 6, 6)
         lay.setSpacing(6)
 
         self._cmd_edit = QLineEdit(holder)
         self._cmd_edit.setPlaceholderText("Search commands…  (Ctrl+Shift+P)")
         self._cmd_edit.setClearButtonEnabled(True)
-        self._cmd_edit.setMinimumWidth(260)
-        self._cmd_edit.setMaximumWidth(600)
-        self._cmd_edit.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
-        lay.addWidget(self._cmd_edit)
+        self._cmd_edit.setMinimumWidth(240)
+        self._cmd_edit.setMaximumWidth(700)
+        self._cmd_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        lay.addWidget(self._cmd_edit, 1)
 
-        mb.setCornerWidget(holder, Qt.Corner.TopRightCorner)
-        holder.show()
+        holder.setMaximumHeight(44)  # keep the dock short
+        self._search_dock.setWidget(holder)
 
-        # Completer + model
+        # Add to the RIGHT area
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._search_dock)
+
+        # Make sure it's ABOVE Layers/Header
+        layers_dock = getattr(self, "layers_dock", None) or getattr(self, "_layers_dock", None)
+        header_dock = getattr(self, "header_dock", None) or getattr(self, "_header_viewer_dock", None)
+        try:
+            if layers_dock:
+                # split so Layers goes BELOW search
+                self.splitDockWidget(self._search_dock, layers_dock, Qt.Orientation.Vertical)
+            if header_dock and layers_dock:
+                # keep header under layers (or whatever arrangement you prefer)
+                # If you tabify layers/header, comment the line below and use tabifyDockWidget
+                self.splitDockWidget(layers_dock, header_dock, Qt.Orientation.Vertical)
+        except Exception:
+            pass
+
+        # ---- Completer + model (same behavior as before) ----
         self._cmd_model = QStandardItemModel(self)
         self._cmd_completer = QCompleter(self._cmd_model, self)
         self._cmd_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
@@ -4854,11 +5070,26 @@ class AstroSuiteProMainWindow(QMainWindow):
 
         self._cmd_edit.setCompleter(self._cmd_completer)
         self._cmd_completer.activated[QModelIndex].connect(self._run_selected_completion)
+
+        # Shortcut to focus it
         QShortcut(QKeySequence("Ctrl+Shift+P"), self, activated=self._focus_command_search)
+
+
+        # Enter runs the first visible completion
         self._cmd_edit.returnPressed.connect(self._trigger_first_visible_completion)
 
         # Initial population
         self._build_command_model()
+
+        # After window state restore, re-pin it to the top of the right area
+        def _repin_right_top():
+            try:
+                if self._search_dock and layers_dock:
+                    self.splitDockWidget(self._search_dock, layers_dock, Qt.Orientation.Vertical)
+            except Exception:
+                pass
+        QTimer.singleShot(0, _repin_right_top)
+
 
     def _build_command_model(self):
         self._cmd_model.clear()
@@ -5742,6 +5973,124 @@ class AstroSuiteProMainWindow(QMainWindow):
 
         super().closeEvent(e)
 
+def _qs_to_str(seq: QKeySequence) -> str:
+    # Native text gives familiar “Ctrl+Shift+P” etc.
+    return seq.toString(QKeySequence.SequenceFormat.NativeText).strip()
+
+def _clean_text(txt: str) -> str:
+    # Strip ampersand accelerators (&File → File)
+    return (txt or "").replace("&", "").strip()
+
+class _CheatSheetDialog(QDialog):
+    def __init__(self, parent, keyboard_rows, gesture_rows):
+        super().__init__(parent)
+        self.setWindowTitle("Keyboard Shortcut Cheat Sheet")
+        self.resize(780, 520)
+
+        tabs = QTabWidget(self)
+
+        # --- Keyboard tab ---
+        pg_keys = QWidget(tabs)
+        v1 = QVBoxLayout(pg_keys)
+        tbl_keys = QTableWidget(0, 3, pg_keys)
+        tbl_keys.setHorizontalHeaderLabels(["Shortcut", "Action", "Where"])
+        tbl_keys.verticalHeader().setVisible(False)
+        tbl_keys.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        tbl_keys.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        tbl_keys.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        tbl_keys.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        tbl_keys.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        tbl_keys.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        v1.addWidget(tbl_keys)
+
+        # populate
+        for s, action, where in keyboard_rows:
+            r = tbl_keys.rowCount()
+            tbl_keys.insertRow(r)
+            tbl_keys.setItem(r, 0, QTableWidgetItem(s))
+            tbl_keys.setItem(r, 1, QTableWidgetItem(action))
+            tbl_keys.setItem(r, 2, QTableWidgetItem(where))
+
+        # --- Mouse/Drag tab ---
+        pg_mouse = QWidget(tabs)
+        v2 = QVBoxLayout(pg_mouse)
+        tbl_mouse = QTableWidget(0, 3, pg_mouse)
+        tbl_mouse.setHorizontalHeaderLabels(["Gesture", "Context", "Effect"])
+        tbl_mouse.verticalHeader().setVisible(False)
+        tbl_mouse.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        tbl_mouse.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        tbl_mouse.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        tbl_mouse.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        tbl_mouse.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        tbl_mouse.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        v2.addWidget(tbl_mouse)
+
+        for gesture, context, effect in gesture_rows:
+            r = tbl_mouse.rowCount()
+            tbl_mouse.insertRow(r)
+            tbl_mouse.setItem(r, 0, QTableWidgetItem(gesture))
+            tbl_mouse.setItem(r, 1, QTableWidgetItem(context))
+            tbl_mouse.setItem(r, 2, QTableWidgetItem(effect))
+
+        tabs.addTab(pg_keys, "Base Keyboard")
+        tabs.addTab(pg_mouse, "Additional & Mouse & Drag")
+
+        # Buttons
+        btns = QHBoxLayout()
+        btns.addStretch(1)
+
+        def _copy_all():
+            # Copy as plain text (simple columns)
+            lines = []
+            lines.append("== Keyboard ==")
+            for s, a, w in keyboard_rows:
+                lines.append(f"{s:20}  {a}  [{w}]")
+            lines.append("")
+            lines.append("== Mouse & Drag ==")
+            for g, c, e in gesture_rows:
+                lines.append(f"{g:24}  {c:18}  {e}")
+            QApplication.clipboard().setText("\n".join(lines))
+            QMessageBox.information(self, "Copied", "Cheat sheet copied to clipboard.")
+
+        b_copy = QPushButton("Copy")
+        b_copy.clicked.connect(_copy_all)
+        b_close = QPushButton("Close")
+        b_close.clicked.connect(self.accept)
+        btns.addWidget(b_copy)
+        btns.addWidget(b_close)
+
+        top = QVBoxLayout(self)
+        top.addWidget(tabs)
+        top.addLayout(btns)
+
+def _uniq_keep_order(items):
+    seen = set(); out = []
+    for x in items:
+        if x in seen: continue
+        seen.add(x); out.append(x)
+    return out
+
+def _seqs_for_action(act: QAction):
+    seqs = [s for s in act.shortcuts() or []] or ([act.shortcut()] if act.shortcut() else [])
+    return [s for s in seqs if not s.isEmpty()]
+
+def _where_for_action(act: QAction):
+    # Rough “where”: menu/toolbar if attached, else object type
+    if act.parent():
+        pn = act.parent().__class__.__name__
+        if pn.startswith("QMenu") or pn.startswith("QToolBar"):
+            return "Menus/Toolbar"
+    return "Window"
+
+def _describe_action(act: QAction):
+    return _clean_text(act.statusTip() or act.toolTip() or act.text() or act.objectName() or "Action")
+
+def _describe_shortcut(sc: QShortcut):
+    return _clean_text(sc.property("hint") or sc.whatsThis() or sc.objectName() or "Shortcut")
+
+def _where_for_shortcut(sc: QShortcut):
+    par = sc.parent()
+    return par.__class__.__name__ if par is not None else "Window"
 
 class _ProjectSaveWorker(QThread):
     ok = pyqtSignal()
