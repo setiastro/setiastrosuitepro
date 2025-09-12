@@ -55,6 +55,12 @@ class SettingsDialog(QDialog):
             self.settings.value("shortcuts/save_on_exit", True, type=bool)
         )
 
+        self.cb_theme = QComboBox()
+        self.cb_theme.addItems(["Dark", "System"])
+
+        theme_val = self.settings.value("ui/theme", "system", type=str)
+        self.cb_theme.setCurrentIndex({"dark":0, "system":1}.get(theme_val, 0))
+
         self.le_graxpert.setText(self.settings.value("paths/graxpert", "", type=str))
         self.le_cosmic.setText(self.settings.value("paths/cosmic_clarity", "", type=str))
         self.le_starnet.setText(self.settings.value("paths/starnet", "", type=str))
@@ -95,6 +101,14 @@ class SettingsDialog(QDialog):
         self.sp_min_alt.setValue(self.settings.value("min_altitude", 0.0, type=float))
         self.sp_obj_limit.setValue(self.settings.value("object_limit", 100, type=int))
 
+        self.chk_autostretch_16bit = QCheckBox("High-quality autostretch (16-bit; better gradients)")
+        self.chk_autostretch_16bit.setToolTip(
+            "When enabled, autostretch computes on a 16-bit histogram for smooth tones (slightly slower)."
+        )
+        self.chk_autostretch_16bit.setChecked(
+            self.settings.value("display/autostretch_16bit", True, type=bool)
+        )
+
         # ---- Layout ----
         form = QFormLayout()
 
@@ -109,7 +123,7 @@ class SettingsDialog(QDialog):
         # Separator / header for WIMS section
         hdr = QLabel("<b>What's In My Sky — Defaults</b>")
         form.addRow(hdr)
-
+        form.addRow("Theme:", self.cb_theme)
         form.addRow("Latitude (°):", self.sp_lat)
         form.addRow("Longitude (°):", self.sp_lon)
         form.addRow("Date (YYYY-MM-DD):", self.le_date)
@@ -132,6 +146,10 @@ class SettingsDialog(QDialog):
         # Use your existing pattern for embedding layouts in QFormLayout
         form.addRow("Updates JSON URL:", QWidget())
         form.itemAt(form.rowCount()-1, QFormLayout.ItemRole.FieldRole).widget().setLayout(row_updates_url)
+
+        hdr_display = QLabel("<b>Display</b>")
+        form.addRow(hdr_display)
+        form.addRow(self.chk_autostretch_16bit)
 
         # Buttons
         btns = QDialogButtonBox(
@@ -193,5 +211,19 @@ class SettingsDialog(QDialog):
         self.settings.setValue("updates/check_on_startup", self.chk_updates_startup.isChecked())
         self.settings.setValue("updates/url", self.le_updates_url.text().strip())
 
+        self.settings.setValue("display/autostretch_16bit", self.chk_autostretch_16bit.isChecked())
+
+        # Theme
+        idx = self.cb_theme.currentIndex()
+        theme_val = {0:"dark", 1:"system"}[idx]
+        self.settings.setValue("ui/theme", theme_val)
+
         self.settings.sync()
+        # Apply now if the parent knows how
+        p = self.parent()
+        if p and hasattr(p, "apply_theme_from_settings"):
+            try:
+                p.apply_theme_from_settings()
+            except Exception:
+                pass        
         self.accept()
