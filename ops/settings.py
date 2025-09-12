@@ -56,10 +56,10 @@ class SettingsDialog(QDialog):
         )
 
         self.cb_theme = QComboBox()
-        self.cb_theme.addItems(["Dark", "System"])
-
-        theme_val = self.settings.value("ui/theme", "system", type=str)
-        self.cb_theme.setCurrentIndex({"dark":0, "system":1}.get(theme_val, 0))
+        self.cb_theme.clear()
+        self.cb_theme.addItems(["Dark", "Light"])
+        theme_val = (self.settings.value("ui/theme", "system", type=str) or "system").lower()
+        self.cb_theme.setCurrentIndex({"dark":0, "light":1, "system":2}.get(theme_val, 2))
 
         self.le_graxpert.setText(self.settings.value("paths/graxpert", "", type=str))
         self.le_cosmic.setText(self.settings.value("paths/cosmic_clarity", "", type=str))
@@ -215,7 +215,7 @@ class SettingsDialog(QDialog):
 
         # Theme
         idx = self.cb_theme.currentIndex()
-        theme_val = {0:"dark", 1:"system"}[idx]
+        theme_val = {0:"dark", 1:"light", 2:"system"}[idx]
         self.settings.setValue("ui/theme", theme_val)
 
         self.settings.sync()
