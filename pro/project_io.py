@@ -1,6 +1,6 @@
 # pro/project_io.py
 from __future__ import annotations
-import io, os, json, time, zipfile, uuid
+import io, os, json, time, zipfile, uuid, pickle
 from typing import Any, Dict, List, Tuple
 import numpy as np
 from PyQt6.QtWidgets import QMdiSubWindow
@@ -231,6 +231,10 @@ class ProjectReader:
         if self.dm is None:
             raise RuntimeError("No DocManager available")
 
+        if not zipfile.is_zipfile(path):
+            LegacyProjectReader(self.mw).read(path)
+            return
+
         with zipfile.ZipFile(path, "r") as z:
             # Ensure we have a ShortcutManager and restore shortcuts ONCE
             if not getattr(self.mw, "shortcuts", None):
@@ -451,3 +455,136 @@ class ProjectReader:
 
         if active_sw:
             self.mw.mdi.setActiveSubWindow(active_sw)
+
+class LegacyProjectReader:
+    """
+    Reads SASv2 pickle projects and coerces them into SASpro documents.
+    This class is completely separate so SASpro loading behavior is unchanged.
+    """
+    def __init__(self, main_window):
+        self.mw = main_window
+        self.dm = getattr(main_window, "doc_manager", None) or getattr(main_window, "dm", None)
+        self.sc = getattr(main_window, "shortcuts", None)
+
+    def read(self, path: str):
+        import pickle
+        import numpy as np
+
+        if self.dm is None:
+            raise RuntimeError("No DocManager available")
+
+        with open(path, "rb") as f:
+            try:
+                data = pickle.load(f)
+            except Exception as e:
+                raise RuntimeError(f"Not a SASpro project and failed to parse legacy SASv2 pickle: {e}")
+
+        images: dict       = data.get("images") or {}
+        meta_by_slot: dict = data.get("metadata") or {}
+        slot_names: dict   = data.get("slot_names") or {}
+        undo_by_slot: dict = data.get("undo_stacks") or {}
+        redo_by_slot: dict = data.get("redo_stacks") or {}
+        masks: dict        = data.get("masks") or {}
+        current_slot       = data.get("current_slot", None)
+
+        # Legacy projects had no shortcuts; ensure manager exists but don't restore anything
+        if not getattr(self.mw, "shortcuts", None):
+            try:
+                from pro.doc_manager import ShortcutManager
+                self.mw.shortcuts = ShortcutManager(self.mw.mdi, self.mw)
+            except Exception:
+                pass
+        self.sc = getattr(self.mw, "shortcuts", None)
+
+        _log = getattr(self.mw, "update_status", None)
+
+        doc_for_slot = {}
+        active_sw = None
+        first_sw = None
+
+        for slot, arr in sorted(images.items(), key=lambda kv: kv[0]):
+            # Convert to array
+            try:
+                img = np.asarray(arr)
+            except Exception:
+                if _log: _log(f"Skipping slot {slot}: unreadable image payload.")
+                continue
+
+            # Skip empty/tiny (≤ 10×10)
+            if self._is_tiny_or_empty(img):
+                if _log: _log(f"Skipping slot {slot}: empty/tiny image (≤ 10×10).")
+                continue
+
+            # Normalize dtype
+            if img.dtype != np.float32:
+                img = img.astype(np.float32, copy=False)
+
+            disp = slot_names.get(slot) or f"Slot {slot}"
+            meta = dict(meta_by_slot.get(slot, {}) or {})
+            meta.setdefault("source", "SASv2")
+            if slot in masks and masks[slot] is not None:
+                meta["legacy_mask_present"] = True
+
+            doc = self.dm.create_document(img, metadata=meta, name=disp)
+
+            # Attach legacy mask (in-memory only)
+            try:
+                if slot in masks and masks[slot] is not None:
+                    setattr(doc, "_legacy_mask", np.asarray(masks[slot]))
+            except Exception:
+                pass
+
+            # Undo/Redo
+            doc._undo = self._coerce_legacy_stack(undo_by_slot.get(slot) or [])
+            doc._redo = self._coerce_legacy_stack(redo_by_slot.get(slot) or [])
+
+            doc_for_slot[slot] = doc
+
+            # Open subwindow
+            try:
+                sw = self.mw._spawn_subwindow_for(doc)
+                if first_sw is None:
+                    first_sw = sw
+                if current_slot is not None and slot == current_slot:
+                    active_sw = sw
+            except Exception:
+                pass
+
+        if not doc_for_slot:
+            if _log: _log("No non-empty slots found in legacy project.")
+            return
+
+        try:
+            self.mw.mdi.setActiveSubWindow(active_sw or first_sw)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _is_tiny_or_empty(img) -> bool:
+        import numpy as _np
+        if img is None:
+            return True
+        if not isinstance(img, _np.ndarray):
+            return True
+        if img.ndim < 2:
+            return True
+        h, w = img.shape[:2]
+        return (h <= 10 or w <= 10)
+
+    def _coerce_legacy_stack(self, stack_list):
+        import numpy as np
+        out = []
+        for entry in stack_list:
+            try:
+                if isinstance(entry, tuple):
+                    arr = entry[0]
+                    meta = entry[1] if len(entry) >= 2 and isinstance(entry[1], dict) else {}
+                    name = entry[2] if len(entry) >= 3 and isinstance(entry[2], str) else "Edit"
+                else:
+                    arr = entry
+                    meta, name = {}, "Edit"
+                arr = np.asarray(arr).astype(np.float32, copy=False)
+                out.append((arr, meta, name))
+            except Exception:
+                continue
+        return out            
