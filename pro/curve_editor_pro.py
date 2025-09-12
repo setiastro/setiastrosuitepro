@@ -904,6 +904,7 @@ class CurvesDialogPro(QDialog):
     def _on_preview_mouse_moved(self, x: float, y: float):
         if self._preview_img is None:
             return
+
         mapped = self._map_label_xy_to_image_ij(x, y)
         if not mapped:
             # cursor is outside the actual pixmap area
@@ -911,20 +912,40 @@ class CurvesDialogPro(QDialog):
             self._set_status("")
             return
 
-        ix, iy = mapped
+        # --- clamp to edges so the last pixel is valid ---
         img = self._preview_img
+        H, W = img.shape[:2]
+        try:
+            ix, iy = mapped
+            ix = max(0, min(W - 1, int(round(ix))))
+            iy = max(0, min(H - 1, int(round(iy))))
+        except Exception:
+            self.editor.clearValueLines()
+            self._set_status("")
+            return
+        # -------------------------------------------------
+
         if img.ndim == 2 or (img.ndim == 3 and img.shape[2] == 1):
             v = float(img[iy, ix] if img.ndim == 2 else img[iy, ix, 0])
-            v = 0.0 if np.isnan(v) else float(np.clip(v, 0.0, 1.0))
+            v = 0.0 if not np.isfinite(v) else float(np.clip(v, 0.0, 1.0))
             self.editor.updateValueLines(v, 0.0, 0.0, grayscale=True)
             self._set_status(f"Cursor ({ix}, {iy})  K: {v:.3f}")
         else:
-            r, g, b = img[iy, ix, 0], img[iy, ix, 1], img[iy, ix, 2]
-            r = 0.0 if np.isnan(r) else float(np.clip(r, 0.0, 1.0))
-            g = 0.0 if np.isnan(g) else float(np.clip(g, 0.0, 1.0))
-            b = 0.0 if np.isnan(b) else float(np.clip(b, 0.0, 1.0))
+            C = img.shape[2]
+            if C >= 3:
+                r, g, b = img[iy, ix, 0], img[iy, ix, 1], img[iy, ix, 2]
+            elif C == 2:
+                r = g = b = img[iy, ix, 0]
+            elif C == 1:
+                r = g = b = img[iy, ix, 0]
+            else:
+                r = g = b = 0.0
+            r = 0.0 if not np.isfinite(r) else float(np.clip(r, 0.0, 1.0))
+            g = 0.0 if not np.isfinite(g) else float(np.clip(g, 0.0, 1.0))
+            b = 0.0 if not np.isfinite(b) else float(np.clip(b, 0.0, 1.0))
             self.editor.updateValueLines(r, g, b, grayscale=False)
             self._set_status(f"Cursor ({ix}, {iy})  R: {r:.3f}  G: {g:.3f}  B: {b:.3f}")
+
 
     # 1) Put this helper inside CurvesDialogPro (near other helpers)
     def _map_label_xy_to_image_ij(self, x: float, y: float):
