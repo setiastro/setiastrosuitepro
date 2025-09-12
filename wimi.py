@@ -215,6 +215,7 @@ if hasattr(sys, '_MEIPASS'):
     colorwheel_path = os.path.join(sys._MEIPASS, 'colorwheel.png')
     font_path = os.path.join(sys._MEIPASS, 'font.png')
     csv_icon_path = os.path.join(sys._MEIPASS, 'cvs.png')
+    hrdiagram_path = os.path.join(sys._MEIPASS, 'HRDiagram.png')    
 else:
     wrench_path = 'wrench_icon.png'  # Path for running as a script
     eye_icon_path = 'eye.png'  # Path for running as a script
@@ -226,6 +227,7 @@ else:
     colorwheel_path = 'colorwheel.png'
     font_path = 'font.png'
     csv_icon_path = 'cvs.png'
+    hrdiagram_path = 'HRDiagram.png'    
 
 # Constants for comoving radial distance calculation
 H0 = 69.6  # Hubble constant in km/s/Mpc
