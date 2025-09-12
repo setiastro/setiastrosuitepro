@@ -159,11 +159,11 @@ from PyQt6.QtWidgets import (QDialog, QApplication, QMainWindow, QWidget, QHBoxL
 )
 
 # ----- QtGui -----
-from PyQt6.QtGui import (QPixmap, QColor, QIcon, QKeySequence, QShortcut, QGuiApplication, QStandardItemModel, QStandardItem, QAction
+from PyQt6.QtGui import (QPixmap, QColor, QIcon, QKeySequence, QShortcut, QGuiApplication, QStandardItemModel, QStandardItem, QAction, QPalette
 )
 
 # ----- QtCore -----
-from PyQt6.QtCore import (Qt, pyqtSignal, QCoreApplication, QTimer, QSize, QSignalBlocker,  QModelIndex, QThread, QUrl, QSettings
+from PyQt6.QtCore import (Qt, pyqtSignal, QCoreApplication, QTimer, QSize, QSignalBlocker,  QModelIndex, QThread, QUrl, QSettings, QEvent
 )
 
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
@@ -247,7 +247,7 @@ from pro.debayer import DebayerDialog, apply_debayer_preset_to_doc
 from pro.copyastro import CopyAstrometryDialog
 from pro.layers_dock import LayersDock
 
-VERSION = "1.0.2"
+VERSION = "1.0.3"
 
 
 if hasattr(sys, '_MEIPASS'):
@@ -658,10 +658,79 @@ class AstroSuiteProMainWindow(QMainWindow):
         # NEW: one shared network manager (lives on the main thread)
         self._nam = QNetworkAccessManager(self)
         self._nam.finished.connect(self._on_update_reply)
-
+        self.apply_theme_from_settings()
+       
         # Startup check (no lambdas)
         if self.settings.value("updates/check_on_startup", True, type=bool):
             QTimer.singleShot(1500, self.check_for_updates_startup)
+
+
+    # ---------- THEME API ----------
+
+    def apply_theme_from_settings(self):
+        mode = self.settings.value("ui/theme", "system", type=str)
+        app = QApplication.instance()
+
+        if mode == "dark":
+            app.setStyle("Fusion")
+            app.setPalette(self._dark_palette())
+            # nicer tooltips in dark
+            app.setStyleSheet(
+                "QToolTip { color: #ffffff; background-color: #2a2a2a; border: 1px solid #5a5a5a; }"
+            )
+        elif mode == "light":
+            app.setStyle("Fusion")
+            app.setPalette(app.style().standardPalette())
+            app.setStyleSheet("")
+        else:  # system
+            # Go back to the platform default style/palette
+            app.setStyle(None)  # clears to platform style
+            app.setPalette(QApplication.style().standardPalette())
+            app.setStyleSheet("")
+
+    def _dark_palette(self) -> QPalette:
+        p = QPalette()
+        # Base greys
+        bg      = QColor(18, 18, 18)
+        panel   = QColor(27, 27, 27)
+        altbase = QColor(33, 33, 33)
+        text    = QColor(220, 220, 220)
+        midtxt  = QColor(200, 200, 200)
+        dis     = QColor(128, 128, 128)
+        hi      = QColor(30, 144, 255)   # dodger blue
+
+        p.setColor(QPalette.ColorRole.Window,          panel)
+        p.setColor(QPalette.ColorRole.WindowText,      text)
+        p.setColor(QPalette.ColorRole.Base,            bg)
+        p.setColor(QPalette.ColorRole.AlternateBase,   altbase)
+        p.setColor(QPalette.ColorRole.ToolTipBase,     panel)
+        p.setColor(QPalette.ColorRole.ToolTipText,     text)
+        p.setColor(QPalette.ColorRole.Text,            text)
+        p.setColor(QPalette.ColorRole.Button,          panel)
+        p.setColor(QPalette.ColorRole.ButtonText,      text)
+        p.setColor(QPalette.ColorRole.BrightText,      QColor(255, 0, 0))
+        p.setColor(QPalette.ColorRole.Highlight,       hi)
+        p.setColor(QPalette.ColorRole.HighlightedText, QColor(0, 0, 0))
+
+        # Disabled state tweaks
+        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text,       dis)
+        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.ButtonText, dis)
+        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.WindowText, dis)
+        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Highlight,  QColor(60, 60, 60))
+        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Base,       QColor(24, 24, 24))
+
+        return p
+
+    # Follow OS theme only when "system" is selected
+    def eventFilter(self, obj, ev):
+        if ev.type() in (QEvent.Type.ApplicationPaletteChange,
+                         QEvent.Type.PaletteChange,
+                         QEvent.Type.ThemeChange):
+            if self.settings.value("ui/theme", "system", type=str) == "system":
+                self.apply_theme_from_settings()
+        return super().eventFilter(obj, ev)
+
+
 
     # --- UI scaffolding ---
     def _init_explorer_dock(self):
