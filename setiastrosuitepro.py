@@ -585,6 +585,7 @@ class AstroSuiteProMainWindow(QMainWindow):
         super().__init__(parent)
         self.setWindowTitle(f"Seti Astro Suite Pro v{VERSION}")
         self.resize(1400, 900)
+        self._ensure_network_manager()
         self.app_icon = QIcon(windowslogo_path if os.path.exists(windowslogo_path) else icon_path)
         self.setWindowIcon(self.app_icon)
         self._doc = None
@@ -1723,12 +1724,16 @@ class AstroSuiteProMainWindow(QMainWindow):
         nums = re.findall(r"\d+", s or "")
         return tuple(int(n) for n in nums) if nums else (0,)
 
+    def _ensure_network_manager(self):
+        if getattr(self, "_nam", None) is None:
+            self._nam = QNetworkAccessManager(self)
+            self._nam.finished.connect(self._on_update_reply)
+
     def _kick_update_check(self, *, interactive: bool):
+        self._ensure_network_manager()   # ← ensure _nam exists
         url_str = self.settings.value("updates/url", self._updates_url, type=str) or self._updates_url
         req = QNetworkRequest(QUrl(url_str))
-        # A UA helps some CDNs
         req.setRawHeader(b"User-Agent", f"SASPro/{globals().get('VERSION','0.0.0')}".encode("utf-8"))
-
         reply = self._nam.get(req)
         reply.setProperty("interactive", interactive)
 
