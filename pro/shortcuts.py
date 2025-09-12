@@ -466,6 +466,8 @@ class ShortcutCanvas(QWidget):
         super().__init__(parent)
         self._mgr = mgr
         self.setAcceptDrops(True)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet("background: transparent;")        
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         self.setGeometry(parent.rect())
