@@ -159,7 +159,7 @@ from PyQt6.QtWidgets import (QDialog, QApplication, QMainWindow, QWidget, QHBoxL
 )
 
 # ----- QtGui -----
-from PyQt6.QtGui import (QPixmap, QColor, QIcon, QKeySequence, QShortcut, QGuiApplication, QStandardItemModel, QStandardItem, QAction, QPalette
+from PyQt6.QtGui import (QPixmap, QColor, QIcon, QKeySequence, QShortcut, QGuiApplication, QStandardItemModel, QStandardItem, QAction, QPalette, QBrush
 )
 
 # ----- QtCore -----
@@ -246,6 +246,8 @@ from pro.linear_fit import LinearFitDialog
 from pro.debayer import DebayerDialog, apply_debayer_preset_to_doc
 from pro.copyastro import CopyAstrometryDialog
 from pro.layers_dock import LayersDock
+
+
 
 VERSION = "1.0.3"
 
@@ -655,9 +657,32 @@ class AstroSuiteProMainWindow(QMainWindow):
             type=str
         )
 
-        # NEW: one shared network manager (lives on the main thread)
-        self._nam = QNetworkAccessManager(self)
-        self._nam.finished.connect(self._on_update_reply)
+        app = QApplication.instance()
+
+        # Re-entrancy guard + debounce
+        self._theme_guard = False
+        self._theme_debounce = QTimer(self)
+        self._theme_debounce.setSingleShot(True)
+        self._theme_debounce.timeout.connect(self._apply_theme_safely)
+
+        # Build a safe list of theme-relevant event types for this Qt build
+        _names = [
+            "ApplicationPaletteChange",  # present on all Qt6
+            "PaletteChange",             # older / extra signal from widgets
+            "ColorSchemeChange",         # newer Qt (6.5+)
+            # "ThemeChange",             # NOT reliable—do NOT include
+            # "StyleChange",             # optional; usually noisy, so we skip
+        ]
+        _types = []
+        for n in _names:
+            t = getattr(QEvent.Type, n, None)
+            if t is not None:
+                _types.append(t)
+        self._theme_events = tuple(_types)
+
+        # Listen only on the app object
+        app.installEventFilter(self)
+
         self.apply_theme_from_settings()
        
         # Startup check (no lambdas)
@@ -666,70 +691,189 @@ class AstroSuiteProMainWindow(QMainWindow):
 
 
     # ---------- THEME API ----------
+    def _apply_workspace_theme(self):
+        """Retint the QMdiArea background + viewport to current theme colors."""
+        pal = QApplication.palette()
+        # Use Base for light, Window for dark (looks better with your palettes)
+        role = QPalette.ColorRole.Base if self._theme_mode() == "light" else QPalette.ColorRole.Window
+        col  = pal.color(role)
+
+        # 1) Tell QMdiArea to use a flat color background
+        try:
+            self.mdi.setBackground(QBrush(col))
+        except Exception:
+            pass
+
+        # 2) Also set the viewport palette (some styles ignore setBackground)
+        try:
+            vp = self.mdi.viewport()
+            vp.setAutoFillBackground(True)
+            p = vp.palette()
+            p.setColor(QPalette.ColorRole.Window, col)
+            vp.setPalette(p)
+            vp.update()
+        except Exception:
+            pass
+
+        # 3) Ensure the overlay canvas stays transparent and refreshes
+        try:
+            if hasattr(self, "shortcuts") and self.shortcuts and getattr(self.shortcuts, "canvas", None):
+                c = self.shortcuts.canvas
+                c.setStyleSheet("background: transparent;")
+                c.update()
+
+        except Exception:
+            pass
 
     def apply_theme_from_settings(self):
-        mode = self.settings.value("ui/theme", "system", type=str)
+        mode = self._theme_mode()
         app = QApplication.instance()
 
         if mode == "dark":
             app.setStyle("Fusion")
             app.setPalette(self._dark_palette())
-            # nicer tooltips in dark
-            app.setStyleSheet(
-                "QToolTip { color: #ffffff; background-color: #2a2a2a; border: 1px solid #5a5a5a; }"
-            )
+            app.setStyleSheet("QToolTip { color: #ffffff; background-color: #2a2a2a; border: 1px solid #5a5a5a; }")
         elif mode == "light":
             app.setStyle("Fusion")
-            app.setPalette(app.style().standardPalette())
-            app.setStyleSheet("")
+            app.setPalette(self._light_palette())
+            # Tooltips readable in light mode
+            app.setStyleSheet(
+                "QToolTip { color: #141414; background-color: #ffffee; border: 1px solid #c8c8c8; }"
+            )
         else:  # system
-            # Go back to the platform default style/palette
-            app.setStyle(None)  # clears to platform style
+            app.setStyle(None)
             app.setPalette(QApplication.style().standardPalette())
             app.setStyleSheet("")
 
+        # Nudge widgets to pick up role changes
+        self._repolish_top_levels()
+        self._apply_workspace_theme()
+
+        try:
+            vp = self.mdi.viewport()
+            vp.setAutoFillBackground(True)
+            vp.setPalette(QApplication.palette())
+            vp.update()
+            self.mdi.setStyleSheet(f"QMdiArea {{ background: {col.name()}; }}")
+        except Exception:
+            pass
+
+    def _repolish_top_levels(self):
+        app = QApplication.instance()
+        for w in app.topLevelWidgets():
+            w.setUpdatesEnabled(False)
+            w.style().unpolish(w)
+            w.style().polish(w)
+            w.setUpdatesEnabled(True)
+
     def _dark_palette(self) -> QPalette:
         p = QPalette()
-        # Base greys
-        bg      = QColor(18, 18, 18)
-        panel   = QColor(27, 27, 27)
+
+        # Bases
+        bg      = QColor(18, 18, 18)   # editor / view backgrounds (Base)
+        panel   = QColor(27, 27, 27)   # window / panels (Window, Button)
         altbase = QColor(33, 33, 33)
         text    = QColor(220, 220, 220)
-        midtxt  = QColor(200, 200, 200)
-        dis     = QColor(128, 128, 128)
-        hi      = QColor(30, 144, 255)   # dodger blue
+        dis     = QColor(140, 140, 140)
+        hi      = QColor(30, 144, 255)  # highlight (dodger blue)
 
-        p.setColor(QPalette.ColorRole.Window,          panel)
-        p.setColor(QPalette.ColorRole.WindowText,      text)
-        p.setColor(QPalette.ColorRole.Base,            bg)
-        p.setColor(QPalette.ColorRole.AlternateBase,   altbase)
-        p.setColor(QPalette.ColorRole.ToolTipBase,     panel)
-        p.setColor(QPalette.ColorRole.ToolTipText,     text)
-        p.setColor(QPalette.ColorRole.Text,            text)
-        p.setColor(QPalette.ColorRole.Button,          panel)
-        p.setColor(QPalette.ColorRole.ButtonText,      text)
-        p.setColor(QPalette.ColorRole.BrightText,      QColor(255, 0, 0))
-        p.setColor(QPalette.ColorRole.Highlight,       hi)
-        p.setColor(QPalette.ColorRole.HighlightedText, QColor(0, 0, 0))
+        p.setColor(QPalette.ColorRole.Window,        panel)
+        p.setColor(QPalette.ColorRole.WindowText,    text)
+        p.setColor(QPalette.ColorRole.Base,          bg)
+        p.setColor(QPalette.ColorRole.AlternateBase, altbase)
+        p.setColor(QPalette.ColorRole.ToolTipBase,   panel)
+        p.setColor(QPalette.ColorRole.ToolTipText,   text)
+        p.setColor(QPalette.ColorRole.Text,          text)
+        p.setColor(QPalette.ColorRole.Button,        panel)
+        p.setColor(QPalette.ColorRole.ButtonText,    text)
+        p.setColor(QPalette.ColorRole.BrightText,    QColor(255, 0, 0))
+        p.setColor(QPalette.ColorRole.Highlight,     hi)
+        p.setColor(QPalette.ColorRole.HighlightedText, QColor(255, 255, 255))   # ← readable on blue
+        p.setColor(QPalette.ColorRole.Link,          QColor(90, 160, 255))
+        p.setColor(QPalette.ColorRole.LinkVisited,   QColor(160, 140, 255))
+        # Qt6: explicit placeholder color helps avoid faint-on-faint
+        try:
+            p.setColor(QPalette.ColorRole.PlaceholderText, QColor(160, 160, 160))
+        except Exception:
+            pass
 
-        # Disabled state tweaks
+        # Disabled
         p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text,       dis)
         p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.ButtonText, dis)
         p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.WindowText, dis)
-        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Highlight,  QColor(60, 60, 60))
         p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Base,       QColor(24, 24, 24))
+        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Highlight,  QColor(60, 60, 60))
+        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.HighlightedText, QColor(210, 210, 210))
 
         return p
 
-    # Follow OS theme only when "system" is selected
-    def eventFilter(self, obj, ev):
-        if ev.type() in (QEvent.Type.ApplicationPaletteChange,
-                         QEvent.Type.PaletteChange,
-                         QEvent.Type.ThemeChange):
-            if self.settings.value("ui/theme", "system", type=str) == "system":
-                self.apply_theme_from_settings()
-        return super().eventFilter(obj, ev)
+    def _light_palette(self) -> QPalette:
+        p = QPalette()
 
+        # Light neutrals
+        window  = QColor(246, 246, 246)  # panels/docks
+        base    = QColor(255, 255, 255)  # text fields, editors
+        altbase = QColor(242, 242, 242)  # alternating rows
+        text    = QColor(20, 20, 20)     # primary text
+        btn     = QColor(246, 246, 246)  # buttons same as window
+        dis     = QColor(140, 140, 140)  # disabled text
+        link    = QColor(25, 100, 210)   # link blue
+        linkv   = QColor(120, 70, 200)   # visited
+        hi      = QColor(43, 120, 228)   # selection blue (Windows-like)
+        hitxt   = QColor(255, 255, 255)  # text over selection
+
+        # Core roles
+        p.setColor(QPalette.ColorRole.Window,          window)
+        p.setColor(QPalette.ColorRole.WindowText,      text)
+        p.setColor(QPalette.ColorRole.Base,            base)
+        p.setColor(QPalette.ColorRole.AlternateBase,   altbase)
+        p.setColor(QPalette.ColorRole.ToolTipBase,     QColor(255, 255, 238))  # soft yellow tooltip
+        p.setColor(QPalette.ColorRole.ToolTipText,     text)
+        p.setColor(QPalette.ColorRole.Text,            text)
+        p.setColor(QPalette.ColorRole.Button,          btn)
+        p.setColor(QPalette.ColorRole.ButtonText,      text)
+        p.setColor(QPalette.ColorRole.BrightText,      QColor(180, 0, 0))
+        p.setColor(QPalette.ColorRole.Highlight,       hi)
+        p.setColor(QPalette.ColorRole.HighlightedText, hitxt)
+        p.setColor(QPalette.ColorRole.Link,            link)
+        p.setColor(QPalette.ColorRole.LinkVisited,     linkv)
+
+        # Helps line edits/placeholders avoid too-faint gray
+        try:
+            p.setColor(QPalette.ColorRole.PlaceholderText, QColor(110, 110, 110))
+        except Exception:
+            pass
+
+        # Disabled group (keep contrasts sane)
+        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text,            dis)
+        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.ButtonText,      dis)
+        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.WindowText,      dis)
+        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Highlight,       QColor(200, 200, 200))
+        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.HighlightedText, QColor(120, 120, 120))
+        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Base,            QColor(248, 248, 248))
+
+        return p
+
+    def _apply_theme_safely(self):
+        if self._theme_guard:
+            return
+        self._theme_guard = True
+        try:
+            self.apply_theme_from_settings()
+        finally:
+            QTimer.singleShot(0, lambda: setattr(self, "_theme_guard", False))
+
+    # Follow OS theme only when "system" is selected
+    def _theme_mode(self) -> str:
+        return (self.settings.value("ui/theme", "system", type=str) or "system").lower()
+
+    def eventFilter(self, obj, ev):
+        if obj is QApplication.instance() and ev.type() in getattr(self, "_theme_events", ()):
+            if self._theme_mode() == "system" and not self._theme_guard:
+                # debounce to collapse bursts
+                self._theme_debounce.start(100)
+            return False
+        return super().eventFilter(obj, ev)
 
 
     # --- UI scaffolding ---
