@@ -629,6 +629,9 @@ class StackingSuiteDialog(QDialog):
         self.internal_dtype = np.float64 if dtype_str == "float64" else np.float32  
         self.star_trail_mode = self.settings.value("stacking/star_trail_mode", False, type=bool)        
 
+        self.align_refinement_passes = self.settings.value("stacking/refinement_passes", 3, type=int)
+        self.align_shift_tolerance = self.settings.value("stacking/shift_tolerance_px", 0.2, type=float)
+
         # Load or default these
         self.stacking_directory = self.settings.value("stacking/dir", "", type=str)
         self.sigma_high = self.settings.value("stacking/sigma_high", 3.0, type=float)
@@ -1183,6 +1186,31 @@ class StackingSuiteDialog(QDialog):
         chunk_layout.addWidget(self.chunkWidthSpinBox)
         layout.addLayout(chunk_layout)
 
+        # Alignment refinement passes
+        align_layout = QHBoxLayout()
+        align_layout.addWidget(QLabel("Alignment refinement:"))
+        self.align_passes_combo = QComboBox()
+        self.align_passes_combo.addItems(["Fast (1 pass)", "Accurate (3 passes)"])
+        self.align_passes_combo.setToolTip(
+            "Fast (1 pass): single astroalign pass; all successfully transformed frames are accepted.\n"
+            "Accurate (3 passes): iterative refinement for sub-pixel accuracy; final outliers can be rejected."
+        )        
+        curr_passes = self.settings.value("stacking/refinement_passes", 3, type=int)
+        self.align_passes_combo.setCurrentIndex(0 if curr_passes <= 1 else 1)
+        align_layout.addWidget(self.align_passes_combo)
+
+        align_layout.addSpacing(16)
+        align_layout.addWidget(QLabel("Accept tolerance (px):"))
+        self.shift_tol_spin = QDoubleSpinBox()
+        self.shift_tol_spin.setRange(0.05, 5.0)
+        self.shift_tol_spin.setDecimals(2)
+        self.shift_tol_spin.setSingleStep(0.05)
+        self.shift_tol_spin.setValue(self.settings.value("stacking/shift_tolerance", 0.2, type=float))
+        self.shift_tol_spin.setToolTip("Convergence threshold per pass; fast mode ignores this for early stop but it is still used for progress messages.")
+        align_layout.addWidget(self.shift_tol_spin)
+        align_layout.addStretch(1)
+        layout.addLayout(align_layout)
+
         # Rejection algorithm selection
         algo_layout = QHBoxLayout()
         algo_label = QLabel("Rejection Algorithm:")
@@ -1364,6 +1392,10 @@ class StackingSuiteDialog(QDialog):
         self.settings.setValue("stacking/chunk_width", self.chunk_width)
         self.settings.setValue("stacking/autocrop_enabled", self.autocrop_cb.isChecked())
         self.settings.setValue("stacking/autocrop_pct", float(self.autocrop_pct.value()))
+
+        passes = 1 if self.align_passes_combo.currentIndex() == 0 else 3
+        self.settings.setValue("stacking/refinement_passes", passes)
+        self.settings.setValue("stacking/shift_tolerance", self.shift_tol_spin.value())
 
         # --- precision (internal dtype) ---
         chosen = self.precision_combo.currentText()  # "32-bit float" or "64-bit float"
@@ -5532,10 +5564,16 @@ class StackingSuiteDialog(QDialog):
         align_dir = os.path.join(self.stacking_directory, "Aligned_Images")
         os.makedirs(align_dir, exist_ok=True)
 
+        passes = self.settings.value("stacking/refinement_passes", 3, type=int)
+        shift_tol = self.settings.value("stacking/shift_tolerance", 0.2, type=float)
+
         self.alignment_thread = StarRegistrationThread(
-            norm_ref_path,          # align against normalized, debayered reference
-            normalized_files,       # all *_n.fit files
-            align_dir
+            norm_ref_path,
+            normalized_files,
+            align_dir,
+            max_refinement_passes=passes,
+            shift_tolerance=shift_tol,
+            parent_window=self
         )
         self.alignment_thread.progress_update.connect(self.update_status)
         self.alignment_thread.registration_complete.connect(self.on_registration_complete)
@@ -5808,66 +5846,76 @@ class StackingSuiteDialog(QDialog):
             return
 
         # ----------------------------
-        # Build valid transform sets
+        # Gather results from the thread
         # ----------------------------
-        all_transforms = alignment_thread.alignment_matrices.copy()
-        if not alignment_thread.transform_deltas:
-            self.update_status("⚠️ No shift data available. Skipping filtering.")
-            final_shifts = [0.0] * len(all_transforms)
+        all_transforms = dict(alignment_thread.alignment_matrices)  # {orig_norm_path -> 2x3 or None}
+        keys = list(all_transforms.keys())
+
+        # Build a per-file shift map (last pass), defaulting to 0 when missing
+        shift_map = {}
+        if alignment_thread.transform_deltas and alignment_thread.transform_deltas[-1]:
+            last = alignment_thread.transform_deltas[-1]
+            for i, k in enumerate(keys):
+                if i < len(last):
+                    shift_map[k] = float(last[i])
+                else:
+                    shift_map[k] = 0.0
         else:
-            final_shifts = alignment_thread.transform_deltas[-1]
+            shift_map = {k: 0.0 for k in keys}
 
-        file_shift_pairs = list(zip(all_transforms.keys(), final_shifts))
+        # Fast mode if only 1 pass was requested
+        fast_mode = (getattr(alignment_thread, "max_refinement_passes", 3) <= 1)
+        # Threshold is only used in normal mode
+        accept_thresh = float(self.settings.value("stacking/accept_shift_px", 2.0, type=float))
 
-        # keep only good transforms (e.g. <= 2 px shift)
-        valid_matrices = {
-            orig_path: all_transforms[orig_path]
-            for orig_path, shift in file_shift_pairs
-            if all_transforms[orig_path] is not None and shift <= 2.0
-        }
+        def _accept(k: str) -> bool:
+            """Accept criteria for a frame."""
+            if all_transforms.get(k) is None:
+                # real failure (e.g., astroalign couldn't find a transform)
+                return False
+            if fast_mode:
+                # In fast mode we keep everything that didn't fail
+                return True
+            # Normal (multi-pass) behavior: keep small last-pass shifts
+            return shift_map.get(k, 0.0) <= accept_thresh
 
-        # Map normalized → aligned path
-        self.valid_transforms = {}
-        for norm_path, shift in file_shift_pairs:
-            M = all_transforms[norm_path]
-            if M is None or shift > 2.0:
-                continue
+        accepted = [k for k in keys if _accept(k)]
+        rejected = [k for k in keys if not _accept(k)]
 
-            base = os.path.basename(norm_path)
-            if base.endswith("_n.fits"):
-                aligned_name = base.replace("_n.fits", "_n_r.fit")
-            elif base.endswith("_n.fit"):
-                aligned_name = base.replace("_n.fit", "_n_r.fit")
-            elif base.endswith(".fits"):
-                aligned_name = base.replace(".fits", "_r.fit")
-            elif base.endswith(".fit"):
-                aligned_name = base.replace(".fit", "_r.fit")
-            else:
-                aligned_name = base + "_r"
-
-            aligned_path = os.path.join(self.stacking_directory, "Aligned_Images", aligned_name)
-            self.valid_transforms[os.path.normpath(norm_path)] = aligned_path
-
-        # finalize alignment phase
-        rejected_files = [p for p, s in file_shift_pairs if s > 2.0]
-        self.alignment_thread = None
-
-        n_valid = len(self.valid_transforms)
-        n_total = len(all_transforms)
-        self.update_status(f"Alignment summary: {n_valid} succeeded, {n_total - n_valid} rejected.")
-        if n_valid == 0:
-            self.update_status("⚠️ No frames to stack; aborting.")
-            return
-        if rejected_files:
-            self.update_status(f"🚨 Rejected {len(rejected_files)} frames due to shift > 2px.")
-            for rf in rejected_files:
-                self.update_status(f"  ❌ {os.path.basename(rf)}")
-
-        # Persist numeric transforms for drizzle
+        # ----------------------------
+        # Persist numeric transforms we accepted (for drizzle, etc.)
+        # ----------------------------
+        valid_matrices = {k: all_transforms[k] for k in accepted}
         self.save_alignment_matrices_sasd(valid_matrices)
 
         # ----------------------------
-        # Build aligned file groups
+        # Build mapping from normalized -> aligned paths
+        # Use the *actual* final paths produced by the thread.
+        # ----------------------------
+        final_map = alignment_thread.file_key_to_current_path  # {orig_norm_path -> final_aligned_path}
+        self.valid_transforms = {
+            os.path.normpath(k): os.path.normpath(final_map[k])
+            for k in accepted
+            if k in final_map and os.path.exists(final_map[k])
+        }
+
+        # finalize alignment phase
+        self.alignment_thread = None
+
+        # Status
+        prefix = "⚡ Fast mode: " if fast_mode else ""
+        self.update_status(f"{prefix}Alignment summary: {len(accepted)} succeeded, {len(rejected)} rejected.")
+        if (not fast_mode) and rejected:
+            self.update_status(f"🚨 Rejected {len(rejected)} frame(s) due to shift > {accept_thresh}px.")
+            for rf in rejected:
+                self.update_status(f"  ❌ {os.path.basename(rf)}")
+
+        if not self.valid_transforms:
+            self.update_status("⚠️ No frames to stack; aborting.")
+            return
+
+        # ----------------------------
+        # Build aligned file groups (unchanged)
         # ----------------------------
         filtered_light_files = {}
         for group, file_list in self.light_files.items():
@@ -5899,7 +5947,7 @@ class StackingSuiteDialog(QDialog):
             autocrop_pct = float(self.settings.value("stacking/autocrop_pct", 95.0, type=float))
 
         # ----------------------------
-        # Kick off post-align worker
+        # Kick off post-align worker (unchanged)
         # ----------------------------
         self.post_thread = QThread(self)
         self.post_worker = AfterAlignWorker(
@@ -5912,14 +5960,6 @@ class StackingSuiteDialog(QDialog):
             autocrop_pct=autocrop_pct,
         )
 
-
-        def _post_progress_label(self, text: str):
-            try:
-                if getattr(self, "post_progress", None):
-                    self.post_progress.setLabelText(text)
-            except Exception:
-                pass
-
         self.post_worker.progress.connect(self._on_post_status)
         self.post_worker.finished.connect(self._on_post_pipeline_finished)
 
@@ -5927,13 +5967,13 @@ class StackingSuiteDialog(QDialog):
         self.post_thread.started.connect(self.post_worker.run)
         self.post_thread.start()
 
-        # Optional progress dialog for this phase
         self.post_progress = QProgressDialog("Stacking & drizzle (if enabled)…", None, 0, 0, self)
         self.post_progress.setWindowModality(Qt.WindowModality.WindowModal)
         self.post_progress.setCancelButton(None)
         self.post_progress.setMinimumDuration(0)
         self.post_progress.setWindowTitle("Post-Alignment")
         self.post_progress.show()
+
 
     @pyqtSlot(bool, str)
     def _on_post_pipeline_finished(self, ok: bool, message: str):

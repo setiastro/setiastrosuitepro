@@ -2,11 +2,11 @@
 from __future__ import annotations
 import os
 import numpy as np
-
-from PyQt6.QtCore import Qt, QSize, QEvent, QTimer, QPoint
+import cv2
+from PyQt6.QtCore import Qt, QSize, QEvent, QTimer, QPoint, pyqtSignal
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea,
-    QFileDialog, QInputDialog, QMessageBox, QGridLayout, QCheckBox, QSizePolicy
+    QFileDialog, QInputDialog, QMessageBox, QGridLayout, QCheckBox, QSizePolicy, QDialog
 )
 from PyQt6.QtGui import QPixmap, QImage, QIcon, QPainter, QPen, QColor, QFont, QFontMetrics, QCursor
 
@@ -16,6 +16,175 @@ from legacy.image_manager import load_image as legacy_load_image
 # your statistical stretch (mono + color) like SASv2
 # (same signatures you use elsewhere)
 from imageops.stretch import stretch_mono_image, stretch_color_image
+
+class PaletteAdjustDialog(QDialog):
+    adjusted_image = pyqtSignal(np.ndarray)
+
+    def __init__(self, base_rgb, palette_name, ha_src, oiii_src, sii_src, owner):
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSlider
+        from PyQt6.QtCore import QTimer, Qt, QPoint, QEvent
+        super().__init__(owner)
+        self.setWindowTitle("Adjust Palette Intensities")
+        self.setModal(True)
+
+        self.base_rgb     = base_rgb.astype(np.float32)
+        self.palette_name = palette_name
+        self.ha_src       = ha_src
+        self.oiii_src     = oiii_src
+        self.sii_src      = sii_src
+        self.owner        = owner
+
+        self.ha_factor = 1.0
+        self.oiii_factor = 1.0
+        self.sii_factor = 1.0
+
+        self._debounce = QTimer(self); self._debounce.setInterval(300); self._debounce.setSingleShot(True)
+        self._debounce.timeout.connect(self._update_preview)
+
+        self.zoom_factor = 1.0
+        self._dragging = False
+        self._last_pos = QPoint()
+
+        vlayout = QVBoxLayout(self)
+
+        # Zoom controls
+        zoom_layout = QHBoxLayout()
+        btn_zoom_in  = QPushButton("Zoom In");  btn_zoom_in.clicked.connect(lambda: self._change_zoom(1.25))
+        btn_zoom_out = QPushButton("Zoom Out"); btn_zoom_out.clicked.connect(lambda: self._change_zoom(0.8))
+        btn_fit      = QPushButton("Fit to Preview"); btn_fit.clicked.connect(self._fit_to_preview)
+        zoom_layout.addWidget(btn_zoom_in); zoom_layout.addWidget(btn_zoom_out); zoom_layout.addWidget(btn_fit)
+        vlayout.addLayout(zoom_layout)
+
+        # Preview
+        self.preview_area = QScrollArea(self); self.preview_area.setWidgetResizable(True)
+        self.preview_label = QLabel(alignment=Qt.AlignmentFlag.AlignCenter)
+        self.preview_label.setCursor(Qt.CursorShape.OpenHandCursor)
+        self.preview_label.setMouseTracking(True)
+        self.preview_area.setWidget(self.preview_label)
+        self.preview_label.installEventFilter(self)
+        vlayout.addWidget(self.preview_area, stretch=1)
+
+        # Sliders
+        for name in ("Ha","OIII","SII"):
+            row = QHBoxLayout()
+            row.addWidget(QLabel(f"{name} Intensity:", self))
+            sl = QSlider(Qt.Orientation.Horizontal, self); sl.setRange(0,200); sl.setValue(100)
+            sl.valueChanged.connect(self._on_slider_change)
+            setattr(self, f"_{name.lower()}_slider", sl)
+            row.addWidget(sl)
+            vlayout.addLayout(row)
+
+        # Buttons
+        btns = QHBoxLayout(); btns.addStretch()
+        accept  = QPushButton("Accept", self); accept.clicked.connect(self._on_accept)
+        reset   = QPushButton("Reset",  self); reset.clicked.connect(self._on_reset)
+        discard = QPushButton("Discard",self); discard.clicked.connect(self.reject)
+        btns.addWidget(accept); btns.addWidget(reset); btns.addWidget(discard)
+        vlayout.addLayout(btns)
+
+        self._update_preview()
+
+    def _on_slider_change(self, _):
+        self.ha_factor   = self._ha_slider.value()/100.0
+        self.oiii_factor = self._oiii_slider.value()/100.0
+        self.sii_factor  = self._sii_slider.value()/100.0
+        self._debounce.start()
+
+    def _update_preview(self):
+        ha = (self.ha_src   * self.ha_factor)   if self.ha_src   is not None else None
+        oo = (self.oiii_src * self.oiii_factor) if self.oiii_src is not None else None
+        si = (self.sii_src  * self.sii_factor)  if self.sii_src  is not None else None
+
+        r,g,b = self.owner._map_channels_or_special(self.palette_name, ha, oo, si)
+
+        # --- make sure channels match the base palette size ---
+        H, W = self.base_rgb.shape[:2]
+        def fit(ch):
+            if ch is None: return None
+            if ch.shape[:2] != (H, W):
+                return self.owner._resize_to(ch, (W, H))
+            return ch
+        r, g, b = fit(r), fit(g), fit(b)
+        # ------------------------------------------------------
+
+        img = np.zeros_like(self.base_rgb, dtype=np.float32)
+        if r is not None: img[...,0] = r
+        if g is not None: img[...,1] = g
+        if b is not None: img[...,2] = b
+        m = float(img.max()) or 1.0
+        img = np.clip(img/m, 0.0, 1.0)
+
+        qimg = self.owner._to_qimage(img)
+        self._base_pixmap = QPixmap.fromImage(qimg)
+        self._rescale_pixmap()
+
+    def _rescale_pixmap(self):
+        if not hasattr(self, "_base_pixmap"): return
+        w = int(self._base_pixmap.width()  * self.zoom_factor)
+        h = int(self._base_pixmap.height() * self.zoom_factor)
+        scaled = self._base_pixmap.scaled(w, h, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        self._current_pixmap = scaled
+        self.preview_label.setPixmap(scaled)
+        self.preview_label.resize(scaled.size())
+
+    def _change_zoom(self, factor: float):
+        self.zoom_factor = max(0.1, min(10.0, self.zoom_factor * factor))
+        self._rescale_pixmap()
+
+    def _fit_to_preview(self):
+        if not hasattr(self, "_base_pixmap"): return
+        vp_w = self.preview_area.viewport().width()
+        self.zoom_factor = vp_w / max(1, self._base_pixmap.width())
+        self._rescale_pixmap()
+
+    def _on_reset(self):
+        for s in (self._ha_slider, self._oiii_slider, self._sii_slider):
+            s.setValue(100)
+        self._on_slider_change(None)
+
+    def _on_accept(self):
+        ha = (self.ha_src   * self.ha_factor)   if self.ha_src   is not None else None
+        oo = (self.oiii_src * self.oiii_factor) if self.oiii_src is not None else None
+        si = (self.sii_src  * self.sii_factor)  if self.sii_src  is not None else None
+
+        r,g,b = self.owner._map_channels_or_special(self.palette_name, ha, oo, si)
+
+        # match base size
+        H, W = self.base_rgb.shape[:2]
+        def fit(ch):
+            if ch is None: return None
+            if ch.shape[:2] != (H, W):
+                return self.owner._resize_to(ch, (W, H))
+            return ch
+        r, g, b = fit(r), fit(g), fit(b)
+
+        final = np.zeros_like(self.base_rgb, dtype=np.float32)
+        if r is not None: final[...,0] = r
+        if g is not None: final[...,1] = g
+        if b is not None: final[...,2] = b
+
+        m = float(final.max()) or 1.0
+        final = np.clip(final/m, 0.0, 1.0)
+
+        self.adjusted_image.emit(final)
+        self.accept()
+
+    def eventFilter(self, obj, evt):
+        if obj is self.preview_label:
+            if evt.type() == QEvent.Type.MouseButtonPress and evt.button() == Qt.MouseButton.LeftButton:
+                self._dragging = True; self._last_pos = evt.pos()
+                self.preview_label.setCursor(Qt.CursorShape.ClosedHandCursor); return True
+            if evt.type() == QEvent.Type.MouseMove and self._dragging:
+                d = evt.pos() - self._last_pos; self._last_pos = evt.pos()
+                self.preview_area.horizontalScrollBar().setValue(self.preview_area.horizontalScrollBar().value() - d.x())
+                self.preview_area.verticalScrollBar().setValue(self.preview_area.verticalScrollBar().value() - d.y())
+                return True
+            if evt.type() == QEvent.Type.MouseButtonRelease and evt.button() == Qt.MouseButton.LeftButton:
+                self._dragging = False; self.preview_label.setCursor(Qt.CursorShape.OpenHandCursor); return True
+            if evt.type() == QEvent.Type.Wheel:
+                self._change_zoom(1.1 if evt.angleDelta().y() > 0 else 0.9); return True
+        return super().eventFilter(obj, evt)
+
 
 class PerfectPalettePicker(QWidget):
     THUMB_CROP = 512  # side length for thumbnail center crops
@@ -175,6 +344,28 @@ class PerfectPalettePicker(QWidget):
 
         self.setLayout(root)
         self.setMinimumSize(left_host.width() + grid_w + 48, max(560, grid_h + 200))
+
+    def _resize_to(self, arr: np.ndarray | None, size: tuple[int, int]) -> np.ndarray | None:
+        """Resize np array to (w,h). Keeps dtype/scale. Uses INTER_AREA for downsizing."""
+        if arr is None:
+            return None
+        w, h = size
+        if arr.ndim == 2:
+            src_h, src_w = arr.shape
+        else:
+            src_h, src_w = arr.shape[:2]
+        if (src_w, src_h) == (w, h):
+            return arr
+        if cv2 is None:
+            # ultra-simple fallback: nearest; OK for thumbs if OpenCV isn't present
+            if arr.ndim == 2:
+                return np.array(Image.fromarray((arr*255).astype(np.uint8)).resize((w, h))).astype(np.float32) / 255.0
+            return np.array(Image.fromarray((arr*255).astype(np.uint8)).resize((w, h))).astype(np.float32) / 255.0
+        interp = cv2.INTER_AREA if (w < src_w or h < src_h) else cv2.INTER_LINEAR
+        if arr.ndim == 2:
+            return cv2.resize(arr, (w, h), interpolation=interp)
+        return cv2.resize(arr, (w, h), interpolation=interp)
+
 
     # ---------- status helpers ----------
     def _set_status_label(self, which: str, text: str | None):
@@ -406,7 +597,22 @@ class PerfectPalettePicker(QWidget):
 
         # thumbnails: crop AFTER stretch/synth
         if for_thumbs:
-            (ha, oo, si), _ = self._center_crop_all_to_side(self.THUMB_CROP, ha, oo, si)
+            # choose a reference (prefer OIII, then Ha, then SII)
+            ref = oo if oo is not None else (ha if ha is not None else si)
+            if ref is not None:
+                ref_h, ref_w = ref.shape[:2]
+
+                # 1) first, size-match all channels to the reference full frame
+                ha = self._resize_to(ha, (ref_w, ref_h)) if ha is not None else None
+                oo = self._resize_to(oo, (ref_w, ref_h)) if oo is not None else None
+                si = self._resize_to(si, (ref_w, ref_h)) if si is not None else None
+
+                # 2) then, make a 50% view of the full rectangle
+                half_w = max(1, int(ref_w * 0.5))
+                half_h = max(1, int(ref_h * 0.5))
+                ha = self._resize_to(ha, (half_w, half_h)) if ha is not None else None
+                oo = self._resize_to(oo, (half_w, half_h)) if oo is not None else None
+                si = self._resize_to(si, (half_w, half_h)) if si is not None else None
 
         return ha, oo, si
 
@@ -558,6 +764,33 @@ class PerfectPalettePicker(QWidget):
     def _push_final(self):
         if self.final is None:
             QMessageBox.warning(self, "No Image", "Generate a palette first."); return
+
+        # Use the SAME prepared channels the palette was built with
+        ha_prep, oo_prep, si_prep = self._prepared_channels()
+        if oo_prep is None or (ha_prep is None and si_prep is None):
+            QMessageBox.warning(self, "Need Channels", "Load at least OIII + (Ha or SII).")
+            return
+
+        dlg = PaletteAdjustDialog(
+            base_rgb     = self.final,                           # fully formed palette
+            palette_name = self.current_palette or "SHO",
+            ha_src       = ha_prep,                              # prepared (stretched/OSC-synth)
+            oiii_src     = oo_prep,
+            sii_src      = si_prep,
+            owner        = self
+        )
+        adjusted = {"img": None}
+        dlg.adjusted_image.connect(lambda img: adjusted.__setitem__("img", img))
+        dlg.exec()
+
+        if adjusted["img"] is None:
+            return  # user canceled
+
+        # Update preview with adjusted result and set as final
+        self.final = adjusted["img"]
+        self._set_preview_image(self._to_qimage(self.final))
+
+        # Push to DocManager in a new view
         mw = self._find_main_window()
         dm = getattr(mw, "docman", None)
         if not mw or not dm:
@@ -578,6 +811,7 @@ class PerfectPalettePicker(QWidget):
             self.status.setText("Opened final palette in a new view.")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to open new view:\n{e}")
+
 
     # ------------- utilities -------------
     def _clear_channels(self):

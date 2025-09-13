@@ -6,6 +6,7 @@ from PyQt6.QtGui import QPixmap, QImage, QWheelEvent, QShortcut, QKeySequence, Q
 from PyQt6 import sip
 import numpy as np
 import json
+import math
 
 from .autostretch import autostretch   # ← uses pro/imageops/stretch.py
 
@@ -70,6 +71,7 @@ class ImageSubWindow(QWidget):
     autostretchChanged = pyqtSignal(bool)
     requestDuplicate = pyqtSignal(object)  # document
     layers_changed = pyqtSignal() 
+    autostretchProfileChanged = pyqtSignal(str)
 
 
     def __init__(self, document, parent=None):
@@ -83,6 +85,8 @@ class ImageSubWindow(QWidget):
         self._drag_start = QPoint()
         self.autostretch_enabled = False
         self.autostretch_target = 0.25    # tweakable, e.g. 0.2–0.35 typical
+        self.autostretch_sigma   = 3.0    # normal profile
+        self.autostretch_profile = "normal"        
         self.show_mask_overlay = False
         self._mask_overlay_alpha = 0.5  # 0..1
         self._mask_overlay_invert = True 
@@ -169,6 +173,38 @@ class ImageSubWindow(QWidget):
                 docs.add(md)
         return docs
 
+
+    def sizeHint(self) -> QSize:
+        lbl = getattr(self, "image_label", None) or getattr(self, "label", None)
+        sa  = getattr(self, "scroll_area", None) or self.findChild(QScrollArea)
+        if lbl and hasattr(lbl, "pixmap") and lbl.pixmap() and not lbl.pixmap().isNull():
+            pm = lbl.pixmap()
+            # logical pixels (HiDPI-safe)
+            dpr  = pm.devicePixelRatioF() if hasattr(pm, "devicePixelRatioF") else 1.0
+            pm_w = int(math.ceil(pm.width()  / dpr))
+            pm_h = int(math.ceil(pm.height() / dpr))
+
+            # label margins
+            lm = lbl.contentsMargins()
+            w = pm_w + lm.left() + lm.right()
+            h = pm_h + lm.top()  + lm.bottom()
+
+            # scrollarea chrome (frame + reserve bar thickness)
+            if sa:
+                fw = sa.frameWidth()
+                w += fw * 2 + sa.verticalScrollBar().sizeHint().width()
+                h += fw * 2 + sa.horizontalScrollBar().sizeHint().height()
+
+            # this widget’s margins
+            m = self.contentsMargins()
+            w += m.left() + m.right() + 2
+            h += m.top()  + m.bottom() + 20
+
+            # tiny safety pad so bars never appear from rounding
+            return QSize(w + 2, h + 8)
+
+        return super().sizeHint()
+
     def _on_layer_source_changed(self):
         # Any source/mask doc changed → recomposite current stack
         try:
@@ -254,16 +290,7 @@ class ImageSubWindow(QWidget):
         # document renamed → rebuild from flags + new base
         self._rebuild_title()
 
-    def set_view_title_override(self, title: str, suppress_active_prefix_once: bool = False):
-        """Set a per-view title (not touching the document name). Keeps the mask dot, and
-        optionally suppresses adding 'Active View:' the next time activation fires."""
-        self._view_title_override = title
-        sub = self._mdi_subwindow()
-        if sub:
-            had_dot = sub.windowTitle().startswith("■ ")
-            sub.setWindowTitle(("■ " if had_dot else "") + title)
-        # one-shot guard so the very next activation doesn't re-add "Active View:"
-        self._suppress_active_once = bool(suppress_active_prefix_once)
+
 
     def base_doc_title(self) -> str:
         """The clean, base title (document display name), no prefixes/suffixes."""
@@ -331,6 +358,31 @@ class ImageSubWindow(QWidget):
         if self.autostretch_enabled:
             self._render(rebuild=True)
 
+    def set_autostretch_sigma(self, sigma: float):
+        self.autostretch_sigma = float(sigma)
+        if self.autostretch_enabled:
+            self._render(rebuild=True)
+
+    def set_autostretch_profile(self, profile: str):
+        """'normal' => target=0.25, sigma=3 ; 'hard' => target=0.5, sigma=1"""
+        p = (profile or "").lower()
+        if p not in ("normal", "hard"):
+            p = "normal"
+        if p == self.autostretch_profile:
+            return
+        if p == "hard":
+            self.autostretch_target = 0.5
+            self.autostretch_sigma  = 2
+        else:
+            self.autostretch_target = 0.3
+            self.autostretch_sigma  = 5
+        self.autostretch_profile = p
+        if self.autostretch_enabled:
+            self._render(rebuild=True)
+
+    def is_hard_autostretch(self) -> bool:
+        return self.autostretch_profile == "hard"
+
     def _mdi_subwindow(self) -> QMdiSubWindow | None:
         w = self.parent()
         while w is not None and not isinstance(w, QMdiSubWindow):
@@ -396,13 +448,7 @@ class ImageSubWindow(QWidget):
         self.scale = float(max(0.02, min(s, 8.0)))
         self._render()
 
-    def sizeHint(self) -> QSize:
-        pm = self.label.pixmap()
-        if pm:
-            s = pm.size()
-            # a little padding for scrollbars/borders
-            return QSize(s.width() + 24, s.height() + 24)
-        return super().sizeHint()
+
 
     # ---- view state API (center in image coords + scale) ----
     #def get_view_state(self) -> dict:
@@ -623,6 +669,10 @@ class ImageSubWindow(QWidget):
 
 
     # ---------- rendering ----------
+    def is_hard_autostretch(self) -> bool:
+        return (abs(getattr(self, "autostretch_target", 0.25) - 0.5) < 1e-6
+                and abs(getattr(self, "autostretch_sigma", 3.0) - 1.0) < 1e-6)
+
     def _render(self, rebuild: bool = False):
         """
         If rebuild=True: rebuild the 8-bit source buffer (apply autostretch/etc).
@@ -646,7 +696,7 @@ class ImageSubWindow(QWidget):
                     mx = float(arr_f.max()) if arr_f.size else 1.0
                     if mx > 5.0:
                         arr_f = arr_f / mx
-                vis = autostretch(arr_f, target_median=self.autostretch_target, linked=False)  # or True if you prefer linked
+                vis = autostretch(arr_f, target_median=self.autostretch_target, sigma=self.autostretch_sigma, linked=False)  # or True if you prefer linked
             else:
                 # true linear view
                 if arr.ndim == 2:

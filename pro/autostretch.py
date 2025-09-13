@@ -52,26 +52,56 @@ def _stats_from_hist_generic(uN: np.ndarray, maxv: int) -> tuple[float, float, i
     return float(med_idx), std, minv, maxv_found
 
 def _build_lut_generic(bp: int, target_median: float, med_uN: float, maxv: int) -> np.ndarray:
-    """Build N-level → float32 LUT using SASv2-style rational formula."""
     denom_bp = max(1, maxv - int(bp))
     median_rescaled = (med_uN - bp) / float(denom_bp)
     median_rescaled = float(np.clip(median_rescaled, 1e-9, 1.0))
 
     x = np.arange(maxv + 1, dtype=np.float32)
-    r = (x - bp) / float(denom_bp)
+
+    # ✅ KEY FIX: clamp r to [0,1] so x<=bp -> r=0 (maps to 0), x>=max -> r=1
+    r = np.clip((x - bp) / float(denom_bp), 0.0, 1.0)
+
     denom = median_rescaled * (target_median + r - 1.0) - target_median * r
     denom = np.where(np.abs(denom) < 1e-12, 1e-12, denom)
     out = ((median_rescaled - 1.0) * target_median * r) / denom
     return np.clip(out, 0.0, 1.0).astype(np.float32)
 
-def _fast_channel_autostretch_uN(ch_uN: np.ndarray, target: float, sigma: float, maxv: int) -> np.ndarray:
+def _fast_channel_autostretch_uN(ch_uN: np.ndarray, target: float, sigma: float, maxv: int,
+                                 qfloor: float = 0.001) -> np.ndarray:
+    """
+    qfloor: low-percentile floor (e.g. 0.1%) so BP doesn't peg to minv=0.
+    """
+    # Subsample
     h, w = ch_uN.shape
     sy, sx = _choose_stride(h, w, _MAX_STATS_PIXELS)
     sample = ch_uN[::sy, ::sx]
-    med, std, minv, _ = _stats_from_hist_generic(sample, maxv)
-    bp = int(max(minv, med - sigma * std))
+
+    # Histogram on the sample
+    hist = np.bincount(sample.ravel(), minlength=maxv + 1)
+    total = int(hist.sum()) or 1
+
+    # CDF + median index
+    cdf = np.cumsum(hist)
+    med = int(np.searchsorted(cdf, (total + 1)//2))
+
+    # Robust std: only use bins <= median (avoids bright-tail inflation)
+    bins      = np.arange(maxv + 1, dtype=np.float64)
+    hist_low  = hist[:med + 1]
+    total_low = int(hist_low.sum()) or 1
+    mean_low  = float((hist_low * bins[:med + 1]).sum() / total_low)
+    var_low   = float((hist_low * (bins[:med + 1] - mean_low)**2).sum() / total_low)
+    std_low   = float(np.sqrt(max(1e-12, var_low)))
+
+    # Percentile floor (avoid pegging to 0)
+    floor_idx = int(np.searchsorted(cdf, int(qfloor * total)))
+
+    # Black point driven by sigma, but never below the floor
+    bp = int(max(floor_idx, med - sigma * std_low))
+    bp = int(np.clip(bp, 0, maxv - 1))
+
+    # Build LUT and map
     lut = _build_lut_generic(bp, target, med, maxv)
-    return lut[ch_uN]  # vectorized lookup
+    return lut[ch_uN]
 
 # ---------- public API ----------
 def autostretch(
@@ -114,15 +144,11 @@ def autostretch(
     # COLOR
     u = _to_uN(a, maxv)
     if linked:
-        # one set of stats over all channels (subsampled)
         h, w, _ = u.shape
         sy, sx = _choose_stride(h, w, max(1, _MAX_STATS_PIXELS // 3))
-        sample = u[::sy, ::sx].reshape(-1)  # H*W*C subsample flattened
-        med, std, minv, _ = _stats_from_hist_generic(sample, maxv)
-        bp = int(max(minv, med - sigma * std))
-        lut = _build_lut_generic(bp, target_median, med, maxv)
-        out = lut[u]
-        return out.astype(np.float32, copy=False)
+        sample = u[::sy, ::sx].reshape(-1)
+        # reuse the same logic by calling the helper on a 2D view
+        return _fast_channel_autostretch_uN(sample.reshape(-1, 1), target_median, sigma, maxv)[u]
     else:
         # per-channel stats/LUTs
         out = np.empty_like(u, dtype=np.float32)
@@ -133,3 +159,5 @@ def autostretch(
         if C > 3:
             out[..., 3:] = u[..., 3:] / float(maxv)
         return out
+    
+    print(f"med={med} std_low={std_low:.2f} floor={floor_idx} σ={sigma} → bp={bp}")

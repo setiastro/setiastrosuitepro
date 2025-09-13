@@ -1056,19 +1056,39 @@ class CurvesDialogPro(QDialog):
             meta = {
                 "step_name": "Curves",
                 "curves": {"mode": self._current_mode()},
-                # ✅ mask bookkeeping
                 "masked": bool(mid),
                 "mask_id": mid,
                 "mask_name": mname,
                 "mask_blend": "m*out + (1-m)*src",
             }
+
+            # 1) Apply to the document (updates the active view)
             self.doc.apply_edit(out01.copy(), metadata=meta, step_name="Curves")
-            mw = self._find_main_window()
-            if mw and hasattr(mw, "_log"):
-                mw._log("Curves: applied to document.")
-            self.accept()
+
+            # 2) Pull the NEW image back into the curves dialog
+            #    (clear cached previews so we truly reload from the document)
+            self.__dict__.pop("_last_preview", None)
+            self._full_img = None
+            self._preview_img = None
+            self._load_from_doc()          # refresh preview from updated doc
+
+            # 3) Reset the curve drawing so user can keep tweaking from scratch
+            if hasattr(self.editor, "clearSymmetryLine"):
+                self.editor.clearSymmetryLine()
+            self.editor.initCurve()         # back to endpoints (linear)
+            self._quick_preview()           # refresh small preview
+
+            # 4) UX: keep focus, tell the user
+            self.raise_()
+            self.activateWindow()
+            self._set_status("Applied. Image reloaded. Curve reset — keep tweaking.")
+
+            # NOTE: do NOT close the dialog
+            # self.accept()   <-- removed
+
         except Exception as e:
             QMessageBox.critical(self, "Apply failed", str(e))
+
 
     # ----- helpers -----
     def _current_mode(self) -> str:

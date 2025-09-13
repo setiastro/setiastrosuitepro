@@ -31,7 +31,7 @@ from PyQt6.QtCore import Qt, QThread, QRunnable, QThreadPool, pyqtSignal, QObjec
 from PyQt6.QtGui import QImage, QPixmap, QIcon, QMovie
 from PyQt6.QtWidgets import (
     QDialog, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QGroupBox, QAbstractItemView, QListWidget, QInputDialog, QApplication, QProgressBar, QProgressDialog,
-    QRadioButton, QFileDialog, QComboBox, QMessageBox, QTextEdit, QDialogButtonBox, QTreeWidget,QCheckBox, QFormLayout, QListWidgetItem, QScrollArea
+    QRadioButton, QFileDialog, QComboBox, QMessageBox, QTextEdit, QDialogButtonBox, QTreeWidget,QCheckBox, QFormLayout, QListWidgetItem, QScrollArea, QTreeWidgetItem
 )
 # I/O & stretch (same stack we used for Plate Solver)
 from legacy.image_manager import load_image, save_image
@@ -946,25 +946,34 @@ class StarRegistrationThread(QThread):
                     self.progress_update.emit("✅ Convergence reached! Stopping refinement.")
                     break
 
-            # Final rejection using last-pass deltas
-            final_shifts = self.transform_deltas[-1] if self.transform_deltas else []
-            old_files = self.files_to_align
-            new_files = []
-            rejected_files = []
-            for f, delta in zip(old_files, final_shifts):
-                if delta > 2.0:
-                    rejected_files.append(f)
-                else:
-                    new_files.append(f)
-            self.files_to_align = new_files
+            fast_mode = (self.max_refinement_passes <= 1)
 
-            if rejected_files:
+            # Final handling
+            if fast_mode:
+                # Accept everything that didn’t error out. We already wrote transformed files
+                # (or left the pre-saved *_n_r as-is for small deltas).
+                self.files_to_align = [p for p in self.file_key_to_current_path.values() if os.path.exists(p)]
                 self.progress_update.emit(
-                    f"🚨 Rejected {len(rejected_files)} frame(s) due to shift >2px or rotation >2°."
+                    f"⚡ Fast mode: accepting {len(self.files_to_align)} frame(s) after a single pass."
                 )
+            else:
+                # Original behavior: reject large last-pass deltas
+                final_shifts = self.transform_deltas[-1] if self.transform_deltas else []
+                old_files = self.files_to_align
+                new_files, rejected_files = [], []
+                for f, delta in zip(old_files, final_shifts):
+                    if delta > 2.0:
+                        rejected_files.append(f)
+                    else:
+                        new_files.append(f)
+                self.files_to_align = new_files
+                if rejected_files:
+                    self.progress_update.emit(
+                        f"🚨 Rejected {len(rejected_files)} frame(s) due to shift >2px or rotation >2°."
+                    )
 
             aligned_count = sum(1 for v in self.alignment_matrices.values() if v is not None)
-            total_count = len(self.alignment_matrices)
+            total_count   = len(self.alignment_matrices)
             summary = f"Registration complete. Valid frames: {aligned_count}/{total_count}."
             self.registration_complete.emit(True, summary)
 
@@ -1048,7 +1057,9 @@ class StarRegistrationThread(QThread):
             self.progress_update.emit(f"Skipped (delta < 0.2px): {', '.join(skipped_files)}")
 
         if aligned_count == 0:
-            return False, "All frames already aligned within tolerance."
+            # This means every frame needed a transform this pass (none were under the skip threshold).
+            # That's still a successful pass; we overwrote the pre-saved _n_r files with aligned data.
+            return True, "Pass complete. All frames required transform (no < tolerance)."
         failed_count = len(self.file_key_to_current_path) - aligned_count
         if failed_count > 0:
             return True, f"Pass complete. {failed_count} frame(s) failed."

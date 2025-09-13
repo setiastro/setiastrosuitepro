@@ -40,6 +40,11 @@ class GhsDialogPro(QDialog):
         self.editor = CurveEditor(self)
         left.addWidget(self.editor)
 
+        hint = QLabel("Tip: Ctrl+Click (or double-click) the image to set the symmetry pivot")
+        hint.setStyleSheet("color: #888; font-size: 11px;")
+        left.addWidget(hint)
+        self.editor.setToolTip("Ctrl+Click (or double-click) the image to set the symmetry pivot")
+
         # channel selector
         ch_row = QHBoxLayout()
         ch_row.addWidget(QLabel("Channel:"))
@@ -252,10 +257,8 @@ class GhsDialogPro(QDialog):
 
     def _on_apply_ready(self, out01: np.ndarray):
         try:
-            # ✅ blend with mask before committing
             out_masked = self._blend_with_mask(out01)
 
-            # mask bookkeeping
             _marr, mid, mname = self._active_mask_layer()
             meta = {
                 "step_name": "Hyperbolic Stretch",
@@ -272,10 +275,24 @@ class GhsDialogPro(QDialog):
                 "mask_blend": "m*out + (1-m)*src",
             }
 
+            # Commit result to the document
             self.doc.apply_edit(out_masked.copy(), metadata=meta, step_name="Hyperbolic Stretch")
-            self.accept()
+
+            # 🔁 Refresh buffers from the updated doc
+            self._load_from_doc()
+
+            # 🔄 Reset pivot + curve drawing for the next pass
+            self._sym_u = 0.5
+            self.editor.clearSymmetryLine()
+            self.editor.initCurve()        # clear handles & redraw baseline
+            self.sA.setValue(50); self.sB.setValue(50); self.sG.setValue(100)
+            self.sLP.setValue(0); self.sHP.setValue(0)            
+            self._rebuild_from_params()    # repopulate curve from current sliders (now at default pivot)
+            QTimer.singleShot(0, self._fit)
+
         except Exception as e:
             QMessageBox.critical(self, "Apply failed", str(e))
+
 
     # ---------- image plumbing / zoom/pan ----------
     def _load_from_doc(self):
