@@ -119,11 +119,11 @@ class SettingsDialog(QDialog):
         form.addRow("ASTAP executable:", QWidget()); form.itemAt(form.rowCount()-1, QFormLayout.ItemRole.FieldRole).widget().setLayout(row_astap)
         form.addRow("Astrometry.net API key:", self.le_astrometry)
         form.addRow(self.chk_save_shortcuts)
-
+        form.addRow("Theme:", self.cb_theme)
         # Separator / header for WIMS section
         hdr = QLabel("<b>What's In My Sky — Defaults</b>")
         form.addRow(hdr)
-        form.addRow("Theme:", self.cb_theme)
+
         form.addRow("Latitude (°):", self.sp_lat)
         form.addRow("Longitude (°):", self.sp_lon)
         form.addRow("Date (YYYY-MM-DD):", self.le_date)
@@ -215,7 +215,9 @@ class SettingsDialog(QDialog):
 
         # Theme
         idx = self.cb_theme.currentIndex()
-        theme_val = {0:"dark", 1:"light", 2:"system"}[idx]
+        if idx < 0:
+            idx = 0
+        theme_val = "dark" if idx == 0 else "light"
         self.settings.setValue("ui/theme", theme_val)
 
         self.settings.sync()
