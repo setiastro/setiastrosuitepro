@@ -1,0 +1,52 @@
+# numeric & scientific
+numpy
+scipy
+pywavelets          # “pywt”
+matplotlib
+plotly
+exifread
+lightkurve
+oktopus
+
+# tables & I/O
+pandas
+tifffile
+Pillow              # “PIL”
+
+# networking & web
+requests
+astroquery
+
+# compression
+lz4
+zstandard
+
+# astronomy
+astropy
+photutils
+astroalign
+sep
+reproject
+
+# performance
+numba
+
+# image formats & camera raw
+xisf
+rawpy
+
+# coordinate transforms
+astropy
+
+# utilities
+pytz
+
+# GUI
+PyQt6
+pyqtgraph
+
+# system
+psutil
+
+# computer vision
+opencv-python
