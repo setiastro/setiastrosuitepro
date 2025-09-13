@@ -153,17 +153,17 @@ from collections import defaultdict
 from PyQt6 import sip
 
 # ----- QtWidgets -----
-from PyQt6.QtWidgets import (QDialog, QApplication, QMainWindow, QWidget, QHBoxLayout, QFileDialog, QMessageBox, QSizePolicy, QToolBar, QPushButton,
+from PyQt6.QtWidgets import (QDialog, QApplication, QMainWindow, QWidget, QHBoxLayout, QFileDialog, QMessageBox, QSizePolicy, QToolBar,
     QLineEdit, QMenu, QListWidget, QListWidgetItem, QSplashScreen, QDockWidget, QListView, QCompleter, QMdiArea, QMdiArea, QMdiSubWindow, 
-    QInputDialog, QVBoxLayout, QLabel, QCheckBox, QProgressBar, QProgressDialog, QGraphicsItem, QTabWidget, QTableWidget, QHeaderView, QTableWidgetItem
+    QInputDialog, QVBoxLayout, QLabel, QCheckBox, QProgressBar, QProgressDialog, QGraphicsItem
 )
 
 # ----- QtGui -----
-from PyQt6.QtGui import (QPixmap, QColor, QIcon, QKeySequence, QShortcut, QGuiApplication, QStandardItemModel, QStandardItem, QAction, QPalette, QBrush
+from PyQt6.QtGui import (QPixmap, QColor, QIcon, QKeySequence, QShortcut, QGuiApplication, QStandardItemModel, QStandardItem, QAction
 )
 
 # ----- QtCore -----
-from PyQt6.QtCore import (Qt, pyqtSignal, QCoreApplication, QTimer, QSize, QSignalBlocker,  QModelIndex, QThread, QUrl, QSettings, QEvent
+from PyQt6.QtCore import (Qt, pyqtSignal, QCoreApplication, QTimer, QSize, QSignalBlocker,  QModelIndex, QThread, QUrl, QSettings
 )
 
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
@@ -246,13 +246,8 @@ from pro.linear_fit import LinearFitDialog
 from pro.debayer import DebayerDialog, apply_debayer_preset_to_doc
 from pro.copyastro import CopyAstrometryDialog
 from pro.layers_dock import LayersDock
-try:
-    from pro._generated.build_info import BUILD_TIMESTAMP
-except Exception:
-    BUILD_TIMESTAMP = "dev"
 
-
-VERSION = "1.0.4"
+VERSION = "1.0.1"
 
 
 if hasattr(sys, '_MEIPASS'):
@@ -553,11 +548,11 @@ class AboutDialog(QDialog):
         self.setWindowTitle("About Seti Astro Suite")
         layout = QVBoxLayout()
 
+        # Create a QLabel with rich text (HTML) for clickable links
         about_text = (
             f"<h2>Seti Astro's Suite Pro {VERSION}</h2>"
             "<p>Written by Franklin Marek</p>"
             "<p>Copyright © 2025 Seti Astro</p>"
-            f"<p><b>Build:</b> {BUILD_TIMESTAMP}</p>"
             "<p>Website: <a href='http://www.setiastro.com'>www.setiastro.com</a></p>"
             "<p>Donations: <a href='https://www.setiastro.com/checkout/donate?donatePageId=65ae7e7bac20370d8c04c1ab'>Click here to donate</a></p>"
         )
@@ -565,7 +560,7 @@ class AboutDialog(QDialog):
         label.setTextFormat(Qt.TextFormat.RichText)
         label.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
         label.setOpenExternalLinks(True)
-
+        
         layout.addWidget(label)
         self.setLayout(layout)
 
@@ -588,7 +583,6 @@ class AstroSuiteProMainWindow(QMainWindow):
         super().__init__(parent)
         self.setWindowTitle(f"Seti Astro Suite Pro v{VERSION}")
         self.resize(1400, 900)
-        self._ensure_network_manager()
         self.app_icon = QIcon(windowslogo_path if os.path.exists(windowslogo_path) else icon_path)
         self.setWindowIcon(self.app_icon)
         self._doc = None
@@ -661,239 +655,13 @@ class AstroSuiteProMainWindow(QMainWindow):
             type=str
         )
 
-        app = QApplication.instance()
+        # NEW: one shared network manager (lives on the main thread)
+        self._nam = QNetworkAccessManager(self)
+        self._nam.finished.connect(self._on_update_reply)
 
-        # Re-entrancy guard + debounce
-        self._theme_guard = False
-        self._theme_debounce = QTimer(self)
-        self._theme_debounce.setSingleShot(True)
-        self._theme_debounce.timeout.connect(self._apply_theme_safely)
-
-        # Build a safe list of theme-relevant event types for this Qt build
-        _names = [
-            "ApplicationPaletteChange",  # present on all Qt6
-            "PaletteChange",             # older / extra signal from widgets
-            "ColorSchemeChange",         # newer Qt (6.5+)
-            # "ThemeChange",             # NOT reliable—do NOT include
-            # "StyleChange",             # optional; usually noisy, so we skip
-        ]
-        _types = []
-        for n in _names:
-            t = getattr(QEvent.Type, n, None)
-            if t is not None:
-                _types.append(t)
-        self._theme_events = tuple(_types)
-
-        # Listen only on the app object
-        app.installEventFilter(self)
-
-        self.apply_theme_from_settings()
-       
         # Startup check (no lambdas)
         if self.settings.value("updates/check_on_startup", True, type=bool):
             QTimer.singleShot(1500, self.check_for_updates_startup)
-
-
-    # ---------- THEME API ----------
-    def _apply_workspace_theme(self):
-        """Retint the QMdiArea background + viewport to current theme colors."""
-        pal = QApplication.palette()
-        # Use Base for light, Window for dark (looks better with your palettes)
-        role = QPalette.ColorRole.Base if self._theme_mode() == "light" else QPalette.ColorRole.Window
-        col  = pal.color(role)
-
-        # 1) Tell QMdiArea to use a flat color background
-        try:
-            self.mdi.setBackground(QBrush(col))
-        except Exception:
-            pass
-
-        # 2) Also set the viewport palette (some styles ignore setBackground)
-        try:
-            vp = self.mdi.viewport()
-            vp.setAutoFillBackground(True)
-            p = vp.palette()
-            p.setColor(QPalette.ColorRole.Window, col)
-            vp.setPalette(p)
-            vp.update()
-        except Exception:
-            pass
-
-        # 3) Ensure the overlay canvas stays transparent and refreshes
-        try:
-            if hasattr(self, "shortcuts") and self.shortcuts and getattr(self.shortcuts, "canvas", None):
-                c = self.shortcuts.canvas
-                c.setStyleSheet("background: transparent;")
-                c.update()
-
-        except Exception:
-            pass
-
-    def apply_theme_from_settings(self):
-        mode = self._theme_mode()
-        app = QApplication.instance()
-
-        if mode == "dark":
-            app.setStyle("Fusion")
-            app.setPalette(self._dark_palette())
-            app.setStyleSheet("QToolTip { color: #ffffff; background-color: #2a2a2a; border: 1px solid #5a5a5a; }")
-        elif mode == "light":
-            app.setStyle("Fusion")
-            app.setPalette(self._light_palette())
-            # Tooltips readable in light mode
-            app.setStyleSheet(
-                "QToolTip { color: #141414; background-color: #ffffee; border: 1px solid #c8c8c8; }"
-            )
-        else:  # system
-            app.setStyle(None)
-            app.setPalette(QApplication.style().standardPalette())
-            app.setStyleSheet("")
-
-        # Nudge widgets to pick up role changes
-        self._repolish_top_levels()
-        self._apply_workspace_theme()
-        self._style_mdi_titlebars()
-
-
-        try:
-            vp = self.mdi.viewport()
-            vp.setAutoFillBackground(True)
-            vp.setPalette(QApplication.palette())
-            vp.update()
-            #self.mdi.setStyleSheet(f"QMdiArea {{ background: {col.name()}; }}")
-        except Exception:
-            pass
-
-    def _repolish_top_levels(self):
-        app = QApplication.instance()
-        for w in app.topLevelWidgets():
-            w.setUpdatesEnabled(False)
-            w.style().unpolish(w)
-            w.style().polish(w)
-            w.setUpdatesEnabled(True)
-
-    def _style_mdi_titlebars(self):
-        if self._theme_mode() == "dark":
-            base = "#1b1b1b"     # inactive titlebar
-            active = "#242424"   # active titlebar
-            fg = "#dcdcdc"       # text color
-            self.mdi.setStyleSheet(f"""
-                QMdiSubWindow::titlebar        {{ background: {base};  color: {fg}; }}
-                QMdiSubWindow::titlebar:active {{ background: {active}; color: {fg}; }}
-            """)
-        else:
-            # No override in light mode
-            self.mdi.setStyleSheet("")
-
-    def _dark_palette(self) -> QPalette:
-        p = QPalette()
-
-        # Bases
-        bg      = QColor(18, 18, 18)   # editor / view backgrounds (Base)
-        panel   = QColor(27, 27, 27)   # window / panels (Window, Button)
-        altbase = QColor(33, 33, 33)
-        text    = QColor(220, 220, 220)
-        dis     = QColor(140, 140, 140)
-        hi      = QColor(30, 144, 255)  # highlight (dodger blue)
-
-        p.setColor(QPalette.ColorRole.Window,        panel)
-        p.setColor(QPalette.ColorRole.WindowText,    text)
-        p.setColor(QPalette.ColorRole.Base,          bg)
-        p.setColor(QPalette.ColorRole.AlternateBase, altbase)
-        p.setColor(QPalette.ColorRole.ToolTipBase,   panel)
-        p.setColor(QPalette.ColorRole.ToolTipText,   text)
-        p.setColor(QPalette.ColorRole.Text,          text)
-        p.setColor(QPalette.ColorRole.Button,        panel)
-        p.setColor(QPalette.ColorRole.ButtonText,    text)
-        p.setColor(QPalette.ColorRole.BrightText,    QColor(255, 0, 0))
-        p.setColor(QPalette.ColorRole.Highlight,     hi)
-        p.setColor(QPalette.ColorRole.HighlightedText, QColor(255, 255, 255))   # ← readable on blue
-        p.setColor(QPalette.ColorRole.Link,          QColor(90, 160, 255))
-        p.setColor(QPalette.ColorRole.LinkVisited,   QColor(160, 140, 255))
-        # Qt6: explicit placeholder color helps avoid faint-on-faint
-        try:
-            p.setColor(QPalette.ColorRole.PlaceholderText, QColor(160, 160, 160))
-        except Exception:
-            pass
-
-        # Disabled
-        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text,       dis)
-        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.ButtonText, dis)
-        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.WindowText, dis)
-        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Base,       QColor(24, 24, 24))
-        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Highlight,  QColor(60, 60, 60))
-        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.HighlightedText, QColor(210, 210, 210))
-
-        return p
-
-    def _light_palette(self) -> QPalette:
-        p = QPalette()
-
-        # Light neutrals
-        window  = QColor(246, 246, 246)  # panels/docks
-        base    = QColor(255, 255, 255)  # text fields, editors
-        altbase = QColor(242, 242, 242)  # alternating rows
-        text    = QColor(20, 20, 20)     # primary text
-        btn     = QColor(246, 246, 246)  # buttons same as window
-        dis     = QColor(140, 140, 140)  # disabled text
-        link    = QColor(25, 100, 210)   # link blue
-        linkv   = QColor(120, 70, 200)   # visited
-        hi      = QColor(43, 120, 228)   # selection blue (Windows-like)
-        hitxt   = QColor(255, 255, 255)  # text over selection
-
-        # Core roles
-        p.setColor(QPalette.ColorRole.Window,          window)
-        p.setColor(QPalette.ColorRole.WindowText,      text)
-        p.setColor(QPalette.ColorRole.Base,            base)
-        p.setColor(QPalette.ColorRole.AlternateBase,   altbase)
-        p.setColor(QPalette.ColorRole.ToolTipBase,     QColor(255, 255, 238))  # soft yellow tooltip
-        p.setColor(QPalette.ColorRole.ToolTipText,     text)
-        p.setColor(QPalette.ColorRole.Text,            text)
-        p.setColor(QPalette.ColorRole.Button,          btn)
-        p.setColor(QPalette.ColorRole.ButtonText,      text)
-        p.setColor(QPalette.ColorRole.BrightText,      QColor(180, 0, 0))
-        p.setColor(QPalette.ColorRole.Highlight,       hi)
-        p.setColor(QPalette.ColorRole.HighlightedText, hitxt)
-        p.setColor(QPalette.ColorRole.Link,            link)
-        p.setColor(QPalette.ColorRole.LinkVisited,     linkv)
-
-        # Helps line edits/placeholders avoid too-faint gray
-        try:
-            p.setColor(QPalette.ColorRole.PlaceholderText, QColor(110, 110, 110))
-        except Exception:
-            pass
-
-        # Disabled group (keep contrasts sane)
-        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text,            dis)
-        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.ButtonText,      dis)
-        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.WindowText,      dis)
-        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Highlight,       QColor(200, 200, 200))
-        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.HighlightedText, QColor(120, 120, 120))
-        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Base,            QColor(248, 248, 248))
-
-        return p
-
-    def _apply_theme_safely(self):
-        if self._theme_guard:
-            return
-        self._theme_guard = True
-        try:
-            self.apply_theme_from_settings()
-        finally:
-            QTimer.singleShot(0, lambda: setattr(self, "_theme_guard", False))
-
-    # Follow OS theme only when "system" is selected
-    def _theme_mode(self) -> str:
-        return (self.settings.value("ui/theme", "system", type=str) or "system").lower()
-
-    def eventFilter(self, obj, ev):
-        if obj is QApplication.instance() and ev.type() in getattr(self, "_theme_events", ()):
-            if self._theme_mode() == "system" and not self._theme_guard:
-                # debounce to collapse bursts
-                self._theme_debounce.start(100)
-            return False
-        return super().eventFilter(obj, ev)
-
 
     # --- UI scaffolding ---
     def _init_explorer_dock(self):
@@ -923,9 +691,7 @@ class AstroSuiteProMainWindow(QMainWindow):
         tb.addAction(self.act_redo)
         tb.addSeparator()
         tb.addAction(self.act_autostretch)
-        tb.addAction(self.act_hardstretch)
         tb.addAction(self.act_zoom_1_1) 
-        tb.addAction(self.act_zoom_fit)    
         # color the Display-Stretch button when checked
         btn = tb.widgetForAction(self.act_autostretch)
         if btn:
@@ -933,12 +699,9 @@ class AstroSuiteProMainWindow(QMainWindow):
             QToolButton { color: #dcdcdc; }
             QToolButton:checked { color: #DAA520; font-weight: 600; }
             """)
-        btn2 = tb.widgetForAction(self.act_hardstretch)
-        if btn2:
-            btn2.setStyleSheet("""
-            QToolButton { color: #dcdcdc; }
-            QToolButton:checked { color: #DAA520; font-weight: 600; }
-            """)
+        #tb.addSeparator()
+        #tb.addAction(self.act_copy_view)
+        #tb.addAction(self.act_paste_view)
 
 
         # Functions toolbar
@@ -1072,23 +835,9 @@ class AstroSuiteProMainWindow(QMainWindow):
         self.act_autostretch.setStatusTip("Toggle display auto-stretch for the active window")
         self.act_autostretch.toggled.connect(self._toggle_autostretch)
 
-        self.act_hardstretch = QAction("Hard-Display-Stretch", self, checkable=True)
-        self.addAction(self.act_hardstretch)
-        self.act_hardstretch.setShortcut(QKeySequence("H"))
-        self.act_hardstretch.setStatusTip("Toggle hard profile for Display-Stretch (H)")
-
-        # use toggled(bool), not triggered()
-        self.act_hardstretch.toggled.connect(self._set_hard_autostretch_from_action)
-
         self.act_zoom_1_1 = QAction("1:1", self)
         self.act_zoom_1_1.setStatusTip("Zoom to 100% (pixel-for-pixel)")
-        self.act_zoom_1_1.setShortcut(QKeySequence("Ctrl+1"))    
         self.act_zoom_1_1.triggered.connect(self._zoom_active_1_1)
-
-        self.act_zoom_fit = QAction("Fit", self)
-        self.act_zoom_fit.setStatusTip("Fit image to current window")
-        self.act_zoom_fit.setShortcut(QKeySequence("Ctrl+0"))
-        self.act_zoom_fit.triggered.connect(self._zoom_active_fit)
 
         # View state copy/paste (optional quick commands)
         self._copied_view_state = None
@@ -1661,11 +1410,6 @@ class AstroSuiteProMainWindow(QMainWindow):
         m_hist.addAction(self.act_history_explorer)
 
         m_short = mb.addMenu("&Shortcuts")
-
-        act_cheats = QAction("Keyboard Shortcut Cheat Sheet…", self)
-        act_cheats.triggered.connect(self._show_cheat_sheet)
-        m_short.addAction(act_cheats)
-
         act_save_sc = QAction("Save Shortcuts Now", self, triggered=self.shortcuts.save_shortcuts)
         act_clear_sc = QAction("Clear All Shortcuts", self, triggered=self.shortcuts.clear)
         m_short.addAction(act_save_sc)
@@ -1681,91 +1425,16 @@ class AstroSuiteProMainWindow(QMainWindow):
         # initialize enabled state + names
         self.update_undo_redo_action_labels()
 
-    def _build_cheats_keyboard_rows(self):
-        rows = []
-
-        # 1) All QActions (you already have a collector; fall back if missing)
-        try:
-            actions = self._collect_all_qactions()
-        except Exception:
-            actions = self.findChildren(QAction)
-        for act in actions:
-            for seq in _seqs_for_action(act):
-                rows.append((_qs_to_str(seq), _describe_action(act), _where_for_action(act)))
-
-        # 2) Ad-hoc QShortcuts created in code
-        for sc in self.findChildren(QShortcut):
-            seq = sc.key()
-            if seq and not seq.isEmpty():
-                rows.append((_qs_to_str(seq), _describe_shortcut(sc), _where_for_shortcut(sc)))
-
-        # De-duplicate and sort by shortcut text
-        rows = _uniq_keep_order(rows)
-        rows.sort(key=lambda r: (r[0].lower(), r[1].lower()))
-        return rows
-
-    def _build_cheats_gesture_rows(self):
-        # Manual list (extend anytime). Format: (Gesture, Context, Effect)
-        rows = [
-            # Command search
-            ("A", "Display Stretch", "Toggle Display Auto-Stretch"),
-            ("Ctrl+I", "Invert", "Invert the Image"),
-            ("Ctrl+Shift+P", "Command Search", "Focus the command search bar; Enter runs first match"),
-
-            # View Icon
-            ("Drag view → Off to Canvas", "View", "Duplicate Image"),
-            ("Drag view → On to Other Image", "View", "Copy Zoom and Pan"),
-            ("Shift+Drag → On to Other Image", "View", "Apply that image to the other as a mask"), 
-            ("Ctrl+Drag → On to Other Image", "View", "Copy Astrometric Solution"),            
-
-            # View zoom
-            ("Ctrl+1", "View", "Zoom to 100% (1:1)"),
-            ("Ctrl+0", "View", "Fit image to current window"),
-
-            # Window switching
-            ("Ctrl+PgDown", "MDI", "Switch to previously active view"),
-            ("Ctrl+PgUp",   "MDI", "Switch to next active view"),
-
-            # Shortcuts canvas + buttons
-            ("Alt+Drag (toolbar button)", "Toolbar", "Create a desktop shortcut for that action"),
-            ("Alt+Drag (shortcut button → view)", "Shortcuts", "Headless apply the shortcut’s command/preset to a view"),
-            ("Ctrl/Shift+Click", "Shortcuts", "Multi-select shortcut buttons"),
-            ("Drag (selection)", "Shortcuts", "Move selected shortcut buttons"),
-            ("Delete / Backspace", "Shortcuts", "Delete selected shortcut buttons"),
-            ("Ctrl+A", "Shortcuts", "Select all shortcut buttons"),
-            ("Double-click empty area", "MDI background", "Open files dialog"),
-
-            # Layers dock
-            ("Drag view → Layers list", "Layers", "Add dragged view as a new layer (on top)"),
-            ("Shift+Drag mask → Layers list", "Layers", "Attach dragged image as mask to the selected layer"),
-
-            # Crop tool
-            ("Click-drag", "Crop Tool", "Draw a crop rectangle"),
-            ("Drag corner handles", "Crop Tool", "Resize crop rectangle"),
-            ("Shift+Drag on box", "Crop Tool", "Rotate crop rectangle"),
-        ]
-        return rows
-
-    def _show_cheat_sheet(self):
-        kb = self._build_cheats_keyboard_rows()
-        gs = self._build_cheats_gesture_rows()
-        dlg = _CheatSheetDialog(self, kb, gs)
-        dlg.exec()
-
     def _parse_version_tuple(self, s: str) -> tuple[int, ...]:
         nums = re.findall(r"\d+", s or "")
         return tuple(int(n) for n in nums) if nums else (0,)
 
-    def _ensure_network_manager(self):
-        if getattr(self, "_nam", None) is None:
-            self._nam = QNetworkAccessManager(self)
-            self._nam.finished.connect(self._on_update_reply)
-
     def _kick_update_check(self, *, interactive: bool):
-        self._ensure_network_manager()   # ← ensure _nam exists
         url_str = self.settings.value("updates/url", self._updates_url, type=str) or self._updates_url
         req = QNetworkRequest(QUrl(url_str))
+        # A UA helps some CDNs
         req.setRawHeader(b"User-Agent", f"SASPro/{globals().get('VERSION','0.0.0')}".encode("utf-8"))
+
         reply = self._nam.get(req)
         reply.setProperty("interactive", interactive)
 
@@ -3625,145 +3294,11 @@ class AstroSuiteProMainWindow(QMainWindow):
         except Exception:
             pass
 
-    def _infer_image_size(self, view):
-        """Return (img_w, img_h) in device-independent pixels (ints), best-effort."""
-        # Preferred: from the label's pixmap
-        try:
-            pm = getattr(view, "label", None).pixmap() if hasattr(view, "label") else None
-            if pm and not pm.isNull():
-                dpr = max(1.0, float(pm.devicePixelRatio()))
-                return int(round(pm.width() / dpr)), int(round(pm.height() / dpr))
-        except Exception:
-            pass
-
-        # Next: from the document image
-        try:
-            doc = getattr(view, "document", None)
-            if doc and getattr(doc, "image", None) is not None:
-                import numpy as np
-                h, w = np.asarray(doc.image).shape[:2]
-                return int(w), int(h)
-        except Exception:
-            pass
-
-        # Fallback: from attributes some views keep
-        for w_key, h_key in (("image_width","image_height"), ("_img_w","_img_h")):
-            w = getattr(view, w_key, None); h = getattr(view, h_key, None)
-            if isinstance(w, (int,float)) and isinstance(h, (int,float)) and w>0 and h>0:
-                return int(w), int(h)
-
-        return None, None
-
-
-    def _viewport_widget(self, view):
-        """Return the viewport widget used to display the image."""
-        try:
-            if hasattr(view, "scroll") and hasattr(view.scroll, "viewport"):
-                return view.scroll.viewport()
-            # Some views are QGraphicsView/QAbstractScrollArea-like
-            if hasattr(view, "viewport"):
-                return view.viewport()
-        except Exception:
-            pass
-        # Worst case: the view itself
-        return view
-
-    def _zoom_active_fit(self):
-        sw = self.mdi.activeSubWindow()
-        if not sw:
-            return
-        view = sw.widget()
-
-        # Get sizes
-        img_w, img_h = self._infer_image_size(view)
-        if not img_w or not img_h:
-            return
-
-        vp = self._viewport_widget(view)
-        vw, vh = max(1, vp.width()), max(1, vp.height())
-
-        # Compute uniform scale (minus a hair to avoid scrollbars fighting)
-        scale = min((vw - 2) / img_w, (vh - 2) / img_h)
-        # Clamp to sane bounds
-        scale = max(1e-4, min(32.0, scale))
-
-        # Apply using view API if available
-        if hasattr(view, "set_scale") and callable(view.set_scale):
-            try:
-                view.set_scale(float(scale))
-                self._center_view(view)
-                return
-            except Exception:
-                pass
-
-        # Fallback: relative zoom using _zoom_at_anchor
-        try:
-            cur = float(getattr(view, "scale", 1.0))
-            factor = scale / max(cur, 1e-12)
-            if hasattr(view, "_zoom_at_anchor") and callable(view._zoom_at_anchor):
-                view._zoom_at_anchor(float(factor))  # most implementations anchor on cursor/center
-                self._center_view(view)
-                return
-        except Exception:
-            pass
-
-    def _center_view(self, view):
-        """Center the content after a zoom change, if possible."""
-        try:
-            vp = self._viewport_widget(view)
-            hbar = view.scroll.horizontalScrollBar() if hasattr(view, "scroll") else None
-            vbar = view.scroll.verticalScrollBar() if hasattr(view, "scroll") else None
-            lbl  = getattr(view, "label", None)
-            if vp and hbar and vbar and lbl:
-                cx = max(0, lbl.width()  // 2 - vp.width()  // 2)
-                cy = max(0, lbl.height() // 2 - vp.height() // 2)
-                hbar.setValue(min(hbar.maximum(), cx))
-                vbar.setValue(min(vbar.maximum(), cy))
-        except Exception:
-            pass
-
     def _toggle_autostretch(self, on: bool):
         sw = self.mdi.activeSubWindow()
         if sw:
             sw.widget().set_autostretch(on)
             self._log(f"Display-Stretch {'ON' if on else 'OFF'} → {sw.windowTitle()}")
-
-    def _set_hard_autostretch_from_action(self, checked: bool):
-        sw = self.mdi.activeSubWindow()
-        if not sw:
-            return
-        view = sw.widget()
-
-        # mirror the action's check to the view profile
-        if hasattr(view, "set_autostretch_profile"):
-            view.set_autostretch_profile("hard" if checked else "normal")
-
-        # ensure it's visible
-        if not getattr(view, "autostretch_enabled", False):
-            view.set_autostretch(True)
-            self._sync_autostretch_action(True)
-
-        self._log(f"Display-Stretch profile → {'HARD' if checked else 'NORMAL'}  ({sw.windowTitle()})")
-
-    def _toggle_hard_autostretch(self):
-        sw = self.mdi.activeSubWindow()
-        if not sw:
-            return
-        view = sw.widget()
-        # flip profile
-        new_profile = "hard" if not getattr(view, "is_hard_autostretch", lambda: False)() else "normal"
-        if hasattr(view, "set_autostretch_profile"):
-            view.set_autostretch_profile(new_profile)
-        # ensure autostretch is ON so the change is visible immediately
-        if not getattr(view, "autostretch_enabled", False):
-            view.set_autostretch(True)
-            self._sync_autostretch_action(True)
-
-        # ✅ reflect in toolbar button
-        with QSignalBlocker(self.act_hardstretch):
-            self.act_hardstretch.setChecked(new_profile == "hard")
-
-        self._log(f"Display-Stretch profile → {new_profile.upper()}  ({sw.windowTitle()})")
 
 
     def _sync_autostretch_action(self, on: bool):
@@ -5281,70 +4816,32 @@ class AstroSuiteProMainWindow(QMainWindow):
 
 
     def _install_command_search(self):
-
-        # Clean up any old placement (corner widget / toolbar / dock)
         mb = self.menuBar()
-        mb.setNativeMenuBar(False)
+        mb.setNativeMenuBar(False)  # needed so the corner widget shows on all OSes
+
+        # Remove any previous corner widget
         old = mb.cornerWidget(Qt.Corner.TopRightCorner)
-        if old:
+        if old is not None:
             old.deleteLater()
-            mb.setCornerWidget(None, Qt.Corner.TopRightCorner)
 
-        tb = getattr(self, "_search_tb", None)
-        if tb:
-            try: self.removeToolBar(tb)
-            except Exception: pass
-            tb.deleteLater()
-            self._search_tb = None
-
-        old_dock = getattr(self, "_search_dock", None)
-        if old_dock:
-            try: old_dock.hide(); old_dock.setParent(None)
-            except Exception: pass
-            old_dock.deleteLater()
-            self._search_dock = None
-
-        # --- Right-side mini dock with the search box ---
-        self._search_dock = QDockWidget("Command Search", self)
-        self._search_dock.setObjectName("CommandSearchDock")
-        self._search_dock.setAllowedAreas(Qt.DockWidgetArea.RightDockWidgetArea)
-        # Keep it pinned and always visible
-        self._search_dock.setFeatures(QDockWidget.DockWidgetFeature.NoDockWidgetFeatures)
-
-        holder = QWidget(self._search_dock)
+        # Holder + line edit in the menubar corner
+        holder = QWidget(mb)
         lay = QHBoxLayout(holder)
-        lay.setContentsMargins(6, 6, 6, 6)
+        lay.setContentsMargins(0, 0, 6, 0)
         lay.setSpacing(6)
 
         self._cmd_edit = QLineEdit(holder)
         self._cmd_edit.setPlaceholderText("Search commands…  (Ctrl+Shift+P)")
         self._cmd_edit.setClearButtonEnabled(True)
-        self._cmd_edit.setMinimumWidth(240)
-        self._cmd_edit.setMaximumWidth(700)
-        self._cmd_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        lay.addWidget(self._cmd_edit, 1)
+        self._cmd_edit.setMinimumWidth(260)
+        self._cmd_edit.setMaximumWidth(600)
+        self._cmd_edit.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        lay.addWidget(self._cmd_edit)
 
-        holder.setMaximumHeight(44)  # keep the dock short
-        self._search_dock.setWidget(holder)
+        mb.setCornerWidget(holder, Qt.Corner.TopRightCorner)
+        holder.show()
 
-        # Add to the RIGHT area
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._search_dock)
-
-        # Make sure it's ABOVE Layers/Header
-        layers_dock = getattr(self, "layers_dock", None) or getattr(self, "_layers_dock", None)
-        header_dock = getattr(self, "header_dock", None) or getattr(self, "_header_viewer_dock", None)
-        try:
-            if layers_dock:
-                # split so Layers goes BELOW search
-                self.splitDockWidget(self._search_dock, layers_dock, Qt.Orientation.Vertical)
-            if header_dock and layers_dock:
-                # keep header under layers (or whatever arrangement you prefer)
-                # If you tabify layers/header, comment the line below and use tabifyDockWidget
-                self.splitDockWidget(layers_dock, header_dock, Qt.Orientation.Vertical)
-        except Exception:
-            pass
-
-        # ---- Completer + model (same behavior as before) ----
+        # Completer + model
         self._cmd_model = QStandardItemModel(self)
         self._cmd_completer = QCompleter(self._cmd_model, self)
         self._cmd_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
@@ -5357,26 +4854,11 @@ class AstroSuiteProMainWindow(QMainWindow):
 
         self._cmd_edit.setCompleter(self._cmd_completer)
         self._cmd_completer.activated[QModelIndex].connect(self._run_selected_completion)
-
-        # Shortcut to focus it
         QShortcut(QKeySequence("Ctrl+Shift+P"), self, activated=self._focus_command_search)
-
-
-        # Enter runs the first visible completion
         self._cmd_edit.returnPressed.connect(self._trigger_first_visible_completion)
 
         # Initial population
         self._build_command_model()
-
-        # After window state restore, re-pin it to the top of the right area
-        def _repin_right_top():
-            try:
-                if self._search_dock and layers_dock:
-                    self.splitDockWidget(self._search_dock, layers_dock, Qt.Orientation.Vertical)
-            except Exception:
-                pass
-        QTimer.singleShot(0, _repin_right_top)
-
 
     def _build_command_model(self):
         self._cmd_model.clear()
@@ -5628,8 +5110,6 @@ class AstroSuiteProMainWindow(QMainWindow):
             if w and h:
                 view.set_scale(min(900 / float(w), 700 / float(h)))
 
-
-        QTimer.singleShot(0, sw.adjustSize)
         # Toolbar toggle reflects this new window's state
         self._sync_autostretch_action(view.autostretch_enabled)
         view.requestDuplicate.connect(self._duplicate_view_from_signal)
@@ -5643,11 +5123,6 @@ class AstroSuiteProMainWindow(QMainWindow):
         self._on_subwindow_activated(sw)
 
         return sw
-
-
-
-
-
     def _connect_view_signals(self, view):
         # Make sure all views we create are wired to our handlers
         view.aboutToClose.connect(self._on_view_about_to_close)
@@ -5917,12 +5392,6 @@ class AstroSuiteProMainWindow(QMainWindow):
                 self.act_autostretch.setChecked(bool(sw.widget().autostretch_enabled))
             else:
                 self.act_autostretch.setChecked(False)
-
-        view = sw.widget() if sw else None
-        is_hard = bool(getattr(view, "is_hard_autostretch", lambda: False)())
-        from PyQt6.QtCore import QSignalBlocker
-        block = QSignalBlocker(self.act_hardstretch)
-        self.act_hardstretch.setChecked(is_hard)
 
         self.update_undo_redo_action_labels()
         self._refresh_header_viewer(self._active_doc())
@@ -6273,124 +5742,6 @@ class AstroSuiteProMainWindow(QMainWindow):
 
         super().closeEvent(e)
 
-def _qs_to_str(seq: QKeySequence) -> str:
-    # Native text gives familiar “Ctrl+Shift+P” etc.
-    return seq.toString(QKeySequence.SequenceFormat.NativeText).strip()
-
-def _clean_text(txt: str) -> str:
-    # Strip ampersand accelerators (&File → File)
-    return (txt or "").replace("&", "").strip()
-
-class _CheatSheetDialog(QDialog):
-    def __init__(self, parent, keyboard_rows, gesture_rows):
-        super().__init__(parent)
-        self.setWindowTitle("Keyboard Shortcut Cheat Sheet")
-        self.resize(780, 520)
-
-        tabs = QTabWidget(self)
-
-        # --- Keyboard tab ---
-        pg_keys = QWidget(tabs)
-        v1 = QVBoxLayout(pg_keys)
-        tbl_keys = QTableWidget(0, 3, pg_keys)
-        tbl_keys.setHorizontalHeaderLabels(["Shortcut", "Action", "Where"])
-        tbl_keys.verticalHeader().setVisible(False)
-        tbl_keys.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        tbl_keys.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        tbl_keys.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
-        tbl_keys.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        tbl_keys.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        tbl_keys.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        v1.addWidget(tbl_keys)
-
-        # populate
-        for s, action, where in keyboard_rows:
-            r = tbl_keys.rowCount()
-            tbl_keys.insertRow(r)
-            tbl_keys.setItem(r, 0, QTableWidgetItem(s))
-            tbl_keys.setItem(r, 1, QTableWidgetItem(action))
-            tbl_keys.setItem(r, 2, QTableWidgetItem(where))
-
-        # --- Mouse/Drag tab ---
-        pg_mouse = QWidget(tabs)
-        v2 = QVBoxLayout(pg_mouse)
-        tbl_mouse = QTableWidget(0, 3, pg_mouse)
-        tbl_mouse.setHorizontalHeaderLabels(["Gesture", "Context", "Effect"])
-        tbl_mouse.verticalHeader().setVisible(False)
-        tbl_mouse.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        tbl_mouse.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        tbl_mouse.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
-        tbl_mouse.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        tbl_mouse.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        tbl_mouse.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        v2.addWidget(tbl_mouse)
-
-        for gesture, context, effect in gesture_rows:
-            r = tbl_mouse.rowCount()
-            tbl_mouse.insertRow(r)
-            tbl_mouse.setItem(r, 0, QTableWidgetItem(gesture))
-            tbl_mouse.setItem(r, 1, QTableWidgetItem(context))
-            tbl_mouse.setItem(r, 2, QTableWidgetItem(effect))
-
-        tabs.addTab(pg_keys, "Base Keyboard")
-        tabs.addTab(pg_mouse, "Additional & Mouse & Drag")
-
-        # Buttons
-        btns = QHBoxLayout()
-        btns.addStretch(1)
-
-        def _copy_all():
-            # Copy as plain text (simple columns)
-            lines = []
-            lines.append("== Keyboard ==")
-            for s, a, w in keyboard_rows:
-                lines.append(f"{s:20}  {a}  [{w}]")
-            lines.append("")
-            lines.append("== Mouse & Drag ==")
-            for g, c, e in gesture_rows:
-                lines.append(f"{g:24}  {c:18}  {e}")
-            QApplication.clipboard().setText("\n".join(lines))
-            QMessageBox.information(self, "Copied", "Cheat sheet copied to clipboard.")
-
-        b_copy = QPushButton("Copy")
-        b_copy.clicked.connect(_copy_all)
-        b_close = QPushButton("Close")
-        b_close.clicked.connect(self.accept)
-        btns.addWidget(b_copy)
-        btns.addWidget(b_close)
-
-        top = QVBoxLayout(self)
-        top.addWidget(tabs)
-        top.addLayout(btns)
-
-def _uniq_keep_order(items):
-    seen = set(); out = []
-    for x in items:
-        if x in seen: continue
-        seen.add(x); out.append(x)
-    return out
-
-def _seqs_for_action(act: QAction):
-    seqs = [s for s in act.shortcuts() or []] or ([act.shortcut()] if act.shortcut() else [])
-    return [s for s in seqs if not s.isEmpty()]
-
-def _where_for_action(act: QAction):
-    # Rough “where”: menu/toolbar if attached, else object type
-    if act.parent():
-        pn = act.parent().__class__.__name__
-        if pn.startswith("QMenu") or pn.startswith("QToolBar"):
-            return "Menus/Toolbar"
-    return "Window"
-
-def _describe_action(act: QAction):
-    return _clean_text(act.statusTip() or act.toolTip() or act.text() or act.objectName() or "Action")
-
-def _describe_shortcut(sc: QShortcut):
-    return _clean_text(sc.property("hint") or sc.whatsThis() or sc.objectName() or "Shortcut")
-
-def _where_for_shortcut(sc: QShortcut):
-    par = sc.parent()
-    return par.__class__.__name__ if par is not None else "Window"
 
 class _ProjectSaveWorker(QThread):
     ok = pyqtSignal()
@@ -6468,120 +5819,227 @@ def install_crash_handlers(app):
     except Exception:
         pass
 
-
 if __name__ == "__main__":
-    # --- Logging (catch unhandled exceptions to a file) ---
-    import logging, sys, os, multiprocessing
-    from PyQt6.QtCore import Qt, QCoreApplication, QSettings
-    from PyQt6.QtGui import QGuiApplication, QIcon, QPixmap, QColor
-    from PyQt6.QtWidgets import QApplication, QSplashScreen, QMessageBox
+    # --- Early diagnostics (before importing PyQt) ---------------------------
+    import os, sys, tempfile, atexit, logging, traceback, faulthandler, warnings, platform
 
+    # Log files (always-writable locations)
+    LOG_DIR = tempfile.gettempdir()
+    APP_TAG = "saspro"
+    LOG_FILE = os.path.join(LOG_DIR, f"{APP_TAG}.log")
+    FAULT_FILE = os.path.join(LOG_DIR, f"{APP_TAG}_fault.log")
 
-    logging.basicConfig(
-        filename="saspro.log",
-        level=logging.ERROR,
-        format="%(asctime)s - %(levelname)s - %(message)s"
-    )
+    # Base logging (file + console) at INFO so we capture startup
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+    fh = logging.FileHandler(LOG_FILE, encoding="utf-8")
+    fh.setFormatter(fmt); fh.setLevel(logging.INFO)
+    root_logger.addHandler(fh)
+    ch = logging.StreamHandler(sys.stdout)
+    ch.setFormatter(fmt); ch.setLevel(logging.INFO)
+    root_logger.addHandler(ch)
 
-    # --- Qt app (make splash ASAP) ---
+    logging.info("======== Launching SASpro on %s ========", platform.platform())
+    logging.info("Logs -> %s", LOG_FILE)
+
+    # Hard-crash traces (segfaults, access violations) -> file
     try:
-        # Small nicety on some PyQt6 builds; ignore if not available.
-        QGuiApplication.setHighDpiScaleFactorRoundingPolicy(
-            Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
-        )
+        faulthandler.enable(open(FAULT_FILE, "w"))
+        os.environ.setdefault("PYTHONFAULTHANDLER", "1")
+        logging.info("Faulthandler -> %s", FAULT_FILE)
+    except Exception:
+        logging.exception("Faulthandler enable failed")
+
+    # Always-on SAFE mode (unless explicitly disabled via env)
+    if os.environ.get("SASPRO_NO_SAFE", "0") != "1":
+        os.environ["QT_OPENGL"] = "software"          # force software GL
+        os.environ["QT_ANGLE_PLATFORM"] = "warp"      # D3D WARP
+        os.environ["QT_QUICK_BACKEND"] = "software"
+        os.environ["QT_D3D_ADAPTER_INDEX"] = "-1"
+        os.environ["QT_ENABLE_PRINTER_DISCOVERY"] = "0"
+        # block common overlay/injector crashes
+        os.environ["RTSSHOOKS"] = "0"
+        os.environ["DISABLE_HW_OVERLAYS"] = "1"
+        logging.info("SAFE mode: software rendering + overlays/printer discovery disabled")
+
+    # Always-on Qt debug logging (unless explicitly disabled via env)
+    if os.environ.get("SASPRO_NO_QTDEBUG", "0") != "1":
+        os.environ["QT_DEBUG_PLUGINS"] = "1"
+        os.environ["QT_LOGGING_RULES"] = "qt.qpa.*=true;qt.plugin.*=true"
+        logging.info("Qt debug logging enabled (plugins/qpa)")
+
+    # Global exception hooks (so background/thread exceptions don’t vanish)
+    def _excepthook(tp, val, tb):
+        logging.error("UNCAUGHT EXCEPTION", exc_info=(tp, val, tb))
+        sys.__excepthook__(tp, val, tb)
+    sys.excepthook = _excepthook
+
+    if hasattr(sys, "unraisablehook"):
+        def _unraisable_hook(unraisable):
+            logging.error(
+                "UNRAISABLE: %s", unraisable.err_msg,
+                exc_info=(unraisable.exc_type, unraisable.exc_value, unraisable.exc_traceback),
+            )
+        sys.unraisablehook = _unraisable_hook
+
+    try:
+        import threading
+        def _thread_excepthook(args):
+            logging.error(
+                "THREAD EXCEPTION (name=%s)",
+                getattr(args.thread, "name", "?"),
+                exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+            )
+        threading.excepthook = _thread_excepthook  # Py 3.8+
     except Exception:
         pass
 
-    QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_DontShowIconsInMenus, False)
+    @atexit.register
+    def _on_exit():
+        logging.info("SASpro process exiting.")
 
-    QCoreApplication.setOrganizationName("SetiAstro")
-    QCoreApplication.setOrganizationDomain("setiastrosuite.pro")
-    QCoreApplication.setApplicationName("Seti Astro Suite Pro")
+    # --- PyQt6 + Qt message handler -----------------------------------------
+    from PyQt6.QtCore import Qt, QCoreApplication, QSettings, qInstallMessageHandler, QMessageLogContext, QtMsgType
+    from PyQt6.QtGui import QGuiApplication, QIcon, QPixmap, QColor
+    from PyQt6.QtWidgets import QApplication, QSplashScreen, QMessageBox
 
-    app = QApplication(sys.argv)
-    install_crash_handlers(app) 
-    app.setWindowIcon(QIcon(windowslogo_path if os.path.exists(windowslogo_path) else icon_path))
+    # Route all Qt messages into our log
+    def _qt_message_handler(mode: QtMsgType, ctx: QMessageLogContext, msg: str):
+        m = msg.strip()
+        if mode == QtMsgType.QtFatalMsg:
+            logging.critical("[QtFatal] %s", m)
+        elif mode == QtMsgType.QtCriticalMsg:
+            logging.error("[QtCritical] %s", m)
+        elif mode == QtMsgType.QtWarningMsg:
+            logging.warning("[QtWarning] %s", m)
+        elif mode == QtMsgType.QtInfoMsg:
+            logging.info("[QtInfo] %s", m)
+        else:
+            logging.debug("[QtDebug] %s", m)
 
-    # Helper: build QPixmap for the splash from icon_path (fallback to windowslogo_path)
-    def _splash_pixmap():
-        p = icon_path if os.path.exists(icon_path) else (windowslogo_path if os.path.exists(windowslogo_path) else icon_path)
-        ext = os.path.splitext(p)[1].lower()
-        if ext == ".ico":
-            ic = QIcon(p)
-            pm = ic.pixmap(512, 512)
-            if pm.isNull():
-                pm = QPixmap(p)
-            return pm
-        pm = QPixmap(p)
-        if pm.isNull():
-            pm = QIcon(p).pixmap(512, 512)
-        return pm
-
-    # --- Splash FIRST ---
-    _pm = _splash_pixmap()
-    splash = QSplashScreen(_pm)
-    splash.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
-    splash.show()
-    splash.showMessage(
-        "Starting Seti Astro Suite Pro…",
-        Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignLeft,
-        QColor("white"),
-    )
-    app.processEvents()
-
-    # --- Windows exe / multiprocessing friendly (after splash is visible) ---
     try:
-        multiprocessing.freeze_support()
-        try:
-            multiprocessing.set_start_method("spawn", force=True)
-        except RuntimeError:
-            # Already set in this interpreter
-            pass
+        qInstallMessageHandler(_qt_message_handler)
     except Exception:
-        # If something here is slow/complains, at least the splash is up.
-        logging.exception("Multiprocessing init failed (continuing).")
+        logging.exception("Failed to install Qt message handler")
 
+    # --- Your app imports (after logging is ready) ---------------------------
+    warnings.filterwarnings("ignore", category=FutureWarning)
     try:
-        # If you have heavy imports/numba warmups, you can update the splash here:
-        splash.showMessage(
-            "Initializing UI…",
-            Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignLeft,
-            QColor("white"),
-        )
-        app.processEvents()
+        # keep your existing imports here
+        # from yourpackage.paths import icon_path, windowslogo_path
+        # from yourpackage.image_manager import ImageManager
+        # from yourpackage.main_window import AstroSuiteProMainWindow, VERSION
+        # from yourpackage.crash_handlers import install_crash_handlers
+        pass
+    except Exception:
+        logging.exception("Early import failure")
+        raise
 
-        import warnings
-        from matplotlib import MatplotlibDeprecationWarning
-        warnings.filterwarnings("ignore", category=MatplotlibDeprecationWarning)
+    # --- Qt app + splash + window -------------------------------------------
+    try:
+        try:
+            QGuiApplication.setHighDpiScaleFactorRoundingPolicy(
+                Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+            )
+        except Exception:
+            pass
 
-        # Your image manager + main window
+        QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_DontShowIconsInMenus, False)
+        QCoreApplication.setOrganizationName("SetiAstro")
+        QCoreApplication.setOrganizationDomain("setiastrosuite.pro")
+        QCoreApplication.setApplicationName("Seti Astro Suite Pro")
+
+        app = QApplication(sys.argv)
+
+        try:
+            install_crash_handlers(app)  # keep if present
+        except Exception:
+            logging.exception("install_crash_handlers failed (continuing)")
+
+        app.setWindowIcon(QIcon(windowslogo_path if os.path.exists(windowslogo_path) else icon_path))
+
+        # Splash (best-effort)
+        def _splash_pixmap():
+            p = icon_path if os.path.exists(icon_path) else (windowslogo_path if os.path.exists(windowslogo_path) else icon_path)
+            ext = os.path.splitext(p)[1].lower()
+            if ext == ".ico":
+                ic = QIcon(p)
+                pm = ic.pixmap(512, 512)
+                if pm.isNull():
+                    pm = QPixmap(p)
+                return pm
+            pm = QPixmap(p)
+            if pm.isNull():
+                pm = QIcon(p).pixmap(512, 512)
+            return pm
+
+        splash = None
+        try:
+            _pm = _splash_pixmap()
+            splash = QSplashScreen(_pm)
+            splash.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
+            splash.show()
+            splash.showMessage(
+                "Starting Seti Astro Suite Pro…",
+                Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignLeft,
+                QColor("white"),
+            )
+            app.processEvents()
+        except Exception:
+            logging.exception("Splash creation failed; continuing without splash")
+
+        # Multiprocessing friendliness
+        try:
+            import multiprocessing
+            multiprocessing.freeze_support()
+            try:
+                multiprocessing.set_start_method("spawn", force=True)
+            except RuntimeError:
+                pass
+        except Exception:
+            logging.exception("Multiprocessing init failed (continuing)")
+
+        # Build and show main window
+        if splash:
+            splash.showMessage(
+                "Initializing UI…",
+                Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignLeft,
+                QColor("white"),
+            )
+            app.processEvents()
+
         imgr = ImageManager(max_slots=100)
         win = AstroSuiteProMainWindow(image_manager=imgr)
         win.show()
 
-        splash.finish(win)
-        print(f"Seti Astro Suite Pro v{VERSION} (build {BUILD_TIMESTAMP}) up and running!")
-        sys.exit(app.exec())
+        if splash:
+            splash.finish(win)
+
+        print(f"Seti Astro Suite Pro v{VERSION} up and running!")
+        logging.info("UI shown; entering event loop")
+        rc = app.exec()
+        logging.info("Event loop exited rc=%s", rc)
+        sys.exit(rc)
 
     except Exception:
-        import traceback
+        # Top-level guard
         try:
-            splash.close()
+            if splash:
+                splash.close()
         except Exception:
             pass
         tb = traceback.format_exc()
         logging.error("Unhandled exception occurred\n%s", tb)
-        msg = QMessageBox(None)
-        msg.setIcon(QMessageBox.Icon.Critical)
-        msg.setWindowTitle("Application Error")
-        # Short headline:
-        msg.setText("An unexpected error occurred.")
-        # One-line summary:
-        msg.setInformativeText(tb.splitlines()[-1] if tb else "See details.")
-        # Full traceback:
-        msg.setDetailedText(tb)
-        msg.setStandardButtons(QMessageBox.StandardButton.Ok)
-        msg.exec()
+        try:
+            msg = QMessageBox(None)
+            msg.setIcon(QMessageBox.Icon.Critical)
+            msg.setWindowTitle("Application Error")
+            msg.setText("An unexpected error occurred.")
+            msg.setInformativeText(tb.splitlines()[-1] if tb else "See details.")
+            msg.setDetailedText(tb)
+            msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+            msg.exec()
+        except Exception:
+            print("FATAL:", tb, file=sys.stderr)
         sys.exit(1)
-
-
