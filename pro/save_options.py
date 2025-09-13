@@ -44,8 +44,9 @@ class SaveOptionsDialog(QDialog):
 
         row = QHBoxLayout()
         row.addStretch(1)
+        row.addWidget(btn_ok)        
         row.addWidget(btn_cancel)
-        row.addWidget(btn_ok)
+
 
         lay = QVBoxLayout(self)
         lay.addWidget(lbl)

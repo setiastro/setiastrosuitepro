@@ -756,8 +756,19 @@ class StackingSuiteDialog(QDialog):
         self._last_status_label.setToolTip(message)
 
     def _show_log_window(self):
+        # Prefer the instance we already cached during __init__
+        if hasattr(self, "_status_console") and self._status_console:
+            self._status_console.show_raise()
+            return
+
+        # Fallback to the app-global singleton (create if missing)
         app = QApplication.instance()
-        app._saspro_log_window.show_raise()
+        console = getattr(app, "_sasd_status_console", None)
+        if console is None:
+            app._sasd_status_console = StatusLogWindow(parent=None)
+            console = app._sasd_status_console
+        self._status_console = console
+        console.show_raise()
 
     def _label_with_dims(self, label: str, width: int, height: int) -> str:
         """Replace or append (WxH) in a human label."""
