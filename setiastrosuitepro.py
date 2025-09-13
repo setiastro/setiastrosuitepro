@@ -250,9 +250,9 @@ try:
     from pro._generated.build_info import BUILD_TIMESTAMP
 except Exception:
     BUILD_TIMESTAMP = "dev"
+from pro.aberration_ai import AberrationAIDialog
 
-
-VERSION = "1.0.4"
+VERSION = "1.0.5"
 
 
 if hasattr(sys, '_MEIPASS'):
@@ -352,6 +352,7 @@ if hasattr(sys, '_MEIPASS'):
     wimi_path = os.path.join(sys._MEIPASS, 'wimi_icon_256x256.png')
     linearfit_path= os.path.join(sys._MEIPASS, 'linearfit.png')
     debayer_path = os.path.join(sys._MEIPASS, 'debayer.png')
+    aberration_path = os.path.join(sys._MEIPASS, 'aberration.png')
 else:
     # Development path
     icon_path = 'astrosuitepro.png'
@@ -449,6 +450,7 @@ else:
     wimi_path = 'wimi_icon_256x256.png'
     linearfit_path = 'linearfit.png'
     debayer_path = 'debayer.png'
+    aberration_path = 'aberration.png'
 
 class MdiArea(QMdiArea):
     backgroundDoubleClicked = pyqtSignal()
@@ -976,8 +978,10 @@ class AstroSuiteProMainWindow(QMainWindow):
 
         tbCosmic = DraggableToolBar("Cosmic Clarity", self)
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tbCosmic)
+        tbCosmic.addAction(self.actAberrationAI)        
         tbCosmic.addAction(self.actCosmicUI)
         tbCosmic.addAction(self.actCosmicSat)
+
 
         tb_tl = DraggableToolBar("Tools", self)
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_tl)
@@ -1315,6 +1319,14 @@ class AstroSuiteProMainWindow(QMainWindow):
         self.actCosmicUI.triggered.connect(self._open_cosmic_clarity_ui)
         self.actCosmicSat.triggered.connect(self._open_cosmic_clarity_satellite)
 
+
+        ab_icon = QIcon(aberration_path)  # falls back if file missing
+
+        self.actAberrationAI = QAction(ab_icon, "Aberration Correction (AI)…", self)
+        self.actAberrationAI.triggered.connect(self._open_aberration_ai)
+
+
+
         #Tools
         self.act_blink = QAction(QIcon(blink_path), "Blink Comparator…", self)
         self.act_blink.setStatusTip("Compare a stack of images by blinking")
@@ -1544,6 +1556,9 @@ class AstroSuiteProMainWindow(QMainWindow):
         reg("whats_in_my_image", self.act_wimi)
         reg("linear_fit", self.act_linear_fit)
         reg("debayer", self.act_debayer)
+        reg("cosmicclarity", self.actCosmicUI)
+        reg("cosmicclaritysat", self.actCosmicSat)
+        reg("aberrationai", self.actAberrationAI)
 
     def _init_menubar(self):
         mb = self.menuBar()
@@ -1596,6 +1611,7 @@ class AstroSuiteProMainWindow(QMainWindow):
         m_fn.addAction(self.act_halobgon)
 
         mCosmic = mb.addMenu("&Cosmic Clarity")
+        mCosmic.addAction(self.actAberrationAI)
         mCosmic.addAction(self.actCosmicUI)
         mCosmic.addAction(self.actCosmicSat)
 
@@ -3553,11 +3569,39 @@ class AstroSuiteProMainWindow(QMainWindow):
         dlg = HaloBGonDialogPro(self, doc, icon=QIcon(halo_path))
         dlg.show()
 
+
+
+    def _open_aberration_ai(self):
+        sw = self.mdi.activeSubWindow()
+        if not sw:
+            QMessageBox.information(self, "Aberration Correction", "No active image view.")
+            return
+
+        w = sw.widget() if hasattr(sw, "widget") else None
+        doc = getattr(w, "document", None)
+        if doc is None or getattr(doc, "image", None) is None:
+            QMessageBox.information(self, "Aberration Correction", "Active view has no image.")
+            return
+
+        try:
+            # pass a callable that returns the current doc (matches your dialog signature)
+            dlg = AberrationAIDialog(self, self.docman, get_active_doc_callable=lambda: doc, icon=QIcon(aberration_path))
+            dlg.exec()
+        except Exception as e:
+            print(f"Failed to open Aberration AI: {e}")
+
     def _open_cosmic_clarity_ui(self):
         sw = self.mdi.activeSubWindow()
-        doc = getattr(sw.widget(), "document", None)
+        if not sw:
+            QMessageBox.information(self, "Cosmic Clarity", "No active image view.")
+            return
+
+        w = sw.widget() if hasattr(sw, "widget") else None
+        doc = getattr(w, "document", None)
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.information(self, "Cosmic Clarity", "Active view has no image."); return
+            QMessageBox.information(self, "Cosmic Clarity", "Active view has no image.")
+            return
+
         try:
             dlg = CosmicClarityDialogPro(self, doc, icon=QIcon(cosmic_path))
             dlg.exec()
