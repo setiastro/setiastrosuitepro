@@ -1,3 +1,4 @@
+#legacy.image_manager.py
 # --- required imports for this module ---
 import os, time, gzip
 from io import BytesIO
@@ -1035,90 +1036,109 @@ def save_image(img_array, filename, original_format, bit_depth=None, original_he
             print(f"Saved {bit_depth} TIFF image to: {filename}")
 
         elif original_format in ['fits', 'fit']:
-            # Preserve the original extension
+            # Normalize extension on the output filename
             if not filename.lower().endswith(f".{original_format}"):
                 filename = filename.rsplit('.', 1)[0] + f".{original_format}"
 
-            # **📌 CASE 1: ORIGINAL FILE WAS XISF → CONVERT TO FITS HEADER**
+            # 1) Build a header:
+            #    - if we have a FITS header: sanitize & reuse
+            #    - else if we detected XISF metadata: convert what we can
+            #    - else: create a minimal valid FITS header
+            from astropy.io import fits
+
+            def _minimal_fits_header(h: int, w: int, is_rgb: bool) -> fits.Header:
+                hdr = fits.Header()
+                hdr['SIMPLE'] = True
+                hdr['BITPIX'] = -32                  # we always write float32
+                hdr['NAXIS']  = 3 if is_rgb else 2
+                hdr['NAXIS1'] = w
+                hdr['NAXIS2'] = h
+                if is_rgb:
+                    hdr['NAXIS3'] = 3
+                hdr['BSCALE'] = 1.0
+                hdr['BZERO']  = 0.0
+                hdr['CREATOR']= 'Seti Astro Suite Pro'
+                hdr.add_history('Written by Seti Astro Suite Pro')
+                return hdr
+
+            # Detect XISF-ness if we have metadata
+            is_xisf = False
+            if original_header:
+                for key in original_header.keys():
+                    if key.startswith("XISF:"):
+                        is_xisf = True
+                        break
+            if image_meta and "XISFProperties" in image_meta:
+                is_xisf = True
+
+            h, w = img_array.shape[:2]
+            is_rgb = (img_array.ndim == 3 and img_array.shape[2] == 3)
+
             if is_xisf:
-                print("Detected XISF metadata. Converting to FITS header...")
+                # (existing XISF -> FITS conversion you had)
                 fits_header = fits.Header()
-
-                if 'XISFProperties' in image_meta:
+                if 'XISFProperties' in (image_meta or {}):
                     xisf_props = image_meta['XISFProperties']
-
-                    # Extract WCS parameters
+                    # Pull WCS-ish bits if present (same as your previous code)
                     if 'PCL:AstrometricSolution:ReferenceCoordinates' in xisf_props:
-                        ref_coords = xisf_props['PCL:AstrometricSolution:ReferenceCoordinates']['value']
-                        fits_header['CRVAL1'] = ref_coords[0]
-                        fits_header['CRVAL2'] = ref_coords[1]
-
+                        ra, dec = xisf_props['PCL:AstrometricSolution:ReferenceCoordinates']['value']
+                        fits_header['CRVAL1'] = ra
+                        fits_header['CRVAL2'] = dec
                     if 'PCL:AstrometricSolution:ReferenceLocation' in xisf_props:
-                        ref_pixel = xisf_props['PCL:AstrometricSolution:ReferenceLocation']['value']
-                        fits_header['CRPIX1'] = ref_pixel[0]
-                        fits_header['CRPIX2'] = ref_pixel[1]
-
+                        cx, cy = xisf_props['PCL:AstrometricSolution:ReferenceLocation']['value']
+                        fits_header['CRPIX1'] = cx
+                        fits_header['CRPIX2'] = cy
                     if 'PCL:AstrometricSolution:PixelSize' in xisf_props:
-                        pixel_size = xisf_props['PCL:AstrometricSolution:PixelSize']['value']
-                        fits_header['CDELT1'] = -pixel_size / 3600.0
-                        fits_header['CDELT2'] = pixel_size / 3600.0
-
+                        px = xisf_props['PCL:AstrometricSolution:PixelSize']['value']
+                        fits_header['CDELT1'] = -px / 3600.0
+                        fits_header['CDELT2'] =  px / 3600.0
                     if 'PCL:AstrometricSolution:LinearTransformationMatrix' in xisf_props:
-                        linear_transform = xisf_props['PCL:AstrometricSolution:LinearTransformationMatrix']['value']
-                        fits_header['CD1_1'] = linear_transform[0][0]
-                        fits_header['CD1_2'] = linear_transform[0][1]
-                        fits_header['CD2_1'] = linear_transform[1][0]
-                        fits_header['CD2_2'] = linear_transform[1][1]
-
-                # Ensure essential WCS headers exist
+                        m = xisf_props['PCL:AstrometricSolution:LinearTransformationMatrix']['value']
+                        fits_header['CD1_1'] = m[0][0]; fits_header['CD1_2'] = m[0][1]
+                        fits_header['CD2_1'] = m[1][0]; fits_header['CD2_2'] = m[1][1]
                 fits_header.setdefault('CTYPE1', 'RA---TAN')
                 fits_header.setdefault('CTYPE2', 'DEC--TAN')
-
-                print("Converted XISF metadata to FITS header.")
-
-            # **📌 CASE 2: ORIGINAL FILE WAS FITS → PRESERVE HEADER**
             elif original_header is not None:
-                print("Detected FITS format. Preserving original FITS header.")
+                # Sanitize a provided FITS header
                 fits_header = fits.Header()
                 for key, value in original_header.items():
                     if key.startswith("XISF:"):
-                        continue  # Skip XISF metadata
-
-                    if key in ["RANGE_LOW", "RANGE_HIGH"]:
-                        print(f"Removing {key} from header to prevent overflow.")
-                        continue  # Skip adding RANGE_LOW and RANGE_HIGH
-
+                        continue
+                    if key in ("RANGE_LOW", "RANGE_HIGH"):
+                        continue
                     if isinstance(value, dict) and 'value' in value:
                         value = value['value']
-
                     try:
                         fits_header[key] = value
-                    except Exception as e:
-                        print(f"Skipping problematic key {key} due to error: {e}")
+                    except Exception:
+                        # skip keys astropy can't serialize
+                        pass
             else:
-                raise ValueError("Original header is required for FITS format!")
+                # No header at all: make a minimal valid header
+                fits_header = _minimal_fits_header(h, w, is_rgb)
 
-            # **📌 Image Processing for FITS**
+            # Ensure dimensional keywords match the data we will write
             fits_header['BSCALE'] = 1.0
-            fits_header['BZERO'] = 0.0
+            fits_header['BZERO']  = 0.0
+            fits_header['BITPIX'] = -32  # float32
 
-            if is_mono or img_array.ndim == 2:
-                img_array_fits = img_array[:, :, 0] if len(img_array.shape) == 3 else img_array
-                fits_header['NAXIS'] = 2
-            else:
-                img_array_fits = np.transpose(img_array, (2, 0, 1))
-                fits_header['NAXIS'] = 3
+            # 2) Arrange image data for FITS and force float32
+            if is_rgb:
+                data_to_write = np.transpose(img_array, (2, 0, 1)).astype(np.float32)  # (3,H,W)
+                fits_header['NAXIS']  = 3
+                fits_header['NAXIS1'] = w
+                fits_header['NAXIS2'] = h
                 fits_header['NAXIS3'] = 3
+            else:
+                data_to_write = (img_array[:, :, 0] if (img_array.ndim == 3 and img_array.shape[2] == 1) else img_array).astype(np.float32)
+                fits_header['NAXIS']  = 2
+                fits_header['NAXIS1'] = w
+                fits_header['NAXIS2'] = h
+                if 'NAXIS3' in fits_header:
+                    del fits_header['NAXIS3']
 
-            fits_header['NAXIS1'] = img_array.shape[1]
-            fits_header['NAXIS2'] = img_array.shape[0]
-
-            # force 32-bit floats and update header
-            img_array_fits = img_array_fits.astype(np.float32)
-            fits_header['BITPIX'] = -32
-
-            # **💾 Save the FITS File**
-            hdu = fits.PrimaryHDU(img_array_fits, header=fits_header)
+            # 3) Write the file
+            hdu = fits.PrimaryHDU(data_to_write, header=fits_header)
             hdu.writeto(filename, overwrite=True)
             print(f"Saved FITS image to: {filename}")
             return
