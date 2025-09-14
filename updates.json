@@ -1,9 +1,9 @@
 {
-  "version": "1.0.4",
+  "version": "1.0.5",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.0.4/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.0.4/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.0.4/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.0.5/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.0.5/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.0.5/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Initial Release of Seti Astro Suite Pro.  1.0.4 Lots of updates: PerfectPalettePicker, Hard Auto Stretch, UHS/Curves stays open, Stacking Suite Fast Align, many many other small bug fixes."
+  "notes": "Initial Release of Seti Astro Suite Pro.  1.0.5 Added Riccardo's amazing Aberration Remover!! Since I had no better place to put it you can find it under Menu Cosmic Clarity. Run this prior to cosmic clarity sharpen as this will remove the stellar aberrations in your image first greatly easing the aberration removal workload of cosmic clarity and giving much much better results!!! Various bug fixes including the FITS save error"
 }
