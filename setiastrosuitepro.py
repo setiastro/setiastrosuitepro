@@ -252,7 +252,7 @@ except Exception:
     BUILD_TIMESTAMP = "dev"
 from pro.aberration_ai import AberrationAIDialog
 
-VERSION = "1.0.5"
+VERSION = "1.0.6"
 
 
 if hasattr(sys, '_MEIPASS'):
@@ -3717,7 +3717,7 @@ class AstroSuiteProMainWindow(QMainWindow):
         if not sw:
             return
         view = sw.widget()
-
+        self._zoom_active_1_1()
         # Get sizes
         img_w, img_h = self._infer_image_size(view)
         if not img_w or not img_h:
