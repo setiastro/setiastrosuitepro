@@ -2,6 +2,9 @@
 from __future__ import annotations
 import os, webbrowser, requests
 import numpy as np
+import sys, platform  # add
+
+IS_APPLE_ARM = (sys.platform == "darwin" and platform.machine() == "arm64")
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QStandardPaths, QSettings
 from PyQt6.QtWidgets import (
@@ -148,7 +151,8 @@ def run_onnx_tiled(session, img: np.ndarray, patch_size=512, overlap=64, progres
         for i in hs:
             for j in ws:
                 patch = arr[c:c+1, i:i+patch_size, j:j+patch_size]  # (1, P, P)
-                inp = patch[np.newaxis, ...]                        # (1,1,P,P)
+                inp = np.ascontiguousarray(patch[np.newaxis, ...], dtype=np.float32)  # (1,1,P,P)
+
                 out_patch = session.run(None, {inp_name: inp})[0]   # (1,1,P,P)
                 out_patch = np.squeeze(out_patch, axis=0)           # (1,P,P)
                 out[c:c+1, i:i+patch_size, j:j+patch_size] += out_patch * win
@@ -166,24 +170,36 @@ def run_onnx_tiled(session, img: np.ndarray, patch_size=512, overlap=64, progres
 # ---------- providers ----------
 def pick_providers(auto_gpu=True) -> list[str]:
     """
-    Order: DirectML (Win) > CUDA > CoreML > CPU. Only those available.
+    Windows: DirectML → CUDA → CPU
+    mac(Intel): CPU → CoreML (optional)
+    mac(Apple Silicon): **CPU only** (avoid CoreML artifact path)
     """
     if ort is None:
         return []
-    available = set(ort.get_available_providers())
-    if not auto_gpu:
-        return ["CPUExecutionProvider"] if "CPUExecutionProvider" in available else []
-    order = []
-    if "DmlExecutionProvider" in available:
-        order.append("DmlExecutionProvider")
-    if "CUDAExecutionProvider" in available:
-        order.append("CUDAExecutionProvider")
-    if "CoreMLExecutionProvider" in available:
-        order.append("CoreMLExecutionProvider")
-    if "CPUExecutionProvider" in available:
-        order.append("CPUExecutionProvider")
-    return order
 
+    avail = set(ort.get_available_providers())
+
+    # Apple Silicon: always CPU ( CoreML has 16,384-dim constraint and can artifact )
+    if IS_APPLE_ARM:
+        return ["CPUExecutionProvider"] if "CPUExecutionProvider" in avail else []
+
+    # Non-Apple ARM
+    if not auto_gpu:
+        return ["CPUExecutionProvider"] if "CPUExecutionProvider" in avail else []
+
+    order = []
+    if "DmlExecutionProvider" in avail:
+        order.append("DmlExecutionProvider")
+    if "CUDAExecutionProvider" in avail:
+        order.append("CUDAExecutionProvider")
+
+    # mac(Intel) can still use CoreML if someone insists, but we won't put it first.
+    if "CPUExecutionProvider" in avail:
+        order.append("CPUExecutionProvider")
+    if "CoreMLExecutionProvider" in avail:
+        order.append("CoreMLExecutionProvider")
+
+    return order
 
 
 def _preserve_border(dst: np.ndarray, src: np.ndarray, px: int = 10) -> np.ndarray:
@@ -334,6 +350,10 @@ class AberrationAIDialog(QDialog):
         self._refresh_providers()
         self._load_last_model_from_settings()
 
+        if IS_APPLE_ARM:
+            self.chk_auto.setChecked(False)
+            self.chk_auto.setEnabled(False)
+
     # ----- model helpers -----
     def _set_model_path(self, p: str | None):
         self._model_path = p
@@ -376,20 +396,32 @@ class AberrationAIDialog(QDialog):
             self.cmb_provider.addItem("onnxruntime not installed")
             self.cmb_provider.setEnabled(False)
             return
+
         avail = ort.get_available_providers()
         self.cmb_provider.clear()
+
+        if IS_APPLE_ARM:
+            # Hard lock to CPU on M-series
+            self.cmb_provider.addItem("CPUExecutionProvider")
+            self.cmb_provider.setCurrentText("CPUExecutionProvider")
+            self.cmb_provider.setEnabled(False)
+            # also turn off Auto GPU and disable that checkbox
+            self.chk_auto.setChecked(False)
+            self.chk_auto.setEnabled(False)
+            return
+
+        # Other platforms: show all, sane default
         for name in avail:
             self.cmb_provider.addItem(name)
+
         if "DmlExecutionProvider" in avail:
             self.cmb_provider.setCurrentText("DmlExecutionProvider")
         elif "CUDAExecutionProvider" in avail:
             self.cmb_provider.setCurrentText("CUDAExecutionProvider")
+        elif "CPUExecutionProvider" in avail:
+            self.cmb_provider.setCurrentText("CPUExecutionProvider")
         elif "CoreMLExecutionProvider" in avail:
             self.cmb_provider.setCurrentText("CoreMLExecutionProvider")
-        else:
-            self.cmb_provider.setCurrentText("CPUExecutionProvider")
-
-
 
     # ----- download -----
     def _download_latest_model(self):
@@ -416,8 +448,13 @@ class AberrationAIDialog(QDialog):
     # ----- run -----
     def _run(self):
         if ort is None:
-            QMessageBox.critical(self, "Missing dependency",
-                                 "onnxruntime is not installed.\n\nInstall one of:\n  pip install onnxruntime  (CPU)\n  pip install onnxruntime-directml  (Windows)\n  pip install onnxruntime-gpu  (CUDA)")
+            QMessageBox.critical(
+                self, "Missing dependency",
+                "onnxruntime is not installed.\n\nInstall one of:\n"
+                "  pip install onnxruntime  (CPU)\n"
+                "  pip install onnxruntime-directml  (Windows)\n"
+                "  pip install onnxruntime-gpu  (CUDA)"
+            )
             return
         if not self._model_path or not os.path.isfile(self._model_path):
             QMessageBox.warning(self, "Model", "Please select or download a valid .onnx model first.")
@@ -427,16 +464,36 @@ class AberrationAIDialog(QDialog):
         if doc is None or getattr(doc, "image", None) is None:
             QMessageBox.warning(self, "Image", "No active image.")
             return
-        img = np.asarray(doc.image)
-        self._orig_for_border = img.copy() 
 
-        patch = int(self.spin_patch.value())
+        img = np.asarray(doc.image)
+        self._orig_for_border = img.copy()
+
+        patch   = int(self.spin_patch.value())
         overlap = int(self.spin_overlap.value())
 
-        providers = pick_providers(auto_gpu=self.chk_auto.isChecked())
-        if not self.chk_auto.isChecked():
-            providers = [self.cmb_provider.currentText()] if self.cmb_provider.currentText() else ["CPUExecutionProvider"]
+        # -------- providers (always choose, then always run) --------
+        if IS_APPLE_ARM:
+            # Hard gate to CPU on Apple Silicon
+            providers = ["CPUExecutionProvider"]
+            # keep UI consistent just in case
+            self.chk_auto.setChecked(False)
+        else:
+            if self.chk_auto.isChecked():
+                providers = pick_providers(auto_gpu=True)
+            else:
+                sel = self.cmb_provider.currentText()
+                providers = [sel] if sel else ["CPUExecutionProvider"]
 
+        # Safety clamp: if CoreML somehow ends up selected, use smaller tiles
+        if "CoreMLExecutionProvider" in providers and patch > 128:
+            patch = 128
+            try:
+                self.spin_patch.blockSignals(True)
+                self.spin_patch.setValue(128)
+            finally:
+                self.spin_patch.blockSignals(False)
+
+        # -------- run worker --------
         self.progress.setValue(0)
         self.btn_run.setEnabled(False)
 
@@ -446,6 +503,7 @@ class AberrationAIDialog(QDialog):
         self._worker.finished_ok.connect(self._on_ok)
         self._worker.finished.connect(lambda: self.btn_run.setEnabled(True))
         self._worker.start()
+
 
     def _on_failed(self, msg: str):
         QMessageBox.critical(self, "ONNX Error", msg)

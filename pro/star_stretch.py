@@ -42,15 +42,32 @@ def _to_float01(img: np.ndarray) -> np.ndarray:
         return (a.astype(np.float32) / (mx if mx > 1.0 else 1.0)).clip(0.0, 1.0)
     return a.astype(np.float32)
 
+
 def _as_qimage_rgb8(float01: np.ndarray) -> QImage:
-    f = float01
+    f = np.asarray(float01, dtype=np.float32)
+
+    # Ensure 3-channel RGB for preview
     if f.ndim == 2:
         f = np.stack([f]*3, axis=-1)
     elif f.ndim == 3 and f.shape[2] == 1:
         f = np.repeat(f, 3, axis=2)
+
+    # [0,1] -> uint8 and force C-contiguous
     buf8 = (np.clip(f, 0.0, 1.0) * 255.0).astype(np.uint8, copy=False)
+    buf8 = np.ascontiguousarray(buf8)
     h, w, _ = buf8.shape
-    return QImage(buf8.data, w, h, buf8.strides[0], QImage.Format.Format_RGB888)
+    bpl = int(buf8.strides[0])
+
+    # Prefer zero-copy via sip pointer if available; fall back to bytes
+    try:
+        import sip
+        qimg = QImage(sip.voidptr(buf8.ctypes.data), w, h, bpl, QImage.Format.Format_RGB888)
+        qimg._keepalive = buf8  # keep numpy alive while qimg exists
+        return qimg.copy()      # detach so Qt owns the pixels (safe for QPixmap.fromImage)
+    except Exception:
+        data = buf8.tobytes()
+        qimg = QImage(data, w, h, bpl, QImage.Format.Format_RGB888)
+        return qimg.copy()      # detach to avoid lifetime issues
 
 def _saturation_boost(rgb01: np.ndarray, amount: float) -> np.ndarray:
     """

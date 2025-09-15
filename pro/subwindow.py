@@ -63,7 +63,8 @@ class _DragTab(QLabel):
         self.setCursor(Qt.CursorShape.OpenHandCursor)
 
 MASK_GLYPH = "■"
-ACTIVE_PREFIX = "Active View: "
+#ACTIVE_PREFIX = "Active View: "
+ACTIVE_PREFIX = ""
 GLYPHS = "■●◆▲▪▫•◼◻◾◽"
 
 class ImageSubWindow(QWidget):
@@ -80,6 +81,8 @@ class ImageSubWindow(QWidget):
 
 
         # view state
+        self._min_scale = 0.02
+        self._max_scale = 3.00     # 300%        
         self.scale = 0.25
         self._dragging = False
         self._drag_start = QPoint()
@@ -266,6 +269,7 @@ class ImageSubWindow(QWidget):
 
     def set_active_highlight(self, on: bool):
         self._is_active_flag = bool(on)
+        return
         sub = self._mdi_subwindow()
         if not sub:
             return
@@ -273,13 +277,13 @@ class ImageSubWindow(QWidget):
         core, had_glyph = self._strip_decorations(sub.windowTitle())
 
         if on and not getattr(self, "_suppress_active_once", False):
-            core = "Active View: " + core
+            core = ACTIVE_PREFIX + core
         self._suppress_active_once = False
 
         # recompose: glyph (from flag), then active prefix, then base/core
         if getattr(self, "_mask_dot_enabled", False):
             core = "■ " + core
-        sub.setWindowTitle(core)
+        #sub.setWindowTitle(core)
         sub.setToolTip(core)
 
     def _set_mask_highlight(self, on: bool):
@@ -445,7 +449,7 @@ class ImageSubWindow(QWidget):
                     pass
 
     def set_scale(self, s: float):
-        self.scale = float(max(0.02, min(s, 8.0)))
+        self.scale = float(max(self._min_scale, min(s, self._max_scale)))
         self._render()
 
 
@@ -533,12 +537,12 @@ class ImageSubWindow(QWidget):
 
 
     def apply_view_state(self, st: dict):
-        # scale always supported
         try:
             new_scale = float(st.get("scale", self.scale))
         except Exception:
             new_scale = self.scale
-        self.scale = max(0.02, min(new_scale, 8.0))
+        # clamp with new max
+        self.scale = max(self._min_scale, min(new_scale, self._max_scale))
         self._render(rebuild=False)
 
         vp = self.scroll.viewport().size()
@@ -771,15 +775,11 @@ class ImageSubWindow(QWidget):
 
     # ---------- interaction ----------
     def _zoom_at_anchor(self, factor: float):
-        """
-        Zoom with the given factor, keeping the image point under the mouse
-        cursor fixed if possible. Falls back to viewport center safely.
-        """
         if self._qimg_src is None:
             return
-
         old_scale = self.scale
-        new_scale = max(0.02, min(old_scale * factor, 8.0))
+        # clamp with new max
+        new_scale = max(self._min_scale, min(old_scale * factor, self._max_scale))
         if abs(new_scale - old_scale) < 1e-8:
             return
 

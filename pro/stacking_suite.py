@@ -7,7 +7,7 @@ import re
 import math            # used in compute_safe_chunk
 import psutil          # used in bytes_available / compute_safe_chunk
 from typing import List 
-from PyQt6.QtCore import Qt, QTimer, QSettings, pyqtSignal, QObject, pyqtSlot, QThread, QEvent, QPoint, QSize, QEventLoop
+from PyQt6.QtCore import Qt, QTimer, QSettings, pyqtSignal, QObject, pyqtSlot, QThread, QEvent, QPoint, QSize, QEventLoop, QCoreApplication
 from PyQt6.QtGui import QIcon, QImage, QPixmap, QAction, QIntValidator, QDoubleValidator, QFontMetrics, QTextCursor
 from PyQt6.QtWidgets import (QDialog, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QLineEdit, QTreeWidget, QHeaderView, QTreeWidgetItem, QProgressBar, QProgressDialog,
                              QFormLayout, QDialogButtonBox, QToolBar, QToolButton, QFileDialog, QTabWidget, QAbstractItemView, QSpinBox, QDoubleSpinBox,
@@ -34,6 +34,426 @@ from imageops.stretch import stretch_mono_image, stretch_color_image
 from legacy.numba_utils import *   # adjust names if different
 from legacy.image_manager import load_image, save_image, get_valid_header
 from pro.star_alignment import StarRegistrationWorker, StarRegistrationThread, IDENTITY_2x3
+
+
+import numpy as np
+
+def _as_C(a: np.ndarray) -> np.ndarray:
+    """Contiguous float32, no copy if possible."""
+    if a.dtype != np.float32:
+        a = a.astype(np.float32, copy=False)
+    return a if a.flags.c_contiguous else np.ascontiguousarray(a)
+
+def _ensure_chw(img: np.ndarray, is_mono: bool) -> np.ndarray:
+    """
+    Return HxW (mono) or CHW (color) float32 contiguous.
+    Accepts HxW, HxWx3, CHW, or HxWx1.
+    """
+    if is_mono or img.ndim == 2:
+        return _as_C(img)
+    # 3D
+    if img.shape[-1] == 1:                      # HWC with 1
+        return _as_C(np.squeeze(img, axis=-1))
+    if img.shape[-1] == 3:                      # HWC -> CHW
+        return _as_C(img.transpose(2, 0, 1))
+    if img.shape[0] in (1, 3):                  # already CHW
+        return _as_C(img)
+    return _as_C(img)  # fallback
+
+def _dark_to_ch_or_hw(dark: np.ndarray) -> tuple[bool, np.ndarray]:
+    """
+    Normalize a dark to either (HxW) or (C,H,W) float32 contiguous.
+    Returns (is_per_channel, array).
+    - If HxW: (False, HxW)
+    - If HWC or CHW: (True, CHW)
+    """
+    d = dark
+    if d.ndim == 2:
+        return False, _as_C(d)
+    if d.ndim == 3 and d.shape[-1] in (1, 3):   # HWC -> CHW
+        return True, _as_C(d.transpose(2, 0, 1))
+    if d.ndim == 3 and d.shape[0] in (1, 3):    # CHW
+        return True, _as_C(d)
+    # Unknown: treat as mono plane by squeezing if possible
+    if d.ndim == 3 and 1 in d.shape:
+        d2 = np.squeeze(d)
+        if d2.ndim == 2:
+            return False, _as_C(d2)
+    return False, _as_C(d)
+
+def _apply_master_dark_light(light: np.ndarray, dark: np.ndarray, is_mono: bool, pedestal: float):
+    """
+    Subtract dark + pedestal for a *single light frame*.
+    - light: HxW (mono) or CHW (color), float32 contiguous
+    - dark:  HxW or CHW/HWC; automatically matched
+    Uses your numba kernel for exact behavior.
+    """
+    from legacy.numba_utils import subtract_dark_with_pedestal as _sub
+
+    if is_mono or light.ndim == 2:
+        # mono path
+        _, D = _dark_to_ch_or_hw(dark)
+        if D.ndim == 3:              # CHW given → choose any channel
+            D = D[0]
+        return _sub(light[None, ...], D, float(pedestal))[0]
+
+    # color path (CHW)
+    is_per_ch, D = _dark_to_ch_or_hw(dark)
+    out = np.empty_like(light, dtype=np.float32)
+    if not is_per_ch:
+        # mono dark for all channels
+        for c in range(light.shape[0]):
+            out[c] = _sub(light[c][None, ...], D, float(pedestal))[0]
+    else:
+        # per-channel (handles 1 or 3)
+        base = D[0]
+        for c in range(light.shape[0]):
+            Dc = D[c] if c < D.shape[0] else base
+            out[c] = _sub(light[c][None, ...], Dc, float(pedestal))[0]
+    return out
+
+def _subtract_dark_stack_inplace_hwc(stack_FHWC: np.ndarray, dark_HWC_or_HW: np.ndarray, pedestal: float = 0.0):
+    """
+    Fast vectorized subtraction for a *stack of tiles* used in master-flat build.
+    Shapes:
+      - stack_FHWC: (F, H, W, C) float32 contiguous
+      - dark_HWC_or_HW: (H, W, C) or (H, W) float32
+    Subtracts in-place: stack -= dark + pedestal.
+    """
+    D = dark_HWC_or_HW
+    if D.ndim == 2:
+        D = D[..., None]                      # (H,W) -> (H,W,1)
+        if stack_FHWC.shape[-1] == 3:
+            D = np.repeat(D, 3, axis=2)       # (H,W,3)
+    # ensure contig
+    D = _as_C(D)
+    np.subtract(stack_FHWC, D[None, ...], out=stack_FHWC)
+    if pedestal:
+        stack_FHWC -= float(pedestal)
+
+
+
+def _luma(img: np.ndarray) -> np.ndarray:
+    """
+    Return a float32 mono view: grayscale image → itself, RGB → luma, (H,W,1) → squeeze.
+    """
+    a = np.asarray(img)
+    if a.ndim == 2:
+        return a.astype(np.float32, copy=False)
+    if a.ndim == 3 and a.shape[-1] == 3:
+        a = a.astype(np.float32, copy=False)
+        r, g, b = a[..., 0], a[..., 1], a[..., 2]
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b
+    return np.squeeze(a, axis=-1).astype(np.float32, copy=False)
+
+def normalize_images(stack: np.ndarray,
+                     target_median: float,
+                     use_luma: bool = True) -> np.ndarray:
+    """
+    Min-offset + median-match normalization with NO clipping.
+    For each frame f:
+      - L = luma(f) if RGB else f
+      - f0 = f - min(L)
+      - gain = target_median / median(luma(f0))
+      - out = f0 * gain
+
+    Returns float32, C-contiguous array with same shape as input.
+    """
+    assert stack.ndim in (3, 4), "stack must be (F,H,W) or (F,H,W,3)"
+    F = stack.shape[0]
+    out = np.empty_like(stack, dtype=np.float32)
+    eps = 1e-12
+
+    def _L(a: np.ndarray) -> np.ndarray:
+        if not use_luma:
+            return a.astype(np.float32, copy=False)
+        if a.ndim == 2:
+            return a.astype(np.float32, copy=False)
+        if a.ndim == 3 and a.shape[-1] == 3:
+            a = a.astype(np.float32, copy=False)
+            r, g, b = a[..., 0], a[..., 1], a[..., 2]
+            return 0.2126 * r + 0.7152 * g + 0.0722 * b
+        return np.squeeze(a, axis=-1).astype(np.float32, copy=False)
+
+    for i in range(F):
+        print(f"Normalizing {i}")
+        f = stack[i].astype(np.float32, copy=False)
+        L = _L(f)
+        fmin = float(np.nanmin(L))
+        f0 = f - fmin
+        L0 = _L(f0)
+        fmed = float(np.nanmedian(L0))
+        gain = (target_median / max(fmed, eps)) if target_median > 0 else 1.0
+        out[i] = f0 * gain
+
+    return np.ascontiguousarray(out, dtype=np.float32)
+
+# ----- small helpers -----
+
+def _downsample_area(img: np.ndarray, scale: int) -> np.ndarray:
+    if scale <= 1:
+        return img.astype(np.float32, copy=False)
+    h, w = img.shape[:2]
+    return cv2.resize(img, (max(1, w // scale), max(1, h // scale)),
+                      interpolation=cv2.INTER_AREA).astype(np.float32, copy=False)
+
+def _upscale_bg(bg_small: np.ndarray, oh: int, ow: int) -> np.ndarray:
+    return cv2.resize(bg_small, (ow, oh), interpolation=cv2.INTER_LANCZOS4).astype(np.float32, copy=False)
+
+def _to_luma(img: np.ndarray) -> np.ndarray:
+    if img.ndim == 2:
+        return img.astype(np.float32, copy=False)
+    # HWC RGB
+    r, g, b = img[..., 0].astype(np.float32), img[..., 1].astype(np.float32), img[..., 2].astype(np.float32)
+    return 0.2989 * r + 0.5870 * g + 0.1140 * b
+
+def _build_poly_terms_deg2(x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    # [1, x, y, x^2, x*y, y^2]
+    return np.stack([np.ones_like(x), x, y, x*x, x*y, y*y], axis=1).astype(np.float32, copy=False)
+
+# ----- ABE-like sampling (corners, borders, quartiles with bright-avoid & descent) -----
+
+def _exclude_bright_regions(gray_small: np.ndarray, exclusion_fraction: float = 0.5) -> np.ndarray:
+    flat = gray_small.ravel()
+    thresh = np.percentile(flat, 100 * (1 - exclusion_fraction))
+    return (gray_small < thresh)
+
+def _gradient_descent_to_dim_spot(gray_small: np.ndarray, x: int, y: int, patch: int) -> tuple[int, int]:
+    H, W = gray_small.shape[:2]
+    half = patch // 2
+    def patch_median(px, py):
+        x0, x1 = max(0, px - half), min(W, px + half + 1)
+        y0, y1 = max(0, py - half), min(H, py + half + 1)
+        return float(np.median(gray_small[y0:y1, x0:x1]))
+    cx, cy = int(np.clip(x, 0, W-1)), int(np.clip(y, 0, H-1))
+    for _ in range(60):
+        cur = patch_median(cx, cy)
+        best = (cx, cy); best_val = cur
+        for nx in (cx-1, cx, cx+1):
+            for ny in (cy-1, cy, cy+1):
+                if nx == cx and ny == cy: continue
+                if nx < 0 or ny < 0 or nx >= W or ny >= H: continue
+                val = patch_median(nx, ny)
+                if val < best_val:
+                    best_val = val; best = (nx, ny)
+        if best == (cx, cy):
+            break
+        cx, cy = best
+    return cx, cy
+
+def _generate_sample_points_small(
+    img_small: np.ndarray,
+    num_samples: int,
+    patch_size: int,
+    exclusion_mask_small: np.ndarray | None
+) -> np.ndarray:
+    H, W = img_small.shape[:2]
+    gray = _to_luma(img_small) if img_small.ndim == 3 else img_small
+    pts: list[tuple[int, int]] = []
+    border = max(6, patch_size)  # keep patch fully inside
+
+    def allowed(x, y):
+        if exclusion_mask_small is None: return True
+        return bool(exclusion_mask_small[min(max(0,y), H-1), min(max(0,x), W-1)])
+
+    # corners
+    for (x, y) in [(border, border), (W-border-1, border), (border, H-border-1), (W-border-1, H-border-1)]:
+        if not allowed(x, y): continue
+        nx, ny = _gradient_descent_to_dim_spot(gray, x, y, patch_size)
+        if allowed(nx, ny): pts.append((nx, ny))
+
+    # borders (5 along each side)
+    xs = np.linspace(border, W-border-1, 5, dtype=int)
+    ys = np.linspace(border, H-border-1, 5, dtype=int)
+    for x in xs:
+        if allowed(x, border):
+            nx, ny = _gradient_descent_to_dim_spot(gray, x, border, patch_size); 
+            if allowed(nx, ny): pts.append((nx, ny))
+        if allowed(x, H-border-1):
+            nx, ny = _gradient_descent_to_dim_spot(gray, x, H-border-1, patch_size); 
+            if allowed(nx, ny): pts.append((nx, ny))
+    for y in ys:
+        if allowed(border, y):
+            nx, ny = _gradient_descent_to_dim_spot(gray, border, y, patch_size); 
+            if allowed(nx, ny): pts.append((nx, ny))
+        if allowed(W-border-1, y):
+            nx, ny = _gradient_descent_to_dim_spot(gray, W-border-1, y, patch_size); 
+            if allowed(nx, ny): pts.append((nx, ny))
+
+    # quartiles: choose dim locations avoiding bright half
+    hh, ww = H // 2, W // 2
+    quads = [
+        (slice(0, hh),    slice(0, ww),    (0, 0)),
+        (slice(0, hh),    slice(ww, W),    (ww, 0)),
+        (slice(hh, H),    slice(0, ww),    (0, hh)),
+        (slice(hh, H),    slice(ww, W),    (ww, hh)),
+    ]
+    for ysl, xsl, (x0, y0) in quads:
+        sub = gray[ysl, xsl]
+        mask_sub = _exclude_bright_regions(sub, exclusion_fraction=0.5)
+        if exclusion_mask_small is not None:
+            mask_sub &= exclusion_mask_small[ysl, xsl]
+        elig = np.argwhere(mask_sub)
+        if elig.size == 0:
+            continue
+        k = min(len(elig), max(1, num_samples // 4))
+        sel = elig[np.random.choice(len(elig), k, replace=False)]
+        for (yy, xx) in sel:
+            gx, gy = x0 + int(xx), y0 + int(yy)
+            nx, ny = _gradient_descent_to_dim_spot(gray, gx, gy, patch_size)
+            if allowed(nx, ny): pts.append((nx, ny))
+
+    if len(pts) == 0:
+        # fall back to simple grid
+        g = max(3, int(np.sqrt(max(16, num_samples))))
+        xs = np.linspace(border, W-border-1, g, dtype=int)
+        ys = np.linspace(border, H-border-1, g, dtype=int)
+        pts = [(x, y) for y in ys for x in xs if allowed(x, y)]
+
+    return np.asarray(pts, dtype=np.int32)
+
+# ----- fit/eval on small image -----
+
+def _fit_poly2_on_small(img_small: np.ndarray, pts_small: np.ndarray, patch_size: int) -> np.ndarray:
+    """Fit degree-2 polynomial on luma of small image using patch medians at pts."""
+    gray = _to_luma(img_small) if img_small.ndim == 3 else img_small
+    Hs, Ws = gray.shape[:2]
+    half = patch_size // 2
+
+    xs = np.clip(pts_small[:, 0], 0, Ws-1).astype(np.int32)
+    ys = np.clip(pts_small[:, 1], 0, Hs-1).astype(np.int32)
+
+    z = np.empty(xs.shape[0], dtype=np.float32)
+    for i, (x, y) in enumerate(zip(xs, ys)):
+        x0, x1 = max(0, x - half), min(Ws, x + half + 1)
+        y0, y1 = max(0, y - half), min(Hs, y + half + 1)
+        z[i] = float(np.median(gray[y0:y1, x0:x1]))
+
+    A = _build_poly_terms_deg2(xs.astype(np.float32), ys.astype(np.float32))
+    coef, *_ = np.linalg.lstsq(A, z, rcond=None)
+
+    # evaluate on full small grid
+    yy, xx = np.meshgrid(np.arange(Hs, dtype=np.float32),
+                         np.arange(Ws, dtype=np.float32), indexing='ij')
+    bg_small = (coef[0] + coef[1]*xx + coef[2]*yy + coef[3]*xx*xx + coef[4]*xx*yy + coef[5]*yy*yy).astype(np.float32)
+    return bg_small
+
+# ----- public API -----
+
+def remove_poly2_gradient_abe(
+    image: np.ndarray,
+    *,
+    mode: str = "subtract",         # "subtract" or "divide"
+    num_samples: int = 120,          # like ABE
+    downsample: int = 6,             # like ABE
+    patch_size: int = 15,            # area median window on small image
+    min_strength: float = 0.01,      # skip if gradient <1% of bg median (5–95% spread)
+    gain_clip: tuple[float,float] = (0.2, 5.0),  # for divide mode
+    exclusion_mask: np.ndarray | None = None,    # optional (H,W) bool
+    log_fn=None
+) -> np.ndarray:
+    """
+    ABE-like degree-2 background model:
+      1) Downsample (AREA) for speed.
+      2) Sample corners/borders/quartiles, avoid bright half, walk to dim spots.
+      3) Fit deg-2 poly on small via patch medians at points.
+      4) Upscale background and apply (subtract or divide) + median re-center.
+      5) Luma-only fit; apply to all channels to avoid color shifts.
+    """
+    if image is None:
+        return image
+    img = np.asarray(image).astype(np.float32, copy=False)
+    mono = (img.ndim == 2)
+
+    H, W = img.shape[:2]
+    t0 = perf_counter()
+
+    # downsample image and (optional) mask
+    img_small = _downsample_area(img, max(1, int(downsample)))
+    mask_small = None
+    if exclusion_mask is not None:
+        mask_small = _downsample_area(exclusion_mask.astype(np.float32), max(1, int(downsample))) >= 0.5
+
+    # generate points + fit
+    pts_small = _generate_sample_points_small(img_small, num_samples=int(num_samples),
+                                              patch_size=int(patch_size),
+                                              exclusion_mask_small=mask_small)
+    bg_small = _fit_poly2_on_small(img_small, pts_small, patch_size=int(patch_size))
+    bg = _upscale_bg(bg_small, H, W)
+    t1 = perf_counter()
+
+    # quick strength check (like your guard)
+    bg_med = float(np.nanmedian(bg)) or 1e-6
+    p5, p95 = np.nanpercentile(bg, 5), np.nanpercentile(bg, 95)
+    rel_amp = float((p95 - p5) / max(bg_med, 1e-6))
+    if log_fn:
+        log_fn(f"ABE poly2: samples={num_samples}, ds={downsample}, patch={patch_size} | "
+               f"bg_med={bg_med:.6f}, rel_amp={rel_amp*100:.2f}% | {t1-t0:.3f}s")
+
+    if rel_amp < float(min_strength):
+        if log_fn: log_fn(f"ABE poly2: gradient weak ({rel_amp*100:.2f}% < {min_strength*100:.2f}%), skipping.")
+        return img
+
+    # apply on channels with *same* bg to avoid color shifts
+    def _apply_sub(ch: np.ndarray) -> np.ndarray:
+        med0 = float(np.nanmedian(ch)) or 1e-6
+        out = ch - bg
+        med1 = float(np.nanmedian(out)) or 1e-6
+        out += (med0 - med1)           # ABE: re-center by adding a constant, no scaling
+        return out
+
+    def _apply_div(ch: np.ndarray) -> np.ndarray:
+        med0 = float(np.nanmedian(ch)) or 1e-6
+        norm_bg = bg / bg_med
+        lo, hi = gain_clip
+        norm_bg = np.clip(norm_bg, lo, hi)
+        out = ch / norm_bg
+        med1 = float(np.nanmedian(out)) or 1e-6
+        out *= (med0 / med1)
+        return out
+
+    if mono:
+        ch = img
+        out = _apply_sub(ch) if mode.lower() == "subtract" else _apply_div(ch)
+        return out.astype(np.float32, copy=False)
+
+    # color (HWC)
+    r = _apply_sub(img[...,0]) if mode.lower() == "subtract" else _apply_div(img[...,0])
+    g = _apply_sub(img[...,1]) if mode.lower() == "subtract" else _apply_div(img[...,1])
+    b = _apply_sub(img[...,2]) if mode.lower() == "subtract" else _apply_div(img[...,2])
+    return np.stack([r,g,b], axis=-1).astype(np.float32, copy=False)
+
+def remove_gradient_stack_abe(
+    stack: np.ndarray,
+    *,
+    mode: str = "subtract",
+    num_samples: int = 120,
+    downsample: int = 6,
+    patch_size: int = 15,
+    min_strength: float = 0.01,
+    gain_clip: tuple[float,float] = (0.2, 5.0),
+    log_fn=None
+) -> np.ndarray:
+    F = int(stack.shape[0])
+    out = np.empty_like(stack, dtype=np.float32)
+    if log_fn:
+        log_fn(f"🌀 ABE poly2 on {F} frame(s): mode={mode}, samples={num_samples}, ds={downsample}, "
+               f"patch={patch_size}, min_strength={min_strength*100:.2f}%, gain_clip={gain_clip}")
+    for i in range(F):
+        out[i] = remove_poly2_gradient_abe(
+            stack[i],
+            mode=mode, num_samples=num_samples, downsample=downsample,
+            patch_size=patch_size, min_strength=min_strength,
+            gain_clip=gain_clip,
+            log_fn=(lambda s, idx=i: log_fn(f"[{idx+1}/{F}] {s}")) if log_fn else None
+        )
+        # let UI breathe if you pass update_status
+        try:
+            from PyQt6.QtWidgets import QApplication
+            QApplication.processEvents()
+        except Exception:
+            pass
+    return out
 
 
 def load_fits_tile(filepath, y_start, y_end, x_start, x_end):
@@ -1139,92 +1559,190 @@ class StackingSuiteDialog(QDialog):
             line_edit.setText(d)
 
     def open_stacking_settings(self):
-        """ Opens a dialog to set the stacking directory, sigma values, rejection algorithm, and algorithm parameters. """
+        """Opens a 2-column Stacking Settings dialog."""
+        from PyQt6.QtWidgets import (
+            QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox, QFormLayout,
+            QLabel, QLineEdit, QPushButton, QComboBox, QSpinBox, QDoubleSpinBox,
+            QCheckBox, QDialogButtonBox, QScrollArea, QWidget
+        )
         dialog = QDialog(self)
         dialog.setWindowTitle("Stacking Settings")
-        layout = QVBoxLayout(dialog)
 
-        # --- Stacking directory selection (DIALOG-SCOPED, no collisions) ---
-        dir_layout = QHBoxLayout()
-        dir_label = QLabel("Stacking Directory:")
-        dir_edit = QLineEdit(self.stacking_directory or "")       # <<< changed: local, not self.dir_path_edit
-        dialog._dir_edit = dir_edit                               # <<< changed: actually assign the defined variable
-        dir_button = QPushButton("Browse")
-        dir_button.clicked.connect(lambda: self._choose_dir_into(dir_edit))  # <<< changed
-        dir_layout.addWidget(dir_label)
-        dir_layout.addWidget(dir_edit)                            # <<< changed
-        dir_layout.addWidget(dir_button)
-        layout.addLayout(dir_layout)
+        # Top-level layout with a scroll area (nice for small screens)
+        root = QVBoxLayout(dialog)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        root.addWidget(scroll)
+        body = QWidget()
+        scroll.setWidget(body)
 
-        prec_layout = QHBoxLayout()
-        prec_layout.addWidget(QLabel("Internal stacking precision:"))
+        cols = QHBoxLayout(body)
+        left_col = QVBoxLayout()
+        right_col = QVBoxLayout()
+        cols.addLayout(left_col, 1)
+        cols.addSpacing(12)
+        cols.addLayout(right_col, 1)
+
+        # ========== LEFT COLUMN ==========
+        # --- General ---
+        gb_general = QGroupBox("General")
+        fl_general = QFormLayout(gb_general)
+
+        # Stacking directory
+        dir_row = QHBoxLayout()
+        dir_edit = QLineEdit(self.stacking_directory or "")
+        dialog._dir_edit = dir_edit
+        btn_browse = QPushButton("Browse")
+        btn_browse.clicked.connect(lambda: self._choose_dir_into(dir_edit))
+        dir_row.addWidget(dir_edit, 1)
+        dir_row.addWidget(btn_browse)
+        fl_general.addRow(QLabel("Stacking Directory:"), QWidget())
+        fl_general.addRow(dir_row)
+
+        # Precision
         self.precision_combo = QComboBox()
         self.precision_combo.addItems(["32-bit float", "64-bit float"])
-        # reflect current value
         self.precision_combo.setCurrentIndex(1 if self.internal_dtype is np.float64 else 0)
-        self.precision_combo.setToolTip("64-bit uses ~2× RAM but can reduce rounding; 32-bit is faster/lighter.")
-        prec_layout.addWidget(self.precision_combo)
-        prec_layout.addStretch(1)
-        layout.addLayout(prec_layout)
+        self.precision_combo.setToolTip("64-bit uses ~2× RAM; 32-bit is faster/lighter.")
+        fl_general.addRow("Internal Precision:", self.precision_combo)
 
-        # Sigma High & Low settings
-        sigma_layout = QHBoxLayout()
-        sigma_layout.addWidget(QLabel("Sigma High:"))
-        self.sigma_high_spinbox = QDoubleSpinBox()
-        self.sigma_high_spinbox.setRange(0.1, 10.0)
-        self.sigma_high_spinbox.setDecimals(2)
-        self.sigma_high_spinbox.setValue(self.sigma_high)
-        sigma_layout.addWidget(self.sigma_high_spinbox)
-        sigma_layout.addWidget(QLabel("Sigma Low:"))
-        self.sigma_low_spinbox = QDoubleSpinBox()
-        self.sigma_low_spinbox.setRange(0.1, 10.0)
-        self.sigma_low_spinbox.setDecimals(2)
-        self.sigma_low_spinbox.setValue(self.sigma_low)
-        sigma_layout.addWidget(self.sigma_low_spinbox)
-        layout.addLayout(sigma_layout)
-
-        chunk_layout = QHBoxLayout()
-        chunk_layout.addWidget(QLabel("Chunk Height:"))
+        # Chunk sizes
         self.chunkHeightSpinBox = QSpinBox()
         self.chunkHeightSpinBox.setRange(128, 8192)
         self.chunkHeightSpinBox.setValue(self.settings.value("stacking/chunk_height", 2048, type=int))
-        chunk_layout.addWidget(self.chunkHeightSpinBox)
-
-        chunk_layout.addWidget(QLabel("Chunk Width:"))
         self.chunkWidthSpinBox = QSpinBox()
         self.chunkWidthSpinBox.setRange(128, 8192)
         self.chunkWidthSpinBox.setValue(self.settings.value("stacking/chunk_width", 2048, type=int))
-        chunk_layout.addWidget(self.chunkWidthSpinBox)
-        layout.addLayout(chunk_layout)
+        hw_row = QHBoxLayout()
+        hw_row.addWidget(QLabel("H:")); hw_row.addWidget(self.chunkHeightSpinBox)
+        hw_row.addSpacing(8)
+        hw_row.addWidget(QLabel("W:")); hw_row.addWidget(self.chunkWidthSpinBox)
+        w_hw = QWidget(); w_hw.setLayout(hw_row)
+        fl_general.addRow("Chunk Size:", w_hw)
 
-        # Alignment refinement passes
-        align_layout = QHBoxLayout()
-        align_layout.addWidget(QLabel("Alignment refinement:"))
+        left_col.addWidget(gb_general)
+
+        # --- Alignment ---
+        gb_align = QGroupBox("Alignment")
+        fl_align = QFormLayout(gb_align)
+
         self.align_passes_combo = QComboBox()
         self.align_passes_combo.addItems(["Fast (1 pass)", "Accurate (3 passes)"])
-        self.align_passes_combo.setToolTip(
-            "Fast (1 pass): single astroalign pass; all successfully transformed frames are accepted.\n"
-            "Accurate (3 passes): iterative refinement for sub-pixel accuracy; final outliers can be rejected."
-        )        
         curr_passes = self.settings.value("stacking/refinement_passes", 3, type=int)
         self.align_passes_combo.setCurrentIndex(0 if curr_passes <= 1 else 1)
-        align_layout.addWidget(self.align_passes_combo)
+        self.align_passes_combo.setToolTip("Fast = single pass; Accurate = 3-pass refinement.")
+        fl_align.addRow("Refinement:", self.align_passes_combo)
 
-        align_layout.addSpacing(16)
-        align_layout.addWidget(QLabel("Accept tolerance (px):"))
         self.shift_tol_spin = QDoubleSpinBox()
         self.shift_tol_spin.setRange(0.05, 5.0)
         self.shift_tol_spin.setDecimals(2)
         self.shift_tol_spin.setSingleStep(0.05)
         self.shift_tol_spin.setValue(self.settings.value("stacking/shift_tolerance", 0.2, type=float))
-        self.shift_tol_spin.setToolTip("Convergence threshold per pass; fast mode ignores this for early stop but it is still used for progress messages.")
-        align_layout.addWidget(self.shift_tol_spin)
-        align_layout.addStretch(1)
-        layout.addLayout(align_layout)
+        fl_align.addRow("Accept tolerance (px):", self.shift_tol_spin)
 
-        # Rejection algorithm selection
-        algo_layout = QHBoxLayout()
-        algo_label = QLabel("Rejection Algorithm:")
+        # Sigma high/low
+        self.sigma_high_spinbox = QDoubleSpinBox()
+        self.sigma_high_spinbox.setRange(0.1, 10.0)
+        self.sigma_high_spinbox.setDecimals(2)
+        self.sigma_high_spinbox.setValue(self.sigma_high)
+        self.sigma_low_spinbox = QDoubleSpinBox()
+        self.sigma_low_spinbox.setRange(0.1, 10.0)
+        self.sigma_low_spinbox.setDecimals(2)
+        self.sigma_low_spinbox.setValue(self.sigma_low)
+        hs_row = QHBoxLayout()
+        hs_row.addWidget(QLabel("High:")); hs_row.addWidget(self.sigma_high_spinbox)
+        hs_row.addSpacing(8)
+        hs_row.addWidget(QLabel("Low:")); hs_row.addWidget(self.sigma_low_spinbox)
+        w_hs = QWidget(); w_hs.setLayout(hs_row)
+        fl_align.addRow("Sigma Clipping:", w_hs)
+
+        left_col.addWidget(gb_align)
+        left_col.addStretch(1)
+
+        # ========== RIGHT COLUMN ==========
+        # --- Normalization & Gradient (ABE poly2) ---
+        gb_normgrad = QGroupBox("Normalization & Gradient (ABE Poly²)")
+        fl_ng = QFormLayout(gb_normgrad)
+
+        # master enable
+        self.chk_poly2 = QCheckBox("Remove background gradient (ABE Poly²)")
+        self.chk_poly2.setChecked(self.settings.value("stacking/grad_poly2/enabled", False, type=bool))
+        fl_ng.addRow(self.chk_poly2)
+
+        # mode (subtract vs divide)
+        self.grad_mode_combo = QComboBox()
+        self.grad_mode_combo.addItems(["Subtract (additive)", "Divide (flat-like)"])
+        _saved_mode = self.settings.value("stacking/grad_poly2/mode", "subtract")
+        self.grad_mode_combo.setCurrentIndex(0 if _saved_mode.lower() != "divide" else 1)
+        fl_ng.addRow("Mode:", self.grad_mode_combo)
+
+        # ABE-style controls
+        self.grad_samples_spin = QSpinBox()
+        self.grad_samples_spin.setRange(20, 600)
+        self.grad_samples_spin.setValue(self.settings.value("stacking/grad_poly2/samples", 120, type=int))
+        fl_ng.addRow("Sample points:", self.grad_samples_spin)
+
+        self.grad_downsample_spin = QSpinBox()
+        self.grad_downsample_spin.setRange(1, 16)
+        self.grad_downsample_spin.setValue(self.settings.value("stacking/grad_poly2/downsample", 6, type=int))
+        fl_ng.addRow("Downsample (AREA):", self.grad_downsample_spin)
+
+        self.grad_patch_spin = QSpinBox()
+        self.grad_patch_spin.setRange(5, 51)
+        self.grad_patch_spin.setSingleStep(2)
+        self.grad_patch_spin.setValue(self.settings.value("stacking/grad_poly2/patch_size", 15, type=int))
+        fl_ng.addRow("Patch size (small):", self.grad_patch_spin)
+
+        self.grad_min_strength = QDoubleSpinBox()
+        self.grad_min_strength.setRange(0.0, 0.20)
+        self.grad_min_strength.setDecimals(3)
+        self.grad_min_strength.setSingleStep(0.005)
+        self.grad_min_strength.setValue(self.settings.value("stacking/grad_poly2/min_strength", 0.01, type=float))
+        fl_ng.addRow("Skip if strength <", self.grad_min_strength)
+
+        # division-only gain clip
+        self.grad_gain_lo = QDoubleSpinBox()
+        self.grad_gain_lo.setRange(0.01, 1.00); self.grad_gain_lo.setDecimals(2); self.grad_gain_lo.setSingleStep(0.01)
+        self.grad_gain_lo.setValue(self.settings.value("stacking/grad_poly2/gain_lo", 0.20, type=float))
+        self.grad_gain_hi = QDoubleSpinBox()
+        self.grad_gain_hi.setRange(1.0, 25.0); self.grad_gain_hi.setDecimals(1); self.grad_gain_hi.setSingleStep(0.5)
+        self.grad_gain_hi.setValue(self.settings.value("stacking/grad_poly2/gain_hi", 5.0, type=float))
+
+        row_gain = QWidget()
+        row_gain_h = QHBoxLayout(row_gain); row_gain_h.setContentsMargins(0,0,0,0)
+        row_gain_h.addWidget(QLabel("Clip (lo/hi):"))
+        row_gain_h.addWidget(self.grad_gain_lo)
+        row_gain_h.addWidget(QLabel(" / "))
+        row_gain_h.addWidget(self.grad_gain_hi)
+        fl_ng.addRow("Divide gain limits:", row_gain)
+
+        # enable/disable
+        def _toggle_grad_enabled(on: bool):
+            for w in (self.grad_mode_combo, self.grad_samples_spin, self.grad_downsample_spin,
+                    self.grad_patch_spin, self.grad_min_strength, row_gain):
+                w.setEnabled(on)
+
+        def _toggle_gain_row():
+            is_div = (self.grad_mode_combo.currentIndex() == 1)
+            row_gain.setVisible(is_div)
+            row_gain.setEnabled(self.chk_poly2.isChecked() and is_div)
+
+        self.chk_poly2.toggled.connect(_toggle_grad_enabled)
+        self.grad_mode_combo.currentIndexChanged.connect(lambda _: _toggle_gain_row())
+
+        _toggle_grad_enabled(self.chk_poly2.isChecked())
+        _toggle_gain_row()
+
+        right_col.addWidget(gb_normgrad)
+
+
+        # --- Rejection ---
+        gb_rej = QGroupBox("Rejection")
+        rej_layout = QVBoxLayout(gb_rej)
+
+        # Algorithm choice
+        algo_row = QHBoxLayout()
+        algo_label = QLabel("Algorithm:")
         self.rejection_algo_combo = QComboBox()
         self.rejection_algo_combo.addItems([
             "Weighted Windsorized Sigma Clipping",
@@ -1238,116 +1756,95 @@ class StackingSuiteDialog(QDialog):
             "Max Value"
         ])
         saved_algo = self.settings.value("stacking/rejection_algorithm", "Weighted Windsorized Sigma Clipping")
-        index = self.rejection_algo_combo.findText(saved_algo)
-        if index >= 0:
-            self.rejection_algo_combo.setCurrentIndex(index)
-        algo_layout.addWidget(algo_label)
-        algo_layout.addWidget(self.rejection_algo_combo)
-        layout.addLayout(algo_layout)
+        idx = self.rejection_algo_combo.findText(saved_algo)
+        if idx >= 0:
+            self.rejection_algo_combo.setCurrentIndex(idx)
+        algo_row.addWidget(algo_label); algo_row.addWidget(self.rejection_algo_combo, 1)
+        rej_layout.addLayout(algo_row)
 
-        # --- Additional Parameters ---
+        # Param rows as small containers we can show/hide
+        def _mini_row(label_text, widget, help_text=None):
+            row = QWidget()
+            h = QHBoxLayout(row); h.setContentsMargins(0,0,0,0)
+            h.addWidget(QLabel(label_text))
+            h.addWidget(widget, 1)
+            if help_text:
+                btn = QPushButton("?"); btn.setFixedSize(20,20)
+                btn.clicked.connect(lambda: QMessageBox.information(self, label_text, help_text))
+                h.addWidget(btn)
+            return row
 
-        # Kappa-Sigma Clipping: Kappa Value
-        kappa_layout = QHBoxLayout()
-        kappa_label = QLabel("Kappa Value:")
         self.kappa_spinbox = QDoubleSpinBox()
-        self.kappa_spinbox.setRange(0.1, 10.0)
-        self.kappa_spinbox.setDecimals(2)
+        self.kappa_spinbox.setRange(0.1, 10.0); self.kappa_spinbox.setDecimals(2)
         self.kappa_spinbox.setValue(self.settings.value("stacking/kappa", 2.5, type=float))
-        kappa_help = QPushButton("?")
-        kappa_help.setFixedSize(20, 20)
-        kappa_help.clicked.connect(lambda: QMessageBox.information(self, "Kappa Value", 
-            "Kappa determines how many standard deviations away from the median are considered outliers. Higher values are more lenient."))
-        kappa_layout.addWidget(kappa_label)
-        kappa_layout.addWidget(self.kappa_spinbox)
-        kappa_layout.addWidget(kappa_help)
-        layout.addLayout(kappa_layout)
+        row_kappa = _mini_row("Kappa:", self.kappa_spinbox, "Std-devs from median to reject; higher = more lenient.")
 
-        # Kappa-Sigma Clipping: Iterations
-        iterations_layout = QHBoxLayout()
-        iterations_label = QLabel("Iterations:")
         self.iterations_spinbox = QSpinBox()
         self.iterations_spinbox.setRange(1, 10)
         self.iterations_spinbox.setValue(self.settings.value("stacking/iterations", 3, type=int))
-        iterations_help = QPushButton("?")
-        iterations_help.setFixedSize(20, 20)
-        iterations_help.clicked.connect(lambda: QMessageBox.information(self, "Iterations", 
-            "The number of iterations to perform kappa-sigma clipping. More iterations may remove more outliers."))
-        iterations_layout.addWidget(iterations_label)
-        iterations_layout.addWidget(self.iterations_spinbox)
-        iterations_layout.addWidget(iterations_help)
-        layout.addLayout(iterations_layout)
+        row_iters = _mini_row("Iterations:", self.iterations_spinbox, "Number of kappa-sigma iterations.")
 
-        # ESD: ESD Threshold
-        esd_layout = QHBoxLayout()
-        esd_label = QLabel("ESD Threshold:")
         self.esd_spinbox = QDoubleSpinBox()
-        self.esd_spinbox.setRange(0.1, 10.0)
-        self.esd_spinbox.setDecimals(2)
+        self.esd_spinbox.setRange(0.1, 10.0); self.esd_spinbox.setDecimals(2)
         self.esd_spinbox.setValue(self.settings.value("stacking/esd_threshold", 3.0, type=float))
-        esd_help = QPushButton("?")
-        esd_help.setFixedSize(20, 20)
-        esd_help.clicked.connect(lambda: QMessageBox.information(self, "ESD Threshold", 
-            "Threshold for the Extreme Studentized Deviate test. Lower values are more aggressive in rejecting outliers."))
-        esd_layout.addWidget(esd_label)
-        esd_layout.addWidget(self.esd_spinbox)
-        esd_layout.addWidget(esd_help)
-        layout.addLayout(esd_layout)
+        row_esd = _mini_row("ESD threshold:", self.esd_spinbox, "Lower = more aggressive outlier rejection.")
 
-        # Biweight Estimator: Tuning Constant
-        biweight_layout = QHBoxLayout()
-        biweight_label = QLabel("Biweight Tuning Constant:")
         self.biweight_spinbox = QDoubleSpinBox()
-        self.biweight_spinbox.setRange(1.0, 10.0)
-        self.biweight_spinbox.setDecimals(2)
+        self.biweight_spinbox.setRange(1.0, 10.0); self.biweight_spinbox.setDecimals(2)
         self.biweight_spinbox.setValue(self.settings.value("stacking/biweight_constant", 6.0, type=float))
-        biweight_help = QPushButton("?")
-        biweight_help.setFixedSize(20, 20)
-        biweight_help.clicked.connect(lambda: QMessageBox.information(self, "Biweight Tuning Constant", 
-            "Tuning constant for the biweight estimator; it controls the aggressiveness of down-weighting outliers."))
-        biweight_layout.addWidget(biweight_label)
-        biweight_layout.addWidget(self.biweight_spinbox)
-        biweight_layout.addWidget(biweight_help)
-        layout.addLayout(biweight_layout)
+        row_bi = _mini_row("Biweight constant:", self.biweight_spinbox, "Controls down-weighting strength.")
 
-        # Trimmed Mean: Trim Fraction
-        trim_layout = QHBoxLayout()
-        trim_label = QLabel("Trim Fraction:")
         self.trim_spinbox = QDoubleSpinBox()
-        self.trim_spinbox.setRange(0.0, 0.5)
-        self.trim_spinbox.setDecimals(2)
+        self.trim_spinbox.setRange(0.0, 0.5); self.trim_spinbox.setDecimals(2)
         self.trim_spinbox.setValue(self.settings.value("stacking/trim_fraction", 0.1, type=float))
-        trim_help = QPushButton("?")
-        trim_help.setFixedSize(20, 20)
-        trim_help.clicked.connect(lambda: QMessageBox.information(self, "Trim Fraction", 
-            "Fraction of values to trim from each end before averaging. For example, 0.1 will trim 10% from each end."))
-        trim_layout.addWidget(trim_label)
-        trim_layout.addWidget(self.trim_spinbox)
-        trim_layout.addWidget(trim_help)
-        layout.addLayout(trim_layout)
+        row_trim = _mini_row("Trim fraction:", self.trim_spinbox, "Fraction trimmed on each end before averaging.")
 
-        # Modified Z-Score Clipping: Threshold
-        modz_layout = QHBoxLayout()
-        modz_label = QLabel("Modified Z-Score Threshold:")
         self.modz_spinbox = QDoubleSpinBox()
-        self.modz_spinbox.setRange(0.1, 10.0)
-        self.modz_spinbox.setDecimals(2)
+        self.modz_spinbox.setRange(0.1, 10.0); self.modz_spinbox.setDecimals(2)
         self.modz_spinbox.setValue(self.settings.value("stacking/modz_threshold", 3.5, type=float))
-        modz_help = QPushButton("?")
-        modz_help.setFixedSize(20, 20)
-        modz_help.clicked.connect(lambda: QMessageBox.information(self, "Modified Z-Score Threshold", 
-            "Threshold for the modified z-score clipping using the median absolute deviation. Lower values are more aggressive."))
-        modz_layout.addWidget(modz_label)
-        modz_layout.addWidget(self.modz_spinbox)
-        modz_layout.addWidget(modz_help)
-        layout.addLayout(modz_layout)
+        row_modz = _mini_row("Modified Z threshold:", self.modz_spinbox, "Lower = more aggressive (MAD-based).")
 
-        # Save button
-        save_button = QPushButton("Save Settings")
-        save_button.clicked.connect(lambda: self.save_stacking_settings(dialog))
-        layout.addWidget(save_button)
+        # add all; visibility managed below
+        for w in (row_kappa, row_iters, row_esd, row_bi, row_trim, row_modz):
+            rej_layout.addWidget(w)
 
+        # show/hide param rows based on algorithm
+        def _update_algo_params():
+            algo = self.rejection_algo_combo.currentText()
+            # default all hidden
+            rows = {
+                "kappa": row_kappa, "iters": row_iters, "esd": row_esd,
+                "bi": row_bi, "trim": row_trim, "modz": row_modz
+            }
+            for w in rows.values(): w.hide()
+
+            if "Kappa-Sigma" in algo:
+                row_kappa.show(); row_iters.show()
+            elif "ESD" in algo:
+                row_esd.show()
+            elif "Biweight" in algo:
+                row_bi.show()
+            elif "Trimmed Mean" in algo:
+                row_trim.show()
+            elif "Modified Z-Score" in algo:
+                row_modz.show()
+            # others (simple average/median, weighted winsorized, max value) need no extra params
+
+        self.rejection_algo_combo.currentTextChanged.connect(_update_algo_params)
+        _update_algo_params()
+
+        right_col.addWidget(gb_rej)
+        right_col.addStretch(1)
+
+        # --- Buttons ---
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(lambda: self.save_stacking_settings(dialog))
+        btns.rejected.connect(dialog.reject)
+        root.addWidget(btns)
+
+        dialog.resize(900, 640)
         dialog.exec()
+
 
     def closeEvent(self, e):
         # Graceful shutdown for any running workers
@@ -1403,6 +1900,18 @@ class StackingSuiteDialog(QDialog):
         self.settings.setValue("stacking/chunk_width", self.chunk_width)
         self.settings.setValue("stacking/autocrop_enabled", self.autocrop_cb.isChecked())
         self.settings.setValue("stacking/autocrop_pct", float(self.autocrop_pct.value()))
+
+        # Gradient settings
+        self.settings.setValue("stacking/grad_poly2/enabled",   self.chk_poly2.isChecked())
+        self.settings.setValue("stacking/grad_poly2/mode",       "divide" if self.grad_mode_combo.currentIndex() == 1 else "subtract")
+        self.settings.setValue("stacking/grad_poly2/samples",    self.grad_samples_spin.value())
+        self.settings.setValue("stacking/grad_poly2/downsample", self.grad_downsample_spin.value())
+        self.settings.setValue("stacking/grad_poly2/patch_size", self.grad_patch_spin.value())
+        self.settings.setValue("stacking/grad_poly2/min_strength", float(self.grad_min_strength.value()))
+        self.settings.setValue("stacking/grad_poly2/gain_lo",    float(self.grad_gain_lo.value()))
+        self.settings.setValue("stacking/grad_poly2/gain_hi",    float(self.grad_gain_hi.value()))
+
+
 
         passes = 1 if self.align_passes_combo.currentIndex() == 0 else 3
         self.settings.setValue("stacking/refinement_passes", passes)
@@ -1825,7 +2334,7 @@ class StackingSuiteDialog(QDialog):
         # Manual Override: Select a Master Dark
         self.override_dark_combo = QComboBox()
         self.override_dark_combo.addItem("None (Use Auto-Select)")
-        self.override_dark_combo.currentIndexChanged.connect(self.override_selected_master_dark)
+        self.override_dark_combo.currentIndexChanged.connect(self.override_selected_master_dark_for_flats)
         right_controls_layout.addWidget(QLabel("Override Master Dark Selection"))
         right_controls_layout.addWidget(self.override_dark_combo)
 
@@ -2137,6 +2646,130 @@ class StackingSuiteDialog(QDialog):
         if best[0] == 0:
             return None
         _, x0, y0, x1, y1 = best
+        return (x0, y0, x1, y1)
+
+    def _compute_common_autocrop_rect_fast(
+        self,
+        grouped_files: dict,         # { group_key: [aligned _n_r.fit paths] }
+        autocrop_pct: float,         # e.g. 95.0
+        transforms_path: str | None = None,
+        transforms_dict: dict | None = None,
+        status_cb=None
+    ):
+        """
+        Compute a global crop rect WITHOUT loading pixel data.
+        Uses saved 2x3 transforms that map RAW-NORMALIZED coords -> ALIGNED coords.
+        Returns (x0, y0, x1, y1) in aligned (non-drizzled) pixels, or None if it can't compute.
+        """
+        log = status_cb or (lambda *_: None)
+        flush = lambda: QCoreApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 20)
+
+        # Collect every aligned file we'll consider
+        aligned_files = [f for files in grouped_files.values() for f in files]
+        if not aligned_files:
+            log("✂️ Auto-crop: no aligned files; skipping.")
+            return None
+
+        # Load transforms (raw_n -> aligned)
+        if transforms_dict is None:
+            if transforms_path is None:
+                transforms_path = os.path.join(self.stacking_directory, "alignment_transforms.sasd")
+            try:
+                Mdict = self.load_alignment_matrices_custom(transforms_path)
+                log(f"✂️ Auto-crop: loaded {len(Mdict)} transforms.")
+            except Exception as e:
+                log(f"✂️ Auto-crop: failed to load transforms ({e}); skipping.")
+                return None
+        else:
+            Mdict = dict(transforms_dict)
+
+        # Pull the canvas (aligned) W/H from the first aligned file header (cheap; not pixel data)
+        try:
+            h0 = fits.getheader(aligned_files[0])
+            W_aligned = int(h0.get("NAXIS1"))
+            H_aligned = int(h0.get("NAXIS2"))
+        except Exception:
+            log("✂️ Auto-crop: could not read aligned header; skipping.")
+            return None
+
+        # We also need the RAW-NORMALIZED source W/H. Read a single header for the first raw_n file.
+        H_src = W_src = None
+
+        # Convert aligned file -> raw-normalized key in your transforms dict.
+        def _aligned_to_raw_n(apath: str) -> str:
+            base = os.path.basename(apath)
+            raw_base = base.replace("_n_r.fit", "_n.fit") if base.endswith("_n_r.fit") else base
+            return os.path.normpath(os.path.join(self.stacking_directory, "Normalized_Images", raw_base))
+
+        # Accumulate per-frame bounding boxes in aligned space
+        xmins, ymins, xmaxs, ymaxs = [], [], [], []
+
+        log("✂️ Auto-crop: computing percent-overlap bbox from transforms (no image reloads)…")
+        flush()
+
+        for i, ap in enumerate(aligned_files, 1):
+            raw_n = _aligned_to_raw_n(ap)
+            M = Mdict.get(raw_n)
+            if M is None:
+                # If we don't have a transform for this file, skip it
+                continue
+
+            if H_src is None or W_src is None:
+                # Read once from the first raw_n header
+                try:
+                    hdr_src = fits.getheader(raw_n)
+                    W_src = int(hdr_src.get("NAXIS1"))
+                    H_src = int(hdr_src.get("NAXIS2"))
+                except Exception:
+                    # Fall back to aligned dims (common case) if header missing
+                    W_src, H_src = W_aligned, H_aligned
+
+            M = np.asarray(M, dtype=np.float32).reshape(2, 3)
+            A = M[:, :2]   # 2x2
+            t = M[:, 2]    # 2
+
+            # Corners of the source in RAW-NORMALIZED coordinates
+            src_corners = np.array([[0, 0], [W_src, 0], [W_src, H_src], [0, H_src]], dtype=np.float32)
+            # Map to ALIGNED coordinates
+            aligned_corners = (src_corners @ A.T) + t  # (4,2)
+            xs = aligned_corners[:, 0]
+            ys = aligned_corners[:, 1]
+
+            # Axis-aligned bbox (clamped to canvas)
+            xmin = max(0.0, float(xs.min()))
+            ymin = max(0.0, float(ys.min()))
+            xmax = min(float(W_aligned), float(xs.max()))
+            ymax = min(float(H_aligned), float(ys.max()))
+            if xmax > xmin and ymax > ymin:
+                xmins.append(xmin); ymins.append(ymin); xmaxs.append(xmax); ymaxs.append(ymax)
+
+            if (i % 25) == 0:
+                log(f"   • processed {i}/{len(aligned_files)}…")
+                flush()
+
+        if not xmins:
+            log("✂️ Auto-crop: no valid bboxes found; skipping.")
+            return None
+
+        # Build a “covered by at least p% of frames” rectangle
+        p = max(0.50, min(1.00, float(autocrop_pct) / 100.0))  # clamp to [50%,100%] sanity
+        left   = float(np.quantile(np.array(xmins), p))
+        top    = float(np.quantile(np.array(ymins), p))
+        right  = float(np.quantile(np.array(xmaxs), 1.0 - p))
+        bottom = float(np.quantile(np.array(ymaxs), 1.0 - p))
+
+        # Integer crop rect inside canvas
+        x0 = max(0, int(math.ceil(left)))
+        y0 = max(0, int(math.ceil(top)))
+        x1 = min(W_aligned, int(math.floor(right)))
+        y1 = min(H_aligned, int(math.floor(bottom)))
+
+        if x1 <= x0 or y1 <= y0:
+            log("✂️ Auto-crop: computed rect is empty; skipping.")
+            return None
+
+        log(f"✂️ Auto-crop rect: ({x0},{y0})–({x1},{y1}) on {W_aligned}×{H_aligned} canvas.")
+        flush()
         return (x0, y0, x1, y1)
 
     def _compute_common_autocrop_rect(self, grouped_files: dict, coverage_pct: float, status_cb=None):
@@ -4096,7 +4729,7 @@ class StackingSuiteDialog(QDialog):
         print("✅ DEBUG: Updated Override Master Dark dropdown with unique entries.")
 
 
-    def override_selected_master_dark(self):
+    def override_selected_master_dark_for_flats(self):
         """ Overrides the selected master dark for the currently highlighted flat group. """
         selected_items = self.flat_tree.selectedItems()
         if not selected_items:
@@ -4237,16 +4870,17 @@ class StackingSuiteDialog(QDialog):
 
 
                     if dark_data is not None:
-                        dark_tile = dark_data[y_start:y_end, x_start:x_end]
-                        if dark_tile.ndim == 2:
-                            dark_tile = dark_tile[..., np.newaxis]
-                            if channels == 3:
-                                dark_tile = np.repeat(dark_tile, 3, axis=2)
-                        elif dark_tile.shape[0] == 3:
-                            dark_tile = dark_tile.transpose(1, 2, 0)
+                        # prepare a matching HWC dark tile (float32, contiguous)
+                        dsub = dark_data
+                        if dsub.ndim == 3 and dsub.shape[0] in (1,3):   # CHW -> HWC
+                            dsub = dsub.transpose(1, 2, 0)
+                        d_tile = dsub[y_start:y_end, x_start:x_end]
+                        d_tile = _as_C(d_tile.astype(np.float32, copy=False))
+                        if d_tile.ndim == 2 and channels == 3:
+                            d_tile = np.repeat(d_tile[..., None], 3, axis=2)
 
-                        if dark_tile.shape == (tile_h, tile_w, channels):
-                            tile_stack = subtract_dark(tile_stack, dark_tile)
+                        # in-place subtraction for entire stack (F,H,W,C)
+                        _subtract_dark_stack_inplace_hwc(tile_stack, d_tile, pedestal=0.0)
 
                     if channels == 3:
                         tile_result = windsorized_sigma_clip_4d(tile_stack, lower=self.sigma_low, upper=self.sigma_high)[0]
@@ -4524,42 +5158,136 @@ class StackingSuiteDialog(QDialog):
 
 
     def override_selected_master_dark(self):
-        """ Opens a file dialog to manually select a Master Dark for the selected group and stores it. """
+        """ Override Dark for selected Light exposure group or individual files. """
         selected_items = self.light_tree.selectedItems()
         if not selected_items:
-            print("⚠️ No light group selected for dark frame override.")
+            print("⚠️ No light item selected for dark frame override.")
             return
 
         file_path, _ = QFileDialog.getOpenFileName(self, "Select Master Dark", "", "FITS Files (*.fits *.fit)")
         if not file_path:
-            return  # User canceled
+            return
 
         for item in selected_items:
-            if item.parent():  # Ensure it's an exposure group, not the top filter name
-                item.setText(2, os.path.basename(file_path))  # Update tree UI
-                self.manual_dark_overrides[item.text(0)] = file_path  # Store override
+            # If the user clicked a group (exposure row), push override to all leaves:
+            if item.parent() and item.childCount() > 0:
+                # exposure row under a filter
+                filter_name = item.parent().text(0)
+                exposure_text = item.text(0)
+                # store override under BOTH keys
+                self.manual_dark_overrides[f"{filter_name} - {exposure_text}"] = file_path
+                self.manual_dark_overrides[exposure_text] = file_path
 
-        print(f"✅ DEBUG: Overrode Master Dark for {item.text(0)} with {file_path}")
+                for i in range(item.childCount()):
+                    leaf = item.child(i)
+                    leaf.setText(2, os.path.basename(file_path))
+            # If the user clicked a leaf, just set that leaf and still store under both keys
+            elif item.parent() and item.parent().parent():
+                exposure_item = item.parent()
+                filter_name = exposure_item.parent().text(0)
+                exposure_text = exposure_item.text(0)
+                self.manual_dark_overrides[f"{filter_name} - {exposure_text}"] = file_path
+                self.manual_dark_overrides[exposure_text] = file_path
+                item.setText(2, os.path.basename(file_path))
+
+        print("✅ DEBUG: Light Dark override applied.")
+
+    def _auto_pick_master_dark(self, image_size: str, exposure_time: float):
+        best_path, best_diff = None, float("inf")
+        for key, path in self.master_files.items():
+            m = re.match(r"^\s*([\d.]+)s\b", str(key))
+            if not m:
+                continue
+            try:
+                dark_exp = float(m.group(1))
+            except Exception:
+                continue
+            size = self.master_sizes.get(path)
+            if size is None:
+                try:
+                    with fits.open(path) as hdul:
+                        size = f"{hdul[0].data.shape[1]}x{hdul[0].data.shape[0]}"
+                    self.master_sizes[path] = size
+                except Exception:
+                    continue
+            if size == image_size:
+                diff = abs(dark_exp - exposure_time)
+                if diff < best_diff:
+                    best_diff, best_path = diff, path
+        return best_path
+
+    def _auto_pick_master_flat(self, filter_name: str, image_size: str, session_name: str):
+        # Prefer session-specific, then session-agnostic
+        key_pref = f"{filter_name} ({image_size}) [{session_name}]"
+        if key_pref in self.master_files:
+            return self.master_files[key_pref]
+        fallback_key = f"{filter_name} ({image_size})"
+        return self.master_files.get(fallback_key)
 
 
 
     def override_selected_master_flat(self):
-        """ Opens a file dialog to manually select a Master Flat for the selected group and stores it. """
+        """
+        Override Master Flat for selected Light items.
+        - Accepts selection at filter row, exposure row, or leaf row.
+        - Updates the leaf's column 3 with the chosen master flat's basename.
+        - Stores overrides under BOTH keys:
+            * "Filter - <exposure_text>"
+            * "<exposure_text>"
+        so calibrate_lights() can resolve it reliably.
+        """
         selected_items = self.light_tree.selectedItems()
         if not selected_items:
-            print("⚠️ No light group selected for flat frame override.")
+            print("⚠️ No Light items selected for flat override.")
             return
 
-        file_path, _ = QFileDialog.getOpenFileName(self, "Select Master Flat", "", "FITS Files (*.fits *.fit)")
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select Master Flat", "", "FITS Files (*.fits *.fit)"
+        )
         if not file_path:
-            return  # User canceled
+            return  # user cancelled
+
+        base = os.path.basename(file_path)
+        overrides_set = []
+
+        def _apply_to_exposure_row(exp_item, filter_name):
+            exposure_text = exp_item.text(0)  # e.g. "300.0s (4144x2822)"
+            # Store override under both key shapes
+            self.manual_flat_overrides[f"{filter_name} - {exposure_text}"] = file_path
+            self.manual_flat_overrides[exposure_text] = file_path
+            overrides_set.append(f"{filter_name} - {exposure_text}")
+            overrides_set.append(exposure_text)
+            # Push to all leaves
+            for i in range(exp_item.childCount()):
+                leaf = exp_item.child(i)
+                leaf.setText(3, base)
 
         for item in selected_items:
-            if item.parent():  # Ensure it's an exposure group, not the top filter name
-                item.setText(3, os.path.basename(file_path))  # Update tree UI
-                self.manual_flat_overrides[item.text(0)] = file_path  # Store override
+            # Case A: leaf row (filename row)
+            if item.parent() and item.parent().parent():
+                exposure_item = item.parent()
+                filter_item = exposure_item.parent()
+                filter_name = filter_item.text(0)
+                _apply_to_exposure_row(exposure_item, filter_name)
+                item.setText(3, base)
 
-        print(f"✅ DEBUG: Overrode Master Flat for {item.text(0)} with {file_path}")
+            # Case B: exposure row (under a filter, has children)
+            elif item.parent() and item.childCount() > 0:
+                filter_name = item.parent().text(0)
+                _apply_to_exposure_row(item, filter_name)
+
+            # Case C: top-level filter row (apply to all its exposure groups)
+            elif item.parent() is None and item.childCount() > 0:
+                filter_name = item.text(0)
+                for j in range(item.childCount()):
+                    exposure_item = item.child(j)
+                    _apply_to_exposure_row(exposure_item, filter_name)
+
+        if overrides_set:
+            print(f"✅ DEBUG: Overrode Master Flat with {base} for keys: {sorted(set(overrides_set))}")
+        else:
+            print("ℹ️ No applicable rows found to apply flat override.")
+
 
 
     def toggle_group_correction(self, group_item, which):
@@ -4605,6 +5333,9 @@ class StackingSuiteDialog(QDialog):
 
     def calibrate_lights(self):
         """Performs calibration on selected light frames using Master Darks and Flats, considering overrides."""
+        # Make sure columns 2/3 have something where possible
+        self.assign_best_master_files()
+
         if not self.stacking_directory:
             QMessageBox.warning(self, "Error", "Please set the stacking directory first.")
             return
@@ -4615,12 +5346,17 @@ class StackingSuiteDialog(QDialog):
         total_files = sum(len(files) for files in self.light_files.values())
         processed_files = 0
 
-        master_bias_path = self.master_files.get("Bias", None)
+        # ---------- LOAD MASTER BIAS ONCE (optional) ----------
         master_bias = None
-        if master_bias_path:
-            with fits.open(master_bias_path) as bias_hdul:
-                master_bias = bias_hdul[0].data.astype(np.float32)
-            self.update_status(f"Using Master Bias: {os.path.basename(master_bias_path)}")
+        bias_path = self.master_files.get("Bias")
+        if bias_path:
+            try:
+                with fits.open(bias_path) as bias_hdul:
+                    master_bias = bias_hdul[0].data.astype(np.float32)
+                self.update_status(f"Using Master Bias: {os.path.basename(bias_path)}")
+            except Exception as e:
+                self.update_status(f"⚠️ Could not load Master Bias: {e}")
+                master_bias = None
 
         for i in range(self.light_tree.topLevelItemCount()):
             filter_item = self.light_tree.topLevelItem(i)
@@ -4649,9 +5385,9 @@ class StackingSuiteDialog(QDialog):
 
                     # Get session from metadata
                     session_name = "Default"
-                    match = re.search(r"Session: ([^|]+)", meta)
-                    if match:
-                        session_name = match.group(1).strip()
+                    m = re.search(r"Session: ([^|]+)", meta)
+                    if m:
+                        session_name = m.group(1).strip()
 
                     # Look up the light file from session-specific group
                     composite_key = (f"{filter_name} - {exposure_text}", session_name)
@@ -4666,33 +5402,57 @@ class StackingSuiteDialog(QDialog):
                     height = int(header.get("NAXIS2", 0))
                     image_size = f"{width}x{height}"
 
-                    # Determine Master Dark (manual override or best match)
-                    manual_dark_key = f"{filter_name} - {exposure_text}"
-                    master_dark_path = self.manual_dark_overrides.get(manual_dark_key)
-                    if not master_dark_path:
-                        for key, path in self.master_files.items():
-                            if os.path.basename(path) == exposure_item.text(2):
-                                master_dark_path = path
-                                break
+                    # ---------- RESOLVE MASTER DARK ----------
+                    manual_dark_key_full  = f"{filter_name} - {exposure_text}"
+                    manual_dark_key_short = exposure_text
+                    master_dark_path = (
+                        self.manual_dark_overrides.get(manual_dark_key_full)
+                        or self.manual_dark_overrides.get(manual_dark_key_short)
+                    )
+                    if master_dark_path is None:
+                        # If the leaf shows a basename, map it back to a stored path
+                        name_in_leaf = (leaf.text(2) or "").strip()
+                        if name_in_leaf:
+                            for _, path in self.master_files.items():
+                                if os.path.basename(path) == name_in_leaf:
+                                    master_dark_path = path
+                                    break
+                    if master_dark_path is None:
+                        # Last resort: auto-pick by size+exposure
+                        mm = re.match(r"([\d.]+)s", exposure_text or "")
+                        exp_time = float(mm.group(1)) if mm else 0.0
+                        master_dark_path = self._auto_pick_master_dark(image_size, exp_time)
+                    print(f"master_dark_path is {master_dark_path}")
 
-                    # Determine Master Flat (manual override or best session match)
-                    manual_flat_key = f"{filter_name} - {exposure_text}"
-                    master_flat_path = self.manual_flat_overrides.get(manual_flat_key)
-                    if not master_flat_path:
-                        flat_key = f"{filter_name} ({image_size}) [{session_name}]"
-                        master_flat_path = self.master_files.get(flat_key)
+                    # ---------- RESOLVE MASTER FLAT ----------
+                    manual_flat_key_full = f"{filter_name} - {exposure_text}"
+                    master_flat_path = self.manual_flat_overrides.get(manual_flat_key_full)
+                    if master_flat_path is None:
+                        name_in_leaf = (leaf.text(3) or "").strip()
+                        if name_in_leaf:
+                            for _, path in self.master_files.items():
+                                if os.path.basename(path) == name_in_leaf:
+                                    master_flat_path = path
+                                    break
+                    if master_flat_path is None:
+                        # Prefer session-matched flat, else fall back to any size+filter flat
+                        master_flat_path = self._auto_pick_master_flat(filter_name, image_size, session_name)
+                    print(f"master_flat_path is {master_flat_path}")
 
                     self.update_status(f"Processing: {os.path.basename(light_file)}")
                     QApplication.processEvents()
 
+                    # ---------- LOAD LIGHT ----------
                     light_data, hdr, bit_depth, is_mono = load_image(light_file)
                     if light_data is None or hdr is None:
                         self.update_status(f"❌ ERROR: Failed to load {os.path.basename(light_file)}")
                         continue
 
-                    if not is_mono and light_data.shape[-1] == 3:
-                        light_data = light_data.transpose(2, 0, 1)
+                    # Work in CHW for color; leave mono as H,W
+                    if not is_mono and light_data.ndim == 3 and light_data.shape[-1] == 3:
+                        light_data = light_data.transpose(2, 0, 1)  # HWC -> CHW
 
+                    # ---------- APPLY BIAS (optional) ----------
                     if master_bias is not None:
                         if is_mono:
                             light_data -= master_bias
@@ -4701,27 +5461,35 @@ class StackingSuiteDialog(QDialog):
                         self.update_status("Bias Subtracted")
                         QApplication.processEvents()
 
+                    # ---------- APPLY DARK (if resolved) ----------
                     if master_dark_path:
                         dark_data, _, _, dark_is_mono = load_image(master_dark_path)
                         if dark_data is not None:
-                            if not dark_is_mono and dark_data.shape[-1] == 3:
-                                dark_data = dark_data.transpose(2, 0, 1)
-                            light_data = subtract_dark_with_pedestal(
-                                light_data[np.newaxis, :, :], dark_data, pedestal_value
-                            )[0]
+                            if not dark_is_mono and dark_data.ndim == 3 and dark_data.shape[-1] == 3:
+                                dark_data = dark_data.transpose(2, 0, 1)  # HWC -> CHW
+                            # shape-safe subtract with pedestal (expects stack,F dimension)
+                            if light_data.ndim == 2:  # mono
+                                tmp = subtract_dark_with_pedestal(light_data[np.newaxis, :, :], dark_data, pedestal_value)
+                                light_data = tmp[0]
+                            else:                      # CHW
+                                tmp = subtract_dark_with_pedestal(light_data[np.newaxis, :, :], dark_data, pedestal_value)
+                                light_data = tmp[0]
                             self.update_status(f"Dark Subtracted: {os.path.basename(master_dark_path)}")
                             QApplication.processEvents()
 
+                    # ---------- APPLY FLAT (if resolved) ----------
                     if master_flat_path:
                         flat_data, _, _, flat_is_mono = load_image(master_flat_path)
                         if flat_data is not None:
-                            if not flat_is_mono and flat_data.shape[-1] == 3:
-                                flat_data = flat_data.transpose(2, 0, 1)
-                            flat_data[flat_data == 0] = 1.0
+                            if not flat_is_mono and flat_data.ndim == 3 and flat_data.shape[-1] == 3:
+                                flat_data = flat_data.transpose(2, 0, 1)  # HWC -> CHW
+                            flat_data = flat_data.astype(np.float32, copy=False)
+                            flat_data[flat_data == 0] = 1.0  # safety
                             light_data = apply_flat_division_numba(light_data, flat_data)
                             self.update_status(f"Flat Applied: {os.path.basename(master_flat_path)}")
                             QApplication.processEvents()
 
+                    # ---------- COSMETIC (optional) ----------
                     if apply_cosmetic:
                         if hdr.get("BAYERPAT"):
                             light_data = bulk_cosmetic_correction_bayer(light_data)
@@ -4731,11 +5499,12 @@ class StackingSuiteDialog(QDialog):
                             self.update_status("Cosmetic Correction Applied")
                         QApplication.processEvents()
 
-                    if not is_mono and light_data.shape[0] == 3:
-                        light_data = light_data.transpose(1, 2, 0)
+                    # Back to HWC for saving if color
+                    if not is_mono and light_data.ndim == 3 and light_data.shape[0] == 3:
+                        light_data = light_data.transpose(1, 2, 0)  # CHW -> HWC
 
-                    min_val = light_data.min()
-                    max_val = light_data.max()
+                    min_val = float(light_data.min())
+                    max_val = float(light_data.max())
                     self.update_status(f"Before saving: min = {min_val:.4f}, max = {max_val:.4f}")
                     print(f"Before saving: min = {min_val:.4f}, max = {max_val:.4f}")
                     QApplication.processEvents()
@@ -4760,6 +5529,7 @@ class StackingSuiteDialog(QDialog):
         self.update_status("✅ Calibration Complete!")
         QApplication.processEvents()
         self.populate_calibrated_lights()
+
 
     def extract_light_files_from_tree(self):
         """
@@ -5206,6 +5976,10 @@ class StackingSuiteDialog(QDialog):
             return np.rot90(img, 2).copy(), True
         return img, False
 
+    def _ui_log(self, msg: str):
+        self.update_status(msg)  # your existing status logger
+        # let Qt process pending paint/input signals so the UI updates
+        QCoreApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 25)
 
     def register_images(self):
         """Measure → choose reference → DEBAYER ref → DEBAYER+normalize all → align."""
@@ -5341,6 +6115,7 @@ class StackingSuiteDialog(QDialog):
             self.frame_weights[fp] = raw_w
             debug_log += f"📂 {os.path.basename(fp)} → StarCount={c}, Ecc={ecc:.4f}, Mean={m:.4f}, Weight={raw_w:.4f}\n"
         self.update_status(debug_log)
+        QApplication.processEvents()
 
         max_w = max(self.frame_weights.values()) if self.frame_weights else 0.0
         if max_w > 0:
@@ -5437,6 +6212,10 @@ class StackingSuiteDialog(QDialog):
         else:
             self.update_status("Dialog closed without explicit choice; using selected reference.")
 
+        ref_L = _luma(ref_img)
+        ref_min = float(np.nanmin(ref_L))
+        ref_target_median = float(np.nanmedian(ref_L - ref_min))
+        self.update_status(f"📊 Reference min={ref_min:.6f}, normalized-median={ref_target_median:.6f}")
 
         # ─────────────────────────────────────────────────────────────────────
         # PHASE 1b: Meridian flips
@@ -5501,8 +6280,39 @@ class StackingSuiteDialog(QDialog):
             if not loaded_images:
                 continue
 
-            stack = np.array(loaded_images, dtype=np.float32)  # (F,H,W) or (F,H,W,3)
-            normalized_stack = normalize_images(stack, ref_median)
+            stack = np.ascontiguousarray(np.array(loaded_images, dtype=np.float32))
+            normalized_stack = normalize_images(stack, target_median=ref_target_median)
+
+            # Optional ABE-style degree-2 background cleanup
+            if self.settings.value("stacking/grad_poly2/enabled", False, type=bool):
+                mode         = "divide" if self.settings.value("stacking/grad_poly2/mode", "subtract") == "divide" else "subtract"
+                samples      = int(self.settings.value("stacking/grad_poly2/samples", 120, type=int))
+                downsample   = int(self.settings.value("stacking/grad_poly2/downsample", 6, type=int))
+                patch_size   = int(self.settings.value("stacking/grad_poly2/patch_size", 15, type=int))
+                min_strength = float(self.settings.value("stacking/grad_poly2/min_strength", 0.01, type=float))
+                gain_lo      = float(self.settings.value("stacking/grad_poly2/gain_lo", 0.20, type=float))
+                gain_hi      = float(self.settings.value("stacking/grad_poly2/gain_hi", 5.0, type=float))
+
+                # Log the plan
+                self.update_status(
+                    f"Gradient removal (ABE Poly²): mode={mode}, samples={samples}, "
+                    f"downsample={downsample}, patch={patch_size}, min_strength={min_strength*100:.2f}%, "
+                    f"gain_clip=[{gain_lo},{gain_hi}]"
+                )
+                QApplication.processEvents()
+
+                normalized_stack = remove_gradient_stack_abe(
+                    normalized_stack,
+                    mode=mode,
+                    num_samples=samples,
+                    downsample=downsample,
+                    patch_size=patch_size,
+                    min_strength=min_strength,
+                    gain_clip=(gain_lo, gain_hi),
+                    log_fn=(self._ui_log if hasattr(self, "_ui_log") else self.update_status),
+                )
+                QApplication.processEvents()
+
 
             # Save each with "_n.fit"
             for i, orig_file in enumerate(valid_paths):
@@ -5916,6 +6726,7 @@ class StackingSuiteDialog(QDialog):
         # Status
         prefix = "⚡ Fast mode: " if fast_mode else ""
         self.update_status(f"{prefix}Alignment summary: {len(accepted)} succeeded, {len(rejected)} rejected.")
+        QApplication.processEvents()
         if (not fast_mode) and rejected:
             self.update_status(f"🚨 Rejected {len(rejected)} frame(s) due to shift > {accept_thresh}px.")
             for rf in rejected:
@@ -5933,6 +6744,7 @@ class StackingSuiteDialog(QDialog):
             filtered = [f for f in file_list if os.path.normpath(f) in self.valid_transforms]
             filtered_light_files[group] = filtered
             self.update_status(f"Group '{group}' has {len(filtered)} file(s) after filtering.")
+            QApplication.processEvents()
 
         aligned_light_files = {}
         for group, file_list in filtered_light_files.items():
@@ -6007,6 +6819,7 @@ class StackingSuiteDialog(QDialog):
             pass
 
         self.update_status(message)
+        QApplication.processEvents()
 
 
     def save_rejection_map_sasr(self, rejection_map, out_file):
@@ -6084,20 +6897,25 @@ class StackingSuiteDialog(QDialog):
         n_groups = len(grouped_files)
         n_frames = sum(len(v) for v in grouped_files.values())
         log(f"📁 Post-align: {n_groups} group(s), {n_frames} aligned frame(s).")
+        QApplication.processEvents()
 
         # Precompute a single global crop rect if enabled (pure computation, no UI).
         global_rect = None
         if autocrop_enabled:
             t0 = perf_counter()
-            log("✂️ Auto-crop: computing common bounding box…")
-            global_rect = self._compute_common_autocrop_rect(grouped_files, autocrop_pct,
-                                                            status_cb=log)  # ← pass logger in
+            log("✂️ Auto-crop: computing common bounding box (transform-only)…")
+            global_rect = self._compute_common_autocrop_rect_fast(
+                grouped_files=grouped_files,
+                autocrop_pct=autocrop_pct,
+                transforms_path=os.path.join(self.stacking_directory, "alignment_transforms.sasd"),
+                status_cb=log
+            )
             dt = perf_counter() - t0
             if global_rect is None:
                 log(f"✂️ Auto-crop: no common box (took {dt:.1f}s) — will crop per group.")
             else:
                 log(f"✂️ Auto-crop: bounding box ready (took {dt:.1f}s).")
-
+        QApplication.processEvents()
         group_integration_data = {}
         summary_lines = []
         autocrop_outputs = []
@@ -6105,11 +6923,13 @@ class StackingSuiteDialog(QDialog):
         for gi, (group_key, file_list) in enumerate(grouped_files.items(), 1):
             t_g = perf_counter()
             log(f"🔹 [{gi}/{n_groups}] Integrating '{group_key}' with {len(file_list)} file(s)…")
+            QApplication.processEvents()
 
             integrated_image, rejection_map, ref_header = self.normal_integration_with_rejection(
                 group_key, file_list, frame_weights, status_cb=log  # ensure inner loop emits!
             )
             log(f"   ↳ Integration done in {perf_counter() - t_g:.1f}s.")
+            QApplication.processEvents()
             if integrated_image is None:
                 continue
 
@@ -6250,6 +7070,7 @@ class StackingSuiteDialog(QDialog):
             return
 
         self.update_status("✅ All frames registered successfully!")
+        QApplication.processEvents()
         
         # Use the grouped files already stored from the tree view.
         if not self.light_files:
@@ -6257,6 +7078,7 @@ class StackingSuiteDialog(QDialog):
             return
         
         self.update_status(f"📂 Preparing to stack {sum(len(v) for v in self.light_files.values())} frames in {len(self.light_files)} groups.")
+        QApplication.processEvents()
         
         # Pass the dictionary (grouped by filter, exposure, dimensions) to the stacking function.
         self.stack_registered_images(self.light_files, frame_weights)
@@ -6275,6 +7097,7 @@ class StackingSuiteDialog(QDialog):
         writes the result into a memory-mapped array, and saves a final stacked FITS.
         """
         self.update_status(f"✅ Chunked stacking {len(grouped_files)} group(s)...")
+        QApplication.processEvents()
 
         # We'll also accumulate a list of rejected pixel positions (global coordinates)
         all_rejection_coords = []

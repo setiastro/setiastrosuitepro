@@ -18,6 +18,56 @@ try:
 except Exception:
     cv2 = None
 
+# --------- deterministic, invertible stretch used for StarNet ----------
+def _stat_stretch_rgb(img: np.ndarray,
+                      lo_pct: float = 0.25,
+                      hi_pct: float = 99.75) -> tuple[np.ndarray, dict]:
+    """
+    Make sure img is RGB float32 in [0,1], stretch each channel to [0,1]
+    using percentiles. Returns (stretched_img, params) where params can be
+    fed to _stat_unstretch_rgb() to invert exactly.
+    """
+    was_single = (img.ndim == 2) or (img.ndim == 3 and img.shape[2] == 1)
+    if was_single:
+        img = np.stack([img] * 3, axis=-1)
+
+    x = img.astype(np.float32, copy=False)
+    out = np.empty_like(x, dtype=np.float32)
+    lo_vals, hi_vals = [], []
+
+    for c in range(3):
+        ch = x[..., c]
+        lo = float(np.percentile(ch, lo_pct))
+        hi = float(np.percentile(ch, hi_pct))
+        if not np.isfinite(lo): lo = 0.0
+        if not np.isfinite(hi): hi = 1.0
+        if hi - lo < 1e-6:
+            hi = lo + 1e-6
+        lo_vals.append(lo); hi_vals.append(hi)
+        out[..., c] = (ch - lo) / (hi - lo)
+
+    out = np.clip(out, 0.0, 1.0)
+    params = {"lo": lo_vals, "hi": hi_vals, "was_single": was_single}
+    return out, params
+
+
+def _stat_unstretch_rgb(img: np.ndarray, params: dict) -> np.ndarray:
+    """
+    Inverse of _stat_stretch_rgb. Expects img RGB float32 [0,1].
+    """
+    lo = np.asarray(params["lo"], dtype=np.float32)
+    hi = np.asarray(params["hi"], dtype=np.float32)
+    out = img.astype(np.float32, copy=False).copy()
+    for c in range(3):
+        out[..., c] = out[..., c] * (hi[c] - lo[c]) + lo[c]
+    out = np.clip(out, 0.0, 1.0)
+    if params.get("was_single", False):
+        out = out.mean(axis=2, keepdims=False)  # back to single channel if needed
+        # StarNet needs RGB during processing; we keep RGB after removal for consistency.
+        # If you want to return mono to the doc when the source was mono, do it at the very end.
+        out = np.stack([out] * 3, axis=-1)
+    return out
+
 
 # ------------------------------------------------------------
 # Settings helper
@@ -106,12 +156,16 @@ def _run_starnet(main, doc):
 
     # optional stretch (SASv2)
     did_stretch = False
-    if is_linear and hasattr(main, "stretch_image") and callable(getattr(main, "stretch_image")):
-        try:
-            processing_image = main.stretch_image(processing_image)
-            did_stretch = True
-        except Exception:
-            pass
+    stretch_params = None
+    if is_linear:
+        processing_image, stretch_params = _stat_stretch_rgb(processing_image)
+        did_stretch = True
+        # remember for the finish step
+        setattr(main, "_starnet_last_stretch_params", stretch_params)
+    else:
+        # clear any stale params
+        if hasattr(main, "_starnet_last_stretch_params"):
+            delattr(main, "_starnet_last_stretch_params")
 
     # write input/output paths in StarNet folder
     starnet_dir = os.path.dirname(exe) or os.getcwd()
@@ -178,14 +232,18 @@ def _on_starnet_finished(main, doc, return_code, dialog, input_path, output_path
     starless_rgb = starless_rgb.astype(np.float32, copy=False)
 
     # unstretch (if we stretched)
-    if did_stretch and hasattr(main, "unstretch_image") and callable(getattr(main, "unstretch_image")):
+    if did_stretch:
         dialog.append_text("Unstretching the starless image...\n")
         try:
-            starless_rgb = main.unstretch_image(starless_rgb)
-            dialog.append_text("Starless image unstretched successfully.\n")
-        except Exception:
-            dialog.append_text("Unstretch failed; continuing with returned starless.\n")
-
+            params = getattr(main, "_starnet_last_stretch_params", None)
+            if params:
+                starless_rgb = _stat_unstretch_rgb(starless_rgb, params)
+                dialog.append_text("Starless image unstretched successfully.\n")
+            else:
+                dialog.append_text("No stretch params found; skipping unstretch.\n")
+        except Exception as e:
+            dialog.append_text(f"Unstretch failed; continuing with returned starless. ({e})\n")
+            
     # original image (from the doc)
     orig = np.asarray(doc.image)
     if orig.ndim == 2:
