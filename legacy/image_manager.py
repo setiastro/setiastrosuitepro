@@ -458,6 +458,15 @@ class MaskManager(QObject):
         """
         return self.applied_mask_slot
 
+def _finalize_loaded_image(arr: np.ndarray) -> np.ndarray:
+    """Ensure float32 [finite], C-contiguous for downstream Qt/Numba."""
+    if arr is None:
+        return None
+    # Replace NaN/Inf (can appear after BSCALE/BZERO math)
+    arr = np.nan_to_num(arr, nan=0.0, posinf=1.0, neginf=0.0)
+    # Force float32 + C-order (copies if needed; detaches from memmap)
+    return np.asarray(arr, dtype=np.float32, order="C")
+
 
 def load_image(filename, max_retries=3, wait_seconds=3):
     """
@@ -539,7 +548,7 @@ def load_image(filename, max_retries=3, wait_seconds=3):
                     elif image_data.dtype == np.float32:
                         bit_depth = "32-bit floating point"
                         print("Identified 32-bit floating point FITS image.")
-                        image = image_data
+                        image = np.array(image_data, dtype=np.float32, copy=True, order="C")
                     else:
                         raise ValueError(f"Unsupported FITS data type: {image_data.dtype}")
 
@@ -568,8 +577,9 @@ def load_image(filename, max_retries=3, wait_seconds=3):
                             raise ValueError(f"Unsupported 3D shape after squeeze: {image.shape}")
                     else:
                         raise ValueError(f"Unsupported FITS dimensions after squeeze: {image.shape}")
-
+                    
                     print(f"Loaded FITS image: shape={image.shape}, bit depth={bit_depth}, mono={is_mono}")
+                    image = _finalize_loaded_image(image)
                     return image, original_header, bit_depth, is_mono
 
 
@@ -800,6 +810,7 @@ def load_image(filename, max_retries=3, wait_seconds=3):
 
                 original_header = hdr
                 print(f"Loaded XISF header with keys: {_filled}")
+                image = _finalize_loaded_image(image)
                 return image, original_header, bit_depth, is_mono
 
             elif filename.lower().endswith(('.cr2', '.cr3', '.nef', '.arw', '.dng', '.orf', '.rw2', '.pef')):
@@ -866,6 +877,7 @@ def load_image(filename, max_retries=3, wait_seconds=3):
 
                     print(f"RAW file loaded with CFA pattern: {cfa_description}, "
                         f"dark frames ~0, bright frames ~1 now.")
+                    image = _finalize_loaded_image(image)
                     return image, original_header, bit_depth, is_mono
 
             elif filename.lower().endswith('.png'):
@@ -909,6 +921,7 @@ def load_image(filename, max_retries=3, wait_seconds=3):
                 raise ValueError("Unsupported file format!")
 
             print(f"Loaded image: shape={image.shape}, bit depth={bit_depth}, mono={is_mono}")
+            image = _finalize_loaded_image(image)
             return image, original_header, bit_depth, is_mono
 
         except Exception as e:
