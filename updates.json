@@ -1,9 +1,9 @@
 {
-  "version": "1.0.5",
+  "version": "1.0.6",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.0.5/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.0.5/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.0.5/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.0.6/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.0.6/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.0.6/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Initial Release of Seti Astro Suite Pro.  1.0.5 Added Riccardo's amazing Aberration Remover!! Since I had no better place to put it you can find it under Menu Cosmic Clarity. Run this prior to cosmic clarity sharpen as this will remove the stellar aberrations in your image first greatly easing the aberration removal workload of cosmic clarity and giving much much better results!!! Various bug fixes including the FITS save error"
+  "notes": "Initial Release of Seti Astro Suite Pro.  1.0.6 Stacking Suite: New Gradient Scale correction option in Stacking Suite Settings. Bug fix that caused dark and flats sometimes not to calibrate with the Lights. Zoom in maximum set at 300%. Other bug fixes."
 }
