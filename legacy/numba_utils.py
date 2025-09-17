@@ -1725,138 +1725,89 @@ def _edge_aware_interpolate_numba(out):
 # and that we want a full (H,W,3) output.
 
 @njit(parallel=True, fastmath=True)
-def debayer_RGGB_fullres_fast(image):
-    """
-    For an RGGB pattern:
-      - Even rows: even cols = Red, odd cols = Green.
-      - Odd rows: even cols = Green, odd cols = Blue.
-    """
+def debayer_RGGB_fullres_fast(image, interpolate=True):
     H, W = image.shape
     out = np.zeros((H, W, 3), dtype=image.dtype)
     for y in prange(H):
         for x in range(W):
             if (y & 1) == 0:
-                if (x & 1) == 0:
-                    # Even row, even col: Red
-                    out[y, x, 0] = image[y, x]
-                else:
-                    # Even row, odd col: Green
-                    out[y, x, 1] = image[y, x]
+                if (x & 1) == 0: out[y, x, 0] = image[y, x]  # R
+                else:            out[y, x, 1] = image[y, x]  # G
             else:
-                if (x & 1) == 0:
-                    # Odd row, even col: Green
-                    out[y, x, 1] = image[y, x]
-                else:
-                    # Odd row, odd col: Blue
-                    out[y, x, 2] = image[y, x]
-    _edge_aware_interpolate_numba(out)
+                if (x & 1) == 0: out[y, x, 1] = image[y, x]  # G
+                else:            out[y, x, 2] = image[y, x]  # B
+    if interpolate:
+        _edge_aware_interpolate_numba(out)
     return out
 
 @njit(parallel=True, fastmath=True)
-def debayer_BGGR_fullres_fast(image):
-    """
-    For a BGGR pattern:
-      - Even rows: even cols = Blue, odd cols = Green.
-      - Odd rows: even cols = Green, odd cols = Red.
-    """
+def debayer_BGGR_fullres_fast(image, interpolate=True):
     H, W = image.shape
     out = np.zeros((H, W, 3), dtype=image.dtype)
     for y in prange(H):
         for x in range(W):
             if (y & 1) == 0:
-                if (x & 1) == 0:
-                    # Even row, even col: Blue
-                    out[y, x, 2] = image[y, x]
-                else:
-                    # Even row, odd col: Green
-                    out[y, x, 1] = image[y, x]
+                if (x & 1) == 0: out[y, x, 2] = image[y, x]  # B
+                else:            out[y, x, 1] = image[y, x]  # G
             else:
-                if (x & 1) == 0:
-                    # Odd row, even col: Green
-                    out[y, x, 1] = image[y, x]
-                else:
-                    # Odd row, odd col: Red
-                    out[y, x, 0] = image[y, x]
-    _edge_aware_interpolate_numba(out)
+                if (x & 1) == 0: out[y, x, 1] = image[y, x]  # G
+                else:            out[y, x, 0] = image[y, x]  # R
+    if interpolate:
+        _edge_aware_interpolate_numba(out)
     return out
 
 @njit(parallel=True, fastmath=True)
-def debayer_GRBG_fullres_fast(image):
-    """
-    For a GRBG pattern:
-      - Even rows: even cols = Green, odd cols = Red.
-      - Odd rows: even cols = Blue, odd cols = Green.
-    """
+def debayer_GRBG_fullres_fast(image, interpolate=True):
     H, W = image.shape
     out = np.zeros((H, W, 3), dtype=image.dtype)
     for y in prange(H):
         for x in range(W):
             if (y & 1) == 0:
-                if (x & 1) == 0:
-                    # Even row, even col: Green
-                    out[y, x, 1] = image[y, x]
-                else:
-                    # Even row, odd col: Red
-                    out[y, x, 0] = image[y, x]
+                if (x & 1) == 0: out[y, x, 1] = image[y, x]  # G
+                else:            out[y, x, 0] = image[y, x]  # R
             else:
-                if (x & 1) == 0:
-                    # Odd row, even col: Blue
-                    out[y, x, 2] = image[y, x]
-                else:
-                    # Odd row, odd col: Green
-                    out[y, x, 1] = image[y, x]
-    _edge_aware_interpolate_numba(out)
+                if (x & 1) == 0: out[y, x, 2] = image[y, x]  # B
+                else:            out[y, x, 1] = image[y, x]  # G
+    if interpolate:
+        _edge_aware_interpolate_numba(out)
     return out
 
 @njit(parallel=True, fastmath=True)
-def debayer_GBRG_fullres_fast(image):
-    """
-    For a GBRG pattern:
-      - Even rows: even cols = Green, odd cols = Blue.
-      - Odd rows: even cols = Red, odd cols = Green.
-    """
+def debayer_GBRG_fullres_fast(image, interpolate=True):
     H, W = image.shape
     out = np.zeros((H, W, 3), dtype=image.dtype)
     for y in prange(H):
         for x in range(W):
             if (y & 1) == 0:
-                if (x & 1) == 0:
-                    # Even row, even col: Green
-                    out[y, x, 1] = image[y, x]
-                else:
-                    # Even row, odd col: Blue
-                    out[y, x, 2] = image[y, x]
+                if (x & 1) == 0: out[y, x, 1] = image[y, x]  # G
+                else:            out[y, x, 2] = image[y, x]  # B
             else:
-                if (x & 1) == 0:
-                    # Odd row, even col: Red
-                    out[y, x, 0] = image[y, x]
-                else:
-                    # Odd row, odd col: Green
-                    out[y, x, 1] = image[y, x]
-    _edge_aware_interpolate_numba(out)
+                if (x & 1) == 0: out[y, x, 0] = image[y, x]  # R
+                else:            out[y, x, 1] = image[y, x]  # G
+    if interpolate:
+        _edge_aware_interpolate_numba(out)
     return out
 
 # === Python-Level Dispatch Function ===
 # Since Numba cannot easily compare strings in nopython mode,
 # we do the if/elif check here in Python and then call the appropriate njit function.
 
-def debayer_fits_fast(image_data, bayer_pattern):
-    bp = bayer_pattern.upper()
+def debayer_fits_fast(image_data, bayer_pattern, cfa_drizzle=False):
+    bp = (bayer_pattern or "").upper()
+    interpolate = not cfa_drizzle
     if bp == 'RGGB':
-        return debayer_RGGB_fullres_fast(image_data)
+        return debayer_RGGB_fullres_fast(image_data, interpolate)
     elif bp == 'BGGR':
-        return debayer_BGGR_fullres_fast(image_data)
+        return debayer_BGGR_fullres_fast(image_data, interpolate)
     elif bp == 'GRBG':
-        return debayer_GRBG_fullres_fast(image_data)
+        return debayer_GRBG_fullres_fast(image_data, interpolate)
     elif bp == 'GBRG':
-        return debayer_GBRG_fullres_fast(image_data)
+        return debayer_GBRG_fullres_fast(image_data, interpolate)
     else:
         raise ValueError(f"Unsupported Bayer pattern: {bayer_pattern}")
 
-def debayer_raw_fast(raw_image_data, bayer_pattern="RGGB"):
-    # For RAW images, use the same full-resolution demosaicing logic.
-    return debayer_fits_fast(raw_image_data, bayer_pattern)
-
+def debayer_raw_fast(raw_image_data, bayer_pattern="RGGB", cfa_drizzle=False):
+    return debayer_fits_fast(raw_image_data, bayer_pattern, cfa_drizzle=cfa_drizzle)
 
 @njit(parallel=True, fastmath=True)
 def applyPixelMath_numba(image_array, amount):
@@ -2243,123 +2194,193 @@ def hsv_to_rgb_numba(hsv):
     return out
 
 @njit(parallel=True, fastmath=True)
-def _cosmetic_correction_numba_fixed(corrected, H, W, C, hot_sigma, cold_sigma):
+def _cosmetic_correction_core(src, dst, H, W, C,
+                              hot_sigma, cold_sigma,
+                              star_mean_ratio,  # e.g. 0.18..0.30
+                              star_max_ratio,   # e.g. 0.45..0.65
+                              sat_threshold,    # absolute cutoff in src units
+                              cold_cluster_max  # max # of neighbors below low before we skip
+                              ):
     """
-    Optimized Numba-compiled local outlier correction.
-    - Computes median and standard deviation from 8 surrounding pixels (excluding center).
-    - If the center pixel is greater than (median + hot_sigma * std_dev), it is replaced with the median.
-    - If the center pixel is less than (median - cold_sigma * std_dev), it is replaced with the median.
-    - Edge pixels are skipped (avoiding padding artifacts).
+    Read from src, write to dst. Center is EXCLUDED from stats.
+    Star guard: if ring mean or ring max are a decent fraction of center, skip (likely a PSF).
+    Cold guard: if many neighbors are also low, skip (structure/shadow, not a dead pixel).
     """
-    local_vals = np.empty(9, dtype=np.float32)  # Holds 8 surrounding pixels
+    local_vals = np.empty(8, dtype=np.float32)
 
-    # Process pixels in parallel, skipping edges
-    for y in prange(1, H - 1):  # Skip first and last rows
-        for x in range(1, W - 1):  # Skip first and last columns
-            # If the image is grayscale, set C=1 and handle accordingly
-            for c_i in prange(C if corrected.ndim == 3 else 1):
+    for y in prange(1, H-1):
+        for x in range(1, W-1):
+            for c in range(C if src.ndim == 3 else 1):
+                # gather 8-neighbor ring (no center)
                 k = 0
-                for dy in range(-1, 2):  # -1, 0, +1
-                    for dx in range(-1, 2):  # -1, 0, +1
-                        if corrected.ndim == 3:  # Color image
-                            local_vals[k] = corrected[y + dy, x + dx, c_i]
-                        else:  # Grayscale image
-                            local_vals[k] = corrected[y + dy, x + dx]
+                ring_sum = 0.0
+                ring_max = -1e30
+                for dy in (-1, 0, 1):
+                    for dx in (-1, 0, 1):
+                        if dy == 0 and dx == 0:
+                            continue
+                        if src.ndim == 3:
+                            v = src[y+dy, x+dx, c]
+                        else:
+                            v = src[y+dy, x+dx]
+                        local_vals[k] = v
+                        ring_sum += v
+                        if v > ring_max:
+                            ring_max = v
                         k += 1
 
-                # Compute median
+                # median and MAD from ring only
                 M = np.median(local_vals)
-
-                # Compute MAD manually
-                abs_devs = np.abs(local_vals - M)
+                abs_devs = np.empty(8, dtype=np.float32)
+                for i in range(8):
+                    abs_devs[i] = abs(local_vals[i] - M)
                 MAD = np.median(abs_devs)
+                sigma = 1.4826 * MAD + 1e-8  # epsilon guard
 
-                # Convert MAD to an approximation of standard deviation
-                sigma_mad = 1.4826 * MAD  
+                # center
+                T = src[y, x, c] if src.ndim == 3 else src[y, x]
 
-                # Get center pixel
-                if corrected.ndim == 3:
-                    T = corrected[y, x, c_i]
+                # saturation guard
+                if T >= sat_threshold:
+                    if src.ndim == 3: dst[y, x, c] = T
+                    else:             dst[y, x]    = T
+                    continue
+
+                high = M + hot_sigma  * sigma
+                low  = M - cold_sigma * sigma
+
+                replace = False
+
+                if T > high:
+                    # Star guard for HOT: neighbors should not form a footprint
+                    ring_mean = ring_sum / 8.0
+                    if (ring_mean / (T + 1e-8) < star_mean_ratio) and (ring_max / (T + 1e-8) < star_max_ratio):
+                        replace = True
+                elif T < low:
+                    # Cold pixel: only if it's isolated (few neighbors also low)
+                    count_below = 0
+                    for i in range(8):
+                        if local_vals[i] < low:
+                            count_below += 1
+                    if count_below <= cold_cluster_max:
+                        replace = True
+
+                if replace:
+                    if src.ndim == 3: dst[y, x, c] = M
+                    else:             dst[y, x]    = M
                 else:
-                    T = corrected[y, x]
+                    if src.ndim == 3: dst[y, x, c] = T
+                    else:             dst[y, x]    = T
 
-                threshold_high = M + (hot_sigma * sigma_mad)
-                threshold_low = M - (cold_sigma * sigma_mad)
 
-                # **Apply correction ONLY if center pixel is an outlier**
-                if T > threshold_high or T < threshold_low:
-                    if corrected.ndim == 3:
-                        corrected[y, x, c_i] = M  # Replace center pixel in color image
-                    else:
-                        corrected[y, x] = M  # Replace center pixel in grayscale image
-
-def bulk_cosmetic_correction_bayer(image, hot_sigma=5.0, cold_sigma=5.0):
+def bulk_cosmetic_correction_numba(image,
+                                   hot_sigma=5.0,
+                                   cold_sigma=5.0,
+                                   star_mean_ratio=0.22,
+                                   star_max_ratio=0.55,
+                                   sat_quantile=0.9995):
     """
-    Perform cosmetic correction on a single-channel Bayer mosaic.
-    Assumes a default Bayer pattern "RGGB":
-      - Red: even rows, even columns
-      - Green1: even rows, odd columns
-      - Green2: odd rows, even columns
-      - Blue: odd rows, odd columns
-    Applies cosmetic correction separately on each channel and reassembles them.
+    Star-safe cosmetic correction for 2D (mono) or 3D (RGB) arrays.
+    Reads from the original, writes to a new array (two-pass).
+    - star_mean_ratio: how large neighbor mean must be vs center to *skip* (PSF)
+    - star_max_ratio : how large neighbor max must be vs center to *skip* (PSF)
+    - sat_quantile   : top quantile to protect from edits (bright cores)
     """
-    H, W = image.shape
-    # Create a copy to hold the corrected image.
-    corrected = image.astype(np.float32).copy()
-    
-    # For each channel, extract the subarray and apply the standard correction.
-    # We use your existing bulk_cosmetic_correction_numba function, which accepts a 2D array.
-    # Red channel (even rows, even cols)
-    red = corrected[0:H:2, 0:W:2]
-    red_corrected = bulk_cosmetic_correction_numba(red, hot_sigma, cold_sigma)
-    corrected[0:H:2, 0:W:2] = red_corrected
-
-    # Blue channel (odd rows, odd cols)
-    blue = corrected[1:H:2, 1:W:2]
-    blue_corrected = bulk_cosmetic_correction_numba(blue, hot_sigma, cold_sigma)
-    corrected[1:H:2, 1:W:2] = blue_corrected
-
-    # Green channel: two sets:
-    # Green1 (even rows, odd cols)
-    green1 = corrected[0:H:2, 1:W:2]
-    green1_corrected = bulk_cosmetic_correction_numba(green1, hot_sigma, cold_sigma)
-    corrected[0:H:2, 1:W:2] = green1_corrected
-
-    # Green2 (odd rows, even cols)
-    green2 = corrected[1:H:2, 0:W:2]
-    green2_corrected = bulk_cosmetic_correction_numba(green2, hot_sigma, cold_sigma)
-    corrected[1:H:2, 0:W:2] = green2_corrected
-
-    return corrected
-
-def bulk_cosmetic_correction_numba(image, hot_sigma=3.0, cold_sigma=3.0, window_size=3):
-    """
-    Optimized local outlier correction using Numba.
-    - Identifies hot and cold outliers based on local neighborhood statistics.
-    - Uses median and standard deviation from surrounding pixels to detect and replace outliers.
-    - Applies separate hot_sigma and cold_sigma thresholds.
-    - Skips edge pixels to avoid padding artifacts.
-    """
-
-    was_gray = False
-
-    if image.ndim == 2:  # Convert grayscale to 3D
-        H, W = image.shape
-        C = 1
-        was_gray = True
-        image = image[:, :, np.newaxis]  # Explicitly add a color channel dimension
-
+    img = image.astype(np.float32, copy=False)
+    was_gray = (img.ndim == 2)
+    if was_gray:
+        src = img[:, :, None]
     else:
-        H, W, C = image.shape
+        src = img
 
-    # Copy the image for modification
-    corrected = image.astype(np.float32).copy()
+    H, W, C = src.shape
+    dst = src.copy()
 
-    # Apply fast correction (no padding, edges skipped)
-    _cosmetic_correction_numba_fixed(corrected, H, W, C, hot_sigma, cold_sigma)
+    # per-channel saturation guards
+    sat_thresholds = np.empty(C, dtype=np.float32)
+    for ci in range(C):
+        plane = src[:, :, ci]
+        # Compute in Python (Numba doesn't support np.quantile well)
+        sat_thresholds[ci] = float(np.quantile(plane, sat_quantile))
+
+    # run per-channel to use per-channel saturation
+    for ci in range(C):
+        _cosmetic_correction_core(src[:, :, ci], dst[:, :, ci],
+                                  H, W, 1,
+                                  float(hot_sigma), float(cold_sigma),
+                                  float(star_mean_ratio), float(star_max_ratio),
+                                  float(sat_thresholds[ci]),
+                                  1)  # cold_cluster_max: allow 1 neighbor to be low
 
     if was_gray:
-        corrected = corrected[:, :, 0]  # Convert back to 2D if originally grayscale
+        return dst[:, :, 0]
+    return dst
+
+
+def bulk_cosmetic_correction_bayer(image,
+                                   hot_sigma=5.5,
+                                   cold_sigma=5.0,
+                                   star_mean_ratio=0.22,
+                                   star_max_ratio=0.55,
+                                   sat_quantile=0.9995,
+                                   pattern="RGGB"):
+    """
+    Bayer-safe cosmetic correction. Work on same-color sub-planes (2-px stride),
+    then write results back. Defaults assume normalized or 16/32f data.
+    """
+    H, W = image.shape
+    corrected = image.astype(np.float32).copy()
+
+    if pattern.upper() not in ("RGGB", "BGGR", "GRBG", "GBRG"):
+        pattern = "RGGB"
+
+    # index maps for each CFA pattern (row0,col0 offsets)
+    if pattern.upper() == "RGGB":
+        r0, c0 = 0, 0
+        g1r, g1c = 0, 1
+        g2r, g2c = 1, 0
+        b0, b0c = 1, 1
+    elif pattern.upper() == "BGGR":
+        r0, c0 = 1, 1
+        g1r, g1c = 1, 0
+        g2r, g2c = 0, 1
+        b0, b0c = 0, 0
+    elif pattern.upper() == "GRBG":
+        r0, c0 = 0, 1
+        g1r, g1c = 0, 0
+        g2r, g2c = 1, 1
+        b0, b0c = 1, 0
+    else:  # GBRG
+        r0, c0 = 1, 0
+        g1r, g1c = 0, 0
+        g2r, g2c = 1, 1
+        b0, b0c = 0, 1
+
+    # helper to process a same-color plane view
+    def _process_plane(view):
+        return bulk_cosmetic_correction_numba(
+            view,
+            hot_sigma=hot_sigma,
+            cold_sigma=cold_sigma,
+            star_mean_ratio=star_mean_ratio,
+            star_max_ratio=star_max_ratio,
+            sat_quantile=sat_quantile
+        )
+
+    # Red
+    red = corrected[r0:H:2, c0:W:2]
+    corrected[r0:H:2, c0:W:2] = _process_plane(red)
+
+    # Blue
+    blue = corrected[b0:H:2, b0c:W:2]
+    corrected[b0:H:2, b0c:W:2] = _process_plane(blue)
+
+    # Greens
+    g1 = corrected[g1r:H:2, g1c:W:2]
+    corrected[g1r:H:2, g1c:W:2] = _process_plane(g1)
+
+    g2 = corrected[g2r:H:2, g2c:W:2]
+    corrected[g2r:H:2, g2c:W:2] = _process_plane(g2)
 
     return corrected
 

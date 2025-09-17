@@ -17,6 +17,26 @@ from xisf import XISF
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
+def _looks_like_xisf_header(hdr) -> bool:
+    try:
+        if isinstance(hdr, (fits.Header, dict)):
+            for k in hdr.keys():
+                if isinstance(k, str) and k.startswith("XISF:"):
+                    return True
+    except Exception:
+        pass
+    return False
+
+def _iter_header_items(hdr):
+    """Yield (key, value) safely from fits.Header or dict; else yield nothing."""
+    if isinstance(hdr, fits.Header):
+        # .items() is supported and yields (key, value)
+        for kv in hdr.items():
+            yield kv
+    elif isinstance(hdr, dict):
+        for kv in hdr.items():
+            yield kv
+
 class ImageManager(QObject):
     """
     Manages multiple image slots with associated metadata and supports undo/redo operations for each slot.
@@ -1007,294 +1027,319 @@ def get_bayer_header(file_path):
         print(f"Error in get_bayer_header: {e}")
     return None
 
-def save_image(img_array, filename, original_format, bit_depth=None, original_header=None, is_mono=False, image_meta=None, file_meta=None):
- 
+
+_BIT_DEPTH_STRS = {
+    "8-bit", "16-bit", "32-bit unsigned", "32-bit floating point"
+}
+
+def _normalize_format(fmt: str) -> str:
+    """Normalize an input format/extension (with or without leading dot)."""
+    f = (fmt or "").lower().lstrip(".")
+    if f == "jpeg": f = "jpg"
+    if f == "tiff": f = "tif"
+    return f
+
+def _is_header_obj(h) -> bool:
+    """True if h looks like a FITS header-ish object."""
+    return isinstance(h, (fits.Header, dict))
+
+def _looks_like_xisf_header(hdr) -> bool:
+    """Detects XISF-origin metadata safely without assuming .keys() exists."""
+    try:
+        if isinstance(hdr, fits.Header):
+            # fits.Header supports .keys() and iteration
+            for k in hdr.keys():
+                if isinstance(k, str) and k.startswith("XISF:"):
+                    return True
+        elif isinstance(hdr, dict):
+            for k in hdr.keys():
+                if isinstance(k, str) and k.startswith("XISF:"):
+                    return True
+    except Exception:
+        pass
+    return False
+
+def _has_xisf_props(meta) -> bool:
+    """True if meta appears to contain XISFProperties (dict or list-of-dicts)."""
+    try:
+        if isinstance(meta, dict):
+            return "XISFProperties" in meta
+        if isinstance(meta, list) and meta and isinstance(meta[0], dict):
+            return "XISFProperties" in meta[0]
+    except Exception:
+        pass
+    return False
+
+def save_image(img_array,
+               filename,
+               original_format,
+               bit_depth=None,
+               original_header=None,
+               is_mono=False,
+               image_meta=None,
+               file_meta=None):
     """
     Save an image array to a file in the specified format and bit depth.
+    - Robust to mis-ordered positional args (header/bit_depth swap).
+    - Never calls .keys() on a non-mapping.
+    - FITS always written as float32; header is sanitized or synthesized.
     """
-    img_array = ensure_native_byte_order(img_array)  # Ensure correct byte order
-    is_xisf = False  # Flag to determine if the original file was XISF
+    # --- Fix for accidental positional arg swap: (header <-> bit_depth) -----
+    if isinstance(original_header, str) and original_header in _BIT_DEPTH_STRS and _is_header_obj(bit_depth):
+        original_header, bit_depth = bit_depth, original_header
 
-    # **🔹 Detect If Original File Was XISF**
-    if original_header:
-        for key in original_header.keys():
-            if key.startswith("XISF:"):
-                is_xisf = True
-                break
+    # Normalize format and extension
+    fmt = _normalize_format(original_format)
+    base, _ = os.path.splitext(filename)
+    out_ext = "jpg" if fmt == "jpg" else ("tif" if fmt == "tif" else fmt)
+    if not filename.lower().endswith(f".{out_ext}"):
+        filename = f"{base}.{out_ext}"
 
-    if image_meta and "XISFProperties" in image_meta:
-        is_xisf = True  # Confirm XISF metadata exists
+    # Ensure correct byte order for numpy data
+    img_array = ensure_native_byte_order(img_array)
+
+    # Detect XISF origin (safely)
+    is_xisf = _looks_like_xisf_header(original_header) or _has_xisf_props(image_meta)
 
     try:
-        if original_format == 'png':
-            img = Image.fromarray((img_array * 255).astype(np.uint8))  # Convert to 8-bit and save as PNG
+        # ---------------------------------------------------------------------
+        # PNG/JPG — always write 8-bit preview-style data
+        # ---------------------------------------------------------------------
+        if fmt == "png":
+            img = Image.fromarray((np.clip(img_array, 0, 1) * 255).astype(np.uint8))
             img.save(filename)
             print(f"Saved 8-bit PNG image to: {filename}")
-        elif original_format in ['jpg', 'jpeg']:
-            img = Image.fromarray((img_array * 255).astype(np.uint8))  # Convert to 8-bit and save as PNG
+            return
+
+        if fmt == "jpg":
+            img = Image.fromarray((np.clip(img_array, 0, 1) * 255).astype(np.uint8))
+            # You can pass quality=95, subsampling=0 if you want
             img.save(filename)
-            print(f"Saved 8-bit JPG image to: {filename}")        
-        elif original_format in ['tiff', 'tif']:
-            # Save TIFF files based on bit depth
-            if bit_depth == "8-bit":
-                tiff.imwrite(filename, (img_array * 255).astype(np.uint8))  # Save as 8-bit TIFF
-            elif bit_depth == "16-bit":
-                tiff.imwrite(filename, (img_array * 65535).astype(np.uint16))  # Save as 16-bit TIFF
-            elif bit_depth == "32-bit unsigned":
-                tiff.imwrite(filename, (img_array * 4294967295).astype(np.uint32))  # Save as 32-bit unsigned TIFF
-            elif bit_depth == "32-bit floating point":
-                tiff.imwrite(filename, img_array.astype(np.float32))  # Save as 32-bit floating point TIFF
+            print(f"Saved 8-bit JPG image to: {filename}")
+            return
+
+        # ---------------------------------------------------------------------
+        # TIFF — honor bit depth (fallback to 32-bit floating point)
+        # ---------------------------------------------------------------------
+        if fmt in ("tif",):
+            bd = bit_depth or "32-bit floating point"
+            if bd == "8-bit":
+                tiff.imwrite(filename, (np.clip(img_array, 0, 1) * 255).astype(np.uint8))
+            elif bd == "16-bit":
+                tiff.imwrite(filename, (np.clip(img_array, 0, 1) * 65535).astype(np.uint16))
+            elif bd == "32-bit unsigned":
+                tiff.imwrite(filename, (np.clip(img_array, 0, 1) * 4294967295).astype(np.uint32))
+            elif bd == "32-bit floating point":
+                tiff.imwrite(filename, img_array.astype(np.float32))
             else:
-                raise ValueError("Unsupported bit depth for TIFF!")
-            print(f"Saved {bit_depth} TIFF image to: {filename}")
+                raise ValueError(f"Unsupported bit depth for TIFF: {bd}")
+            print(f"Saved {bd} TIFF image to: {filename}")
+            return
 
-        elif original_format in ['fits', 'fit']:
-            # Normalize extension on the output filename
-            if not filename.lower().endswith(f".{original_format}"):
-                filename = filename.rsplit('.', 1)[0] + f".{original_format}"
-
-            # 1) Build a header:
-            #    - if we have a FITS header: sanitize & reuse
-            #    - else if we detected XISF metadata: convert what we can
-            #    - else: create a minimal valid FITS header
-            from astropy.io import fits
-
+        # ---------------------------------------------------------------------
+        # FITS — always float32, sanitize or synthesize header
+        # ---------------------------------------------------------------------
+        if fmt in ("fit", "fits"):
+            # Helper to build minimal valid header
             def _minimal_fits_header(h: int, w: int, is_rgb: bool) -> fits.Header:
                 hdr = fits.Header()
-                hdr['SIMPLE'] = True
-                hdr['BITPIX'] = -32                  # we always write float32
-                hdr['NAXIS']  = 3 if is_rgb else 2
-                hdr['NAXIS1'] = w
-                hdr['NAXIS2'] = h
+                hdr["SIMPLE"] = True
+                hdr["BITPIX"] = -32
+                hdr["NAXIS"] = 3 if is_rgb else 2
+                hdr["NAXIS1"] = w
+                hdr["NAXIS2"] = h
                 if is_rgb:
-                    hdr['NAXIS3'] = 3
-                hdr['BSCALE'] = 1.0
-                hdr['BZERO']  = 0.0
-                hdr['CREATOR']= 'Seti Astro Suite Pro'
-                hdr.add_history('Written by Seti Astro Suite Pro')
+                    hdr["NAXIS3"] = 3
+                hdr["BSCALE"] = 1.0
+                hdr["BZERO"] = 0.0
+                hdr["CREATOR"] = "Seti Astro Suite Pro"
+                hdr.add_history("Written by Seti Astro Suite Pro")
                 return hdr
-
-            # Detect XISF-ness if we have metadata
-            is_xisf = False
-            if original_header:
-                for key in original_header.keys():
-                    if key.startswith("XISF:"):
-                        is_xisf = True
-                        break
-            if image_meta and "XISFProperties" in image_meta:
-                is_xisf = True
 
             h, w = img_array.shape[:2]
             is_rgb = (img_array.ndim == 3 and img_array.shape[2] == 3)
 
+            # Build header
             if is_xisf:
-                # (existing XISF -> FITS conversion you had)
                 fits_header = fits.Header()
-                if 'XISFProperties' in (image_meta or {}):
-                    xisf_props = image_meta['XISFProperties']
-                    # Pull WCS-ish bits if present (same as your previous code)
-                    if 'PCL:AstrometricSolution:ReferenceCoordinates' in xisf_props:
-                        ra, dec = xisf_props['PCL:AstrometricSolution:ReferenceCoordinates']['value']
-                        fits_header['CRVAL1'] = ra
-                        fits_header['CRVAL2'] = dec
-                    if 'PCL:AstrometricSolution:ReferenceLocation' in xisf_props:
-                        cx, cy = xisf_props['PCL:AstrometricSolution:ReferenceLocation']['value']
-                        fits_header['CRPIX1'] = cx
-                        fits_header['CRPIX2'] = cy
-                    if 'PCL:AstrometricSolution:PixelSize' in xisf_props:
-                        px = xisf_props['PCL:AstrometricSolution:PixelSize']['value']
-                        fits_header['CDELT1'] = -px / 3600.0
-                        fits_header['CDELT2'] =  px / 3600.0
-                    if 'PCL:AstrometricSolution:LinearTransformationMatrix' in xisf_props:
-                        m = xisf_props['PCL:AstrometricSolution:LinearTransformationMatrix']['value']
-                        fits_header['CD1_1'] = m[0][0]; fits_header['CD1_2'] = m[0][1]
-                        fits_header['CD2_1'] = m[1][0]; fits_header['CD2_2'] = m[1][1]
-                fits_header.setdefault('CTYPE1', 'RA---TAN')
-                fits_header.setdefault('CTYPE2', 'DEC--TAN')
-            elif original_header is not None:
-                # Sanitize a provided FITS header
+                # read props from dict or list-of-dicts
+                props = None
+                if isinstance(image_meta, dict):
+                    props = image_meta.get("XISFProperties")
+                elif isinstance(image_meta, list) and image_meta and isinstance(image_meta[0], dict):
+                    props = image_meta[0].get("XISFProperties")
+                if isinstance(props, dict):
+                    try:
+                        if "PCL:AstrometricSolution:ReferenceCoordinates" in props:
+                            ra, dec = props["PCL:AstrometricSolution:ReferenceCoordinates"]["value"]
+                            fits_header["CRVAL1"] = ra
+                            fits_header["CRVAL2"] = dec
+                        if "PCL:AstrometricSolution:ReferenceLocation" in props:
+                            cx, cy = props["PCL:AstrometricSolution:ReferenceLocation"]["value"]
+                            fits_header["CRPIX1"] = cx
+                            fits_header["CRPIX2"] = cy
+                        if "PCL:AstrometricSolution:PixelSize" in props:
+                            px = props["PCL:AstrometricSolution:PixelSize"]["value"]
+                            fits_header["CDELT1"] = -px / 3600.0
+                            fits_header["CDELT2"] =  px / 3600.0
+                        if "PCL:AstrometricSolution:LinearTransformationMatrix" in props:
+                            m = props["PCL:AstrometricSolution:LinearTransformationMatrix"]["value"]
+                            fits_header["CD1_1"] = m[0][0]; fits_header["CD1_2"] = m[0][1]
+                            fits_header["CD2_1"] = m[1][0]; fits_header["CD2_2"] = m[1][1]
+                    except Exception:
+                        pass
+                fits_header.setdefault("CTYPE1", "RA---TAN")
+                fits_header.setdefault("CTYPE2", "DEC--TAN")
+
+            elif _is_header_obj(original_header):
+                # Sanitize provided header (FITS.Header or dict)
+                src_items = (original_header.items()
+                             if isinstance(original_header, fits.Header)
+                             else original_header.items())
                 fits_header = fits.Header()
-                for key, value in original_header.items():
-                    if key.startswith("XISF:"):
+                for key, value in src_items:
+                    if isinstance(key, str) and key.startswith("XISF:"):
                         continue
                     if key in ("RANGE_LOW", "RANGE_HIGH"):
                         continue
-                    if isinstance(value, dict) and 'value' in value:
-                        value = value['value']
+                    if isinstance(value, dict) and "value" in value:
+                        value = value["value"]
                     try:
                         fits_header[key] = value
                     except Exception:
                         # skip keys astropy can't serialize
                         pass
             else:
-                # No header at all: make a minimal valid header
                 fits_header = _minimal_fits_header(h, w, is_rgb)
 
-            # Ensure dimensional keywords match the data we will write
-            fits_header['BSCALE'] = 1.0
-            fits_header['BZERO']  = 0.0
-            fits_header['BITPIX'] = -32  # float32
+            # Ensure dimensional + datatype keywords match what we write
+            fits_header["BSCALE"] = 1.0
+            fits_header["BZERO"]  = 0.0
+            fits_header["BITPIX"] = -32
 
-            # 2) Arrange image data for FITS and force float32
             if is_rgb:
                 data_to_write = np.transpose(img_array, (2, 0, 1)).astype(np.float32)  # (3,H,W)
-                fits_header['NAXIS']  = 3
-                fits_header['NAXIS1'] = w
-                fits_header['NAXIS2'] = h
-                fits_header['NAXIS3'] = 3
+                fits_header["NAXIS"]  = 3
+                fits_header["NAXIS1"] = w
+                fits_header["NAXIS2"] = h
+                fits_header["NAXIS3"] = 3
             else:
-                data_to_write = (img_array[:, :, 0] if (img_array.ndim == 3 and img_array.shape[2] == 1) else img_array).astype(np.float32)
-                fits_header['NAXIS']  = 2
-                fits_header['NAXIS1'] = w
-                fits_header['NAXIS2'] = h
-                if 'NAXIS3' in fits_header:
-                    del fits_header['NAXIS3']
+                if img_array.ndim == 3 and img_array.shape[2] == 1:
+                    data = img_array[:, :, 0]
+                else:
+                    data = img_array
+                data_to_write = data.astype(np.float32)
+                fits_header["NAXIS"]  = 2
+                fits_header["NAXIS1"] = w
+                fits_header["NAXIS2"] = h
+                if "NAXIS3" in fits_header:
+                    del fits_header["NAXIS3"]
 
-            # 3) Write the file
             hdu = fits.PrimaryHDU(data_to_write, header=fits_header)
             hdu.writeto(filename, overwrite=True)
             print(f"Saved FITS image to: {filename}")
             return
 
-
-
-        elif original_format in ['.cr2', '.nef', '.arw', '.dng', '.orf', '.rw2', '.pef']:
-            # Save as FITS file with metadata
+        # ---------------------------------------------------------------------
+        # RAW inputs — not writable; convert to FITS (float32)
+        # ---------------------------------------------------------------------
+        if fmt in ("cr2", "nef", "arw", "dng", "orf", "rw2", "pef"):
             print("RAW formats are not writable. Saving as FITS instead.")
-            filename = filename.rsplit('.', 1)[0] + ".fits"
+            filename = f"{base}.fits"
 
-            if original_header is not None:
-                # Convert original_header (dictionary) to astropy Header object
-                fits_header = fits.Header()
-                for key, value in original_header.items():
-                    fits_header[key] = value
-                fits_header['BSCALE'] = 1.0  # Scaling factor
-                fits_header['BZERO'] = 0.0   # Offset for brightness    
+            fits_header = fits.Header()
+            if _is_header_obj(original_header):
+                src_items = (original_header.items()
+                             if isinstance(original_header, fits.Header)
+                             else original_header.items())
+                for k, v in src_items:
+                    try:
+                        fits_header[k] = v
+                    except Exception:
+                        pass
 
-                if is_mono:  # Grayscale FITS
-                    if bit_depth == "16-bit":
-                        img_array_fits = (img_array[:, :, 0] * 65535).astype(np.uint16)
-                    elif bit_depth == "32-bit unsigned":
-                        bzero = fits_header.get('BZERO', 0)
-                        bscale = fits_header.get('BSCALE', 1)
-                        img_array_fits = (img_array[:, :, 0].astype(np.float32) * bscale + bzero).astype(np.uint32)
-                    else:  # 32-bit float
-                        img_array_fits = img_array[:, :, 0].astype(np.float32)
+            fits_header["BSCALE"] = 1.0
+            fits_header["BZERO"]  = 0.0
+            fits_header["BITPIX"] = -32
 
-                    # Update header for a 2D (grayscale) image
-                    fits_header['NAXIS'] = 2
-                    fits_header['NAXIS1'] = img_array.shape[1]  # Width
-                    fits_header['NAXIS2'] = img_array.shape[0]  # Height
-                    fits_header.pop('NAXIS3', None)  # Remove if present
-
-                    hdu = fits.PrimaryHDU(img_array_fits, header=fits_header)
-                else:  # RGB FITS
-                    img_array_transposed = np.transpose(img_array, (2, 0, 1))  # Channels, Height, Width
-                    if bit_depth == "16-bit":
-                        img_array_fits = (img_array_transposed * 65535).astype(np.uint16)
-                    elif bit_depth == "32-bit unsigned":
-                        bzero = fits_header.get('BZERO', 0)
-                        bscale = fits_header.get('BSCALE', 1)
-                        img_array_fits = img_array_transposed.astype(np.float32) * bscale + bzero
-                        fits_header['BITPIX'] = -32
-                    else:  # Default to 32-bit float
-                        img_array_fits = img_array_transposed.astype(np.float32)
-
-                    # Update header for a 3D (RGB) image
-                    fits_header['NAXIS'] = 3
-                    fits_header['NAXIS1'] = img_array_transposed.shape[2]  # Width
-                    fits_header['NAXIS2'] = img_array_transposed.shape[1]  # Height
-                    fits_header['NAXIS3'] = img_array_transposed.shape[0]  # Channels
-
-                    hdu = fits.PrimaryHDU(img_array_fits, header=fits_header)
-
-                # Write the FITS file
-                try:
-                    hdu.writeto(filename, overwrite=True)
-                    print(f"RAW processed and saved as FITS to: {filename}")
-                except Exception as e:
-                    print(f"Error saving FITS file: {e}")
+            if is_mono:
+                data = (img_array[:, :, 0] if (img_array.ndim == 3 and img_array.shape[2] == 1) else img_array)
+                img_array_fits = data.astype(np.float32)
+                fits_header["NAXIS"]  = 2
+                fits_header["NAXIS1"] = img_array.shape[1]
+                fits_header["NAXIS2"] = img_array.shape[0]
+                fits_header.pop("NAXIS3", None)
             else:
-                raise ValueError("Original header is required for FITS format!")
+                img_array_transposed = np.transpose(img_array, (2, 0, 1))  # (C,H,W)
+                img_array_fits = img_array_transposed.astype(np.float32)
+                fits_header["NAXIS"]  = 3
+                fits_header["NAXIS1"] = img_array_transposed.shape[2]
+                fits_header["NAXIS2"] = img_array_transposed.shape[1]
+                fits_header["NAXIS3"] = img_array_transposed.shape[0]
 
-        elif original_format == 'xisf':
-            try:
-                print(f"Original image shape: {img_array.shape}, dtype: {img_array.dtype}")
-                print(f"Bit depth: {bit_depth}")
+            hdu = fits.PrimaryHDU(img_array_fits, header=fits_header)
+            hdu.writeto(filename, overwrite=True)
+            print(f"RAW processed and saved as FITS to: {filename}")
+            return
 
-                # Adjust bit depth for saving
-                if bit_depth == "16-bit":
-                    processed_image = (img_array * 65535).astype(np.uint16)
-                elif bit_depth == "32-bit unsigned":
-                    processed_image = (img_array * 4294967295).astype(np.uint32)
-                else:  # Default to 32-bit float
-                    processed_image = img_array.astype(np.float32)
+        # ---------------------------------------------------------------------
+        # XISF — use XISF.write; manage metadata shapes
+        # ---------------------------------------------------------------------
+        if fmt == "xisf":
+            print(f"Original image shape: {img_array.shape}, dtype: {img_array.dtype}")
+            print(f"Bit depth: {bit_depth}")
 
-                # Handle mono images explicitly
-                if is_mono:
-                    print("Detected mono image. Preparing for XISF...")
-                    if processed_image.ndim == 3 and processed_image.shape[2] > 1:
-                        processed_image = processed_image[:, :, 0]  # Extract single channel
-                    processed_image = processed_image[:, :, np.newaxis]  # Add back channel dimension
+            bd = bit_depth or "32-bit floating point"
+            if bd == "16-bit":
+                processed_image = (np.clip(img_array, 0, 1) * 65535).astype(np.uint16)
+            elif bd == "32-bit unsigned":
+                processed_image = (np.clip(img_array, 0, 1) * 4294967295).astype(np.uint32)
+            else:
+                processed_image = img_array.astype(np.float32)
 
-                    # Update metadata for mono images
-                    if image_meta and isinstance(image_meta, list):
-                        image_meta[0]['geometry'] = (processed_image.shape[1], processed_image.shape[0], 1)
-                        image_meta[0]['colorSpace'] = 'Gray'
-                    else:
-                        # Create default metadata for mono images
-                        image_meta = [{
-                            'geometry': (processed_image.shape[1], processed_image.shape[0], 1),
-                            'colorSpace': 'Gray'
-                        }]
+            # Normalize metadata shape hints
+            if is_mono:
+                if processed_image.ndim == 3 and processed_image.shape[2] > 1:
+                    processed_image = processed_image[:, :, 0]
+                if processed_image.ndim == 2:
+                    processed_image = processed_image[:, :, np.newaxis]  # H, W, 1
 
-                # Handle RGB images
-                else:
-                    if image_meta and isinstance(image_meta, list):
-                        image_meta[0]['geometry'] = (processed_image.shape[1], processed_image.shape[0], processed_image.shape[2])
-                        image_meta[0]['colorSpace'] = 'RGB'
-                    else:
-                        # Create default metadata for RGB images
-                        image_meta = [{
-                            'geometry': (processed_image.shape[1], processed_image.shape[0], processed_image.shape[2]),
-                            'colorSpace': 'RGB'
-                        }]
+                if not isinstance(image_meta, list):
+                    image_meta = [{}]
+                image_meta[0].setdefault("geometry", (processed_image.shape[1], processed_image.shape[0], 1))
+                image_meta[0]["colorSpace"] = "Gray"
+            else:
+                if not isinstance(image_meta, list):
+                    image_meta = [{}]
+                ch = processed_image.shape[2] if processed_image.ndim == 3 else 1
+                image_meta[0].setdefault("geometry", (processed_image.shape[1], processed_image.shape[0], ch))
+                image_meta[0]["colorSpace"] = "RGB" if ch >= 3 else "Gray"
 
-                # Ensure fallback for `image_meta` and `file_meta`
-                if image_meta is None or not isinstance(image_meta, list):
-                    image_meta = [{
-                        'geometry': (processed_image.shape[1], processed_image.shape[0], 1 if is_mono else 3),
-                        'colorSpace': 'Gray' if is_mono else 'RGB'
-                    }]
-                if file_meta is None:
-                    file_meta = {}
+            if file_meta is None:
+                file_meta = {}
 
-                # Debug: Print processed image details and metadata
-                print(f"Processed image shape for XISF: {processed_image.shape}, dtype: {processed_image.dtype}")
+            print(f"Processed image shape for XISF: {processed_image.shape}, dtype: {processed_image.dtype}")
 
-                # Save the image using XISF.write
-                XISF.write(
-                    filename,                    # Output path
-                    processed_image,             # Final processed image
-                    creator_app="Seti Astro Cosmic Clarity",
-                    image_metadata=image_meta[0],  # First block of image metadata
-                    xisf_metadata=file_meta,       # File-level metadata
-                    shuffle=True
-                )
+            XISF.write(
+                filename,
+                processed_image,
+                creator_app="Seti Astro Cosmic Clarity",
+                image_metadata=image_meta[0],
+                xisf_metadata=file_meta,
+                shuffle=True
+            )
+            print(f"Saved {bd} XISF image to: {filename}")
+            return
 
-                print(f"Saved {bit_depth} XISF image to: {filename}")
-
-            except Exception as e:
-                print(f"Error saving XISF file: {e}")
-                raise
-
-
-        else:
-            raise ValueError("Unsupported file format!")
+        # ---------------------------------------------------------------------
+        # Unknown format
+        # ---------------------------------------------------------------------
+        raise ValueError(f"Unsupported file format: {original_format!r}")
 
     except Exception as e:
         print(f"Error saving image to {filename}: {e}")
         raise
+
 
 def ensure_native_byte_order(array):
     """
