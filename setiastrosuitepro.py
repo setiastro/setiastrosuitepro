@@ -69,7 +69,7 @@ warnings.filterwarnings(
 from itertools import combinations
 from tifffile import imwrite
 import requests
-
+from math import isnan
 import re, threading, webbrowser
 import os
 os.environ['LIGHTKURVE_STYLE'] = 'default'
@@ -198,7 +198,7 @@ from pro.continuum_subtract import ContinuumSubtractTab
 from pro.abe import ABEDialog
 from ops.settings import SettingsDialog
 from pro.mask_creation import create_mask_and_attach
-from pro.dnd_mime import MIME_VIEWSTATE, MIME_CMD, MIME_MASK
+from pro.dnd_mime import MIME_VIEWSTATE, MIME_CMD, MIME_MASK, MIME_ASTROMETRY
 from pro.graxpert import remove_gradient_with_graxpert
 from pro.remove_stars import remove_stars
 from pro.add_stars import add_stars 
@@ -251,8 +251,13 @@ try:
 except Exception:
     BUILD_TIMESTAMP = "dev"
 from pro.aberration_ai import AberrationAIDialog
+from pro.view_bundle import show_view_bundles
+from pro.function_bundle import show_function_bundles
+from pro.ghs_preset import open_ghs_with_preset
+from pro.curves_preset import open_curves_with_preset
+from pro.save_options import _normalize_ext
 
-VERSION = "1.0.6"
+VERSION = "1.1.0"
 
 
 if hasattr(sys, '_MEIPASS'):
@@ -353,6 +358,8 @@ if hasattr(sys, '_MEIPASS'):
     linearfit_path= os.path.join(sys._MEIPASS, 'linearfit.png')
     debayer_path = os.path.join(sys._MEIPASS, 'debayer.png')
     aberration_path = os.path.join(sys._MEIPASS, 'aberration.png')
+    functionbundles_path = os.path.join(sys._MEIPASS, 'functionbundle.png')
+    viewbundles_path = os.path.join(sys._MEIPASS, 'viewbundle.png')
 else:
     # Development path
     icon_path = 'astrosuitepro.png'
@@ -451,6 +458,8 @@ else:
     linearfit_path = 'linearfit.png'
     debayer_path = 'debayer.png'
     aberration_path = 'aberration.png'
+    functionbundles_path = 'functionbundle.png'
+    viewbundles_path = 'viewbundle.png'
 
 class MdiArea(QMdiArea):
     backgroundDoubleClicked = pyqtSignal()
@@ -466,8 +475,8 @@ class MdiArea(QMdiArea):
     def dragEnterEvent(self, e):
         if (e.mimeData().hasFormat("application/x-sas-viewstate")
                 or e.mimeData().hasFormat(MIME_CMD)
-                or e.mimeData().hasFormat(MIME_MASK)):
-
+                or e.mimeData().hasFormat(MIME_MASK)
+                or e.mimeData().hasFormat(MIME_ASTROMETRY)):
             e.acceptProposedAction()
         else:
             super().dragEnterEvent(e)
@@ -583,6 +592,91 @@ def _strip_ui_decorations(s: str) -> str:
         s = s[len(ACTIVE):]
     return s
 
+def _exts_from_filter(selected_filter: str) -> list[str]:
+    """
+    Extract extensions from a Qt name filter string like:
+      "TIFF (*.tif *.tiff)"
+    Returns normalized (e.g., 'tiff' -> 'tif', 'jpeg' -> 'jpg').
+    """
+    exts = [m.group(1).lower() for m in re.finditer(r"\*\.\s*([A-Za-z0-9]+)", selected_filter)]
+    if not exts:
+        return []
+    # normalize & uniquify while preserving order
+    seen = set()
+    out = []
+    for e in exts:
+        n = _normalize_ext(e)
+        if n not in seen:
+            seen.add(n)
+            out.append(n)
+    return out
+
+def _normalize_save_path_chosen_filter(path: str, selected_filter: str) -> tuple[str, str]:
+    """
+    Returns (final_path, final_ext_norm). Ensures:
+      - appends extension if missing
+      - avoids double extensions (*.png.png)
+      - if user provided a conflicting ext, overwrite with chosen filter's default
+    """
+    path = (path or "").strip().rstrip(".")
+    allowed = _exts_from_filter(selected_filter) or ["png"]  # safe fallback
+    default_ext = allowed[0]
+
+    base, ext = os.path.splitext(path)
+    typed = _normalize_ext(ext.lstrip(".").lower()) if ext else ""
+
+    # If the base already ends with an allowed ext (from a previous auto-append), remove it.
+    # e.g., base="foo.png" and ext=".png" => "foo" only once
+    def strip_trailing_allowed(b: str) -> str:
+        lowered = b.lower()
+        for a in allowed:
+            suf = "." + a
+            if lowered.endswith(suf):
+                return b[:-len(suf)]
+        return b
+
+    base = strip_trailing_allowed(base)
+
+    if not typed:
+        # No user-typed extension: append default for the chosen filter
+        final_ext = default_ext
+    else:
+        if typed in allowed:
+            # Keep the typed (normalized) extension
+            final_ext = typed
+        else:
+            # Conflicting ext: enforce the chosen filter's default
+            final_ext = default_ext
+
+    final_path = f"{base}.{final_ext}"
+    return final_path, final_ext
+
+def _display_name(doc) -> str:
+    """Best-effort title for any doc-like object."""
+    # Prefer a method
+    for attr in ("display_name", "title", "name"):
+        v = getattr(doc, attr, None)
+        if callable(v):
+            try:
+                s = v()
+                if isinstance(s, str) and s.strip():
+                    return s
+            except Exception:
+                pass
+        elif isinstance(v, str) and v.strip():
+            return v
+
+    # Metadata fallbacks
+    md = getattr(doc, "metadata", {}) or {}
+    if isinstance(md, dict):
+        for k in ("display_name", "title", "name", "filename", "basename"):
+            s = md.get(k)
+            if isinstance(s, str) and s.strip():
+                return s
+
+    # Last resort: id snippet
+    return f"Document-{id(doc) & 0xFFFF:04X}"
+
 class AstroSuiteProMainWindow(QMainWindow):
     currentDocumentChanged = pyqtSignal(object)  # ImageDocument | None
 
@@ -643,7 +737,7 @@ class AstroSuiteProMainWindow(QMainWindow):
         self.mdi.viewStateDropped.connect(self._handle_viewstate_drop)
         self.docman.documentAdded.connect(self._on_doc_added_for_header_sync)
         self.docman.documentRemoved.connect(self._on_doc_removed_for_header_sync)
-        self.mdi.subWindowActivated.connect(lambda _sw: self._refresh_header_viewer(self._active_doc()))
+        self.mdi.subWindowActivated.connect(lambda _sw: self._hdr_refresh_timer.start(0))
         self.mdi.subWindowActivated.connect(self._on_subwindow_activated)
         self.mdi.commandDropped.connect(self._handle_command_drop)
         self.docman.documentAdded.connect(self._open_subwindow_for_added_doc)
@@ -690,10 +784,14 @@ class AstroSuiteProMainWindow(QMainWindow):
         app.installEventFilter(self)
 
         self.apply_theme_from_settings()
-       
+        self._populate_view_panels_menu()
         # Startup check (no lambdas)
         if self.settings.value("updates/check_on_startup", True, type=bool):
             QTimer.singleShot(1500, self.check_for_updates_startup)
+
+        self._hdr_refresh_timer = QTimer(self)
+        self._hdr_refresh_timer.setSingleShot(True)
+        self._hdr_refresh_timer.timeout.connect(lambda: self._refresh_header_viewer(self._active_doc()))
 
 
     # ---------- THEME API ----------
@@ -1032,6 +1130,10 @@ class AstroSuiteProMainWindow(QMainWindow):
         tb_wim.addAction(self.act_whats_in_my_sky)     
         tb_wim.addAction(self.act_wimi)
 
+        tb_bundle = DraggableToolBar("Bundles", self)
+        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_bundle)
+        tb_bundle.addAction(self.act_view_bundles)
+        tb_bundle.addAction(self.act_function_bundles)
 
     def _create_actions(self):
         # File actions
@@ -1053,6 +1155,12 @@ class AstroSuiteProMainWindow(QMainWindow):
         self.act_project_new.triggered.connect(self._new_project)
         self.act_project_save.triggered.connect(self._save_project)
         self.act_project_load.triggered.connect(self._load_project)
+
+        self.act_clear_views = QAction("Clear All Views", self)
+        self.act_clear_views.setStatusTip("Close all views and documents, keep desktop shortcuts")
+        # optional shortcut (pick anything you like or omit)
+        # self.act_clear_views.setShortcut(QKeySequence("Ctrl+Shift+W"))
+        self.act_clear_views.triggered.connect(self._clear_views_keep_shortcuts)
 
         self.act_save = QAction(QIcon(disk_path), "Save As…", self)
         self.act_save.setIconVisibleInMenu(True)
@@ -1478,6 +1586,14 @@ class AstroSuiteProMainWindow(QMainWindow):
         self.act_check_updates = QAction("Check for Updates…", self)
         self.act_check_updates.triggered.connect(self.check_for_updates_now)
 
+        self.act_view_bundles = QAction(QIcon(viewbundles_path), "View Bundles…", self)
+        self.act_view_bundles.setStatusTip("Create bundles of views; drop shortcuts to apply to all")
+        self.act_view_bundles.triggered.connect(self._open_view_bundles)
+
+        self.act_function_bundles = QAction(QIcon(functionbundles_path), "Function Bundles…", self)
+        self.act_function_bundles.setStatusTip("Create and run bundles of functions/shortcuts")
+        self.act_function_bundles.triggered.connect(self._open_function_bundles)
+
         # give each action a stable id and register
         def reg(cid, act):
             act.setProperty("command_id", cid)
@@ -1509,7 +1625,7 @@ class AstroSuiteProMainWindow(QMainWindow):
         reg("contsub",      self.act_contsub)
         reg("abe",          self.act_abe)
         reg("create_mask", self.act_create_mask)
-        reg("remove_gradient", self.act_graxpert)
+        reg("graxpert", self.act_graxpert)
         reg("remove_stars", self.act_remove_stars)
         reg("add_stars", self.act_add_stars)
         reg("pedestal",       self.act_pedestal)
@@ -1559,6 +1675,8 @@ class AstroSuiteProMainWindow(QMainWindow):
         reg("cosmicclarity", self.actCosmicUI)
         reg("cosmicclaritysat", self.actCosmicSat)
         reg("aberrationai", self.actAberrationAI)
+        reg("view_bundles", self.act_view_bundles)
+        reg("function_bundles", self.act_function_bundles)
 
     def _init_menubar(self):
         mb = self.menuBar()
@@ -1568,6 +1686,8 @@ class AstroSuiteProMainWindow(QMainWindow):
         m_file.addAction(self.act_open)
         m_file.addSeparator()
         m_file.addAction(self.act_save)
+        m_file.addSeparator()
+        m_file.addAction(self.act_clear_views) 
         m_file.addSeparator()
         m_file.addAction(self.act_project_new)
         m_file.addAction(self.act_project_save)
@@ -1622,6 +1742,9 @@ class AstroSuiteProMainWindow(QMainWindow):
         m_tools.addAction(self.act_freqsep)
         m_tools.addAction(self.act_contsub)
         m_tools.addAction(self.act_image_combine)
+        m_tools.addSeparator()
+        m_tools.addAction(self.act_view_bundles) 
+        m_tools.addAction(self.act_function_bundles)
 
         m_geom = mb.addMenu("&Geometry")
         m_geom.addAction(self.act_geom_invert)
@@ -1687,6 +1810,7 @@ class AstroSuiteProMainWindow(QMainWindow):
         m_short.addAction(act_save_sc)
         m_short.addAction(act_clear_sc)
 
+
         m_settings = mb.addMenu("&Settings")
         m_settings.addAction("Preferences…", self._open_settings)
 
@@ -1696,6 +1820,106 @@ class AstroSuiteProMainWindow(QMainWindow):
 
         # initialize enabled state + names
         self.update_undo_redo_action_labels()
+
+    # --- Shortcuts -> View Panels (dynamic) --------------------------------------
+    def _ensure_view_panels_menu(self):
+        """Create (or return) the 'Shortcuts -> View Panels' submenu."""
+        if getattr(self, "_menu_view_panels", None):
+            return self._menu_view_panels
+        # Find the existing &Shortcuts top-level menu we already create in _init_menubar
+        shortcuts_menu = None
+        for act in self.menuBar().actions():
+            m = act.menu()
+            if m and (m.title().replace("&", "").strip().lower() == "shortcuts"):
+                shortcuts_menu = m
+                break
+        if shortcuts_menu is None:
+            # Fallback: create it if somehow missing
+            shortcuts_menu = self.menuBar().addMenu("&Shortcuts")
+
+        self._menu_view_panels = shortcuts_menu.addMenu("View Panels")
+        self._view_panels_actions = {}  # objectName -> QAction
+        return self._menu_view_panels
+
+
+    def _register_dock_in_view_menu(self, dock: QDockWidget):
+        """Create/refresh a checkable action for a dock widget."""
+        if dock is None:
+            return
+        # Make sure every dock has a stable objectName
+        if not dock.objectName():
+            dock.setObjectName(dock.windowTitle().replace(" ", "") + "Dock")
+
+        menu = self._ensure_view_panels_menu()
+        name = dock.objectName()
+        title = dock.windowTitle() or name
+
+        act = self._view_panels_actions.get(name)
+        if act is None:
+            act = QAction(title, self, checkable=True)
+            self._view_panels_actions[name] = act
+            menu.addAction(act)
+
+            # clicking the menu toggles the dock
+            act.toggled.connect(lambda checked, d=dock: d.setVisible(checked))
+
+            # keeping state in sync when user closes/moves the dock
+            dock.visibilityChanged.connect(lambda vis, a=act: a.setChecked(bool(vis)))
+            dock.destroyed.connect(lambda _=None, n=name: self._remove_dock_from_view_menu(n))
+
+        # initial/refresh check state
+        act.setChecked(dock.isVisible())
+
+
+    def _remove_dock_from_view_menu(self, name: str):
+        act = self._view_panels_actions.pop(name, None)
+        if act:
+            m = self._ensure_view_panels_menu()
+            m.removeAction(act)
+            act.deleteLater()
+
+
+    def _populate_view_panels_menu(self):
+        """Rebuild 'View Panels' with all current dock widgets (ordered nicely)."""
+        menu = self._ensure_view_panels_menu()
+        menu.clear()
+        self._view_panels_actions = {}
+
+        # Collect every QDockWidget that exists right now
+        docks: list[QDockWidget] = self.findChildren(QDockWidget)
+
+        # Friendly ordering for common ones; others follow alphabetically.
+        order_hint = {
+            "Explorer": 10,
+            "Console / Status": 20,
+            "Header Viewer": 30,
+            "Layers": 40,
+            "Window Shelf": 50,
+            "Command Search": 60,
+        }
+
+        def key_fn(d: QDockWidget):
+            t = d.windowTitle()
+            return (order_hint.get(t, 1000), t.lower())
+
+        for dock in sorted(docks, key=key_fn):
+            self._register_dock_in_view_menu(dock)
+
+
+
+    def _open_view_bundles(self):
+        try:
+
+            show_view_bundles(self)
+        except Exception as e:
+            QMessageBox.warning(self, "View Bundles", f"Open failed:\n{e}")
+
+    def _open_function_bundles(self):
+        try:
+
+            show_function_bundles(self)
+        except Exception as e:
+            QMessageBox.warning(self, "Function Bundles", f"Open failed:\n{e}")
 
     def _build_cheats_keyboard_rows(self):
         rows = []
@@ -2150,7 +2374,7 @@ class AstroSuiteProMainWindow(QMainWindow):
             try: doc.changed.emit()
             except Exception: pass
         if hasattr(self, "_refresh_header_viewer"):
-            self._refresh_header_viewer(doc)
+            self._hdr_refresh_timer.start(0)
         if hasattr(self, "currentDocumentChanged"):
             try: self.currentDocumentChanged.emit(doc)
             except Exception: pass
@@ -2233,6 +2457,29 @@ class AstroSuiteProMainWindow(QMainWindow):
 
         self._log("New project workspace ready.")
 
+    def _clear_views_keep_shortcuts(self):
+        if not self._confirm_discard(
+            title="Clear All Views",
+            msg="Close all views and documents? Desktop shortcuts will be preserved."
+        ):
+            return
+
+        # Close views + docs + minimized shelf (same as _new_project)
+        self._close_all_subwindows()
+        self._clear_all_documents()
+        self._clear_minimized_shelf()
+
+        # DO NOT clear shortcuts or their persisted layout.
+        # Just bring the canvas forward so users can keep working.
+        try:
+            if getattr(self, "shortcuts", None):
+                self.shortcuts.canvas.raise_()
+                self.shortcuts.canvas.show()
+                self.shortcuts.canvas.setFocus()
+        except Exception:
+            pass
+
+        self._log("Cleared all views (shortcuts preserved).")
 
     def _collect_open_documents(self):
         # Prefer DocManager if present
@@ -2609,120 +2856,253 @@ class AstroSuiteProMainWindow(QMainWindow):
             w.clear()
             w.setPlainText(msg)
 
+    def _refresh_header_viewer(self, doc=None):
+        """Rebuild the header dock from the given (or active) doc — never raises."""
+        try:
+            doc = doc or self._active_doc()
+            hv = getattr(self, "header_viewer", None)
+
+            # If your dock widget has a native API, try it but don't trust it.
+            if hv and hasattr(hv, "set_document"):
+                try:
+                    hv.set_document(doc)
+                    return
+                except Exception as e:
+                    print("[header] set_document suppressed:", e)
+
+            # Fallback path: extract → populate, all guarded.
+            rows = self._extract_header_pairs(doc)
+            if not rows:
+                self._clear_header_viewer("No header" if doc else "No image")
+            else:
+                self._populate_header_viewer(rows)
+        except Exception as e:
+            print("[header] refresh suppressed:", e)
+            self._clear_header_viewer("")
+
+
     def _extract_header_pairs(self, doc):
         """
-        Return an iterable of (key, value, comment) from whatever the doc has.
-        Looks in metadata for common places we store headers.
+        Return list[(key, value, comment)].
+        Prefers a JSON-safe snapshot if present, otherwise best-effort parsing.
+        Never raises.
         """
-        if not doc:
+        try:
+            if not doc:
+                return []
+
+            meta = getattr(doc, "metadata", {}) or {}
+
+            # 1) Prefer a snapshot if any writer/loader provided it.
+            snap = meta.get("__header_snapshot__")
+            if isinstance(snap, dict):
+                fmt = snap.get("format")
+                if fmt == "fits-cards":
+                    cards = snap.get("cards") or []
+                    out = []
+                    for it in cards:
+                        try:
+                            k, v, c = it
+                        except Exception:
+                            # tolerate weird shapes
+                            k, v, c = (str(it[0]) if it else "",
+                                    "" if len(it) < 2 else str(it[1]),
+                                    "" if len(it) < 3 else str(it[2]))
+                        out.append((str(k), str(v), str(c)))
+                    return out
+                if fmt == "dict":
+                    items = snap.get("items") or {}
+                    out = []
+                    for k, v in items.items():
+                        if isinstance(v, dict):
+                            out.append((str(k), str(v.get("value","")), str(v.get("comment",""))))
+                        else:
+                            out.append((str(k), str(v), ""))
+                    return out
+                if fmt == "repr":
+                    return [("Header", str(snap.get("text","")), "")]
+
+            # 2) Live header object(s) (can be astropy, dict, or random).
+            hdr = (meta.get("original_header")
+                or meta.get("fits_header")
+                or meta.get("header"))
+
+            if hdr is None:
+                return []
+
+            # astropy.io.fits.Header (optional; no hard dependency)
+            try:
+                from astropy.io.fits import Header  # type: ignore
+            except Exception:
+                Header = None  # type: ignore
+
+            if Header is not None:
+                try:
+                    if isinstance(hdr, Header):
+                        out = []
+                        for k in hdr.keys():
+                            try: val = hdr[k]
+                            except Exception: val = ""
+                            try: cmt = hdr.comments[k]
+                            except Exception: cmt = ""
+                            out.append((str(k), str(val), str(cmt)))
+                        return out
+                except Exception as e:
+                    print("[header] astropy parse suppressed:", e)
+
+            # dict-ish header (e.g., XISF-like)
+            if isinstance(hdr, dict):
+                out = []
+                for k, v in hdr.items():
+                    if isinstance(v, dict):
+                        out.append((str(k), str(v.get("value","")), str(v.get("comment",""))))
+                    else:
+                        # avoid huge array dumps
+                        try:
+                            import numpy as _np
+                            if isinstance(v, _np.ndarray):
+                                v = f"ndarray{tuple(v.shape)}"
+                        except Exception:
+                            pass
+                        out.append((str(k), str(v), ""))
+                return out
+
+            # Fallback: string repr
+            return [("Header", str(hdr), "")]
+        except Exception as e:
+            print("[header] extract suppressed:", e)
             return []
 
-        hdr = (doc.metadata.get("original_header")
-            or doc.metadata.get("fits_header")
-            or doc.metadata.get("header")
-            or {})
-
-        # astropy.io.fits.Header?
-        try:
-            from astropy.io.fits import Header
-            if isinstance(hdr, Header):
-                out = []
-                for k in hdr.keys():
-                    # Header cards can return (value, comment)
-                    try:
-                        val = hdr[k]
-                        cmt = hdr.comments[k] if hasattr(hdr, "comments") else ""
-                    except Exception:
-                        val, cmt = hdr.get(k, ""), ""
-                    out.append((str(k), str(val), str(cmt)))
-                return out
-        except Exception:
-            pass
-
-        # dict (possibly nested/xisf-ish)
-        if isinstance(hdr, dict):
-            out = []
-            for k, v in hdr.items():
-                cmt = ""
-                if isinstance(v, dict):
-                    # common pattern: {"value": X, "comment": "..."}
-                    val = v.get("value", v)
-                    cmt = v.get("comment", "")
-                else:
-                    val = v
-                # avoid super long reprs for arrays
-                if hasattr(val, "shape"):
-                    try:
-                        import numpy as np
-                        val = f"ndarray{tuple(np.asarray(val).shape)}"
-                    except Exception:
-                        val = "array"
-                out.append((str(k), str(val), str(cmt)))
-            return out
-
-        # Fallback: stringify
-        return [("Header", str(hdr), "")]
 
     def _populate_header_viewer(self, rows):
-        w = self._header_widget()
+        """Render rows into whatever widget you expose; never raises."""
+        try:
+            w = self._header_widget()
+        except Exception as e:
+            print("[header] _header_widget suppressed:", e)
+            return
         if w is None:
             return
 
-        # QTableWidget?
+        # Table widget path
         try:
             from PyQt6.QtWidgets import QTableWidget, QTableWidgetItem
+            if isinstance(w, QTableWidget):
+                try:
+                    w.setRowCount(0)
+                    w.setColumnCount(3)
+                    w.setHorizontalHeaderLabels(["Key", "Value", "Comment"])
+                    for r, (k, v, c) in enumerate(rows):
+                        w.insertRow(r)
+                        w.setItem(r, 0, QTableWidgetItem(k))
+                        w.setItem(r, 1, QTableWidgetItem(v))
+                        w.setItem(r, 2, QTableWidgetItem(c))
+                    return
+                except Exception as e:
+                    print("[header] table populate suppressed:", e)
+        except Exception:
+            pass
+
+        # List widget path
+        try:
+            from PyQt6.QtWidgets import QListWidget
+            if isinstance(w, QListWidget):
+                try:
+                    w.clear()
+                    for k, v, c in rows:
+                        w.addItem(f"{k} = {v}" + (f"  / {c}" if c else ""))
+                    return
+                except Exception as e:
+                    print("[header] list populate suppressed:", e)
+        except Exception:
+            pass
+
+        # Plain text-ish
+        try:
+            if hasattr(w, "setPlainText"):
+                w.setPlainText("\n".join(
+                    f"{k} = {v}" + (f"  / {c}" if c else "") for (k, v, c) in rows
+                ))
+                return
+            if hasattr(w, "setText"):
+                w.setText("\n".join(
+                    f"{k} = {v}" + (f"  / {c}" if c else "") for (k, v, c) in rows
+                ))
+                return
+        except Exception as e:
+            print("[header] text populate suppressed:", e)
+
+
+    def _clear_header_viewer(self, msg=""):
+        """Clear the dock safely (any widget type)."""
+        try:
+            w = self._header_widget()
+            if not w:
+                return
+            if hasattr(w, "clear"):
+                w.clear()
+            if hasattr(w, "setPlainText"):
+                w.setPlainText(str(msg))
+            elif hasattr(w, "setText"):
+                w.setText(str(msg))
+        except Exception as e:
+            print("[header] clear suppressed:", e)
+
+
+    def _clear_header_viewer(self, message: str = ""):
+        """Clear header viewer content quietly—no dialogs."""
+        w = self._header_widget()
+        if w is None:
+            return
+        try:
+            # QTableWidget
+            from PyQt6.QtWidgets import QTableWidget  # type: ignore
             if isinstance(w, QTableWidget):
                 w.setRowCount(0)
                 w.setColumnCount(3)
                 w.setHorizontalHeaderLabels(["Key", "Value", "Comment"])
-                for r, (k, v, c) in enumerate(rows):
-                    w.insertRow(r)
-                    w.setItem(r, 0, QTableWidgetItem(k))
-                    w.setItem(r, 1, QTableWidgetItem(v))
-                    w.setItem(r, 2, QTableWidgetItem(c))
                 return
         except Exception:
             pass
-
-        # QListWidget?
         try:
-            from PyQt6.QtWidgets import QListWidget
+            # QListWidget
+            from PyQt6.QtWidgets import QListWidget  # type: ignore
             if isinstance(w, QListWidget):
                 w.clear()
-                for k, v, c in rows:
-                    if c:
-                        w.addItem(f"{k} = {v}  / {c}")
-                    else:
-                        w.addItem(f"{k} = {v}")
+                if message:
+                    w.addItem(message)
                 return
         except Exception:
             pass
-
-        # QTextEdit-like?
+        # QTextEdit-like
         if hasattr(w, "setPlainText"):
-            lines = []
-            for k, v, c in rows:
-                lines.append(f"{k} = {v}" + (f"  / {c}" if c else ""))
-            w.setPlainText("\n".join(lines))
+            try:
+                w.setPlainText(message or "")
+            except Exception:
+                pass
 
-    def _refresh_header_viewer(self, doc=None):
-        """Always rebuild the dock from the given (or active) doc."""
-        if doc is None:
-            doc = self._active_doc()
-        hv = getattr(self, "header_viewer", None)
-        if hv and hasattr(hv, "set_document"):
-            hv.set_document(doc)
-            return
 
-        # Fallback only if the dock isn’t available (legacy viewers)
-        if doc is None:
-            self._clear_header_viewer("No image")
-            return
-        rows = self._extract_header_pairs(doc)
-        if not rows:
-            self._clear_header_viewer("No header")
-        else:
-            self._populate_header_viewer(rows)
+    def _header_widget(self):
+        """
+        Find the concrete widget used to display header text/table.
+        Never raises; returns None if nothing sensible is found.
+        """
+        # Common setups:
+        hv = getattr(self, "header_viewer", None) or getattr(self, "metadata_dock", None)
+        if hv is None:
+            return None
+
+        # If it's a dock widget (QDockWidget-like), pull its child widget
+        try:
+            if hasattr(hv, "widget") and callable(hv.widget):
+                inner = hv.widget()
+                if inner is not None:
+                    return inner
+        except Exception:
+            pass
+
+        # It might already be the actual widget
+        return hv
 
     def _on_doc_added_for_header_sync(self, doc):
         # Update header when the *active* doc changes
@@ -2745,12 +3125,12 @@ class AstroSuiteProMainWindow(QMainWindow):
         # If there are no more subwindows, force a global clear too
         if not self.mdi.subWindowList():
             self.currentDocumentChanged.emit(None)
-            self._refresh_header_viewer(None)
+            self._hdr_refresh_timer.start(0)
 
     def _maybe_refresh_header_on_doc_change(self):
         sender = self.sender()
         if sender is self._active_doc():
-            self._refresh_header_viewer(sender)
+            self._hdr_refresh_timer.start(0)
 
     def _format_explorer_title(self, doc) -> str:
         name = _strip_ui_decorations(doc.display_name() or "Untitled")
@@ -4044,7 +4424,7 @@ class AstroSuiteProMainWindow(QMainWindow):
         try:
             doc = self._active_doc()
             if doc:
-                self._refresh_header_viewer(doc)
+                self._hdr_refresh_timer.start(0)
         except Exception:
             pass
 
@@ -4068,7 +4448,7 @@ class AstroSuiteProMainWindow(QMainWindow):
         try:
             doc = self._active_doc()
             if doc:
-                self._refresh_header_viewer(doc)
+                self._hdr_refresh_timer.start(0)
         except Exception:
             pass
         try:
@@ -4432,6 +4812,40 @@ class AstroSuiteProMainWindow(QMainWindow):
 
                 "rescale": "geom_rescale",
                 "geom_rescale": "geom_rescale",
+
+                "ghs": "ghs",
+                "hyperbolic_stretch": "ghs",
+                "universal_hyperbolic_stretch": "ghs",    
+
+                "abe": "abe",
+                "automatic_background_extraction": "abe",   
+
+                "graxpert": "graxpert",
+                "grax": "graxpert",
+                "remove_gradient_graxpert": "graxpert",    
+
+                "remove_stars": "remove_stars",
+                "star_removal": "remove_stars",
+                "starnet": "remove_stars",
+                "darkstar": "remove_stars",      
+
+                "aberrationai": "aberrationai",
+                "aberration": "aberrationai",
+                "ai_aberration": "aberrationai", 
+
+                "cosmic": "cosmic_clarity",
+                "cosmicclarity": "cosmic_clarity",
+                "cosmic_clarity": "cosmic_clarity",  
+
+                "wavescale_hdr": "wavescale_hdr",
+                "wavescalehdr": "wavescale_hdr",
+                "wavescale": "wavescale_hdr",   
+
+                "wavescale_dark_enhance": "wavescale_dark_enhance",
+                "wavescale_dark_enhancer": "wavescale_dark_enhance",
+                "wsde": "wavescale_dark_enhance",
+                "dark_enhancer": "wavescale_dark_enhance",
+
             }
             return aliases.get(c, c)
 
@@ -4444,6 +4858,106 @@ class AstroSuiteProMainWindow(QMainWindow):
             return False
 
         cid = _cid_norm(cid)
+
+        # ----- Function bundle: run a sequence of steps on the target view(s) -----
+        if cid in ("function_bundle", "bundle_functions"):
+            steps = list((payload or {}).get("steps") or [])
+            # If user dropped onto the background (no target), try 'targets'
+            if target_sw is None:
+                targets = (payload or {}).get("targets")
+                if targets == "all_open":
+                    sw_list = list(self.mdi.subWindowList())
+                    for sw in sw_list:
+                        for st in steps:
+                            self._handle_command_drop(st, target_sw=sw)
+                    return
+                elif isinstance(targets, (list, tuple)):
+                    # list of doc_ptrs
+                    for ptr in targets:
+                        doc, sw = self._find_doc_by_id(int(ptr))
+                        if sw:
+                            for st in steps:
+                                self._handle_command_drop(st, target_sw=sw)
+                    return
+                # otherwise, just open the UI
+                try:
+                    from pro.function_bundle import show_function_bundles
+                    show_function_bundles(self)
+                except Exception:
+                    pass
+                return
+
+            # We have a specific target subwindow → run the sequence there
+            for st in steps:
+                self._handle_command_drop(st, target_sw=target_sw)
+            return
+
+        # --- Bundle runner -----------------------------------------------------------
+        if cid in ("bundle", "__bundle_exec__"):
+            steps = list((payload or {}).get("steps") or [])
+            if not steps:
+                return
+
+            # Resolve targets
+            targets = (payload or {}).get("targets", None)
+            def _iter_bundle_targets():
+                # explicit list of doc pointers
+                if isinstance(targets, (list, tuple)):
+                    for ptr in targets:
+                        try:
+                            d, sw = self._find_doc_by_id(int(ptr))
+                        except Exception:
+                            d, sw = None, None
+                        if sw is not None:
+                            yield sw
+                    return
+                # special keywords
+                if isinstance(targets, str) and targets.lower() == "all_open":
+                    for sw in self.mdi.subWindowList():
+                        if sw and sw.isVisible():
+                            yield sw
+                    return
+                # default: the explicit drop target, else the active subwindow
+                if target_sw is not None:
+                    yield target_sw
+                    return
+                sw = self.mdi.activeSubWindow()
+                if sw:
+                    yield sw
+
+            stop_on_error = bool((payload or {}).get("stop_on_error", False))
+
+            # Optional: light progress text in Console
+            try: self._log(f"Bundle: {len(steps)} step(s) → {targets or 'target view'}")
+            except Exception: pass
+
+
+            for sw in _iter_bundle_targets():
+                if sw is None: 
+                    continue
+                title = getattr(sw, "windowTitle", lambda: "view")()
+                for i, sp in enumerate(steps, start=1):
+                    try:
+                        # allow nested bundles but guard against weird payloads
+                        if not isinstance(sp, dict) or "command_id" not in sp:
+                            continue
+                        QCoreApplication.processEvents()
+                        # Reuse this dispatcher on the specific subwindow target
+                        self._handle_command_drop(sp, sw)
+                        QCoreApplication.processEvents()
+                        try: self._log(f"Bundle [{i}/{len(steps)}] on '{title}' → {sp.get('command_id')}")
+                        except Exception: pass
+                    except Exception as e:
+                        try: self._log(f"Bundle step failed on '{title}': {e}")
+                        except Exception: pass
+                        if stop_on_error:
+                            QMessageBox.warning(self, "Bundle", f"Stopped on error:\n{e}")
+                            return
+                        # else continue to next step
+
+            try: self._log("Bundle complete.")
+            except Exception: pass
+            return
 
         # ------------------- No target subwindow → open UIs / active ops -------------------
         if target_sw is None:
@@ -4469,6 +4983,15 @@ class AstroSuiteProMainWindow(QMainWindow):
                 self._open_halo_b_gon(); return
             if cid == "rgb_combine":
                 self._open_rgb_combination(); return
+            if cid == "curves":
+                
+                open_curves_with_preset(self, preset)
+                return
+            if target_sw is None:
+                if cid == "ghs":
+                    
+                    open_ghs_with_preset(self, preset)
+                    return
 
             # Fallback: trigger QAction by cid (ok when no target)
             act = self._find_action_by_cid(cid)
@@ -4501,8 +5024,87 @@ class AstroSuiteProMainWindow(QMainWindow):
                 QMessageBox.warning(self, "Preset apply failed", str(e))
             return
 
+        if cid == "curves":
+            try:
+                from pro.curves_preset import apply_curves_via_preset
+                apply_curves_via_preset(self, doc, preset or {})
+                self._log(f"Applied Curves preset to '{target_sw.windowTitle()}'")
+            except Exception as e:
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.warning(self, "Curves", f"Apply failed:\n{e}")
+            return
+
+        if cid == "ghs":
+            try:
+                from pro.ghs_preset import apply_ghs_via_preset
+                apply_ghs_via_preset(self, doc, preset or {})
+                self._log(f"Applied GHS preset to '{target_sw.windowTitle()}'")
+            except Exception as e:
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.warning(self, "GHS", f"Apply failed:\n{e}")
+            return
+
         if cid == "pedestal":
             remove_pedestal(self, target_doc=doc)
+            return
+
+        if cid == "abe":
+            try:
+                from pro.abe_preset import apply_abe_via_preset
+                apply_abe_via_preset(self, doc, preset or {})
+                self._log(f"Applied ABE preset to '{target_sw.windowTitle()}' (no exclusions)")
+            except Exception as e:
+                QMessageBox.warning(self, "ABE", f"Apply failed:\n{e}")
+            return
+
+        if cid == "graxpert":
+            from pro.graxpert_preset import run_graxpert_via_preset
+            run_graxpert_via_preset(self, preset or {})
+            s_raw = (preset or {}).get("smoothing", 0.10)
+            try:
+                s_val = float(s_raw)
+            except Exception:
+                s_val = 0.10
+            gpu_val = bool((preset or {}).get("gpu", True))
+
+            self._log(f"Ran GraXpert (smoothing={round(s_val, 2)}, gpu={'on' if gpu_val else 'off'})")
+            return
+
+
+        if cid == "remove_stars":
+            from pro.remove_stars_preset import run_remove_stars_via_preset
+            run_remove_stars_via_preset(self, preset or {})
+            # safe logging (no nested format specs)
+            tool = str((preset or {}).get("tool","starnet"))
+            if tool.lower().startswith("star"):
+                lin = bool((preset or {}).get("linear", True))
+                self._log(f"Ran Remove Stars (tool=StarNet, linear={'yes' if lin else 'no'})")
+            else:
+                mode = (preset or {}).get("mode","unscreen")
+                stride = int((preset or {}).get("stride", 512))
+                gpu = not bool((preset or {}).get("disable_gpu", False))
+                show = bool((preset or {}).get("show_extracted_stars", True))
+                self._log(f"Ran Remove Stars (tool=DarkStar, mode={mode}, stride={stride}, gpu={'on' if gpu else 'off'}, stars={'on' if show else 'off'})")
+            return
+
+        if cid == "aberrationai":
+            from pro.aberration_ai_preset import run_aberration_ai_via_preset
+            run_aberration_ai_via_preset(self, preset or {})
+            # safe, simple log
+            pp = preset or {}
+            auto = bool(pp.get("auto_gpu", True))
+            prov = pp.get("provider", "auto" if auto else "CPUExecutionProvider")
+            self._log(f"Ran Aberration AI (patch={int(pp.get('patch',512))}, overlap={int(pp.get('overlap',64))}, border={int(pp.get('border_px',10))}px, provider={prov})")
+            return
+
+        if cid == "cosmic_clarity":
+            from pro.cosmicclarity_preset import run_cosmicclarity_via_preset
+            run_cosmicclarity_via_preset(self, preset or {})
+            try:
+                m = (preset or {}).get("mode", "sharpen")
+                self._log(f"Ran Cosmic Clarity (mode={m})")
+            except Exception:
+                pass
             return
 
         if cid == "linear_fit":
@@ -4534,6 +5136,41 @@ class AstroSuiteProMainWindow(QMainWindow):
             except Exception as e:
                 QMessageBox.warning(self, "White Balance", str(e))
             return
+
+        if cid == "wavescale_hdr":
+            from pro.wavescale_hdr_preset import run_wavescale_hdr_via_preset
+            run_wavescale_hdr_via_preset(self, preset or {}, target_doc=doc)
+            # safe, readable log
+            pp = preset or {}
+            ns = int(pp.get("n_scales", 5))
+            try:
+                comp = float(pp.get("compression_factor", 1.5))
+            except Exception:
+                comp = 1.5
+            try:
+                mg = float(pp.get("mask_gamma", 5.0))
+            except Exception:
+                mg = 5.0
+            self._log(f"Ran WaveScale HDR (n_scales={ns}, compression={comp:.2f}, mask_gamma={mg:.2f})")
+            return
+
+        if cid == "wavescale_dark_enhance":
+            try:
+                from pro.wavescalede_preset import run_wavescalede_via_preset
+                run_wavescalede_via_preset(self, preset or {}, target_doc=doc)
+                pp = preset or {}
+                ns   = int(pp.get("n_scales", 6))
+                try: bf = float(pp.get("boost_factor", 5.0))
+                except Exception: bf = 5.0
+                try: mg = float(pp.get("mask_gamma", 1.0))
+                except Exception: mg = 1.0
+                it   = int(pp.get("iterations", 2))
+                self._log(f"Ran WaveScale Dark Enhancer (n_scales={ns}, boost={bf:.2f}, mask_gamma={mg:.2f}, iters={it})")
+            except Exception as e:
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.warning(self, "WaveScale Dark Enhancer", f"Apply failed:\n{e}")
+            return
+
 
         if cid == "extract_luminance":
             try:
@@ -4879,7 +5516,7 @@ class AstroSuiteProMainWindow(QMainWindow):
                     QMessageBox.warning(self, "Plate Solver", f"Plate solve failed:\n{hdr_or_err}")
             except Exception as e:
                 QMessageBox.critical(self, "Plate Solver", f"Unhandled error:\n{e}")
-            self._refresh_header_viewer(self._active_doc()) 
+            self._hdr_refresh_timer.start(0)
             return
         if cid == "star_align":
             # For alignment we need user choice of source/target, so open the dialog.
@@ -5036,7 +5673,7 @@ class AstroSuiteProMainWindow(QMainWindow):
             try:
                 # If your header dock attaches to the active doc via signals,
                 # this explicit refresh guarantees the UI updates immediately.
-                self._refresh_header_viewer(tgt)
+                self._hdr_refresh_timer.start(0)
             except Exception:
                 pass
             try:
@@ -5063,8 +5700,6 @@ class AstroSuiteProMainWindow(QMainWindow):
             self._log(f"Copied astrometric solution from '{src.display_name()}' to '{tgt.display_name()}'.")
         except Exception:
             pass
-
-
 
     def _open_statistical_stretch_with_preset(self, preset: dict):
         """
@@ -5351,9 +5986,18 @@ class AstroSuiteProMainWindow(QMainWindow):
         # --- Right-side mini dock with the search box ---
         self._search_dock = QDockWidget("Command Search", self)
         self._search_dock.setObjectName("CommandSearchDock")
-        self._search_dock.setAllowedAreas(Qt.DockWidgetArea.RightDockWidgetArea)
-        # Keep it pinned and always visible
-        self._search_dock.setFeatures(QDockWidget.DockWidgetFeature.NoDockWidgetFeatures)
+        # ✅ Allow moving/closing like other panels
+        self._search_dock.setAllowedAreas(
+            Qt.DockWidgetArea.LeftDockWidgetArea |
+            Qt.DockWidgetArea.RightDockWidgetArea |
+            Qt.DockWidgetArea.TopDockWidgetArea |
+            Qt.DockWidgetArea.BottomDockWidgetArea
+        )
+        self._search_dock.setFeatures(
+            QDockWidget.DockWidgetFeature.DockWidgetMovable |
+            QDockWidget.DockWidgetFeature.DockWidgetClosable |
+            QDockWidget.DockWidgetFeature.DockWidgetFloatable
+        )
 
         holder = QWidget(self._search_dock)
         lay = QHBoxLayout(holder)
@@ -5413,13 +6057,20 @@ class AstroSuiteProMainWindow(QMainWindow):
         self._build_command_model()
 
         # After window state restore, re-pin it to the top of the right area
-        def _repin_right_top():
+        if not self.settings.value("window_layout/restored", False, type=bool):
             try:
-                if self._search_dock and layers_dock:
+                layers_dock = getattr(self, "layers_dock", None) or getattr(self, "_layers_dock", None)
+                header_dock = getattr(self, "header_dock", None) or getattr(self, "_header_viewer_dock", None)
+                if layers_dock:
                     self.splitDockWidget(self._search_dock, layers_dock, Qt.Orientation.Vertical)
+                if header_dock and layers_dock:
+                    self.splitDockWidget(layers_dock, header_dock, Qt.Orientation.Vertical)
             except Exception:
                 pass
-        QTimer.singleShot(0, _repin_right_top)
+        try:
+            self._populate_view_panels_menu()
+        except Exception:
+            pass
 
 
     def _build_command_model(self):
@@ -5501,9 +6152,6 @@ class AstroSuiteProMainWindow(QMainWindow):
         doc = self._active_doc()
         if not doc:
             return
-        
-        last_save = self.settings.value("paths/last_save_dir", "", type=str) or \
-                    self.settings.value("paths/last_open_dir", "", type=str) or ""
 
         filters = (
             "FITS (*.fits *.fit);;"
@@ -5512,36 +6160,17 @@ class AstroSuiteProMainWindow(QMainWindow):
             "PNG (*.png);;"
             "JPEG (*.jpg *.jpeg)"
         )
+
+        # You can optionally pass the last dir here instead of "".
         path, selected_filter = QFileDialog.getSaveFileName(self, "Save As", "", filters)
         if not path:
             return
 
-        # Normalize/force extension to match selected filter
-        filter_map = {
-            "FITS":  ["fits", "fit"],
-            "XISF":  ["xisf"],
-            "TIFF":  ["tif", "tiff"],
-            "PNG":   ["png"],
-            "JPEG":  ["jpg", "jpeg"],
-        }
-        base, ext = os.path.splitext(path)
-        ext_norm = ext.lower().lstrip(".")
+        # --- NEW: robust path normalization based on the chosen filter ---
+        path, ext_norm = _normalize_save_path_chosen_filter(path, selected_filter)
 
-        chosen_key = None
-        for k in filter_map:
-            if selected_filter.startswith(k):
-                chosen_key = k
-                break
-
-        if chosen_key:
-            allowed = set(filter_map[chosen_key])
-            if not ext_norm or ext_norm not in allowed:
-                path = base + f".{filter_map[chosen_key][0]}"
-                ext_norm = filter_map[chosen_key][0]
-
-        # Ask for bit depth
-        from pro.save_options import SaveOptionsDialog, _normalize_ext  # add this import at top if you prefer
-        ext_norm = _normalize_ext(ext_norm)
+        # Ask for bit depth (uses your existing dialog)
+        from pro.save_options import SaveOptionsDialog
         current_bd = doc.metadata.get("bit_depth")
         dlg = SaveOptionsDialog(self, ext_norm, current_bd)
         if dlg.exec() != dlg.DialogCode.Accepted:
@@ -5549,12 +6178,12 @@ class AstroSuiteProMainWindow(QMainWindow):
         chosen_bd = dlg.selected_bit_depth()
 
         try:
-            # Hand bit-depth explicitly to the saver
             self.docman.save_document(doc, path, bit_depth_override=chosen_bd)
             self._log(f"Saved: {path} ({chosen_bd})")
             self.settings.setValue("paths/last_save_dir", os.path.dirname(path))
         except Exception as e:
             QMessageBox.critical(self, "Save failed", str(e))
+
 
     def _init_layers_dock(self):
         self.layers_dock = LayersDock(self)
@@ -5721,7 +6350,7 @@ class AstroSuiteProMainWindow(QMainWindow):
         if not self.mdi.subWindowList():
             self.currentDocumentChanged.emit(None)   # drives HeaderViewerDock.set_document(None)
             self.update_undo_redo_action_labels()
-            self._refresh_header_viewer(None)        # belt-and-suspenders for manual widgets
+            self._hdr_refresh_timer.start(0)       # belt-and-suspenders for manual widgets
             # If your dock has its own set_document, call it explicitly too
             hv = getattr(self, "header_viewer", None)
             if hv and hasattr(hv, "set_document"):
@@ -5969,7 +6598,7 @@ class AstroSuiteProMainWindow(QMainWindow):
         self.act_hardstretch.setChecked(is_hard)
 
         self.update_undo_redo_action_labels()
-        self._refresh_header_viewer(self._active_doc())
+        self._hdr_refresh_timer.start(0)
         self._refresh_mask_action_states()     
 
     def _sync_docman_active(self, doc):
@@ -6314,6 +6943,15 @@ class AstroSuiteProMainWindow(QMainWindow):
                 self.shortcuts.save_shortcuts()
             except Exception:
                 pass
+
+        try:
+            for t in list(getattr(self, "_bg_threads", [])):
+                try:
+                    t.wait(3000)  # don't block forever
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
         super().closeEvent(e)
 
