@@ -130,6 +130,85 @@ class ImageDocument(QObject):
         return os.path.basename(p) if p else "Untitled"
 
 
+def _dm_json_sanitize(obj):
+    """Tiny, local JSON sanitizer: keeps size small & avoids numpy/astropy weirdness."""
+    import numpy as _np
+    if isinstance(obj, (str, int, float, bool)) or obj is None:
+        return obj
+    if isinstance(obj, dict):
+        return {str(k): _dm_json_sanitize(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_dm_json_sanitize(x) for x in obj]
+    # numpy array → small placeholder
+    try:
+        if isinstance(obj, _np.ndarray):
+            return {"__nd__": True, "shape": list(obj.shape), "dtype": str(obj.dtype)}
+        # numpy scalar
+        if hasattr(obj, "item"):
+            return obj.item()
+    except Exception:
+        pass
+    try:
+        return repr(obj)
+    except Exception:
+        return str(type(obj))
+
+
+def _snapshot_header_for_metadata(meta: dict):
+    """
+    If meta contains a header under common keys, add a JSON-safe snapshot at
+    meta["__header_snapshot__"] so viewers/project IO never choke.
+    """
+    if not isinstance(meta, dict):
+        return
+    if "__header_snapshot__" in meta:
+        return
+
+    hdr = (meta.get("original_header")
+           or meta.get("fits_header")
+           or meta.get("header"))
+
+    if hdr is None:
+        return
+
+    snap = None
+
+    # Try astropy Header (without hard dependency)
+    try:
+        from astropy.io.fits import Header  # type: ignore
+    except Exception:
+        Header = None  # type: ignore
+
+    try:
+        if Header is not None and isinstance(hdr, Header):
+            cards = []
+            for k in hdr.keys():
+                try:
+                    val = hdr[k]
+                except Exception:
+                    val = ""
+                try:
+                    cmt = hdr.comments[k] if hasattr(hdr, "comments") else ""
+                except Exception:
+                    cmt = ""
+                cards.append([str(k), _dm_json_sanitize(val), str(cmt)])
+            snap = {"format": "fits-cards", "cards": cards}
+        elif isinstance(hdr, dict):
+            # Already a dict-like header (e.g., XISF style)
+            snap = {"format": "dict",
+                    "items": {str(k): _dm_json_sanitize(v) for k, v in hdr.items()}}
+        else:
+            # Last resort string
+            snap = {"format": "repr", "text": repr(hdr)}
+    except Exception:
+        try:
+            snap = {"format": "repr", "text": str(hdr)}
+        except Exception:
+            snap = None
+
+    if snap:
+        meta["__header_snapshot__"] = snap
+
 class DocManager(QObject):
     documentAdded = pyqtSignal(object)   # ImageDocument
     documentRemoved = pyqtSignal(object) # ImageDocument
@@ -143,7 +222,7 @@ class DocManager(QObject):
 
 
     # --- File -> Document ---
-    def open_path(self, path: str) -> ImageDocument:
+    def open_path(self, path: str) -> "ImageDocument":
         img, header, bit_depth, is_mono = legacy_load_image(path)
         if img is None:
             raise IOError(f"Could not load: {path}")
@@ -151,18 +230,21 @@ class DocManager(QObject):
         ext = os.path.splitext(path)[1].lower().lstrip('.')
         meta = {
             "file_path": path,
-            "original_header": header,
+            "original_header": header,                 # keep raw
             "bit_depth": bit_depth,
             "is_mono": is_mono,
             "original_format": _normalize_ext(ext),
         }
+        # add snapshot so viewers/project IO are safe
+        _snapshot_header_for_metadata(meta)
+
         doc = ImageDocument(img, meta)
         self._docs.append(doc)
         self.documentAdded.emit(doc)
         return doc
-
+    
     # --- Slot -> Document ---
-    def open_from_slot(self, slot_idx: int | None = None) -> ImageDocument | None:
+    def open_from_slot(self, slot_idx: int | None = None) -> "ImageDocument | None":
         if not self.image_manager:
             return None
 
@@ -173,25 +255,25 @@ class DocManager(QObject):
         if img is None:
             return None
 
-        # grab anything your SASv2 manager already stored
         meta = {}
         try:
             meta = dict(self.image_manager._metadata.get(slot_idx, {}))
         except Exception:
             pass
 
-        # fill sane fallbacks if missing
         meta.setdefault("file_path", f"Slot {slot_idx}")
-        meta.setdefault("bit_depth", "32-bit floating point")       # SASv2 works in float32 [0..1]
+        meta.setdefault("bit_depth", "32-bit floating point")
         meta.setdefault("is_mono", (img.ndim == 2))
-        meta.setdefault("original_header", None)
-        meta.setdefault("original_format", "fits")                   # default if they “Save As…”
+        meta.setdefault("original_header", meta.get("original_header"))  # whatever SASv2 had
+        meta.setdefault("original_format", "fits")
+
+        _snapshot_header_for_metadata(meta)
 
         doc = ImageDocument(img, meta)
         self._docs.append(doc)
         self.documentAdded.emit(doc)
         return doc
-
+    
     # --- Save ---
     def _infer_bit_depth_for_format(self, img: np.ndarray, ext: str, current_bit_depth: str | None) -> str:
         # Previous heuristic fallback (used only if no override provided).
@@ -280,10 +362,21 @@ class DocManager(QObject):
     #    return doc
 
     # convenient aliases used by your tool code
-    def open_array(self, img: np.ndarray, metadata: dict | None = None, title: str | None = None) -> ImageDocument:
-        doc = ImageDocument(img, dict(metadata or {}), parent=self.parent())
+    def open_array(self, img: np.ndarray, metadata: dict | None = None, title: str | None = None) -> "ImageDocument":
+        meta = dict(metadata or {})
         if title:
-            doc.metadata["display_name"] = title
+            meta["display_name"] = title
+        # normalize a few expected fields if missing
+        try:
+            if "is_mono" not in meta and isinstance(img, np.ndarray):
+                meta["is_mono"] = (img.ndim == 2 or (img.ndim == 3 and img.shape[2] == 1))
+        except Exception:
+            pass
+        meta.setdefault("bit_depth", meta.get("bit_depth", "32-bit floating point"))
+
+        _snapshot_header_for_metadata(meta)
+
+        doc = ImageDocument(img, meta, parent=self.parent())
         self._docs.append(doc)
         self.documentAdded.emit(doc)
         return doc

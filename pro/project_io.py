@@ -21,6 +21,48 @@ def _np_save_to_bytes(arr: np.ndarray, *, compress: bool = True) -> bytes:
     return bio.getvalue()
 
 
+# --- NEW: header + file helpers ---------------------------------------------
+def _serialize_header_any(hdr) -> dict:
+    """
+    Try to serialize a FITS/ASTAP/whatever header into JSON-safe form.
+    Prefers .cards (astropy) -> list of [key, value, comment].
+    Falls back to plain dict or repr-string.
+    """
+    try:
+        # astropy.io.fits.Header style
+        cards = getattr(hdr, "cards", None)
+        if cards is not None:
+            out = []
+            for c in cards:
+                # c may be a Card or a tuple-like
+                try:
+                    k = str(getattr(c, "keyword", c[0]))
+                    v = getattr(c, "value", c[1] if len(c) > 1 else "")
+                    cm = getattr(c, "comment", c[2] if len(c) > 2 else "")
+                except Exception:
+                    # ultra defensive
+                    k = str(getattr(c, "keyword", ""))
+                    v = getattr(c, "value", "")
+                    cm = getattr(c, "comment", "")
+                out.append([k, _json_sanitize(v), str(cm)])
+            return {"format": "fits-cards", "cards": out}
+    except Exception:
+        pass
+
+    # dict-like fallback
+    try:
+        if isinstance(hdr, dict):
+            return {"format": "dict", "items": {str(k): _json_sanitize(v) for k, v in hdr.items()}}
+    except Exception:
+        pass
+
+    # last resort
+    try:
+        return {"format": "repr", "text": repr(hdr)}
+    except Exception:
+        return {"format": "unknown", "text": str(type(hdr))}
+
+
 def _np_load_from_bytes(data: bytes) -> np.ndarray:
     """
     Reads both npz-with-{'img'} and raw npy.
@@ -82,11 +124,19 @@ class ProjectWriter:
 
     @staticmethod
     def write(path: str, *, docs: list, shortcuts=None, mdi=None, compress: bool = True, shelf=None):
-      
         """
         Write a .sas project.
         compress=False → much faster saves (bigger file).
+        Embeds:
+          • current image
+          • undo/redo stacks
+          • original header (if available) → views/<doc_id>/original_header.json
+          • source file copy (if available) → views/<doc_id>/source/<basename>
+            and records a pointer in meta so ProjectReader can extract + repoint.
         """
+        import zipfile
+        from PyQt6.QtCore import QRect, Qt
+
         docs = list(docs or [])
         id_map = {doc: uuid.uuid4().hex for doc in docs}
 
@@ -182,17 +232,55 @@ class ProjectWriter:
             for doc in docs:
                 doc_id = id_map[doc]
                 base = f"views/{doc_id}"
+
+                # ---- gather + sanitize metadata (we'll augment it before writing) ----
                 meta = dict(getattr(doc, "metadata", {}) or {})
                 meta.setdefault("display_name", doc.display_name())
-                safe_meta = _json_sanitize(meta)
 
+                # pull possible header + file path BEFORE we sanitize
+                hdr_obj = getattr(doc, "original_header", None)
+                if hdr_obj is None:
+                    # if someone stuffed the raw header object into metadata, remove it to avoid
+                    # dumping an unreadable repr into meta.json
+                    try:
+                        hdr_obj = meta.pop("original_header", None)
+                    except Exception:
+                        hdr_obj = None
+
+                src_path = (
+                    getattr(doc, "file_path", None)
+                    or meta.get("file_path")
+                    or meta.get("source_path")
+                )
+
+                # --- embed header (if available) ------------------------------------
+                if hdr_obj is not None:
+                    try:
+                        hdr_payload = _serialize_header_any(hdr_obj)
+                        z.writestr(f"{base}/original_header.json", json.dumps(hdr_payload, indent=2))
+                        meta["_embedded_header"] = "original_header.json"
+                    except Exception:
+                        pass  # non-fatal
+
+                # --- embed source file copy (if present on disk) --------------------
+                if isinstance(src_path, str) and os.path.isfile(src_path):
+                    try:
+                        arc = f"{base}/source/{os.path.basename(src_path)}"
+                        z.write(src_path, arcname=arc)
+                        meta["_embedded_source"] = arc
+                        meta["_original_source_path"] = src_path  # for reference only
+                    except Exception:
+                        pass  # non-fatal
+
+                # only now create the JSON-safe version and write meta.json
+                safe_meta = _json_sanitize(meta)
                 z.writestr(f"{base}/meta.json", json.dumps(safe_meta, indent=2))
 
-                # current image
+                # --- current image ---------------------------------------------------
                 if getattr(doc, "image", None) is not None:
                     z.writestr(f"{base}/current.{cur_ext}", _np_save_to_bytes(doc.image, compress=compress))
 
-                # history stacks
+                # --- history stacks --------------------------------------------------
                 undo_list = []
                 for i, (img, m, name) in enumerate(getattr(doc, "_undo", []) or []):
                     fname = f"history/undo_{i:04d}.{hist_ext}"
@@ -275,7 +363,54 @@ class ProjectReader:
                 doc = self.dm.create_document(img, metadata=meta, name=disp)
                 doc_id_map[doc_id] = doc
 
-                # history
+                # --- restore embedded header, if present --------------------------
+                try:
+                    # Prefer explicit file; if not flagged, still try the default path
+                    hdr_path = meta.get("_embedded_header", "original_header.json")
+                    if f"{base}/{hdr_path}".replace("//", "/") in z.namelist():
+                        hdr_json = json.loads(z.read(f"{base}/{hdr_path}").decode("utf-8"))
+                        setattr(doc, "original_header", hdr_json)
+                        try:
+                            doc.metadata["original_header"] = hdr_json
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+                # --- extract embedded source + repoint file_path -------------------
+                try:
+                    # 1) From meta pointer
+                    arc = meta.get("_embedded_source")
+                    # 2) If not in meta (older saves), try to find any file under views/<id>/source/
+                    if not arc:
+                        prefix = f"{base}/source/"
+                        for n in z.namelist():
+                            if n.startswith(prefix) and not n.endswith("/"):
+                                arc = n
+                                break
+                    if arc and arc in z.namelist():
+                        cache_root = self._ensure_project_cache(os.path.abspath(path))
+                        extract_path = z.extract(arc, path=cache_root)
+                        setattr(doc, "file_path", extract_path)
+                        try:
+                            doc.metadata["file_path"] = extract_path
+                            doc.metadata["_extracted_from_project"] = True
+                        except Exception:
+                            pass
+                    else:
+                        # If meta points to a non-existent external file, clear it so we don't
+                        # spam error dialogs elsewhere.
+                        fp = meta.get("file_path")
+                        if isinstance(fp, str) and not os.path.exists(fp):
+                            setattr(doc, "file_path", None)
+                            try:
+                                doc.metadata["_missing_original_source"] = True
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+
+                # --- history -------------------------------------------------------
                 try:
                     stack = json.loads(z.read(f"{base}/history/stack.json").decode("utf-8"))
                 except Exception:
@@ -315,6 +450,21 @@ class ProjectReader:
 
             # After everything is created, bring the canvas to the front & ready
             self._post_restore_shortcuts()
+
+    # --- NEW: cache folder for extracted sources ------------------------------
+    def _ensure_project_cache(self, project_path: str) -> str:
+        """
+        Returns a stable cache directory next to the project for extracted assets.
+        e.g. <project_dir>/.sas_cache/<project_filename>/
+        """
+        proj_dir = os.path.dirname(project_path)
+        proj_name = os.path.splitext(os.path.basename(project_path))[0]
+        cache = os.path.join(proj_dir, ".sas_cache", proj_name)
+        try:
+            os.makedirs(cache, exist_ok=True)
+        except Exception:
+            pass
+        return cache
 
     def _post_restore_shortcuts(self):
         """Ensure the shortcuts canvas is interactive and on top after restore."""

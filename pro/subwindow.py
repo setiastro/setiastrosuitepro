@@ -12,6 +12,7 @@ from .autostretch import autostretch   # ← uses pro/imageops/stretch.py
 
 from pro.dnd_mime import MIME_VIEWSTATE, MIME_MASK, MIME_ASTROMETRY, MIME_CMD 
 
+
 from .layers import composite_stack, ImageLayer, BLEND_MODES
 
 class _DragTab(QLabel):
@@ -624,20 +625,44 @@ class ImageSubWindow(QWidget):
     # accept view-state drops anywhere in the view
     def dragEnterEvent(self, ev):
         md = ev.mimeData()
-        if md.hasFormat(MIME_VIEWSTATE) or md.hasFormat(MIME_ASTROMETRY):
+
+        if (md.hasFormat(MIME_VIEWSTATE)
+                or md.hasFormat(MIME_ASTROMETRY)
+                or md.hasFormat(MIME_MASK)
+                or md.hasFormat(MIME_CMD)):
             ev.acceptProposedAction()
         else:
             ev.ignore()
 
     def dragMoveEvent(self, ev):
         md = ev.mimeData()
-        if md.hasFormat(MIME_VIEWSTATE) or md.hasFormat(MIME_ASTROMETRY):
+
+        if (md.hasFormat(MIME_VIEWSTATE)
+                or md.hasFormat(MIME_ASTROMETRY)
+                or md.hasFormat(MIME_MASK)
+                or md.hasFormat(MIME_CMD)):
             ev.acceptProposedAction()
         else:
             ev.ignore()
 
     def dropEvent(self, ev):
         md = ev.mimeData()
+
+        # 0) Function/Action command → forward to main window for headless/UI routing
+        if md.hasFormat(MIME_CMD):
+            try:
+                payload = _unpack_cmd_payload(bytes(md.data(MIME_CMD)))
+            except Exception:
+                ev.ignore(); return
+            mw = self._find_main_window()
+            sw = self._mdi_subwindow()
+            if mw and sw and hasattr(mw, "_handle_command_drop"):
+                mw._handle_command_drop(payload, sw)
+                ev.acceptProposedAction()
+            else:
+                ev.ignore()
+            return
+
         # 1) view state (existing)
         if md.hasFormat(MIME_VIEWSTATE):
             try:
@@ -648,7 +673,22 @@ class ImageSubWindow(QWidget):
                 ev.ignore()
             return
 
-        # 2) astrometry (NEW) → forward to main-window handler using this view as target
+        # 2) mask (NEW) → forward to main-window handler using this view as target
+        if md.hasFormat(MIME_MASK):
+            try:
+                payload = json.loads(bytes(md.data(MIME_MASK)).decode("utf-8"))
+            except Exception:
+                ev.ignore(); return
+            mw = self._find_main_window()
+            sw = self._mdi_subwindow()
+            if mw and sw and hasattr(mw, "_handle_mask_drop"):
+                mw._handle_mask_drop(payload, sw)
+                ev.acceptProposedAction()
+            else:
+                ev.ignore()
+            return
+
+        # 3) astrometry (existing forwarding)
         if md.hasFormat(MIME_ASTROMETRY):
             try:
                 payload = json.loads(bytes(md.data(MIME_ASTROMETRY)).decode("utf-8"))
@@ -673,10 +713,6 @@ class ImageSubWindow(QWidget):
 
 
     # ---------- rendering ----------
-    def is_hard_autostretch(self) -> bool:
-        return (abs(getattr(self, "autostretch_target", 0.25) - 0.5) < 1e-6
-                and abs(getattr(self, "autostretch_sigma", 3.0) - 1.0) < 1e-6)
-
     def _render(self, rebuild: bool = False):
         """
         If rebuild=True: rebuild the 8-bit source buffer (apply autostretch/etc).

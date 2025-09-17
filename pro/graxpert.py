@@ -26,6 +26,14 @@ def remove_gradient_with_graxpert(main_window):
       - read input_image_GraXpert.{fits|tif|tiff|png} using legacy loader
       - apply to active document
     """
+    if getattr(main_window, "_graxpert_headless_running", False):
+        return
+    if getattr(main_window, "_graxpert_guard", False):   # <-- new: cool-down guard
+        return
+    
+    # ⛑️ don’t open the smoothing dialog if a headless preset is running
+    if getattr(main_window, "_graxpert_headless_running", False):
+        return    
     # 1) active doc & image
     doc = getattr(main_window, "_active_doc", None)
     if callable(doc):
@@ -293,7 +301,7 @@ def _on_graxpert_finished(parent, return_code: int, output_basename: str, workin
         # Optional: if your active view had display-stretch on and this looks “flat”,
         # you can toggle it here. Leaving unchanged for consistency with ABE flow.
 
-        QMessageBox.information(parent, "Success", "Gradient removed successfully.")
+        #QMessageBox.information(parent, "Success", "Gradient removed successfully.")
     except Exception as e:
         QMessageBox.critical(parent, "GraXpert", f"Failed to apply result:\n{e}")
     finally:

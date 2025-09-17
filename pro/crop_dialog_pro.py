@@ -192,6 +192,32 @@ class CropDialogPro(QDialog):
         self.view.viewport().installEventFilter(self)
         main.addWidget(self.view, 1)
 
+        self._zoom = 1.0            # manual zoom factor
+        self._fit_mode = True       # start in Fit-to-View mode
+
+        # nicer zoom behavior
+        self.view.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        self.view.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        self.view.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)  # pan with mouse-drag
+
+        zoom_row = QHBoxLayout()
+        self.btn_zoom_out = QToolButton(); self.btn_zoom_out.setText("−")
+        self.btn_zoom_in  = QToolButton(); self.btn_zoom_in.setText("+")
+        self.btn_zoom_100 = QToolButton(); self.btn_zoom_100.setText("100%")
+        self.btn_zoom_fit = QToolButton(); self.btn_zoom_fit.setText("Fit")
+
+        zoom_row.addStretch(1)
+        for b in (self.btn_zoom_out, self.btn_zoom_in, self.btn_zoom_100, self.btn_zoom_fit):
+            zoom_row.addWidget(b)
+        zoom_row.addStretch(1)
+        main.addLayout(zoom_row)
+
+        # wire zoom buttons
+        self.btn_zoom_in.clicked.connect(lambda: self._zoom_by(1.25))
+        self.btn_zoom_out.clicked.connect(lambda: self._zoom_by(1/1.25))
+        self.btn_zoom_100.clicked.connect(self._zoom_reset_100)
+        self.btn_zoom_fit.clicked.connect(self._fit_view)
+
         # buttons
         btn_row = QHBoxLayout()
         self.btn_autostretch = QPushButton("Toggle Autostretch")
@@ -238,7 +264,12 @@ class CropDialogPro(QDialog):
         self._pix_item = QGraphicsPixmapItem(pm)
         self._pix_item.setZValue(-1)
         self.scene.addItem(self._pix_item)
-        self.view.fitInView(self.scene.itemsBoundingRect(), Qt.AspectRatioMode.KeepAspectRatio)
+        self._apply_zoom_transform()
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        if self._fit_mode:
+            self._apply_zoom_transform()
 
     @staticmethod
     def _to_qimage(img01: np.ndarray) -> QImage:
@@ -281,6 +312,10 @@ class CropDialogPro(QDialog):
     # ---------- drawing / interaction ----------
     def eventFilter(self, src, e):
         if src is self.view.viewport():
+            if e.type() == QEvent.Type.Wheel and (e.modifiers() & Qt.KeyboardModifier.ControlModifier):
+                delta = e.angleDelta().y()
+                self._zoom_by(1.25 if delta > 0 else 1/1.25)
+                return True            
             if e.type() in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseMove, QEvent.Type.MouseButtonRelease):
                 scene_pt = self.view.mapToScene(e.pos())
 
@@ -311,6 +346,39 @@ class CropDialogPro(QDialog):
 
             return False
         return super().eventFilter(src, e)
+    
+    def _apply_zoom_transform(self):
+        """Apply current zoom or fit mode to the view."""
+        if not self._pix_item:
+            return
+        if self._fit_mode:
+            # Fit pixmap + rect overlay
+            rect = self._pix_item.mapRectToScene(self._pix_item.boundingRect())
+            self.view.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
+            self.view.fitInView(rect, Qt.AspectRatioMode.KeepAspectRatio)
+            self.view.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        else:
+            self.view.resetTransform()
+            self.view.scale(self._zoom, self._zoom)
+
+    def _fit_view(self):
+        self._fit_mode = True
+        self._apply_zoom_transform()
+
+    def _zoom_reset_100(self):
+        self._fit_mode = False
+        self._zoom = 1.0
+        self._apply_zoom_transform()
+
+    def _zoom_by(self, factor: float):
+        self._fit_mode = False
+        # clamp zoom
+        newz = min(16.0, max(0.05, self._zoom * float(factor)))
+        if abs(newz - self._zoom) < 1e-4:
+            return
+        self._zoom = newz
+        self._apply_zoom_transform()
+
 
     def _current_ar_value(self) -> Optional[float]:
         txt = self.cmb_ar.currentText()

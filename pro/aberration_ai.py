@@ -3,6 +3,7 @@ from __future__ import annotations
 import os, webbrowser, requests
 import numpy as np
 import sys, platform  # add
+import time
 
 IS_APPLE_ARM = (sys.platform == "darwin" and platform.machine() == "arm64")
 
@@ -241,6 +242,7 @@ class _ONNXWorker(QThread):
         self.patch = patch
         self.overlap = overlap
         self.providers = providers
+        self.used_provider = None
 
     def run(self):
         if ort is None:
@@ -248,10 +250,12 @@ class _ONNXWorker(QThread):
             return
         try:
             sess = ort.InferenceSession(self.model_path, providers=self.providers)
+            self.used_provider = (sess.get_providers()[0] if sess.get_providers() else None)
         except Exception:
             # fallback CPU if GPU fails
             try:
                 sess = ort.InferenceSession(self.model_path, providers=["CPUExecutionProvider"])
+                self.used_provider = "CPUExecutionProvider"  # NEW
             except Exception as e2:
                 self.failed.emit(f"Failed to init ONNX session:\n{e2}")
                 return
@@ -283,6 +287,8 @@ class AberrationAIDialog(QDialog):
             self.setWindowIcon(icon)  # <-- here
         self.docman = docman
         self.get_active_doc = get_active_doc_callable
+        self._t_start = None              # NEW: timing
+        self._last_used_provider = None   # NEW: what ORT actually used
 
         v = QVBoxLayout(self)
 
@@ -390,6 +396,16 @@ class AberrationAIDialog(QDialog):
             webbrowser.open(f"file://{d}")
 
     # ----- provider UI -----
+    def _log(self, msg: str):  # NEW
+        mw = self.parent()
+        try:
+            if hasattr(mw, "_log"):
+                mw._log(msg)
+            elif hasattr(mw, "update_status"):
+                mw.update_status(msg)
+        except Exception:
+            pass
+
     def _refresh_providers(self):
         if ort is None:
             self.cmb_provider.clear()
@@ -493,6 +509,11 @@ class AberrationAIDialog(QDialog):
             finally:
                 self.spin_patch.blockSignals(False)
 
+        self._t_start = time.perf_counter()
+        prov_txt = ("auto" if self.chk_auto.isChecked() else self.cmb_provider.currentText() or "CPU")
+        self._log(f"🚀 Aberration AI: model={os.path.basename(self._model_path)}, "
+                  f"provider={prov_txt}, patch={patch}, overlap={overlap}")
+
         # -------- run worker --------
         self.progress.setValue(0)
         self.btn_run.setEnabled(False)
@@ -506,6 +527,7 @@ class AberrationAIDialog(QDialog):
 
 
     def _on_failed(self, msg: str):
+        self._log(f"❌ Aberration AI failed: {msg}")   # NEW
         QMessageBox.critical(self, "ONNX Error", msg)
 
     def _on_ok(self, out: np.ndarray):
@@ -556,6 +578,7 @@ class AberrationAIDialog(QDialog):
                 except Exception:
                     pass
         except Exception as e:
+            self._log(f"❌ Aberration AI apply failed: {e}")
             QMessageBox.critical(self, "Apply Error", f"Failed to apply result:\n{e}")
             return
 
@@ -572,6 +595,23 @@ class AberrationAIDialog(QDialog):
                 except Exception: pass
             elif hasattr(w, "update"):
                 w.update()
+
+        dt = 0.0
+        try:
+            if self._t_start is not None:
+                dt = time.perf_counter() - self._t_start
+        except Exception:
+            pass
+        used = getattr(self._worker, "used_provider", None) or \
+               (self.cmb_provider.currentText() if not self.chk_auto.isChecked() else "auto")
+        BORDER_PX = 10  # same value used above
+        self._log(
+            f"✅ Aberration AI applied "
+            f"(model={os.path.basename(self._model_path)}, provider={used}, "
+            f"patch={int(self.spin_patch.value())}, overlap={int(self.spin_overlap.value())}, "
+            f"border={BORDER_PX}px, time={dt:.2f}s)"
+        )
+
 
         self.progress.setValue(100)
         self.accept()

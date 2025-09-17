@@ -15,6 +15,8 @@ from PyQt6.QtWidgets import (QToolBar, QWidget, QToolButton, QMenu, QApplication
 from PyQt6.QtWidgets import QMdiArea, QMdiSubWindow
 from pro.linear_fit import _LinearFitPresetDialog
 
+
+
 try:
     import sip
 except Exception:
@@ -159,12 +161,31 @@ class DraggableToolBar(QToolBar):
         act_id = act.property("command_id") or act.objectName()
         if not act_id:
             return
-        mime = QMimeData()
-        mime.setData(MIME_ACTION, act_id.encode("utf-8"))
+
+        mods = QApplication.keyboardModifiers()
+        alt = bool(mods & Qt.KeyboardModifier.AltModifier)
+
+        md = QMimeData()
+        if alt:
+            # Put BOTH payloads on the drag:
+            # 1) MIME_CMD → lets you drop directly on a View or Function Bundle chip
+            #    (use per-command preset if available, else empty dict)
+            s = QSettings()
+            raw = s.value(f"presets/{act_id}", "", type=str) or ""
+            try:
+                preset = json.loads(raw) if raw else {}
+            except Exception:
+                preset = {}
+            md.setData(MIME_CMD, _pack_cmd_payload(act_id, preset))
+
+            # 2) MIME_ACTION → canvas still interprets this to create a desktop shortcut
+            md.setData(MIME_ACTION, act_id.encode("utf-8"))
+        else:
+            # Ctrl/Shift (legacy): only create a desktop shortcut
+            md.setData(MIME_ACTION, act_id.encode("utf-8"))
 
         drag = QDrag(self)
-        drag.setMimeData(mime)
-
+        drag.setMimeData(md)
         pm = act.icon().pixmap(32, 32) if not act.icon().isNull() else QPixmap(32, 32)
         if pm.isNull():
             pm = QPixmap(32, 32); pm.fill(Qt.GlobalColor.darkGray)
@@ -278,12 +299,111 @@ class ShortcutButton(QToolButton):
                 QMessageBox.information(self, "Preset saved", "Preset stored on shortcut.")
             return
 
+        if cid == "curves":
+            cur = self._load_preset() or {"shape": "linear", "amount": 0.5, "mode": "K (Brightness)"}
+            dlg = _CurvesPresetDialog(self, initial=cur)
+            if dlg.exec() == QDialog.DialogCode.Accepted:
+                self._save_preset(dlg.result_dict())
+                QMessageBox.information(self, "Preset saved", "Curves preset stored on shortcut.")
+            return
+
+        if cid == "ghs":
+            cur = self._load_preset() or {"alpha":1.0, "beta":1.0, "gamma":1.0,
+                                          "pivot":0.5, "lp":0.0, "hp":0.0,
+                                          "channel":"K (Brightness)"}
+            dlg = _GHSPresetDialog(self, initial=cur)
+            if dlg.exec() == QDialog.DialogCode.Accepted:
+                self._save_preset(dlg.result_dict())
+                QMessageBox.information(self, "Preset saved", "GHS preset stored on shortcut.")
+            return
+
+        if cid == "abe":
+            cur = self._load_preset() or {"degree":2, "samples":120, "downsample":6, "patch":15, "rbf":True, "rbf_smooth":1.0, "make_background_doc":False}
+            dlg = _ABEPresetDialog(self, initial=cur)
+            if dlg.exec() == QDialog.DialogCode.Accepted:
+                self._save_preset(dlg.result_dict())
+                QMessageBox.information(self, "Preset saved", "ABE preset stored on shortcut.")
+            return
+
+        if cid == "graxpert":
+            from pro.graxpert_preset import GraXpertPresetDialog
+            cur = self._load_preset() or {"smoothing": 0.10, "gpu": True}
+            dlg = GraXpertPresetDialog(self, initial=cur)
+            if dlg.exec() == QDialog.DialogCode.Accepted:
+                self._save_preset(dlg.result_dict())
+                QMessageBox.information(self, "Preset saved", "GraXpert preset stored on shortcut.")
+            return
+
+        if cid == "remove_stars":
+            from pro.remove_stars_preset import RemoveStarsPresetDialog
+            cur = self._load_preset() or {"tool":"starnet", "linear": True}
+            dlg = RemoveStarsPresetDialog(self, initial=cur)
+            if dlg.exec() == QDialog.DialogCode.Accepted:
+                self._save_preset(dlg.result_dict())
+                QMessageBox.information(self, "Preset saved", "Remove Stars preset stored on shortcut.")
+            return
+
+        if cid == "aberration_ai":
+            from pro.aberration_ai_preset import AberrationAIPresetDialog
+            cur = self._load_preset() or {"patch":512, "overlap":64, "border_px":10, "auto_gpu":True}
+            dlg = AberrationAIPresetDialog(self, initial=cur)
+            if dlg.exec() == QDialog.DialogCode.Accepted:
+                self._save_preset(dlg.result_dict())
+                QMessageBox.information(self, "Preset saved", "Aberration AI preset stored on shortcut.")
+            return
+
+        if cid in ("cosmic_clarity", "cosmic", "cosmicclarity"):
+            from pro.cosmicclarity_preset import _CosmicClarityPresetDialog
+            cur = self._load_preset() or {
+                "mode": "sharpen",
+                "gpu": True,
+                "create_new_view": False,
+                "sharpening_mode": "Both",
+                "auto_psf": True,
+                "nonstellar_psf": 3.0,
+                "stellar_amount": 0.50,
+                "nonstellar_amount": 0.50,
+                "denoise_luma": 0.50,
+                "denoise_color": 0.50,
+                "denoise_mode": "full",
+                "separate_channels": False,
+                "scale": 2,
+            }
+            dlg = _CosmicClarityPresetDialog(self, initial=cur)
+            if dlg.exec() == QDialog.DialogCode.Accepted:
+                self._save_preset(dlg.result_dict())
+                QMessageBox.information(self, "Preset saved", "Cosmic Clarity preset stored on shortcut.")
+            return
+
         if cid == "linear_fit":
             cur = self._load_preset() or {}
             dlg = _LinearFitPresetDialog(self, initial=cur)
             if dlg.exec() == QDialog.DialogCode.Accepted:
                 self._save_preset(dlg.result_dict())
                 QMessageBox.information(self, "Preset saved", "Linear Fit preset stored on shortcut.")
+            return
+
+        if cid == "wavescale_hdr":
+            from pro.wavescale_hdr_preset import WaveScaleHDRPresetDialog
+            cur = self._load_preset() or {"n_scales": 5, "compression_factor": 1.5, "mask_gamma": 5.0}
+            dlg = WaveScaleHDRPresetDialog(self, initial=cur)
+            if dlg.exec() == QDialog.DialogCode.Accepted:
+                self._save_preset(dlg.result_dict())
+                QMessageBox.information(self, "Preset saved", "WaveScale HDR preset stored on shortcut.")
+            return
+
+        if cid in ("wavescale_dark_enhance", "wavescale_dark_enhancer"):
+            from pro.wavescalede_preset import WaveScaleDSEPresetDialog
+            cur = self._load_preset() or {
+                "n_scales": 6,
+                "boost_factor": 5.0,
+                "mask_gamma": 1.0,
+                "iterations": 2,
+            }
+            dlg = WaveScaleDSEPresetDialog(self, initial=cur)
+            if dlg.exec() == QDialog.DialogCode.Accepted:
+                self._save_preset(dlg.result_dict())
+                QMessageBox.information(self, "Preset saved", "WaveScale Dark Enhancer preset stored on shortcut.")
             return
 
         if cid == "remove_green":
@@ -460,6 +580,28 @@ class ShortcutButton(QToolButton):
         self._mgr.delete_by_id(self.sid, persist=True)       # ← was command_id
 
 
+def _open_view_bundles_from_canvas(w):
+    try:
+        from pro.view_bundle import show_view_bundles
+        mw = _find_main_window(w)
+        show_view_bundles(mw)
+    except Exception:
+        pass
+
+def _open_function_bundles_from_canvas(w):
+    try:
+        from pro.function_bundle import show_function_bundles
+        mw = _find_main_window(w)
+        show_function_bundles(mw)
+    except Exception:
+        pass
+
+def _find_main_window(w):
+    p = w.parent()
+    while p is not None and not (hasattr(p, "doc_manager") or hasattr(p, "docman")):
+        p = p.parent()
+    return p
+
 # ---------- overlay canvas that sits on top of QMdiArea.viewport() ----------
 class ShortcutCanvas(QWidget):
     def __init__(self, mgr: "ShortcutManager", parent: QWidget):
@@ -533,23 +675,26 @@ class ShortcutCanvas(QWidget):
 
     def dragEnterEvent(self, e):
         md = e.mimeData()
-        if md.hasFormat(MIME_ACTION):
+        if md.hasFormat(MIME_ACTION) or md.hasFormat(MIME_CMD) or self._md_has_openable_urls(md):
             self.raise_()
             e.acceptProposedAction()
-        elif self._md_has_openable_urls(md):
-            e.acceptProposedAction()
         else:
-            # IMPORTANT: don't accept command drags here (let subwindow get it)
             e.ignore()
 
-
-
     def _top_subwindow_at(self, vp_pos: QPoint) -> QMdiSubWindow | None:
-        # iterate by stacking order: last is front-most
-        for sw in reversed(self._mgr.mdi.subWindowList(QMdiArea.SubWindowViewOrder.StackingOrder)):
+        # Use the correct enum for PyQt6, fall back gracefully if unavailable
+        try:
+            order_enum = QMdiArea.WindowOrder  # PyQt6
+            swlist = self._mgr.mdi.subWindowList(order_enum.StackingOrder)
+        except Exception:
+            # Fallback for older bindings
+            swlist = self._mgr.mdi.subWindowList()
+
+        # Iterate from front-most to back-most (StackingOrder is typically back->front)
+        for sw in reversed(swlist):
             if not sw.isVisible():
                 continue
-            # QMdiSubWindow geometry is in the viewport’s coord space
+            # QMdiSubWindow geometry is in the viewport's coordinate space
             if sw.geometry().contains(vp_pos):
                 return sw
         return None
@@ -561,9 +706,9 @@ class ShortcutCanvas(QWidget):
         sw = self._top_subwindow_at(e.position().toPoint())
         if sw is None:
             return False
-        # let manager apply the command to that subwindow/view
         try:
-            payload = _unpack_cmd_payload(bytes(md.data(MIME_CMD)))
+            raw = bytes(md.data(MIME_CMD))
+            payload = _unpack_cmd_payload(raw)  # your existing helper
         except Exception:
             return False
         self._mgr.apply_command_to_subwindow(sw, payload)
@@ -571,7 +716,7 @@ class ShortcutCanvas(QWidget):
         return True
 
     def dragMoveEvent(self, e):
-        if e.mimeData().hasFormat(MIME_ACTION) or self._md_has_openable_urls(e.mimeData()):
+        if e.mimeData().hasFormat(MIME_ACTION) or e.mimeData().hasFormat(MIME_CMD) or self._md_has_openable_urls(e.mimeData()):
             e.acceptProposedAction()
         else:
             e.ignore()
@@ -585,6 +730,7 @@ class ShortcutCanvas(QWidget):
 
         # 1) route function/preset drops to the front-most subwindow under cursor
         if self._forward_command_drop(e):
+            self.lower()
             return
 
         # 2) desktop shortcut creation (MIME_ACTION) → create a button
@@ -626,7 +772,11 @@ class ShortcutCanvas(QWidget):
         has_sel = bool(self._mgr.selected)
         a_del = menu.addAction("Delete Selected", self._mgr.delete_selected); a_del.setEnabled(has_sel)
         a_clr = menu.addAction("Clear Selection", self._mgr.clear_selection); a_clr.setEnabled(has_sel)
+        menu.addSeparator()
+        a_vb = menu.addAction("View Bundles…", lambda: _open_view_bundles_from_canvas(self))
+        a_fb = menu.addAction("Function Bundles…", lambda: _open_function_bundles_from_canvas(self))
         menu.exec(e.globalPos())
+
 
     def mouseDoubleClickEvent(self, e):
         # If user double-clicks empty canvas area, forward to MDI's handler
@@ -824,29 +974,69 @@ class ShortcutManager:
             except Exception:
                 pass
 
-    def apply_command_to_subwindow(self, subwin, payload: dict):
-        """Apply a dragged command to the specific subwindow under the pointer."""
-        cmd = payload.get("command_id")
-        preset = payload.get("preset", {}) or {}
-        if not cmd:
+    def apply_command_to_subwindow(self, subwin, payload):
+        """Apply a dragged command (or bundle) to the specific subwindow."""
+        # --- normalize payload to a dict ---
+        if isinstance(payload, (bytes, bytearray)):
+            try:
+                payload = json.loads(payload.decode("utf-8"))
+            except Exception:
+                return
+        if not isinstance(payload, dict):
             return
-        # Try to get the subwindow’s content widget
+
+        # --- flatten accidental nesting:
+        #     sometimes command_id itself is a dict like {"command_id": {...}}
+        cid = payload.get("command_id")
+        if isinstance(cid, dict):
+            payload = cid
+            cid = payload.get("command_id")
+
+        # still not a string? try one more level
+        if not isinstance(cid, str) and isinstance(payload.get("command_id"), dict):
+            payload = payload["command_id"]
+            cid = payload.get("command_id")
+
+        if not isinstance(cid, str) or not cid:
+            return
+
+        # --- expand function bundles inline ---
+        if cid == "function_bundle":
+            steps = payload.get("steps") or []
+            for st in steps:
+                self.apply_command_to_subwindow(subwin, st)
+            return
+
+        # --- primary path: use your main window’s drop handler (headless-capable) ---
+        mw = self.mw
+        try:
+            if hasattr(mw, "_handle_command_drop"):
+                mw._handle_command_drop(payload, target_sw=subwin)
+                return
+        except Exception:
+            # fall through to the more generic paths
+            pass
+
+        # --- secondary paths (optional hooks) ---
         w = getattr(subwin, "widget", None)
         target = w() if callable(w) else w
-        # Your app-specific hook to run `cmd` on `target`
-        # Prefer a precise API; fall back to main window’s dispatcher.
+        preset = payload.get("preset") or {}
+
         if hasattr(target, "apply_command"):
-            target.apply_command(cmd, preset)
-        elif hasattr(self.mw, "apply_command_to_view"):
-            self.mw.apply_command_to_view(target, cmd, preset)
-        elif hasattr(self.mw, "run_command"):
-            self.mw.run_command(cmd, preset, view=target)
-        else:
-            # Last resort: activate then trigger global action
-            self.mdi.setActiveSubWindow(subwin)
-            act = self.registry.get(cmd)
-            if act:
-                act.trigger()
+            target.apply_command(cid, preset)
+            return
+        if hasattr(mw, "apply_command_to_view"):
+            mw.apply_command_to_view(target, cid, preset)
+            return
+        if hasattr(mw, "run_command"):
+            mw.run_command(cid, preset, view=target)
+            return
+
+        # --- last resort: activate & trigger registered QAction ---
+        self.mdi.setActiveSubWindow(subwin)
+        act = self.registry.get(cid if isinstance(cid, str) else str(cid))
+        if act:
+            act.trigger()
 
     def clear(self):
         for sid, w in list(self.widgets.items()):
@@ -1735,3 +1925,176 @@ class _DebayerPresetDialog(QDialog):
 
     def result_dict(self) -> dict:
         return {"pattern": self.combo.currentText().upper()}
+
+class _CurvesPresetDialog(QDialog):
+    def __init__(self, parent=None, initial: dict | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Curves — Preset")
+        init = dict(initial or {})
+
+        # mode
+        self.mode = QComboBox()
+        self.mode.addItems(["K (Brightness)", "R", "G", "B", "L*", "a*", "b*", "Chroma", "Saturation"])
+        want = (init.get("mode") or "K (Brightness)").strip()
+        i = self.mode.findText(want)
+        self.mode.setCurrentIndex(max(0, i))
+
+        # shape
+        self.shape = QComboBox()
+        self.shape.addItem("Linear", "linear")
+        self.shape.addItem("S-curve (mild)", "s_mild")
+        self.shape.addItem("S-curve (medium)", "s_med")
+        self.shape.addItem("S-curve (strong)", "s_strong")
+        self.shape.addItem("Lift shadows", "lift_shadows")
+        self.shape.addItem("Crush shadows", "crush_shadows")
+        self.shape.addItem("Fade blacks", "fade_blacks")
+        self.shape.addItem("Highlight roll-off", "rolloff_highlights")
+        self.shape.addItem("Flatten contrast", "flatten")
+        self.shape.addItem("Custom points", "custom")
+        j = max(0, self.shape.findData((init.get("shape") or "linear").lower()))
+        self.shape.setCurrentIndex(j)
+
+        # amount (not used for custom)
+        self.amount = QDoubleSpinBox()
+        self.amount.setRange(0.0, 1.0)
+        self.amount.setDecimals(2)
+        self.amount.setSingleStep(0.05)
+        self.amount.setValue(float(init.get("amount", 0.50)))
+
+        # custom points (normalized "x,y; x,y; ...")
+        self.points = QLineEdit()
+        self.points.setPlaceholderText("points_norm: x,y; x,y; ...  (0..1)  e.g. 0,0; 0.25,0.15; 0.75,0.85; 1,1")
+        if isinstance(init.get("points_norm"), (list, tuple)) and init["points_norm"]:
+            s = "; ".join(f"{float(x):.3f},{float(y):.3f}" for x,y in init["points_norm"])
+            self.points.setText(s)
+
+        # enable/disable
+        def _update_enabled():
+            custom = (self.shape.currentData() == "custom")
+            self.points.setEnabled(custom)
+            self.amount.setEnabled(not custom)
+        self.shape.currentIndexChanged.connect(_update_enabled); _update_enabled()
+
+        form = QFormLayout(self)
+        form.addRow("Mode:", self.mode)
+        form.addRow("Shape:", self.shape)
+        form.addRow("Amount (0–1):", self.amount)
+        form.addRow("Custom points:", self.points)
+
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self)
+        btns.accepted.connect(self.accept); btns.rejected.connect(self.reject)
+        form.addRow(btns)
+
+    def _parse_points(self, s: str):
+        pts = []
+        for tok in (s or "").replace(",", " ").replace(";", "\n").splitlines():
+            tok = tok.strip()
+            if not tok: continue
+            parts = tok.split()
+            if len(parts) != 2: continue
+            try:
+                x = max(0.0, min(1.0, float(parts[0])))
+                y = max(0.0, min(1.0, float(parts[1])))
+                pts.append([x, y])
+            except Exception:
+                pass
+        # ensure endpoints present
+        if not any(abs(p[0]-0.0) < 1e-6 for p in pts): pts.insert(0, [0.0, 0.0])
+        if not any(abs(p[0]-1.0) < 1e-6 for p in pts): pts.append([1.0, 1.0])
+        # sort & uniq by x
+        pts = sorted({float(x): float(y) for x,y in pts}.items())
+        return [[x, y] for x,y in pts]
+
+    def result_dict(self) -> dict:
+        out = {
+            "mode": self.mode.currentText(),
+            "shape": self.shape.currentData(),
+            "amount": float(self.amount.value()),
+        }
+        if self.shape.currentData() == "custom":
+            out["points_norm"] = self._parse_points(self.points.text())
+        return out
+
+class _GHSPresetDialog(QDialog):
+    def __init__(self, parent=None, initial: dict | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Universal Hyperbolic Stretch — Preset")
+        init = dict(initial or {})
+
+        self.mode = QComboBox()
+        self.mode.addItems(["K (Brightness)", "R", "G", "B"])
+        want = (init.get("channel") or "K (Brightness)").strip()
+        i = self.mode.findText(want); self.mode.setCurrentIndex(max(0, i))
+
+        def _mk_spin(minv, maxv, step, val, dec=2):
+            s = QDoubleSpinBox(); s.setRange(minv, maxv); s.setDecimals(dec); s.setSingleStep(step); s.setValue(val); return s
+
+        self.alpha = _mk_spin(0.02, 10.0, 0.02, float(init.get("alpha", 1.00)))
+        self.beta  = _mk_spin(0.02, 10.0, 0.02, float(init.get("beta",  1.00)))
+        self.gamma = _mk_spin(0.01,  5.0, 0.01, float(init.get("gamma", 1.00)))
+        self.pivot = _mk_spin(0.00,  1.0, 0.01, float(init.get("pivot", 0.50)))
+        self.lp    = _mk_spin(0.00,  1.0, 0.01, float(init.get("lp",    0.00)))
+        self.hp    = _mk_spin(0.00,  1.0, 0.01, float(init.get("hp",    0.00)))
+
+        form = QFormLayout(self)
+        form.addRow("Channel:", self.mode)
+        form.addRow("α (0.02–10):", self.alpha)
+        form.addRow("β (0.02–10):", self.beta)
+        form.addRow("γ (0.01–5):",  self.gamma)
+        form.addRow("Pivot (0–1):", self.pivot)
+        form.addRow("LP (0–1):",    self.lp)
+        form.addRow("HP (0–1):",    self.hp)
+
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self)
+        btns.accepted.connect(self.accept); btns.rejected.connect(self.reject)
+        form.addRow(btns)
+
+    def result_dict(self) -> dict:
+        return {
+            "channel": self.mode.currentText(),
+            "alpha": float(self.alpha.value()),
+            "beta":  float(self.beta.value()),
+            "gamma": float(self.gamma.value()),
+            "pivot": float(self.pivot.value()),
+            "lp":    float(self.lp.value()),
+            "hp":    float(self.hp.value()),
+        }        
+
+class _ABEPresetDialog(QDialog):
+    def __init__(self, parent=None, initial: dict | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("ABE — Preset")
+        p = dict(initial or {})
+        form = QFormLayout(self)
+
+        self.degree  = QSpinBox(); self.degree.setRange(1, 6);  self.degree.setValue(int(p.get("degree", 2)))
+        self.samples = QSpinBox(); self.samples.setRange(20, 100000); self.samples.setSingleStep(20); self.samples.setValue(int(p.get("samples", 120)))
+        self.down    = QSpinBox(); self.down.setRange(1, 64); self.down.setValue(int(p.get("downsample", 6)))
+        self.patch   = QSpinBox(); self.patch.setRange(5, 151); self.patch.setSingleStep(2); self.patch.setValue(int(p.get("patch", 15)))
+        self.rbf     = QCheckBox("Enable RBF"); self.rbf.setChecked(bool(p.get("rbf", True)))
+        self.smooth  = QDoubleSpinBox(); self.smooth.setRange(0.0, 10.0); self.smooth.setDecimals(3); self.smooth.setSingleStep(0.01); self.smooth.setValue(float(p.get("rbf_smooth", 1.0)))
+        self.mk_bg   = QCheckBox("Also create background document"); self.mk_bg.setChecked(bool(p.get("make_background_doc", False)))
+
+        form.addRow("Polynomial degree:", self.degree)
+        form.addRow("# samples:",         self.samples)
+        form.addRow("Downsample:",        self.down)
+        form.addRow("Patch size (px):",   self.patch)
+        form.addRow(self.rbf)
+        form.addRow("RBF smooth:",        self.smooth)
+        form.addRow(self.mk_bg)
+
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self)
+        btns.accepted.connect(self.accept); btns.rejected.connect(self.reject)
+        form.addRow(btns)
+
+    def result_dict(self) -> dict:
+        return {
+            "degree": int(self.degree.value()),
+            "samples": int(self.samples.value()),
+            "downsample": int(self.down.value()),
+            "patch": int(self.patch.value()),
+            "rbf": bool(self.rbf.isChecked()),
+            "rbf_smooth": float(self.smooth.value()),
+            "make_background_doc": bool(self.mk_bg.isChecked()),
+            # exclusion polygons: intentionally unsupported here
+        }        

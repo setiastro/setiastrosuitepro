@@ -3,7 +3,7 @@ from __future__ import annotations
 from PyQt6.QtCore import Qt, QSize, QEvent
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QDoubleSpinBox,
-    QCheckBox, QPushButton, QScrollArea, QWidget, QMessageBox, QSlider
+    QCheckBox, QPushButton, QScrollArea, QWidget, QMessageBox, QSlider, QToolBar, QToolButton
 )
 from PyQt6.QtGui import QImage, QPixmap, QMouseEvent, QCursor
 import numpy as np
@@ -71,6 +71,20 @@ class StatisticalStretchDialog(QDialog):
         self.preview_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.preview_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
+        self._fit_mode = True       # NEW: start in Fit mode
+
+        # --- Zoom buttons row (place before the main layout or right above preview) ---
+        zoom_row = QHBoxLayout()
+        self.btn_zoom_out = QToolButton(); self.btn_zoom_out.setText("−")
+        self.btn_zoom_in  = QToolButton(); self.btn_zoom_in.setText("+")
+        self.btn_zoom_100 = QToolButton(); self.btn_zoom_100.setText("100%")
+        self.btn_zoom_fit = QToolButton(); self.btn_zoom_fit.setText("Fit")
+
+        zoom_row.addStretch(1)
+        for b in (self.btn_zoom_out, self.btn_zoom_in, self.btn_zoom_100, self.btn_zoom_fit):
+            zoom_row.addWidget(b)
+        zoom_row.addStretch(1)
+
         # Buttons
         self.btn_preview = QPushButton("Preview")
         self.btn_apply   = QPushButton("Apply")
@@ -85,9 +99,8 @@ class StatisticalStretchDialog(QDialog):
         form.addRow("Target median:", self.spin_target)
         form.addRow("", self.chk_linked)
         form.addRow("", self.chk_normalize)
-        form.addRow("", self.chk_curves)     # NEW
-        form.addRow("", self.curves_row)     # NEW
-
+        form.addRow("", self.chk_curves)
+        form.addRow("", self.curves_row)
 
         left = QVBoxLayout()
         left.addLayout(form)
@@ -100,7 +113,17 @@ class StatisticalStretchDialog(QDialog):
 
         main = QHBoxLayout(self)
         main.addLayout(left, 0)
-        main.addWidget(self.preview_scroll, 1)
+
+        # NEW: right column with zoom row + preview
+        right = QVBoxLayout()
+        right.addLayout(zoom_row)                # ← actually add the zoom controls
+        right.addWidget(self.preview_scroll, 1)  # preview below the buttons
+        main.addLayout(right, 1)
+
+        self.btn_zoom_in.clicked.connect(lambda: self._zoom_by(1.25))
+        self.btn_zoom_out.clicked.connect(lambda: self._zoom_by(1/1.25))
+        self.btn_zoom_100.clicked.connect(self._zoom_reset_100)
+        self.btn_zoom_fit.clicked.connect(self._fit_preview)
 
         self.preview_scroll.viewport().installEventFilter(self)
         self.preview_label.installEventFilter(self)
@@ -127,6 +150,46 @@ class StatisticalStretchDialog(QDialog):
             if mx > 5.0:
                 f = f / mx
             return f
+
+    def _apply_current_zoom(self):
+        """Apply the current zoom mode (fit or manual) to the preview image."""
+        if self._preview_qimg is None:
+            return
+        if self._fit_mode:
+            self._fit_preview()
+        else:
+            self._update_preview_scaled()
+
+    def _fit_preview(self):
+        """Fit the image into the visible scroll viewport."""
+        if self._preview_qimg is None:
+            return
+        vp = self.preview_scroll.viewport().size()
+        if vp.width() <= 1 or vp.height() <= 1:
+            return
+        iw, ih = self._preview_qimg.width(), self._preview_qimg.height()
+        if iw <= 0 or ih <= 0:
+            return
+        # compute scale to fit
+        sx = vp.width()  / iw
+        sy = vp.height() / ih
+        self._preview_scale = max(0.05, min(sx, sy))
+        self._fit_mode = True
+        self._update_preview_scaled()
+
+    def _zoom_reset_100(self):
+        """Set zoom to 100% (1:1)."""
+        self._fit_mode = False
+        self._preview_scale = 1.0
+        self._update_preview_scaled()
+
+    def _zoom_by(self, factor: float):
+        """Incremental zoom around the current center; exits Fit mode."""
+        self._fit_mode = False
+        new_scale = self._preview_scale * float(factor)
+        self._preview_scale = max(0.05, min(new_scale, 8.0))
+        self._update_preview_scaled()
+
 
     # --- MASK helpers ----------------------------------------------------
     def _active_mask_array(self) -> np.ndarray | None:
@@ -250,7 +313,7 @@ class StatisticalStretchDialog(QDialog):
         qimg = QImage(ptr, w, h, bytes_per_line, QImage.Format.Format_RGB888)
 
         self._preview_qimg = qimg
-        self._update_preview_scaled()
+        self._apply_current_zoom() 
 
     # ----- slots -----
     def _populate_initial_preview(self):
@@ -336,15 +399,21 @@ class StatisticalStretchDialog(QDialog):
         self.preview_label.setPixmap(QPixmap.fromImage(scaled))
         self.preview_label.resize(scaled.size())            # <- crucial for scrollbars
 
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        if self._fit_mode:
+            self._fit_preview()
+
     def eventFilter(self, obj, ev):
         # Ctrl+wheel zoom
         if ev.type() == QEvent.Type.Wheel and (obj is self.preview_scroll.viewport() or obj is self.preview_label):
             if ev.modifiers() & Qt.KeyboardModifier.ControlModifier:
                 factor = 1.25 if ev.angleDelta().y() > 0 else 1/1.25
+                self._fit_mode = False                       # ← ensure we exit Fit mode
                 self._preview_scale = max(0.05, min(self._preview_scale * factor, 8.0))
                 self._update_preview_scaled()
                 return True
-            return False  # let the scroll area do normal scrolling
+            return False
 
         # Click+drag pan (left or middle mouse)
         if obj is self.preview_scroll.viewport() or obj is self.preview_label:

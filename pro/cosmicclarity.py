@@ -4,7 +4,7 @@ import os, sys, glob, time
 import numpy as np
 
 from PyQt6.QtCore import Qt, QTimer, QSettings, QThread, pyqtSignal, QFileSystemWatcher, QEvent
-from PyQt6.QtGui import QIcon
+from PyQt6.QtGui import QIcon, QAction, QImage, QPixmap
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGroupBox, QGridLayout, QLabel, QPushButton,
     QSlider, QCheckBox, QComboBox, QMessageBox, QWidget, QRadioButton, QProgressBar,
@@ -40,6 +40,37 @@ def _get_cosmic_root_from_settings() -> str:
 def _ensure_dirs(root: str):
     os.makedirs(os.path.join(root, "input"), exist_ok=True)
     os.makedirs(os.path.join(root, "output"), exist_ok=True)
+
+_IMG_EXTS = ('.png', '.tif', '.tiff', '.fit', '.fits', '.xisf',
+             '.cr2', '.nef', '.arw', '.dng', '.orf', '.rw2', '.pef',
+             '.jpg', '.jpeg')
+
+def _purge_dir(path: str, *, prefix: str | None = None):
+    """Delete lingering image-like files in a folder. Safe: files only."""
+    try:
+        if not os.path.isdir(path):
+            return
+        for fn in os.listdir(path):
+            fp = os.path.join(path, fn)
+            if not os.path.isfile(fp):
+                continue
+            if prefix and not fn.startswith(prefix):
+                continue
+            if os.path.splitext(fn)[1].lower() in _IMG_EXTS:
+                try: os.remove(fp)
+                except Exception: pass
+    except Exception:
+        pass
+
+def _purge_cc_io(root: str, *, clear_input: bool, clear_output: bool, prefix: str | None = None):
+    """Convenience to purge CC input/output dirs."""
+    try:
+        if clear_input:
+            _purge_dir(os.path.join(root, "input"),  prefix=prefix)
+        if clear_output:
+            _purge_dir(os.path.join(root, "output"), prefix=prefix)
+    except Exception:
+        pass
 
 def _platform_exe_names(mode: str) -> str:
     """
@@ -115,8 +146,15 @@ class CosmicClarityDialogPro(QDialog):
       • Apply target: overwrite / new view
     Uses QSettings key: paths/cosmic_clarity
     """
-    def __init__(self, parent, doc, icon: QIcon | None = None):
+    def __init__(self, parent, doc, icon: QIcon | None = None, *, headless: bool=False, bypass_guard: bool=False):
         super().__init__(parent)
+        # Hard guard unless explicitly bypassed (used by preset runner)
+        if not bypass_guard and self._headless_guard_active():
+            # avoid any flash; never show
+            try: self.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+            except Exception: pass
+            QTimer.singleShot(0, self.reject)
+            return        
         self.setWindowTitle("Cosmic Clarity")
         if icon: 
             try: self.setWindowIcon(icon)
@@ -160,12 +198,14 @@ class CosmicClarityDialogPro(QDialog):
 
         self.lbl_st_amt = QLabel("Stellar Amount (0–1): 0.50")
         self.sld_st_amt = QSlider(Qt.Orientation.Horizontal); self.sld_st_amt.setRange(0, 100); self.sld_st_amt.setValue(50)
-        self.sld_st_amt.valueChanged.connect(lambda v: self.lbl_st_amt.setText(f"Stellar Amount (0–1): {v/100:.2f}"))
+
+        self.sld_st_amt.valueChanged.connect(self._on_st_amt)
         grid.addWidget(self.lbl_st_amt, 6, 0, 1, 2); grid.addWidget(self.sld_st_amt, 7, 0, 1, 3)
 
         self.lbl_nst_amt = QLabel("Non-Stellar Amount (0–1): 0.50")
         self.sld_nst_amt = QSlider(Qt.Orientation.Horizontal); self.sld_nst_amt.setRange(0, 100); self.sld_nst_amt.setValue(50)
-        self.sld_nst_amt.valueChanged.connect(lambda v: self.lbl_nst_amt.setText(f"Non-Stellar Amount (0–1): {v/100:.2f}"))
+
+        self.sld_nst_amt.valueChanged.connect(self._on_nst_amt)
         grid.addWidget(self.lbl_nst_amt, 8, 0, 1, 2); grid.addWidget(self.sld_nst_amt, 9, 0, 1, 3)
 
         # Denoise block
@@ -211,9 +251,52 @@ class CosmicClarityDialogPro(QDialog):
         self._wait_thread = None
         self._proc = None
 
+        self._headless = bool(headless)
+        if self._headless:
+            # Don’t show the control panel; we’ll still exec() to run the event loop.
+            try: self.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+            except Exception: pass
         self.resize(560, 540)
 
     # ----- UI helpers -----
+    def _headless_guard_active(self) -> bool:
+        # 1) fast path: flags on the main window
+        try:
+            p = self.parent()
+            if p and (getattr(p, "_cosmicclarity_guard", False) or getattr(p, "_cosmicclarity_headless_running", False)):
+                return True
+        except Exception:
+            pass
+        # 2) cross-module path: QSettings flag set by the preset runner
+        try:
+            s = QSettings()
+            v = s.value("cc/headless_in_progress", False, type=bool)
+            return bool(v)
+        except Exception:
+            # fallback if type kwarg unsupported in some Qt builds
+            try:
+                return bool(QSettings().value("cc/headless_in_progress", False))
+            except Exception:
+                return False
+
+    # Never show if guard is active
+    def showEvent(self, e):
+        if self._headless_guard_active():
+            e.ignore()
+            QTimer.singleShot(0, self.reject)
+            return
+        return super().showEvent(e)
+
+    # Never exec if guard is active
+    def exec(self) -> int:
+        if self._headless_guard_active():
+            return 0
+        return super().exec()
+
+
+    def _on_st_amt(self, v: int): self.lbl_st_amt.setText(f"Stellar Amount (0–1): {v/100:.2f}")
+    def _on_nst_amt(self, v: int): self.lbl_nst_amt.setText(f"Non-Stellar Amount (0–1): {v/100:.2f}")
+
     def _psf_label(self):
         self.lbl_psf.setText(f"Non-Stellar PSF (1.0–8.0): {self.sld_psf.value()/10:.1f}")
 
@@ -253,6 +336,7 @@ class CosmicClarityDialogPro(QDialog):
     def _run_main(self):
         if not self._validate_root(): return
         _ensure_dirs(self.cosmic_root)
+        _purge_cc_io(self.cosmic_root, clear_input=True, clear_output=False)
 
         # Determine queue of operations
         mode_idx = self.cmb_mode.currentIndex()
@@ -283,6 +367,8 @@ class CosmicClarityDialogPro(QDialog):
 
     def _run_next(self):
         if not self._op_queue:
+            # If we ever get here without more steps, we’re done.
+            self.accept()
             return
         mode, suffix = self._op_queue.pop(0)
         exe_name = _platform_exe_names(mode)
@@ -314,8 +400,10 @@ class CosmicClarityDialogPro(QDialog):
         # Run process
         self._proc = QProcess(self)
         self._proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
-        self._proc.readyReadStandardOutput.connect(lambda: self._read_proc_output(self._proc, which="main"))
-        self._proc.finished.connect(lambda code, status: self._on_proc_finished(mode, suffix, code, status))
+
+        self._proc.readyReadStandardOutput.connect(self._read_proc_output_main)
+        from functools import partial
+        self._proc.finished.connect(partial(self._on_proc_finished, mode, suffix))
         self._proc.setProgram(exe_path)
         self._proc.setArguments(args)
         self._proc.start()
@@ -331,10 +419,13 @@ class CosmicClarityDialogPro(QDialog):
         self._wait.show()
 
         self._wait_thread = WaitForFileWorker(out_glob, timeout_sec=1800, parent=self)
-        self._wait_thread.fileFound.connect(lambda path: self._on_output_file(path, mode))
+        self._wait_thread.fileFound.connect(lambda path, mode=mode: self._on_output_file(path, mode))
         self._wait_thread.error.connect(self._on_wait_error)
         self._wait_thread.cancelled.connect(self._on_wait_cancel)
         self._wait_thread.start()
+
+    def _read_proc_output_main(self):
+        self._read_proc_output(self._proc, which="main")
 
     def _read_proc_output(self, proc: QProcess, which="main"):
         out = proc.readAllStandardOutput().data().decode("utf-8", errors="replace")
@@ -418,6 +509,11 @@ class CosmicClarityDialogPro(QDialog):
             QTimer.singleShot(100, self._run_next)
         else:
             # Nothing else queued — we're done
+            try:
+                # 🔸 Final cleanup: clear both input & output
+                _purge_cc_io(self.cosmic_root, clear_input=True, clear_output=True)
+            except Exception:
+                pass
             self.accept()
 
 
@@ -437,10 +533,17 @@ class CosmicClarityDialogPro(QDialog):
         self._on_wait_cancel()
 
     def _base_name(self) -> str:
-        # Prefer current doc filename stem if available
         fp = getattr(self.doc, "file_path", None)
         if isinstance(fp, str) and fp:
             return os.path.splitext(os.path.basename(fp))[0]
+        name = getattr(self.doc, "display_name", None)
+        if callable(name):
+            try:
+                n = name() or ""
+                if n:
+                    return "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in n).strip("_") or "image"
+            except Exception:
+                pass
         return "image"
 
 
@@ -491,6 +594,7 @@ class CosmicClarityDialogPro(QDialog):
             return
 
         _ensure_dirs(self.cosmic_root)
+        _purge_cc_io(self.cosmic_root, clear_input=True, clear_output=False)
         base = self._base_name()
         in_path = os.path.join(self.cosmic_root, "input", f"{base}.tif")
         try:
@@ -506,7 +610,8 @@ class CosmicClarityDialogPro(QDialog):
 
         self._proc = QProcess(self)
         self._proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
-        self._proc.readyReadStandardOutput.connect(lambda: self._read_superres_output(self._proc))
+
+        self._proc.readyReadStandardOutput.connect(self._read_superres_output_main)
         self._proc.finished.connect(lambda code, status: None)  # watcher decides success
 
         self._proc.setProgram(exe_path); self._proc.setArguments(args); self._proc.start()
@@ -518,21 +623,48 @@ class CosmicClarityDialogPro(QDialog):
         self._wait.cancelled.connect(self._cancel_all)
         self._wait.show()
 
-        scale_str = self.cmb_scale.currentText()
-        out_glob = os.path.join(self.cosmic_root, "output", f"{base}_upscaled{scale_str}.fit")
+        scale_int = int(self.cmb_scale.currentText().replace("x",""))
+        out_glob = os.path.join(self.cosmic_root, "output", f"{base}_upscaled{scale_int}.*")
         self._wait_thread = WaitForFileWorker(out_glob, timeout_sec=1800, parent=self)
         self._wait_thread.fileFound.connect(self._on_superres_file)
         self._wait_thread.error.connect(self._on_wait_error)
         self._wait_thread.cancelled.connect(self._on_wait_cancel)
         self._wait_thread.start()
 
+    def apply_preset(self, p: dict):
+        # Mode
+        mode = str(p.get("mode","sharpen")).lower()
+        self.cmb_mode.setCurrentIndex({"sharpen":0,"denoise":1,"both":2,"superres":3}.get(mode,0))
+        # GPU
+        self.cmb_gpu.setCurrentIndex(0 if p.get("gpu", True) else 1)
+       # Target
+        self.cmb_target.setCurrentIndex(1 if p.get("create_new_view", False) else 0)
+        # Sharpen
+        self.cmb_sh_mode.setCurrentText(p.get("sharpening_mode","Both"))
+        self.chk_auto_psf.setChecked(bool(p.get("auto_psf", True)))
+        self.sld_psf.setValue(int(max(10, min(80, round(float(p.get("nonstellar_psf",3.0))*10)))))
+        self.sld_st_amt.setValue(int(max(0, min(100, round(float(p.get("stellar_amount",0.5))*100)))))
+        self.sld_nst_amt.setValue(int(max(0, min(100, round(float(p.get("nonstellar_amount",0.5))*100)))))
+        # Denoise
+        self.sld_dn_lum.setValue(int(max(0, min(100, round(float(p.get("denoise_luma",0.5))*100)))))
+        self.sld_dn_col.setValue(int(max(0, min(100, round(float(p.get("denoise_color",0.5))*100)))))
+        self.cmb_dn_mode.setCurrentText(str(p.get("denoise_mode","full")))
+        self.chk_dn_sep.setChecked(bool(p.get("separate_channels", False)))
+        # Super-Res
+        self.cmb_scale.setCurrentText(str(int(p.get("scale",2))))
+
+
+    def _read_superres_output_main(self):
+        self._read_superres_output(self._proc)
+
     def _read_superres_output(self, proc: QProcess):
         out = proc.readAllStandardOutput().data().decode("utf-8", errors="replace")
         if not self._wait: return
         for line in out.splitlines():
-            if line.startswith("PROGRESS:"):
+            if line.startswith("PROGRESS:") or line.startswith("Progress:"):
                 try:
-                    pct = int(line.split(":",1)[1].strip().replace("%",""))
+                    tail = line.split(":",1)[1] if ":" in line else line.split()[1]
+                    pct = int(float(tail.strip().replace("%","")))
                     self._wait.set_progress(pct)
                 except Exception:
                     pass
@@ -566,6 +698,8 @@ class CosmicClarityDialogPro(QDialog):
         try:
             if os.path.exists(self._current_input): os.remove(self._current_input)
             if os.path.exists(out_path): os.remove(out_path)
+            # 🔸 Final cleanup for super-res run
+            _purge_cc_io(self.cosmic_root, clear_input=True, clear_output=True)
         except Exception:
             pass
 

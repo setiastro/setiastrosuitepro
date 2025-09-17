@@ -6,8 +6,9 @@ from PyQt6.QtCore import Qt, QEvent, QPointF, QRunnable, QThreadPool, pyqtSlot, 
 from PyQt6.QtGui import QImage, QPixmap, QPen, QBrush, QAction, QKeySequence, QColor, QWheelEvent, QIcon
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox, QLabel, QPushButton, QSlider,
-    QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QGraphicsEllipseItem, QMessageBox, QScrollArea
+    QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QGraphicsEllipseItem, QMessageBox, QScrollArea, QCheckBox, QDoubleSpinBox    
 )
+from imageops.stretch import stretch_color_image, stretch_mono_image 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Worker
@@ -167,10 +168,10 @@ class BlemishBlasterDialogPro(QDialog):
         else:
             raise ValueError(f"Unsupported image shape: {img.shape}")
 
-        self._image = img3.copy()
+        self._image   = img3.copy()      # linear, edited by worker
         self._display = self._image.copy()
 
-        # ── Scene/View
+        # ── Scene/View (unchanged) ─────────────────────────────────────────
         self.scene = QGraphicsScene(self)
         self.view  = QGraphicsView(self.scene)
         self.view.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -183,7 +184,7 @@ class BlemishBlasterDialogPro(QDialog):
         self.circle.setVisible(False)
         self.scene.addItem(self.circle)
 
-        # scroll container (smoother wheel zoom UX)
+        # scroll container
         self.scroll = QScrollArea(self)
         self.scroll.setWidgetResizable(True)
         self.scroll.setWidget(self.view)
@@ -192,20 +193,44 @@ class BlemishBlasterDialogPro(QDialog):
         ctrls = QGroupBox("Controls")
         form  = QFormLayout(ctrls)
 
-        self.s_radius  = QSlider(Qt.Orientation.Horizontal); self.s_radius.setRange(1, 300); self.s_radius.setValue(12)
+        # existing sliders
+        self.s_radius  = QSlider(Qt.Orientation.Horizontal); self.s_radius.setRange(1, 900); self.s_radius.setValue(12)
         self.s_feather = QSlider(Qt.Orientation.Horizontal); self.s_feather.setRange(0, 100); self.s_feather.setValue(50)
         self.s_opacity = QSlider(Qt.Orientation.Horizontal); self.s_opacity.setRange(0, 100); self.s_opacity.setValue(100)
-
-        form.addRow("Radius:", self.s_radius)
+        form.addRow("Radius:",  self.s_radius)
         form.addRow("Feather:", self.s_feather)
         form.addRow("Opacity:", self.s_opacity)
 
+        # --- PREVIEW AUTOSTRETCH (display only) ---
+        self.cb_autostretch = QCheckBox("Auto-stretch preview")
+        self.cb_autostretch.setChecked(True)
+        form.addRow(self.cb_autostretch)
+
+        self.s_target_median = QDoubleSpinBox()
+        self.s_target_median.setRange(0.01, 0.60)
+        self.s_target_median.setSingleStep(0.01)
+        self.s_target_median.setDecimals(3)
+        self.s_target_median.setValue(0.25)
+        form.addRow("Target median:", self.s_target_median)
+
+        self.cb_linked = QCheckBox("Linked color channels")
+        self.cb_linked.setChecked(True)
+        form.addRow(self.cb_linked)
+
+        # react to UI
+        self.cb_autostretch.toggled.connect(self._update_display_autostretch)
+        self.s_target_median.valueChanged.connect(self._update_display_autostretch)
+        self.cb_linked.toggled.connect(self._update_display_autostretch)
+        # (nice-to-have: disable fields when off)
+        self.cb_autostretch.toggled.connect(lambda on: (self.s_target_median.setEnabled(on),
+                                                        self.cb_linked.setEnabled(on)))
+
+        # buttons / layout (unchanged)
         bb = QHBoxLayout()
         self.btn_apply = QPushButton("Apply to Document")
         self.btn_close = QPushButton("Close")
         bb.addStretch(); bb.addWidget(self.btn_apply); bb.addWidget(self.btn_close)
 
-        # ── Layout
         main = QVBoxLayout(self)
         main.addWidget(self.scroll)
         main.addWidget(ctrls)
@@ -225,12 +250,35 @@ class BlemishBlasterDialogPro(QDialog):
         # wheel zoom
         self._zoom = 1.0
 
-        self._refresh_pix()
+        self._update_display_autostretch()
 
         # shortcuts
         a_undo = QAction(self); a_undo.setShortcut(QKeySequence.StandardKey.Undo); a_undo.triggered.connect(self._undo_step)
         a_redo = QAction(self); a_redo.setShortcut(QKeySequence.StandardKey.Redo); a_redo.triggered.connect(self._redo_step)
         self.addAction(a_undo); self.addAction(a_redo)
+
+    def _update_display_autostretch(self):
+        """Rebuilds self._display from the current linear working image."""
+        src = self._image  # linear data (HxWx3)
+        if not self.cb_autostretch.isChecked():
+            self._display = src.astype(np.float32, copy=False)
+            self._refresh_pix()
+            return
+
+        tm = float(self.s_target_median.value())
+        if not self._orig_mono:
+            # true color source
+            disp = stretch_color_image(src, target_median=tm, linked=self.cb_linked.isChecked(),
+                                    normalize=False, apply_curves=False)
+        else:
+            # original was mono; channels in src are identical
+            mono = src[..., 0]
+            mono_st = stretch_mono_image(mono, target_median=tm, normalize=False, apply_curves=False)
+            disp = np.stack([mono_st]*3, axis=-1)
+
+        self._display = disp.astype(np.float32, copy=False)
+        self._refresh_pix()
+
 
     # ── Event filter for hover/click + wheel zoom
     def eventFilter(self, src, ev):
@@ -268,7 +316,7 @@ class BlemishBlasterDialogPro(QDialog):
         self._undo.append(self._image.copy()); self._redo.clear()
         self._image = corrected.astype(np.float32, copy=False)
         self._display = self._image.copy()
-        self._refresh_pix()
+        self._update_display_autostretch()   
         self.setEnabled(True)
 
     # ── Zoom
@@ -287,14 +335,14 @@ class BlemishBlasterDialogPro(QDialog):
         self._redo.append(self._image.copy())
         self._image = self._undo.pop()
         self._display = self._image.copy()
-        self._refresh_pix()
+        self._update_display_autostretch()
 
     def _redo_step(self):
         if not self._redo: return
         self._undo.append(self._image.copy())
         self._image = self._redo.pop()
         self._display = self._image.copy()
-        self._refresh_pix()
+        self._update_display_autostretch()
 
     # ── Commit back to the document
     def _commit_to_doc(self):
@@ -336,7 +384,7 @@ class BlemishBlasterDialogPro(QDialog):
 
     # ── display helpers
     def _np_to_qpix(self, img: np.ndarray) -> QPixmap:
-        arr = np.clip(img * 255.0, 0, 255).astype(np.uint8)
+        arr = np.ascontiguousarray(np.clip(img * 255.0, 0, 255).astype(np.uint8))
         if arr.ndim == 2:
             h, w = arr.shape
             arr = np.repeat(arr[:, :, None], 3, axis=2)

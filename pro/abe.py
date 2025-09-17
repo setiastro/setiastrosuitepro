@@ -383,7 +383,7 @@ class ABEDialog(QDialog):
         self.sp_down = QSpinBox(); self.sp_down.setRange(1, 32); self.sp_down.setValue(6)
         self.sp_patch = QSpinBox(); self.sp_patch.setRange(5, 151); self.sp_patch.setSingleStep(2); self.sp_patch.setValue(15)
         self.chk_use_rbf = QCheckBox("Enable RBF refinement (after polynomial)"); self.chk_use_rbf.setChecked(True)
-        self.sp_rbf = QSpinBox(); self.sp_rbf.setRange(0, 1000); self.sp_rbf.setValue(10)  # shown as ×0.01 below
+        self.sp_rbf = QSpinBox(); self.sp_rbf.setRange(0, 1000); self.sp_rbf.setValue(100)  # shown as ×0.01 below
         self.chk_make_bg_doc = QCheckBox("Create background document"); self.chk_make_bg_doc.setChecked(False)
         self.chk_preview_bg   = QCheckBox("Preview background instead of corrected"); self.chk_preview_bg.setChecked(False)
 

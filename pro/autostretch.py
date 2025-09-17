@@ -3,7 +3,7 @@ import numpy as np
 
 _MAX_STATS_PIXELS = 1_000_000
 _DEFAULT_SIGMA = 3
-_U8_MAX  = 4095
+_U8_MAX  = 4095  # 12-bit output for better gradations than 255
 _U16_MAX = 65535
 
 # ---------- helpers (generic N-level pipeline) ----------

@@ -25,18 +25,31 @@ import rawpy
 
 import exifread
 
-
+from typing import List, Tuple, Optional
 import sep
+from pathlib import Path
 
 
 # your helpers/utilities
 from imageops.stretch import stretch_mono_image, stretch_color_image
-from legacy.numba_utils import *   # adjust names if different
+from legacy.numba_utils import *   
 from legacy.image_manager import load_image, save_image, get_valid_header
 from pro.star_alignment import StarRegistrationWorker, StarRegistrationThread, IDENTITY_2x3
 
 
 import numpy as np
+
+def _is_deleted(obj) -> bool:
+    try:
+        import sip
+        return sip.isdeleted(obj)
+    except Exception:
+        # Fallback heuristic
+        try:
+            _ = obj.thread()
+            return False
+        except Exception:
+            return True
 
 def _as_C(a: np.ndarray) -> np.ndarray:
     """Contiguous float32, no copy if possible."""
@@ -937,10 +950,16 @@ class StatusLogWindow(QDialog):
         # ── key flags ─────────────────────────────────────────────
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)   # hide, don't delete
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
-        self.setWindowFlag(Qt.WindowType.Tool, True)                    # tool-style (no taskbar)
-        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)    # stay on top of app windows
-        self.setWindowModality(Qt.WindowModality.NonModal)              # never block UI
+        self.setWindowFlag(Qt.WindowType.Tool, True)                    # tool window (no taskbar)
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, False)   # ❗ not global topmost
+        self.setWindowModality(Qt.WindowModality.NonModal)              # don't block UI
         # ─────────────────────────────────────────────────────────
+        # follow app activation/deactivation
+        QApplication.instance().applicationStateChanged.connect(self._on_app_state_changed)
+
+        # watch the parent to keep the log above it while the app is active
+        #if parent is not None:
+        #    parent.installEventFilter(self)
 
         self.resize(800, 250)
 
@@ -960,10 +979,31 @@ class StatusLogWindow(QDialog):
         row.addStretch(1)
         lay.addLayout(row)
 
+    def _apply_topmost(self, enable: bool):
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, enable)
+        if self.isVisible():
+            self.show()   # re-apply flags on Windows
+            if enable:
+                self.raise_()
+
+    @pyqtSlot(Qt.ApplicationState)
+    def _on_app_state_changed(self, state):
+        self._apply_topmost(state == Qt.ApplicationState.ApplicationActive)
+
+    def eventFilter(self, obj, event):
+        if obj is self.parent() and event.type() in (
+            QEvent.Type.WindowActivate,
+            QEvent.Type.ZOrderChange,
+            QEvent.Type.ActivationChange,
+        ):
+            if (QApplication.instance().applicationState() == Qt.ApplicationState.ApplicationActive
+                and self.isVisible()):
+                self.raise_()
+        return super().eventFilter(obj, event)
+
     def show_raise(self):
-        # bring forward without stealing focus
         self.show()
-        self.raise_()
+        self._apply_topmost(QApplication.instance().applicationState() == Qt.ApplicationState.ApplicationActive)
 
     @pyqtSlot(str)
     def append_line(self, message: str):
@@ -1039,7 +1079,16 @@ class StackingSuiteDialog(QDialog):
         self._norm_map = {}
         self._gui_thread = QThread.currentThread()        # remember GUI thread
         self.status_signal.connect(self._update_status_gui)  # queued to GUI
+        self._cfa_for_this_run = None  # None = follow checkbox; True/False = override for this run
  
+        # --- singleton status console (no parent, recreate if gone) ---
+        app = QApplication.instance()
+        console = getattr(app, "_sasd_status_console", None)
+        if console is None or _is_deleted(console):
+            console = StatusLogWindow(parent=None)
+            app._sasd_status_console = console
+        self._status_console = console
+
         self.auto_rot180 = self.settings.value("stacking/auto_rot180", True, type=bool)
         self.auto_rot180_tol_deg = self.settings.value("stacking/auto_rot180_tol_deg", 89.0, type=float)             
 
@@ -1100,7 +1149,7 @@ class StackingSuiteDialog(QDialog):
 
         # Wrench button, status bar, etc.
         self.wrench_button = QPushButton()
-        self.wrench_button.setIcon(QIcon(wrench_path))
+        self.wrench_button.setIcon(QIcon(self._wrench_path))
         self.wrench_button.setToolTip("Set Stacking Directory & Sigma Clipping")
         self.wrench_button.clicked.connect(self.open_stacking_settings)
         self.wrench_button.setStyleSheet("""
@@ -1139,11 +1188,11 @@ class StackingSuiteDialog(QDialog):
         app = QApplication.instance()
         if not hasattr(app, "_sasd_status_console"):
             # parent=None so it floats independent of any single dialog
-            app._sasd_status_console = StatusLogWindow(parent=None)
+            app._sasd_status_console = StatusLogWindow(parent=self)
         self._status_console = app._sasd_status_console
 
         # every StackingSuiteDialog writes to the same console
-        self.status_signal.connect(self._status_console.append_line)
+        self.status_signal.connect(self._status_console.append_line, Qt.ConnectionType.QueuedConnection)
 
         # show it (front) on open without stealing focus
         self._status_console.show_raise()
@@ -1185,7 +1234,7 @@ class StackingSuiteDialog(QDialog):
         app = QApplication.instance()
         console = getattr(app, "_sasd_status_console", None)
         if console is None:
-            app._sasd_status_console = StatusLogWindow(parent=None)
+            app._sasd_status_console = StatusLogWindow(parent=self)
             console = app._sasd_status_console
         self._status_console = console
         console.show_raise()
@@ -1471,14 +1520,19 @@ class StackingSuiteDialog(QDialog):
 
 
     def debayer_image(self, image, file_path, header):
-        if file_path.lower().endswith(('.cr2', '.cr3', '.nef', '.arw', '.dng', '.orf', '.rw2', '.pef')):
-            print(f"Debayering RAW image: {file_path}")
-            return debayer_raw_fast(image)
-        elif file_path.lower().endswith(('.fits', '.fit', '.fz')):
-            bayer_pattern = header.get('BAYERPAT')
-            if bayer_pattern:
-                print(f"Debayering FITS image: {file_path} with Bayer pattern {bayer_pattern}")
-                return debayer_fits_fast(image, bayer_pattern)
+        # per-run override if set, else honor the checkbox
+        if self._cfa_for_this_run is None:
+            cfa = bool(getattr(self, "cfa_drizzle_cb", None) and self.cfa_drizzle_cb.isChecked())
+        else:
+            cfa = bool(self._cfa_for_this_run)
+        print(f"[DEBUG] Debayering with CFA drizzle = {cfa}")
+        ext = file_path.lower()
+        if ext.endswith(('.cr2','.cr3','.nef','.arw','.dng','.orf','.rw2','.pef')):
+            return debayer_raw_fast(image, cfa_drizzle=cfa)
+        elif ext.endswith(('.fits','.fit','.fz')):
+            bp = (header.get('BAYERPAT') or header.get('BAYERPATN') or "").upper()
+            if bp:
+                return debayer_fits_fast(image, bp, cfa_drizzle=cfa)
         return image
 
     def setup_status_bar(self, layout):
@@ -2648,390 +2702,215 @@ class StackingSuiteDialog(QDialog):
         _, x0, y0, x1, y1 = best
         return (x0, y0, x1, y1)
 
-    def _compute_common_autocrop_rect_fast(
-        self,
-        grouped_files: dict,         # { group_key: [aligned _n_r.fit paths] }
-        autocrop_pct: float,         # e.g. 95.0
-        transforms_path: str | None = None,
-        transforms_dict: dict | None = None,
-        status_cb=None
-    ):
-        """
-        Compute a global crop rect WITHOUT loading pixel data.
-        Uses saved 2x3 transforms that map RAW-NORMALIZED coords -> ALIGNED coords.
-        Returns (x0, y0, x1, y1) in aligned (non-drizzled) pixels, or None if it can't compute.
-        """
-        log = status_cb or (lambda *_: None)
-        flush = lambda: QCoreApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 20)
-
-        # Collect every aligned file we'll consider
-        aligned_files = [f for files in grouped_files.values() for f in files]
-        if not aligned_files:
-            log("✂️ Auto-crop: no aligned files; skipping.")
-            return None
-
-        # Load transforms (raw_n -> aligned)
-        if transforms_dict is None:
-            if transforms_path is None:
-                transforms_path = os.path.join(self.stacking_directory, "alignment_transforms.sasd")
-            try:
-                Mdict = self.load_alignment_matrices_custom(transforms_path)
-                log(f"✂️ Auto-crop: loaded {len(Mdict)} transforms.")
-            except Exception as e:
-                log(f"✂️ Auto-crop: failed to load transforms ({e}); skipping.")
+    def _compute_common_autocrop_rect(self, grouped_files: dict, coverage_pct: float, status_cb=None):
+        log = status_cb or self.update_status
+        transforms_path = os.path.join(self.stacking_directory, "alignment_transforms.sasd")
+        common_mask = None
+        for group_key, file_list in grouped_files.items():
+            if not file_list:
+                continue
+            mask = self._compute_coverage_mask(file_list, transforms_path, coverage_pct)
+            if mask is None:
+                log(f"✂️ Global crop: no mask for '{group_key}' → disabling global crop.")
                 return None
-        else:
-            Mdict = dict(transforms_dict)
+            if common_mask is None:
+                common_mask = mask.astype(bool, copy=True)
+            else:
+                if mask.shape != common_mask.shape:
+                    log("✂️ Global crop: mask shapes differ across groups.")
+                    return None
+                np.logical_and(common_mask, mask, out=common_mask)
 
-        # Pull the canvas (aligned) W/H from the first aligned file header (cheap; not pixel data)
-        try:
-            h0 = fits.getheader(aligned_files[0])
-            W_aligned = int(h0.get("NAXIS1"))
-            H_aligned = int(h0.get("NAXIS2"))
-        except Exception:
-            log("✂️ Auto-crop: could not read aligned header; skipping.")
+        if common_mask is None or not common_mask.any():
             return None
 
-        # We also need the RAW-NORMALIZED source W/H. Read a single header for the first raw_n file.
-        H_src = W_src = None
+        rect = self._max_rectangle_in_binary(common_mask)
+        # Optional safety guard so we never get pencil-thin rectangles:
+        if rect:
+            x0, y0, x1, y1 = rect
+            if (x1 - x0) < 16 or (y1 - y0) < 16:
+                log("✂️ Global crop: rect too small; disabling global crop.")
+                return None
+            log(f"✂️ Global crop rect={rect} → size {x1-x0}×{y1-y0}")
+        return rect
 
-        # Convert aligned file -> raw-normalized key in your transforms dict.
-        def _aligned_to_raw_n(apath: str) -> str:
-            base = os.path.basename(apath)
-            raw_base = base.replace("_n_r.fit", "_n.fit") if base.endswith("_n_r.fit") else base
-            return os.path.normpath(os.path.join(self.stacking_directory, "Normalized_Images", raw_base))
+    def _first_non_none(self, *vals):
+        for v in vals:
+            if v is not None:
+                return v
+        return None
 
-        # Accumulate per-frame bounding boxes in aligned space
-        xmins, ymins, xmaxs, ymaxs = [], [], [], []
+    def _compute_coverage_mask(self, file_list: List[str], transforms_path: str, coverage_pct: float):
+        """
+        Build a coverage-count image on the aligned canvas for 'file_list'.
+        Threshold at coverage_pct, but use the number of frames we ACTUALLY rasterized (N_eff).
+        Returns a bool mask (H×W) or None if nothing rasterized.
+        """
+        if not file_list:
+            return None
 
-        log("✂️ Auto-crop: computing percent-overlap bbox from transforms (no image reloads)…")
-        flush()
+        # Canvas from first aligned image
+        ref_img, _, _, _ = load_image(file_list[0])
+        if ref_img is None:
+            self.update_status("✂️ Auto-crop: could not load first aligned ref.")
+            return None
+        H, W = (ref_img.shape if ref_img.ndim == 2 else ref_img.shape[:2])
 
-        for i, ap in enumerate(aligned_files, 1):
-            raw_n = _aligned_to_raw_n(ap)
-            M = Mdict.get(raw_n)
+        if not os.path.exists(transforms_path):
+            self.update_status(f"✂️ Auto-crop: no transforms file at {transforms_path}")
+            return None
+
+        transforms = self.load_alignment_matrices_custom(transforms_path)
+
+        # --- Robust transform lookup: key by normalized full path AND by basename ---
+        def _normcase(p):  # windows-insensitive
+            p = os.path.normpath(os.path.abspath(p))
+            return p.lower() if os.name == "nt" else p
+
+        xforms_by_full = { _normcase(k): v for k, v in transforms.items() }
+        xforms_by_name = {}
+        for k, v in transforms.items():
+            xforms_by_name.setdefault(os.path.basename(k), v)
+
+        cov = np.zeros((H, W), dtype=np.uint16)
+        used = 0
+
+        for aligned_path in file_list:
+            base = os.path.basename(aligned_path)
+            if base.endswith("_n_r.fit"):
+                raw_base = base.replace("_n_r.fit", "_n.fit")
+            elif base.endswith("_r.fit"):
+                raw_base = base.replace("_r.fit", ".fit")
+            else:
+                raw_base = base
+
+            # try normalized-Images location first
+            raw_path_guess = os.path.join(self.stacking_directory, "Normalized_Images", raw_base)
+
+            # find transform
+            M = self._first_non_none(
+                xforms_by_full.get(_normcase(raw_path_guess)),
+                xforms_by_full.get(_normcase(aligned_path)),
+                transforms.get(raw_path_guess),
+                transforms.get(os.path.normpath(aligned_path)),
+                xforms_by_name.get(raw_base),
+            )
+
             if M is None:
-                # If we don't have a transform for this file, skip it
+                # Can't rasterize this frame
                 continue
 
-            if H_src is None or W_src is None:
-                # Read once from the first raw_n header
-                try:
-                    hdr_src = fits.getheader(raw_n)
-                    W_src = int(hdr_src.get("NAXIS1"))
-                    H_src = int(hdr_src.get("NAXIS2"))
-                except Exception:
-                    # Fall back to aligned dims (common case) if header missing
-                    W_src, H_src = W_aligned, H_aligned
+            # raw size
+            h_raw = w_raw = None
+            if os.path.exists(raw_path_guess):
+                raw_img, _, _, _ = load_image(raw_path_guess)
+                if raw_img is not None:
+                    h_raw, w_raw = (raw_img.shape if raw_img.ndim == 2 else raw_img.shape[:2])
 
-            M = np.asarray(M, dtype=np.float32).reshape(2, 3)
-            A = M[:, :2]   # 2x2
-            t = M[:, 2]    # 2
+            if h_raw is None or w_raw is None:
+                # fallback to aligned canvas size (still okay; affine provides placement)
+                h_raw, w_raw = H, W
 
-            # Corners of the source in RAW-NORMALIZED coordinates
-            src_corners = np.array([[0, 0], [W_src, 0], [W_src, H_src], [0, H_src]], dtype=np.float32)
-            # Map to ALIGNED coordinates
-            aligned_corners = (src_corners @ A.T) + t  # (4,2)
-            xs = aligned_corners[:, 0]
-            ys = aligned_corners[:, 1]
+            corners = np.array([[0,0],[w_raw-1,0],[w_raw-1,h_raw-1],[0,h_raw-1]], dtype=np.float32)
+            A = M[:, :2]; t = M[:, 2]
+            quad = (corners @ A.T) + t
 
-            # Axis-aligned bbox (clamped to canvas)
-            xmin = max(0.0, float(xs.min()))
-            ymin = max(0.0, float(ys.min()))
-            xmax = min(float(W_aligned), float(xs.max()))
-            ymax = min(float(H_aligned), float(ys.max()))
-            if xmax > xmin and ymax > ymin:
-                xmins.append(xmin); ymins.append(ymin); xmaxs.append(xmax); ymaxs.append(ymax)
+            self._quad_coverage_add(cov, quad)
+            used += 1
 
-            if (i % 25) == 0:
-                log(f"   • processed {i}/{len(aligned_files)}…")
-                flush()
-
-        if not xmins:
-            log("✂️ Auto-crop: no valid bboxes found; skipping.")
+        if used == 0:
+            self.update_status("✂️ Auto-crop: 0/{} frames had usable transforms; skipping.".format(len(file_list)))
             return None
 
-        # Build a “covered by at least p% of frames” rectangle
-        p = max(0.50, min(1.00, float(autocrop_pct) / 100.0))  # clamp to [50%,100%] sanity
-        left   = float(np.quantile(np.array(xmins), p))
-        top    = float(np.quantile(np.array(ymins), p))
-        right  = float(np.quantile(np.array(xmaxs), 1.0 - p))
-        bottom = float(np.quantile(np.array(ymaxs), 1.0 - p))
-
-        # Integer crop rect inside canvas
-        x0 = max(0, int(math.ceil(left)))
-        y0 = max(0, int(math.ceil(top)))
-        x1 = min(W_aligned, int(math.floor(right)))
-        y1 = min(H_aligned, int(math.floor(bottom)))
-
-        if x1 <= x0 or y1 <= y0:
-            log("✂️ Auto-crop: computed rect is empty; skipping.")
+        need = int(np.ceil((coverage_pct / 100.0) * used))
+        mask = (cov >= need)
+        self.update_status(f"✂️ Auto-crop: rasterized {used}/{len(file_list)} frames; need {need} per-pixel.")
+        if not mask.any():
+            self.update_status("✂️ Auto-crop: threshold produced empty mask.")
             return None
+        return mask
 
-        log(f"✂️ Auto-crop rect: ({x0},{y0})–({x1},{y1}) on {W_aligned}×{H_aligned} canvas.")
-        flush()
-        return (x0, y0, x1, y1)
 
-    def _compute_common_autocrop_rect(self, grouped_files: dict, coverage_pct: float, status_cb=None):
+
+    def _compute_autocrop_rect(self, file_list: List[str], transforms_path: str, coverage_pct: float):
         """
-        Fast global crop using alignment transforms only.
-
-        - If coverage_pct >= 99: exact convex intersection of all transformed rectangles (no black edges).
-        - If coverage_pct < 99: fast percentile-based AABB approximation (very quick; good in practice).
-
-        Returns (x0, y0, x1, y1) in *aligned/reference* pixel coords, or None if not computable.
+        Build a coverage-count image (aligned canvas), threshold at pct, and extract largest rectangle.e
+        Returns (x0, y0, x1, y1) or None.
         """
-        import math
-        import json
-        from time import perf_counter
-        import numpy as np
-        from astropy.io import fits
-
-        def log(msg: str):
-            try:
-                (status_cb or self.update_status)(msg)
-            except Exception:
-                pass
-
-        t0 = perf_counter()
-        transforms_path = os.path.join(self.stacking_directory, "alignment_transforms.sasd")
-
-        # ---- Helpers -----------------------------------------------------------
-        def _load_transforms(path: str):
-            """
-            Returns dict {normalized_path: 3x3 float64 affine matrix}
-            Tries your existing loader if present; otherwise tries JSON / pickle / npy/npz.
-            """
-            # Prefer your existing method if available
-            if hasattr(self, "load_alignment_matrices_sasd"):
-                try:
-                    d = self.load_alignment_matrices_sasd(path)
-                    # normalize into numpy arrays
-                    out = {}
-                    for k, v in (d or {}).items():
-                        M = np.asarray(v, dtype=np.float64)
-                        if M.shape == (3, 3):
-                            out[os.path.normpath(k)] = M
-                    return out
-                except Exception:
-                    pass
-
-            # Fallbacks
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    raw = json.load(f)
-                out = {}
-                for k, v in raw.items():
-                    M = np.asarray(v, dtype=np.float64)
-                    if M.shape == (3, 3):
-                        out[os.path.normpath(k)] = M
-                return out
-            except Exception:
-                pass
-
-            try:
-                import pickle
-                with open(path, "rb") as f:
-                    raw = pickle.load(f)
-                out = {}
-                for k, v in raw.items():
-                    M = np.asarray(v, dtype=np.float64)
-                    if M.shape == (3, 3):
-                        out[os.path.normpath(k)] = M
-                return out
-            except Exception:
-                pass
-
-            try:
-                npz = np.load(path, allow_pickle=True)
-                out = {}
-                # support either dict-like npz or (keys, mats)
-                if hasattr(npz, "files") and "keys" in npz.files and "mats" in npz.files:
-                    keys = npz["keys"]
-                    mats = npz["mats"]
-                    for k, M in zip(keys, mats):
-                        M = np.asarray(M, dtype=np.float64)
-                        if M.shape == (3, 3):
-                            out[os.path.normpath(str(k))] = M
-                    return out
-            except Exception:
-                pass
-            return {}
-
-        def _infer_dims_from_any_aligned_file() -> tuple[int, int] | None:
-            for _g, lst in grouped_files.items():
-                for p in lst:
-                    if os.path.exists(p):
-                        try:
-                            hdr = fits.getheader(p, ext=0)
-                            W = int(hdr.get("NAXIS1") or 0)
-                            H = int(hdr.get("NAXIS2") or 0)
-                            if W > 0 and H > 0:
-                                return (W, H)
-                        except Exception:
-                            pass
+        if not file_list:
             return None
 
-        def _rev_map_aligned_to_normalized() -> dict:
-            """
-            Map aligned path -> normalized path using either self.valid_transforms or filename pattern.
-            """
-            rev = {}
-            vt = getattr(self, "valid_transforms", None)
-            if isinstance(vt, dict) and vt:
-                for norm_p, aligned_p in vt.items():
-                    rev[os.path.normpath(aligned_p)] = os.path.normpath(norm_p)
+        # Load aligned reference to get canvas size
+        ref_img, ref_hdr, _, _ = load_image(file_list[0])
+        if ref_img is None:
+            return None
+        if ref_img.ndim == 2:
+            H, W = ref_img.shape
+        else:
+            H, W = ref_img.shape[:2]
+
+        # Load transforms (raw _n path -> 2x3 matrix mapping raw->aligned)
+        if not os.path.exists(transforms_path):
+            return None
+        transforms = self.load_alignment_matrices_custom(transforms_path)
+
+        # We need the raw (normalized) image size for each file to transform its corners
+        # From aligned name "..._n_r.fit" get raw name "..._n.fit" (like in your drizzle code)
+        cov = np.zeros((H, W), dtype=np.uint16)
+        for aligned_path in file_list:
+            base = os.path.basename(aligned_path)
+            if base.endswith("_n_r.fit"):
+                raw_base = base.replace("_n_r.fit", "_n.fit")
+            elif base.endswith("_r.fit"):
+                raw_base = base.replace("_r.fit", ".fit")  # fallback
             else:
-                # best-effort: derive from naming convention
-                for _g, lst in grouped_files.items():
-                    for aligned in lst:
-                        base = os.path.basename(aligned)
-                        if base.endswith("_n_r.fit"):
-                            nn = base.replace("_n_r.fit", "_n.fit")
-                        elif base.endswith("_r.fit"):
-                            nn = base.replace("_r.fit", "_n.fit")
-                        else:
-                            continue
-                        rev[os.path.normpath(aligned)] = os.path.normpath(
-                            os.path.join(self.stacking_directory, "Normalized_Images", nn)
-                        )
-            return rev
+                raw_base = base  # fallback
 
-        def _transform_rect(M: np.ndarray, W: int, H: int):
-            # Apply 3x3 affine to the 4 corners of the source image (0,0)-(W,H)
-            corners = np.array([[0, 0, 1],
-                                [W, 0, 1],
-                                [W, H, 1],
-                                [0, H, 1]], dtype=np.float64)
-            tp = (M @ corners.T).T
-            # assume affine (no perspective), ignore homogeneous w if present
-            return [(float(tp[i, 0]), float(tp[i, 1])) for i in range(4)]
+            raw_path = os.path.join(self.stacking_directory, "Normalized_Images", raw_base)
+            # Fallback if normalized folder differs:
+            raw_key = os.path.normpath(raw_path)
+            M = transforms.get(raw_key, None)
+            if M is None:
+                # Try direct key (some pipelines use normalized path equal to aligned key)
+                M = transforms.get(os.path.normpath(aligned_path), None)
+            if M is None:
+                continue
 
-        # Sutherland–Hodgman convex polygon intersection
-        def _poly_intersection(subject, clip):
-            def _inside(p, a, b):
-                # keep left of directed edge a->b
-                return (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]) >= 0.0
-            def _intersection(a1, a2, b1, b2):
-                # line-line intersection
-                x1,y1 = a1; x2,y2 = a2; x3,y3 = b1; x4,y4 = b2
-                den = (x1-x2)*(y3-y4) - (y1-y2)*(x3-x4)
-                if abs(den) < 1e-12:
-                    return a2  # parallel; fallback
-                px = ((x1*y2 - y1*x2)*(x3 - x4) - (x1 - x2)*(x3*y4 - y3*x4)) / den
-                py = ((x1*y2 - y1*x2)*(y3 - y4) - (y1 - y2)*(x3*y4 - y3*x4)) / den
-                return (px, py)
+            # Determine raw size
+            raw_img, _, _, _ = load_image(raw_key) if os.path.exists(raw_key) else (None, None, None, None)
+            if raw_img is None:
+                # last resort: assume same canvas; still yields a conservative crop
+                h_raw, w_raw = H, W
+            else:
+                if raw_img.ndim == 2:
+                    h_raw, w_raw = raw_img.shape
+                else:
+                    h_raw, w_raw = raw_img.shape[:2]
 
-            output = subject
-            if not output:
-                return []
-            for i in range(len(clip)):
-                input_list = output
-                output = []
-                A = clip[i]
-                B = clip[(i+1) % len(clip)]
-                if not input_list:
-                    break
-                S = input_list[-1]
-                for E in input_list:
-                    if _inside(E, A, B):
-                        if not _inside(S, A, B):
-                            output.append(_intersection(S, E, A, B))
-                        output.append(E)
-                    elif _inside(S, A, B):
-                        output.append(_intersection(S, E, A, B))
-                    S = E
-                if not output:
-                    break
-            return output
+            # Transform raw rectangle corners into aligned coords
+            corners = np.array([
+                [0,       0      ],
+                [w_raw-1, 0      ],
+                [w_raw-1, h_raw-1],
+                [0,       h_raw-1]
+            ], dtype=np.float32)
 
-        # ---- Load transforms + dims -------------------------------------------
-        log("✂️ Auto-crop: loading transforms…")
-        transforms = _load_transforms(transforms_path)
-        if not transforms:
-            log("✂️ Auto-crop: no transforms found → disabling global crop.")
-            return None
+            # Apply affine: [x' y']^T = A*[x y]^T + t
+            A = M[:, :2]; t = M[:, 2]
+            quad = (corners @ A.T) + t  # shape (4,2)
 
-        dims = _infer_dims_from_any_aligned_file()
-        if not dims:
-            log("✂️ Auto-crop: could not infer image dimensions → disabling global crop.")
-            return None
-        W, H = dims
+            # Rasterize into coverage
+            self._quad_coverage_add(cov, quad)
 
-        rev_map = _rev_map_aligned_to_normalized()
+        # Threshold at requested coverage
+        N = len(file_list)
+        need = int(np.ceil((coverage_pct / 100.0) * N))
+        mask = (cov >= need)
 
-        # ---- Build per-frame polygons (transformed corners on the reference grid) ----
-        polys = []
-        n_frames = 0
-        for _g, flist in grouped_files.items():
-            for aligned_path in flist:
-                n_frames += 1
-                norm_p = rev_map.get(os.path.normpath(aligned_path))
-                if not norm_p:
-                    continue
-                M = transforms.get(os.path.normpath(norm_p))
-                if M is None or np.asarray(M).shape != (3, 3):
-                    continue
-                polys.append(_transform_rect(np.asarray(M, dtype=np.float64), W, H))
+        # Largest rectangle of 1s
+        rect = self._max_rectangle_in_binary(mask)
+        return rect
 
-        if not polys:
-            log("✂️ Auto-crop: no usable polygons from transforms → disabling global crop.")
-            return None
-
-        # ---- Exact 100% coverage (convex intersection) ----
-        base_rect = [(0.0, 0.0), (W*1.0, 0.0), (W*1.0, H*1.0), (0.0, H*1.0)]
-        inter_poly = base_rect
-        for p in polys:
-            inter_poly = _poly_intersection(inter_poly, p)
-            if len(inter_poly) < 3:
-                inter_poly = []
-                break
-
-        # If user wants ≈100% coverage, prefer exact polygon intersection (fast & safe).
-        if coverage_pct >= 99 or not polys:
-            if not inter_poly:
-                log("✂️ Auto-crop: empty intersection at 100% coverage.")
-                return None
-            xs = [pt[0] for pt in inter_poly]
-            ys = [pt[1] for pt in inter_poly]
-            x0 = max(0, int(math.floor(min(xs))))
-            y0 = max(0, int(math.floor(min(ys))))
-            x1 = min(W, int(math.ceil(max(xs))))
-            y1 = min(H, int(math.ceil(max(ys))))
-            if x1 - x0 <= 4 or y1 - y0 <= 4:
-                log("✂️ Auto-crop: intersection too small to be useful.")
-                return None
-            log(f"✂️ Global crop (100% coverage): {x0},{y0} → {x1},{y1}  "
-                f"({x1-x0}×{y1-y0})  in {perf_counter()-t0:.1f}s")
-            return (x0, y0, x1, y1)
-
-        # ---- Fast percentile AABB fallback for coverage_pct < 99 ---------------
-        # This is a conservative, very fast approximation (no per-pixel masks).
-        xmins = np.array([min(x for x, _ in p) for p in polys], dtype=np.float64)
-        xmaxs = np.array([max(x for x, _ in p) for p in polys], dtype=np.float64)
-        ymins = np.array([min(y for _, y in p) for p in polys], dtype=np.float64)
-        ymaxs = np.array([max(y for _, y in p) for p in polys], dtype=np.float64)
-
-        k = max(1, int(math.ceil((coverage_pct / 100.0) * len(polys))))
-        # k-th largest for mins, k-th smallest for maxes
-        # (np.partition is O(n) and fast)
-        x0 = float(np.partition(xmins, -k)[-k])   # k-th largest left boundary
-        y0 = float(np.partition(ymins, -k)[-k])
-        x1 = float(np.partition(xmaxs,  k-1)[k-1])  # k-th smallest right boundary
-        y1 = float(np.partition(ymaxs,  k-1)[k-1])
-
-        x0 = max(0, int(math.floor(x0)))
-        y0 = max(0, int(math.floor(y0)))
-        x1 = min(W, int(math.ceil(x1)))
-        y1 = min(H, int(math.ceil(y1)))
-
-        if x1 - x0 <= 4 or y1 - y0 <= 4 or x0 >= x1 or y0 >= y1:
-            log("✂️ Auto-crop: percentile AABB produced too small/invalid rect → disabling global crop.")
-            return None
-
-        log(f"✂️ Global crop (~{coverage_pct:.0f}% coverage): {x0},{y0} → {x1},{y1}  "
-            f"({x1-x0}×{y1-y0})  in {perf_counter()-t0:.1f}s")
-        return (x0, y0, x1, y1)
 
 
     def _first_non_none(self, *vals):
@@ -3279,7 +3158,7 @@ class StackingSuiteDialog(QDialog):
         # ─────────────────────────────────────────
         drizzle_layout = QHBoxLayout()
 
-        self.drizzle_checkbox = QCheckBox("Enable Drizzle (beta)")
+        self.drizzle_checkbox = QCheckBox("Enable Drizzle")
         self.drizzle_checkbox.toggled.connect(self._on_drizzle_checkbox_toggled) # <─ connect signal
         drizzle_layout.addWidget(self.drizzle_checkbox)
 
@@ -3296,6 +3175,12 @@ class StackingSuiteDialog(QDialog):
         self.drizzle_drop_shrink_spin.setValue(0.65)
         self.drizzle_drop_shrink_spin.valueChanged.connect(self._on_drizzle_param_changed)  # <─ connect
         drizzle_layout.addWidget(self.drizzle_drop_shrink_spin)
+
+        self.cfa_drizzle_cb = QCheckBox("CFA Drizzle")
+        self.cfa_drizzle_cb.setChecked(self.settings.value("stacking/cfa_drizzle", False, type=bool))
+        self.cfa_drizzle_cb.toggled.connect(self._on_cfa_drizzle_toggled)
+        self.cfa_drizzle_cb.setToolTip("Map R/G/B CFA samples directly into channels and skip interpolation.")
+        drizzle_layout.addWidget(self.cfa_drizzle_cb)
 
         layout.addLayout(drizzle_layout)
 
@@ -3384,7 +3269,36 @@ class StackingSuiteDialog(QDialog):
         # Populate the tree from your calibrated folder
         self.populate_calibrated_lights()
         tab.setLayout(layout)
+
+        self.drizzle_checkbox.setChecked(self.settings.value("stacking/drizzle_enabled", False, type=bool))
+        self.drizzle_scale_combo.setCurrentText(self.settings.value("stacking/drizzle_scale", "2x", type=str))
+        self.drizzle_drop_shrink_spin.setValue(self.settings.value("stacking/drizzle_drop", 0.65, type=float))
+
         return tab
+
+    def _on_cfa_drizzle_toggled(self, checked: bool):
+        self.settings.setValue("stacking/cfa_drizzle", bool(checked))
+        self._update_drizzle_summary_columns()
+
+
+    def _on_drizzle_param_changed(self, *_):
+        # persist
+        self.settings.setValue("stacking/drizzle_scale", self.drizzle_scale_combo.currentText())
+        self.settings.setValue("stacking/drizzle_drop", float(self.drizzle_drop_shrink_spin.value()))
+        self._update_drizzle_summary_columns()
+
+    def _update_drizzle_summary_columns(self):
+        desc = "OFF"
+        if self.drizzle_checkbox.isChecked():
+            scale = self.drizzle_scale_combo.currentText()
+            drop  = self.drizzle_drop_shrink_spin.value()
+            desc = f"ON, Scale {scale}, Drop {drop:.2f}"
+        if self.cfa_drizzle_cb.isChecked():
+            desc += " + CFA"
+
+        root = self.reg_tree.invisibleRootItem()
+        for i in range(root.childCount()):
+            root.child(i).setText(2, f"Drizzle: {desc}")
 
     def _on_star_trail_toggled(self, state):
         self.star_trail_mode = bool(state)
@@ -3928,10 +3842,8 @@ class StackingSuiteDialog(QDialog):
             }
 
     def _on_drizzle_checkbox_toggled(self, checked: bool):
-        scale = float(self.drizzle_scale_combo.currentText().replace("x","",1))
-        drop  = self.drizzle_drop_shrink_spin.value()
-        targets = list(self._iter_group_items())  # ALWAYS all groups
-        self._set_drizzle_on_items(targets, checked, scale, drop)
+        self.settings.setValue("stacking/drizzle_enabled", bool(checked))
+        self._update_drizzle_summary_columns()
 
     def _on_drizzle_param_changed(self, *_):
         enabled = self.drizzle_checkbox.isChecked()
@@ -3954,44 +3866,27 @@ class StackingSuiteDialog(QDialog):
         self._set_drizzle_on_items(targets, enabled, scale, drop)
 
     def gather_drizzle_settings_from_tree(self):
-        """
-        Returns: { group_key: {files:[...], drizzle_enabled:bool,
-                            scale_factor:float, drop_shrink:float} }
-        """
-        dd = {}
-        for i in range(self.reg_tree.topLevelItemCount()):
-            item = self.reg_tree.topLevelItem(i)
-            key  = item.text(0)
-            files= item.data(0, Qt.ItemDataRole.UserRole) or []
-            txt  = item.text(2).lower()
+        """Return per-group drizzle settings based on the global controls."""
+        enabled = bool(self.drizzle_checkbox.isChecked())
+        scale_txt = self.drizzle_scale_combo.currentText()
+        try:
+            scale_factor = float(scale_txt.replace("x", "").strip())
+        except Exception:
+            scale_factor = 1.0
+        drop_shrink = float(self.drizzle_drop_shrink_spin.value())
 
-            ena = txt.startswith("drizzle: true")
-            sf  = 1.0
-            ds  = 0.65
-            if ena:
-                m = re.search(r"scale\s*:\s*([\d\.]+)x?", txt)
-                if m: sf = float(m.group(1))
-                m = re.search(r"drop\s*:\s*([\d\.]+)", txt)
-                if m: ds = float(m.group(1))
-
-            dd[key] = {
-                "files": files,
-                "drizzle_enabled": ena,
-                "scale_factor": sf,
-                "drop_shrink": ds
+        out = {}
+        root = self.reg_tree.invisibleRootItem()
+        for i in range(root.childCount()):
+            group_key = root.child(i).text(0)   # e.g. "L Ultimate - 300.0s (4144x2822)"
+            out[group_key] = {
+                "drizzle_enabled": enabled,
+                "scale_factor": scale_factor,
+                "drop_shrink": drop_shrink,
             }
-
-        # backfill any group that lived only in self.light_files
-        for key, fl in self.light_files.items():
-            if key not in dd:
-                dd[key] = {
-                    "files": fl,
-                    "drizzle_enabled": False,
-                    "scale_factor": 1.0,
-                    "drop_shrink": 0.65
-                }
-
-        return dd
+        # Optional: debug once to verify
+        self.update_status(f"🧪 drizzle_dict: {out}")
+        return out
 
 
 
@@ -5981,6 +5876,50 @@ class StackingSuiteDialog(QDialog):
         # let Qt process pending paint/input signals so the UI updates
         QCoreApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 25)
 
+    def _maybe_warn_cfa_low_frames(self):
+        if not (getattr(self, "cfa_drizzle_cb", None) and self.cfa_drizzle_cb.isChecked()):
+            self._cfa_for_this_run = None  # follow checkbox (OFF)
+            return
+
+        # Count frames per group (use the *current* reg tree groups)
+        per_group_counts = {g: len(v) for g, v in (self.light_files or {}).items() if v}
+        if not per_group_counts:
+            self._cfa_for_this_run = None
+            return
+
+        worst = min(per_group_counts.values())
+
+        # Scale-aware cutoff (you can expose this in QSettings if you like)
+        try:
+            scale_txt = self.drizzle_scale_combo.currentText()
+            scale = float(scale_txt.replace("x", "").strip())
+        except Exception:
+            scale = 1.0
+        cutoff = {1.0: 32, 2.0: 64, 3.0: 96}.get(scale, 64)
+
+        if worst >= cutoff:
+            self._cfa_for_this_run = True   # keep raw CFA mapping
+            return
+
+        # Ask the user
+        msg = (f"CFA Drizzle is enabled but at least one group has only {worst} frames.\n\n"
+            f"CFA Drizzle typically needs ≥{cutoff} frames (scale {scale:.0f}×) for good coverage.\n"
+            "Switch to Edge-Aware Interpolation for this run?")
+        ret = QMessageBox.question(
+            self, "CFA Drizzle: Low Sample Count",
+            msg, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes
+        )
+
+        if ret == QMessageBox.StandardButton.Yes:
+            # Disable raw CFA just for this run
+            self._cfa_for_this_run = False
+            self.update_status("⚠️ CFA Drizzle: low-count fallback → using Edge-Aware Interpolation for this run.")
+        else:
+            self._cfa_for_this_run = True
+            self.update_status("ℹ️ CFA Drizzle kept despite low frame count (you chose No).")
+
+
     def register_images(self):
         """Measure → choose reference → DEBAYER ref → DEBAYER+normalize all → align."""
         if self.star_trail_mode:
@@ -6005,6 +5944,8 @@ class StackingSuiteDialog(QDialog):
             self.update_status("🌈 Splitting dual-band OSC frames into Ha / SII / OIII...")
             self._split_dual_band_osc(selected_groups=selected_groups)
             self._refresh_reg_tree_from_light_files()
+
+        self._maybe_warn_cfa_low_frames()
 
         # Flatten to get all files
         all_files = [f for lst in self.light_files.values() for f in lst]
@@ -6655,6 +6596,18 @@ class StackingSuiteDialog(QDialog):
         self.update_status(f"✂️ Auto-cropped to [{x0}:{x1}]×[{y0}:{y1}] (scale {scale}×)")
         return arr, header
 
+    def _dither_phase_fill(self, matrices: dict[str, np.ndarray], bins=8) -> float:
+        """Return fraction of occupied (dx,dy) phase bins in [0,1)×[0,1)."""
+        hist = np.zeros((bins, bins), dtype=np.int32)
+        for M in matrices.values():
+            # fractional translation at origin
+            tx, ty = float(M[0,2]), float(M[1,2])
+            fx = (tx - math.floor(tx)) % 1.0
+            fy = (ty - math.floor(ty)) % 1.0
+            ix = min(int(fx * bins), bins-1)
+            iy = min(int(fy * bins), bins-1)
+            hist[iy, ix] += 1
+        return float(np.count_nonzero(hist)) / float(hist.size)
 
     def on_registration_complete(self, success, msg):
         self.update_status(msg)
@@ -6707,7 +6660,13 @@ class StackingSuiteDialog(QDialog):
         # Persist numeric transforms we accepted (for drizzle, etc.)
         # ----------------------------
         valid_matrices = {k: all_transforms[k] for k in accepted}
+        self.valid_matrices = {
+            os.path.normpath(k): np.asarray(v, dtype=np.float32)
+            for k, v in valid_matrices.items() if v is not None
+                }        
         self.save_alignment_matrices_sasd(valid_matrices)
+
+
 
         # ----------------------------
         # Build mapping from normalized -> aligned paths
@@ -6769,6 +6728,22 @@ class StackingSuiteDialog(QDialog):
             autocrop_enabled = self.settings.value("stacking/autocrop_enabled", False, type=bool)
             autocrop_pct = float(self.settings.value("stacking/autocrop_pct", 95.0, type=float))
 
+        # Only report fill % if CFA mapping is actually in use for this run
+        cfa_effective = bool(
+            self._cfa_for_this_run
+            if getattr(self, "_cfa_for_this_run", None) is not None
+            else (getattr(self, "cfa_drizzle_cb", None) and self.cfa_drizzle_cb.isChecked())
+        )
+        print("CFA effective for this run:", cfa_effective)
+
+        if cfa_effective and getattr(self, "valid_matrices", None):
+            fill = self._dither_phase_fill(self.valid_matrices, bins=8)
+            self.update_status(f"🔎 CFA drizzle sub-pixel phase fill (8×8): {fill*100:.1f}%")
+            if fill < 0.65:
+                self.update_status("💡 For best results with CFA drizzle, aim for >65% fill.")
+                self.update_status("   With <~40–55% fill, expect visible patching even with many frames.")
+        QApplication.processEvents()
+
         # ----------------------------
         # Kick off post-align worker (unchanged)
         # ----------------------------
@@ -6819,6 +6794,7 @@ class StackingSuiteDialog(QDialog):
             pass
 
         self.update_status(message)
+        self._cfa_for_this_run = None
         QApplication.processEvents()
 
 
@@ -6902,19 +6878,12 @@ class StackingSuiteDialog(QDialog):
         # Precompute a single global crop rect if enabled (pure computation, no UI).
         global_rect = None
         if autocrop_enabled:
-            t0 = perf_counter()
-            log("✂️ Auto-crop: computing common bounding box (transform-only)…")
-            global_rect = self._compute_common_autocrop_rect_fast(
-                grouped_files=grouped_files,
-                autocrop_pct=autocrop_pct,
-                transforms_path=os.path.join(self.stacking_directory, "alignment_transforms.sasd"),
-                status_cb=log
-            )
-            dt = perf_counter() - t0
+            log("✂️ Auto Crop Enabled. Calculating bounding box…")
+            global_rect = self._compute_common_autocrop_rect(grouped_files, autocrop_pct, status_cb=log)
             if global_rect is None:
-                log(f"✂️ Auto-crop: no common box (took {dt:.1f}s) — will crop per group.")
+                log("✂️ Global crop disabled; falling back to per-group.")
             else:
-                log(f"✂️ Auto-crop: bounding box ready (took {dt:.1f}s).")
+                log("✂️ Auto Crop Bounding Box Calculated")
         QApplication.processEvents()
         group_integration_data = {}
         summary_lines = []
@@ -7019,6 +6988,8 @@ class StackingSuiteDialog(QDialog):
                     "drizzled": False
                 }
                 log(f"ℹ️ Skipping rejection map save for '{group_key}' (drizzle disabled).")
+            
+        QApplication.processEvents()
 
         # Drizzle pass (only for groups with drizzle enabled)
         for group_key, file_list in grouped_files.items():

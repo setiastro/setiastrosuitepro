@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
 
 # use your legacy I/O functions (as requested)
 from legacy.image_manager import save_image, load_image
-
+import glob
 try:
     import cv2
 except Exception:
@@ -89,6 +89,11 @@ def _get_setting_any(settings, keys: tuple[str, ...], default: str = "") -> str:
 # Public entry
 # ------------------------------------------------------------
 def remove_stars(main):
+    # block interactive UI during/just-after a headless preset run
+    if getattr(main, "_remove_stars_headless_running", False):
+        return
+    if getattr(main, "_remove_stars_guard", False):
+        return    
     """Choose StarNet or CosmicClarityDarkStar, process active doc, update starless in-place, open stars-only as new doc."""
     tool, ok = QInputDialog.getItem(
         main, "Select Star Removal Tool", "Choose a tool:",
@@ -310,9 +315,10 @@ def _run_darkstar(main, doc):
     output_dir = os.path.join(base, "output")
     os.makedirs(input_dir, exist_ok=True)
     os.makedirs(output_dir, exist_ok=True)
-
+    _purge_darkstar_io(base, prefix=None, clear_input=True, clear_output=True)   
     # Save the current image as 32-bit float TIFF (no stretch)
     in_path = os.path.join(input_dir, "imagetoremovestars.tif")
+ 
     try:
         save_image(doc.image, in_path, original_format="tif",
                    bit_depth="32-bit floating point",
@@ -346,7 +352,9 @@ def _run_darkstar(main, doc):
     dlg = _ProcDialog(main, title="CosmicClarityDarkStar Progress")
     thr = _ProcThread(command, cwd=output_dir)
     thr.output_signal.connect(dlg.append_text)
-    thr.finished_signal.connect(lambda rc: _on_darkstar_finished(main, doc, rc, dlg, in_path, output_dir))
+    thr.finished_signal.connect(
+        lambda rc, base=base: _on_darkstar_finished(main, doc, rc, dlg, in_path, output_dir, base)
+            )
     dlg.cancel_button.clicked.connect(thr.terminate)
 
     dlg.show()
@@ -403,7 +411,7 @@ def _resolve_darkstar_exe(main):
     return exe_path, base_folder
 
 
-def _on_darkstar_finished(main, doc, return_code, dialog, in_path, output_dir):
+def _on_darkstar_finished(main, doc, return_code, dialog, in_path, output_dir, base_folder):
     dialog.append_text(f"\nProcess finished with return code {return_code}.\n")
     if return_code != 0:
         QMessageBox.critical(main, "CosmicClarityDarkStar Error",
@@ -474,11 +482,15 @@ def _on_darkstar_finished(main, doc, return_code, dialog, in_path, output_dir):
 
     # cleanup
     try:
+        # Remove known outputs
         _safe_rm(in_path)
-        sp = starless_path
-        if os.path.exists(sp): _safe_rm(sp)
-        sp2 = os.path.join(output_dir, "imagetoremovestars_stars_only.tif")
-        if os.path.exists(sp2): _safe_rm(sp2)
+        _safe_rm(starless_path)
+        _safe_rm(os.path.join(output_dir, "imagetoremovestars_stars_only.tif"))
+
+        # 🔸 Final sweep: nuke any imagetoremovestars* leftovers in both dirs
+        base_folder = os.path.dirname(output_dir)  # <-- derive CC base from output_dir
+        _purge_darkstar_io(base_folder, prefix="imagetoremovestars", clear_input=True, clear_output=True)
+
         dialog.append_text("Temporary files cleaned up.\n")
     except Exception as e:
         dialog.append_text(f"Cleanup error: {e}\n")
@@ -587,6 +599,32 @@ def _safe_rm(p):
     try:
         if p and os.path.exists(p):
             os.remove(p)
+    except Exception:
+        pass
+
+def _safe_rm_globs(patterns: list[str]):
+    for pat in patterns:
+        try:
+            for fp in glob.glob(pat):
+                _safe_rm(fp)
+        except Exception:
+            pass
+
+def _purge_darkstar_io(base_folder: str, *, prefix: str | None = None, clear_input=True, clear_output=True):
+    """Delete old image-like files from CC DarkStar input/output."""
+    try:
+        inp = os.path.join(base_folder, "input")
+        out = os.path.join(base_folder, "output")
+        if clear_input and os.path.isdir(inp):
+            for fn in os.listdir(inp):
+                fp = os.path.join(inp, fn)
+                if os.path.isfile(fp) and (prefix is None or fn.startswith(prefix)):
+                    _safe_rm(fp)
+        if clear_output and os.path.isdir(out):
+            for fn in os.listdir(out):
+                fp = os.path.join(out, fn)
+                if os.path.isfile(fp) and (prefix is None or fn.startswith(prefix)):
+                    _safe_rm(fp)
     except Exception:
         pass
 

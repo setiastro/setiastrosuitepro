@@ -318,9 +318,15 @@ class ZoomableGraphicsView(QGraphicsView):
 
 
 class WaveScaleHDRDialogPro(QDialog):
-    def __init__(self, parent, doc, icon_path: str | None = None):
+    def __init__(self, parent, doc, icon_path: str | None = None, *, headless: bool=False, bypass_guard: bool=False):
         super().__init__(parent)
         self.setWindowTitle("WaveScale HDR")
+        self._headless = bool(headless)
+        self._bypass_guard = bool(bypass_guard)
+        if self._headless:
+            # Don’t show any windows; we’ll still exec() to run the event loop.
+            try: self.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+            except Exception: pass
         if icon_path:
             try: self.setWindowIcon(QIcon(icon_path))
             except Exception: pass
@@ -418,7 +424,10 @@ class WaveScaleHDRDialogPro(QDialog):
         main.addLayout(bot)
 
         # mask window
-        self.mask_win = MaskDisplayWindow(self); self.mask_win.show()
+        self.mask_win = MaskDisplayWindow(self)
+        if not self._headless:
+            self.mask_win.show()
+
 
         # kernel
         self.base_kernel = _B3
@@ -448,6 +457,47 @@ class WaveScaleHDRDialogPro(QDialog):
 
         # initial pix
         self._set_pix(self.preview_rgb)
+
+    def apply_preset(self, p: dict):
+        # sliders are integer; map floats to their scales
+        ns = int(p.get("n_scales", 5))
+        comp = float(p.get("compression_factor", 1.5))
+        mg  = float(p.get("mask_gamma", 5.0))  # dialog default is 5.0 (slider 500)
+        # clamp safely
+        ns = max(2, min(10, ns))
+        comp_i = int(max(10, min(500, round(comp*100))))      # 1.0..5.0 -> 100..500
+        mg_i   = int(max(10, min(1000, round(mg*100))))       # 0.1..10.0 -> 10..1000
+        self.s_scales.setValue(ns)
+        self.s_comp.setValue(comp_i)
+        self.s_gamma.setValue(mg_i)
+        # refresh mask preview (even if window is hidden)
+        self._update_mask_from_gamma()
+
+    def _headless_guard_active(self) -> bool:
+        try:
+            p = self.parent()
+            if p and (getattr(p, "_wavescale_guard", False) or getattr(p, "_wavescale_headless_running", False)):
+                return True
+        except Exception:
+            pass
+        try:
+            from PyQt6.QtCore import QSettings
+            s = QSettings()
+            return bool(s.value("wavescale/headless_in_progress", False))
+        except Exception:
+            return False
+
+    def showEvent(self, e):
+        if not self._bypass_guard and self._headless_guard_active():
+            e.ignore()
+            QTimer.singleShot(0, self.reject)
+            return
+        return super().showEvent(e)
+
+    def exec(self) -> int:
+        if not self._bypass_guard and self._headless_guard_active():
+            return 0
+        return super().exec()
 
     def _get_doc_active_mask_2d(self) -> np.ndarray | None:
         """
@@ -595,7 +645,9 @@ class WaveScaleHDRDialogPro(QDialog):
         self.btn_apply.setEnabled(True)
         self.btn_toggle.setChecked(False); self.btn_toggle.setText("Show Original")
         self.lbl_step.setText("Preview ready"); self.bar.setValue(100)
-
+        # Headless: apply immediately (exactly like clicking "Apply to Document")
+        if self._headless:
+            QTimer.singleShot(0, self._apply_to_doc)
 
     def _apply_to_doc(self):
         out = self.preview_rgb
