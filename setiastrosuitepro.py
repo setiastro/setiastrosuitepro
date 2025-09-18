@@ -257,7 +257,7 @@ from pro.ghs_preset import open_ghs_with_preset
 from pro.curves_preset import open_curves_with_preset
 from pro.save_options import _normalize_ext
 
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 
 
 if hasattr(sys, '_MEIPASS'):
@@ -6886,6 +6886,47 @@ class AstroSuiteProMainWindow(QMainWindow):
             if not tb.objectName():
                 tb.setObjectName(_safe_name(tb.windowTitle(), "Toolbar"))
 
+    def _clear_view_bundles_for_next_launch(self):
+        """
+        On app exit, wipe any saved doc_ptrs in View Bundles so they don't point
+        to stale objects on next run. We keep bundle names/uuids, just empty lists.
+        If you prefer a full wipe (remove all bundles), see the commented lines.
+        """
+        try:
+            s = QSettings()
+            # ---- OPTION A: keep bundles, clear their views (recommended) ----
+            raw = s.value("viewbundles/v2", "[]", type=str) or "[]"
+            try:
+                data = json.loads(raw)
+            except Exception:
+                data = []
+
+            if isinstance(data, list):
+                for b in data:
+                    if isinstance(b, dict):
+                        b["doc_ptrs"] = []  # drop all pointers
+                s.setValue("viewbundles/v2", json.dumps(data, ensure_ascii=False))
+            else:
+                s.setValue("viewbundles/v2", "[]")
+
+            # also neutralize any legacy store just in case
+            s.setValue("viewbundles/v1", "[]")
+
+            # ---- OPTION B: nuke everything (uncomment to prefer a clean slate) ----
+            # s.setValue("viewbundles/v2", "[]")
+            # s.setValue("viewbundles/v1", "[]")
+
+            s.sync()
+        except Exception:
+            # last-resort: try to at least write empty arrays
+            try:
+                s = QSettings()
+                s.setValue("viewbundles/v2", "[]")
+                s.setValue("viewbundles/v1", "[]")
+                s.sync()
+            except Exception:
+                pass
+
     def closeEvent(self, e):
         # Gather open docs
         docs = []
@@ -6952,6 +6993,8 @@ class AstroSuiteProMainWindow(QMainWindow):
                     pass
         except Exception:
             pass
+
+        self._clear_view_bundles_for_next_launch()
 
         super().closeEvent(e)
 
