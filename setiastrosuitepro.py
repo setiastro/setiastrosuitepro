@@ -611,45 +611,144 @@ def _exts_from_filter(selected_filter: str) -> list[str]:
             out.append(n)
     return out
 
+# --- filename/path hardening helpers ---
+
+import os, re, sys
+from pathlib import Path
+
+# If you want to keep spaces, set to False
+_REPLACE_SPACES_WITH_UNDERSCORES = True
+
+_WIN_RESERVED = {
+    "CON","PRN","AUX","NUL",
+    *(f"COM{i}" for i in range(1,10)),
+    *(f"LPT{i}" for i in range(1,10)),
+}
+
+def _sanitize_filename(basename: str, replace_spaces: bool = _REPLACE_SPACES_WITH_UNDERSCORES) -> str:
+    """
+    Returns a safe file basename (no directories), with:
+      - collapsed/trimmed whitespace
+      - optional spaces→underscores
+      - illegal characters removed (Windows/macOS/Linux superset)
+      - no leading/trailing dots/spaces
+      - Windows reserved device names avoided by appending '_'
+    """
+    name = (basename or "").strip()
+
+    # Split name/ext carefully (may be empty if user typed only ext)
+    stem, ext = os.path.splitext(name)
+
+    # collapse weird whitespace in stem
+    stem = re.sub(r"\s+", " ", stem).strip()
+
+    if replace_spaces:
+        stem = stem.replace(" ", "_")
+
+    # Remove characters illegal or risky on common platforms
+    # Windows: <>:"/\|?* ; also control chars; mac legacy ':' ; keep unicode letters/numbers
+    stem = re.sub(r'[<>:"/\\|?*\x00-\x1F]', "", stem)
+    stem = stem.replace(":", "")  # legacy macOS
+
+    # On POSIX, '/' is the only illegal path char, but we already stripped it above.
+
+    # Strip trailing dots/spaces (Windows)
+    stem = stem.rstrip(" .")
+
+    # Avoid empty or dot-only names
+    if not stem or set(stem) == {"."}:
+        stem = "untitled"
+
+    # Avoid Windows reserved device names (case-insensitive)
+    if sys.platform.startswith("win") and stem.upper() in _WIN_RESERVED:
+        stem = stem + "_"
+
+    # Guard overall length (very conservative 200 for basename)
+    if len(stem) > 200:
+        stem = stem[:200]
+
+    # Clean extension too (just in case user typed garbage)
+    ext = re.sub(r'[<>:"/\\|?*\s\x00-\x1F]', "", ext)
+
+    # Final safety: if ext is just a dot or empty, drop it here
+    if ext in (".", ""):
+        ext = ""
+
+    return stem + ext
+
+
+def _safe_join_dir_and_name(directory: str, basename: str) -> str:
+    """
+    Join directory + sanitized basename. Ensures the directory exists or raises a clear error.
+    """
+    safe_name = _sanitize_filename(basename)
+    final_dir = directory or ""
+    if final_dir and not os.path.isdir(final_dir):
+        # attempt to create; ignore if it fails (docman.save_document may still error, which we catch)
+        try:
+            os.makedirs(final_dir, exist_ok=True)
+        except Exception:
+            pass
+    return os.path.join(final_dir, safe_name)
+
+
+def _exts_from_filter(selected_filter: str) -> list[str]:
+    # unchanged; your existing helper
+    exts = re.findall(r"\*\.(\w+)", selected_filter or "")
+    return [e.lower() for e in exts] if exts else []
+
+
+def _normalize_ext(ext: str) -> str:
+    # unchanged; your existing helper
+    return ext.lower().lstrip(".")
+
+
 def _normalize_save_path_chosen_filter(path: str, selected_filter: str) -> tuple[str, str]:
     """
     Returns (final_path, final_ext_norm). Ensures:
-      - appends extension if missing
+      - appends extension if missing (from chosen filter)
       - avoids double extensions (*.png.png)
-      - if user provided a conflicting ext, overwrite with chosen filter's default
+      - if user provided a conflicting ext, enforce the chosen filter’s default
+      - sanitizes the basename (spaces, illegal chars, trailing dots)
     """
-    path = (path or "").strip().rstrip(".")
+    raw_path = (path or "").strip().rstrip(".")
     allowed = _exts_from_filter(selected_filter) or ["png"]  # safe fallback
     default_ext = allowed[0]
 
-    base, ext = os.path.splitext(path)
-    typed = _normalize_ext(ext.lstrip(".").lower()) if ext else ""
+    # split dir + basename (sanitize only the basename)
+    directory, base = os.path.split(raw_path)
+    if not base:
+        base = "untitled"
 
-    # If the base already ends with an allowed ext (from a previous auto-append), remove it.
-    # e.g., base="foo.png" and ext=".png" => "foo" only once
-    def strip_trailing_allowed(b: str) -> str:
-        lowered = b.lower()
+    # if the user typed something like "name.png" but selected TIFF, we’ll fix after sanitization
+    base_stem, base_ext = os.path.splitext(base)
+    typed = _normalize_ext(base_ext) if base_ext else ""
+
+    # remove repeated extension in stem (e.g. "foo.png" then + ".png")
+    def strip_trailing_allowed(stem: str) -> str:
+        lowered = stem.lower()
         for a in allowed:
             suf = "." + a
             if lowered.endswith(suf):
-                return b[:-len(suf)]
-        return b
+                return stem[:-len(suf)]
+        return stem
 
-    base = strip_trailing_allowed(base)
+    base_stem = strip_trailing_allowed(base_stem)
 
+    # choose final extension
     if not typed:
-        # No user-typed extension: append default for the chosen filter
         final_ext = default_ext
     else:
-        if typed in allowed:
-            # Keep the typed (normalized) extension
-            final_ext = typed
-        else:
-            # Conflicting ext: enforce the chosen filter's default
-            final_ext = default_ext
+        final_ext = typed if typed in allowed else default_ext
 
-    final_path = f"{base}.{final_ext}"
+    # rebuild name with the chosen extension, then sanitize the WHOLE basename
+    basename_target = f"{base_stem}.{final_ext}"
+    basename_safe = _sanitize_filename(basename_target, replace_spaces=_REPLACE_SPACES_WITH_UNDERSCORES)
+
+    # final join (create dir if missing)
+    final_path = _safe_join_dir_and_name(directory, basename_safe)
     return final_path, final_ext
+
 
 def _display_name(doc) -> str:
     """Best-effort title for any doc-like object."""
@@ -676,6 +775,29 @@ def _display_name(doc) -> str:
 
     # Last resort: id snippet
     return f"Document-{id(doc) & 0xFFFF:04X}"
+
+def _best_doc_name(doc) -> str:
+    # try common attributes in order
+    for attr in ("display_name", "name", "title"):
+        v = getattr(doc, attr, None)
+        if callable(v):
+            try:
+                v = v()
+            except Exception:
+                v = None
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+
+    # fallback: derive from original path if we have it
+    try:
+        meta = getattr(doc, "metadata", {}) or {}
+        fp = meta.get("file_path")
+        if isinstance(fp, str) and fp:
+            return os.path.splitext(os.path.basename(fp))[0]
+    except Exception:
+        pass
+
+    return "untitled"
 
 class AstroSuiteProMainWindow(QMainWindow):
     currentDocumentChanged = pyqtSignal(object)  # ImageDocument | None
@@ -6161,15 +6283,26 @@ class AstroSuiteProMainWindow(QMainWindow):
             "JPEG (*.jpg *.jpeg)"
         )
 
-        # You can optionally pass the last dir here instead of "".
-        path, selected_filter = QFileDialog.getSaveFileName(self, "Save As", "", filters)
+        # Default dir: last save dir or home
+        last = self.settings.value("paths/last_save_dir", "", type=str) or str(Path.home())
+        # Suggest current doc name if you have it:
+        suggested = _best_doc_name(doc)
+        # drop any extension the name might already include
+        suggested = os.path.splitext(suggested)[0]
+        suggested_safe = _sanitize_filename(suggested)
+        suggested_path = os.path.join(last, suggested_safe)
+
+        path, selected_filter = QFileDialog.getSaveFileName(self, "Save As", suggested_path, filters)
         if not path:
             return
 
-        # --- NEW: robust path normalization based on the chosen filter ---
+        before = path
         path, ext_norm = _normalize_save_path_chosen_filter(path, selected_filter)
 
-        # Ask for bit depth (uses your existing dialog)
+        # If we changed the path (e.g., removed spaces or illegal chars), give a heads-up once
+        if before != path:
+            self._log(f"Adjusted filename for safety:\n  {before}\n→ {path}")
+
         from pro.save_options import SaveOptionsDialog
         current_bd = doc.metadata.get("bit_depth")
         dlg = SaveOptionsDialog(self, ext_norm, current_bd)
@@ -6183,6 +6316,7 @@ class AstroSuiteProMainWindow(QMainWindow):
             self.settings.setValue("paths/last_save_dir", os.path.dirname(path))
         except Exception as e:
             QMessageBox.critical(self, "Save failed", str(e))
+
 
 
     def _init_layers_dock(self):
