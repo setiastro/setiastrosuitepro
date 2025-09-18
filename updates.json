@@ -1,9 +1,9 @@
 {
-  "version": "1.0.6",
+  "version": "1.1.0",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.0.6/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.0.6/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.0.6/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.1.0/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.1.0/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.1.0/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Initial Release of Seti Astro Suite Pro.  1.0.6 Stacking Suite: New Gradient Scale correction option in Stacking Suite Settings. Bug fix that caused dark and flats sometimes not to calibrate with the Lights. Zoom in maximum set at 300%. Other bug fixes."
+  "notes": "Initial Release of Seti Astro Suite Pro.  1.1.0 View and Function Bundles! Automate your processes on your views! Stacking suite new features, Gradient Scale Correction, CFA Drizzle, and more. Lots of niceties throughout all of SASpro. Find some hidden gems!"
 }
