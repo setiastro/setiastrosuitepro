@@ -776,7 +776,22 @@ class ViewBundleDialog(QDialog):
             if sw is None:
                 continue
             try:
+                # 🔸 Make this subwindow active (some commands operate on the active view)
+                try:
+                    if hasattr(mw, "mdi") and mw.mdi.activeSubWindow() is not sw:
+                        mw.mdi.setActiveSubWindow(sw)
+                    w = getattr(sw, "widget", lambda: None)()
+                    if w:
+                        w.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
+                    # Let the UI/app catch up so the command sees the right active view
+                    QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 50)
+                except Exception:
+                    pass
+
                 mw._handle_command_drop(payload, target_sw=sw)
+
+                # Small pump so commands that spawn work or flip views settle before next doc
+                QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 0)
                 applied += 1
             except Exception as e:
                 errors.append(str(e))
