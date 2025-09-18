@@ -92,7 +92,7 @@ from lightkurve import TessTargetPixelFile
 import oktopus
 import lightkurve as lk
 from scipy.interpolate import griddata
-
+from astropy.io.fits import Header as FitsHeader
 lk.MPLSTYLE = None
 
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
@@ -151,7 +151,7 @@ from matplotlib.ticker import MaxNLocator
 from matplotlib.patches import Circle
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-
+from pro.plate_solver import plate_solve_doc_inplace
 
 #################################
 # PyQt6 Imports
@@ -715,7 +715,11 @@ def load_api_key():
         print("API key loaded.")
     return api_key
 
-
+def _find_main_window(w):
+    p = w.parent()
+    while p and not (hasattr(p, "doc_manager") or hasattr(p, "docman")):
+        p = p.parent()
+    return p
 
 
 class CustomGraphicsView(QGraphicsView):
@@ -2778,6 +2782,32 @@ class WIMIDialog(QDialog):
             act = self.load_from_view_menu.addAction(title)
             act.triggered.connect(lambda _, d=doc: self._load_from_view(d))
 
+    def _ensure_wcs_on_doc(self, doc) -> bool:
+        """Return True if WCS already present or successfully solved and written back to doc.metadata."""
+        meta = getattr(doc, "metadata", {}) or {}
+        if self.check_astrometry_data(meta.get("original_header")) or self.check_astrometry_data(meta.get("wcs_header")):
+            return True
+
+        mw = _find_main_window(self) or self.parent()
+        settings = getattr(mw, "settings", QSettings())
+        ok, _ = plate_solve_doc_inplace(mw, doc, settings)
+        if ok:
+            meta = getattr(doc, "metadata", {}) or {}
+            return self.check_astrometry_data(meta.get("original_header")) or self.check_astrometry_data(meta.get("wcs_header"))
+
+        # fallback to your existing blind-solve path in this dialog
+        QMessageBox.information(self, "Blind Solve", "ASTAP Failed.\nPerforming blind solve via Astrometry.NET…")
+        try:
+            self.perform_blind_solve()
+            # perform_blind_solve() applies WCS into self.*; reflect that into doc if needed
+            if hasattr(self, "wcs_header") and self.wcs_header is not None:
+                if not isinstance(doc.metadata, dict):
+                    doc.metadata = {}
+                doc.metadata["original_header"] = self.wcs_header
+            return True
+        except Exception as e:
+            print("Blind-solve fallback failed:", e)
+            return False
 
     def populate_object_tree(self):
         self.object_tree.blockSignals(True)
@@ -4177,8 +4207,9 @@ class WIMIDialog(QDialog):
             header = meta["wcs_header"]
 
         # otherwise try the original FITS header (if present and looks like WCS)
-        if header is None and "original_header" in meta and self.check_astrometry_data(meta["original_header"]):
-            header = meta["original_header"]
+        orig_hdr = meta.get("original_header")
+        if header is None and self.check_astrometry_data(orig_hdr):
+            header = orig_hdr
 
         # otherwise try to synthesize from XISF metadata we may have stored
         if header is None:
@@ -4190,7 +4221,17 @@ class WIMIDialog(QDialog):
             if candidate and self.check_astrometry_data(candidate):
                 header = candidate
 
-        # 3) initialize WCS if we found a header
+        if header is None:
+            QMessageBox.information(self, "Blind Solve", "No WCS found.\nPerforming blind solve…")
+            if not self._ensure_wcs_on_doc(doc):
+                self.wcs = None
+                self.status_label.setText("Status: Loaded view (no WCS) — auto-solve failed.")
+                return
+            # refresh from doc after solving
+            meta = dict(getattr(doc, "metadata", {}) or {})
+            header = meta.get("wcs_header") or meta.get("original_header")
+
+        # 3) initialize WCS if we found/created a header
         if header is not None:
             try:
                 header = self._sanitize_wcs_header(header)
@@ -4679,8 +4720,17 @@ class WIMIDialog(QDialog):
         degree_symbol = "\u00B0"
         return f"{sign}{degrees:02d}{degree_symbol}{minutes:02d}m{seconds:05.2f}s"                 
 
-    def check_astrometry_data(self, header):
-        return "CTYPE1" in header and "CTYPE2" in header
+    def check_astrometry_data(self, header_like) -> bool:
+        if header_like is None:
+            return False
+        try:
+            h = header_like  # fits.Header is Mapping-like, dict is fine
+            has_ctypes = ("CTYPE1" in h) and ("CTYPE2" in h)
+            has_crval  = ("CRVAL1" in h) and ("CRVAL2" in h)
+            has_scale  = ("CD1_1" in h) or ("CDELT1" in h) or ("PC1_1" in h)
+            return bool(has_ctypes or (has_crval and has_scale))
+        except Exception:
+            return False
 
     def prompt_blind_solve(self):
         reply = QMessageBox.question(
