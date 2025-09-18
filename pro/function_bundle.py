@@ -223,6 +223,17 @@ def _spawn_function_chip_on_canvas(mw: QWidget, panel: "FunctionBundleDialog",
     chip.raise_()
     return chip
 
+def _activate_target_sw(mw, sw):
+    try:
+        if hasattr(mw, "mdi") and mw.mdi.activeSubWindow() is not sw:
+            mw.mdi.setActiveSubWindow(sw)
+        w = getattr(sw, "widget", lambda: None)()
+        if w:
+            w.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
+        QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 50)
+    except Exception:
+        pass
+
 # =============================  FunctionBundleDialog  =============================
 class FunctionBundleDialog(QDialog):
     SETTINGS_KEY = "functionbundles/v1"
@@ -387,6 +398,7 @@ class FunctionBundleDialog(QDialog):
     def _save_all(self):
         try:
             self._settings.setValue(self.SETTINGS_KEY, json.dumps(self._bundles, ensure_ascii=False))
+            self._settings.sync()  # <- add this line
         except Exception:
             pass
 
@@ -544,27 +556,49 @@ class FunctionBundleDialog(QDialog):
     def _apply_to_view_bundle(self):
         mw = _find_main_window(self)
         if not mw:
-            QMessageBox.information(self, "Apply", "Main window not available."); return
+            QMessageBox.information(self, "Apply", "Main window not available.")
+            return
 
         settings = QSettings()
-        raw = settings.value("viewbundles/v1", "[]", type=str) or settings.value("viewbundles/v2", "[]", type=str)
+        settings.sync()  # see latest saved bundles
+
+        raw_v2 = settings.value("viewbundles/v2", "", type=str)
+        raw_v1 = settings.value("viewbundles/v1", "", type=str)
+        raw = raw_v2 or raw_v1 or "[]"
+
         try:
-            vb = json.loads(raw)
-            choices = [(b.get("name","Bundle"), [int(x) for x in (b.get("doc_ptrs") or [])])
-                       for b in vb if isinstance(b, dict)]
+            vb_raw = json.loads(raw)
         except Exception:
-            choices = []
+            vb_raw = []
+
+        # normalize -> [(name, [int_ptr,...])]
+        choices = []
+        for b in vb_raw:
+            if not isinstance(b, dict):
+                continue
+            name = (b.get("name") or "Bundle").strip()
+            ptrs = []
+            for x in (b.get("doc_ptrs") or []):
+                try:
+                    ptrs.append(int(x))
+                except Exception:
+                    pass
+            choices.append((name, ptrs))
 
         if not choices:
-            QMessageBox.information(self, "Apply", "No View Bundles found."); return
+            QMessageBox.information(self, "Apply", "No View Bundles found.")
+            return
 
-        dlg = QDialog(self); dlg.setWindowTitle("Apply to View Bundle…")
+        # ✅ create the dialog BEFORE using it
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Apply to View Bundle…")
         v = QVBoxLayout(dlg)
         v.addWidget(QLabel("Select a View Bundle:"))
         lb = QListWidget(); v.addWidget(lb, 1)
         for name, ptrs in choices:
             it = QListWidgetItem(f"{name}  ({len(ptrs)} views)")
-            it.setData(Qt.ItemDataRole.UserRole, ptrs); lb.addItem(it)
+            it.setData(Qt.ItemDataRole.UserRole, ptrs)
+            lb.addItem(it)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         v.addWidget(buttons)
         buttons.accepted.connect(dlg.accept); buttons.rejected.connect(dlg.reject)
@@ -577,7 +611,8 @@ class FunctionBundleDialog(QDialog):
         ptrs = cur.data(Qt.ItemDataRole.UserRole) or []
         steps = self.current_steps()
         if not steps:
-            QMessageBox.information(self, "Apply", "This Function Bundle is empty."); return
+            QMessageBox.information(self, "Apply", "This Function Bundle is empty.")
+            return
 
         # show busy cursor during batch apply
         try: QApplication.setOverrideCursor(Qt.CursorShape.BusyCursor)
@@ -589,9 +624,9 @@ class FunctionBundleDialog(QDialog):
             if sw is None:
                 self._pump_events(0)
                 continue
+            _activate_target_sw(mw, sw)   
             self._apply_steps_to_target_sw(mw, sw, steps)
             applied += 1
-            # ensure CC is not still running before moving to next view
             self._wait_for_cosmicclarity(mw)
             self._pump_events(0)
 
@@ -601,6 +636,7 @@ class FunctionBundleDialog(QDialog):
         if applied == 0:
             QMessageBox.information(self, "Apply", "No valid targets in the selected bundle.")
 
+
     def _apply_steps_to_target_sw(self, mw, sw, steps: list[dict]):
         errors = []
         # busy cursor while running this set
@@ -608,6 +644,7 @@ class FunctionBundleDialog(QDialog):
         except Exception: pass
 
         for st in steps:
+            _activate_target_sw(mw, sw)   
             try:
                 mw._handle_command_drop(st, target_sw=sw)
             except Exception as e:

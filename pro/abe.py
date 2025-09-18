@@ -32,6 +32,7 @@ from scipy.interpolate import Rbf
 
 from .doc_manager import ImageDocument
 from legacy.numba_utils import build_poly_terms, evaluate_polynomial
+from .autostretch import autostretch as hard_autostretch
 
 # =============================================================================
 #                         Headless ABE Core (poly + RBF)
@@ -117,7 +118,7 @@ def _to_luminance(img: np.ndarray) -> np.ndarray:
     return np.dot(img[..., :3], [0.2989, 0.5870, 0.1140]).astype(np.float32)
 
 
-def _gradient_descent_to_dim_spot(image: np.ndarray, x: int, y: int, max_iter: int = 100, patch_size: int = 15) -> tuple[int, int]:
+def _gradient_descent_to_dim_spot(image: np.ndarray, x: int, y: int, max_iter: int = 500, patch_size: int = 15) -> tuple[int, int]:
     half = patch_size // 2
     lum = _to_luminance(image)
     H, W = lum.shape
@@ -216,115 +217,219 @@ def _generate_sample_points(image: np.ndarray, num_points: int = 100, exclusion_
 
 
 def _fit_rbf_on_small(small: np.ndarray, points: np.ndarray, smooth: float = 0.1, patch_size: int = 15) -> np.ndarray:
+    """Match SASv2 exactly: float64 for RBF inputs, multiquadric, epsilon=1.0."""
     H, W = small.shape[:2]
     half = patch_size // 2
     pts = np.asarray(points, dtype=np.int32)
-    xs = np.clip(pts[:, 0], 0, W - 1)
-    ys = np.clip(pts[:, 1], 0, H - 1)
+    xs = np.clip(pts[:, 0], 0, W - 1).astype(np.int64)
+    ys = np.clip(pts[:, 1], 0, H - 1).astype(np.int64)
+
+    # Evaluate on a float64 meshgrid (same as SASv2)
+    grid_x, grid_y = np.meshgrid(
+        np.arange(W, dtype=np.float64),
+        np.arange(H, dtype=np.float64),
+    )
+
+    def _median_patch(arr, x, y):
+        x0, x1 = max(0, x - half), min(W, x + half + 1)
+        y0, y1 = max(0, y - half), min(H, y + half + 1)
+        return float(np.median(arr[y0:y1, x0:x1]))
 
     if small.ndim == 3 and small.shape[2] == 3:
-        bg_small = np.zeros_like(small, dtype=np.float32)
-        grid_x, grid_y = np.meshgrid(np.arange(W, dtype=np.float32), np.arange(H, dtype=np.float32))
+        bg_small = np.zeros((H, W, 3), dtype=np.float32)
         for c in range(3):
-            z = []
-            for x, y in zip(xs, ys):
-                x0, x1 = max(0, x - half), min(W, x + half + 1)
-                y0, y1 = max(0, y - half), min(H, y + half + 1)
-                z.append(float(np.median(small[y0:y1, x0:x1, c])))
-            z = np.asarray(z, dtype=np.float32)
-            rbf = Rbf(xs.astype(np.float32), ys.astype(np.float32), z, function='multiquadric', smooth=float(smooth), epsilon=1.0)
+            z = np.array([_median_patch(small[..., c], int(x), int(y)) for x, y in zip(xs, ys)], dtype=np.float64)
+            rbf = Rbf(xs.astype(np.float64), ys.astype(np.float64), z,
+                      function='multiquadric', smooth=float(smooth), epsilon=1.0)
             bg_small[..., c] = rbf(grid_x, grid_y).astype(np.float32)
         return bg_small
     else:
-        grid_x, grid_y = np.meshgrid(np.arange(W, dtype=np.float32), np.arange(H, dtype=np.float32))
-        z = []
-        for x, y in zip(xs, ys):
-            x0, x1 = max(0, x - half), min(W, x + half + 1)
-            y0, y1 = max(0, y - half), min(H, y + half + 1)
-            z.append(float(np.median(small[y0:y1, x0:x1])))
-        z = np.asarray(z, dtype=np.float32)
-        rbf = Rbf(xs.astype(np.float32), ys.astype(np.float32), z, function='multiquadric', smooth=float(smooth), epsilon=1.0)
+        z = np.array([_median_patch(small, int(x), int(y)) for x, y in zip(xs, ys)], dtype=np.float64)
+        rbf = Rbf(xs.astype(np.float64), ys.astype(np.float64), z,
+                  function='multiquadric', smooth=float(smooth), epsilon=1.0)
         return rbf(grid_x, grid_y).astype(np.float32)
+
+def _legacy_stretch_unlinked(image: np.ndarray):
+    """
+    SASv2 stretch domain used for modeling: per-channel min shift + unlinked rational
+    stretch to target median=0.25. Returns (stretched_rgb, state_dict).
+    """
+    was_single = False
+    img = image
+    if img.ndim == 2 or (img.ndim == 3 and img.shape[2] == 1):
+        was_single = True
+        img = np.stack([img[..., 0] if img.ndim == 3 else img] * 3, axis=-1)
+
+    img = img.astype(np.float32, copy=True)
+    target_median = 0.25
+
+    ch_mins: list[float] = []
+    ch_meds: list[float] = []
+    out = img.copy()
+
+    for c in range(3):
+        m0 = float(np.min(out[..., c]))
+        ch_mins.append(m0)
+        out[..., c] -= m0
+        med = float(np.median(out[..., c]))
+        ch_meds.append(med)
+        if med != 0.0:
+            num = (med - 1.0) * target_median * out[..., c]
+            den = (med * (target_median + out[..., c] - 1.0) - target_median * out[..., c])
+            den = np.where(den == 0.0, 1e-6, den)
+            out[..., c] = num / den
+
+    out = np.clip(out, 0.0, 1.0)
+    return out, {"mins": ch_mins, "meds": ch_meds, "was_single": was_single}
+
+
+def _legacy_unstretch_unlinked(image: np.ndarray, state: dict):
+    """
+    Inverse of the SASv2 stretch above. Accepts mono or RGB; returns same ndim
+    as input, except if original was single-channel it returns mono.
+    """
+    mins = state["mins"]; meds = state["meds"]; was_single = state["was_single"]
+    img = image.astype(np.float32, copy=True)
+
+    # Work as RGB internally
+    if img.ndim == 2:
+        img = np.stack([img] * 3, axis=-1)
+    if img.ndim == 3 and img.shape[2] == 1:
+        img = np.repeat(img, 3, axis=2)
+
+    for c in range(3):
+        ch_med = float(np.median(img[..., c]))
+        orig_med = float(meds[c])
+        if ch_med != 0.0 and orig_med != 0.0:
+            num = (ch_med - 1.0) * orig_med * img[..., c]
+            den = (ch_med * (orig_med + img[..., c] - 1.0) - orig_med * img[..., c])
+            den = np.where(den == 0.0, 1e-6, den)
+            img[..., c] = num / den
+        img[..., c] += float(mins[c])
+
+    img = np.clip(img, 0.0, 1.0)
+    if was_single:
+        # original was mono → return mono
+        return img[..., 0]
+    return img
 
 
 def abe_run(
     image: np.ndarray,
-    degree: int = 2,
-    num_samples: int = 120,
-    downsample: int = 6,
+    degree: int = 2,             # 0..6 (0 = skip polynomial)
+    num_samples: int = 100,
+    downsample: int = 4,
     patch_size: int = 15,
     use_rbf: bool = True,
-    rbf_smooth: float = 0.1,
+    rbf_smooth: float = 0.1,      # numeric; UI can map 10 -> 0.10, 100 -> 1.0, etc.
     exclusion_mask: np.ndarray | None = None,
     return_background: bool = True,
-    progress_cb=None,  # ◀️ new
+    progress_cb=None,
+    legacy_prestretch: bool = True,   # <-- SASv2 parity switch
 ) -> tuple[np.ndarray, np.ndarray] | np.ndarray:
-    """Two-stage ABE (poly -> optional RBF). Mono or RGB float [0..1]."""
+    """Two-stage ABE (poly + optional RBF) with SASv2-compatible pre/post stretch."""
     if image is None:
         raise ValueError("ABE: image is None")
 
-    img = np.asarray(image).astype(np.float32, copy=False)
-    mono = (img.ndim == 2) or (img.ndim == 3 and img.shape[2] == 1)
-    if mono:
-        img = img.squeeze()
-    else:
-        assert img.shape[2] == 3, f"Expected RGB, got {img.shape}"
+    img_src = np.asarray(image).astype(np.float32, copy=False)
+    mono = (img_src.ndim == 2) or (img_src.ndim == 3 and img_src.shape[2] == 1)
 
-    # downsample and mask
+    # Work in RGB internally (even for mono) so pre/post stretch matches SASv2 behavior
+    img_rgb = img_src if (img_src.ndim == 3 and img_src.shape[2] == 3) else np.stack(
+        [img_src.squeeze()] * 3, axis=-1
+    )
+
+    # --- SASv2 modeling domain (optional) ---------------------------------
+    stretch_state = None
+    if legacy_prestretch:
+        img_rgb, stretch_state = _legacy_stretch_unlinked(img_rgb)
+
+    # IMPORTANT: compute original median ONCE in the modeling domain
+    orig_med = float(np.median(img_rgb))
+
+    # downsample & mask (for fitting only)
     if progress_cb: progress_cb("Downsampling image…")
-    small = _downsample_area(img, downsample)
+    small = _downsample_area(img_rgb, downsample)
     mask_small = None
     if exclusion_mask is not None:
         if progress_cb: progress_cb("Downsampling exclusion mask…")
-        # downsample mask via area and threshold ≥ 0.5
         mask_small = _downsample_area(exclusion_mask.astype(np.float32), downsample) >= 0.5
 
-    if progress_cb: progress_cb("Sampling points (poly stage)…")
-    pts = _generate_sample_points(small, num_points=num_samples, exclusion_mask=mask_small, patch_size=patch_size)
+    # ---------- Polynomial stage (skip when degree == 0) ----------
+    if degree <= 0:
+        if progress_cb: progress_cb("Degree 0: skipping polynomial stage…")
+        after_poly = img_rgb.copy()                         # nothing removed yet
+        total_bg   = np.zeros_like(img_rgb, dtype=np.float32)
+    else:
+        if progress_cb: progress_cb("Sampling points (poly stage)…")
+        pts = _generate_sample_points(small, num_points=num_samples,
+                                      exclusion_mask=mask_small, patch_size=patch_size)
 
-    # polynomial stage
-    if progress_cb: progress_cb(f"Fitting polynomial (degree {degree})…")
-    bg_poly_small = _fit_poly_on_small(small, pts, degree=degree, patch_size=patch_size)
-    
-    if progress_cb: progress_cb("Upscaling polynomial background…")
-    bg_poly = _upscale_bg(bg_poly_small, img.shape[:2])
-    if progress_cb: progress_cb("Subtracting polynomial background & re-centering…")
+        if progress_cb: progress_cb(f"Fitting polynomial (degree {degree})…")
+        bg_poly_small = _fit_poly_on_small(small, pts, degree=degree, patch_size=patch_size)
 
-    orig_med = float(np.median(img))
-    after_poly = img - bg_poly
-    med_after = float(np.median(after_poly))
-    after_poly = np.clip(after_poly + (orig_med - med_after), 0.0, 1.0)
+        if progress_cb: progress_cb("Upscaling polynomial background…")
+        bg_poly = _upscale_bg(bg_poly_small, img_rgb.shape[:2])
 
-    total_bg = bg_poly.astype(np.float32, copy=False)
+        if progress_cb: progress_cb("Subtracting polynomial background & re-centering…")
+        after_poly = img_rgb - bg_poly
+        med_after  = float(np.median(after_poly))
+        after_poly = np.clip(after_poly + (orig_med - med_after), 0.0, 1.0)
 
+        total_bg = bg_poly.astype(np.float32, copy=False)
+
+    # ---------- RBF refinement --------------------------------------------
     if use_rbf:
         if progress_cb: progress_cb("Downsampling for RBF stage…")
         small_rbf = _downsample_area(after_poly, downsample)
+
         if progress_cb: progress_cb("Sampling points (RBF stage)…")
-        pts_rbf = _generate_sample_points(small_rbf, num_points=num_samples, exclusion_mask=mask_small, patch_size=patch_size)
+        pts_rbf = _generate_sample_points(small_rbf, num_points=num_samples,
+                                          exclusion_mask=mask_small, patch_size=patch_size)
+
         if progress_cb: progress_cb(f"Fitting RBF (smooth={rbf_smooth:.3f})…")
         bg_rbf_small = _fit_rbf_on_small(small_rbf, pts_rbf, smooth=rbf_smooth, patch_size=patch_size)
+
         if progress_cb: progress_cb("Upscaling RBF background…")
-        bg_rbf = _upscale_bg(bg_rbf_small, img.shape[:2])
+        bg_rbf = _upscale_bg(bg_rbf_small, img_rgb.shape[:2])
+
         if progress_cb: progress_cb("Combining backgrounds & finalizing…")
         total_bg = (total_bg + bg_rbf).astype(np.float32)
-        corrected = img - total_bg
+        corrected = img_rgb - total_bg
         med2 = float(np.median(corrected))
         corrected = np.clip(corrected + (orig_med - med2), 0.0, 1.0)
     else:
         if progress_cb: progress_cb("Finalizing…")
         corrected = after_poly
 
-    if mono:
-        if corrected.ndim == 3:
+    # --- Undo SASv2 modeling domain if used -------------------------------
+    if legacy_prestretch and stretch_state is not None:
+        if progress_cb: progress_cb("Unstretching to source domain…")
+        corrected = _legacy_unstretch_unlinked(corrected, stretch_state)
+        total_bg  = _legacy_unstretch_unlinked(total_bg,  stretch_state)
+
+        # Make sure types are float32
+        corrected = corrected.astype(np.float32, copy=False)
+        total_bg  = total_bg.astype(np.float32, copy=False)
+
+        # If original was mono, squeeze to 2D
+        if mono:
+            if corrected.ndim == 3:
+                corrected = corrected[..., 0]
+            if total_bg.ndim == 3:
+                total_bg  = total_bg[..., 0]
+    else:
+        # We stayed in RGB all along; if the source was mono, return mono
+        if mono:
             corrected = corrected[..., 0]
-        if total_bg.ndim == 3:
-            total_bg = total_bg[..., 0]
+            total_bg  = total_bg[..., 0]
 
     if progress_cb: progress_cb("Ready")
     if return_background:
         return corrected.astype(np.float32, copy=False), total_bg.astype(np.float32, copy=False)
     return corrected.astype(np.float32, copy=False)
+
+
 
 def siril_style_autostretch(image: np.ndarray, sigma: float = 3.0) -> np.ndarray:
     def stretch_channel(c):
@@ -378,9 +483,9 @@ class ABEDialog(QDialog):
         self._preview_source_f01 = None 
 
         # ---------------- Controls ----------------
-        self.sp_degree = QSpinBox(); self.sp_degree.setRange(1, 6); self.sp_degree.setValue(2)
+        self.sp_degree = QSpinBox(); self.sp_degree.setRange(0, 6); self.sp_degree.setValue(2)
         self.sp_samples = QSpinBox(); self.sp_samples.setRange(20, 10000); self.sp_samples.setSingleStep(20); self.sp_samples.setValue(120)
-        self.sp_down = QSpinBox(); self.sp_down.setRange(1, 32); self.sp_down.setValue(6)
+        self.sp_down = QSpinBox(); self.sp_down.setRange(1, 32); self.sp_down.setValue(4)
         self.sp_patch = QSpinBox(); self.sp_patch.setRange(5, 151); self.sp_patch.setSingleStep(2); self.sp_patch.setValue(15)
         self.chk_use_rbf = QCheckBox("Enable RBF refinement (after polynomial)"); self.chk_use_rbf.setChecked(True)
         self.sp_rbf = QSpinBox(); self.sp_rbf.setRange(0, 1000); self.sp_rbf.setValue(100)  # shown as ×0.01 below
@@ -451,6 +556,7 @@ class ABEDialog(QDialog):
         self.preview_label.installEventFilter(self)
         self._install_zoom_filters()
         self._populate_initial_preview()
+        self.sp_degree.valueChanged.connect(self._degree_changed) 
 
     def _set_status(self, text: str) -> None:
         self.status_label.setText(text)
@@ -510,6 +616,16 @@ class ABEDialog(QDialog):
             exclusion_mask=excl_mask, return_background=True,
             progress_cb=progress  # ◀️ forward progress
         )
+
+    def _degree_changed(self, v: int):
+        # Make it clear what 0 means, and default RBF on (can still be unchecked)
+        if v == 0:
+            self.chk_use_rbf.setChecked(True)
+            if hasattr(self, "_set_status"):
+                self._set_status("Polynomial disabled (degree 0) → RBF-only.")
+        else:
+            if hasattr(self, "_set_status"):
+                self._set_status("Ready")
 
     def _populate_initial_preview(self):
         src = self._get_source_float()
@@ -668,8 +784,9 @@ class ABEDialog(QDialog):
         self._preview_source_f01 = a  # ← no np.clip here
 
         # show autostretched or raw; siril_style_autostretch() already clips its result
-        src_to_show = siril_style_autostretch(self._preview_source_f01, sigma=3.0) \
-                    if getattr(self, "_autostretch_on", False) else self._preview_source_f01
+        src_to_show = (hard_autostretch(self._preview_source_f01, target_median=0.5, sigma=2,
+                                        linked=False, use_16bit=True)
+                    if getattr(self, "_autostretch_on", False) else self._preview_source_f01)
 
         if src_to_show.ndim == 2 or (src_to_show.ndim == 3 and src_to_show.shape[2] == 1):
             # MONO path — match Crop: use Grayscale8 QImage; keep 3-ch backing for rebuild
@@ -945,8 +1062,9 @@ class ABEDialog(QDialog):
         a = np.asarray(arr, dtype=np.float32, copy=False)
         self._preview_source_f01 = a  # ← no np.clip
 
-        src_to_show = siril_style_autostretch(self._preview_source_f01, sigma=3.0) \
-                    if getattr(self, "_autostretch_on", False) else self._preview_source_f01
+        src_to_show = (hard_autostretch(self._preview_source_f01, target_median=0.5, sigma=2,
+                                        linked=False, use_16bit=True)
+                    if getattr(self, "_autostretch_on", False) else self._preview_source_f01)
 
         if src_to_show.ndim == 2 or (src_to_show.ndim == 3 and src_to_show.shape[2] == 1):
             mono = src_to_show if src_to_show.ndim == 2 else src_to_show[..., 0]
@@ -1063,29 +1181,9 @@ class ABEDialog(QDialog):
             self._orig_preview8 = np.ascontiguousarray(self._last_preview)
 
         # Prefer float source (avoids 8-bit clipping); fall back to decoding _last_preview if needed
-        if self._preview_source_f01 is None:
-            arr = (self._last_preview.astype(np.float32) / 255.0)
-        else:
-            arr = self._preview_source_f01
+        arr = self._preview_source_f01 if self._preview_source_f01 is not None else (self._last_preview.astype(np.float32)/255.0)
 
-        # Siril-style stretch with robust fallback
-        def _percentile_fallback(a: np.ndarray):
-            def _stretch_ch(ch):
-                lo = float(np.percentile(ch, 0.5))
-                hi = float(np.percentile(ch, 99.5))
-                if hi <= lo + 1e-6:
-                    return np.clip(ch, 0.0, 1.0)
-                return np.clip((ch - lo) / (hi - lo), 0.0, 1.0)
-            if a.ndim == 2:
-                return _stretch_ch(a)
-            out = np.empty_like(a, dtype=np.float32)
-            for c in range(a.shape[2]):
-                out[..., c] = _stretch_ch(a[..., c])
-            return out
-
-        stretched = siril_style_autostretch(arr, sigma=sigma)
-        if not np.isfinite(stretched).all() or np.max(stretched) <= 1e-6:
-            stretched = _percentile_fallback(arr)
+        stretched = hard_autostretch(arr, target_median=0.5, sigma=2, linked=False, use_16bit=True)
 
         buf8 = (np.clip(stretched, 0.0, 1.0) * 255.0).astype(np.uint8)
         if buf8.ndim == 2:
@@ -1102,7 +1200,8 @@ class ABEDialog(QDialog):
         # Apply autostretch directly from current float preview source without toggling state.
         if self._preview_source_f01 is None:
             return
-        stretched = siril_style_autostretch(self._preview_source_f01, sigma=sigma)
+        stretched = hard_autostretch(self._preview_source_f01, target_median=0.5, sigma=2,
+                             linked=False, use_16bit=True)
         buf8 = (np.clip(stretched, 0.0, 1.0) * 255.0).astype(np.uint8)
         if buf8.ndim == 2:
             buf8 = np.stack([buf8] * 3, axis=-1)

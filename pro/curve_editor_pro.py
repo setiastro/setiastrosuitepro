@@ -36,6 +36,13 @@ class DraggablePoint(QGraphicsEllipseItem):
         self.setCursor(Qt.CursorShape.OpenHandCursor)
         self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton | Qt.MouseButton.RightButton)
         self.setPos(x, y)
+        outline = QColor(255, 255, 255) if QColor(color).lightnessF() < 0.5 else QColor(0, 0, 0)
+        pen = QPen(outline)
+        try:
+            pen.setWidthF(1.5)  # PyQt6 supports float widths
+        except AttributeError:
+            pen.setWidth(2)     # fallback for builds missing setWidthF
+        self.setPen(pen)        
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.RightButton:
@@ -143,12 +150,16 @@ class CurveEditor(QGraphicsView):
 
         # Set scene rectangle
         self.scene.setSceneRect(0, 0, 360, 360)
-
+        self.scene.setBackgroundBrush(QColor(32, 32, 36))              # dark background
+        self._grid_pen     = QPen(QColor(95, 95, 105), 0, Qt.PenStyle.DashLine)
+        self._label_color  = QColor(210, 210, 210)                     # light grid labels
+        self._curve_fg     = QColor(255, 255, 255)                     # bright curve
+        self._curve_shadow = QColor(0, 0, 0, 190)                      # black halo under curve
         self.initGrid()
         self.initCurve()
         _warm_numba_once()
 
-        self.setSymmetryCallback(self._on_symmetry_pick)
+
 
     def _on_symmetry_pick(self, u: float, _v: float):
         # editor already drew the yellow line; now redistribute handles
@@ -157,24 +168,18 @@ class CurveEditor(QGraphicsView):
         self._quick_preview()
 
     def initGrid(self):
-        pen = QPen(Qt.GlobalColor.gray)
-        pen.setStyle(Qt.PenStyle.DashLine)
-        for i in range(0, 361, 45):  # Grid lines at 0,45,...,360
-            self.scene.addLine(i, 0, i, 360, pen)  # Vertical lines
-            self.scene.addLine(0, i, 360, i, pen)  # Horizontal lines
+        pen = self._grid_pen
+        for i in range(0, 361, 45):  # grid lines
+            self.scene.addLine(i, 0, i, 360, pen)
+            self.scene.addLine(0, i, 360, i, pen)
 
-        # Add X-axis labels
-        # Each line corresponds to i/360.0
+        # X-axis labels (0..1 mapped to 0..360)
         for i in range(0, 361, 45):
-            val = i/360.0
+            val = i / 360.0
             label = QGraphicsTextItem(f"{val:.3f}")
-            # Position label slightly below the x-axis (360 is bottom)
-            # For X-axis, put them near bottom at y=365 for example
-            label.setPos(i-5, 365) 
+            label.setDefaultTextColor(self._label_color)
+            label.setPos(i - 5, 365)
             self.scene.addItem(label)
-
-        # Optionally add Y-axis labels if needed
-        # Similar approach for the Y-axis if you want
 
     def initCurve(self):
         # Remove existing items from the scene
@@ -415,8 +420,23 @@ class CurveEditor(QGraphicsView):
 
         if self.curve_item:
             self.scene.removeItem(self.curve_item)
-        pen = QPen(Qt.GlobalColor.white)
+            self.curve_item = None
+        if getattr(self, "curve_shadow_item", None):
+            self.scene.removeItem(self.curve_shadow_item)
+            self.curve_shadow_item = None
+
+        # shadow (under)
+        sh_pen = QPen(self._curve_shadow)
+        sh_pen.setWidth(5)
+        sh_pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        sh_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        self.curve_shadow_item = self.scene.addPath(self.curve_path, sh_pen)
+
+        # foreground (over)
+        pen = QPen(self._curve_fg)
         pen.setWidth(3)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         self.curve_item = self.scene.addPath(self.curve_path, pen)
 
         # Trigger the preview callback
@@ -894,6 +914,12 @@ class CurvesDialogPro(QDialog):
         # seed images
         self._load_from_doc()
         QTimer.singleShot(0, self._fit_once)
+        self.editor.setSymmetryCallback(self._on_symmetry_pick)
+
+    def _on_symmetry_pick(self, u: float, _v: float):
+        self.editor.redistributeHandlesByPivot(u)
+        self._set_status(f"Inflection @ K={u:.3f}")
+        self._quick_preview()
 
     def _fit_once(self):
         if self._pix is None or self._did_initial_fit:

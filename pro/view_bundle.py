@@ -4,9 +4,9 @@ import json
 import uuid
 from typing import Iterable, Optional
 
-from PyQt6.QtCore import Qt, QSettings, QByteArray, QMimeData, QSize, QPoint
+from PyQt6.QtCore import Qt, QSettings, QByteArray, QMimeData, QSize, QPoint, QEventLoop
 from PyQt6.QtWidgets import (
-    QDialog, QWidget, QHBoxLayout, QVBoxLayout, QListWidget, QListWidgetItem,
+    QDialog, QWidget, QHBoxLayout, QVBoxLayout, QListWidget, QListWidgetItem,QApplication,
     QPushButton, QSplitter, QMessageBox, QLabel, QAbstractItemView, QDialogButtonBox,
     QCheckBox, QFrame, QSizePolicy
 )
@@ -95,6 +95,16 @@ def _find_shortcut_canvas(mw: QWidget | None) -> QWidget | None:
     except Exception:
         return None
 
+def _unwrap_cmd_payload(p: dict) -> dict:
+    """
+    Some packers wrap as {'command_id': {actual_cmd_dict}, 'preset': {...}}.
+    If we see that shape, return the inner dict.
+    """
+    if isinstance(p, dict):
+        cmd = p.get("command_id")
+        if isinstance(cmd, dict) and cmd.get("command_id"):
+            return dict(cmd)  # copy to avoid aliasing
+    return p
 
 # ----------------------------- Bundle Chip -----------------------------
 class BundleChip(QWidget):
@@ -681,46 +691,87 @@ class ViewBundleDialog(QDialog):
         e.ignore()
 
     # ---------- applying shortcuts to all views in a bundle ----------
-    def _apply_payload_to_bundle(self, payload: dict):
+    def _apply_payload_to_bundle(self, payload: dict, target_uuid: Optional[str] = None):
         mw = _find_main_window(self)
         if mw is None or not hasattr(mw, "_handle_command_drop"):
             QMessageBox.information(self, "Apply", "Main window not available.")
             return
-
-        cmd = (payload or {}).get("command_id")
+        payload = _unwrap_cmd_payload(payload)
+        cmd_val = (payload or {}).get("command_id")
+        cmd = cmd_val if isinstance(cmd_val, str) else None
         if not cmd:
             QMessageBox.information(self, "Apply", "Invalid shortcut payload.")
             return
-
-        # New: apply a whole Function Bundle to every doc in this View Bundle
+        
+        # pick doc_ptrs from the target bundle (chip drop) or current selection (panel drop)
+        if target_uuid:
+            b = self._get_bundle(target_uuid)
+            ptrs = [] if not b else list(b.get("doc_ptrs", []))
+            
+        else:
+            ptrs = self.current_bundle_doc_ptrs()
+            
+        # Apply a Function Bundle (multiple steps) to every view in the bundle
         if cmd == "function_bundle":
-            steps = list((payload or {}).get("steps") or [])
-            errors = []
-            applied = 0
-            for ptr in self.current_bundle_doc_ptrs():
+            
+            # 1) normalize to plain JSON-safe dicts (deep copy)
+            try:
+                
+                steps = json.loads(json.dumps((payload or {}).get("steps") or []))
+            except Exception:
+                
+                steps = list((payload or {}).get("steps") or [])
+
+            # 2) sanity filter: only dict steps with a command_id
+            norm_steps = [s for s in steps if isinstance(s, dict) and s.get("command_id")]
+            
+            if not norm_steps:
+                QMessageBox.information(self, "Apply", "This Function Bundle has no usable steps.")
+                return
+
+            # 3) apply using the same sequencing as the button
+            errors, applied = [], 0
+            for ptr in ptrs:
                 _doc, sw = _resolve_doc_and_subwindow(mw, ptr)
-                if sw is None: continue
-                for st in steps:
+                
+                if sw is None:
+                    print(f"    no subwindow found for doc_ptr {ptr}")
+                    continue
+                try:
+                    # activate the target like the button runner does
                     try:
+                        
+                        if hasattr(mw, "mdi") and mw.mdi.activeSubWindow() is not sw:
+                            mw.mdi.setActiveSubWindow(sw)
+                        w = getattr(sw, "widget", lambda: None)()
+                        if w:
+                            w.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
+                        QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 50)
+                    except Exception:
+                        
+                        pass
+
+                    for st in norm_steps:
                         mw._handle_command_drop(st, target_sw=sw)
-                        applied += 1
-                    except Exception as e:
-                        errors.append(str(e))
+                        QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 0)
+                    applied += 1
+                except Exception as e:
+                    errors.append(str(e))
+
             if applied == 0 and not errors:
                 QMessageBox.information(self, "Apply", "No valid targets in the bundle.")
             elif errors:
-                QMessageBox.warning(self, "Apply", f"Applied some steps but some failed:\n\n" + "\n".join(errors))
+                QMessageBox.warning(self, "Apply", "Applied some steps but some failed:\n\n" + "\n".join(errors))
             return
 
-        # (old behavior)
+        # Ignore nested view-bundle shortcuts
         if cmd == "bundle":
-            # ignore nested view bundles for now
             return
 
-        # single-step shortcut → apply to all docs
+        # Single-step shortcut → apply to all docs in the chosen bundle
         errors = []
         applied = 0
-        for ptr in self.current_bundle_doc_ptrs():
+        for ptr in ptrs:
             doc, sw = _resolve_doc_and_subwindow(mw, ptr)
             if sw is None:
                 continue
@@ -734,7 +785,6 @@ class ViewBundleDialog(QDialog):
             QMessageBox.information(self, "Apply", "No valid targets in the bundle.")
         elif errors:
             QMessageBox.warning(self, "Apply", f"Applied to {applied} views, but some failed:\n\n" + "\n".join(errors))
-
 
     def closeEvent(self, e: QCloseEvent):
         # keep chips alive; nothing to do
