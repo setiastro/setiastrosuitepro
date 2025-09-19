@@ -256,6 +256,9 @@ from pro.function_bundle import show_function_bundles
 from pro.ghs_preset import open_ghs_with_preset
 from pro.curves_preset import open_curves_with_preset
 from pro.save_options import _normalize_ext
+from pro.status_log_dock import StatusLogDock
+from pro.log_bus import LogBus
+
 
 VERSION = "1.1.2"
 
@@ -850,6 +853,7 @@ class AstroSuiteProMainWindow(QMainWindow):
         self._init_header_viewer_dock()
         self._init_layers_dock()
         self._shutting_down = False
+        self._init_status_log_dock()
 
 
         # Toolbar / actions
@@ -925,6 +929,7 @@ class AstroSuiteProMainWindow(QMainWindow):
         except Exception:
             pass
 
+        self.status_log_dock.hide()
 
     # ---------- THEME API ----------
     def _apply_workspace_theme(self):
@@ -1143,6 +1148,76 @@ class AstroSuiteProMainWindow(QMainWindow):
         dock.setWidget(self.console)
         dock.setObjectName("ConsoleDock")
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, dock)
+
+    def _init_status_log_dock(self):
+        # Create the dock
+        self.status_log_dock = StatusLogDock(self)            # your dock widget class
+        self.status_log_dock.setObjectName("StatusLogDock")   # stable name for restoreState/menu
+        self.status_log_dock.setAllowedAreas(
+            Qt.DockWidgetArea.LeftDockWidgetArea
+            | Qt.DockWidgetArea.RightDockWidgetArea
+            | Qt.DockWidgetArea.BottomDockWidgetArea
+            | Qt.DockWidgetArea.TopDockWidgetArea
+        )
+        # Default area (will be overridden by restoreState if present)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.status_log_dock)
+
+        # Expose the dock globally so dialogs can show/raise it
+        app = QApplication.instance()
+        app._sasd_status_console = self.status_log_dock
+
+        # Ensure a global log bus and wire bus → dock (queued; thread-safe)
+        if not hasattr(app, "_sasd_log_bus"):
+            app._sasd_log_bus = LogBus()
+        app._sasd_log_bus.posted.connect(
+            self.status_log_dock.append_line,
+            type=Qt.ConnectionType.QueuedConnection
+        )
+
+        # First-run placement (only if no prior saved layout)
+        self._first_place_status_log_if_needed()
+
+    def _first_place_status_log_if_needed(self):
+        s = self.settings  # QSettings you already have
+        flag_key = "ui/status_log/placed_v1"
+
+        # If we've already placed it once, or a full window state exists, do nothing
+        if s.value(flag_key, False, type=bool):
+            return
+
+        # If you have a "main window state" key, use it to detect prior layouts:
+        has_main_state = s.contains("mainwindow/state") or s.contains("ui/window_state")
+        if has_main_state:
+            return
+
+        # Defer until after the window has a real geometry
+        def _place():
+            # OPTION A: float it centered on first run (recommended)
+            self.status_log_dock.setFloating(True)
+
+            g = self.frameGeometry()  # screen coords incl. frame
+            w = min(900, int(g.width() * 0.6))
+            h = min(320, int(g.height() * 0.3))
+            x = g.x() + (g.width() - w) // 2
+            y = g.y() + 60
+
+            self.status_log_dock.resize(w, h)
+            self.status_log_dock.move(x, y)
+            self.status_log_dock.show()
+            self.status_log_dock.raise_()
+
+            # Remember we’ve “introduced” it once
+            s.setValue(flag_key, True)
+            s.sync()
+
+            # Optional: immediately persist the whole layout so next launch restores it
+            try:
+                s.setValue("mainwindow/state", self.saveState())
+            except Exception:
+                pass
+
+        QTimer.singleShot(0, _place)
+
 
     def _init_toolbar(self):
         # View toolbar (Undo / Redo / Display-Stretch)
