@@ -49,6 +49,37 @@ from PyQt6.QtWidgets import (QToolBar, QWidget, QToolButton, QMenu, QApplication
 # Utilities
 # ──────────────────────────────────────────────────────────────────────────────
 
+# --- Debug/guards -----------------------------------------------------
+def _debug_probe_channels(img: np.ndarray, label="input"):
+    assert img.ndim == 3 and img.shape[2] == 3, f"[SFCC] {label}: not RGB"
+    f = img.astype(np.float32) / (255.0 if img.dtype == np.uint8 else 1.0)
+    means = [float(f[...,i].mean()) for i in range(3)]
+    stds  = [float(f[...,i].std())  for i in range(3)]
+    rg = float(np.corrcoef(f[...,0].ravel(), f[...,1].ravel())[0,1])
+    rb = float(np.corrcoef(f[...,0].ravel(), f[...,2].ravel())[0,1])
+    gb = float(np.corrcoef(f[...,1].ravel(), f[...,2].ravel())[0,1])
+    print(f"[SFCC] {label}: mean={means}, std={stds}, corr(R,G)={rg:.5f}, corr(R,B)={rb:.5f}, corr(G,B)={gb:.5f}")
+    return rg, rb, gb
+
+def _maybe_bgr_to_rgb(img: np.ndarray) -> np.ndarray:
+    # Heuristic: if channel-2 is consistently brightest in highlights and ch-0 the dimmest → likely BGR.
+    f = img.astype(np.float32) / (255.0 if img.dtype == np.uint8 else 1.0)
+    lum = np.mean(f, axis=2)
+    thr = np.quantile(lum, 0.95)
+    m0 = f[...,0][lum >= thr].mean() if np.any(lum >= thr) else f[...,0].mean()
+    m1 = f[...,1][lum >= thr].mean() if np.any(lum >= thr) else f[...,1].mean()
+    m2 = f[...,2][lum >= thr].mean() if np.any(lum >= thr) else f[...,2].mean()
+    if (m2 > m1 >= m0) and (m2 - m0 > 0.02):
+        print("[SFCC] Heuristic suggests BGR input → converting to RGB")
+        return img[..., ::-1]
+    return img
+
+def _ensure_angstrom(wl: np.ndarray) -> np.ndarray:
+    """If wavelengths look like nm (≈300–1100), convert to Å."""
+    med = float(np.median(wl))
+    return wl * 10.0 if 250.0 <= med <= 2000.0 else wl
+
+
 def pickles_match_for_simbad(simbad_sp: str, available_extnames: List[str]) -> List[str]:
     sp = simbad_sp.strip().upper()
     if not sp:
@@ -868,7 +899,7 @@ class SFCCDialog(QDialog):
         Simbad.reset_votable_fields()
         for attempt in range(1, 6):
             try:
-                Simbad.add_votable_fields('sp', 'B', 'V', 'R')
+                Simbad.add_votable_fields('sp', 'flux(B)', 'flux(V)', 'flux(R)')
                 break
             except Exception:
                 QApplication.processEvents()
@@ -1029,14 +1060,20 @@ class SFCCDialog(QDialog):
             for p in (self.user_custom_path, self.sasp_data_path):
                 with fits.open(p) as hd:
                     if ext in hd:
-                        d = hd[ext].data; return d["WAVELENGTH"], d["THROUGHPUT"]
+                        d = hd[ext].data
+                        wl = _ensure_angstrom(d["WAVELENGTH"].astype(float))
+                        tp = d["THROUGHPUT"].astype(float)
+                        return wl, tp
             raise KeyError(f"Curve '{ext}' not found")
 
         def load_sed(ext):
             for p in (self.user_custom_path, self.sasp_data_path):
                 with fits.open(p) as hd:
                     if ext in hd:
-                        d = hd[ext].data; return d["WAVELENGTH"], d["FLUX"]
+                        d = hd[ext].data
+                        wl = _ensure_angstrom(d["WAVELENGTH"].astype(float))
+                        fl = d["FLUX"].astype(float)
+                        return wl, fl
             raise KeyError(f"SED '{ext}' not found")
 
         interp = lambda wl_o, tp_o: np.interp(wl_grid, wl_o, tp_o, left=0., right=0.)
@@ -1061,10 +1098,7 @@ class SFCCDialog(QDialog):
 
         for m in raw_matches:
             xi, yi, sp = m["x_pix"], m["y_pix"], m["template"]
-            if img.dtype == np.uint8:
-                Rm = img[yi, xi, 0] / 255.0; Gm = img[yi, xi, 1] / 255.0; Bm = img[yi, xi, 2] / 255.0
-            else:
-                Rm = float(base[yi, xi, 0]); Gm = float(base[yi, xi, 1]); Bm = float(base[yi, xi, 2])
+            Rm = float(base[yi, xi, 0]); Gm = float(base[yi, xi, 1]); Bm = float(base[yi, xi, 2])
             if Gm <= 0: continue
 
             cands = pickles_match_for_simbad(sp, getattr(self, "pickles_templates", []))
@@ -1087,7 +1121,7 @@ class SFCCDialog(QDialog):
                 "S_star_R": S_sr, "S_star_G": S_sg, "S_star_B": S_sb,
                 "exp_RG": exp_RG, "exp_BG": exp_BG
             })
-
+        self._last_matched = enriched  # <-- missing in SASpro
         diag_meas_RG = np.array(diag_meas_RG); diag_exp_RG = np.array(diag_exp_RG)
         diag_meas_BG = np.array(diag_meas_BG); diag_exp_BG = np.array(diag_exp_BG)
         if diag_meas_RG.size == 0 or diag_meas_BG.size == 0:
@@ -1099,8 +1133,9 @@ class SFCCDialog(QDialog):
         affine     = lambda x, m, b: m*x + b
         quad       = lambda x, a, b, c: a*x**2 + b*x + c
 
-        mR_s = np.sum(diag_meas_RG * diag_exp_RG) / np.sum(diag_meas_RG**2)
-        mB_s = np.sum(diag_meas_BG * diag_exp_BG) / np.sum(diag_meas_BG**2)
+        denR = np.sum(diag_meas_RG**2); denB = np.sum(diag_meas_BG**2)
+        mR_s = (np.sum(diag_meas_RG * diag_exp_RG) / denR) if denR > 0 else 1.0
+        mB_s = (np.sum(diag_meas_BG * diag_exp_BG) / denB) if denB > 0 else 1.0
         rms_s = rms_frac(slope_only(diag_meas_RG, mR_s), diag_exp_RG) + rms_frac(slope_only(diag_meas_BG, mB_s), diag_exp_BG)
 
         mR_a, bR_a = np.linalg.lstsq(np.vstack([diag_meas_RG, np.ones_like(diag_meas_RG)]).T, diag_exp_RG, rcond=None)[0]
@@ -1325,12 +1360,7 @@ class SFCCDialog(QDialog):
 # Helper to open the dialog from your app
 # ──────────────────────────────────────────────────────────────────────────────
 
-def open_sfcc(view_adapter, sasp_data_path: str, parent=None) -> SFCCDialog:
-    """
-    Example:
-        dlg = open_sfcc(my_view_adapter, "/path/to/SASP_data.fits", parent=self)
-        dlg.show()
-    """
-    dlg = SFCCDialog(view=view_adapter, sasp_data_path=sasp_data_path, parent=parent)
+def open_sfcc(doc_manager, sasp_data_path: str, parent=None) -> SFCCDialog:
+    dlg = SFCCDialog(doc_manager=doc_manager, sasp_data_path=sasp_data_path, parent=parent)
     dlg.show()
     return dlg
