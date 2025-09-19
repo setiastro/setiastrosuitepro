@@ -163,7 +163,7 @@ from PyQt6.QtGui import (QPixmap, QColor, QIcon, QKeySequence, QShortcut, QGuiAp
 )
 
 # ----- QtCore -----
-from PyQt6.QtCore import (Qt, pyqtSignal, QCoreApplication, QTimer, QSize, QSignalBlocker,  QModelIndex, QThread, QUrl, QSettings, QEvent
+from PyQt6.QtCore import (Qt, pyqtSignal, QCoreApplication, QTimer, QSize, QSignalBlocker,  QModelIndex, QThread, QUrl, QSettings, QEvent, QByteArray
 )
 
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
@@ -257,7 +257,7 @@ from pro.ghs_preset import open_ghs_with_preset
 from pro.curves_preset import open_curves_with_preset
 from pro.save_options import _normalize_ext
 
-VERSION = "1.1.1"
+VERSION = "1.1.2"
 
 
 if hasattr(sys, '_MEIPASS'):
@@ -815,7 +815,11 @@ class AstroSuiteProMainWindow(QMainWindow):
         self._last_active_view = None
         self._current_active_sw = None
         self._last_active_sw = None
-
+        self._suspend_dock_sync = False        # pause action<->dock syncing while minimized
+        self._dock_visibility_snapshot = {}     # objectName -> bool
+        self._pre_minimize_state = None
+        self._dock_vis_intended: dict[str, bool] = {}   # last known intended visibility per dock
+        self._last_good_state: QByteArray | None = None
         
 
         # Core
@@ -846,6 +850,7 @@ class AstroSuiteProMainWindow(QMainWindow):
         self._init_header_viewer_dock()
         self._init_layers_dock()
         self._shutting_down = False
+
 
         # Toolbar / actions
         self._create_actions()
@@ -914,6 +919,11 @@ class AstroSuiteProMainWindow(QMainWindow):
         self._hdr_refresh_timer = QTimer(self)
         self._hdr_refresh_timer.setSingleShot(True)
         self._hdr_refresh_timer.timeout.connect(lambda: self._refresh_header_viewer(self._active_doc()))
+
+        try:
+            self._last_good_state = self.saveState()
+        except Exception:
+            pass
 
 
     # ---------- THEME API ----------
@@ -1963,12 +1973,17 @@ class AstroSuiteProMainWindow(QMainWindow):
         self._view_panels_actions = {}  # objectName -> QAction
         return self._menu_view_panels
 
+    def _is_inactive_or_minimized(self) -> bool:
+        app = QApplication.instance()
+        try:
+            inactive = app.applicationState() != Qt.ApplicationState.ApplicationActive
+        except Exception:
+            inactive = False
+        return bool(self.windowState() & Qt.WindowState.WindowMinimized) or inactive
 
     def _register_dock_in_view_menu(self, dock: QDockWidget):
-        """Create/refresh a checkable action for a dock widget."""
         if dock is None:
             return
-        # Make sure every dock has a stable objectName
         if not dock.objectName():
             dock.setObjectName(dock.windowTitle().replace(" ", "") + "Dock")
 
@@ -1982,15 +1997,76 @@ class AstroSuiteProMainWindow(QMainWindow):
             self._view_panels_actions[name] = act
             menu.addAction(act)
 
-            # clicking the menu toggles the dock
-            act.toggled.connect(lambda checked, d=dock: d.setVisible(checked))
+            def _on_action_toggled(checked, d=dock, n=name):
+                if self._suspend_dock_sync or self._is_inactive_or_minimized():
+                    return
+                self._dock_vis_intended[n] = bool(checked)
+                d.setVisible(bool(checked))
+                # capture a last-good layout whenever the user changes vis while active
+                try:
+                    self._last_good_state = self.saveState()
+                except Exception:
+                    pass
 
-            # keeping state in sync when user closes/moves the dock
-            dock.visibilityChanged.connect(lambda vis, a=act: a.setChecked(bool(vis)))
+            act.toggled.connect(_on_action_toggled)
+
+            def _on_dock_vis_changed(vis, a=act, n=name):
+                # Ignore layout churn during minimize/restore; don’t let “False” uncheck the action.
+                if self._suspend_dock_sync or self._is_inactive_or_minimized():
+                    return
+                a.setChecked(bool(vis))
+                self._dock_vis_intended[n] = bool(vis)
+                try:
+                    self._last_good_state = self.saveState()
+                except Exception:
+                    pass
+
+            dock.visibilityChanged.connect(_on_dock_vis_changed)
+
             dock.destroyed.connect(lambda _=None, n=name: self._remove_dock_from_view_menu(n))
 
-        # initial/refresh check state
         act.setChecked(dock.isVisible())
+        self._dock_vis_intended[name] = dock.isVisible()
+
+    def changeEvent(self, ev):
+        super().changeEvent(ev)
+        if ev.type() == QEvent.Type.WindowStateChange:
+            if self.windowState() & Qt.WindowState.WindowMinimized:
+                # entering minimized — just guard; do not snapshot false vis
+                self._suspend_dock_sync = True
+                return
+
+            # leaving minimized / other state change
+            if self._suspend_dock_sync:
+                try:
+                    # Restore the last good layout if we have it
+                    if self._last_good_state:
+                        self.restoreState(self._last_good_state)
+                except Exception:
+                    pass
+
+                # Enforce intended vis for each known dock (in case restoreState wasn’t enough)
+                for name, want in dict(self._dock_vis_intended).items():
+                    d = self.findChild(QDockWidget, name)
+                    if d:
+                        if want: d.show()
+                        else:    d.hide()
+
+                # Re-sync menu checks
+                for name, act in getattr(self, "_view_panels_actions", {}).items():
+                    dock = self.findChild(QDockWidget, name)
+                    if dock:
+                        act.setChecked(dock.isVisible())
+
+                # Resume normal syncing
+                self._suspend_dock_sync = False
+
+                # Capture a fresh last-good layout now that we’re back
+                try:
+                    self._last_good_state = self.saveState()
+                except Exception:
+                    pass
+
 
 
     def _remove_dock_from_view_menu(self, name: str):
@@ -7060,6 +7136,12 @@ class AstroSuiteProMainWindow(QMainWindow):
                 s.sync()
             except Exception:
                 pass
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        # when returning from the taskbar, some platforms don’t emit WindowStateChange reliably
+        if self._suspend_dock_sync:
+            QTimer.singleShot(0, lambda: self.changeEvent(QEvent(QEvent.Type.WindowStateChange)))
 
     def closeEvent(self, e):
         # Gather open docs
