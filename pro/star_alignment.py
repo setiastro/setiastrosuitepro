@@ -5,13 +5,14 @@ from itertools import combinations
 from typing import Callable, Iterable, Tuple
 import tempfile
 import traceback
-
+import requests
 import numpy as np
 import cv2
 import astroalign
 import sep
 import re, warnings
-
+import json
+import time
 from scipy.spatial import KDTree, Delaunay
 from astropy.stats import sigma_clipped_stats
 from astropy.io.fits import Header
@@ -25,12 +26,12 @@ import astropy.units as u
 from astropy.wcs import WCS
 from astropy.wcs.utils import skycoord_to_pixel
 from reproject import reproject_interp
-
-
-from PyQt6.QtCore import Qt, QThread, QRunnable, QThreadPool, pyqtSignal, QObject, QTimer, QProcess, QPoint, QEvent
+from pro.blink_comparator_pro import CustomDoubleSpinBox, CustomSpinBox
+import numpy.ma as ma
+from PyQt6.QtCore import Qt, QThread, QRunnable, QThreadPool, pyqtSignal, QObject, QTimer, QProcess, QPoint, QEvent, QSettings
 from PyQt6.QtGui import QImage, QPixmap, QIcon, QMovie
 from PyQt6.QtWidgets import (
-    QDialog, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QGroupBox, QAbstractItemView, QListWidget, QInputDialog, QApplication, QProgressBar, QProgressDialog,
+    QDialog, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QGroupBox, QAbstractItemView, QListWidget, QInputDialog, QApplication, QProgressBar, QProgressDialog, 
     QRadioButton, QFileDialog, QComboBox, QMessageBox, QTextEdit, QDialogButtonBox, QTreeWidget,QCheckBox, QFormLayout, QListWidgetItem, QScrollArea, QTreeWidgetItem
 )
 # I/O & stretch (same stack we used for Plate Solver)
@@ -43,11 +44,11 @@ except Exception:
 
 # Optional fast star detector; fall back gracefully if not present
 try:
-    from imageops.stars import fast_star_detect  # your optimized detector, if available
+    from legacy.numba_utils import fast_star_detect  # your optimized detector, if available
 except Exception:
     fast_star_detect = None
 
-from legacy.numba_utils import debayer_fits_fast, numba_color_final_formula_linked, numba_color_final_formula_unlinked, numba_mono_final_formula, numba_unstretch, build_poly_terms, evaluate_polynomial
+from legacy.numba_utils import *
 from pro.abe import _generate_sample_points as abe_generate_sample_points
 
 # ---------------------------------------------------------------------
@@ -185,6 +186,7 @@ def _push_image_to_active_view(parent, new_image: np.ndarray, metadata_update: d
         except Exception:
             pass
 
+ASTROMETRY_API_URL = "http://nova.astrometry.net/api/"
 
 # ---------------------------------------------------------------------
 # Stellar Alignment (Dialog) — uses Active View or File (no slots)
@@ -2207,6 +2209,20 @@ class PolyGradientRemoval:
         cmed = np.median(image)
         diff = target_median - cmed
         return image + diff
+
+settings = QSettings("SetiAstro", "Seti Astro Suite Pro")
+
+def save_api_key(api_key):
+    settings.setValue("astrometry_api_key", api_key)  # Save to QSettings
+    print("API key saved.")
+
+def load_api_key():
+    api_key = settings.value("astrometry_api_key", "")  # Load from QSettings
+    if api_key:
+        print("API key loaded.")
+    return api_key
+
+
 
 
 class MosaicMasterDialog(QDialog):

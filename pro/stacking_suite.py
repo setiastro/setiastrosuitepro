@@ -3,7 +3,7 @@ import os, glob, shutil, tempfile, datetime as _dt
 from time import perf_counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy as np
-import re
+import re, unicodedata
 import math            # used in compute_safe_chunk
 import psutil          # used in bytes_available / compute_safe_chunk
 from typing import List 
@@ -29,19 +29,24 @@ from typing import List, Tuple, Optional
 import sep
 from pathlib import Path
 
-
+from PyQt6 import sip
 # your helpers/utilities
 from imageops.stretch import stretch_mono_image, stretch_color_image
 from legacy.numba_utils import *   
 from legacy.image_manager import load_image, save_image, get_valid_header
 from pro.star_alignment import StarRegistrationWorker, StarRegistrationThread, IDENTITY_2x3
-
+from pro.log_bus import LogBus
 
 import numpy as np
 
+_WINDOWS_RESERVED = {
+    "CON","PRN","AUX","NUL",
+    "COM1","COM2","COM3","COM4","COM5","COM6","COM7","COM8","COM9",
+    "LPT1","LPT2","LPT3","LPT4","LPT5","LPT6","LPT7","LPT8","LPT9",
+}
+
 def _is_deleted(obj) -> bool:
     try:
-        import sip
         return sip.isdeleted(obj)
     except Exception:
         # Fallback heuristic
@@ -558,7 +563,9 @@ def load_fits_tile(filepath, y_start, y_end, x_start, x_end):
 
     return tile_data
 
-
+def _get_log_dock():
+    app = QApplication.instance()
+    return getattr(app, "_sasd_status_console", None)  # set by main window
 
 # --------------------------------------------------
 # Stacking Suite
@@ -953,6 +960,7 @@ class StatusLogWindow(QDialog):
         self.setWindowFlag(Qt.WindowType.Tool, True)                    # tool window (no taskbar)
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, False)   # ❗ not global topmost
         self.setWindowModality(Qt.WindowModality.NonModal)              # don't block UI
+        self._was_visible_on_deactivate = False   
         # ─────────────────────────────────────────────────────────
         # follow app activation/deactivation
         QApplication.instance().applicationStateChanged.connect(self._on_app_state_changed)
@@ -979,16 +987,31 @@ class StatusLogWindow(QDialog):
         row.addStretch(1)
         lay.addLayout(row)
 
+
     def _apply_topmost(self, enable: bool):
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, enable)
-        if self.isVisible():
-            self.show()   # re-apply flags on Windows
-            if enable:
-                self.raise_()
+        # Re-apply the native flags and stacking
+        if enable:
+            # When re-activating, make sure it’s shown even if the OS hid it
+            self.show()               # ← **always** show on enable
+            self.raise_()
+        else:
+            # When deactivating, keep whatever visible state it had
+            # (don’t force-hide here—let the OS do whatever it wants)
+            self.show()  # reapply flags without changing visibility
 
     @pyqtSlot(Qt.ApplicationState)
     def _on_app_state_changed(self, state):
-        self._apply_topmost(state == Qt.ApplicationState.ApplicationActive)
+        if state == Qt.ApplicationState.ApplicationActive:
+            # If it was visible when we lost focus, ensure it’s back
+            if self._was_visible_on_deactivate:
+                self.show()
+                self.raise_()
+            self._apply_topmost(True)
+        else:
+            # Remember whether we should bring it back later
+            self._was_visible_on_deactivate = self.isVisible()
+            self._apply_topmost(False)
 
     def eventFilter(self, obj, event):
         if obj is self.parent() and event.type() in (
@@ -1003,7 +1026,7 @@ class StatusLogWindow(QDialog):
 
     def show_raise(self):
         self.show()
-        self._apply_topmost(QApplication.instance().applicationState() == Qt.ApplicationState.ApplicationActive)
+        self.raise_()
 
     @pyqtSlot(str)
     def append_line(self, message: str):
@@ -1083,11 +1106,13 @@ class StackingSuiteDialog(QDialog):
  
         # --- singleton status console (no parent, recreate if gone) ---
         app = QApplication.instance()
-        console = getattr(app, "_sasd_status_console", None)
-        if console is None or _is_deleted(console):
-            console = StatusLogWindow(parent=None)
-            app._sasd_status_console = console
-        self._status_console = console
+        if not hasattr(app, "_sasd_log_bus"):
+            app._sasd_log_bus = LogBus()
+        self._log_bus = app._sasd_log_bus
+        self.status_signal.connect(self._log_bus.posted.emit, Qt.ConnectionType.QueuedConnection)
+
+        # show the dock (if the main window created it)
+        self._ensure_log_visible_once()
 
         self.auto_rot180 = self.settings.value("stacking/auto_rot180", True, type=bool)
         self.auto_rot180_tol_deg = self.settings.value("stacking/auto_rot180_tol_deg", 89.0, type=float)             
@@ -1185,17 +1210,6 @@ class StackingSuiteDialog(QDialog):
         self.restore_saved_master_calibrations()
         self._update_stacking_path_display()
 
-        app = QApplication.instance()
-        if not hasattr(app, "_sasd_status_console"):
-            # parent=None so it floats independent of any single dialog
-            app._sasd_status_console = StatusLogWindow(parent=self)
-        self._status_console = app._sasd_status_console
-
-        # every StackingSuiteDialog writes to the same console
-        self.status_signal.connect(self._status_console.append_line, Qt.ConnectionType.QueuedConnection)
-
-        # show it (front) on open without stealing focus
-        self._status_console.show_raise()
 
         # Keep a tiny “last line” label (optional)
         #self._last_status_label = QLabel("")
@@ -1224,20 +1238,23 @@ class StackingSuiteDialog(QDialog):
         # keep full message available on hover
         self._last_status_label.setToolTip(message)
 
-    def _show_log_window(self):
-        # Prefer the instance we already cached during __init__
-        if hasattr(self, "_status_console") and self._status_console:
-            self._status_console.show_raise()
-            return
 
-        # Fallback to the app-global singleton (create if missing)
-        app = QApplication.instance()
-        console = getattr(app, "_sasd_status_console", None)
-        if console is None:
-            app._sasd_status_console = StatusLogWindow(parent=self)
-            console = app._sasd_status_console
-        self._status_console = console
-        console.show_raise()
+    def _ensure_log_visible_once(self):
+        dock = _get_log_dock()
+        if dock:
+            dock.setVisible(True)
+            dock.raise_()
+
+    def _show_log_window(self):
+        dock = _get_log_dock()
+        if dock:
+            dock.setVisible(True)
+            dock.raise_()
+        else:
+            QMessageBox.information(
+                self, "Stacking Log",
+                "Open the main window to see the Stacking Log dock."
+            )
 
     def _label_with_dims(self, label: str, width: int, height: int) -> str:
         """Replace or append (WxH) in a human label."""
@@ -4413,7 +4430,9 @@ class StackingSuiteDialog(QDialog):
             del final_stacked
 
             # (F) Save Master Dark
-            master_dark_path = os.path.join(master_dir, f"MasterDark_{int(exposure_time)}s_{image_size}.fit")
+            
+            master_dark_stem = f"MasterDark_{int(exposure_time)}s_{image_size}"
+            master_dark_path = self._build_out(master_dir, master_dark_stem, "fit")
 
             # Build a minimal header
             # Possibly store EXPTIME, IMAGETYP="DARK", etc.
@@ -4789,10 +4808,8 @@ class StackingSuiteDialog(QDialog):
             master_flat_data = np.array(final_stacked)
             del final_stacked
 
-            master_flat_path = os.path.join(
-                master_dir,
-                f"MasterFlat_{session}_{int(exposure_time)}s_{image_size}_{filter_name}.fit"
-            )
+            master_flat_stem = f"MasterFlat_{session}_{int(exposure_time)}s_{image_size}_{filter_name}"
+            master_flat_path = self._build_out(master_dir, master_flat_stem, "fit")
 
             header = fits.Header()
             header["IMAGETYP"] = "FLAT"
@@ -6489,13 +6506,12 @@ class StackingSuiteDialog(QDialog):
             trail_norm = trail_img / (trail_img.max() + 1e-12)
 
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            default_name = f"StarTrail_{n_frames:03d}frames_{ts}"
+            default_name = self._safe_component(f"StarTrail_{n_frames:03d}frames_{ts}")
             filters = "TIFF (*.tif);;PNG (*.png);;JPEG (*.jpg *.jpeg);;FITS (*.fits);;XISF (*.xisf')"
             path, chosen_filter = QFileDialog.getSaveFileName(
-                self,
-                "Save Star-Trail Image",
+                self, "Save Star-Trail Image",
                 os.path.join(self.stacking_directory, default_name),
-                filters
+                "TIFF (*.tif);;PNG (*.png);;JPEG (*.jpg *.jpeg);;FITS (*.fits);;XISF (*.xisf)"
             )
             if not path:
                 self.update_status("✖ Star-trail save cancelled.")
@@ -6929,8 +6945,8 @@ class StackingSuiteDialog(QDialog):
             n_frames = len(file_list)
             H, W = integrated_image.shape[:2]
             display_group = self._label_with_dims(group_key, W, H)
-            base_name = f"MasterLight_{display_group}_{n_frames}stacked"
-            out_path_orig = os.path.join(self.stacking_directory, f"{base_name}.fit")
+            base = f"MasterLight_{display_group}_{n_frames}stacked"
+            out_path_orig = self._build_out(self.stacking_directory, base, "fit")
 
             save_image(
                 img_array=integrated_image,
@@ -6954,8 +6970,8 @@ class StackingSuiteDialog(QDialog):
                 is_mono_crop = (cropped_img.ndim == 2)
                 Hc, Wc = (cropped_img.shape[:2] if cropped_img.ndim >= 2 else (H, W))
                 display_group_crop = self._label_with_dims(group_key, Wc, Hc)
-                base_name_crop = f"MasterLight_{display_group_crop}_{n_frames}stacked"
-                out_path_crop = os.path.join(self.stacking_directory, f"{base_name_crop}_autocrop.fit")
+                base_crop = f"MasterLight_{display_group_crop}_{n_frames}stacked_autocrop"
+                out_path_crop = self._build_out(self.stacking_directory, base_crop, "fit")
 
                 save_image(
                     img_array=cropped_img,
@@ -7098,7 +7114,7 @@ class StackingSuiteDialog(QDialog):
             channels = 3 if is_color else 1
 
             # 2) Prepare a memmap for the final stacked image.
-            memmap_path = os.path.join(self.stacking_directory, f"chunked_{group_key}.dat")
+            memmap_path = self._build_out(self.stacking_directory, f"chunked_{group_key}", "dat")
             final_stacked = np.memmap(
                 memmap_path,
                 dtype=np.float32,
@@ -7274,8 +7290,9 @@ class StackingSuiteDialog(QDialog):
                 ref_header["NAXIS2"] = final_array.shape[0]
                 ref_header["NAXIS3"] = 3
 
-            output_filename = f"MasterLight_{group_key}_{len(aligned_paths)}stacked.fit"
-            output_path = os.path.join(self.stacking_directory, output_filename)
+            output_stem = f"MasterLight_{group_key}_{len(aligned_paths)}stacked"
+            output_path  = self._build_out(self.stacking_directory, output_stem, "fit")
+
             save_image(
                 img_array=final_array,
                 filename=output_path,
@@ -7298,9 +7315,6 @@ class StackingSuiteDialog(QDialog):
             except OSError:
                 pass
 
-        # Optionally, you could return the global rejection coordinate list.
-        return all_rejection_coords
-
         QMessageBox.information(
             self,
             "Stacking Complete",
@@ -7308,6 +7322,9 @@ class StackingSuiteDialog(QDialog):
             f"Frames per group:\n" +
             "\n".join([f"{group_key}: {len(files)} frame(s)" for group_key, files in grouped_files.items()])
         )
+
+        # Optionally, you could return the global rejection coordinate list.
+        return all_rejection_coords        
 
 
 
@@ -7575,8 +7592,8 @@ class StackingSuiteDialog(QDialog):
         # Save original drizzle
         Hd, Wd = final_drizzle.shape[:2] if final_drizzle.ndim >= 2 else (0, 0)
         display_group_driz = self._label_with_dims(group_key, Wd, Hd)
-        base_name = f"MasterLight_{display_group_driz}_{len(file_list)}stacked_drizzle"
-        out_path_orig = os.path.join(self.stacking_directory, f"{base_name}.fit")
+        base_stem = f"MasterLight_{display_group_driz}_{len(file_list)}stacked_drizzle"
+        out_path_orig = self._build_out(self.stacking_directory, base_stem, "fit")
 
         hdr_orig = hdr.copy() if hdr is not None else fits.Header()
         hdr_orig["IMAGETYP"]   = "MASTER STACK - DRIZZLE"
@@ -7618,8 +7635,8 @@ class StackingSuiteDialog(QDialog):
             )
             is_mono_crop = (cropped_drizzle.ndim == 2)
             display_group_driz_crop = self._label_with_dims(group_key, cropped_drizzle.shape[1], cropped_drizzle.shape[0])
-            base_name_crop = f"MasterLight_{display_group_driz_crop}_{len(file_list)}stacked_drizzle"
-            out_path_crop = os.path.join(self.stacking_directory, f"{base_name_crop}_autocrop.fit")
+            base_crop = f"MasterLight_{display_group_driz_crop}_{len(file_list)}stacked_drizzle_autocrop"
+            out_path_crop = self._build_out(self.stacking_directory, base_crop, "fit")
 
             save_image(
                 img_array=cropped_drizzle,
@@ -7791,9 +7808,6 @@ class StackingSuiteDialog(QDialog):
         log(f"Integration complete for group '{group_key}'.")
         return integrated_image, per_file_rejections, ref_header
 
-
-
-
     def outlier_rejection_with_mask(self, tile_stack, weights_array):
         """
         Example outlier rejection routine that computes the weighted median of the tile stack
@@ -7826,3 +7840,62 @@ class StackingSuiteDialog(QDialog):
         # If color, you might combine channels or process each channel separately.
         
         return tile_result, rejection_mask
+
+    def _safe_component(self, s: str, *, replacement:str="_", maxlen:int=180) -> str:
+        """
+        Sanitize a *single* path component for cross-platform safety.
+        - normalizes unicode (NFKC)
+        - replaces path separators and illegal chars
+        - collapses whitespace to `_`
+        - strips leading/trailing dots/spaces (Windows rule)
+        - avoids reserved device names (Windows)
+        - truncates to maxlen, keeping extension if present
+        """
+        s = unicodedata.normalize("NFKC", str(s))
+
+        # nuke path separators
+        other_sep = "/" if os.sep == "\\" else "\\"
+        s = s.replace(os.sep, replacement).replace(other_sep, replacement)
+
+        # replace illegal Windows chars + control chars
+        s = re.sub(r'[<>:"/\\|?*\x00-\x1F]', replacement, s)
+
+        # collapse whitespace → _
+        s = re.sub(r"\s+", replacement, s)
+
+        # allow only [A-Za-z0-9._-()] plus 'x' (for 1234x5678) — tweak if you want
+        s = re.sub(r"[^A-Za-z0-9._\-()x]", replacement, s)
+
+        # collapse multiple replacements
+        rep = re.escape(replacement)
+        s = re.sub(rep + r"+", replacement, s)
+
+        # trim leading/trailing spaces/dots/dashes/underscores
+        s = s.strip(" .-_")
+
+        if not s:
+            s = "untitled"
+
+        # avoid reserved basenames on Windows (compare stem only)
+        stem, ext = os.path.splitext(s)
+        if stem.upper() in _WINDOWS_RESERVED:
+            s = "_" + s  # prefix underscore
+
+        # enforce maxlen, preserving extension if present
+        if len(s) > maxlen:
+            stem, ext = os.path.splitext(s)
+            keep = max(1, maxlen - len(ext))
+            s = stem[:keep].rstrip(" .-_") + ext
+
+        return s
+
+    def _build_out(self, directory: str, stem: str, ext: str) -> str:
+        """
+        Join directory + sanitized stem + sanitized extension.
+        Ensures parent dir exists.
+        """
+        ext = (ext or "").lstrip(".").lower() or "fit"
+        safe_stem = self._safe_component(stem)
+        safe_dir  = os.path.abspath(directory or ".")
+        os.makedirs(safe_dir, exist_ok=True)
+        return os.path.join(safe_dir, f"{safe_stem}.{ext}")
