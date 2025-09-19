@@ -7,7 +7,7 @@ from PyQt6.QtCore import Qt, QSettings, QByteArray, QMimeData, QSize, QPoint, QE
 from PyQt6.QtWidgets import (
     QDialog, QWidget, QHBoxLayout, QVBoxLayout, QListWidget, QListWidgetItem, 
     QPushButton, QSplitter, QMessageBox, QLabel, QAbstractItemView, QDialogButtonBox,
-    QApplication
+    QApplication, QMenu, QInputDialog, QPlainTextEdit
 )
 from PyQt6.QtGui import QDrag, QCloseEvent, QCursor, QShortcut, QKeySequence
 from PyQt6.QtCore import  QThread
@@ -253,6 +253,7 @@ class FunctionBundleDialog(QDialog):
         # left: bundles
         self.list = QListWidget()
         self.list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
 
         self.btn_new = QPushButton("New")
         self.btn_dup = QPushButton("Duplicate")
@@ -262,6 +263,7 @@ class FunctionBundleDialog(QDialog):
         self.steps = QListWidget()
         self.steps.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.steps.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.steps.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
 
         self.add_hint = QLabel("Drop shortcuts here to add steps")
         self.add_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -311,9 +313,16 @@ class FunctionBundleDialog(QDialog):
 
         # wire
         self.list.currentRowChanged.connect(lambda _i: self._refresh_steps_list())
+        self.list.customContextMenuRequested.connect(self._bundles_context_menu)
         self.btn_new.clicked.connect(self._new_bundle)
         self.btn_dup.clicked.connect(self._dup_bundle)
         self.btn_del.clicked.connect(self._del_bundle)
+        # rename shortcuts
+        QShortcut(QKeySequence("F2"), self.list, activated=self._rename_bundle)
+        self.list.itemDoubleClicked.connect(lambda _it: self._rename_bundle())
+
+        # step context menu
+        self.steps.customContextMenuRequested.connect(self._steps_context_menu)
 
         self.btn_remove.clicked.connect(self._remove_selected_steps)
         self.btn_clear.clicked.connect(self._clear_steps)
@@ -429,10 +438,27 @@ class FunctionBundleDialog(QDialog):
         for st in self.current_steps():
             self._add_step_item(st)
 
+    def _preset_label(self, preset) -> str:
+        """Human-friendly label for the preset shown in the list."""
+        if preset is None:
+            return ""
+        if isinstance(preset, str):
+            return f" — {preset}"
+        if isinstance(preset, dict):
+            # Prefer a human name if present
+            name = preset.get("name") or preset.get("label")
+            if isinstance(name, str) and name.strip():
+                return f" — {name.strip()}"
+            # Otherwise a tiny summary like {k1,k2}
+            keys = list(preset.keys())
+            return f" — {{{', '.join(keys[:3])}{'…' if len(keys)>3 else ''}}}"
+        # fallback
+        return f" — {str(preset)}"
+
     def _add_step_item(self, step: dict, at: int | None = None):
         cid = step.get("command_id", "<cmd>")
         preset = step.get("preset", None)
-        desc = cid if not preset else f"{cid} — {preset}"
+        desc = f"{cid}{self._preset_label(preset)}"
         it = QListWidgetItem(desc)
         it.setData(Qt.ItemDataRole.UserRole, step)
         if at is None:
@@ -454,6 +480,8 @@ class FunctionBundleDialog(QDialog):
         self._save_all()
         if i in self._chips:
             self._chips[i]._sync_count()
+        # refresh visible labels (e.g. after preset edits)
+        self._refresh_steps_list()
 
     # ---------- editing actions ----------
     def _new_bundle(self):
@@ -510,6 +538,101 @@ class FunctionBundleDialog(QDialog):
             if isinstance(st, dict) and st.get("command_id"):
                 self._add_step_item(st)
         self._commit_steps_from_ui()
+
+    # ---------- rename bundle ----------
+    def _rename_bundle(self):
+        i = self._current_index()
+        if i < 0:
+            return
+        cur = self._bundles[i]
+        new_name, ok = QInputDialog.getText(self, "Rename Function Bundle",
+                                            "New name:", text=cur.get("name","Function Bundle"))
+        if not ok:
+            return
+        cur["name"] = (new_name or "Function Bundle").strip()
+        self._save_all()
+        self._refresh_bundle_list()
+        self.list.setCurrentRow(i)
+        # update chip title if present
+        ch = self._chips.get(i)
+        if ch:
+            ch._title.setText(cur["name"])
+
+    def _bundles_context_menu(self, pos):
+        if self.list.count() == 0:
+            return
+        m = QMenu(self)
+        act_ren = m.addAction("Rename…")
+        act = m.exec(self.list.mapToGlobal(pos))
+        if act is act_ren:
+            self._rename_bundle()
+
+    # ---------- step context menu & preset editor ----------
+    def _steps_context_menu(self, pos):
+        item = self.steps.itemAt(pos)
+        if not item:
+            return
+        m = QMenu(self)
+        a_edit  = m.addAction("Edit Preset…")
+        a_clear = m.addAction("Clear Preset")
+        m.addSeparator()
+        a_dup   = m.addAction("Duplicate Step")
+        a_rem   = m.addAction("Remove Step")
+        act = m.exec(self.steps.mapToGlobal(pos))
+        if not act:
+            return
+        row = self.steps.row(item)
+        step = item.data(Qt.ItemDataRole.UserRole) or {}
+        if act is a_edit:
+            new_preset, ok = self._edit_preset_dialog(step.get("preset", None))
+            if ok:
+                step["preset"] = new_preset
+                item.setData(Qt.ItemDataRole.UserRole, step)
+                item.setText(f"{step.get('command_id','<cmd>')}{self._preset_label(new_preset)}")
+                self._commit_steps_from_ui()
+        elif act is a_clear:
+            if "preset" in step:
+                step.pop("preset", None)
+                item.setData(Qt.ItemDataRole.UserRole, step)
+                item.setText(f"{step.get('command_id','<cmd>')}")
+                self._commit_steps_from_ui()
+        elif act is a_dup:
+            self._add_step_item(json.loads(json.dumps(step)), at=row+1)
+            self._commit_steps_from_ui()
+        elif act is a_rem:
+            self.steps.takeItem(row)
+            self._commit_steps_from_ui()
+
+    def _edit_preset_dialog(self, current) -> tuple[object, bool]:
+        """
+        Simple JSON editor for the 'preset' field.
+        Accepts dict, string, number, etc. Returns (value, ok).
+        """
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Edit Preset")
+        v = QVBoxLayout(dlg)
+        v.addWidget(QLabel("Edit the preset as JSON (e.g. {\"name\":\"My Preset\", \"strength\": 0.8})"))
+        edit = QPlainTextEdit()
+        try:
+            seed = json.dumps(current, ensure_ascii=False, indent=2)
+        except Exception:
+            seed = json.dumps(current if current is not None else {}, ensure_ascii=False, indent=2)
+        edit.setPlainText(seed)
+        v.addWidget(edit, 1)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        v.addWidget(buttons)
+        buttons.accepted.connect(dlg.accept); buttons.rejected.connect(dlg.reject)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return current, False
+        txt = edit.toPlainText().strip()
+        if not txt:
+            return None, True
+        try:
+            val = json.loads(txt)
+        except Exception as e:
+            QMessageBox.warning(self, "Invalid JSON", f"Could not parse JSON:\n{e}")
+            return current, False
+        return val, True
 
     # ---------- DnD into the PANEL (add steps) ----------
     def dragEnterEvent(self, e):

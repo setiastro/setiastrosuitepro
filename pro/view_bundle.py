@@ -8,9 +8,9 @@ from PyQt6.QtCore import Qt, QSettings, QByteArray, QMimeData, QSize, QPoint, QE
 from PyQt6.QtWidgets import (
     QDialog, QWidget, QHBoxLayout, QVBoxLayout, QListWidget, QListWidgetItem,QApplication,
     QPushButton, QSplitter, QMessageBox, QLabel, QAbstractItemView, QDialogButtonBox,
-    QCheckBox, QFrame, QSizePolicy
+    QCheckBox, QFrame, QSizePolicy, QMenu, QInputDialog
 )
-from PyQt6.QtGui import QDrag, QCloseEvent, QCursor
+from PyQt6.QtGui import QDrag, QCloseEvent, QCursor, QShortcut, QKeySequence
 
 from pro.dnd_mime import MIME_CMD, MIME_VIEWSTATE
 
@@ -370,6 +370,12 @@ class ViewBundleDialog(QDialog):
         # UI
         self.list = QListWidget()
         self.list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        # rename UX
+        self.list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.list.customContextMenuRequested.connect(self._bundles_context_menu)
+        self.list.itemDoubleClicked.connect(lambda _it: self._rename_bundle())
+        QShortcut(QKeySequence("F2"), self.list, activated=self._rename_bundle)
+
 
         self.docs = QListWidget()
         self.docs.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -539,6 +545,41 @@ class ViewBundleDialog(QDialog):
         for b in self._bundles:
             it = QListWidgetItem(b.get("name", "Bundle"))
             self.list.addItem(it)
+        # keep selection reasonable
+        if self.list.count() and self.list.currentRow() < 0:
+            self.list.setCurrentRow(0)
+
+    # ---------- rename helpers ----------
+    def _rename_bundle(self):
+        i = self._current_index()
+        if i < 0:
+            return
+        cur = self._bundles[i]
+        new_name, ok = QInputDialog.getText(self, "Rename Bundle",
+                                            "New name:", text=cur.get("name","Bundle"))
+        if not ok:
+            return
+        self._rename_current_in_list(new_name)
+
+    def _bundles_context_menu(self, pos):
+        if self.list.count() == 0:
+            return
+        # focus the item under cursor (so rename/dup/delete applies to it)
+        it = self.list.itemAt(pos)
+        if it:
+            self.list.setCurrentItem(it)
+
+        m = QMenu(self)
+        act_ren = m.addAction("Rename…")
+        act_dup = m.addAction("Duplicate")
+        act_del = m.addAction("Delete")
+        chosen = m.exec(self.list.mapToGlobal(pos))
+        if chosen is act_ren:
+            self._rename_bundle()
+        elif chosen is act_dup:
+            self._dup_bundle()
+        elif chosen is act_del:
+            self._del_bundle()
 
     def _refresh_docs_list_if_current_uuid(self, bundle_uuid: str):
         if bundle_uuid and bundle_uuid == self._current_uuid():
