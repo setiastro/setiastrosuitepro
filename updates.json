@@ -1,9 +1,9 @@
 {
-  "version": "1.1.1",
+  "version": "1.1.2",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.1.1/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.1.1/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.1.1/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.1.2/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.1.2/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.1.2/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.1.1 View and Function Bundles! Automate your processes on your views! Stacking suite new features, Gradient Scale Correction, CFA Drizzle, and more. Lots of niceties throughout all of SASpro. Find some hidden gems!"
+  "notes": "Seti Astro Suite Pro V1.1.2 Rename View and Function Bundles. Right click any step in a Function Bundle to adjust the preset values. SFCC Major Bug Fix. Minor bug fixes for save, panel's hiding, upgraded the stacking status window to a dockable panel to solve a bunch of issues,and a few others."
 }
