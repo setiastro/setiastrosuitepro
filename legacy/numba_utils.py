@@ -1474,91 +1474,120 @@ def compute_noise(image):
 
 
 def compute_star_count(image):
-    """ Uses fast star detection instead of DAOStarFinder. """
+    """Fast star detection with robust pre-stretch for linear data."""
     return fast_star_count(image)
 
-
 def fast_star_count(
-    image, 
-    blur_size=15,      # Smaller blur preserves faint/small stars
-    threshold_factor=0.8, 
-    min_area=2, 
-    max_area=5000
+    image,
+    blur_size=None,           # adaptive if None
+    threshold_factor=0.8,
+    min_area=None,            # adaptive if None
+    max_area=None,            # adaptive if None
+    *,
+    gamma=0.45,               # <1 brightens faint signal; 0.35–0.55 is a good range
+    p_lo=0.1,                 # robust low percentile for stretch
+    p_hi=99.8                 # robust high percentile for stretch
 ):
     """
-    Estimate star count + average eccentricity by:
-      1) Convert to 8-bit grayscale
-      2) Blur => subtract => enhance stars
-      3) Otsu's threshold * threshold_factor => final threshold
-      4) Contour detection + ellipse fit => eccentricity
-    Returns (star_count, avg_ecc).
+    Estimate star count + avg eccentricity from a 2D float/uint8 image.
+    Now does robust percentile stretch + gamma in float BEFORE 8-bit/Otsu.
     """
-
-    # 1) Convert to grayscale if needed
+    # 1) Ensure 2D grayscale (stay float32)
     if image.ndim == 3:
-        image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-
-    # 2) Normalize to 8-bit
-    img_min, img_max = image.min(), image.max()
-    if img_max > img_min:
-        image_8u = (255.0 * (image - img_min) / (img_max - img_min)).astype(np.uint8)
+        # RGB -> luma
+        r, g, b = image[..., 0], image[..., 1], image[..., 2]
+        img = (0.2126 * r + 0.7152 * g + 0.0722 * b).astype(np.float32, copy=False)
     else:
-        return 0, 0.0  # All pixels identical => no stars
+        img = np.asarray(image, dtype=np.float32, order="C")
 
-    # 3) Blur + subtract => enhance
+    H, W = img.shape[:2]
+    short_side = max(1, min(H, W))
+
+    # Adaptive params
+    if blur_size is None:
+        k = max(3, int(round(short_side / 80)))
+        blur_size = k if (k % 2 == 1) else (k + 1)
+    if min_area is None:
+        min_area = 1
+    if max_area is None:
+        max_area = max(100, int(0.01 * H * W))
+
+    # 2) Robust percentile stretch in float (no 8-bit yet)
+    #    This lifts the sky background and pulls faint stars up before thresholding.
+    lo = float(np.percentile(img, p_lo))
+    hi = float(np.percentile(img, p_hi))
+    if not (hi > lo):
+        lo, hi = float(img.min()), float(img.max())
+        if not (hi > lo):
+            return 0, 0.0
+
+    norm = (img - lo) / max(1e-8, (hi - lo))
+    norm = np.clip(norm, 0.0, 1.0)
+
+    # 3) Gamma (<1 brightens low end)
+    if gamma and gamma > 0:
+        norm = np.power(norm, gamma, dtype=np.float32)
+
+    # 4) Convert to 8-bit ONLY after stretch/gamma (preserves faint structure)
+    image_8u = (norm * 255.0).astype(np.uint8)
+
+    # 5) Blur + subtract (unsharp-ish)
     blurred = cv2.GaussianBlur(image_8u, (blur_size, blur_size), 0)
-    subtracted = cv2.absdiff(image_8u, blurred)
+    sub = cv2.absdiff(image_8u, blurred)
 
-    # 4) Otsu's threshold on 'subtracted'
-    otsu_thresh_val, _ = cv2.threshold(subtracted, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
-    # Scale it down if we want to detect more/fainter stars
-    final_thresh_val = int(otsu_thresh_val * threshold_factor)
-    if final_thresh_val < 2:
-        final_thresh_val = 2  # avoid going below 2
+    # 6) Otsu + threshold_factor
+    otsu, _ = cv2.threshold(sub, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+    thr = max(2, int(otsu * threshold_factor))
+    _, mask = cv2.threshold(sub, thr, 255, cv2.THRESH_BINARY)
 
-    # 5) Apply threshold
-    _, thresh = cv2.threshold(subtracted, final_thresh_val, 255, cv2.THRESH_BINARY)
+    # 7) Morph open *only* on larger frames (tiny frames lose stars otherwise)
+    if short_side >= 600:
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
 
-    # 6) (Optional) Morphological opening to remove single-pixel noise
-    #    Adjust kernel size if you get too many/few stars
-    kernel = np.ones((2, 2), np.uint8)
-    thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
+    # 8) Contours → area filter → eccentricity
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    # 7) Find contours
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    # 8) Filter contours by area, fit ellipse => compute eccentricity
     star_count = 0
     ecc_values = []
     for c in contours:
         area = cv2.contourArea(c)
         if area < min_area or area > max_area:
             continue
-
         if len(c) < 5:
-            continue  # Need >=5 points to fit an ellipse
-
-        # Fit ellipse
-        ellipse = cv2.fitEllipse(c)
-        (cx, cy), (major_axis, minor_axis), angle = ellipse
-
-        # major_axis >= minor_axis
-        if minor_axis > major_axis:
-            major_axis, minor_axis = minor_axis, major_axis
-
-        if major_axis > 0:
-            ecc = math.sqrt(1.0 - (minor_axis**2 / major_axis**2))
+            continue
+        (_, _), (a, b), _ = cv2.fitEllipse(c)
+        if b > a: a, b = b, a
+        if a > 0:
+            e = math.sqrt(max(0.0, 1.0 - (b * b) / (a * a)))
         else:
-            ecc = 0.0
-
-        ecc_values.append(ecc)
+            e = 0.0
+        ecc_values.append(e)
         star_count += 1
 
-    if star_count > 0:
-        avg_ecc = float(np.mean(ecc_values))
-    else:
-        avg_ecc = 0.0
+    # 9) Gentle fallback if too few detections: lower threshold & smaller blur
+    if star_count < 5:
+        k2 = max(3, (blur_size // 2) | 1)
+        blurred2 = cv2.GaussianBlur(image_8u, (k2, k2), 0)
+        sub2 = cv2.absdiff(image_8u, blurred2)
+        otsu2, _ = cv2.threshold(sub2, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+        thr2 = max(2, int(otsu2 * 0.6))              # more permissive
+        _, mask2 = cv2.threshold(sub2, thr2, 255, cv2.THRESH_BINARY)
+        contours2, _ = cv2.findContours(mask2, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        star_count = 0
+        ecc_values = []
+        for c in contours2:
+            area = cv2.contourArea(c)
+            if area < 1 or area > max_area:
+                continue
+            if len(c) < 5:
+                continue
+            (_, _), (a, b), _ = cv2.fitEllipse(c)
+            if b > a: a, b = b, a
+            e = math.sqrt(max(0.0, 1.0 - (b * b) / (a * a))) if a > 0 else 0.0
+            ecc_values.append(e)
+            star_count += 1
 
+    avg_ecc = float(np.mean(ecc_values)) if star_count > 0 else 0.0
     return star_count, avg_ecc
 
 @njit(parallel=True, fastmath=True)
@@ -2712,6 +2741,243 @@ def drizzle_deposit_numba_footprint(
 
     return drizzle_buffer, coverage_buffer
 
+@njit(fastmath=True)
+def _drizzle_kernel_weights(kernel_code: int, Xo: float, Yo: float,
+                            min_x: int, max_x: int, min_y: int, max_y: int,
+                            sigma_out: float,
+                            weights_out):  # preallocated 2D view (max_y-min_y+1, max_x-min_x+1)
+    """
+    Fill `weights_out` with unnormalized kernel weights centered at (Xo,Yo).
+    Returns (sum_w, count_used).
+    """
+    H = max_y - min_y + 1
+    W = max_x - min_x + 1
+    r2_limit = sigma_out * sigma_out  # for circle, sigma_out := radius
+
+    sum_w = 0.0
+    cnt = 0
+    for j in range(H):
+        oy = min_y + j
+        cy = (oy + 0.5) - Yo  # pixel-center distance
+        for i in range(W):
+            ox = min_x + i
+            cx = (ox + 0.5) - Xo
+            w = 0.0
+
+            if kernel_code == 0:
+                # square = uniform weight in the bounding box
+                w = 1.0
+            elif kernel_code == 1:
+                # circle = uniform weight if inside radius
+                if (cx*cx + cy*cy) <= r2_limit:
+                    w = 1.0
+            else:  # gaussian
+                # gaussian centered at (Xo,Yo) with sigma_out
+                z = (cx*cx + cy*cy) / (2.0 * sigma_out * sigma_out)
+                # drop tiny far-away contributions to keep perf ok
+                if z <= 9.0:  # ~3σ
+                    w = math.exp(-z)
+
+            weights_out[j, i] = w
+            sum_w += w
+            if w > 0.0:
+                cnt += 1
+
+    return sum_w, cnt
+
+
+@njit(fastmath=True)
+def drizzle_deposit_numba_kernel_mono(
+    img_data, transform, drizzle_buffer, coverage_buffer,
+    drizzle_factor: float, drop_shrink: float, frame_weight: float,
+    kernel_code: int, gaussian_sigma_or_radius: float
+):
+    H, W = img_data.shape
+    outH, outW = drizzle_buffer.shape
+
+    # build 3x3
+    M = np.zeros((3, 3), dtype=np.float32)
+    M[0,0], M[0,1], M[0,2] = transform[0,0], transform[0,1], transform[0,2]
+    M[1,0], M[1,1], M[1,2] = transform[1,0], transform[1,1], transform[1,2]
+    M[2,2] = 1.0
+
+    v = np.zeros(3, dtype=np.float32); v[2] = 1.0
+
+    # interpret width parameter:
+    # - square/circle: radius = drop_shrink * 0.5   (pixfrac-like)
+    # - gaussian: sigma_out = max(gaussian_sigma_or_radius, drop_shrink * 0.5)
+    radius = drop_shrink * 0.5
+    sigma_out = gaussian_sigma_or_radius if kernel_code == 2 else radius
+    if sigma_out < 1e-6:
+        sigma_out = 1e-6
+
+    # temp weights tile (safely sized later per pixel)
+    for y in range(H):
+        for x in range(W):
+            val = img_data[y, x]
+            if val == 0.0:
+                continue
+
+            v[0] = x; v[1] = y
+            out_coords = M @ v
+            Xo = out_coords[0] * drizzle_factor
+            Yo = out_coords[1] * drizzle_factor
+
+            # choose bounds
+            if kernel_code == 2:
+                r = int(math.ceil(3.0 * sigma_out))
+            else:
+                r = int(math.ceil(radius))
+
+            if r <= 0:
+                # degenerate → nearest pixel
+                ox = int(Xo); oy = int(Yo)
+                if 0 <= ox < outW and 0 <= oy < outH:
+                    drizzle_buffer[oy, ox] += val * frame_weight
+                    coverage_buffer[oy, ox] += frame_weight
+                continue
+
+            min_x = int(math.floor(Xo - r))
+            max_x = int(math.floor(Xo + r))
+            min_y = int(math.floor(Yo - r))
+            max_y = int(math.floor(Yo + r))
+            if max_x < 0 or min_x >= outW or max_y < 0 or min_y >= outH:
+                continue
+            if min_x < 0: min_x = 0
+            if min_y < 0: min_y = 0
+            if max_x >= outW: max_x = outW - 1
+            if max_y >= outH: max_y = outH - 1
+
+            Ht = max_y - min_y + 1
+            Wt = max_x - min_x + 1
+            if Ht <= 0 or Wt <= 0:
+                continue
+
+            # allocate small tile (Numba-friendly: fixed-size via stack array)
+            weights = np.zeros((Ht, Wt), dtype=np.float32)
+            sum_w, cnt = _drizzle_kernel_weights(kernel_code, Xo, Yo,
+                                                 min_x, max_x, min_y, max_y,
+                                                 sigma_out, weights)
+            if cnt == 0 or sum_w <= 1e-12:
+                # fallback to nearest
+                ox = int(Xo); oy = int(Yo)
+                if 0 <= ox < outW and 0 <= oy < outH:
+                    drizzle_buffer[oy, ox] += val * frame_weight
+                    coverage_buffer[oy, ox] += frame_weight
+                continue
+
+            scale = (val * frame_weight) / sum_w
+            cov_scale = frame_weight / sum_w
+            for j in range(Ht):
+                oy = min_y + j
+                for i in range(Wt):
+                    w = weights[j, i]
+                    if w > 0.0:
+                        ox = min_x + i
+                        drizzle_buffer[oy, ox] += w * scale
+                        coverage_buffer[oy, ox] += w * cov_scale
+
+    return drizzle_buffer, coverage_buffer
+
+
+@njit(fastmath=True)
+def drizzle_deposit_color_kernel(
+    img_data, transform, drizzle_buffer, coverage_buffer,
+    drizzle_factor: float, drop_shrink: float, frame_weight: float,
+    kernel_code: int, gaussian_sigma_or_radius: float
+):
+    H, W, C = img_data.shape
+    outH, outW, _ = drizzle_buffer.shape
+
+    M = np.zeros((3, 3), dtype=np.float32)
+    M[0,0], M[0,1], M[0,2] = transform[0,0], transform[0,1], transform[0,2]
+    M[1,0], M[1,1], M[1,2] = transform[1,0], transform[1,1], transform[1,2]
+    M[2,2] = 1.0
+
+    v = np.zeros(3, dtype=np.float32); v[2] = 1.0
+
+    radius = drop_shrink * 0.5
+    sigma_out = gaussian_sigma_or_radius if kernel_code == 2 else radius
+    if sigma_out < 1e-6:
+        sigma_out = 1e-6
+
+    for y in range(H):
+        for x in range(W):
+            # (minor optimization) skip all-zero triplets
+            nz = False
+            for cc in range(C):
+                if img_data[y, x, cc] != 0.0:
+                    nz = True; break
+            if not nz:
+                continue
+
+            v[0] = x; v[1] = y
+            out_coords = M @ v
+            Xo = out_coords[0] * drizzle_factor
+            Yo = out_coords[1] * drizzle_factor
+
+            if kernel_code == 2:
+                r = int(math.ceil(3.0 * sigma_out))
+            else:
+                r = int(math.ceil(radius))
+
+            if r <= 0:
+                ox = int(Xo); oy = int(Yo)
+                if 0 <= ox < outW and 0 <= oy < outH:
+                    for c in range(C):
+                        val = img_data[y, x, c]
+                        if val != 0.0:
+                            drizzle_buffer[oy, ox, c] += val * frame_weight
+                            coverage_buffer[oy, ox, c] += frame_weight
+                continue
+
+            min_x = int(math.floor(Xo - r))
+            max_x = int(math.floor(Xo + r))
+            min_y = int(math.floor(Yo - r))
+            max_y = int(math.floor(Yo + r))
+            if max_x < 0 or min_x >= outW or max_y < 0 or min_y >= outH:
+                continue
+            if min_x < 0: min_x = 0
+            if min_y < 0: min_y = 0
+            if max_x >= outW: max_x = outW - 1
+            if max_y >= outH: max_y = outH - 1
+
+            Ht = max_y - min_y + 1
+            Wt = max_x - min_x + 1
+            if Ht <= 0 or Wt <= 0:
+                continue
+
+            weights = np.zeros((Ht, Wt), dtype=np.float32)
+            sum_w, cnt = _drizzle_kernel_weights(kernel_code, Xo, Yo,
+                                                 min_x, max_x, min_y, max_y,
+                                                 sigma_out, weights)
+            if cnt == 0 or sum_w <= 1e-12:
+                ox = int(Xo); oy = int(Yo)
+                if 0 <= ox < outW and 0 <= oy < outH:
+                    for c in range(C):
+                        val = img_data[y, x, c]
+                        if val != 0.0:
+                            drizzle_buffer[oy, ox, c] += val * frame_weight
+                            coverage_buffer[oy, ox, c] += frame_weight
+                continue
+
+            inv_sum = 1.0 / sum_w
+            for c in range(C):
+                val = img_data[y, x, c]
+                if val == 0.0:
+                    continue
+                scale = (val * frame_weight) * inv_sum
+                cov_scale = frame_weight * inv_sum
+                for j in range(Ht):
+                    oy = min_y + j
+                    for i in range(Wt):
+                        w = weights[j, i]
+                        if w > 0.0:
+                            ox = min_x + i
+                            drizzle_buffer[oy, ox, c] += w * scale
+                            coverage_buffer[oy, ox, c] += w * cov_scale
+
+    return drizzle_buffer, coverage_buffer
 
 @njit(parallel=True)
 def finalize_drizzle_2d(drizzle_buffer, coverage_buffer, final_out):
