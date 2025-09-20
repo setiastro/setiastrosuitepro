@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import uuid
 from typing import Iterable, Optional
-
+import sys
 from PyQt6.QtCore import Qt, QSettings, QByteArray, QMimeData, QSize, QPoint, QEventLoop
 from PyQt6.QtWidgets import (
     QDialog, QWidget, QHBoxLayout, QVBoxLayout, QListWidget, QListWidgetItem,QApplication,
@@ -14,6 +14,16 @@ from PyQt6.QtGui import QDrag, QCloseEvent, QCursor, QShortcut, QKeySequence
 
 from pro.dnd_mime import MIME_CMD, MIME_VIEWSTATE
 
+def _pin_on_top_mac(win: QDialog):
+    if sys.platform == "darwin":
+        # Float above normal windows, behave like a palette/tool window
+        win.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        win.setWindowFlag(Qt.WindowType.Tool, True)
+        # Keep showing even when app deactivates (mac-only attribute)
+        try:
+            win.setAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow, True)
+        except Exception:
+            pass
 
 # ---------- helpers ----------
 def _find_main_window(w: QWidget):
@@ -357,6 +367,7 @@ class ViewBundleDialog(QDialog):
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
+        _pin_on_top_mac(self)
         self.setWindowTitle("View Bundles")
         self.setModal(False)
         self.resize(900, 540)

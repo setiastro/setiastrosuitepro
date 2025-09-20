@@ -1806,6 +1806,40 @@ class StackingSuiteDialog(QDialog):
 
         right_col.addWidget(gb_normgrad)
 
+        gb_drizzle = QGroupBox("Drizzle")
+        fl_dz = QFormLayout(gb_drizzle)
+
+        self.drizzle_kernel_combo = QComboBox()
+        self.drizzle_kernel_combo.addItems(["Square (pixfrac)", "Circular (disk)", "Gaussian"])
+        # restore
+        _saved_k = self.settings.value("stacking/drizzle_kernel", "square").lower()
+        if _saved_k.startswith("gauss"): self.drizzle_kernel_combo.setCurrentIndex(2)
+        elif _saved_k.startswith("circ"): self.drizzle_kernel_combo.setCurrentIndex(1)
+        else: self.drizzle_kernel_combo.setCurrentIndex(0)
+        fl_dz.addRow("Kernel:", self.drizzle_kernel_combo)
+
+        self.drop_shrink_spin = QDoubleSpinBox()
+        self.drop_shrink_spin.setRange(0.05, 2.0)
+        self.drop_shrink_spin.setDecimals(3)
+        self.drop_shrink_spin.setSingleStep(0.05)
+        self.drop_shrink_spin.setValue(self.settings.value("stacking/drop_shrink", 0.65, type=float))
+        fl_dz.addRow("Kernel width:", self.drop_shrink_spin)
+
+        # Optional: a separate σ for Gaussian (if you want it distinct)
+        self.gauss_sigma_spin = QDoubleSpinBox()
+        self.gauss_sigma_spin.setRange(0.05, 3.0)
+        self.gauss_sigma_spin.setDecimals(3)
+        self.gauss_sigma_spin.setSingleStep(0.05)
+        self.gauss_sigma_spin.setValue(self.settings.value("stacking/drizzle_gauss_sigma",
+                                                        self.drop_shrink_spin.value()*0.5, type=float))
+        fl_dz.addRow("Gaussian σ (px):", self.gauss_sigma_spin)
+
+        def _toggle_gauss_sigma():
+            self.gauss_sigma_spin.setEnabled(self.drizzle_kernel_combo.currentIndex()==2)
+        _toggle_gauss_sigma()
+        self.drizzle_kernel_combo.currentIndexChanged.connect(lambda _ : _toggle_gauss_sigma())
+
+        right_col.addWidget(gb_drizzle)
 
         # --- Rejection ---
         gb_rej = QGroupBox("Rejection")
@@ -1987,6 +2021,14 @@ class StackingSuiteDialog(QDialog):
         passes = 1 if self.align_passes_combo.currentIndex() == 0 else 3
         self.settings.setValue("stacking/refinement_passes", passes)
         self.settings.setValue("stacking/shift_tolerance", self.shift_tol_spin.value())
+
+        self.settings.setValue("stacking/drop_shrink", float(self.drop_shrink_spin.value()))
+
+        kidx = self.drizzle_kernel_combo.currentIndex()
+        kname = "square" if kidx==0 else ("circular" if kidx==1 else "gaussian")
+        self.settings.setValue("stacking/drizzle_kernel", kname)
+
+        self.settings.setValue("stacking/drizzle_gauss_sigma", float(self.gauss_sigma_spin.value()))
 
         # --- precision (internal dtype) ---
         chosen = self.precision_combo.currentText()  # "32-bit float" or "64-bit float"
@@ -5973,23 +6015,45 @@ class StackingSuiteDialog(QDialog):
         # ─────────────────────────────────────────────────────────────────────
         def mono_preview_for_stats(img: np.ndarray, hdr) -> np.ndarray:
             """
-            2D float32 preview without full demosaic:
-            - If color (HxWx3): return luma.
-            - If raw CFA 2D with BAYERPAT: 2x2 superpixel average.
-            - Else: return mono as float32.
+            Returns a 2D float32 preview for measurement:
+            • RGB → luma → 2×2 superpixel average
+            • CFA (2D with BAYERPAT) → 2×2 superpixel average
+            • Mono → 2×2 superpixel average
+            Always returns float32 and trims odd edges to keep even dims.
             """
             if img is None:
                 return None
-            if img.ndim == 3 and img.shape[-1] == 3:
-                img = img.astype(np.float32, copy=False)
-                r = img[..., 0]; g = img[..., 1]; b = img[..., 2]
-                return 0.2126 * r + 0.7152 * g + 0.0722 * b
-            if hdr and hdr.get('BAYERPAT') and not hdr.get('SPLITDB', False) and img.ndim == 2:
-                h, w = img.shape
+
+            def _superpixel2x2(x: np.ndarray) -> np.ndarray:
+                h, w = x.shape[:2]
                 h2, w2 = h - (h % 2), w - (w % 2)
-                cfa = img[:h2, :w2].astype(np.float32, copy=False)
-                return (cfa[0:h2:2, 0:w2:2] + cfa[0:h2:2, 1:w2:2] +
-                        cfa[1:h2:2, 0:w2:2] + cfa[1:h2:2, 1:w2:2]) * 0.25
+                if h2 <= 0 or w2 <= 0:
+                    return x.astype(np.float32, copy=False)
+                x = x[:h2, :w2].astype(np.float32, copy=False)
+                if x.ndim == 2:
+                    # 2D mono/CFA
+                    return (x[0:h2:2, 0:w2:2] + x[0:h2:2, 1:w2:2] +
+                            x[1:h2:2, 0:w2:2] + x[1:h2:2, 1:w2:2]) * 0.25
+                else:
+                    # 3D: bin on luma, not per-channel
+                    r = x[..., 0]; g = x[..., 1]; b = x[..., 2]
+                    luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
+                    return (luma[0:h2:2, 0:w2:2] + luma[0:h2:2, 1:w2:2] +
+                            luma[1:h2:2, 0:w2:2] + luma[1:h2:2, 1:w2:2]) * 0.25
+
+            # RGB
+            if img.ndim == 3 and img.shape[-1] == 3:
+                return _superpixel2x2(img)
+
+            # CFA hinted by header (keep simple: any BAYERPAT means mosaic)
+            if hdr and hdr.get('BAYERPAT') and img.ndim == 2:
+                return _superpixel2x2(img)
+
+            # Mono (or already debayered to 2D)
+            if img.ndim == 2:
+                return _superpixel2x2(img)
+
+            # Fallback
             return img.astype(np.float32, copy=False)
 
         def chunk_list(lst, size):
@@ -7485,7 +7549,7 @@ class StackingSuiteDialog(QDialog):
         self,
         group_key,
         file_list,
-        transforms_dict,   # kept for API compatibility; transforms reloaded from disk
+        transforms_dict,
         frame_weights,
         scale_factor=2.0,
         drop_shrink=0.65,
@@ -7495,11 +7559,19 @@ class StackingSuiteDialog(QDialog):
         rect_override=None,
         status_cb=None
     ):
-        """
-        Drizzle a single group. Skips only per-file rejected pixels.
-        Designed to run in a worker thread (no UI calls).
-        """
         log = status_cb or (lambda *_: None)
+
+        # --- kernel config from settings ---
+        kernel_name = self.settings.value("stacking/drizzle_kernel", "square", type=str).lower()
+        gauss_sigma = self.settings.value(
+            "stacking/drizzle_gauss_sigma", float(drop_shrink) * 0.5, type=float
+        )
+        if kernel_name.startswith("gauss"):
+            _kcode = 2
+        elif kernel_name.startswith("circ"):
+            _kcode = 1
+        else:
+            _kcode = 0  # square
 
         total_rej = sum(len(v) for v in (rejection_map or {}).values())
         log(f"🔭 Drizzle stacking for group '{group_key}' with {total_rej} total rejected pixels.")
@@ -7516,6 +7588,7 @@ class StackingSuiteDialog(QDialog):
         new_transforms_dict = self.load_alignment_matrices_custom(transforms_path)
         log(f"✅ Loaded {len(new_transforms_dict)} transforms from disk for drizzle.")
 
+        # --- establish geometry + is_mono before choosing depositor ---
         first_file = file_list[0]
         first_img, hdr, _, _ = load_image(first_file)
         if first_img is None:
@@ -7530,20 +7603,25 @@ class StackingSuiteDialog(QDialog):
             is_mono = False
             h, w, c = first_img.shape
 
-        # Choose depositor
-        if drop_shrink >= 0.99:
+        # --- choose depositor ONCE (and log it) ---
+        if _kcode == 0 and drop_shrink >= 0.99:
+            # square + pixfrac≈1 → naive “one-to-one” deposit
             deposit_func = drizzle_deposit_numba_naive if is_mono else drizzle_deposit_color_naive
-            log(f"Using naive drizzle deposit ({'mono' if is_mono else 'color'}).")
+            kinf = "naive (square, pixfrac≈1)"
         else:
-            deposit_func = drizzle_deposit_numba_footprint if is_mono else drizzle_deposit_color_footprint
-            log(f"Using footprint drizzle deposit ({'mono' if is_mono else 'color'}).")
+            # Any other case → kernelized path (square/circular/gaussian)
+            deposit_func = drizzle_deposit_numba_kernel_mono if is_mono else drizzle_deposit_color_kernel
+            kinf = ["square", "circular", "gaussian"][_kcode]
+        log(f"Using {kinf} kernel drizzle ({'mono' if is_mono else 'color'}).")
 
+        # --- allocate buffers ---
         out_h = int(h * scale_factor)
         out_w = int(w * scale_factor)
         drizzle_buffer  = np.zeros((out_h, out_w) if is_mono else (out_h, out_w, c), dtype=self._dtype())
         coverage_buffer = np.zeros_like(drizzle_buffer, dtype=self._dtype())
         finalize_func   = finalize_drizzle_2d if is_mono else finalize_drizzle_3d
 
+        # --- main loop ---
         for aligned_file in file_list:
             aligned_base = os.path.basename(aligned_file)
             raw_base = aligned_base.replace("_n_r.fit", "_n.fit") if aligned_base.endswith("_n_r.fit") else aligned_base
@@ -7561,31 +7639,42 @@ class StackingSuiteDialog(QDialog):
                 continue
 
             log(f"🧩 Drizzling (raw): {raw_base}")
-            log(
-                f"    Matrix: [[{transform[0,0]:.4f}, {transform[0,1]:.4f}, {transform[0,2]:.4f}], "
-                f"[{transform[1,0]:.4f}, {transform[1,1]:.4f}, {transform[1,2]:.4f}]]"
-            )
+            log(f"    Matrix: [[{transform[0,0]:.4f}, {transform[0,1]:.4f}, {transform[0,2]:.4f}], "
+                f"[{transform[1,0]:.4f}, {transform[1,1]:.4f}, {transform[1,2]:.4f}]]")
 
             weight = frame_weights.get(aligned_file, 1.0)
             if transform.dtype != np.float32:
                 transform = transform.astype(np.float32)
 
+            # zero out rejected raw pixels
             coords_for_this_file = rejection_map.get(aligned_file, []) if rejection_map else []
-
             if coords_for_this_file:
                 inv_transform = self.invert_affine_transform(transform)
                 for (x_r, y_r) in coords_for_this_file:
                     x_raw, y_raw = self.apply_affine_transform_point(inv_transform, x_r, y_r)
-                    x_raw = int(round(x_raw))
-                    y_raw = int(round(y_raw))
+                    x_raw = int(round(x_raw)); y_raw = int(round(y_raw))
                     if 0 <= x_raw < raw_img_data.shape[1] and 0 <= y_raw < raw_img_data.shape[0]:
                         raw_img_data[y_raw, x_raw] = 0.0
 
-            drizzle_buffer, coverage_buffer = deposit_func(
-                raw_img_data, transform, drizzle_buffer, coverage_buffer,
-                scale_factor, drop_shrink, weight
-            )
+            # call with correct signature for the chosen function
+            if deposit_func is drizzle_deposit_numba_naive:
+                drizzle_buffer, coverage_buffer = deposit_func(
+                    raw_img_data, transform, drizzle_buffer, coverage_buffer,
+                    scale_factor, weight
+                )
+            elif deposit_func is drizzle_deposit_color_naive:
+                drizzle_buffer, coverage_buffer = deposit_func(
+                    raw_img_data, transform, drizzle_buffer, coverage_buffer,
+                    scale_factor, drop_shrink, weight
+                )
+            else:
+                # kernelized (square/circular/gaussian)
+                drizzle_buffer, coverage_buffer = deposit_func(
+                    raw_img_data, transform, drizzle_buffer, coverage_buffer,
+                    scale_factor, drop_shrink, weight, _kcode, float(gauss_sigma)
+                )
 
+        # --- finalize, save, optional autocrop (unchanged below) ---
         final_drizzle = np.zeros_like(drizzle_buffer, dtype=np.float32)
         final_drizzle = finalize_func(drizzle_buffer, coverage_buffer, final_drizzle)
 

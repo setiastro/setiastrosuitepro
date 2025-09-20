@@ -1,3 +1,4 @@
+#pro.star_alignment.py
 from __future__ import annotations
 
 import os, math, random, sys
@@ -54,6 +55,243 @@ from pro.abe import _generate_sample_points as abe_generate_sample_points
 # ---------------------------------------------------------------------
 # Small helpers to work with the *active view/document* (no slots)
 # ---------------------------------------------------------------------
+
+
+# ---------- Shortcut / Headless integration ----------
+
+STAR_ALIGN_CID = "star_alignment"
+
+def _find_main_window_from_child(w):
+    p = w
+    while p is not None and not (hasattr(p, "doc_manager") or hasattr(p, "docman")):
+        p = getattr(p, "parent", lambda: None)()
+    return p
+
+def _resolve_doc_and_sw_by_ptr(mw, doc_ptr: int):
+    # Prefer helper if app exposes one
+    if hasattr(mw, "_find_doc_by_id"):
+        try:
+            d, sw = mw._find_doc_by_id(int(doc_ptr))
+            if d is not None:
+                return d, sw
+        except Exception:
+            pass
+    # Fallback: scan MDI
+    try:
+        for sw in mw.mdi.subWindowList():
+            vw = sw.widget()
+            d = getattr(vw, "document", None)
+            if d is not None and id(d) == int(doc_ptr):
+                return d, sw
+    except Exception:
+        pass
+    return None, None
+
+def _doc_from_sw(sw):
+    try:
+        return getattr(sw.widget(), "document", None)
+    except Exception:
+        return None
+
+def _gray2d(a):
+    return np.mean(a, axis=2) if a.ndim == 3 else a
+
+def _aa_find_transform_with_backoff_simple(tgt_gray: np.ndarray, ref_gray: np.ndarray):
+    """Fast astroalign with mild backoff (headless)."""
+    t32 = np.ascontiguousarray(tgt_gray.astype(np.float32))
+    r32 = np.ascontiguousarray(ref_gray.astype(np.float32))
+    tries = [
+        dict(detection_sigma=5,  min_area=7,  max_control_points=75),
+        dict(detection_sigma=12, min_area=9,  max_control_points=75),
+        dict(detection_sigma=20, min_area=9,  max_control_points=75),
+        dict(detection_sigma=30, min_area=11, max_control_points=75),
+    ]
+    last_exc = None
+    for kw in tries:
+        try:
+            return astroalign.find_transform(t32, r32, **kw)
+        except Exception as e:
+            last_exc = e
+            # try to expand SEP buffer if that was the issue
+            try:
+                import sep
+                if "pixel buffer full" in str(e).lower():
+                    sep.set_extract_pixstack(int(sep.get_extract_pixstack() * 2))
+            except Exception:
+                pass
+            continue
+    raise last_exc if last_exc else RuntimeError("astroalign failed")
+
+def _warp_like_ref(target_img: np.ndarray, M_2x3: np.ndarray, ref_shape_hw: tuple[int,int]) -> np.ndarray:
+    H, W = ref_shape_hw
+    if target_img.ndim == 2:
+        return cv2.warpAffine(target_img, M_2x3.astype(np.float32), (W, H),
+                              flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+    chs = [cv2.warpAffine(target_img[..., i], M_2x3.astype(np.float32), (W, H),
+                           flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+           for i in range(target_img.shape[2])]
+    return np.stack(chs, axis=2)
+
+def run_star_alignment_headless(mw, target_sw, preset: dict) -> bool:
+    """
+    Headless align the TARGET view (target_sw) to a chosen REFERENCE, as per preset.
+    Preset schema (all optional except a reference):
+      {
+        "reference": {"type":"view_ptr","doc_ptr":123456}
+                     | {"type":"view_name","name":"Some View"}
+                     | {"type":"active"}
+                     | {"type":"file","path":"/abs/path/file.fit"}
+        "overwrite": false,          # False => create new view
+        "downsample": 2,             # 1,2,3,... speed vs precision
+        "title_suffix": "Aligned",   # appended to new view title (if creating)
+      }
+    """
+    try:
+        # ---------- resolve target doc & image ----------
+        target_doc = _doc_from_sw(target_sw) if target_sw else None
+        if target_doc is None or getattr(target_doc, "image", None) is None:
+            return False
+        tgt_img = np.asarray(target_doc.image, dtype=np.float32)
+
+        # ---------- resolve reference image ----------
+        ref_spec = (preset or {}).get("reference", {"type": "active"})
+        ref_type = (ref_spec or {}).get("type", "active")
+        ref_img = None
+        ref_name = "Reference"
+
+        if ref_type == "view_ptr":
+            doc_ptr = int(ref_spec.get("doc_ptr", 0))
+            ref_doc, _ = _resolve_doc_and_sw_by_ptr(mw, doc_ptr)
+            if ref_doc is None or getattr(ref_doc, "image", None) is None:
+                raise RuntimeError("reference view_ptr not found or has no image")
+            ref_img = np.asarray(ref_doc.image, dtype=np.float32)
+            # nice name
+            try:
+                ref_name = ref_doc.display_name() if callable(getattr(ref_doc, "display_name", None)) else (getattr(ref_doc, "title", None) or "Reference")
+            except Exception:
+                pass
+
+        elif ref_type == "view_name":
+            wanted = str(ref_spec.get("name", "")).strip().lower()
+            if not wanted:
+                raise RuntimeError("reference view_name missing 'name'")
+            ref_doc = None
+            if hasattr(mw, "mdi"):
+                for sw in mw.mdi.subWindowList():
+                    d = getattr(sw.widget(), "document", None)
+                    if d is None: continue
+                    t = ""
+                    try:
+                        t = d.display_name() if callable(getattr(d, "display_name", None)) else getattr(d, "title", "") or ""
+                    except Exception:
+                        pass
+                    if str(t).strip().lower() == wanted:
+                        ref_doc = d; break
+            if ref_doc is None or getattr(ref_doc, "image", None) is None:
+                raise RuntimeError(f"reference view_name '{wanted}' not found")
+            ref_img = np.asarray(ref_doc.image, dtype=np.float32)
+            ref_name = wanted
+
+        elif ref_type == "file":
+            p = ref_spec.get("path")
+            if not p or not os.path.exists(p):
+                raise RuntimeError("reference file does not exist")
+            ref_img, _, _, _ = load_image(p)
+            if ref_img is None:
+                raise RuntimeError("failed to load reference file")
+            ref_name = os.path.basename(p)
+
+        else:  # "active"
+            # fall back to the app’s active view
+            act_doc = target_doc
+            if act_doc is None:
+                return False
+            ref_img = np.asarray(act_doc.image, dtype=np.float32)
+            try:
+                ref_name = act_doc.display_name() if callable(getattr(act_doc, "display_name", None)) else (getattr(act_doc, "title", None) or "Reference")
+            except Exception:
+                pass
+
+        # ---------- downsample (optional) ----------
+        ds = int(max(1, (preset or {}).get("downsample", 2)))
+        ref_gray = _gray2d(ref_img)
+        tgt_gray = _gray2d(tgt_img)
+        if ds > 1:
+            new_hw_ref = (max(1, ref_gray.shape[1] // ds), max(1, ref_gray.shape[0] // ds))
+            new_hw_tgt = (max(1, tgt_gray.shape[1] // ds), max(1, tgt_gray.shape[0] // ds))
+            ref_small = cv2.resize(ref_gray, new_hw_ref, interpolation=cv2.INTER_AREA)
+            tgt_small = cv2.resize(tgt_gray, new_hw_tgt, interpolation=cv2.INTER_AREA)
+        else:
+            ref_small, tgt_small = ref_gray, tgt_gray
+
+        # ---------- find transform ----------
+        transform_obj, _pts = _aa_find_transform_with_backoff_simple(tgt_small, ref_small)
+        M2 = transform_obj.params[0:2, :].astype(np.float32)
+        if ds > 1:
+            M2 = M2.copy()
+            M2[0, 2] *= ds
+            M2[1, 2] *= ds
+
+        # ---------- warp target like reference size ----------
+        ref_h, ref_w = ref_gray.shape[:2]
+        aligned = _warp_like_ref(tgt_img, M2, (ref_h, ref_w)).astype(np.float32, copy=False)
+
+        # ---------- overwrite or create new ----------
+        overwrite = bool((preset or {}).get("overwrite", False))
+        if overwrite:
+            # push pixels into target doc
+            if hasattr(target_doc, "set_image"):
+                target_doc.set_image(aligned, step_name=f"Star Alignment → {ref_name}")
+            elif hasattr(target_doc, "apply_numpy"):
+                target_doc.apply_numpy(aligned, step_name=f"Star Alignment → {ref_name}")
+            else:
+                target_doc.image = aligned
+            # nudge UI
+            try:
+                if hasattr(target_doc, "changed"):
+                    target_doc.changed.emit()
+            except Exception:
+                pass
+        else:
+            dm = getattr(mw, "docman", None) or getattr(mw, "doc_manager", None)
+            if dm is None:
+                raise RuntimeError("document manager not available to create a new view")
+            base_title = getattr(target_doc, "display_name", None)
+            base = base_title() if callable(base_title) else (base_title or "Image")
+            suffix = str((preset or {}).get("title_suffix", "Aligned"))
+            title = f"{base} [{suffix} → {ref_name}]"
+            meta = {
+                "step_name": "Star Alignment",
+                "description": f"Aligned to {ref_name}",
+                "is_mono": bool(aligned.ndim == 2 or (aligned.ndim == 3 and aligned.shape[2] == 1)),
+            }
+            newdoc = dm.open_array(aligned, metadata=meta, title=title)
+            if hasattr(mw, "_spawn_subwindow_for"):
+                mw._spawn_subwindow_for(newdoc)
+
+        return True
+
+    except Exception as e:
+        # You can log here if you like
+        print(f"[StarAlign headless] error: {e}")
+        return False
+
+
+def handle_shortcut(payload: dict, mw, target_sw) -> bool:
+    """
+    Entry point for MainWindow._handle_command_drop.
+    Returns True if this module handled the payload.
+    """
+    try:
+        cmd = (payload or {}).get("command_id", "")
+        if cmd != STAR_ALIGN_CID:
+            return False
+        preset = (payload or {}).get("preset", {}) or {}
+        return run_star_alignment_headless(mw, target_sw, preset)
+    except Exception as e:
+        print(f"[StarAlign shortcut] {e}")
+        return False
+
 def _fmt_doc_title(doc, widget=None) -> str:
     """
     Best-effort human title for a document/view.

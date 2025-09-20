@@ -2,7 +2,7 @@
 from __future__ import annotations
 import json
 from typing import Iterable, List
-
+import sys
 from PyQt6.QtCore import Qt, QSettings, QByteArray, QMimeData, QSize, QPoint, QEventLoop
 from PyQt6.QtWidgets import (
     QDialog, QWidget, QHBoxLayout, QVBoxLayout, QListWidget, QListWidgetItem, 
@@ -13,6 +13,17 @@ from PyQt6.QtGui import QDrag, QCloseEvent, QCursor, QShortcut, QKeySequence
 from PyQt6.QtCore import  QThread
 import time
 from pro.dnd_mime import MIME_CMD
+
+def _pin_on_top_mac(win: QDialog):
+    if sys.platform == "darwin":
+        # Float above normal windows, behave like a palette/tool window
+        win.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        win.setWindowFlag(Qt.WindowType.Tool, True)
+        # Keep showing even when app deactivates (mac-only attribute)
+        try:
+            win.setAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow, True)
+        except Exception:
+            pass
 
 # ---------- pack/unpack helpers (lazy to avoid circular imports) ----------
 def _unpack_cmd_safely(raw: bytes):
@@ -88,6 +99,7 @@ class FunctionBundleChip(QWidget):
     """
     def __init__(self, panel: "FunctionBundleDialog", name: str, bundle_key: str, parent_canvas: QWidget):
         super().__init__(parent_canvas)
+        
         self.setAcceptDrops(True)
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
@@ -240,6 +252,7 @@ class FunctionBundleDialog(QDialog):
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
+        _pin_on_top_mac(self)
         self.setWindowTitle("Function Bundles")
         self.setModal(False)
         self.resize(920, 560)

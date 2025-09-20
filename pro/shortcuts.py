@@ -18,7 +18,7 @@ from pro.linear_fit import _LinearFitPresetDialog
 
 
 try:
-    import sip
+    from PyQt6 import sip
 except Exception:
     sip = None
     
@@ -411,6 +411,19 @@ class ShortcutButton(QToolButton):
             if dlg.exec() == QDialog.DialogCode.Accepted:
                 self._save_preset(dlg.result_dict())
                 QMessageBox.information(self, "Preset saved", "Preset stored on shortcut.")
+            return
+
+        if cid == "star_align":
+            from pro.star_alignment_preset import StarAlignmentPresetDialog
+            cur = self._load_preset() or {
+                "ref_mode": "active",
+                "overwrite": False,
+                "downsample": 2
+            }
+            dlg = StarAlignmentPresetDialog(self, initial=cur)
+            if dlg.exec() == QDialog.DialogCode.Accepted:
+                self._save_preset(dlg.result_dict())
+                QMessageBox.information(self, "Preset saved", "Star Alignment preset stored on shortcut.")
             return
 
         if cid == "background_neutral":
@@ -1926,20 +1939,21 @@ class _DebayerPresetDialog(QDialog):
     def result_dict(self) -> dict:
         return {"pattern": self.combo.currentText().upper()}
 
+from pro.curves_preset import list_custom_presets, _norm_mode
+
 class _CurvesPresetDialog(QDialog):
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
         self.setWindowTitle("Curves — Preset")
         init = dict(initial or {})
 
-        # mode
+        # --- Mode ---------------------------------------------------------
         self.mode = QComboBox()
         self.mode.addItems(["K (Brightness)", "R", "G", "B", "L*", "a*", "b*", "Chroma", "Saturation"])
         want = (init.get("mode") or "K (Brightness)").strip()
-        i = self.mode.findText(want)
-        self.mode.setCurrentIndex(max(0, i))
+        self.mode.setCurrentIndex(max(0, self.mode.findText(want)))
 
-        # shape
+        # --- Shape --------------------------------------------------------
         self.shape = QComboBox()
         self.shape.addItem("Linear", "linear")
         self.shape.addItem("S-curve (mild)", "s_mild")
@@ -1951,69 +1965,144 @@ class _CurvesPresetDialog(QDialog):
         self.shape.addItem("Highlight roll-off", "rolloff_highlights")
         self.shape.addItem("Flatten contrast", "flatten")
         self.shape.addItem("Custom points", "custom")
-        j = max(0, self.shape.findData((init.get("shape") or "linear").lower()))
-        self.shape.setCurrentIndex(j)
+        self.shape.setCurrentIndex(max(0, self.shape.findData((init.get("shape") or "linear").lower())))
 
-        # amount (not used for custom)
+        # --- Amount (ignored if custom) -----------------------------------
         self.amount = QDoubleSpinBox()
-        self.amount.setRange(0.0, 1.0)
-        self.amount.setDecimals(2)
+        self.amount.setRange(0.0, 1.0); self.amount.setDecimals(2)
         self.amount.setSingleStep(0.05)
         self.amount.setValue(float(init.get("amount", 0.50)))
 
-        # custom points (normalized "x,y; x,y; ...")
+        # --- Custom points (normalized "x,y; x,y; ...") -------------------
         self.points = QLineEdit()
         self.points.setPlaceholderText("points_norm: x,y; x,y; ...  (0..1)  e.g. 0,0; 0.25,0.15; 0.75,0.85; 1,1")
         if isinstance(init.get("points_norm"), (list, tuple)) and init["points_norm"]:
-            s = "; ".join(f"{float(x):.3f},{float(y):.3f}" for x,y in init["points_norm"])
+            s = "; ".join(f"{float(x):.6g},{float(y):.6g}" for x, y in init["points_norm"])
             self.points.setText(s)
 
-        # enable/disable
-        def _update_enabled():
-            custom = (self.shape.currentData() == "custom")
-            self.points.setEnabled(custom)
-            self.amount.setEnabled(not custom)
-        self.shape.currentIndexChanged.connect(_update_enabled); _update_enabled()
+        # ===================== Custom Presets picker ======================
+        self.preset_picker = QComboBox()
+        self.btn_load = QPushButton("Load custom → fields")
 
+        # populate & enable/disable based on availability
+        self._rebuild_customs()
+        self.btn_load.clicked.connect(self._load_selected_preset_into_fields)
+
+        # wrap the load-row in a QWidget so we can hide/show the whole row
+        load_row = QHBoxLayout()
+        load_row.setContentsMargins(0, 0, 0, 0)
+        load_row.addWidget(self.btn_load)
+        self._row_custom_controls = QWidget(self)
+        self._row_custom_controls.setLayout(load_row)
+
+        # layout (use explicit labels so they can be hidden with the row)
         form = QFormLayout(self)
-        form.addRow("Mode:", self.mode)
-        form.addRow("Shape:", self.shape)
-        form.addRow("Amount (0–1):", self.amount)
-        form.addRow("Custom points:", self.points)
+        form.addRow(QLabel("Mode:", self), self.mode)
+        form.addRow(QLabel("Shape:", self), self.shape)
+        form.addRow(QLabel("Amount (0–1):", self), self.amount)
+        form.addRow(QLabel("Custom points:", self), self.points)
+
+        self._lbl_custom_picker = QLabel("Custom presets:", self)
+        form.addRow(self._lbl_custom_picker, self.preset_picker)
+        form.addRow(QLabel("", self), self._row_custom_controls)
 
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self)
         btns.accepted.connect(self.accept); btns.rejected.connect(self.reject)
         form.addRow(btns)
 
-    def _parse_points(self, s: str):
-        pts = []
-        for tok in (s or "").replace(",", " ").replace(";", "\n").splitlines():
-            tok = tok.strip()
-            if not tok: continue
-            parts = tok.split()
-            if len(parts) != 2: continue
+        # enable/disable + show/hide depending on shape
+        def _update_enabled():
+            custom = (self.shape.currentData() == "custom")
+            self.points.setEnabled(custom)
+            self.amount.setEnabled(custom)
+
+            # show/hide the custom presets UI as requested
+            self._set_custom_picker_visible(custom)
+
+        self.shape.currentIndexChanged.connect(_update_enabled)
+        _update_enabled()
+    # ---------------------------------------------------------------------
+
+    def _set_custom_picker_visible(self, visible: bool):
+        """Show/hide the custom presets picker + load row."""
+        for w in (self._lbl_custom_picker, self.preset_picker, self._row_custom_controls):
+            w.setVisible(bool(visible))
+
+    def _rebuild_customs(self):
+        """Refresh the list from QSettings and (de)activate picker/load."""
+        self.preset_picker.clear()
+        customs = list_custom_presets()
+        if not customs:
+            self.preset_picker.addItem("(No custom presets saved)", userData=None)
+            self.preset_picker.setEnabled(False)
+            self.btn_load.setEnabled(False)
+            return
+        self.preset_picker.setEnabled(True)
+        self.btn_load.setEnabled(True)
+        for p in sorted(customs, key=lambda d: d.get("name", "").lower()):
+            self.preset_picker.addItem(p.get("name", "(unnamed)"), userData=p)
+
+    def _load_selected_preset_into_fields(self):
+        p = self.preset_picker.currentData()
+        if not isinstance(p, dict):
+            return
+        # mode
+        want = _norm_mode(p.get("mode"))
+        idx = self.mode.findText(want)
+        if idx >= 0:
+            self.mode.setCurrentIndex(idx)
+        # switch to custom
+        j = self.shape.findData("custom")
+        if j >= 0:
+            self.shape.setCurrentIndex(j)
+        # points → text
+        pts = p.get("points_norm") or []
+        if isinstance(pts, (list, tuple)) and pts:
+            s = "; ".join(f"{float(x):.6g},{float(y):.6g}" for x, y in pts)
+            self.points.setText(s)
+
+    # -------------------- parsing & result -------------------------------
+    def _parse_points_text(self) -> list[tuple[float, float]]:
+        txt = (self.points.text() or "").strip()
+        if not txt:
+            return []
+        s = txt.replace("\n", ";").replace("\r", ";")
+        parts = [p.strip() for p in s.split(";") if p.strip()]
+        out: list[tuple[float, float]] = []
+        for part in parts:
+            p = part.replace(",", " ").split()
+            if len(p) != 2:
+                continue
             try:
-                x = max(0.0, min(1.0, float(parts[0])))
-                y = max(0.0, min(1.0, float(parts[1])))
-                pts.append([x, y])
-            except Exception:
-                pass
-        # ensure endpoints present
-        if not any(abs(p[0]-0.0) < 1e-6 for p in pts): pts.insert(0, [0.0, 0.0])
-        if not any(abs(p[0]-1.0) < 1e-6 for p in pts): pts.append([1.0, 1.0])
-        # sort & uniq by x
-        pts = sorted({float(x): float(y) for x,y in pts}.items())
-        return [[x, y] for x,y in pts]
+                x = float(p[0]); y = float(p[1])
+            except ValueError:
+                continue
+            out.append((max(0.0, min(1.0, x)), max(0.0, min(1.0, y))))
+
+        if out:
+            if all(abs(x - 0.0) > 1e-6 for x, _ in out): out.insert(0, (0.0, 0.0))
+            if all(abs(x - 1.0) > 1e-6 for x, _ in out): out.append((1.0, 1.0))
+            out = sorted(out, key=lambda t: t[0])
+            cleaned, lastx = [], -1.0
+            for x, y in out:
+                if x <= lastx: x = min(1.0, lastx + 1e-4)
+                cleaned.append((x, y)); lastx = x
+            out = cleaned
+        return out
 
     def result_dict(self) -> dict:
-        out = {
-            "mode": self.mode.currentText(),
-            "shape": self.shape.currentData(),
-            "amount": float(self.amount.value()),
-        }
-        if self.shape.currentData() == "custom":
-            out["points_norm"] = self._parse_points(self.points.text())
-        return out
+        mode  = _norm_mode(self.mode.currentText())
+        shape = self.shape.currentData() or "linear"
+        amt   = float(self.amount.value())
+        d = {"mode": mode, "shape": shape, "amount": amt}
+        if shape == "custom":
+            pts = self._parse_points_text()
+            if pts:
+                d["points_norm"] = pts
+            else:
+                d["shape"] = "linear"
+                d.pop("points_norm", None)
+        return d
 
 class _GHSPresetDialog(QDialog):
     def __init__(self, parent=None, initial: dict | None = None):

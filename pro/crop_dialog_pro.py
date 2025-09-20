@@ -4,7 +4,7 @@ from __future__ import annotations
 import math, numpy as np, cv2
 from typing import Optional
 
-from PyQt6.QtCore import Qt, QEvent, QPointF, QRectF, pyqtSignal
+from PyQt6.QtCore import Qt, QEvent, QPointF, QRectF, pyqtSignal, QPoint
 from PyQt6.QtGui import QPixmap, QImage, QPen, QBrush, QColor
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox, QToolButton,
@@ -30,7 +30,8 @@ def siril_style_autostretch(image: np.ndarray, sigma: float = 3.0) -> np.ndarray
         return np.stack([stretch_channel(image[..., i]) for i in range(3)], axis=-1)
     raise ValueError("Unsupported image format for autostretch.")
 
-HANDLE_SIZE = 12  # screen pixels (handles stay constant size)
+HANDLE_SIZE = 8  # screen pixels (handles stay constant size)
+EDGE_GRAB_PX = 12  # screen-pixel tolerance for grabbing edges when zoomed out
 
 class ResizableRotatableRectItem(QGraphicsRectItem):
     def __init__(self, rect: QRectF, parent=None):
@@ -50,11 +51,62 @@ class ResizableRotatableRectItem(QGraphicsRectItem):
         self._rotating = False
         self._angle0 = 0.0
         self._pivot_scene = QPointF()
+
+        self._grab_pad = 20              # ← extra hit slop in screen px
+        self._edge_pad_px = EDGE_GRAB_PX
+        self.setZValue(100)             # ← keep above pixmap
+
         self._mk_handles()
         self.setTransformOriginPoint(self.rect().center())
 
     def setFixedAspectRatio(self, ratio: Optional[float]):
         self._fixed_ar = ratio
+
+    def _scene_tolerance(self, px: float) -> float:
+        """Convert a pixel tolerance into scene/item units using the first view."""
+        sc = self.scene()
+        if not sc:
+            return float(px)
+        views = sc.views()
+        if not views:
+            return float(px)
+        v = views[0]
+        p0 = v.mapToScene(QPoint(0, 0))
+        p1 = v.mapToScene(QPoint(int(px), 0))
+        dx = p1.x() - p0.x()
+        dy = p1.y() - p0.y()
+        return math.hypot(dx, dy)
+
+    def _edge_under_cursor(self, scene_pos: QPointF) -> Optional[str]:
+        """
+        Return 'l', 'r', 't', or 'b' if the pointer is near an edge (within px-tolerance),
+        else None. Works at any zoom/rotation.
+        """
+        tol = self._scene_tolerance(self._edge_pad_px)
+        r = self.rect()
+        p = self.mapFromScene(scene_pos)  # local coords (rotation handled)
+
+        # Distance to each edge in item units
+        d = {
+            "l": abs(p.x() - r.left()),
+            "r": abs(p.x() - r.right()),
+            "t": abs(p.y() - r.top()),
+            "b": abs(p.y() - r.bottom()),
+        }
+        m = min(d.values())
+        if m > tol:
+            return None
+
+        # Must also be within the span of the opposite axis (with tolerance)
+        if d["l"] == m or d["r"] == m:
+            if (r.top() - tol) <= p.y() <= (r.bottom() + tol):
+                return "l" if d["l"] <= d["r"] else "r"
+        else:  # top/bottom
+            if (r.left() - tol) <= p.x() <= (r.right() + tol):
+                return "t" if d["t"] <= d["b"] else "b"
+
+        return None
+
 
     def _mk_handles(self):
         pen = QPen(Qt.GlobalColor.green, 2); pen.setCosmetic(True)
@@ -63,9 +115,21 @@ class ResizableRotatableRectItem(QGraphicsRectItem):
             h = QGraphicsEllipseItem(0, 0, HANDLE_SIZE, HANDLE_SIZE, self)
             h.setPen(pen); h.setBrush(brush)
             h.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, False)
-            h.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)  # constant-size
+            h.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)  # constant-size on screen
+            h.setAcceptedMouseButtons(Qt.MouseButton.NoButton)   # ← let parent receive mouse events
+            h.setAcceptHoverEvents(False)
+            h.setZValue(self.zValue() + 1)
             self._handles[name] = h
         self._sync_handles()
+
+    def _handle_hit(self, h: QGraphicsEllipseItem, scene_pos: QPointF) -> bool:
+        """
+        True if scene_pos is within the handle ellipse *plus* padding.
+        Because the handle ignores view transforms, this padding is in screen px.
+        """
+        p = h.mapFromScene(scene_pos)
+        r = h.rect().adjusted(-self._grab_pad, -self._grab_pad, self._grab_pad, self._grab_pad)
+        return r.contains(p)
 
     def _sync_handles(self):
         r = self.rect(); s = HANDLE_SIZE
@@ -79,8 +143,9 @@ class ResizableRotatableRectItem(QGraphicsRectItem):
             it.setPos(pos[k])
 
     def hoverMoveEvent(self, e):
+        # Corner handles take priority
         for k, h in self._handles.items():
-            if h.contains(h.mapFromScene(e.scenePos())):
+            if self._handle_hit(h, e.scenePos()):
                 self.setCursor({
                     "tl": Qt.CursorShape.SizeFDiagCursor,
                     "br": Qt.CursorShape.SizeFDiagCursor,
@@ -88,6 +153,17 @@ class ResizableRotatableRectItem(QGraphicsRectItem):
                     "bl": Qt.CursorShape.SizeBDiagCursor,
                 }.get(k, Qt.CursorShape.ArrowCursor))
                 return
+
+        # Edges next
+        edge = self._edge_under_cursor(e.scenePos())
+        if edge:
+            self.setCursor(
+                Qt.CursorShape.SizeHorCursor if edge in ("l", "r")
+                else Qt.CursorShape.SizeVerCursor
+            )
+            return
+
+        # Otherwise move
         self.setCursor(Qt.CursorShape.SizeAllCursor)
         super().hoverMoveEvent(e)
 
@@ -99,9 +175,19 @@ class ResizableRotatableRectItem(QGraphicsRectItem):
             self._angle_ref = math.degrees(math.atan2(v0.y(), v0.x()))
             self._angle0 = self.rotation()
             e.accept(); return
+
+        # padded corner hit
         for k, h in self._handles.items():
-            if h.contains(h.mapFromScene(e.scenePos())):
-                self._active = k; e.accept(); return
+            if self._handle_hit(h, e.scenePos()):
+                self._active = k
+                e.accept(); return
+
+        # edge hit
+        edge = self._edge_under_cursor(e.scenePos())
+        if edge:
+            self._active = edge
+            e.accept(); return
+
         super().mousePressEvent(e)
 
     def mouseMoveEvent(self, e):
@@ -130,19 +216,40 @@ class ResizableRotatableRectItem(QGraphicsRectItem):
     def _resize_via_handle(self, scene_pt: QPointF):
         r = self.rect()
         p = self.mapFromScene(scene_pt)
+
+        # Corners
         if   self._active == "tl": r.setTopLeft(p)
         elif self._active == "tr": r.setTopRight(p)
         elif self._active == "br": r.setBottomRight(p)
         elif self._active == "bl": r.setBottomLeft(p)
+        # Edges
+        elif self._active == "l":  r.setLeft(p.x())
+        elif self._active == "r":  r.setRight(p.x())
+        elif self._active == "t":  r.setTop(p.y())
+        elif self._active == "b":  r.setBottom(p.y())
 
+        # Aspect ratio maintenance
         if self._fixed_ar:
-            w = r.width(); h = w / self._fixed_ar
-            if self._active in ("tl", "tr"):
-                r.setTop(r.bottom() - h)
-            else:
-                r.setBottom(r.top() + h)
+            r = r.normalized()
+            cx, cy = r.center().x(), r.center().y()
+            if self._active in ("l", "r"):  # horizontal resize → adjust height
+                w = r.width()
+                h = w / self._fixed_ar
+                r.setTop(cy - h/2); r.setBottom(cy + h/2)
+            elif self._active in ("t", "b"):  # vertical resize → adjust width
+                h = r.height()
+                w = h * self._fixed_ar
+                r.setLeft(cx - w/2); r.setRight(cx + w/2)
+            else:  # corner behaves like before
+                w = r.width(); h = w / self._fixed_ar
+                if self._active in ("tl", "tr"):
+                    r.setTop(r.bottom() - h)
+                else:
+                    r.setBottom(r.top() + h)
+
         r = r.normalized()
-        self.setRect(r); self._sync_handles()
+        self.setRect(r)
+        self._sync_handles()
 
 
 class CropDialogPro(QDialog):

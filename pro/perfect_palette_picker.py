@@ -2,6 +2,7 @@
 from __future__ import annotations
 import os
 import numpy as np
+from PIL import Image
 import cv2
 from PyQt6.QtCore import Qt, QSize, QEvent, QTimer, QPoint, pyqtSignal
 from PyQt6.QtWidgets import (

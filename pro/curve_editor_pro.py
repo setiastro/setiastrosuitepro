@@ -1,14 +1,17 @@
-# pro/curves_editor_pro.py
+# pro/curve_editor_pro.py
 from __future__ import annotations
 import numpy as np
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QEvent, QPointF, QPoint, QTimer
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea, QGraphicsView, QLineEdit, QGraphicsScene, 
-    QWidget, QMessageBox, QRadioButton, QButtonGroup, QToolButton, QGraphicsEllipseItem, QGraphicsItem, QGraphicsTextItem
+    QWidget, QMessageBox, QRadioButton, QButtonGroup, QToolButton, QGraphicsEllipseItem, QGraphicsItem, QGraphicsTextItem, QInputDialog, QMenu
 )
 from PyQt6.QtGui import QPixmap, QImage, QWheelEvent, QPainter, QPainterPath, QPen, QColor, QBrush, QIcon, QKeyEvent, QCursor
-
+from pro.curves_preset import (
+    list_custom_presets, save_custom_preset, _points_norm_to_scene, _norm_mode,
+    _shape_points_norm, open_curves_with_preset, _lut_from_preset
+)
 from scipy.interpolate import PchipInterpolator
 
 try:
@@ -527,6 +530,33 @@ class CurveEditor(QGraphicsView):
             if ln is not None:
                 ln.setVisible(False)
 
+    def _scene_to_norm_points(self, pts_scene: list[tuple[float,float]]) -> list[tuple[float,float]]:
+        """(x:[0..360], y:[0..360] down) → (x,y in [0..1] up). Ensures endpoints present & strictly increasing x."""
+        out = []
+        lastx = -1e9
+        for (x, y) in sorted(pts_scene, key=lambda t: t[0]):
+            x = float(np.clip(x, 0.0, 360.0))
+            y = float(np.clip(y, 0.0, 360.0))
+            # strictly increasing X
+            if x <= lastx:
+                x = lastx + 1e-3
+            lastx = x
+            out.append((x / 360.0, 1.0 - (y / 360.0)))
+        # ensure endpoints
+        if not any(abs(px - 0.0)  < 1e-6 for px, _ in out): out.insert(0, (0.0, 0.0))
+        if not any(abs(px - 1.0)  < 1e-6 for px, _ in out): out.append((1.0, 1.0))
+        # clamp
+        return [(float(np.clip(x,0,1)), float(np.clip(y,0,1))) for (x,y) in out]
+
+    def _collect_points_norm_from_editor(self) -> list[tuple[float,float]]:
+        """Take endpoints+handles from editor => normalized points."""
+        pts_scene = []
+        for p in (self.editor.end_points + self.editor.control_points):
+            pos = p.scenePos()
+            pts_scene.append((float(pos.x()), float(pos.y())))
+        return self._scene_to_norm_points(pts_scene)
+
+
     def redistributeHandlesByPivot(self, u: float):
         """
         Re-space current control handles around a pivot u∈[0..1].
@@ -859,6 +889,18 @@ class CurvesDialogPro(QDialog):
         left.addLayout(row1)
         left.addLayout(row2)
 
+        rowp = QHBoxLayout()
+        self.btn_presets = QToolButton(self)
+        self.btn_presets.setText("Presets")
+        self.btn_presets.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        rowp.addWidget(self.btn_presets)
+
+        self.btn_save_preset = QToolButton(self)
+        self.btn_save_preset.setText("Save as Preset…")
+        self.btn_save_preset.clicked.connect(self._save_current_as_preset)
+        rowp.addWidget(self.btn_save_preset)
+        left.addLayout(rowp)
+
         # status
         self.lbl_status = QLabel("", self)
         self.lbl_status.setStyleSheet("color: gray;")
@@ -915,6 +957,8 @@ class CurvesDialogPro(QDialog):
         self._load_from_doc()
         QTimer.singleShot(0, self._fit_once)
         self.editor.setSymmetryCallback(self._on_symmetry_pick)
+
+        self._rebuild_presets_menu()
 
     def _on_symmetry_pick(self, u: float, _v: float):
         self.editor.redistributeHandlesByPivot(u)
@@ -997,6 +1041,111 @@ class CurvesDialogPro(QDialog):
         if ix < 0 or iy < 0 or ix >= src_w or iy >= src_h:
             return None
         return ix, iy
+
+    def _scene_to_norm_points(self, pts_scene: list[tuple[float,float]]) -> list[tuple[float,float]]:
+        """(x:[0..360], y:[0..360] down) → (x,y in [0..1] up). Ensures endpoints present & strictly increasing x."""
+        out = []
+        lastx = -1e9
+        for (x, y) in sorted(pts_scene, key=lambda t: t[0]):
+            x = float(np.clip(x, 0.0, 360.0))
+            y = float(np.clip(y, 0.0, 360.0))
+            # strictly increasing X
+            if x <= lastx:
+                x = lastx + 1e-3
+            lastx = x
+            out.append((x / 360.0, 1.0 - (y / 360.0)))
+        # ensure endpoints
+        if not any(abs(px - 0.0)  < 1e-6 for px, _ in out): out.insert(0, (0.0, 0.0))
+        if not any(abs(px - 1.0)  < 1e-6 for px, _ in out): out.append((1.0, 1.0))
+        # clamp
+        return [(float(np.clip(x,0,1)), float(np.clip(y,0,1))) for (x,y) in out]
+
+    def _collect_points_norm_from_editor(self) -> list[tuple[float,float]]:
+        """Take endpoints+handles from editor => normalized points."""
+        pts_scene = []
+        for p in (self.editor.end_points + self.editor.control_points):
+            pos = p.scenePos()
+            pts_scene.append((float(pos.x()), float(pos.y())))
+        return self._scene_to_norm_points(pts_scene)
+
+    def _apply_preset_dict(self, preset: dict):
+        # set mode
+        want = _norm_mode(preset.get("mode"))
+        for b in self.mode_group.buttons():
+            if b.text().lower() == want.lower():
+                b.setChecked(True); break
+
+        # set handles from points_norm (strip endpoints)
+        ptsN = preset.get("points_norm")
+        if isinstance(ptsN, (list, tuple)) and len(ptsN) >= 2:
+            # convert to scene coordinates and remove endpoints
+            pts_scene = _points_norm_to_scene(ptsN)
+            filt = [(x,y) for (x,y) in pts_scene if x > 1e-6 and x < 360.0 - 1e-6]
+            self.editor.setControlHandles(filt)
+            self._quick_preview()
+            self._set_status(f"Preset: {preset.get('name','(custom)')}")
+
+    def _save_current_as_preset(self):
+        # get name
+        name, ok = QInputDialog.getText(self, "Save Curves Preset", "Preset name:")
+        if not ok or not name.strip():
+            return
+        pts_norm = self._collect_points_norm_from_editor()
+        mode = self._current_mode()
+        if save_custom_preset(name.strip(), mode, pts_norm):
+            self._set_status(f"Saved preset “{name.strip()}”.")
+            self._rebuild_presets_menu()
+        else:
+            QMessageBox.warning(self, "Save failed", "Could not save preset.")
+
+    def _rebuild_presets_menu(self):
+        m = QMenu(self)
+        # Built-in shapes under K (Brightness)
+        builtins = [
+            ("Linear",              {"mode": "K (Brightness)", "shape": "linear"}),
+            ("S-Curve (mild)",      {"mode": "K (Brightness)", "shape": "s_mild", "amount": 1.0}),
+            ("S-Curve (medium)",    {"mode": "K (Brightness)", "shape": "s_med",  "amount": 1.0}),
+            ("S-Curve (strong)",    {"mode": "K (Brightness)", "shape": "s_strong","amount": 1.0}),
+            ("Lift Shadows",        {"mode": "K (Brightness)", "shape": "lift_shadows", "amount": 1.0}),
+            ("Crush Shadows",       {"mode": "K (Brightness)", "shape": "crush_shadows","amount": 1.0}),
+            ("Fade Blacks",         {"mode": "K (Brightness)", "shape": "fade_blacks",  "amount": 1.0}),
+            ("Rolloff Highlights",  {"mode": "K (Brightness)", "shape": "rolloff_highlights","amount": 1.0}),
+            ("Flatten",             {"mode": "K (Brightness)", "shape": "flatten", "amount": 1.0}),
+        ]
+        if builtins:
+            mb = m.addMenu("Built-ins")
+            for label, preset in builtins:
+                act = mb.addAction(label)
+                act.triggered.connect(lambda _=False, p=preset: self._apply_preset_dict(p))
+
+        # Custom presets (from QSettings)
+        customs = list_custom_presets()
+        if customs:
+            mc = m.addMenu("Custom")
+            for p in sorted(customs, key=lambda d: d.get("name","").lower()):
+                act = mc.addAction(p.get("name","(unnamed)"))
+                act.triggered.connect(lambda _=False, pp=p: self._apply_preset_dict(pp))
+            mc.addSeparator()
+            act_manage = mc.addAction("Manage…")
+            act_manage.triggered.connect(self._open_manage_customs_dialog)  # optional (see below)
+        else:
+            m.addAction("(No custom presets yet)").setEnabled(False)
+
+        self.btn_presets.setMenu(m)
+
+    def _open_manage_customs_dialog(self):
+        # optional: quick-and-dirty remover
+        customs = list_custom_presets()
+        if not customs:
+            QMessageBox.information(self, "Manage Presets", "No custom presets.")
+            return
+        names = [p.get("name","") for p in customs]
+        name, ok = QInputDialog.getItem(self, "Delete Preset", "Choose preset to delete:", names, 0, False)
+        if ok and name:
+            from pro.curves_preset import delete_custom_preset
+            if delete_custom_preset(name):
+                self._rebuild_presets_menu()
+
 
     # ----- data -----
     def _load_from_doc(self):

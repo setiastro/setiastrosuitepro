@@ -280,23 +280,30 @@ class MetricsPanel(QWidget):
 
     def _on_point_click(self, metric_idx, points):
         for pt in points:
-            frame_idx = int(round(pt.pos().x()))
+            # local index on the currently plotted subset
+            li = int(round(pt.pos().x()))
+
+            # map to global index
+            if hasattr(self, "_cur_indices") and self._cur_indices is not None and 0 <= li < len(self._cur_indices):
+                gi = int(self._cur_indices[li])
+            else:
+                gi = li  # fallback (e.g., "All")
+
             mods = QApplication.keyboardModifiers()
             if mods & Qt.KeyboardModifier.ShiftModifier:
-                entry  = self._orig_images[frame_idx]
+                # preview the correct global frame
+                entry  = self._orig_images[gi]
                 img    = entry['image_data']
                 is_mono= entry.get('is_mono', False)
                 dlg = ImagePreviewDialog(img, is_mono)
-                dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)  
+                dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
                 dlg.show()
-                self._open_previews.append(dlg)  # <-- hold a reference
-
-                # optionally prune closed ones:
-                dlg.destroyed.connect(lambda _=None, d=dlg: 
-                      self._open_previews.remove(d)
-                      if d in self._open_previews else None)
+                self._open_previews.append(dlg)
+                dlg.destroyed.connect(lambda _=None, d=dlg:
+                    self._open_previews.remove(d) if d in self._open_previews else None)
             else:
-                self.pointClicked.emit(metric_idx, frame_idx)
+                # emit the correct global frame index so Blink flags the right leaf
+                self.pointClicked.emit(metric_idx, gi)
 
     def _on_line_move(self, metric_idx, line):
         self.thresholdChanged.emit(metric_idx, line.value())
@@ -356,9 +363,9 @@ class MetricsWindow(QWidget):
         pct = (flagged/total*100) if total else 0.0
         self.status_label.setText(f"Flagged Items {flagged}/{total}  ({pct:.1f}%)")
 
-    def set_images(self, loaded_images):
-        """Initialize with a brand-new set of images."""
+    def set_images(self, loaded_images, order=None):
         self._all_images = loaded_images
+        self._order_all = list(order) if order is not None else list(range(len(loaded_images)))
 
         # ─── rebuild the combo-list of FILTER groups ─────────────
         self.group_combo.blockSignals(True)
@@ -384,28 +391,23 @@ class MetricsWindow(QWidget):
         self.metrics_panel.compute_all_metrics(self._all_images)
 
         # ─── show “All” by default and plot ───────────────────────
-        self._current_indices = None
+        self._current_indices = self._order_all
         self._apply_thresholds("All")
-        self.metrics_panel.plot(self._all_images, indices=None)
-
-        # ─── update the flagged-items status label ───────────────
+        self.metrics_panel.plot(self._all_images, indices=self._current_indices)
         self._update_status()
 
 
     def _on_group_change(self, name: str):
-        """Re-plot for the selected FILTER group."""
         if name == "All":
-            self._current_indices = None
+            self._current_indices = self._order_all
         else:
-            # collect indices matching this filter
+            # preserve Tree order inside the chosen FILTER
+            filt = name
             self._current_indices = [
-                i for i, e in enumerate(self._all_images)
-                if e.get('header', {}).get('FILTER', 'Unknown') == name
+                i for i in self._order_all
+                if (self._all_images[i].get('header', {}) or {}).get('FILTER', 'Unknown') == filt
             ]
-
-        # apply saved thresholds for this group
         self._apply_thresholds(name)
-        # re-draw
         self.metrics_panel.plot(self._all_images, indices=self._current_indices)
 
     def _on_panel_threshold_change(self, metric_idx: int, new_val: float):
@@ -425,15 +427,13 @@ class MetricsWindow(QWidget):
             # if saved[idx] is None, we leave it so that
             # the panel’s own auto-init can run on next plot()
 
-    def update_metrics(self, loaded_images):
-        """
-        Called whenever BlinkTab.loadImages or clearImages fires.
-        If it's a new list, re-init; otherwise just re-plot current group.
-        """
+    def update_metrics(self, loaded_images, order=None):
         if loaded_images is not self._all_images:
-            self.set_images(loaded_images)
+            self.set_images(loaded_images, order=order)
         else:
-            # same list, just redraw current selection
+            if order is not None:
+                self._order_all = list(order)
+            # re-plot the current group with the new ordering
             self._on_group_change(self.group_combo.currentText())
 
 
@@ -747,6 +747,16 @@ class BlinkTab(QWidget):
             # update the "Flagged Items X/Y" label
             self.metrics_window._update_status()
 
+    # inside BlinkTab
+    def _sync_metrics_flags(self):
+        """Push current flagged states into the Metrics panel and refresh colors."""
+        if self.metrics_window:
+            panel = self.metrics_window.metrics_panel
+            panel.flags = [entry['flagged'] for entry in self.loaded_images]
+            panel._refresh_scatter_colors()
+            self.metrics_window._update_status()
+
+
     def addAdditionalImages(self):
         """Let the user pick more images to append to the blink list."""
         file_paths, _ = QFileDialog.getOpenFileNames(
@@ -808,7 +818,7 @@ class BlinkTab(QWidget):
         # update status
         self.loading_label.setText(f"Loaded {len(self.loaded_images)} images.")
         if self.metrics_window and self.metrics_window.isVisible():
-            self.metrics_window.update_metrics(self.loaded_images)
+            self.metrics_window.update_metrics(self.loaded_images, order=self._tree_order_indices())
 
     def show_metrics(self):
         if self.metrics_window is None:
@@ -817,25 +827,18 @@ class BlinkTab(QWidget):
             mp.pointClicked.connect(self.on_metrics_point)
             mp.thresholdChanged.connect(self.on_threshold_change)
 
-        # ← here ←
-        self.metrics_window.set_images(self.loaded_images)
+        order = self._tree_order_indices()
+        self.metrics_window.set_images(self.loaded_images, order=order)
         panel = self.metrics_window.metrics_panel
-        self.thresholds_by_group["All"] = [ line.value() for line in panel.lines ]
+        self.thresholds_by_group["All"] = [line.value() for line in panel.lines]
         self.metrics_window.show()
         self.metrics_window.raise_()
 
     def on_metrics_point(self, metric_idx, frame_idx):
-        # Toggle the flagged state on the image…
         item = self.get_tree_item_for_index(frame_idx)
         if not item:
             return
-        self._toggle_flag_on_item(item)
-
-        # Now update the panel’s flags and refresh
-        panel = self.metrics_window.metrics_panel
-        panel.flags = [entry['flagged'] for entry in self.loaded_images]
-        panel._refresh_scatter_colors()
-        self.metrics_window._update_status()
+        self._toggle_flag_on_item(item)  
 
     def _as_float01(self, arr):
         """Fast conversion to float [0..1] without any new stretching logic."""
@@ -1199,12 +1202,13 @@ class BlinkTab(QWidget):
 
                     for p in by_object[obj][filt][exp]:
                         leaf = QTreeWidgetItem([os.path.basename(p)])
+                        leaf.setData(0, Qt.ItemDataRole.UserRole, p)  
                         exp_item.addChild(leaf)
 
         self.loading_label.setText(f"Loaded {len(self.loaded_images)} images.")
         self.progress_bar.setValue(100)
         if self.metrics_window and self.metrics_window.isVisible():
-            self.metrics_window.update_metrics(self.loaded_images)
+            self.metrics_window.update_metrics(self.loaded_images, order=self._tree_order_indices())
 
     def findTopLevelItemByName(self, name):
         """Find a top-level item in the tree by its name."""
@@ -1223,10 +1227,8 @@ class BlinkTab(QWidget):
         return None
 
 
-    def _toggle_flag_on_item(self, item: QTreeWidgetItem):
-        """Toggle the flagged state on this tree item and its loaded_images entry."""
+    def _toggle_flag_on_item(self, item: QTreeWidgetItem, *, sync_metrics: bool = True):
         file_name = item.text(0).lstrip("⚠️ ")
-        # find the matching image entry
         file_path = next((p for p in self.image_paths if os.path.basename(p) == file_name), None)
         if file_path is None:
             return
@@ -1235,7 +1237,6 @@ class BlinkTab(QWidget):
         entry = self.loaded_images[idx]
         entry['flagged'] = not entry['flagged']
 
-        # update the tree view
         RED = Qt.GlobalColor.red
         palette = self.fileTree.palette()
         normal_color = palette.color(QPalette.ColorRole.WindowText)
@@ -1247,14 +1248,16 @@ class BlinkTab(QWidget):
             item.setText(0, file_name)
             item.setForeground(0, QBrush(normal_color))
 
+        if sync_metrics:
+            self._sync_metrics_flags()
+
     def flag_current_image(self):
-        """Called by the F-key: toggle flag on the currently selected item."""
         item = self.fileTree.currentItem()
         if not item:
             QMessageBox.warning(self, "No Selection", "No image is currently selected to flag.")
             return
-        self._toggle_flag_on_item(item)
-        self.next_item()  # Move to the next item after flagging
+        self._toggle_flag_on_item(item)   # ← this now updates the metrics panel too
+        self.next_item()
 
 
     def on_current_item_changed(self, current, previous):
@@ -1468,9 +1471,21 @@ class BlinkTab(QWidget):
         # Add the file item
         file_name = os.path.basename(file_path)
         item = QTreeWidgetItem([file_name])
+        item.setData(0, Qt.ItemDataRole.UserRole, file_path)
         exposure_item.addChild(item)
 
-
+    def _tree_order_indices(self) -> list[int]:
+        """Return the indices of loaded_images in the exact order the Tree shows."""
+        order = []
+        for leaf in self.get_all_leaf_items():
+            path = leaf.data(0, Qt.ItemDataRole.UserRole)
+            if not path:
+                # fallback by basename if old items exist
+                name = leaf.text(0).lstrip("⚠️ ").strip()
+                path = next((p for p in self.image_paths if os.path.basename(p) == name), None)
+            if path and path in self.image_paths:
+                order.append(self.image_paths.index(path))
+        return order
 
     def debayer_raw(self, raw_image_data, bayer_pattern="RGGB"):
         """Debayer a RAW image based on the Bayer pattern, ensuring even dimensions."""

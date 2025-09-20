@@ -594,27 +594,36 @@ class CosmicClarityDialogPro(QDialog):
             return
 
         _ensure_dirs(self.cosmic_root)
-        _purge_cc_io(self.cosmic_root, clear_input=True, clear_output=False)
+        # 🔸 purge output too so any file that appears is from THIS run
+        _purge_cc_io(self.cosmic_root, clear_input=True, clear_output=True)
+
         base = self._base_name()
         in_path = os.path.join(self.cosmic_root, "input", f"{base}.tif")
         try:
-            save_image(self.orig, in_path, "tiff", "32-bit floating point", getattr(self.doc, "original_header", None), getattr(self.doc, "is_mono", False))
+            save_image(self.orig, in_path, "tiff", "32-bit floating point",
+                    getattr(self.doc, "original_header", None),
+                    getattr(self.doc, "is_mono", False))
         except Exception as e:
             QMessageBox.critical(self, "Cosmic Clarity", f"Failed to save input TIFF:\n{e}")
             return
         self._current_input = in_path
 
-        scale = int(self.cmb_scale.currentText().replace("x",""))
-        args = ["--input", in_path, "--output_dir", os.path.join(self.cosmic_root, "output"),
-                "--scale", str(scale), "--model_dir", self.cosmic_root]
+        scale = int(self.cmb_scale.currentText().replace("x", ""))
+        # keep args as-is if your superres build expects explicit paths
+        args = [
+            "--input", in_path,
+            "--output_dir", os.path.join(self.cosmic_root, "output"),
+            "--scale", str(scale),
+            "--model_dir", self.cosmic_root
+        ]
 
         self._proc = QProcess(self)
         self._proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
-
         self._proc.readyReadStandardOutput.connect(self._read_superres_output_main)
-        self._proc.finished.connect(lambda code, status: None)  # watcher decides success
-
-        self._proc.setProgram(exe_path); self._proc.setArguments(args); self._proc.start()
+        # finished handler not required; the file watcher drives success
+        self._proc.setProgram(exe_path)
+        self._proc.setArguments(args)
+        self._proc.start()
         if not self._proc.waitForStarted(3000):
             QMessageBox.critical(self, "Cosmic Clarity", "Failed to start Super Resolution process.")
             return
@@ -623,13 +632,18 @@ class CosmicClarityDialogPro(QDialog):
         self._wait.cancelled.connect(self._cancel_all)
         self._wait.show()
 
-        scale_int = int(self.cmb_scale.currentText().replace("x",""))
-        out_glob = os.path.join(self.cosmic_root, "output", f"{base}_upscaled{scale_int}.*")
+        # 🔸 Watch broadly; we purged output so the first file is from this run.
+        # We'll still re-pick the exact file in the slot for safety.
+        self._sr_base = base
+        self._sr_scale = scale
+        out_glob = os.path.join(self.cosmic_root, "output", "*.*")
+
         self._wait_thread = WaitForFileWorker(out_glob, timeout_sec=1800, parent=self)
-        self._wait_thread.fileFound.connect(self._on_superres_file)
+        self._wait_thread.fileFound.connect(self._on_superres_file)   # path arg is ignored; we reselect
         self._wait_thread.error.connect(self._on_wait_error)
         self._wait_thread.cancelled.connect(self._on_wait_cancel)
         self._wait_thread.start()
+
 
     def apply_preset(self, p: dict):
         # Mode
@@ -671,9 +685,48 @@ class CosmicClarityDialogPro(QDialog):
             else:
                 self._wait.append_output(line)
 
-    def _on_superres_file(self, out_path: str):
+    def _pick_superres_output(self, base: str, scale: int) -> str | None:
+        """
+        Find the most plausible super-res output file. We try several common
+        name patterns, then fall back to the newest/largest file in the output dir.
+        """
+        out_dir = os.path.join(self.cosmic_root, "output")
+
+        def _best(paths: list[str]) -> str | None:
+            if not paths:
+                return None
+            # prefer bigger file; tie-break by newest mtime
+            paths.sort(key=lambda p: (os.path.getsize(p), os.path.getmtime(p)), reverse=True)
+            return paths[0]
+
+        # common patterns used by different builds
+        patterns = [
+            f"{base}_upscaled{scale}.*",
+            f"{base}_upscaled*.*",
+            f"{base}*upscal*.*",
+            f"{base}*superres*.*",
+        ]
+        for pat in patterns:
+            hit = _best(glob.glob(os.path.join(out_dir, pat)))
+            if hit:
+                return hit
+
+        # fallback: anything in output (we purge it first, so whatever appears is ours)
+        return _best(glob.glob(os.path.join(out_dir, "*.*")))
+
+
+    def _on_superres_file(self, _first_path_from_watcher: str):
+        # stop waiting UI
         if self._wait: self._wait.close(); self._wait = None
         if self._wait_thread: self._wait_thread.stop(); self._wait_thread = None
+
+        # pick the actual output (robust to naming)
+        base  = getattr(self, "_sr_base", self._base_name())
+        scale = int(getattr(self, "_sr_scale", int(self.cmb_scale.currentText().replace("x",""))))
+        out_path = self._pick_superres_output(base, scale)
+        if not out_path or not os.path.exists(out_path):
+            QMessageBox.critical(self, "Cosmic Clarity", "Super Resolution output file not found.")
+            return
 
         try:
             img, hdr, bd, mono = load_image(out_path)
@@ -694,16 +747,18 @@ class CosmicClarityDialogPro(QDialog):
         else:
             self._apply_to_active(dest, step_title)
 
-        # cleanup
+        # cleanup mirrors sharpen/denoise
         try:
-            if os.path.exists(self._current_input): os.remove(self._current_input)
-            if os.path.exists(out_path): os.remove(out_path)
-            # 🔸 Final cleanup for super-res run
+            if getattr(self, "_current_input", None) and os.path.exists(self._current_input):
+                os.remove(self._current_input)
+            if os.path.exists(out_path):
+                os.remove(out_path)
             _purge_cc_io(self.cosmic_root, clear_input=True, clear_output=True)
         except Exception:
             pass
 
         self.accept()
+
 
 
 # =============================================================================

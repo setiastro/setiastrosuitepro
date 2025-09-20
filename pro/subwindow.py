@@ -1,6 +1,6 @@
 # pro/subwindow.py
 from __future__ import annotations
-from PyQt6.QtCore import Qt, QPoint, pyqtSignal, QSize, QEvent, QByteArray, QMimeData
+from PyQt6.QtCore import Qt, QPoint, pyqtSignal, QSize, QEvent, QByteArray, QMimeData, QSettings
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QScrollArea, QLabel, QToolButton, QHBoxLayout, QMessageBox, QMdiSubWindow, QMenu, QInputDialog, QApplication
 from PyQt6.QtGui import QPixmap, QImage, QWheelEvent, QShortcut, QKeySequence, QCursor, QDrag
 from PyQt6 import sip
@@ -11,7 +11,7 @@ import math
 from .autostretch import autostretch   # ← uses pro/imageops/stretch.py
 
 from pro.dnd_mime import MIME_VIEWSTATE, MIME_MASK, MIME_ASTROMETRY, MIME_CMD 
-
+from pro.shortcuts import _unpack_cmd_payload
 
 from .layers import composite_stack, ImageLayer, BLEND_MODES
 
@@ -87,6 +87,7 @@ class ImageSubWindow(QWidget):
         self.scale = 0.25
         self._dragging = False
         self._drag_start = QPoint()
+        self._autostretch_linked = QSettings().value("display/stretch_linked", False, type=bool)
         self.autostretch_enabled = False
         self.autostretch_target = 0.25    # tweakable, e.g. 0.2–0.35 typical
         self.autostretch_sigma   = 3.0    # normal profile
@@ -711,34 +712,58 @@ class ImageSubWindow(QWidget):
         if hasattr(self, "_view_tab"):
             self._view_tab.raise_()
 
+    def is_autostretch_linked(self) -> bool:
+        return bool(self._autostretch_linked)
+
+    def set_autostretch_linked(self, linked: bool):
+        linked = bool(linked)
+        if self._autostretch_linked == linked:
+            return
+        self._autostretch_linked = linked
+        if self.autostretch_enabled:
+            self._recompute_autostretch_and_update()
+
+    def set_autostretch(self, on: bool):
+        self.autostretch_enabled = bool(on)
+        self._recompute_autostretch_and_update()
+
+    def _recompute_autostretch_and_update(self):
+        self._qimg_src = None   # force source rebuild
+        self._render(True)
 
     # ---------- rendering ----------
     def _render(self, rebuild: bool = False):
-        """
-        If rebuild=True: rebuild the 8-bit source buffer (apply autostretch/etc).
-        If rebuild=False: only rescale the already-built QImage for zoom.
-        """
         if rebuild or self._qimg_src is None:
             img = self._display_override if (self._display_override is not None) else self.document.image
             if img is None:
                 return
             arr = np.asarray(img)
 
-            # Ensure float32 for stretch path; keep original for linear display
+            # detect mono now so we can ignore "linked" for mono images
+            is_mono = (arr.ndim == 2) or (arr.ndim == 3 and arr.shape[2] == 1)
+
             if self.autostretch_enabled:
-                # try to normalize common integer ranges to [0..1] before stretching
+                # normalize common integer inputs to [0..1]
                 if np.issubdtype(arr.dtype, np.integer):
-                    # assume 16-bit sources by default (common in astro)
-                    arr_f = arr.astype(np.float32) / 65535.0
+                    info = np.iinfo(arr.dtype)
+                    denom = float(max(1, info.max))
+                    arr_f = (arr.astype(np.float32) / denom)
                 else:
-                    arr_f = arr.astype(np.float32)
-                    # if wildly above 1, gently compress to [0..1]
+                    arr_f = arr.astype(np.float32, copy=False)
                     mx = float(arr_f.max()) if arr_f.size else 1.0
-                    if mx > 5.0:
+                    if mx > 5.0:  # wildly large floats → compress to [0..1]
                         arr_f = arr_f / mx
-                vis = autostretch(arr_f, target_median=self.autostretch_target, sigma=self.autostretch_sigma, linked=False)  # or True if you prefer linked
+
+                # >>> this is the important bit: honor linked flag unless mono
+                vis = autostretch(
+                    arr_f,
+                    target_median=self.autostretch_target,
+                    sigma=self.autostretch_sigma,
+                    linked=(not is_mono and self._autostretch_linked),
+                    use_16bit=None,
+                )
             else:
-                # true linear view
+                # true linear view → ensure we have 3 channels for display
                 if arr.ndim == 2:
                     vis = np.stack([arr] * 3, axis=-1)
                 elif arr.ndim == 3 and arr.shape[2] == 1:
@@ -746,12 +771,12 @@ class ImageSubWindow(QWidget):
                 else:
                     vis = arr
 
-            # convert to 8-bit RGB buffer for QImage
+            # convert to 8-bit RGB for QImage
             if vis.dtype == np.uint8:
                 buf8 = vis
             elif vis.dtype == np.uint16:
                 buf8 = (vis.astype(np.float32) / 65535.0 * 255.0).clip(0, 255).astype(np.uint8)
-            else:  # floats
+            else:
                 buf8 = (np.clip(vis, 0.0, 1.0) * 255.0).astype(np.uint8)
 
             # ensure 3 channels
@@ -760,30 +785,21 @@ class ImageSubWindow(QWidget):
             elif buf8.ndim == 3 and buf8.shape[2] == 1:
                 buf8 = np.repeat(buf8, 3, axis=2)
 
-            # --- MASK OVERLAY (red) ---
+            # --- MASK OVERLAY (unchanged) ---
             if self.show_mask_overlay:
                 m = self._active_mask_array()
                 if m is not None:
-                    # (A) flip so white=shown (your current result looked inverted)
                     if getattr(self, "_mask_overlay_invert", True):
                         m = 1.0 - m
-
-                    # (B) resize mask to current image (nearest)
                     th, tw = buf8.shape[:2]
                     sh, sw = m.shape
                     if (sh, sw) != (th, tw):
                         yi = (np.linspace(0, sh - 1, th)).astype(np.int32)
                         xi = (np.linspace(0, sw - 1, tw)).astype(np.int32)
                         m = m[yi][:, xi]
-
-                    # (C) additive red, no darkening → clear red wash
-                    a = m * float(getattr(self, "_mask_overlay_alpha", 0.35))  # 0..1
+                    a = m * float(getattr(self, "_mask_overlay_alpha", 0.35))
                     bf = buf8.astype(np.float32, copy=False)
-                    # push red toward 255 where mask is strong
                     bf[..., 0] = np.clip(bf[..., 0] + (255.0 - bf[..., 0]) * a, 0.0, 255.0)
-                    # (optional) very light desat for clarity — comment out if you want pure add
-                    # bf[..., 1] *= (1.0 - 0.15 * a)
-                    # bf[..., 2] *= (1.0 - 0.15 * a)
                     buf8 = bf.astype(np.uint8, copy=False)
             # --- /MASK OVERLAY ---
 
@@ -791,21 +807,22 @@ class ImageSubWindow(QWidget):
             h, w, _ = buf8.shape
             bytes_per_line = buf8.strides[0]
 
-            # keep backing memory alive while QImage exists
-            self._buf8 = buf8
+            self._buf8 = buf8  # keep backing memory alive
             ptr = sip.voidptr(self._buf8.ctypes.data)
             self._qimg_src = QImage(ptr, w, h, bytes_per_line, QImage.Format.Format_RGB888)
 
-        # scale current source image to view scale
+        # scale and show
         qimg = self._qimg_src
         if qimg is None:
             return
 
         sw = int(qimg.width() * self.scale)
         sh = int(qimg.height() * self.scale)
-        scaled = qimg.scaled(sw, sh,
-                             Qt.AspectRatioMode.KeepAspectRatio,
-                             Qt.TransformationMode.SmoothTransformation)
+        scaled = qimg.scaled(
+            sw, sh,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation
+        )
         self.label.setPixmap(QPixmap.fromImage(scaled))
         self.label.resize(scaled.size())
 

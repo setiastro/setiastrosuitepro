@@ -29,6 +29,28 @@ def _choose_stride(h: int, w: int, max_pixels: int) -> tuple[int, int]:
     s = max(1, int(np.sqrt(n / float(max_pixels))))
     return s, s
 
+def _compute_lut_from_sample(sample_uN: np.ndarray, target: float, sigma: float, maxv: int,
+                             qfloor: float = 0.001) -> np.ndarray:
+    """Return a 0..maxv -> [0..1] LUT using the same math as _fast_channel_autostretch_uN."""
+    hist = np.bincount(sample_uN.ravel(), minlength=maxv + 1)
+    total = int(hist.sum()) or 1
+
+    cdf = np.cumsum(hist)
+    med = int(np.searchsorted(cdf, (total + 1) // 2))
+
+    bins      = np.arange(maxv + 1, dtype=np.float64)
+    hist_low  = hist[:med + 1]
+    total_low = int(hist_low.sum()) or 1
+    mean_low  = float((hist_low * bins[:med + 1]).sum() / total_low)
+    var_low   = float((hist_low * (bins[:med + 1] - mean_low)**2).sum() / total_low)
+    std_low   = float(np.sqrt(max(1e-12, var_low)))
+
+    floor_idx = int(np.searchsorted(cdf, int(qfloor * total)))
+    bp = int(max(floor_idx, med - sigma * std_low))
+    bp = int(np.clip(bp, 0, maxv - 1))
+
+    return _build_lut_generic(bp, target, med, maxv)
+
 def _stats_from_hist_generic(uN: np.ndarray, maxv: int) -> tuple[float, float, int, int]:
     """(median, std, minv, maxv) using a histogram of levels [0..maxv]."""
     hist = np.bincount(uN.ravel(), minlength=maxv + 1)
@@ -141,21 +163,32 @@ def autostretch(
         out = _fast_channel_autostretch_uN(u, target_median, sigma, maxv)
         return out.astype(np.float32, copy=False)
 
-    # COLOR
+    # color
     u = _to_uN(a, maxv)
+    C = u.shape[2]
+
     if linked:
+        # sample fewer pixels for stats
         h, w, _ = u.shape
         sy, sx = _choose_stride(h, w, max(1, _MAX_STATS_PIXELS // 3))
-        sample = u[::sy, ::sx].reshape(-1)
-        # reuse the same logic by calling the helper on a 2D view
-        return _fast_channel_autostretch_uN(sample.reshape(-1, 1), target_median, sigma, maxv)[u]
-    else:
-        # per-channel stats/LUTs
+        sample = u[::sy, ::sx]
+
+        # Rec.709-ish luminance, integer dtype preserved
+        # (weights sum to 1; cast back to u.dtype for the LUT builder)
+        lum = (0.2126 * sample[..., 0] + 0.7152 * sample[..., 1] + 0.0722 * sample[..., 2]).astype(u.dtype)
+
+        lut = _compute_lut_from_sample(lum, target_median, sigma, maxv)
+
         out = np.empty_like(u, dtype=np.float32)
-        C = u.shape[2]
+        for c in range(min(3, C)):
+            out[..., c] = lut[u[..., c]]
+        if C > 3:  # pass-through non-RGB channels
+            out[..., 3:] = u[..., 3:] / float(maxv)
+        return out
+    else:
+        out = np.empty_like(u, dtype=np.float32)
         for c in range(min(3, C)):
             out[..., c] = _fast_channel_autostretch_uN(u[..., c], target_median, sigma, maxv)
-        # if image has >3 channels, just copy remaining
         if C > 3:
             out[..., 3:] = u[..., 3:] / float(maxv)
         return out

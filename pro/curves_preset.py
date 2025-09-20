@@ -2,7 +2,8 @@
 from __future__ import annotations
 from typing import List, Tuple, Dict
 import numpy as np
-
+import json
+from PyQt6.QtCore import QSettings
 # optional PCHIP (same as editor)
 try:
     from scipy.interpolate import PchipInterpolator as _PCHIP
@@ -10,7 +11,7 @@ try:
 except Exception:
     _HAS_PCHIP = False
 
-from pro.curve_editor_pro import CurvesDialogPro, build_curve_lut, _apply_mode_any
+
 
 # ---------------------- preset schema ----------------------
 # {
@@ -109,6 +110,13 @@ def _points_norm_to_scene(points_norm: List[Tuple[float, float]]) -> List[Tuple[
         lastx = out[-1][0]
     return out
 
+def build_curve_lut(curve_func, size=65536):
+    """Map v∈[0..1] → y∈[0..1] using a curve defined on x∈[0..360] (scene coords)."""
+    x = np.linspace(0.0, 360.0, size, dtype=np.float32)
+    y = 360.0 - curve_func(x)
+    y = (y / 360.0).clip(0.0, 1.0).astype(np.float32)
+    return y
+
 def _interpolator_from_scene_points(points_scene: List[Tuple[float, float]]):
     xs = np.array([p[0] for p in points_scene], dtype=np.float64)
     ys = np.array([p[1] for p in points_scene], dtype=np.float64)
@@ -136,17 +144,72 @@ def _lut_from_preset(preset: Dict) -> tuple[np.ndarray, str]:
     mode = _norm_mode(preset.get("mode"))
     return lut01, mode
 
+_SETTINGS_KEY = "curves/custom_presets_v1"
+
+def _settings() -> QSettings | None:
+    try:
+        return QSettings()
+    except Exception:
+        return None
+
+def list_custom_presets() -> list[dict]:
+    """Return a list of dicts: {"name", "mode", "shape":"custom", "points_norm":[[x,y],...]}"""
+    s = _settings()
+    if not s:
+        return []
+    raw = s.value(_SETTINGS_KEY, "", type=str) or ""
+    try:
+        lst = json.loads(raw)
+        if isinstance(lst, list):
+            return [p for p in lst if isinstance(p, dict)]
+    except Exception:
+        pass
+    return []
+
+def save_custom_preset(name: str, mode: str, points_norm: list[tuple[float,float]]) -> bool:
+    """Create/overwrite by name."""
+    s = _settings()
+    if not s:
+        return False
+    name = (name or "").strip()
+    if not name:
+        return False
+    preset = {
+        "name": name,
+        "mode": _norm_mode(mode),
+        "shape": "custom",
+        "amount": 1.0,
+        "points_norm": [(float(x), float(y)) for (x, y) in points_norm],
+    }
+    lst = list_custom_presets()
+    lst = [p for p in lst if (p.get("name","").lower() != name.lower())]
+    lst.append(preset)
+    s.setValue(_SETTINGS_KEY, json.dumps(lst))
+    s.sync()
+    return True
+
+def delete_custom_preset(name: str) -> bool:
+    s = _settings()
+    if not s:
+        return False
+    lst = list_custom_presets()
+    lst = [p for p in lst if (p.get("name","").lower() != (name or "").strip().lower())]
+    s.setValue(_SETTINGS_KEY, json.dumps(lst))
+    s.sync()
+    return True
+
+
 # ---------------------- headless apply ----------------------
 def apply_curves_via_preset(main_window, doc, preset: Dict):
-    """
-    Headless Curves apply (used when a Curves shortcut is dropped onto a view).
-    """
     import numpy as _np
+    from pro.curves_preset import _lut_from_preset  # self
+    # lazy import to avoid cycle
+    from pro.curve_editor_pro import _apply_mode_any
+
     img = getattr(doc, "image", None)
     if img is None:
         return
     arr = _np.asarray(img)
-    # normalize → float01
     if arr.dtype.kind in "ui":
         arr01 = arr.astype(_np.float32) / _np.iinfo(arr.dtype).max
     elif arr.dtype.kind == "f":
@@ -159,17 +222,13 @@ def apply_curves_via_preset(main_window, doc, preset: Dict):
     out01 = _apply_mode_any(arr01, mode, lut01)
 
     meta = {"step_name": "Curves", "mode": mode, "preset": dict(preset or {})}
-    # commit
     doc.apply_edit(out01, metadata=meta, step_name="Curves")
 
 # ---------------------- open UI with preset ----------------------
 def open_curves_with_preset(main_window, preset: Dict | None = None):
-    """
-    Opens Curves dialog and seeds:
-      - mode radio from preset["mode"]
-      - curve handles from preset["points_norm"] or from shape/amount
-    """
-    # find active doc (reuse your pattern elsewhere)
+    # lazy import UI to avoid cycle
+    from pro.curve_editor_pro import CurvesDialogPro
+
     dm = getattr(main_window, "doc_manager", getattr(main_window, "docman", None))
     if dm is None:
         return
