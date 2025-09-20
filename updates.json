@@ -1,9 +1,9 @@
 {
-  "version": "1.1.2",
+  "version": "1.1.3",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.1.2/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.1.2/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.1.2/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.1.3/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.1.3/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.1.3/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.1.2 Rename View and Function Bundles. Right click any step in a Function Bundle to adjust the preset values. SFCC Major Bug Fix. Minor bug fixes for save, panel's hiding, upgraded the stacking status window to a dockable panel to solve a bunch of issues,and a few others."
+  "notes": "Seti Astro Suite Pro V1.1.3 Drizzle Kernel options in Stacking Suite options (Gaussian in general gives the best result but is computationally more taxing). Ability to Save and Load custom Curves. Many Many bug fixes and extra updates."
 }
