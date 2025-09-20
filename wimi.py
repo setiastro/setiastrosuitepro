@@ -4379,109 +4379,83 @@ class WIMIDialog(QDialog):
         return hdr
 
     def _load_image(self, path: str):
+        """
+        Load pixels and WCS like _load_from_view:
+        1) use embedded WCS if present and valid
+        2) try to synthesize from XISF metadata
+        3) otherwise auto-solve (ASTAP → Astrometry.net)
+        """
         img_array, original_header, bit_depth, is_mono = load_image(path)
         self.image_path = path
-        if img_array is not None:
+        if img_array is None:
+            QMessageBox.warning(self, "Open Image", "Could not load the selected file.")
+            return
 
-            self.image_data = img_array
-            self.original_header = original_header
-            self.bit_depth = bit_depth
-            self.is_mono = is_mono
+        # persist basics
+        self.image_data = img_array
+        self.original_header = original_header
+        self.bit_depth = bit_depth
+        self.is_mono = is_mono
 
-            # Prepare image for display
-            if img_array.ndim == 2:  # Single-channel image
-                img_array = np.stack([img_array] * 3, axis=-1)  # Expand to 3 channels
+        # 1) show pixels (same renderer used by _load_from_view)
+        self._set_image_from_array(img_array)
 
+        # 2) choose a header using the same order as _load_from_view
+        header = None
 
-            # Prepare image for display
-            img = (img_array * 255).astype(np.uint8)
-            height, width, _ = img.shape
-            bytes_per_line = 3 * width
-            qimg = QImage(img.tobytes(), width, height, bytes_per_line, QImage.Format.Format_RGB888)
-            pixmap = QPixmap.fromImage(qimg)
+        # prefer an explicit/embedded WCS header (from FITS or what load_image provided)
+        if self.check_astrometry_data(original_header):
+            header = original_header
 
-            self.main_image = pixmap
-            scaled_pixmap = pixmap.scaled(self.mini_preview.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-            self.mini_preview.setPixmap(scaled_pixmap)
+        # otherwise try to synthesize from XISF metadata
+        if header is None and path.lower().endswith(".xisf"):
+            xisf_meta = self.extract_xisf_metadata(path)
+            try:
+                candidate = self.construct_fits_header_from_xisf(xisf_meta) if xisf_meta else None
+            except Exception:
+                candidate = None
+            if candidate and self.check_astrometry_data(candidate):
+                header = candidate
 
-            self.main_scene.clear()
-            self.main_scene.addPixmap(pixmap)
-            self.main_preview.setSceneRect(QRectF(pixmap.rect()))
-            self.zoom_level = 1.0
-            self.main_preview.resetTransform()
-            self.main_preview.centerOn(self.main_scene.sceneRect().center())
-            self.update_green_box()
+        # 3) if we found/created a header → sanitize and init WCS
+        if header is not None:
+            try:
+                header = self._sanitize_wcs_header(header)
+                self.initialize_wcs_from_header(header)
+                self.status_label.setText("Status: Loaded image with astrometric solution.")
+                return
+            except Exception as e:
+                # embedded header present but unusable → fall through to auto-solve
+                self.wcs = None
+                self.status_label.setText(f"Status: Embedded WCS invalid — {e}. Attempting auto-solve…")
+                QApplication.processEvents()
 
-            # Initialize WCS from FITS header if it is a FITS file
-            if self.image_path.lower().endswith(('.fits', '.fit')):
-                with fits.open(self.image_path) as hdul:
-                    raw_header = hdul[0].header
-                    self.header = self._sanitize_wcs_header(raw_header) 
-                    
-                    try:
-                        # Use only the first two dimensions for WCS
-                        self.wcs = WCS(self.header, naxis=2, relax=True)
-                        
-                        # Calculate and set pixel scale
-                        pixel_scale_matrix = self.wcs.pixel_scale_matrix
-                        self.pixscale = np.sqrt(pixel_scale_matrix[0, 0]**2 + pixel_scale_matrix[1, 0]**2) * 3600  # arcsec/pixel
-                        self.center_ra, self.center_dec = self.wcs.wcs.crval
-                        self.wcs_header = self.wcs.to_header(relax=True)  # Store the full WCS header, including non-standard keywords
-                        self.print_corner_coordinates()
-                        
-                        print(f"Header CROTA2 Value: {self.header.get('CROTA2', 'Not Found')}")
+        # 4) no valid WCS → follow the same auto-solve path as _load_from_view
+        #    (ASTAP first; if that fails, Astrometry.net)
+        self.status_label.setText("Status: No WCS found. Performing auto-solve…")
+        QMessageBox.information(self, "Auto-Solve", "No astrometric solution found.\nPerforming auto-solve…")
+        QApplication.processEvents()
 
-                        # Display WCS information
-                        # Set orientation based on WCS data if available
-                        if 'CROTA2' in self.header:
-                            try:
-                                self.orientation = float(self.header['CROTA2'])  # Convert to float
-                            except (ValueError, TypeError):
-                                self.orientation = None
-                                print("CROTA2 found, but could not convert to float.")
-                        else:
-                            # Use calculate_orientation if CROTA2 is not present
-                            self.orientation = calculate_orientation(self.header)
-                            if self.orientation is None:
-                                print("Orientation: CD matrix elements not found in WCS header.")
-
-                        # --- ✅ Ensure `self.orientation` is a float before using it ---
-                        if self.orientation is not None:
-                            try:
-                                self.orientation = float(self.orientation)  # Final conversion check
-                                print(f"Orientation: {self.orientation:.2f}°")
-                                self.orientation_label.setText(f"Orientation: {self.orientation:.2f}°")
-                            except (ValueError, TypeError):
-                                print(f"Failed to format orientation: {self.orientation}")
-                                self.orientation_label.setText("Orientation: N/A")
-                        else:
-                            self.orientation_label.setText("Orientation: N/A")
-
-
-                        print(f"WCS data loaded from FITS header: RA={self.center_ra}, Dec={self.center_dec}, "
-                            f"Pixel Scale={self.pixscale} arcsec/px")
-                        
-                        
-                    except ValueError as e:
-                        print("Error initializing WCS:", e)
-                        QMessageBox.warning(self, "WCS Error", "Failed to load WCS data from FITS header.")
-            elif self.image_path.lower().endswith('.xisf'):
-                # Load WCS from XISF properties
-                xisf_meta = self.extract_xisf_metadata(self.image_path)
-                self.metadata = xisf_meta  # Ensure metadata is stored in self.metadata for later use
-
-                # Construct WCS header from XISF properties
-                header = self.construct_fits_header_from_xisf(xisf_meta)
-                if header:
-                    try:
-                        header = self._sanitize_wcs_header(header)
-                        self.initialize_wcs_from_header(header)
-                    except ValueError as e:
-                        print("Error initializing WCS from XISF:", e)
-                        QMessageBox.warning(self, "WCS Error", "Failed to load WCS data from XISF properties.")
+        # ASTAP (seeded if possible)
+        solved_header = self.plate_solve_image()
+        if solved_header is not None:
+            # your perform_* helpers already use apply_wcs_header(); do the same here
+            try:
+                self.apply_wcs_header(solved_header)
+                self.status_label.setText("Status: ASTAP plate solve succeeded.")
+            except Exception as e:
+                self.status_label.setText(f"Status: ASTAP solve produced unusable WCS — {e}. Falling back to blind solve…")
+                QApplication.processEvents()
             else:
-                # For non-FITS images (e.g., JPEG, PNG), prompt directly for a blind solve
-                self.prompt_blind_solve()
+                return  # done
+
+        # Astrometry.net fallback
+        try:
+            self.perform_blind_solve()  # handles login, polling, apply_wcs_header, and status text
+            # perform_blind_solve sets its own success/failure messages
+        except Exception as e:
+            self.wcs = None
+            self.status_label.setText(f"Status: Blind solve failed — {e}")
 
     def extract_xisf_metadata(self, xisf_path):
         """
@@ -4902,6 +4876,29 @@ class WIMIDialog(QDialog):
             self.status_label.setText("Status: Blind Solve Failed.")
             QMessageBox.critical(self, "Blind Solve Failed", f"An error occurred: {str(e)}")
 
+    def _settings(self) -> QSettings:
+        return getattr(self, "settings", None) or QSettings()
+
+    def _get_astap_exe(self) -> str:
+        s = self._settings()
+        # preferred key (what SettingsDialog writes)
+        p = s.value("paths/astap", "", type=str)
+        if p:
+            return p
+        # migrate legacy key if present
+        legacy = s.value("astap/exe_path", "", type=str)
+        if legacy:
+            s.setValue("paths/astap", legacy)
+            s.remove("astap/exe_path")
+            s.sync()
+            return legacy
+        return ""
+
+    def _set_astap_exe(self, path: str) -> None:
+        s = self._settings()
+        s.setValue("paths/astap", path)
+        s.sync()
+
     def plate_solve_image(self):
         """
         Attempts to plate-solve the loaded image using ASTAP,
@@ -4913,14 +4910,15 @@ class WIMIDialog(QDialog):
             return
 
         # 1) Ensure ASTAP path
-        astap_exe = self.settings.value("astap/exe_path", "", type=str)
+        astap_exe = self._get_astap_exe()
         if not astap_exe or not os.path.exists(astap_exe):
-            filt = "Executables (*.exe);;All Files (*)" if sys.platform.startswith("win") else "Executables (astap);;All Files (*)"
+            # last-resort browse if nothing in settings (keeps existing behavior)
+            filt = "Executables (*.exe);;All Files (*)" if sys.platform.startswith("win") else "Executables (*)"
             new_path, _ = QFileDialog.getOpenFileName(self, "Select ASTAP Executable", "", filt)
             if not new_path:
                 return
             astap_exe = new_path
-            self.settings.setValue("astap/exe_path", astap_exe)
+            self._set_astap_exe(astap_exe)
 
         # 2) Write out the normalized FITS for ASTAP
         normalized = self.stretch_image(self.image_data.astype(np.float32))

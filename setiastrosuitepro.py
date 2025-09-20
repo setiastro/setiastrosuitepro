@@ -155,7 +155,7 @@ from PyQt6 import sip
 # ----- QtWidgets -----
 from PyQt6.QtWidgets import (QDialog, QApplication, QMainWindow, QWidget, QHBoxLayout, QFileDialog, QMessageBox, QSizePolicy, QToolBar, QPushButton,
     QLineEdit, QMenu, QListWidget, QListWidgetItem, QSplashScreen, QDockWidget, QListView, QCompleter, QMdiArea, QMdiArea, QMdiSubWindow, 
-    QInputDialog, QVBoxLayout, QLabel, QCheckBox, QProgressBar, QProgressDialog, QGraphicsItem, QTabWidget, QTableWidget, QHeaderView, QTableWidgetItem
+    QInputDialog, QVBoxLayout, QLabel, QCheckBox, QProgressBar, QProgressDialog, QGraphicsItem, QTabWidget, QTableWidget, QHeaderView, QTableWidgetItem, QToolButton
 )
 
 # ----- QtGui -----
@@ -260,7 +260,7 @@ from pro.status_log_dock import StatusLogDock
 from pro.log_bus import LogBus
 
 
-VERSION = "1.1.2"
+VERSION = "1.1.3"
 
 
 if hasattr(sys, '_MEIPASS'):
@@ -1223,28 +1223,32 @@ class AstroSuiteProMainWindow(QMainWindow):
         # View toolbar (Undo / Redo / Display-Stretch)
         tb = DraggableToolBar("View", self)
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb)
+
         tb.addAction(self.act_open)
-        tb.addAction(self.act_save)          # <-- use the QAction
+        tb.addAction(self.act_save)
         tb.addSeparator()
         tb.addAction(self.act_undo)
         tb.addAction(self.act_redo)
         tb.addSeparator()
+
+        # Put Display-Stretch on the bar first so we can attach a menu to its button
         tb.addAction(self.act_autostretch)
-        tb.addAction(self.act_hardstretch)
-        tb.addAction(self.act_zoom_1_1) 
-        tb.addAction(self.act_zoom_fit)    
-        # color the Display-Stretch button when checked
+        tb.addAction(self.act_zoom_1_1)
+        tb.addAction(self.act_zoom_fit)
+
+        # Style
         btn = tb.widgetForAction(self.act_autostretch)
-        if btn:
+        if isinstance(btn, QToolButton):
+            # split-button menu with Linked + Hard profile
+            menu = QMenu(btn)
+            menu.addAction(self.act_stretch_linked)
+            menu.addAction(self.act_hardstretch)   # keep your hard profile here too
+            btn.setMenu(menu)
+            btn.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+
             btn.setStyleSheet("""
-            QToolButton { color: #dcdcdc; }
-            QToolButton:checked { color: #DAA520; font-weight: 600; }
-            """)
-        btn2 = tb.widgetForAction(self.act_hardstretch)
-        if btn2:
-            btn2.setStyleSheet("""
-            QToolButton { color: #dcdcdc; }
-            QToolButton:checked { color: #DAA520; font-weight: 600; }
+                QToolButton { color: #dcdcdc; }
+                QToolButton:checked { color: #DAA520; font-weight: 600; }
             """)
 
 
@@ -1398,6 +1402,15 @@ class AstroSuiteProMainWindow(QMainWindow):
 
         # use toggled(bool), not triggered()
         self.act_hardstretch.toggled.connect(self._set_hard_autostretch_from_action)
+
+        # NEW: Linked/Unlinked toggle (global default via QSettings, per-view runtime)
+        self.act_stretch_linked = QAction("Link RGB channels", self, checkable=True)
+        self.act_stretch_linked.setStatusTip("Apply the same stretch to all RGB channels")
+        self.act_stretch_linked.setShortcut(QKeySequence("Ctrl+Shift+L"))
+        self.act_stretch_linked.setChecked(
+            self.settings.value("display/stretch_linked", False, type=bool)
+        )
+        self.act_stretch_linked.toggled.connect(self._set_linked_stretch_from_action)
 
         self.act_zoom_1_1 = QAction("1:1", self)
         self.act_zoom_1_1.setStatusTip("Zoom to 100% (pixel-for-pixel)")
@@ -5119,6 +5132,10 @@ class AstroSuiteProMainWindow(QMainWindow):
                 "wsde": "wavescale_dark_enhance",
                 "dark_enhancer": "wavescale_dark_enhance",
 
+                "star_alignment": "star_align",
+                "align_stars": "star_align",
+                "align": "star_align",
+
             }
             return aliases.get(c, c)
 
@@ -5260,6 +5277,19 @@ class AstroSuiteProMainWindow(QMainWindow):
                 
                 open_curves_with_preset(self, preset)
                 return
+            if cid == "star_align":
+                try:
+                    from pro.star_alignment_preset import run_star_alignment_via_preset
+                    run_star_alignment_via_preset(self, preset or {}, target_doc=doc)
+                    rp = preset or {}
+                    rm = str(rp.get("ref_mode", "active"))
+                    rn = (rp.get("ref_name") or os.path.basename(rp.get("ref_file","")) or
+                        (str(rp.get("ref_ptr")) if rp.get("ref_ptr") is not None else "active"))
+                    self._log(f"Ran Star Alignment (ref={rm}:{rn}, overwrite={'yes' if rp.get('overwrite', False) else 'no'})")
+                except Exception as e:
+                    from PyQt6.QtWidgets import QMessageBox
+                    QMessageBox.warning(self, "Star Alignment", f"Apply failed:\n{e}")
+                return            
             if target_sw is None:
                 if cid == "ghs":
                     
@@ -5394,6 +5424,20 @@ class AstroSuiteProMainWindow(QMainWindow):
             apply_remove_green_preset_to_doc(self, doc, preset)
             return
 
+        if cid == "star_align":
+            try:
+                from pro.star_alignment_preset import run_star_alignment_via_preset
+                run_star_alignment_via_preset(self, preset or {}, target_doc=doc)
+                # simple, robust logging
+                rp = preset or {}
+                rm = rp.get("ref_mode", "active")
+                rn = rp.get("ref_name") or os.path.basename(rp.get("ref_file","")) or "active"
+                self._log(f"Ran Star Alignment (ref={rm}:{rn}, overwrite={'yes' if rp.get('overwrite', False) else 'no'})")
+            except Exception as e:
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.warning(self, "Star Alignment", f"Apply failed:\n{e}")
+            return
+
         if cid == "background_neutral":
             try:
                 self._apply_background_neutral_preset_to_doc(doc, preset)
@@ -5470,6 +5514,8 @@ class AstroSuiteProMainWindow(QMainWindow):
             dlg.resize(900, 650)
             dlg.show()
             return
+
+
 
         if cid == "wavescale_hdr":
             # (unchanged block)
@@ -6841,6 +6887,24 @@ class AstroSuiteProMainWindow(QMainWindow):
                 self.mdi.setActiveSubWindow(sw)
                 return
 
+    def _set_linked_stretch_from_action(self, checked: bool):
+        # persist as the default for *new* views
+        self.settings.setValue("display/stretch_linked", bool(checked))
+
+        # apply to the current view immediately (if any)
+        sw = self.mdi.activeSubWindow()
+        if not sw:
+            return
+        view = sw.widget()
+        if hasattr(view, "set_autostretch_linked"):
+            view.set_autostretch_linked(bool(checked))
+            # If stretch is off, turn it on so the user sees the effect right away
+            if not getattr(view, "autostretch_enabled", False):
+                view.set_autostretch(True)
+                self._sync_autostretch_action(True)
+
+        self._log(f"Display-Stretch mode → {'LINKED' if checked else 'UNLINKED'}")
+
     def _on_subwindow_activated(self, sw):
         # Clear previous active marker
         prev = getattr(self, "_last_active_view", None)
@@ -6877,10 +6941,16 @@ class AstroSuiteProMainWindow(QMainWindow):
                 self.act_autostretch.setChecked(False)
 
         view = sw.widget() if sw else None
-        is_hard = bool(getattr(view, "is_hard_autostretch", lambda: False)())
-        from PyQt6.QtCore import QSignalBlocker
-        block = QSignalBlocker(self.act_hardstretch)
-        self.act_hardstretch.setChecked(is_hard)
+        # sync the Linked action with the active view (and enable/disable for mono)
+        if hasattr(self, "act_stretch_linked"):
+            if not view:
+                self.act_stretch_linked.setEnabled(False)
+                return
+            is_mono = getattr(view, "is_mono", lambda: False)()
+            self.act_stretch_linked.setEnabled(not is_mono)
+            if hasattr(view, "is_autostretch_linked"):
+                with QSignalBlocker(self.act_stretch_linked):
+                    self.act_stretch_linked.setChecked(bool(view.is_autostretch_linked()))
 
         self.update_undo_redo_action_labels()
         self._hdr_refresh_timer.start(0)
