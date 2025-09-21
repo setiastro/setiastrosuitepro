@@ -474,25 +474,51 @@ class WaveScaleHDRDialogPro(QDialog):
         self._update_mask_from_gamma()
 
     def _headless_guard_active(self) -> bool:
-        try:
-            p = self.parent()
-            if p and (getattr(p, "_wavescale_guard", False) or getattr(p, "_wavescale_headless_running", False)):
-                return True
-        except Exception:
-            pass
-        try:
-            from PyQt6.QtCore import QSettings
-            s = QSettings()
-            return bool(s.value("wavescale/headless_in_progress", False))
-        except Exception:
+        """Only guard true concurrent *headless* runs; ignore stale locks."""
+        # If we are not launching headless, never block the interactive UI.
+        if not self._headless:
             return False
 
+        # Parent flags
+        p = self.parent()
+        if p and (getattr(p, "_wavescale_guard", False) or getattr(p, "_wavescale_headless_running", False)):
+            return True
+
+        # Settings lock with TTL
+        try:
+            s = QSettings()
+            in_prog = bool(s.value("wavescale/headless_in_progress", False))
+            started  = float(s.value("wavescale/headless_started_at", 0.0))
+        except Exception:
+            in_prog, started = False, 0.0
+
+        if not in_prog:
+            return False
+
+        # consider anything older than 5 minutes stale
+        import time
+        if (time.time() - started) > 5 * 60:
+            try:
+                s.remove("wavescale/headless_in_progress")
+                s.remove("wavescale/headless_started_at")
+            except Exception:
+                pass
+            return False
+
+        return True
+
     def showEvent(self, e):
+        super().showEvent(e)
         if not self._bypass_guard and self._headless_guard_active():
-            e.ignore()
-            QTimer.singleShot(0, self.reject)
-            return
-        return super().showEvent(e)
+            # Soft warning instead of rejecting the dialog
+            try:
+                QMessageBox.information(
+                    self, "WaveScale HDR",
+                    "A headless HDR run appears to be in progress. "
+                    "This window will remain open; you can still preview safely."
+                )
+            except Exception:
+                pass
 
     def exec(self) -> int:
         if not self._bypass_guard and self._headless_guard_active():
