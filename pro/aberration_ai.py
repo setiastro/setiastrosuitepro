@@ -25,6 +25,22 @@ except Exception:
 GITHUB_REPO = "riccardoalberghi/abberation_models"
 LATEST_API  = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
+def _model_required_patch(model_path: str) -> int | None:
+    """
+    Returns the fixed spatial size the model expects (e.g. 512), or None if dynamic.
+    """
+    if ort is None or not os.path.isfile(model_path):
+        return None
+    try:
+        sess = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+        shp = sess.get_inputs()[0].shape  # e.g. [1, 1, 512, 512] or ['N','C',512,512]
+        h = shp[-2]; w = shp[-1]
+        if isinstance(h, int) and isinstance(w, int) and h == w:
+            return int(h)
+    except Exception:
+        pass
+    return None
+
 
 def _app_model_dir() -> str:
     base = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation)
@@ -489,9 +505,7 @@ class AberrationAIDialog(QDialog):
 
         # -------- providers (always choose, then always run) --------
         if IS_APPLE_ARM:
-            # Hard gate to CPU on Apple Silicon
             providers = ["CPUExecutionProvider"]
-            # keep UI consistent just in case
             self.chk_auto.setChecked(False)
         else:
             if self.chk_auto.isChecked():
@@ -500,14 +514,25 @@ class AberrationAIDialog(QDialog):
                 sel = self.cmb_provider.currentText()
                 providers = [sel] if sel else ["CPUExecutionProvider"]
 
-        # Safety clamp: if CoreML somehow ends up selected, use smaller tiles
-        if "CoreMLExecutionProvider" in providers and patch > 128:
-            patch = 128
+        # --- make patch match the model's requirement (if fixed) ---
+        req = _model_required_patch(self._model_path)
+        if req and req > 0:
+            patch = req
             try:
                 self.spin_patch.blockSignals(True)
-                self.spin_patch.setValue(128)
+                self.spin_patch.setValue(req)
             finally:
                 self.spin_patch.blockSignals(False)
+
+        # --- CoreML guard on Intel: if model needs >128, run on CPU instead ---
+        if ("CoreMLExecutionProvider" in providers) and (req and req > 128):
+            self._log(f"CoreML limited to small tiles; model requires {req}px → using CPU.")
+            providers = ["CPUExecutionProvider"]
+            try:
+                self.cmb_provider.setCurrentText("CPUExecutionProvider")
+                self.chk_auto.setChecked(False)
+            except Exception:
+                pass
 
         self._t_start = time.perf_counter()
         prov_txt = ("auto" if self.chk_auto.isChecked() else self.cmb_provider.currentText() or "CPU")
