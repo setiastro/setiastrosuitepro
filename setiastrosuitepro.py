@@ -260,7 +260,7 @@ from pro.status_log_dock import StatusLogDock
 from pro.log_bus import LogBus
 
 
-VERSION = "1.1.3"
+VERSION = "1.1.4"
 
 
 if hasattr(sys, '_MEIPASS'):
@@ -7639,6 +7639,7 @@ if __name__ == "__main__":
         import warnings
         from matplotlib import MatplotlibDeprecationWarning
         warnings.filterwarnings("ignore", category=MatplotlibDeprecationWarning)
+
 
         # Your image manager + main window
         imgr = ImageManager(max_slots=100)
