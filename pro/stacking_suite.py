@@ -3,6 +3,8 @@ import os, glob, shutil, tempfile, datetime as _dt
 from time import perf_counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy as np
+import hashlib
+from numpy.lib.format import open_memmap 
 import re, unicodedata
 import math            # used in compute_safe_chunk
 import psutil          # used in bytes_available / compute_safe_chunk
@@ -566,6 +568,74 @@ def load_fits_tile(filepath, y_start, y_end, x_start, x_end):
 def _get_log_dock():
     app = QApplication.instance()
     return getattr(app, "_sasd_status_console", None)  # set by main window
+
+class _MMFits:
+    """
+    Keeps one FITS open (memmap=True) for the whole group; slices tiles without
+    re-opening the file. Handles spatial/color axis detection once.
+    """
+    def __init__(self, path: str):
+        self.path = path
+        # Keep file open for the whole integration of the group
+        self.hdul = fits.open(path, memmap=True)
+        self.data = self.hdul[0].data
+        if self.data is None:
+            raise ValueError(f"Empty FITS: {path}")
+
+        self.shape = self.data.shape
+        self.ndim  = self.data.ndim
+        self.orig_dtype = self.data.dtype
+
+        # detect color axis (size==3) and spatial axes once
+        if self.ndim == 2:
+            self.color_axis = None
+            self.spat_axes = (0, 1)
+        elif self.ndim == 3:
+            dims = self.shape
+            self.color_axis = next((i for i, d in enumerate(dims) if d == 3), None)
+            if self.color_axis is None:
+                self.spat_axes = (0, 1)
+            else:
+                self.spat_axes = tuple(i for i in range(3) if i != self.color_axis)
+        else:
+            raise ValueError(f"Unsupported ndim={self.ndim} for {path}")
+
+        # scalar normalization chosen once
+        if   self.orig_dtype == np.uint8:  self._scale = 1.0/255.0
+        elif self.orig_dtype == np.uint16: self._scale = 1.0/65535.0
+        else:                              self._scale = None
+
+    def read_tile(self, y0, y1, x0, x1) -> np.ndarray:
+        d = self.data
+        if self.ndim == 2:
+            tile = d[y0:y1, x0:x1]
+        else:
+            sl = [slice(None)]*3
+            sl[self.spat_axes[0]] = slice(y0, y1)
+            sl[self.spat_axes[1]] = slice(x0, x1)
+            tile = d[tuple(sl)]
+            # move color to last if present
+            if self.color_axis is not None and self.color_axis != 2:
+                tile = np.moveaxis(tile, self.color_axis, -1)
+
+        # late normalize to float32
+        if self._scale is None:
+            tile = tile.astype(np.float32, copy=False)
+        else:
+            tile = tile.astype(np.float32, copy=False) * self._scale
+
+        # ensure (h,w,3) or (h,w)
+        if tile.ndim == 3 and tile.shape[-1] not in (1,3):
+            # uncommon mono-3D (e.g. (3,h,w)): move to (h,w,3)
+            if tile.shape[0] == 3 and tile.shape[-1] != 3:
+                tile = np.moveaxis(tile, 0, -1)
+        return tile
+
+    def close(self):
+        try:
+            self.hdul.close()
+        except Exception:
+            pass
 
 # --------------------------------------------------
 # Stacking Suite
@@ -1941,6 +2011,76 @@ class StackingSuiteDialog(QDialog):
         right_col.addWidget(gb_rej)
         right_col.addStretch(1)
 
+        # --- Cosmetic Correction (Advanced) ---
+        gb_cosm = QGroupBox("Cosmetic Correction (Advanced)")
+        fl_cosm = QFormLayout(gb_cosm)
+
+        # Enable/disable advanced controls (purely for UI clarity)
+        self.cosm_enable_cb = QCheckBox("Enable advanced cosmetic tuning")
+        self.cosm_enable_cb.setChecked(
+            self.settings.value("stacking/cosmetic/custom_enable", False, type=bool)
+        )
+        fl_cosm.addRow(self.cosm_enable_cb)
+
+        def _mk_fspin(minv, maxv, step, decimals, key, default):
+            sb = QDoubleSpinBox()
+            sb.setRange(minv, maxv)
+            sb.setDecimals(decimals)
+            sb.setSingleStep(step)
+            sb.setValue(self.settings.value(key, default, type=float))
+            return sb
+
+        # σ thresholds
+        self.cosm_hot_sigma = _mk_fspin(0.1, 20.0, 0.1, 2,
+            "stacking/cosmetic/hot_sigma", 5.0)
+        self.cosm_cold_sigma = _mk_fspin(0.1, 20.0, 0.1, 2,
+            "stacking/cosmetic/cold_sigma", 5.0)
+
+        row_sig = QWidget(); row_sig_h = QHBoxLayout(row_sig); row_sig_h.setContentsMargins(0,0,0,0)
+        row_sig_h.addWidget(QLabel("Hot σ:")); row_sig_h.addWidget(self.cosm_hot_sigma)
+        row_sig_h.addSpacing(8)
+        row_sig_h.addWidget(QLabel("Cold σ:")); row_sig_h.addWidget(self.cosm_cold_sigma)
+        fl_cosm.addRow("Sigma thresholds:", row_sig)
+
+        # Star guards (skip replacements if neighbors look like a PSF)
+        self.cosm_star_mean_ratio = _mk_fspin(0.05, 0.60, 0.01, 3,
+            "stacking/cosmetic/star_mean_ratio", 0.22)
+        self.cosm_star_max_ratio  = _mk_fspin(0.10, 0.95, 0.01, 3,
+            "stacking/cosmetic/star_max_ratio", 0.55)
+        row_star = QWidget(); row_star_h = QHBoxLayout(row_star); row_star_h.setContentsMargins(0,0,0,0)
+        row_star_h.addWidget(QLabel("Mean ratio:")); row_star_h.addWidget(self.cosm_star_mean_ratio)
+        row_star_h.addSpacing(8)
+        row_star_h.addWidget(QLabel("Max ratio:"));  row_star_h.addWidget(self.cosm_star_max_ratio)
+        fl_cosm.addRow("Star guards:", row_star)
+
+        # Saturation guard quantile
+        self.cosm_sat_quantile = _mk_fspin(0.90, 0.9999, 0.0005, 4,
+            "stacking/cosmetic/sat_quantile", 0.9995)
+        self.cosm_sat_quantile.setToolTip("Pixels above this image quantile are treated as saturated and never replaced.")
+        fl_cosm.addRow("Saturation quantile:", self.cosm_sat_quantile)
+
+        # Small helper to enable/disable rows by master checkbox
+        def _toggle_cosm_enabled(on: bool):
+            for w in (row_sig, row_star, self.cosm_sat_quantile):
+                w.setEnabled(on)
+
+        # Defaults button
+        btn_defaults = QPushButton("Restore Recommended")
+        def _restore_defaults():
+            self.cosm_hot_sigma.setValue(5.0)
+            self.cosm_cold_sigma.setValue(5.0)
+            self.cosm_star_mean_ratio.setValue(0.22)
+            self.cosm_star_max_ratio.setValue(0.55)
+            self.cosm_sat_quantile.setValue(0.9995)
+        btn_defaults.clicked.connect(_restore_defaults)
+        fl_cosm.addRow(btn_defaults)
+
+        # wire
+        self.cosm_enable_cb.toggled.connect(_toggle_cosm_enabled)
+        _toggle_cosm_enabled(self.cosm_enable_cb.isChecked())
+
+        right_col.addWidget(gb_cosm)
+
         # --- Buttons ---
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         btns.accepted.connect(lambda: self.save_stacking_settings(dialog))
@@ -2016,6 +2156,13 @@ class StackingSuiteDialog(QDialog):
         self.settings.setValue("stacking/grad_poly2/gain_lo",    float(self.grad_gain_lo.value()))
         self.settings.setValue("stacking/grad_poly2/gain_hi",    float(self.grad_gain_hi.value()))
 
+        # Cosmetic (Advanced)
+        self.settings.setValue("stacking/cosmetic/custom_enable", self.cosm_enable_cb.isChecked())
+        self.settings.setValue("stacking/cosmetic/hot_sigma",      float(self.cosm_hot_sigma.value()))
+        self.settings.setValue("stacking/cosmetic/cold_sigma",     float(self.cosm_cold_sigma.value()))
+        self.settings.setValue("stacking/cosmetic/star_mean_ratio",float(self.cosm_star_mean_ratio.value()))
+        self.settings.setValue("stacking/cosmetic/star_max_ratio", float(self.cosm_star_max_ratio.value()))
+        self.settings.setValue("stacking/cosmetic/sat_quantile",   float(self.cosm_sat_quantile.value()))
 
 
         passes = 1 if self.align_passes_combo.currentIndex() == 0 else 3
@@ -5445,11 +5592,35 @@ class StackingSuiteDialog(QDialog):
 
                     # ---------- COSMETIC (optional) ----------
                     if apply_cosmetic:
+                        # Pull configured values (fallbacks preserve current behavior)
+                        hot_sigma      = self.settings.value("stacking/cosmetic/hot_sigma", 5.0, type=float)
+                        cold_sigma     = self.settings.value("stacking/cosmetic/cold_sigma", 5.0, type=float)
+                        star_mean_ratio= self.settings.value("stacking/cosmetic/star_mean_ratio", 0.22, type=float)
+                        star_max_ratio = self.settings.value("stacking/cosmetic/star_max_ratio", 0.55, type=float)
+                        sat_quantile   = self.settings.value("stacking/cosmetic/sat_quantile", 0.9995, type=float)
+
                         if hdr.get("BAYERPAT"):
-                            light_data = bulk_cosmetic_correction_bayer(light_data)
+                            # Use the FITS header pattern if present
+                            pattern = str(hdr.get("BAYERPAT")).strip().upper()
+                            light_data = bulk_cosmetic_correction_bayer(
+                                light_data,
+                                hot_sigma=hot_sigma,
+                                cold_sigma=cold_sigma,
+                                star_mean_ratio=star_mean_ratio,
+                                star_max_ratio=star_max_ratio,
+                                sat_quantile=sat_quantile,
+                                pattern=pattern if pattern in ("RGGB","BGGR","GRBG","GBRG") else "RGGB"
+                            )
                             self.update_status("Cosmetic Correction Applied for Bayer Pattern")
                         else:
-                            light_data = bulk_cosmetic_correction_numba(light_data)
+                            light_data = bulk_cosmetic_correction_numba(
+                                light_data,
+                                hot_sigma=hot_sigma,
+                                cold_sigma=cold_sigma,
+                                star_mean_ratio=star_mean_ratio,
+                                star_max_ratio=star_max_ratio,
+                                sat_quantile=sat_quantile
+                            )
                             self.update_status("Cosmetic Correction Applied")
                         QApplication.processEvents()
 
@@ -7134,35 +7305,85 @@ class StackingSuiteDialog(QDialog):
         # Pass the dictionary (grouped by filter, exposure, dimensions) to the stacking function.
         self.stack_registered_images(self.light_files, frame_weights)
 
+    def _mmcache_dir(self) -> str:
+        d = os.path.join(self.stacking_directory, "_mmcache")
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def _memmap_key(self, file_path: str) -> str:
+        """Stable key bound to path + size + mtime (regen if source changes)."""
+        st = os.stat(file_path)
+        sig = f"{os.path.abspath(file_path)}|{st.st_size}|{st.st_mtime_ns}"
+        return hashlib.sha1(sig.encode("utf-8")).hexdigest()[:16]
+
+    def _ensure_float32_memmap(self, file_path: str) -> tuple[str, tuple[int,int,int]]:
+        """
+        Ensure a (H,W,C float32) .npy exists for file_path. Returns (npy_path, shape).
+        We keep C=1 for mono, C=3 for color. Values in [0..1].
+        """
+        key = self._memmap_key(file_path)
+        npy_path = os.path.join(self._mmcache_dir(), f"{key}.npy")
+        if os.path.exists(npy_path):
+            # Shape header is embedded in the .npy; we’ll read when opening.
+            return npy_path, None
+
+        img, hdr, _, _ = load_image(file_path)
+        if img is None:
+            raise RuntimeError(f"Could not load {file_path} to create memmap cache.")
+
+        # Normalize → float32 [0..1], ensure channels-last (H,W,C).
+        if img.ndim == 2:
+            arr = img.astype(np.float32, copy=False)
+            if arr.dtype == np.uint16: arr = arr / 65535.0
+            elif arr.dtype == np.uint8: arr = arr / 255.0
+            else: arr = np.clip(arr, 0.0, 1.0)
+            arr = arr[..., None]  # (H,W,1)
+        elif img.ndim == 3:
+            if img.shape[0] == 3 and img.shape[2] != 3:
+                img = np.transpose(img, (1,2,0))  # (H,W,3)
+            arr = img.astype(np.float32, copy=False)
+            if arr.dtype == np.uint16: arr = arr / 65535.0
+            elif arr.dtype == np.uint8: arr = arr / 255.0
+            else: arr = np.clip(arr, 0.0, 1.0)
+        else:
+            raise ValueError(f"Unsupported image ndim={img.ndim} for {file_path}")
+
+        H, W, C = arr.shape
+        mm = open_memmap(npy_path, mode="w+", dtype=np.float32, shape=(H, W, C))
+        mm[:] = arr  # single write
+        del mm
+        return npy_path, (H, W, C)
+
+    def _open_memmaps_readonly(self, paths: list[str]) -> dict[str, np.memmap]:
+        """Open all cached arrays in read-only mmap mode."""
+        views = {}
+        for p in paths:
+            npy, _ = self._ensure_float32_memmap(p)
+            views[p] = np.load(npy, mmap_mode="r")  # returns numpy.memmap
+        return views
+
 
     def stack_registered_images_chunked(
         self,
-        grouped_files,           # dict of { group_key: [list_of_aligned_and_already_normalized_file_paths] }
-        frame_weights,           # dict of { file_path: weight }
+        grouped_files,
+        frame_weights,
         chunk_height=2048,
         chunk_width=2048
     ):
-        """
-        Chunked stacking of already-aligned and pre-normalized FITS images.
-        Reads small tiles from each image, applies outlier rejection (using the new rejection-map output),
-        writes the result into a memory-mapped array, and saves a final stacked FITS.
-        """
         self.update_status(f"✅ Chunked stacking {len(grouped_files)} group(s)...")
         QApplication.processEvents()
 
-        # We'll also accumulate a list of rejected pixel positions (global coordinates)
         all_rejection_coords = []
 
         for group_key, file_list in grouped_files.items():
             num_files = len(file_list)
             self.update_status(f"📊 Group '{group_key}' has {num_files} aligned file(s).")
             QApplication.processEvents()
-
             if num_files < 2:
                 self.update_status(f"⚠️ Group '{group_key}' does not have enough frames to stack.")
                 continue
 
-            # 1) Identify the reference file to get shape and header
+            # Reference shape/header (unchanged)
             ref_file = file_list[0]
             if not os.path.exists(ref_file):
                 self.update_status(f"⚠️ Reference file '{ref_file}' not found, skipping group.")
@@ -7177,179 +7398,166 @@ class StackingSuiteDialog(QDialog):
             height, width = ref_data.shape[:2]
             channels = 3 if is_color else 1
 
-            # 2) Prepare a memmap for the final stacked image.
+            # Final output memmap (unchanged)
             memmap_path = self._build_out(self.stacking_directory, f"chunked_{group_key}", "dat")
-            final_stacked = np.memmap(
-                memmap_path,
-                dtype=np.float32,
-                mode='w+',
-                shape=(height, width, channels)
-            )
+            final_stacked = np.memmap(memmap_path, dtype=np.float32, mode='w+', shape=(height, width, channels))
 
-            # Build list of valid files and corresponding weights.
-            aligned_paths = []
-            weights_list = []
+            # Valid files + weights
+            aligned_paths, weights_list = [], []
             for fpath in file_list:
                 if os.path.exists(fpath):
                     aligned_paths.append(fpath)
-                    w = frame_weights.get(fpath, 1.0)
-                    weights_list.append(w)
+                    weights_list.append(frame_weights.get(fpath, 1.0))
                 else:
                     self.update_status(f"⚠️ File not found: {fpath}, skipping.")
-
             if len(aligned_paths) < 2:
                 self.update_status(f"⚠️ Not enough valid frames in group '{group_key}' to stack.")
                 continue
 
             weights_list = np.array(weights_list, dtype=np.float32)
+
+            # ⬇️ NEW: open read-only memmaps for all aligned frames (float32 [0..1], HxWxC)
+            mm_views = self._open_memmaps_readonly(aligned_paths)
+
             self.update_status(f"📊 Stacking group '{group_key}' with {self.rejection_algorithm}")
             QApplication.processEvents()
 
-            # Initialize a list to collect rejected pixel coordinates for this group.
             rejection_coords = []
             N = len(aligned_paths)
-            DTYPE    = self._dtype()
-            pref_h   = self.chunk_height
-            pref_w   = self.chunk_width
+            DTYPE  = self._dtype()
+            pref_h = self.chunk_height
+            pref_w = self.chunk_width
 
-            # 3) Compute a safe chunk size once, up front
             try:
-                chunk_h, chunk_w = compute_safe_chunk(
-                    height, width, N, channels, DTYPE, pref_h, pref_w
-                )
+                chunk_h, chunk_w = compute_safe_chunk(height, width, N, channels, DTYPE, pref_h, pref_w)
                 self.update_status(f"🔧 Using chunk size {chunk_h}×{chunk_w} for {self._dtype()}")
             except MemoryError as e:
                 self.update_status(f"⚠️ {e}")
                 return None, {}, None
 
-            # 3) Loop over tiles
+            # Tile loop (same structure, but tile loading reads from memmaps)
             from concurrent.futures import ThreadPoolExecutor, as_completed
-            for y_start in range(0, height, chunk_height):
-                y_end = min(y_start + chunk_height, height)
+            LOADER_WORKERS = min(max(2, (os.cpu_count() or 4) // 2), 8)  # tuned for memory bw
+
+            for y_start in range(0, height, chunk_h):
+                y_end  = min(y_start + chunk_h, height)
                 tile_h = y_end - y_start
 
-                for x_start in range(0, width, chunk_width):
-                    x_end = min(x_start + chunk_width, width)
+                for x_start in range(0, width, chunk_w):
+                    x_end  = min(x_start + chunk_w, width)
                     tile_w = x_end - x_start
 
-                    # Build tile stack: shape (N, tile_h, tile_w, channels)
-                    N = len(aligned_paths)
-                 
-                    tile_stack = np.zeros((N, tile_h, tile_w, channels), dtype=np.float32)
-                    num_cores = os.cpu_count() or 4
-                    with ThreadPoolExecutor(max_workers=num_cores) as executor:
-                        future_to_index = {}
-                        for i, path in enumerate(aligned_paths):
-                            future = executor.submit(load_fits_tile, path, y_start, y_end, x_start, x_end)
-                            future_to_index[future] = i
+                    # Preallocate tile stack
+                    tile_stack = np.empty((N, tile_h, tile_w, channels), dtype=np.float32)
 
-                        for future in as_completed(future_to_index):
-                            i = future_to_index[future]
-                            sub_img = future.result()
-                            if sub_img is None:
-                                continue
-                            # Ensure sub_img is shaped (tile_h, tile_w, channels)
-                            if sub_img.ndim == 2:
-                                sub_img = sub_img[:, :, np.newaxis]
-                                if channels == 3:
-                                    sub_img = np.repeat(sub_img, 3, axis=2)
-                            elif sub_img.ndim == 3 and sub_img.shape[0] == 3 and channels == 3:
-                                sub_img = sub_img.transpose(1, 2, 0)
-                            sub_img = sub_img.astype(np.float32, copy=False)
-                            tile_stack[i] = sub_img
+                    # ⬇️ NEW: fill tile_stack from the memmaps (parallel copy)
+                    def _copy_one(i, path):
+                        v = mm_views[path][y_start:y_end, x_start:x_end]  # view on disk
+                        if v.ndim == 2:
+                            # mono memmap stored as (H,W,1); but if legacy mono npy exists as (H,W),
+                            # make it (H,W,1) here:
+                            vv = v[..., None]
+                        else:
+                            vv = v
+                        if vv.shape[2] == 1 and channels == 3:
+                            vv = np.repeat(vv, 3, axis=2)
+                        tile_stack[i] = vv
 
-                    # 4) Apply the chosen rejection algorithm and get the rejection map.
+                    with ThreadPoolExecutor(max_workers=LOADER_WORKERS) as exe:
+                        futs = {exe.submit(_copy_one, i, p): i for i, p in enumerate(aligned_paths)}
+                        for _ in as_completed(futs):
+                            pass
+
+                    # Rejection (unchanged – uses your Numba kernels)
                     algo = self.rejection_algorithm
                     if algo == "Simple Median (No Rejection)":
-                        tile_result = np.median(tile_stack, axis=0)
-                        tile_rej_map = np.zeros(tile_stack.shape[1:], dtype=np.bool_)
+                        tile_result  = np.median(tile_stack, axis=0)
+                        tile_rej_map = np.zeros(tile_stack.shape[1:3], dtype=np.bool_)
                     elif algo == "Simple Average (No Rejection)":
-                        tile_result = np.average(tile_stack, axis=0, weights=weights_list)
-                        tile_rej_map = np.zeros(tile_stack.shape[1:], dtype=np.bool_)
+                        tile_result  = np.average(tile_stack, axis=0, weights=weights_list)
+                        tile_rej_map = np.zeros(tile_stack.shape[1:3], dtype=np.bool_)
                     elif algo == "Weighted Windsorized Sigma Clipping":
-                        tile_result, tile_rej_map = windsorized_sigma_clip_weighted(tile_stack, weights_list,
-                            lower=self.sigma_low, upper=self.sigma_high)
+                        tile_result, tile_rej_map = windsorized_sigma_clip_weighted(
+                            tile_stack, weights_list, lower=self.sigma_low, upper=self.sigma_high
+                        )
                     elif algo == "Kappa-Sigma Clipping":
-                        tile_result, tile_rej_map = kappa_sigma_clip_weighted(tile_stack, weights_list,
-                            kappa=self.kappa, iterations=self.iterations)
+                        tile_result, tile_rej_map = kappa_sigma_clip_weighted(
+                            tile_stack, weights_list, kappa=self.kappa, iterations=self.iterations
+                        )
                     elif algo == "Trimmed Mean":
-                        tile_result, tile_rej_map = trimmed_mean_weighted(tile_stack, weights_list,
-                            trim_fraction=self.trim_fraction)
+                        tile_result, tile_rej_map = trimmed_mean_weighted(
+                            tile_stack, weights_list, trim_fraction=self.trim_fraction
+                        )
                     elif algo == "Extreme Studentized Deviate (ESD)":
-                        tile_result, tile_rej_map = esd_clip_weighted(tile_stack, weights_list,
-                            threshold=self.esd_threshold)
+                        tile_result, tile_rej_map = esd_clip_weighted(
+                            tile_stack, weights_list, threshold=self.esd_threshold
+                        )
                     elif algo == "Biweight Estimator":
-                        tile_result, tile_rej_map = biweight_location_weighted(tile_stack, weights_list,
-                            tuning_constant=self.biweight_constant)
+                        tile_result, tile_rej_map = biweight_location_weighted(
+                            tile_stack, weights_list, tuning_constant=self.biweight_constant
+                        )
                     elif algo == "Modified Z-Score Clipping":
-                        tile_result, tile_rej_map = modified_zscore_clip_weighted(tile_stack, weights_list,
-                            threshold=self.modz_threshold)
+                        tile_result, tile_rej_map = modified_zscore_clip_weighted(
+                            tile_stack, weights_list, threshold=self.modz_threshold
+                        )
                     elif algo == "Max Value":
-                        tile_result, tile_rej_map = max_value_stack(tile_stack, weights_list)
+                        tile_result, tile_rej_map = max_value_stack(
+                            tile_stack, weights_list
+                        )
                     else:
-                        tile_result, tile_rej_map = windsorized_sigma_clip_weighted(tile_stack, weights_list,
-                            lower=self.sigma_low, upper=self.sigma_high)
+                        tile_result, tile_rej_map = windsorized_sigma_clip_weighted(
+                            tile_stack, weights_list, lower=self.sigma_low, upper=self.sigma_high
+                        )
 
-                    # 5) Insert integrated tile into final image.
+                    # Commit tile
                     final_stacked[y_start:y_end, x_start:x_end, :] = tile_result
 
-                    # 6) Use the returned tile_rej_map to record rejected pixel positions.
-                    # For rejection maps with per-frame output, combine along the frame axis.
-                    if tile_rej_map.ndim == 3:  # mono: (N, tile_h, tile_w)
-                        combined_rej = np.any(tile_rej_map, axis=0)  # shape: (tile_h, tile_w)
-                    elif tile_rej_map.ndim == 4:  # color: (N, tile_h, tile_w, channels)
-                        # First combine along the frame axis, then across channels.
-                        combined_rej = np.any(tile_rej_map, axis=0)  # shape: (tile_h, tile_w, channels)
-                        combined_rej = np.any(combined_rej, axis=-1)  # shape: (tile_h, tile_w)
+                    # Collect per-tile rejection coords (unchanged logic)
+                    if tile_rej_map.ndim == 3:          # (N, tile_h, tile_w)
+                        combined_rej = np.any(tile_rej_map, axis=0)
+                    elif tile_rej_map.ndim == 4:        # (N, tile_h, tile_w, C)
+                        combined_rej = np.any(tile_rej_map, axis=0)
+                        combined_rej = np.any(combined_rej, axis=-1)
                     else:
-                        combined_rej = np.zeros(tile_stack.shape[1:3], dtype=np.bool_)
+                        combined_rej = np.zeros((tile_h, tile_w), dtype=np.bool_)
 
                     ys_tile, xs_tile = np.where(combined_rej)
-                    for dx, dy in zip(xs_tile, ys_tile):
-                        global_x = x_start + dx
-                        global_y = y_start + dy
-                        rejection_coords.append((global_x, global_y))
+                    for dy, dx in zip(ys_tile, xs_tile):
+                        rejection_coords.append((x_start + dx, y_start + dy))
 
-            # 7) After processing all tiles, finish up the integrated image.
+            # Finish/save (unchanged from your version) …
             final_array = np.array(final_stacked)
             del final_stacked
 
-            # Apply a black-point offset and scale if needed.
-            flat_array = final_array.ravel()
-            nonzero_indices = np.where(flat_array > 0)[0]
-            if nonzero_indices.size > 0:
-                first_nonzero = flat_array[nonzero_indices[0]]
-                final_array -= first_nonzero
+            flat = final_array.ravel()
+            nz = np.where(flat > 0)[0]
+            if nz.size > 0:
+                final_array -= flat[nz[0]]
 
             new_max = final_array.max()
             if new_max > 1.0:
                 new_min = final_array.min()
-                range_val = new_max - new_min
-                if range_val != 0:
-                    final_array = (final_array - new_min) / range_val
-                else:
-                    final_array = np.zeros_like(final_array, dtype=np.float32)
+                rng = new_max - new_min
+                final_array = (final_array - new_min) / rng if rng != 0 else np.zeros_like(final_array, np.float32)
 
             if final_array.ndim == 3 and final_array.shape[-1] == 1:
                 final_array = final_array[..., 0]
             is_mono = (final_array.ndim == 2)
 
-            # 8) Save the final stacked image.
             if ref_header is None:
                 ref_header = fits.Header()
-
             ref_header["IMAGETYP"] = "MASTER STACK"
             ref_header["BITPIX"] = -32
             ref_header["STACKED"] = (True, "Stacked using chunked approach")
             ref_header["CREATOR"] = "SetiAstroSuite"
             ref_header["DATE-OBS"] = datetime.utcnow().isoformat()
-
             if is_mono:
-                ref_header["NAXIS"] = 2
+                ref_header["NAXIS"]  = 2
                 ref_header["NAXIS1"] = final_array.shape[1]
                 ref_header["NAXIS2"] = final_array.shape[0]
+                if "NAXIS3" in ref_header: del ref_header["NAXIS3"]
             else:
-                ref_header["NAXIS"] = 3
+                ref_header["NAXIS"]  = 3
                 ref_header["NAXIS1"] = final_array.shape[1]
                 ref_header["NAXIS2"] = final_array.shape[0]
                 ref_header["NAXIS3"] = 3
@@ -7741,23 +7949,13 @@ class StackingSuiteDialog(QDialog):
             log(f"✂️ Drizzle (auto-cropped) saved: {out_path_crop}")
 
     def normal_integration_with_rejection(self, group_key, file_list, frame_weights, status_cb=None):
-        """
-        Chunked integration of aligned (_n_r) images with outlier rejection.
-        Returns: (integrated_image, per_file_rejections, ref_header)
-        """
         log = status_cb or (lambda *_: None)
-
         log(f"Starting integration for group '{group_key}' with {len(file_list)} files.")
-
         if not file_list:
-            log(f"DEBUG: Empty file_list for group '{group_key}'.")
             return None, {}, None
 
+        # --- reference frame (unchanged) ---
         ref_file = file_list[0]
-        if not os.path.exists(ref_file):
-            log(f"⚠️ Reference file '{ref_file}' not found for group '{group_key}'.")
-            return None, {}, None
-
         ref_data, ref_header, _, _ = load_image(ref_file)
         if ref_data is None:
             log(f"⚠️ Could not load reference '{ref_file}' for group '{group_key}'.")
@@ -7768,134 +7966,116 @@ class StackingSuiteDialog(QDialog):
         is_color = (ref_data.ndim == 3 and ref_data.shape[2] == 3)
         height, width = ref_data.shape[:2]
         channels = 3 if is_color else 1
+        N = len(file_list)
 
         log(f"📊 Stacking group '{group_key}' with {self.rejection_algorithm}")
 
-        N = len(file_list)
-        integrated_image = np.zeros((height, width, channels), dtype=self._dtype())
+        # --- NEW: keep all FITSes open (memmap) once for the whole group ---
+        sources = []
+        try:
+            for p in file_list:
+                sources.append(_MMFits(p))
+        except Exception as e:
+            for s in sources:
+                s.close()
+            log(f"⚠️ Failed to open images (memmap): {e}")
+            return None, {}, None
+
+        DTYPE = self._dtype()
+        integrated_image = np.zeros((height, width, channels), dtype=DTYPE)
         per_file_rejections = {f: [] for f in file_list}
 
-        DTYPE  = self._dtype()
+        # --- chunk size (unchanged) ---
         pref_h = self.chunk_height
         pref_w = self.chunk_width
         try:
-            chunk_h, chunk_w = compute_safe_chunk(
-                height, width, N, channels, DTYPE, pref_h, pref_w
-            )
-            log(f"🔧 Using chunk size {chunk_h}×{chunk_w} for {self._dtype()}")
+            chunk_h, chunk_w = compute_safe_chunk(height, width, N, channels, DTYPE, pref_h, pref_w)
+            log(f"🔧 Using chunk size {chunk_h}×{chunk_w} for {DTYPE}")
         except MemoryError as e:
+            for s in sources: s.close()
             log(f"⚠️ {e}")
             return None, {}, None
+
+        # --- NEW: one reusable Fortran-order tile buffer (F makes frames contiguous) ---
+        tile_stack_buf = np.empty((N, chunk_h, chunk_w, channels), dtype=np.float32, order='F')
+
+        # --- NEW: weights once per group ---
+        weights_array = np.array([frame_weights.get(p, 1.0) for p in file_list], dtype=np.float32)
 
         n_rows  = math.ceil(height / chunk_h)
         n_cols  = math.ceil(width  / chunk_w)
         total_tiles = n_rows * n_cols
         tile_idx = 0
 
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-
-        for y_start in range(0, height, chunk_h):
-            y_end  = min(y_start + chunk_h, height)
-            tile_h = y_end - y_start
-
-            for x_start in range(0, width, chunk_w):
-                x_end  = min(x_start + chunk_w, width)
-                tile_w = x_end - x_start
-
+        for y0 in range(0, height, chunk_h):
+            y1  = min(y0 + chunk_h, height)
+            th  = y1 - y0
+            for x0 in range(0, width, chunk_w):
+                x1  = min(x0 + chunk_w, width)
+                tw  = x1 - x0
                 tile_idx += 1
                 log(f"Integrating tile {tile_idx}/{total_tiles}…")
 
-                tile_stack   = np.zeros((N, tile_h, tile_w, channels), dtype=self._dtype())
-                weights_list = []
+                # view into the reusable buffer with *actual* edge sizes
+                ts = tile_stack_buf[:, :th, :tw, :channels]
 
-                num_cores = os.cpu_count() or 4
-                with ThreadPoolExecutor(max_workers=num_cores) as executor:
-                    future_to_i = {}
-                    for i, fpath in enumerate(file_list):
-                        future = executor.submit(load_fits_tile, fpath, y_start, y_end, x_start, x_end)
-                        future_to_i[future] = i
-                        weights_list.append(frame_weights.get(fpath, 1.0))
+                # --- NEW: sequential, low-overhead sliced reads (OS prefetch + memmap) ---
+                for i, src in enumerate(sources):
+                    sub = src.read_tile(y0, y1, x0, x1)  # float32, (th,tw) or (th,tw,3)
+                    if sub.ndim == 2:
+                        if channels == 3:
+                            sub = sub[:, :, None].repeat(3, axis=2)
+                        else:
+                            sub = sub[:, :, None]  # unify to 3D for assignment
+                    ts[i, :, :, :] = sub
 
-                    for fut in as_completed(future_to_i):
-                        i = future_to_i[fut]
-                        sub_img = fut.result()
-                        if sub_img is None:
-                            log(f"DEBUG: Tile load returned None for file: {file_list[i]}")
-                            continue
-                        if sub_img.ndim == 2:
-                            sub_img = sub_img[:, :, np.newaxis]
-                            if channels == 3:
-                                sub_img = np.repeat(sub_img, 3, axis=2)
-                        elif sub_img.ndim == 3 and sub_img.shape[0] == 3 and channels == 3:
-                            sub_img = sub_img.transpose(1, 2, 0)
-                        tile_stack[i] = sub_img.astype(np.float32, copy=False)
-
-                weights_array = np.array(weights_list, dtype=np.float32)
-
-                # Rejection
+                # --- rejection/integration (as before) ---
                 algo = self.rejection_algorithm
                 if algo == "Simple Median (No Rejection)":
-                    tile_result  = np.median(tile_stack, axis=0)
-                    tile_rej_map = np.zeros((N, tile_h, tile_w), dtype=bool)
+                    tile_result  = np.median(ts, axis=0)
+                    tile_rej_map = np.zeros((N, th, tw), dtype=bool)
                 elif algo == "Simple Average (No Rejection)":
-                    tile_result  = np.average(tile_stack, axis=0, weights=weights_array)
-                    tile_rej_map = np.zeros((N, tile_h, tile_w), dtype=bool)
+                    tile_result  = np.average(ts, axis=0, weights=weights_array)
+                    tile_rej_map = np.zeros((N, th, tw), dtype=bool)
                 elif algo == "Weighted Windsorized Sigma Clipping":
-                    tile_result, tile_rej_map = windsorized_sigma_clip_weighted(
-                        tile_stack, weights_array,
-                        lower=self.sigma_low, upper=self.sigma_high
-                    )
+                    tile_result, tile_rej_map = windsorized_sigma_clip_weighted(ts, weights_array, lower=self.sigma_low, upper=self.sigma_high)
                 elif algo == "Kappa-Sigma Clipping":
-                    tile_result, tile_rej_map = kappa_sigma_clip_weighted(
-                        tile_stack, weights_array,
-                        kappa=self.kappa, iterations=self.iterations
-                    )
+                    tile_result, tile_rej_map = kappa_sigma_clip_weighted(ts, weights_array, kappa=self.kappa, iterations=self.iterations)
                 elif algo == "Trimmed Mean":
-                    tile_result, tile_rej_map = trimmed_mean_weighted(
-                        tile_stack, weights_array,
-                        trim_fraction=self.trim_fraction
-                    )
+                    tile_result, tile_rej_map = trimmed_mean_weighted(ts, weights_array, trim_fraction=self.trim_fraction)
                 elif algo == "Extreme Studentized Deviate (ESD)":
-                    tile_result, tile_rej_map = esd_clip_weighted(
-                        tile_stack, weights_array,
-                        threshold=self.esd_threshold
-                    )
+                    tile_result, tile_rej_map = esd_clip_weighted(ts, weights_array, threshold=self.esd_threshold)
                 elif algo == "Biweight Estimator":
-                    tile_result, tile_rej_map = biweight_location_weighted(
-                        tile_stack, weights_array,
-                        tuning_constant=self.biweight_constant
-                    )
+                    tile_result, tile_rej_map = biweight_location_weighted(ts, weights_array, tuning_constant=self.biweight_constant)
                 elif algo == "Modified Z-Score Clipping":
-                    tile_result, tile_rej_map = modified_zscore_clip_weighted(
-                        tile_stack, weights_array,
-                        threshold=self.modz_threshold
-                    )
+                    tile_result, tile_rej_map = modified_zscore_clip_weighted(ts, weights_array, threshold=self.modz_threshold)
                 elif algo == "Max Value":
-                    tile_result, tile_rej_map = max_value_stack(
-                        tile_stack, weights_array
-                    )
+                    tile_result, tile_rej_map = max_value_stack(ts, weights_array)
                 else:
-                    tile_result, tile_rej_map = windsorized_sigma_clip_weighted(
-                        tile_stack, weights_array,
-                        lower=self.sigma_low, upper=self.sigma_high
-                    )
+                    tile_result, tile_rej_map = windsorized_sigma_clip_weighted(ts, weights_array, lower=self.sigma_low, upper=self.sigma_high)
 
-                # Commit tile
-                integrated_image[y_start:y_end, x_start:x_end, :] = tile_result
+                integrated_image[y0:y1, x0:x1, :] = tile_result
 
-                # Collect per-file rejections
+                # rejection bookkeeping
                 if tile_rej_map.ndim == 4:
                     tile_rej_map = np.any(tile_rej_map, axis=-1)
                 for i, fpath in enumerate(file_list):
                     ys, xs = np.where(tile_rej_map[i])
-                    for dy, dx in zip(ys, xs):
-                        per_file_rejections[fpath].append((x_start + dx, y_start + dy))
+                    if ys.size:
+                        per_file_rejections[fpath].extend(
+                            zip(x0 + xs, y0 + ys)
+                        )
+
+        # close all mmapped files
+        for s in sources:
+            s.close()
 
         if channels == 1:
             integrated_image = integrated_image[..., 0]
 
         log(f"Integration complete for group '{group_key}'.")
         return integrated_image, per_file_rejections, ref_header
+
 
     def outlier_rejection_with_mask(self, tile_stack, weights_array):
         """

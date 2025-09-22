@@ -7,7 +7,7 @@ import uuid
 
 from PyQt6.QtCore import (Qt, QPoint, QRect, QMimeData, QSettings, QByteArray,
                           QDataStream, QIODevice, QEvent)
-from PyQt6.QtGui import (QAction, QDrag, QIcon, QMouseEvent, QPixmap, QKeyEvent)
+from PyQt6.QtGui import (QAction, QDrag, QIcon, QMouseEvent, QPixmap, QKeyEvent, QKeyEvent, QCursor)
 from PyQt6.QtWidgets import (QToolBar, QWidget, QToolButton, QMenu, QApplication, QVBoxLayout, QHBoxLayout, QComboBox, QGroupBox, QGridLayout, QDoubleSpinBox, QSpinBox,
                              QInputDialog, QMessageBox, QDialog, QSlider,
     QFormLayout, QDialogButtonBox, QDoubleSpinBox, QCheckBox, QLabel, QRubberBand, QRadioButton, QPlainTextEdit, QTabWidget, QLineEdit, QPushButton, QFileDialog)
@@ -121,6 +121,21 @@ class DraggableToolBar(QToolBar):
 
     def eventFilter(self, obj, ev):
         if isinstance(obj, QToolButton):
+            # RIGHT CLICK → show "Create Desktop Shortcut"
+            if ev.type() == QEvent.Type.MouseButtonPress and ev.button() == Qt.MouseButton.RightButton:
+                act = self._find_action_for_button(obj)
+                if act:
+                    self._show_toolbutton_context_menu(obj, act, ev.globalPosition().toPoint())
+                    return True  # consume
+                return False
+
+            # Keyboard/trackpad context menu event
+            if ev.type() == QEvent.Type.ContextMenu:
+                act = self._find_action_for_button(obj)
+                if act:
+                    self._show_toolbutton_context_menu(obj, act, ev.globalPos())
+                    return True
+                return False            
             # L-press: remember start + whether a drag-modifier was held
             if ev.type() == QEvent.Type.MouseButtonPress and ev.button() == Qt.MouseButton.LeftButton:
                 self._press_pos[obj] = ev.globalPosition().toPoint()
@@ -192,6 +207,42 @@ class DraggableToolBar(QToolBar):
         drag.setPixmap(pm)
         drag.setHotSpot(pm.rect().center())
         drag.exec(Qt.DropAction.CopyAction)
+
+    def _find_action_for_button(self, btn: QToolButton) -> QAction | None:
+        # Find the QAction that owns this toolbutton
+        for a in self.actions():
+            if self.widgetForAction(a) is btn:
+                return a
+        return None
+
+    def _add_shortcut_for_action(self, act: QAction):
+        # Resolve command id
+        act_id = act.property("command_id") or act.objectName()
+        if not act_id:
+            return
+        # Find ShortcutManager on the main window
+        mw = self.window()
+        mgr = getattr(mw, "shortcuts", None)
+        mdi = getattr(mw, "mdi", None)
+        if mgr is None or mdi is None:
+            return
+        # Map current cursor pos (global) into the viewport
+        gpos = QCursor.pos()
+        vp   = mdi.viewport()
+        pos  = vp.mapFromGlobal(gpos)
+        # Clamp into viewport rect (center if way out of bounds)
+        rect = vp.rect()
+        if not rect.contains(pos):
+            pos = rect.center()
+        mgr.add_shortcut(str(act_id), pos)
+
+    def _show_toolbutton_context_menu(self, btn: QToolButton, act: QAction, gpos: QPoint):
+        m = QMenu(btn)
+        m.addAction("Create Desktop Shortcut", lambda: self._add_shortcut_for_action(act))
+        # (Optional) teach users about Alt+Drag:
+        m.addSeparator()
+        m.addAction("Tip: Alt+Drag to create", lambda: None).setEnabled(False)
+        m.exec(gpos)
 
 
 # ---------- the button that sits on the MDI desktop ----------
