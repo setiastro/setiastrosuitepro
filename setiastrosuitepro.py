@@ -260,7 +260,7 @@ from pro.status_log_dock import StatusLogDock
 from pro.log_bus import LogBus
 
 
-VERSION = "1.1.4"
+VERSION = "1.1.5"
 
 
 if hasattr(sys, '_MEIPASS'):
@@ -1950,10 +1950,12 @@ class AstroSuiteProMainWindow(QMainWindow):
         m_fn.addAction(self.act_signature)
         m_fn.addAction(self.act_halobgon)
 
-        mCosmic = mb.addMenu("&Cosmic Clarity")
+        mCosmic = mb.addMenu("&Smart Tools")
         mCosmic.addAction(self.actAberrationAI)
         mCosmic.addAction(self.actCosmicUI)
         mCosmic.addAction(self.actCosmicSat)
+        mCosmic.addAction(self.act_graxpert)
+        mCosmic.addAction(self.act_remove_stars)
 
         m_tools = mb.addMenu("&Tools")
         m_tools.addAction(self.act_blink)
@@ -3689,6 +3691,8 @@ class AstroSuiteProMainWindow(QMainWindow):
             dlg.setWindowIcon(QIcon(cropicon_path))
         except Exception:
             pass
+
+        dlg.crop_applied.connect(lambda *_: QTimer.singleShot(0, self._zoom_active_fit))
         dlg.show()
 
     def _open_statistical_stretch(self):
