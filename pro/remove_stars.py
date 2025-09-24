@@ -19,6 +19,85 @@ except Exception:
     cv2 = None
 
 # --------- deterministic, invertible stretch used for StarNet ----------
+# ---------- Siril-like MTF (linked) pre-stretch for StarNet ----------
+def _robust_peak_sigma(gray: np.ndarray) -> tuple[float, float]:
+    gray = gray.astype(np.float32, copy=False)
+    med = float(np.median(gray))
+    mad = float(np.median(np.abs(gray - med)))
+    sigma = 1.4826 * mad if mad > 0 else float(gray.std())
+    # optional: refine "peak" as histogram mode around median
+    try:
+        hist, edges = np.histogram(gray, bins=2048, range=(gray.min(), gray.max()))
+        peak = float(0.5 * (edges[np.argmax(hist)] + edges[np.argmax(hist)+1]))
+    except Exception:
+        peak = med
+    return peak, max(sigma, 1e-8)
+
+def _mtf_apply(x: np.ndarray, shadows: float, midtones: float, highlights: float) -> np.ndarray:
+    # x in [0, +], returns [0..1]ish given s,h
+    s, m, h = float(shadows), float(midtones), float(highlights)
+    denom = max(h - s, 1e-8)
+    xp = (x - s) / denom
+    # clamp xp to avoid crazy values
+    xp = np.clip(xp, 0.0, 1.0)
+    num = (m - 1.0) * xp
+    den = ((2.0 * m - 1.0) * xp) - m
+    y = np.divide(num, den, out=np.zeros_like(xp, dtype=np.float32), where=np.abs(den) > 1e-12)
+    return np.clip(y, 0.0, 1.0).astype(np.float32, copy=False)
+
+def _mtf_inverse(y: np.ndarray, shadows: float, midtones: float, highlights: float) -> np.ndarray:
+    # Inverse via property: mtf^{-1}(·, m) = mtf(·, 1-m)
+    s, m, h = float(shadows), float(midtones), float(highlights)
+    yp = np.clip(y.astype(np.float32, copy=False), 0.0, 1.0)
+    # apply with (1 - m)
+    m_inv = np.clip(1.0 - m, 1e-4, 1.0 - 1e-4)
+    num = (m_inv - 1.0) * yp
+    den = ((2.0 * m_inv - 1.0) * yp) - m_inv
+    xp = np.divide(num, den, out=np.zeros_like(yp, dtype=np.float32), where=np.abs(den) > 1e-12)
+    xp = np.clip(xp, 0.0, 1.0)
+    return (xp * (h - s) + s).astype(np.float32, copy=False)
+
+def _mtf_params_linked(img_rgb01: np.ndarray, shadowclip_sigma: float = -2.8, targetbg: float = 0.25):
+    """
+    Compute linked (single) MTF parameters for RGB image in [0..1].
+    Returns dict(s=..., m=..., h=...).
+    """
+    # luminance proxy for stats
+    if img_rgb01.ndim == 2:
+        gray = img_rgb01
+    else:
+        gray = img_rgb01.mean(axis=2)
+    peak, sigma = _robust_peak_sigma(gray)
+    s = peak + shadowclip_sigma * sigma
+    # keep [0..1) with margin
+    s = float(np.clip(s, gray.min(), max(gray.max() - 1e-6, 0.0)))
+    h = 1.0  # Siril effectively normalizes to <=1 before 16-bit TIFF
+    # solve for midtones m so that mtf(xp(peak)) = targetbg
+    x = (peak - s) / max(h - s, 1e-8)
+    x = float(np.clip(x, 1e-6, 1.0 - 1e-6))
+    y = float(np.clip(targetbg, 1e-6, 1.0 - 1e-6))
+    denom = (2.0 * y * x) - y - x
+    m = (x * (y - 1.0)) / denom if abs(denom) > 1e-12 else 0.5
+    m = float(np.clip(m, 1e-4, 1.0 - 1e-4))
+    return {"s": s, "m": m, "h": h}
+
+def _apply_mtf_linked_rgb(img_rgb01: np.ndarray, p: dict) -> np.ndarray:
+    if img_rgb01.ndim == 2:
+        img_rgb01 = np.stack([img_rgb01]*3, axis=-1)
+    y = np.empty_like(img_rgb01, dtype=np.float32)
+    for c in range(3):
+        y[..., c] = _mtf_apply(img_rgb01[..., c], p["s"], p["m"], p["h"])
+    return np.clip(y, 0.0, 1.0)
+
+def _invert_mtf_linked_rgb(img_rgb01: np.ndarray, p: dict) -> np.ndarray:
+    y = np.empty_like(img_rgb01, dtype=np.float32)
+    for c in range(3):
+        y[..., c] = _mtf_inverse(img_rgb01[..., c], p["s"], p["m"], p["h"])
+    return y
+
+
+
+
 def _stat_stretch_rgb(img: np.ndarray,
                       lo_pct: float = 0.25,
                       hi_pct: float = 99.75) -> tuple[np.ndarray, dict]:
@@ -161,16 +240,26 @@ def _run_starnet(main, doc):
 
     # optional stretch (SASv2)
     did_stretch = False
-    stretch_params = None
     if is_linear:
-        processing_image, stretch_params = _stat_stretch_rgb(processing_image)
         did_stretch = True
-        # remember for the finish step
-        setattr(main, "_starnet_last_stretch_params", stretch_params)
+        # normalize if >1.0 (Siril rescales to avoid clipping on 16-bit TIFF)
+        scale_factor = float(np.max(processing_image))
+        if scale_factor > 1.0:
+            processing_norm = processing_image / scale_factor
+        else:
+            processing_norm = processing_image
+
+        mtf_params = _mtf_params_linked(processing_norm, shadowclip_sigma=-2.8, targetbg=0.25)
+        processing_image = _apply_mtf_linked_rgb(processing_norm, mtf_params)
+
+        # stash params for inverse step
+        setattr(main, "_starnet_last_mtf_params", {
+            "s": mtf_params["s"], "m": mtf_params["m"], "h": mtf_params["h"],
+            "scale": scale_factor
+        })
     else:
-        # clear any stale params
-        if hasattr(main, "_starnet_last_stretch_params"):
-            delattr(main, "_starnet_last_stretch_params")
+        if hasattr(main, "_starnet_last_mtf_params"):
+            delattr(main, "_starnet_last_mtf_params")
 
     # write input/output paths in StarNet folder
     starnet_dir = os.path.dirname(exe) or os.getcwd()
@@ -238,16 +327,13 @@ def _on_starnet_finished(main, doc, return_code, dialog, input_path, output_path
 
     # unstretch (if we stretched)
     if did_stretch:
-        dialog.append_text("Unstretching the starless image...\n")
-        try:
-            params = getattr(main, "_starnet_last_stretch_params", None)
-            if params:
-                starless_rgb = _stat_unstretch_rgb(starless_rgb, params)
-                dialog.append_text("Starless image unstretched successfully.\n")
-            else:
-                dialog.append_text("No stretch params found; skipping unstretch.\n")
-        except Exception as e:
-            dialog.append_text(f"Unstretch failed; continuing with returned starless. ({e})\n")
+        params = getattr(main, "_starnet_last_mtf_params", None)
+        if params:
+            starless_rgb = _invert_mtf_linked_rgb(starless_rgb, params)
+            if float(params.get("scale", 1.0)) > 1.0:
+                starless_rgb = starless_rgb * float(params["scale"])
+            # keep numeric sanity
+            starless_rgb = np.clip(starless_rgb, 0.0, 1.0)
             
     # original image (from the doc)
     orig = np.asarray(doc.image)

@@ -4213,16 +4213,30 @@ class StackingSuiteDialog(QDialog):
     def add_files(self, tree, title, expected_type):
         """ Adds FITS files and assigns best master files if needed. """
         last_dir = self.settings.value("last_opened_folder", "", type=str)
-        files, _ = QFileDialog.getOpenFileNames(self, title, last_dir, "FITS Files (*.fits *.fit *.fz *.fz)")
+        files, _ = QFileDialog.getOpenFileNames(
+            self, title, last_dir,
+            "FITS Files (*.fits *.fit *.fts *.fits.gz *.fit.gz *.fz)"
+        )
+        if not files:
+            return
 
-        if files:
-            self.settings.setValue("last_opened_folder", os.path.dirname(files[0]))  # Save last opened folder
-            for file in files:
-                self.process_fits_header(file, tree, expected_type)
+        self.settings.setValue("last_opened_folder", os.path.dirname(files[0]))
 
-            # 🔥 Auto-assign Master Dark & Flat **if adding LIGHTS**
-            if expected_type == "LIGHT":
+        # Show a standalone progress dialog while ingesting
+        self._ingest_paths_with_progress(
+            paths=files,
+            tree=tree,
+            expected_type=expected_type,
+            title=f"Adding {expected_type.title()} Files…"
+        )
+
+        # Auto-assign after ingest (LIGHT only, same behavior you had)
+        if expected_type.upper() == "LIGHT":
+            busy = self._busy_progress("Assigning best Master Dark/Flat…")
+            try:
                 self.assign_best_master_files()
+            finally:
+                busy.close()
 
 
 
@@ -4230,16 +4244,96 @@ class StackingSuiteDialog(QDialog):
         """ Adds all FITS files from a directory and assigns best master files if needed. """
         last_dir = self.settings.value("last_opened_folder", "", type=str)
         directory = QFileDialog.getExistingDirectory(self, title, last_dir)
+        if not directory:
+            return
 
-        if directory:
-            self.settings.setValue("last_opened_folder", directory)  # Save last opened folder
-            for file in os.listdir(directory):
-                if file.lower().endswith((".fits", ".fit", ".fz", ".fz")):
-                    self.process_fits_header(os.path.join(directory, file), tree, expected_type)
+        self.settings.setValue("last_opened_folder", directory)
 
-            # 🔥 Auto-assign Master Dark & Flat **if adding LIGHTS**
-            if expected_type == "LIGHT":
+        # Collect files first so we know the total for the progress range
+        exts = (".fits", ".fit", ".fts", ".fits.gz", ".fit.gz", ".fz")
+        paths = [
+            os.path.join(directory, f)
+            for f in os.listdir(directory)
+            if f.lower().endswith(exts)
+        ]
+        if not paths:
+            return
+
+        # Standalone progress while ingesting
+        self._ingest_paths_with_progress(
+            paths=paths,
+            tree=tree,
+            expected_type=expected_type,
+            title=f"Adding {expected_type.title()} from Directory…"
+        )
+
+        # Auto-assign after ingest (LIGHT only, same behavior you had)
+        if expected_type.upper() == "LIGHT":
+            busy = self._busy_progress("Assigning best Master Dark/Flat…")
+            try:
                 self.assign_best_master_files()
+            finally:
+                busy.close()
+
+    def _ingest_paths_with_progress(self, paths, tree, expected_type, title):
+        """
+        Show a small standalone progress dialog while ingesting headers,
+        with cancel support. Keeps UI responsive via processEvents().
+        """
+        total = len(paths)
+        dlg = QProgressDialog(title, "Cancel", 0, total, self)
+        dlg.setWindowTitle("Please wait")
+        dlg.setWindowModality(Qt.WindowModality.ApplicationModal)
+        dlg.setMinimumDuration(0)
+        dlg.setAutoReset(True)
+        dlg.setAutoClose(True)
+        dlg.setValue(0)
+
+        added = 0
+        for i, path in enumerate(paths, start=1):
+            if dlg.wasCanceled():
+                break
+
+            try:
+                base = os.path.basename(path)
+                dlg.setLabelText(f"{base}  ({i}/{total})")
+                # Process events so the dialog repaints & remains responsive
+                QCoreApplication.processEvents()
+                self.process_fits_header(path, tree, expected_type)
+                added += 1
+            except Exception as e:
+                # Optional: log or show a brief error — keep going
+                # print(f"Failed to add {path}: {e}")
+                pass
+
+            dlg.setValue(i)
+            QCoreApplication.processEvents()
+
+        # Make sure it closes
+        dlg.setValue(total)
+        QCoreApplication.processEvents()
+
+        # Optional: brief status line (non-intrusive)
+        try:
+            if expected_type.upper() == "LIGHT":
+                self.statusBar().showMessage(f"Added {added}/{total} Light frames", 3000)
+        except Exception:
+            pass
+
+    def _busy_progress(self, text):
+        """
+        Returns a modal, indeterminate QProgressDialog you can open during
+        short post-steps (e.g., assigning masters). Caller must .close().
+        """
+        dlg = QProgressDialog(text, None, 0, 0, self)
+        dlg.setWindowTitle("Please wait")
+        dlg.setWindowModality(Qt.WindowModality.ApplicationModal)
+        dlg.setMinimumDuration(0)
+        dlg.setCancelButton(None)
+        dlg.show()
+        QCoreApplication.processEvents()
+        return dlg
+
 
     def _sanitize_name(self, name: str) -> str:
         """

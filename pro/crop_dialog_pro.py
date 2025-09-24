@@ -9,7 +9,7 @@ from PyQt6.QtGui import QPixmap, QImage, QPen, QBrush, QColor
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox, QToolButton,
     QMessageBox, QGraphicsScene, QGraphicsView, QGraphicsRectItem, QGraphicsEllipseItem,
-    QGraphicsItem, QGraphicsPixmapItem
+    QGraphicsItem, QGraphicsPixmapItem, QSpinBox 
 )
 
 # -------- util: Siril-style preview stretch (non-destructive) ----------
@@ -291,6 +291,43 @@ class CropDialogPro(QDialog):
         row.addStretch(1)
         main.addLayout(row)
 
+        # typed margins (pixels): Top, Right, Bottom, Left
+        margins_row = QHBoxLayout()
+        margins_row.addStretch(1)
+        margins_row.addWidget(QLabel("Margins (px):"))
+        self.sb_top    = QSpinBox(); self.sb_top.setSuffix(" px")
+        self.sb_right  = QSpinBox(); self.sb_right.setSuffix(" px")
+        self.sb_bottom = QSpinBox(); self.sb_bottom.setSuffix(" px")
+        self.sb_left   = QSpinBox(); self.sb_left.setSuffix(" px")
+
+        # reasonable wide ranges; clamped on apply anyway
+        for sb in (self.sb_top, self.sb_bottom, self.sb_left, self.sb_right):
+            sb.setRange(0, 1_000_000)
+
+        # labels inline for clarity
+        margins_row.addWidget(QLabel("Top"))
+        margins_row.addWidget(self.sb_top)
+        margins_row.addSpacing(8)
+        margins_row.addWidget(QLabel("Right"))
+        margins_row.addWidget(self.sb_right)
+        margins_row.addSpacing(8)
+        margins_row.addWidget(QLabel("Bottom"))
+        margins_row.addWidget(self.sb_bottom)
+        margins_row.addSpacing(8)
+        margins_row.addWidget(QLabel("Left"))
+        margins_row.addWidget(self.sb_left)
+        margins_row.addStretch(1)
+        main.addLayout(margins_row)
+
+        # live-apply: when any value changes, update the selection rectangle
+        self._suppress_margin_sync = False
+        def _on_margin_changed(_):
+            if self._suppress_margin_sync:
+                return
+            self._apply_margin_inputs()
+        for sb in (self.sb_top, self.sb_right, self.sb_bottom, self.sb_left):
+            sb.valueChanged.connect(_on_margin_changed)
+
         # graphics view
         self.scene = QGraphicsScene(self)
         self.view  = QGraphicsView(self.scene)
@@ -346,7 +383,9 @@ class CropDialogPro(QDialog):
 
         # seed image
         self._load_from_doc()
+        self._update_margin_spin_ranges()
         self.resize(1000, 720)
+        self._fit_view()
 
     # ---------- image plumbing ----------
     def _img01_from_doc(self) -> np.ndarray:
@@ -486,6 +525,52 @@ class CropDialogPro(QDialog):
         self._zoom = newz
         self._apply_zoom_transform()
 
+    # ---------- typed margins helpers ----------
+    def _update_margin_spin_ranges(self):
+        """Limit typed margins to image dimensions (pixels)."""
+        h, w = int(self._orig_h), int(self._orig_w)
+        # Individual margins can be up to the full dimension; final rect is clamped.
+        self.sb_top.setRange(0, max(0, h))
+        self.sb_bottom.setRange(0, max(0, h))
+        self.sb_left.setRange(0, max(0, w))
+        self.sb_right.setRange(0, max(0, w))
+
+    def _apply_margin_inputs(self):
+        """Create/adjust the selection rect from typed margins (pixels)."""
+        t = int(self.sb_top.value())
+        r = int(self.sb_right.value())
+        b = int(self.sb_bottom.value())
+        l = int(self.sb_left.value())
+        self._set_rect_from_margins(t, r, b, l)
+
+    def _set_rect_from_margins(self, top: int, right: int, bottom: int, left: int):
+        """Set an axis-aligned crop selection equal to image bounds minus margins."""
+        w_img, h_img = float(self._orig_w), float(self._orig_h)
+        # clamp to image
+        left   = max(0, min(int(left),   int(w_img)))
+        right  = max(0, min(int(right),  int(w_img)))
+        top    = max(0, min(int(top),    int(h_img)))
+        bottom = max(0, min(int(bottom), int(h_img)))
+
+        x = float(left)
+        y = float(top)
+        w = max(1.0, w_img - (left + right))
+        h = max(1.0, h_img - (top + bottom))
+
+        r = QRectF(x, y, w, h)
+
+        # create or update the selection; force axis-aligned (rotation = 0)
+        if self._rect_item is None:
+            self._rect_item = ResizableRotatableRectItem(r)
+            self._rect_item.setZValue(10)
+            self.scene.addItem(self._rect_item)
+        else:
+            self._rect_item.setRotation(0.0)
+            self._rect_item.setPos(QPointF(0, 0))  # keep in image coordinates
+            self._rect_item.setRect(r)
+
+        self._rect_item.setTransformOriginPoint(r.center())
+
 
     def _current_ar_value(self) -> Optional[float]:
         txt = self.cmb_ar.currentText()
@@ -586,6 +671,7 @@ class CropDialogPro(QDialog):
         # push back to document (float [0..1])
         try:
             self.doc.apply_edit(out.copy(), metadata={"step_name": "Crop"}, step_name="Crop")
+            self.crop_applied.emit(out)          # ← add this
             self.accept()
         except Exception as e:
             QMessageBox.critical(self, "Apply failed", str(e))
@@ -645,4 +731,5 @@ class CropDialogPro(QDialog):
                 pass
 
         QMessageBox.information(self, "Batch Crop", "Applied crop to all open images.")
+        self.crop_applied.emit(cropped)          # ← add this
         self.accept()

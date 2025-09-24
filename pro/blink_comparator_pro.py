@@ -27,6 +27,7 @@ from imageops.stretch import stretch_color_image, stretch_mono_image, siril_styl
 
 from numba_utils import debayer_fits_fast, debayer_raw_fast
 
+from pro.star_metrics import measure_stars_sep
 
 def _percentile_scale(arr, lo=0.5, hi=99.5):
     a = np.asarray(arr, dtype=np.float32)
@@ -84,59 +85,30 @@ class MetricsPanel(QWidget):
 
     @staticmethod
     def _compute_one(i_entry):
-        """
-        Worker: run SEP on one image entry.
-        Returns (idx, fwhm, ecc, orig_back, star_count).
-        If SEP overflows its internal pixel buffer, we catch it and
-        return sentinel “bad” values so the frame will be flagged.
-        """
         idx, entry = i_entry
-
-        # rebuild normalized mono data
         img = entry['image_data']
-        if img.dtype == np.uint8:
-            data = img.astype(np.float32) / 255.0
-        elif img.dtype == np.uint16:
-            data = img.astype(np.float32) / 65535.0
-        else:
-            data = np.asarray(img, dtype=np.float32)
+
+        # normalize to float32 mono [0..1] exactly like live
+        data = np.asarray(img)
         if data.ndim == 3:
             data = data.mean(axis=2)
-
-        # detection parameters
-        thresh   = 7.0    # σ threshold
-        min_area = 16     # at least a 4×4 blob
+        if data.dtype == np.uint8:
+            data = data.astype(np.float32) / 255.0
+        elif data.dtype == np.uint16:
+            data = data.astype(np.float32) / 65535.0
+        else:
+            data = data.astype(np.float32, copy=False)
 
         try:
-            bkg = sep.Background(data)
-            back, gb, gr = bkg.back(), bkg.globalback, bkg.globalrms
-
-            cat = sep.extract(
-                data - back,
-                thresh,
-                err=gr,
-                minarea=min_area,
-                clean=True,
-                deblend_nthresh=32
+            star_cnt, fwhm, ecc = measure_stars_sep(
+                data,
+                thresh_sigma=7.0,
+                minarea=16,
+                deblend_nthresh=32,
+                aggregate="median",
             )
-
-            if len(cat) > 0:
-                # σ = geometric mean of the two RMS axes
-                sig      = np.sqrt(cat['a'] * cat['b'])
-                fwhm     = np.nanmedian(2.3548 * sig)
-
-                # true eccentricity e = sqrt(1 - (b/a)^2)
-                ratios   = np.clip(cat['b'] / cat['a'], 0, 1)
-                ecc_vals = np.sqrt(1.0 - ratios**2)
-                ecc      = np.nanmedian(ecc_vals)
-
-                star_cnt = len(cat)
-            else:
-                fwhm, ecc, star_cnt = np.nan, np.nan, 0
-
-        except Exception as e:
-            # catch SEP overflow (or any other) and mark as “bad” frame
-            # you can even check `if "internal pixel buffer full" in str(e):`
+        except Exception:
+            # same sentinel as before if you prefer
             fwhm, ecc, star_cnt = 10.0, 1.0, 0
 
         orig_back = entry.get('orig_background', np.nan)

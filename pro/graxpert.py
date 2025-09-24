@@ -17,6 +17,72 @@ except Exception:
     _legacy_load_image = None
 
 
+class GraXpertOperationDialog(QDialog):
+    """Choose operation + parameter (smoothing or strength)."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        from PyQt6.QtWidgets import QRadioButton, QFormLayout, QDialogButtonBox, QDoubleSpinBox, QWidget, QVBoxLayout, QLabel
+
+        self.setWindowTitle("GraXpert")
+        root = QVBoxLayout(self)
+
+        # radios
+        self.rb_bg  = QRadioButton("Remove gradient")
+        self.rb_dn  = QRadioButton("Denoise")
+        self.rb_bg.setChecked(True)
+
+        # param widgets
+        self.spin = QDoubleSpinBox()
+        self.spin.setRange(0.0, 1.0)
+        self.spin.setDecimals(2)
+        self.spin.setSingleStep(0.01)
+        self.spin.setValue(0.10)   # default for smoothing
+
+        # dynamic label
+        self.param_label = QLabel("Smoothing (0–1):")
+
+        # layout
+        form = QFormLayout()
+        form.addRow(self.rb_bg)
+        form.addRow(self.rb_dn)
+        form.addRow(self.param_label, self.spin)
+        root.addLayout(form)
+
+        # switch label/defaults when toggled
+        def _to_bg():
+            self.param_label.setText("Smoothing (0–1):")
+            self.spin.setValue(min(max(self.spin.value(), 0.0), 1.0) if self.spin.value() != 0.50 else 0.10)
+        def _to_dn():
+            self.param_label.setText("Strength (0–1):")
+            self.spin.setValue(0.50 if abs(self.spin.value()-0.10) < 1e-6 else self.spin.value())
+
+        self.rb_bg.toggled.connect(lambda checked: _to_bg() if checked else None)
+        self.rb_dn.toggled.connect(lambda checked: _to_dn() if checked else None)
+
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        root.addWidget(btns)
+
+    def result(self):
+        op = "background" if self.rb_bg.isChecked() else "denoise"
+        val = float(self.spin.value())
+        return op, val
+
+def _build_graxpert_cmd(exe: str, operation: str, input_path: str, *, smoothing: float | None = None,
+                        strength: float | None = None, gpu: bool = True, batch_size: int | None = None) -> list[str]:
+    op = "denoising" if operation == "denoise" else "background-extraction"
+    cmd = [exe, "-cmd", op, input_path, "-cli", "-gpu", "true" if gpu else "false"]
+    if op == "denoising":
+        if strength is not None:
+            cmd += ["-strength", f"{strength:.2f}"]
+        if batch_size is not None:
+            cmd += ["-batch_size", str(int(batch_size))]
+    else:
+        if smoothing is not None:
+            cmd += ["-smoothing", f"{smoothing:.2f}"]
+    return cmd
+
 # ---------- Public entry point (call this from your main window) ----------
 def remove_gradient_with_graxpert(main_window):
     """
@@ -43,14 +109,10 @@ def remove_gradient_with_graxpert(main_window):
         return
 
     # 2) smoothing prompt (same defaults as v2)
-    smoothing, ok = QInputDialog.getDouble(
-        main_window,
-        "GraXpert Smoothing Amount",
-        "Enter smoothing amount (0.0 to 1.0):",
-        decimals=2, min=0.0, max=1.0, value=0.10
-    )
-    if not ok:
+    op_dlg = GraXpertOperationDialog(main_window)
+    if op_dlg.exec() != QDialog.DialogCode.Accepted:
         return
+    operation, param = op_dlg.result() 
 
     # 3) resolve GraXpert executable
     exe = _resolve_graxpert_exec(main_window)
@@ -69,14 +131,15 @@ def remove_gradient_with_graxpert(main_window):
         return
 
     # 5) build the exact v2 command
-    command = [
+    command = _build_graxpert_cmd(
         exe,
-        "-cmd", "background-extraction",
+        operation,
         input_path,
-        "-cli",
-        "-smoothing", str(smoothing),
-        "-gpu", "true"
-    ]
+        smoothing=param if operation == "background" else None,
+        strength=param if operation == "denoise" else None,
+        gpu=True,
+        batch_size=4  # optional: expose later if you want
+    )
 
     # 6) run and wait with a small log dialog
     output_basename = f"{input_basename}_GraXpert"

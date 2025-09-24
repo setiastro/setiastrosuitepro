@@ -383,56 +383,34 @@ class LiveMetricsWindow(QWidget):
         self.metrics_panel = LiveMetricsPanel(self)
         layout.addWidget(self.metrics_panel)
 
+from pro.star_metrics import measure_stars_sep
+
 def compute_frame_star_metrics(image_2d):
     """
-    Runs SEP on a normalized 2D image to estimate:
-      - star_count (int)
-      - avg_fwhm    (float)
-      - avg_ecc     (float)
-    
-    This replaces the DAOStarFinder version, because DAOStarFinder
-    does not always produce an 'fwhm' column.  SEP will give us 'a', 'b',
-    from which FWHM = 2.3548 * sqrt(a * b), and ecc = sqrt(1 - (b/a)^2).
+    Harmonized with Blink metrics:
+      - SEP.Background() for back/noise
+      - thresh = 7σ
+      - median aggregation for FWHM & Ecc
     """
-    # 1) estimate background & global RMS
-    mean, median, std = sigma_clipped_stats(image_2d)
-    data = image_2d - median
+    # ensure float32 mono [0..1]
+    data = np.asarray(image_2d)
+    if data.ndim == 3:
+        data = data.mean(axis=2)
+    if data.dtype == np.uint8:
+        data = data.astype(np.float32) / 255.0
+    elif data.dtype == np.uint16:
+        data = data.astype(np.float32) / 65535.0
+    else:
+        data = data.astype(np.float32, copy=False)
 
-    try:
-        # 2) run SEP extract (threshold = 5σ)
-        objects = sep.extract(data, thresh=5.0, 
-                              err=std, 
-                              minarea=16,   # adjust if needed
-                              deblend_nthresh=32,
-                              clean=True)
-    except Exception:
-        # if SEP fails (e.g. “internal pixel buffer full”), just return zeros
-        return 0, 0.0, 0.0
-
-    if objects is None or len(objects) == 0:
-        return 0, 0.0, 0.0
-
-    # 3) star count
-    star_count = len(objects)
-
-    # 4) compute FWHM and eccentricity for each detected source
-    #    SEP’s "a" and "b" columns are the RMS ellipse axes
-    #    FWHM = 2.3548 * sqrt(a * b)
-    a_vals = objects['a']
-    b_vals = objects['b']
-    # Avoid negative or zero values:
-    a_vals = np.clip(a_vals, 1e-3, None)
-    b_vals = np.clip(b_vals, 1e-3, None)
-
-    fwhm_vals = 2.3548 * np.sqrt(a_vals * b_vals)
-    avg_fwhm = float(np.nanmean(fwhm_vals)) if len(fwhm_vals) > 0 else 0.0
-
-    # 5) compute eccentricity: e = sqrt(1 − (b/a)^2)
-    ratios = np.clip(b_vals / a_vals, 0.0, 1.0)
-    ecc_vals = np.sqrt(1.0 - ratios * ratios)
-    avg_ecc = float(np.nanmean(ecc_vals)) if len(ecc_vals) > 0 else 0.0
-
-    return star_count, avg_fwhm, avg_ecc
+    star_count, fwhm, ecc = measure_stars_sep(
+        data,
+        thresh_sigma=7.0,
+        minarea=16,
+        deblend_nthresh=32,
+        aggregate="median",
+    )
+    return star_count, fwhm, ecc
 
 def estimate_global_snr(
     stack_image: np.ndarray,
