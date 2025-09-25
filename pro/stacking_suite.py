@@ -1145,6 +1145,88 @@ class StatusLogWindow(QDialog):
         except Exception:
             pass
 
+def _save_master_with_rejection_layers(
+    img_array: np.ndarray,
+    hdr: "fits.Header",
+    out_path: str,
+    *,
+    rej_any: "np.ndarray | None" = None,     # 2D bool
+    rej_frac: "np.ndarray | None" = None,    # 2D float32 [0..1]
+):
+    """
+    Writes a MEF (multi-extension FITS) file:
+      - Primary HDU: the master image (2D or 3D) as float32
+        * Mono: (H, W)
+        * Color: (3, H, W)  <-- channels-first for FITS
+      - Optional EXTNAME=REJ_COMB: uint8 (0/1) combined rejection mask
+      - Optional EXTNAME=REJ_FRAC: float32 fraction-of-frames rejected per pixel
+    """
+    # --- sanitize/shape primary data ---
+    data = np.asarray(img_array, dtype=np.float32, order="C")
+
+    # If channels-last, move to channels-first for FITS
+    if data.ndim == 3:
+        # squeeze accidental singleton channels
+        if data.shape[-1] == 1:
+            data = np.squeeze(data, axis=-1)  # becomes (H, W)
+        elif data.shape[-1] in (3, 4):       # RGB or RGBA
+            data = np.transpose(data, (2, 0, 1))  # (C, H, W)
+        # If already (C, H, W) leave it as-is.
+
+    # After squeeze/transpose, re-evaluate dims
+    if data.ndim not in (2, 3):
+        raise ValueError(f"Unsupported master image shape for FITS: {data.shape}")
+
+    # --- clone + annotate header, and align NAXIS* with 'data' ---
+    H = (hdr.copy() if hdr is not None else fits.Header())
+    # purge prior NAXIS keys to avoid conflicts after transpose/squeeze
+    for k in ("NAXIS", "NAXIS1", "NAXIS2", "NAXIS3", "NAXIS4"):
+        if k in H:
+            del H[k]
+
+    H["IMAGETYP"] = "MASTER STACK"
+    H["BITPIX"]   = -32
+    H["STACKED"]  = (True, "Stacked with rejection; channels-first in FITS if color")
+    H["CREATOR"]  = "SetiAstroSuite"
+    H["DATE-OBS"] = datetime.utcnow().isoformat()
+
+    # Fill NAXIS* to match data (optional; Astropy will infer if omitted)
+    if data.ndim == 2:
+        H["NAXIS"]  = 2
+        H["NAXIS1"] = int(data.shape[1])  # width
+        H["NAXIS2"] = int(data.shape[0])  # height
+    else:
+        # data.shape == (C, H, W)
+        C, Hh, Ww = data.shape
+        H["NAXIS"]  = 3
+        H["NAXIS1"] = int(Ww)  # width
+        H["NAXIS2"] = int(Hh)  # height
+        H["NAXIS3"] = int(C)   # channels/planes
+
+    # --- build HDU list ---
+    prim = fits.PrimaryHDU(data=data, header=H)
+    hdul = [prim]
+
+    # Optional layers: must be 2D (H, W). Convert types safely.
+    if rej_any is not None:
+        rej_any_2d = np.asarray(rej_any, dtype=bool)
+        if rej_any_2d.ndim != 2:
+            raise ValueError(f"REJ_COMB must be 2D, got {rej_any_2d.shape}")
+        h = fits.Header()
+        h["EXTNAME"] = "REJ_COMB"
+        h["COMMENT"] = "Combined rejection mask (any algorithm / any frame)"
+        hdul.append(fits.ImageHDU(data=rej_any_2d.astype(np.uint8, copy=False), header=h))
+
+    if rej_frac is not None:
+        rej_frac_2d = np.asarray(rej_frac, dtype=np.float32)
+        if rej_frac_2d.ndim != 2:
+            raise ValueError(f"REJ_FRAC must be 2D, got {rej_frac_2d.shape}")
+        h = fits.Header()
+        h["EXTNAME"] = "REJ_FRAC"
+        h["COMMENT"] = "Per-pixel fraction of frames rejected [0..1]"
+        hdul.append(fits.ImageHDU(data=rej_frac_2d, header=h))
+
+    fits.HDUList(hdul).writeto(out_path, overwrite=True)
 
 
 class StackingSuiteDialog(QDialog):
@@ -7230,6 +7312,7 @@ class StackingSuiteDialog(QDialog):
             else:
                 log("✂️ Auto Crop Bounding Box Calculated")
         QApplication.processEvents()
+
         group_integration_data = {}
         summary_lines = []
         autocrop_outputs = []
@@ -7250,7 +7333,7 @@ class StackingSuiteDialog(QDialog):
             if ref_header is None:
                 ref_header = fits.Header()
 
-            # --- Save the non-cropped master ---
+            # --- Save the non-cropped master (MEF w/ rejection layers if present) ---
             hdr_orig = ref_header.copy()
             hdr_orig["IMAGETYP"] = "MASTER STACK"
             hdr_orig["BITPIX"]   = -32
@@ -7277,15 +7360,42 @@ class StackingSuiteDialog(QDialog):
             base = f"MasterLight_{display_group}_{n_frames}stacked"
             out_path_orig = self._build_out(self.stacking_directory, base, "fit")
 
-            save_image(
-                img_array=integrated_image,
-                filename=out_path_orig,
-                original_format="fit",
-                bit_depth="32-bit floating point",
-                original_header=hdr_orig,
-                is_mono=is_mono_orig
-            )
-            log(f"✅ Saved integrated image (original) for '{group_key}': {out_path_orig}")
+            # Try to attach rejection maps that were accumulated during integration
+            maps = getattr(self, "_rej_maps", {}).get(group_key)
+            save_layers = self.settings.value("stacking/save_rejection_layers", True, type=bool)
+
+            if maps and save_layers:
+                try:
+                    _save_master_with_rejection_layers(
+                        integrated_image,
+                        hdr_orig,
+                        out_path_orig,
+                        rej_any = maps.get("any"),
+                        rej_frac= maps.get("frac"),
+                    )
+                    log(f"✅ Saved integrated image (with rejection layers) for '{group_key}': {out_path_orig}")
+                except Exception as e:
+                    log(f"⚠️ MEF save failed ({e}); falling back to single-HDU save.")
+                    save_image(
+                        img_array=integrated_image,
+                        filename=out_path_orig,
+                        original_format="fit",
+                        bit_depth="32-bit floating point",
+                        original_header=hdr_orig,
+                        is_mono=is_mono_orig
+                    )
+                    log(f"✅ Saved integrated image (single-HDU) for '{group_key}': {out_path_orig}")
+            else:
+                # No maps available or feature disabled → single-HDU save
+                save_image(
+                    img_array=integrated_image,
+                    filename=out_path_orig,
+                    original_format="fit",
+                    bit_depth="32-bit floating point",
+                    original_header=hdr_orig,
+                    is_mono=is_mono_orig
+                )
+                log(f"✅ Saved integrated image (original) for '{group_key}': {out_path_orig}")
 
             # --- Optional: auto-cropped copy (uses global_rect if provided) ---
             if autocrop_enabled:
@@ -7379,6 +7489,7 @@ class StackingSuiteDialog(QDialog):
             "summary_lines": summary_lines,
             "autocrop_outputs": autocrop_outputs
         }
+
 
     def save_registered_images(self, success, msg, frame_weights):
         if not success:
@@ -7948,17 +8059,36 @@ class StackingSuiteDialog(QDialog):
             if transform.dtype != np.float32:
                 transform = transform.astype(np.float32)
 
-            # zero out rejected raw pixels
+            # dilation settings (square or diamond), defaults safe to 0 (disabled)
+            dilate_px = int(self.settings.value("stacking/reject_dilate_px", 0, type=int))
+            dilate_shape = self.settings.value("stacking/reject_dilate_shape", "square", type=str).lower()
+
+            # precompute integer offsets for dilation (in ALIGNED space)
+            _offsets = [(0, 0)]
+            if dilate_px > 0:
+                r = dilate_px
+                if dilate_shape.startswith("dia"):  # diamond = L1 radius
+                    _offsets = [(dx, dy) for dx in range(-r, r+1)
+                                    for dy in range(-r, r+1)
+                                    if (abs(dx) + abs(dy) <= r)]
+                else:  # square = Chebyshev radius
+                    _offsets = [(dx, dy) for dx in range(-r, r+1)
+                                    for dy in range(-r, r+1)]
+
+            # zero out rejected raw pixels (sparse, coordinate-based)
             coords_for_this_file = rejection_map.get(aligned_file, []) if rejection_map else []
             if coords_for_this_file:
                 inv_transform = self.invert_affine_transform(transform)
+                Hraw, Wraw = raw_img_data.shape[:2]
                 for (x_r, y_r) in coords_for_this_file:
-                    x_raw, y_raw = self.apply_affine_transform_point(inv_transform, x_r, y_r)
-                    x_raw = int(round(x_raw)); y_raw = int(round(y_raw))
-                    if 0 <= x_raw < raw_img_data.shape[1] and 0 <= y_raw < raw_img_data.shape[0]:
-                        raw_img_data[y_raw, x_raw] = 0.0
+                    for (ox, oy) in _offsets:
+                        xr, yr = x_r + ox, y_r + oy
+                        x_raw, y_raw = self.apply_affine_transform_point(inv_transform, xr, yr)
+                        x_raw = int(round(x_raw)); y_raw = int(round(y_raw))
+                        if 0 <= x_raw < Wraw and 0 <= y_raw < Hraw:
+                            raw_img_data[y_raw, x_raw] = 0.0
 
-            # call with correct signature for the chosen function
+            # deposit
             if deposit_func is drizzle_deposit_numba_naive:
                 drizzle_buffer, coverage_buffer = deposit_func(
                     raw_img_data, transform, drizzle_buffer, coverage_buffer,
@@ -7976,11 +8106,11 @@ class StackingSuiteDialog(QDialog):
                     scale_factor, drop_shrink, weight, _kcode, float(gauss_sigma)
                 )
 
-        # --- finalize, save, optional autocrop (unchanged below) ---
+        # --- finalize, save, optional autocrop ---
         final_drizzle = np.zeros_like(drizzle_buffer, dtype=np.float32)
         final_drizzle = finalize_func(drizzle_buffer, coverage_buffer, final_drizzle)
 
-        # Save original drizzle
+        # Save original drizzle (single-HDU; no rejection layers here)
         Hd, Wd = final_drizzle.shape[:2] if final_drizzle.ndim >= 2 else (0, 0)
         display_group_driz = self._label_with_dims(group_key, Wd, Hd)
         base_stem = f"MasterLight_{display_group_driz}_{len(file_list)}stacked_drizzle"
@@ -8005,13 +8135,15 @@ class StackingSuiteDialog(QDialog):
             hdr_orig["NAXIS2"] = final_drizzle.shape[0]
             hdr_orig["NAXIS3"] = final_drizzle.shape[2]
 
+        is_mono_driz = (final_drizzle.ndim == 2)
+
         save_image(
             img_array=final_drizzle,
             filename=out_path_orig,
             original_format="fit",
             bit_depth="32-bit floating point",
             original_header=hdr_orig,
-            is_mono=(final_drizzle.ndim == 2)
+            is_mono=is_mono_driz
         )
         log(f"✅ Drizzle (original) saved: {out_path_orig}")
 
@@ -8042,6 +8174,7 @@ class StackingSuiteDialog(QDialog):
             self._autocrop_outputs.append((group_key, out_path_crop))
             log(f"✂️ Drizzle (auto-cropped) saved: {out_path_crop}")
 
+
     def normal_integration_with_rejection(self, group_key, file_list, frame_weights, status_cb=None):
         log = status_cb or (lambda *_: None)
         log(f"Starting integration for group '{group_key}' with {len(file_list)} files.")
@@ -8064,7 +8197,7 @@ class StackingSuiteDialog(QDialog):
 
         log(f"📊 Stacking group '{group_key}' with {self.rejection_algorithm}")
 
-        # --- NEW: keep all FITSes open (memmap) once for the whole group ---
+        # --- keep all FITSes open (memmap) once for the whole group ---
         sources = []
         try:
             for p in file_list:
@@ -8079,27 +8212,32 @@ class StackingSuiteDialog(QDialog):
         integrated_image = np.zeros((height, width, channels), dtype=DTYPE)
         per_file_rejections = {f: [] for f in file_list}
 
-        # --- chunk size (unchanged) ---
+        # --- chunk size ---
         pref_h = self.chunk_height
         pref_w = self.chunk_width
         try:
             chunk_h, chunk_w = compute_safe_chunk(height, width, N, channels, DTYPE, pref_h, pref_w)
             log(f"🔧 Using chunk size {chunk_h}×{chunk_w} for {DTYPE}")
         except MemoryError as e:
-            for s in sources: s.close()
+            for s in sources:
+                s.close()
             log(f"⚠️ {e}")
             return None, {}, None
 
-        # --- NEW: one reusable Fortran-order tile buffer (F makes frames contiguous) ---
+        # --- reusable Fortran-order tile buffer (frames contiguous) ---
         tile_stack_buf = np.empty((N, chunk_h, chunk_w, channels), dtype=np.float32, order='F')
 
-        # --- NEW: weights once per group ---
+        # --- weights once per group ---
         weights_array = np.array([frame_weights.get(p, 1.0) for p in file_list], dtype=np.float32)
 
         n_rows  = math.ceil(height / chunk_h)
         n_cols  = math.ceil(width  / chunk_w)
         total_tiles = n_rows * n_cols
         tile_idx = 0
+
+        # --- group-level rejection maps (RAM-light) ---
+        rej_any   = np.zeros((height, width), dtype=np.bool_)
+        rej_count = np.zeros((height, width), dtype=np.uint16)
 
         for y0 in range(0, height, chunk_h):
             y1  = min(y0 + chunk_h, height)
@@ -8113,7 +8251,7 @@ class StackingSuiteDialog(QDialog):
                 # view into the reusable buffer with *actual* edge sizes
                 ts = tile_stack_buf[:, :th, :tw, :channels]
 
-                # --- NEW: sequential, low-overhead sliced reads (OS prefetch + memmap) ---
+                # sequential, low-overhead sliced reads (OS prefetch + memmap)
                 for i, src in enumerate(sources):
                     sub = src.read_tile(y0, y1, x0, x1)  # float32, (th,tw) or (th,tw,3)
                     if sub.ndim == 2:
@@ -8123,7 +8261,7 @@ class StackingSuiteDialog(QDialog):
                             sub = sub[:, :, None]  # unify to 3D for assignment
                     ts[i, :, :, :] = sub
 
-                # --- rejection/integration (as before) ---
+                # --- rejection/integration ---
                 algo = self.rejection_algorithm
                 if algo == "Simple Median (No Rejection)":
                     tile_result  = np.median(ts, axis=0)
@@ -8132,43 +8270,71 @@ class StackingSuiteDialog(QDialog):
                     tile_result  = np.average(ts, axis=0, weights=weights_array)
                     tile_rej_map = np.zeros((N, th, tw), dtype=bool)
                 elif algo == "Weighted Windsorized Sigma Clipping":
-                    tile_result, tile_rej_map = windsorized_sigma_clip_weighted(ts, weights_array, lower=self.sigma_low, upper=self.sigma_high)
+                    tile_result, tile_rej_map = windsorized_sigma_clip_weighted(
+                        ts, weights_array, lower=self.sigma_low, upper=self.sigma_high
+                    )
                 elif algo == "Kappa-Sigma Clipping":
-                    tile_result, tile_rej_map = kappa_sigma_clip_weighted(ts, weights_array, kappa=self.kappa, iterations=self.iterations)
+                    tile_result, tile_rej_map = kappa_sigma_clip_weighted(
+                        ts, weights_array, kappa=self.kappa, iterations=self.iterations
+                    )
                 elif algo == "Trimmed Mean":
-                    tile_result, tile_rej_map = trimmed_mean_weighted(ts, weights_array, trim_fraction=self.trim_fraction)
+                    tile_result, tile_rej_map = trimmed_mean_weighted(
+                        ts, weights_array, trim_fraction=self.trim_fraction
+                    )
                 elif algo == "Extreme Studentized Deviate (ESD)":
-                    tile_result, tile_rej_map = esd_clip_weighted(ts, weights_array, threshold=self.esd_threshold)
+                    tile_result, tile_rej_map = esd_clip_weighted(
+                        ts, weights_array, threshold=self.esd_threshold
+                    )
                 elif algo == "Biweight Estimator":
-                    tile_result, tile_rej_map = biweight_location_weighted(ts, weights_array, tuning_constant=self.biweight_constant)
+                    tile_result, tile_rej_map = biweight_location_weighted(
+                        ts, weights_array, tuning_constant=self.biweight_constant
+                    )
                 elif algo == "Modified Z-Score Clipping":
-                    tile_result, tile_rej_map = modified_zscore_clip_weighted(ts, weights_array, threshold=self.modz_threshold)
+                    tile_result, tile_rej_map = modified_zscore_clip_weighted(
+                        ts, weights_array, threshold=self.modz_threshold
+                    )
                 elif algo == "Max Value":
-                    tile_result, tile_rej_map = max_value_stack(ts, weights_array)
+                    tile_result, tile_rej_map = max_value_stack(
+                        ts, weights_array
+                    )
                 else:
-                    tile_result, tile_rej_map = windsorized_sigma_clip_weighted(ts, weights_array, lower=self.sigma_low, upper=self.sigma_high)
+                    tile_result, tile_rej_map = windsorized_sigma_clip_weighted(
+                        ts, weights_array, lower=self.sigma_low, upper=self.sigma_high
+                    )
 
                 integrated_image[y0:y1, x0:x1, :] = tile_result
 
-                # rejection bookkeeping
-                if tile_rej_map.ndim == 4:
-                    tile_rej_map = np.any(tile_rej_map, axis=-1)
-                for i, fpath in enumerate(file_list):
-                    ys, xs = np.where(tile_rej_map[i])
-                    if ys.size:
-                        per_file_rejections[fpath].extend(
-                            zip(x0 + xs, y0 + ys)
-                        )
+                # --- rejection bookkeeping ---
+                trm = tile_rej_map
+                if trm.ndim == 4:
+                    trm = np.any(trm, axis=-1)  # collapse color → (N, th, tw)
 
-        # close all mmapped files
+                # accumulate group maps
+                rej_any[y0:y1, x0:x1]  |= np.any(trm, axis=0)
+                rej_count[y0:y1, x0:x1] += trm.sum(axis=0).astype(np.uint16)
+
+                # per-file coords (existing behavior)
+                for i, fpath in enumerate(file_list):
+                    ys, xs = np.where(trm[i])
+                    if ys.size:
+                        per_file_rejections[fpath].extend(zip(x0 + xs, y0 + ys))
+
+        # close mmapped FITSes
         for s in sources:
             s.close()
 
         if channels == 1:
             integrated_image = integrated_image[..., 0]
 
+        # stash group-level maps so the *master* saver can MEF-embed them
+        if not hasattr(self, "_rej_maps"):
+            self._rej_maps = {}
+        rej_frac = (rej_count.astype(np.float32) / float(max(1, N)))  # [0..1]
+        self._rej_maps[group_key] = {"any": rej_any, "frac": rej_frac, "count": rej_count, "n": N}
+
         log(f"Integration complete for group '{group_key}'.")
         return integrated_image, per_file_rejections, ref_header
+
 
 
     def outlier_rejection_with_mask(self, tile_stack, weights_array):

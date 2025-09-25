@@ -426,6 +426,15 @@ class ShortcutButton(QToolButton):
                 QMessageBox.information(self, "Preset saved", "Cosmic Clarity preset stored on shortcut.")
             return
 
+        if cid in ("convo", "convolution", "deconvolution", "convo_deconvo"):
+            from pro.convo_preset import ConvoPresetDialog
+            cur = self._load_preset() or {"op":"convolution", "radius":5.0, "kurtosis":2.0, "aspect":1.0, "rotation":0.0, "strength":1.0}
+            dlg = ConvoPresetDialog(self, initial=cur)
+            if dlg.exec() == QDialog.DialogCode.Accepted:
+                self._save_preset(dlg.result_dict())
+                QMessageBox.information(self, "Preset saved", "Convo/Deconvo preset stored on shortcut.")
+            return
+
         if cid == "linear_fit":
             cur = self._load_preset() or {}
             dlg = _LinearFitPresetDialog(self, initial=cur)
@@ -1337,15 +1346,38 @@ class _RemoveGreenPresetDialog(QDialog):
         self.setWindowTitle("Remove Green — Preset")
         init = dict(initial or {})
 
+        # Local labels so there’s no external dependency.
+        MODE_LABELS = {
+            "avg": "Average neutral (G → min(avg(R,B), G))",
+            "max": "Average neutral MAX (G → min(max(R,B), G))",
+            "min": "Average neutral MIN (G → min(min(R,B), G))",
+        }
+        MODE_INDEX = {"avg": 0, "max": 1, "min": 2}
+
+        # Amount
         self.spin_amount = QDoubleSpinBox()
         self.spin_amount.setRange(0.0, 1.0)
         self.spin_amount.setDecimals(2)
         self.spin_amount.setSingleStep(0.05)
-        # default full SCNR if nothing saved
-        self.spin_amount.setValue(float(init.get("amount", 1.00)))
+        self.spin_amount.setValue(float(init.get("amount", 1.00)))  # default full SCNR
 
+        # Mode
+        self.combo_mode = QComboBox()
+        self.combo_mode.addItem(MODE_LABELS["avg"], userData="avg")
+        self.combo_mode.addItem(MODE_LABELS["max"], userData="max")
+        self.combo_mode.addItem(MODE_LABELS["min"], userData="min")
+        init_mode = str(init.get("mode", init.get("neutral_mode", "avg"))).lower()
+        self.combo_mode.setCurrentIndex(MODE_INDEX.get(init_mode, 0))
+
+        # Preserve lightness
+        self.cb_preserve = QCheckBox("Preserve lightness")
+        self.cb_preserve.setChecked(bool(init.get("preserve_lightness", init.get("preserve", True))))
+
+        # Layout
         form = QFormLayout(self)
         form.addRow("Amount (0–1):", self.spin_amount)
+        form.addRow("Neutral mode:", self.combo_mode)
+        form.addRow("", self.cb_preserve)
 
         btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
@@ -1357,8 +1389,11 @@ class _RemoveGreenPresetDialog(QDialog):
 
     def result_dict(self) -> dict:
         return {
-            "amount": float(self.spin_amount.value())  # 0..1
+            "amount": float(self.spin_amount.value()),                 # 0..1
+            "mode": self.combo_mode.currentData() or "avg",            # "avg" | "max" | "min"
+            "preserve_lightness": bool(self.cb_preserve.isChecked()),  # True/False
         }
+
 
 class _BackgroundNeutralPresetDialog(QDialog):
     """

@@ -3,7 +3,7 @@ from __future__ import annotations
 import os, shutil, tempfile
 import numpy as np
 from PyQt6.QtWidgets import (QMessageBox, QDialog, QFormLayout, QDialogButtonBox, QDoubleSpinBox, QCheckBox,
-    QRadioButton, QLabel)
+    QRadioButton, QLabel, QComboBox)
 from PyQt6.QtCore import QTimer
 
 # Reuse your existing implementation
@@ -13,8 +13,17 @@ from .graxpert import (
     _run_graxpert_command,
 )
 
-def _build_graxpert_cmd(exe: str, operation: str, input_path: str, *, smoothing: float | None = None,
-                        strength: float | None = None, gpu: bool = True, batch_size: int | None = None) -> list[str]:
+def _build_graxpert_cmd(
+    exe: str,
+    operation: str,
+    input_path: str,
+    *,
+    smoothing: float | None = None,
+    strength: float | None = None,
+    ai_version: str | None = None,
+    gpu: bool = True,
+    batch_size: int | None = None
+) -> list[str]:
     op = "denoising" if operation == "denoise" else "background-extraction"
     cmd = [exe, "-cmd", op, input_path, "-cli", "-gpu", "true" if gpu else "false"]
     if op == "denoising":
@@ -22,6 +31,8 @@ def _build_graxpert_cmd(exe: str, operation: str, input_path: str, *, smoothing:
             cmd += ["-strength", f"{strength:.2f}"]
         if batch_size is not None:
             cmd += ["-batch_size", str(int(batch_size))]
+        if ai_version:
+            cmd += ["-ai_version", ai_version]
     else:
         if smoothing is not None:
             cmd += ["-smoothing", f"{smoothing:.2f}"]
@@ -47,12 +58,13 @@ def run_graxpert_via_preset(main_window, preset: dict | None = None):
         return
 
     p = dict(preset or {})
-    op = str(p.get("op", "background")).lower()  # "background" or "denoise"
-    strength = p.get("strength", 0.50)    
+    op = str(p.get("op", "background")).lower()
+    strength = p.get("strength", 0.50)
     smoothing = float(p.get("smoothing", 0.10))
     smoothing = max(0.0, min(1.0, smoothing))
     gpu = bool(p.get("gpu", True))
     batch_size = p.get("batch_size", None)
+    ai_version = p.get("ai_version")  # None or e.g. "3.0.2"
 
     # 2) GraXpert executable
     exe = p.get("exe") or _resolve_graxpert_exec(main_window)
@@ -77,6 +89,7 @@ def run_graxpert_via_preset(main_window, preset: dict | None = None):
         input_path,
         smoothing=float(smoothing) if op == "background" else None,
         strength=float(strength) if op == "denoise" else None,
+        ai_version=str(ai_version) if (op == "denoise" and ai_version) else None,
         gpu=bool(p.get("gpu", True)),
         batch_size=int(batch_size) if batch_size is not None else None,
     )
@@ -109,6 +122,7 @@ class GraXpertPresetDialog(QDialog):
       - Operation: Remove gradient (background) OR Denoise
       - Parameter: Smoothing (0..1) for background OR Strength (0..1) for denoise
       - GPU on/off
+      - Optional denoise model (ai_version); blank = latest/auto
     """
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
@@ -121,12 +135,10 @@ class GraXpertPresetDialog(QDialog):
         # --- operation radios ---
         self.rb_background = QRadioButton("Remove gradient")
         self.rb_denoise    = QRadioButton("Denoise")
-
         if op == "denoise":
             self.rb_denoise.setChecked(True)
         else:
             self.rb_background.setChecked(True)
-
         form.addRow(self.rb_background)
         form.addRow(self.rb_denoise)
 
@@ -137,17 +149,31 @@ class GraXpertPresetDialog(QDialog):
         self.param.setDecimals(2)
         self.param.setSingleStep(0.01)
 
-        # Defaults/initials
         smoothing = float(p.get("smoothing", 0.10))
         strength  = float(p.get("strength", 0.50))
 
         def _set_for_background():
             self.param_label.setText("Smoothing (0–1):")
             self.param.setValue(smoothing)
+            self.model_label.setEnabled(False)
+            self.model_combo.setEnabled(False)
 
         def _set_for_denoise():
             self.param_label.setText("Strength (0–1):")
             self.param.setValue(strength)
+            self.model_label.setEnabled(True)
+            self.model_combo.setEnabled(True)
+
+        # --- denoise model picker ---
+        self.model_label = QLabel("Denoise model:")
+        self.model_combo = QComboBox()
+        self.model_combo.addItem("Latest (auto)", "")
+        for v in ["3.0.2", "3.0.1", "3.0.0", "2.0.0", "1.1.0", "1.0.0"]:
+            self.model_combo.addItem(v, v)
+        # preselect from preset if provided
+        ai_ver = str(p.get("ai_version") or "")
+        idx = max(0, self.model_combo.findData(ai_ver))
+        self.model_combo.setCurrentIndex(idx)
 
         self.rb_background.toggled.connect(lambda checked: _set_for_background() if checked else None)
         self.rb_denoise.toggled.connect(lambda checked: _set_for_denoise() if checked else None)
@@ -159,6 +185,7 @@ class GraXpertPresetDialog(QDialog):
             _set_for_background()
 
         form.addRow(self.param_label, self.param)
+        form.addRow(self.model_label, self.model_combo)
 
         # --- GPU ---
         self.gpu = QCheckBox("Use GPU (if available)")
@@ -176,14 +203,12 @@ class GraXpertPresetDialog(QDialog):
 
     def result_dict(self) -> dict:
         op = "denoise" if self.rb_denoise.isChecked() else "background"
-        out = {
-            "op": op,
-            "gpu": bool(self.gpu.isChecked()),
-        }
-        # Only include the relevant parameter; harmless if you include both,
-        # but this keeps the dict clean.
+        out = {"op": op, "gpu": bool(self.gpu.isChecked())}
         if op == "background":
             out["smoothing"] = float(self.param.value())
         else:
             out["strength"] = float(self.param.value())
+            ai_version = self.model_combo.currentData() or ""
+            if ai_version:  # only include if explicitly chosen
+                out["ai_version"] = ai_version
         return out

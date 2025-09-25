@@ -1,4 +1,4 @@
-# pro/layers_dock.py
+#pro.layers_dock.py
 from __future__ import annotations
 from typing import Optional
 import json
@@ -75,8 +75,8 @@ class _LayerRow(QWidget):
             self.btn_dn.clicked.connect(self.moveDown.emit)
 
     def _on_clear_mask(self):
-        # clear selection → index -1
-        self.mask_combo.setCurrentIndex(-1)
+        # select the explicit "(none)" entry
+        self.mask_combo.setCurrentIndex(0)
         self._emit()
 
     def _emit(self, *_):
@@ -97,11 +97,6 @@ class _LayerRow(QWidget):
     def setName(self, name: str):
         self._name = name
         self.lbl.setText(name)
-
-    def _on_clear_mask(self):
-        # select the explicit "(none)" entry
-        self.mask_combo.setCurrentIndex(0)
-        self._emit()
 
 # ---------- The Dock ----------
 class LayersDock(QDockWidget):
@@ -127,9 +122,9 @@ class LayersDock(QDockWidget):
         # buttons
         row = QHBoxLayout(); v.addLayout(row)
         self.btn_clear = QPushButton("Clear All Layers")
-        self.btn_merge = QPushButton("Merge Layers and Push to View")  # <-- NEW
+        self.btn_merge = QPushButton("Merge Layers and Push to View")
         self.btn_merge.setToolTip("Flatten the visible layers into the current view and add an undo step.")
-        row.addWidget(self.btn_merge)   # show merge left so it’s primary
+        row.addWidget(self.btn_merge)
         row.addStretch(1)
         row.addWidget(self.btn_clear)
 
@@ -147,16 +142,13 @@ class LayersDock(QDockWidget):
         self.docman.documentAdded.connect(lambda _d: self._refresh_views())
         self.docman.documentRemoved.connect(lambda _d: self._refresh_views())
 
-        self.btn_merge.clicked.connect(self._merge_and_push) 
+        self.btn_merge.clicked.connect(self._merge_and_push)
 
         # initial
         self._refresh_views()
 
-
-
     # ---------- helpers ----------
     def _mask_choices(self):
-        # returns [(title, doc), ...]
         out = []
         for sw in self._all_subwindows():
             title = sw._effective_title() or "Untitled"
@@ -182,7 +174,6 @@ class LayersDock(QDockWidget):
             self.view_combo.addItem(title, userData=w)
         self.view_combo.blockSignals(False)
 
-        # reselect closest
         if current and current in subs:
             idx = subs.index(current)
             self.view_combo.setCurrentIndex(idx)
@@ -200,17 +191,15 @@ class LayersDock(QDockWidget):
     def _on_pick_view(self, _i):
         self._rebuild_list()
 
-
     def _rebuild_list(self):
         self.list.clear()
         vw = self.current_view()
         if not vw:
             return
 
-        choices = self._mask_choices()     # [(title, doc), ...]
+        choices = self._mask_choices()
         docs = [d for _, d in choices]
 
-        # editable layers (top→down)
         for lyr in getattr(vw, "_layers", []):
             raw_name = getattr(lyr, "name", "Layer")
             name = raw_name if isinstance(raw_name, str) else str(raw_name)
@@ -218,42 +207,24 @@ class LayersDock(QDockWidget):
             opacity = float(getattr(lyr, "opacity", 1.0))
             visible = bool(getattr(lyr, "visible", True))
             roww = _LayerRow(name, mode, opacity, visible)
-            # fill mask list
-            # fill mask list
             roww.mask_combo.blockSignals(True)
             roww.mask_combo.clear()
-
-            # first item = no mask
             roww.mask_combo.addItem("(none)", userData=None)
-
             for title, doc in choices:
                 roww.mask_combo.addItem(title, userData=doc)
-
-            # select existing (shift by +1 to account for "(none)")
             if getattr(lyr, "mask_doc", None) in docs:
                 roww.mask_combo.setCurrentIndex(1 + docs.index(lyr.mask_doc))
             else:
-                roww.mask_combo.setCurrentIndex(0)  # "(none)"
-
+                roww.mask_combo.setCurrentIndex(0)
             roww.mask_src.setCurrentIndex(1 if getattr(lyr, "mask_use_luma", False) else 0)
             roww.mask_invert.setChecked(bool(getattr(lyr, "mask_invert", False)))
             roww.mask_combo.blockSignals(False)
-            # select existing
-            if getattr(lyr, "mask_doc", None) in docs:
-                roww.mask_combo.setCurrentIndex(docs.index(lyr.mask_doc))
-            else:
-                roww.mask_combo.setCurrentIndex(-1)
-            roww.mask_src.setCurrentIndex(1 if getattr(lyr, "mask_use_luma", False) else 0)
-            roww.mask_invert.setChecked(bool(getattr(lyr, "mask_invert", False)))
-            roww.mask_combo.blockSignals(False)
-
             self._bind_row(roww)
             it = QListWidgetItem(self.list)
             it.setSizeHint(roww.sizeHint())
             self.list.addItem(it)
             self.list.setItemWidget(it, roww)
 
-        # base row same as before...
         base_name = getattr(vw, "_effective_title", None)
         base_name = base_name() if callable(base_name) else "Current View"
         base_label = f"Base • {base_name}"
@@ -271,7 +242,6 @@ class LayersDock(QDockWidget):
         return len(getattr(vw, "_layers", [])) if vw else 0
 
     def _bind_row(self, roww: _LayerRow):
-        # Only connect for non-base rows (base row is inert)
         if getattr(roww, "_is_base", False):
             return
         roww.changed.connect(self._apply_list_to_view)
@@ -292,7 +262,7 @@ class LayersDock(QDockWidget):
         idx = self._find_row_index(roww)
         if idx < 0:
             return
-        if idx >= self._layer_count():   # base row: ignore
+        if idx >= self._layer_count():
             return
         vw._layers.pop(idx)
         self.list.takeItem(idx)
@@ -303,22 +273,13 @@ class LayersDock(QDockWidget):
         if not vw:
             return
         i = self._find_row_index(roww)
-        if i < 0 or i >= self._layer_count():   # base row or invalid
+        if i < 0 or i >= self._layer_count():
             return
         j = i + delta
-        # cannot move past bounds or into base row position
         if j < 0 or j >= self._layer_count():
             return
-
-        # swap in UI
-        it_i = self.list.takeItem(i)
-        it_j = self.list.takeItem(j - 1 if j > i else j)
-        self.list.insertItem(i, it_j); self.list.insertItem(j, it_i)
-        wi = self.list.itemWidget(it_i); wj = self.list.itemWidget(it_j)
-        self.list.setItemWidget(it_i, wi); self.list.setItemWidget(it_j, wj)
-
-        # swap in view model
         vw._layers[i], vw._layers[j] = vw._layers[j], vw._layers[i]
+        self._rebuild_list()
         self._apply_list_to_view()
 
     def _apply_list_to_view(self):
@@ -336,29 +297,25 @@ class LayersDock(QDockWidget):
             lyr.visible = p["visible"]
             lyr.mode = p["mode"]
             lyr.opacity = float(p["opacity"])
-
-            # mask selection
             mi = p["mask_index"]
             if mi is not None and mi > 0:
                 doc = roww.mask_combo.itemData(mi)
                 lyr.mask_doc = doc
             else:
                 lyr.mask_doc = None
-
             lyr.mask_use_luma = (p["mask_src"] == "Luminance")
             lyr.mask_invert = bool(p["mask_invert"])
-        vw._reinstall_layer_watchers() 
+        vw._reinstall_layer_watchers()
         vw.apply_layer_stack(vw._layers)
 
     def _clear_layers(self):
         vw = self.current_view()
         if not vw: return
         vw._layers = []
-        vw._reinstall_layer_watchers()       # <— NEW (clears all watchers)
+        vw._reinstall_layer_watchers()
         self._rebuild_list()
         vw.apply_layer_stack([])
 
-    # ---------- DnD ----------
     def dragEnterEvent(self, e: QDragEnterEvent):
         md = e.mimeData()
         if md.hasFormat(MIME_VIEWSTATE) or md.hasFormat(MIME_MASK):
@@ -373,134 +330,71 @@ class LayersDock(QDockWidget):
         vw = self.current_view()
         if not vw:
             e.ignore(); return
-
         md = e.mimeData()
-
         try:
-            # -------- normal drag: add image layer ----------
             if md.hasFormat(MIME_VIEWSTATE):
                 st = json.loads(bytes(md.data(MIME_VIEWSTATE)).decode("utf-8"))
                 doc_ptr = st.get("doc_ptr")
                 if doc_ptr is None:
                     raise RuntimeError("Missing doc_ptr in MIME_VIEWSTATE payload")
-
                 src_doc = self._resolve_doc_ptr(doc_ptr)
                 if src_doc is None:
                     raise RuntimeError("Source doc gone")
-
                 layer_name = src_doc.display_name() if hasattr(src_doc, "display_name") else "Layer"
-
-                # Match ImageLayer dataclass exactly
                 new_layer = ImageLayer(
                     name=layer_name,
                     src_doc=src_doc,
                     visible=True,
                     opacity=1.0,
-                    mode="Normal",   # must match BLEND_MODES capitalization
+                    mode="Normal",
                 )
-
                 if not hasattr(vw, "_layers") or vw._layers is None:
                     vw._layers = []
-                # Add on top
                 vw._layers.insert(0, new_layer)
-                vw._reinstall_layer_watchers()  
-
+                vw._reinstall_layer_watchers()
                 self._rebuild_list()
                 vw.apply_layer_stack(vw._layers)
                 e.acceptProposedAction()
                 return
 
-            # -------- Shift-drag: attach mask to selected layer ----------
             if md.hasFormat(MIME_MASK):
                 payload = json.loads(bytes(md.data(MIME_MASK)).decode("utf-8"))
                 doc_ptr = payload.get("mask_doc_ptr")
                 if doc_ptr is None:
                     raise RuntimeError("Missing mask_doc_ptr in MIME_MASK payload")
-
                 mask_doc = self._resolve_doc_ptr(doc_ptr)
                 if mask_doc is None:
                     raise RuntimeError("Mask doc gone")
-
                 if not getattr(vw, "_layers", None):
                     QMessageBox.information(self, "No Layers", "Add a layer first, then drop a mask onto it.")
                     e.ignore(); return
-
                 sel_row = self.list.currentRow()
                 if sel_row < 0:
-                    sel_row = 0  # default to top
+                    sel_row = 0
                 idx = min(sel_row, len(vw._layers) - 1)
                 layer = vw._layers[idx]
-
-                # Store the document; compositor will read the active mask from it
                 layer.mask_doc = mask_doc
-                # Optional flags carried in the payload (if present)
                 layer.mask_invert = bool(payload.get("invert", False))
                 try:
                     layer.mask_feather = float(payload.get("feather", 0.0) or 0.0)
                 except Exception:
                     layer.mask_feather = 0.0
-                vw._reinstall_layer_watchers() 
+                vw._reinstall_layer_watchers()
                 self._rebuild_list()
                 vw.apply_layer_stack(vw._layers)
                 e.acceptProposedAction()
                 return
-
         except Exception as ex:
             print("[LayersDock] drop error:", ex)
-
         e.ignore()
 
-
     def _resolve_doc_ptr(self, ptr: int):
-        # Map id(document) → document
         for d in self.docman.all_documents():
             if id(d) == ptr:
                 return d
         return None
 
-
     def _merge_and_push(self):
         vw = self.current_view()
         if not vw:
             return
-        # nothing to do?
-        layers = getattr(vw, "_layers", []) or []
-        if not layers:
-            QMessageBox.information(self, "Nothing to Merge", "There are no layers to merge for this view.")
-            return
-
-        try:
-            base = vw.document.image
-            merged = composite_stack(base, layers)
-            if merged is None:
-                QMessageBox.warning(self, "Merge Failed", "Could not composite the current layers.")
-                return
-
-            # Ensure float32 (your pipeline prefers float32 [0..1])
-            import numpy as np
-            if merged.dtype != np.float32:
-                merged = merged.astype(np.float32, copy=False)
-
-            # Push into the document with an undo step name
-            # apply_edit already emits doc.changed → the view will re-render
-            step_name = "Merge Layers"
-            meta = dict(vw.document.metadata or {})
-            meta["last_merge_layer_count"] = len(layers)
-            meta["last_merge_view"] = getattr(vw, "_effective_title", lambda: "View")()
-
-            vw.document.apply_edit(merged, metadata=meta, step_name=step_name)
-
-            # Clear panel state & override preview
-            vw._layers = []
-            if hasattr(vw, "_display_override"):
-                vw._display_override = None
-            vw._reinstall_layer_watchers()
-            self._rebuild_list()
-            vw._render(rebuild=True)
-
-            # Optional toast
-            # QMessageBox.information(self, "Merged", "Layers merged into the view.")
-
-        except Exception as e:
-            print("[LayersDock] merge_and_push error:", e)
-            QMessageBox.critical(self, "Merge Error", f"An error occurred while merging:\n{e}")

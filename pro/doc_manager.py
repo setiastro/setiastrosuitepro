@@ -6,6 +6,7 @@ import numpy as np
 
 
 from legacy.image_manager import load_image as legacy_load_image, save_image as legacy_save_image
+from legacy.image_manager import list_fits_extensions, load_fits_extension
 
 def _normalize_ext(ext: str) -> str:
     e = ext.lower().lstrip(".")
@@ -230,17 +231,50 @@ class DocManager(QObject):
         ext = os.path.splitext(path)[1].lower().lstrip('.')
         meta = {
             "file_path": path,
-            "original_header": header,                 # keep raw
+            "original_header": header,
             "bit_depth": bit_depth,
             "is_mono": is_mono,
             "original_format": _normalize_ext(ext),
         }
-        # add snapshot so viewers/project IO are safe
         _snapshot_header_for_metadata(meta)
 
         doc = ImageDocument(img, meta)
         self._docs.append(doc)
         self.documentAdded.emit(doc)
+
+        # ⬇️ NEW: if FITS/MEF, auto-open known rejection layers as sibling docs
+        try:
+            if ext in ("fits", "fit", "fits.gz", "fit.gz", "fz"):
+                exts = list_fits_extensions(path)
+                # canonical names we emit when saving masters
+                for key, nice in (("REJ_LOW","(Rej Low)"),
+                                  ("REJ_HIGH","(Rej High)"),
+                                  ("REJ_COMB","(Rej Combined)")):
+                    if key in exts:
+                        aux_img, aux_hdr, aux_depth, aux_mono = load_fits_extension(path, key)
+                        aux_meta = {
+                            "file_path": f"{path}::{key}",
+                            "original_header": aux_hdr,
+                            "bit_depth": aux_depth,
+                            "is_mono": aux_mono,
+                            "original_format": "fits",
+                            # mark as derived/readonly so tools don’t overwrite originals by accident
+                            "image_meta": {"derived_from": path, "layer": key, "readonly": True},
+                        }
+                        _snapshot_header_for_metadata(aux_meta)
+                        aux_doc = ImageDocument(aux_img, aux_meta)
+                        self._docs.append(aux_doc)
+                        self.documentAdded.emit(aux_doc)
+                        # give it a nicer display title
+                        try:
+                            aux_doc.metadata["display_name"] = f"{os.path.basename(path)} {nice}"
+                            aux_doc.changed.emit()
+                        except Exception:
+                            pass
+        except Exception as _e:
+            # Non-fatal: if anything goes wrong we still opened the main image
+            print(f"[DocManager] MEF aux open skipped: {_e}")
+
         return doc
     
     # --- Slot -> Document ---

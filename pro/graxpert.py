@@ -6,7 +6,8 @@ import numpy as np
 from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QTextEdit, QPushButton, QFileDialog,
-    QMessageBox, QInputDialog
+    QMessageBox, QInputDialog, QFormLayout, QDialogButtonBox, QDoubleSpinBox,
+    QRadioButton, QLabel, QComboBox
 )
 
 # Prefer the exact loader you used in SASv2
@@ -18,10 +19,9 @@ except Exception:
 
 
 class GraXpertOperationDialog(QDialog):
-    """Choose operation + parameter (smoothing or strength)."""
+    """Choose operation + parameter (smoothing or strength) + (optional) denoise model."""
     def __init__(self, parent=None):
         super().__init__(parent)
-        from PyQt6.QtWidgets import QRadioButton, QFormLayout, QDialogButtonBox, QDoubleSpinBox, QWidget, QVBoxLayout, QLabel
 
         self.setWindowTitle("GraXpert")
         root = QVBoxLayout(self)
@@ -41,23 +41,42 @@ class GraXpertOperationDialog(QDialog):
         # dynamic label
         self.param_label = QLabel("Smoothing (0–1):")
 
+        # denoise model (optional)
+        self.model_label = QLabel("Denoise model:")
+        self.model_combo = QComboBox()
+        # Index 0 = auto/latest (empty payload → omit flag)
+        self.model_combo.addItem("Latest (auto)", "")     # omit -ai_version
+        for v in ["3.0.2", "3.0.1", "3.0.0", "2.0.0", "1.1.0", "1.0.0"]:
+            self.model_combo.addItem(v, v)
+
         # layout
         form = QFormLayout()
         form.addRow(self.rb_bg)
         form.addRow(self.rb_dn)
         form.addRow(self.param_label, self.spin)
+        form.addRow(self.model_label, self.model_combo)
         root.addLayout(form)
 
-        # switch label/defaults when toggled
+        # switch label/defaults and enable/disable model picker
         def _to_bg():
             self.param_label.setText("Smoothing (0–1):")
-            self.spin.setValue(min(max(self.spin.value(), 0.0), 1.0) if self.spin.value() != 0.50 else 0.10)
+            # If param was the denoise default, flip back to smoothing default
+            self.spin.setValue(0.10 if abs(self.spin.value() - 0.50) < 1e-6 else self.spin.value())
+            self.model_label.setEnabled(False)
+            self.model_combo.setEnabled(False)
+
         def _to_dn():
             self.param_label.setText("Strength (0–1):")
-            self.spin.setValue(0.50 if abs(self.spin.value()-0.10) < 1e-6 else self.spin.value())
+            # If param was the smoothing default, flip to denoise default
+            self.spin.setValue(0.50 if abs(self.spin.value() - 0.10) < 1e-6 else self.spin.value())
+            self.model_label.setEnabled(True)
+            self.model_combo.setEnabled(True)
 
         self.rb_bg.toggled.connect(lambda checked: _to_bg() if checked else None)
         self.rb_dn.toggled.connect(lambda checked: _to_dn() if checked else None)
+
+        # initialize state
+        _to_bg()
 
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         btns.accepted.connect(self.accept)
@@ -67,10 +86,20 @@ class GraXpertOperationDialog(QDialog):
     def result(self):
         op = "background" if self.rb_bg.isChecked() else "denoise"
         val = float(self.spin.value())
-        return op, val
+        ai_version = self.model_combo.currentData() if not self.rb_bg.isChecked() else ""
+        return op, val, (ai_version or None)
 
-def _build_graxpert_cmd(exe: str, operation: str, input_path: str, *, smoothing: float | None = None,
-                        strength: float | None = None, gpu: bool = True, batch_size: int | None = None) -> list[str]:
+def _build_graxpert_cmd(
+    exe: str,
+    operation: str,
+    input_path: str,
+    *,
+    smoothing: float | None = None,
+    strength: float | None = None,
+    ai_version: str | None = None,
+    gpu: bool = True,
+    batch_size: int | None = None
+) -> list[str]:
     op = "denoising" if operation == "denoise" else "background-extraction"
     cmd = [exe, "-cmd", op, input_path, "-cli", "-gpu", "true" if gpu else "false"]
     if op == "denoising":
@@ -78,6 +107,9 @@ def _build_graxpert_cmd(exe: str, operation: str, input_path: str, *, smoothing:
             cmd += ["-strength", f"{strength:.2f}"]
         if batch_size is not None:
             cmd += ["-batch_size", str(int(batch_size))]
+        # Only include if user chose a specific model
+        if ai_version:
+            cmd += ["-ai_version", ai_version]
     else:
         if smoothing is not None:
             cmd += ["-smoothing", f"{smoothing:.2f}"]
@@ -108,11 +140,11 @@ def remove_gradient_with_graxpert(main_window):
         QMessageBox.warning(main_window, "No Image", "Please load an image before removing the gradient.")
         return
 
-    # 2) smoothing prompt (same defaults as v2)
+    # 2) smoothing/denoise prompt
     op_dlg = GraXpertOperationDialog(main_window)
     if op_dlg.exec() != QDialog.DialogCode.Accepted:
         return
-    operation, param = op_dlg.result() 
+    operation, param, ai_version = op_dlg.result()
 
     # 3) resolve GraXpert executable
     exe = _resolve_graxpert_exec(main_window)
@@ -130,15 +162,16 @@ def remove_gradient_with_graxpert(main_window):
         shutil.rmtree(workdir, ignore_errors=True)
         return
 
-    # 5) build the exact v2 command
+    # 5) build the exact v2 command (now with optional ai_version for denoise)
     command = _build_graxpert_cmd(
         exe,
         operation,
         input_path,
         smoothing=param if operation == "background" else None,
         strength=param if operation == "denoise" else None,
+        ai_version=ai_version if operation == "denoise" else None,
         gpu=True,
-        batch_size=4  # optional: expose later if you want
+        batch_size=4
     )
 
     # 6) run and wait with a small log dialog
@@ -310,6 +343,27 @@ def _run_graxpert_command(parent, command: list[str], output_basename: str, work
 
 
 # ---------- finish: import EXACT base like v2, via legacy loader ----------
+def _persist_output_file(src_path: str) -> str | None:
+    """Optional: move/copy GraXpert output to an app cache we control."""
+    try:
+        from PyQt6.QtCore import QStandardPaths
+        cache_root = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.CacheLocation)
+    except Exception:
+        cache_root = None
+    try:
+        base = os.path.join(cache_root or os.path.expanduser("~/.saspro_cache"), "graxpert")
+        os.makedirs(base, exist_ok=True)
+        dst = os.path.join(base, os.path.basename(src_path))
+        # prefer move (cheaper); fall back to copy if cross-device issues
+        try:
+            shutil.move(src_path, dst)
+        except Exception:
+            shutil.copy2(src_path, dst)
+        return dst
+    except Exception:
+        return None
+
+
 def _on_graxpert_finished(parent, return_code: int, output_basename: str, working_dir: str, target_doc, dlg):
     try:
         dlg.close()
@@ -321,22 +375,22 @@ def _on_graxpert_finished(parent, return_code: int, output_basename: str, workin
         shutil.rmtree(working_dir, ignore_errors=True)
         return
 
-    # v2 logic: look ONLY for {base}.{fits|tif|tiff|png} in working_dir
+    # 1) find output file in the temp working dir
     output_file = _pick_exact_output(working_dir, output_basename)
     if not output_file:
         QMessageBox.critical(parent, "GraXpert", "GraXpert output file not found.")
         shutil.rmtree(working_dir, ignore_errors=True)
         return
 
-    # Use the SAME loader as v2
-    arr = None
+    # 2) read pixels (header is optional)
+    arr, header = None, None
     if _legacy_load_image is not None:
         try:
-            arr, _, _, _ = _legacy_load_image(output_file)
+            a, h, _, _ = _legacy_load_image(output_file)
+            arr, header = a, h
         except Exception:
             arr = None
 
-    # Fallback loader if legacy not available
     if arr is None:
         arr = _fallback_read_float01(output_file)
 
@@ -345,29 +399,32 @@ def _on_graxpert_finished(parent, return_code: int, output_basename: str, workin
         shutil.rmtree(working_dir, ignore_errors=True)
         return
 
-    # v2 coerced mono -> RGB for its image_manager; your doc stack supports mono,
-    # so we keep channels as-is. (If you want RGB, uncomment below.)
-    # if arr.ndim == 2:
-    #     arr = np.stack([arr] * 3, axis=-1)
+    # 3) (Option A: default) do NOT keep a file_path to a soon-to-be-deleted temp file
+    #    (Option B: set PERSIST_GX_OUTPUT=True to keep a copy in app cache and point file_path there)
+    PERSIST_GX_OUTPUT = False
+    persisted_path = _persist_output_file(output_file) if PERSIST_GX_OUTPUT else None
 
-    doc = target_doc
+    meta = {
+        "step_name": "GraXpert Gradient Removal",
+        "bit_depth": "32-bit floating point",
+        "is_mono": (arr.ndim == 2) or (arr.ndim == 3 and arr.shape[2] == 1),
+        "description": "GraXpert Gradient Removed",
+        # Don't tempt any later metadata probes with an invalid path:
+        # only include a path if we really persisted a copy.
+    }
+    if header is not None:
+        meta["original_header"] = header
+    if persisted_path:
+        meta["file_path"] = persisted_path  # safe: this path will remain
+
+    # 4) apply to the target doc
     try:
-        meta = {
-            "step_name": "GraXpert Gradient Removal",
-            "bit_depth": "32-bit floating point",
-            "is_mono": (arr.ndim == 2) or (arr.ndim == 3 and arr.shape[2] == 1),
-            "file_path": output_file,
-            "description": "GraXpert Gradient Removed",
-        }
-        doc.apply_edit(arr.astype(np.float32, copy=False), metadata=meta, step_name="GraXpert Gradient Removal")
-
-        # Optional: if your active view had display-stretch on and this looks “flat”,
-        # you can toggle it here. Leaving unchanged for consistency with ABE flow.
-
-        #QMessageBox.information(parent, "Success", "Gradient removed successfully.")
+        target_doc.apply_edit(arr.astype(np.float32, copy=False), metadata=meta,
+                              step_name="GraXpert Gradient Removal")
     except Exception as e:
         QMessageBox.critical(parent, "GraXpert", f"Failed to apply result:\n{e}")
     finally:
+        # If we persisted the file, it has already been moved out of working_dir.
         shutil.rmtree(working_dir, ignore_errors=True)
 
 

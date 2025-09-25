@@ -4,8 +4,13 @@ import io, os, json, time, zipfile, uuid, pickle
 from typing import Any, Dict, List, Tuple
 import numpy as np
 from PyQt6.QtWidgets import QMdiSubWindow
-from PyQt6.QtCore import QPoint
+from PyQt6.QtCore import QPoint, QRect, QTimer
 
+
+try:
+    from PyQt6 import sip
+except Exception:
+    sip = None
 # ---------- helpers ----------
 def _np_save_to_bytes(arr: np.ndarray, *, compress: bool = True) -> bytes:
     """
@@ -19,6 +24,18 @@ def _np_save_to_bytes(arr: np.ndarray, *, compress: bool = True) -> bytes:
     else:
         np.save(bio, arr)
     return bio.getvalue()
+
+
+def _is_dead(obj) -> bool:
+    """True if a PyQt object has been deleted or is None."""
+    try:
+        if obj is None:
+            return True
+        if sip is not None:
+            return sip.isdeleted(obj)
+    except Exception:
+        pass
+    return False
 
 
 # --- NEW: header + file helpers ---------------------------------------------
@@ -439,17 +456,35 @@ class ProjectReader:
             # restore UI geometry/minimized
             try:
                 ui = json.loads(z.read("ui.json").decode("utf-8"))
-                self._restore_ui(ui, doc_id_map)
             except Exception:
-                # fallback: at least open all docs
-                for doc in doc_id_map.values():
-                    try:
-                        self.mw._spawn_subwindow_for(doc)
-                    except Exception:
-                        pass
+                ui = None
 
-            # After everything is created, bring the canvas to the front & ready
-            self._post_restore_shortcuts()
+            def _do_restore():
+                # bail out if the main window got closed/destroyed in the meantime
+                if _is_dead(self.mw) or _is_dead(getattr(self.mw, "mdi", None)):
+                    return
+                if ui is not None:
+                    try:
+                        self._restore_ui(ui, doc_id_map)
+                    except Exception:
+                        # fallback: at least open all docs
+                        for doc in doc_id_map.values():
+                            try:
+                                self.mw._spawn_subwindow_for(doc)
+                            except Exception:
+                                pass
+                else:
+                    # no ui.json — still open all docs
+                    for doc in doc_id_map.values():
+                        try:
+                            self.mw._spawn_subwindow_for(doc)
+                        except Exception:
+                            pass
+                # shortcuts canvas finalization (also guarded)
+                self._post_restore_shortcuts()
+
+            # Defer to avoid racing with dock/MDI state changes during project open/close
+            QTimer.singleShot(0, _do_restore)
 
     # --- NEW: cache folder for extracted sources ------------------------------
     def _ensure_project_cache(self, project_path: str) -> str:
@@ -471,27 +506,7 @@ class ProjectReader:
         sc = getattr(self, "sc", None)
         if not sc:
             return
-        try:
-            c = sc.canvas
-            # make sure we're parented and sized to the viewport
-            if c.parent() is not sc.mdi.viewport():
-                c.setParent(sc.mdi.viewport())
-            c.setGeometry(sc.mdi.viewport().rect())
-            # ensure it will actually receive mouse/keyboard events
-            c.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
-            c.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-            c.raise_()
-            c.show()
-            # Wake up the child buttons (some styles need a nudge)
-            for w in list(sc.widgets.values()):
-                try:
-                    w.setEnabled(True)
-                    w.show()
-                    w.raise_()
-                except Exception:
-                    pass
-        except Exception:
-            pass
+
 
     # ---------- helpers ----------
     def _restore_shortcuts(self, z: zipfile.ZipFile):
@@ -544,67 +559,43 @@ class ProjectReader:
             pass
 
     def _restore_ui(self, ui: dict, id_map: dict):
+        # Validate window & MDI — avoid calling into deleted C++ objects
+        if _is_dead(self.mw) or _is_dead(getattr(self.mw, "mdi", None)):
+            return
+
         views = ui.get("views", [])
         active_id = ui.get("active_doc_id")
         active_sw = None
         shelf = getattr(self.mw, "window_shelf", None)
 
         for v in views:
+            if _is_dead(self.mw):  # recheck per-iteration
+                return
             doc = id_map.get(v.get("doc_id"))
             if not doc:
                 continue
 
-            sw = self.mw._spawn_subwindow_for(doc)
+            try:
+                sw = self.mw._spawn_subwindow_for(doc)
+            except Exception:
+                continue
 
             # geometry from project
-            x = int(v.get("x", sw.x()))
-            y = int(v.get("y", sw.y()))
-            w = int(v.get("w", sw.width()))
-            h = int(v.get("h", sw.height()))
-            was_max = bool(v.get("was_max", False))
-            is_min = bool(v.get("minimized", False))
-
             try:
-                if not is_min:
-                    # normal path: restore rect / max
-                    if was_max:
-                        sw.showMaximized()
-                    else:
-                        sw.setWindowState(Qt.WindowState.WindowNoState)
-                        sw.setGeometry(QRect(x, y, w, h))
-                        sw.showNormal()
-                else:
-                    # minimized path: seed shelf saved state with our rect/max and add entry
-                    if shelf is not None:
-                        try:
-                            # ensure saved state exists for this subwindow
-                            shelf._saved_state[sw] = {"geom": QRect(x, y, w, h), "max": was_max}
-                        except Exception:
-                            pass
-                        sw.setWindowState(Qt.WindowState.WindowNoState)
-                        sw.setGeometry(QRect(x, y, w, h))
-                        sw.hide()
-                        try:
-                            shelf.add_entry(sw)
-                        except Exception:
-                            # fallback: capture-then-add
-                            try:
-                                shelf.pre_capture_state(sw)
-                                shelf.add_entry(sw)
-                            except Exception:
-                                pass
-                    else:
-                        # no shelf available; just hide at the geometry so it’s not intrusive
-                        sw.setGeometry(QRect(x, y, w, h))
-                        sw.hide()
+                is_min = bool(v.get("minimized", False))
+
             except Exception:
                 pass
 
             if v.get("doc_id") == active_id and not is_min:
                 active_sw = sw
 
-        if active_sw:
-            self.mw.mdi.setActiveSubWindow(active_sw)
+        if active_sw and not _is_dead(self.mw):
+            try:
+                self.mw.mdi.setActiveSubWindow(active_sw)
+            except Exception:
+                pass
+
 
 class LegacyProjectReader:
     """
@@ -689,6 +680,9 @@ class LegacyProjectReader:
             doc._redo = self._coerce_legacy_stack(redo_by_slot.get(slot) or [])
 
             doc_for_slot[slot] = doc
+
+            if _is_dead(self.mw) or _is_dead(getattr(self.mw, "mdi", None)):
+                return
 
             # Open subwindow
             try:
