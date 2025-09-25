@@ -487,6 +487,100 @@ def _finalize_loaded_image(arr: np.ndarray) -> np.ndarray:
     # Force float32 + C-order (copies if needed; detaches from memmap)
     return np.asarray(arr, dtype=np.float32, order="C")
 
+def list_fits_extensions(path: str) -> dict:
+    """
+    Return a dict {extname_or_index: {"index": i, "shape": shape, "dtype": dtype}} for all IMAGE HDUs.
+    extname_or_index prefers the HDU name (uppercased) when present, otherwise the numeric index.
+    """
+    if path.lower().endswith(('.fits.gz', '.fit.gz')):
+        with gzip.open(path, 'rb') as f:
+            buf = BytesIO(f.read())
+        hdul = fits.open(buf, memmap=False)
+    else:
+        hdul = fits.open(path, memmap=False)
+
+    info = {}
+    with hdul as hdul:
+        for i, hdu in enumerate(hdul):
+            if getattr(hdu, 'data', None) is None:
+                continue
+            if not hasattr(hdu, 'data'):
+                continue
+            key = (hdu.name or str(i)).upper()
+            try:
+                shp = tuple(hdu.data.shape)
+                dt  = hdu.data.dtype
+                info[key] = {"index": i, "shape": shp, "dtype": str(dt)}
+            except Exception:
+                pass
+    return info
+
+
+def load_fits_extension(path: str, key: str | int):
+    """
+    Load a single IMAGE HDU (by extname or index) as float32 in [0..1] (like load_image does).
+    Returns (image: np.ndarray, header: fits.Header, bit_depth: str, is_mono: bool).
+    """
+    if path.lower().endswith(('.fits.gz', '.fit.gz')):
+        with gzip.open(path, 'rb') as f:
+            buf = BytesIO(f.read())
+        hdul = fits.open(buf, memmap=False)
+    else:
+        hdul = fits.open(path, memmap=False)
+
+    with hdul as hdul:
+        # resolve key
+        if isinstance(key, str):
+            # find first matching extname (case-insensitive)
+            idx = None
+            for i, hdu in enumerate(hdul):
+                if (hdu.name or '').upper() == key.upper():
+                    idx = i; break
+            if idx is None:
+                raise KeyError(f"Extension '{key}' not found in {path}")
+        else:
+            idx = int(key)
+
+        hdu = hdul[idx]
+        data = hdu.data
+        if data is None:
+            raise ValueError(f"HDU {key} has no image data")
+
+        # normalize like your load_image
+        import numpy as np
+        if data.dtype == np.uint8:
+            bit_depth = "8-bit";  img = data.astype(np.float32) / 255.0
+        elif data.dtype == np.uint16:
+            bit_depth = "16-bit"; img = data.astype(np.float32) / 65535.0
+        elif data.dtype == np.uint32:
+            bit_depth = "32-bit unsigned"; 
+            bzero  = hdu.header.get('BZERO', 0); bscale = hdu.header.get('BSCALE', 1)
+            img = data.astype(np.float32) * bscale + bzero
+        elif data.dtype == np.int32:
+            bit_depth = "32-bit signed";
+            bzero  = hdu.header.get('BZERO', 0); bscale = hdu.header.get('BSCALE', 1)
+            img = data.astype(np.float32) * bscale + bzero
+        elif data.dtype == np.float32:
+            bit_depth = "32-bit floating point"; img = np.array(data, dtype=np.float32, copy=True, order="C")
+        else:
+            raise ValueError(f"Unsupported FITS extension dtype: {data.dtype}")
+
+        img = np.squeeze(img)
+        if img.dtype == np.float32 and img.size and img.max() > 1.0:
+            img = img / float(img.max())
+
+        if img.ndim == 2:
+            is_mono = True
+        elif img.ndim == 3 and img.shape[0] == 3 and img.shape[1] > 1 and img.shape[2] > 1:
+            img = np.transpose(img, (1, 2, 0)); is_mono = False
+        elif img.ndim == 3 and img.shape[-1] == 3:
+            is_mono = False
+        else:
+            raise ValueError(f"Unsupported FITS ext dimensions: {img.shape}")
+
+        from .image_manager import _finalize_loaded_image  # or adjust import if needed
+        img = _finalize_loaded_image(img)
+        return img, hdu.header, bit_depth, is_mono
 
 def load_image(filename, max_retries=3, wait_seconds=3):
     """
