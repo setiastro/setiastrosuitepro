@@ -77,41 +77,39 @@ def _apply_scnr_rgb(rgb: np.ndarray, amount: float, mode: str = "avg", preserve_
     SCNR green suppression:
       G' = G - amount * max(0, G - neutral)
     where neutral is avg/max/min of (R,B) depending on mode.
-    If preserve_lightness: keep Rec.709 luma Y constant by scaling (R,B).
+
+    If preserve_lightness=True:
+      compute per-pixel scale s = Y_before / Y_after (Rec.709 luma),
+      cap s so that no channel exceeds 1.0, and multiply ALL channels by s.
     """
     rgb = np.clip(rgb.astype(np.float32, copy=False), 0.0, 1.0)
     R, G, B = rgb[..., 0], rgb[..., 1], rgb[..., 2]
+
+    # choose neutral comparator (avg/max/min of R,B)
     neutral = _compute_neutral(R, B, mode)
-    excess = np.maximum(0.0, G - neutral)
-    G_new = np.clip(G - amount * excess, 0.0, 1.0)
+    excess  = np.maximum(0.0, G - neutral)
+    G_new   = np.clip(G - float(np.clip(amount, 0.0, 1.0)) * excess, 0.0, 1.0)
+
+    out = np.stack([R, G_new, B], axis=-1)
 
     if not preserve_lightness:
-        out = np.stack([R, G_new, B], axis=-1)
-        return np.clip(out, 0.0, 1.0)
+        return out
 
-    # Preserve luma (Rec.709).
-    # Y = 0.2126*R + 0.7152*G + 0.0722*B
+    # ---- preserve perceived lightness (scale ALL channels equally) ----
     wR, wG, wB = 0.2126, 0.7152, 0.0722
-    Y_orig = wR * R + wG * G + wB * B
-    Y_new  = wR * R + wG * G_new + wB * B
+    Y_before = wR * R + wG * G + wB * B
+    Y_after  = wR * out[..., 0] + wG * out[..., 1] + wB * out[..., 2]
 
-    dY = Y_orig - Y_new  # how much luma we need to add back
+    eps   = 1e-8
+    scale = Y_before / np.maximum(Y_after, eps)
 
-    # Adjust ONLY (R,B) to avoid re-introducing green:
-    # Solve for scale s so that: Y_target = s*(wR*R + wB*B) + wG*G_new
-    denom = (wR * R + wB * B)
-    eps = 1e-8
-    s = (Y_orig - wG * G_new) / np.maximum(denom, eps)
+    # highlight safety: prevent any channel from exceeding 1.0 after scaling
+    maxc  = np.max(out, axis=2)  # current per-pixel max channel
+    cap   = np.where(maxc > 0.0, 1.0 / np.maximum(maxc, eps), 1.0)
+    scale = np.minimum(scale, cap)
 
-    # Constrain s to a reasonable range and avoid NaNs where denom≈0
-    s = np.where(denom <= eps, 1.0, s)
-    s = np.clip(s, 0.0, 4.0)
-
-    R2 = np.clip(R * s, 0.0, 1.0)
-    B2 = np.clip(B * s, 0.0, 1.0)
-
-    out = np.stack([R2, G_new, B2], axis=-1)
-    return np.clip(out, 0.0, 1.0)
+    out = np.clip(out * scale[..., None], 0.0, 1.0)
+    return out
 
 # ---------- headless core ----------
 def remove_green_headless(
