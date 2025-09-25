@@ -260,7 +260,7 @@ from pro.status_log_dock import StatusLogDock
 from pro.log_bus import LogBus
 
 
-VERSION = "1.1.5"
+VERSION = "1.1.6"
 
 
 if hasattr(sys, '_MEIPASS'):
@@ -1853,7 +1853,7 @@ class AstroSuiteProMainWindow(QMainWindow):
         reg("background_neutral", self.act_background_neutral)
         reg("white_balance", self.act_white_balance)
         reg("sfcc",    self.act_sfcc)
-        reg("convo_deconvo", self.act_convo)
+        reg("convo", self.act_convo)
         reg("extract_luminance", self.act_extract_luma)
         reg("recombine_luminance", self.act_recombine_luma)
         reg("rgb_extract", self.act_rgb_extract)
@@ -5140,6 +5140,11 @@ class AstroSuiteProMainWindow(QMainWindow):
                 "align_stars": "star_align",
                 "align": "star_align",
 
+                "convo": "convo",
+                "convolution": "convo",
+                "deconvolution": "convo",
+                "convo_deconvo": "convo",
+
             }
             return aliases.get(c, c)
 
@@ -5377,6 +5382,16 @@ class AstroSuiteProMainWindow(QMainWindow):
             self._log(f"Ran GraXpert (smoothing={round(s_val, 2)}, gpu={'on' if gpu_val else 'off'})")
             return
 
+        if cid == "convo":
+            try:
+                from pro.convo_preset import apply_convo_via_preset
+                apply_convo_via_preset(self, doc, preset or {})
+                op = (preset or {}).get("op", "convolution")
+                self._log(f"Applied Convo/Deconvo preset ({op}) to '{target_sw.windowTitle()}'")
+            except Exception as e:
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.warning(self, "Convo/Deconvo", f"Apply failed:\n{e}")
+            return
 
         if cid == "remove_stars":
             from pro.remove_stars_preset import run_remove_stars_via_preset
