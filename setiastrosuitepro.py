@@ -260,7 +260,7 @@ from pro.status_log_dock import StatusLogDock
 from pro.log_bus import LogBus
 
 
-VERSION = "1.1.6"
+VERSION = "1.1.7"
 
 
 if hasattr(sys, '_MEIPASS'):
@@ -5160,25 +5160,33 @@ class AstroSuiteProMainWindow(QMainWindow):
 
         # ----- Function bundle: run a sequence of steps on the target view(s) -----
         if cid in ("function_bundle", "bundle_functions"):
-            steps = list((payload or {}).get("steps") or [])
-            # If user dropped onto the background (no target), try 'targets'
+            steps   = list((payload or {}).get("steps") or [])
+            inherit = bool((payload or {}).get("inherit_target", True))  # NEW: default True
+
+            # If user dropped onto the background (no direct target), support 'targets'
             if target_sw is None:
                 targets = (payload or {}).get("targets")
+
+                # Apply to all open subwindows
                 if targets == "all_open":
-                    sw_list = list(self.mdi.subWindowList())
-                    for sw in sw_list:
+                    for sw in list(self.mdi.subWindowList()):
                         for st in steps:
                             self._handle_command_drop(st, target_sw=sw)
                     return
-                elif isinstance(targets, (list, tuple)):
-                    # list of doc_ptrs
+
+                # Apply to explicit list of doc_ptrs
+                if isinstance(targets, (list, tuple)):
                     for ptr in targets:
-                        doc, sw = self._find_doc_by_id(int(ptr))
+                        try:
+                            doc, sw = self._find_doc_by_id(int(ptr))
+                        except Exception:
+                            sw = None
                         if sw:
                             for st in steps:
                                 self._handle_command_drop(st, target_sw=sw)
                     return
-                # otherwise, just open the UI
+
+                # No target info → open Function Bundles UI
                 try:
                     from pro.function_bundle import show_function_bundles
                     show_function_bundles(self)
@@ -5186,9 +5194,12 @@ class AstroSuiteProMainWindow(QMainWindow):
                     pass
                 return
 
-            # We have a specific target subwindow → run the sequence there
+            # We DO have an explicit target subwindow → run the sequence there.
+            # If inherit=True (default), forward the SAME target to each child step.
             for st in steps:
-                self._handle_command_drop(st, target_sw=target_sw)
+                if not isinstance(st, dict) or not st.get("command_id"):
+                    continue
+                self._handle_command_drop(st, target_sw=target_sw if inherit else None)
             return
 
         # --- Bundle runner -----------------------------------------------------------
@@ -5421,7 +5432,18 @@ class AstroSuiteProMainWindow(QMainWindow):
 
         if cid == "cosmic_clarity":
             from pro.cosmicclarity_preset import run_cosmicclarity_via_preset
-            run_cosmicclarity_via_preset(self, preset or {})
+
+            # resolve doc from the target subwindow if present
+            doc = None
+            try:
+                if target_sw is not None:
+                    vw = target_sw.widget()
+                    doc = getattr(vw, "document", None)
+            except Exception:
+                doc = None
+
+            run_cosmicclarity_via_preset(self, preset or {}, doc=doc)  # <-- pass doc
+
             try:
                 m = (preset or {}).get("mode", "sharpen")
                 self._log(f"Ran Cosmic Clarity (mode={m})")
