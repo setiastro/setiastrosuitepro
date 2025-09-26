@@ -63,6 +63,92 @@ class HeaderViewerDock(QDockWidget):
         # metadata changed → rebuild view
         self._rebuild()
 
+
+    # --- helpers ---------------------------------------------------------
+    def _populate_header_dict(self, d: dict, title="Header (dict)"):
+        root = QTreeWidgetItem([title])
+        self._tree.addTopLevelItem(root)
+        for k, v in d.items():
+            root.addChild(QTreeWidgetItem([str(k), str(v)]))
+
+    def _populate_header_snapshot(self, snap: dict):
+        fmt = (snap or {}).get("format", "")
+        if fmt == "fits-cards":
+            cards = snap.get("cards") or []
+            hdr = fits.Header()
+            for k, v, c in cards:
+                try:
+                    hdr[str(k)] = (v, c)
+                except Exception:
+                    # extremely defensive: skip bad card entries
+                    pass
+            self._populate_fits_header(hdr)
+        elif fmt == "dict":
+            self._populate_header_dict(snap.get("items") or {}, "Header (snapshot)")
+        else:
+            # generic repr fallback
+            txt = (snap or {}).get("text", "")
+            node = QTreeWidgetItem(["Header (snapshot)"])
+            self._tree.addTopLevelItem(node)
+            node.addChild(QTreeWidgetItem(["repr", str(txt)]))
+
+    def _try_populate_from_doc(self, meta: dict) -> bool:
+        """Return True if we showed any header from the document metadata."""
+        # 1) direct astropy header
+        hdr = meta.get("original_header") or meta.get("fits_header") or meta.get("header")
+        if isinstance(hdr, fits.Header):
+            self._populate_fits_header(hdr)
+            return True
+
+        # 2) dict-style header (e.g., XISF-style properties captured as dict)
+        if isinstance(hdr, dict):
+            self._populate_header_dict(hdr, "Header (dict from document)")
+            return True
+
+        # 3) JSON-safe snapshot captured by DocManager
+        snap = meta.get("__header_snapshot__")
+        if isinstance(snap, dict):
+            self._populate_header_snapshot(snap)
+            return True
+
+        # 4) XISF properties stored in metadata (common keys)
+        for k in ("xisf_header", "xisf_properties"):
+            if isinstance(meta.get(k), dict):
+                self._populate_header_dict(meta[k], "XISF Properties (document)")
+                return True
+
+        return False
+
+    def _try_populate_from_file(self, path: str, meta: dict) -> bool:
+        """Return True if we read & showed header from the backing file."""
+        if not path:
+            return False
+        p = path.lower()
+
+        # FITS (and MEF and .fz) via legacy helper
+        if p.endswith((".fits", ".fit", ".fz", ".fits.fz", ".fit.fz")):
+            # prefer the on-disk header if not already in meta
+            file_hdr = meta.get("original_header")
+            if not isinstance(file_hdr, fits.Header):
+                file_hdr, _ = get_valid_header(path)
+            if isinstance(file_hdr, fits.Header):
+                self._populate_fits_header(file_hdr)
+                return True
+
+        # XISF: try to open and show basic properties if available
+        if p.endswith(".xisf"):
+            try:
+                xisf = XISF(path)
+                props = getattr(xisf, "properties", None)
+                if isinstance(props, dict):
+                    self._populate_header_dict(props, "XISF Properties")
+                    return True
+            except Exception:
+                pass
+
+        return False
+
+    # --- main ------------------------------------------------------------
     def _rebuild(self):
         self._tree.clear()
         if not self._doc:
@@ -70,24 +156,19 @@ class HeaderViewerDock(QDockWidget):
             return
 
         meta = self._doc.metadata or {}
-        path = meta.get("file_path", "") or ""
-        base = os.path.basename(path) if path else "Untitled"
+        path = (meta.get("file_path") or "") if isinstance(meta.get("file_path"), str) else ""
+        base = os.path.basename(path) if path else (meta.get("display_name") or "Untitled")
         self.setWindowTitle(f"Header: {base}")
 
         try:
-            # 1) If metadata already has a real fits.Header, show that first.
-            hdr = meta.get("original_header") or meta.get("fits_header") or meta.get("header")
-            if isinstance(hdr, fits.Header):
-                self._populate_fits_header(hdr)
+            # 1) Prefer header data already stored with the document
+            shown_any = self._try_populate_from_doc(meta)
 
-            # 2) If no header in metadata and the file itself is FITS-like, read it.
-            elif path.lower().endswith((".fits", ".fit", ".fz", ".fits.fz", ".fit.fz")):
-                file_hdr = meta.get("original_header")
-                if file_hdr is None or not isinstance(file_hdr, fits.Header):
-                    file_hdr, _ = get_valid_header(path)
-                self._populate_fits_header(file_hdr)
+            # 2) If we didn't render anything yet, fall back to the file on disk
+            if not shown_any:
+                shown_any = self._try_populate_from_file(path, meta)
 
-            # 3) If there is a real astropy.wcs.WCS object, expand it as proper keys.
+            # 3) If there is a real astropy.wcs.WCS object, render it as key/value rows
             try:
                 from astropy.wcs import WCS as _WCS
                 wcs_obj = meta.get("wcs")
@@ -96,18 +177,19 @@ class HeaderViewerDock(QDockWidget):
             except Exception:
                 pass
 
-            # 4) Show the remaining lightweight metadata (skip heavy objects).
+            # 4) Always show remaining lightweight metadata (skip heavy blobs we already rendered)
             info_root = QTreeWidgetItem(["Metadata"])
             self._tree.addTopLevelItem(info_root)
             for k, v in meta.items():
-                if k in ("original_header", "fits_header", "header", "wcs"):
-                    continue  # avoid giant repr blobs; we render them above
+                if k in ("original_header", "fits_header", "header", "wcs", "__header_snapshot__", "xisf_header", "xisf_properties"):
+                    continue
                 info_root.addChild(QTreeWidgetItem([str(k), str(v)]))
 
             self._tree.expandAll()
 
-        except Exception as e:
-            QMessageBox.warning(self, "Metadata", f"Failed to read metadata:\n{e}")
+        except Exception:
+            # per request: fail silently on final exception
+            pass
 
 
     # ---- population helpers ----

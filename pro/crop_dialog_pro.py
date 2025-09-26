@@ -733,3 +733,5 @@ class CropDialogPro(QDialog):
         QMessageBox.information(self, "Batch Crop", "Applied crop to all open images.")
         self.crop_applied.emit(cropped)          # ← add this
         self.accept()
+
+

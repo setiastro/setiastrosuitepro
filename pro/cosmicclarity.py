@@ -1,6 +1,6 @@
 # pro/cosmicclarity.py
 from __future__ import annotations
-import os, sys, glob, time
+import os, sys, glob, time, tempfile, uuid
 import numpy as np
 
 from PyQt6.QtCore import Qt, QTimer, QSettings, QThread, pyqtSignal, QFileSystemWatcher, QEvent
@@ -20,7 +20,112 @@ from imageops.stretch import stretch_mono_image, stretch_color_image
 
 import shutil, subprocess
 
+# --- replace your _atomic_fsync_replace with this ---
+def _atomic_fsync_replace(src_bytes_writer, final_path: str):
+    """
+    Write to a unique temp file next to final_path, fsync it, then atomically
+    replace final_path. src_bytes_writer(tmp_path) must CREATE tmp_path.
+    """
+    d = os.path.dirname(final_path) or "."
+    os.makedirs(d, exist_ok=True)
 
+    # Use same extension so writers (like your save_image) don't append a new one.
+    ext = os.path.splitext(final_path)[1] or ".tmp"
+    tmp_path = os.path.join(d, f".stage_{uuid.uuid4().hex}{ext}")
+
+    try:
+        # Let caller create/write the file at tmp_path
+        src_bytes_writer(tmp_path)
+
+        # Ensure written bytes are on disk
+        try:
+            with open(tmp_path, "rb", buffering=0) as f:
+                os.fsync(f.fileno())
+        except Exception:
+            # If a backend keeps the file open exclusively or doesn't support fsync,
+            # we still continue; replace() below is atomic on the same filesystem.
+            pass
+
+        # Promote atomically
+        os.replace(tmp_path, final_path)
+
+        # POSIX-only: best-effort directory entry fsync (Windows doesn't support this)
+        if os.name != "nt":
+            try:
+                dirfd = os.open(d, os.O_DIRECTORY)
+                try: os.fsync(dirfd)
+                finally: os.close(dirfd)
+            except Exception:
+                pass
+
+    finally:
+        # Cleanup if anything left behind
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
+
+def resolve_cosmic_root(parent=None) -> str:
+    s = QSettings()
+    root = s.value("paths/cosmic_clarity", "", type=str) or ""
+    if root and os.path.isdir(root):
+        return root
+
+    # Try common relatives to the app executable
+    appdir = os.path.dirname(os.path.abspath(sys.argv[0]))
+    candidates = [
+        appdir,
+        os.path.join(appdir, "cosmic_clarity"),
+        os.path.join(appdir, "CosmicClarity"),
+        os.path.dirname(appdir),  # one up
+    ]
+    exe_names = {
+        "win": ["SetiAstroCosmicClarity.exe", "SetiAstroCosmicClarity_denoise.exe"],
+        "mac": ["SetiAstroCosmicClaritymac", "SetiAstroCosmicClarity_denoisemac"],
+        "nix": ["SetiAstroCosmicClarity", "SetiAstroCosmicClarity_denoise"],
+    }
+    key = "win" if os.name == "nt" else ("mac" if sys.platform=="darwin" else "nix")
+
+    for c in candidates:
+        if all(os.path.exists(os.path.join(c, name)) for name in exe_names[key]):
+            # ensure in/out exist
+            os.makedirs(os.path.join(c, "input"), exist_ok=True)
+            os.makedirs(os.path.join(c, "output"), exist_ok=True)
+            s.setValue("paths/cosmic_clarity", c); s.sync()
+            return c
+
+    # Prompt user once
+    QMessageBox.information(parent, "Cosmic Clarity",
+        "Please select your Cosmic Clarity folder (the one that contains the CC executables and input/output).")
+    folder = QFileDialog.getExistingDirectory(parent, "Select Cosmic Clarity Folder", "")
+    if folder:
+        s.setValue("paths/cosmic_clarity", folder); s.sync()
+        os.makedirs(os.path.join(folder, "input"), exist_ok=True)
+        os.makedirs(os.path.join(folder, "output"), exist_ok=True)
+        return folder
+    return ""  # caller should handle "not set"
+
+def _wait_stable_file(path: str, timeout_ms: int = 4000, poll_ms: int = 50) -> bool:
+    """Return True when path exists and its size doesn't change for 2 polls in a row."""
+    t0 = time.monotonic()
+    last = (-1, -1.0)  # (size, mtime)
+    stable_count = 0
+    while (time.monotonic() - t0) * 1000 < timeout_ms:
+        try:
+            st = os.stat(path)
+            cur = (st.st_size, st.st_mtime)
+            if cur == last and st.st_size > 0:
+                stable_count += 1
+                if stable_count >= 2:
+                    return True
+            else:
+                stable_count = 0
+            last = cur
+        except FileNotFoundError:
+            stable_count = 0
+        time.sleep(poll_ms / 1000.0)
+    return False
 
 
 # =============================================================================
@@ -32,10 +137,7 @@ def _satellite_exe_name() -> str:
 
 
 def _get_cosmic_root_from_settings() -> str:
-    # Uses the same key your SettingsDialog writes:
-    # self.settings.setValue("paths/cosmic_clarity", <path>)
-    s = QSettings()
-    return s.value("paths/cosmic_clarity", "", type=str) or ""
+    return resolve_cosmic_root(parent=None)  # or pass self as parent
 
 def _ensure_dirs(root: str):
     os.makedirs(os.path.join(root, "input"), exist_ok=True)
@@ -354,8 +456,27 @@ class CosmicClarityDialogPro(QDialog):
         base = self._base_name()
         in_path = os.path.join(self.cosmic_root, "input", f"{base}.tif")
         try:
-            # Use your save_image helper. 32-bit float is what SASv2 used for input.
-            save_image(self.orig, in_path, "tiff", "32-bit floating point", getattr(self.doc, "original_header", None), getattr(self.doc, "is_mono", False))
+            # Use atomic fsync
+            base = self._base_name()
+            in_path = os.path.join(self.cosmic_root, "input", f"{base}.tif")
+            arr = self.orig  # already float32 [0..1]
+
+            def _writer(tmp_path):
+                # reuse your save_image impl to tmp
+                save_image(arr, tmp_path, "tiff", "32-bit floating point",
+                        getattr(self.doc, "original_header", None),
+                        getattr(self.doc, "is_mono", False))
+
+            try:
+                _atomic_fsync_replace(_writer, in_path)
+            except Exception as e:
+                print("Atomic save failed:", repr(e))
+                raise
+
+            # ensure stable on disk before launching
+            if not _wait_stable_file(in_path):
+                QMessageBox.critical(self, "Cosmic Clarity", "Failed to stage input TIFF (not stable on disk).")
+                return
         except Exception as e:
             QMessageBox.critical(self, "Cosmic Clarity", f"Failed to save input TIFF:\n{e}")
             return
@@ -400,6 +521,7 @@ class CosmicClarityDialogPro(QDialog):
         # Run process
         self._proc = QProcess(self)
         self._proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        self._proc.setWorkingDirectory(self.cosmic_root)  # <-- add this line
 
         self._proc.readyReadStandardOutput.connect(self._read_proc_output_main)
         from functools import partial
@@ -441,6 +563,7 @@ class CosmicClarityDialogPro(QDialog):
                     pass
             else:
                 self._wait.append_output(line)
+        print(f"[CC] {line}")        
 
     def _on_proc_finished(self, mode, suffix, code, status):
         if code != 0:
@@ -483,12 +606,15 @@ class CosmicClarityDialogPro(QDialog):
 
         try:
             if has_more:
-                # IMPORTANT: Stage the current result as the next step's input
-                save_image(
-                    dest, next_in, "tiff", "32-bit floating point",
-                    getattr(self.doc, "original_header", None),
-                    getattr(self.doc, "is_mono", False)
-                )
+                def _writer(tmp_path, arr=dest):
+                    save_image(arr, tmp_path, "tiff", "32-bit floating point",
+                            getattr(self.doc, "original_header", None),
+                            getattr(self.doc, "is_mono", False))
+                _atomic_fsync_replace(_writer, next_in)
+                if not _wait_stable_file(next_in):
+                    QMessageBox.critical(self, "Cosmic Clarity", "Staging for next step failed (not stable).")
+                    self._op_queue.clear()
+                    return
                 self._current_input = next_in
 
             # Now it’s safe to clean up the produced output

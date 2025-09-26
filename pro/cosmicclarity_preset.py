@@ -209,60 +209,54 @@ class _CCHeadlessWorker(QThread):
 
 
 # ---------------- Public entry ----------------
-def run_cosmicclarity_via_preset(main, preset: dict | None = None):
-    """Run CC headlessly by driving the exact same pipeline as the Execute button."""
+def run_cosmicclarity_via_preset(main, preset: dict | None = None, *, doc=None):
+    """Run CC headlessly by driving the same pipeline as the Execute button."""
     p = dict(preset or {})
+
     # Guard so users can’t open another CC panel while this runs
     setattr(main, "_cosmicclarity_headless_running", True)
     setattr(main, "_cosmicclarity_guard", True)
     s = QSettings()
-    try: s.setValue("cc/headless_in_progress", True); s.sync()
-    except Exception: pass
-
-    # Active doc
-    doc = getattr(main, "_active_doc", None)
-    if callable(doc): doc = doc()
-    if doc is None or getattr(doc, "image", None) is None:
-        QMessageBox.warning(main, "Cosmic Clarity", "Load an image first.")
-        try: s.setValue("cc/headless_in_progress", False); s.sync()
-        except Exception: pass
-        for name in ("_cosmicclarity_headless_running","_cosmicclarity_guard"):
-            try: delattr(main, name)
-            except Exception: setattr(main, name, False)
-        return
-
-    # Build the dialog in headless mode, bypassing the guard (since *we* are the guarded owner)
-    dlg = CosmicClarityDialogPro(main, doc, headless=True, bypass_guard=True)
-    if getattr(dlg, "_headless", False) is not True:
-        # Construction aborted (e.g., unexpected guard); bail cleanly
-        try: s.setValue("cc/headless_in_progress", False); s.sync()
-        except Exception: pass
-        for name in ("_cosmicclarity_headless_running","_cosmicclarity_guard"):
-            try: delattr(main, name)
-            except Exception: setattr(main, name, False)
-        return
-
-    # Apply preset to the dialog widgets so behavior == user pressed Execute
     try:
-        dlg.apply_preset(p)
+        s.setValue("cc/headless_in_progress", True); s.sync()
     except Exception:
-       # If apply_preset not found (older build), fallback to minimal mapping
-        mode = str(p.get("mode","sharpen")).lower()
-        dlg.cmb_mode.setCurrentIndex({"sharpen":0,"denoise":1,"both":2,"superres":3}.get(mode,0))
-        dlg.cmb_gpu.setCurrentIndex(0 if p.get("gpu", True) else 1)
-        dlg.cmb_target.setCurrentIndex(1 if p.get("create_new_view", False) else 0)
+        pass
 
-    # Kick the exact same execution path
-    dlg._run_main()
-
-    # Block here (nested event loop) until the dialog finishes.
-    # We avoid dlg.exec() because the headless guard would return immediately.
-    loop = QEventLoop()
     try:
+        # Prefer the explicit doc (from target_sw); otherwise fall back to active
+        if doc is None:
+            doc = getattr(main, "_active_doc", None)
+            if callable(doc):
+                doc = doc()
+
+        if doc is None or getattr(doc, "image", None) is None:
+            QMessageBox.warning(main, "Cosmic Clarity", "Load an image first.")
+            return
+
+        # Build the dialog in headless mode, bypassing the guard (we're the owner)
+        dlg = CosmicClarityDialogPro(main, doc, headless=True, bypass_guard=True)
+        if getattr(dlg, "_headless", False) is not True:
+            return
+
+        # Apply preset to the dialog widgets so behavior == user pressed Execute
+        try:
+            dlg.apply_preset(p)
+        except Exception:
+            mode = str(p.get("mode","sharpen")).lower()
+            dlg.cmb_mode.setCurrentIndex({"sharpen":0,"denoise":1,"both":2,"superres":3}.get(mode,0))
+            dlg.cmb_gpu.setCurrentIndex(0 if p.get("gpu", True) else 1)
+            dlg.cmb_target.setCurrentIndex(1 if p.get("create_new_view", False) else 0)
+
+        # Kick the exact same execution path
+        dlg._run_main()
+
+        # Block here until the dialog finishes.
+        loop = QEventLoop()
         dlg.finished.connect(loop.quit)
-        loop.exec()  # returns when CC calls accept()/reject()
+        loop.exec_() if hasattr(loop, "exec_") else loop.exec()
+
     finally:
-        # Clear guards
+        # Clear guards even on exceptions
         try:
             s.setValue("cc/headless_in_progress", False); s.sync()
         except Exception:

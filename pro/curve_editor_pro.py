@@ -1489,6 +1489,38 @@ class CurvesDialogPro(QDialog):
             p = p.parent()
         return p
 
+    def _apply_preset_dict(self, preset: dict):
+        # set mode radio
+        want = _norm_mode((preset or {}).get("mode"))
+        for b in self.mode_group.buttons():
+            if b.text().lower() == want.lower():
+                b.setChecked(True)
+                break
+
+        # get points_norm — if absent, build from shape/amount
+        ptsN = (preset or {}).get("points_norm")
+        if not (isinstance(ptsN, (list, tuple)) and len(ptsN) >= 2):
+            shape  = (preset or {}).get("shape", "linear")
+            amount = float((preset or {}).get("amount", 1.0))
+            try:
+                # already imported at top from pro.curves_preset
+                ptsN = _shape_points_norm(str(shape), amount)
+            except Exception:
+                ptsN = [(0.0, 0.0), (1.0, 1.0)]  # safe fallback
+
+        # apply handles to the editor (strip exact endpoints)
+        pts_scene = _points_norm_to_scene(ptsN)
+        filt = [(x, y) for (x, y) in pts_scene if x > 1e-6 and x < 360.0 - 1e-6]
+
+        # optional: clear symmetry helper when switching presets
+        if hasattr(self.editor, "clearSymmetryLine"):
+            self.editor.clearSymmetryLine()
+
+        self.editor.setControlHandles(filt)
+        self.editor.updateCurve()   # ensure redraw
+        self._quick_preview()
+        self._set_status(f"Preset: {preset.get('name', '(built-in)')}  [{shape}]")
+
 
 def _apply_mode_any(img01: np.ndarray, mode: str, lut01: np.ndarray) -> np.ndarray:
     """

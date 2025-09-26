@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (
     QAbstractItemView, QMenu, QSplitter, QStyle, QScrollArea, QSlider, QDoubleSpinBox, QProgressDialog, QComboBox, QLineEdit, QApplication, QGridLayout, QCheckBox, QInputDialog,
     QMdiArea
 )
-
+from bisect import bisect_right
 # 3rd-party (your code already expects these)
 import cv2, sep, pyqtgraph as pg
 
@@ -249,6 +249,29 @@ class MetricsPanel(QWidget):
                             else pg.mkBrush(100,100,255,200))
             scat.setData(x=x, y=y, brush=brushes)
 
+    def remove_frames(self, removed_idx: List[int]):
+        """
+        Drop frames from cached arrays and flags (no recomputation).
+        removed_idx: global indices in the *old* ordering.
+        """
+        if self.metrics_data is None or not removed_idx:
+            return
+        import numpy as _np
+        removed = _np.unique(_np.asarray(removed_idx, dtype=int))
+        n = len(self.flags or [])
+        if n == 0:
+            return
+        keep = _np.ones(n, dtype=bool)
+        keep[removed[removed < n]] = False
+
+        # shrink cached arrays and flags
+        self.metrics_data = [arr[keep] for arr in self.metrics_data]
+        if self.flags is not None:
+            self.flags = list(_np.asarray(self.flags)[keep])
+
+    def refresh_colors_and_status(self):
+        """Recolor dots based on self.flags; caller should also update the window status."""
+        self._refresh_scatter_colors()
 
     def _on_point_click(self, metric_idx, points):
         for pt in points:
@@ -368,6 +391,64 @@ class MetricsWindow(QWidget):
         self.metrics_panel.plot(self._all_images, indices=self._current_indices)
         self._update_status()
 
+    def _reindex_list_after_remove(self, lst: List[int] | None, removed: List[int]) -> List[int] | None:
+        """Return lst with removed indices dropped and others shifted."""
+        if lst is None:
+            return None
+        from bisect import bisect_right
+        removed = sorted(set(int(i) for i in removed))
+        rset = set(removed)
+        def new_idx(old):
+            return old - bisect_right(removed, old)
+        return [new_idx(i) for i in lst if i not in rset]
+
+    def _rebuild_groups_from_images(self):
+        """Rebuild the FILTER combobox from current _all_images, keep current if possible."""
+        cur = self.group_combo.currentText()
+        self.group_combo.blockSignals(True)
+        self.group_combo.clear()
+        self.group_combo.addItem("All")
+        seen = set()
+        for entry in self._all_images:
+            filt = (entry.get('header', {}) or {}).get('FILTER', 'Unknown')
+            if filt not in seen:
+                self.group_combo.addItem(filt)
+                seen.add(filt)
+        self.group_combo.blockSignals(False)
+        # restore selection if still valid
+        idx = self.group_combo.findText(cur)
+        if idx >= 0:
+            self.group_combo.setCurrentIndex(idx)
+        else:
+            self.group_combo.setCurrentIndex(0)
+
+    def remove_indices(self, removed: List[int]):
+        """
+        Called when some frames were deleted/moved out of the list.
+        Does NOT recompute metrics. Just trims cached arrays and re-plots.
+        """
+        if not removed:
+            return
+        removed = sorted(set(int(i) for i in removed))
+
+        # 1) shrink cached arrays in the panel
+        self.metrics_panel.remove_frames(removed)
+
+        # 2) update our “master” list and ordering (object identity unchanged)
+        #    (BlinkTab will already have mutated the underlying list for us)
+        self._order_all = self._reindex_list_after_remove(self._order_all, removed)
+        self._current_indices = self._reindex_list_after_remove(self._current_indices, removed)
+
+        # 3) rebuild group list (filters may have disappeared)
+        self._rebuild_groups_from_images()
+
+        # 4) replot current group with updated order
+        indices = self._current_indices if self._current_indices is not None else self._order_all
+        self.metrics_panel.plot(self._all_images, indices=indices)
+
+        # 5) recolor & status
+        self.metrics_panel.refresh_colors_and_status()
+        self._update_status()
 
     def _on_group_change(self, name: str):
         if name == "All":
@@ -411,6 +492,7 @@ class MetricsWindow(QWidget):
 
 
 class BlinkTab(QWidget):
+    imagesChanged = pyqtSignal(int)
     def __init__(self, image_manager=None, doc_manager=None, parent=None):
         super().__init__(parent)  
 
@@ -590,6 +672,7 @@ class BlinkTab(QWidget):
         # Add loading message label
         self.loading_label = QLabel("Load images...", self)
         left_layout.addWidget(self.loading_label)
+        self.imagesChanged.emit(len(self.loaded_images)) 
 
         # Set the layout for the left widget
         left_widget.setLayout(left_layout)
@@ -663,7 +746,11 @@ class BlinkTab(QWidget):
 
         self.scroll_area.horizontalScrollBar().valueChanged.connect(lambda _: self._capture_view_center_norm())
         self.scroll_area.verticalScrollBar().valueChanged.connect(lambda _: self._capture_view_center_norm())
+        self.imagesChanged.connect(self._update_loaded_count_label)
 
+    def _update_loaded_count_label(self, n: int):
+        # pluralize nicely
+        self.loading_label.setText(f"Loaded {n} image{'s' if n != 1 else ''}.")
 
     def _apply_playback_interval(self, *_):
         # read from custom spin if present
@@ -676,20 +763,24 @@ class BlinkTab(QWidget):
         if not current:
             return
 
-        # If a mouse button is currently pressed, don't scroll now—defer a bit
+        # If mouse is down, defer a bit, but DO NOT capture the item
         if QApplication.mouseButtons() != Qt.MouseButton.NoButton:
-            QTimer.singleShot(120, lambda: self._center_if_no_mouse(current))
+            QTimer.singleShot(120, self._center_if_no_mouse)
             return
 
-        # Let selection settle, then gently ensure it's visible (no jump)
-        QTimer.singleShot(0, lambda: self.fileTree.scrollToItem(
-            current, QAbstractItemView.ScrollHint.EnsureVisible
-        ))
+        # Defer to allow selection to settle, then ensure the *current* item is visible
+        QTimer.singleShot(0, self._ensure_current_visible)
 
-    def _center_if_no_mouse(self, item):
-        # Only center if the mouse is up AND the item is still current
-        if QApplication.mouseButtons() == Qt.MouseButton.NoButton and item is self.fileTree.currentItem():
+    def _ensure_current_visible(self):
+        item = self.fileTree.currentItem()
+        if item is not None:
             self.fileTree.scrollToItem(item, QAbstractItemView.ScrollHint.EnsureVisible)
+
+    def _center_if_no_mouse(self):
+        if QApplication.mouseButtons() == Qt.MouseButton.NoButton:
+            item = self.fileTree.currentItem()
+            if item is not None:
+                self.fileTree.scrollToItem(item, QAbstractItemView.ScrollHint.EnsureVisible)
 
     def toggle_aggressive(self):
         self.aggressive_stretch_enabled = self.aggressive_button.isChecked()
@@ -792,6 +883,8 @@ class BlinkTab(QWidget):
         if self.metrics_window and self.metrics_window.isVisible():
             self.metrics_window.update_metrics(self.loaded_images, order=self._tree_order_indices())
 
+        self.imagesChanged.emit(len(self.loaded_images)) 
+
     def show_metrics(self):
         if self.metrics_window is None:
             self.metrics_window = MetricsWindow()
@@ -875,7 +968,61 @@ class BlinkTab(QWidget):
         panel._refresh_scatter_colors()
         self.metrics_window._update_status()
 
+    def _rebuild_tree_from_loaded(self):
+        """Rebuild the left tree from self.loaded_images without reloading or recomputing."""
+        self.fileTree.clear()
+        from collections import defaultdict
+        grouped = defaultdict(list)
+        for entry in self.loaded_images:
+            hdr = entry.get('header', {}) or {}
+            obj = hdr.get('OBJECT', 'Unknown')
+            fil = hdr.get('FILTER', 'Unknown')
+            exp = hdr.get('EXPOSURE', 'Unknown')
+            grouped[(obj, fil, exp)].append(entry['file_path'])
 
+        # natural sort within each leaf group
+        for key, paths in grouped.items():
+            paths.sort(key=lambda p: self._natural_key(os.path.basename(p)))
+
+        by_object = defaultdict(lambda: defaultdict(dict))
+        for (obj, fil, exp), paths in grouped.items():
+            by_object[obj][fil][exp] = paths
+
+        for obj in sorted(by_object, key=lambda o: o.lower()):
+            obj_item = QTreeWidgetItem([f"Object: {obj}"])
+            self.fileTree.addTopLevelItem(obj_item)
+            obj_item.setExpanded(True)
+            for fil in sorted(by_object[obj], key=lambda f: f.lower()):
+                fil_item = QTreeWidgetItem([f"Filter: {fil}"])
+                obj_item.addChild(fil_item)
+                fil_item.setExpanded(True)
+                for exp in sorted(by_object[obj][fil], key=lambda e: str(e).lower()):
+                    exp_item = QTreeWidgetItem([f"Exposure: {exp}"])
+                    fil_item.addChild(exp_item)
+                    exp_item.setExpanded(True)
+                    for p in by_object[obj][fil][exp]:
+                        leaf = QTreeWidgetItem([os.path.basename(p)])
+                        leaf.setData(0, Qt.ItemDataRole.UserRole, p)
+                        exp_item.addChild(leaf)
+
+    def _after_list_changed(self, removed_indices: List[int] | None = None):
+        """Call after you mutate image_paths/loaded_images. Keeps UI + metrics in sync w/o recompute."""
+        # 1) rebuild the tree (groups collapse if empty)
+        self._rebuild_tree_from_loaded()
+        self.imagesChanged.emit(len(self.loaded_images))
+
+        # 2) refresh metrics (if open) WITHOUT recomputing SEP
+        if self.metrics_window and self.metrics_window.isVisible():
+            if removed_indices:
+                # drop points and reindex
+                self.metrics_window._all_images = self.loaded_images
+                self.metrics_window.remove_indices(list(removed_indices))
+            else:
+                # just order changed or paths changed -> replot current group
+                self.metrics_window.update_metrics(
+                    self.loaded_images,
+                    order=self._tree_order_indices()
+                )
 
     def get_tree_item_for_index(self, idx):
         target = os.path.basename(self.image_paths[idx])
@@ -976,6 +1123,7 @@ class BlinkTab(QWidget):
             self.current_pixmap = None
             self.progress_bar.setValue(0)
             self.loading_label.setText("Loading images...")
+            self.imagesChanged.emit(len(self.loaded_images)) 
 
             # (legacy) if you still have this, you can delete it:
             # self.thresholds = [None, None, None, None]
@@ -997,6 +1145,7 @@ class BlinkTab(QWidget):
         # finally, tell the MetricsWindow to fully re‐init with no images
         if self.metrics_window is not None:
             self.metrics_window.update_metrics([])
+   
 
 
     @staticmethod
@@ -1179,8 +1328,10 @@ class BlinkTab(QWidget):
 
         self.loading_label.setText(f"Loaded {len(self.loaded_images)} images.")
         self.progress_bar.setValue(100)
+        self.imagesChanged.emit(len(self.loaded_images))
         if self.metrics_window and self.metrics_window.isVisible():
             self.metrics_window.update_metrics(self.loaded_images, order=self._tree_order_indices())
+
 
     def findTopLevelItemByName(self, name):
         """Find a top-level item in the tree by its name."""
@@ -1861,23 +2012,32 @@ class BlinkTab(QWidget):
         )
 
         if confirmation == QMessageBox.StandardButton.Yes:
+            removed_indices = []
+            # snapshot the indices before mutation
+            for img in flagged_images:
+                try:
+                    removed_indices.append(self.image_paths.index(img['file_path']))
+                except ValueError:
+                    pass
+
+            # perform deletions
             for img in flagged_images:
                 file_path = img['file_path']
                 try:
                     os.remove(file_path)
-                    print(f"Deleted flagged image: {file_path}")
                 except Exception as e:
-                    print(f"Failed to delete {file_path}: {e}")
-                    QMessageBox.critical(self, "Error", f"Failed to delete {file_path}: {e}")
-
-                # Remove from data structures
-                self.image_paths.remove(file_path)
-                self.loaded_images.remove(img)
-
-                # Remove from tree view
+                    ...
+                # remove from structures
+                if file_path in self.image_paths:
+                    self.image_paths.remove(file_path)
+                if img in self.loaded_images:
+                    self.loaded_images.remove(img)
                 self.remove_item_from_tree(file_path)
 
-            QMessageBox.information(self, "Batch Deletion", f"Deleted {len(flagged_images)} flagged images.")
+            QMessageBox.information(self, "Batch Deletion", f"Deleted {len(removed_indices)} flagged images.")
+
+            # 🔁 refresh tree + metrics (no recompute)
+            self._after_list_changed(removed_indices)
 
     def batch_move_flagged_images(self):
         """Move all flagged images to a selected directory."""
@@ -1916,7 +2076,7 @@ class BlinkTab(QWidget):
             self.add_item_to_tree(dest_path)
 
         QMessageBox.information(self, "Batch Move", f"Moved {len(flagged_images)} flagged images.")
-
+        self._after_list_changed(removed_indices=None)
 
     def move_items(self):
         """Move selected images *and* remove them from the tree+metrics."""
@@ -1934,6 +2094,7 @@ class BlinkTab(QWidget):
 
         # Keep track of which on‐disk paths we actually moved
         moved_old_paths = []
+        removed_indices = []
 
         for item in selected_items:
             name = item.text(0).lstrip("⚠️ ")
@@ -1941,6 +2102,7 @@ class BlinkTab(QWidget):
                             if os.path.basename(p) == name), None)
             if not old_path:
                 continue
+            removed_indices.append(self.image_paths.index(old_path)) 
 
             new_path = os.path.join(new_dir, name)
             try:
@@ -1956,20 +2118,12 @@ class BlinkTab(QWidget):
             parent.removeChild(item)
 
         # 2) Purge them from your internal lists
-        for old in moved_old_paths:
-            idx = self.image_paths.index(old)
+        for idx in sorted(removed_indices, reverse=True):
             del self.image_paths[idx]
             del self.loaded_images[idx]
 
-        # 3) Update your “loaded X images” label
-        self.loading_label.setText(f"Loaded {len(self.loaded_images)} images.")
-
-        # 4) Tell metrics to re-initialize on the new list
-        if self.metrics_window and self.metrics_window.isVisible():
-            self.metrics_window.update_metrics(self.loaded_images)
-
-        print(f"Moved and removed {len(moved_old_paths)} items.")
-
+        self._after_list_changed(removed_indices)
+        print(f"Moved and removed {len(removed_indices)} items.")
 
 
 
@@ -1990,53 +2144,36 @@ class BlinkTab(QWidget):
             QMessageBox.StandardButton.No
         )
 
+        removed_indices = []
         if reply == QMessageBox.StandardButton.Yes:
             for item in selected_items:
                 file_name = item.text(0).lstrip("⚠️ ")
                 file_path = next((path for path in self.image_paths if os.path.basename(path) == file_name), None)
-
                 if file_path:
                     try:
-                        # Remove the image from image_paths
-                        if file_path in self.image_paths:
-                            self.image_paths.remove(file_path)
-                            print(f"Image path {file_path} removed from image_paths.")
-                        else:
-                            print(f"Image path {file_path} not found in image_paths.")
-
-                        # Remove the corresponding image from loaded_images
-                        matching_image_data = next((entry for entry in self.loaded_images if entry['file_path'] == file_path), None)
-                        if matching_image_data:
-                            self.loaded_images.remove(matching_image_data)
-                            print(f"Image {file_name} removed from loaded_images.")
-                        else:
-                            print(f"Image {file_name} not found in loaded_images.")
-
-                        # Delete the file from the filesystem
+                        idx = self.image_paths.index(file_path)
+                        removed_indices.append(idx)  # collect BEFORE mutation
+                        ...
                         os.remove(file_path)
-                        print(f"File {file_path} deleted successfully.")
-
                     except Exception as e:
-                        print(f"Failed to delete {file_path}: {e}")
-                        QMessageBox.critical(self, "Error", f"Failed to delete the image file: {e}")
-
-            # Remove the selected items from the TreeWidget
+                        ...
+            # Remove from widgets
             for item in selected_items:
-                parent = item.parent()
-                if parent:
-                    parent.removeChild(item)
-                else:
-                    index = self.fileTree.indexOfTopLevelItem(item)
-                    if index != -1:
-                        self.fileTree.takeTopLevelItem(index)
+                parent = item.parent() or self.fileTree.invisibleRootItem()
+                parent.removeChild(item)
 
-            print(f"Deleted {len(selected_items)} items.")
+            # Purge arrays (descending order)
+            for idx in sorted(removed_indices, reverse=True):
+                del self.image_paths[idx]
+                del self.loaded_images[idx]
 
-            # Clear the preview if the deleted items include the currently displayed image
+            # Clear preview
             self.preview_label.clear()
             self.preview_label.setText('No image selected.')
-
             self.current_image = None
+
+            # 🔁 refresh tree + metrics (no recompute)
+            self._after_list_changed(removed_indices)
 
     def eventFilter(self, source, event):
         """Handle mouse events for dragging."""
@@ -2083,17 +2220,13 @@ class BlinkTab(QWidget):
 
     def _do_preview_update(self):
         item = self._pending_preview_item
-        if not item:
+        if not item or item.treeWidget() is None:   # ← item got deleted
             return
-        # item might have changed selection; ensure it’s still selected/current
         cur = self.fileTree.currentItem()
         if cur is not item:
             return
-
         name = item.text(0).lstrip("⚠️ ").strip()
         self._last_preview_name = name
-
-        # kick the preview (reuse your existing loader)
         self.on_item_clicked(item, 0)
 
     def toggle_aggressive(self):

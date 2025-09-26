@@ -211,7 +211,12 @@ class FunctionBundleChip(QWidget):
         e.ignore()
 
     def _start_external_drag(self):
-        payload = {"command_id": "function_bundle", "steps": self._panel.current_steps()}
+        payload = {
+            "command_id": "function_bundle",
+            "steps": self._panel.current_steps(),
+            # NEW: tell the drop handler to forward the same target_sw to all steps
+            "inherit_target": True
+        }
         md = QMimeData()
         md.setData(MIME_CMD, QByteArray(_pack_cmd_safely(payload)))
         drag = QDrag(self)
@@ -780,16 +785,21 @@ class FunctionBundleDialog(QDialog):
         except Exception: pass
 
         for st in steps:
-            _activate_target_sw(mw, sw)   
+            _activate_target_sw(mw, sw)
+
+            # Small settle when the next step is CC
+            is_cc = isinstance(st, dict) and st.get("command_id") == "cosmic_clarity"
+            if is_cc:
+                QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 100)
+                QThread.msleep(120)  # tiny debounce; avoids racing previous step’s writes
+
             try:
                 mw._handle_command_drop(st, target_sw=sw)
             except Exception as e:
                 errors.append(str(e))
 
-            # 🔸 If CC is (now) running, wait until it’s done before continuing.
+            # Wait if CC was launched; you already have this:
             self._wait_for_cosmicclarity(mw)
-
-            # keep UI responsive regardless
             self._pump_events(0)
 
         try: QApplication.restoreOverrideCursor()
