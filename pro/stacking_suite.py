@@ -1,3 +1,4 @@
+#pro.stacking_suite.py
 from __future__ import annotations
 import os, glob, shutil, tempfile, datetime as _dt
 from time import perf_counter
@@ -7358,6 +7359,7 @@ class StackingSuiteDialog(QDialog):
             H, W = integrated_image.shape[:2]
             display_group = self._label_with_dims(group_key, W, H)
             base = f"MasterLight_{display_group}_{n_frames}stacked"
+            base = self._normalize_master_stem(base)   
             out_path_orig = self._build_out(self.stacking_directory, base, "fit")
 
             # Try to attach rejection maps that were accumulated during integration
@@ -7410,6 +7412,7 @@ class StackingSuiteDialog(QDialog):
                 Hc, Wc = (cropped_img.shape[:2] if cropped_img.ndim >= 2 else (H, W))
                 display_group_crop = self._label_with_dims(group_key, Wc, Hc)
                 base_crop = f"MasterLight_{display_group_crop}_{n_frames}stacked_autocrop"
+                base_crop = self._normalize_master_stem(base_crop)   
                 out_path_crop = self._build_out(self.stacking_directory, base_crop, "fit")
 
                 save_image(
@@ -8114,6 +8117,7 @@ class StackingSuiteDialog(QDialog):
         Hd, Wd = final_drizzle.shape[:2] if final_drizzle.ndim >= 2 else (0, 0)
         display_group_driz = self._label_with_dims(group_key, Wd, Hd)
         base_stem = f"MasterLight_{display_group_driz}_{len(file_list)}stacked_drizzle"
+        base_stem = self._normalize_master_stem(base_stem) 
         out_path_orig = self._build_out(self.stacking_directory, base_stem, "fit")
 
         hdr_orig = hdr.copy() if hdr is not None else fits.Header()
@@ -8159,6 +8163,7 @@ class StackingSuiteDialog(QDialog):
             is_mono_crop = (cropped_drizzle.ndim == 2)
             display_group_driz_crop = self._label_with_dims(group_key, cropped_drizzle.shape[1], cropped_drizzle.shape[0])
             base_crop = f"MasterLight_{display_group_driz_crop}_{len(file_list)}stacked_drizzle_autocrop"
+            base_crop = self._normalize_master_stem(base_crop) 
             out_path_crop = self._build_out(self.stacking_directory, base_crop, "fit")
 
             save_image(
@@ -8417,6 +8422,35 @@ class StackingSuiteDialog(QDialog):
             s = stem[:keep].rstrip(" .-_") + ext
 
         return s
+
+    def _normalize_master_stem(self, stem: str) -> str:
+        """
+        Clean up common artifacts in master filenames:
+        - collapse _-_ / -_ / _- into a single _
+        - turn 40.0s → 40s (strip trailing .0…)
+        - keep non-integer exposures filename-safe (e.g., 2.5s → 2p5s)
+        """
+        # 1) collapse weird joiners like "_-_" or "-_" or "_-"
+        stem = re.sub(r'(?:_-+|-+_)+', '_', stem)
+
+        # 2) normalize exposures: <number>s
+        def _fix_exp(m):
+            txt = m.group(1)  # the numeric part
+            try:
+                val = float(txt)
+            except ValueError:
+                return m.group(0)  # leave it as-is
+
+            # If it's an integer (e.g., 40.0) → 40s
+            if abs(val - round(val)) < 1e-6:
+                return f"{int(round(val))}s"
+            # Otherwise make it filename-friendly by replacing '.' with '_' → 2_5s
+            return txt.replace('.', '_') + 's'
+
+        stem = re.sub(r'(\d+(?:\.\d+)?)s', _fix_exp, stem)
+        
+        stem = re.sub(r'\((\d+)x(\d+)\)', r'\1x\2', stem)
+        return stem
 
     def _build_out(self, directory: str, stem: str, ext: str) -> str:
         """
