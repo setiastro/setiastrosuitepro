@@ -1,9 +1,9 @@
 {
-  "version": "1.1.7",
+  "version": "1.2.0",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.1.7/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.1.7/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.1.7/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.2.0/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.2.0/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.2.0/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.1.7 Multiple bug fixes: FunctionBundle use with Cosmic Clarity, Curves presets use in Curves, Blink treeitems remove when moving and deleting them, project i/o items, various others."
+  "notes": "Seti Astro Suite Pro V1.2.0 Stacking Suite: Comet Stacking, many minor and major updates as well. Crop: Adjusts and Updates astrometric solution upon crop. Unified Plate Solving across all functions. Many additional bug fixes and niceties throughout."
 }
