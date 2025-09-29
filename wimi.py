@@ -151,7 +151,7 @@ from matplotlib.ticker import MaxNLocator
 from matplotlib.patches import Circle
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from pro.plate_solver import plate_solve_doc_inplace
+from pro.plate_solver import plate_solve_doc_inplace, _active_doc_from_parent, _get_seed_mode, _set_seed_mode, _as_header
 
 #################################
 # PyQt6 Imports
@@ -2286,6 +2286,17 @@ class CustomSpinBox(QWidget):
             newVal = self._value
         self.setValue(newVal)
 
+class _NoopSignal:
+    def emit(self, *_, **__): pass
+
+class _WIMIAdapterDoc:
+    """
+    Minimal doc shim so plate_solve_doc_inplace can write into .metadata.
+    """
+    def __init__(self, image: np.ndarray, metadata: dict | None = None):
+        self.image = image
+        self.metadata = metadata if isinstance(metadata, dict) else {}
+        self.changed = _NoopSignal()
 
 class WIMIDialog(QDialog):
     def __init__(self, parent=None, settings=None, doc_manager=None, wimi_path: Optional[str] = None, wrench_path: Optional[str] = None):
@@ -2752,6 +2763,26 @@ class WIMIDialog(QDialog):
         legend = LegendDialog(self)
         legend.setModal(False)
     
+    def _doc_for_solver(self):
+        # Prefer the real pro document if we loaded from a view
+        if getattr(self, "_loaded_doc", None) is not None:
+            return self._loaded_doc
+
+        # Otherwise build an adapter around the image currently in WIMI
+        if getattr(self, "image_data", None) is None:
+            return None
+
+        meta = {}
+        # pack whatever we already know so ASTAP can seed if possible
+        if getattr(self, "original_header", None):
+            meta["original_header"] = self.original_header
+        if getattr(self, "wcs", None) is not None:
+            try:
+                meta["wcs_header"] = self.wcs.to_header(relax=True)
+            except Exception:
+                pass
+        return _WIMIAdapterDoc(self.image_data, meta)
+
 
     def show_legend(self):
         # keep a persistent reference so it doesn't get garbage-collected
@@ -2783,31 +2814,63 @@ class WIMIDialog(QDialog):
             act.triggered.connect(lambda _, d=doc: self._load_from_view(d))
 
     def _ensure_wcs_on_doc(self, doc) -> bool:
-        """Return True if WCS already present or successfully solved and written back to doc.metadata."""
+        """
+        Return True if WCS already present or successfully solved and written back to doc.metadata.
+        Uses the shared plate solver (ASTAP first, then Astrometry.net) and shows status in the UI.
+        If the document has no usable seed header, temporarily forces a blind solve for this run.
+        """
         meta = getattr(doc, "metadata", {}) or {}
-        if self.check_astrometry_data(meta.get("original_header")) or self.check_astrometry_data(meta.get("wcs_header")):
+        # already solved?
+        if self.check_astrometry_data(meta.get("original_header")) or \
+        self.check_astrometry_data(meta.get("wcs_header")):
             return True
+
+        # decide whether to force blind for this one run (no seed header)
+        seed_hdr = _as_header(meta.get("original_header") or meta.get("wcs_header"))
+        force_blind = (seed_hdr is None)
 
         mw = _find_main_window(self) or self.parent()
         settings = getattr(mw, "settings", QSettings())
-        ok, _ = plate_solve_doc_inplace(mw, doc, settings)
-        if ok:
-            meta = getattr(doc, "metadata", {}) or {}
-            return self.check_astrometry_data(meta.get("original_header")) or self.check_astrometry_data(meta.get("wcs_header"))
 
-        # fallback to your existing blind-solve path in this dialog
-        QMessageBox.information(self, "Blind Solve", "ASTAP Failed.\nPerforming blind solve via Astrometry.NET…")
+        # status hint
         try:
-            self.perform_blind_solve()
-            # perform_blind_solve() applies WCS into self.*; reflect that into doc if needed
-            if hasattr(self, "wcs_header") and self.wcs_header is not None:
-                if not isinstance(doc.metadata, dict):
-                    doc.metadata = {}
-                doc.metadata["original_header"] = self.wcs_header
-            return True
-        except Exception as e:
-            print("Blind-solve fallback failed:", e)
-            return False
+            if hasattr(self, "status_label"):
+                self.status_label.setText("Status: Solving (ASTAP)…")
+                QApplication.processEvents()
+        except Exception:
+            pass
+
+        prev_mode = _get_seed_mode(settings)
+        try:
+            if force_blind and prev_mode != "none":
+                _set_seed_mode(settings, "none")  # blind just for this solve
+            ok, _ = plate_solve_doc_inplace(mw, doc, settings)
+        finally:
+            # restore user preference
+            if force_blind and prev_mode != "none":
+                _set_seed_mode(settings, prev_mode)
+
+        if ok:
+            # double-check we now have WCS on the doc
+            meta = getattr(doc, "metadata", {}) or {}
+            got = self.check_astrometry_data(meta.get("original_header")) or \
+                self.check_astrometry_data(meta.get("wcs_header"))
+            try:
+                if hasattr(self, "status_label"):
+                    self.status_label.setText("Status: Solve complete.")
+            except Exception:
+                pass
+            return bool(got)
+
+        # unified solver already tried ASTAP and Astrometry.net; just report failure
+        try:
+            QMessageBox.critical(self, "Solve Failed",
+                                "Automatic plate solve failed (ASTAP → Astrometry.net).")
+            if hasattr(self, "status_label"):
+                self.status_label.setText("Status: Solve failed.")
+        except Exception:
+            pass
+        return False
 
     def populate_object_tree(self):
         self.object_tree.blockSignals(True)
@@ -4195,6 +4258,8 @@ class WIMIDialog(QDialog):
             QMessageBox.information(self, "Load from View", "That view has no image data.")
             return
 
+        self._loaded_doc = doc 
+
         # 1) show pixels
         self._set_image_from_array(doc.image)
 
@@ -4436,26 +4501,37 @@ class WIMIDialog(QDialog):
         QMessageBox.information(self, "Auto-Solve", "No astrometric solution found.\nPerforming auto-solve…")
         QApplication.processEvents()
 
-        # ASTAP (seeded if possible)
-        solved_header = self.plate_solve_image()
-        if solved_header is not None:
-            # your perform_* helpers already use apply_wcs_header(); do the same here
-            try:
-                self.apply_wcs_header(solved_header)
-                self.status_label.setText("Status: ASTAP plate solve succeeded.")
-            except Exception as e:
-                self.status_label.setText(f"Status: ASTAP solve produced unusable WCS — {e}. Falling back to blind solve…")
-                QApplication.processEvents()
-            else:
-                return  # done
 
-        # Astrometry.net fallback
+        doc = self._doc_for_solver()  # returns the view doc if present, else adapter around image_data
+        if doc is None:
+            QMessageBox.warning(self, "Auto-Solve", "No image loaded.")
+            return
+
+        mw = _find_main_window(self) or self.parent()
+        settings = getattr(mw, "settings", QSettings())
+
+        prev_mode = _get_seed_mode(settings)
         try:
-            self.perform_blind_solve()  # handles login, polling, apply_wcs_header, and status text
-            # perform_blind_solve sets its own success/failure messages
-        except Exception as e:
-            self.wcs = None
-            self.status_label.setText(f"Status: Blind solve failed — {e}")
+            # ensure it’s blind for this first solve
+            _set_seed_mode(settings, "none")
+            ok, res = plate_solve_doc_inplace(mw, doc, settings)
+        finally:
+            _set_seed_mode(settings, prev_mode)
+
+        if ok:
+            meta = getattr(doc, "metadata", {}) or {}
+            hdr = meta.get("wcs_header") or meta.get("original_header")
+            try:
+                if hdr is None:
+                    raise RuntimeError("Solver returned no header.")
+                self.initialize_wcs_from_header(hdr)
+                self.status_label.setText("Status: Blind solve succeeded.")
+            except Exception as e:
+                self.status_label.setText(f"Status: WCS init failed — {e}")
+                QMessageBox.warning(self, "Apply WCS", f"Solve succeeded but WCS init failed: {e}")
+        else:
+            self.status_label.setText(f"Status: Blind solve failed — {res}")
+            QMessageBox.critical(self, "Auto-Solve Failed", str(res))
 
     def extract_xisf_metadata(self, xisf_path):
         """
@@ -4706,175 +4782,6 @@ class WIMIDialog(QDialog):
         except Exception:
             return False
 
-    def prompt_blind_solve(self):
-        reply = QMessageBox.question(
-            self, "Astrometry Data Missing",
-            "No astrometry data found in the image. Would you like to perform a blind solve?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        )
-        if reply == QMessageBox.StandardButton.Yes:
-            self.perform_blind_solve()
-
-    def perform_blind_solve2(self):
-        """
-        First attempts to plate-solve the loaded image using ASTAP.
-        If that fails, falls back to performing a blind solve via Astrometry.net.
-        Updates the WCS (self.wcs) and header (self.header) accordingly.
-        """
-        # --- First, try ASTAP plate solve ---
-        solved_header = self.plate_solve_image()  # This method should try to solve via ASTAP and return a header (or None).
-        if solved_header is not None:
-            # instead of manually doing header.update + WCS(...)
-            self.apply_wcs_header(solved_header)
-            return
-
-        # --- If ASTAP plate solve failed, fall back to blind solve via Astrometry.net ---
-
-        # Load or prompt for API key
-        api_key = load_api_key()
-        if not api_key:
-            api_key, ok = QInputDialog.getText(self, "Enter API Key", "Please enter your Astrometry.net API key:")
-            if ok and api_key:
-                save_api_key(api_key)
-            else:
-                self.status_label.setText("API Key Required: Blind solve cannot proceed without an API key.")
-                QApplication.processEvents()
-                return
-
-        try:
-            self.status_label.setText("Status: Logging in to Astrometry.net...")
-            QApplication.processEvents()
-
-            # Step 1: Login to Astrometry.net
-            session_key = self.login_to_astrometry(api_key)
-
-            self.status_label.setText("Status: Uploading image to Astrometry.net...")
-            QApplication.processEvents()
-            
-            # Step 2: Upload the image and get submission ID
-            subid = self.upload_image_to_astrometry(self.image_path, session_key)
-
-            self.status_label.setText("Status: Waiting for job ID...")
-            QApplication.processEvents()
-            
-            # Step 3: Poll for the job ID until it's available
-            job_id = self.poll_submission_status(subid)
-            if not job_id:
-                raise TimeoutError("Failed to retrieve job ID from Astrometry.net after multiple attempts.")
-            
-            self.status_label.setText("Status: Job ID found, processing image...")
-            QApplication.processEvents()
-
-            # Step 4a: Poll for the calibration data, ensuring RA/Dec are available
-            calibration_data = self.poll_calibration_data(job_id)
-            if not calibration_data:
-                raise TimeoutError("Calibration data did not complete in the expected timeframe.")
-            
-            # Set pixscale and other necessary attributes from calibration data
-            self.pixscale = calibration_data.get('pixscale')
-
-            self.status_label.setText("Status: Calibration complete, downloading WCS file...")
-            QApplication.processEvents()
-
-            # Step 4b: Download the WCS FITS file for complete calibration data
-            wcs_header = self.retrieve_and_apply_wcs(job_id)
-            if not wcs_header:
-                raise TimeoutError("Failed to retrieve WCS FITS file from Astrometry.net.")
-
-            self.status_label.setText("Status: Applying astrometric solution to the image...")
-            QApplication.processEvents()
-
-            # Apply calibration data to the WCS
-            self.apply_wcs_header(wcs_header)
-            self.status_label.setText("Status: Blind Solve Complete.")
-            #QMessageBox.information(self, "Blind Solve Complete", "Astrometric solution applied successfully.")
-        except Exception as e:
-            self.status_label.setText("Status: Blind Solve Failed.")
-            #QMessageBox.critical(self, "Blind Solve Failed", f"An error occurred: {str(e)}")
-
-    def perform_blind_solve(self):
-        """
-        First attempts to plate-solve the loaded image using ASTAP.
-        If that fails, falls back to performing a blind solve via Astrometry.net.
-        Updates the WCS (self.wcs) and header (self.header) accordingly.
-        """
-        # --- First, try ASTAP plate solve ---
-        self.status_label.setText("Status: Attempting ASTAP plate solve...")
-        QApplication.processEvents()
-        solved_header = self.plate_solve_image()  # This method should try to solve via ASTAP and return a header (or None).
-        if solved_header is not None:
-            self.status_label.setText("ASTAP plate solve succeeded.")
-            # instead of manually doing header.update + WCS(...)
-            self.apply_wcs_header(solved_header)
-            QMessageBox.information(self, "Plate Solve", 
-                                    "ASTAP plate solve succeeded. WCS, orientation, and pixscale updated.")
-            return
-
-        # --- If ASTAP plate solve failed, fall back to blind solve via Astrometry.net ---
-        self.status_label.setText("Status: ASTAP failed. Proceeding with blind solve via Astrometry.net...")
-        QApplication.processEvents()
-
-        # Load or prompt for API key
-        api_key = load_api_key()
-        if not api_key:
-            api_key, ok = QInputDialog.getText(self, "Enter API Key", "Please enter your Astrometry.net API key:")
-            if ok and api_key:
-                save_api_key(api_key)
-            else:
-                self.status_label.setText("API Key Required: Blind solve cannot proceed without an API key.")
-                QApplication.processEvents()
-                return
-
-        try:
-            self.status_label.setText("Status: Logging in to Astrometry.net...")
-            QApplication.processEvents()
-
-            # Step 1: Login to Astrometry.net
-            session_key = self.login_to_astrometry(api_key)
-
-            self.status_label.setText("Status: Uploading image to Astrometry.net...")
-            QApplication.processEvents()
-            
-            # Step 2: Upload the image and get submission ID
-            subid = self.upload_image_to_astrometry(self.image_path, session_key)
-
-            self.status_label.setText("Status: Waiting for job ID...")
-            QApplication.processEvents()
-            
-            # Step 3: Poll for the job ID until it's available
-            job_id = self.poll_submission_status(subid)
-            if not job_id:
-                raise TimeoutError("Failed to retrieve job ID from Astrometry.net after multiple attempts.")
-            
-            self.status_label.setText("Status: Job ID found, processing image...")
-            QApplication.processEvents()
-
-            # Step 4a: Poll for the calibration data, ensuring RA/Dec are available
-            calibration_data = self.poll_calibration_data(job_id)
-            if not calibration_data:
-                raise TimeoutError("Calibration data did not complete in the expected timeframe.")
-            
-            # Set pixscale and other necessary attributes from calibration data
-            self.pixscale = calibration_data.get('pixscale')
-
-            self.status_label.setText("Status: Calibration complete, downloading WCS file...")
-            QApplication.processEvents()
-
-            # Step 4b: Download the WCS FITS file for complete calibration data
-            wcs_header = self.retrieve_and_apply_wcs(job_id)
-            if not wcs_header:
-                raise TimeoutError("Failed to retrieve WCS FITS file from Astrometry.net.")
-
-            self.status_label.setText("Status: Applying astrometric solution to the image...")
-            QApplication.processEvents()
-
-            # Apply calibration data to the WCS
-            self.apply_wcs_header(wcs_header)
-            self.status_label.setText("Status: Blind Solve Complete.")
-            QMessageBox.information(self, "Blind Solve Complete", "Astrometric solution applied successfully.")
-        except Exception as e:
-            self.status_label.setText("Status: Blind Solve Failed.")
-            QMessageBox.critical(self, "Blind Solve Failed", f"An error occurred: {str(e)}")
 
     def _settings(self) -> QSettings:
         return getattr(self, "settings", None) or QSettings()
@@ -6196,7 +6103,7 @@ class WIMIDialog(QDialog):
 
         # Force Blind Solve button
         force_blind_solve_button = QPushButton("Force Blind Solve")
-        force_blind_solve_button.clicked.connect(lambda: self.force_blind_solve(dialog))
+        force_blind_solve_button.clicked.connect(self.force_blind_solve)
         layout.addWidget(force_blind_solve_button)
         
         # OK and Cancel buttons
@@ -6215,10 +6122,39 @@ class WIMIDialog(QDialog):
         self.main_preview.draw_query_results()
         dialog.accept()
 
-    def force_blind_solve(self, dialog):
-        """Force a blind solve on the currently loaded image."""
-        dialog.accept()  # Close the settings dialog
-        self.perform_blind_solve()  # Call the blind solve function
+    def force_blind_solve(self):
+        doc = self._doc_for_solver()
+        if doc is None:
+            QMessageBox.information(self, "Force Blind Solve", "No image is loaded.")
+            return
+
+        mw = _find_main_window(self) or self.parent()
+        settings = getattr(mw, "settings", QSettings())
+
+        prev_mode = _get_seed_mode(settings)
+        try:
+            _set_seed_mode(settings, "none")  # blind for this one call
+            ok, res = plate_solve_doc_inplace(mw, doc, settings)
+        finally:
+            _set_seed_mode(settings, prev_mode)  # restore user preference
+
+        if ok:
+            # Pull the header the solver just wrote and reflect it into WIMI
+            meta = getattr(doc, "metadata", {}) or {}
+            hdr = meta.get("wcs_header") or meta.get("original_header")
+            try:
+                if hdr is not None:
+                    self.initialize_wcs_from_header(hdr)
+                    self.status_label.setText("Status: Blind solve succeeded.")
+                    QMessageBox.information(self, "Blind Solve", "Astrometric solution applied successfully.")
+                else:
+                    raise RuntimeError("Solver returned no header.")
+            except Exception as e:
+                QMessageBox.warning(self, "Apply WCS", f"Solve succeeded but WCS init failed: {e}")
+                self.status_label.setText(f"Status: WCS init failed — {e}")
+        else:
+            QMessageBox.critical(self, "Blind Solve Failed", str(res))
+            self.status_label.setText(f"Status: Blind solve failed — {res}")
 
 
 def extract_wcs_data(file_path):

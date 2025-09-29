@@ -260,7 +260,7 @@ from pro.status_log_dock import StatusLogDock
 from pro.log_bus import LogBus
 
 
-VERSION = "1.1.7"
+VERSION = "1.2.0"
 
 
 if hasattr(sys, '_MEIPASS'):
