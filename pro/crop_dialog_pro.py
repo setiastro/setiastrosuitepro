@@ -12,6 +12,8 @@ from PyQt6.QtWidgets import (
     QGraphicsItem, QGraphicsPixmapItem, QSpinBox 
 )
 
+from pro.wcs_update import update_wcs_after_crop
+
 # -------- util: Siril-style preview stretch (non-destructive) ----------
 def siril_style_autostretch(image: np.ndarray, sigma: float = 3.0) -> np.ndarray:
     def stretch_channel(c):
@@ -660,18 +662,35 @@ class CropDialogPro(QDialog):
         height = np.linalg.norm(src[3] - src[0])
         dst = np.array([[0,0],[width,0],[width,height],[0,height]], dtype=np.float32)
 
+        # Homography src->dst and crop
         M = cv2.getPerspectiveTransform(src, dst)
-        out = cv2.warpPerspective(self._full01, M, (int(round(width)), int(round(height))), flags=cv2.INTER_LINEAR)
+        w_out = int(round(width))
+        h_out = int(round(height))
+        if w_out <= 0 or h_out <= 0:
+            QMessageBox.critical(self, "Apply failed", "Invalid crop size.")
+            return
 
-        # record previous
-        CropDialogPro._prev_rect = QRectF(self._rect_item.rect())
-        CropDialogPro._prev_angle = float(self._rect_item.rotation())
-        CropDialogPro._prev_pos = QPointF(self._rect_item.pos())
+        out = cv2.warpPerspective(self._full01, M, (w_out, h_out), flags=cv2.INTER_LINEAR)
 
-        # push back to document (float [0..1])
+        # Build updated metadata (WCS-aware)
+        new_meta = dict(self.doc.metadata or {})
         try:
-            self.doc.apply_edit(out.copy(), metadata={"step_name": "Crop"}, step_name="Crop")
-            self.crop_applied.emit(out)          # ← add this
+            if update_wcs_after_crop is not None:
+                new_meta = update_wcs_after_crop(new_meta, M_src_to_dst=M, out_w=w_out, out_h=h_out)
+        except Exception:
+            # If WCS update fails, keep going with pixel crop only.
+            pass
+
+        # Record previous crop state (for “Load Previous”)
+        CropDialogPro._prev_rect  = QRectF(self._rect_item.rect())
+        CropDialogPro._prev_angle = float(self._rect_item.rotation())
+        CropDialogPro._prev_pos   = QPointF(self._rect_item.pos())
+
+        # Push back to document (float [0..1]) with updated metadata
+        try:
+            self.doc.apply_edit(out.copy(), metadata={**new_meta, "step_name": "Crop"}, step_name="Crop")
+            self._maybe_notify_wcs_update(new_meta)
+            self.crop_applied.emit(out)
             self.accept()
         except Exception as e:
             QMessageBox.critical(self, "Apply failed", str(e))
@@ -681,12 +700,12 @@ class CropDialogPro(QDialog):
             QMessageBox.warning(self, "No Selection", "Draw & finalize a crop first.")
             return
 
-        # normalize the crop polygon to THIS image size
+        # Normalize the crop polygon to THIS image size
         corners = self._corners_scene()
         src_this = np.array([self._scene_to_img_pixels(p, self._orig_w, self._orig_h) for p in corners], dtype=np.float32)
         norm = src_this / np.array([self._orig_w, self._orig_h], dtype=np.float32)
 
-        # collect all open documents from the MDI
+        # Collect all open documents from the MDI
         win = self.parent()
         subs = getattr(win, "mdi", None).subWindowList() if hasattr(win, "mdi") else []
         docs = []
@@ -709,6 +728,7 @@ class CropDialogPro(QDialog):
         if ok != QMessageBox.StandardButton.Yes:
             return
 
+        last_cropped = None
         for d in docs:
             img = np.asarray(d.image)
             if img.dtype.kind in "ui":
@@ -720,18 +740,59 @@ class CropDialogPro(QDialog):
 
             w_out  = int(round(np.linalg.norm(src_pts[1] - src_pts[0])))
             h_out  = int(round(np.linalg.norm(src_pts[3] - src_pts[0])))
+            if w_out <= 0 or h_out <= 0:
+                continue
+
             dst = np.array([[0,0],[w_out,0],[w_out,h_out],[0,h_out]], dtype=np.float32)
 
+            # Per-doc homography and crop
             M = cv2.getPerspectiveTransform(src_pts.astype(np.float32), dst)
             cropped = cv2.warpPerspective(src01, M, (w_out, h_out), flags=cv2.INTER_LINEAR)
 
+            # Update that doc’s metadata/WCS
+            meta_this = dict(d.metadata or {})
             try:
-                d.apply_edit(cropped.copy(), metadata={"step_name":"Crop"}, step_name="Crop")
+                if update_wcs_after_crop is not None:
+                    meta_this = update_wcs_after_crop(meta_this, M_src_to_dst=M, out_w=w_out, out_h=h_out)
             except Exception:
                 pass
 
-        QMessageBox.information(self, "Batch Crop", "Applied crop to all open images.")
-        self.crop_applied.emit(cropped)          # ← add this
+            try:
+                d.apply_edit(cropped.copy(), metadata={**meta_this, "step_name":"Crop"}, step_name="Crop")
+                last_cropped = cropped
+            except Exception:
+                pass
+
+        QMessageBox.information(self, "Batch Crop", "Applied crop to all open images. Any Astrometric Solutions has been updated.")
+        if last_cropped is not None:
+            self.crop_applied.emit(last_cropped)
         self.accept()
 
-
+    def _maybe_notify_wcs_update(self, meta: dict, batch_note: str | None = None):
+        dbg = (meta or {}).get("__wcs_debug__")
+        if not dbg:
+            return
+        try:
+            before = dbg.get("before", {})
+            after  = dbg.get("after", {})
+            fit    = dbg.get("fit", {})
+            b_ra, b_dec = before.get("crval_deg", (float("nan"), float("nan")))
+            a_ra, a_dec = after.get("crval_deg", (float("nan"), float("nan")))
+            rms   = fit.get("rms_arcsec", float("nan"))
+            p95   = fit.get("p95_arcsec", float("nan"))
+            sip   = after.get("sip_degree")
+            size  = after.get("size")
+            sip_txt = f"TAN-SIP (deg={sip})" if sip is not None else "TAN"
+            size_txt = f"{size[0]}×{size[1]}" if size else "?"
+            extra = f"\n{batch_note}" if batch_note else ""
+            msg = (
+                "Astrometric solution updated ✔️\n\n"
+                f"Model: {sip_txt}   Image: {size_txt}\n"
+                f"CRVAL: ({b_ra:.6f}, {b_dec:.6f}) → ({a_ra:.6f}, {a_dec:.6f})\n"
+                f"Fit residuals: RMS {rms:.3f}\"  (p95 {p95:.3f}\")"
+                f"{extra}"
+            )
+            QMessageBox.information(self, "WCS Updated", msg)
+        except Exception:
+            # Be quiet if formatting fails
+            pass

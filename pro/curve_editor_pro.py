@@ -142,7 +142,9 @@ class CurveEditor(QGraphicsView):
         self.setFixedSize(380, 425)
         self.preview_callback = None  # To trigger real-time updates
         self.symmetry_callback = None
-        
+        self._cdf = None
+        self._cdf_bins = 1024
+        self._cdf_total = 0        
 
         # Initialize control points and curve path
         self.end_points = []  # Start and end points with axis constraints
@@ -172,12 +174,12 @@ class CurveEditor(QGraphicsView):
 
     def initGrid(self):
         pen = self._grid_pen
-        for i in range(0, 361, 45):  # grid lines
+        for i in range(0, 361, 36):  # grid lines
             self.scene.addLine(i, 0, i, 360, pen)
             self.scene.addLine(0, i, 360, i, pen)
 
         # X-axis labels (0..1 mapped to 0..360)
-        for i in range(0, 361, 45):
+        for i in range(0, 361, 36):
             val = i / 360.0
             label = QGraphicsTextItem(f"{val:.3f}")
             label.setDefaultTextColor(self._label_color)
@@ -641,6 +643,28 @@ class CurveEditor(QGraphicsView):
                 self.b_line.setLine(b_x, 0, b_x, 360)
             self.b_line.setVisible(True)
 
+    def current_black_white_thresholds(self) -> tuple[float|None, float|None]:
+        """
+        Return (black_t, white_t) in [0..1], derived from endpoints:
+        - black_t is the X position of the endpoint that sits on the bottom edge (y≈360)
+        - white_t is the X position of the endpoint that sits on the top edge (y≈0)
+        If an endpoint is on the left/right edges instead, we return None for that side
+        (i.e., no clipping for that side).
+        """
+        bx = None
+        wx = None
+        eps = 1.0
+        for p in self.end_points:
+            pos = p.scenePos()
+            x, y = float(pos.x()), float(pos.y())
+            if abs(y - 360.0) <= eps:
+                bx = max(0.0, min(1.0, x / 360.0))
+            if abs(y - 0.0) <= eps:
+                wx = max(0.0, min(1.0, x / 360.0))
+        return bx, wx
+
+
+
 class CommaToDotLineEdit(QLineEdit):
     def keyPressEvent(self, event: QKeyEvent):
         print("C2D got:", event.key(), repr(event.text()), event.modifiers())
@@ -860,6 +884,14 @@ class CurvesDialogPro(QDialog):
         self._did_initial_fit = False
         self._apply_when_ready = False
 
+        self._cdf = None
+        self._cdf_bins = 1024
+        self._cdf_total = 0
+
+        self._clip_scale = 1.0          # preview→full multiplier
+        self._cdf_total_full = 0        # total pixels in full image (H*W)
+        self._cdf_total_preview = 0     # total pixels in preview (H*W)
+
         # --- UI ---
         main = QHBoxLayout(self)
 
@@ -959,6 +991,51 @@ class CurvesDialogPro(QDialog):
         self.editor.setSymmetryCallback(self._on_symmetry_pick)
 
         self._rebuild_presets_menu()
+
+    def _build_preview_luma_cdf(self):
+        """Compute a luminance CDF once from the preview image for fast clipping lookups.
+        Also derives a preview→full scaling factor so we can report full-image pixel counts.
+        """
+        img = self._preview_img
+        # defaults / safety
+        bins = int(getattr(self, "_cdf_bins", 1024))
+        self._cdf_bins = bins  # remember for consistency
+
+        # reset outputs
+        self._cdf = None
+        self._cdf_total = 0
+        self._cdf_total_preview = 0
+        self._cdf_total_full = 0
+        self._clip_scale = 1.0
+
+        if img is None:
+            return
+
+        # luminance (float32 [0..1])
+        if img.ndim == 2 or (img.ndim == 3 and img.shape[2] == 1):
+            luma = img if img.ndim == 2 else img[..., 0]
+        else:
+            luma = (0.2126 * img[..., 0] + 0.7152 * img[..., 1] + 0.0722 * img[..., 2]).astype(np.float32)
+        luma = np.clip(luma, 0.0, 1.0)
+
+        # preview CDF
+        hist, _edges = np.histogram(luma, bins=bins, range=(0.0, 1.0))
+        self._cdf = np.cumsum(hist).astype(np.int64)
+        self._cdf_total_preview = int(luma.size)
+        self._cdf_total = self._cdf_total_preview  # backward-compat alias
+
+        # compute full-image pixel count
+        full_pixels = 0
+        if isinstance(getattr(self, "_full_img", None), np.ndarray) and self._full_img.ndim >= 2:
+            Hf, Wf = self._full_img.shape[:2]
+            full_pixels = int(Hf * Wf)
+        if full_pixels <= 0:
+            full_pixels = self._cdf_total_preview  # fall back to preview size
+
+        self._cdf_total_full = full_pixels
+        self._clip_scale = (full_pixels / float(self._cdf_total_preview)) if self._cdf_total_preview else 1.0
+
+
 
     def _on_symmetry_pick(self, u: float, _v: float):
         self.editor.redistributeHandlesByPivot(u)
@@ -1165,6 +1242,7 @@ class CurvesDialogPro(QDialog):
         self._full_img = arr
         self._preview_img = _downsample_for_preview(arr, 1200)
         self._update_preview_pix(self._preview_img)
+        self._build_preview_luma_cdf()
 
     # ----- building LUT from editor -----
     def _build_lut01(self) -> np.ndarray | None:
@@ -1191,6 +1269,17 @@ class CurvesDialogPro(QDialog):
         out = _apply_mode_any(self._preview_img, mode, lut)
         out = self._blend_with_mask(out)               # ✅ blend
         self._update_preview_pix(out)
+        try:
+            bt, wt = self.editor.current_black_white_thresholds()
+            below, above, f_below, f_above = self._clip_counts_from_thresholds(bt, wt)
+            # Nice compact status; keep other statuses intact when not dragging
+            self._set_status(
+                f"Clipping: blacks {below:,} ({f_below*100:.2f}%)   whites {above:,} ({f_above*100:.2f}%)"
+            )
+        except Exception:
+            # don't let any hiccup break interactive editing
+            pass
+
 
     # ----- threaded full-res preview (also used for Apply path if needed) -----
     def _run_preview(self):
@@ -1214,6 +1303,50 @@ class CurvesDialogPro(QDialog):
         if getattr(self, "_apply_when_ready", False):
             self._apply_when_ready = False
             self._commit(self._last_preview)
+
+    def _clip_counts_from_thresholds(self, black_t: float | None, white_t: float | None):
+        """
+        Return tuple: (below_count_full, above_count_full, below_frac, above_frac)
+        using the precomputed *preview* luma CDF, scaled to full-image counts.
+        """
+        if self._cdf is None or getattr(self, "_cdf_total_preview", 0) <= 0:
+            return 0, 0, 0.0, 0.0
+
+        bins = int(getattr(self, "_cdf_bins", 1024))
+
+        # blacks: values strictly < black_t
+        if black_t is None:
+            below_preview = 0
+        else:
+            i = int(np.floor(np.clip(float(black_t), 0.0, 1.0) * (bins - 1)))
+            i = max(0, min(bins - 1, i))
+            below_preview = int(self._cdf[i])
+
+        # whites: values strictly > white_t
+        if white_t is None:
+            above_preview = 0
+        else:
+            j = int(np.floor(np.clip(float(white_t), 0.0, 1.0) * (bins - 1)))
+            j = max(0, min(bins - 1, j))
+            above_preview = int(self._cdf_total_preview - self._cdf[j])
+
+        # scale preview counts to full-image counts
+        scale = float(getattr(self, "_clip_scale", 1.0))
+        total_full = int(getattr(self, "_cdf_total_full", self._cdf_total_preview)) or 1
+        below_full = int(round(below_preview * scale))
+        above_full = int(round(above_preview * scale))
+
+        # clamp to valid range
+        below_full = max(0, min(below_full, total_full))
+        above_full = max(0, min(above_full, total_full))
+
+        # fractions against full-image total
+        f_below = below_full / float(total_full)
+        f_above = above_full / float(total_full)
+
+        return below_full, above_full, f_below, f_above
+
+
 
     # ----- apply to document -----
     def _apply(self):

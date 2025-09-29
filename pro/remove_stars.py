@@ -164,6 +164,102 @@ def _get_setting_any(settings, keys: tuple[str, ...], default: str = "") -> str:
     return default
 
 
+# ================== HEADLESS, ARRAY-IN → STARLESS-ARRAY-OUT ==================
+
+def starnet_starless_from_array(arr_rgb01: np.ndarray, settings, *, tmp_prefix="comet") -> np.ndarray:
+    """
+    Always: MTF pre-stretch -> StarNet -> inverse MTF -> rescale -> starless RGB [0..1].
+    """
+    exe = _get_setting_any(settings, ("starnet/exe_path", "paths/starnet"), "")
+    if not exe or not os.path.exists(exe):
+        raise RuntimeError("StarNet executable not configured (settings 'paths/starnet').")
+
+    workdir = os.path.dirname(exe) or os.getcwd()
+    in_path  = os.path.join(workdir, f"{tmp_prefix}_in.tif")
+    out_path = os.path.join(workdir, f"{tmp_prefix}_out.tif")
+
+    # ensure RGB float32
+    x = arr_rgb01.astype(np.float32, copy=False)
+    if x.ndim == 2: x = np.stack([x]*3, axis=-1)
+    elif x.ndim == 3 and x.shape[2] == 1: x = np.repeat(x, 3, axis=2)
+
+    # --- ALWAYS do deterministic MTF stretch like SASv2 ---
+    scale_factor = float(np.max(x)) if np.isfinite(np.max(x)) else 1.0
+    x_norm = x / scale_factor if scale_factor > 1.0 else x
+    mtf = _mtf_params_linked(x_norm, shadowclip_sigma=-2.8, targetbg=0.25)
+    x_stretched = _apply_mtf_linked_rgb(x_norm, mtf)
+
+    # StarNet expects 16-bit TIFF in its folder
+    save_image(x_stretched, in_path, original_format="tif", bit_depth="16-bit",
+               original_header=None, is_mono=False, image_meta=None, file_meta=None)
+
+    # run StarNet
+    import subprocess, platform
+    exe_name = os.path.basename(exe).lower()
+    if platform.system() in ("Windows", "Linux"):
+        cmd = [exe, in_path, out_path, "256"]
+    else:  # macOS
+        cmd = [exe, "--input", in_path, "--output", out_path] if "starnet2" in exe_name else [exe, in_path, out_path]
+
+    rc = subprocess.call(cmd, cwd=workdir)
+    if rc != 0 or not os.path.exists(out_path):
+        _safe_rm(in_path); _safe_rm(out_path)
+        raise RuntimeError(f"StarNet failed rc={rc}")
+
+    starless, _, _, _ = load_image(out_path)
+    _safe_rm(in_path); _safe_rm(out_path)
+
+    if starless.ndim == 2: starless = np.stack([starless]*3, axis=-1)
+    starless = starless.astype(np.float32, copy=False)
+
+    # --- ALWAYS inverse the MTF & restore scale ---
+    starless = _invert_mtf_linked_rgb(starless, mtf)
+    if scale_factor > 1.0:
+        starless *= scale_factor
+
+    return np.clip(starless, 0.0, 1.0)
+
+
+
+def darkstar_starless_from_array(arr_rgb01: np.ndarray, settings, *, tmp_prefix="comet",
+                                 disable_gpu=False, mode="unscreen", stride=512) -> np.ndarray:
+    """
+    Save arr -> run DarkStar -> load starless -> return starless RGB float32 [0..1].
+    """
+    exe, base = _resolve_darkstar_exe(type("dummy", (), {"settings": settings}) )
+    if not exe or not base:
+        raise RuntimeError("Cosmic Clarity DarkStar executable not configured.")
+
+    input_dir  = os.path.join(base, "input")
+    output_dir = os.path.join(base, "output")
+    os.makedirs(input_dir, exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
+    _purge_darkstar_io(base, prefix=None, clear_input=True, clear_output=True)
+
+    in_path = os.path.join(input_dir, f"{tmp_prefix}_in.tif")
+    save_image(arr_rgb01, in_path, original_format="tif", bit_depth="32-bit floating point",
+               original_header=None, is_mono=False, image_meta=None, file_meta=None)
+
+    args = []
+    if disable_gpu: args.append("--disable_gpu")
+    args += ["--star_removal_mode", mode, "--chunk_size", str(int(stride))]
+    import subprocess
+    rc = subprocess.call([exe] + args, cwd=output_dir)
+    if rc != 0:
+        _safe_rm(in_path); raise RuntimeError(f"DarkStar failed rc={rc}")
+
+    starless_path = os.path.join(output_dir, "imagetoremovestars_starless.tif")
+    starless, _, _, _ = load_image(starless_path)
+    if starless is None:
+        _safe_rm(in_path); raise RuntimeError("DarkStar produced no starless image.")
+    if starless.ndim == 2: starless = np.stack([starless]*3, axis=-1)
+    starless = starless.astype(np.float32, copy=False)
+
+    # cleanup typical outputs
+    _purge_darkstar_io(base, prefix="imagetoremovestars", clear_input=True, clear_output=True)
+    return np.clip(starless, 0.0, 1.0)
+
+
 # ------------------------------------------------------------
 # Public entry
 # ------------------------------------------------------------

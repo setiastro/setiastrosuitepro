@@ -10,11 +10,11 @@ import re, unicodedata
 import math            # used in compute_safe_chunk
 import psutil          # used in bytes_available / compute_safe_chunk
 from typing import List 
-from PyQt6.QtCore import Qt, QTimer, QSettings, pyqtSignal, QObject, pyqtSlot, QThread, QEvent, QPoint, QSize, QEventLoop, QCoreApplication
-from PyQt6.QtGui import QIcon, QImage, QPixmap, QAction, QIntValidator, QDoubleValidator, QFontMetrics, QTextCursor
+from PyQt6.QtCore import Qt, QTimer, QSettings, pyqtSignal, QObject, pyqtSlot, QThread, QEvent, QPoint, QSize, QEventLoop, QCoreApplication, QRectF, QPointF, QMetaObject
+from PyQt6.QtGui import QIcon, QImage, QPixmap, QAction, QIntValidator, QDoubleValidator, QFontMetrics, QTextCursor, QPalette, QPainter, QPen, QTransform, QColor, QBrush, QCursor
 from PyQt6.QtWidgets import (QDialog, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QLineEdit, QTreeWidget, QHeaderView, QTreeWidgetItem, QProgressBar, QProgressDialog,
                              QFormLayout, QDialogButtonBox, QToolBar, QToolButton, QFileDialog, QTabWidget, QAbstractItemView, QSpinBox, QDoubleSpinBox,
-                             QSizePolicy, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QApplication, QScrollArea, QTextEdit, QMenu, QPlainTextEdit,
+                             QSizePolicy, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QApplication, QScrollArea, QTextEdit, QMenu, QPlainTextEdit, QGraphicsEllipseItem,
                              QMessageBox, QSlider, QCheckBox, QInputDialog, QComboBox)
 from datetime import datetime, timezone
 import pyqtgraph as pg
@@ -23,7 +23,8 @@ from astropy.stats import sigma_clipped_stats
 from PIL import Image                 # used by _get_image_size (and elsewhere)
 import tifffile as tiff               # _get_image_size -> tiff.imread(...)
 import cv2                            # _get_image_size -> cv2.imread(...)
-
+cv2.setNumThreads(0)
+CursorShape = Qt.CursorShape 
 import rawpy
 
 import exifread
@@ -39,6 +40,8 @@ from legacy.numba_utils import *
 from legacy.image_manager import load_image, save_image, get_valid_header
 from pro.star_alignment import StarRegistrationWorker, StarRegistrationThread, IDENTITY_2x3
 from pro.log_bus import LogBus
+from pro import comet_stacking as CS
+from pro.remove_stars import starnet_starless_from_array, darkstar_starless_from_array
 
 import numpy as np
 
@@ -632,6 +635,32 @@ class _MMFits:
                 tile = np.moveaxis(tile, 0, -1)
         return tile
 
+    def read_full(self) -> np.ndarray:
+        """
+        Return the whole frame as float32 in (H,W) or (H,W,3) with color last,
+        normalized the same way as read_tile().
+        """
+        d = self.data
+        if self.ndim == 2:
+            full = d
+        else:
+            # move color to last if present
+            full = d
+            if self.color_axis is not None and self.color_axis != 2:
+                full = np.moveaxis(full, self.color_axis, -1)
+
+        # late normalize to float32
+        if self._scale is None:
+            full = full.astype(np.float32, copy=False)
+        else:
+            full = full.astype(np.float32, copy=False) * self._scale
+
+        # ensure (H,W,3) or (H,W)
+        if full.ndim == 3 and full.shape[-1] not in (1, 3):
+            if full.shape[0] == 3 and full.shape[-1] != 3:
+                full = np.moveaxis(full, 0, -1)
+        return full
+
     def close(self):
         try:
             self.hdul.close()
@@ -978,10 +1007,13 @@ def compute_safe_chunk(height, width, N, channels, dtype, pref_h, pref_w):
 
 _DIM_RE = re.compile(r"\s*\(\d+\s*x\s*\d+\)\s*")
 
+class _Responder(QObject):
+    finished = pyqtSignal(object)   # emits the edited dict or None
 
 class AfterAlignWorker(QObject):
     progress = pyqtSignal(str)                 # emits status lines
     finished = pyqtSignal(bool, str)           # (success, message)
+    need_comet_review = pyqtSignal(list, dict, object)  # (files, initial_xy, responder)
 
     def __init__(self, dialog, *,
                  light_files,
@@ -989,7 +1021,7 @@ class AfterAlignWorker(QObject):
                  transforms_dict,
                  drizzle_dict,
                  autocrop_enabled,
-                 autocrop_pct):
+                 autocrop_pct, ui_owner=None):
         super().__init__()
         self.dialog = dialog                    # we will call pure methods on it
         self.light_files = light_files
@@ -998,6 +1030,7 @@ class AfterAlignWorker(QObject):
         self.drizzle_dict = drizzle_dict
         self.autocrop_enabled = autocrop_enabled
         self.autocrop_pct = autocrop_pct
+        self.ui_owner         = ui_owner  
 
     @pyqtSlot()
     def run(self):
@@ -1229,6 +1262,367 @@ def _save_master_with_rejection_layers(
 
     fits.HDUList(hdul).writeto(out_path, overwrite=True)
 
+class _SimplePickDialog(QDialog):
+    def __init__(self, np_image, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Click the comet center")
+        self._orig = np.clip(np.asarray(np_image, dtype=np.float32), 0.0, 1.0)
+        if self._orig.ndim == 3 and self._orig.shape[-1] == 1:
+            self._orig = np.squeeze(self._orig, axis=-1)
+
+        self._autostretch = False
+        self._zoom = 1.0
+        self._marker_xy = None  # image coords (float)
+
+        v = QVBoxLayout(self)
+
+        # ---- Graphics View scaffold ----
+        self.scene = QGraphicsScene(self)
+        self.view = _ZoomableGraphicsView(self.scene, self)
+        self.view.setRenderHints(self.view.renderHints() | QPainter.RenderHint.SmoothPixmapTransform)
+        self.view.setDragMode(QGraphicsView.DragMode.NoDrag)  # keep arrow; pan via wheel/scrollbars or your own handler
+        self.view.setCursor(QCursor(CursorShape.ArrowCursor))
+        self.view.viewport().setCursor(QCursor(CursorShape.ArrowCursor))
+        v.addWidget(self.view)
+
+        # pixmap item that holds the image
+        self.pix_item = QGraphicsPixmapItem()
+        self.scene.addItem(self.pix_item)
+
+        # marker (crosshair as small ellipse; we’ll draw lines into it)
+        self.marker = QGraphicsEllipseItem(-6, -6, 12, 12)
+
+        pen = QPen(QColor(0, 255, 0))   # bright green outline
+        pen.setWidth(2)
+        pen.setCosmetic(True)           # stays 2px regardless of zoom
+        self.marker.setPen(pen)
+
+        # optional: translucent green fill; or use Qt.NoBrush for hollow circle
+        #self.marker.setBrush(QBrush(QColor(0, 255, 0, 60)))
+
+        self.marker.setZValue(1_000_000)  # ensure it draws on top
+        self.marker.setVisible(False)
+        self.scene.addItem(self.marker)
+
+        # ---- Controls ----
+        row = QHBoxLayout()
+        self.btn_fit = QPushButton("Fit")
+        self.btn_fit.clicked.connect(self.fitToView)
+        row.addWidget(self.btn_fit)
+
+        self.btn_1x = QPushButton("1:1")
+        self.btn_1x.clicked.connect(self.zoom1x)
+        row.addWidget(self.btn_1x)
+
+        self.btn_zi = QPushButton("Zoom In")
+        self.btn_zi.clicked.connect(lambda: self.zoomBy(1.2))
+        row.addWidget(self.btn_zi)
+
+        self.btn_zo = QPushButton("Zoom Out")
+        self.btn_zo.clicked.connect(lambda: self.zoomBy(1/1.2))
+        row.addWidget(self.btn_zo)
+
+        self.btn_st = QPushButton("Enable Autostretch")
+        self.btn_st.setCheckable(True)
+        self.btn_st.toggled.connect(self._toggle_autostretch)
+        row.addWidget(self.btn_st)
+
+        row.addStretch(1)
+        v.addLayout(row)
+
+        # ---- OK/Cancel ----
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        v.addWidget(btns)
+
+        # image render + first fit
+        self._update_pixmap()
+        QTimer.singleShot(0, self.fitToView)
+
+        # click to place marker
+        self.view.mousePressOnScene = self._on_scene_click
+        self.view.viewport().installEventFilter(self)
+
+    def eventFilter(self, obj, ev):
+        if obj is self.view.viewport():
+            if ev.type() == QEvent.Type.CursorChange:
+                obj.setCursor(QCursor(CursorShape.ArrowCursor))
+                return True
+        return super().eventFilter(obj, ev)
+
+    # ---------- Display pipeline ----------
+    def _make_display(self):
+        if self._autostretch:
+            if self._orig.ndim == 2:
+                from imageops.stretch import stretch_mono_image
+                disp = stretch_mono_image(self._orig, target_median=0.30, normalize=True, apply_curves=False)
+            elif self._orig.ndim == 3 and self._orig.shape[2] == 3:
+                from imageops.stretch import stretch_color_image
+                disp = stretch_color_image(self._orig, target_median=0.30, linked=False, normalize=True, apply_curves=False)
+            else:
+                disp = self._orig
+        else:
+            disp = self._orig
+        return (np.clip(disp, 0, 1) * 255).astype(np.uint8)
+
+    def _update_pixmap(self):
+        disp = self._make_display()
+        if disp.ndim == 2:
+            h, w = disp.shape; bpl = w
+            qimg = QImage(disp.tobytes(), w, h, bpl, QImage.Format.Format_Grayscale8)
+        else:
+            h, w, _ = disp.shape; bpl = 3*w
+            qimg = QImage(disp.tobytes(), w, h, bpl, QImage.Format.Format_RGB888)
+        pm = QPixmap.fromImage(qimg)
+        self.pix_item.setPixmap(pm)
+        # reset scene rect to image bounds so fit works
+        self.scene.setSceneRect(QRectF(0, 0, pm.width(), pm.height()))
+
+        # keep marker visible at same image coordinate
+        if self._marker_xy is not None:
+            self._place_marker_at(self._marker_xy[0], self._marker_xy[1])
+
+    # ---------- Zoom / Fit ----------
+    def fitToView(self):
+        if self.pix_item.pixmap().isNull():
+            return
+        self.view.fitInView(self.pix_item, Qt.AspectRatioMode.KeepAspectRatio)
+        # record current zoom (approx) from view transform
+        m = self.view.transform().m11()
+        self._zoom = m
+
+    def zoom1x(self):
+        self.view.setTransform(QTransform())  # identity
+        self._zoom = 1.0
+
+    def zoomBy(self, factor):
+        self._zoom *= factor
+        self.view.scale(factor, factor)
+
+    def _toggle_autostretch(self, checked):
+        self._autostretch = bool(checked)
+        self.btn_st.setText("Disable Autostretch" if checked else "Enable Autostretch")
+        self._update_pixmap()
+
+    # ---------- Picking ----------
+    def _on_scene_click(self, scene_pos: QPointF, button: Qt.MouseButton):
+        if button != Qt.MouseButton.LeftButton:
+            return
+        # clamp to image rect
+        img_rect = self.scene.sceneRect()
+        x = float(max(img_rect.left(), min(img_rect.right() - 1.0, scene_pos.x())))
+        y = float(max(img_rect.top(),  min(img_rect.bottom() - 1.0, scene_pos.y())))
+        self._marker_xy = (x, y)
+        self._place_marker_at(x, y)
+
+    def _place_marker_at(self, x, y):
+        self.marker.setPos(QPointF(x, y))
+        self.marker.setVisible(True)
+
+    def point(self):
+        """Return (x, y) in native image coordinates (float), or (0.0, 0.0) if none."""
+        return self._marker_xy or (0.0, 0.0)
+
+class _ZoomableGraphicsView(QGraphicsView):
+    """
+    Small helper view: Ctrl+wheel to zoom centered on cursor.
+    Right or middle mouse drag pans (ScrollHandDrag is enabled).
+    We call back to owner for clicks in scene coords.
+    """
+    def __init__(self, scene, owner):
+        super().__init__(scene)
+        self.owner = owner
+        self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.SmartViewportUpdate)
+        self.mousePressOnScene = None  # set by owner
+        self.setMouseTracking(True)
+
+    def wheelEvent(self, e):
+        if e.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            factor = 1.15 if e.angleDelta().y() > 0 else 1/1.15
+            # zoom around cursor
+            pos = e.position()
+            old_pos = self.mapToScene(int(pos.x()), int(pos.y()))
+            self.scale(factor, factor)
+            new_pos = self.mapToScene(int(pos.x()), int(pos.y()))
+            delta = new_pos - old_pos
+            self.translate(delta.x(), delta.y())
+            e.accept()
+        else:
+            super().wheelEvent(e)
+
+    def mousePressEvent(self, e):
+        if self.mousePressOnScene and e.button() in (Qt.MouseButton.LeftButton,):
+            sp = self.mapToScene(e.pos())
+            self.mousePressOnScene(sp, e.button())
+        super().mousePressEvent(e)
+
+def _canonize_img(img: np.ndarray) -> np.ndarray:
+    """Return image as float32, shape (H,W,C) where C is 1 or 3."""
+    x = np.asarray(img, dtype=np.float32)
+    if x.ndim == 2:
+        return x[..., None]                # (H,W) -> (H,W,1)
+    if x.ndim == 3 and x.shape[2] in (1, 3):
+        return x
+    # unexpected (e.g., more channels)
+    raise ValueError(f"Unexpected image shape {x.shape}")
+
+def _canonize_mask(mask: np.ndarray, channels: int) -> np.ndarray:
+    """Return mask in [0,1], shape (H,W,channels)."""
+    m = np.asarray(mask, dtype=np.float32)
+    if m.ndim == 2:
+        m = m[..., None]                   # (H,W) -> (H,W,1)
+    elif m.ndim == 3 and m.shape[2] == 1:
+        pass
+    else:
+        raise ValueError(f"Unexpected mask shape {m.shape}")
+    # repeat to RGB if needed
+    if channels == 3 and m.shape[2] == 1:
+        m = np.repeat(m, 3, axis=2)
+    return np.clip(m, 0.0, 1.0)
+
+def feather_mask(mask_hw_or_hw1: np.ndarray, feather_px: int, channels: int) -> np.ndarray:
+    """Feather with Gaussian blur; returns (H,W,channels) in [0,1]."""
+    m = _canonize_mask(mask_hw_or_hw1, 1)[..., 0]   # work in 2-D
+    if feather_px and feather_px > 0:
+        # Convert feather_px (approx radius) to sigma and odd kernel size
+        sigma = max(0.1, float(feather_px) / 2.0)
+        k = int(2 * int(3 * sigma) + 1)            # ~3σ radius, odd
+        m = cv2.GaussianBlur(m, (k, k), sigmaX=sigma, sigmaY=sigma, borderType=cv2.BORDER_REPLICATE)
+        m = np.clip(m, 0.0, 1.0)
+    # expand to channels
+    if channels == 3:
+        m = np.repeat(m[..., None], 3, axis=2)
+    else:
+        m = m[..., None]
+    return m
+
+def blend_stars_comet(stars_img, comet_img, comet_mask, feather_px=16, mix=1.0):
+    """
+    stars_img: (H,W) or (H,W,1/3)
+    comet_img: (H,W) or (H,W,1/3)
+    comet_mask: (H,W) or (H,W,1)
+    mix in [0..1]: 0 = only stars, 1 = only comet in masked areas
+    """
+    S = _canonize_img(stars_img)
+    C = _canonize_img(comet_img)
+
+    # If one is mono and the other RGB, upcast mono to RGB for a consistent result
+    if S.shape[2] != C.shape[2]:
+        if S.shape[2] == 1 and C.shape[2] == 3:
+            S = np.repeat(S, 3, axis=2)
+        elif S.shape[2] == 3 and C.shape[2] == 1:
+            C = np.repeat(C, 3, axis=2)
+        else:
+            raise ValueError(f"Unsupported channel combination: {S.shape} vs {C.shape}")
+
+    A = feather_mask(comet_mask, feather_px, S.shape[2]) * float(np.clip(mix, 0.0, 1.0))
+    out = (1.0 - A) * S + A * C
+    return np.clip(out, 0.0, 1.0)
+
+def _match_channels(A: np.ndarray, B: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Return (A', B') with matching channel counts (1 or 3), float32."""
+    A = np.asarray(A, dtype=np.float32)
+    B = np.asarray(B, dtype=np.float32)
+    def _c(x):
+        if x.ndim == 2:    return 1
+        if x.ndim == 3:    return x.shape[2]
+        raise ValueError(f"Unexpected image shape {x.shape}")
+    ca, cb = _c(A), _c(B)
+    if ca == cb:
+        return A, B
+    if ca == 1 and cb == 3:
+        A = np.repeat(A[..., None] if A.ndim == 2 else A, 3, axis=2)
+    elif ca == 3 and cb == 1:
+        B = np.repeat(B[..., None] if B.ndim == 2 else B, 3, axis=2)
+    else:
+        # handle (H,W,1) vs (H,W): squeeze to 2D then upcast consistently
+        if A.ndim == 3 and A.shape[2] == 1: A = A[..., 0]
+        if B.ndim == 3 and B.shape[2] == 1: B = B[..., 0]
+        A = A[..., None] if A.ndim == 2 else A
+        B = B[..., None] if B.ndim == 2 else B
+    return A, B
+
+# --- comet-friendly reducers ---
+def _lower_trimmed_mean(ts: np.ndarray, trim_hi_frac: float = 0.30) -> np.ndarray:
+    """
+    Per-pixel lower-trimmed mean: drop the brightest t% (star trails) then mean.
+    ts: (N, th, tw, C) float32
+    """
+    n = ts.shape[0]
+    k = int(np.floor(n * (1.0 - trim_hi_frac)))
+    if k <= 0:
+        return np.median(ts, axis=0)
+    part = np.partition(ts, k-1, axis=0)[:k, ...]  # keep lowest k across N
+    return np.mean(part, axis=0)
+
+def _percentile40(ts: np.ndarray) -> np.ndarray:
+    """Low-percentile combiner; good at suppressing bright streaks."""
+    return np.percentile(ts, 40.0, axis=0)
+
+def _high_clip_percentile(ts: np.ndarray, k: float = 2.5, p: float = 40.0) -> np.ndarray:
+    """
+    Robust high-side winsorize per pixel, then take a low percentile.
+    ts: (N, th, tw, C) float32
+    k:  MAD multiplier for high tail clamp
+    p:  percentile to return (e.g. 35..45)
+    """
+    med = np.median(ts, axis=0)
+    mad = np.median(np.abs(ts - med), axis=0) + 1e-6
+    hi = med + (k * 1.4826 * mad)
+    clipped = np.minimum(ts, hi, dtype=ts.dtype)
+    return np.percentile(clipped, p, axis=0)
+
+def _high_clip_percentile_fast(ts: np.ndarray, k: float = 2.5, p: float = 40.0,
+                               _work: dict = {}) -> np.ndarray:
+    """
+    Same math as _high_clip_percentile, but ~2–4× faster on CPU:
+      - median / MAD via np.partition (no full sort)
+      - percentile via partition index (nearest-rank)
+      - reuse scratch buffers between calls (pass via _work dict)
+    ts: (N, th, tw, C) float32
+    """
+    N = ts.shape[0]
+    assert N >= 2, "need at least two frames"
+
+    # allocate / reuse scratch buffers
+    tmp  = _work.get("tmp");   # for med
+    tmp2 = _work.get("tmp2");  # for mad & hi
+    tmp3 = _work.get("tmp3");  # for percentile
+    if (tmp is None) or (tmp.shape != ts.shape):
+        tmp  = np.empty_like(ts)
+        tmp2 = np.empty_like(ts)
+        tmp3 = np.empty_like(ts)
+        _work["tmp"], _work["tmp2"], _work["tmp3"] = tmp, tmp2, tmp3
+
+    # ---- median along axis 0 (copy -> partition -> take middle slice)
+    np.copyto(tmp, ts)
+    np.partition(tmp, N // 2, axis=0)
+    med = tmp[N // 2]  # shape: (th, tw, C)
+
+    # ---- MAD: median(|ts - med|)
+    np.subtract(ts, med, out=tmp2)
+    np.abs(tmp2, out=tmp2)
+    np.copyto(tmp, tmp2)
+    np.partition(tmp, N // 2, axis=0)
+    mad = tmp[N // 2] + 1e-6
+
+    # ---- high-side clip threshold: hi = med + k * 1.4826 * MAD
+    np.multiply(mad, (k * 1.4826), out=tmp)   # tmp = k*1.4826*MAD
+    np.add(med, tmp, out=tmp)                 # tmp = hi
+
+    # ---- clip high side into tmp2 (reuse): clipped = min(ts, hi)
+    np.minimum(ts, tmp, out=tmp2)
+
+    # ---- percentile via nearest-rank partition
+    # index of p-th percentile along axis=0
+    p = float(p)
+    idx = int(np.clip(round((p / 100.0) * (N - 1)), 0, N - 1))
+    np.copyto(tmp3, tmp2)
+    np.partition(tmp3, idx, axis=0)
+    return tmp3[idx]
+
+
 
 class StackingSuiteDialog(QDialog):
     requestRelaunch = pyqtSignal(str, str)  # old_dir, new_dir
@@ -1257,6 +1651,12 @@ class StackingSuiteDialog(QDialog):
         self.status_signal.connect(self._update_status_gui)  # queued to GUI
         self._cfa_for_this_run = None  # None = follow checkbox; True/False = override for this run
  
+        self.reference_frame = None     # make it explicit from the start
+        self._comet_seed = None         # {'path': <original file>, 'xy': (x,y)}
+        self._orig2norm = {}            # map original path -> normalized *_n.fit
+        self._comet_ref_xy = None       # comet coordinate in reference frame (filled post-align)
+
+
         # --- singleton status console (no parent, recreate if gone) ---
         app = QApplication.instance()
         if not hasattr(app, "_sasd_log_bus"):
@@ -1957,7 +2357,7 @@ class StackingSuiteDialog(QDialog):
         _toggle_grad_enabled(self.chk_poly2.isChecked())
         _toggle_gain_row()
 
-        right_col.addWidget(gb_normgrad)
+        left_col.addWidget(gb_normgrad)
 
         gb_drizzle = QGroupBox("Drizzle")
         fl_dz = QFormLayout(gb_drizzle)
@@ -1993,6 +2393,37 @@ class StackingSuiteDialog(QDialog):
         self.drizzle_kernel_combo.currentIndexChanged.connect(lambda _ : _toggle_gauss_sigma())
 
         right_col.addWidget(gb_drizzle)
+
+        # --- Comet Star Removal (Optional) ---
+        gb_csr = QGroupBox("Comet Star Removal (Optional)")
+        fl_csr = QFormLayout(gb_csr)
+
+        self.csr_enable = QCheckBox("Remove stars on comet-aligned frames")
+        self.csr_enable.setChecked(self.settings.value("stacking/comet_starrem/enabled", False, type=bool))
+        fl_csr.addRow(self.csr_enable)
+
+        self.csr_tool = QComboBox()
+        self.csr_tool.addItems(["StarNet", "CosmicClarityDarkStar"])
+        curr_tool = self.settings.value("stacking/comet_starrem/tool", "StarNet", type=str)
+        self.csr_tool.setCurrentText(curr_tool if curr_tool in ("StarNet","CosmicClarityDarkStar") else "StarNet")
+        fl_csr.addRow("Tool:", self.csr_tool)
+
+        self.csr_core_r = QDoubleSpinBox(); self.csr_core_r.setRange(2.0, 200.0); self.csr_core_r.setDecimals(1)
+        self.csr_core_r.setValue(self.settings.value("stacking/comet_starrem/core_r", 22.0, type=float))
+        fl_csr.addRow("Protect core radius (px):", self.csr_core_r)
+
+        self.csr_core_soft = QDoubleSpinBox(); self.csr_core_soft.setRange(0.0, 100.0); self.csr_core_soft.setDecimals(1)
+        self.csr_core_soft.setValue(self.settings.value("stacking/comet_starrem/core_soft", 6.0, type=float))
+        fl_csr.addRow("Core mask feather (px):", self.csr_core_soft)
+
+        def _toggle_csr(on: bool):
+            for w in (self.csr_tool, self.csr_core_r, self.csr_core_soft):
+                w.setEnabled(on)
+        _toggle_csr(self.csr_enable.isChecked())
+        self.csr_enable.toggled.connect(_toggle_csr)
+
+        right_col.addWidget(gb_csr)
+
 
         # --- Rejection ---
         gb_rej = QGroupBox("Rejection")
@@ -2164,6 +2595,36 @@ class StackingSuiteDialog(QDialog):
 
         right_col.addWidget(gb_cosm)
 
+        # --- Comet (tuning only; not an algorithm picker) ---
+        gb_comet = QGroupBox("Comet (High-Clip Percentile tuning)")
+        fl_comet = QFormLayout(gb_comet)
+
+        # load saved values (with defaults)
+        def _getf(key, default):
+            return self.settings.value(key, default, type=float)
+
+        self.comet_hclip_k = QDoubleSpinBox()
+        self.comet_hclip_k.setRange(0.1, 10.0)
+        self.comet_hclip_k.setDecimals(2)
+        self.comet_hclip_k.setSingleStep(0.05)
+        self.comet_hclip_k.setValue(_getf("stacking/comet_hclip_k", 1.30))
+
+        self.comet_hclip_p = QDoubleSpinBox()
+        self.comet_hclip_p.setRange(1.0, 99.0)
+        self.comet_hclip_p.setDecimals(1)
+        self.comet_hclip_p.setSingleStep(1.0)
+        self.comet_hclip_p.setValue(_getf("stacking/comet_hclip_p", 25.0))
+
+        row_hclip = QWidget()
+        row_hclip_h = QHBoxLayout(row_hclip); row_hclip_h.setContentsMargins(0,0,0,0)
+        row_hclip_h.addWidget(QLabel("High-clip k / Percentile p:"))
+        row_hclip_h.addWidget(self.comet_hclip_k)
+        row_hclip_h.addWidget(QLabel(" / "))
+        row_hclip_h.addWidget(self.comet_hclip_p)
+
+        fl_comet.addRow(row_hclip)
+        right_col.addWidget(gb_comet)
+
         # --- Buttons ---
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         btns.accepted.connect(lambda: self.save_stacking_settings(dialog))
@@ -2247,6 +2708,10 @@ class StackingSuiteDialog(QDialog):
         self.settings.setValue("stacking/cosmetic/star_max_ratio", float(self.cosm_star_max_ratio.value()))
         self.settings.setValue("stacking/cosmetic/sat_quantile",   float(self.cosm_sat_quantile.value()))
 
+        self.settings.setValue("stacking/comet_starrem/enabled", self.csr_enable.isChecked())
+        self.settings.setValue("stacking/comet_starrem/tool", self.csr_tool.currentText())
+        self.settings.setValue("stacking/comet_starrem/core_r", float(self.csr_core_r.value()))
+        self.settings.setValue("stacking/comet_starrem/core_soft", float(self.csr_core_soft.value()))
 
         passes = 1 if self.align_passes_combo.currentIndex() == 0 else 3
         self.settings.setValue("stacking/refinement_passes", passes)
@@ -2259,7 +2724,8 @@ class StackingSuiteDialog(QDialog):
         self.settings.setValue("stacking/drizzle_kernel", kname)
 
         self.settings.setValue("stacking/drizzle_gauss_sigma", float(self.gauss_sigma_spin.value()))
-
+        self.settings.setValue("stacking/comet_hclip_k", float(self.comet_hclip_k.value()))
+        self.settings.setValue("stacking/comet_hclip_p", float(self.comet_hclip_p.value()))
         # --- precision (internal dtype) ---
         chosen = self.precision_combo.currentText()  # "32-bit float" or "64-bit float"
         new_dtype_str = "float64" if "64" in chosen else "float32"
@@ -2775,26 +3241,65 @@ class StackingSuiteDialog(QDialog):
         correction_layout = QHBoxLayout()
 
         self.cosmetic_checkbox = QCheckBox("Enable Cosmetic Correction")
+        # default = True, but keep it sticky via QSettings
+        self.cosmetic_checkbox.setChecked(
+            self.settings.value("stacking/cosmetic_enabled", True, type=bool)
+        )
+        self.cosmetic_checkbox.toggled.connect(
+            lambda v: self.settings.setValue("stacking/cosmetic_enabled", bool(v))
+        )
+
         self.pedestal_checkbox = QCheckBox("Apply Pedestal")
+        self.pedestal_checkbox.setChecked(
+            self.settings.value("stacking/pedestal_enabled", False, type=bool)
+        )
+        self.pedestal_checkbox.toggled.connect(
+            lambda v: self.settings.setValue("stacking/pedestal_enabled", bool(v))
+        )
+
         self.bias_checkbox = QCheckBox("Apply Bias Subtraction (For CCD Users)")
+        self.bias_checkbox.setChecked(
+            self.settings.value("stacking/bias_enabled", False, type=bool)
+        )
+        self.bias_checkbox.toggled.connect(
+            lambda v: self.settings.setValue("stacking/bias_enabled", bool(v))
+        )
+
+        correction_layout.addWidget(self.cosmetic_checkbox)
+        correction_layout.addWidget(self.pedestal_checkbox)
+        correction_layout.addWidget(self.bias_checkbox)
 
         # Pedestal Value (0-1000, converted to 0-1)
         pedestal_layout = QHBoxLayout()
+        self.pedestal_label = QLabel("Pedestal (0-1000):")
         self.pedestal_spinbox = QSpinBox()
         self.pedestal_spinbox.setRange(0, 1000)
-        self.pedestal_spinbox.setValue(50)  # Default pedestal
-        pedestal_layout.addWidget(QLabel("Pedestal (0-1000):"))
-        pedestal_layout.addWidget(self.pedestal_spinbox)
-        layout.addLayout(pedestal_layout)        
+        self.pedestal_spinbox.setValue(self.settings.value("stacking/pedestal_value", 50, type=int))
+        self.pedestal_spinbox.valueChanged.connect(
+            lambda v: self.settings.setValue("stacking/pedestal_value", int(v))
+        )
 
-        # Tooltip for Bias Checkbox
+        pedestal_layout.addWidget(self.pedestal_label)
+        pedestal_layout.addWidget(self.pedestal_spinbox)
+        pedestal_layout.addStretch(1)
+        layout.addLayout(pedestal_layout)
+
+        # 👇 tie enabled state to the checkbox (initial + live updates)
+        def _sync_pedestal_enabled(checked: bool):
+            self.pedestal_label.setEnabled(checked)
+            self.pedestal_spinbox.setEnabled(checked)
+
+        _sync_pedestal_enabled(self.pedestal_checkbox.isChecked())
+        self.pedestal_checkbox.toggled.connect(_sync_pedestal_enabled)
+
+        # Tooltips (unchanged)
         self.bias_checkbox.setToolTip(
             "CMOS users: Bias Subtraction is not needed.\n"
             "Modern CMOS cameras use Correlated Double Sampling (CDS),\n"
             "meaning bias is already subtracted at the sensor level."
         )
 
-        # Connect checkboxes to update function
+        # Connect to your existing correction updater
         self.cosmetic_checkbox.stateChanged.connect(self.update_light_corrections)
         self.pedestal_checkbox.stateChanged.connect(self.update_light_corrections)
         self.bias_checkbox.stateChanged.connect(self.update_light_corrections)
@@ -3482,10 +3987,22 @@ class StackingSuiteDialog(QDialog):
         self.select_ref_frame_btn = QPushButton("Select Reference Frame")
         self.select_ref_frame_btn.clicked.connect(self.select_reference_frame)
 
+        # NEW: Auto-accept toggle
+        self.auto_accept_ref_cb = QCheckBox("Auto-accept measured reference")
+        self.auto_accept_ref_cb.setToolTip(
+            "When checked, the best measured frame is accepted automatically and the review dialog is skipped."
+        )
+        # restore from settings
+        self.auto_accept_ref_cb.setChecked(self.settings.value("stacking/auto_accept_ref", False, type=bool))
+        self.auto_accept_ref_cb.toggled.connect(
+            lambda v: self.settings.setValue("stacking/auto_accept_ref", bool(v))
+        )
+
         ref_layout = QHBoxLayout()
         ref_layout.addWidget(self.ref_frame_label)
-        ref_layout.addWidget(self.ref_frame_path)
+        ref_layout.addWidget(self.ref_frame_path, 1)
         ref_layout.addWidget(self.select_ref_frame_btn)
+        ref_layout.addWidget(self.auto_accept_ref_cb)  # ← add to the row
         layout.addLayout(ref_layout)
 
         crop_row = QHBoxLayout()
@@ -3502,6 +4019,35 @@ class StackingSuiteDialog(QDialog):
         crop_row.addWidget(self.autocrop_pct)
         crop_row.addStretch(1)
         layout.addLayout(crop_row)
+
+        # In create_image_registration_tab(), after the crop_row:
+        comet_row = QHBoxLayout()
+
+        self.comet_cb = QCheckBox("🌠🌠Create comet stack (comet-aligned)🌠🌠")
+        self.comet_cb.setChecked(self.settings.value("stacking/comet/enabled", False, type=bool))
+        comet_row.addWidget(self.comet_cb)
+
+        self.comet_pick_btn = QPushButton("Pick comet center…")
+        self.comet_pick_btn.setEnabled(self.comet_cb.isChecked())
+        self.comet_pick_btn.clicked.connect(self._pick_comet_center)
+        self.comet_cb.toggled.connect(self.comet_pick_btn.setEnabled)
+        comet_row.addWidget(self.comet_pick_btn)
+
+        self.comet_blend_cb = QCheckBox("Also output Stars+Comet blend")
+        self.comet_blend_cb.setChecked(self.settings.value("stacking/comet/blend", True, type=bool))
+        comet_row.addWidget(self.comet_blend_cb)
+
+
+        comet_row.addWidget(QLabel("Mix:"))
+        self.comet_mix = QDoubleSpinBox()
+        self.comet_mix.setRange(0.0, 1.0); self.comet_mix.setSingleStep(0.05)
+        self.comet_mix.setValue(self.settings.value("stacking/comet/mix", 1.0, type=float))
+        comet_row.addWidget(self.comet_mix)
+
+
+        comet_row.addStretch(1)
+        layout.addLayout(comet_row)
+
 
         # ★★ Star-Trail Mode ★★
         trail_layout = QHBoxLayout()
@@ -3534,6 +4080,8 @@ class StackingSuiteDialog(QDialog):
         """)
         layout.addWidget(self.register_images_btn)
 
+        self._registration_busy = False
+
         self.integrate_registered_btn = QPushButton("Integrate Previously Registered Images")
         self.integrate_registered_btn.clicked.connect(self.integrate_registered_images)
         self.integrate_registered_btn.setStyleSheet("""
@@ -3563,7 +4111,71 @@ class StackingSuiteDialog(QDialog):
         self.drizzle_scale_combo.setCurrentText(self.settings.value("stacking/drizzle_scale", "2x", type=str))
         self.drizzle_drop_shrink_spin.setValue(self.settings.value("stacking/drizzle_drop", 0.65, type=float))
 
+        self.settings.setValue("stacking/comet/enabled", self.comet_cb.isChecked())
+        self.settings.setValue("stacking/comet/blend", self.comet_blend_cb.isChecked())
+
+        self.settings.setValue("stacking/comet/mix", self.comet_mix.value())
+
+
+        self.auto_accept_ref_cb.toggled.connect(self.select_ref_frame_btn.setDisabled)
+        self.select_ref_frame_btn.setDisabled(self.auto_accept_ref_cb.isChecked())
+
+
         return tab
+
+    def _pick_comet_center(self):
+        """
+        Let the user click a point on ANY light frame. We store (file_path, x, y)
+        and defer mapping into the reference frame until after alignment.
+        """
+        # choose a source file
+        src_path = None
+
+        # 1) try current selection in reg_tree
+        it = self._first_selected_leaf(self.reg_tree) if hasattr(self, "_first_selected_leaf") else None
+        if it and it.parent() is not None:
+            group = it.parent().text(0)
+            fname = it.text(0)
+            # reconstruct full path from our dicts
+            lst = self.light_files.get(group) or []
+            for p in lst:
+                if os.path.basename(p) == fname or os.path.splitext(os.path.basename(p))[0] in fname:
+                    src_path = p; break
+
+        # 2) else, fall back to “first light”, or prompt
+        if not src_path:
+            all_files = [f for lst in self.light_files.values() for f in lst]
+            if all_files:
+                src_path = all_files[0]
+            else:
+                fp, _ = QFileDialog.getOpenFileName(
+                    self, "Pick a frame to mark the comet center", self.stacking_directory or "",
+                    "Images (*.fit *.fits *.tif *.tiff *.png *.jpg *.jpeg)"
+                )
+                if not fp:
+                    QMessageBox.information(self, "Comet Center", "No file chosen.")
+                    return
+                src_path = fp
+
+        # load and show a simple click-to-pick dialog
+        try:
+            img, hdr, _, _ = load_image(src_path)
+            if img is None:
+                raise RuntimeError("Failed to load image.")
+        except Exception as e:
+            QMessageBox.critical(self, "Comet Center", f"Could not load:\n{src_path}\n\n{e}")
+            return
+
+        dlg = _SimplePickDialog(img, parent=self)  # small helper below
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        x, y = dlg.point()
+
+        # store the seed in ORIGINAL file space (or the path we used)
+        self._comet_seed = {"path": os.path.normpath(src_path), "xy": (float(x), float(y))}
+        self._comet_ref_xy = None  # will be resolved post-align
+        self.update_status(f"🌠 Comet seed set on {os.path.basename(src_path)} at ({x:.1f}, {y:.1f}).")
+
 
     def _on_cfa_drizzle_toggled(self, checked: bool):
         self.settings.setValue("stacking/cfa_drizzle", bool(checked))
@@ -6326,461 +6938,532 @@ class StackingSuiteDialog(QDialog):
             self._cfa_for_this_run = True
             self.update_status("ℹ️ CFA Drizzle kept despite low frame count (you chose No).")
 
+    def _ensure_comet_seed_now(self) -> bool:
+        """If no comet seed exists, open the picker. Return True IFF we have a seed after."""
+        if getattr(self, "_comet_seed", None):
+            return True
+        # Open the same picker you already have
+        self._pick_comet_center()
+        return bool(getattr(self, "_comet_seed", None))
+
+    # small helper to toggle UI while registration is running
+    def _set_registration_busy(self, busy: bool):
+        self._registration_busy = bool(busy)
+        self.register_images_btn.setEnabled(not busy)
+        self.integrate_registered_btn.setEnabled(not busy)
+        # optional visual hint
+        if busy:
+            self.register_images_btn.setText("⏳ Registering…")
+            self.register_images_btn.setToolTip("Registration in progress…")
+        else:
+            self.register_images_btn.setText("🔥🚀Register and Integrate Images🔥🚀")
+            self.register_images_btn.setToolTip("")
+
+        # prevent accidental double-queue from keyboard/space
+        self.register_images_btn.blockSignals(busy)
 
     def register_images(self):
-        """Measure → choose reference → DEBAYER ref → DEBAYER+normalize all → align."""
-        if self.star_trail_mode:
-            self.update_status("🌠 Star-Trail Mode enabled: skipping registration & using max-value stack")
-            QApplication.processEvents()
-            return self._make_star_trail()
 
-        self.update_status("🔄 Image Registration Started...")
-        self.extract_light_files_from_tree(debug=True)
-
-        if not self.light_files:
-            self.update_status("⚠️ No light files to register!")
+        if getattr(self, "_registration_busy", False):
+            self.update_status("⏸ Registration already running; ignoring extra click.")
             return
 
-        # Which groups are selected? (used for optional dual-band split)
-        selected_groups = set()
-        for it in self.reg_tree.selectedItems():
-            top = it if it.parent() is None else it.parent()
-            selected_groups.add(top.text(0))
+        self._set_registration_busy(True)
 
-        if self.split_dualband_cb.isChecked():
-            self.update_status("🌈 Splitting dual-band OSC frames into Ha / SII / OIII...")
-            self._split_dual_band_osc(selected_groups=selected_groups)
-            self._refresh_reg_tree_from_light_files()
+        try:
+            """Measure → choose reference → DEBAYER ref → DEBAYER+normalize all → align."""
 
-        self._maybe_warn_cfa_low_frames()
+            if self.star_trail_mode:
+                self.update_status("🌠 Star-Trail Mode enabled: skipping registration & using max-value stack")
+                QApplication.processEvents()
+                return self._make_star_trail()
 
-        # Flatten to get all files
-        all_files = [f for lst in self.light_files.values() for f in lst]
-        self.update_status(f"📊 Found {len(all_files)} total frames. Now measuring in parallel batches...")
+            self.update_status("🔄 Image Registration Started...")
+            self.extract_light_files_from_tree(debug=True)
 
-        # ─────────────────────────────────────────────────────────────────────
-        # Helpers
-        # ─────────────────────────────────────────────────────────────────────
-        def mono_preview_for_stats(img: np.ndarray, hdr) -> np.ndarray:
-            """
-            Returns a 2D float32 preview for measurement:
-            • RGB → luma → 2×2 superpixel average
-            • CFA (2D with BAYERPAT) → 2×2 superpixel average
-            • Mono → 2×2 superpixel average
-            Always returns float32 and trims odd edges to keep even dims.
-            """
-            if img is None:
-                return None
+            # Determine comet mode from checkbox (safe if widget missing)
+            comet_mode = bool(getattr(self, "comet_cb", None) and self.comet_cb.isChecked())
 
-            def _superpixel2x2(x: np.ndarray) -> np.ndarray:
-                h, w = x.shape[:2]
-                h2, w2 = h - (h % 2), w - (w % 2)
-                if h2 <= 0 or w2 <= 0:
-                    return x.astype(np.float32, copy=False)
-                x = x[:h2, :w2].astype(np.float32, copy=False)
-                if x.ndim == 2:
-                    # 2D mono/CFA
-                    return (x[0:h2:2, 0:w2:2] + x[0:h2:2, 1:w2:2] +
-                            x[1:h2:2, 0:w2:2] + x[1:h2:2, 1:w2:2]) * 0.25
-                else:
-                    # 3D: bin on luma, not per-channel
-                    r = x[..., 0]; g = x[..., 1]; b = x[..., 2]
-                    luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
-                    return (luma[0:h2:2, 0:w2:2] + luma[0:h2:2, 1:w2:2] +
-                            luma[1:h2:2, 0:w2:2] + luma[1:h2:2, 1:w2:2]) * 0.25
+            if comet_mode:
+                # Force a seed BEFORE any loops or registration compute
+                self.update_status("🌠 Comet mode: please click the comet center to continue…")
+                QApplication.processEvents()
 
-            # RGB
-            if img.ndim == 3 and img.shape[-1] == 3:
-                return _superpixel2x2(img)
-
-            # CFA hinted by header (keep simple: any BAYERPAT means mosaic)
-            if hdr and hdr.get('BAYERPAT') and img.ndim == 2:
-                return _superpixel2x2(img)
-
-            # Mono (or already debayered to 2D)
-            if img.ndim == 2:
-                return _superpixel2x2(img)
-
-            # Fallback
-            return img.astype(np.float32, copy=False)
-
-        def chunk_list(lst, size):
-            for i in range(0, len(lst), size):
-                yield lst[i:i+size]
-
-        # ─────────────────────────────────────────────────────────────────────
-        # PHASE 1: measure (NO demosaic here)
-        # ─────────────────────────────────────────────────────────────────────
-        self.frame_weights = {}
-        mean_values = {}
-        star_counts = {}
-        measured_frames = []
-
-        max_workers = os.cpu_count() or 4
-        chunk_size = max_workers
-        chunks = list(chunk_list(all_files, chunk_size))
-        total_chunks = len(chunks)
-
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-
-        for idx, chunk in enumerate(chunks, 1):
-            self.update_status(f"📦 Measuring chunk {idx}/{total_chunks} ({len(chunk)} frames)")
-            chunk_images = []
-            chunk_valid_files = []
-
-            self.update_status(f"🌍 Loading {len(chunk)} images in parallel (up to {max_workers} threads)...")
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                future_to_file = {executor.submit(load_image, fp): fp for fp in chunk}
-                for fut in as_completed(future_to_file):
-                    fp = future_to_file[fut]
-                    try:
-                        img, hdr, _, _ = fut.result()
-                        if img is None:
-                            continue
-                        preview = mono_preview_for_stats(img, hdr)
-                        if preview is None:
-                            continue
-                        chunk_images.append(preview)
-                        chunk_valid_files.append(fp)
-                        self.update_status(f"  Loaded {fp}")
-                    except Exception as e:
-                        self.update_status(f"⚠️ Error loading {fp}: {e}")
-                    QApplication.processEvents()
-
-            if not chunk_images:
-                self.update_status("⚠️ No valid images in this chunk.")
-                continue
-
-            self.update_status("🌍 Measuring global means in parallel...")
-            means = parallel_measure_frames(chunk_images)  # expects list/stack of 2D previews
-
-            # star counts per preview
-            for i, fp in enumerate(chunk_valid_files):
-                mv = float(means[i])
-                mean_values[fp] = mv
-                c, ecc = compute_star_count(chunk_images[i])  # 2D preview
-                star_counts[fp] = {"count": c, "eccentricity": ecc}
-                measured_frames.append(fp)
-
-            del chunk_images
-
-        if not measured_frames:
-            self.update_status("⚠️ No frames could be measured!")
-            return
-
-        self.update_status(f"✅ All chunks complete! Measured {len(measured_frames)} frames total.")
-
-        # ─────────────────────────────────────────────────────────────────────
-        # Pick reference & compute weights
-        # ─────────────────────────────────────────────────────────────────────
-        self.update_status("⚖️ Computing frame weights...")
-        debug_log = "\n📊 **Frame Weights Debug Log:**\n"
-        for fp in measured_frames:
-            c = star_counts[fp]["count"]
-            ecc = star_counts[fp]["eccentricity"]
-            m = mean_values[fp]
-            c = max(c, 1)
-            m = max(m, 1e-6)
-            raw_w = (c * min(1.0, max(1.0 - ecc, 0.0))) / m
-            self.frame_weights[fp] = raw_w
-            debug_log += f"📂 {os.path.basename(fp)} → StarCount={c}, Ecc={ecc:.4f}, Mean={m:.4f}, Weight={raw_w:.4f}\n"
-        self.update_status(debug_log)
-        QApplication.processEvents()
-
-        max_w = max(self.frame_weights.values()) if self.frame_weights else 0.0
-        if max_w > 0:
-            for k in self.frame_weights:
-                self.frame_weights[k] /= max_w
-
-        # Choose reference (path)
-        if getattr(self, "reference_frame", None):
-            self.update_status(f"📌 Using user-specified reference: {self.reference_frame}")
-        else:
-            self.reference_frame = self.select_reference_frame_robust(self.frame_weights, sigma_threshold=2.0)
-            self.update_status(f"📌 Auto-selected robust reference frame: {self.reference_frame}")
-
-        # Stats for the chosen reference from the measurement pass
-        ref_stats_meas = star_counts.get(self.reference_frame, {"count": 0, "eccentricity": 0.0})
-        ref_count = ref_stats_meas["count"]
-        ref_ecc   = ref_stats_meas["eccentricity"]
-
-        # ─────────────────────────────────────────────────────────────────────
-        # Debayer the reference ONCE and compute ref_median from debayered ref
-        # ─────────────────────────────────────────────────────────────────────
-        ref_img_raw, ref_hdr, _, _ = load_image(self.reference_frame)
-        if ref_img_raw is None:
-            self.update_status(f"🚨 Could not load reference {self.reference_frame}. Aborting.")
-            return
-
-        # If CFA, debayer; if already color, keep; if mono but 3D with last=1, squeeze.
-        if ref_hdr and ref_hdr.get('BAYERPAT') and not ref_hdr.get('SPLITDB', False) and (ref_img_raw.ndim == 2 or (ref_img_raw.ndim == 3 and ref_img_raw.shape[-1] == 1)):
-            self.update_status("📦 Debayering reference frame…")
-            ref_img = self.debayer_image(ref_img_raw, self.reference_frame, ref_hdr)  # HxWx3
-        else:
-            ref_img = ref_img_raw
-            if ref_img.ndim == 3 and ref_img.shape[-1] == 1:
-                ref_img = np.squeeze(ref_img, axis=-1)
-
-        # Use luma median if color, else direct median
-        if ref_img.ndim == 3 and ref_img.shape[-1] == 3:
-            r, g, b = ref_img[..., 0], ref_img[..., 1], ref_img[..., 2]
-            ref_luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
-            ref_median = float(np.median(ref_luma))
-        else:
-            ref_median = float(np.median(ref_img))
-
-        self.update_status(f"📊 Reference (debayered) median: {ref_median:.4f}")
-
-        # Show review dialog; if user changes reference, redo debayer+median
-        stats_payload = {"star_count": ref_count, "eccentricity": ref_ecc, "mean": ref_median}
-        dialog = ReferenceFrameReviewDialog(self.reference_frame, stats_payload, parent=self)
-
-        # Make it non-modal but raised/focused
-        dialog.setModal(False)
-        dialog.setWindowModality(Qt.WindowModality.NonModal)
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
-
-        # Wait here without freezing UI (modeless pseudo-modal)
-        _loop = QEventLoop(self)
-        dialog.finished.connect(_loop.quit)   # finished(int) -> quit loop
-        _loop.exec()
-
-        # After the user closes the dialog, proceed exactly as before:
-        result = dialog.result()
-        user_choice = dialog.getUserChoice()   # "use", "select_other", or None
-
-        if result == QDialog.DialogCode.Accepted:
-            self.update_status("User accepted the reference frame.")
-        elif user_choice == "select_other":
-            new_ref = self.prompt_for_reference_frame()
-            if new_ref:
-                self.reference_frame = new_ref
-                self.update_status(f"User selected a new reference frame: {new_ref}")
-                # re-load and debayer/median the new reference
-                ref_img_raw, ref_hdr, _, _ = load_image(self.reference_frame)
-                if ref_img_raw is None:
-                    self.update_status(f"🚨 Could not load reference {self.reference_frame}. Aborting.")
+                ok = self._ensure_comet_seed_now()
+                if not ok:
+                    # Hard-stop: we don't want the trash fallback
+                    QMessageBox.information(
+                        self, "Comet Mode",
+                        "No comet center was selected. Registration has been cancelled so you can try again."
+                    )
+                    self.update_status("❌ Registration cancelled (no comet seed).")
                     return
-                if ref_hdr and ref_hdr.get('BAYERPAT') and not ref_hdr.get('SPLITDB', False) and (ref_img_raw.ndim == 2 or (ref_img_raw.ndim == 3 and ref_img_raw.shape[-1] == 1)):
-                    self.update_status("📦 Debayering reference frame…")
-                    ref_img = self.debayer_image(ref_img_raw, self.reference_frame, ref_hdr)
                 else:
-                    ref_img = ref_img_raw
-                    if ref_img.ndim == 3 and ref_img.shape[-1] == 1:
-                        ref_img = np.squeeze(ref_img, axis=-1)
-                if ref_img.ndim == 3 and ref_img.shape[-1] == 3:
-                    r, g, b = ref_img[..., 0], ref_img[..., 1], ref_img[..., 2]
-                    ref_luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
-                    ref_median = float(np.median(ref_luma))
-                else:
-                    ref_median = float(np.median(ref_img))
-                self.update_status(f"📊 (New) reference median: {ref_median:.4f}")
-            else:
-                self.update_status("No new reference selected; using previous reference.")
-        else:
-            self.update_status("Dialog closed without explicit choice; using selected reference.")
-
-        ref_L = _luma(ref_img)
-        ref_min = float(np.nanmin(ref_L))
-        ref_target_median = float(np.nanmedian(ref_L - ref_min))
-        self.update_status(f"📊 Reference min={ref_min:.6f}, normalized-median={ref_target_median:.6f}")
-
-        # ─────────────────────────────────────────────────────────────────────
-        # PHASE 1b: Meridian flips
-        # ─────────────────────────────────────────────────────────────────────
-        ref_pa = self._extract_pa_deg(ref_hdr)
-        self.update_status(f"🧭 Reference PA: {ref_pa:.2f}°" if ref_pa is not None else "🧭 Reference PA: (unknown)")
-
-        # ─────────────────────────────────────────────────────────────────────
-        # PHASE 2: normalize (DEBAYER everything once here)
-        # ─────────────────────────────────────────────────────────────────────
-        norm_dir = os.path.join(self.stacking_directory, "Normalized_Images")
-        os.makedirs(norm_dir, exist_ok=True)
-
-        normalized_files = []
-        chunks = list(chunk_list(measured_frames, chunk_size))
-        total_chunks = len(chunks)
-
-        for idx, chunk in enumerate(chunks, 1):
-            self.update_status(f"🌀 Normalizing chunk {idx}/{total_chunks} ({len(chunk)} frames)…")
-            QApplication.processEvents()
-
-            loaded_images = []
-            valid_paths = []
-
-            self.update_status(f"🌍 Loading {len(chunk)} images in parallel for normalization (up to {max_workers} threads)…")
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                future_to_file = {executor.submit(load_image, fp): fp for fp in chunk}
-                for fut in as_completed(future_to_file):
-                    fp = future_to_file[fut]
-                    try:
-                        img, hdr, _, _ = fut.result()
-                        if img is None:
-                            self.update_status(f"⚠️ No data for {fp}")
-                            continue
-
-                        # Debayer ONCE here if CFA
-                        if hdr and hdr.get('BAYERPAT') and not hdr.get('SPLITDB', False) and (img.ndim == 2 or (img.ndim == 3 and img.shape[-1] == 1)):
-                            img = self.debayer_image(img, fp, hdr)  # → HxWx3
-                        else:
-                            if img.ndim == 3 and img.shape[-1] == 1:
-                                img = np.squeeze(img, axis=-1)
-
-                        # --- Meridian flip assist: auto 180° rotate by header PA ---
-                        if self.auto_rot180 and ref_pa is not None:
-                            pa = self._extract_pa_deg(hdr)
-                            img, did = self._maybe_rot180(img, pa, ref_pa, self.auto_rot180_tol_deg)
-                            if did:
-                                self.update_status(f"↻ 180° rotate (PA Δ≈180°): {os.path.basename(fp)}")
-                                # Optional: mark header so we remember we pre-rotated
-                                QApplication.processEvents()
-                                try:
-                                    hdr['ROT180'] = (True, 'Rotated 180° pre-align by SAS')
-                                except Exception:
-                                    pass
-
-                        loaded_images.append(img)
-                        valid_paths.append(fp)
-                    except Exception as e:
-                        self.update_status(f"⚠️ Error loading {fp} for normalization: {e}")
+                    # Clear any stale mapped ref coords from a previous run; we’ll recompute post-align
+                    self._comet_ref_xy = None
+                    self.update_status("✅ Comet seed set. Proceeding with registration…")
                     QApplication.processEvents()
 
-            if not loaded_images:
-                continue
+                
 
-            stack = np.ascontiguousarray(np.array(loaded_images, dtype=np.float32))
-            normalized_stack = normalize_images(stack, target_median=ref_target_median)
+            if not self.light_files:
+                self.update_status("⚠️ No light files to register!")
+                return
 
-            # Optional ABE-style degree-2 background cleanup
-            if self.settings.value("stacking/grad_poly2/enabled", False, type=bool):
-                mode         = "divide" if self.settings.value("stacking/grad_poly2/mode", "subtract") == "divide" else "subtract"
-                samples      = int(self.settings.value("stacking/grad_poly2/samples", 120, type=int))
-                downsample   = int(self.settings.value("stacking/grad_poly2/downsample", 6, type=int))
-                patch_size   = int(self.settings.value("stacking/grad_poly2/patch_size", 15, type=int))
-                min_strength = float(self.settings.value("stacking/grad_poly2/min_strength", 0.01, type=float))
-                gain_lo      = float(self.settings.value("stacking/grad_poly2/gain_lo", 0.20, type=float))
-                gain_hi      = float(self.settings.value("stacking/grad_poly2/gain_hi", 5.0, type=float))
+            # Which groups are selected? (used for optional dual-band split)
+            selected_groups = set()
+            for it in self.reg_tree.selectedItems():
+                top = it if it.parent() is None else it.parent()
+                selected_groups.add(top.text(0))
 
-                # Log the plan
-                self.update_status(
-                    f"Gradient removal (ABE Poly²): mode={mode}, samples={samples}, "
-                    f"downsample={downsample}, patch={patch_size}, min_strength={min_strength*100:.2f}%, "
-                    f"gain_clip=[{gain_lo},{gain_hi}]"
-                )
-                QApplication.processEvents()
+            if self.split_dualband_cb.isChecked():
+                self.update_status("🌈 Splitting dual-band OSC frames into Ha / SII / OIII...")
+                self._split_dual_band_osc(selected_groups=selected_groups)
+                self._refresh_reg_tree_from_light_files()
 
-                normalized_stack = remove_gradient_stack_abe(
-                    normalized_stack,
-                    mode=mode,
-                    num_samples=samples,
-                    downsample=downsample,
-                    patch_size=patch_size,
-                    min_strength=min_strength,
-                    gain_clip=(gain_lo, gain_hi),
-                    log_fn=(self._ui_log if hasattr(self, "_ui_log") else self.update_status),
-                )
-                QApplication.processEvents()
+            self._maybe_warn_cfa_low_frames()
 
+            # Flatten to get all files
+            all_files = [f for lst in self.light_files.values() for f in lst]
+            self.update_status(f"📊 Found {len(all_files)} total frames. Now measuring in parallel batches...")
 
-            # Save each with "_n.fit"
-            for i, orig_file in enumerate(valid_paths):
-                base = os.path.basename(orig_file)
-                # normalize suffix handling for .fit/.fits
-                if base.endswith("_n.fit"):
-                    base = base.replace("_n.fit", ".fit")
-                if base.lower().endswith(".fits"):
-                    out_name = base[:-5] + "_n.fit"
-                elif base.lower().endswith(".fit"):
-                    out_name = base[:-4] + "_n.fit"
-                else:
-                    out_name = base + "_n.fit"
+            # ─────────────────────────────────────────────────────────────────────
+            # Helpers
+            # ─────────────────────────────────────────────────────────────────────
+            def mono_preview_for_stats(img: np.ndarray, hdr) -> np.ndarray:
+                """
+                Returns a 2D float32 preview for measurement:
+                • RGB → luma → 2×2 superpixel average
+                • CFA (2D with BAYERPAT) → 2×2 superpixel average
+                • Mono → 2×2 superpixel average
+                Always returns float32 and trims odd edges to keep even dims.
+                """
+                if img is None:
+                    return None
 
-                out_path = os.path.join(norm_dir, out_name)
-                frame_data = normalized_stack[i]
-
-                try:
-                    orig_header = fits.getheader(orig_file, ext=0)
-                except Exception:
-                    orig_header = fits.Header()
-
-                # Mark representation to avoid re-debayering later
-                if isinstance(frame_data, np.ndarray) and frame_data.ndim == 3 and frame_data.shape[-1] == 3:
-                    orig_header["DEBAYERED"] = (True, "Color debayered normalized")
-                else:
-                    orig_header["DEBAYERED"] = (False, "Mono normalized")
-
-                hdu = fits.PrimaryHDU(data=frame_data.astype(np.float32), header=orig_header)
-                hdu.writeto(out_path, overwrite=True)
-                normalized_files.append(out_path)
-
-            del loaded_images, stack, normalized_stack
-
-        # Update self.light_files to *_n.fit
-        for group, file_list in self.light_files.items():
-            new_list = []
-            for old_path in file_list:
-                base = os.path.basename(old_path)
-                if base.endswith("_n.fit"):
-                    new_list.append(os.path.join(norm_dir, base))
-                else:
-                    if base.lower().endswith(".fits"):
-                        n_name = base[:-5] + "_n.fit"
-                    elif base.lower().endswith(".fit"):
-                        n_name = base[:-4] + "_n.fit"
+                def _superpixel2x2(x: np.ndarray) -> np.ndarray:
+                    h, w = x.shape[:2]
+                    h2, w2 = h - (h % 2), w - (w % 2)
+                    if h2 <= 0 or w2 <= 0:
+                        return x.astype(np.float32, copy=False)
+                    x = x[:h2, :w2].astype(np.float32, copy=False)
+                    if x.ndim == 2:
+                        # 2D mono/CFA
+                        return (x[0:h2:2, 0:w2:2] + x[0:h2:2, 1:w2:2] +
+                                x[1:h2:2, 0:w2:2] + x[1:h2:2, 1:w2:2]) * 0.25
                     else:
-                        n_name = base + "_n.fit"
-                    new_list.append(os.path.join(norm_dir, n_name))
-            self.light_files[group] = new_list
+                        # 3D: bin on luma, not per-channel
+                        r = x[..., 0]; g = x[..., 1]; b = x[..., 2]
+                        luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
+                        return (luma[0:h2:2, 0:w2:2] + luma[0:h2:2, 1:w2:2] +
+                                luma[1:h2:2, 0:w2:2] + luma[1:h2:2, 1:w2:2]) * 0.25
 
-        self.update_status("✅ Updated self.light_files to use debayered, normalized *_n.fit frames.")
+                # RGB
+                if img.ndim == 3 and img.shape[-1] == 3:
+                    return _superpixel2x2(img)
 
-        # Pick normalized reference path to align against
-        ref_base = os.path.basename(self.reference_frame)
-        if ref_base.endswith("_n.fit"):
-            norm_ref_path = os.path.join(norm_dir, ref_base)
-        else:
-            if ref_base.lower().endswith(".fits"):
-                norm_ref_base = ref_base[:-5] + "_n.fit"
-            elif ref_base.lower().endswith(".fit"):
-                norm_ref_base = ref_base[:-4] + "_n.fit"
+                # CFA hinted by header (keep simple: any BAYERPAT means mosaic)
+                if hdr and hdr.get('BAYERPAT') and img.ndim == 2:
+                    return _superpixel2x2(img)
+
+                # Mono (or already debayered to 2D)
+                if img.ndim == 2:
+                    return _superpixel2x2(img)
+
+                # Fallback
+                return img.astype(np.float32, copy=False)
+
+            def chunk_list(lst, size):
+                for i in range(0, len(lst), size):
+                    yield lst[i:i+size]
+
+            # ─────────────────────────────────────────────────────────────────────
+            # PHASE 1: measure (NO demosaic here)
+            # ─────────────────────────────────────────────────────────────────────
+            self.frame_weights = {}
+            mean_values = {}
+            star_counts = {}
+            measured_frames = []
+
+            max_workers = os.cpu_count() or 4
+            chunk_size = max_workers
+            chunks = list(chunk_list(all_files, chunk_size))
+            total_chunks = len(chunks)
+
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            for idx, chunk in enumerate(chunks, 1):
+                self.update_status(f"📦 Measuring chunk {idx}/{total_chunks} ({len(chunk)} frames)")
+                chunk_images = []
+                chunk_valid_files = []
+
+                self.update_status(f"🌍 Loading {len(chunk)} images in parallel (up to {max_workers} threads)...")
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    future_to_file = {executor.submit(load_image, fp): fp for fp in chunk}
+                    for fut in as_completed(future_to_file):
+                        fp = future_to_file[fut]
+                        try:
+                            img, hdr, _, _ = fut.result()
+                            if img is None:
+                                continue
+                            preview = mono_preview_for_stats(img, hdr)
+                            if preview is None:
+                                continue
+                            chunk_images.append(preview)
+                            chunk_valid_files.append(fp)
+                            self.update_status(f"  Loaded {fp}")
+                        except Exception as e:
+                            self.update_status(f"⚠️ Error loading {fp}: {e}")
+                        QApplication.processEvents()
+
+                if not chunk_images:
+                    self.update_status("⚠️ No valid images in this chunk.")
+                    continue
+
+                self.update_status("🌍 Measuring global means in parallel...")
+                means = parallel_measure_frames(chunk_images)  # expects list/stack of 2D previews
+
+                # star counts per preview
+                for i, fp in enumerate(chunk_valid_files):
+                    mv = float(means[i])
+                    mean_values[fp] = mv
+                    c, ecc = compute_star_count(chunk_images[i])  # 2D preview
+                    star_counts[fp] = {"count": c, "eccentricity": ecc}
+                    measured_frames.append(fp)
+
+                del chunk_images
+
+            if not measured_frames:
+                self.update_status("⚠️ No frames could be measured!")
+                return
+
+            self.update_status(f"✅ All chunks complete! Measured {len(measured_frames)} frames total.")
+
+            # ─────────────────────────────────────────────────────────────────────
+            # Pick reference & compute weights
+            # ─────────────────────────────────────────────────────────────────────
+            self.update_status("⚖️ Computing frame weights...")
+            debug_log = "\n📊 **Frame Weights Debug Log:**\n"
+            for fp in measured_frames:
+                c = star_counts[fp]["count"]
+                ecc = star_counts[fp]["eccentricity"]
+                m = mean_values[fp]
+                c = max(c, 1)
+                m = max(m, 1e-6)
+                raw_w = (c * min(1.0, max(1.0 - ecc, 0.0))) / m
+                self.frame_weights[fp] = raw_w
+                debug_log += f"📂 {os.path.basename(fp)} → StarCount={c}, Ecc={ecc:.4f}, Mean={m:.4f}, Weight={raw_w:.4f}\n"
+            self.update_status(debug_log)
+            QApplication.processEvents()
+
+            max_w = max(self.frame_weights.values()) if self.frame_weights else 0.0
+            if max_w > 0:
+                for k in self.frame_weights:
+                    self.frame_weights[k] /= max_w
+
+            # Choose reference (path)
+            if getattr(self, "reference_frame", None):
+                self.update_status(f"📌 Using user-specified reference: {self.reference_frame}")
             else:
-                norm_ref_base = ref_base + "_n.fit"
-            norm_ref_path = os.path.join(norm_dir, norm_ref_base)
+                self.reference_frame = self.select_reference_frame_robust(self.frame_weights, sigma_threshold=2.0)
+                self.update_status(f"📌 Auto-selected robust reference frame: {self.reference_frame}")
 
-        # ─────────────────────────────────────────────────────────────────────
-        # Start alignment on the normalized files
-        # ─────────────────────────────────────────────────────────────────────
-        align_dir = os.path.join(self.stacking_directory, "Aligned_Images")
-        os.makedirs(align_dir, exist_ok=True)
+            # Stats for the chosen reference from the measurement pass
+            ref_stats_meas = star_counts.get(self.reference_frame, {"count": 0, "eccentricity": 0.0})
+            ref_count = ref_stats_meas["count"]
+            ref_ecc   = ref_stats_meas["eccentricity"]
 
-        passes = self.settings.value("stacking/refinement_passes", 3, type=int)
-        shift_tol = self.settings.value("stacking/shift_tolerance", 0.2, type=float)
+            # ─────────────────────────────────────────────────────────────────────
+            # Debayer the reference ONCE and compute ref_median from debayered ref
+            # ─────────────────────────────────────────────────────────────────────
+            ref_img_raw, ref_hdr, _, _ = load_image(self.reference_frame)
+            if ref_img_raw is None:
+                self.update_status(f"🚨 Could not load reference {self.reference_frame}. Aborting.")
+                return
 
-        self.alignment_thread = StarRegistrationThread(
-            norm_ref_path,
-            normalized_files,
-            align_dir,
-            max_refinement_passes=passes,
-            shift_tolerance=shift_tol,
-            parent_window=self
-        )
-        self.alignment_thread.progress_update.connect(self.update_status)
-        self.alignment_thread.registration_complete.connect(self.on_registration_complete)
+            # If CFA, debayer; if already color, keep; if mono but 3D with last=1, squeeze.
+            if ref_hdr and ref_hdr.get('BAYERPAT') and not ref_hdr.get('SPLITDB', False) and (ref_img_raw.ndim == 2 or (ref_img_raw.ndim == 3 and ref_img_raw.shape[-1] == 1)):
+                self.update_status("📦 Debayering reference frame…")
+                ref_img = self.debayer_image(ref_img_raw, self.reference_frame, ref_hdr)  # HxWx3
+            else:
+                ref_img = ref_img_raw
+                if ref_img.ndim == 3 and ref_img.shape[-1] == 1:
+                    ref_img = np.squeeze(ref_img, axis=-1)
 
-        self.align_progress = QProgressDialog("Aligning stars…", None, 0, 0, self)
-        self.align_progress.setWindowModality(Qt.WindowModality.WindowModal)
-        self.align_progress.setMinimumDuration(0)
-        self.align_progress.setCancelButton(None)
-        self.align_progress.setWindowTitle("Stellar Alignment")
-        self.align_progress.setValue(0)
-        self.align_progress.show()
+            # Use luma median if color, else direct median
+            if ref_img.ndim == 3 and ref_img.shape[-1] == 3:
+                r, g, b = ref_img[..., 0], ref_img[..., 1], ref_img[..., 2]
+                ref_luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
+                ref_median = float(np.median(ref_luma))
+            else:
+                ref_median = float(np.median(ref_img))
 
-        self.alignment_thread.progress_step.connect(self._on_align_progress)
-        self.alignment_thread.registration_complete.connect(self._on_align_done)
-        self.alignment_thread.start()
+            self.update_status(f"📊 Reference (debayered) median: {ref_median:.4f}")
 
+            # Show review dialog; if user changes reference, redo debayer+median
+            stats_payload = {"star_count": ref_count, "eccentricity": ref_ecc, "mean": ref_median}
+
+            if self.auto_accept_ref_cb.isChecked():
+                # ✅ Auto-accept path: no dialog
+                self.update_status("✅ Auto-accept measured reference is enabled; using the measured best frame.")
+                # If you show the chosen path somewhere in the UI, update it:
+                try:
+                    self.ref_frame_path.setText(self.reference_frame or "No file selected")
+                except Exception:
+                    pass
+            else:
+                # Show review dialog (existing behavior)
+                dialog = ReferenceFrameReviewDialog(self.reference_frame, stats_payload, parent=self)
+
+                # Make it non-modal but raised/focused
+                dialog.setModal(False)
+                dialog.setWindowModality(Qt.WindowModality.NonModal)
+                dialog.show()
+                dialog.raise_()
+                dialog.activateWindow()
+
+                # Wait here without freezing UI (modeless pseudo-modal)
+                _loop = QEventLoop(self)
+                dialog.finished.connect(_loop.quit)   # finished(int) -> quit loop
+                _loop.exec()
+
+                # After the user closes the dialog, proceed exactly as before:
+                result = dialog.result()
+                user_choice = dialog.getUserChoice()   # "use", "select_other", or None
+
+                if result == QDialog.DialogCode.Accepted:
+                    self.update_status("User accepted the reference frame.")
+                elif user_choice == "select_other":
+                    new_ref = self.prompt_for_reference_frame()
+                    if new_ref:
+                        self.reference_frame = new_ref
+                        self.update_status(f"User selected a new reference frame: {new_ref}")
+                        # re-load and debayer/median the new reference (same logic as above)
+                        ref_img_raw, ref_hdr, _, _ = load_image(self.reference_frame)
+                        if ref_img_raw is None:
+                            self.update_status(f"🚨 Could not load reference {self.reference_frame}. Aborting.")
+                            return
+                        if ref_hdr and ref_hdr.get('BAYERPAT') and not ref_hdr.get('SPLITDB', False) and (ref_img_raw.ndim == 2 or (ref_img_raw.ndim == 3 and ref_img_raw.shape[-1] == 1)):
+                            self.update_status("📦 Debayering reference frame…")
+                            ref_img = self.debayer_image(ref_img_raw, self.reference_frame, ref_hdr)
+                        else:
+                            ref_img = ref_img_raw
+                            if ref_img.ndim == 3 and ref_img.shape[-1] == 1:
+                                ref_img = np.squeeze(ref_img, axis=-1)
+                        if ref_img.ndim == 3 and ref_img.shape[-1] == 3:
+                            r, g, b = ref_img[..., 0], ref_img[..., 1], ref_img[..., 2]
+                            ref_luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
+                            ref_median = float(np.median(ref_luma))
+                        else:
+                            ref_median = float(np.median(ref_img))
+                        self.update_status(f"📊 (New) reference median: {ref_median:.4f}")
+                    else:
+                        self.update_status("No new reference selected; using previous reference.")
+                else:
+                    self.update_status("Dialog closed without explicit choice; using selected reference.")
+
+            ref_L = _luma(ref_img)
+            ref_min = float(np.nanmin(ref_L))
+            ref_target_median = float(np.nanmedian(ref_L - ref_min))
+            self.update_status(f"📊 Reference min={ref_min:.6f}, normalized-median={ref_target_median:.6f}")
+
+            # ─────────────────────────────────────────────────────────────────────
+            # PHASE 1b: Meridian flips
+            # ─────────────────────────────────────────────────────────────────────
+            ref_pa = self._extract_pa_deg(ref_hdr)
+            self.update_status(f"🧭 Reference PA: {ref_pa:.2f}°" if ref_pa is not None else "🧭 Reference PA: (unknown)")
+
+            # ─────────────────────────────────────────────────────────────────────
+            # PHASE 2: normalize (DEBAYER everything once here)
+            # ─────────────────────────────────────────────────────────────────────
+            norm_dir = os.path.join(self.stacking_directory, "Normalized_Images")
+            os.makedirs(norm_dir, exist_ok=True)
+
+            normalized_files = []
+            chunks = list(chunk_list(measured_frames, chunk_size))
+            total_chunks = len(chunks)
+
+            for idx, chunk in enumerate(chunks, 1):
+                self.update_status(f"🌀 Normalizing chunk {idx}/{total_chunks} ({len(chunk)} frames)…")
+                QApplication.processEvents()
+
+                loaded_images = []
+                valid_paths = []
+
+                self.update_status(f"🌍 Loading {len(chunk)} images in parallel for normalization (up to {max_workers} threads)…")
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    future_to_file = {executor.submit(load_image, fp): fp for fp in chunk}
+                    for fut in as_completed(future_to_file):
+                        fp = future_to_file[fut]
+                        try:
+                            img, hdr, _, _ = fut.result()
+                            if img is None:
+                                self.update_status(f"⚠️ No data for {fp}")
+                                continue
+
+                            # Debayer ONCE here if CFA
+                            if hdr and hdr.get('BAYERPAT') and not hdr.get('SPLITDB', False) and (img.ndim == 2 or (img.ndim == 3 and img.shape[-1] == 1)):
+                                img = self.debayer_image(img, fp, hdr)  # → HxWx3
+                            else:
+                                if img.ndim == 3 and img.shape[-1] == 1:
+                                    img = np.squeeze(img, axis=-1)
+
+                            # --- Meridian flip assist: auto 180° rotate by header PA ---
+                            if self.auto_rot180 and ref_pa is not None:
+                                pa = self._extract_pa_deg(hdr)
+                                img, did = self._maybe_rot180(img, pa, ref_pa, self.auto_rot180_tol_deg)
+                                if did:
+                                    self.update_status(f"↻ 180° rotate (PA Δ≈180°): {os.path.basename(fp)}")
+                                    # Optional: mark header so we remember we pre-rotated
+                                    QApplication.processEvents()
+                                    try:
+                                        hdr['ROT180'] = (True, 'Rotated 180° pre-align by SAS')
+                                    except Exception:
+                                        pass
+
+                            loaded_images.append(img)
+                            valid_paths.append(fp)
+                        except Exception as e:
+                            self.update_status(f"⚠️ Error loading {fp} for normalization: {e}")
+                        QApplication.processEvents()
+
+                if not loaded_images:
+                    continue
+
+                stack = np.ascontiguousarray(np.array(loaded_images, dtype=np.float32))
+                normalized_stack = normalize_images(stack, target_median=ref_target_median)
+
+                # Optional ABE-style degree-2 background cleanup
+                if self.settings.value("stacking/grad_poly2/enabled", False, type=bool):
+                    mode         = "divide" if self.settings.value("stacking/grad_poly2/mode", "subtract") == "divide" else "subtract"
+                    samples      = int(self.settings.value("stacking/grad_poly2/samples", 120, type=int))
+                    downsample   = int(self.settings.value("stacking/grad_poly2/downsample", 6, type=int))
+                    patch_size   = int(self.settings.value("stacking/grad_poly2/patch_size", 15, type=int))
+                    min_strength = float(self.settings.value("stacking/grad_poly2/min_strength", 0.01, type=float))
+                    gain_lo      = float(self.settings.value("stacking/grad_poly2/gain_lo", 0.20, type=float))
+                    gain_hi      = float(self.settings.value("stacking/grad_poly2/gain_hi", 5.0, type=float))
+
+                    # Log the plan
+                    self.update_status(
+                        f"Gradient removal (ABE Poly²): mode={mode}, samples={samples}, "
+                        f"downsample={downsample}, patch={patch_size}, min_strength={min_strength*100:.2f}%, "
+                        f"gain_clip=[{gain_lo},{gain_hi}]"
+                    )
+                    QApplication.processEvents()
+
+                    normalized_stack = remove_gradient_stack_abe(
+                        normalized_stack,
+                        mode=mode,
+                        num_samples=samples,
+                        downsample=downsample,
+                        patch_size=patch_size,
+                        min_strength=min_strength,
+                        gain_clip=(gain_lo, gain_hi),
+                        log_fn=(self._ui_log if hasattr(self, "_ui_log") else self.update_status),
+                    )
+                    QApplication.processEvents()
+
+
+                # Save each with "_n.fit"
+                for i, orig_file in enumerate(valid_paths):
+                    base = os.path.basename(orig_file)
+                    # normalize suffix handling for .fit/.fits
+                    if base.endswith("_n.fit"):
+                        base = base.replace("_n.fit", ".fit")
+                    if base.lower().endswith(".fits"):
+                        out_name = base[:-5] + "_n.fit"
+                    elif base.lower().endswith(".fit"):
+                        out_name = base[:-4] + "_n.fit"
+                    else:
+                        out_name = base + "_n.fit"
+
+                    out_path = os.path.join(norm_dir, out_name)
+                    frame_data = normalized_stack[i]
+
+                    try:
+                        orig_header = fits.getheader(orig_file, ext=0)
+                    except Exception:
+                        orig_header = fits.Header()
+
+                    # Mark representation to avoid re-debayering later
+                    if isinstance(frame_data, np.ndarray) and frame_data.ndim == 3 and frame_data.shape[-1] == 3:
+                        orig_header["DEBAYERED"] = (True, "Color debayered normalized")
+                    else:
+                        orig_header["DEBAYERED"] = (False, "Mono normalized")
+                    self._orig2norm[os.path.normpath(orig_file)] = os.path.normpath(out_path)
+                    hdu = fits.PrimaryHDU(data=frame_data.astype(np.float32), header=orig_header)
+                    hdu.writeto(out_path, overwrite=True)
+                    normalized_files.append(out_path)
+
+                del loaded_images, stack, normalized_stack
+
+            # Update self.light_files to *_n.fit
+            for group, file_list in self.light_files.items():
+                new_list = []
+                for old_path in file_list:
+                    base = os.path.basename(old_path)
+                    if base.endswith("_n.fit"):
+                        new_list.append(os.path.join(norm_dir, base))
+                    else:
+                        if base.lower().endswith(".fits"):
+                            n_name = base[:-5] + "_n.fit"
+                        elif base.lower().endswith(".fit"):
+                            n_name = base[:-4] + "_n.fit"
+                        else:
+                            n_name = base + "_n.fit"
+                        new_list.append(os.path.join(norm_dir, n_name))
+                self.light_files[group] = new_list
+
+            self.update_status("✅ Updated self.light_files to use debayered, normalized *_n.fit frames.")
+
+            # Pick normalized reference path to align against
+            ref_base = os.path.basename(self.reference_frame)
+            if ref_base.endswith("_n.fit"):
+                norm_ref_path = os.path.join(norm_dir, ref_base)
+            else:
+                if ref_base.lower().endswith(".fits"):
+                    norm_ref_base = ref_base[:-5] + "_n.fit"
+                elif ref_base.lower().endswith(".fit"):
+                    norm_ref_base = ref_base[:-4] + "_n.fit"
+                else:
+                    norm_ref_base = ref_base + "_n.fit"
+                norm_ref_path = os.path.join(norm_dir, norm_ref_base)
+
+            # ─────────────────────────────────────────────────────────────────────
+            # Start alignment on the normalized files
+            # ─────────────────────────────────────────────────────────────────────
+            align_dir = os.path.join(self.stacking_directory, "Aligned_Images")
+            os.makedirs(align_dir, exist_ok=True)
+
+            passes = self.settings.value("stacking/refinement_passes", 3, type=int)
+            shift_tol = self.settings.value("stacking/shift_tolerance", 0.2, type=float)
+
+            self.alignment_thread = StarRegistrationThread(
+                norm_ref_path,
+                normalized_files,
+                align_dir,
+                max_refinement_passes=passes,
+                shift_tolerance=shift_tol,
+                parent_window=self
+            )
+            self.alignment_thread.progress_update.connect(self.update_status)
+            self.alignment_thread.registration_complete.connect(self.on_registration_complete)
+
+            self.align_progress = QProgressDialog("Aligning stars…", None, 0, 0, self)
+            self.align_progress.setWindowModality(Qt.WindowModality.WindowModal)
+            self.align_progress.setMinimumDuration(0)
+            self.align_progress.setCancelButton(None)
+            self.align_progress.setWindowTitle("Stellar Alignment")
+            self.align_progress.setValue(0)
+            self.align_progress.show()
+
+            self.alignment_thread.progress_step.connect(self._on_align_progress)
+            self.alignment_thread.registration_complete.connect(self._on_align_done)
+            self.alignment_thread.start()
+        except Exception as e:
+            # on unexpected error, re-enable the UI
+            self._set_registration_busy(False)
+            raise
         
     @pyqtSlot(int, int)
     def _on_align_progress(self, done, total):
@@ -7038,6 +7721,7 @@ class StackingSuiteDialog(QDialog):
         return float(np.count_nonzero(hist)) / float(hist.size)
 
     def on_registration_complete(self, success, msg):
+       
         self.update_status(msg)
         if not success:
             return
@@ -7094,7 +7778,29 @@ class StackingSuiteDialog(QDialog):
                 }        
         self.save_alignment_matrices_sasd(valid_matrices)
 
+        try:
+            if self._comet_seed and self.reference_frame and getattr(self, "valid_matrices", None):
+                seed_orig = os.path.normpath(self._comet_seed["path"])
+                seed_xy   = self._comet_seed["xy"]
 
+                # find the normalized counterpart of the original seed frame
+                seed_norm = self._orig2norm.get(seed_orig)
+                if not seed_norm:
+                    # if the seed was picked on an already-normalized path, try that as-is
+                    if seed_orig in self.valid_matrices:
+                        seed_norm = seed_orig
+
+                M = self.valid_matrices.get(os.path.normpath(seed_norm)) if seed_norm else None
+                if M is not None:
+                    x, y = seed_xy
+                    X = float(M[0,0]*x + M[0,1]*y + M[0,2])
+                    Y = float(M[1,0]*x + M[1,1]*y + M[1,2])
+                    self._comet_ref_xy = (X, Y)
+                    self.update_status(f"🌠 Comet anchor in reference frame: ({X:.1f}, {Y:.1f})")
+                else:
+                    self.update_status("ℹ️ Could not resolve comet seed to reference (no matrix for that frame).")
+        except Exception as e:
+            self.update_status(f"⚠️ Comet seed resolve failed: {e}")
 
         # ----------------------------
         # Build mapping from normalized -> aligned paths
@@ -7177,14 +7883,17 @@ class StackingSuiteDialog(QDialog):
         # ----------------------------
         self.post_thread = QThread(self)
         self.post_worker = AfterAlignWorker(
-            self,
+            self,                                   # parent QObject
             light_files=aligned_light_files,
             frame_weights=dict(self.frame_weights),
             transforms_dict=dict(self.valid_transforms),
             drizzle_dict=drizzle_dict,
             autocrop_enabled=autocrop_enabled,
             autocrop_pct=autocrop_pct,
+            ui_owner=self                           # 👈 PASS THE OWNER HERE
         )
+        self.post_worker.ui_owner = self
+        self.post_worker.need_comet_review.connect(self.on_need_comet_review) 
 
         self.post_worker.progress.connect(self._on_post_status)
         self.post_worker.finished.connect(self._on_post_pipeline_finished)
@@ -7199,6 +7908,8 @@ class StackingSuiteDialog(QDialog):
         self.post_progress.setMinimumDuration(0)
         self.post_progress.setWindowTitle("Post-Alignment")
         self.post_progress.show()
+
+        self._set_registration_busy(False)
 
 
     @pyqtSlot(bool, str)
@@ -7276,6 +7987,24 @@ class StackingSuiteDialog(QDialog):
                 rejections[raw_path] = coords
         return rejections
 
+
+    @pyqtSlot(list, dict, result=object)   # (files: list[str], initial_xy: dict[str, (x,y)]) -> dict|None
+    def show_comet_preview(self, files, initial_xy):
+        dlg = CS.CometCentroidPreview(files, initial_xy=initial_xy, parent=self)
+        if dlg.exec() == int(QDialog.DialogCode.Accepted):
+            return dlg.get_seeds()
+        return None
+
+    @pyqtSlot(list, dict, object)
+    def on_need_comet_review(self, files, initial_xy, responder):
+        # This runs on the GUI thread.
+        dlg = CS.CometCentroidPreview(files, initial_xy=initial_xy, parent=self)
+        if dlg.exec() == int(QDialog.DialogCode.Accepted):
+            result = dlg.get_seeds()
+        else:
+            result = None
+        responder.finished.emit(result)
+
     def stack_images_mixed_drizzle(
         self,
         grouped_files,           # { group_key: [aligned _n_r.fit paths] }
@@ -7287,8 +8016,9 @@ class StackingSuiteDialog(QDialog):
         autocrop_pct: float,
         status_cb=None
     ):
-        """Runs normal integration (to get rejection coords), saves masters,
-        and (optionally) runs drizzle. Designed to run in a worker thread.
+        """
+        Runs normal integration (to get rejection coords), saves masters,
+        optionally runs comet-mode stacks and drizzle. Designed to run in a worker thread.
 
         Returns:
             {
@@ -7297,6 +8027,11 @@ class StackingSuiteDialog(QDialog):
             }
         """
         log = status_cb or (lambda *_: None)
+        comet_mode = bool(getattr(self, "comet_cb", None) and self.comet_cb.isChecked())
+
+        # Comet-mode defaults (surface later if desired)
+        COMET_ALGO = "Comet High-Clip Percentile"          # or "Comet Lower-Trim (30%)"
+        STARS_ALGO = "Comet High-Clip Percentile"          # star-aligned stack: median best suppresses moving comet
 
         n_groups = len(grouped_files)
         n_frames = sum(len(v) for v in grouped_files.values())
@@ -7307,9 +8042,13 @@ class StackingSuiteDialog(QDialog):
         global_rect = None
         if autocrop_enabled:
             log("✂️ Auto Crop Enabled. Calculating bounding box…")
-            global_rect = self._compute_common_autocrop_rect(grouped_files, autocrop_pct, status_cb=log)
+            try:
+                global_rect = self._compute_common_autocrop_rect(grouped_files, autocrop_pct, status_cb=log)
+            except Exception as e:
+                global_rect = None
+                log(f"⚠️ Global crop failed: {e}")
             if global_rect is None:
-                log("✂️ Global crop disabled; falling back to per-group.")
+                log("✂️ Global crop disabled; will fall back to per-group.")
             else:
                 log("✂️ Auto Crop Bounding Box Calculated")
         QApplication.processEvents()
@@ -7323,8 +8062,12 @@ class StackingSuiteDialog(QDialog):
             log(f"🔹 [{gi}/{n_groups}] Integrating '{group_key}' with {len(file_list)} file(s)…")
             QApplication.processEvents()
 
+            # ---- STARS (reference-aligned) integration ----
+            # Force a comet-safe reducer for the star-aligned stack only when comet_mode is on.
             integrated_image, rejection_map, ref_header = self.normal_integration_with_rejection(
-                group_key, file_list, frame_weights, status_cb=log  # ensure inner loop emits!
+                group_key, file_list, frame_weights,
+                status_cb=log,
+                algo_override=(STARS_ALGO if comet_mode else None)   # << correct: stars use STARS_ALGO in comet mode
             )
             log(f"   ↳ Integration done in {perf_counter() - t_g:.1f}s.")
             QApplication.processEvents()
@@ -7334,7 +8077,7 @@ class StackingSuiteDialog(QDialog):
             if ref_header is None:
                 ref_header = fits.Header()
 
-            # --- Save the non-cropped master (MEF w/ rejection layers if present) ---
+            # --- Save the non-cropped STAR master (MEF w/ rejection layers if present) ---
             hdr_orig = ref_header.copy()
             hdr_orig["IMAGETYP"] = "MASTER STACK"
             hdr_orig["BITPIX"]   = -32
@@ -7355,11 +8098,11 @@ class StackingSuiteDialog(QDialog):
                 hdr_orig["NAXIS2"] = integrated_image.shape[0]
                 hdr_orig["NAXIS3"] = integrated_image.shape[2]
 
-            n_frames = len(file_list)
+            n_frames_group = len(file_list)
             H, W = integrated_image.shape[:2]
             display_group = self._label_with_dims(group_key, W, H)
-            base = f"MasterLight_{display_group}_{n_frames}stacked"
-            base = self._normalize_master_stem(base)   
+            base = f"MasterLight_{display_group}_{n_frames_group}stacked"
+            base = self._normalize_master_stem(base)
             out_path_orig = self._build_out(self.stacking_directory, base, "fit")
 
             # Try to attach rejection maps that were accumulated during integration
@@ -7399,20 +8142,42 @@ class StackingSuiteDialog(QDialog):
                 )
                 log(f"✅ Saved integrated image (original) for '{group_key}': {out_path_orig}")
 
-            # --- Optional: auto-cropped copy (uses global_rect if provided) ---
+            # ---- Decide the group’s fixed crop rect (used for ALL outputs in this group) ----
+            group_rect = None
+            if autocrop_enabled:
+                if global_rect is not None:
+                    group_rect = tuple(global_rect)
+                else:
+                    # derive a per-group rect once from this group's aligned images
+                    try:
+                        group_rect = self._compute_common_autocrop_rect(
+                            {group_key: file_list},  # single-group dict
+                            autocrop_pct,
+                            status_cb=log
+                        )
+                    except Exception as e:
+                        group_rect = None
+                        log(f"⚠️ Per-group crop failed for '{group_key}': {e}")
+                if group_rect:
+                    x1, y1, x2, y2 = map(int, group_rect)
+                    log(f"✂️ Using fixed crop rect for '{group_key}': ({x1},{y1})–({x2},{y2})")
+                else:
+                    log("✂️ No stable rect found for this group; per-image fallback will be used.")
+
+            # --- Optional: auto-cropped STAR copy (uses group_rect if available, else global/per-image logic) ---
             if autocrop_enabled:
                 cropped_img, hdr_crop = self._apply_autocrop(
                     integrated_image,
                     file_list,
                     ref_header.copy(),
                     scale=1.0,
-                    rect_override=global_rect
+                    rect_override=group_rect if group_rect is not None else global_rect
                 )
                 is_mono_crop = (cropped_img.ndim == 2)
                 Hc, Wc = (cropped_img.shape[:2] if cropped_img.ndim >= 2 else (H, W))
                 display_group_crop = self._label_with_dims(group_key, Wc, Hc)
-                base_crop = f"MasterLight_{display_group_crop}_{n_frames}stacked_autocrop"
-                base_crop = self._normalize_master_stem(base_crop)   
+                base_crop = f"MasterLight_{display_group_crop}_{n_frames_group}stacked_autocrop"
+                base_crop = self._normalize_master_stem(base_crop)
                 out_path_crop = self._build_out(self.stacking_directory, base_crop, "fit")
 
                 save_image(
@@ -7426,7 +8191,224 @@ class StackingSuiteDialog(QDialog):
                 log(f"✂️ Saved auto-cropped image for '{group_key}': {out_path_crop}")
                 autocrop_outputs.append((group_key, out_path_crop))
 
-            # Bookkeeping for drizzle
+            # ---- Optional: COMET mode ----
+            if comet_mode:
+                log("🌠 Comet mode enabled for this group")
+
+                # registered, time-sorted
+                sorted_files = sorted(file_list, key=CS.time_key)
+
+                # Build seeds in the *registered* space
+                seeds = {}
+                reg_path = None  # ensure defined for logging checks below
+                if hasattr(self, "_comet_seed") and self._comet_seed:
+                    seed_src_path = os.path.normpath(self._comet_seed.get("path", ""))
+                    seed_xy       = tuple(self._comet_seed.get("xy", (0.0, 0.0)))
+
+                    # 1) try exact mapping: original/normalized -> registered path
+                    if transforms_dict:
+                        reg_path = transforms_dict.get(seed_src_path)
+
+                    # 2) fuzzy fallback by basename prefix (handles _n -> _n_r)
+                    if not reg_path:
+                        bn = os.path.basename(os.path.splitext(seed_src_path)[0])
+                        for p in sorted_files:
+                            if os.path.basename(p).startswith(bn):
+                                reg_path = p
+                                break
+
+                    # 3) transform XY into registered frame
+                    if reg_path:
+                        M = self.valid_matrices.get(os.path.normpath(reg_path))
+                        if M is not None and np.asarray(M).shape == (2,3):
+                            x, y = seed_xy
+                            a,b,tx = M[0]; c,d,ty = M[1]
+                            seeds[os.path.normpath(reg_path)] = (
+                                float(a*x + b*y + tx),
+                                float(c*x + d*y + ty)
+                            )
+                            log(f"  ◦ using user seed on {os.path.basename(reg_path)}")
+                        else:
+                            log("  ⚠️ user seed: no affine for that registered file")
+
+                # 4) Last resort: if no seed mapped to any of the files, drop the reference-frame seed
+                if not any(fp in seeds for fp in sorted_files):
+                    if getattr(self, "_comet_ref_xy", None):
+                        seeds[sorted_files[0]] = tuple(map(float, self._comet_ref_xy))
+                        log("  ◦ seeding first registered frame with _comet_ref_xy")
+
+                # Sanity log if we actually have a reg_path and seed
+                if reg_path and (os.path.normpath(reg_path) in seeds):
+                    sx, sy = seeds[os.path.normpath(reg_path)]
+                    log(f"  ◦ seed xy={sx:.1f},{sy:.1f} within {W}×{H}? "
+                        f"{'OK' if (0<=sx<W and 0<=sy<H) else 'OUT-OF-BOUNDS'}")
+
+                # 1) Measure comet centers (auto baseline)
+                log("🟢 Measuring comet centers (template match)…")
+                comet_xy = CS.measure_comet_positions(sorted_files, seeds=seeds, status_cb=log)
+                CS.debug_save_marks(sorted_files, comet_xy,
+                                    os.path.join(self.stacking_directory, "debug_comet_xy"))
+
+                # 2) Offer preview (GUI) via worker signal
+                ui_target = None
+                try:
+                    ui_target = self._find_ui_target() if hasattr(self, "_find_ui_target") else None
+                    if ui_target is None:
+                        # inline helper (same as your earlier version)
+                        def _find_ui_target() -> QWidget | None:
+                            ow = getattr(self, "ui_owner", None)
+                            if isinstance(ow, QWidget) and hasattr(ow, "show_comet_preview"):
+                                return ow
+                            par = self.parent()
+                            if isinstance(par, QWidget) and hasattr(par, "show_comet_preview"):
+                                return par
+                            aw = QApplication.activeWindow()
+                            if isinstance(aw, QWidget) and hasattr(aw, "show_comet_preview"):
+                                return aw
+                            for w in QApplication.topLevelWidgets():
+                                if hasattr(w, "show_comet_preview"):
+                                    return w
+                            return None
+                        ui_target = _find_ui_target()
+                except Exception:
+                    ui_target = None
+
+                if ui_target is not None:
+                    try:
+                        responder = _Responder()
+                        loop = QEventLoop()
+                        result_box = {"res": None}
+
+                        def _store_and_quit(res):
+                            result_box["res"] = res
+                            loop.quit()
+
+                        responder.finished.connect(_store_and_quit)
+
+                        emitter = getattr(self, "post_worker", None)
+                        if emitter is None:
+                            log("  ⚠️ comet preview skipped: no worker emitter present")
+                        else:
+                            emitter.need_comet_review.emit(sorted_files, comet_xy, responder)
+                            loop.exec()  # block this worker thread until GUI responds
+
+                            edited = result_box["res"]
+                            if isinstance(edited, dict) and edited:
+                                comet_xy = edited
+                                log(f"  ◦ user confirmed/edited {len(comet_xy)} centroids")
+                            else:
+                                log("  ◦ user cancelled or no edits — using auto centroids")
+                    except Exception as e:
+                        log(f"  ⚠️ comet preview skipped: {e!r}")
+                else:
+                    log("  ⚠️ comet preview unavailable (no UI target)")
+
+                # 3) Comet-aligned integration
+                usable = [fp for fp in sorted_files if fp in comet_xy]
+                if len(usable) < 2:
+                    log("⚠️ Not enough frames with valid comet centroids; skipping comet stack.")
+                else:
+                    log("🟠 Comet-aligned integration…")
+                    comet_only, comet_rej_map, ref_header_c = self.integrate_comet_aligned(
+                        group_key=f"{group_key}",
+                        file_list=usable,
+                        comet_xy=comet_xy,
+                        frame_weights=frame_weights,
+                        status_cb=log,
+                        algo_override=COMET_ALGO  # << comet-friendly reducer
+                    )
+
+                    # Save CometOnly
+                    Hc, Wc = comet_only.shape[:2]
+                    display_group_c = self._label_with_dims(group_key, Wc, Hc)
+                    comet_path = self._build_out(
+                        self.stacking_directory,
+                        f"MasterCometOnly_{display_group_c}_{len(usable)}stacked",
+                        "fit"
+                    )
+                    save_image(
+                        comet_only, comet_path, "fit", "32-bit floating point",
+                        original_header=(ref_header_c or ref_header),
+                        is_mono=(comet_only.ndim==2)
+                    )
+                    log(f"✅ Saved CometOnly → {comet_path}")
+
+                    # --- Crop CometOnly identically (if requested) ---
+                    if autocrop_enabled and (group_rect is not None or global_rect is not None):
+                        comet_only_crop, hdr_c_crop = self._apply_autocrop(
+                            comet_only,
+                            file_list,  # ok to reuse; rect is forced
+                            (ref_header_c or ref_header).copy(),
+                            scale=1.0,
+                            rect_override=group_rect if group_rect is not None else global_rect
+                        )
+                        Hcc, Wcc = comet_only_crop.shape[:2]
+                        display_group_cc = self._label_with_dims(group_key, Wcc, Hcc)
+                        comet_path_crop = self._build_out(
+                            self.stacking_directory,
+                            f"MasterCometOnly_{display_group_cc}_{len(usable)}stacked_autocrop",
+                            "fit"
+                        )
+                        save_image(
+                            comet_only_crop, comet_path_crop, "fit", "32-bit floating point",
+                            original_header=hdr_c_crop,
+                            is_mono=(comet_only_crop.ndim==2)
+                        )
+                        log(f"✂️ Saved CometOnly (auto-cropped) → {comet_path_crop}")
+
+                    # Optional blend
+                    if getattr(self, "comet_blend_cb", None) and self.comet_blend_cb.isChecked():
+                        mix = float(self.comet_mix.value())
+                        # If you want a user knob for blackpoint, expose a spinbox and read it here.
+                        blackpoint_pct = 50.0  # median; change to e.g. float(self.comet_blackpoint_pct.value())
+
+                        log(f"🟡 Blending Stars+Comet (additive; bp={blackpoint_pct:.1f}%, mix={mix:.2f})…")
+                        stars_img, comet_img = _match_channels(integrated_image, comet_only)
+
+                        # New additive blend
+                        blend = CS.blend_additive_comet(
+                            comet_only=comet_img,
+                            stars_only=stars_img,
+                            blackpoint_percentile=blackpoint_pct,
+                            per_channel=True,
+                            mix=mix,
+                            preserve_dtype=False
+                        )
+
+                        is_mono_blend = (blend.ndim == 2) or (blend.ndim == 3 and blend.shape[2] == 1)
+                        blend_path = self._build_out(
+                            self.stacking_directory,
+                            f"MasterCometBlend_{display_group_c}_{len(usable)}stacked",
+                            "fit"
+                        )
+                        save_image(blend, blend_path, "fit", "32-bit floating point",
+                                ref_header, is_mono=is_mono_blend)
+                        log(f"✅ Saved CometBlend → {blend_path}")
+
+                        # --- Crop CometBlend identically (if requested) ---
+                        if autocrop_enabled and (group_rect is not None or global_rect is not None):
+                            blend_crop, hdr_b_crop = self._apply_autocrop(
+                                blend,
+                                file_list,
+                                ref_header.copy(),
+                                scale=1.0,
+                                rect_override=group_rect if group_rect is not None else global_rect
+                            )
+                            Hb, Wb = blend_crop.shape[:2]
+                            display_group_bc = self._label_with_dims(group_key, Wb, Hb)
+                            blend_path_crop = self._build_out(
+                                self.stacking_directory,
+                                f"MasterCometBlend_{display_group_bc}_{len(usable)}stacked_autocrop",
+                                "fit"
+                            )
+                            save_image(
+                                blend_crop, blend_path_crop, "fit", "32-bit floating point",
+                                original_header=hdr_b_crop,
+                                is_mono=(blend_crop.ndim == 2 or (blend_crop.ndim == 3 and blend_crop.shape[2] == 1))
+                            )
+                            log(f"✂️ Saved CometBlend (auto-cropped) → {blend_path_crop}")
+
+            # ---- Drizzle bookkeeping for this group ----
             dconf = drizzle_dict.get(group_key, {})
             if dconf.get("drizzle_enabled", False):
                 sasr_path = os.path.join(self.stacking_directory, f"{group_key}_rejections.sasr")
@@ -7435,21 +8417,21 @@ class StackingSuiteDialog(QDialog):
                 group_integration_data[group_key] = {
                     "integrated_image": integrated_image,
                     "rejection_map": rejection_map,
-                    "n_frames": n_frames,
+                    "n_frames": n_frames_group,
                     "drizzled": True
                 }
             else:
                 group_integration_data[group_key] = {
                     "integrated_image": integrated_image,
                     "rejection_map": None,
-                    "n_frames": n_frames,
+                    "n_frames": n_frames_group,
                     "drizzled": False
                 }
                 log(f"ℹ️ Skipping rejection map save for '{group_key}' (drizzle disabled).")
-            
+
         QApplication.processEvents()
 
-        # Drizzle pass (only for groups with drizzle enabled)
+        # ---- Drizzle pass (only for groups with drizzle enabled) ----
         for group_key, file_list in grouped_files.items():
             dconf = drizzle_dict.get(group_key)
             if not (dconf and dconf.get("drizzle_enabled", False)):
@@ -7459,9 +8441,9 @@ class StackingSuiteDialog(QDialog):
             scale_factor = float(dconf["scale_factor"])
             drop_shrink  = float(dconf["drop_shrink"])
             rejections_for_group = group_integration_data[group_key]["rejection_map"]
-            n_frames = group_integration_data[group_key]["n_frames"]
+            n_frames_group = group_integration_data[group_key]["n_frames"]
 
-            log(f"📐 Drizzle for '{group_key}' at {scale_factor}× (drop={drop_shrink}) using {n_frames} frame(s).")
+            log(f"📐 Drizzle for '{group_key}' at {scale_factor}× (drop={drop_shrink}) using {n_frames_group} frame(s).")
 
             self.drizzle_stack_one_group(
                 group_key=group_key,
@@ -7472,15 +8454,15 @@ class StackingSuiteDialog(QDialog):
                 drop_shrink=drop_shrink,
                 rejection_map=rejections_for_group,
                 autocrop_enabled=autocrop_enabled,
-                rect_override=global_rect,
+                rect_override=global_rect,         # drizzle path already handles rect internally
                 status_cb=log
             )
 
         # Build summary lines
         for group_key, info in group_integration_data.items():
-            n_frames = info["n_frames"]
+            n_frames_group = info["n_frames"]
             drizzled = info["drizzled"]
-            summary_lines.append(f"• {group_key}: {n_frames} stacked{' + drizzle' if drizzled else ''}")
+            summary_lines.append(f"• {group_key}: {n_frames_group} stacked{' + drizzle' if drizzled else ''}")
 
         if autocrop_outputs:
             summary_lines.append("")
@@ -7492,6 +8474,329 @@ class StackingSuiteDialog(QDialog):
             "summary_lines": summary_lines,
             "autocrop_outputs": autocrop_outputs
         }
+
+
+
+    def integrate_comet_aligned(
+        self,
+        group_key: str,
+        file_list: list[str],
+        comet_xy: dict[str, tuple[float,float]],
+        frame_weights: dict[str, float],
+        status_cb=None,
+        *,
+        algo_override: str | None = None
+    ):
+        """
+        Translate each frame so its comet centroid lands on a single reference pixel
+        (from file_list[0]). Optional comet star-removal runs AFTER this alignment,
+        with a single fixed core mask in comet space. No NaNs; reduction uses the
+        selected rejection algorithm.
+        """
+        log = status_cb or (lambda *_: None)
+        if not file_list:
+            return None, {}, None
+
+        # --- Reference frame / canvas shape ---
+        ref_file = file_list[0]
+        ref_img, ref_header, _, _ = load_image(ref_file)
+        if ref_img is None:
+            log(f"⚠️ Could not load reference '{ref_file}' for comet stack.")
+            return None, {}, None
+
+        is_color = (ref_img.ndim == 3 and ref_img.shape[2] == 3)
+        H, W = ref_img.shape[:2]
+        C = 3 if is_color else 1
+
+        # The single pixel we align to (in ref frame):
+        ref_xy = comet_xy[ref_file]
+        log(f"📌 Comet reference pixel @ {ref_file} → ({ref_xy[0]:.2f},{ref_xy[1]:.2f})")
+
+        # --- Open sources (mem-mapped readers) ---
+        sources = []
+        try:
+            for p in file_list:
+                sources.append(_MMFits(p))
+        except Exception as e:
+            for s in sources:
+                try: s.close()
+                except Exception: pass
+            log(f"⚠️ Failed to open images (memmap): {e}")
+            return None, {}, None
+
+        DTYPE = self._dtype()
+        integrated_image = np.zeros((H, W, C), dtype=DTYPE)
+        per_file_rejections = {p: [] for p in file_list}
+
+        # --- Chunking (same policy as normal integration) ---
+        pref_h, pref_w = self.chunk_height, self.chunk_width
+        try:
+            chunk_h, chunk_w = compute_safe_chunk(H, W, len(file_list), C, DTYPE, pref_h, pref_w)
+            log(f"🔧 Comet stack chunk {chunk_h}×{chunk_w}")
+        except MemoryError as e:
+            for s in sources:
+                try: s.close()
+                except Exception: pass
+            log(f"⚠️ {e}")
+            return None, {}, None
+
+        # Reusable tile buffer
+        ts_buf = np.empty((len(file_list), chunk_h, chunk_w, C), dtype=np.float32, order='F')
+        weights_array = np.array([frame_weights.get(p, 1.0) for p in file_list], dtype=np.float32)
+
+        # Rejection maps (for MEF layers)
+        rej_any   = np.zeros((H, W), dtype=np.bool_)
+        rej_count = np.zeros((H, W), dtype=np.uint16)
+
+        # --- Per-frame pure-translation affines (into comet space) ---
+        affines = {}
+        for p in file_list:
+            cx, cy = comet_xy[p]
+            dx = ref_xy[0] - cx
+            dy = ref_xy[1] - cy
+            affines[p] = np.array([[1.0, 0.0, dx],
+                                [0.0, 1.0, dy]], dtype=np.float32)
+
+        # ---------- OPTIONAL comet star removal (pre-process per frame) ----------
+        csr_enabled = self.settings.value("stacking/comet_starrem/enabled", False, type=bool)
+        csr_tool    = self.settings.value("stacking/comet_starrem/tool", "StarNet", type=str)
+        core_r      = float(self.settings.value("stacking/comet_starrem/core_r", 22.0, type=float))
+        core_soft   = float(self.settings.value("stacking/comet_starrem/core_soft", 6.0, type=float))
+
+        csr_outputs_are_aligned = False   # tells the tile loop whether to warp again
+        tmp_root = None
+        starless_temp_paths: list[str] | None = None
+
+        if csr_enabled:
+            log("✨ Comet star removal enabled — pre-processing frames…")
+
+            # Build a single core-protection mask in comet-aligned coords (center = ref_xy)
+            core_mask = CS._protect_core_mask(H, W, ref_xy[0], ref_xy[1], core_r, core_soft).astype(np.float32)
+
+            starless_temp_paths = []
+            tmp_root = tempfile.mkdtemp(prefix="sas_comet_starless_")
+            try:
+                for i, p in enumerate(file_list, 1):
+                    try:
+                        src = sources[i-1].read_full()  # float32 (H,W) or (H,W,3)
+                        # Ensure 3ch for the external tools
+                        if src.ndim == 2:
+                            src = src[..., None]
+                        if src.shape[2] == 1:
+                            src = np.repeat(src, 3, axis=2)
+
+                        # Warp into comet space once (so the same mask applies to all frames)
+                        M = affines[p]
+                        warped = cv2.warpAffine(
+                            src, M, (W, H),
+                            flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_REFLECT
+                        ).astype(np.float32, copy=False)
+
+                        # Run chosen remover in comet space
+                        if csr_tool == "CosmicClarityDarkStar":
+                            log("  ◦ DarkStar comet star removal…")
+                            starless = darkstar_starless_from_array(warped, self.settings)
+                        else:
+                            log("  ◦ StarNet comet star removal…")
+                            # Frames are linear at this stage
+                            starless = starnet_starless_from_array(warped, self.settings, tmp_prefix=f"comet_{i:04d}")
+
+                        # Protect nucleus: blend original back under soft core mask
+                        m3 = np.repeat(core_mask[..., None], 3, axis=2)
+                        protected = np.clip(starless * (1.0 - m3) + warped * m3, 0.0, 1.0).astype(np.float32)
+
+                        # Persist as temp FITS (comet-aligned)
+                        outp = os.path.join(tmp_root, f"starless_{i:04d}.fit")
+                        save_image(
+                            img_array=protected,
+                            filename=outp,
+                            original_format="fit",
+                            bit_depth="32-bit floating point",
+                            original_header=ref_header,  # simple header OK
+                            is_mono=False
+                        )
+                        starless_temp_paths.append(outp)
+                        log(f"    ✓ [{i}/{len(file_list)}] starless saved")
+                    except Exception as e:
+                        log(f"  ⚠️ star removal failed on {os.path.basename(p)}: {e}")
+                        # Fallback: use the warped original (still comet-aligned)
+                        outp = os.path.join(tmp_root, f"starless_{i:04d}.fit")
+                        save_image(
+                            img_array=warped.astype(np.float32, copy=False),
+                            filename=outp,
+                            original_format="fit",
+                            bit_depth="32-bit floating point",
+                            original_header=ref_header,
+                            is_mono=False
+                        )
+                        starless_temp_paths.append(outp)
+
+                # Swap readers to the comet-aligned starless temp files
+                for s in sources:
+                    try: s.close()
+                    except Exception: pass
+                sources = [_MMFits(p) for p in starless_temp_paths]
+
+                # These temp frames are already comet-aligned ⇒ no further warp in tile loop
+                for p in file_list:
+                    affines[p] = np.array([[1.0, 0.0, 0.0],
+                                        [0.0, 1.0, 0.0]], dtype=np.float32)
+                csr_outputs_are_aligned = True
+                log("✨ Comet star removal pre-process complete.")
+            except Exception as e:
+                log(f"⚠️ Comet star removal pre-process aborted: {e}")
+                # Keep original sources; continue without pre-removal
+                csr_outputs_are_aligned = False
+                # (tmp_root cleanup happens in finally below)
+
+        # --- Tile loop ---
+        t_idx = 0
+        for y0 in range(0, H, chunk_h):
+            y1 = min(y0 + chunk_h, H); th = y1 - y0
+            for x0 in range(0, W, chunk_w):
+                x1 = min(x0 + chunk_w, W); tw = x1 - x0
+                t_idx += 1
+                log(f"Integrating comet tile {t_idx}…")
+
+                ts = ts_buf[:, :th, :tw, :C]
+
+                for i, src in enumerate(sources):
+                    full = src.read_full()  # (H,W) or (H,W,3) float32
+
+                    if csr_outputs_are_aligned:
+                        # Already comet-aligned; just slice the tile
+                        if C == 1:
+                            if full.ndim == 3:
+                                full = full[..., 0]
+                            tile = full[y0:y1, x0:x1]
+                            ts[i, :, :, 0] = tile
+                        else:
+                            if full.ndim == 2:
+                                full = full[..., None].repeat(3, axis=2)
+                            ts[i, :, :, :] = full[y0:y1, x0:x1, :]
+                    else:
+                        # Warp into comet space on the fly
+                        M = affines[file_list[i]]
+                        if C == 1:
+                            full2d = full[..., 0] if full.ndim == 3 else full
+                            warped2d = cv2.warpAffine(
+                                full2d, M, (W, H),
+                                flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_REFLECT
+                            )
+                            ts[i, :, :, 0] = warped2d[y0:y1, x0:x1]
+                        else:
+                            if full.ndim == 2:
+                                full = full[..., None].repeat(3, axis=2)
+                            warped = cv2.warpAffine(
+                                full, M, (W, H),
+                                flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_REFLECT
+                            )
+                            ts[i, :, :, :] = warped[y0:y1, x0:x1, :]
+
+                # --- Apply selected rejection algorithm ---
+                algo = (algo_override or self.rejection_algorithm)
+                log(f"  ◦ applying rejection algorithm: {algo}")
+
+                if algo in ("Comet Median", "Simple Median (No Rejection)"):
+                    tile_result  = np.median(ts, axis=0)
+                    tile_rej_map = np.zeros((len(file_list), th, tw), dtype=bool)
+
+                elif algo == "Comet High-Clip Percentile":
+                    k = self.settings.value("stacking/comet_hclip_k", 1.30, type=float)
+                    p = self.settings.value("stacking/comet_hclip_p", 25.0, type=float)
+                    # keep a small dict across tiles to reuse scratch buffers
+
+                    tile_result = _high_clip_percentile(ts, k=float(k), p=float(p))
+                    tile_rej_map = np.zeros((len(file_list), th, tw), dtype=bool)
+
+                elif algo == "Comet Lower-Trim (30%)":
+                    tile_result  = _lower_trimmed_mean(ts, trim_hi_frac=0.30)
+                    tile_rej_map = np.zeros((len(file_list), th, tw), dtype=bool)
+
+                elif algo == "Comet Percentile (40th)":
+                    tile_result  = _percentile40(ts)
+                    tile_rej_map = np.zeros((len(file_list), th, tw), dtype=bool)
+
+                elif algo == "Simple Average (No Rejection)":
+                    tile_result  = np.average(ts, axis=0, weights=weights_array)
+                    tile_rej_map = np.zeros((len(file_list), th, tw), dtype=bool)
+
+                elif algo == "Weighted Windsorized Sigma Clipping":
+                    tile_result, tile_rej_map = windsorized_sigma_clip_weighted(
+                        ts, weights_array, lower=self.sigma_low, upper=self.sigma_high
+                    )
+
+                elif algo == "Kappa-Sigma Clipping":
+                    tile_result, tile_rej_map = kappa_sigma_clip_weighted(
+                        ts, weights_array, kappa=self.kappa, iterations=self.iterations
+                    )
+
+                elif algo == "Trimmed Mean":
+                    tile_result, tile_rej_map = trimmed_mean_weighted(
+                        ts, weights_array, trim_fraction=self.trim_fraction
+                    )
+
+                elif algo == "Extreme Studentized Deviate (ESD)":
+                    tile_result, tile_rej_map = esd_clip_weighted(
+                        ts, weights_array, threshold=self.esd_threshold
+                    )
+
+                elif algo == "Biweight Estimator":
+                    tile_result, tile_rej_map = biweight_location_weighted(
+                        ts, weights_array, tuning_constant=self.biweight_constant
+                    )
+
+                elif algo == "Modified Z-Score Clipping":
+                    tile_result, tile_rej_map = modified_zscore_clip_weighted(
+                        ts, weights_array, threshold=self.modz_threshold
+                    )
+
+                elif algo == "Max Value":
+                    tile_result, tile_rej_map = max_value_stack(ts, weights_array)
+
+                else:
+                    # default to comet-safe median
+                    tile_result  = np.median(ts, axis=0)
+                    tile_rej_map = np.zeros((len(file_list), th, tw), dtype=bool)
+
+                integrated_image[y0:y1, x0:x1, :] = tile_result
+
+                # Accumulate rejection bookkeeping
+                trm = tile_rej_map
+                if trm.ndim == 4:
+                    trm = np.any(trm, axis=-1)  # (N, th, tw)
+                rej_any[y0:y1, x0:x1]  |= np.any(trm, axis=0)
+                rej_count[y0:y1, x0:x1] += trm.sum(axis=0).astype(np.uint16)
+
+                for i, fpath in enumerate(file_list):
+                    ys, xs = np.where(trm[i])
+                    if ys.size:
+                        per_file_rejections[fpath].extend(zip(x0 + xs, y0 + ys))
+
+        # Close readers and clean temp
+        for s in sources:
+            try: s.close()
+            except Exception: pass
+
+        if tmp_root is not None:
+            try: shutil.rmtree(tmp_root, ignore_errors=True)
+            except Exception: pass
+
+        if C == 1:
+            integrated_image = integrated_image[..., 0]
+
+        # Store MEF rejection maps for this comet stack
+        if not hasattr(self, "_rej_maps"):
+            self._rej_maps = {}
+        rej_frac = (rej_count.astype(np.float32) / float(max(1, len(file_list))))
+        self._rej_maps[group_key + " (COMET)"] = {
+            "any":   rej_any,
+            "frac":  rej_frac,
+            "count": rej_count,
+            "n":     len(file_list),
+        }
+
+        return integrated_image, per_file_rejections, ref_header
 
 
     def save_registered_images(self, success, msg, frame_weights):
@@ -8180,7 +9485,15 @@ class StackingSuiteDialog(QDialog):
             log(f"✂️ Drizzle (auto-cropped) saved: {out_path_crop}")
 
 
-    def normal_integration_with_rejection(self, group_key, file_list, frame_weights, status_cb=None):
+    def normal_integration_with_rejection(
+        self,
+        group_key,
+        file_list,
+        frame_weights,
+        status_cb=None,
+        *,
+        algo_override: str | None = None  # <--- NEW
+    ):
         log = status_cb or (lambda *_: None)
         log(f"Starting integration for group '{group_key}' with {len(file_list)} files.")
         if not file_list:
@@ -8267,13 +9580,33 @@ class StackingSuiteDialog(QDialog):
                     ts[i, :, :, :] = sub
 
                 # --- rejection/integration ---
-                algo = self.rejection_algorithm
-                if algo == "Simple Median (No Rejection)":
+                algo = (algo_override or self.rejection_algorithm)
+                print(f"  ◦ applying rejection algorithm: {algo}")
+
+                if algo in ("Comet Median", "Simple Median (No Rejection)"):
                     tile_result  = np.median(ts, axis=0)
                     tile_rej_map = np.zeros((N, th, tw), dtype=bool)
+
+                elif algo == "Comet High-Clip Percentile":
+                    k = self.settings.value("stacking/comet_hclip_k", 1.30, type=float)
+                    p = self.settings.value("stacking/comet_hclip_p", 25.0, type=float)
+                    # keep a small dict across tiles to reuse scratch buffers
+
+                    tile_result = _high_clip_percentile(ts, k=float(k), p=float(p))
+                    tile_rej_map = np.zeros((len(file_list), th, tw), dtype=bool)
+
+                elif algo == "Comet Lower-Trim (30%)":
+                    tile_result  = _lower_trimmed_mean(ts, trim_hi_frac=0.30)
+                    tile_rej_map = np.zeros((N, th, tw), dtype=bool)
+
+                elif algo == "Comet Percentile (40th)":
+                    tile_result  = _percentile40(ts)
+                    tile_rej_map = np.zeros((N, th, tw), dtype=bool)
+
                 elif algo == "Simple Average (No Rejection)":
                     tile_result  = np.average(ts, axis=0, weights=weights_array)
                     tile_rej_map = np.zeros((N, th, tw), dtype=bool)
+
                 elif algo == "Weighted Windsorized Sigma Clipping":
                     tile_result, tile_rej_map = windsorized_sigma_clip_weighted(
                         ts, weights_array, lower=self.sigma_low, upper=self.sigma_high
@@ -8448,7 +9781,7 @@ class StackingSuiteDialog(QDialog):
             return txt.replace('.', '_') + 's'
 
         stem = re.sub(r'(\d+(?:\.\d+)?)s', _fix_exp, stem)
-        
+
         stem = re.sub(r'\((\d+)x(\d+)\)', r'\1x\2', stem)
         return stem
 

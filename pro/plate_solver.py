@@ -5,17 +5,18 @@ import os, re, math, tempfile
 from typing import Tuple, Dict, Any, Optional
 
 import numpy as np
-
+import json, time
+import requests
 from astropy.io import fits
 from astropy.io.fits import Header
 from astropy.wcs import WCS
 
-from PyQt6.QtCore import QProcess, QTimer
+from PyQt6.QtCore import QProcess, QTimer, QEventLoop, Qt
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import (
     QDialog, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
     QFileDialog, QComboBox, QStackedWidget, QWidget, QMessageBox,
-    QLineEdit, QTextEdit, QApplication
+    QLineEdit, QTextEdit, QApplication, QProgressBar
 )
 
 # === our I/O & stretch — migrate from SASv2 ===
@@ -26,6 +27,319 @@ except Exception:
     stretch_mono_image = None
     stretch_color_image = None
 
+
+
+
+# --- Lightweight, modeless status popup for headless runs ---
+_STATUS_POPUP = None  # module-level singleton
+
+class _SolveStatusPopup(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent, Qt.WindowType.Tool)
+        self.setObjectName("plate_solve_status_popup")
+        self.setWindowTitle("Plate Solving")
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        self.setMinimumWidth(420)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(12, 12, 12, 12)
+        lay.setSpacing(10)
+
+        self.label = QLabel("Starting…", self)
+        self.label.setWordWrap(True)
+        lay.addWidget(self.label)
+
+        self.bar = QProgressBar(self)
+        self.bar.setRange(0, 0)  # indeterminate
+        lay.addWidget(self.bar)
+
+        row = QHBoxLayout()
+        row.addStretch(1)
+        hide_btn = QPushButton("Hide", self)
+        hide_btn.clicked.connect(self.hide)
+        row.addWidget(hide_btn)
+        lay.addLayout(row)
+
+    def update_text(self, text: str):
+        self.label.setText(text or "")
+        self.label.repaint()  # quick visual feedback
+        QApplication.processEvents()
+
+def _status_popup_open(parent, text: str = ""):
+    """Show (or create) the singleton status popup for headless runs."""
+    global _STATUS_POPUP
+    if _STATUS_POPUP is None:
+        host = parent if isinstance(parent, QWidget) else QApplication.activeWindow()
+        _STATUS_POPUP = _SolveStatusPopup(host)
+    if text:
+        _STATUS_POPUP.update_text(text)
+    _STATUS_POPUP.show()
+    _STATUS_POPUP.raise_()
+    QApplication.processEvents()
+    return _STATUS_POPUP
+
+def _status_popup_update(text: str):
+    global _STATUS_POPUP
+    if _STATUS_POPUP is not None:
+        _STATUS_POPUP.update_text(text)
+
+def _status_popup_close():
+    
+    try:
+        global _STATUS_POPUP
+        _STATUS_POPUP.hide()
+            # keep instance for reuse (fast re-open)
+    except Exception:
+        pass
+
+def _sleep_ui(ms: int):
+    """Non-blocking sleep that keeps the UI responsive."""
+    loop = QEventLoop()
+    QTimer.singleShot(ms, loop.quit)
+    loop.exec()
+
+def _with_events():
+    """Yield to the UI event loop briefly."""
+    QApplication.processEvents()
+
+def _set_status_ui(parent, text: str):
+    """
+    Update dialog/main-window status or batch log; if neither exists (headless),
+    show/update a small modeless popup. Always pumps events for responsiveness.
+    """
+    try:
+        updated_any = False
+
+        def _do():
+            nonlocal updated_any
+            target = None
+            # Dialog status label?
+            if hasattr(parent, "status") and isinstance(getattr(parent, "status"), QLabel):
+                target = parent.status
+            # Named child fallback
+            if target is None and hasattr(parent, "findChild"):
+                target = parent.findChild(QLabel, "status_label")
+            if target is not None:
+                target.setText(text)
+                updated_any = True
+
+            # Batch log?
+            logw = getattr(parent, "log", None)
+            if logw and hasattr(logw, "append"):
+                if text and (text.startswith("Status:") or text.startswith("▶") or text.startswith("✔") or text.startswith("❌")):
+                    logw.append(text)
+                    updated_any = True
+
+            # If we couldn't update any inline widget, use the headless popup.
+            if not updated_any:
+                _status_popup_open(parent, text)
+            else:
+                # If inline widgets exist and popup is visible, keep it quiet.
+                _status_popup_update(text)
+
+            QApplication.processEvents()
+
+        if isinstance(parent, QWidget):
+            QTimer.singleShot(0, _do)
+        else:
+            _do()
+    except Exception:
+        # Last-resort popup if even the above failed
+        try:
+            _status_popup_open(parent, text)
+        except Exception:
+            pass
+
+def _wait_process(proc: QProcess, timeout_ms: int, parent=None) -> bool:
+    """
+    Incrementally wait for a QProcess while pumping UI events so the dialog stays responsive.
+    Returns True if the process finished with NormalExit, else False.
+    """
+    deadline = time.monotonic() + (timeout_ms / 1000.0)
+    step_ms = 100
+
+    while time.monotonic() < deadline:
+        if proc.state() == QProcess.ProcessState.NotRunning:
+            break
+        _sleep_ui(step_ms)
+
+    if proc.state() != QProcess.ProcessState.NotRunning:
+        # Timed out: try to stop the process cleanly, then force kill.
+        try:
+            proc.terminate()
+            if not proc.waitForFinished(2000):
+                proc.kill()
+                proc.waitForFinished(2000)
+        except Exception:
+            pass
+        _set_status_ui(parent, "Status: process timed out.")
+        return False
+
+    if proc.exitStatus() != QProcess.ExitStatus.NormalExit:
+        _set_status_ui(parent, "Status: process did not exit normally.")
+        return False
+
+    return True
+
+# --- astrometry.net config (web API) ---
+ASTROMETRY_API_URL_DEFAULT = "https://nova.astrometry.net/api/"
+
+def _get_astrometry_api_url(settings) -> str:
+    return (settings.value("astrometry/server_url", "", type=str) or ASTROMETRY_API_URL_DEFAULT).rstrip("/") + "/"
+
+def _get_solvefield_exe(settings) -> str:
+    # Support both SASpro-style and legacy keys
+    cand = [
+        settings.value("paths/solve_field", "", type=str) or "",
+        settings.value("astrometry/solvefield_path", "", type=str) or "",
+    ]
+    for p in cand:
+        if p and os.path.exists(p):
+            return p
+    return cand[0]  # may be empty (used to decide web vs. local)
+
+def _get_astrometry_api_key(settings) -> str:
+    return settings.value("astrometry/api_key", "", type=str) or ""
+
+def _set_astrometry_api_key(settings, key: str):
+    settings.setValue("astrometry/api_key", key or "")
+
+def _wcs_header_from_astrometry_calib(calib: dict, image_shape: tuple[int, ...]) -> Header:
+    """
+    calib: dict with keys 'ra','dec','pixscale'(arcsec/px),'orientation'(deg, +CCW).
+    image_shape: (H, W) or (H, W, C). CRPIX is image center (1-based vs 0-based—astropy expects pixel coordinates in "fits" sense; mid-frame is fine).
+    """
+    H = int(image_shape[0]); W = int(image_shape[1])
+    h = Header()
+    h["CTYPE1"] = "RA---TAN"
+    h["CTYPE2"] = "DEC--TAN"
+    h["CRPIX1"] = W / 2.0
+    h["CRPIX2"] = H / 2.0
+    h["CRVAL1"] = float(calib["ra"])
+    h["CRVAL2"] = float(calib["dec"])
+    scale_deg = float(calib["pixscale"]) / 3600.0  # deg/px
+    theta = math.radians(float(calib.get("orientation", 0.0)))
+    # note: same sign convention as your SASv2 builder
+    h["CD1_1"] = -scale_deg * math.cos(theta)
+    h["CD1_2"] =  scale_deg * math.sin(theta)
+    h["CD2_1"] = -scale_deg * math.sin(theta)
+    h["CD2_2"] = -scale_deg * math.cos(theta)
+    h["RADECSYS"] = "ICRS"
+    h["WCSAXES"] = 2
+    return h
+
+# If you already ship 'requests', this is simplest:
+
+# ---- Seed controls (persisted in QSettings) ----
+def _get_seed_mode(settings) -> str:
+    # "auto" (from header), "manual" (use user values), "none" (blind)
+    return (settings.value("astap/seed_mode", "auto", type=str) or "auto").lower()
+
+def _set_seed_mode(settings, mode: str):
+    settings.setValue("astap/seed_mode", (mode or "auto").lower())
+
+def _get_manual_ra(settings) -> str:
+    # store raw string so user can type hh:mm:ss or degrees
+    return settings.value("astap/manual_ra", "", type=str) or ""
+
+def _get_manual_dec(settings) -> str:
+    return settings.value("astap/manual_dec", "", type=str) or ""
+
+def _get_manual_scale(settings) -> float | None:
+    try:
+        v = settings.value("astap/manual_scale_arcsec", "", type=str)
+        return float(v) if v not in (None, "",) else None
+    except Exception:
+        return None
+
+def _parse_ra_input_to_deg(s: str) -> float | None:
+    s = (s or "").strip()
+    if not s: return None
+    # allow plain degrees if > 24 or contains "deg"
+    try:
+        if re.search(r"[a-zA-Z]", s) is None and ":" not in s and " " not in s:
+            x = float(s)
+            return x if x > 24.0 else x * 15.0
+    except Exception:
+        pass
+    parts = re.split(r"[:\s]+", s)
+    try:
+        if len(parts) >= 3:
+            hh, mm, ss = float(parts[0]), float(parts[1]), float(parts[2])
+        elif len(parts) == 2:
+            hh, mm, ss = float(parts[0]), float(parts[1]), 0.0
+        else:
+            hh, mm, ss = float(parts[0]), 0.0, 0.0
+        return (abs(hh) + mm/60.0 + ss/3600.0) * 15.0
+    except Exception:
+        return None
+
+def _parse_dec_input_to_deg(s: str) -> float | None:
+    s = (s or "").strip()
+    if not s: return None
+    sign = -1.0 if s.startswith("-") else 1.0
+    s = s.lstrip("+-")
+    parts = re.split(r"[:\s]+", s)
+    try:
+        if len(parts) >= 3:
+            dd, mm, ss = float(parts[0]), float(parts[1]), float(parts[2])
+        elif len(parts) == 2:
+            dd, mm, ss = float(parts[0]), float(parts[1]), 0.0
+        else:
+            return sign * float(parts[0])
+        return sign * (abs(dd) + mm/60.0 + ss/3600.0)
+    except Exception:
+        return None
+
+def _set_manual_seed(settings, ra: str, dec: str, scale_arcsec: float | None):
+    settings.setValue("astap/manual_ra", ra or "")
+    settings.setValue("astap/manual_dec", dec or "")
+    if scale_arcsec is None:
+        settings.setValue("astap/manual_scale_arcsec", "")
+    else:
+        settings.setValue("astap/manual_scale_arcsec", str(float(scale_arcsec)))
+
+def _astrometry_api_request(method: str, url: str, *, data=None, files=None,
+                            timeout=(10, 60),  # (connect, read)
+                            max_retries: int = 5,
+                            parent=None,
+                            stage: str = "") -> dict | None:
+    """
+    Robust request with retries, exponential backoff + jitter.
+    """
+    if requests is None:
+        print("Requests not available for astrometry.net API.")
+        return None
+
+    import random, requests as _rq
+    for attempt in range(1, max_retries + 1):
+        try:
+            if method.upper() == "POST":
+                r = requests.post(url, data=data, files=files, timeout=timeout)
+            else:
+                r = requests.get(url, timeout=timeout)
+
+            if r.status_code == 200:
+                try:
+                    return r.json()
+                except Exception:
+                    return None
+
+            if r.status_code in (429, 500, 502, 503, 504):
+                raise _rq.RequestException(f"HTTP {r.status_code}")
+            else:
+                print(f"Astrometry API HTTP {r.status_code} (no retry).")
+                return None
+
+        except (_rq.Timeout, _rq.ConnectionError, _rq.RequestException) as e:
+            print(f"Astrometry API request error ({stage}): {e}")
+            if attempt >= max_retries:
+                break
+            delay = min(8.0, 0.5 * (2 ** (attempt - 1))) + random.random() * 0.2
+            _set_status_ui(parent, f"Status: {stage or 'request'} retry {attempt}/{max_retries}…")
+            _sleep_ui(int(delay * 1000))
+    return None
 
 # ---------------------------------------------------------------------
 # Utilities (headers, parsing, normalization)
@@ -321,6 +635,50 @@ def _compute_scale_arcsec_per_pix(h: Header) -> float | None:
         return 206.264806 * px_um_eff / float(focal_mm)
     return None
 
+def _build_astap_seed_with_overrides(settings, header: Header | None, image: np.ndarray) -> tuple[list[str], str, float | None]:
+    """
+    Decide seed based on seed_mode:
+      - auto: derive from header (existing logic)
+      - manual: use user-provided RA/Dec/Scale
+      - none: return [], "blind"
+    Returns: (args, dbg, scale_arcsec)
+    """
+    mode = _get_seed_mode(settings)
+
+    if mode == "none":
+        return [], "seed disabled (blind)", None
+
+    if mode == "manual":
+        ra_s  = _get_manual_ra(settings)
+        dec_s = _get_manual_dec(settings)
+        scl   = _get_manual_scale(settings)
+        ra_deg  = _parse_ra_input_to_deg(ra_s)
+        dec_deg = _parse_dec_input_to_deg(dec_s)
+        dbg = []
+        if ra_deg is None:  dbg.append("RA?")
+        if dec_deg is None: dbg.append("Dec?")
+        if scl is None or not np.isfinite(scl) or scl <= 0: dbg.append("scale?")
+        if dbg:
+            return [], "manual seed invalid: " + ", ".join(dbg), None
+        ra_h = ra_deg / 15.0
+        spd  = dec_deg + 90.0
+        args = ["-ra", f"{ra_h:.6f}", "-spd", f"{spd:.6f}", "-scale", f"{scl:.3f}"]
+        return args, f"manual RA={ra_h:.6f}h | SPD={spd:.6f}° | scale={scl:.3f}\"/px", float(scl)
+
+    # auto (default): from header
+    if isinstance(header, Header):
+        args, dbg = _build_astap_seed(header)
+        scl = None
+        if args:
+            try:
+                if "-scale" in args:
+                    scl = float(args[args.index("-scale")+1])
+            except Exception:
+                scl = None
+        return args, "auto: " + dbg, scl
+
+    return [], "no header available for auto seed", None
+
 
 def _build_astap_seed(h: Header) -> Tuple[list[str], str]:
     dbg = []
@@ -339,6 +697,163 @@ def _build_astap_seed(h: Header) -> Tuple[list[str], str]:
     spd  = dec_deg + 90.0
     args = ["-ra", f"{ra_h:.6f}", "-spd", f"{spd:.6f}", "-scale", f"{scale:.3f}"]
     return args, f"RA={ra_h:.6f} h | SPD={spd:.6f}° | scale={scale:.3f}\"/px"
+
+
+def _astrometry_login(settings, parent=None) -> str | None:
+    _set_status_ui(parent, "Status: Logging in to Astrometry.net…")
+    api_key = _get_astrometry_api_key(settings)
+    if not api_key:
+        from PyQt6.QtWidgets import QInputDialog
+        key, ok = QInputDialog.getText(None, "Astrometry.net API Key", "Enter your Astrometry.net API key:")
+        if not ok or not key:
+            _set_status_ui(parent, "Status: Login canceled (no API key).")
+            return None
+        _set_astrometry_api_key(settings, key)
+        api_key = key
+
+    base = _get_astrometry_api_url(settings)
+    resp = _astrometry_api_request(
+        "POST", base + "login",
+        data={'request-json': json.dumps({"apikey": api_key})},
+        parent=parent, stage="login"
+    )
+    if resp and resp.get("status") == "success":
+        _set_status_ui(parent, "Status: Login successful.")
+        return resp.get("session")
+    _set_status_ui(parent, "Status: Login failed.")
+    return None
+
+def _astrometry_upload(settings, session: str, image_path: str, parent=None) -> int | None:
+    _set_status_ui(parent, "Status: Uploading image to Astrometry.net…")
+    base = _get_astrometry_api_url(settings)
+    try:
+        with open(image_path, "rb") as f:
+            files = {"file": f}
+            data = {'request-json': json.dumps({
+                "publicly_visible": "y",
+                "allow_modifications": "d",
+                "session": session,
+                "allow_commercial_use": "d"
+            })}
+            resp = _astrometry_api_request(
+                "POST", base + "upload",
+                data=data, files=files,
+                timeout=(15, 180),  # longer read timeout for upload
+                parent=parent, stage="upload"
+            )
+        if resp and resp.get("status") == "success":
+            _set_status_ui(parent, "Status: Upload complete.")
+            return int(resp["subid"])
+    except Exception as e:
+        print("Upload error:", e)
+    _set_status_ui(parent, "Status: Upload failed.")
+    return None
+
+
+def _solve_with_local_solvefield(parent, settings, tmp_fit_path: str) -> tuple[bool, Header | str]:
+    solvefield = _get_solvefield_exe(settings)
+    if not solvefield or not os.path.exists(solvefield):
+        return False, "solve-field not configured."
+
+    args = [
+        "--overwrite",
+        "--no-remove-lines",
+        "--cpulimit", "300",
+        "--downsample", "2",
+        "--write-wcs", "wcs",
+        tmp_fit_path
+    ]
+    _set_status_ui(parent, "Status: Running local solve-field…")
+    print("Running solve-field:", solvefield, " ".join(args))
+    p = QProcess(parent)
+    p.start(solvefield, args)
+    if not p.waitForStarted(5000):
+        _set_status_ui(parent, "Status: solve-field failed to start.")
+        return False, f"Failed to start solve-field: {p.errorString()}"
+
+    if not _wait_process(p, 300000, parent=parent):
+        _set_status_ui(parent, "Status: solve-field timed out.")
+        return False, "solve-field timed out."
+
+    if p.exitCode() != 0:
+        out = bytes(p.readAllStandardOutput()).decode(errors="ignore")
+        err = bytes(p.readAllStandardError()).decode(errors="ignore")
+        _set_status_ui(parent, "Status: solve-field failed.")
+        print("solve-field failed.\nSTDOUT:\n", out, "\nSTDERR:\n", err)
+        return False, "solve-field returned non-zero exit."
+
+    wcs_path = os.path.splitext(tmp_fit_path)[0] + ".wcs"
+    new_path = os.path.splitext(tmp_fit_path)[0] + ".new"
+
+    if os.path.exists(wcs_path):
+        d = _parse_astap_wcs_file(wcs_path)
+        if d:
+            d = _ensure_ctypes(_coerce_wcs_numbers(d))
+            return True, Header({k: v for k, v in d.items()})
+
+    if os.path.exists(new_path):
+        try:
+            with fits.open(new_path, memmap=False) as hdul:
+                h = Header()
+                for k, v in dict(hdul[0].header).items():
+                    if k not in ("COMMENT","HISTORY","END"):
+                        h[k] = v
+            return True, h
+        except Exception as e:
+            print("Failed reading .new FITS:", e)
+
+    return False, "solve-field produced no WCS."
+
+
+def _astrometry_poll_job(settings, subid: int, *, max_wait_s=900, parent=None) -> int | None:
+    _set_status_ui(parent, "Status: Waiting for job assignment…")
+    base = _get_astrometry_api_url(settings)
+    t0 = time.time()
+    while time.time() - t0 < max_wait_s:
+        resp = _astrometry_api_request("GET", base + f"submissions/{subid}",
+                                       parent=parent, stage="poll job")
+        if resp:
+            jobs = resp.get("jobs", [])
+            if jobs and jobs[0] is not None:
+                _set_status_ui(parent, f"Status: Job assigned (ID {jobs[0]}).")
+                try: return int(jobs[0])
+                except Exception: pass
+        _sleep_ui(1000)
+    return None
+
+def _astrometry_poll_calib(settings, job_id: int, *, max_wait_s=900, parent=None) -> dict | None:
+    _set_status_ui(parent, "Status: Waiting for solution…")
+    base = _get_astrometry_api_url(settings)
+    t0 = time.time()
+    while time.time() - t0 < max_wait_s:
+        resp = _astrometry_api_request("GET", base + f"jobs/{job_id}/calibration/",
+                                       parent=parent, stage="poll calib")
+        if resp and all(k in resp for k in ("ra","dec","pixscale")):
+            _set_status_ui(parent, "Status: Solution received.")
+            return resp
+        _sleep_ui(1500)
+    return None
+
+# ---- ASTAP seed controls ----
+# modes for radius: "auto" -> -r 0, "value" -> -r <user>, default "auto"
+def _get_astap_radius_mode(settings) -> str:
+    return (settings.value("astap/seed_radius_mode", "auto", type=str) or "auto").lower()
+
+def _get_astap_radius_value(settings) -> float:
+    try:
+        return float(settings.value("astap/seed_radius_value", 5.0, type=float))
+    except Exception:
+        return 5.0
+
+# modes for fov: "auto" -> -fov 0, "compute" -> use computed FOV, "value" -> user number; default "compute"
+def _get_astap_fov_mode(settings) -> str:
+    return (settings.value("astap/seed_fov_mode", "compute", type=str) or "compute").lower()
+
+def _get_astap_fov_value(settings) -> float:
+    try:
+        return float(settings.value("astap/seed_fov_value", 0.0, type=float))
+    except Exception:
+        return 0.0
 
 
 def _read_header_from_fits(path: str) -> Dict[str, Any]:
@@ -562,6 +1077,99 @@ def _write_temp_fit_via_save_image(gray2d: np.ndarray, _header: Header | None) -
     print(f"Saved FITS image to: {fit_path}")
     return fit_path, os.path.splitext(fit_path)[0] + ".wcs"
 
+def _solve_numpy_with_astrometry(parent, settings, image: np.ndarray) -> tuple[bool, Header | str]:
+    """
+    Try local solve-field first; if unavailable/failed, try web API.
+    Returns (ok, Header|err).
+    """
+    # Prefer to *not* re-stretch for astrometry; linear works fine.
+    gray = _to_gray2d_unit(_float01(image))
+    tmp_fit, _unused_sidecar = _write_temp_fit_via_save_image(gray, None)
+
+    try:
+        # 1) local solve-field path
+        ok, res = _solve_with_local_solvefield(parent, settings, tmp_fit)
+        if ok:
+            hdr = res if isinstance(res, Header) else None
+            if hdr is not None:
+                # coerce and ensure TAN if needed, parity with ASTAP path
+                d = _ensure_ctypes(_coerce_wcs_numbers(dict(hdr)))
+                if any(re.match(r"^(A|B|AP|BP)_\d+_\d+$", k) for k in d.keys()):
+                    if not str(d.get("CTYPE1","RA---TAN")).endswith("-SIP"):
+                        d["CTYPE1"] = "RA---TAN-SIP"
+                    if not str(d.get("CTYPE2","DEC--TAN")).endswith("-SIP"):
+                        d["CTYPE2"] = "DEC--TAN-SIP"
+                hh = Header()
+                for k, v in d.items():
+                    try: hh[k] = v
+                    except Exception: pass
+                return True, hh
+            return False, "solve-field returned no header."
+
+        # 2) web API fallback
+        if requests is None:
+            return False, "requests not available for astrometry.net API."
+        session = _astrometry_login(settings, parent=parent)
+        if not session:
+            return False, "Astrometry.net login failed."
+
+        subid = _astrometry_upload(settings, session, tmp_fit, parent=parent)
+        if not subid:
+            return False, "Astrometry.net upload failed."
+
+        job_id = _astrometry_poll_job(settings, subid, parent=parent)
+        if not job_id:
+            return False, "Astrometry.net job ID not received in time."
+
+        calib = _astrometry_poll_calib(settings, job_id, parent=parent)
+        if not calib:
+            return False, "Astrometry.net calibration not received in time."
+
+        # Build WCS header from calibration
+        _set_status_ui(parent, "Status: Building WCS header from calibration…")
+        hdr = _wcs_header_from_astrometry_calib(calib, gray.shape)
+        # Coerce numeric & ensure types (reuse your merge path)
+        d = _ensure_ctypes(_coerce_wcs_numbers(dict(hdr)))
+        hh = Header()
+        for k, v in d.items():
+            try: hh[k] = v
+            except Exception: pass
+        return True, hh
+
+    finally:
+        # clean temp + typical astrometry byproducts created next to tmp
+        _set_status_ui(parent, "Status: Cleaning up temporary files…")
+        base = os.path.splitext(tmp_fit)[0]
+        for ext in (".fit",".fits",".wcs",".axy",".corr",".rdls",".solved",".new",".match",".ngc",".png",".ppm",".xyls"):
+            try:
+                p = base + ext
+                if os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass
+
+def _solve_numpy_with_fallback(parent, settings, image: np.ndarray, seed_header: Header | None) -> tuple[bool, Header | str]:
+    # Try ASTAP first
+    _set_status_ui(parent, "Status: Solving with ASTAP…")
+    ok, res = _solve_numpy_with_astap(parent, settings, image, seed_header)
+    if ok:
+        _set_status_ui(parent, "Status: Solved with ASTAP.")
+        return True, res
+
+    # ASTAP failed → tell the user and fall back
+    err_msg = str(res) if res is not None else "unknown error"
+    print("ASTAP failed:", err_msg)
+    _set_status_ui(parent, f"Status: ASTAP failed ({err_msg}). Falling back to Astrometry.net…")
+    QApplication.processEvents()
+
+    # Fallback: astrometry.net (local solve-field first, then web API inside)
+    ok2, res2 = _solve_numpy_with_astrometry(parent, settings, image)
+    if ok2:
+        _set_status_ui(parent, "Status: Solved via Astrometry.net.")
+    else:
+        _set_status_ui(parent, f"Status: Astrometry.net failed ({res2}).")
+
+    return ok2, res2
 
 
 def _save_temp_fits_via_save_image(norm_img: np.ndarray, clean_header: Header, is_mono: bool) -> str:
@@ -696,13 +1304,43 @@ def _solve_numpy_with_astap(parent, settings, image: np.ndarray, seed_header: He
 
     # seed if possible; otherwise blind
     seed_args: list[str] = []
-    if seed_header is not None:
-        try:
-            seed_args, dbg = _build_astap_seed(seed_header)
-            if seed_args:
-                print("ASTAP seed:", dbg)
-        except Exception as e:
-            print("Seed build error:", e)
+    scale_arcsec = None
+    try:
+        seed_args, dbg, scale_arcsec = _build_astap_seed_with_overrides(settings, seed_header, gray)
+        if seed_args:
+            # radius & fov modes (already implemented)
+            radius_mode = _get_astap_radius_mode(settings)   # "auto" or "value"
+            fov_mode    = _get_astap_fov_mode(settings)      # "auto", "compute", "value"
+
+            # radius
+            if radius_mode == "auto":
+                r_arg = ["-r", "0"]     # ASTAP auto
+                r_dbg = "r=auto(0)"
+            else:
+                r_val = max(0.0, float(_get_astap_radius_value(settings)))
+                r_arg = ["-r", f"{r_val:.3f}"]
+                r_dbg = f"r={r_val:.3f}°"
+
+            # fov
+            if fov_mode == "auto":
+                fov_arg = ["-fov", "0"]
+                f_dbg = "fov=auto(0)"
+            elif fov_mode == "value":
+                fv = max(0.0, float(_get_astap_fov_value(settings)))
+                fov_arg = ["-fov", f"{fv:.4f}"]
+                f_dbg = f"fov={fv:.4f}°"
+            else:  # "compute"
+                fv = _compute_fov_deg(gray, scale_arcsec) or 0.0
+                fov_arg = ["-fov", f"{fv:.4f}"]
+                f_dbg = f"fov(computed)={fv:.4f}°"
+
+            seed_args = seed_args + r_arg + fov_arg
+            print("ASTAP seed:", dbg, "|", r_dbg, "|", f_dbg)
+        else:
+            print("Seed disabled/invalid → blind:", dbg)
+    except Exception as e:
+        print("Seed build error:", e)
+
     if not seed_args:
         seed_args = ["-r", "179", "-fov", "0", "-z", "0"]
         print("ASTAP BLIND: using arguments:", " ".join(seed_args))
@@ -713,12 +1351,12 @@ def _solve_numpy_with_astap(parent, settings, image: np.ndarray, seed_header: He
     proc = QProcess(parent)
     proc.start(astap_exe, args)
     if not proc.waitForStarted(5000):
-        try: os.remove(tmp_fit)
-        except Exception: pass
+        _set_status_ui(parent, "Status: ASTAP failed to start.")
         return False, f"Failed to start ASTAP: {proc.errorString()}"
-    if not proc.waitForFinished(300000):
-        try: os.remove(tmp_fit)
-        except Exception: pass
+
+    _set_status_ui(parent, "Status: ASTAP solving…")
+    if not _wait_process(proc, 300000, parent=parent):
+        _set_status_ui(parent, "Status: ASTAP timed out.")
         return False, "ASTAP timed out."
 
     if proc.exitCode() != 0:
@@ -754,7 +1392,7 @@ def _solve_numpy_with_astap(parent, settings, image: np.ndarray, seed_header: He
 def plate_solve_doc_inplace(parent, doc, settings) -> Tuple[bool, Header | str]:
     """
     Run ASTAP on the doc's image; merge WCS/SIP back into doc.metadata.
-    Adds debug prints for what we store into metadata.
+    If called headless (no inline status/log), show a small modeless status popup.
     """
     img = getattr(doc, "image", None)
     if img is None:
@@ -763,55 +1401,73 @@ def plate_solve_doc_inplace(parent, doc, settings) -> Tuple[bool, Header | str]:
     meta  = getattr(doc, "metadata", {}) or {}
     seed_h = _as_header(meta.get("original_header") or meta)
 
-    ok, res = _solve_numpy_with_astap(parent, settings, img, seed_h)
-    if not ok:
-        return False, res
-    hdr: Header = res
+    # Determine if we have inline status/log widgets; if not, show the popup.
+    headless = not (
+        (hasattr(parent, "status") and isinstance(getattr(parent, "status"), QLabel)) or
+        (hasattr(parent, "log") and hasattr(getattr(parent, "log"), "append")) or
+        (hasattr(parent, "findChild") and parent.findChild(QLabel, "status_label") is not None)
+    )
+    if headless:
+        _status_popup_open(parent, "Status: Preparing plate solve…")
 
-    # ---- DEBUG: show exactly what we’re about to write to metadata
     try:
-        print("\n================ Storing into doc.metadata =================")
-        print(f"original_header -> FITS.Header with {len(hdr)} keys")
-        for k, v in hdr.items():
-            print(f"  META_HDR[{k}] = {v!r}")
-        print("===========================================================\n")
-    except Exception as e:
-        print("Debug print of stored header failed:", e)
+        ok, res = _solve_numpy_with_fallback(parent, settings, img, seed_h)
+        if not ok:
+            return False, res
+        hdr: Header = res
 
-    # write back
-    if not isinstance(doc.metadata, dict):
-        setattr(doc, "metadata", {})
-    doc.metadata["original_header"] = hdr
-
-    # Build WCS (best-effort)
-    try:
-        wcs_obj = WCS(hdr)
-        doc.metadata["wcs"] = wcs_obj
+        # Debug print
         try:
-            naxis = getattr(wcs_obj, "naxis", None)
-            print(f"WCS constructed successfully (naxis={naxis}).")
-        except Exception:
-            print("WCS constructed successfully.")
-    except Exception as e:
-        print("WCS build FAILED:", e)
+            print("\n================ Storing into doc.metadata =================")
+            print(f"original_header -> FITS.Header with {len(hdr)} keys")
+            for k, v in hdr.items():
+                print(f"  META_HDR[{k}] = {v!r}")
+            print("===========================================================\n")
+        except Exception as e:
+            print("Debug print of stored header failed:", e)
 
-    # notify UI immediately
-    if hasattr(doc, "changed"):
+        # Store back
+        if not isinstance(doc.metadata, dict):
+            setattr(doc, "metadata", {})
+        doc.metadata["original_header"] = hdr
+
+        # Build WCS object
         try:
-            doc.changed.emit()
-        except Exception:
-            pass
+            wcs_obj = WCS(hdr)
+            doc.metadata["wcs"] = wcs_obj
+            try:
+                naxis = getattr(wcs_obj, "naxis", None)
+                print(f"WCS constructed successfully (naxis={naxis}).")
+            except Exception:
+                print("WCS constructed successfully.")
+        except Exception as e:
+            print("WCS build FAILED:", e)
 
-    if hasattr(parent, "header_viewer") and hasattr(parent.header_viewer, "set_document"):
-        QTimer.singleShot(0, lambda: parent.header_viewer.set_document(doc))
-    if hasattr(parent, "_refresh_header_viewer"):
-        QTimer.singleShot(0, lambda: parent._refresh_header_viewer(doc))
-    if hasattr(parent, "currentDocumentChanged"):
-        QTimer.singleShot(0, lambda: parent.currentDocumentChanged.emit(doc))
+        # Notify UI
+        if hasattr(doc, "changed"):
+            try: doc.changed.emit()
+            except Exception: pass
 
-    return True, hdr
+        if hasattr(parent, "header_viewer") and hasattr(parent.header_viewer, "set_document"):
+            QTimer.singleShot(0, lambda: parent.header_viewer.set_document(doc))
+        if hasattr(parent, "_refresh_header_viewer"):
+            QTimer.singleShot(0, lambda: parent._refresh_header_viewer(doc))
+        if hasattr(parent, "currentDocumentChanged"):
+            QTimer.singleShot(0, lambda: parent.currentDocumentChanged.emit(doc))
 
+        _set_status_ui(parent, "Status: Plate solve completed.")
+        _status_popup_close()
+        return True, hdr
+    finally:
+        _status_popup_close()
 
+def _compute_fov_deg(image: np.ndarray, arcsec_per_px: float | None) -> float | None:
+    if arcsec_per_px is None or not np.isfinite(arcsec_per_px) or arcsec_per_px <= 0:
+        return None
+    H = int(image.shape[0]) if image.ndim >= 2 else 0
+    if H <= 0:
+        return None
+    return (H * arcsec_per_px) / 3600.0  # vertical FOV in degrees
 
 # ---------------------------------------------------------------------
 # Dialog UI with Active/File and Batch modes
@@ -829,14 +1485,81 @@ class PlateSolverDialog(QDialog):
         super().__init__(parent)
         self.settings = settings
         self.setWindowTitle("Plate Solver")
-        self.setMinimumWidth(520)
+        self.setMinimumWidth(560)
+        self.setModal(True)
 
+        # ---------------- Main containers ----------------
+        main = QVBoxLayout(self)
+        main.setContentsMargins(10, 10, 10, 10)
+        main.setSpacing(10)
+
+        # ---- Top row: Mode selector ----
+        top = QHBoxLayout()
+        top.addWidget(QLabel("Mode:", self))
         self.mode_combo = QComboBox(self)
         self.mode_combo.addItems(["Active View", "File", "Batch"])
+        top.addWidget(self.mode_combo, 1)
+        top.addStretch(1)
+        main.addLayout(top)
 
+        # ---- Seeding group (shared) ----
+        from PyQt6.QtWidgets import QGroupBox, QFormLayout
+        seed_box = QGroupBox("Seeding & Constraints", self)
+        seed_form = QFormLayout(seed_box)
+        seed_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        seed_form.setHorizontalSpacing(8)
+        seed_form.setVerticalSpacing(6)
+
+        # Seed mode
+        self.cb_seed_mode = QComboBox(seed_box)
+        self.cb_seed_mode.addItems(["Auto (from header)", "Manual", "None (blind)"])
+        seed_form.addRow("Seed mode:", self.cb_seed_mode)
+
+        # Manual RA/Dec/Scale row
+        manual_row = QHBoxLayout()
+        self.le_ra = QLineEdit(seed_box);   self.le_ra.setPlaceholderText("RA (e.g. 22:32:14 or 338.1385)")
+        self.le_dec = QLineEdit(seed_box);  self.le_dec.setPlaceholderText("Dec (e.g. +40:42:43 or 40.7123)")
+        self.le_scale = QLineEdit(seed_box); self.le_scale.setPlaceholderText('Scale [" / px] (e.g. 1.46)')
+        manual_row.addWidget(self.le_ra, 1)
+        manual_row.addWidget(self.le_dec, 1)
+        manual_row.addWidget(self.le_scale, 1)
+        seed_form.addRow("Manual RA/Dec/Scale:", manual_row)
+
+        # Search radius (-r)
+        rad_row = QHBoxLayout()
+        self.cb_radius_mode = QComboBox(seed_box)
+        self.cb_radius_mode.addItems(["Auto (-r 0)", "Value (deg)"])
+        self.le_radius_val = QLineEdit(seed_box); self.le_radius_val.setPlaceholderText("e.g. 5.0")
+        self.le_radius_val.setFixedWidth(120)
+        rad_row.addWidget(self.cb_radius_mode)
+        rad_row.addWidget(self.le_radius_val)
+        rad_row.addStretch(1)
+        seed_form.addRow("Search radius:", rad_row)
+
+        # FOV (-fov)
+        fov_row = QHBoxLayout()
+        self.cb_fov_mode = QComboBox(seed_box)
+        self.cb_fov_mode.addItems(["Compute from scale", "Auto (-fov 0)", "Value (deg)"])
+        self.le_fov_val = QLineEdit(seed_box); self.le_fov_val.setPlaceholderText("e.g. 1.80")
+        self.le_fov_val.setFixedWidth(120)
+        fov_row.addWidget(self.cb_fov_mode)
+        fov_row.addWidget(self.le_fov_val)
+        fov_row.addStretch(1)
+        seed_form.addRow("FOV:", fov_row)
+
+        # Tooltips
+        self.cb_seed_mode.setToolTip("Use FITS header, your manual RA/Dec/scale, or blind solve.")
+        self.le_scale.setToolTip('Pixel scale in arcseconds/pixel (e.g., 1.46).')
+        self.cb_radius_mode.setToolTip("ASTAP -r. Auto lets ASTAP choose; Value forces a cone radius.")
+        self.cb_fov_mode.setToolTip("ASTAP -fov. Compute uses image height × scale; Auto lets ASTAP infer.")
+
+        main.addWidget(seed_box)
+
+        # ---------------- Stacked pages ----------------
         self.stack = QStackedWidget(self)
+        main.addWidget(self.stack, 1)
 
-        # Page 0: Active view info
+        # Page 0: Active View
         p0 = QWidget(self); l0 = QVBoxLayout(p0)
         l0.addWidget(QLabel("Solve the currently active image view.", p0))
         l0.addStretch(1)
@@ -844,37 +1567,40 @@ class PlateSolverDialog(QDialog):
 
         # Page 1: File picker
         p1 = QWidget(self); l1 = QVBoxLayout(p1)
+        file_row = QHBoxLayout()
         self.le_path = QLineEdit(p1); self.le_path.setPlaceholderText("Choose an image…")
         btn_browse = QPushButton("Browse…", p1)
-        r1 = QHBoxLayout(); r1.addWidget(self.le_path, 1); r1.addWidget(btn_browse)
-        l1.addLayout(r1); l1.addStretch(1)
+        file_row.addWidget(self.le_path, 1); file_row.addWidget(btn_browse)
+        l1.addLayout(file_row); l1.addStretch(1)
         self.stack.addWidget(p1)
 
         # Page 2: Batch
         p2 = QWidget(self); l2 = QVBoxLayout(p2)
+        in_row  = QHBoxLayout(); out_row = QHBoxLayout()
         self.le_in  = QLineEdit(p2);  self.le_in.setPlaceholderText("Input directory")
         self.le_out = QLineEdit(p2);  self.le_out.setPlaceholderText("Output directory")
         b_in  = QPushButton("Browse Input…", p2)
         b_out = QPushButton("Browse Output…", p2)
-        self.log  = QTextEdit(p2); self.log.setReadOnly(True); self.log.setMinimumHeight(160)
-        r2 = QHBoxLayout(); r2.addWidget(self.le_in, 1); r2.addWidget(b_in)
-        r3 = QHBoxLayout(); r3.addWidget(self.le_out, 1); r3.addWidget(b_out)
-        l2.addLayout(r2); l2.addLayout(r3); l2.addWidget(QLabel("Status:")); l2.addWidget(self.log)
+        in_row.addWidget(self.le_in, 1);   in_row.addWidget(b_in)
+        out_row.addWidget(self.le_out, 1); out_row.addWidget(b_out)
+        self.log = QTextEdit(p2); self.log.setReadOnly(True); self.log.setMinimumHeight(160)
+        l2.addLayout(in_row); l2.addLayout(out_row); l2.addWidget(QLabel("Status:", p2)); l2.addWidget(self.log, 1)
         self.stack.addWidget(p2)
 
+        # ---------------- Status + buttons ----------------
         self.status = QLabel("", self)
-        self.btn_go  = QPushButton("Start")
-        self.btn_close = QPushButton("Close")
+        self.status.setMinimumHeight(20)
+        main.addWidget(self.status)
 
-        top = QHBoxLayout(); top.addWidget(QLabel("Mode:")); top.addWidget(self.mode_combo); top.addStretch(1)
-        bot = QHBoxLayout(); bot.addStretch(1); bot.addWidget(self.btn_go); bot.addWidget(self.btn_close)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        self.btn_go = QPushButton("Start", self)
+        self.btn_close = QPushButton("Close", self)
+        btn_row.addWidget(self.btn_go)
+        btn_row.addWidget(self.btn_close)
+        main.addLayout(btn_row)
 
-        lay = QVBoxLayout(self)
-        lay.addLayout(top)
-        lay.addWidget(self.stack)
-        lay.addWidget(self.status)
-        lay.addLayout(bot)
-
+        # ---------------- Connections ----------------
         self.mode_combo.currentIndexChanged.connect(self.stack.setCurrentIndex)
         btn_browse.clicked.connect(self._browse_file)
         b_in.clicked.connect(self._browse_in)
@@ -882,8 +1608,40 @@ class PlateSolverDialog(QDialog):
         self.btn_go.clicked.connect(self._run)
         self.btn_close.clicked.connect(self.close)
 
+        # ---------------- Load settings & init UI ----------------
+        mode_map = {"auto": 0, "manual": 1, "none": 2}
+        self.cb_seed_mode.setCurrentIndex(mode_map.get(_get_seed_mode(self.settings), 0))
+        self.le_ra.setText(_get_manual_ra(self.settings))
+        self.le_dec.setText(_get_manual_dec(self.settings))
+        scl = _get_manual_scale(self.settings)
+        self.le_scale.setText("" if scl is None else str(scl))
+
+        self.cb_radius_mode.setCurrentIndex(0 if _get_astap_radius_mode(self.settings) == "auto" else 1)
+        self.le_radius_val.setText(str(_get_astap_radius_value(self.settings)))
+
+        fov_mode = _get_astap_fov_mode(self.settings)
+        self.cb_fov_mode.setCurrentIndex(1 if fov_mode == "auto" else (2 if fov_mode == "value" else 0))
+        self.le_fov_val.setText(str(_get_astap_fov_value(self.settings)))
+
+        def _update_visibility():
+            manual = (self.cb_seed_mode.currentIndex() == 1)
+            self.le_ra.setEnabled(manual)
+            self.le_dec.setEnabled(manual)
+            self.le_scale.setEnabled(manual)
+            self.le_radius_val.setEnabled(self.cb_radius_mode.currentIndex() == 1)
+            self.le_fov_val.setEnabled(self.cb_fov_mode.currentIndex() == 2)
+
+        self.cb_seed_mode.currentIndexChanged.connect(_update_visibility)
+        self.cb_radius_mode.currentIndexChanged.connect(_update_visibility)
+        self.cb_fov_mode.currentIndexChanged.connect(_update_visibility)
+        _update_visibility()
+
         if icon:
             self.setWindowIcon(icon)
+
+        self.status.setObjectName("status_label")
+        # if batch page exists:
+        self.log.setObjectName("batch_log")
 
     # ---------- file/batch pickers ----------
     def _browse_file(self):
@@ -910,6 +1668,28 @@ class PlateSolverDialog(QDialog):
             QMessageBox.warning(self, "Plate Solver", "ASTAP path missing.\nSet it in Preferences → ASTAP executable.")
             return
 
+        idx = self.cb_seed_mode.currentIndex()
+        _set_seed_mode(self.settings, "auto" if idx == 0 else ("manual" if idx == 1 else "none"))
+        # manual values
+        try:
+            manual_scale = float(self.le_scale.text().strip()) if self.le_scale.text().strip() else None
+        except Exception:
+            manual_scale = None
+        _set_manual_seed(self.settings, self.le_ra.text().strip(), self.le_dec.text().strip(), manual_scale)
+        # radius
+        self.settings.setValue("astap/seed_radius_mode", "auto" if self.cb_radius_mode.currentIndex()==0 else "value")
+        try:
+            self.settings.setValue("astap/seed_radius_value", float(self.le_radius_val.text().strip()))
+        except Exception:
+            pass
+        # fov
+        self.settings.setValue("astap/seed_fov_mode",
+                               "compute" if self.cb_fov_mode.currentIndex()==0 else ("auto" if self.cb_fov_mode.currentIndex()==1 else "value"))
+        try:
+            self.settings.setValue("astap/seed_fov_value", float(self.le_fov_val.text().strip()))
+        except Exception:
+            pass
+
         mode = self.stack.currentIndex()
         if mode == 0:
             # Active view
@@ -917,7 +1697,7 @@ class PlateSolverDialog(QDialog):
             if not doc:
                 QMessageBox.information(self, "Plate Solver", "No active image view.")
                 return
-            ok, res = plate_solve_doc_inplace(self.parent(), doc, self.settings)
+            ok, res = plate_solve_doc_inplace(self, doc, self.settings)
             if ok:
                 self.status.setText("Solved with ASTAP (WCS + SIP applied to active doc).")
                 QTimer.singleShot(0, self.accept)  # close when done
@@ -949,7 +1729,7 @@ class PlateSolverDialog(QDialog):
 
         seed_h = _as_header(original_header) if isinstance(original_header, (dict, Header)) else None
 
-        ok, res = _solve_numpy_with_astap(self, self.settings, image_data, seed_h)
+        ok, res = _solve_numpy_with_fallback(self, self.settings, image_data, seed_h)
         if not ok:
             self.status.setText(str(res)); return
         hdr: Header = res
@@ -1010,7 +1790,7 @@ class PlateSolverDialog(QDialog):
                     self.log.append("  ❌ Failed to load"); continue
 
                 seed_h = _as_header(original_header) if isinstance(original_header, (dict, Header)) else None
-                ok, res = _solve_numpy_with_astap(self, self.settings, image_data, seed_h)
+                ok, res = _solve_numpy_with_fallback(self, self.settings, image_data, seed_h)
                 if not ok:
                     self.log.append(f"  ❌ {res}"); continue
                 hdr: Header = res
