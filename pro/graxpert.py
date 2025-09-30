@@ -7,7 +7,7 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QTextEdit, QPushButton, QFileDialog,
     QMessageBox, QInputDialog, QFormLayout, QDialogButtonBox, QDoubleSpinBox,
-    QRadioButton, QLabel, QComboBox
+    QRadioButton, QLabel, QComboBox, QCheckBox
 )
 
 # Prefer the exact loader you used in SASv2
@@ -49,12 +49,25 @@ class GraXpertOperationDialog(QDialog):
         for v in ["3.0.2", "3.0.1", "3.0.0", "2.0.0", "1.1.0", "1.0.0"]:
             self.model_combo.addItem(v, v)
 
+        # GPU toggle (persists via QSettings if available)
+        self.cb_gpu = QCheckBox("Use GPU acceleration")
+        use_gpu_default = True
+        try:
+            settings = getattr(parent, "settings", None)
+            if settings is not None:
+                use_gpu_default = settings.value("graxpert/use_gpu", True, type=bool)
+        except Exception:
+            pass
+        self.cb_gpu.setChecked(bool(use_gpu_default))
+
+
         # layout
         form = QFormLayout()
         form.addRow(self.rb_bg)
         form.addRow(self.rb_dn)
         form.addRow(self.param_label, self.spin)
         form.addRow(self.model_label, self.model_combo)
+        form.addRow(self.cb_gpu)
         root.addLayout(form)
 
         # switch label/defaults and enable/disable model picker
@@ -87,7 +100,8 @@ class GraXpertOperationDialog(QDialog):
         op = "background" if self.rb_bg.isChecked() else "denoise"
         val = float(self.spin.value())
         ai_version = self.model_combo.currentData() if not self.rb_bg.isChecked() else ""
-        return op, val, (ai_version or None)
+        use_gpu = self.cb_gpu.isChecked()
+        return op, val, (ai_version or None), use_gpu
 
 def _build_graxpert_cmd(
     exe: str,
@@ -144,19 +158,26 @@ def remove_gradient_with_graxpert(main_window):
     op_dlg = GraXpertOperationDialog(main_window)
     if op_dlg.exec() != QDialog.DialogCode.Accepted:
         return
-    operation, param, ai_version = op_dlg.result()
+    operation, param, ai_version, use_gpu = op_dlg.result()
 
     # 3) resolve GraXpert executable
     exe = _resolve_graxpert_exec(main_window)
     if not exe:
         return
 
+    # Persist the checkbox choice for next time
+    try:
+        if hasattr(main_window, "settings"):
+            main_window.settings.setValue("graxpert/use_gpu", bool(use_gpu))
+    except Exception:
+        pass
+
     # 4) write input to a temp working dir but KEEP THE SAME BASENAMES as v2
     workdir = tempfile.mkdtemp(prefix="saspro_graxpert_")
     input_basename = "input_image"
     input_path = os.path.join(workdir, f"{input_basename}.tif")
     try:
-        _write_tiff_like_v2(doc.image, input_path)
+        _write_tiff_float32(doc.image, input_path)
     except Exception as e:
         QMessageBox.critical(main_window, "GraXpert", f"Failed to write temporary input:\n{e}")
         shutil.rmtree(workdir, ignore_errors=True)
@@ -170,8 +191,8 @@ def remove_gradient_with_graxpert(main_window):
         smoothing=param if operation == "background" else None,
         strength=param if operation == "denoise" else None,
         ai_version=ai_version if operation == "denoise" else None,
-        gpu=True,
-        batch_size=4
+        gpu=bool(use_gpu),
+        batch_size=(4 if use_gpu else 1)
     )
 
     # 6) run and wait with a small log dialog
@@ -237,49 +258,63 @@ def _ensure_exec_bit(path: str) -> None:
         pass
 
 
-def _write_tiff_like_v2(image, path: str):
-    """Preserve v2’s behavior: save to 16-bit if <=1.0 range, else float32."""
+def _write_tiff_float32(image, path: str, *, clip01: bool = True):
+    """
+    Always write a 32-bit floating-point TIFF for GraXpert.
+    - Mono stays 2D; RGB stays HxWx3.
+    - Values are clipped to [0,1] by default to avoid weird HDR ranges.
+    """
+    import numpy as np
+
     arr = np.asarray(image)
-    # channel-last & non-empty
     if arr.ndim == 3 and arr.shape[2] == 1:
         arr = arr[..., 0]
-    if np.issubdtype(arr.dtype, np.floating):
-        mx = float(arr.max()) if arr.size else 1.0
-        if mx <= 1.0:
-            arr = (np.clip(arr, 0.0, 1.0) * 65535.0 + 0.5).astype(np.uint16)
-        else:
-            arr = arr.astype(np.float32, copy=False)
-    elif arr.dtype == np.uint8:
-        arr = (arr.astype(np.float32) / 255.0 * 65535.0 + 0.5).astype(np.uint16)
-    elif arr.dtype != np.uint16:
-        arr = arr.astype(np.uint16, copy=False)
 
-    # try tifffile then imageio, like before
+    # Convert to float32 in [0,1]
+    if np.issubdtype(arr.dtype, np.floating):
+        a32 = arr.astype(np.float32, copy=False)
+        if clip01:
+            a32 = np.clip(a32, 0.0, 1.0)
+    elif np.issubdtype(arr.dtype, np.integer):
+        # Scale integers to [0,1] float32
+        maxv = np.float32(np.iinfo(arr.dtype).max)
+        a32 = (arr.astype(np.float32) / maxv)
+    else:
+        a32 = arr.astype(np.float32)
+
+    if clip01:
+        a32 = np.clip(a32, 0.0, 1.0)
+
+    # Prefer tifffile to guarantee float32 TIFFs
     try:
         import tifffile as tiff
-        tiff.imwrite(path, arr)
+        # Write a plain, contiguous, uncompressed float32 TIFF
+        # (GraXpert doesn't need ImageJ tags; photometric=minisblack is fine)
+        tiff.imwrite(
+            path,
+            a32,
+            dtype=np.float32,
+            photometric='minisblack' if a32.ndim == 2 else None,
+            planarconfig='contig',
+            compression=None,
+            imagej=False,
+        )
         return
-    except Exception:
+    except Exception as e1:
         pass
+
+    # Fallback: imageio (uses tifffile under the hood in many installs)
     try:
         import imageio.v3 as iio
-        iio.imwrite(path, arr)
+        iio.imwrite(path, a32.astype(np.float32))
         return
-    except Exception:
-        pass
-    # last resort OpenCV (8-bit fallback)
-    try:
-        import cv2
-        w = arr
-        if arr.dtype != np.uint8:
-            # OpenCV encodes 8-bit TIFF well enough for GraXpert intake
-            denom = 65535.0 if arr.dtype == np.uint16 else float(arr.max() or 1.0)
-            w = (arr.astype(np.float32) / denom * 255.0).astype(np.uint8)
-        if w.ndim == 3 and w.shape[2] == 3:
-            w = w[..., ::-1]  # RGB->BGR
-        cv2.imwrite(path, w)
-    except Exception as e:
-        raise RuntimeError(f"Could not save TIFF: {e}")
+    except Exception as e2:
+        raise RuntimeError(
+            "Could not write 32-bit TIFF for GraXpert. "
+            "Please install 'tifffile' or 'imageio'.\n"
+            f"tifffile error: {e1}\nimageio error: {e2}"
+        )
+
 
 
 # ---------- runner + dialog ----------

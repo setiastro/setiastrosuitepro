@@ -9,8 +9,7 @@ from PyQt6.QtCore import QTimer
 # Reuse your existing implementation
 from .graxpert import (
     _resolve_graxpert_exec,
-    _write_tiff_like_v2,
-    _run_graxpert_command,
+    _run_graxpert_command, _write_tiff_float32
 )
 
 def _build_graxpert_cmd(
@@ -59,11 +58,25 @@ def run_graxpert_via_preset(main_window, preset: dict | None = None):
 
     p = dict(preset or {})
     op = str(p.get("op", "background")).lower()
+
     strength = p.get("strength", 0.50)
     smoothing = float(p.get("smoothing", 0.10))
     smoothing = max(0.0, min(1.0, smoothing))
-    gpu = bool(p.get("gpu", True))
+
+    # ---- NEW: default GPU from QSettings if preset omitted it
+    use_gpu_default = True
+    try:
+        if hasattr(main_window, "settings"):
+            use_gpu_default = main_window.settings.value("graxpert/use_gpu", True, type=bool)
+    except Exception:
+        pass
+    gpu = bool(p.get("gpu", use_gpu_default))
+
+    # Optional batch_size override; otherwise pick sensible default from gpu
     batch_size = p.get("batch_size", None)
+    if batch_size is None:
+        batch_size = 4 if gpu else 1
+
     ai_version = p.get("ai_version")  # None or e.g. "3.0.2"
 
     # 2) GraXpert executable
@@ -71,18 +84,18 @@ def run_graxpert_via_preset(main_window, preset: dict | None = None):
     if not exe:
         return
 
-    # 3) temp working dir + write input (same basenames as v2)
+    # 3) temp write (unchanged)
     workdir = tempfile.mkdtemp(prefix="saspro_graxpert_")
     input_basename = "input_image"
     input_path = os.path.join(workdir, f"{input_basename}.tif")
     try:
-        _write_tiff_like_v2(doc.image, input_path)
+        _write_tiff_float32(doc.image, input_path)
     except Exception as e:
         QMessageBox.critical(main_window, "GraXpert", f"Failed to write temporary input:\n{e}")
         shutil.rmtree(workdir, ignore_errors=True)
         return
 
-    # 4) exact command (with preset smoothing & gpu flag)
+    # 4) exact command (now with resolved gpu + batch_size)
     command = _build_graxpert_cmd(
         exe,
         op,
@@ -90,29 +103,32 @@ def run_graxpert_via_preset(main_window, preset: dict | None = None):
         smoothing=float(smoothing) if op == "background" else None,
         strength=float(strength) if op == "denoise" else None,
         ai_version=str(ai_version) if (op == "denoise" and ai_version) else None,
-        gpu=bool(p.get("gpu", True)),
+        gpu=gpu,
         batch_size=int(batch_size) if batch_size is not None else None,
     )
 
-    # 5) run (reuses your threaded dialog + legacy loader pipeline)
-    output_basename = f"{input_basename}_GraXpert"
+    # Persist the resolved GPU preference so dialogs/presets stay in sync
+    try:
+        if hasattr(main_window, "settings"):
+            main_window.settings.setValue("graxpert/use_gpu", bool(gpu))
+    except Exception:
+        pass
 
-    # mark this session as headless/silent & block the UI with a cool-down guard
+    # 5) run (unchanged)
+    output_basename = f"{input_basename}_GraXpert"
     setattr(main_window, "_graxpert_headless_running", True)
     setattr(main_window, "_graxpert_silent", True)
     setattr(main_window, "_graxpert_guard", True)
-
     try:
         _run_graxpert_command(main_window, command, output_basename, workdir, target_doc=doc)
     finally:
-        # don't drop the guard immediately — give the app a moment to settle
         def _clear_flags():
             for name in ("_graxpert_headless_running", "_graxpert_silent", "_graxpert_guard"):
                 try:
                     delattr(main_window, name)
                 except Exception:
                     setattr(main_window, name, False)
-        QTimer.singleShot(1200, _clear_flags) 
+        QTimer.singleShot(1200, _clear_flags)
 
 # -------------------------- Preset editor (optional) --------------------------
 
@@ -189,7 +205,15 @@ class GraXpertPresetDialog(QDialog):
 
         # --- GPU ---
         self.gpu = QCheckBox("Use GPU (if available)")
-        self.gpu.setChecked(bool(p.get("gpu", True)))
+        use_gpu_default = True
+        try:
+            settings = getattr(parent, "settings", None)
+            if settings is not None:
+                use_gpu_default = settings.value("graxpert/use_gpu", True, type=bool)
+        except Exception:
+            pass
+        self.gpu.setChecked(bool(p.get("gpu", use_gpu_default)))
+
         form.addRow(self.gpu)
 
         # Buttons
