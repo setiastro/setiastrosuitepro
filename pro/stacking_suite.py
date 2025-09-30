@@ -41,9 +41,8 @@ from legacy.image_manager import load_image, save_image, get_valid_header
 from pro.star_alignment import StarRegistrationWorker, StarRegistrationThread, IDENTITY_2x3
 from pro.log_bus import LogBus
 from pro import comet_stacking as CS
-from pro.remove_stars import starnet_starless_from_array, darkstar_starless_from_array
-
-import numpy as np
+#from pro.remove_stars import starnet_starless_from_array, darkstar_starless_from_array
+from pro.mfdeconv import MultiFrameDeconvWorker
 
 _WINDOWS_RESERVED = {
     "CON","PRN","AUX","NUL",
@@ -1764,11 +1763,11 @@ class StackingSuiteDialog(QDialog):
         self._update_stacking_path_display()
 
 
-        # Keep a tiny “last line” label (optional)
-        #self._last_status_label = QLabel("")
-        #self._last_status_label.setStyleSheet("color:#bbb; font: 11px 'Monospace';")
-        #header_row.addWidget(self._last_status_label)
-        #self._last_status_max_chars = 50 
+        self.settings.setValue("stacking/mfdeconv/enabled", False)           # beta off
+        self.settings.setValue("stacking/mfdeconv/iters", 20)               # iterations
+        self.settings.setValue("stacking/mfdeconv/kappa", 2.0)              # update clip
+        self.settings.setValue("stacking/mfdeconv/color_mode", "luma")      # "luma" | "perchannel"
+        self.settings.setValue("stacking/mfdeconv/huber_delta", 0.0)        # 0 => off (LS loss)
 
     def _elide_chars(self, s: str, max_chars: int) -> str:
         if not s:
@@ -7910,6 +7909,49 @@ class StackingSuiteDialog(QDialog):
                     self.update_status(f"DEBUG: File '{aligned}' does not exist on disk.")
             aligned_light_files[group] = new_list
 
+        mf_enabled = self.settings.value("stacking/mfdeconv/enabled", False, type=bool)
+        if mf_enabled:
+            self.update_status("🧪 Beta: Multi-frame PSF-aware deconvolution path enabled.")
+            # choose which group to run; simplest: run on the first non-empty group
+            target_group = next((g for g, lst in aligned_light_files.items() if lst), None)
+            if target_group is None:
+                self.update_status("⚠️ No aligned frames available for MF deconvolution.")
+            else:
+                frames = aligned_light_files[target_group]
+                out_dir = os.path.join(self.stacking_directory, "Masters")
+                os.makedirs(out_dir, exist_ok=True)
+                out_path = os.path.join(out_dir, f"MasterLight_MFDeconv.fit")
+                iters  = self.settings.value("stacking/mfdeconv/iters", 20, type=int)
+                kappa  = self.settings.value("stacking/mfdeconv/kappa", 2.0, type=float)
+                mode   = self.settings.value("stacking/mfdeconv/color_mode", "luma", type=str)
+                huber  = self.settings.value("stacking/mfdeconv/huber_delta", 0.0, type=float)
+
+                # Run synchronously on the post thread (we are in GUI thread here; kick to a worker)
+                self.post_thread = QThread(self)
+                self.post_worker = MultiFrameDeconvWorker(
+                    parent=self,
+                    aligned_paths=frames,
+                    output_path=out_path,
+                    iters=iters,
+                    kappa=kappa,
+                    color_mode=mode,
+                    huber_delta=huber
+                )
+                self.post_worker.progress.connect(self._on_post_status)
+                self.post_worker.finished.connect(self._on_post_pipeline_finished)
+                self.post_worker.moveToThread(self.post_thread)
+                self.post_thread.started.connect(self.post_worker.run)
+                self.post_thread.start()
+
+                # Progress dialog (reuse yours)
+                self.post_progress = QProgressDialog("Multi-frame deconvolving…", None, 0, 0, self)
+                self.post_progress.setWindowModality(Qt.WindowModality.WindowModal)
+                self.post_progress.setCancelButton(None)
+                self.post_progress.setMinimumDuration(0)
+                self.post_progress.setWindowTitle("MF Deconvolution (Beta)")
+                self.post_progress.show()
+                return  # ⬅️ short-circuit the normal AfterAlignWorker for this beta path
+
         # ----------------------------
         # Snapshot UI-dependent settings
         # ----------------------------
@@ -8633,6 +8675,7 @@ class StackingSuiteDialog(QDialog):
             core_mask = CS._protect_core_mask(H, W, ref_xy[0], ref_xy[1], core_r, core_soft).astype(np.float32)
 
             starless_temp_paths = []
+            starless_map = {}  # ← add this
             tmp_root = tempfile.mkdtemp(prefix="sas_comet_starless_")
             try:
                 for i, p in enumerate(file_list, 1):
@@ -8654,11 +8697,13 @@ class StackingSuiteDialog(QDialog):
                         # Run chosen remover in comet space
                         if csr_tool == "CosmicClarityDarkStar":
                             log("  ◦ DarkStar comet star removal…")
-                            starless = darkstar_starless_from_array(warped, self.settings)
+                            starless = CS.darkstar_starless_from_array(warped, self.settings)
                         else:
                             log("  ◦ StarNet comet star removal…")
                             # Frames are linear at this stage
-                            starless = starnet_starless_from_array(warped, self.settings, tmp_prefix=f"comet_{i:04d}")
+                            starless = CS.starnet_starless_from_array(
+                                    warped, self.settings, is_linear=True
+                                )
 
                         # Protect nucleus: blend original back under soft core mask
                         m3 = np.repeat(core_mask[..., None], 3, axis=2)
@@ -8675,6 +8720,7 @@ class StackingSuiteDialog(QDialog):
                             is_mono=False
                         )
                         starless_temp_paths.append(outp)
+                        starless_map[p] = outp    
                         log(f"    ✓ [{i}/{len(file_list)}] starless saved")
                     except Exception as e:
                         log(f"  ⚠️ star removal failed on {os.path.basename(p)}: {e}")
@@ -8695,18 +8741,19 @@ class StackingSuiteDialog(QDialog):
                     try: s.close()
                     except Exception: pass
                 sources = [_MMFits(p) for p in starless_temp_paths]
+                starless_readers_paths = list(starless_temp_paths)  
 
                 # These temp frames are already comet-aligned ⇒ no further warp in tile loop
                 for p in file_list:
                     affines[p] = np.array([[1.0, 0.0, 0.0],
                                         [0.0, 1.0, 0.0]], dtype=np.float32)
                 csr_outputs_are_aligned = True
-                log("✨ Comet star removal pre-process complete.")
+                self._last_comet_used_starless = True                    # ← record for UI/summary
+                log(f"✨ Using comet-aligned STARLESS frames for stack ({len(starless_temp_paths)} files).")
             except Exception as e:
                 log(f"⚠️ Comet star removal pre-process aborted: {e}")
-                # Keep original sources; continue without pre-removal
                 csr_outputs_are_aligned = False
-                # (tmp_root cleanup happens in finally below)
+                self._last_comet_used_starless = False
 
         # --- Tile loop ---
         t_idx = 0
@@ -8716,17 +8763,28 @@ class StackingSuiteDialog(QDialog):
                 x1 = min(x0 + chunk_w, W); tw = x1 - x0
                 t_idx += 1
                 log(f"Integrating comet tile {t_idx}…")
+                if csr_outputs_are_aligned:
+                    log("   • Tile source: STARLESS (pre-aligned)")
 
                 ts = ts_buf[:, :th, :tw, :C]
 
                 for i, src in enumerate(sources):
                     full = src.read_full()  # (H,W) or (H,W,3) float32
 
+                    # --- sanity: ensure this reader corresponds to the original file index
+                    if csr_outputs_are_aligned:
+                        # Optional soft sanity check (index-based)
+                        expected = os.path.normpath(starless_readers_paths[i])
+                        actual   = os.path.normpath(getattr(src, "path", expected))
+                        if actual != expected:
+                            log(f"   ⚠️ Starless reader path mismatch at i={i}; "
+                                f"got {os.path.basename(actual)}, expected {os.path.basename(expected)}. Using index order.")
+
                     if csr_outputs_are_aligned:
                         # Already comet-aligned; just slice the tile
                         if C == 1:
                             if full.ndim == 3:
-                                full = full[..., 0]
+                                full = full[..., 0]  # collapse RGB→mono (same as stars stack behavior)
                             tile = full[y0:y1, x0:x1]
                             ts[i, :, :, 0] = tile
                         else:
@@ -8738,18 +8796,14 @@ class StackingSuiteDialog(QDialog):
                         M = affines[file_list[i]]
                         if C == 1:
                             full2d = full[..., 0] if full.ndim == 3 else full
-                            warped2d = cv2.warpAffine(
-                                full2d, M, (W, H),
-                                flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_REFLECT
-                            )
+                            warped2d = cv2.warpAffine(full2d, M, (W, H),
+                                                    flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_REFLECT)
                             ts[i, :, :, 0] = warped2d[y0:y1, x0:x1]
                         else:
                             if full.ndim == 2:
                                 full = full[..., None].repeat(3, axis=2)
-                            warped = cv2.warpAffine(
-                                full, M, (W, H),
-                                flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_REFLECT
-                            )
+                            warped = cv2.warpAffine(full, M, (W, H),
+                                                    flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_REFLECT)
                             ts[i, :, :, :] = warped[y0:y1, x0:x1, :]
 
                 # --- Apply selected rejection algorithm ---

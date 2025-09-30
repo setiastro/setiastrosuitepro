@@ -15,61 +15,69 @@ from pro.remove_stars import (
 )
 from legacy.image_manager import load_image, save_image
 
-def starnet_starless_from_array(src_rgb01: np.ndarray, settings, *, is_linear: bool) -> np.ndarray:
-    """
-    Headless StarNet run for a single RGB frame in [0..1] or arbitrary float range.
-    Returns starless RGB in [0..1] (clipped), no stars-only.
-    """
-    # locate executable
+def _blackpoint_nonzero(img_norm: np.ndarray, p: float = 0.1) -> float:
+    """Scalar blackpoint from non-zero pixels across all channels (linked).
+       p in [0..100]: small percentile to resist outliers; use 0 for strict min."""
+    x = img_norm
+    if x.ndim == 3 and x.shape[2] == 3:
+        nz = np.any(x > 0.0, axis=2)     # keep pixels where any channel has signal
+        vals = x[nz]                      # shape (N,3) → flatten to scalar pool
+    else:
+        vals = x[x > 0.0]
+    if vals.size == 0:
+        return float(np.min(x))           # fallback (all zeros?)
+    if p <= 0.0:
+        return float(np.min(vals))
+    return float(np.percentile(vals, p))
+
+def starnet_starless_from_array(src_rgb01: np.ndarray, settings, *, is_linear: bool, **_ignored) -> np.ndarray:
     exe = _get_setting_any(settings, ("starnet/exe_path", "paths/starnet"), "")
     if not exe or not os.path.exists(exe):
         raise RuntimeError("StarNet executable path is not configured.")
-
-    # ensure executable on POSIX
     _ensure_exec_bit(exe)
 
-    # source to process (StarNet expects 16-bit TIFF); handle linked stretch if linear
     img = src_rgb01.astype(np.float32, copy=False)
-    # normalize channel count
     if img.ndim == 2: img = np.stack([img]*3, axis=-1)
     if img.ndim == 3 and img.shape[2] == 1: img = np.repeat(img, 3, axis=2)
+    img = np.nan_to_num(img, nan=0.0, posinf=0.0, neginf=0.0)
 
     did_stretch = False
+    mtf = None
     scale_factor = float(np.max(img))
+
     if is_linear:
         did_stretch = True
         img_norm = img / scale_factor if scale_factor > 1.0 else img
-        mtf = _mtf_params_linked(img_norm, shadowclip_sigma=-2.8, targetbg=0.25)
-        proc_in = _apply_mtf_linked_rgb(img_norm, mtf)
+
+        # --- normalize pedestal from data (ignore borders/zeros) ---
+        bp_norm = _blackpoint_nonzero(img_norm, p=0.1)   # use 0.0 for strict min
+        img_zerod = img_norm - bp_norm
+        np.maximum(img_zerod, 0.0, out=img_zerod)
+
+        # linked MTF exactly as before, but on zeroed data
+        mtf = _mtf_params_linked(img_zerod, shadowclip_sigma=-2.8, targetbg=0.25)
+        proc_in = _apply_mtf_linked_rgb(img_zerod, mtf)
     else:
         proc_in = img
+        bp_norm = 0.0
 
-    # temp files live in the exe folder (SAS-style) – safest for StarNet
     starnet_dir = os.path.dirname(exe) or os.getcwd()
     in_path  = os.path.join(starnet_dir, "imagetoremovestars.tif")
     out_path = os.path.join(starnet_dir, "starless.tif")
+    _rs_save_image(proc_in, in_path, "tif", "16-bit", None, False, None, None)
 
-    # write input (16-bit)
-    _rs_save_image(proc_in, in_path, original_format="tif", bit_depth="16-bit",
-                   original_header=None, is_mono=False, image_meta=None, file_meta=None)
-
-    # build command
     exe_name = os.path.basename(exe).lower()
     if os.name == "nt" or sys.platform.startswith(("linux","linux2")):
         cmd = [exe, in_path, out_path, "256"]
     else:
-        # macOS new StarNet2 supports flags
         cmd = [exe, "--input", in_path, "--output", out_path] if "starnet2" in exe_name else [exe, in_path, out_path]
 
-    # run
     rc = subprocess.call(cmd, cwd=starnet_dir)
     if rc != 0 or not os.path.exists(out_path):
-        # best effort cleanup
         try: os.remove(in_path)
         except Exception: pass
         raise RuntimeError(f"StarNet failed (rc={rc}).")
 
-    # read starless back
     starless, _, _, _ = _rs_load_image(out_path)
     try: os.remove(in_path)
     except Exception: pass
@@ -78,20 +86,23 @@ def starnet_starless_from_array(src_rgb01: np.ndarray, settings, *, is_linear: b
 
     if starless is None:
         raise RuntimeError("StarNet produced no output.")
-
     if starless.ndim == 2: starless = np.stack([starless]*3, axis=-1)
     if starless.ndim == 3 and starless.shape[2] == 1: starless = np.repeat(starless, 3, axis=2)
     starless = starless.astype(np.float32, copy=False)
 
-    # inverse stretch if needed
     if did_stretch:
+        # inverse MTF, then restore pedestal + original scale
         starless = _invert_mtf_linked_rgb(starless, mtf)
+        starless = starless + bp_norm
         if scale_factor > 1.0:
             starless = starless * scale_factor
+
     return np.clip(starless, 0.0, 1.0)
 
 
-def darkstar_starless_from_array(src_rgb01: np.ndarray, settings) -> np.ndarray:
+
+
+def darkstar_starless_from_array(src_rgb01: np.ndarray, settings, **_ignored) -> np.ndarray:
     """
     Headless CosmicClarity DarkStar run for a single RGB frame.
     Returns starless RGB in [0..1]. Uses CC’s input/output folders.

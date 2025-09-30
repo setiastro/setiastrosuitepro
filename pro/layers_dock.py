@@ -398,3 +398,42 @@ class LayersDock(QDockWidget):
         vw = self.current_view()
         if not vw:
             return
+
+        # No layers? Nothing to do.
+        layers = list(getattr(vw, "_layers", []) or [])
+        if not layers:
+            QMessageBox.information(self, "Layers", "There are no layers to merge.")
+            return
+
+        try:
+            # Base image from the current view's document
+            base_doc = getattr(vw, "document", None)
+            if base_doc is None or getattr(base_doc, "image", None) is None:
+                QMessageBox.warning(self, "Layers", "No base image available for this view.")
+                return
+
+            base_img = base_doc.image
+            merged = composite_stack(base_img, layers)
+            if merged is None:
+                QMessageBox.warning(self, "Layers", "Composite failed (empty result).")
+                return
+
+            # Push into the document as an undoable edit
+            # (assumes document.apply_edit accepts float [0..1] or handles dtype internally)
+            meta = dict(getattr(base_doc, "metadata", {}) or {})
+            meta["step_name"] = "Layers Merge"
+            base_doc.apply_edit(merged.copy(), metadata=meta, step_name="Layers Merge")
+
+            # Clear layers and update live preview
+            vw._layers = []
+            vw._reinstall_layer_watchers()
+            self._rebuild_list()
+            vw.apply_layer_stack([])
+
+            # Nice confirmation
+            QMessageBox.information(self, "Layers",
+                                    "Merged visible layers and pushed the result to the current view.")
+        except Exception as ex:
+            print("[LayersDock] merge error:", ex)
+            QMessageBox.critical(self, "Layers", f"Merge failed:\n{ex}")
+
