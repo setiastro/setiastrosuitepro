@@ -3245,6 +3245,8 @@ class StackingSuiteDialog(QDialog):
         self.cosmetic_checkbox.setChecked(
             self.settings.value("stacking/cosmetic_enabled", True, type=bool)
         )
+        # 🔧 NEW: persist initial value immediately so background code sees it
+        self.settings.setValue("stacking/cosmetic_enabled", bool(self.cosmetic_checkbox.isChecked()))        
         self.cosmetic_checkbox.toggled.connect(
             lambda v: self.settings.setValue("stacking/cosmetic_enabled", bool(v))
         )
@@ -6220,6 +6222,53 @@ class StackingSuiteDialog(QDialog):
         new_text = f"Cosmetic: {str(cosmetic_bool)}, Pedestal: {str(pedestal_bool)}"
         group_item.setText(4, new_text)
 
+    def _resolve_corrections_for_exposure(self, exposure_item):
+        """
+        Decide whether to apply cosmetic correction & pedestal for a given exposure row.
+        Priority:
+        1) Live UI checkboxes (if present)
+        2) Corrections column text on the row
+        3) QSettings defaults
+        """
+        # 1) Live UI
+        try:
+            cosmetic_ui  = bool(self.cosmetic_checkbox.isChecked())
+        except Exception:
+            cosmetic_ui = None
+        try:
+            pedestal_ui  = bool(self.pedestal_checkbox.isChecked())
+        except Exception:
+            pedestal_ui = None
+
+        # 2) Row text (Corrections column)
+        apply_cosmetic_col = apply_pedestal_col = None
+        try:
+            correction_text = exposure_item.text(4) or ""
+            if correction_text:
+                parts = [p.strip().lower() for p in correction_text.split(",")]
+                # Expect "Cosmetic: True, Pedestal: False"
+                for p in parts:
+                    if p.startswith("cosmetic:"):
+                        apply_cosmetic_col = (p.split(":")[-1].strip() == "true")
+                    elif p.startswith("pedestal:"):
+                        apply_pedestal_col = (p.split(":")[-1].strip() == "true")
+        except Exception:
+            pass
+
+        # 3) Settings default
+        cosmetic_cfg = self.settings.value("stacking/cosmetic_enabled", True, type=bool)
+        pedestal_cfg = self.settings.value("stacking/pedestal_enabled", False, type=bool)
+
+        apply_cosmetic = (
+            cosmetic_ui if cosmetic_ui is not None
+            else (apply_cosmetic_col if apply_cosmetic_col is not None else cosmetic_cfg)
+        )
+        apply_pedestal = (
+            pedestal_ui if pedestal_ui is not None
+            else (apply_pedestal_col if apply_pedestal_col is not None else pedestal_cfg)
+        )
+        return bool(apply_cosmetic), bool(apply_pedestal)
+
 
     def calibrate_lights(self):
         """Performs calibration on selected light frames using Master Darks and Flats, considering overrides."""
@@ -6257,16 +6306,18 @@ class StackingSuiteDialog(QDialog):
                 exposure_text = exposure_item.text(0)
 
                 # Get default corrections
-                correction_text = exposure_item.text(4)
-                apply_cosmetic = False
-                apply_pedestal = False
-                if correction_text:
-                    parts = correction_text.split(",")
-                    if len(parts) == 2:
-                        apply_cosmetic = parts[0].split(":")[-1].strip().lower() == "true"
-                        apply_pedestal = parts[1].split(":")[-1].strip().lower() == "true"
+                apply_cosmetic, apply_pedestal = self._resolve_corrections_for_exposure(exposure_item)
+                pedestal_value = (self.pedestal_spinbox.value() / 65535.0) if apply_pedestal else 0.0
 
-                pedestal_value = self.pedestal_spinbox.value() / 65535 if apply_pedestal else 0
+                # (optional) keep the Corrections column in sync for visibility/debugging
+                try:
+                    exposure_item.setText(
+                        4,
+                        f"Cosmetic: {'True' if apply_cosmetic else 'False'}, "
+                        f"Pedestal: {'True' if apply_pedestal else 'False'}"
+                    )
+                except Exception:
+                    pass
 
                 for k in range(exposure_item.childCount()):
                     leaf = exposure_item.child(k)
@@ -6961,6 +7012,14 @@ class StackingSuiteDialog(QDialog):
 
         # prevent accidental double-queue from keyboard/space
         self.register_images_btn.blockSignals(busy)
+
+    def _cosmetic_enabled(self) -> bool:
+        try:
+            if hasattr(self, "cosmetic_checkbox") and self.cosmetic_checkbox is not None:
+                return bool(self.cosmetic_checkbox.isChecked())
+        except Exception:
+            pass
+        return bool(self.settings.value("stacking/cosmetic_enabled", True, type=bool))
 
     def register_images(self):
 
