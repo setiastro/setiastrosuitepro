@@ -1,9 +1,9 @@
 {
-  "version": "1.2.1",
+  "version": "1.2.2",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.2.1/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.2.1/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.2.1/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.2.2/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.2.2/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.2.2/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.2.0 Stacking Suite: Comet Stacking, many minor and major updates as well. Crop: Adjusts and Updates astrometric solution upon crop. Unified Plate Solving across all functions. Many additional bug fixes and niceties throughout."
+  "notes": "Seti Astro Suite Pro V1.2.2 ImageMM (MF Deconv Stacking) Beta. My white paper on the SASpro implementation https://www.setiastro.com/s/imageMM_overviewtext.pdf Layers now uses the correct view names after you rename them so you can use shorter view names in layers."
 }
