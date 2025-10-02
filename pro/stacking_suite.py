@@ -4145,21 +4145,66 @@ class StackingSuiteDialog(QDialog):
         mf_v.addLayout(accel_row)
 
         def _install_accel():
+            # --- UI: all created on the GUI thread ---
             self.install_accel_btn.setEnabled(False)
             self.backend_label.setText("Backend: installing…")
+
+            # Indeterminate progress dialog on GUI thread
+            self._accel_pd = QProgressDialog("Preparing runtime…", "Cancel", 0, 0, self)
+            self._accel_pd.setWindowTitle("Installing GPU Acceleration")
+            self._accel_pd.setWindowModality(Qt.WindowModality.ApplicationModal)
+            self._accel_pd.setAutoClose(True)
+            self._accel_pd.setMinimumDuration(0)
+            self._accel_pd.show()
+
+            # Worker thread
             self._accel_thread = QThread(self)
             self._accel_worker = AccelInstallWorker(prefer_gpu=True)
             self._accel_worker.moveToThread(self._accel_thread)
-            self._accel_thread.started.connect(self._accel_worker.run)
-            self._accel_worker.progress.connect(lambda s: self.status_signal.emit(s))
+
+            # Start worker when thread starts (queued so it runs in worker thread)
+            self._accel_thread.started.connect(self._accel_worker.run, Qt.ConnectionType.QueuedConnection)
+
+            # Pipe worker progress to both the progress dialog and your log bus (GUI thread)
+            self._accel_worker.progress.connect(self._accel_pd.setLabelText, Qt.ConnectionType.QueuedConnection)
+            self._accel_worker.progress.connect(lambda s: self.status_signal.emit(s), Qt.ConnectionType.QueuedConnection)
+
+            # Allow cancel to request interruption
+            def _cancel():
+                if self._accel_thread.isRunning():
+                    self._accel_thread.requestInterruption()
+            self._accel_pd.canceled.connect(_cancel, Qt.ConnectionType.QueuedConnection)
+
+            # Finish handler (runs on GUI thread)
             def _done(ok: bool, msg: str):
-                self.status_signal.emit(("✅ " if ok else "❌ ") + msg)
-                self._accel_thread.quit(); self._accel_thread.wait()
+                # Close progress dialog safely
+                if getattr(self, "_accel_pd", None):
+                    self._accel_pd.reset()
+                    self._accel_pd.deleteLater()
+                    self._accel_pd = None
+
+                # Stop thread cleanly
+                self._accel_thread.quit()
+                self._accel_thread.wait()
+
+                # Re-enable UI and refresh backend label
                 self.install_accel_btn.setEnabled(True)
-                # Refresh label to reflect new state
                 from pro.accel_installer import current_backend
                 self.backend_label.setText(f"Backend: {current_backend()}")
-            self._accel_worker.finished.connect(_done)
+
+                # User feedback + log
+                self.status_signal.emit(("✅ " if ok else "❌ ") + msg)
+                if ok:
+                    QMessageBox.information(self, "Acceleration", f"✅ {msg}")
+                else:
+                    QMessageBox.warning(self, "Acceleration", f"❌ {msg}")
+
+            self._accel_worker.finished.connect(_done, Qt.ConnectionType.QueuedConnection)
+
+            # Cleanup objects when thread finishes
+            self._accel_thread.finished.connect(self._accel_worker.deleteLater, Qt.ConnectionType.QueuedConnection)
+            self._accel_thread.finished.connect(self._accel_thread.deleteLater, Qt.ConnectionType.QueuedConnection)
+
             self._accel_thread.start()
 
         self.install_accel_btn.clicked.connect(_install_accel)
