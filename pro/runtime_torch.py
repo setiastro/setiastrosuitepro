@@ -64,13 +64,28 @@ def _ensure_venv(rt: Path, status_cb=print) -> Path:
             status_cb(f"Setting up SASpro runtime venv at: {p['venv']}")
             p["venv"].mkdir(parents=True, exist_ok=True)
 
-            # Use system Python (NOT sys.executable) to create the venv in frozen builds.
+            # Use system Python when frozen; otherwise use the running interpreter
             py_cmd = _find_system_python_cmd() if getattr(sys, "frozen", False) else [sys.executable]
-            subprocess.check_call(py_cmd + [" -m venv ".strip(), str(p["venv"])])
 
-            # bootstrap pip in the venv and upgrade tools
-            subprocess.check_call([str(p["python"]), "-m", "ensurepip", "--upgrade"])
-            subprocess.check_call([str(p["python"]), "-m", "pip", "install", "--upgrade", "pip", "wheel", "setuptools"])
+            # Clean env (PyInstaller sometimes sets PYTHON* that confuse venv)
+            env = os.environ.copy()
+            env.pop("PYTHONHOME", None)
+            env.pop("PYTHONPATH", None)
+
+            # ✅ IMPORTANT: split "-m" and "venv" into separate args
+            subprocess.check_call(py_cmd + ["-m", "venv", str(p["venv"])], env=env)
+
+            # bootstrap pip & tooling inside the venv
+            subprocess.check_call([str(p["python"]), "-m", "ensurepip", "--upgrade"], env=env)
+            subprocess.check_call([str(p["python"]), "-m", "pip", "install", "--upgrade", "pip", "wheel", "setuptools"], env=env)
+
+        except subprocess.CalledProcessError as e:
+            # If venv partially created, delete it so the next run is clean
+            try:
+                if p["venv"].exists():
+                    shutil.rmtree(p["venv"], ignore_errors=True)
+            finally:
+                raise
         except Exception as e:
             if _is_access_denied(e):
                 raise OSError(_access_denied_msg(rt)) from e
@@ -150,6 +165,17 @@ def _find_system_python_cmd() -> list[str]:
     Return a command list that runs a system Python we can use to create a venv.
     On Windows try the py launcher; on POSIX try python3.
     """
+    import shutil, platform, subprocess
+    if platform.system() == "Darwin":
+        for exe in ("/opt/homebrew/bin/python3", "/usr/local/bin/python3", "/usr/bin/python3"):
+            if shutil.which(exe) or os.path.exists(exe):
+                try:
+                    r = subprocess.run([exe, "-c", "import sys; print(sys.version)"],
+                                       stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+                    if r.returncode == 0:
+                        return [exe]
+                except Exception:
+                    pass    
     if platform.system() == "Windows":
         # Try specific versions first via py launcher
         for args in (["py","-3.11"], ["py","-3.10"], ["py","-3"], ["python3"], ["python"]):
