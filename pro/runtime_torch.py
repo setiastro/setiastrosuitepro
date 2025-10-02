@@ -205,3 +205,40 @@ def _find_system_python_cmd() -> list[str]:
         "Could not find a system Python to create the runtime environment.\n"
         "Install Python 3.10+ or set SASPRO_RUNTIME_DIR to a writable path."
     )
+
+def add_runtime_to_sys_path(status_cb=print) -> None:
+    """
+    If the per-user venv exists, add its site-packages to sys.path so imports
+    (like 'import torch') work on a fresh app launch without re-installing.
+    No network / install is performed here.
+    """
+    rt = _user_runtime_dir()
+    p  = _venv_paths(rt)
+    vpy = p["python"]
+    if not vpy.exists():
+        return  # venv not created yet
+
+    try:
+        site = _site_packages(vpy)
+        sp = str(site)
+        if sp not in sys.path:
+            sys.path.insert(0, sp)
+            # Optional: tiny hint for logs
+            try: status_cb(f"Added runtime site-packages to sys.path: {sp}")
+            except Exception: pass
+
+        # Also add the other common macOS/Unix site-packages in case 'site' returns platlib/purelib variant.
+        # This avoids edge cases on different Python builds.
+        candidates = [
+            site,
+            site.parent / "site-packages",
+            site.parent / "dist-packages",
+        ]
+        for c in candidates:
+            sc = str(c)
+            if c.exists() and sc not in sys.path:
+                sys.path.insert(0, sc)
+
+    except Exception:
+        # Non-fatal; we'll fall back to the subprocess probe in current_backend()
+        return
