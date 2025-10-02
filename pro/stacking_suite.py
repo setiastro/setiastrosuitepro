@@ -45,6 +45,7 @@ from pro import comet_stacking as CS
 from pro.mfdeconv import MultiFrameDeconvWorker
 from pro.accel_installer import current_backend
 from pro.accel_workers import AccelInstallWorker
+from pro.runtime_torch import add_runtime_to_sys_path
 
 _WINDOWS_RESERVED = {
     "CON","PRN","AUX","NUL",
@@ -1716,6 +1717,7 @@ class StackingSuiteDialog(QDialog):
         self.dark_tab = self.create_dark_tab()
         self.flat_tab = self.create_flat_tab()
         self.light_tab = self.create_light_tab()
+        add_runtime_to_sys_path(status_cb=lambda *_: None)
         self.image_integration_tab = self.create_image_registration_tab()
 
         # Add the tabs in desired order. (Conversion first)
