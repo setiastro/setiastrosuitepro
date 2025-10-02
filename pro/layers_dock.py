@@ -105,6 +105,7 @@ class LayersDock(QDockWidget):
         self.setObjectName("LayersDock")
         self.mw = main_window
         self.docman = main_window.docman
+        self._wired_title_sources = set()
 
         # UI
         w = QWidget()
@@ -180,7 +181,69 @@ class LayersDock(QDockWidget):
         elif subs:
             self.view_combo.setCurrentIndex(0)
 
+        # NEW: listen for future title changes
+        self._wire_title_change_listeners(subs)
+
         self._rebuild_list()
+
+
+    def _wire_title_change_listeners(self, subs):
+        # connect once per subwindow
+        for sw in subs:
+            if sw in self._wired_title_sources:
+                continue
+            if hasattr(sw, "viewTitleChanged"):
+                try:
+                    sw.viewTitleChanged.connect(lambda *_: self._refresh_titles_only())
+                except Exception:
+                    pass
+            self._wired_title_sources.add(sw)
+
+    def _refresh_titles_only(self):
+        """Update just the titles in the View dropdown, mask source lists,
+        and base-row label, preserving current selection and layer state."""
+        subs = self._all_subwindows()
+        if not subs:
+            return
+
+        # Update the View dropdown text in place
+        self.view_combo.blockSignals(True)
+        cur_idx = self.view_combo.currentIndex()
+        for i, sw in enumerate(subs):
+            t = sw._effective_title() or "Untitled"
+            if i < self.view_combo.count():
+                self.view_combo.setItemText(i, t)
+            else:
+                self.view_combo.addItem(t, userData=sw)
+        self.view_combo.blockSignals(False)
+        if 0 <= cur_idx < self.view_combo.count():
+            self.view_combo.setCurrentIndex(cur_idx)
+
+        # Update mask choices shown in each row (titles only)
+        choices = [(sw._effective_title() or "Untitled", sw.document) for sw in subs]
+        docs = [d for _, d in choices]
+
+        for i in range(self.list.count()):
+            roww = self.list.itemWidget(self.list.item(i))
+            if not isinstance(roww, _LayerRow):
+                continue
+
+            # base row label
+            if getattr(roww, "_is_base", False):
+                vw = self.current_view()
+                base_name = vw._effective_title() if (vw and hasattr(vw, "_effective_title")) else "Current View"
+                roww.setName(f"Base • {base_name}")
+                continue
+
+            # non-base row: update mask combo item texts without changing selection
+            if roww.mask_combo.count() > 0:
+                # index 0 is "(none)"
+                # build a map from doc -> title
+                title_for_doc = {doc: title for title, doc in choices}
+                for idx in range(1, roww.mask_combo.count()):
+                    doc = roww.mask_combo.itemData(idx)
+                    if doc in title_for_doc:
+                        roww.mask_combo.setItemText(idx, title_for_doc[doc])
 
     def current_view(self):
         idx = self.view_combo.currentIndex()
@@ -203,6 +266,28 @@ class LayersDock(QDockWidget):
         for lyr in getattr(vw, "_layers", []):
             raw_name = getattr(lyr, "name", "Layer")
             name = raw_name if isinstance(raw_name, str) else str(raw_name)
+
+            # --- Optional dynamic title sync ---
+            try:
+                src_doc = getattr(lyr, "src_doc", None)
+                # What the document considers its "base" display name
+                doc_disp = None
+                if src_doc is not None:
+                    dn = getattr(src_doc, "display_name", None)
+                    doc_disp = dn() if callable(dn) else dn
+
+                # If our stored name is just the base doc name, prefer the current view title
+                if src_doc is not None and name == (doc_disp or name):
+                    for sw in self._all_subwindows():
+                        if getattr(sw, "document", None) is src_doc:
+                            t = getattr(sw, "_effective_title", None)
+                            if callable(t):
+                                t = t()
+                            if t:
+                                name = t
+                            break
+            except Exception:
+                pass
             mode = getattr(lyr, "mode", "Normal")
             opacity = float(getattr(lyr, "opacity", 1.0))
             visible = bool(getattr(lyr, "visible", True))
@@ -340,7 +425,22 @@ class LayersDock(QDockWidget):
                 src_doc = self._resolve_doc_ptr(doc_ptr)
                 if src_doc is None:
                     raise RuntimeError("Source doc gone")
-                layer_name = src_doc.display_name() if hasattr(src_doc, "display_name") else "Layer"
+                layer_name = "Layer"
+                src_title = None
+                for sw in self._all_subwindows():
+                    if getattr(sw, "document", None) is src_doc:
+                        t = getattr(sw, "_effective_title", None)
+                        if callable(t):
+                            t = t()
+                        src_title = t or None
+                        break
+
+                if src_title:
+                    layer_name = src_title
+                else:
+                    # fallback to document display name
+                    dn = getattr(src_doc, "display_name", None)
+                    layer_name = dn() if callable(dn) else (dn or "Layer")
                 new_layer = ImageLayer(
                     name=layer_name,
                     src_doc=src_doc,

@@ -60,7 +60,7 @@ def _as_qimage_rgb8(float01: np.ndarray) -> QImage:
 
     # Prefer zero-copy via sip pointer if available; fall back to bytes
     try:
-        import sip
+        from PyQt6 import sip
         qimg = QImage(sip.voidptr(buf8.ctypes.data), w, h, bpl, QImage.Format.Format_RGB888)
         qimg._keepalive = buf8  # keep numpy alive while qimg exists
         return qimg.copy()      # detach so Qt owns the pixels (safe for QPixmap.fromImage)

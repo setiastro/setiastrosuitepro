@@ -13,7 +13,7 @@ from typing import List
 from PyQt6.QtCore import Qt, QTimer, QSettings, pyqtSignal, QObject, pyqtSlot, QThread, QEvent, QPoint, QSize, QEventLoop, QCoreApplication, QRectF, QPointF, QMetaObject
 from PyQt6.QtGui import QIcon, QImage, QPixmap, QAction, QIntValidator, QDoubleValidator, QFontMetrics, QTextCursor, QPalette, QPainter, QPen, QTransform, QColor, QBrush, QCursor
 from PyQt6.QtWidgets import (QDialog, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QLineEdit, QTreeWidget, QHeaderView, QTreeWidgetItem, QProgressBar, QProgressDialog,
-                             QFormLayout, QDialogButtonBox, QToolBar, QToolButton, QFileDialog, QTabWidget, QAbstractItemView, QSpinBox, QDoubleSpinBox,
+                             QFormLayout, QDialogButtonBox, QToolBar, QToolButton, QFileDialog, QTabWidget, QAbstractItemView, QSpinBox, QDoubleSpinBox, QGroupBox,
                              QSizePolicy, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QApplication, QScrollArea, QTextEdit, QMenu, QPlainTextEdit, QGraphicsEllipseItem,
                              QMessageBox, QSlider, QCheckBox, QInputDialog, QComboBox)
 from datetime import datetime, timezone
@@ -43,6 +43,8 @@ from pro.log_bus import LogBus
 from pro import comet_stacking as CS
 #from pro.remove_stars import starnet_starless_from_array, darkstar_starless_from_array
 from pro.mfdeconv import MultiFrameDeconvWorker
+from pro.accel_installer import current_backend
+from pro.accel_workers import AccelInstallWorker
 
 _WINDOWS_RESERVED = {
     "CON","PRN","AUX","NUL",
@@ -1762,12 +1764,6 @@ class StackingSuiteDialog(QDialog):
         self.restore_saved_master_calibrations()
         self._update_stacking_path_display()
 
-
-        self.settings.setValue("stacking/mfdeconv/enabled", False)           # beta off
-        self.settings.setValue("stacking/mfdeconv/iters", 20)               # iterations
-        self.settings.setValue("stacking/mfdeconv/kappa", 2.0)              # update clip
-        self.settings.setValue("stacking/mfdeconv/color_mode", "luma")      # "luma" | "perchannel"
-        self.settings.setValue("stacking/mfdeconv/huber_delta", 0.0)        # 0 => off (LS loss)
 
     def _elide_chars(self, s: str, max_chars: int) -> str:
         if not s:
@@ -4049,6 +4045,124 @@ class StackingSuiteDialog(QDialog):
         comet_row.addStretch(1)
         layout.addLayout(comet_row)
 
+        mf_box = QGroupBox("MFDeconv (beta) — Multi-Frame Deconvolution (ImageMM)")
+        mf_v = QVBoxLayout(mf_box)
+
+        # sensible defaults if missing
+        def _get(key, default, t):
+            return self.settings.value(key, default, type=t)
+
+        # row 1: enable
+        mf_row1 = QHBoxLayout()
+        self.mf_enabled_cb = QCheckBox("Enable MFDeconv during integration")
+        self.mf_enabled_cb.setChecked(_get("stacking/mfdeconv/enabled", False, bool))
+        self.mf_enabled_cb.setToolTip("Runs multi-frame deconvolution during integration. Turn off if testing.")
+        mf_row1.addWidget(self.mf_enabled_cb)
+        mf_row1.addStretch(1)
+        mf_v.addLayout(mf_row1)
+
+        # row 2: iterations + kappa
+        mf_row2 = QHBoxLayout()
+        mf_row2.addWidget(QLabel("Iterations:"))
+        self.mf_iters_spin = QSpinBox()
+        self.mf_iters_spin.setRange(1, 500)
+        self.mf_iters_spin.setValue(_get("stacking/mfdeconv/iters", 20, int))
+        self.mf_iters_spin.setToolTip("Number of multiplicative update steps (e.g., 10–60).")
+        mf_row2.addWidget(self.mf_iters_spin)
+
+        mf_row2.addSpacing(16)
+        mf_row2.addWidget(QLabel("Update clip (κ):"))
+        self.mf_kappa_spin = QDoubleSpinBox()
+        self.mf_kappa_spin.setRange(0.0, 10.0)
+        self.mf_kappa_spin.setDecimals(3)
+        self.mf_kappa_spin.setSingleStep(0.1)
+        self.mf_kappa_spin.setValue(_get("stacking/mfdeconv/kappa", 2.0, float))
+        self.mf_kappa_spin.setToolTip("Kappa clipping for multiplicative updates (typ. ~2.0).")
+        mf_row2.addWidget(self.mf_kappa_spin)
+        mf_row2.addStretch(1)
+        mf_v.addLayout(mf_row2)
+
+        # row 3: color mode + huber_delta
+        mf_row3 = QHBoxLayout()
+        mf_row3.addWidget(QLabel("Color mode:"))
+        self.mf_color_combo = QComboBox()
+        self.mf_color_combo.addItems(["luma", "perchannel"])
+        # ensure current text is valid
+        _cm = _get("stacking/mfdeconv/color_mode", "perchannel", str)
+        if _cm not in ("luma", "perchannel"):
+            _cm = "perchannel"
+        self.mf_color_combo.setCurrentText(_cm)
+        self.mf_color_combo.setToolTip("‘luma’ deconvolves the luminance only; ‘perchannel’ runs on RGB independently.")
+        mf_row3.addWidget(self.mf_color_combo)
+
+        mf_row3.addSpacing(16)
+        mf_row3.addWidget(QLabel("Huber δ:"))
+        self.mf_huber_spin = QDoubleSpinBox()
+        self.mf_huber_spin.setRange(-1000.0, 1000.0)   # negative allowed
+        self.mf_huber_spin.setDecimals(4)
+        self.mf_huber_spin.setSingleStep(0.1)
+        self.mf_huber_spin.setValue(_get("stacking/mfdeconv/huber_delta", 2.0, float))
+        self.mf_huber_spin.setToolTip(
+            "Robust Huber threshold in σ units. ~2–3× background RMS is typical.\n"
+            "Negative values are scale*RMS, positive values are hardcoded deltas."
+        )
+        mf_row3.addWidget(self.mf_huber_spin)
+        
+        self.mf_huber_hint = QLabel("(<0 = scale×RMS, >0 = absolute Δ)")
+        self.mf_huber_hint.setToolTip("Negative = factor times background RMS (auto). Positive = fixed absolute threshold.")
+        self.mf_huber_hint.setStyleSheet("color: #888;")  # subtle hint color
+        mf_row3.addWidget(self.mf_huber_hint)        
+        mf_row3.addStretch(1)
+        mf_v.addLayout(mf_row3)
+
+        # write-through bindings
+        self.mf_enabled_cb.toggled.connect(
+            lambda v: self.settings.setValue("stacking/mfdeconv/enabled", bool(v))
+        )
+        self.mf_iters_spin.valueChanged.connect(
+            lambda v: self.settings.setValue("stacking/mfdeconv/iters", int(v))
+        )
+        self.mf_kappa_spin.valueChanged.connect(
+            lambda v: self.settings.setValue("stacking/mfdeconv/kappa", float(v))
+        )
+        self.mf_color_combo.currentTextChanged.connect(
+            lambda s: self.settings.setValue("stacking/mfdeconv/color_mode", s)
+        )
+        self.mf_huber_spin.valueChanged.connect(
+            lambda v: self.settings.setValue("stacking/mfdeconv/huber_delta", float(v))
+        )
+
+        accel_row = QHBoxLayout()
+        self.backend_label = QLabel(f"Backend: {current_backend()}")
+        accel_row.addWidget(self.backend_label)
+
+        self.install_accel_btn = QPushButton("Install/Update GPU Acceleration…")
+        self.install_accel_btn.setToolTip("Downloads PyTorch with the right backend (CUDA/MPS/CPU). One-time per machine.")
+        accel_row.addWidget(self.install_accel_btn)
+        accel_row.addStretch(1)
+        mf_v.addLayout(accel_row)
+
+        def _install_accel():
+            self.install_accel_btn.setEnabled(False)
+            self.backend_label.setText("Backend: installing…")
+            self._accel_thread = QThread(self)
+            self._accel_worker = AccelInstallWorker(prefer_gpu=True)
+            self._accel_worker.moveToThread(self._accel_thread)
+            self._accel_thread.started.connect(self._accel_worker.run)
+            self._accel_worker.progress.connect(lambda s: self.status_signal.emit(s))
+            def _done(ok: bool, msg: str):
+                self.status_signal.emit(("✅ " if ok else "❌ ") + msg)
+                self._accel_thread.quit(); self._accel_thread.wait()
+                self.install_accel_btn.setEnabled(True)
+                # Refresh label to reflect new state
+                from pro.accel_installer import current_backend
+                self.backend_label.setText(f"Backend: {current_backend()}")
+            self._accel_worker.finished.connect(_done)
+            self._accel_thread.start()
+
+        self.install_accel_btn.clicked.connect(_install_accel)
+
+        layout.addWidget(mf_box)
 
         # ★★ Star-Trail Mode ★★
         trail_layout = QHBoxLayout()

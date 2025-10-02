@@ -4,10 +4,7 @@ from typing import Dict, List, Tuple
 import numpy as np
 
 # Reuse LUT + apply engine from Curves editor (with a safe fallback import)
-try:
-    from pro.curves_editor_pro import build_curve_lut, _apply_mode_any
-except Exception:
-    from pro.curve_editor_pro import build_curve_lut, _apply_mode_any  # if your file name lacks the 's'
+from pro.curve_editor_pro import build_curve_lut, _apply_mode_any  # if your file name lacks the 's'
 
 # Optional PCHIP interpolation (nice-to-have; we’ll fall back to np.interp)
 try:

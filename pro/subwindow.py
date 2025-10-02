@@ -74,11 +74,13 @@ class ImageSubWindow(QWidget):
     requestDuplicate = pyqtSignal(object)  # document
     layers_changed = pyqtSignal() 
     autostretchProfileChanged = pyqtSignal(str)
+    viewTitleChanged = pyqtSignal(object, str)
 
 
     def __init__(self, document, parent=None):
         super().__init__(parent)
         self.document = document
+        self._last_title_for_emit = None
 
 
         # view state
@@ -239,11 +241,6 @@ class ImageSubWindow(QWidget):
         self._render(rebuild=True)
 
     def _rebuild_title(self, *, base: str | None = None):
-        """Compose the window title from flags + base title.
-
-        Order: mask glyph (if any) → 'Active View:' (if any) → base
-        Example: '■ Active View: M31.png'
-        """
         sub = self._mdi_subwindow()
         if not sub:
             return
@@ -256,8 +253,17 @@ class ImageSubWindow(QWidget):
         if self._mask_dot_enabled:
             title = f"{MASK_GLYPH} {title}"
 
-        sub.setWindowTitle(title)
-        sub.setToolTip(title)
+        # only emit when it actually changes
+        if title != sub.windowTitle():
+            sub.setWindowTitle(title)
+            sub.setToolTip(title)
+            if title != self._last_title_for_emit:
+                self._last_title_for_emit = title
+                # notify listeners (Layers dock etc.)
+                try:
+                    self.viewTitleChanged.emit(self, title)
+                except Exception:
+                    pass
 
 
     def _strip_decorations(self, title: str) -> tuple[str, bool]:
@@ -430,7 +436,15 @@ class ImageSubWindow(QWidget):
         new, ok = QInputDialog.getText(self, "Rename View", "New view name:", text=current)
         if ok and new.strip():
             self._view_title_override = new.strip()
-            self._sync_host_title()
+            self._sync_host_title()  # calls _rebuild_title → emits viewTitleChanged
+
+            # optional: directly ping layers dock (defensive)
+            mw = self._find_main_window()
+            if mw and hasattr(mw, "layers_dock") and mw.layers_dock:
+                try:
+                    mw.layers_dock._refresh_titles_only()
+                except Exception:
+                    pass
 
     def _rename_document(self):
         current = self.document.display_name()

@@ -63,12 +63,15 @@ class _AstrobinIdDelegate(QStyledItemDelegate):
 
 # ---- Filter ID editor ------------------------------------------------------
 
+
+
 class FilterIdDialog(QDialog):
     """
     Editable table: local filter name ↔ AstroBin numeric ID.
     Loads/saves mapping in QSettings key: astrobin_exporter/filter_map
     Also supports an offline CSV for ID lookup / completion.
     """
+
     BLANK_ROWS = 6
 
     def __init__(self, parent, filters_in_data: List[str], settings: QSettings,
@@ -225,8 +228,8 @@ class FilterIdDialog(QDialog):
             return saved
 
         # 2) module default (if you kept it)
-        if os.path.isfile(OFFLINE_FILTERS_CSV_DEFAULT):
-            return OFFLINE_FILTERS_CSV_DEFAULT
+        if os.path.isfile(self._offline_csv_default):
+            return self._offline_csv_default
         return None
 
     def _update_offline_button_text(self):

@@ -36,83 +36,101 @@ def _subpixel_shift_to_center(patch: np.ndarray) -> np.ndarray:
 def compute_psf_kernel_for_image(
     image: np.ndarray,
     *,
-    ksize: int = 21,
+    ksize: int | None = 21,
     det_sigma: float = 6.0,
     max_stars: int = 60,
-    max_ecc: float = 0.5,        # 0 = round, ~0.5 ok
+    max_ecc: float = 0.5,
     min_flux: float = 0.0,
-    max_frac_saturation: float = 0.8
-) -> np.ndarray | None:
+    max_frac_saturation: float = 0.98,   # was 0.8 → far too strict
+    return_info: bool = True             # new: return (psf, info)
+) -> np.ndarray | tuple[np.ndarray, dict] | None:
     """
-    Returns a normalized (ksize×ksize) PSF kernel or None on failure.
-    - Uses SEP to detect stars.
-    - Rejects saturated, very elongated, and low-flux sources.
-    - Median-combines sub-pixel centered cutouts.
+    Returns a normalized (ksize×ksize) PSF (or (psf, info) if return_info=True).
+    - SEP detects stars; rejects saturated/elongated/low-flux sources.
+    - Subpixel centers each cutout and median-combines.
+    - Auto-selects ksize if None, or downsizes when stars are very small.
     """
     if image is None:
         return None
     img = _to_luma(image)
-    # Robust background
+    info = {}
+
+    # Robust background & detection
     bkg = sep.Background(img)
     data = img - bkg.back()
-    try:
-        err = bkg.globalrms
-    except Exception:
-        err = float(np.median(bkg.rms()))
-    # Detect
+    try: err = bkg.globalrms
+    except Exception: err = float(np.median(bkg.rms()))
     sources = sep.extract(data, det_sigma, err=err)
     if sources is None or len(sources) == 0:
         return None
 
-    # Compute eccentricity proxy and filter
-    a = np.array(sources["a"], dtype=np.float32)
+    # Star size & shape
+    a = np.array(sources["a"], dtype=np.float32)   # SEP Gaussian sigma along major axis (≈ σ)
     b = np.array(sources["b"], dtype=np.float32)
-    ecc = np.sqrt(1.0 - (b / np.maximum(a, 1e-9))**2)  # 0..1
+    ecc = np.sqrt(1.0 - (b / np.maximum(a, 1e-9))**2)
     flux = np.array(sources["flux"], dtype=np.float32)
-    # Dynamic saturation guess: near-maximum pixel inside cutout
-    # We'll do a quick pre-check using local max later.
 
+    # Estimate typical FWHM in px from 'a' (use median of central bulk)
+    good_a = a[np.isfinite(a) & (a > 0.5)]
+    if good_a.size:
+        sigma_med = float(np.median(good_a))
+        fwhm_med  = 2.3548 * sigma_med
+    else:
+        sigma_med, fwhm_med = 1.2, 2.8  # fallback
+
+    # Auto kernel size if None or wildly big vs star size
+    if (ksize is None) or (ksize > int(6.0 * sigma_med) + 1):
+        ksize = int(2 * np.ceil(3.0 * sigma_med) + 1)
+        ksize = int(np.clip(ksize, 9, 25))  # clamp to practical window
+    k = int(ksize) | 1  # enforce odd
+    info.update({"ksize": k, "fwhm_med_px": fwhm_med})
+
+    # Filtering
     idx = np.where(
         (np.isfinite(a)) & (np.isfinite(b)) &
         (a > 0.5) & (b > 0.5) &
         (ecc <= max_ecc) &
         (flux > min_flux)
     )[0]
+    info["detected"] = int(len(sources))
 
     if idx.size == 0:
         return None
 
-    # Sort by flux descending and cap
-    idx = idx[np.argsort(-flux[idx])]  # bright first
+    # Bright-ish first, cap
+    idx = idx[np.argsort(-flux[idx])]
     idx = idx[:max_stars]
 
-    patches = []
+    patches, rejected = [], 0
     for i in idx:
         cy, cx = float(sources["y"][i]), float(sources["x"][i])
-        patch = _cutout(data, cy, cx, ksize)
+        patch = _cutout(data, cy, cx, k)
         if patch is None:
-            continue
-        # Saturation test: center fraction must be below max_frac_saturation of its local peak
+            rejected += 1; continue
         peak = float(np.max(patch))
-        center = patch[ksize//2, ksize//2]
-        if peak <= EPS or (center / (peak + EPS)) > max_frac_saturation:
-            # if center is already too close to peak value, it's likely saturated/flat-topped
-            continue
-        # Sub-pixel center and normalize
+        center = float(patch[k//2, k//2])
+        # reject *obvious* clipped cores only
+        if peak > 0 and (center / (peak + EPS)) >= max_frac_saturation:
+            rejected += 1; continue
         try:
             patch = _subpixel_shift_to_center(patch)
         except Exception:
             pass
         s = float(np.sum(patch))
         if s <= 0:
-            continue
+            rejected += 1; continue
         patches.append(patch / (s + EPS))
+
+    info["rejected"] = int(rejected)
+    info["used_stars"] = int(len(patches))
 
     if not patches:
         return None
 
-    psf = np.median(np.stack(patches, axis=0), axis=0)
-    s = float(np.sum(psf))
+    psf = np.median(np.stack(patches, axis=0), axis=0).astype(np.float32, copy=False)
+    s = float(psf.sum())
     if s <= 0:
         return None
-    return (psf / (s + EPS)).astype(np.float32)
+    psf = psf / (s + EPS)
+    return (psf, info) if return_info else psf
+
