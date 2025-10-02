@@ -94,36 +94,62 @@ def _ensure_venv(rt: Path, status_cb=print) -> Path:
 
 
 def _install_torch(venv_python: Path, prefer_cuda: bool, status_cb=print):
-    torch_pkgs = ["torch"]
-    index_args = []
+    """
+    Install torch into the per-user venv.
+
+    Linux behavior (no NVIDIA / CPU path) is now more robust:
+      - Try PyPI first
+      - If that fails, retry with the official CPU index
+      - If that fails, upgrade pip/setuptools/wheel and retry CPU index once more
+    """
+    import platform
     sysname = platform.system()
-    try_cuda = prefer_cuda and sysname in ("Windows","Linux")
-    if try_cuda:
-        index_args = ["--index-url", "https://download.pytorch.org/whl/cu121"]
+    try_cuda = prefer_cuda and sysname in ("Windows", "Linux")
+
+    def _pip(*args):
+        subprocess.check_call([str(venv_python), "-m", "pip", *args])
 
     try:
-        status_cb("Installing PyTorch (one-time download)…")
-        subprocess.check_call([str(venv_python), "-m", "pip", "install", *torch_pkgs, *index_args])
-    except subprocess.CalledProcessError as e:
-        # pip returned non-zero (not permissions) → try CPU or bubble up
         if try_cuda:
-            status_cb("CUDA wheels not available—falling back to CPU-only PyTorch.")
-            try:
-                subprocess.check_call([str(venv_python), "-m", "pip", "install",
-                                       "torch", "--index-url", "https://download.pytorch.org/whl/cpu"])
-            except Exception as e2:
-                if _is_access_denied(e2):
-                    # Permission issue writing into the venv
-                    rt = Path(str(venv_python)).parents[1]  # …/runtime/py311
-                    raise OSError(_access_denied_msg(rt)) from e2
-                raise
+            # ── CUDA path (unchanged for Windows/Linux with NVIDIA) ───────────────────
+            status_cb("Installing PyTorch (one-time download)…")
+            _pip("install", "torch", "--index-url", "https://download.pytorch.org/whl/cu121")
         else:
-            raise
+            # ── CPU path ─────────────────────────────────────────────────────────────
+            status_cb("Installing PyTorch (CPU)…")
+            try:
+                # 1) PyPI first (works on many Linux distros)
+                _pip("install", "torch")
+            except subprocess.CalledProcessError as e1:
+                if sysname == "Linux":
+                    status_cb("PyPI CPU install failed on Linux → retrying with the official CPU index…")
+                    try:
+                        # 2) Official CPU index retry
+                        _pip("install", "torch", "--index-url", "https://download.pytorch.org/whl/cpu")
+                    except subprocess.CalledProcessError as e2:
+                        status_cb("CPU index install also failed → upgrading pip/wheel/setuptools and retrying once…")
+                        try:
+                            # 3) Upgrade tooling and try CPU index again
+                            _pip("install", "--upgrade", "pip", "wheel", "setuptools")
+                            _pip("install", "torch", "--index-url", "https://download.pytorch.org/whl/cpu")
+                        except Exception as e3:
+                            # Propagate the last error
+                            raise e3
+                else:
+                    # Non-Linux CPU failure → just bubble up (macOS path is handled elsewhere)
+                    raise e1
+
+    except subprocess.CalledProcessError as e:
+        # Not a permissions error; let caller handle/report details
+        # (Permissions issues are handled below)
+        raise
     except Exception as e:
+        # Map explicit permission denials to our friendly message
         if _is_access_denied(e):
-            rt = Path(str(venv_python)).parents[1]
+            rt = Path(str(venv_python)).parents[1]  # …/runtime/py311
             raise OSError(_access_denied_msg(rt)) from e
         raise
+
 
 
 def import_torch(prefer_cuda: bool = True, status_cb=print):
