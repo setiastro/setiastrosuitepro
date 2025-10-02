@@ -3,7 +3,7 @@ from __future__ import annotations
 import platform, subprocess, sys
 from typing import Callable, Optional
 
-from pro.runtime_torch import import_torch
+from pro.runtime_torch import import_torch, add_runtime_to_sys_path, _user_runtime_dir, _venv_paths
 
 LogCB = Callable[[str], None]
 
@@ -39,16 +39,67 @@ def ensure_torch_installed(prefer_gpu: bool, log_cb: LogCB) -> tuple[bool, Optio
         return False, str(e)
 
 def current_backend() -> str:
+    """
+    Report the detected torch backend without forcing a network install.
+    1) Try in-process import (after warming sys.path).
+    2) If that fails but the venv exists, probe it via its python (subprocess).
+    """
     try:
-        import torch  # ← do NOT call import_torch here
-        if hasattr(torch, "cuda") and torch.cuda.is_available():
+        # Warm sys.path so a fresh launch can see the venv immediately
+        add_runtime_to_sys_path(status_cb=lambda *_: None)
+
+        import importlib
+        torch = importlib.import_module("torch")  # may still fail if venv missing
+        if hasattr(torch, "cuda") and getattr(torch.cuda, "is_available", lambda: False)():
             try:
                 name = torch.cuda.get_device_name(0)
             except Exception:
                 name = "CUDA"
             return f"CUDA ({name})"
-        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        if hasattr(torch, "backends") and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             return "Apple MPS"
         return "CPU"
     except Exception:
+        # Fall back to probing the venv directly (doesn't depend on current sys.path)
+        try:
+            rt = _user_runtime_dir()
+            paths = _venv_paths(rt)
+            vpy = paths["python"]
+            if not vpy.exists():
+                return "Not installed"
+
+            import json, subprocess, textwrap
+            code = textwrap.dedent(
+                """
+                import json, platform
+                try:
+                    import torch
+                except Exception as e:
+                    print(json.dumps({"ok": False, "err": str(e)})); raise SystemExit(0)
+                out = {
+                    "ok": True,
+                    "ver": getattr(torch, "__version__", "?"),
+                    "cuda": bool(getattr(torch, "cuda", None) and torch.cuda.is_available()),
+                    "mps":  bool(getattr(torch.backends, "mps", None) and torch.backends.mps.is_available()),
+                }
+                if out["cuda"]:
+                    try:
+                        out["dev"] = torch.cuda.get_device_name(0)
+                    except Exception:
+                        out["dev"] = "CUDA"
+                print(json.dumps(out))
+                """
+            ).strip()
+            r = subprocess.run([str(vpy), "-c", code], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            if r.returncode == 0:
+                info = json.loads(r.stdout.strip().splitlines()[-1])
+                if not info.get("ok"):
+                    return "Not installed"
+                if info.get("cuda"):
+                    return f"CUDA ({info.get('dev','CUDA')})"
+                if info.get("mps"):
+                    return "Apple MPS"
+                return "CPU"
+        except Exception:
+            pass
         return "Not installed"
