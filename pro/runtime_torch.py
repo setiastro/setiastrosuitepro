@@ -5,9 +5,52 @@ from pathlib import Path
 import errno
 import importlib
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Helpers for diagnosing and avoiding torch import shadowing
-# ──────────────────────────────────────────────────────────────────────────────
+import re
+
+def _runtime_base_dir() -> Path:
+    """Base folder that may contain multiple versioned runtimes (py39, py310, py311...)."""
+    env_override = os.getenv("SASPRO_RUNTIME_DIR")
+    if env_override:
+        base = Path(env_override).expanduser().resolve()
+    else:
+        sysname = platform.system()
+        if sysname == "Windows":
+            base = Path(os.getenv("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+        elif sysname == "Darwin":
+            base = Path.home() / "Library" / "Application Support"
+        else:
+            base = Path(os.getenv("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+        base = base / "SASpro" / "runtime"
+    return base
+
+def _current_tag() -> str:
+    return f"py{sys.version_info.major}{sys.version_info.minor}"
+
+def _discover_existing_runtime_dir() -> Path | None:
+    """Return the newest existing runtime dir that already has a venv python."""
+    base = _runtime_base_dir()
+    if not base.exists():
+        return None
+    candidates = []
+    for p in base.glob("py*"):
+        vpy = (p / "venv" / ("Scripts/python.exe" if platform.system()=="Windows" else "bin/python"))
+        if vpy.exists():
+            # parse pyMAJORMINOR
+            m = re.match(r"^py(\d)(\d+)$", p.name)
+            ver = (int(m.group(1)), int(m.group(2))) if m else (0, 0)
+            candidates.append((ver, p))
+    if not candidates:
+        return None
+    candidates.sort()
+    return candidates[-1][1]  # newest
+
+def _user_runtime_dir() -> Path:
+    """
+    Use an existing runtime if we find one; otherwise select a directory for the
+    current interpreter version (py39/py310/py311...).
+    """
+    existing = _discover_existing_runtime_dir()
+    return existing or (_runtime_base_dir() / _current_tag())
 
 def _demote_shadow_torch_paths(status_cb=print) -> None:
     """
