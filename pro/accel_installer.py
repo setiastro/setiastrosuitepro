@@ -40,7 +40,7 @@ def ensure_torch_installed(prefer_gpu: bool, log_cb: LogCB) -> tuple[bool, Optio
 
 def current_backend() -> str:
     try:
-        torch = import_torch(prefer_cuda=False, status_cb=lambda *_: None)  # import without forcing CUDA download
+        import torch  # ← do NOT call import_torch here
         if hasattr(torch, "cuda") and torch.cuda.is_available():
             try:
                 name = torch.cuda.get_device_name(0)

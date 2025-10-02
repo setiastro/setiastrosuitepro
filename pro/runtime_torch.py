@@ -3,6 +3,8 @@ from __future__ import annotations
 import os, sys, subprocess, platform, shutil, json
 from pathlib import Path
 
+
+import platform
 import errno
 
 def _is_access_denied(exc: BaseException) -> bool:
@@ -61,7 +63,12 @@ def _ensure_venv(rt: Path, status_cb=print) -> Path:
         try:
             status_cb(f"Setting up SASpro runtime venv at: {p['venv']}")
             p["venv"].mkdir(parents=True, exist_ok=True)
-            subprocess.check_call([sys.executable, "-m", "venv", str(p["venv"])])
+
+            # Use system Python (NOT sys.executable) to create the venv in frozen builds.
+            py_cmd = _find_system_python_cmd() if getattr(sys, "frozen", False) else [sys.executable]
+            subprocess.check_call(py_cmd + [" -m venv ".strip(), str(p["venv"])])
+
+            # bootstrap pip in the venv and upgrade tools
             subprocess.check_call([str(p["python"]), "-m", "ensurepip", "--upgrade"])
             subprocess.check_call([str(p["python"]), "-m", "pip", "install", "--upgrade", "pip", "wheel", "setuptools"])
         except Exception as e:
@@ -70,8 +77,6 @@ def _ensure_venv(rt: Path, status_cb=print) -> Path:
             raise
     return p["python"]
 
-
-import platform
 
 def _install_torch(venv_python: Path, prefer_cuda: bool, status_cb=print):
     torch_pkgs = ["torch"]
@@ -122,7 +127,7 @@ def import_torch(prefer_cuda: bool = True, status_cb=print):
     vp = _ensure_venv(rt, status_cb=status_cb)
     site = _site_packages(vp)
     marker = rt / "torch_installed.json"
-    
+
     if not marker.exists():
         try:
             _install_torch(vp, prefer_cuda=prefer_cuda, status_cb=status_cb)
@@ -139,3 +144,38 @@ def import_torch(prefer_cuda: bool = True, status_cb=print):
     import importlib
     torch = importlib.import_module("torch")
     return torch
+
+def _find_system_python_cmd() -> list[str]:
+    """
+    Return a command list that runs a system Python we can use to create a venv.
+    On Windows try the py launcher; on POSIX try python3.
+    """
+    if platform.system() == "Windows":
+        # Try specific versions first via py launcher
+        for args in (["py","-3.11"], ["py","-3.10"], ["py","-3"], ["python3"], ["python"]):
+            try:
+                r = subprocess.run(args + ["-c","import sys; print(sys.version)"],
+                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+                if r.returncode == 0:
+                    return args
+            except Exception:
+                pass
+    else:
+        for exe in ("python3.11","python3.10","python3"):
+            p = shutil.which(exe)
+            if p:
+                try:
+                    r = subprocess.run([p,"-c","import sys; print(sys.version)"],
+                                       stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+                    if r.returncode == 0:
+                        return [p]
+                except Exception:
+                    pass
+        # last resort
+        p = shutil.which("python")
+        if p:
+            return [p]
+    raise RuntimeError(
+        "Could not find a system Python to create the runtime environment.\n"
+        "Install Python 3.10+ or set SASPRO_RUNTIME_DIR to a writable path."
+    )
