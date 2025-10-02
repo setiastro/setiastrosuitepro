@@ -7,6 +7,29 @@ from pathlib import Path
 import platform
 import errno
 
+import importlib
+
+def _torch_sanity_check(status_cb=print):
+    """
+    Ensure we're importing the wheel (site-packages) and the C-extensions load.
+    Raise RuntimeError with a helpful message if something looks wrong.
+    """
+    try:
+        import torch  # noqa
+        tf = getattr(torch, "__file__", "") or ""
+        if ("site-packages" not in tf) and ("dist-packages" not in tf):
+            raise RuntimeError(
+                "Torch was imported from a source directory, not from site-packages:\n"
+                f"  torch.__file__ = {tf}\n"
+                "This usually means a folder named 'torch' is shadowing the real package.\n"
+                "Rename or remove that folder, or launch SAS Pro from a different directory."
+            )
+        # Force-load the C extension to surface the common failure early
+        importlib.import_module("torch._C")
+    except Exception as e:
+        # Re-raise with a clear header so callers can decide to repair
+        raise RuntimeError(f"PyTorch C-extension check failed: {e}") from e
+
 def _is_access_denied(exc: BaseException) -> bool:
     if not isinstance(exc, OSError):
         return False
@@ -182,9 +205,28 @@ def import_torch(prefer_cuda: bool = True, status_cb=print):
     if str(site) not in sys.path:
         sys.path.insert(0, str(site))
 
-    import importlib
-    torch = importlib.import_module("torch")
-    return torch
+    try:
+        import torch  # noqa
+        _torch_sanity_check(status_cb=status_cb)
+        return torch
+    except Exception as first_err:
+        # On macOS, try a clean reinstall once in case of a broken wheel
+        if platform.system() == "Darwin":
+            try:
+                status_cb("Detected a broken/shadowed Torch import → repairing install…")
+                # remove any stale/bad torch in the venv, purge cache, reinstall
+                subprocess.check_call([str(vp), "-m", "pip", "uninstall", "-y", "torch"])
+                subprocess.check_call([str(vp), "-m", "pip", "cache", "purge"])
+                subprocess.check_call([str(vp), "-m", "pip", "install", "--no-cache-dir", "torch"])
+                importlib.invalidate_caches()
+                import torch  # noqa
+                _torch_sanity_check(status_cb=status_cb)
+                return torch
+            except Exception:
+                # if repair fails, surface the original error (most informative)
+                raise first_err
+        # Non-mac or no repair → bubble up
+        raise
 
 def _find_system_python_cmd() -> list[str]:
     """

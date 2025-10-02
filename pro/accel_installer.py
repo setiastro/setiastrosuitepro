@@ -36,7 +36,17 @@ def ensure_torch_installed(prefer_gpu: bool, log_cb: LogCB) -> tuple[bool, Optio
         _ = getattr(torch, "cuda", None)
         return True, None
     except Exception as e:
-        return False, str(e)
+        msg = str(e)
+        if "PyTorch C-extension check failed" in msg or "Failed to load PyTorch C extensions" in msg:
+            msg += (
+                "\n\nHints:\n"
+                " • Make sure you are not launching SAS Pro from a folder that contains a 'torch' directory.\n"
+                " • If you previously ran a local PyTorch checkout, remove it from PYTHONPATH.\n"
+                " • You can force a clean reinstall by deleting:\n"
+                f"   {os.path.join(str(_user_runtime_dir()), 'venv')}\n"
+                "   then clicking Install/Update again."
+            )
+        return False, msg
 
 def current_backend() -> str:
     """
