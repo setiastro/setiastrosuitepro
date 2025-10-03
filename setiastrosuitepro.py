@@ -969,6 +969,15 @@ class AstroSuiteProMainWindow(QMainWindow):
     def apply_theme_from_settings(self):
         mode = self._theme_mode()
         app = QApplication.instance()
+        color_scheme = app.styleHints().colorScheme()
+        
+        if mode == "system":
+            if color_scheme == Qt.ColorScheme.Dark:
+                print("System is in Dark Mode")
+                mode = "dark"
+            else:
+                print("System is in Light Mode")
+                mode = "light"
 
         if mode == "dark":
             app.setStyle("Fusion")
