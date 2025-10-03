@@ -8,6 +8,7 @@ from contextlib import contextmanager
 # Paths & runtime selection
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def _runtime_base_dir() -> Path:
     """
     Base folder that may contain multiple versioned runtimes (py310, py311, py312...).
@@ -110,6 +111,8 @@ def _ban_shadow_torch_paths(status_cb=print) -> None:
             status_cb("Removed shadowing torch paths: " + ", ".join(banned))
         except Exception:
             pass
+
+_demote_shadow_torch_paths = _ban_shadow_torch_paths
 
 def _purge_bad_torch_from_sysmodules(status_cb=print) -> None:
     """
@@ -295,6 +298,15 @@ def _install_torch(venv_python: Path, prefer_cuda: bool, status_cb=print):
     sysname = _plat.system()
     machine = _plat.machine().lower()
     py_major, py_minor = _pyver()
+
+    if sysname == "Darwin" and ("arm64" in machine or "aarch64" in machine):
+        if py_minor >= 13:
+            raise RuntimeError(
+                f"PyTorch wheels are not available for macOS arm64 on Python {py_major}.{py_minor}. "
+                "Please install Python 3.12 (e.g. `brew install python@3.12`) so SAS Pro can create "
+                "its runtime with 3.12 and install the MPS-enabled torch wheel."
+            )
+
     ladder = _TORCH_VERSION_LADDER.get((py_major, py_minor), ["2.4.*", "2.3.*", "2.2.*"])
 
     status_cb(f"Runtime Python: {py_major}.{py_minor}")
@@ -427,7 +439,23 @@ def import_torch(prefer_cuda: bool = True, status_cb=print):
 def _find_system_python_cmd() -> list[str]:
     import platform as _plat
     if _plat.system() == "Darwin":
-        for exe in ("/opt/homebrew/bin/python3", "/usr/local/bin/python3", "/usr/bin/python3"):
+        # Prefer versions that have PyTorch wheels on arm64.
+        candidates = [
+            "/opt/homebrew/bin/python3.12",
+            "/usr/local/bin/python3.12",
+            "/usr/bin/python3.12",
+            "/opt/homebrew/bin/python3.11",
+            "/usr/local/bin/python3.11",
+            "/usr/bin/python3.11",
+            "/opt/homebrew/bin/python3.10",
+            "/usr/local/bin/python3.10",
+            "/usr/bin/python3.10",
+            # finally, unversioned fallbacks (may be 3.13 — last resort)
+            "/opt/homebrew/bin/python3",
+            "/usr/local/bin/python3",
+            "/usr/bin/python3",
+        ]
+        for exe in candidates:
             if shutil.which(exe) or os.path.exists(exe):
                 try:
                     r = subprocess.run([exe, "-c", "import sys; print(sys.version)"],

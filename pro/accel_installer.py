@@ -37,16 +37,10 @@ def _has_nvidia() -> bool:
       return False
 
 def ensure_torch_installed(prefer_gpu: bool, log_cb: LogCB) -> tuple[bool, Optional[str]]:
-    """
-    Install torch into the per-user venv (runtime_torch) and verify import.
-    Returns (ok, message). If ok==True, torch can be imported.
-    """
     try:
-        # Decide whether to try CUDA wheels
         prefer_cuda = prefer_gpu and _has_nvidia() and platform.system() in ("Windows","Linux")
         log_cb(f"PyTorch install preference: prefer_cuda={prefer_cuda} (OS={platform.system()})")
-        torch = import_torch(prefer_cuda=prefer_cuda, status_cb=log_cb)  # <-- uses per-user venv
-        # Touch CUDA/MPS to confirm GPU availability (optional)
+        torch = import_torch(prefer_cuda=prefer_cuda, status_cb=log_cb)
         _ = getattr(torch, "cuda", None)
         return True, None
     except Exception as e:
@@ -56,9 +50,13 @@ def ensure_torch_installed(prefer_gpu: bool, log_cb: LogCB) -> tuple[bool, Optio
                 "\n\nHints:\n"
                 " • Make sure you are not launching SAS Pro from a folder that contains a 'torch' directory.\n"
                 " • If you previously ran a local PyTorch checkout, remove it from PYTHONPATH.\n"
-                " • You can force a clean reinstall by deleting:\n"
-                f"   {os.path.join(str(_user_runtime_dir()), 'venv')}\n"
-                "   then clicking Install/Update again."
+                f" • To force a clean reinstall, delete: {os.path.join(str(_user_runtime_dir()), 'venv')} and click Install/Update again."
+            )
+        if "macOS arm64 on Python 3.13" in msg:
+            msg += (
+                "\n\nmacOS tip:\n"
+                " • Install Python 3.12: `brew install python@3.12`\n"
+                " • Ensure `/opt/homebrew/bin/python3.12` exists, then relaunch SAS Pro.\n"
             )
         return False, msg
 
