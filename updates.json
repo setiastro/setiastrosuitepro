@@ -1,9 +1,9 @@
 {
-  "version": "1.2.3",
+  "version": "1.2.4",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.2.3/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.2.3/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.2.3/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.2.4/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.2.4/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.2.4/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.2.3 ImageMM (MF Deconv Stacking) Beta. Huge amount of bug fixing with ImageMM: hardening Install Acceleration errors, Per Channel Color mapping, MFDeconv moving onto the next group if multiple image groups present, MFDeconv working in the Integrate Previously Registered Images path, and more."
+  "notes": "Seti Astro Suite Pro V1.2.4 More hardening for users still having issues with torch_C errors with the pytorch installation. Much better progress updates and other fixes."
 }
