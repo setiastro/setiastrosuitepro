@@ -11,17 +11,30 @@ def _run(cmd):
     return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 
 def _has_nvidia() -> bool:
+    """
+    Return True if the machine *appears* to have an NVIDIA adapter.
+    Windows: try PowerShell CIM first (wmic is deprecated), then wmic.
+    Linux: use nvidia-smi.
+    macOS: always False.
+    """
     try:
-        sysname = platform.system()
-        if sysname == "Windows":
-            out = _run(["wmic","path","win32_VideoController","get","name"]).stdout.lower()
-            return "nvidia" in out
-        if sysname == "Linux":
-            out = _run(["nvidia-smi","-L"]).stdout
-            return "GPU" in out
-        return False
+      sysname = platform.system()
+      if sysname == "Windows":
+          # Try CIM (preferred)
+          ps = _run(["powershell","-NoProfile","-Command",
+                     "(Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name) -join ';'"])
+          out = (ps.stdout or "").lower()
+          if "nvidia" in out:
+              return True
+          # Fallback to wmic (older systems)
+          w = _run(["wmic","path","win32_VideoController","get","name"])
+          return "nvidia" in (w.stdout or "").lower()
+      if sysname == "Linux":
+          r = _run(["nvidia-smi","-L"])
+          return "GPU" in (r.stdout or "")
+      return False
     except Exception:
-        return False
+      return False
 
 def ensure_torch_installed(prefer_gpu: bool, log_cb: LogCB) -> tuple[bool, Optional[str]]:
     """
@@ -31,6 +44,7 @@ def ensure_torch_installed(prefer_gpu: bool, log_cb: LogCB) -> tuple[bool, Optio
     try:
         # Decide whether to try CUDA wheels
         prefer_cuda = prefer_gpu and _has_nvidia() and platform.system() in ("Windows","Linux")
+        log_cb(f"PyTorch install preference: prefer_cuda={prefer_cuda} (OS={platform.system()})")
         torch = import_torch(prefer_cuda=prefer_cuda, status_cb=log_cb)  # <-- uses per-user venv
         # Touch CUDA/MPS to confirm GPU availability (optional)
         _ = getattr(torch, "cuda", None)

@@ -1,14 +1,18 @@
 # pro/runtime_torch.py  (hardened against shadowing / broken wheels)
 from __future__ import annotations
-import os, sys, subprocess, platform, shutil, json
+import os, sys, subprocess, platform, shutil, json, time, errno, importlib, re
 from pathlib import Path
-import errno
-import importlib
+from contextlib import contextmanager
 
-import re
+# ──────────────────────────────────────────────────────────────────────────────
+# Paths & runtime selection
+# ──────────────────────────────────────────────────────────────────────────────
 
 def _runtime_base_dir() -> Path:
-    """Base folder that may contain multiple versioned runtimes (py39, py310, py311...)."""
+    """
+    Base folder that may contain multiple versioned runtimes (py310, py311, py312...).
+    Overridable via SASPRO_RUNTIME_DIR (which points to the parent "runtime" dir).
+    """
     env_override = os.getenv("SASPRO_RUNTIME_DIR")
     if env_override:
         base = Path(env_override).expanduser().resolve()
@@ -27,103 +31,97 @@ def _current_tag() -> str:
     return f"py{sys.version_info.major}{sys.version_info.minor}"
 
 def _discover_existing_runtime_dir() -> Path | None:
-    """Return the newest existing runtime dir that already has a venv python."""
+    """
+    Return the newest existing runtime dir that already has a venv python.
+    Accepts folders named 'py310', 'py311', 'py312', etc.
+    """
     base = _runtime_base_dir()
     if not base.exists():
         return None
     candidates = []
     for p in base.glob("py*"):
-        vpy = (p / "venv" / ("Scripts/python.exe" if platform.system()=="Windows" else "bin/python"))
+        vpy = (p / "venv" / ("Scripts/python.exe" if platform.system() == "Windows" else "bin/python"))
         if vpy.exists():
-            # parse pyMAJORMINOR
-            m = re.match(r"^py(\d)(\d+)$", p.name)
-            ver = (int(m.group(1)), int(m.group(2))) if m else (0, 0)
+            # parse digits after "py"
+            m = re.match(r"^py(\d+)$", p.name)
+            ver = int(m.group(1)) if m else 0
             candidates.append((ver, p))
     if not candidates:
         return None
     candidates.sort()
-    return candidates[-1][1]  # newest
+    return candidates[-1][1]  # newest by tag
 
 def _user_runtime_dir() -> Path:
     """
     Use an existing runtime if we find one; otherwise select a directory for the
-    current interpreter version (py39/py310/py311...).
+    current interpreter version (py310/py311/py312...).
     """
     existing = _discover_existing_runtime_dir()
     return existing or (_runtime_base_dir() / _current_tag())
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Shadowing & sanity checks
+# ──────────────────────────────────────────────────────────────────────────────
+
 def _demote_shadow_torch_paths(status_cb=print) -> None:
     """
-    If any entry on sys.path contains a plain 'torch' package directory that does
-    NOT include the compiled extension (_C.*.pyd / .so), move that entry to the
-    end of sys.path so the real wheel in site-packages wins.
-
-    Also handles the common case where the current working directory ('')
-    contains a 'torch/' folder (zip of the repo, etc.).
+    If any entry on sys.path contains a 'torch' package directory that does NOT
+    include the compiled extension (torch/_C.*), move that path to the end so the
+    real wheel in site-packages wins. Also handles CWD ('') and editable src trees.
     """
     def has_compiled_ext(torch_dir: Path) -> bool:
         return any(torch_dir.glob("_C.*.pyd")) or any(torch_dir.glob("_C.*.so")) or any(torch_dir.glob("_C.cpython*"))
 
-    moved = []
-    new_path = []
-    for p in list(sys.path):
+    moved, keep = [], []
+    for entry in list(sys.path):
         try:
-            tp = (Path(p) if p else Path.cwd()) / "torch"
-            if tp.is_dir() and not has_compiled_ext(tp):
-                # Demote this entry to the end
-                moved.append(p or "<cwd>")
-                continue
+            base = (Path(entry) if entry else Path.cwd())
+            td = base / "torch"
+            if td.is_dir():
+                if not has_compiled_ext(td) or (td.parent.name in {"src", "torch"} and not has_compiled_ext(td)):
+                    moved.append(entry or "<cwd>")
+                    continue
         except Exception:
             pass
-        new_path.append(p)
+        keep.append(entry)
 
     if moved:
-        # Re-append moved items at the end in the same order
-        new_path.extend([m if m != "<cwd>" else "" for m in moved])
-        sys.path[:] = new_path
+        keep.extend([m if m != "<cwd>" else "" for m in moved])
+        sys.path[:] = keep
         try:
             status_cb(f"Demoted shadowing paths for torch: {', '.join(moved)}")
         except Exception:
             pass
 
-
 def _torch_sanity_check(status_cb=print):
     """
-    Ensure we're importing the wheel (site-packages/dist-packages) and that the
-    C-extensions load. Raise RuntimeError with a helpful message if wrong.
+    Ensure torch is imported from site/dist-packages and C-extensions load.
+    Also run a tiny tensor op to catch hidden DLL/linker issues early.
     """
     try:
-        import torch  # noqa
+        import torch
         tf = getattr(torch, "__file__", "") or ""
         pkg_dir = Path(tf).parent if tf else None
 
-        # 1) Must come from site/dist-packages
         if ("site-packages" not in tf) and ("dist-packages" not in tf):
-            raise RuntimeError(
-                "Torch was imported from a source directory, not from site-packages:\n"
-                f"  torch.__file__ = {tf}\n"
-                "A folder named 'torch' is shadowing the real package.\n"
-                "Rename/remove that folder, or launch SAS Pro from a different directory."
-            )
+            raise RuntimeError(f"Shadow import: torch.__file__ = {tf}")
 
-        # 2) Must have compiled extension present
         has_ext = any(pkg_dir.glob("_C.*.pyd")) or any(pkg_dir.glob("_C.*.so")) or any(pkg_dir.glob("_C.cpython*"))
         if not has_ext:
-            raise RuntimeError(
-                "Installed torch wheel appears to be missing the compiled extension ('_C').\n"
-                f"  package dir = {pkg_dir}\n"
-                "This can happen if a source tree shadows the wheel or if the wheel install is corrupt."
-            )
+            raise RuntimeError(f"Wheel missing torch._C in {pkg_dir}")
 
-        # 3) Force import of torch._C to trip load-time errors early (DLL load, etc.)
-        importlib.import_module("torch._C")
+        importlib.import_module("torch._C")  # force extension load
 
+        # tiny op to flush runtime linking issues
+        x = torch.ones(1)
+        y = x + 1
+        if int(y.item()) != 2:
+            raise RuntimeError("Unexpected tensor arithmetic result from torch sanity op.")
     except Exception as e:
         raise RuntimeError(f"PyTorch C-extension check failed: {e}") from e
 
-
 # ──────────────────────────────────────────────────────────────────────────────
-# Existing functions (unchanged)
+# OS / permissions helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _is_access_denied(exc: BaseException) -> bool:
@@ -146,25 +144,15 @@ def _access_denied_msg(base_path: Path) -> str:
         "    (e.g. C:\\Users\\<you>\\SASproRuntime) and relaunch."
     )
 
-def _user_runtime_dir() -> Path:
-    env_override = os.getenv("SASPRO_RUNTIME_DIR")
-    if env_override:
-        return Path(env_override).expanduser().resolve() / "py311"
-    sysname = platform.system()
-    if sysname == "Windows":
-        base = Path(os.getenv("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
-    elif sysname == "Darwin":
-        base = Path.home() / "Library" / "Application Support"
-    else:
-        base = Path(os.getenv("XDG_DATA_HOME", Path.home() / ".local" / "share"))
-    return base / "SASpro" / "runtime" / "py311"
+# ──────────────────────────────────────────────────────────────────────────────
+# Venv creation & site discovery
+# ──────────────────────────────────────────────────────────────────────────────
 
 def _venv_paths(rt: Path):
     return {
         "venv": rt / "venv",
-        "python": (rt / "venv" / "Scripts" / "python.exe") if platform.system()=="Windows" else (rt / "venv" / "bin" / "python"),
-        "site": None,
-        "marker": rt / "torch_installed.json"
+        "python": (rt / "venv" / "Scripts" / "python.exe") if platform.system() == "Windows" else (rt / "venv" / "bin" / "python"),
+        "marker": rt / "torch_installed.json",
     }
 
 def _site_packages(venv_python: Path) -> Path:
@@ -197,43 +185,141 @@ def _ensure_venv(rt: Path, status_cb=print) -> Path:
             raise
     return p["python"]
 
-def _install_torch(venv_python: Path, prefer_cuda: bool, status_cb=print):
-    import platform as _plat
-    sysname = _plat.system()
-    try_cuda = prefer_cuda and sysname in ("Windows", "Linux")
+# ──────────────────────────────────────────────────────────────────────────────
+# Install locking & version ladder
+# ──────────────────────────────────────────────────────────────────────────────
 
-    def _pip(*args): subprocess.check_call([str(venv_python), "-m", "pip", *args])
-
+@contextmanager
+def _install_lock(rt: Path, timeout_s: int = 600):
+    """
+    Prevent concurrent partial installs into the same runtime.
+    """
+    lock = rt / ".install.lock"
+    rt.mkdir(parents=True, exist_ok=True)
+    start = time.time()
+    while True:
+        try:
+            fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+            break
+        except FileExistsError:
+            if time.time() - start > timeout_s:
+                raise RuntimeError(f"Another install is running (lock: {lock})")
+            time.sleep(0.5)
     try:
-        if try_cuda:
-            status_cb("Installing PyTorch (one-time download)…")
-            _pip("install", "torch", "--index-url", "https://download.pytorch.org/whl/cu121")
-        else:
-            status_cb("Installing PyTorch (CPU)…")
-            try:
-                _pip("install", "torch")
-            except subprocess.CalledProcessError as e1:
-                if sysname == "Linux":
-                    status_cb("PyPI CPU install failed on Linux → retry with official CPU index…")
-                    try:
-                        _pip("install", "torch", "--index-url", "https://download.pytorch.org/whl/cpu")
-                    except subprocess.CalledProcessError:
-                        status_cb("CPU index install also failed → upgrading pip/setuptools/wheel and retrying…")
-                        _pip("install", "--upgrade", "pip", "wheel", "setuptools")
-                        _pip("install", "torch", "--index-url", "https://download.pytorch.org/whl/cpu")
-                else:
-                    raise e1
-    except subprocess.CalledProcessError:
-        raise
-    except Exception as e:
-        if _is_access_denied(e):
-            rt = Path(str(venv_python)).parents[1]
-            raise OSError(_access_denied_msg(rt)) from e
-        raise
+        yield
+    finally:
+        try:
+            lock.unlink()
+        except Exception:
+            pass
+
+# coarse but practical ladder by Python minor
+_TORCH_VERSION_LADDER: dict[tuple[int, int], list[str]] = {
+    (3, 12): ["2.4.*", "2.3.*", "2.2.*"],
+    (3, 11): ["2.4.*", "2.3.*", "2.2.*", "2.1.*"],
+    (3, 10): ["2.4.*", "2.3.*", "2.2.*", "2.1.*", "1.13.*"],
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Torch installation with robust fallbacks
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _install_torch(venv_python: Path, prefer_cuda: bool, status_cb=print):
+    """
+    Install torch into the per-user venv with best-effort backend detection:
+      • macOS arm64 → PyPI (MPS)
+      • Win/Linux + (prefer_cuda True) → try CUDA indices in order: cu124, cu121, cu118
+      • else → PyPI (CPU), with Linux fallback to official CPU index
+    Uses a version ladder when "no matching distribution" occurs.
+    """
+    import platform as _plat
+
+    def _pip(*args, env=None) -> subprocess.CompletedProcess:
+        e = (os.environ.copy() if env is None else env)
+        e.pop("PYTHONPATH", None); e.pop("PYTHONHOME", None)
+        return subprocess.run([str(venv_python), "-m", "pip", *args],
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=e)
+
+    def _pip_ok(cmd: list[str]) -> bool:
+        r = _pip(*cmd)
+        if r.returncode != 0:
+            # surface tail of pip log for the UI
+            tail = (r.stdout or "").strip()
+            status_cb(tail[-4000:])
+        return r.returncode == 0
+
+    def _pyver() -> tuple[int, int]:
+        code = "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
+        out = subprocess.check_output([str(venv_python), "-c", code], text=True).strip()
+        major, minor = out.split(".")
+        return int(major), int(minor)
+
+    sysname = _plat.system()
+    machine = _plat.machine().lower()
+    py_major, py_minor = _pyver()
+    ladder = _TORCH_VERSION_LADDER.get((py_major, py_minor), ["2.4.*", "2.3.*", "2.2.*"])
+
+    status_cb(f"Runtime Python: {py_major}.{py_minor}")
+
+    # Keep venv tools fresh
+    _pip_ok(["install", "--upgrade", "pip", "setuptools", "wheel"])
+
+    def _try_series(index_url: str | None, versions: list[str]) -> bool:
+        base = ["install", "--prefer-binary"]
+        if index_url:
+            base += ["--index-url", index_url]
+        # latest for that index first
+        if _pip_ok(base + ["torch"]):
+            return True
+        # walk the ladder
+        for v in versions:
+            if _pip_ok(base + [f"torch=={v}"]):
+                return True
+        return False
+
+    # macOS Apple Silicon → MPS wheels on PyPI
+    if sysname == "Darwin" and ("arm64" in machine or "aarch64" in machine):
+        status_cb("Installing PyTorch (macOS arm64, MPS)…")
+        if not _try_series(None, ladder):
+            raise RuntimeError("Failed to find a matching PyTorch wheel for macOS arm64.")
+        return
+
+    # Windows/Linux – CUDA first if requested, then CPU
+    try_cuda = prefer_cuda and sysname in ("Windows", "Linux")
+    cuda_indices = [
+        ("cu124", "https://download.pytorch.org/whl/cu124"),
+        ("cu121", "https://download.pytorch.org/whl/cu121"),
+        ("cu118", "https://download.pytorch.org/whl/cu118"),
+    ]
+
+    if try_cuda:
+        for tag, url in cuda_indices:
+            status_cb(f"Trying PyTorch CUDA wheels: {tag} …")
+            if _try_series(url, ladder):
+                status_cb(f"Installed PyTorch CUDA ({tag}).")
+                return
+            status_cb(f"No matching CUDA {tag} wheel for this Python/OS. Trying next…")
+        status_cb("Falling back to CPU wheels (no matching CUDA wheel).")
+
+    # CPU path
+    status_cb("Installing PyTorch (CPU)…")
+    if _try_series(None, ladder):
+        return
+    if sysname == "Linux":
+        status_cb("Retry with official CPU index…")
+        if _try_series("https://download.pytorch.org/whl/cpu", ladder):
+            return
+    raise RuntimeError("Failed to install any compatible PyTorch wheel (CPU or CUDA).")
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Public entry points
+# ──────────────────────────────────────────────────────────────────────────────
 
 def import_torch(prefer_cuda: bool = True, status_cb=print):
     """
     Ensure a per-user venv exists with torch installed; return the imported module.
+    Hardened against shadow imports, broken wheels, concurrent installs, and partial markers.
     """
     # Before any attempt, demote shadowing paths (CWD / random folders)
     _demote_shadow_torch_paths(status_cb=status_cb)
@@ -251,44 +337,55 @@ def import_torch(prefer_cuda: bool = True, status_cb=print):
     site = _site_packages(vp)
     marker = rt / "torch_installed.json"
 
+    # If no marker, perform install under a lock
     if not marker.exists():
         try:
-            _install_torch(vp, prefer_cuda=prefer_cuda, status_cb=status_cb)
-            marker.write_text(json.dumps({"installed": True}), encoding="utf-8")
+            with _install_lock(rt):
+                # Re-check inside lock in case another process finished
+                if not marker.exists():
+                    _install_torch(vp, prefer_cuda=prefer_cuda, status_cb=status_cb)
         except Exception as e:
             if _is_access_denied(e):
                 raise OSError(_access_denied_msg(rt)) from e
             raise
 
-    # Put the venv first and re-demote any shadowers after adding it
+    # Ensure the venv site is first on sys.path, then demote shadowers again
     if str(site) not in sys.path:
         sys.path.insert(0, str(site))
     _demote_shadow_torch_paths(status_cb=status_cb)
 
-    # Try import + sanity; if it fails, do a one-time repair on macOS/Windows
+    # Import + sanity. If broken, force a clean repair (all OSes).
+    def _force_repair():
+        try:
+            status_cb("Detected broken/shadowed Torch import → attempting clean repair…")
+        except Exception:
+            pass
+        subprocess.run([str(vp), "-m", "pip", "uninstall", "-y", "torch"], check=False)
+        subprocess.run([str(vp), "-m", "pip", "cache", "purge"], check=False)
+        with _install_lock(rt):
+            _install_torch(vp, prefer_cuda=prefer_cuda, status_cb=status_cb)
+        importlib.invalidate_caches()
+        _demote_shadow_torch_paths(status_cb=status_cb)
+
     try:
         import torch  # noqa
         _torch_sanity_check(status_cb=status_cb)
+        # write/update marker only when sane
+        if not marker.exists():
+            pyver = f"{sys.version_info.major}.{sys.version_info.minor}"
+            marker.write_text(json.dumps({"installed": True, "python": pyver, "when": int(time.time())}), encoding="utf-8")
         return torch
-    except Exception as first_err:
-        if platform.system() in ("Darwin", "Windows"):
-            try:
-                status_cb("Detected broken/shadowed Torch import → attempting repair…")
-                subprocess.check_call([str(vp), "-m", "pip", "uninstall", "-y", "torch"])
-                subprocess.check_call([str(vp), "-m", "pip", "cache", "purge"])
-                subprocess.check_call([str(vp), "-m", "pip", "install", "--no-cache-dir", "torch"])
-                importlib.invalidate_caches()
-                _demote_shadow_torch_paths(status_cb=status_cb)
-                import torch  # noqa
-                _torch_sanity_check(status_cb=status_cb)
-                return torch
-            except Exception:
-                # Surface the original (more informative) error
-                raise first_err
-        raise
+    except Exception:
+        _force_repair()
+        import torch  # retry
+        _torch_sanity_check(status_cb=status_cb)
+        if not marker.exists():
+            pyver = f"{sys.version_info.major}.{sys.version_info.minor}"
+            marker.write_text(json.dumps({"installed": True, "python": pyver, "when": int(time.time())}), encoding="utf-8")
+        return torch
 
 def _find_system_python_cmd() -> list[str]:
-    import shutil, platform as _plat
+    import platform as _plat
     if _plat.system() == "Darwin":
         for exe in ("/opt/homebrew/bin/python3", "/usr/local/bin/python3", "/usr/bin/python3"):
             if shutil.which(exe) or os.path.exists(exe):
@@ -300,7 +397,7 @@ def _find_system_python_cmd() -> list[str]:
                 except Exception:
                     pass
     if _plat.system() == "Windows":
-        for args in (["py","-3.11"], ["py","-3.10"], ["py","-3"], ["python3"], ["python"]):
+        for args in (["py","-3.12"], ["py","-3.11"], ["py","-3.10"], ["py","-3"], ["python3"], ["python"]):
             try:
                 r = subprocess.run(args + ["-c","import sys; print(sys.version)"],
                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
@@ -309,7 +406,7 @@ def _find_system_python_cmd() -> list[str]:
             except Exception:
                 pass
     else:
-        for exe in ("python3.11","python3.10","python3"):
+        for exe in ("python3.12","python3.11","python3.10","python3"):
             p = shutil.which(exe)
             if p:
                 try:
@@ -320,13 +417,17 @@ def _find_system_python_cmd() -> list[str]:
                 except Exception:
                     pass
         p = shutil.which("python")
-        if p: return [p]
+        if p:
+            return [p]
     raise RuntimeError(
         "Could not find a system Python to create the runtime environment.\n"
         "Install Python 3.10+ or set SASPRO_RUNTIME_DIR to a writable path."
     )
 
 def add_runtime_to_sys_path(status_cb=print) -> None:
+    """
+    Warm up sys.path so a fresh launch can see the runtime immediately.
+    """
     rt = _user_runtime_dir()
     p  = _venv_paths(rt)
     vpy = p["python"]
@@ -337,8 +438,10 @@ def add_runtime_to_sys_path(status_cb=print) -> None:
         sp = str(site)
         if sp not in sys.path:
             sys.path.insert(0, sp)
-            try: status_cb(f"Added runtime site-packages to sys.path: {sp}")
-            except Exception: pass
+            try:
+                status_cb(f"Added runtime site-packages to sys.path: {sp}")
+            except Exception:
+                pass
         # also consider sibling dirs:
         for c in (site, site.parent / "site-packages", site.parent / "dist-packages"):
             sc = str(c)

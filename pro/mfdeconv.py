@@ -5,6 +5,7 @@ import numpy as np
 from astropy.io import fits
 from PyQt6.QtCore import QObject, pyqtSignal
 from pro.psf_utils import compute_psf_kernel_for_image
+from PyQt6.QtWidgets import QApplication
 
 try:
     import sep
@@ -231,6 +232,7 @@ def _build_psf_bank_from_data_auto(
     psfs = []
     for i, (arr, hdr) in enumerate(zip(ys_raw, hdrs), start=1):
         status_cb(f"MFDeconv: measuring PSF {i}/{len(ys_raw)} …")
+        QApplication.processEvents()
 
         # FWHM estimate selection
         f_hdr = _estimate_fwhm_from_header(hdr)
@@ -288,6 +290,7 @@ def _build_psf_bank_from_data_auto(
         if info_extra.get("fallback"):
             msg += " | (fallback PSF)"
         status_cb(msg)
+        QApplication.processEvents()
 
         if save_dir:
             fits.PrimaryHDU(psf).writeto(os.path.join(save_dir, f"psf_{i:03d}.fit"), overwrite=True)
@@ -462,6 +465,7 @@ def multiframe_deconv(
         status_cb(f"PyTorch not available → CPU path. ({e})")
 
     use_torch = bool(TORCH_OK)  # GPU only if CUDA/MPS true
+    QApplication.processEvents()
 
     # PSFs (auto-size per frame) + flipped copies
     psf_out_dir = None  # set to e.g. os.path.join(os.path.dirname(out_path), "PSFs") to save PSFs
@@ -487,8 +491,10 @@ def multiframe_deconv(
         x = np.median(np.stack(data, axis=0), axis=0).astype(np.float32)  # (C,H,W)
 
     status_cb("MFDeconv: starting multiplicative updates…")
+    QApplication.processEvents()
     bg_est = np.median([np.median(np.abs(y - np.median(y))) for y in (data if isinstance(data, list) else [data])]) * 1.4826
     status_cb(f"MFDeconv: color_mode={color_mode}, huber_delta={huber_delta} (bg RMS~{bg_est:.3g})")
+    QApplication.processEvents()
 
     if use_torch:
         # Move state & inputs to device
@@ -517,6 +523,7 @@ def multiframe_deconv(
             if torch.median(torch.abs(upd - 1)) < 1e-3:
                 x_t = x_next
                 status_cb(f"MFDeconv: iter {it}/{iters} (early stop)")
+                QApplication.processEvents()
                 break
             x_t = (1.0 - relax) * x_t + relax * x_next
         else:
@@ -532,11 +539,13 @@ def multiframe_deconv(
             if np.median(np.abs(upd - 1.0)) < 1e-3:
                 x_t = x_next
                 status_cb(f"MFDeconv: iter {it}/{iters} (early stop)")
+                QApplication.processEvents()
                 break
             x_t = (1.0 - relax) * x_t + relax * x_next
 
         if (it % 5) == 0:
             status_cb(f"MFDeconv: iter {it}/{iters}")
+            QApplication.processEvents()
 
     # Save result
     x_final = x_t.detach().cpu().numpy().astype(np.float32) if use_torch else x_t.astype(np.float32)
@@ -550,6 +559,7 @@ def multiframe_deconv(
     hdr0['MFDECONV'] = (True, 'Seti Astro multi-frame deconvolution (beta)')
     fits.PrimaryHDU(data=x_final, header=hdr0).writeto(out_path, overwrite=True)
     status_cb(f"✅ MFDeconv saved: {out_path}")
+    QApplication.processEvents()
     return out_path
 
 # -----------------------------
@@ -583,5 +593,6 @@ class MultiFrameDeconvWorker(QObject):
                 status_cb=self._log
             )
             self.finished.emit(True, "MF deconvolution complete.", out)
+            QApplication.processEvents()
         except Exception as e:
             self.finished.emit(False, f"MF deconvolution failed: {e}", "")

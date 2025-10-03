@@ -1657,6 +1657,7 @@ class StackingSuiteDialog(QDialog):
         self._comet_seed = None         # {'path': <original file>, 'xy': (x,y)}
         self._orig2norm = {}            # map original path -> normalized *_n.fit
         self._comet_ref_xy = None       # comet coordinate in reference frame (filled post-align)
+        
 
 
         # --- singleton status console (no parent, recreate if gone) ---
@@ -1766,6 +1767,8 @@ class StackingSuiteDialog(QDialog):
         self.restore_saved_master_calibrations()
         self._update_stacking_path_display()
 
+        if self.settings.value("stacking/mfdeconv/after_mf_run_integration", None) is None:
+            self.settings.setValue("stacking/mfdeconv/after_mf_run_integration", False)
 
     def _elide_chars(self, s: str, max_chars: int) -> str:
         if not s:
@@ -4088,7 +4091,7 @@ class StackingSuiteDialog(QDialog):
         mf_row3 = QHBoxLayout()
         mf_row3.addWidget(QLabel("Color mode:"))
         self.mf_color_combo = QComboBox()
-        self.mf_color_combo.addItems(["luma", "perchannel"])
+        self.mf_color_combo.addItems(["perchannel", "luma"])
         # ensure current text is valid
         _cm = _get("stacking/mfdeconv/color_mode", "perchannel", str)
         if _cm not in ("luma", "perchannel"):
@@ -7943,11 +7946,13 @@ class StackingSuiteDialog(QDialog):
        
         self.update_status(msg)
         if not success:
+            self._set_registration_busy(False)
             return
 
         alignment_thread = self.alignment_thread
         if alignment_thread is None:
             self.update_status("⚠️ Error: No alignment data available.")
+            self._set_registration_busy(False) 
             return
 
         # ----------------------------
@@ -8046,6 +8051,7 @@ class StackingSuiteDialog(QDialog):
 
         if not self.valid_transforms:
             self.update_status("⚠️ No frames to stack; aborting.")
+            self._set_registration_busy(False)
             return
 
         # ----------------------------
@@ -8070,49 +8076,176 @@ class StackingSuiteDialog(QDialog):
                     self.update_status(f"DEBUG: File '{aligned}' does not exist on disk.")
             aligned_light_files[group] = new_list
 
+        def _start_after_align_worker(aligned_light_files: dict[str, list[str]]):
+            # ----------------------------
+            # Snapshot UI-dependent settings (your existing code)
+            # ----------------------------
+            drizzle_dict = self.gather_drizzle_settings_from_tree()
+            try:
+                autocrop_enabled = self.autocrop_cb.isChecked()
+                autocrop_pct = float(self.autocrop_pct.value())
+            except Exception:
+                autocrop_enabled = self.settings.value("stacking/autocrop_enabled", False, type=bool)
+                autocrop_pct = float(self.settings.value("stacking/autocrop_pct", 95.0, type=float))
+
+            cfa_effective = bool(
+                self._cfa_for_this_run
+                if getattr(self, "_cfa_for_this_run", None) is not None
+                else (getattr(self, "cfa_drizzle_cb", None) and self.cfa_drizzle_cb.isChecked())
+            )
+            if cfa_effective and getattr(self, "valid_matrices", None):
+                fill = self._dither_phase_fill(self.valid_matrices, bins=8)
+                self.update_status(f"🔎 CFA drizzle sub-pixel phase fill (8×8): {fill*100:.1f}%")
+                if fill < 0.65:
+                    self.update_status("💡 For best results with CFA drizzle, aim for >65% fill.")
+                    self.update_status("   With <~40–55% fill, expect visible patching even with many frames)")
+            QApplication.processEvents()
+
+            # ----------------------------
+            # Kick off post-align worker (unchanged body)
+            # ----------------------------
+            self.post_thread = QThread(self)
+            self.post_worker = AfterAlignWorker(
+                self,
+                light_files=aligned_light_files,
+                frame_weights=dict(self.frame_weights),
+                transforms_dict=dict(self.valid_transforms),
+                drizzle_dict=drizzle_dict,
+                autocrop_enabled=autocrop_enabled,
+                autocrop_pct=autocrop_pct,
+                ui_owner=self
+            )
+            self.post_worker.ui_owner = self
+            self.post_worker.need_comet_review.connect(self.on_need_comet_review)
+            self.post_worker.progress.connect(self._on_post_status)
+            self.post_worker.finished.connect(self._on_post_pipeline_finished)
+            self.post_worker.moveToThread(self.post_thread)
+            self.post_thread.started.connect(self.post_worker.run)
+            self.post_thread.start()
+
+            self.post_progress = QProgressDialog("Stacking & drizzle (if enabled)…", None, 0, 0, self)
+            self.post_progress.setWindowModality(Qt.WindowModality.WindowModal)
+            self.post_progress.setCancelButton(None)
+            self.post_progress.setMinimumDuration(0)
+            self.post_progress.setWindowTitle("Post-Alignment")
+            self.post_progress.show()
+
+            self._set_registration_busy(False)
+
         mf_enabled = self.settings.value("stacking/mfdeconv/enabled", False, type=bool)
         if mf_enabled:
             self.update_status("🧪 Beta: Multi-frame PSF-aware deconvolution path enabled.")
-            # choose which group to run; simplest: run on the first non-empty group
-            target_group = next((g for g, lst in aligned_light_files.items() if lst), None)
-            if target_group is None:
+
+            mf_groups = [(g, lst) for g, lst in aligned_light_files.items() if lst]
+            if not mf_groups:
                 self.update_status("⚠️ No aligned frames available for MF deconvolution.")
             else:
-                frames = aligned_light_files[target_group]
-                out_dir = os.path.join(self.stacking_directory, "Masters")
-                os.makedirs(out_dir, exist_ok=True)
-                out_path = os.path.join(out_dir, f"MasterLight_MFDeconv.fit")
-                iters  = self.settings.value("stacking/mfdeconv/iters", 20, type=int)
-                kappa  = self.settings.value("stacking/mfdeconv/kappa", 2.0, type=float)
-                mode   = self.settings.value("stacking/mfdeconv/color_mode", "luma", type=str)
-                huber  = self.settings.value("stacking/mfdeconv/huber_delta", 0.0, type=float)
+                self._mf_pd = QProgressDialog("Multi-frame deconvolving…", "Cancel", 0, len(mf_groups), self)
+                self._mf_pd.setWindowModality(Qt.WindowModality.ApplicationModal)
+                self._mf_pd.setMinimumDuration(0)
+                self._mf_pd.setWindowTitle("MF Deconvolution (Beta)")
+                self._mf_pd.setValue(0)
+                self._mf_pd.show()
 
-                # Run synchronously on the post thread (we are in GUI thread here; kick to a worker)
-                self.post_thread = QThread(self)
-                self.post_worker = MultiFrameDeconvWorker(
-                    parent=self,
-                    aligned_paths=frames,
-                    output_path=out_path,
-                    iters=iters,
-                    kappa=kappa,
-                    color_mode=mode,
-                    huber_delta=huber
-                )
-                self.post_worker.progress.connect(self._on_post_status)
-                self.post_worker.finished.connect(self._on_post_pipeline_finished)
-                self.post_worker.moveToThread(self.post_thread)
-                self.post_thread.started.connect(self.post_worker.run)
-                self.post_thread.start()
+                self._mf_queue = list(mf_groups)
+                self._mf_results = {}
+                self._mf_cancelled = False
+                self._mf_thread = None
+                self._mf_worker = None
 
-                # Progress dialog (reuse yours)
-                self.post_progress = QProgressDialog("Multi-frame deconvolving…", None, 0, 0, self)
-                self.post_progress.setWindowModality(Qt.WindowModality.WindowModal)
-                self.post_progress.setCancelButton(None)
-                self.post_progress.setMinimumDuration(0)
-                self.post_progress.setWindowTitle("MF Deconvolution (Beta)")
-                self.post_progress.show()
-                return  # ⬅️ short-circuit the normal AfterAlignWorker for this beta path
+                def _cancel_all():
+                    self._mf_cancelled = True
+                self._mf_pd.canceled.connect(_cancel_all, Qt.ConnectionType.QueuedConnection)
 
+                def _finish_mf_phase_and_exit():
+                    """Tear down MF UI/threads and either continue or exit."""
+                    # Close PD
+                    if getattr(self, "_mf_pd", None):
+                        self._mf_pd.reset()
+                        self._mf_pd.deleteLater()
+                        self._mf_pd = None
+                    # Stop stray thread
+                    try:
+                        if self._mf_thread:
+                            self._mf_thread.quit()
+                            self._mf_thread.wait()
+                    except Exception:
+                        pass
+                    self._mf_thread = None
+                    self._mf_worker = None
+
+                    # Decide: continue into normal integration, or finish here
+                    run_after = self.settings.value("stacking/mfdeconv/after_mf_run_integration", False, type=bool)
+                    if run_after:
+                        _start_after_align_worker(aligned_light_files)   # ← your existing helper
+                    else:
+                        self.update_status("✅ MFDeconv complete for all groups. Skipping normal integration as requested.")
+                        # Release busy state so user can start another job
+                        self._set_registration_busy(False)
+
+                def _start_next_mf_job():
+                    if self._mf_cancelled or not self._mf_queue:
+                        _finish_mf_phase_and_exit()
+                        return
+
+                    group_key, frames = self._mf_queue.pop(0)
+
+                    out_dir = os.path.join(self.stacking_directory, "Masters")
+                    os.makedirs(out_dir, exist_ok=True)
+                    out_path = os.path.join(out_dir, f"MasterLight_{group_key}_MFDeconv.fit")
+
+                    iters = self.settings.value("stacking/mfdeconv/iters", 20, type=int)
+                    kappa = self.settings.value("stacking/mfdeconv/kappa", 2.0, type=float)
+                    mode  = self.mf_color_combo.currentText()
+                    huber = self.settings.value("stacking/mfdeconv/huber_delta", 0.0, type=float)
+
+                    self._mf_thread = QThread(self)
+                    self._mf_worker = MultiFrameDeconvWorker(
+                        parent=self,
+                        aligned_paths=frames,
+                        output_path=out_path,
+                        iters=iters,
+                        kappa=kappa,
+                        color_mode=mode,
+                        huber_delta=huber
+                    )
+                    self._mf_worker.moveToThread(self._mf_thread)
+                    self._mf_worker.progress.connect(self._on_post_status, Qt.ConnectionType.QueuedConnection)
+
+                    def _job_finished(ok: bool, message: str, out: str):
+                        if getattr(self, "_mf_pd", None):
+                            val = self._mf_pd.value() + 1
+                            self._mf_pd.setValue(val)
+                            self._mf_pd.setLabelText(f"{'✅' if ok else '❌'} {group_key}: {message}")
+
+                        if ok and out:
+                            self._mf_results[group_key] = out
+                        else:
+                            self.update_status(f"❌ MFDeconv failed for '{group_key}': {message}")
+
+                        try:
+                            self._mf_thread.quit()
+                            self._mf_thread.wait()
+                        except Exception:
+                            pass
+                        self._mf_thread = None
+                        self._mf_worker = None
+
+                        QTimer.singleShot(0, _start_next_mf_job)
+
+                    self._mf_worker.finished.connect(_job_finished, Qt.ConnectionType.QueuedConnection)
+                    self._mf_thread.started.connect(self._mf_worker.run, Qt.ConnectionType.QueuedConnection)
+                    self._mf_thread.start()
+
+                    if getattr(self, "_mf_pd", None):
+                        self._mf_pd.setLabelText(f"Deconvolving '{group_key}' ({len(frames)} frames)…")
+
+                # Kick off the first job
+                QTimer.singleShot(0, _start_next_mf_job)
+
+                # Defer the rest of the pipeline; we'll decide at MF completion.
+                self._set_registration_busy(False)
+                return
         # ----------------------------
         # Snapshot UI-dependent settings
         # ----------------------------
@@ -9385,135 +9518,331 @@ class StackingSuiteDialog(QDialog):
         # Optionally, you could return the global rejection coordinate list.
         return all_rejection_coords        
 
+    def _start_after_align_worker(self, aligned_light_files: dict[str, list[str]]):
+        # Snapshot UI settings
+        if getattr(self, "_suppress_normal_integration_once", False):
+            self._suppress_normal_integration_once = False
+            self.update_status("⏭️ Normal integration suppressed (MFDeconv-only run).")
+            self._set_registration_busy(False)
+            return        
+        drizzle_dict = self.gather_drizzle_settings_from_tree()
+        try:
+            autocrop_enabled = self.autocrop_cb.isChecked()
+            autocrop_pct = float(self.autocrop_pct.value())
+        except Exception:
+            autocrop_enabled = self.settings.value("stacking/autocrop_enabled", False, type=bool)
+            autocrop_pct = float(self.settings.value("stacking/autocrop_pct", 95.0, type=float))
+
+        # CFA fill log (optional)
+        if getattr(self, "valid_matrices", None):
+            try:
+                cfa_effective = bool(
+                    self._cfa_for_this_run
+                    if getattr(self, "_cfa_for_this_run", None) is not None
+                    else (getattr(self, "cfa_drizzle_cb", None) and self.cfa_drizzle_cb.isChecked())
+                )
+                if cfa_effective:
+                    fill = self._dither_phase_fill(self.valid_matrices, bins=8)
+                    self.update_status(f"🔎 CFA drizzle sub-pixel phase fill (8×8): {fill*100:.1f}%")
+            except Exception:
+                pass
+
+        # Launch the normal post-align worker
+        self.post_thread = QThread(self)
+        self.post_worker = AfterAlignWorker(
+            self,
+            light_files=aligned_light_files,
+            frame_weights=dict(self.frame_weights),
+            transforms_dict=dict(self.valid_transforms),
+            drizzle_dict=drizzle_dict,
+            autocrop_enabled=autocrop_enabled,
+            autocrop_pct=autocrop_pct,
+            ui_owner=self
+        )
+        self.post_worker.ui_owner = self
+        self.post_worker.need_comet_review.connect(self.on_need_comet_review)
+        self.post_worker.progress.connect(self._on_post_status)
+        self.post_worker.finished.connect(self._on_post_pipeline_finished)
+        self.post_worker.moveToThread(self.post_thread)
+        self.post_thread.started.connect(self.post_worker.run)
+        self.post_thread.start()
+
+        self.post_progress = QProgressDialog("Stacking & drizzle (if enabled)…", None, 0, 0, self)
+        self.post_progress.setWindowModality(Qt.WindowModality.WindowModal)
+        self.post_progress.setCancelButton(None)
+        self.post_progress.setMinimumDuration(0)
+        self.post_progress.setWindowTitle("Post-Alignment")
+        self.post_progress.show()
+
+        # Important for button state
+        self._set_registration_busy(False)
+
+
+    def _run_mfdeconv_then_continue(self, aligned_light_files: dict[str, list[str]]):
+        """Queue MFDeconv per group if enabled, then continue into AfterAlignWorker for all groups."""
+        mf_enabled = self.settings.value("stacking/mfdeconv/enabled", False, type=bool)
+        if not mf_enabled:
+            self._start_after_align_worker(aligned_light_files)
+            return
+
+        # Build list of non-empty groups
+        mf_groups = [(g, lst) for g, lst in aligned_light_files.items() if lst]
+        if not mf_groups:
+            self.update_status("⚠️ No aligned frames available for MF deconvolution.")
+            self._start_after_align_worker(aligned_light_files)
+            return
+
+        # Progress UI for the entire MF phase
+        self._mf_pd = QProgressDialog("Multi-frame deconvolving…", "Cancel", 0, len(mf_groups), self)
+        self._mf_pd.setWindowModality(Qt.WindowModality.ApplicationModal)
+        self._mf_pd.setMinimumDuration(0)
+        self._mf_pd.setWindowTitle("MF Deconvolution (Beta)")
+        self._mf_pd.setValue(0)
+        self._mf_pd.show()
+
+        self._mf_queue = list(mf_groups)
+        self._mf_results = {}
+        self._mf_cancelled = False
+        self._mf_thread = None
+        self._mf_worker = None
+
+        def _cancel_all():
+            self._mf_cancelled = True
+        self._mf_pd.canceled.connect(_cancel_all, Qt.ConnectionType.QueuedConnection)
+
+        def _start_next():
+            if self._mf_cancelled or not self._mf_queue:
+                if getattr(self, "_mf_pd", None):
+                    self._mf_pd.reset()
+                    self._mf_pd.deleteLater()
+                    self._mf_pd = None
+                try:
+                    if self._mf_thread:
+                        self._mf_thread.quit()
+                        self._mf_thread.wait()
+                except Exception:
+                    pass
+                self._mf_thread = None
+                self._mf_worker = None
+                # Continue the normal pipeline for ALL groups
+                self._suppress_normal_integration_once = True
+                self.update_status("✅ MFDeconv complete for all groups. Skipping normal integration.")
+                self._set_registration_busy(False)
+                return
+
+            group_key, frames = self._mf_queue.pop(0)
+            out_dir = os.path.join(self.stacking_directory, "Masters")
+            os.makedirs(out_dir, exist_ok=True)
+
+            iters = self.settings.value("stacking/mfdeconv/iters", 20, type=int)
+            kappa = self.settings.value("stacking/mfdeconv/kappa", 2.0, type=float)
+            mode  = self.mf_color_combo.currentText()
+            huber = self.settings.value("stacking/mfdeconv/huber_delta", 0.0, type=float)
+
+            # Use your earlier unique-naming helper if you added it; fallback:
+            safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", str(group_key)) or "Group"
+            out_path = os.path.join(out_dir, f"MasterLight_{safe_name}_{len(frames)}f_MFDeconv_{mode}_{iters}it_k{int(round(kappa*100))}.fit")
+
+            self._mf_thread = QThread(self)
+            self._mf_worker = MultiFrameDeconvWorker(
+                parent=self,
+                aligned_paths=frames,
+                output_path=out_path,
+                iters=iters,
+                kappa=kappa,
+                color_mode=mode,
+                huber_delta=huber
+            )
+            self._mf_worker.moveToThread(self._mf_thread)
+            self._mf_worker.progress.connect(self._on_post_status, Qt.ConnectionType.QueuedConnection)
+
+            def _done(ok: bool, message: str, out: str):
+                if getattr(self, "_mf_pd", None):
+                    val = self._mf_pd.value() + 1
+                    self._mf_pd.setValue(val)
+                    self._mf_pd.setLabelText(f"{'✅' if ok else '❌'} {group_key}: {message}")
+                if ok and out:
+                    self._mf_results[group_key] = out
+                else:
+                    self.update_status(f"❌ MFDeconv failed for '{group_key}': {message}")
+                try:
+                    self._mf_thread.quit(); self._mf_thread.wait()
+                except Exception:
+                    pass
+                self._mf_thread = None
+                self._mf_worker = None
+                QTimer.singleShot(0, _start_next)
+
+            self._mf_worker.finished.connect(_done, Qt.ConnectionType.QueuedConnection)
+            self._mf_thread.started.connect(self._mf_worker.run, Qt.ConnectionType.QueuedConnection)
+            self._mf_thread.start()
+
+            if getattr(self, "_mf_pd", None):
+                self._mf_pd.setLabelText(f"Deconvolving '{group_key}' ({len(frames)} frames)…")
+
+        QTimer.singleShot(0, _start_next)
 
 
     def integrate_registered_images(self):
-        """ 
+        """
         Integrates previously registered images (already aligned) without re-aligning them,
         but uses a chunked measurement approach so we don't load all frames at once.
         """
-        self.update_status("🔄 Integrating Previously Registered Images...")
-
-        # 1) Extract files from the registration tree
-        self.extract_light_files_from_tree()
-        if not self.light_files:
-            self.update_status("⚠️ No registered images found!")
+        if getattr(self, "_registration_busy", False):
+            self.update_status("⏸ Another job is running; ignoring extra click.")
             return
+        self._set_registration_busy(True)
 
-        # Flatten the dictionary to get all registered files
-        all_files = [f for file_list in self.light_files.values() for f in file_list]
-        if not all_files:
-            self.update_status("⚠️ No frames found in the registration tree!")
-            return
+        try:
+            self.update_status("🔄 Integrating Previously Registered Images...")
 
-        # 2) We'll measure means + star counts in chunks, so we don't load everything at once
-        self.update_status(f"📊 Found {len(all_files)} total aligned frames. Measuring in parallel batches...")
+            # 1) Extract files from the registration tree
+            self.extract_light_files_from_tree()
+            if not self.light_files:
+                self.update_status("⚠️ No registered images found!")
+                self._set_registration_busy(False)
+                return
 
-        self.frame_weights = {}
-        mean_values = {}
-        star_counts = {}
-        measured_frames = []
+            # Flatten the dictionary to get all registered files
+            all_files = [f for file_list in self.light_files.values() for f in file_list]
+            if not all_files:
+                self.update_status("⚠️ No frames found in the registration tree!")
+                self._set_registration_busy(False)
+                return
 
-        # Decide how many images to load at once. Typically # of CPU cores:
-        max_workers = os.cpu_count() or 4
-        chunk_size = max_workers  # or a custom formula if you prefer
+            # 2) We'll measure means + star counts in chunks, so we don't load everything at once
+            self.update_status(f"📊 Found {len(all_files)} total aligned frames. Measuring in parallel batches...")
 
-        def chunk_list(lst, size):
-            for i in range(0, len(lst), size):
-                yield lst[i : i + size]
+            self.frame_weights = {}
+            mean_values = {}
+            star_counts = {}
+            measured_frames = []
 
-        chunked_files = list(chunk_list(all_files, chunk_size))
-        total_chunks = len(chunked_files)
+            # Decide how many images to load at once. Typically # of CPU cores:
+            max_workers = os.cpu_count() or 4
+            chunk_size = max_workers  # or a custom formula if you prefer
 
-        # 3) Process each chunk
-        chunk_index = 0
-        for chunk in chunked_files:
-            chunk_index += 1
-            self.update_status(f"📦 Loading and measuring chunk {chunk_index}/{total_chunks} with {len(chunk)} frames...")
-            QApplication.processEvents()
+            def chunk_list(lst, size):
+                for i in range(0, len(lst), size):
+                    yield lst[i : i + size]
 
-            # Load this chunk of images
-            images = []
-            valid_files_for_this_chunk = []
-            for file in chunk:
-                image_data, _, _, _ = load_image(file)
-                if image_data is not None:
-                    images.append(image_data)
-                    valid_files_for_this_chunk.append(file)
-                else:
-                    self.update_status(f"⚠️ Could not load {file}, skipping.")
+            chunked_files = list(chunk_list(all_files, chunk_size))
+            total_chunks = len(chunked_files)
 
-            if not images:
-                self.update_status("⚠️ No valid images in this chunk.")
-                continue
-
-            # Parallel measure the mean pixel value
-            self.update_status("🌍 Measuring global statistics (mean) in parallel...")
-            QApplication.processEvents()
-            means = parallel_measure_frames(images)
-
-            # Now measure star counts
-            for i, file in enumerate(valid_files_for_this_chunk):
-                mean_signal = means[i]
-                mean_values[file] = mean_signal
-                measured_frames.append(file)
-
-                self.update_status(f"⭐ Measuring star stats for {file}...")
+            # 3) Process each chunk
+            chunk_index = 0
+            for chunk in chunked_files:
+                chunk_index += 1
+                self.update_status(f"📦 Loading and measuring chunk {chunk_index}/{total_chunks} with {len(chunk)} frames...")
                 QApplication.processEvents()
-                count, ecc = compute_star_count(images[i])
-                star_counts[file] = {"count": count, "eccentricity": ecc}
 
-            # Clear the images from memory before moving on
-            del images
+                # Load this chunk of images
+                images = []
+                valid_files_for_this_chunk = []
+                for file in chunk:
+                    image_data, _, _, _ = load_image(file)
+                    if image_data is not None:
+                        images.append(image_data)
+                        valid_files_for_this_chunk.append(file)
+                    else:
+                        self.update_status(f"⚠️ Could not load {file}, skipping.")
 
-        # If we never measured any frames at all
-        if not measured_frames:
-            self.update_status("⚠️ No frames could be measured!")
+                if not images:
+                    self.update_status("⚠️ No valid images in this chunk.")
+                    continue
+
+                # Parallel measure the mean pixel value
+                self.update_status("🌍 Measuring global statistics (mean) in parallel...")
+                QApplication.processEvents()
+                means = parallel_measure_frames(images)
+
+                # Now measure star counts
+                for i, file in enumerate(valid_files_for_this_chunk):
+                    mean_signal = means[i]
+                    mean_values[file] = mean_signal
+                    measured_frames.append(file)
+
+                    self.update_status(f"⭐ Measuring star stats for {file}...")
+                    QApplication.processEvents()
+                    count, ecc = compute_star_count(images[i])
+                    star_counts[file] = {"count": count, "eccentricity": ecc}
+
+                # Clear the images from memory before moving on
+                del images
+
+            # If we never measured any frames at all
+            if not measured_frames:
+                self.update_status("⚠️ No frames could be measured!")
+                return
+
+            self.update_status(f"✅ All chunks complete! Measured {len(measured_frames)} frames total.")
+            QApplication.processEvents()
+
+            # 4) Compute Weights
+            self.update_status("⚖️ Computing frame weights...")
+
+            debug_weight_log = "\n📊 **Frame Weights Debug Log:**\n"
+            QApplication.processEvents()
+            for file in measured_frames:
+                c = star_counts[file]["count"]
+                ecc = star_counts[file]["eccentricity"]
+                mean_val = mean_values[file]
+
+                star_weight = max(c, 1e-6)
+                mean_weight = max(mean_val, 1e-6)
+
+                # Basic ratio-based weight: star_count / mean
+                raw_weight = star_weight / mean_weight
+                self.frame_weights[file] = raw_weight
+
+                debug_weight_log += (
+                    f"📂 {os.path.basename(file)} → "
+                    f"Star Count: {c}, Mean: {mean_val:.4f}, Final Weight: {raw_weight:.4f}\n"
+                )
+                QApplication.processEvents()
+
+            self.update_status(debug_weight_log)
+            self.update_status("✅ Frame weights computed!")
+            QApplication.processEvents()
+
+            # 5) Pick the best reference frame if not user-specified
+            if hasattr(self, "reference_frame") and self.reference_frame:
+                self.update_status(f"📌 Using user-specified reference frame: {self.reference_frame}")
+                QApplication.processEvents()
+            else:
+                self.reference_frame = max(self.frame_weights, key=self.frame_weights.get)
+                self.update_status(f"📌 Auto-selected reference frame: {self.reference_frame} (Best Weight)")
+                
+            chunk_h = self.chunk_height  # or self.settings.value("stacking/chunk_height", 1024, type=int)
+            chunk_w = self.chunk_width   # or self.settings.value("stacking/chunk_width", 1024, type=int)
+
+            # 6) Finally, call the chunked stacking method using the already registered images
+            aligned_light_files = {g: list(lst) for g, lst in self.light_files.items() if lst}
+
+            # If you want a quick sanity check, you can filter to “looks aligned” files:
+            # def _looks_aligned(p: str) -> bool:
+            #     bn = os.path.basename(p).lower()
+            #     return ("aligned_images" in os.path.normpath(p).lower()) or bn.endswith("_r.fit") or bn.endswith("_n_r.fit")
+            # aligned_light_files = {g: [p for p in lst if _looks_aligned(p)] for g, lst in self.light_files.items()}
+            # aligned_light_files = {g: v for g, v in aligned_light_files.items() if v}
+
+            # Clear transforms; they aren't needed for MFDeconv or integration when frames are already aligned.
+            self.valid_transforms = {}
+
+            # Hand off to the unified pipeline:
+            #   - runs MFDeconv per group if enabled (unique per-group filenames),
+            #   - then continues into AfterAlignWorker for ALL groups,
+            #   - and releases the busy state at the right time.
+            self._run_mfdeconv_then_continue(aligned_light_files)
             return
 
-        self.update_status(f"✅ All chunks complete! Measured {len(measured_frames)} frames total.")
-        QApplication.processEvents()
+            # 6) (REMOVE the old call)  ❌
+            # self.stack_registered_images_chunked(...)
 
-        # 4) Compute Weights
-        self.update_status("⚖️ Computing frame weights...")
-
-        debug_weight_log = "\n📊 **Frame Weights Debug Log:**\n"
-        QApplication.processEvents()
-        for file in measured_frames:
-            c = star_counts[file]["count"]
-            ecc = star_counts[file]["eccentricity"]
-            mean_val = mean_values[file]
-
-            star_weight = max(c, 1e-6)
-            mean_weight = max(mean_val, 1e-6)
-
-            # Basic ratio-based weight: star_count / mean
-            raw_weight = star_weight / mean_weight
-            self.frame_weights[file] = raw_weight
-
-            debug_weight_log += (
-                f"📂 {os.path.basename(file)} → "
-                f"Star Count: {c}, Mean: {mean_val:.4f}, Final Weight: {raw_weight:.4f}\n"
-            )
-            QApplication.processEvents()
-
-        self.update_status(debug_weight_log)
-        self.update_status("✅ Frame weights computed!")
-        QApplication.processEvents()
-
-        # 5) Pick the best reference frame if not user-specified
-        if hasattr(self, "reference_frame") and self.reference_frame:
-            self.update_status(f"📌 Using user-specified reference frame: {self.reference_frame}")
-            QApplication.processEvents()
-        else:
-            self.reference_frame = max(self.frame_weights, key=self.frame_weights.get)
-            self.update_status(f"📌 Auto-selected reference frame: {self.reference_frame} (Best Weight)")
-            
-        chunk_h = self.chunk_height  # or self.settings.value("stacking/chunk_height", 1024, type=int)
-        chunk_w = self.chunk_width   # or self.settings.value("stacking/chunk_width", 1024, type=int)
-
-        # 6) Finally, call the chunked stacking method using the already registered images
-        self.stack_registered_images_chunked(self.light_files, self.frame_weights, chunk_height=chunk_h, chunk_width=chunk_w)
+        except Exception:
+            # Make sure the UI is released on exceptions
+            self._set_registration_busy(False)
+            raise
 
     @staticmethod
     def invert_affine_transform(matrix):
