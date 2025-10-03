@@ -41,6 +41,13 @@ def ensure_torch_installed(prefer_gpu: bool, log_cb: LogCB) -> tuple[bool, Optio
         prefer_cuda = prefer_gpu and _has_nvidia() and platform.system() in ("Windows","Linux")
         log_cb(f"PyTorch install preference: prefer_cuda={prefer_cuda} (OS={platform.system()})")
         torch = import_torch(prefer_cuda=prefer_cuda, status_cb=log_cb)
+        from pro.runtime_torch import _maybe_find_torch_shm_manager
+        shm = _maybe_find_torch_shm_manager(torch)
+        # On macOS/Windows this will be None → do nothing.
+        if shm is not None and not os.path.exists(shm):
+            # Linux-only optional notice; DON’T show on macOS.
+            log_cb(f"Note: torch_shm_manager not found at {shm}. "
+                "This is only used for certain Linux multiprocessing paths.")        
         _ = getattr(torch, "cuda", None)
         return True, None
     except Exception as e:

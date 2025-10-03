@@ -4,10 +4,37 @@ import os, sys, subprocess, platform, shutil, json, time, errno, importlib, re
 from pathlib import Path
 from contextlib import contextmanager
 
+import platform as _plat
+from pathlib import Path as _Path
+
+def _maybe_find_torch_shm_manager(torch_mod) -> str | None:
+    # Only Linux wheels include/use this helper binary.
+    if _plat.system() != "Linux":
+        return None
+    try:
+        base = _Path(getattr(torch_mod, "__file__", "")).parent
+        p = base / "bin" / "torch_shm_manager"
+        return str(p) if p.exists() else None
+    except Exception:
+        return None
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Paths & runtime selection
 # ──────────────────────────────────────────────────────────────────────────────
+def _venv_pyver(venv_python: Path) -> tuple[int, int] | None:
+    """Return (major, minor) for the venv interpreter, or None if unknown."""
+    try:
+        out = subprocess.check_output(
+            [str(venv_python), "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
+            text=True,
+        ).strip()
+        maj, min_ = out.split(".")
+        return int(maj), int(min_)
+    except Exception:
+        return None
 
+def _tag_for_pyver(maj: int, min_: int) -> str:
+    return f"py{maj}{min_}"
 
 def _runtime_base_dir() -> Path:
     """
@@ -33,24 +60,24 @@ def _current_tag() -> str:
 
 def _discover_existing_runtime_dir() -> Path | None:
     """
-    Return the newest existing runtime dir that already has a venv python.
-    Accepts folders named 'py310', 'py311', 'py312', etc.
+    Return the newest existing runtime dir that already has a venv python,
+    using the venv interpreter's REAL version instead of just the folder name.
     """
     base = _runtime_base_dir()
     if not base.exists():
         return None
-    candidates = []
+    candidates: list[tuple[int, int, Path]] = []
     for p in base.glob("py*"):
-        vpy = (p / "venv" / ("Scripts/python.exe" if platform.system() == "Windows" else "bin/python"))
-        if vpy.exists():
-            # parse digits after "py"
-            m = re.match(r"^py(\d+)$", p.name)
-            ver = int(m.group(1)) if m else 0
-            candidates.append((ver, p))
+        vpy = p / "venv" / ("Scripts/python.exe" if platform.system() == "Windows" else "bin/python")
+        if not vpy.exists():
+            continue
+        ver = _venv_pyver(vpy)
+        if ver:
+            candidates.append((ver[0], ver[1], p))
     if not candidates:
         return None
-    candidates.sort()
-    return candidates[-1][1]  # newest by tag
+    candidates.sort()  # pick the highest Python (major, minor)
+    return candidates[-1][2]
 
 def _user_runtime_dir() -> Path:
     """
@@ -206,10 +233,20 @@ def _ensure_venv(rt: Path, status_cb=print) -> Path:
         try:
             status_cb(f"Setting up SASpro runtime venv at: {p['venv']}")
             p["venv"].mkdir(parents=True, exist_ok=True)
+
+            # choose the system python that will back this venv
             py_cmd = _find_system_python_cmd() if getattr(sys, "frozen", False) else [sys.executable]
-            env = os.environ.copy()
-            env.pop("PYTHONHOME", None)
-            env.pop("PYTHONPATH", None)
+            # detect its version to ensure the folder tag matches
+            out = subprocess.check_output(py_cmd + ["-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"], text=True).strip()
+            maj, min_ = map(int, out.split("."))
+            desired_tag = _tag_for_pyver(maj, min_)
+            if rt.name != desired_tag:
+                rt = _runtime_base_dir() / desired_tag
+                p = _venv_paths(rt)
+                status_cb(f"Adjusted runtime folder to match Python {maj}.{min_}: {rt}")
+                p["venv"].mkdir(parents=True, exist_ok=True)
+
+            env = os.environ.copy(); env.pop("PYTHONHOME", None); env.pop("PYTHONPATH", None)
             subprocess.check_call(py_cmd + ["-m", "venv", str(p["venv"])], env=env)
             subprocess.check_call([str(p["python"]), "-m", "ensurepip", "--upgrade"], env=env)
             subprocess.check_call([str(p["python"]), "-m", "pip", "install", "--upgrade", "pip", "wheel", "setuptools"], env=env)
@@ -223,6 +260,16 @@ def _ensure_venv(rt: Path, status_cb=print) -> Path:
             if _is_access_denied(e):
                 raise OSError(_access_denied_msg(rt)) from e
             raise
+    else:
+        # venv already exists — verify its interpreter version matches the folder tag
+        ver = _venv_pyver(p["python"])
+        if ver and rt.name != _tag_for_pyver(*ver):
+            status_cb(f"Runtime folder/version mismatch ({rt.name} vs Python {ver[0]}.{ver[1]}). Rebuilding.")
+            shutil.rmtree(p["venv"], ignore_errors=True)
+            # recreate at the correct tag
+            corrected = _runtime_base_dir() / _tag_for_pyver(*ver)
+            return _ensure_venv(corrected, status_cb=status_cb)
+
     return p["python"]
 
 # ──────────────────────────────────────────────────────────────────────────────
