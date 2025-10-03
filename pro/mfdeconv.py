@@ -6,6 +6,7 @@ from astropy.io import fits
 from PyQt6.QtCore import QObject, pyqtSignal
 from pro.psf_utils import compute_psf_kernel_for_image
 from PyQt6.QtWidgets import QApplication
+from PyQt6.QtCore import QThread
 
 try:
     import sep
@@ -15,13 +16,26 @@ except Exception:
 torch = None        # filled by runtime loader if available
 TORCH_OK = False
 
-
+def _process_gui_events_safely():
+    app = QApplication.instance()
+    if app and QThread.currentThread() is app.thread():
+        app.processEvents()
 
 EPS = 1e-6
 
 # -----------------------------
 # Helpers: image prep / shapes
 # -----------------------------
+
+# new: lightweight loader that yields one frame at a time
+def _iter_fits(paths):
+    for p in paths:
+        with fits.open(p, memmap=True) as hdul:
+            arr = np.asarray(hdul[0].data, dtype=np.float32)
+            if arr.ndim == 3 and arr.shape[-1] == 1:
+                arr = np.squeeze(arr, axis=-1)
+            hdr = hdul[0].header
+        yield arr, hdr
 
 def _to_luma_local(a: np.ndarray) -> np.ndarray:
     a = np.asarray(a, dtype=np.float32)
@@ -54,18 +68,25 @@ def _normalize_layout_single(a, color_mode):
     """
     Coerce to:
       - 'luma'       -> (H, W)
-      - 'perchannel' -> (3, H, W) (mono is repeated)
+      - 'perchannel' -> (C, H, W); mono stays (1,H,W), RGB → (3,H,W)
     Accepts (H,W), (H,W,3), or (3,H,W).
     """
     a = np.asarray(a, dtype=np.float32)
+
     if color_mode == "luma":
-        return _to_luma_local(a)
+        return _to_luma_local(a)  # returns (H,W)
+
     # perchannel
     if a.ndim == 2:
-        return np.stack([a, a, a], axis=0)
+        return a[None, ...]                     # (1,H,W)  ← keep mono as 1 channel
     if a.ndim == 3 and a.shape[-1] == 3:
-        return np.moveaxis(a, -1, 0)
-    return a  # already (3,H,W) or best-effort
+        return np.moveaxis(a, -1, 0)            # (3,H,W)
+    if a.ndim == 3 and a.shape[0] in (1, 3):
+        return a                                 # already (1,H,W) or (3,H,W)
+    # fallback: average any weird shape into luma 1×H×W
+    l = _to_luma_local(a)
+    return l[None, ...]
+
 
 def _normalize_layout_batch(arrs, color_mode):
     return [_normalize_layout_single(a, color_mode) for a in arrs]
@@ -232,7 +253,7 @@ def _build_psf_bank_from_data_auto(
     psfs = []
     for i, (arr, hdr) in enumerate(zip(ys_raw, hdrs), start=1):
         status_cb(f"MFDeconv: measuring PSF {i}/{len(ys_raw)} …")
-        QApplication.processEvents()
+        _process_gui_events_safely()
 
         # FWHM estimate selection
         f_hdr = _estimate_fwhm_from_header(hdr)
@@ -290,7 +311,7 @@ def _build_psf_bank_from_data_auto(
         if info_extra.get("fallback"):
             msg += " | (fallback PSF)"
         status_cb(msg)
-        QApplication.processEvents()
+        _process_gui_events_safely()
 
         if save_dir:
             fits.PrimaryHDU(psf).writeto(os.path.join(save_dir, f"psf_{i:03d}.fit"), overwrite=True)
@@ -420,8 +441,16 @@ def multiframe_deconv(
     huber_delta=0.0,
     status_cb=lambda s: None
 ):
+    
+
+    def _emit_pct(pct: float, msg: str | None = None):
+        pct = float(max(0.0, min(1.0, pct)))
+        status_cb(f"__PROGRESS__ {pct:.4f}" + (f" {msg}" if msg else ""))
+
     status_cb(f"MFDeconv: loading {len(paths)} aligned frames…")
+    _emit_pct(0.02, "loading")    
     ys_raw, hdrs = _stack_loader(paths)
+    _emit_pct(0.05, "preparing")
     relax = 0.7  # 0<alpha<=1; smaller = more damping.
     use_torch = False
     global torch, TORCH_OK
@@ -465,15 +494,19 @@ def multiframe_deconv(
         status_cb(f"PyTorch not available → CPU path. ({e})")
 
     use_torch = bool(TORCH_OK)  # GPU only if CUDA/MPS true
-    QApplication.processEvents()
+    _process_gui_events_safely()
 
     # PSFs (auto-size per frame) + flipped copies
     psf_out_dir = None  # set to e.g. os.path.join(os.path.dirname(out_path), "PSFs") to save PSFs
     psfs = _build_psf_bank_from_data_auto(ys_raw, hdrs, status_cb=status_cb, save_dir=psf_out_dir)
     flip_psf = [_flip_kernel(k) for k in psfs]
+    _emit_pct(0.20, "psf ready")
 
+
+    
     # Normalize layout BEFORE size harmonization
     data = _normalize_layout_batch(ys_raw, color_mode)  # list of (H,W) or (3,H,W)
+    _emit_pct(0.25, "seed ready")
 
     # Center-crop all to common intersection
     Ht, Wt = _common_hw(data)
@@ -491,10 +524,10 @@ def multiframe_deconv(
         x = np.median(np.stack(data, axis=0), axis=0).astype(np.float32)  # (C,H,W)
 
     status_cb("MFDeconv: starting multiplicative updates…")
-    QApplication.processEvents()
+    _process_gui_events_safely()
     bg_est = np.median([np.median(np.abs(y - np.median(y))) for y in (data if isinstance(data, list) else [data])]) * 1.4826
     status_cb(f"MFDeconv: color_mode={color_mode}, huber_delta={huber_delta} (bg RMS~{bg_est:.3g})")
-    QApplication.processEvents()
+    _process_gui_events_safely()
 
     if use_torch:
         # Move state & inputs to device
@@ -506,6 +539,9 @@ def multiframe_deconv(
     else:
         x_t = x
         y_np = data  # use NP conv
+
+    total_steps = max(1, int(iters))
+    status_cb("__PROGRESS__ 0.0000 Starting iterations…")
 
     # MM iterations (Eq. 16): u_k = (Σ Fᵀ(W y)) / (Σ Fᵀ(W F x))
     for it in range(1, iters + 1):
@@ -523,7 +559,7 @@ def multiframe_deconv(
             if torch.median(torch.abs(upd - 1)) < 1e-3:
                 x_t = x_next
                 status_cb(f"MFDeconv: iter {it}/{iters} (early stop)")
-                QApplication.processEvents()
+                _process_gui_events_safely()
                 break
             x_t = (1.0 - relax) * x_t + relax * x_next
         else:
@@ -539,27 +575,52 @@ def multiframe_deconv(
             if np.median(np.abs(upd - 1.0)) < 1e-3:
                 x_t = x_next
                 status_cb(f"MFDeconv: iter {it}/{iters} (early stop)")
-                QApplication.processEvents()
+                _process_gui_events_safely()
                 break
             x_t = (1.0 - relax) * x_t + relax * x_next
+        frac = 0.25 + 0.70 * (it / float(iters))   # use most time budget for iterations
+        _emit_pct(frac, f"iter {it}/{iters}")
+        status_cb(f"__PROGRESS__ {it/total_steps:.4f} Iter {it}/{iters}")
+        _process_gui_events_safely()
 
-        if (it % 5) == 0:
-            status_cb(f"MFDeconv: iter {it}/{iters}")
-            QApplication.processEvents()
+    # ----------------------------
+    # Save result (keep FITS-friendly order: (C,H,W))
+    # ----------------------------
+    _emit_pct(0.97, "saving")
+    x_final = x_t.detach().cpu().numpy().astype(np.float32) if use_torch \
+              else x_t.astype(np.float32)
 
-    # Save result
-    x_final = x_t.detach().cpu().numpy().astype(np.float32) if use_torch else x_t.astype(np.float32)
-    # If perchannel (3,H,W), save as (H,W,3) for your viewer
-    if x_final.ndim == 3 and x_final.shape[0] == 3:
-        x_final = np.moveaxis(x_final, 0, -1)  # (H,W,3)
+    # Ensure channels-first for FITS
+    if x_final.ndim == 3:
+        # If it's already (C,H,W) we're good; if it's (H,W,C) move C → first
+        if x_final.shape[0] not in (1, 3) and x_final.shape[-1] in (1, 3):
+            x_final = np.moveaxis(x_final, -1, 0)  # (C,H,W)
+
+        # Optional: collapse singleton C=1 to 2D
+        if x_final.shape[0] == 1:
+            x_final = x_final[0]  # (H,W)
+
+    # (No channels-last write for FITS; viewers expect cubes as (nz,ny,nx))
+
     try:
         hdr0 = fits.getheader(paths[0], ext=0)
     except Exception:
         hdr0 = fits.Header()
+
     hdr0['MFDECONV'] = (True, 'Seti Astro multi-frame deconvolution (beta)')
+    hdr0['MF_COLOR'] = (str(color_mode), 'Color mode used')
+    if isinstance(x_final, np.ndarray):
+        if x_final.ndim == 2:
+            hdr0['MF_SHAPE'] = (f"{x_final.shape[0]}x{x_final.shape[1]}", 'Saved as 2D image (HxW)')
+        elif x_final.ndim == 3:
+            C, H, W = x_final.shape
+            hdr0['MF_SHAPE'] = (f"{C}x{H}x{W}", 'Saved as 3D cube (CxHxW)')
+    status_cb(f"MFDeconv: saving array with shape {x_final.shape} "
+            + ("(2D)" if x_final.ndim==2 else "(C×H×W)"))
     fits.PrimaryHDU(data=x_final, header=hdr0).writeto(out_path, overwrite=True)
     status_cb(f"✅ MFDeconv saved: {out_path}")
-    QApplication.processEvents()
+    _emit_pct(1.00, "done")
+    _process_gui_events_safely()
     return out_path
 
 # -----------------------------
@@ -593,6 +654,6 @@ class MultiFrameDeconvWorker(QObject):
                 status_cb=self._log
             )
             self.finished.emit(True, "MF deconvolution complete.", out)
-            QApplication.processEvents()
+            _process_gui_events_safely()
         except Exception as e:
             self.finished.emit(False, f"MF deconvolution failed: {e}", "")

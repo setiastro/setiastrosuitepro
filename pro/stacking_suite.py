@@ -2394,6 +2394,19 @@ class StackingSuiteDialog(QDialog):
 
         right_col.addWidget(gb_drizzle)
 
+        # --- MF Deconvolution (Beta) ---
+        gb_mf = QGroupBox("Multi-frame Deconvolution (Beta)")
+        fl_mf = QFormLayout(gb_mf)
+
+        self.mf_batch_spin = QSpinBox()
+        self.mf_batch_spin.setRange(1, 64)
+        self.mf_batch_spin.setValue(self.settings.value("stacking/mfdeconv/batch", 8, type=int))
+        self.mf_batch_spin.setToolTip("Frames per GPU batch. Higher → more VRAM, more throughput.")
+
+        fl_mf.addRow("Batch size (frames):", self.mf_batch_spin)
+
+        right_col.addWidget(gb_mf)
+
         # --- Comet Star Removal (Optional) ---
         gb_csr = QGroupBox("Comet Star Removal (Optional)")
         fl_csr = QFormLayout(gb_csr)
@@ -2707,6 +2720,7 @@ class StackingSuiteDialog(QDialog):
         self.settings.setValue("stacking/cosmetic/star_mean_ratio",float(self.cosm_star_mean_ratio.value()))
         self.settings.setValue("stacking/cosmetic/star_max_ratio", float(self.cosm_star_max_ratio.value()))
         self.settings.setValue("stacking/cosmetic/sat_quantile",   float(self.cosm_sat_quantile.value()))
+        self.settings.setValue("stacking/mfdeconv/batch", int(self.mf_batch_spin.value()))
 
         self.settings.setValue("stacking/comet_starrem/enabled", self.csr_enable.isChecked())
         self.settings.setValue("stacking/comet_starrem/tool", self.csr_tool.currentText())
@@ -4106,7 +4120,7 @@ class StackingSuiteDialog(QDialog):
         self.mf_huber_spin.setRange(-1000.0, 1000.0)   # negative allowed
         self.mf_huber_spin.setDecimals(4)
         self.mf_huber_spin.setSingleStep(0.1)
-        self.mf_huber_spin.setValue(_get("stacking/mfdeconv/huber_delta", 2.0, float))
+        self.mf_huber_spin.setValue(_get("stacking/mfdeconv/huber_delta", -2.0, float))
         self.mf_huber_spin.setToolTip(
             "Robust Huber threshold in σ units. ~2–3× background RMS is typical.\n"
             "Negative values are scale*RMS, positive values are hardcoded deltas."
@@ -8147,6 +8161,14 @@ class StackingSuiteDialog(QDialog):
                 self._mf_pd.setValue(0)
                 self._mf_pd.show()
 
+                if getattr(self, "_mf_pd", None):
+                    self._mf_pd.setLabelText("Preparing MF deconvolution…")
+                    self._mf_pd.setMinimumWidth(520)
+                self._mf_total_groups = len(mf_groups)
+                self._mf_groups_done = 0
+                # progress range = groups * 1000 (each group gets a 0..1000 sub-range)
+                self._mf_pd.setRange(0, self._mf_total_groups * 1000)
+                self._mf_pd.setValue(0)
                 self._mf_queue = list(mf_groups)
                 self._mf_results = {}
                 self._mf_cancelled = False
@@ -8198,24 +8220,32 @@ class StackingSuiteDialog(QDialog):
                     kappa = self.settings.value("stacking/mfdeconv/kappa", 2.0, type=float)
                     mode  = self.mf_color_combo.currentText()
                     huber = self.settings.value("stacking/mfdeconv/huber_delta", 0.0, type=float)
+                    batch = self.settings.value("stacking/mfdeconv/batch", 8, type=int)
 
                     self._mf_thread = QThread(self)
                     self._mf_worker = MultiFrameDeconvWorker(
-                        parent=self,
+                        parent=None,
                         aligned_paths=frames,
                         output_path=out_path,
                         iters=iters,
                         kappa=kappa,
                         color_mode=mode,
-                        huber_delta=huber
-                    )
+                        huber_delta=huber,
+                        #batch_size=batch,
+                        )
                     self._mf_worker.moveToThread(self._mf_thread)
-                    self._mf_worker.progress.connect(self._on_post_status, Qt.ConnectionType.QueuedConnection)
+                    self._mf_worker.progress.connect(self._on_mf_progress, Qt.ConnectionType.QueuedConnection)
+                    self._mf_thread.started.connect(self._mf_worker.run, Qt.ConnectionType.QueuedConnection)
+                    self._mf_worker.finished.connect(self._mf_thread.quit, Qt.ConnectionType.QueuedConnection)
+                    self._mf_thread.finished.connect(self._mf_worker.deleteLater)   # ✅ free worker on thread end
+                    self._mf_thread.finished.connect(self._mf_thread.deleteLater)   # ✅ free thread object
+
 
                     def _job_finished(ok: bool, message: str, out: str):
                         if getattr(self, "_mf_pd", None):
-                            val = self._mf_pd.value() + 1
-                            self._mf_pd.setValue(val)
+                            self._mf_groups_done = min(self._mf_groups_done + 1, self._mf_total_groups)
+                            # Snap to the boundary of the finished segment
+                            self._mf_pd.setValue(self._mf_groups_done * 1000)
                             self._mf_pd.setLabelText(f"{'✅' if ok else '❌'} {group_key}: {message}")
 
                         if ok and out:
@@ -8234,7 +8264,7 @@ class StackingSuiteDialog(QDialog):
                         QTimer.singleShot(0, _start_next_mf_job)
 
                     self._mf_worker.finished.connect(_job_finished, Qt.ConnectionType.QueuedConnection)
-                    self._mf_thread.started.connect(self._mf_worker.run, Qt.ConnectionType.QueuedConnection)
+
                     self._mf_thread.start()
 
                     if getattr(self, "_mf_pd", None):
@@ -8306,6 +8336,31 @@ class StackingSuiteDialog(QDialog):
 
         self._set_registration_busy(False)
 
+    def _on_mf_progress(self, s: str):
+        # Mirror non-token messages
+        if not s.startswith("__PROGRESS__"):
+            self._on_post_status(s)
+            if getattr(self, "_mf_pd", None):
+                self._mf_pd.setLabelText(s)
+            return
+
+        # "__PROGRESS__ <float> [message]"
+        parts = s.split(maxsplit=2)
+        try:
+            pct = float(parts[1])
+        except Exception:
+            return
+
+        if len(parts) >= 3 and getattr(self, "_mf_pd", None):
+            self._mf_pd.setLabelText(parts[2])
+
+        if getattr(self, "_mf_pd", None):
+            groups_done = getattr(self, "_mf_groups_done", 0)
+            total_groups = max(1, getattr(self, "_mf_total_groups", 1))
+            base = groups_done * 1000
+            val = base + int(round(max(0.0, min(1.0, pct)) * 1000))
+            self._mf_pd.setRange(0, total_groups * 1000)
+            self._mf_pd.setValue(min(val, total_groups * 1000))
 
     @pyqtSlot(bool, str)
     def _on_post_pipeline_finished(self, ok: bool, message: str):
@@ -9593,7 +9648,10 @@ class StackingSuiteDialog(QDialog):
             return
 
         # Progress UI for the entire MF phase
-        self._mf_pd = QProgressDialog("Multi-frame deconvolving…", "Cancel", 0, len(mf_groups), self)
+        self._mf_total_groups = len(mf_groups)
+        self._mf_groups_done = 0        
+        self._mf_pd = QProgressDialog("Multi-frame deconvolving…", "Cancel", 0, self._mf_total_groups * 1000, self)
+        self._mf_pd.setValue(0)
         self._mf_pd.setWindowModality(Qt.WindowModality.ApplicationModal)
         self._mf_pd.setMinimumDuration(0)
         self._mf_pd.setWindowTitle("MF Deconvolution (Beta)")
@@ -9642,19 +9700,26 @@ class StackingSuiteDialog(QDialog):
             # Use your earlier unique-naming helper if you added it; fallback:
             safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", str(group_key)) or "Group"
             out_path = os.path.join(out_dir, f"MasterLight_{safe_name}_{len(frames)}f_MFDeconv_{mode}_{iters}it_k{int(round(kappa*100))}.fit")
+            batch = self.settings.value("stacking/mfdeconv/batch", 8, type=int)
 
             self._mf_thread = QThread(self)
             self._mf_worker = MultiFrameDeconvWorker(
-                parent=self,
+                parent=None,
                 aligned_paths=frames,
                 output_path=out_path,
                 iters=iters,
                 kappa=kappa,
                 color_mode=mode,
-                huber_delta=huber
+                huber_delta=huber,
+                #batch_size=batch,
             )
             self._mf_worker.moveToThread(self._mf_thread)
             self._mf_worker.progress.connect(self._on_post_status, Qt.ConnectionType.QueuedConnection)
+            self._mf_thread.started.connect(self._mf_worker.run, Qt.ConnectionType.QueuedConnection)
+            self._mf_worker.finished.connect(self._mf_thread.quit, Qt.ConnectionType.QueuedConnection)
+            self._mf_thread.finished.connect(self._mf_worker.deleteLater)   # ✅ free worker on thread end
+            self._mf_thread.finished.connect(self._mf_thread.deleteLater)   # ✅ free thread object
+
 
             def _done(ok: bool, message: str, out: str):
                 if getattr(self, "_mf_pd", None):

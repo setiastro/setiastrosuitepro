@@ -63,58 +63,95 @@ def _user_runtime_dir() -> Path:
 # Shadowing & sanity checks
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _demote_shadow_torch_paths(status_cb=print) -> None:
-    """
-    If any entry on sys.path contains a 'torch' package directory that does NOT
-    include the compiled extension (torch/_C.*), move that path to the end so the
-    real wheel in site-packages wins. Also handles CWD ('') and editable src trees.
-    """
-    def has_compiled_ext(torch_dir: Path) -> bool:
-        return any(torch_dir.glob("_C.*.pyd")) or any(torch_dir.glob("_C.*.so")) or any(torch_dir.glob("_C.cpython*"))
+# ──────────────────────────────────────────────────────────────────────────────
+# Shadowing & sanity checks
+# ──────────────────────────────────────────────────────────────────────────────
 
-    moved, keep = [], []
+def _is_compiled_torch_dir(d: Path) -> bool:
+    """True if 'torch' directory contains the compiled extension files."""
+    return any(d.glob("_C.*.pyd")) or any(d.glob("_C.*.so")) or any(d.glob("_C.cpython*"))
+
+def _looks_like_source_tree_torch(d: Path) -> bool:
+    """
+    True if this is a PyTorch repo / editable install dir (has torch/_C/__init__.py).
+    These can *never* satisfy torch._C at runtime.
+    """
+    return (d / "_C" / "__init__.py").exists()
+
+def _ban_shadow_torch_paths(status_cb=print) -> None:
+    """
+    Remove (not just demote) any sys.path entries that would cause a source-tree
+    import of torch to win over the wheel. Also handles CWD ('') and editable installs.
+    """
+    keep: list[str] = []
+    banned: list[str] = []
+
     for entry in list(sys.path):
         try:
-            base = (Path(entry) if entry else Path.cwd())
+            base = Path(entry) if entry else Path.cwd()
             td = base / "torch"
             if td.is_dir():
-                if not has_compiled_ext(td) or (td.parent.name in {"src", "torch"} and not has_compiled_ext(td)):
-                    moved.append(entry or "<cwd>")
+                # (a) repo/editable: has torch/_C/__init__.py  → ban outright
+                if _looks_like_source_tree_torch(td):
+                    banned.append(entry or "<cwd>")
+                    continue
+                # (b) any 'torch' dir without compiled _C.*  → ban (cannot work at runtime)
+                if not _is_compiled_torch_dir(td):
+                    banned.append(entry or "<cwd>")
                     continue
         except Exception:
+            # if we can't inspect, keep it
             pass
         keep.append(entry)
 
-    if moved:
-        keep.extend([m if m != "<cwd>" else "" for m in moved])
+    if banned:
         sys.path[:] = keep
         try:
-            status_cb(f"Demoted shadowing paths for torch: {', '.join(moved)}")
+            status_cb("Removed shadowing torch paths: " + ", ".join(banned))
         except Exception:
             pass
 
-def _torch_sanity_check(status_cb=print):
+def _purge_bad_torch_from_sysmodules(status_cb=print) -> None:
     """
-    Ensure torch is imported from site/dist-packages and C-extensions load.
-    Also run a tiny tensor op to catch hidden DLL/linker issues early.
+    If 'torch' is already imported from a shadow location, drop it so we can
+    re-import from the wheel after cleaning sys.path.
     """
     try:
-        import torch
+        import importlib
+        if "torch" in sys.modules:
+            mod = sys.modules["torch"]
+            tf = getattr(mod, "__file__", "") or ""
+            if tf and (("site-packages" not in tf) and ("dist-packages" not in tf)):
+                # definitely a shadow import
+                for k in list(sys.modules.keys()):
+                    if k == "torch" or k.startswith("torch."):
+                        sys.modules.pop(k, None)
+                status_cb(f"Purged shadowed torch import: {tf}")
+        # Always ensure we don't carry a stale extension handle
+        sys.modules.pop("torch._C", None)
+        importlib.invalidate_caches()
+    except Exception:
+        pass
+
+def _torch_sanity_check(status_cb=print):
+    try:
+        import torch, importlib
         tf = getattr(torch, "__file__", "") or ""
         pkg_dir = Path(tf).parent if tf else None
 
+        # must come from site/dist packages
         if ("site-packages" not in tf) and ("dist-packages" not in tf):
             raise RuntimeError(f"Shadow import: torch.__file__ = {tf}")
 
-        has_ext = any(pkg_dir.glob("_C.*.pyd")) or any(pkg_dir.glob("_C.*.so")) or any(pkg_dir.glob("_C.cpython*"))
-        if not has_ext:
+        # compiled extension must exist, and 'torch/_C/__init__.py' must NOT
+        if not _is_compiled_torch_dir(pkg_dir):
             raise RuntimeError(f"Wheel missing torch._C in {pkg_dir}")
+        if (pkg_dir / "_C" / "__init__.py").exists():
+            raise RuntimeError(f"Found package folder torch/_C at {pkg_dir/'_C'}, this indicates a source tree.")
 
         importlib.import_module("torch._C")  # force extension load
 
-        # tiny op to flush runtime linking issues
-        x = torch.ones(1)
-        y = x + 1
+        x = torch.ones(1); y = x + 1
         if int(y.item()) != 2:
             raise RuntimeError("Unexpected tensor arithmetic result from torch sanity op.")
     except Exception as e:
@@ -322,7 +359,8 @@ def import_torch(prefer_cuda: bool = True, status_cb=print):
     Hardened against shadow imports, broken wheels, concurrent installs, and partial markers.
     """
     # Before any attempt, demote shadowing paths (CWD / random folders)
-    _demote_shadow_torch_paths(status_cb=status_cb)
+    _ban_shadow_torch_paths(status_cb=status_cb)
+    _purge_bad_torch_from_sysmodules(status_cb=status_cb)
 
     # Fast path: if torch already importable and sane, use it
     try:
@@ -377,6 +415,8 @@ def import_torch(prefer_cuda: bool = True, status_cb=print):
         return torch
     except Exception:
         _force_repair()
+        _purge_bad_torch_from_sysmodules(status_cb=status_cb)
+        _ban_shadow_torch_paths(status_cb=status_cb)
         import torch  # retry
         _torch_sanity_check(status_cb=status_cb)
         if not marker.exists():

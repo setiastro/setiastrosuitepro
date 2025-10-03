@@ -126,5 +126,4 @@ def current_backend() -> str:
                 return "CPU"
         except Exception:
             pass
-
         return "Not installed"
