@@ -1,4 +1,10 @@
 #setiastrosuitepro.py
+from pro.runtime_torch import add_runtime_to_sys_path, _ban_shadow_torch_paths, _purge_bad_torch_from_sysmodules
+add_runtime_to_sys_path(status_cb=lambda *_: None)
+_ban_shadow_torch_paths(status_cb=lambda *_: None)
+_purge_bad_torch_from_sysmodules(status_cb=lambda *_: None)
+
+
 import sys
 import importlib
 
@@ -58,6 +64,8 @@ if getattr(sys, 'frozen', False):
         if orig_distribution:
             m.distribution = safe_distribution
 
+
+
 import warnings
 warnings.filterwarnings(
     "ignore",
@@ -103,7 +111,8 @@ matplotlib.use("QtAgg")
 import numpy as np
 
 
-if sys.stdout is not None:
+#if running in IDE which runs ipython or jupiter in backend reconfigure may not be available
+if (sys.stdout is not None) and (hasattr(sys.stdout, "reconfigure")):
     sys.stdout.reconfigure(encoding='utf-8')
 
 try:
@@ -260,7 +269,7 @@ from pro.status_log_dock import StatusLogDock
 from pro.log_bus import LogBus
 
 
-VERSION = "1.2.3"
+VERSION = "1.2.4"
 
 
 if hasattr(sys, '_MEIPASS'):
@@ -969,7 +978,15 @@ class AstroSuiteProMainWindow(QMainWindow):
     def apply_theme_from_settings(self):
         mode = self._theme_mode()
         app = QApplication.instance()
+        color_scheme = app.styleHints().colorScheme()
 
+        if mode == "system":
+            if color_scheme == Qt.ColorScheme.Dark:
+                print("System is in Dark Mode")
+                mode = "dark"
+            else:
+                print("System is in Light Mode")
+                mode = "light"
         if mode == "dark":
             app.setStyle("Fusion")
             app.setPalette(self._dark_palette())
