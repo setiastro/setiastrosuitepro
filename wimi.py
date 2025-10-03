@@ -63,7 +63,8 @@ import matplotlib.ticker as mtick
 from scipy.interpolate import RBFInterpolator
 import random
 import inspect
-if sys.stdout is not None:
+#if running in IDE which runs ipython or jupiter in backend reconfigure may not be available
+if (sys.stdout is not None) and (hasattr(sys.stdout, "reconfigure")):
     sys.stdout.reconfigure(encoding='utf-8')
 
 try:
