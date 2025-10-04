@@ -40,15 +40,38 @@ def ensure_torch_installed(prefer_gpu: bool, log_cb: LogCB) -> tuple[bool, Optio
     try:
         prefer_cuda = prefer_gpu and _has_nvidia() and platform.system() in ("Windows","Linux")
         log_cb(f"PyTorch install preference: prefer_cuda={prefer_cuda} (OS={platform.system()})")
+
+        # Try normal torch first (CUDA on NV, CPU otherwise — your existing logic):
         torch = import_torch(prefer_cuda=prefer_cuda, status_cb=log_cb)
-        from pro.runtime_torch import _maybe_find_torch_shm_manager
-        shm = _maybe_find_torch_shm_manager(torch)
-        # On macOS/Windows this will be None → do nothing.
-        if shm is not None and not os.path.exists(shm):
-            # Linux-only optional notice; DON’T show on macOS.
-            log_cb(f"Note: torch_shm_manager not found at {shm}. "
-                "This is only used for certain Linux multiprocessing paths.")        
+
+        # If we're on Windows, no CUDA, try to enable DirectML
+        dml_enabled = False
+        if platform.system() == "Windows":
+            try:
+                import torch_directml  # already present?
+                dml_enabled = True
+            except Exception:
+                # attempt install of torch-directml into the same venv
+                from pro.runtime_torch import _user_runtime_dir, _venv_paths
+                rt = _user_runtime_dir()
+                vpy = _venv_paths(rt)["python"]
+                log_cb("Installing torch-directml (Windows non-NVIDIA path)…")
+                r = subprocess.run([str(vpy), "-m", "pip", "install", "--prefer-binary", "torch-directml"],
+                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                if r.returncode != 0:
+                    log_cb((r.stdout or "")[-4000:])
+                else:
+                    import importlib; importlib.invalidate_caches()
+                    try:
+                        import torch_directml  # noqa
+                        dml_enabled = True
+                    except Exception:
+                        dml_enabled = False
+
+        # Touch CUDA/MPS/DML to confirm availability
         _ = getattr(torch, "cuda", None)
+        if dml_enabled:
+            log_cb("DirectML backend available.")
         return True, None
     except Exception as e:
         msg = str(e)
@@ -68,25 +91,24 @@ def ensure_torch_installed(prefer_gpu: bool, log_cb: LogCB) -> tuple[bool, Optio
         return False, msg
 
 def current_backend() -> str:
-    """
-    Report the detected torch backend without forcing a network install.
-    1) Try in-process import (after warming sys.path).
-    2) If that fails but the venv exists, probe it via its python (subprocess).
-    """
     try:
-        # Warm sys.path so a fresh launch can see the venv immediately
         add_runtime_to_sys_path(status_cb=lambda *_: None)
-
         import importlib
-        torch = importlib.import_module("torch")  # may still fail if venv missing
-        if hasattr(torch, "cuda") and getattr(torch.cuda, "is_available", lambda: False)():
-            try:
-                name = torch.cuda.get_device_name(0)
-            except Exception:
-                name = "CUDA"
+        torch = importlib.import_module("torch")
+        if hasattr(torch, "cuda") and torch.cuda.is_available():
+            try: name = torch.cuda.get_device_name(0)
+            except Exception: name = "CUDA"
             return f"CUDA ({name})"
-        if hasattr(torch, "backends") and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             return "Apple MPS"
+        try:
+            import torch_directml  # noqa
+            # quick probe
+            dev = torch_directml.device()
+            _ = (torch.ones(1, device=dev) + 1).item()
+            return "DirectML"
+        except Exception:
+            pass
         return "CPU"
     except Exception:
         # Fall back to probing the venv directly (doesn't depend on current sys.path)

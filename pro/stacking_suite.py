@@ -1770,6 +1770,91 @@ class StackingSuiteDialog(QDialog):
         if self.settings.value("stacking/mfdeconv/after_mf_run_integration", None) is None:
             self.settings.setValue("stacking/mfdeconv/after_mf_run_integration", False)
 
+        # Drizzle: enable/disable its params when toggled
+        self.drizzle_checkbox.toggled.connect(
+            lambda v: (
+                self.drizzle_scale_combo.setEnabled(v),
+                self.drizzle_drop_shrink_spin.setEnabled(v),
+                self.settings.setValue("stacking/drizzle_enabled", bool(v))
+            )
+        )
+        # Initialize enabled state
+        drizzle_on = self.settings.value("stacking/drizzle_enabled", False, type=bool)
+        self.drizzle_scale_combo.setEnabled(drizzle_on)
+        self.drizzle_drop_shrink_spin.setEnabled(drizzle_on)
+
+        # Comet wiring
+        self.comet_cb.toggled.connect(self._on_comet_toggled_public)
+        self._on_comet_toggled_public(self.comet_cb.isChecked())
+
+        self.comet_blend_cb.toggled.connect(lambda v: self.settings.setValue("stacking/comet/blend", bool(v)))
+        self.comet_mix.valueChanged.connect(lambda v: self.settings.setValue("stacking/comet/mix", float(v)))
+
+        # MF wiring
+        self.mf_enabled_cb.toggled.connect(self._on_mf_toggled_public)
+        self._on_mf_toggled_public(self.mf_enabled_cb.isChecked())
+
+        # Mutual exclusivity trigger (fires only when turning ON)
+        self.drizzle_checkbox.toggled.connect(lambda v: v and self._apply_mode_enforcement(self.drizzle_checkbox))
+        self.comet_cb.toggled.connect(        lambda v: v and self._apply_mode_enforcement(self.comet_cb))
+        self.mf_enabled_cb.toggled.connect(   lambda v: v and self._apply_mode_enforcement(self.mf_enabled_cb))
+        self.trail_cb.toggled.connect(        lambda v: v and self._apply_mode_enforcement(self.trail_cb))
+
+        for cb in (self.trail_cb, self.comet_cb, self.mf_enabled_cb, self.drizzle_checkbox):
+            if cb.isChecked():
+                self._apply_mode_enforcement(cb)
+                break
+
+    def _set_check_safely(self, cb, on: bool):
+        """Set a checkbox without firing its signals (prevents recursion)."""
+        old = cb.blockSignals(True)
+        try:
+            cb.setChecked(on)
+        finally:
+            cb.blockSignals(old)
+
+    def _apply_mode_enforcement(self, who):
+        """
+        When one of the 'mode' boxes turns ON, uncheck the others,
+        persist settings, and re-apply per-mode enable/disable.
+        """
+        # 1) Uncheck other modes
+        mode_boxes = (self.drizzle_checkbox, self.comet_cb, self.mf_enabled_cb, self.trail_cb)
+        for cb in mode_boxes:
+            if cb is not who:
+                self._set_check_safely(cb, False)
+
+        # 2) Persist current state
+        self.settings.setValue("stacking/drizzle_enabled",      self.drizzle_checkbox.isChecked())
+        self.settings.setValue("stacking/comet/enabled",        self.comet_cb.isChecked())
+        self.settings.setValue("stacking/mfdeconv/enabled",     self.mf_enabled_cb.isChecked())
+        self.settings.setValue("stacking/star_trail_enabled",   self.trail_cb.isChecked())
+
+        # 3) Re-apply UI gating so widgets match the new state
+        self._on_drizzle_checkbox_toggled(self.drizzle_checkbox.isChecked())
+        self._on_star_trail_toggled(self.trail_cb.isChecked())
+        self._on_comet_toggled_public(self.comet_cb.isChecked())
+        self._on_mf_toggled_public(self.mf_enabled_cb.isChecked())
+
+    def _on_comet_toggled_public(self, v: bool):
+        """
+        Public comet toggle (replaces the inline closure). Also handles the
+        'Stars+Comet blend' interlock + persists setting.
+        """
+        self.comet_pick_btn.setEnabled(v)
+        self.comet_blend_cb.setEnabled(v)
+        self.comet_mix.setEnabled(v)
+        self.settings.setValue("stacking/comet/enabled", bool(v))
+
+    def _on_mf_toggled_public(self, v: bool):
+        """
+        Public MFDeconv toggle (replaces the inline closure). Gates MF params
+        + persists setting.
+        """
+        for w in (self.mf_iters_spin, self.mf_kappa_spin, self.mf_color_combo, self.mf_huber_spin):
+            w.setEnabled(v)
+        self.settings.setValue("stacking/mfdeconv/enabled", bool(v))
+
     def _elide_chars(self, s: str, max_chars: int) -> str:
         if not s:
             return ""
@@ -4300,7 +4385,483 @@ class StackingSuiteDialog(QDialog):
         self.select_ref_frame_btn.setDisabled(self.auto_accept_ref_cb.isChecked())
 
 
+
         return tab
+
+    def create_image_registration_tab(self):
+        """
+        Creates an Image Registration tab that mimics how the Light tab handles
+        cosmetic corrections—i.e., we have global Drizzle controls (checkbox, combo, spin),
+        and we update a text column in the QTreeWidget to show each group's drizzle state.
+        """
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        # ─────────────────────────────────────────
+        # 1) QTreeWidget
+        # ─────────────────────────────────────────
+        self.reg_tree = QTreeWidget()
+        self.reg_tree.setColumnCount(3)
+        self.reg_tree.setHeaderLabels([
+            "Filter - Exposure - Size",
+            "Metadata",
+            "Drizzle"  # We'll display "Drizzle: True, Scale: 2x, Drop:0.65" here
+        ])
+        self.reg_tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+
+        # Optional: make columns resize nicely
+        header = self.reg_tree.header()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+
+        layout.addWidget(QLabel("Calibrated Light Frames"))
+        layout.addWidget(self.reg_tree)
+
+        tol_layout = QHBoxLayout()
+        tol_layout.addWidget(QLabel("Exposure Tolerance (sec):"))
+        self.exposure_tolerance_spin = QSpinBox()
+        self.exposure_tolerance_spin.setRange(0, 900)
+        self.exposure_tolerance_spin.setValue(0)
+        self.exposure_tolerance_spin.setSingleStep(5)
+        tol_layout.addWidget(self.exposure_tolerance_spin)
+        tol_layout.addStretch()
+        self.split_dualband_cb = QCheckBox("Split dual-band OSC before integration")
+        self.split_dualband_cb.setToolTip("For OSC dual-band data: SII/OIII → R=SII, G=OIII; Ha/OIII → R=Ha, G=OIII")
+        tol_layout.addWidget(self.split_dualband_cb)
+        layout.addLayout(tol_layout)
+
+        self.exposure_tolerance_spin.valueChanged.connect(lambda _: self.populate_calibrated_lights())
+
+
+
+        # ─────────────────────────────────────────
+        # 2) Buttons for Managing Files
+        # ─────────────────────────────────────────
+        btn_layout = QHBoxLayout()
+        self.add_reg_files_btn = QPushButton("Add Light Files")
+        self.add_reg_files_btn.clicked.connect(self.add_light_files_to_registration)
+        btn_layout.addWidget(self.add_reg_files_btn)
+
+        self.clear_selection_btn = QPushButton("Remove Selected")
+        self.clear_selection_btn.clicked.connect(lambda: self.clear_tree_selection_registration(self.reg_tree))
+
+        btn_layout.addWidget(self.clear_selection_btn)
+
+        layout.addLayout(btn_layout)
+
+        # ─────────────────────────────────────────
+        # 3) Global Drizzle Controls
+        # ─────────────────────────────────────────
+        drizzle_layout = QHBoxLayout()
+
+        self.drizzle_checkbox = QCheckBox("Enable Drizzle")
+        self.drizzle_checkbox.toggled.connect(self._on_drizzle_checkbox_toggled) # <─ connect signal
+        drizzle_layout.addWidget(self.drizzle_checkbox)
+
+        drizzle_layout.addWidget(QLabel("Scale:"))
+        self.drizzle_scale_combo = QComboBox()
+        self.drizzle_scale_combo.addItems(["1x", "2x", "3x"])
+        self.drizzle_scale_combo.currentIndexChanged.connect(self._on_drizzle_param_changed)  # <─ connect
+        drizzle_layout.addWidget(self.drizzle_scale_combo)
+
+        drizzle_layout.addWidget(QLabel("Drop Shrink:"))
+        self.drizzle_drop_shrink_spin = QDoubleSpinBox()
+        self.drizzle_drop_shrink_spin.setRange(0.0, 1.0)
+        self.drizzle_drop_shrink_spin.setSingleStep(0.05)
+        self.drizzle_drop_shrink_spin.setValue(0.65)
+        self.drizzle_drop_shrink_spin.valueChanged.connect(self._on_drizzle_param_changed)  # <─ connect
+        drizzle_layout.addWidget(self.drizzle_drop_shrink_spin)
+
+        self.cfa_drizzle_cb = QCheckBox("CFA Drizzle")
+        self.cfa_drizzle_cb.setChecked(self.settings.value("stacking/cfa_drizzle", False, type=bool))
+        self.cfa_drizzle_cb.toggled.connect(self._on_cfa_drizzle_toggled)
+        self.cfa_drizzle_cb.setToolTip("Map R/G/B CFA samples directly into channels and skip interpolation.")
+        drizzle_layout.addWidget(self.cfa_drizzle_cb)
+
+        layout.addLayout(drizzle_layout)
+
+        # ─────────────────────────────────────────
+        # 4) Reference Frame Selection
+        # ─────────────────────────────────────────
+        self.ref_frame_label = QLabel("Select Reference Frame:")
+        self.ref_frame_path = QLabel("No file selected")
+        self.ref_frame_path.setWordWrap(True)
+        self.select_ref_frame_btn = QPushButton("Select Reference Frame")
+        self.select_ref_frame_btn.clicked.connect(self.select_reference_frame)
+
+        # NEW: Auto-accept toggle
+        self.auto_accept_ref_cb = QCheckBox("Auto-accept measured reference")
+        self.auto_accept_ref_cb.setToolTip(
+            "When checked, the best measured frame is accepted automatically and the review dialog is skipped."
+        )
+        # restore from settings
+        self.auto_accept_ref_cb.setChecked(self.settings.value("stacking/auto_accept_ref", False, type=bool))
+        self.auto_accept_ref_cb.toggled.connect(
+            lambda v: self.settings.setValue("stacking/auto_accept_ref", bool(v))
+        )
+
+        ref_layout = QHBoxLayout()
+        ref_layout.addWidget(self.ref_frame_label)
+        ref_layout.addWidget(self.ref_frame_path, 1)
+        ref_layout.addWidget(self.select_ref_frame_btn)
+        ref_layout.addWidget(self.auto_accept_ref_cb)  # ← add to the row
+        layout.addLayout(ref_layout)
+
+        crop_row = QHBoxLayout()
+        self.autocrop_cb = QCheckBox("Auto-crop output")
+        self.autocrop_cb.setToolTip("Crop the final image to pixels covered by ≥ Coverage % of frames")
+        self.autocrop_pct = QDoubleSpinBox()
+        self.autocrop_pct.setRange(50.0, 100.0)
+        self.autocrop_pct.setSingleStep(1.0)
+        self.autocrop_pct.setSuffix(" %")
+        self.autocrop_pct.setValue(self.settings.value("stacking/autocrop_pct", 95.0, type=float))
+        self.autocrop_cb.setChecked(self.settings.value("stacking/autocrop_enabled", True, type=bool))
+        crop_row.addWidget(self.autocrop_cb)
+        crop_row.addWidget(QLabel("Coverage:"))
+        crop_row.addWidget(self.autocrop_pct)
+        crop_row.addStretch(1)
+        layout.addLayout(crop_row)
+
+        # In create_image_registration_tab(), after the crop_row:
+        comet_row = QHBoxLayout()
+
+        self.comet_cb = QCheckBox("🌠🌠Create comet stack (comet-aligned)🌠🌠")
+        self.comet_cb.setChecked(self.settings.value("stacking/comet/enabled", False, type=bool))
+        comet_row.addWidget(self.comet_cb)
+
+        self.comet_pick_btn = QPushButton("Pick comet center…")
+        self.comet_pick_btn.setEnabled(self.comet_cb.isChecked())
+        self.comet_pick_btn.clicked.connect(self._pick_comet_center)
+        self.comet_cb.toggled.connect(self.comet_pick_btn.setEnabled)
+        comet_row.addWidget(self.comet_pick_btn)
+
+        self.comet_blend_cb = QCheckBox("Also output Stars+Comet blend")
+        self.comet_blend_cb.setChecked(self.settings.value("stacking/comet/blend", True, type=bool))
+        comet_row.addWidget(self.comet_blend_cb)
+
+
+        comet_row.addWidget(QLabel("Mix:"))
+        self.comet_mix = QDoubleSpinBox()
+        self.comet_mix.setRange(0.0, 1.0); self.comet_mix.setSingleStep(0.05)
+        self.comet_mix.setValue(self.settings.value("stacking/comet/mix", 1.0, type=float))
+        comet_row.addWidget(self.comet_mix)
+
+
+        comet_row.addStretch(1)
+        layout.addLayout(comet_row)
+
+        mf_box = QGroupBox("MFDeconv (beta) — Multi-Frame Deconvolution (ImageMM)")
+        mf_v = QVBoxLayout(mf_box)
+
+        # sensible defaults if missing
+        def _get(key, default, t):
+            return self.settings.value(key, default, type=t)
+
+        # row 1: enable
+        mf_row1 = QHBoxLayout()
+        self.mf_enabled_cb = QCheckBox("Enable MFDeconv during integration")
+        self.mf_enabled_cb.setChecked(_get("stacking/mfdeconv/enabled", False, bool))
+        self.mf_enabled_cb.setToolTip("Runs multi-frame deconvolution during integration. Turn off if testing.")
+        mf_row1.addWidget(self.mf_enabled_cb)
+        mf_row1.addStretch(1)
+        mf_v.addLayout(mf_row1)
+
+        # row 2: iterations + kappa
+        mf_row2 = QHBoxLayout()
+        mf_row2.addWidget(QLabel("Iterations:"))
+        self.mf_iters_spin = QSpinBox()
+        self.mf_iters_spin.setRange(1, 500)
+        self.mf_iters_spin.setValue(_get("stacking/mfdeconv/iters", 20, int))
+        self.mf_iters_spin.setToolTip("Number of multiplicative update steps (e.g., 10–60).")
+        mf_row2.addWidget(self.mf_iters_spin)
+
+        mf_row2.addSpacing(16)
+        mf_row2.addWidget(QLabel("Update clip (κ):"))
+        self.mf_kappa_spin = QDoubleSpinBox()
+        self.mf_kappa_spin.setRange(0.0, 10.0)
+        self.mf_kappa_spin.setDecimals(3)
+        self.mf_kappa_spin.setSingleStep(0.1)
+        self.mf_kappa_spin.setValue(_get("stacking/mfdeconv/kappa", 2.0, float))
+        self.mf_kappa_spin.setToolTip("Kappa clipping for multiplicative updates (typ. ~2.0).")
+        mf_row2.addWidget(self.mf_kappa_spin)
+        mf_row2.addStretch(1)
+        mf_v.addLayout(mf_row2)
+
+        # row 3: color mode + huber_delta
+        mf_row3 = QHBoxLayout()
+        mf_row3.addWidget(QLabel("Color mode:"))
+        self.mf_color_combo = QComboBox()
+        self.mf_color_combo.addItems(["perchannel", "luma"])
+        # ensure current text is valid
+        _cm = _get("stacking/mfdeconv/color_mode", "perchannel", str)
+        if _cm not in ("luma", "perchannel"):
+            _cm = "perchannel"
+        self.mf_color_combo.setCurrentText(_cm)
+        self.mf_color_combo.setToolTip("‘luma’ deconvolves the luminance only; ‘perchannel’ runs on RGB independently.")
+        mf_row3.addWidget(self.mf_color_combo)
+
+        mf_row3.addSpacing(16)
+        mf_row3.addWidget(QLabel("Huber δ:"))
+        self.mf_huber_spin = QDoubleSpinBox()
+        self.mf_huber_spin.setRange(-1000.0, 1000.0)   # negative allowed
+        self.mf_huber_spin.setDecimals(4)
+        self.mf_huber_spin.setSingleStep(0.1)
+        self.mf_huber_spin.setValue(_get("stacking/mfdeconv/huber_delta", -2.0, float))
+        self.mf_huber_spin.setToolTip(
+            "Robust Huber threshold in σ units. ~2–3× background RMS is typical.\n"
+            "Negative values are scale*RMS, positive values are hardcoded deltas."
+        )
+        mf_row3.addWidget(self.mf_huber_spin)
+        
+        self.mf_huber_hint = QLabel("(<0 = scale×RMS, >0 = absolute Δ)")
+        self.mf_huber_hint.setToolTip("Negative = factor times background RMS (auto). Positive = fixed absolute threshold.")
+        self.mf_huber_hint.setStyleSheet("color: #888;")  # subtle hint color
+        mf_row3.addWidget(self.mf_huber_hint)        
+        mf_row3.addStretch(1)
+        mf_v.addLayout(mf_row3)
+
+        # write-through bindings
+        self.mf_enabled_cb.toggled.connect(
+            lambda v: self.settings.setValue("stacking/mfdeconv/enabled", bool(v))
+        )
+        self.mf_iters_spin.valueChanged.connect(
+            lambda v: self.settings.setValue("stacking/mfdeconv/iters", int(v))
+        )
+        self.mf_kappa_spin.valueChanged.connect(
+            lambda v: self.settings.setValue("stacking/mfdeconv/kappa", float(v))
+        )
+        self.mf_color_combo.currentTextChanged.connect(
+            lambda s: self.settings.setValue("stacking/mfdeconv/color_mode", s)
+        )
+        self.mf_huber_spin.valueChanged.connect(
+            lambda v: self.settings.setValue("stacking/mfdeconv/huber_delta", float(v))
+        )
+
+        accel_row = QHBoxLayout()
+        self.backend_label = QLabel(f"Backend: {current_backend()}")
+        accel_row.addWidget(self.backend_label)
+
+        self.install_accel_btn = QPushButton("Install/Update GPU Acceleration…")
+        self.install_accel_btn.setToolTip("Downloads PyTorch with the right backend (CUDA/MPS/CPU). One-time per machine.")
+        accel_row.addWidget(self.install_accel_btn)
+        accel_row.addStretch(1)
+        mf_v.addLayout(accel_row)
+
+        def _install_accel():
+            # --- UI: all created on the GUI thread ---
+            self.install_accel_btn.setEnabled(False)
+            self.backend_label.setText("Backend: installing…")
+
+            # Indeterminate progress dialog on GUI thread
+            self._accel_pd = QProgressDialog("Preparing runtime…", "Cancel", 0, 0, self)
+            self._accel_pd.setWindowTitle("Installing GPU Acceleration")
+            self._accel_pd.setWindowModality(Qt.WindowModality.ApplicationModal)
+            self._accel_pd.setAutoClose(True)
+            self._accel_pd.setMinimumDuration(0)
+            self._accel_pd.show()
+
+            # Worker thread
+            self._accel_thread = QThread(self)
+            self._accel_worker = AccelInstallWorker(prefer_gpu=True)
+            self._accel_worker.moveToThread(self._accel_thread)
+
+            # Start worker when thread starts (queued so it runs in worker thread)
+            self._accel_thread.started.connect(self._accel_worker.run, Qt.ConnectionType.QueuedConnection)
+
+            # Pipe worker progress to both the progress dialog and your log bus (GUI thread)
+            self._accel_worker.progress.connect(self._accel_pd.setLabelText, Qt.ConnectionType.QueuedConnection)
+            self._accel_worker.progress.connect(lambda s: self.status_signal.emit(s), Qt.ConnectionType.QueuedConnection)
+
+            # Allow cancel to request interruption
+            def _cancel():
+                if self._accel_thread.isRunning():
+                    self._accel_thread.requestInterruption()
+            self._accel_pd.canceled.connect(_cancel, Qt.ConnectionType.QueuedConnection)
+
+            # Finish handler (runs on GUI thread)
+            def _done(ok: bool, msg: str):
+                # Close progress dialog safely
+                if getattr(self, "_accel_pd", None):
+                    self._accel_pd.reset()
+                    self._accel_pd.deleteLater()
+                    self._accel_pd = None
+
+                # Stop thread cleanly
+                self._accel_thread.quit()
+                self._accel_thread.wait()
+
+                # Re-enable UI and refresh backend label
+                self.install_accel_btn.setEnabled(True)
+                from pro.accel_installer import current_backend
+                self.backend_label.setText(f"Backend: {current_backend()}")
+
+                # User feedback + log
+                self.status_signal.emit(("✅ " if ok else "❌ ") + msg)
+                if ok:
+                    QMessageBox.information(self, "Acceleration", f"✅ {msg}")
+                else:
+                    QMessageBox.warning(self, "Acceleration", f"❌ {msg}")
+
+            self._accel_worker.finished.connect(_done, Qt.ConnectionType.QueuedConnection)
+
+            # Cleanup objects when thread finishes
+            self._accel_thread.finished.connect(self._accel_worker.deleteLater, Qt.ConnectionType.QueuedConnection)
+            self._accel_thread.finished.connect(self._accel_thread.deleteLater, Qt.ConnectionType.QueuedConnection)
+
+            self._accel_thread.start()
+
+        self.install_accel_btn.clicked.connect(_install_accel)
+
+        layout.addWidget(mf_box)
+
+        # ★★ Star-Trail Mode ★★
+        trail_layout = QHBoxLayout()
+        self.trail_cb = QCheckBox("★★ Star-Trail Mode ★★ (Max-Value Stack)")
+        self.trail_cb.setChecked(self.star_trail_mode)
+        self.trail_cb.setToolTip(
+            "Skip registration/alignment and use Maximum-Intensity projection for star trails"
+        )
+        self.trail_cb.stateChanged.connect(self._on_star_trail_toggled)
+        trail_layout.addWidget(self.trail_cb)
+        layout.addLayout(trail_layout)
+        # ─────────────────────────────────────────
+        # 5) Register & Integrate Buttons
+        # ─────────────────────────────────────────
+
+        self.register_images_btn = QPushButton("🔥🚀Register and Integrate Images🔥🚀")
+        self.register_images_btn.clicked.connect(self.register_images)
+        self.register_images_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #FF4500;
+                color: white;
+                font-size: 16px;
+                padding: 8px;
+                border-radius: 5px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #FF6347;
+            }
+        """)
+        layout.addWidget(self.register_images_btn)
+
+        self._registration_busy = False
+
+        self.integrate_registered_btn = QPushButton("Integrate Previously Registered Images")
+        self.integrate_registered_btn.clicked.connect(self.integrate_registered_images)
+        self.integrate_registered_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #333;
+                color: white;
+                font-size: 14px;
+                padding: 8px;
+                border-radius: 5px;
+                border: 2px solid yellow;
+            }
+            QPushButton:hover {
+                border: 2px solid #FFD700;
+            }
+            QPushButton:pressed {
+                background-color: #222;
+                border: 2px solid #FFA500;
+            }
+        """)
+        layout.addWidget(self.integrate_registered_btn)
+
+        # Populate the tree from your calibrated folder
+        self.populate_calibrated_lights()
+        tab.setLayout(layout)
+
+        self.drizzle_checkbox.setChecked(self.settings.value("stacking/drizzle_enabled", False, type=bool))
+        self.drizzle_scale_combo.setCurrentText(self.settings.value("stacking/drizzle_scale", "2x", type=str))
+        self.drizzle_drop_shrink_spin.setValue(self.settings.value("stacking/drizzle_drop", 0.65, type=float))
+
+        self.settings.setValue("stacking/comet/enabled", self.comet_cb.isChecked())
+        self.settings.setValue("stacking/comet/blend", self.comet_blend_cb.isChecked())
+
+        self.settings.setValue("stacking/comet/mix", self.comet_mix.value())
+
+
+        self.auto_accept_ref_cb.toggled.connect(self.select_ref_frame_btn.setDisabled)
+        self.select_ref_frame_btn.setDisabled(self.auto_accept_ref_cb.isChecked())
+
+
+
+        return tab
+
+    def _on_drizzle_checkbox_toggled(self, checked: bool):
+        """(If you still call this elsewhere) keep as a thin wrapper or remove if unused."""
+        self.drizzle_scale_combo.setEnabled(checked)
+        self.drizzle_drop_shrink_spin.setEnabled(checked)
+        self.settings.setValue("stacking/drizzle_enabled", bool(checked))
+        # If you update tree rows with drizzle state, you can trigger that here:
+        # self._refresh_reg_tree_drizzle_column()
+
+    def _on_drizzle_param_changed(self, *_):
+        # Persist drizzle params whenever changed
+        self.settings.setValue("stacking/drizzle_scale", self.drizzle_scale_combo.currentText())
+        self.settings.setValue("stacking/drizzle_drop", float(self.drizzle_drop_shrink_spin.value()))
+        # If you reflect params to tree rows, update here:
+        # self._refresh_reg_tree_drizzle_column()
+
+    def _on_cfa_drizzle_toggled(self, checked: bool):
+        self.settings.setValue("stacking/cfa_drizzle", bool(checked))
+
+    def _on_star_trail_toggled(self, enabled: bool):
+        """
+        When Star-Trail mode is ON, we skip registration/alignment and use max-value stack.
+        Disable other registration-dependent features (drizzle/comet/MFDeconv) to avoid confusion.
+        """
+        # Controls to gate
+        drizzle_widgets = (self.drizzle_checkbox, self.drizzle_scale_combo, self.drizzle_drop_shrink_spin, self.cfa_drizzle_cb)
+        comet_widgets = (self.comet_cb, self.comet_pick_btn, self.comet_blend_cb, self.comet_mix)
+        mf_widgets = (self.mf_enabled_cb, self.mf_iters_spin, self.mf_kappa_spin, self.mf_color_combo, self.mf_huber_spin)
+
+        for w in drizzle_widgets + comet_widgets + mf_widgets:
+            w.setEnabled(not enabled)
+
+        if enabled:
+            self.status_signal.emit("⭐ Star-Trail Mode enabled: Drizzle, Comet stack, and MFDeconv disabled.")
+        else:
+            self.status_signal.emit("⭐ Star-Trail Mode disabled: other options re-enabled.")
+
+    def _on_drizzle_checkbox_toggled(self, checked: bool):
+        """(If you still call this elsewhere) keep as a thin wrapper or remove if unused."""
+        self.drizzle_scale_combo.setEnabled(checked)
+        self.drizzle_drop_shrink_spin.setEnabled(checked)
+        self.settings.setValue("stacking/drizzle_enabled", bool(checked))
+        # If you update tree rows with drizzle state, you can trigger that here:
+        # self._refresh_reg_tree_drizzle_column()
+
+    def _on_drizzle_param_changed(self, *_):
+        # Persist drizzle params whenever changed
+        self.settings.setValue("stacking/drizzle_scale", self.drizzle_scale_combo.currentText())
+        self.settings.setValue("stacking/drizzle_drop", float(self.drizzle_drop_shrink_spin.value()))
+        # If you reflect params to tree rows, update here:
+        # self._refresh_reg_tree_drizzle_column()
+
+    def _on_cfa_drizzle_toggled(self, checked: bool):
+        self.settings.setValue("stacking/cfa_drizzle", bool(checked))
+
+    def _on_star_trail_toggled(self, enabled: bool):
+        """
+        When Star-Trail mode is ON, we skip registration/alignment and use max-value stack.
+        Disable other registration-dependent features (drizzle/comet/MFDeconv) to avoid confusion.
+        """
+        # Controls to gate
+        drizzle_widgets = (self.drizzle_checkbox, self.drizzle_scale_combo, self.drizzle_drop_shrink_spin, self.cfa_drizzle_cb)
+        comet_widgets = (self.comet_cb, self.comet_pick_btn, self.comet_blend_cb, self.comet_mix)
+        mf_widgets = (self.mf_enabled_cb, self.mf_iters_spin, self.mf_kappa_spin, self.mf_color_combo, self.mf_huber_spin)
+
+        for w in drizzle_widgets + comet_widgets + mf_widgets:
+            w.setEnabled(not enabled)
+
+        if enabled:
+            self.status_signal.emit("⭐ Star-Trail Mode enabled: Drizzle, Comet stack, and MFDeconv disabled.")
+        else:
+            self.status_signal.emit("⭐ Star-Trail Mode disabled: other options re-enabled.")
+
 
     def _pick_comet_center(self):
         """
@@ -9633,6 +10194,15 @@ class StackingSuiteDialog(QDialog):
         self._set_registration_busy(False)
 
 
+    def _pd_alive(self):
+        pd = getattr(self, "_mf_pd", None)
+        if pd is None:
+            return None
+        # If Qt already destroyed it, skip
+        if sip.isdeleted(pd):
+            return None
+        return pd
+
     def _run_mfdeconv_then_continue(self, aligned_light_files: dict[str, list[str]]):
         """Queue MFDeconv per group if enabled, then continue into AfterAlignWorker for all groups."""
         mf_enabled = self.settings.value("stacking/mfdeconv/enabled", False, type=bool)
@@ -9671,8 +10241,10 @@ class StackingSuiteDialog(QDialog):
         def _start_next():
             if self._mf_cancelled or not self._mf_queue:
                 if getattr(self, "_mf_pd", None):
-                    self._mf_pd.reset()
-                    self._mf_pd.deleteLater()
+                    pd = self._pd_alive()
+                    if pd:
+                        pd.reset()
+                        pd.deleteLater()
                     self._mf_pd = None
                 try:
                     if self._mf_thread:
@@ -9722,20 +10294,26 @@ class StackingSuiteDialog(QDialog):
 
 
             def _done(ok: bool, message: str, out: str):
-                if getattr(self, "_mf_pd", None):
-                    val = self._mf_pd.value() + 1
-                    self._mf_pd.setValue(val)
-                    self._mf_pd.setLabelText(f"{'✅' if ok else '❌'} {group_key}: {message}")
+                pd = self._pd_alive()
+                if pd:
+                    # if you keep the 0..groups*1000 range, snap to segment boundary:
+                    val = min(pd.value() + 1000, pd.maximum())
+                    pd.setValue(val)
+                    pd.setLabelText(f"{'✅' if ok else '❌'} {group_key}: {message}")
+
                 if ok and out:
                     self._mf_results[group_key] = out
                 else:
                     self.update_status(f"❌ MFDeconv failed for '{group_key}': {message}")
+
                 try:
-                    self._mf_thread.quit(); self._mf_thread.wait()
+                    self._mf_thread.quit()
+                    self._mf_thread.wait()
                 except Exception:
                     pass
                 self._mf_thread = None
                 self._mf_worker = None
+
                 QTimer.singleShot(0, _start_next)
 
             self._mf_worker.finished.connect(_done, Qt.ConnectionType.QueuedConnection)
@@ -9743,7 +10321,9 @@ class StackingSuiteDialog(QDialog):
             self._mf_thread.start()
 
             if getattr(self, "_mf_pd", None):
-                self._mf_pd.setLabelText(f"Deconvolving '{group_key}' ({len(frames)} frames)…")
+                pd = self._pd_alive()
+                if pd:
+                    pd.setLabelText(f"Deconvolving '{group_key}' ({len(frames)} frames)…")
 
         QTimer.singleShot(0, _start_next)
 

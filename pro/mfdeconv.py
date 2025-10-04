@@ -7,7 +7,7 @@ from PyQt6.QtCore import QObject, pyqtSignal
 from pro.psf_utils import compute_psf_kernel_for_image
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QThread
-
+import contextlib
 try:
     import sep
 except Exception:
@@ -15,6 +15,9 @@ except Exception:
 
 torch = None        # filled by runtime loader if available
 TORCH_OK = False
+NO_GRAD = contextlib.nullcontext  # fallback
+
+
 
 def _process_gui_events_safely():
     app = QApplication.instance()
@@ -323,6 +326,12 @@ def _build_psf_bank_from_data_auto(
 # Robust weighting (Huber)
 # -----------------------------
 
+def _estimate_scalar_variance_t(r):
+    # r: tensor on device
+    med = torch.median(r)
+    mad = torch.median(torch.abs(r - med)) + 1e-6
+    return (1.4826 * mad) ** 2
+
 def _estimate_scalar_variance(a):
     med = np.median(a)
     mad = np.median(np.abs(a - med)) + 1e-6
@@ -331,76 +340,176 @@ def _estimate_scalar_variance(a):
 def _weight_map(y, pred, huber_delta, var_map=None, mask=None):
     """
     Robust per-pixel weights for the MM update.
-
     If huber_delta < 0, interpret it as a factor × RMS (auto mode):
-      delta = (-huber_delta) * background_RMS(residual)
-
-    W = m * [psi(r)/r] / (var + eps)
-      - Huber psi/r = 1                if |r| <= delta
-                      delta / (|r|+eps) otherwise
+        delta = (-huber_delta) * background_RMS(residual)
     """
     r = y - pred
+    eps = EPS
 
-    # Resolve delta (absolute) first
+    # --- robust RMS / delta on the same backend as r ---
     if huber_delta < 0:
-        # estimate scalar RMS from residuals
         if TORCH_OK and isinstance(r, torch.Tensor):
             med = torch.median(r)
-            mad = torch.median(torch.abs(r - med))
-            rms = float((1.4826 * mad).detach().cpu().numpy())
+            mad = torch.median(torch.abs(r - med)) + 1e-6
+            rms = 1.4826 * mad
+            delta = (-huber_delta) * torch.clamp(rms, min=1e-6)
         else:
             med = np.median(r)
-            mad = np.median(np.abs(r - med))
+            mad = np.median(np.abs(r - med)) + 1e-6
             rms = 1.4826 * mad
-        huber_delta = (-huber_delta) * max(rms, 1e-6)
+            delta = (-huber_delta) * max(rms, 1e-6)
+    else:
+        delta = huber_delta
 
-    # psi(r)/r  (array-shaped)
-    if huber_delta > 0:
-        if TORCH_OK and isinstance(r, torch.Tensor):
+    # --- psi(r)/r ---
+    if TORCH_OK and isinstance(r, torch.Tensor):
+        if float(delta) > 0:
             absr = torch.abs(r)
-            psi_over_r = torch.where(absr <= huber_delta,
+            psi_over_r = torch.where(absr <= delta,
                                      torch.ones_like(r),
-                                     huber_delta / (absr + EPS))
+                                     delta / (absr + eps))
         else:
+            psi_over_r = torch.ones_like(r)
+        if var_map is None:
+            v = _estimate_scalar_variance_t(r)
+            w = psi_over_r / (v + eps)
+        else:
+            w = psi_over_r / (var_map + eps)
+        if mask is not None:
+            w = w * mask
+        return w
+    else:
+        if float(delta) > 0:
             absr = np.abs(r)
-            psi_over_r = np.where(absr <= huber_delta,
+            psi_over_r = np.where(absr <= delta,
                                   np.ones_like(r, dtype=np.float32),
-                                  huber_delta / (absr + EPS))
-    else:
-        psi_over_r = torch.ones_like(r) if (TORCH_OK and isinstance(r, torch.Tensor)) \
-                     else np.ones_like(r, dtype=np.float32)
-
-    # variance term (scalar or map)
-    if var_map is None:
-        if TORCH_OK and isinstance(r, torch.Tensor):
-            v = _estimate_scalar_variance(r.detach().cpu().numpy())
-            v = torch.tensor(v, dtype=r.dtype, device=r.device)
+                                  delta / (absr + eps))
         else:
+            psi_over_r = np.ones_like(r, dtype=np.float32)
+        if var_map is None:
             v = _estimate_scalar_variance(r)
-        w = psi_over_r / (v + EPS)
-    else:
-        w = psi_over_r / (var_map + EPS)
+            w = psi_over_r / (v + eps)
+        else:
+            w = psi_over_r / (var_map + eps)
+        if mask is not None:
+            w = w * mask
+        return w
 
-    if mask is not None:
-        w = w * mask
-    return w
 
 # -----------------------------
 # Torch / conv
 # -----------------------------
 
+def _fftshape_same(H, W, kh, kw):
+    return H + kh - 1, W + kw - 1
+
+# ---------- Torch FFT helpers (FIXED: carry padH/padW) ----------
+def _precompute_torch_psf_ffts(psfs, flip_psf, H, W, device, dtype):
+    """
+    Returns two lists of tuples:
+      psf_fft:  [(Kf, padH, padW), ...]
+      psfT_fft: [(KTf, padH, padW), ...]
+    where Kf/KTf are rfft2 of the padded kernels to (padH, padW).
+    """
+    import torch.fft as tfft
+    psf_fft  = []
+    psfT_fft = []
+    for k, kT in zip(psfs, flip_psf):
+        kh, kw = k.shape
+        padH, padW = _fftshape_same(H, W, kh, kw)
+
+        # center-place kernel into a (padH, padW) canvas
+        k_pad  = torch.zeros((padH, padW), device=device, dtype=dtype)
+        kT_pad = torch.zeros((padH, padW), device=device, dtype=dtype)
+        sy, sx = (padH - kh)//2, (padW - kw)//2
+        k_pad [sy:sy+kh,  sx:sx+kw] = torch.as_tensor(k,  device=device, dtype=dtype)
+        kT_pad[sy:sy+kh, sx:sx+kw]  = torch.as_tensor(kT, device=device, dtype=dtype)
+
+        # rfft over the *real* spatial size (padH, padW)
+        Kf  = tfft.rfftn(k_pad,  s=(padH, padW))
+        KTf = tfft.rfftn(kT_pad, s=(padH, padW))
+
+        psf_fft.append((Kf,  padH, padW))
+        psfT_fft.append((KTf, padH, padW))
+    return psf_fft, psfT_fft
+
+
+def _fft_conv_same_torch(x, Kf_pack, out_spatial):
+    """
+    x:         (H,W) or (C,H,W) tensor on device
+    Kf_pack:   tuple (Kf, padH, padW) from _precompute_torch_psf_ffts
+    out_spatial: preallocated tensor like x to receive the 'same' result
+    """
+    import torch.fft as tfft
+    Kf, padH, padW = Kf_pack
+    H, W = x.shape[-2], x.shape[-1]
+
+    if x.ndim == 2:
+        X = tfft.rfftn(x, s=(padH, padW))
+        y = tfft.irfftn(X * Kf, s=(padH, padW))
+        sh, sw = (padH - H) // 2, (padW - W) // 2
+        out_spatial.copy_(y[sh:sh+H, sw:sw+W])
+        return out_spatial
+    else:
+        X = tfft.rfftn(x, s=(padH, padW), dim=(-2, -1))
+        y = tfft.irfftn(X * Kf, s=(padH, padW), dim=(-2, -1))
+        sh, sw = (padH - H) // 2, (padW - W) // 2
+        out_spatial.copy_(y[..., sh:sh+H, sw:sw+W])
+        return out_spatial
+
+# ---------- NumPy FFT helpers ----------
+def _precompute_np_psf_ffts(psfs, flip_psf, H, W):
+    import numpy.fft as fft
+    meta = []
+    Kfs  = []
+    KTfs = []
+    for k, kT in zip(psfs, flip_psf):
+        kh, kw = k.shape
+        fftH, fftW = _fftshape_same(H, W, kh, kw)
+        Kfs.append( fft.rfftn(k,  s=(fftH, fftW)) )
+        KTfs.append(fft.rfftn(kT, s=(fftH, fftW)) )
+        meta.append((kh, kw, fftH, fftW))
+    return Kfs, KTfs, meta
+
+def _fft_conv_same_np(a, Kf, kh, kw, fftH, fftW, out):
+    import numpy.fft as fft
+    if a.ndim == 2:
+        A = fft.rfftn(a, s=(fftH, fftW))
+        y = fft.irfftn(A * Kf, s=(fftH, fftW))
+        sh, sw = (fftH - a.shape[0])//2, (fftW - a.shape[1])//2
+        out[...] = y[sh:sh+a.shape[0], sw:sw+a.shape[1]]
+        return out
+    else:
+        # per-channel
+        C, H, W = a.shape
+        acc = []
+        for c in range(C):
+            A = fft.rfftn(a[c], s=(fftH, fftW))
+            y = fft.irfftn(A * Kf, s=(fftH, fftW))
+            sh, sw = (fftH - H)//2, (fftW - W)//2
+            acc.append(y[sh:sh+H, sw:sw+W])
+        out[...] = np.stack(acc, 0)
+        return out
+
+
 def _torch_device():
-    if TORCH_OK and (torch is not None) and hasattr(torch, "cuda") and torch.cuda.is_available():
-        return torch.device("cuda")
+    if TORCH_OK and (torch is not None):
+        if hasattr(torch, "cuda") and torch.cuda.is_available():
+            return torch.device("cuda")
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            return torch.device("mps")
+        # DirectML: we passed dml_device from outer scope; keep a module-global
+        if globals().get("dml_ok", False) and globals().get("dml_device", None) is not None:
+            return globals()["dml_device"]
     return torch.device("cpu")
 
 def _to_t(x: np.ndarray):
     if not (TORCH_OK and (torch is not None)):
         raise RuntimeError("Torch path requested but torch is unavailable")
+    device = _torch_device()
     t = torch.from_numpy(x)
-    if hasattr(torch, "cuda") and torch.cuda.is_available():
-        return t.to(_torch_device(), non_blocking=True)
-    return t
+    # DirectML wants explicit .to(device)
+    return t.to(device, non_blocking=True) if str(device) != "cpu" else t
 
 def _contig(x):
     return np.ascontiguousarray(x, dtype=np.float32)
@@ -427,6 +536,29 @@ def _conv_same_torch(img_t, psf_t):
         w = psf_t.repeat(C, 1, 1, 1)
         y = torch.nn.functional.conv2d(x, w, padding=0, groups=C)
         return y[0]
+
+def _safe_inference_context():
+    """
+    Return a valid, working no-grad context:
+      - prefer torch.inference_mode() if it exists *and* can be entered,
+      - otherwise fall back to torch.no_grad(),
+      - if torch is unavailable, return NO_GRAD.
+    """
+    if not (TORCH_OK and (torch is not None)):
+        return NO_GRAD
+
+    cm = getattr(torch, "inference_mode", None)
+    if cm is None:
+        return torch.no_grad
+
+    # Probe inference_mode once; if it explodes on this build, fall back.
+    try:
+        with cm():
+            pass
+        return cm
+    except Exception:
+        return torch.no_grad
+
 
 # -----------------------------
 # Core
@@ -458,37 +590,42 @@ def multiframe_deconv(
     # -------- try to import torch from per-user runtime venv --------
     global TORCH_OK
     torch = None
-    cuda_ok = mps_ok = False
+    cuda_ok = mps_ok = dml_ok = False
+    dml_device = None
     try:
         from pro.runtime_torch import import_torch
-        # Ask for CUDA if plausible; if not available the loader falls back inside.
-        prefer_cuda = True
-        torch = import_torch(prefer_cuda=prefer_cuda, status_cb=status_cb)
+        torch = import_torch(prefer_cuda=True, status_cb=status_cb)
         TORCH_OK = True
+
+        try: cuda_ok = hasattr(torch, "cuda") and torch.cuda.is_available()
+        except Exception: cuda_ok = False
+
+        try: mps_ok = hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
+        except Exception: mps_ok = False
+
+        # DirectML (Windows: AMD/Intel iGPU/dGPU)
         try:
-            torch.backends.cudnn.benchmark = True
+            import torch_directml
+            dml_device = torch_directml.device()
+            # Quick no-op to validate the backend
+            _ = (torch.ones(1, device=dml_device) + 1).item()
+            dml_ok = True
         except Exception:
-            pass
-        try:
-            cuda_ok = hasattr(torch, "cuda") and torch.cuda.is_available()
-        except Exception:
-            cuda_ok = False
-        try:
-            mps_ok = hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
-        except Exception:
-            mps_ok = False
+            dml_ok = False
 
         if cuda_ok:
             status_cb(f"PyTorch CUDA available: True | device={torch.cuda.get_device_name(0)}")
         elif mps_ok:
             status_cb("PyTorch MPS (Apple) available: True")
+        elif dml_ok:
+            status_cb("PyTorch DirectML (Windows) available: True")
         else:
             status_cb("PyTorch present, using CPU backend.")
 
         status_cb(
             f"PyTorch {getattr(torch, '__version__', '?')} backend: "
-            + ("CUDA" if cuda_ok else "MPS" if mps_ok else "CPU")
-        )            
+            + ("CUDA" if cuda_ok else "MPS" if mps_ok else "DirectML" if dml_ok else "CPU")
+        )
     except Exception as e:
         TORCH_OK = False
         status_cb(f"PyTorch not available → CPU path. ({e})")
@@ -503,7 +640,7 @@ def multiframe_deconv(
     _emit_pct(0.20, "psf ready")
 
 
-    
+
     # Normalize layout BEFORE size harmonization
     data = _normalize_layout_batch(ys_raw, color_mode)  # list of (H,W) or (3,H,W)
     _emit_pct(0.25, "seed ready")
@@ -529,59 +666,84 @@ def multiframe_deconv(
     status_cb(f"MFDeconv: color_mode={color_mode}, huber_delta={huber_delta} (bg RMS~{bg_est:.3g})")
     _process_gui_events_safely()
 
+    # Prepare tensors/arrays used by the main loop
     if use_torch:
-        # Move state & inputs to device
-        x_t = _to_t(_contig(x))
-        y_tensors = [_to_t(_contig(y)) for y in data]
-        # PSFs on device once
-        psf_t  = [_to_t(_contig(k))[None, None]  for k in psfs]     # (1,1,kh,kw)
-        psfT_t = [_to_t(_contig(kT))[None, None] for kT in flip_psf]
+        # move initial estimate and all frames to the selected device
+        x_t = _to_t(_contig(x))                              # (H,W) or (C,H,W) tensor
+        y_tensors = [_to_t(_contig(y)) for y in data]        # list of tensors
     else:
-        x_t = x
-        y_np = data  # use NP conv
+        x_t = x                                              # numpy array
+        y_np = data                                          # list of numpy arrays
 
     total_steps = max(1, int(iters))
     status_cb("__PROGRESS__ 0.0000 Starting iterations…")
 
-    # MM iterations (Eq. 16): u_k = (Σ Fᵀ(W y)) / (Σ Fᵀ(W F x))
-    for it in range(1, iters + 1):
-        if use_torch:
-            num = torch.zeros_like(x_t)
-            den = torch.zeros_like(x_t)
-            for yt, wk, wkT in zip(y_tensors, psf_t, psfT_t):
-                pred = _conv_same_torch(x_t, wk)
-                wmap = _weight_map(yt, pred, huber_delta, var_map=None, mask=None)
-                num += _conv_same_torch(wmap * yt,  wkT)
-                den += _conv_same_torch(wmap * pred, wkT)
-            upd = torch.clamp(num / (den + EPS), 1.0 / kappa, kappa)
-            x_next = torch.clamp(x_t * upd, min=0.0)
-            # early stop on clipped update stagnation
-            if torch.median(torch.abs(upd - 1)) < 1e-3:
-                x_t = x_next
-                status_cb(f"MFDeconv: iter {it}/{iters} (early stop)")
-                _process_gui_events_safely()
-                break
-            x_t = (1.0 - relax) * x_t + relax * x_next
+    # -------- precompute FFTs and allocate scratch --------
+    if use_torch:
+        device = _torch_device()
+        H, W = int(x_t.shape[-2]), int(x_t.shape[-1])
+        psf_fft, psfT_fft = _precompute_torch_psf_ffts(psfs, flip_psf, H, W, device, x_t.dtype)
+
+        # persistent buffers
+        num      = torch.zeros_like(x_t)
+        den      = torch.zeros_like(x_t)
+        pred_buf = torch.empty_like(x_t)
+        tmp_out  = torch.empty_like(x_t)
+    else:
+        x_t = x  # ensure name consistency
+        y_np = data
+        if x_t.ndim == 2:
+            H, W = x_t.shape
         else:
-            num = np.zeros_like(x_t)
-            den = np.zeros_like(x_t)
-            for yt, hk, hkT in zip(y_np, psfs, flip_psf):
-                pred = _conv_same_np(x_t, hk)
-                wmap = _weight_map(yt, pred, huber_delta, var_map=None, mask=None)
-                num += _conv_same_np(wmap * yt,  hkT)
-                den += _conv_same_np(wmap * pred, hkT)
-            upd = np.clip(num / (den + EPS), 1.0 / kappa, kappa)
-            x_next = np.clip(x_t * upd, 0.0, None)
-            if np.median(np.abs(upd - 1.0)) < 1e-3:
-                x_t = x_next
-                status_cb(f"MFDeconv: iter {it}/{iters} (early stop)")
+            _, H, W = x_t.shape
+        Kfs, KTfs, meta = _precompute_np_psf_ffts(psfs, flip_psf, H, W)
+        num      = np.zeros_like(x_t)
+        den      = np.zeros_like(x_t)
+        pred_buf = np.empty_like(x_t)
+        tmp_out  = np.empty_like(x_t)
+
+    # -------- inference/no-grad for the whole loop --------
+    cm = _safe_inference_context() if use_torch else NO_GRAD
+
+    with cm():
+        for it in range(1, iters + 1):
+            if use_torch:
+                num.zero_(); den.zero_()
+                for yt, Kf_pack, KTf_pack in zip(y_tensors, psf_fft, psfT_fft):
+                    _fft_conv_same_torch(x_t, Kf_pack, pred_buf)
+                    wmap = _weight_map(yt, pred_buf, huber_delta, var_map=None, mask=None)
+                    _fft_conv_same_torch(wmap * yt,      KTf_pack, tmp_out); num.add_(tmp_out)
+                    _fft_conv_same_torch(wmap * pred_buf, KTf_pack, tmp_out); den.add_(tmp_out)
+                upd    = torch.clamp(num / (den + EPS), 1.0 / kappa, kappa)
+                x_next = torch.clamp(x_t * upd, min=0.0)
+                if torch.median(torch.abs(upd - 1)) < 1e-3:
+                    x_t = x_next
+                    status_cb(f"MFDeconv: iter {it}/{iters} (early stop)")
+                    _process_gui_events_safely()
+                    break
+                x_t = (1.0 - relax) * x_t + relax * x_next
+            else:
+                num.fill(0.0); den.fill(0.0)
+                for (yt, Kf, KTf, (kh, kw, fftH, fftW)) in zip(y_np, Kfs, KTfs, meta):
+                    _fft_conv_same_np(x_t, Kf, kh, kw, fftH, fftW, pred_buf)
+                    wmap = _weight_map(yt, pred_buf, huber_delta, var_map=None, mask=None)
+                    _fft_conv_same_np(wmap * yt,      KTf, kh, kw, fftH, fftW, tmp_out); num += tmp_out
+                    _fft_conv_same_np(wmap * pred_buf, KTf, kh, kw, fftH, fftW, tmp_out); den += tmp_out
+                upd    = np.clip(num / (den + EPS), 1.0 / kappa, kappa)
+                x_next = np.clip(x_t * upd, 0.0, None)
+                if np.median(np.abs(upd - 1.0)) < 1e-3:
+                    x_t = x_next
+                    status_cb(f"MFDeconv: iter {it}/{iters} (early stop)")
+                    _process_gui_events_safely()
+                    break
+                x_t = (1.0 - relax) * x_t + relax * x_next
+
+            # UI throttled (don’t spam every iter)
+            if (it == 1) or (it % 3 == 0) or (it == iters):
+                frac = 0.25 + 0.70 * (it / float(iters))
+                _emit_pct(frac, f"iter {it}/{iters}")
+                status_cb(f"__PROGRESS__ {it/total_steps:.4f} Iter {it}/{iters}")
                 _process_gui_events_safely()
-                break
-            x_t = (1.0 - relax) * x_t + relax * x_next
-        frac = 0.25 + 0.70 * (it / float(iters))   # use most time budget for iterations
-        _emit_pct(frac, f"iter {it}/{iters}")
-        status_cb(f"__PROGRESS__ {it/total_steps:.4f} Iter {it}/{iters}")
-        _process_gui_events_safely()
 
     # ----------------------------
     # Save result (keep FITS-friendly order: (C,H,W))
