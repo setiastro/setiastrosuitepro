@@ -631,6 +631,12 @@ def multiframe_deconv(
         status_cb(f"PyTorch not available → CPU path. ({e})")
 
     use_torch = bool(TORCH_OK)  # GPU only if CUDA/MPS true
+    if use_torch:
+        try:
+            import torch.backends.cudnn as cudnn
+            cudnn.benchmark = True  # let cuDNN pick fastest algo for this shape
+        except Exception:
+            pass
     _process_gui_events_safely()
 
     # PSFs (auto-size per frame) + flipped copies
@@ -680,16 +686,14 @@ def multiframe_deconv(
 
     # -------- precompute FFTs and allocate scratch --------
     if use_torch:
-        device = _torch_device()
-        H, W = int(x_t.shape[-2]), int(x_t.shape[-1])
-        psf_fft, psfT_fft = _precompute_torch_psf_ffts(psfs, flip_psf, H, W, device, x_t.dtype)
+        # Place kernels on device once; use spatial conv2d each iter (fast for small PSFs)
+        psf_t  = [_to_t(_contig(k))[None, None]  for k  in psfs]      # (1,1,kh,kw)
+        psfT_t = [_to_t(_contig(kT))[None, None] for kT in flip_psf]  # (1,1,kh,kw)
 
-        # persistent buffers
-        num      = torch.zeros_like(x_t)
-        den      = torch.zeros_like(x_t)
-        pred_buf = torch.empty_like(x_t)
-        tmp_out  = torch.empty_like(x_t)
+        num = torch.zeros_like(x_t)
+        den = torch.zeros_like(x_t)
     else:
+        # (keep NumPy/FFT branch as-is)
         x_t = x  # ensure name consistency
         y_np = data
         if x_t.ndim == 2:
@@ -709,11 +713,11 @@ def multiframe_deconv(
         for it in range(1, iters + 1):
             if use_torch:
                 num.zero_(); den.zero_()
-                for yt, Kf_pack, KTf_pack in zip(y_tensors, psf_fft, psfT_fft):
-                    _fft_conv_same_torch(x_t, Kf_pack, pred_buf)
-                    wmap = _weight_map(yt, pred_buf, huber_delta, var_map=None, mask=None)
-                    _fft_conv_same_torch(wmap * yt,      KTf_pack, tmp_out); num.add_(tmp_out)
-                    _fft_conv_same_torch(wmap * pred_buf, KTf_pack, tmp_out); den.add_(tmp_out)
+                for yt, wk, wkT in zip(y_tensors, psf_t, psfT_t):
+                    pred = _conv_same_torch(x_t, wk)                 # spatial conv2d
+                    wmap = _weight_map(yt, pred, huber_delta, var_map=None, mask=None)
+                    num  += _conv_same_torch(wmap * yt,   wkT)       # back-projection
+                    den  += _conv_same_torch(wmap * pred, wkT)
                 upd    = torch.clamp(num / (den + EPS), 1.0 / kappa, kappa)
                 x_next = torch.clamp(x_t * upd, min=0.0)
                 if torch.median(torch.abs(upd - 1)) < 1e-3:
