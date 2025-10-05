@@ -76,7 +76,7 @@ warnings.filterwarnings(
 # Standard library imports
 from itertools import combinations
 from tifffile import imwrite
-import requests
+
 from math import isnan
 import re, threading, webbrowser
 import os
@@ -146,7 +146,7 @@ except ImportError:
 
 
 # Third-party library imports
-import requests
+
 import numpy as np
 
 import cv2
@@ -269,7 +269,7 @@ from pro.status_log_dock import StatusLogDock
 from pro.log_bus import LogBus
 
 
-VERSION = "1.2.5"
+VERSION = "1.2.6"
 
 
 if hasattr(sys, '_MEIPASS'):
