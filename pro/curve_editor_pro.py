@@ -12,6 +12,7 @@ from pro.curves_preset import (
     list_custom_presets, save_custom_preset, _points_norm_to_scene, _norm_mode,
     _shape_points_norm, open_curves_with_preset, _lut_from_preset
 )
+from PyQt6.QtWidgets import QFrame, QSizePolicy
 from scipy.interpolate import PchipInterpolator
 
 try:
@@ -893,7 +894,8 @@ class CurvesDialogPro(QDialog):
         self._cdf_total_preview = 0     # total pixels in preview (H*W)
 
         # --- UI ---
-        main = QHBoxLayout(self)
+        main = QVBoxLayout(self)          # ⬅️ root is now vertical
+        top  = QHBoxLayout()              # ⬅️ holds the two columns
 
         # Left column: CurveEditor + mode + buttons
         left = QVBoxLayout()
@@ -936,7 +938,7 @@ class CurvesDialogPro(QDialog):
         # status
         self.lbl_status = QLabel("", self)
         self.lbl_status.setStyleSheet("color: gray;")
-        left.addWidget(self.lbl_status)
+
 
         # buttons
         rowb = QHBoxLayout()
@@ -950,7 +952,7 @@ class CurvesDialogPro(QDialog):
         left.addLayout(rowb)
 
         left.addStretch(1)
-        main.addLayout(left, 0)
+        top.addLayout(left, 0)
 
         # Right column: preview w/ zoom/pan
         right = QVBoxLayout()
@@ -971,7 +973,33 @@ class CurvesDialogPro(QDialog):
         self.label.installEventFilter(self)
         self.scroll.setWidget(self.label)
         right.addWidget(self.scroll, 1)
-        main.addLayout(right, 1)
+        top.addLayout(right, 1)
+
+        main.addLayout(top, 1)
+
+        # subtle separator line
+
+        sep = QFrame(self)
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setFrameShadow(QFrame.Shadow.Sunken)
+        main.addWidget(sep)
+
+        # bottom status row
+        status_row = QHBoxLayout()
+        self.lbl_status = QLabel("", self)             # ⬅️ re-create here at bottom
+        self.lbl_status.setObjectName("curvesStatus")
+        self.lbl_status.setWordWrap(True)
+        self.lbl_status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.lbl_status.setStyleSheet("color: #bbb;")  # or keep your theme color
+
+        # keep it from growing tall: ~2 lines max
+        line_h = self.fontMetrics().height()
+        self.lbl_status.setMaximumHeight(int(line_h * 2.2))
+        self.lbl_status.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+
+        status_row.addWidget(self.lbl_status, 1)
+
+        main.addLayout(status_row, 0)
 
         # wire
         self.btn_preview.clicked.connect(self._run_preview)
@@ -1035,6 +1063,28 @@ class CurvesDialogPro(QDialog):
         self._cdf_total_full = full_pixels
         self._clip_scale = (full_pixels / float(self._cdf_total_preview)) if self._cdf_total_preview else 1.0
 
+    def _build_preview_rgb_cdfs(self):
+        """Compute per-channel CDFs (R,G,B) from the preview image for clipping stats."""
+        self._cdf_rgb = None
+        img = self._preview_img
+        if img is None or not (img.ndim == 3 and img.shape[2] >= 3):
+            return
+
+        bins = int(getattr(self, "_cdf_bins", 1024))
+        r = np.clip(img[..., 0].astype(np.float32), 0.0, 1.0)
+        g = np.clip(img[..., 1].astype(np.float32), 0.0, 1.0)
+        b = np.clip(img[..., 2].astype(np.float32), 0.0, 1.0)
+
+        hr, _ = np.histogram(r, bins=bins, range=(0.0, 1.0))
+        hg, _ = np.histogram(g, bins=bins, range=(0.0, 1.0))
+        hb, _ = np.histogram(b, bins=bins, range=(0.0, 1.0))
+
+        self._cdf_rgb = {
+            "r": np.cumsum(hr).astype(np.int64),
+            "g": np.cumsum(hg).astype(np.int64),
+            "b": np.cumsum(hb).astype(np.int64),
+            "total_preview": int(r.size)  # same for each channel
+        }
 
 
     def _on_symmetry_pick(self, u: float, _v: float):
@@ -1243,6 +1293,7 @@ class CurvesDialogPro(QDialog):
         self._preview_img = _downsample_for_preview(arr, 1200)
         self._update_preview_pix(self._preview_img)
         self._build_preview_luma_cdf()
+        self._build_preview_rgb_cdfs() 
 
     # ----- building LUT from editor -----
     def _build_lut01(self) -> np.ndarray | None:
@@ -1271,13 +1322,23 @@ class CurvesDialogPro(QDialog):
         self._update_preview_pix(out)
         try:
             bt, wt = self.editor.current_black_white_thresholds()
-            below, above, f_below, f_above = self._clip_counts_from_thresholds(bt, wt)
-            # Nice compact status; keep other statuses intact when not dragging
-            self._set_status(
-                f"Clipping: blacks {below:,} ({f_below*100:.2f}%)   whites {above:,} ({f_above*100:.2f}%)"
-            )
+
+            if self._preview_img is not None and self._preview_img.ndim == 3 and self._preview_img.shape[2] >= 3:
+                # Color image → only per-channel stats
+                rgb = self._clip_counts_rgb_from_thresholds(bt, wt)
+                def _fmt(pair):
+                    cnt_b, cnt_w, fb, fw = pair
+                    return f"Bk {cnt_b:,} ({fb*100:.2f}%)  Wt {cnt_w:,} ({fw*100:.2f}%)"
+                self._set_status(
+                    f"Clipping —  R: {_fmt(rgb['r'])}   G: {_fmt(rgb['g'])}   B: {_fmt(rgb['b'])}"
+                )
+            else:
+                # Grayscale/mono → K summary (unchanged behavior)
+                below, above, f_below, f_above = self._clip_counts_from_thresholds(bt, wt)
+                self._set_status(
+                    f"Clipping —  Bk {below:,} ({f_below*100:.2f}%)   Wt {above:,} ({f_above*100:.2f}%)"
+                )
         except Exception:
-            # don't let any hiccup break interactive editing
             pass
 
 
@@ -1346,6 +1407,57 @@ class CurvesDialogPro(QDialog):
 
         return below_full, above_full, f_below, f_above
 
+    def _clip_counts_rgb_from_thresholds(self, black_t: float | None, white_t: float | None):
+        """
+        Returns dict:
+        {
+            'r': (below_full, above_full, frac_below, frac_above),
+            'g': (...),
+            'b': (...)
+        }
+        using the precomputed preview RGB CDFs scaled to full-image counts.
+        """
+        out = {"r": (0,0,0.0,0.0), "g": (0,0,0.0,0.0), "b": (0,0,0.0,0.0)}
+        if getattr(self, "_cdf_rgb", None) is None:
+            return out
+
+        bins = int(getattr(self, "_cdf_bins", 1024))
+        scale = float(getattr(self, "_clip_scale", 1.0))
+        total_full = int(getattr(self, "_cdf_total_full", self._cdf_rgb["total_preview"])) or 1
+        total_prev = int(self._cdf_rgb["total_preview"]) or 1
+
+        def _bin_idx(t):
+            i = int(np.floor(np.clip(float(t), 0.0, 1.0) * (bins - 1)))
+            return max(0, min(bins - 1, i))
+
+        for ch in ("r", "g", "b"):
+            cdf = self._cdf_rgb[ch]
+            # blacks
+            if black_t is None:
+                below_prev = 0
+            else:
+                i = _bin_idx(black_t)
+                below_prev = int(cdf[i])
+            # whites
+            if white_t is None:
+                above_prev = 0
+            else:
+                j = _bin_idx(white_t)
+                above_prev = int(total_prev - cdf[j])
+
+            below_full = int(round(below_prev * scale))
+            above_full = int(round(above_prev * scale))
+
+            below_full = max(0, min(below_full, total_full))
+            above_full = max(0, min(above_full, total_full))
+
+            out[ch] = (
+                below_full,
+                above_full,
+                below_full / float(total_full),
+                above_full / float(total_full),
+            )
+        return out
 
 
     # ----- apply to document -----

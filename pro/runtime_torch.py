@@ -362,7 +362,7 @@ def _install_torch(venv_python: Path, prefer_cuda: bool, status_cb=print):
     _pip_ok(["install", "--upgrade", "pip", "setuptools", "wheel"])
 
     def _try_series(index_url: str | None, versions: list[str]) -> bool:
-        base = ["install", "--prefer-binary"]
+        base = ["install", "--prefer-binary", "--no-cache-dir"]
         if index_url:
             base += ["--index-url", index_url]
         # latest for that index first
@@ -384,6 +384,8 @@ def _install_torch(venv_python: Path, prefer_cuda: bool, status_cb=print):
     # Windows/Linux – CUDA first if requested, then CPU
     try_cuda = prefer_cuda and sysname in ("Windows", "Linux")
     cuda_indices = [
+        ("cu129", "https://download.pytorch.org/whl/cu129"),
+        ("cu128", "https://download.pytorch.org/whl/cu128"),        
         ("cu124", "https://download.pytorch.org/whl/cu124"),
         ("cu121", "https://download.pytorch.org/whl/cu121"),
         ("cu118", "https://download.pytorch.org/whl/cu118"),
@@ -393,9 +395,42 @@ def _install_torch(venv_python: Path, prefer_cuda: bool, status_cb=print):
         for tag, url in cuda_indices:
             status_cb(f"Trying PyTorch CUDA wheels: {tag} …")
             if _try_series(url, ladder):
-                status_cb(f"Installed PyTorch CUDA ({tag}).")
-                return
+                # Verify the wheel is actually CUDA-enabled; otherwise uninstall and try next.
+                try:
+                    import importlib
+                    importlib.invalidate_caches()
+                    torch = importlib.import_module("torch")
+
+                    # Must expose a CUDA runtime and report a CUDA version.
+                    cuda_tag = getattr(getattr(torch, "version", None), "cuda", None)
+                    if (not cuda_tag) or (not torch.cuda.is_available()):
+                        status_cb(
+                            f"Installed from {tag} but got CPU-only torch "
+                            f"(torch.version.cuda={cuda_tag}, cuda.is_available={torch.cuda.is_available()}). "
+                            "Uninstalling and trying next…"
+                        )
+                        _pip_ok(["uninstall", "-y", "torch", "torchvision", "torchaudio"])
+                        continue
+
+                    # Quick fp32 op to force GPU code path
+                    try:
+                        x = torch.rand((256, 256), device="cuda", dtype=torch.float32)
+                        y = torch.rand((256, 256), device="cuda", dtype=torch.float32)
+                        _ = (x @ y).sum().item()
+                    except Exception as e:
+                        status_cb(f"CUDA runtime test failed for {tag}: {e}. Uninstalling and trying next…")
+                        _pip_ok(["uninstall", "-y", "torch", "torchvision", "torchaudio"])
+                        continue
+
+                    status_cb(f"Installed PyTorch CUDA ({tag}; torch.version.cuda={cuda_tag}).")
+                    return
+                except Exception as e:
+                    status_cb(f"CUDA verification failed after {tag}: {e}. Uninstalling and trying next…")
+                    _pip_ok(["uninstall", "-y", "torch", "torchvision", "torchaudio"])
+                    continue
+
             status_cb(f"No matching CUDA {tag} wheel for this Python/OS. Trying next…")
+
         status_cb("Falling back to CPU wheels (no matching CUDA wheel).")
 
     # CPU path

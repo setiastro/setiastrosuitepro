@@ -47,6 +47,17 @@ from pro.accel_installer import current_backend
 from pro.accel_workers import AccelInstallWorker
 from pro.runtime_torch import add_runtime_to_sys_path
 
+from pro.mfdeconv import (
+    THRESHOLD_SIGMA as _SM_DEF_THRESH,
+    GROW_PX         as _SM_DEF_GROW,
+    SOFT_SIGMA      as _SM_DEF_SOFT,
+    MAX_STAR_RADIUS as _SM_DEF_RMAX,
+    STAR_MASK_MAXOBJS as _SM_DEF_MAXOBJS,
+    KEEP_FLOOR      as _SM_DEF_KEEPF,
+    ELLIPSE_SCALE   as _SM_DEF_ES,
+    VARMAP_SAMPLE_STRIDE as _VM_DEF_STRIDE,
+)
+
 _WINDOWS_RESERVED = {
     "CON","PRN","AUX","NUL",
     "COM1","COM2","COM3","COM4","COM5","COM6","COM7","COM8","COM9",
@@ -159,9 +170,9 @@ def _subtract_dark_stack_inplace_hwc(stack_FHWC: np.ndarray, dark_HWC_or_HW: np.
 
 
 
-def _luma(img: np.ndarray) -> np.ndarray:
+def _Luma(img: np.ndarray) -> np.ndarray:
     """
-    Return a float32 mono view: grayscale image → itself, RGB → luma, (H,W,1) → squeeze.
+    Return a float32 mono view: grayscale image → itself, RGB → Luma, (H,W,1) → squeeze.
     """
     a = np.asarray(img)
     if a.ndim == 2:
@@ -174,13 +185,13 @@ def _luma(img: np.ndarray) -> np.ndarray:
 
 def normalize_images(stack: np.ndarray,
                      target_median: float,
-                     use_luma: bool = True) -> np.ndarray:
+                     use_Luma: bool = True) -> np.ndarray:
     """
     Min-offset + median-match normalization with NO clipping.
     For each frame f:
-      - L = luma(f) if RGB else f
+      - L = Luma(f) if RGB else f
       - f0 = f - min(L)
-      - gain = target_median / median(luma(f0))
+      - gain = target_median / median(Luma(f0))
       - out = f0 * gain
 
     Returns float32, C-contiguous array with same shape as input.
@@ -191,7 +202,7 @@ def normalize_images(stack: np.ndarray,
     eps = 1e-12
 
     def _L(a: np.ndarray) -> np.ndarray:
-        if not use_luma:
+        if not use_Luma:
             return a.astype(np.float32, copy=False)
         if a.ndim == 2:
             return a.astype(np.float32, copy=False)
@@ -226,7 +237,7 @@ def _downsample_area(img: np.ndarray, scale: int) -> np.ndarray:
 def _upscale_bg(bg_small: np.ndarray, oh: int, ow: int) -> np.ndarray:
     return cv2.resize(bg_small, (ow, oh), interpolation=cv2.INTER_LANCZOS4).astype(np.float32, copy=False)
 
-def _to_luma(img: np.ndarray) -> np.ndarray:
+def _to_Luma(img: np.ndarray) -> np.ndarray:
     if img.ndim == 2:
         return img.astype(np.float32, copy=False)
     # HWC RGB
@@ -274,7 +285,7 @@ def _generate_sample_points_small(
     exclusion_mask_small: np.ndarray | None
 ) -> np.ndarray:
     H, W = img_small.shape[:2]
-    gray = _to_luma(img_small) if img_small.ndim == 3 else img_small
+    gray = _to_Luma(img_small) if img_small.ndim == 3 else img_small
     pts: list[tuple[int, int]] = []
     border = max(6, patch_size)  # keep patch fully inside
 
@@ -341,8 +352,8 @@ def _generate_sample_points_small(
 # ----- fit/eval on small image -----
 
 def _fit_poly2_on_small(img_small: np.ndarray, pts_small: np.ndarray, patch_size: int) -> np.ndarray:
-    """Fit degree-2 polynomial on luma of small image using patch medians at pts."""
-    gray = _to_luma(img_small) if img_small.ndim == 3 else img_small
+    """Fit degree-2 polynomial on Luma of small image using patch medians at pts."""
+    gray = _to_Luma(img_small) if img_small.ndim == 3 else img_small
     Hs, Ws = gray.shape[:2]
     half = patch_size // 2
 
@@ -835,16 +846,34 @@ class ReferenceFrameReviewDialog(QDialog):
 
 
     def loadImageArray(self):
-        """
-        Load the image from the reference frame file using the global load_image function.
-        """
+        """Load image for preview; ensure float32 in [0,1] and HxWx{1,3}."""
         image_data, header, _, _ = load_image(self.ref_frame_path)
-        if image_data is not None:
-            if image_data.ndim == 3 and image_data.shape[-1] == 1:
-                image_data = np.squeeze(image_data, axis=-1)
-            self.original_image = image_data
-        else:
+        if image_data is None:
             QMessageBox.critical(self, "Error", "Failed to load the reference image.")
+            return
+
+        # If CHW (3,H,W), convert to HWC for preview
+        if image_data.ndim == 3 and image_data.shape[0] == 3 and image_data.shape[-1] != 3:
+            image_data = np.transpose(image_data, (1, 2, 0))  # CHW -> HWC
+
+        # Squeeze last singleton channel
+        if image_data.ndim == 3 and image_data.shape[-1] == 1:
+            image_data = np.squeeze(image_data, axis=-1)
+
+        img = image_data.astype(np.float32, copy=False)
+
+        # Preview-normalize: if not already ~[0,1], bring it into [0,1]
+        mn = float(np.nanmin(img)); mx = float(np.nanmax(img))
+        if not np.isfinite(mn) or not np.isfinite(mx):
+            img = np.nan_to_num(img, nan=0.0, posinf=0.0, neginf=0.0)
+            mn = float(img.min()); mx = float(img.max())
+
+        if mx > 1.0 or mn < 0.0:
+            ptp = mx - mn
+            img = (img - mn) / ptp if ptp > 0.0 else np.zeros_like(img, dtype=np.float32)
+
+        self.original_image = np.clip(img, 0.0, 1.0)
+
     
     def updatePreview(self, image):
         """
@@ -862,18 +891,38 @@ class ReferenceFrameReviewDialog(QDialog):
                                           Qt.TransformationMode.SmoothTransformation)
             self.previewLabel.setPixmap(scaled_pixmap)
     
+    def _preview_boost(self, img: np.ndarray) -> np.ndarray:
+        """Robust, very gentle stretch for display when image would quantize to black."""
+        # Use your implemented siril_style_autostretch
+        try:
+            out = siril_style_autostretch(img, sigma=3.0).astype(np.float32, copy=False)
+            mx = float(out.max())
+            if mx > 0: out /= mx  # keep in [0,1]
+            return np.clip(out, 0.0, 1.0)
+        except Exception:
+            return np.clip(img, 0.0, 1.0)
+
     def convertArrayToPixmap(self, image):
         if image is None:
             return None
-        display_image = (image * 255).clip(0, 255).astype(np.uint8)
+
+        img = image.astype(np.float32, copy=False)
+
+        # If image is so dim or flat that 8-bit will zero-out, boost for preview
+        ptp = float(img.max() - img.min())
+        needs_boost = (float(img.max()) <= (1.0 / 255.0)) or (ptp < 1e-6) or (not np.isfinite(img).all())
+        if needs_boost:
+            img = self._preview_boost(np.nan_to_num(img, nan=0.0, posinf=0.0, neginf=0.0))
+
+        # Convert to 8-bit for QImage
+        display_image = (img * 255.0).clip(0, 255).astype(np.uint8)
+
         if display_image.ndim == 2:
             h, w = display_image.shape
-            bytes_per_line = w
-            q_image = QImage(display_image.tobytes(), w, h, bytes_per_line, QImage.Format.Format_Grayscale8)
+            q_image = QImage(display_image.data, w, h, w, QImage.Format.Format_Grayscale8)
         elif display_image.ndim == 3 and display_image.shape[2] == 3:
             h, w, _ = display_image.shape
-            bytes_per_line = 3 * w
-            q_image = QImage(display_image.tobytes(), w, h, bytes_per_line, QImage.Format.Format_RGB888)
+            q_image = QImage(display_image.data, w, h, 3 * w, QImage.Format.Format_RGB888)
         else:
             return None
         return QPixmap.fromImage(q_image)
@@ -1658,7 +1707,8 @@ class StackingSuiteDialog(QDialog):
         self._orig2norm = {}            # map original path -> normalized *_n.fit
         self._comet_ref_xy = None       # comet coordinate in reference frame (filled post-align)
         
-
+        self.manual_light_files = []
+        self._reg_excluded_files = set() 
 
         # --- singleton status console (no parent, recreate if gone) ---
         app = QApplication.instance()
@@ -1851,7 +1901,7 @@ class StackingSuiteDialog(QDialog):
         Public MFDeconv toggle (replaces the inline closure). Gates MF params
         + persists setting.
         """
-        for w in (self.mf_iters_spin, self.mf_kappa_spin, self.mf_color_combo, self.mf_huber_spin):
+        for w in (self.mf_iters_spin, self.mf_kappa_spin, self.mf_color_combo, self.mf_Huber_spin):
             w.setEnabled(v)
         self.settings.setValue("stacking/mfdeconv/enabled", bool(v))
 
@@ -2483,12 +2533,73 @@ class StackingSuiteDialog(QDialog):
         gb_mf = QGroupBox("Multi-frame Deconvolution (Beta)")
         fl_mf = QFormLayout(gb_mf)
 
-        self.mf_batch_spin = QSpinBox()
-        self.mf_batch_spin.setRange(1, 64)
-        self.mf_batch_spin.setValue(self.settings.value("stacking/mfdeconv/batch", 8, type=int))
-        self.mf_batch_spin.setToolTip("Frames per GPU batch. Higher → more VRAM, more throughput.")
+        def _row(lbl, w):
+            c = QWidget(); h = QHBoxLayout(c); h.setContentsMargins(0,0,0,0); h.addWidget(w, 1); return (lbl, c)
 
-        fl_mf.addRow("Batch size (frames):", self.mf_batch_spin)
+        self.sm_thresh = QDoubleSpinBox(); self.sm_thresh.setRange(0.1, 20.0); self.sm_thresh.setDecimals(2)
+        self.sm_thresh.setValue(
+            self.settings.value("stacking/mfdeconv/star_mask/thresh_sigma", _SM_DEF_THRESH, type=float)
+        )
+        fl_mf.addRow(*_row("Star detect σ:", self.sm_thresh))
+
+        self.sm_grow = QSpinBox(); self.sm_grow.setRange(0, 128)
+        self.sm_grow.setValue(
+            self.settings.value("stacking/mfdeconv/star_mask/grow_px", _SM_DEF_GROW, type=int)
+        )
+        fl_mf.addRow(*_row("Dilate (+px):", self.sm_grow))
+
+        self.sm_soft = QDoubleSpinBox(); self.sm_soft.setRange(0.0, 10.0); self.sm_soft.setDecimals(2)
+        self.sm_soft.setValue(
+            self.settings.value("stacking/mfdeconv/star_mask/soft_sigma", _SM_DEF_SOFT, type=float)
+        )
+        fl_mf.addRow(*_row("Feather σ (px):", self.sm_soft))
+
+        self.sm_rmax = QSpinBox(); self.sm_rmax.setRange(2, 256)
+        self.sm_rmax.setValue(
+            self.settings.value("stacking/mfdeconv/star_mask/max_radius_px", _SM_DEF_RMAX, type=int)
+        )
+        fl_mf.addRow(*_row("Max star radius (px):", self.sm_rmax))
+
+        self.sm_maxobjs = QSpinBox(); self.sm_maxobjs.setRange(10, 50000)
+        self.sm_maxobjs.setValue(
+            self.settings.value("stacking/mfdeconv/star_mask/max_objs", _SM_DEF_MAXOBJS, type=int)
+        )
+        fl_mf.addRow(*_row("Max stars kept:", self.sm_maxobjs))
+
+        self.sm_keepfloor = QDoubleSpinBox(); self.sm_keepfloor.setRange(0.0, 0.95); self.sm_keepfloor.setDecimals(2)
+        self.sm_keepfloor.setValue(
+            self.settings.value("stacking/mfdeconv/star_mask/keep_floor", _SM_DEF_KEEPF, type=float)
+        )
+        self.sm_keepfloor.setToolTip("Lower = stronger masking near stars; 0 = hard mask, 0.2 = gentle.")
+        fl_mf.addRow(*_row("Keep-floor:", self.sm_keepfloor))
+
+        # (optional) expose ellipse scale if you like:
+        self.sm_es = QDoubleSpinBox(); self.sm_es.setRange(0.5, 3.0); self.sm_es.setDecimals(2)
+        self.sm_es.setValue(
+            self.settings.value("stacking/mfdeconv/star_mask/ellipse_scale", _SM_DEF_ES, type=float)
+        )
+        fl_mf.addRow(*_row("Ellipse scale:", self.sm_es))
+
+        # --- Variance map tuning ---
+        self.vm_stride = QSpinBox(); self.vm_stride.setRange(1, 64)
+        self.vm_stride.setValue(
+            self.settings.value("stacking/mfdeconv/varmap/sample_stride", _VM_DEF_STRIDE, type=int)
+        )
+        fl_mf.addRow(*_row("VarMap sample stride:", self.vm_stride))
+
+        self.vm_sigma = QDoubleSpinBox(); self.vm_sigma.setRange(0.0, 5.0); self.vm_sigma.setDecimals(2)
+        self.vm_sigma.setValue(self.settings.value("stacking/mfdeconv/varmap/smooth_sigma", 1.0, type=float))
+        fl_mf.addRow(*_row("VarMap smooth σ:", self.vm_sigma))
+
+        self.vm_floor_log = QDoubleSpinBox()
+        self.vm_floor_log.setRange(-12.0, -2.0)
+        self.vm_floor_log.setDecimals(2)
+        self.vm_floor_log.setSingleStep(0.5)
+        self.vm_floor_log.setValue(math.log10(
+            self.settings.value("stacking/mfdeconv/varmap/floor", 1e-8, type=float)
+        ))
+        self.vm_floor_log.setToolTip("log10 of variance floor (DN²). -8 ≡ 1e-8.")
+        fl_mf.addRow(*_row("VarMap floor (log10):", self.vm_floor_log))
 
         right_col.addWidget(gb_mf)
 
@@ -2520,7 +2631,7 @@ class StackingSuiteDialog(QDialog):
         _toggle_csr(self.csr_enable.isChecked())
         self.csr_enable.toggled.connect(_toggle_csr)
 
-        right_col.addWidget(gb_csr)
+        left_col.addWidget(gb_csr)
 
 
         # --- Rejection ---
@@ -2788,6 +2899,21 @@ class StackingSuiteDialog(QDialog):
         self.settings.setValue("stacking/autocrop_enabled", self.autocrop_cb.isChecked())
         self.settings.setValue("stacking/autocrop_pct", float(self.autocrop_pct.value()))
 
+        # Star mask params
+        self.settings.setValue("stacking/mfdeconv/star_mask/thresh_sigma",  float(self.sm_thresh.value()))
+        self.settings.setValue("stacking/mfdeconv/star_mask/grow_px",       int(self.sm_grow.value()))
+        self.settings.setValue("stacking/mfdeconv/star_mask/soft_sigma",    float(self.sm_soft.value()))
+        self.settings.setValue("stacking/mfdeconv/star_mask/max_radius_px", int(self.sm_rmax.value()))
+        self.settings.setValue("stacking/mfdeconv/star_mask/max_objs",      int(self.sm_maxobjs.value()))
+        self.settings.setValue("stacking/mfdeconv/star_mask/keep_floor",    float(self.sm_keepfloor.value()))
+        self.settings.setValue("stacking/mfdeconv/star_mask/ellipse_scale", float(self.sm_es.value()))
+
+        # Variance map params
+        self.settings.setValue("stacking/mfdeconv/varmap/sample_stride", int(self.vm_stride.value()))
+        self.settings.setValue("stacking/mfdeconv/varmap/smooth_sigma",  float(self.vm_sigma.value()))
+        vm_floor = 10.0 ** float(self.vm_floor_log.value())
+        self.settings.setValue("stacking/mfdeconv/varmap/floor", vm_floor)
+
         # Gradient settings
         self.settings.setValue("stacking/grad_poly2/enabled",   self.chk_poly2.isChecked())
         self.settings.setValue("stacking/grad_poly2/mode",       "divide" if self.grad_mode_combo.currentIndex() == 1 else "subtract")
@@ -2805,7 +2931,7 @@ class StackingSuiteDialog(QDialog):
         self.settings.setValue("stacking/cosmetic/star_mean_ratio",float(self.cosm_star_mean_ratio.value()))
         self.settings.setValue("stacking/cosmetic/star_max_ratio", float(self.cosm_star_max_ratio.value()))
         self.settings.setValue("stacking/cosmetic/sat_quantile",   float(self.cosm_sat_quantile.value()))
-        self.settings.setValue("stacking/mfdeconv/batch", int(self.mf_batch_spin.value()))
+
 
         self.settings.setValue("stacking/comet_starrem/enabled", self.csr_enable.isChecked())
         self.settings.setValue("stacking/comet_starrem/tool", self.csr_tool.currentText())
@@ -3309,6 +3435,11 @@ class StackingSuiteDialog(QDialog):
     def create_light_tab(self):
         tab = QWidget()
         layout = QVBoxLayout(tab)
+
+        if not hasattr(self, "manual_flat_overrides"):
+            self.manual_flat_overrides = {}
+        if not hasattr(self, "manual_dark_overrides"):
+            self.manual_dark_overrides = {}
 
         # Tree widget for light frames
         self.light_tree = QTreeWidget()
@@ -4186,36 +4317,36 @@ class StackingSuiteDialog(QDialog):
         mf_row2.addStretch(1)
         mf_v.addLayout(mf_row2)
 
-        # row 3: color mode + huber_delta
+        # row 3: color mode + Huber_delta
         mf_row3 = QHBoxLayout()
         mf_row3.addWidget(QLabel("Color mode:"))
         self.mf_color_combo = QComboBox()
-        self.mf_color_combo.addItems(["perchannel", "luma"])
+        self.mf_color_combo.addItems(["PerChannel", "Luma"])
         # ensure current text is valid
-        _cm = _get("stacking/mfdeconv/color_mode", "perchannel", str)
-        if _cm not in ("luma", "perchannel"):
-            _cm = "perchannel"
+        _cm = _get("stacking/mfdeconv/color_mode", "PerChannel", str)
+        if _cm not in ("Luma", "PerChannel"):
+            _cm = "PerChannel"
         self.mf_color_combo.setCurrentText(_cm)
-        self.mf_color_combo.setToolTip("‘luma’ deconvolves the luminance only; ‘perchannel’ runs on RGB independently.")
+        self.mf_color_combo.setToolTip("‘Luma’ deconvolves the luminance only; ‘PerChannel’ runs on RGB independently.")
         mf_row3.addWidget(self.mf_color_combo)
 
         mf_row3.addSpacing(16)
         mf_row3.addWidget(QLabel("Huber δ:"))
-        self.mf_huber_spin = QDoubleSpinBox()
-        self.mf_huber_spin.setRange(-1000.0, 1000.0)   # negative allowed
-        self.mf_huber_spin.setDecimals(4)
-        self.mf_huber_spin.setSingleStep(0.1)
-        self.mf_huber_spin.setValue(_get("stacking/mfdeconv/huber_delta", -2.0, float))
-        self.mf_huber_spin.setToolTip(
+        self.mf_Huber_spin = QDoubleSpinBox()
+        self.mf_Huber_spin.setRange(-1000.0, 1000.0)   # negative allowed
+        self.mf_Huber_spin.setDecimals(4)
+        self.mf_Huber_spin.setSingleStep(0.1)
+        self.mf_Huber_spin.setValue(_get("stacking/mfdeconv/Huber_delta", -2.0, float))
+        self.mf_Huber_spin.setToolTip(
             "Robust Huber threshold in σ units. ~2–3× background RMS is typical.\n"
             "Negative values are scale*RMS, positive values are hardcoded deltas."
         )
-        mf_row3.addWidget(self.mf_huber_spin)
+        mf_row3.addWidget(self.mf_Huber_spin)
         
-        self.mf_huber_hint = QLabel("(<0 = scale×RMS, >0 = absolute Δ)")
-        self.mf_huber_hint.setToolTip("Negative = factor times background RMS (auto). Positive = fixed absolute threshold.")
-        self.mf_huber_hint.setStyleSheet("color: #888;")  # subtle hint color
-        mf_row3.addWidget(self.mf_huber_hint)        
+        self.mf_Huber_hint = QLabel("(<0 = scale×RMS, >0 = absolute Δ)")
+        self.mf_Huber_hint.setToolTip("Negative = factor times background RMS (auto). Positive = fixed absolute threshold.")
+        self.mf_Huber_hint.setStyleSheet("color: #888;")  # subtle hint color
+        mf_row3.addWidget(self.mf_Huber_hint)        
         mf_row3.addStretch(1)
         mf_v.addLayout(mf_row3)
 
@@ -4232,8 +4363,8 @@ class StackingSuiteDialog(QDialog):
         self.mf_color_combo.currentTextChanged.connect(
             lambda s: self.settings.setValue("stacking/mfdeconv/color_mode", s)
         )
-        self.mf_huber_spin.valueChanged.connect(
-            lambda v: self.settings.setValue("stacking/mfdeconv/huber_delta", float(v))
+        self.mf_Huber_spin.valueChanged.connect(
+            lambda v: self.settings.setValue("stacking/mfdeconv/Huber_delta", float(v))
         )
 
         accel_row = QHBoxLayout()
@@ -4569,12 +4700,23 @@ class StackingSuiteDialog(QDialog):
 
         # row 2: iterations + kappa
         mf_row2 = QHBoxLayout()
-        mf_row2.addWidget(QLabel("Iterations:"))
+
+        mf_row2.addWidget(QLabel("Iterations (max):"))
         self.mf_iters_spin = QSpinBox()
         self.mf_iters_spin.setRange(1, 500)
         self.mf_iters_spin.setValue(_get("stacking/mfdeconv/iters", 20, int))
-        self.mf_iters_spin.setToolTip("Number of multiplicative update steps (e.g., 10–60).")
+        self.mf_iters_spin.setToolTip("Maximum number of multiplicative updates (e.g., 10–60).")
         mf_row2.addWidget(self.mf_iters_spin)
+
+        mf_row2.addSpacing(12)
+
+        # NEW: Min iterations
+        mf_row2.addWidget(QLabel("Min iters:"))
+        self.mf_min_iters_spin = QSpinBox()
+        self.mf_min_iters_spin.setRange(1, 500)
+        self.mf_min_iters_spin.setValue(_get("stacking/mfdeconv/min_iters", 3, int))
+        self.mf_min_iters_spin.setToolTip("Run at least this many iterations before early-stop can trigger.")
+        mf_row2.addWidget(self.mf_min_iters_spin)
 
         mf_row2.addSpacing(16)
         mf_row2.addWidget(QLabel("Update clip (κ):"))
@@ -4588,38 +4730,70 @@ class StackingSuiteDialog(QDialog):
         mf_row2.addStretch(1)
         mf_v.addLayout(mf_row2)
 
-        # row 3: color mode + huber_delta
+        # row 3: color mode + Huber_delta
         mf_row3 = QHBoxLayout()
         mf_row3.addWidget(QLabel("Color mode:"))
         self.mf_color_combo = QComboBox()
-        self.mf_color_combo.addItems(["perchannel", "luma"])
+        self.mf_color_combo.addItems(["PerChannel", "Luma"])
         # ensure current text is valid
-        _cm = _get("stacking/mfdeconv/color_mode", "perchannel", str)
-        if _cm not in ("luma", "perchannel"):
-            _cm = "perchannel"
+        _cm = _get("stacking/mfdeconv/color_mode", "PerChannel", str)
+        if _cm not in ("Luma", "PerChannel"):
+            _cm = "PerChannel"
         self.mf_color_combo.setCurrentText(_cm)
-        self.mf_color_combo.setToolTip("‘luma’ deconvolves the luminance only; ‘perchannel’ runs on RGB independently.")
+        self.mf_color_combo.setToolTip("‘Luma’ deconvolves the luminance only; ‘PerChannel’ runs on RGB independently.")
         mf_row3.addWidget(self.mf_color_combo)
+        mf_row3.addSpacing(16)
+        mf_row3.addWidget(QLabel("ρ (loss):"))
+        self.mf_rho_combo = QComboBox()
+        self.mf_rho_combo.addItems(["Huber", "L2"])
+        self.mf_rho_combo.setCurrentText(self.settings.value("stacking/mfdeconv/rho", "Huber", type=str))
+        self.mf_rho_combo.setToolTip("Choose robust Huber loss or plain L2.")
+        mf_row3.addWidget(self.mf_rho_combo)
 
+        # persist to settings
+        self.mf_rho_combo.currentTextChanged.connect(
+            lambda s: self.settings.setValue("stacking/mfdeconv/rho", s)
+        )
         mf_row3.addSpacing(16)
         mf_row3.addWidget(QLabel("Huber δ:"))
-        self.mf_huber_spin = QDoubleSpinBox()
-        self.mf_huber_spin.setRange(-1000.0, 1000.0)   # negative allowed
-        self.mf_huber_spin.setDecimals(4)
-        self.mf_huber_spin.setSingleStep(0.1)
-        self.mf_huber_spin.setValue(_get("stacking/mfdeconv/huber_delta", -2.0, float))
-        self.mf_huber_spin.setToolTip(
+        self.mf_Huber_spin = QDoubleSpinBox()
+        self.mf_Huber_spin.setRange(-1000.0, 1000.0)   # negative allowed
+        self.mf_Huber_spin.setDecimals(4)
+        self.mf_Huber_spin.setSingleStep(0.1)
+        self.mf_Huber_spin.setValue(_get("stacking/mfdeconv/Huber_delta", -2.0, float))
+        self.mf_Huber_spin.setToolTip(
             "Robust Huber threshold in σ units. ~2–3× background RMS is typical.\n"
             "Negative values are scale*RMS, positive values are hardcoded deltas."
         )
-        mf_row3.addWidget(self.mf_huber_spin)
+        mf_row3.addWidget(self.mf_Huber_spin)
         
-        self.mf_huber_hint = QLabel("(<0 = scale×RMS, >0 = absolute Δ)")
-        self.mf_huber_hint.setToolTip("Negative = factor times background RMS (auto). Positive = fixed absolute threshold.")
-        self.mf_huber_hint.setStyleSheet("color: #888;")  # subtle hint color
-        mf_row3.addWidget(self.mf_huber_hint)        
-        mf_row3.addStretch(1)
+        self.mf_Huber_hint = QLabel("(<0 = scale×RMS, >0 = absolute Δ)")
+        self.mf_Huber_hint.setToolTip("Negative = factor times background RMS (auto). Positive = fixed absolute threshold.")
+        self.mf_Huber_hint.setStyleSheet("color: #888;")  # subtle hint color
+        mf_row3.addWidget(self.mf_Huber_hint)        
+        
         mf_v.addLayout(mf_row3)
+
+        mf_row3.addSpacing(16)
+
+        self.mf_use_star_mask_cb = QCheckBox("Auto Star Mask")
+        self.mf_use_star_mask_cb.setToolTip("Detect bright stars and mask them to suppress ringing.")
+        self.mf_use_star_mask_cb.setChecked(self.settings.value("stacking/mfdeconv/use_star_masks", False, type=bool))
+        mf_row3.addWidget(self.mf_use_star_mask_cb)
+
+        self.mf_use_noise_map_cb = QCheckBox("Auto Noise Map")
+        self.mf_use_noise_map_cb.setToolTip("Estimate per-pixel noise variance (SEP background RMS²).")
+        self.mf_use_noise_map_cb.setChecked(self.settings.value("stacking/mfdeconv/use_noise_maps", False, type=bool))
+        mf_row3.addWidget(self.mf_use_noise_map_cb)
+        mf_row3.addStretch(1)
+
+        # persist to settings
+        self.mf_use_star_mask_cb.toggled.connect(
+            lambda v: self.settings.setValue("stacking/mfdeconv/use_star_masks", bool(v))
+        )
+        self.mf_use_noise_map_cb.toggled.connect(
+            lambda v: self.settings.setValue("stacking/mfdeconv/use_noise_maps", bool(v))
+        )
 
         # write-through bindings
         self.mf_enabled_cb.toggled.connect(
@@ -4628,14 +4802,17 @@ class StackingSuiteDialog(QDialog):
         self.mf_iters_spin.valueChanged.connect(
             lambda v: self.settings.setValue("stacking/mfdeconv/iters", int(v))
         )
+        self.mf_min_iters_spin.valueChanged.connect(                     # NEW
+            lambda v: self.settings.setValue("stacking/mfdeconv/min_iters", int(v))
+        )        
         self.mf_kappa_spin.valueChanged.connect(
             lambda v: self.settings.setValue("stacking/mfdeconv/kappa", float(v))
         )
         self.mf_color_combo.currentTextChanged.connect(
             lambda s: self.settings.setValue("stacking/mfdeconv/color_mode", s)
         )
-        self.mf_huber_spin.valueChanged.connect(
-            lambda v: self.settings.setValue("stacking/mfdeconv/huber_delta", float(v))
+        self.mf_Huber_spin.valueChanged.connect(
+            lambda v: self.settings.setValue("stacking/mfdeconv/Huber_delta", float(v))
         )
 
         accel_row = QHBoxLayout()
@@ -4645,6 +4822,13 @@ class StackingSuiteDialog(QDialog):
         self.install_accel_btn = QPushButton("Install/Update GPU Acceleration…")
         self.install_accel_btn.setToolTip("Downloads PyTorch with the right backend (CUDA/MPS/CPU). One-time per machine.")
         accel_row.addWidget(self.install_accel_btn)
+
+        gpu_help_btn = QToolButton()
+        gpu_help_btn.setText("?")
+        gpu_help_btn.setToolTip("If GPU still not being used — click for fix steps")
+        gpu_help_btn.clicked.connect(self._show_gpu_accel_fix_help)
+        accel_row.addWidget(gpu_help_btn)
+
         accel_row.addStretch(1)
         mf_v.addLayout(accel_row)
 
@@ -4790,6 +4974,42 @@ class StackingSuiteDialog(QDialog):
 
         return tab
 
+    def _show_gpu_accel_fix_help(self):
+        from PyQt6.QtWidgets import QMessageBox, QApplication
+        msg = QMessageBox(self)
+        msg.setWindowTitle("GPU still not being used?")
+        msg.setIcon(QMessageBox.Icon.Information)
+        msg.setText(
+            "Open Command Prompt and run the following.\n\n"
+            "Step 1: uninstall PyTorch\n"
+            "Step 2: install the correct build for your GPU"
+        )
+
+        # Exact commands (kept as Windows-friendly with %LOCALAPPDATA%)
+        cmds = r'''
+    "%LOCALAPPDATA%\SASpro\runtime\py312\venv\Scripts\python.exe" -m pip uninstall -y torch
+
+    REM Then install ONE of the following:
+
+    REM AMD / Intel GPUs:
+    "%LOCALAPPDATA%\SASpro\runtime\py312\venv\Scripts\python.exe" -m pip install torch-directml
+
+    REM NVIDIA GPUs (CUDA 12.9):
+    "%LOCALAPPDATA%\SASpro\runtime\py312\venv\Scripts\python.exe" -m pip install torch --extra-index-url https://download.pytorch.org/whl/cu129
+    '''.strip()
+
+        # Show commands in the expandable details area
+        msg.setDetailedText(cmds)
+
+        # Add a one-click copy button
+        copy_btn = msg.addButton("Copy commands", QMessageBox.ButtonRole.ActionRole)
+        msg.addButton(QMessageBox.StandardButton.Close)
+
+        msg.exec()
+        if msg.clickedButton() is copy_btn:
+            QApplication.clipboard().setText(cmds)
+
+
     def _on_drizzle_checkbox_toggled(self, checked: bool):
         """(If you still call this elsewhere) keep as a thin wrapper or remove if unused."""
         self.drizzle_scale_combo.setEnabled(checked)
@@ -4816,7 +5036,7 @@ class StackingSuiteDialog(QDialog):
         # Controls to gate
         drizzle_widgets = (self.drizzle_checkbox, self.drizzle_scale_combo, self.drizzle_drop_shrink_spin, self.cfa_drizzle_cb)
         comet_widgets = (self.comet_cb, self.comet_pick_btn, self.comet_blend_cb, self.comet_mix)
-        mf_widgets = (self.mf_enabled_cb, self.mf_iters_spin, self.mf_kappa_spin, self.mf_color_combo, self.mf_huber_spin)
+        mf_widgets = (self.mf_enabled_cb, self.mf_iters_spin, self.mf_kappa_spin, self.mf_color_combo, self.mf_Huber_spin)
 
         for w in drizzle_widgets + comet_widgets + mf_widgets:
             w.setEnabled(not enabled)
@@ -4852,7 +5072,7 @@ class StackingSuiteDialog(QDialog):
         # Controls to gate
         drizzle_widgets = (self.drizzle_checkbox, self.drizzle_scale_combo, self.drizzle_drop_shrink_spin, self.cfa_drizzle_cb)
         comet_widgets = (self.comet_cb, self.comet_pick_btn, self.comet_blend_cb, self.comet_mix)
-        mf_widgets = (self.mf_enabled_cb, self.mf_iters_spin, self.mf_kappa_spin, self.mf_color_combo, self.mf_huber_spin)
+        mf_widgets = (self.mf_enabled_cb, self.mf_iters_spin, self.mf_kappa_spin, self.mf_color_combo, self.mf_Huber_spin)
 
         for w in drizzle_widgets + comet_widgets + mf_widgets:
             w.setEnabled(not enabled)
@@ -5110,47 +5330,85 @@ class StackingSuiteDialog(QDialog):
         top_item.setData(0, Qt.ItemDataRole.UserRole, paths)
 
     def clear_tree_selection_registration(self, tree):
+        """
+        Remove selected rows from the Registration tree and *persist* those removals,
+        so refreshes / 'Add Light Files' won't resurrect them.
+        """
         selected_items = tree.selectedItems()
         if not selected_items:
             return
+
+        # ensure attrs exist
+        if not hasattr(self, "_reg_excluded_files"):
+            self._reg_excluded_files = set()
+        if not hasattr(self, "deleted_calibrated_files"):
+            self.deleted_calibrated_files = []
+
+        removed_paths = []
 
         for item in selected_items:
             parent = item.parent()
 
             if parent is None:
-                # Remove entire group
+                # Top-level group
                 group_key = item.text(0)
-                # Track deleted files (optional)
+
+                # paths are stored on the group's UserRole
                 full_paths = item.data(0, Qt.ItemDataRole.UserRole) or []
-                self.deleted_calibrated_files.extend(p for p in full_paths
-                                                    if p not in self.deleted_calibrated_files)
-                # Remove from dict + tree
+                for p in full_paths:
+                    if isinstance(p, str):
+                        removed_paths.append(p)
+
+                # Keep internal dict in sync
                 self.reg_files.pop(group_key, None)
-                tree.takeTopLevelItem(tree.indexOfTopLevelItem(item))
+
+                # Remove group row
+                idx = tree.indexOfTopLevelItem(item)
+                if idx >= 0:
+                    tree.takeTopLevelItem(idx)
 
             else:
-                # Remove a single child
+                # Leaf (single file)
                 group_key = parent.text(0)
-                filename = item.text(0)
+                fp = item.data(0, Qt.ItemDataRole.UserRole)
 
+                # Track the absolute path if available, else fall back to name
+                if isinstance(fp, str):
+                    removed_paths.append(fp)
+                else:
+                    # fallback to name-based match (kept for backward compat)
+                    filename = item.text(0)
+                    removed_paths.append(filename)
+
+                # Update reg_files
                 if group_key in self.reg_files:
                     self.reg_files[group_key] = [
                         f for f in self.reg_files[group_key]
-                        if os.path.basename(f) != filename
+                        if f != fp and os.path.basename(f) != item.text(0)
                     ]
                     if not self.reg_files[group_key]:
                         del self.reg_files[group_key]
 
-                # Track deleted path (optional)
-                fp = item.data(0, Qt.ItemDataRole.UserRole)
-                if fp and fp not in self.deleted_calibrated_files:
-                    self.deleted_calibrated_files.append(fp)
-
-                # Remove child from tree
+                # Remove leaf row
                 parent.removeChild(item)
 
-                # 🔑 keep parent’s stored list in sync
+                # Keep parent's stored list in sync (your helper)
                 self._sync_group_userrole(parent)
+
+        # Persist the exclusions so they won't reappear on refresh
+        self._reg_excluded_files.update(p for p in removed_paths if isinstance(p, str))
+
+        # Maintain your legacy list too (if you still use it elsewhere)
+        for p in removed_paths:
+            if p not in self.deleted_calibrated_files:
+                self.deleted_calibrated_files.append(p)
+
+        # Also prune manual list so it doesn't re-inject removed files
+        if hasattr(self, "manual_light_files") and self.manual_light_files:
+            self.manual_light_files = [p for p in self.manual_light_files if p not in self._reg_excluded_files]
+
+        # Optional but helpful: rebuild so empty groups disappear cleanly
+        self.populate_calibrated_lights()
 
     def rebuild_flat_tree(self):
         """Regroup flat frames in the flat_tree based on the exposure tolerance."""
@@ -5287,20 +5545,10 @@ class StackingSuiteDialog(QDialog):
 
 
     def populate_calibrated_lights(self):
-        """
-        Reads both the Calibrated folder and any manually-added files,
-        groups them by FILTER, EXPOSURE±tol, SIZE, and fills self.reg_tree.
-        Also sets each group's Drizzle column from saved per-group state,
-        or from the current global controls if none exists yet.
-        """
         from PIL import Image
-
-        # Fallback in case helper wasn't added
         def _fmt(enabled, scale, drop):
-            return (f"Drizzle: True, Scale: {scale:g}x, Drop: {drop:.2f}"
-                    if enabled else "Drizzle: False")
+            return (f"Drizzle: True, Scale: {scale:g}x, Drop: {drop:.2f}" if enabled else "Drizzle: False")
 
-        # 1) clear tree
         self.reg_tree.clear()
         self.reg_tree.setColumnCount(3)
         self.reg_tree.setHeaderLabels(["Filter - Exposure - Size", "Metadata", "Drizzle"])
@@ -5314,9 +5562,18 @@ class StackingSuiteDialog(QDialog):
         if os.path.isdir(calibrated_folder):
             for fn in os.listdir(calibrated_folder):
                 files.append(os.path.join(calibrated_folder, fn))
-        files += getattr(self, "manual_light_files", [])
+
+        # include manual files
+        files += self.manual_light_files
+
+        # NEW: filter out exclusions + dedupe while preserving order
+        if self._reg_excluded_files:
+            files = [f for f in files if f not in self._reg_excluded_files]
+        files = list(dict.fromkeys(files))
 
         if not files:
+            # keep internal state coherent
+            self.light_files = {}
             return
 
         # 3) group by header (or defaults)
@@ -5532,30 +5789,23 @@ class StackingSuiteDialog(QDialog):
 
 
     def add_light_files_to_registration(self):
-        """
-        Let the user pick some new LIGHT frames, then
-        immediately re-populate the tree so they show up
-        in the same Filter–Exposure–Size groups as everything else.
-        """
         last_dir = self.settings.value("last_opened_folder", "", type=str)
         files, _ = QFileDialog.getOpenFileNames(
-            self,
-            "Select Light Frames",
-            last_dir,
-            "FITS Files (*.fits *.fit *.fz *.fz *.xisf *.tif *.tiff *.png *.jpg *.jpeg)"
+            self, "Select Light Frames", last_dir,
+            "FITS Files (*.fits *.fit *.fz *.xisf *.tif *.tiff *.png *.jpg *.jpeg)"
         )
         if not files:
             return
 
-        # remember for next time
         self.settings.setValue("last_opened_folder", os.path.dirname(files[0]))
 
-        # store these in a manual list, then rebuild the tree
-        if not hasattr(self, "manual_light_files"):
-            self.manual_light_files = []
-        self.manual_light_files.extend(files)
+        # Exclude files the user has removed previously
+        new_files = [f for f in files if f not in self._reg_excluded_files]
 
-        # rebuild the registration tree (it reads manual_light_files + calibrated folder)
+        # Deduplicate while preserving order
+        merged = list(dict.fromkeys(self.manual_light_files + new_files))
+        self.manual_light_files = merged
+
         self.populate_calibrated_lights()
 
 
@@ -6618,87 +6868,136 @@ class StackingSuiteDialog(QDialog):
         master_item = QTreeWidgetItem([os.path.basename(master_flat_path)])
         filter_item.addChild(master_item)
 
-    def assign_best_master_files(self):
-        """ Assign best matching Master Dark and Flat to each Light Frame (per leaf). """
+    def assign_best_master_files(self, fill_only: bool = True):
+        """
+        Assign best matching Master Dark and Flat to each Light leaf.
+        - Honors manual overrides (never ignored).
+        - If fill_only is True, do NOT overwrite non-empty cells.
+        """
         print("\n🔍 DEBUG: Assigning best Master Darks & Flats to Lights...\n")
 
-        if not self.master_files:
+        if not getattr(self, "master_files", None):
             print("⚠️ WARNING: No Master Calibration Files available.")
             self.update_status("⚠️ WARNING: No Master Calibration Files available.")
             return
 
+        # Ensure override dicts exist
+        dark_over = getattr(self, "manual_dark_overrides", {}) or {}
+        flat_over = getattr(self, "manual_flat_overrides", {}) or {}
+        master_sizes = getattr(self, "master_sizes", {})
+        self.master_sizes = master_sizes  # keep cache alive
+
         for i in range(self.light_tree.topLevelItemCount()):
             filter_item = self.light_tree.topLevelItem(i)
-            filter_name = filter_item.text(0)
-            filter_name     = self._sanitize_name(filter_name)
+            filter_name_raw = filter_item.text(0)
+            filter_name = self._sanitize_name(filter_name_raw)
 
             for j in range(filter_item.childCount()):
                 exposure_item = filter_item.child(j)
-                exposure_text = exposure_item.text(0)
+                exposure_text = exposure_item.text(0)  # e.g. "300.0s (4144x2822)"
 
-                match = re.match(r"([\d.]+)s?", exposure_text)
-                if not match:
-                    print(f"⚠️ WARNING: Could not parse exposure time from {exposure_text}")
-                    continue
-
-                exposure_time = float(match.group(1))
+                # Parse exposure seconds (for dark matching)
+                mexp = re.match(r"([\d.]+)s?", exposure_text or "")
+                exposure_time = float(mexp.group(1)) if mexp else 0.0
 
                 for k in range(exposure_item.childCount()):
                     leaf_item = exposure_item.child(k)
-                    meta_text = leaf_item.text(1)
+                    meta_text = leaf_item.text(1) or ""
 
-                    size_match = re.search(r"Size: (\d+x\d+)", meta_text)
-                    session_match = re.search(r"Session: ([^|]+)", meta_text)
-                    image_size = size_match.group(1) if size_match else "Unknown"
-                    session_name = session_match.group(1).strip() if session_match else "Default"
+                    # Parse size & session from metadata column
+                    msize = re.search(r"Size:\s*(\d+x\d+)", meta_text)
+                    image_size = msize.group(1) if msize else "Unknown"
+                    msess = re.search(r"Session:\s*([^|]+)", meta_text)
+                    session_name = (msess.group(1).strip() if msess else "Default")
 
-                    print(f"🧠 Leaf: {leaf_item.text(0)} | Size: {image_size} | Session: {session_name}")
+                    # Current cells (so we can skip if fill_only)
+                    curr_dark = (leaf_item.text(2) or "").strip()
+                    curr_flat = (leaf_item.text(3) or "").strip()
 
-                    # 🔍 Match Dark
-                    best_dark_match = None
-                    best_dark_diff = float("inf")
+                    # ---------- DARK RESOLUTION ----------
+                    # 1) Manual overrides: prefer "Filter - exposure" then bare exposure
+                    dark_key_full  = f"{filter_name_raw} - {exposure_text}"
+                    dark_key_short = exposure_text
+                    dark_override  = dark_over.get(dark_key_full) or dark_over.get(dark_key_short)
 
-                    for master_key, master_path in self.master_files.items():
-                        # ✅ Only consider keys that start with an exposure (i.e. darks)
-                        dark_match = re.match(r"^([\d.]+)s\b", master_key)
-                        if not dark_match:
-                            continue
-                        master_dark_exposure_time = float(dark_match.group(1))
+                    if dark_override:
+                        dark_choice = os.path.basename(dark_override)
+                    else:
+                        # 2) If fill_only and cell already nonempty & not "None", keep it
+                        if fill_only and curr_dark and curr_dark.lower() != "none":
+                            dark_choice = curr_dark
+                        else:
+                            # 3) Auto-pick by size+closest exposure
+                            best_dark_match = None
+                            best_dark_diff = float("inf")
+                            for master_key, master_path in self.master_files.items():
+                                dmatch = re.match(r"^([\d.]+)s\b", master_key)  # darks start with "<exp>s"
+                                if not dmatch:
+                                    continue
+                                master_dark_exposure_time = float(dmatch.group(1))
 
-                        # Ensure we know the dark’s size
-                        master_dark_size = self.master_sizes.get(master_path, "Unknown")
-                        if master_dark_size == "Unknown":
-                            with fits.open(master_path) as hdul:
-                                master_dark_size = f"{hdul[0].data.shape[1]}x{hdul[0].data.shape[0]}"
-                                self.master_sizes[master_path] = master_dark_size
+                                # Ensure size known/cached
+                                md_size = master_sizes.get(master_path)
+                                if not md_size:
+                                    try:
+                                        with fits.open(master_path) as hdul:
+                                            md_size = f"{hdul[0].data.shape[1]}x{hdul[0].data.shape[0]}"
+                                    except Exception:
+                                        md_size = "Unknown"
+                                    master_sizes[master_path] = md_size
 
-                        # Only compare if sizes match
-                        if master_dark_size == image_size:
-                            diff = abs(master_dark_exposure_time - exposure_time)
-                            if diff < best_dark_diff:
-                                best_dark_match = master_path
-                                best_dark_diff = diff
+                                if md_size == image_size:
+                                    diff = abs(master_dark_exposure_time - exposure_time)
+                                    if diff < best_dark_diff:
+                                        best_dark_diff = diff
+                                        best_dark_match = master_path
 
-                    # 🔍 Match Flat
-                    best_flat_match = None
-                    for flat_key, flat_path in self.master_files.items():
-                        if filter_name not in flat_key or f"({image_size})" not in flat_key:
-                            continue
-                        if session_name in flat_key:
-                            best_flat_match = flat_path
-                            break
-                    if not best_flat_match:
-                        fallback_key = f"{filter_name} ({image_size})"
-                        best_flat_match = self.master_files.get(fallback_key)
+                            dark_choice = os.path.basename(best_dark_match) if best_dark_match else ("None" if not curr_dark else curr_dark)
 
-                    # 🔄 Assign to leaf
-                    leaf_item.setText(2, os.path.basename(best_dark_match) if best_dark_match else "None")
-                    leaf_item.setText(3, os.path.basename(best_flat_match) if best_flat_match else "None")
+                    # ---------- FLAT RESOLUTION ----------
+                    # 1) Manual overrides: prefer "Filter - exposure" then bare exposure
+                    flat_key_full  = f"{filter_name_raw} - {exposure_text}"
+                    flat_key_short = exposure_text
+                    flat_override  = flat_over.get(flat_key_full) or flat_over.get(flat_key_short)
+
+                    if flat_override:
+                        flat_choice = os.path.basename(flat_override)
+                    else:
+                        # 2) If fill_only and cell already nonempty & not "None", keep it
+                        if fill_only and curr_flat and curr_flat.lower() != "none":
+                            flat_choice = curr_flat
+                        else:
+                            # 3) Prefer session-matched flat with same filter & size; else fallback
+                            best_flat_match = None
+                            # Fast path: exact key commonly stored by your loader
+                            exact_key = f"{filter_name} ({image_size}) [{session_name}]"
+                            if exact_key in self.master_files:
+                                best_flat_match = self.master_files[exact_key]
+                            else:
+                                # Search any matching filter & size, prioritize ones that mention session
+                                for flat_key, flat_path in self.master_files.items():
+                                    if (filter_name in flat_key) and (f"({image_size})" in flat_key):
+                                        if session_name in flat_key:
+                                            best_flat_match = flat_path
+                                            break
+                                        if best_flat_match is None:
+                                            best_flat_match = flat_path
+                                # Fallback to simple key if you keep one like "Filter (WxH)"
+                                if not best_flat_match:
+                                    fallback_key = f"{filter_name} ({image_size})"
+                                    best_flat_match = self.master_files.get(fallback_key)
+
+                            flat_choice = os.path.basename(best_flat_match) if best_flat_match else ("None" if not curr_flat else curr_flat)
+
+                    # ---------- WRITE CELLS ----------
+                    leaf_item.setText(2, dark_choice)
+                    leaf_item.setText(3, flat_choice)
 
                     print(f"📌 Assigned to {leaf_item.text(0)} -> Dark: {leaf_item.text(2)}, Flat: {leaf_item.text(3)}")
 
         self.light_tree.viewport().update()
         print("\n✅ DEBUG: Finished assigning Master Files per leaf.\n")
+
 
     def update_light_corrections(self):
         """ Updates the light frame corrections when checkboxes change. """
@@ -6853,6 +7152,23 @@ class StackingSuiteDialog(QDialog):
             return self.master_files[key_pref]
         fallback_key = f"{filter_name} ({image_size})"
         return self.master_files.get(fallback_key)
+
+    def _lookup_flat_override(self, filter_name: str, exposure_text: str) -> str | None:
+        """Prefer 'Filter - exposure' override, else bare exposure."""
+        if not hasattr(self, "manual_flat_overrides"):
+            self.manual_flat_overrides = {}
+        key_full  = f"{filter_name} - {exposure_text}"
+        key_short = exposure_text
+        return (self.manual_flat_overrides.get(key_full)
+                or self.manual_flat_overrides.get(key_short))
+
+    def _lookup_dark_override(self, filter_name: str, exposure_text: str) -> str | None:
+        if not hasattr(self, "manual_dark_overrides"):
+            self.manual_dark_overrides = {}
+        key_full  = f"{filter_name} - {exposure_text}"
+        key_short = exposure_text
+        return (self.manual_dark_overrides.get(key_full)
+                or self.manual_dark_overrides.get(key_short))
 
 
 
@@ -7011,7 +7327,7 @@ class StackingSuiteDialog(QDialog):
     def calibrate_lights(self):
         """Performs calibration on selected light frames using Master Darks and Flats, considering overrides."""
         # Make sure columns 2/3 have something where possible
-        self.assign_best_master_files()
+        self.assign_best_master_files(fill_only=True)
 
         if not self.stacking_directory:
             QMessageBox.warning(self, "Error", "Please set the stacking directory first.")
@@ -7830,7 +8146,7 @@ class StackingSuiteDialog(QDialog):
             def mono_preview_for_stats(img: np.ndarray, hdr) -> np.ndarray:
                 """
                 Returns a 2D float32 preview for measurement:
-                • RGB → luma → 2×2 superpixel average
+                • RGB → Luma → 2×2 superpixel average
                 • CFA (2D with BAYERPAT) → 2×2 superpixel average
                 • Mono → 2×2 superpixel average
                 Always returns float32 and trims odd edges to keep even dims.
@@ -7849,11 +8165,11 @@ class StackingSuiteDialog(QDialog):
                         return (x[0:h2:2, 0:w2:2] + x[0:h2:2, 1:w2:2] +
                                 x[1:h2:2, 0:w2:2] + x[1:h2:2, 1:w2:2]) * 0.25
                     else:
-                        # 3D: bin on luma, not per-channel
+                        # 3D: bin on Luma, not per-channel
                         r = x[..., 0]; g = x[..., 1]; b = x[..., 2]
-                        luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
-                        return (luma[0:h2:2, 0:w2:2] + luma[0:h2:2, 1:w2:2] +
-                                luma[1:h2:2, 0:w2:2] + luma[1:h2:2, 1:w2:2]) * 0.25
+                        Luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
+                        return (Luma[0:h2:2, 0:w2:2] + Luma[0:h2:2, 1:w2:2] +
+                                Luma[1:h2:2, 0:w2:2] + Luma[1:h2:2, 1:w2:2]) * 0.25
 
                 # RGB
                 if img.ndim == 3 and img.shape[-1] == 3:
@@ -7987,11 +8303,11 @@ class StackingSuiteDialog(QDialog):
                 if ref_img.ndim == 3 and ref_img.shape[-1] == 1:
                     ref_img = np.squeeze(ref_img, axis=-1)
 
-            # Use luma median if color, else direct median
+            # Use Luma median if color, else direct median
             if ref_img.ndim == 3 and ref_img.shape[-1] == 3:
                 r, g, b = ref_img[..., 0], ref_img[..., 1], ref_img[..., 2]
-                ref_luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
-                ref_median = float(np.median(ref_luma))
+                ref_Luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
+                ref_median = float(np.median(ref_Luma))
             else:
                 ref_median = float(np.median(ref_img))
 
@@ -8049,8 +8365,8 @@ class StackingSuiteDialog(QDialog):
                                 ref_img = np.squeeze(ref_img, axis=-1)
                         if ref_img.ndim == 3 and ref_img.shape[-1] == 3:
                             r, g, b = ref_img[..., 0], ref_img[..., 1], ref_img[..., 2]
-                            ref_luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
-                            ref_median = float(np.median(ref_luma))
+                            ref_Luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
+                            ref_median = float(np.median(ref_Luma))
                         else:
                             ref_median = float(np.median(ref_img))
                         self.update_status(f"📊 (New) reference median: {ref_median:.4f}")
@@ -8059,7 +8375,7 @@ class StackingSuiteDialog(QDialog):
                 else:
                     self.update_status("Dialog closed without explicit choice; using selected reference.")
 
-            ref_L = _luma(ref_img)
+            ref_L = _Luma(ref_img)
             ref_min = float(np.nanmin(ref_L))
             ref_target_median = float(np.nanmedian(ref_L - ref_min))
             self.update_status(f"📊 Reference min={ref_min:.6f}, normalized-median={ref_target_median:.6f}")
@@ -8778,10 +9094,31 @@ class StackingSuiteDialog(QDialog):
                     out_path = os.path.join(out_dir, f"MasterLight_{group_key}_MFDeconv.fit")
 
                     iters = self.settings.value("stacking/mfdeconv/iters", 20, type=int)
+                    min_iters = self.settings.value("stacking/mfdeconv/min_iters", 3, type=int)
                     kappa = self.settings.value("stacking/mfdeconv/kappa", 2.0, type=float)
                     mode  = self.mf_color_combo.currentText()
-                    huber = self.settings.value("stacking/mfdeconv/huber_delta", 0.0, type=float)
+                    Huber = self.settings.value("stacking/mfdeconv/Huber_delta", 0.0, type=float)
                     batch = self.settings.value("stacking/mfdeconv/batch", 8, type=int)
+
+                    use_star_masks    = self.mf_use_star_mask_cb.isChecked()
+                    use_variance_maps = self.mf_use_noise_map_cb.isChecked()
+                    rho               = self.mf_rho_combo.currentText()
+
+                    # Build cfg dicts (even if disabled; they’ll be ignored if not used)
+                    star_mask_cfg = {
+                        "thresh_sigma":  self.settings.value("stacking/mfdeconv/star_mask/thresh_sigma",  _SM_DEF_THRESH, type=float),
+                        "grow_px":       self.settings.value("stacking/mfdeconv/star_mask/grow_px",       _SM_DEF_GROW, type=int),
+                        "soft_sigma":    self.settings.value("stacking/mfdeconv/star_mask/soft_sigma",    _SM_DEF_SOFT, type=float),
+                        "max_radius_px": self.settings.value("stacking/mfdeconv/star_mask/max_radius_px", _SM_DEF_RMAX, type=int),
+                        "max_objs":      self.settings.value("stacking/mfdeconv/star_mask/max_objs",      _SM_DEF_MAXOBJS, type=int),
+                        "keep_floor":    self.settings.value("stacking/mfdeconv/star_mask/keep_floor",    _SM_DEF_KEEPF, type=float),
+                        "ellipse_scale": self.settings.value("stacking/mfdeconv/star_mask/ellipse_scale", _SM_DEF_ES, type=float),
+                    }
+                    varmap_cfg = {
+                        "sample_stride": self.settings.value("stacking/mfdeconv/varmap/sample_stride", _VM_DEF_STRIDE, type=int),
+                        "smooth_sigma":  self.settings.value("stacking/mfdeconv/varmap/smooth_sigma", 1.0, type=float),
+                        "floor":         self.settings.value("stacking/mfdeconv/varmap/floor",        1e-8, type=float),
+                    }
 
                     self._mf_thread = QThread(self)
                     self._mf_worker = MultiFrameDeconvWorker(
@@ -8791,9 +9128,14 @@ class StackingSuiteDialog(QDialog):
                         iters=iters,
                         kappa=kappa,
                         color_mode=mode,
-                        huber_delta=huber,
-                        #batch_size=batch,
-                        )
+                        huber_delta=Huber,
+                        min_iters=min_iters,
+                        use_star_masks=use_star_masks,
+                        use_variance_maps=use_variance_maps,
+                        rho=rho,
+                        star_mask_cfg=star_mask_cfg,        # <<< NEW
+                        varmap_cfg=varmap_cfg               # <<< NEW
+                    )
                     self._mf_worker.moveToThread(self._mf_thread)
                     self._mf_worker.progress.connect(self._on_mf_progress, Qt.ConnectionType.QueuedConnection)
                     self._mf_thread.started.connect(self._mf_worker.run, Qt.ConnectionType.QueuedConnection)
@@ -10265,9 +10607,30 @@ class StackingSuiteDialog(QDialog):
             os.makedirs(out_dir, exist_ok=True)
 
             iters = self.settings.value("stacking/mfdeconv/iters", 20, type=int)
+            min_iters = self.settings.value("stacking/mfdeconv/min_iters", 3, type=int)
             kappa = self.settings.value("stacking/mfdeconv/kappa", 2.0, type=float)
             mode  = self.mf_color_combo.currentText()
-            huber = self.settings.value("stacking/mfdeconv/huber_delta", 0.0, type=float)
+            Huber = self.settings.value("stacking/mfdeconv/Huber_delta", 0.0, type=float)
+
+            use_star_masks   = self.mf_use_star_mask_cb.isChecked()
+            use_variance_maps = self.mf_use_noise_map_cb.isChecked()   # ← keep your name
+            rho              = self.mf_rho_combo.currentText()
+
+            star_mask_cfg = {
+                "thresh_sigma":  self.settings.value("stacking/mfdeconv/star_mask/thresh_sigma",  _SM_DEF_THRESH, type=float),
+                "grow_px":       self.settings.value("stacking/mfdeconv/star_mask/grow_px",       _SM_DEF_GROW, type=int),
+                "soft_sigma":    self.settings.value("stacking/mfdeconv/star_mask/soft_sigma",    _SM_DEF_SOFT, type=float),
+                "max_radius_px": self.settings.value("stacking/mfdeconv/star_mask/max_radius_px", _SM_DEF_RMAX, type=int),
+                "max_objs":      self.settings.value("stacking/mfdeconv/star_mask/max_objs",      _SM_DEF_MAXOBJS, type=int),
+                "keep_floor":    self.settings.value("stacking/mfdeconv/star_mask/keep_floor",    _SM_DEF_KEEPF, type=float),
+                "ellipse_scale": self.settings.value("stacking/mfdeconv/star_mask/ellipse_scale", _SM_DEF_ES, type=float),
+            }
+            varmap_cfg = {
+                "sample_stride": self.settings.value("stacking/mfdeconv/varmap/sample_stride", _VM_DEF_STRIDE, type=int),
+                "smooth_sigma":  self.settings.value("stacking/mfdeconv/varmap/smooth_sigma", 1.0, type=float),
+                "floor":         self.settings.value("stacking/mfdeconv/varmap/floor",        1e-8, type=float),
+            }
+
 
             # Use your earlier unique-naming helper if you added it; fallback:
             safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", str(group_key)) or "Group"
@@ -10282,8 +10645,13 @@ class StackingSuiteDialog(QDialog):
                 iters=iters,
                 kappa=kappa,
                 color_mode=mode,
-                huber_delta=huber,
-                #batch_size=batch,
+                huber_delta=Huber,
+                min_iters=min_iters,
+                use_star_masks=use_star_masks,
+                use_variance_maps=use_variance_maps,
+                rho=rho,
+                star_mask_cfg=star_mask_cfg,        # <<< NEW
+                varmap_cfg=varmap_cfg               # <<< NEW
             )
             self._mf_worker.moveToThread(self._mf_thread)
             self._mf_worker.progress.connect(self._on_post_status, Qt.ConnectionType.QueuedConnection)
@@ -10296,10 +10664,13 @@ class StackingSuiteDialog(QDialog):
             def _done(ok: bool, message: str, out: str):
                 pd = self._pd_alive()
                 if pd:
-                    # if you keep the 0..groups*1000 range, snap to segment boundary:
-                    val = min(pd.value() + 1000, pd.maximum())
-                    pd.setValue(val)
-                    pd.setLabelText(f"{'✅' if ok else '❌'} {group_key}: {message}")
+                    try:
+                        # if you keep the 0..groups*1000 range, snap to segment boundary:
+                        val = min(pd.value() + 1000, pd.maximum())
+                        pd.setValue(val)
+                        pd.setLabelText(f"{'✅' if ok else '❌'} {group_key}: {message}")
+                    except:
+                        pass    
 
                 if ok and out:
                     self._mf_results[group_key] = out
@@ -10317,7 +10688,7 @@ class StackingSuiteDialog(QDialog):
                 QTimer.singleShot(0, _start_next)
 
             self._mf_worker.finished.connect(_done, Qt.ConnectionType.QueuedConnection)
-            self._mf_thread.started.connect(self._mf_worker.run, Qt.ConnectionType.QueuedConnection)
+
             self._mf_thread.start()
 
             if getattr(self, "_mf_pd", None):
