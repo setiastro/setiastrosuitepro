@@ -1,9 +1,9 @@
 {
-  "version": "1.2.6",
+  "version": "1.3.0",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.2.6/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.2.6/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.2.6/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.0/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.0/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.0/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.2.6 ImageMM: Added Star Masks and Noise Variation Maps to fully utilize everything in the Sukurdeep paper. Lot's of new settings in the wrench icon for all of it. Min and Max Iteration count added. Lot's of bug fixes throughout."
+  "notes": "Seti Astro Suite Pro V1.3.0 Stacking Suite: Hardware Acceleration for the Integration portion for both normal integration and ImageMM. Full mixed Bin support for normal integration and ImageMM. Numerous bug fixes."
 }
