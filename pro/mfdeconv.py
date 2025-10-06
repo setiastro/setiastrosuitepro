@@ -12,7 +12,7 @@ try:
     import sep
 except Exception:
     sep = None
-
+from pro.free_torch_memory import _free_torch_memory
 torch = None        # filled by runtime loader if available
 TORCH_OK = False
 NO_GRAD = contextlib.nullcontext  # fallback
@@ -1123,7 +1123,8 @@ def multiframe_deconv(
     cm = _safe_inference_context() if use_torch else NO_GRAD
     rho_is_l2 = (str(rho).lower() == "l2")
     local_delta = 0.0 if rho_is_l2 else huber_delta
-
+    used_iters = 0
+    early_stopped = False
     with cm():
         for it in range(1, max_iters + 1):
             if use_torch:
@@ -1144,6 +1145,8 @@ def multiframe_deconv(
                 if torch.median(torch.abs(upd - 1)) < 1e-3:
                     if it >= min_iters:
                         x_t = x_next
+                        used_iters = it              # <<< NEW
+                        early_stopped = True         # <<< NEW
                         status_cb(f"MFDeconv: Iteration {it}/{max_iters} (early stop)")
                         _process_gui_events_safely()
                         break
@@ -1166,6 +1169,8 @@ def multiframe_deconv(
                 if np.median(np.abs(upd - 1.0)) < 1e-3:
                     if it >= min_iters:
                         x_t = x_next
+                        used_iters = it              # <<< NEW
+                        early_stopped = True         # <<< NEW
                         status_cb(f"MFDeconv: Iteration {it}/{max_iters} (early stop)")
                         _process_gui_events_safely()
                         break
@@ -1177,6 +1182,9 @@ def multiframe_deconv(
                 _emit_pct(frac, f"Iteration {it}/{max_iters}")
                 status_cb(f"__PROGRESS__ {it/total_steps:.4f} Iter {it}/{max_iters}")
                 _process_gui_events_safely()
+
+    if not early_stopped:
+        used_iters = max_iters
 
     # ----------------------------
     # Save result (keep FITS-friendly order: (C,H,W))
@@ -1196,20 +1204,24 @@ def multiframe_deconv(
     except Exception:
         hdr0 = fits.Header()
 
-    hdr0['MFDECONV'] = (True, 'Seti Astro multi-frame deconvolution (beta)')
+    hdr0['MFDECONV'] = (True, 'Seti Astro multi-frame deconvolution')   # removed "(beta)"
     hdr0['MF_COLOR'] = (str(color_mode), 'Color mode used')
     hdr0['MF_RHO']   = (str(rho), 'Loss: huber|l2')
     hdr0['MF_HDEL']  = (float(huber_delta), 'Huber delta (>0 abs, <0 autoxRMS)')
-    hdr0['MF_MASK']  = (bool(use_star_masks),   'Used auto star masks')
-    hdr0['MF_VAR']   = (bool(use_variance_maps),'Used auto variance maps')
+    hdr0['MF_MASK']  = (bool(use_star_masks),    'Used auto star masks')
+    hdr0['MF_VAR']   = (bool(use_variance_maps), 'Used auto variance maps')
+
+    # >>> NEW: iteration telemetry
+    hdr0['MF_ITMAX'] = (int(max_iters),  'Requested max iterations')
+    hdr0['MF_ITERS'] = (int(used_iters), 'Actual iterations run')
+    hdr0['MF_ESTOP'] = (bool(early_stopped), 'Early stop triggered')
+
     if isinstance(x_final, np.ndarray):
         if x_final.ndim == 2:
             hdr0['MF_SHAPE'] = (f"{x_final.shape[0]}x{x_final.shape[1]}", 'Saved as 2D image (HxW)')
         elif x_final.ndim == 3:
             C, H, W = x_final.shape
             hdr0['MF_SHAPE'] = (f"{C}x{H}x{W}", 'Saved as 3D cube (CxHxW)')
-    status_cb(f"MFDeconv: saving array with shape {x_final.shape} "
-              + ("(2D)" if x_final.ndim==2 else "(CxHxW)"))
     # >>> NEW: pick a non-clobbering path
     safe_out_path = _nonclobber_path(out_path)
     if safe_out_path != out_path:
@@ -1218,9 +1230,26 @@ def multiframe_deconv(
     # write without overwrite now that the name is unique
     fits.PrimaryHDU(data=x_final, header=hdr0).writeto(safe_out_path, overwrite=False)
 
-    status_cb(f"✅ MFDeconv saved: {safe_out_path}")
+    status_cb(f"✅ MFDeconv saved: {safe_out_path}  (iters used: {used_iters}{', early stop' if early_stopped else ''})")
     _emit_pct(1.00, "done")
     _process_gui_events_safely()
+
+    try:
+        if use_torch:
+            # big tensors / lists
+            del x_t
+            del y_tensors
+            del num, den
+            del psf_t, psfT_t
+            # optional: masks/vars if tensorized
+            try:
+                del mask_tensors, var_tensors
+            except Exception:
+                pass
+            _free_torch_memory()
+    except Exception:
+        pass
+
     return safe_out_path
 
 

@@ -26,9 +26,10 @@ import cv2                            # _get_image_size -> cv2.imread(...)
 cv2.setNumThreads(0)
 CursorShape = Qt.CursorShape 
 import rawpy
-
+import time
 import exifread
-
+import contextlib
+NO_GRAD = contextlib.nullcontext  # fallback when torch isn’t present
 from typing import List, Tuple, Optional
 import sep
 from pathlib import Path
@@ -46,6 +47,12 @@ from pro.mfdeconv import MultiFrameDeconvWorker
 from pro.accel_installer import current_backend
 from pro.accel_workers import AccelInstallWorker
 from pro.runtime_torch import add_runtime_to_sys_path
+from pro.free_torch_memory import _free_torch_memory
+from pro.torch_rejection import (
+    torch_available as _torch_ok,
+    gpu_algo_supported as _gpu_algo_supported,
+    torch_reduce_tile as _torch_reduce_tile,
+)
 
 from pro.mfdeconv import (
     THRESHOLD_SIGMA as _SM_DEF_THRESH,
@@ -63,6 +70,31 @@ _WINDOWS_RESERVED = {
     "COM1","COM2","COM3","COM4","COM5","COM6","COM7","COM8","COM9",
     "LPT1","LPT2","LPT3","LPT4","LPT5","LPT6","LPT7","LPT8","LPT9",
 }
+
+
+def _safe_torch_inference_ctx():
+    """
+    Return a context manager suitable for inference:
+    - torch.inference_mode() if available and enterable
+    - else torch.no_grad()
+    - else a no-op context if torch isn't importable
+    """
+    try:
+        import torch
+    except Exception:
+        return contextlib.nullcontext  # returns the *type*; call as _ctx()
+
+    cm = getattr(torch, "inference_mode", None)
+    if cm is not None:
+        # Probe once — older/alt backends may have the symbol but not the C++ hook
+        try:
+            with cm():
+                pass
+            return cm
+        except Exception:
+            return getattr(torch, "no_grad", contextlib.nullcontext)
+    return getattr(torch, "no_grad", contextlib.nullcontext)
+
 
 def _is_deleted(obj) -> bool:
     try:
@@ -1673,6 +1705,97 @@ def _high_clip_percentile_fast(ts: np.ndarray, k: float = 2.5, p: float = 40.0,
     np.partition(tmp3, idx, axis=0)
     return tmp3[idx]
 
+def _parse_binning_from_header(hdr) -> tuple[int, int]:
+    """
+    Return (xbin, ybin), defaulting to (1,1). Handles common FITS keys and string forms.
+    Accepts: XBINNING/YBINNING, CCDXBIN/CCDYBIN, XBIN/YBIN, BINNING="2 2" | "2x2" | "2,2"
+    """
+    def _coerce(v):
+        try:
+            return int(float(v))
+        except Exception:
+            return None
+
+    if hdr is None:
+        return 1, 1
+
+    # direct numeric keys
+    for kx, ky in (("XBINNING", "YBINNING"),
+                   ("CCDXBIN", "CCDYBIN"),
+                   ("XBIN", "YBIN")):
+        if kx in hdr and ky in hdr:
+            bx = _coerce(hdr.get(kx)); by = _coerce(hdr.get(ky))
+            if bx and by:
+                return max(1, bx), max(1, by)
+
+    # combined string key
+    if "BINNING" in hdr:
+        s = str(hdr.get("BINNING", "")).lower().replace("x", " ").replace(",", " ")
+        parts = [p for p in s.split() if p.strip()]
+        if len(parts) >= 2:
+            bx = _coerce(parts[0]); by = _coerce(parts[1])
+            if bx and by:
+                return max(1, bx), max(1, by)
+
+    return 1, 1
+
+
+def _resize_to_scale(img: np.ndarray, scale_x: float, scale_y: float) -> np.ndarray:
+    """
+    Resample image to apply per-axis scale. Works for 2D or HxWx3.
+    Uses OpenCV if present (fast, high quality). Fallbacks to SciPy; last resort = NumPy kron for integer upscales.
+    """
+    if scale_x == 1.0 and scale_y == 1.0:
+        return img
+
+    h, w = img.shape[:2]
+    new_w = max(1, int(round(w * (scale_x))))
+    new_h = max(1, int(round(h * (scale_y))))
+
+    # Prefer OpenCV
+    try:
+        import cv2
+        interp = cv2.INTER_CUBIC if (scale_x > 1.0 or scale_y > 1.0) else cv2.INTER_AREA
+        if img.ndim == 2:
+            return cv2.resize(img.astype(np.float32, copy=False), (new_w, new_h), interpolation=interp)
+        else:
+            return cv2.resize(img.astype(np.float32, copy=False), (new_w, new_h), interpolation=interp)
+    except Exception:
+        pass
+
+    # SciPy fallback
+    try:
+        from scipy.ndimage import zoom
+        if img.ndim == 2:
+            return zoom(img.astype(np.float32, copy=False), (scale_y, scale_x), order=3)
+        else:
+            # zoom each channel; zoom expects zoom per axis
+            return zoom(img.astype(np.float32, copy=False), (scale_y, scale_x, 1.0), order=3)
+    except Exception:
+        pass
+
+    # Last resort (integer upscale only): kron
+    sx_i = int(round(scale_x)); sy_i = int(round(scale_y))
+    if abs(scale_x - sx_i) < 1e-6 and abs(scale_y - sy_i) < 1e-6 and sx_i >= 1 and sy_i >= 1:
+        if img.ndim == 2:
+            return np.kron(img, np.ones((sy_i, sx_i), dtype=np.float32))
+        else:
+            up2d = np.kron(img[..., 0], np.ones((sy_i, sx_i), dtype=np.float32))
+            out = np.empty((up2d.shape[0], up2d.shape[1], img.shape[2]), dtype=np.float32)
+            for c in range(img.shape[2]):
+                out[..., c] = np.kron(img[..., c], np.ones((sy_i, sx_i), dtype=np.float32))
+            return out
+
+    # If all else fails, return original
+    return img
+
+def _center_crop_2d(a: np.ndarray, Ht: int, Wt: int) -> np.ndarray:
+    H, W = a.shape[:2]
+    if H == Ht and W == Wt:
+        return a
+    y0 = max(0, (H - Ht) // 2)
+    x0 = max(0, (W - Wt) // 2)
+    return a[y0:y0+Ht, x0:x0+Wt]
 
 
 class StackingSuiteDialog(QDialog):
@@ -1855,6 +1978,14 @@ class StackingSuiteDialog(QDialog):
                 self._apply_mode_enforcement(cb)
                 break
 
+        self.use_gpu_integration = self.settings.value("stacking/use_hardware_accel", True, type=bool)
+
+    def _hw_accel_enabled(self) -> bool:
+        try:
+            return bool(self.settings.value("stacking/use_hardware_accel", True, type=bool))
+        except Exception:
+            return bool(getattr(self, "use_gpu_integration", True))
+
     def _set_check_safely(self, cb, on: bool):
         """Set a checkbox without firing its signals (prevents recursion)."""
         old = cb.blockSignals(True)
@@ -1898,11 +2029,28 @@ class StackingSuiteDialog(QDialog):
 
     def _on_mf_toggled_public(self, v: bool):
         """
-        Public MFDeconv toggle (replaces the inline closure). Gates MF params
-        + persists setting.
+        Gate all MFDeconv controls together (including Auto Star Mask + Auto Noise Map)
+        and persist the master enable.
         """
-        for w in (self.mf_iters_spin, self.mf_kappa_spin, self.mf_color_combo, self.mf_Huber_spin):
-            w.setEnabled(v)
+        widgets = [
+            # numeric params
+            getattr(self, "mf_iters_spin", None),
+            getattr(self, "mf_min_iters_spin", None),
+            getattr(self, "mf_kappa_spin", None),
+            # dropdowns
+            getattr(self, "mf_color_combo", None),
+            getattr(self, "mf_rho_combo", None),
+            # huber bits
+            getattr(self, "mf_Huber_spin", None),
+            getattr(self, "mf_Huber_hint", None),
+            # NEW: gate these with the MF enable
+            getattr(self, "mf_use_star_mask_cb", None),
+            getattr(self, "mf_use_noise_map_cb", None),
+        ]
+        for w in widgets:
+            if w is not None:
+                w.setEnabled(v)
+
         self.settings.setValue("stacking/mfdeconv/enabled", bool(v))
 
     def _elide_chars(self, s: str, max_chars: int) -> str:
@@ -2380,6 +2528,24 @@ class StackingSuiteDialog(QDialog):
         fl_general.addRow("Chunk Size:", w_hw)
 
         left_col.addWidget(gb_general)
+
+        # --- Performance ---
+        gb_perf = QGroupBox("Performance")
+        fl_perf = QFormLayout(gb_perf)
+
+        self.hw_accel_cb = QCheckBox("Use hardware acceleration if available")
+        self.hw_accel_cb.setToolTip("Enable GPU/MPS via PyTorch when supported; falls back to CPU automatically.")
+        self.hw_accel_cb.setChecked(self.settings.value("stacking/use_hardware_accel", True, type=bool))
+        fl_perf.addRow(self.hw_accel_cb)
+
+        # (Optional) show detected backend for user feedback
+        try:
+            backend_str = current_backend() or "CPU only"
+        except Exception:
+            backend_str = "CPU only"
+        fl_perf.addRow("Detected backend:", QLabel(backend_str))
+
+        left_col.addWidget(gb_perf)
 
         # --- Alignment ---
         gb_align = QGroupBox("Alignment")
@@ -2932,6 +3098,8 @@ class StackingSuiteDialog(QDialog):
         self.settings.setValue("stacking/cosmetic/star_max_ratio", float(self.cosm_star_max_ratio.value()))
         self.settings.setValue("stacking/cosmetic/sat_quantile",   float(self.cosm_sat_quantile.value()))
 
+        self.settings.setValue("stacking/use_hardware_accel", self.hw_accel_cb.isChecked())
+        self.use_gpu_integration = bool(self.hw_accel_cb.isChecked())
 
         self.settings.setValue("stacking/comet_starrem/enabled", self.csr_enable.isChecked())
         self.settings.setValue("stacking/comet_starrem/tool", self.csr_tool.currentText())
@@ -2965,6 +3133,7 @@ class StackingSuiteDialog(QDialog):
         # Logging
         self.update_status("✅ Saved stacking settings.")
         self.update_status(f"• Internal precision: {new_dtype_str}")
+        self.update_status(f"• Hardware acceleration: {'ON' if self.use_gpu_integration else 'OFF'}")
         self._update_stacking_path_display()
 
         # --- restart if needed ---
@@ -4235,6 +4404,7 @@ class StackingSuiteDialog(QDialog):
         ref_layout.addWidget(self.ref_frame_path, 1)
         ref_layout.addWidget(self.select_ref_frame_btn)
         ref_layout.addWidget(self.auto_accept_ref_cb)  # ← add to the row
+        ref_layout.addStretch()
         layout.addLayout(ref_layout)
 
         crop_row = QHBoxLayout()
@@ -4521,9 +4691,15 @@ class StackingSuiteDialog(QDialog):
 
     def create_image_registration_tab(self):
         """
-        Creates an Image Registration tab that mimics how the Light tab handles
-        cosmetic corrections—i.e., we have global Drizzle controls (checkbox, combo, spin),
-        and we update a text column in the QTreeWidget to show each group's drizzle state.
+        Image Registration tab with:
+        - tree of calibrated lights
+        - tolerance row (now includes Auto-crop)
+        - add/remove buttons
+        - global drizzle controls
+        - reference selection + auto-accept toggle
+        - MFDeconv (no 'beta')
+        - Comet + Star-Trail checkboxes in one row BELOW MFDeconv
+        - Backend (acceleration) row moved BELOW the comet+trail row
         """
         tab = QWidget()
         layout = QVBoxLayout(tab)
@@ -4536,11 +4712,9 @@ class StackingSuiteDialog(QDialog):
         self.reg_tree.setHeaderLabels([
             "Filter - Exposure - Size",
             "Metadata",
-            "Drizzle"  # We'll display "Drizzle: True, Scale: 2x, Drop:0.65" here
+            "Drizzle"
         ])
         self.reg_tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-
-        # Optional: make columns resize nicely
         header = self.reg_tree.header()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
@@ -4549,25 +4723,44 @@ class StackingSuiteDialog(QDialog):
         layout.addWidget(QLabel("Calibrated Light Frames"))
         layout.addWidget(self.reg_tree)
 
+        # ─────────────────────────────────────────
+        # 2) Exposure tolerance + Auto-crop + Split dual-band (same row)
+        # ─────────────────────────────────────────
         tol_layout = QHBoxLayout()
         tol_layout.addWidget(QLabel("Exposure Tolerance (sec):"))
+
         self.exposure_tolerance_spin = QSpinBox()
         self.exposure_tolerance_spin.setRange(0, 900)
         self.exposure_tolerance_spin.setValue(0)
         self.exposure_tolerance_spin.setSingleStep(5)
         tol_layout.addWidget(self.exposure_tolerance_spin)
         tol_layout.addStretch()
+
+        # Auto-crop moved here
+        self.autocrop_cb = QCheckBox("Auto-crop output")
+        self.autocrop_cb.setToolTip("Crop final image to pixels covered by ≥ Coverage % of frames")
+        tol_layout.addWidget(self.autocrop_cb)
+
+        tol_layout.addWidget(QLabel("Coverage:"))
+        self.autocrop_pct = QDoubleSpinBox()
+        self.autocrop_pct.setRange(50.0, 100.0)
+        self.autocrop_pct.setSingleStep(1.0)
+        self.autocrop_pct.setSuffix(" %")
+        self.autocrop_pct.setValue(self.settings.value("stacking/autocrop_pct", 95.0, type=float))
+        self.autocrop_cb.setChecked(self.settings.value("stacking/autocrop_enabled", True, type=bool))
+        tol_layout.addWidget(self.autocrop_pct)
+
+        tol_layout.addStretch()
+
         self.split_dualband_cb = QCheckBox("Split dual-band OSC before integration")
         self.split_dualband_cb.setToolTip("For OSC dual-band data: SII/OIII → R=SII, G=OIII; Ha/OIII → R=Ha, G=OIII")
         tol_layout.addWidget(self.split_dualband_cb)
-        layout.addLayout(tol_layout)
 
+        layout.addLayout(tol_layout)
         self.exposure_tolerance_spin.valueChanged.connect(lambda _: self.populate_calibrated_lights())
 
-
-
         # ─────────────────────────────────────────
-        # 2) Buttons for Managing Files
+        # 3) Buttons for Managing Files
         # ─────────────────────────────────────────
         btn_layout = QHBoxLayout()
         self.add_reg_files_btn = QPushButton("Add Light Files")
@@ -4576,24 +4769,23 @@ class StackingSuiteDialog(QDialog):
 
         self.clear_selection_btn = QPushButton("Remove Selected")
         self.clear_selection_btn.clicked.connect(lambda: self.clear_tree_selection_registration(self.reg_tree))
-
         btn_layout.addWidget(self.clear_selection_btn)
 
         layout.addLayout(btn_layout)
 
         # ─────────────────────────────────────────
-        # 3) Global Drizzle Controls
+        # 4) Global Drizzle Controls
         # ─────────────────────────────────────────
         drizzle_layout = QHBoxLayout()
 
         self.drizzle_checkbox = QCheckBox("Enable Drizzle")
-        self.drizzle_checkbox.toggled.connect(self._on_drizzle_checkbox_toggled) # <─ connect signal
+        self.drizzle_checkbox.toggled.connect(self._on_drizzle_checkbox_toggled)
         drizzle_layout.addWidget(self.drizzle_checkbox)
 
         drizzle_layout.addWidget(QLabel("Scale:"))
         self.drizzle_scale_combo = QComboBox()
         self.drizzle_scale_combo.addItems(["1x", "2x", "3x"])
-        self.drizzle_scale_combo.currentIndexChanged.connect(self._on_drizzle_param_changed)  # <─ connect
+        self.drizzle_scale_combo.currentIndexChanged.connect(self._on_drizzle_param_changed)
         drizzle_layout.addWidget(self.drizzle_scale_combo)
 
         drizzle_layout.addWidget(QLabel("Drop Shrink:"))
@@ -4601,7 +4793,7 @@ class StackingSuiteDialog(QDialog):
         self.drizzle_drop_shrink_spin.setRange(0.0, 1.0)
         self.drizzle_drop_shrink_spin.setSingleStep(0.05)
         self.drizzle_drop_shrink_spin.setValue(0.65)
-        self.drizzle_drop_shrink_spin.valueChanged.connect(self._on_drizzle_param_changed)  # <─ connect
+        self.drizzle_drop_shrink_spin.valueChanged.connect(self._on_drizzle_param_changed)
         drizzle_layout.addWidget(self.drizzle_drop_shrink_spin)
 
         self.cfa_drizzle_cb = QCheckBox("CFA Drizzle")
@@ -4613,7 +4805,7 @@ class StackingSuiteDialog(QDialog):
         layout.addLayout(drizzle_layout)
 
         # ─────────────────────────────────────────
-        # 4) Reference Frame Selection
+        # 5) Reference Frame Selection
         # ─────────────────────────────────────────
         self.ref_frame_label = QLabel("Select Reference Frame:")
         self.ref_frame_path = QLabel("No file selected")
@@ -4621,13 +4813,9 @@ class StackingSuiteDialog(QDialog):
         self.select_ref_frame_btn = QPushButton("Select Reference Frame")
         self.select_ref_frame_btn.clicked.connect(self.select_reference_frame)
 
-        # NEW: Auto-accept toggle
         self.auto_accept_ref_cb = QCheckBox("Auto-accept measured reference")
-        self.auto_accept_ref_cb.setToolTip(
-            "When checked, the best measured frame is accepted automatically and the review dialog is skipped."
-        )
-        # restore from settings
         self.auto_accept_ref_cb.setChecked(self.settings.value("stacking/auto_accept_ref", False, type=bool))
+        self.auto_accept_ref_cb.setToolTip("If checked, the best measured frame is accepted automatically.")
         self.auto_accept_ref_cb.toggled.connect(
             lambda v: self.settings.setValue("stacking/auto_accept_ref", bool(v))
         )
@@ -4636,56 +4824,20 @@ class StackingSuiteDialog(QDialog):
         ref_layout.addWidget(self.ref_frame_label)
         ref_layout.addWidget(self.ref_frame_path, 1)
         ref_layout.addWidget(self.select_ref_frame_btn)
-        ref_layout.addWidget(self.auto_accept_ref_cb)  # ← add to the row
+        ref_layout.addWidget(self.auto_accept_ref_cb)
+        ref_layout.addStretch()
         layout.addLayout(ref_layout)
 
-        crop_row = QHBoxLayout()
-        self.autocrop_cb = QCheckBox("Auto-crop output")
-        self.autocrop_cb.setToolTip("Crop the final image to pixels covered by ≥ Coverage % of frames")
-        self.autocrop_pct = QDoubleSpinBox()
-        self.autocrop_pct.setRange(50.0, 100.0)
-        self.autocrop_pct.setSingleStep(1.0)
-        self.autocrop_pct.setSuffix(" %")
-        self.autocrop_pct.setValue(self.settings.value("stacking/autocrop_pct", 95.0, type=float))
-        self.autocrop_cb.setChecked(self.settings.value("stacking/autocrop_enabled", True, type=bool))
-        crop_row.addWidget(self.autocrop_cb)
-        crop_row.addWidget(QLabel("Coverage:"))
-        crop_row.addWidget(self.autocrop_pct)
-        crop_row.addStretch(1)
-        layout.addLayout(crop_row)
+        # Disable Select button when auto-accept is on
+        self.auto_accept_ref_cb.toggled.connect(self.select_ref_frame_btn.setDisabled)
+        self.select_ref_frame_btn.setDisabled(self.auto_accept_ref_cb.isChecked())
 
-        # In create_image_registration_tab(), after the crop_row:
-        comet_row = QHBoxLayout()
-
-        self.comet_cb = QCheckBox("🌠🌠Create comet stack (comet-aligned)🌠🌠")
-        self.comet_cb.setChecked(self.settings.value("stacking/comet/enabled", False, type=bool))
-        comet_row.addWidget(self.comet_cb)
-
-        self.comet_pick_btn = QPushButton("Pick comet center…")
-        self.comet_pick_btn.setEnabled(self.comet_cb.isChecked())
-        self.comet_pick_btn.clicked.connect(self._pick_comet_center)
-        self.comet_cb.toggled.connect(self.comet_pick_btn.setEnabled)
-        comet_row.addWidget(self.comet_pick_btn)
-
-        self.comet_blend_cb = QCheckBox("Also output Stars+Comet blend")
-        self.comet_blend_cb.setChecked(self.settings.value("stacking/comet/blend", True, type=bool))
-        comet_row.addWidget(self.comet_blend_cb)
-
-
-        comet_row.addWidget(QLabel("Mix:"))
-        self.comet_mix = QDoubleSpinBox()
-        self.comet_mix.setRange(0.0, 1.0); self.comet_mix.setSingleStep(0.05)
-        self.comet_mix.setValue(self.settings.value("stacking/comet/mix", 1.0, type=float))
-        comet_row.addWidget(self.comet_mix)
-
-
-        comet_row.addStretch(1)
-        layout.addLayout(comet_row)
-
-        mf_box = QGroupBox("MFDeconv (beta) — Multi-Frame Deconvolution (ImageMM)")
+        # ─────────────────────────────────────────
+        # 6) MFDeconv (title cleaned; no “beta”)
+        # ─────────────────────────────────────────
+        mf_box = QGroupBox("MFDeconv — Multi-Frame Deconvolution (ImageMM)")
         mf_v = QVBoxLayout(mf_box)
 
-        # sensible defaults if missing
         def _get(key, default, t):
             return self.settings.value(key, default, type=t)
 
@@ -4693,128 +4845,127 @@ class StackingSuiteDialog(QDialog):
         mf_row1 = QHBoxLayout()
         self.mf_enabled_cb = QCheckBox("Enable MFDeconv during integration")
         self.mf_enabled_cb.setChecked(_get("stacking/mfdeconv/enabled", False, bool))
-        self.mf_enabled_cb.setToolTip("Runs multi-frame deconvolution during integration. Turn off if testing.")
+        self.mf_enabled_cb.setToolTip("Runs multi-frame deconvolution during integration.")
         mf_row1.addWidget(self.mf_enabled_cb)
         mf_row1.addStretch(1)
         mf_v.addLayout(mf_row1)
 
-        # row 2: iterations + kappa
+        # row 2: iterations, min iters, kappa
         mf_row2 = QHBoxLayout()
-
         mf_row2.addWidget(QLabel("Iterations (max):"))
-        self.mf_iters_spin = QSpinBox()
-        self.mf_iters_spin.setRange(1, 500)
+        self.mf_iters_spin = QSpinBox(); self.mf_iters_spin.setRange(1, 500)
         self.mf_iters_spin.setValue(_get("stacking/mfdeconv/iters", 20, int))
-        self.mf_iters_spin.setToolTip("Maximum number of multiplicative updates (e.g., 10–60).")
         mf_row2.addWidget(self.mf_iters_spin)
 
         mf_row2.addSpacing(12)
-
-        # NEW: Min iterations
         mf_row2.addWidget(QLabel("Min iters:"))
-        self.mf_min_iters_spin = QSpinBox()
-        self.mf_min_iters_spin.setRange(1, 500)
+        self.mf_min_iters_spin = QSpinBox(); self.mf_min_iters_spin.setRange(1, 500)
         self.mf_min_iters_spin.setValue(_get("stacking/mfdeconv/min_iters", 3, int))
-        self.mf_min_iters_spin.setToolTip("Run at least this many iterations before early-stop can trigger.")
         mf_row2.addWidget(self.mf_min_iters_spin)
 
         mf_row2.addSpacing(16)
         mf_row2.addWidget(QLabel("Update clip (κ):"))
-        self.mf_kappa_spin = QDoubleSpinBox()
-        self.mf_kappa_spin.setRange(0.0, 10.0)
-        self.mf_kappa_spin.setDecimals(3)
-        self.mf_kappa_spin.setSingleStep(0.1)
+        self.mf_kappa_spin = QDoubleSpinBox(); self.mf_kappa_spin.setRange(0.0, 10.0)
+        self.mf_kappa_spin.setDecimals(3); self.mf_kappa_spin.setSingleStep(0.1)
         self.mf_kappa_spin.setValue(_get("stacking/mfdeconv/kappa", 2.0, float))
-        self.mf_kappa_spin.setToolTip("Kappa clipping for multiplicative updates (typ. ~2.0).")
         mf_row2.addWidget(self.mf_kappa_spin)
         mf_row2.addStretch(1)
         mf_v.addLayout(mf_row2)
 
-        # row 3: color mode + Huber_delta
+        # row 3: color / rho / huber / toggles
         mf_row3 = QHBoxLayout()
         mf_row3.addWidget(QLabel("Color mode:"))
-        self.mf_color_combo = QComboBox()
-        self.mf_color_combo.addItems(["PerChannel", "Luma"])
-        # ensure current text is valid
+        self.mf_color_combo = QComboBox(); self.mf_color_combo.addItems(["PerChannel", "Luma"])
         _cm = _get("stacking/mfdeconv/color_mode", "PerChannel", str)
-        if _cm not in ("Luma", "PerChannel"):
-            _cm = "PerChannel"
+        if _cm not in ("PerChannel", "Luma"): _cm = "PerChannel"
         self.mf_color_combo.setCurrentText(_cm)
-        self.mf_color_combo.setToolTip("‘Luma’ deconvolves the luminance only; ‘PerChannel’ runs on RGB independently.")
+        self.mf_color_combo.setToolTip("‘Luma’ deconvolves luminance only; ‘PerChannel’ runs on RGB independently.")
         mf_row3.addWidget(self.mf_color_combo)
+
         mf_row3.addSpacing(16)
         mf_row3.addWidget(QLabel("ρ (loss):"))
-        self.mf_rho_combo = QComboBox()
-        self.mf_rho_combo.addItems(["Huber", "L2"])
+        self.mf_rho_combo = QComboBox(); self.mf_rho_combo.addItems(["Huber", "L2"])
         self.mf_rho_combo.setCurrentText(self.settings.value("stacking/mfdeconv/rho", "Huber", type=str))
-        self.mf_rho_combo.setToolTip("Choose robust Huber loss or plain L2.")
+        self.mf_rho_combo.currentTextChanged.connect(lambda s: self.settings.setValue("stacking/mfdeconv/rho", s))
         mf_row3.addWidget(self.mf_rho_combo)
 
-        # persist to settings
-        self.mf_rho_combo.currentTextChanged.connect(
-            lambda s: self.settings.setValue("stacking/mfdeconv/rho", s)
-        )
         mf_row3.addSpacing(16)
         mf_row3.addWidget(QLabel("Huber δ:"))
         self.mf_Huber_spin = QDoubleSpinBox()
-        self.mf_Huber_spin.setRange(-1000.0, 1000.0)   # negative allowed
-        self.mf_Huber_spin.setDecimals(4)
-        self.mf_Huber_spin.setSingleStep(0.1)
+        self.mf_Huber_spin.setRange(-1000.0, 1000.0); self.mf_Huber_spin.setDecimals(4); self.mf_Huber_spin.setSingleStep(0.1)
         self.mf_Huber_spin.setValue(_get("stacking/mfdeconv/Huber_delta", -2.0, float))
-        self.mf_Huber_spin.setToolTip(
-            "Robust Huber threshold in σ units. ~2–3× background RMS is typical.\n"
-            "Negative values are scale*RMS, positive values are hardcoded deltas."
-        )
         mf_row3.addWidget(self.mf_Huber_spin)
-        
+
         self.mf_Huber_hint = QLabel("(<0 = scale×RMS, >0 = absolute Δ)")
-        self.mf_Huber_hint.setToolTip("Negative = factor times background RMS (auto). Positive = fixed absolute threshold.")
-        self.mf_Huber_hint.setStyleSheet("color: #888;")  # subtle hint color
-        mf_row3.addWidget(self.mf_Huber_hint)        
-        
-        mf_v.addLayout(mf_row3)
+        self.mf_Huber_hint.setStyleSheet("color:#888;")
+        mf_row3.addWidget(self.mf_Huber_hint)
 
         mf_row3.addSpacing(16)
-
         self.mf_use_star_mask_cb = QCheckBox("Auto Star Mask")
-        self.mf_use_star_mask_cb.setToolTip("Detect bright stars and mask them to suppress ringing.")
-        self.mf_use_star_mask_cb.setChecked(self.settings.value("stacking/mfdeconv/use_star_masks", False, type=bool))
-        mf_row3.addWidget(self.mf_use_star_mask_cb)
-
         self.mf_use_noise_map_cb = QCheckBox("Auto Noise Map")
-        self.mf_use_noise_map_cb.setToolTip("Estimate per-pixel noise variance (SEP background RMS²).")
+        self.mf_use_star_mask_cb.setChecked(self.settings.value("stacking/mfdeconv/use_star_masks", False, type=bool))
         self.mf_use_noise_map_cb.setChecked(self.settings.value("stacking/mfdeconv/use_noise_maps", False, type=bool))
+        mf_row3.addWidget(self.mf_use_star_mask_cb)
         mf_row3.addWidget(self.mf_use_noise_map_cb)
         mf_row3.addStretch(1)
+        mf_v.addLayout(mf_row3)
 
-        # persist to settings
-        self.mf_use_star_mask_cb.toggled.connect(
-            lambda v: self.settings.setValue("stacking/mfdeconv/use_star_masks", bool(v))
-        )
-        self.mf_use_noise_map_cb.toggled.connect(
-            lambda v: self.settings.setValue("stacking/mfdeconv/use_noise_maps", bool(v))
-        )
+        # persist
+        self.mf_enabled_cb.toggled.connect(lambda v: self.settings.setValue("stacking/mfdeconv/enabled", bool(v)))
+        self.mf_iters_spin.valueChanged.connect(lambda v: self.settings.setValue("stacking/mfdeconv/iters", int(v)))
+        self.mf_min_iters_spin.valueChanged.connect(lambda v: self.settings.setValue("stacking/mfdeconv/min_iters", int(v)))
+        self.mf_kappa_spin.valueChanged.connect(lambda v: self.settings.setValue("stacking/mfdeconv/kappa", float(v)))
+        self.mf_color_combo.currentTextChanged.connect(lambda s: self.settings.setValue("stacking/mfdeconv/color_mode", s))
+        self.mf_Huber_spin.valueChanged.connect(lambda v: self.settings.setValue("stacking/mfdeconv/Huber_delta", float(v)))
+        self.mf_use_star_mask_cb.toggled.connect(lambda v: self.settings.setValue("stacking/mfdeconv/use_star_masks", bool(v)))
+        self.mf_use_noise_map_cb.toggled.connect(lambda v: self.settings.setValue("stacking/mfdeconv/use_noise_maps", bool(v)))
 
-        # write-through bindings
-        self.mf_enabled_cb.toggled.connect(
-            lambda v: self.settings.setValue("stacking/mfdeconv/enabled", bool(v))
-        )
-        self.mf_iters_spin.valueChanged.connect(
-            lambda v: self.settings.setValue("stacking/mfdeconv/iters", int(v))
-        )
-        self.mf_min_iters_spin.valueChanged.connect(                     # NEW
-            lambda v: self.settings.setValue("stacking/mfdeconv/min_iters", int(v))
-        )        
-        self.mf_kappa_spin.valueChanged.connect(
-            lambda v: self.settings.setValue("stacking/mfdeconv/kappa", float(v))
-        )
-        self.mf_color_combo.currentTextChanged.connect(
-            lambda s: self.settings.setValue("stacking/mfdeconv/color_mode", s)
-        )
-        self.mf_Huber_spin.valueChanged.connect(
-            lambda v: self.settings.setValue("stacking/mfdeconv/Huber_delta", float(v))
-        )
+        layout.addWidget(mf_box)
 
+        # ─────────────────────────────────────────
+        # 7) Comet + Star-Trail checkboxes (same row) — now BELOW MFDeconv
+        # ─────────────────────────────────────────
+        comet_trail_row = QHBoxLayout()
+        self.comet_cb = QCheckBox("🌠 Create comet stack (comet-aligned)")
+        self.comet_cb.setChecked(self.settings.value("stacking/comet/enabled", False, type=bool))
+        comet_trail_row.addWidget(self.comet_cb)
+
+        comet_trail_row.addSpacing(12)
+        self.trail_cb = QCheckBox("★★ Star-Trail Mode ★★ (Max-Value Stack)")
+        self.trail_cb.setChecked(self.star_trail_mode)
+        self.trail_cb.setToolTip("Skip registration/alignment and use Maximum-Intensity projection for star trails")
+        self.trail_cb.stateChanged.connect(self._on_star_trail_toggled)
+        comet_trail_row.addWidget(self.trail_cb)
+        comet_trail_row.addStretch(1)
+        layout.addLayout(comet_trail_row)
+
+        # keep comet options in a compact row just beneath
+        comet_opts = QHBoxLayout()
+        self.comet_pick_btn = QPushButton("Pick comet center…")
+        self.comet_pick_btn.setEnabled(self.comet_cb.isChecked())
+        self.comet_pick_btn.clicked.connect(self._pick_comet_center)
+        self.comet_cb.toggled.connect(self.comet_pick_btn.setEnabled)
+        comet_opts.addWidget(self.comet_pick_btn)
+
+        self.comet_blend_cb = QCheckBox("Also output Stars+Comet blend")
+        self.comet_blend_cb.setChecked(self.settings.value("stacking/comet/blend", True, type=bool))
+        comet_opts.addWidget(self.comet_blend_cb)
+
+        comet_opts.addWidget(QLabel("Mix:"))
+        self.comet_mix = QDoubleSpinBox(); self.comet_mix.setRange(0.0, 1.0); self.comet_mix.setSingleStep(0.05)
+        self.comet_mix.setValue(self.settings.value("stacking/comet/mix", 1.0, type=float))
+        comet_opts.addWidget(self.comet_mix)
+        comet_opts.addStretch(1)
+        layout.addLayout(comet_opts)
+
+        # persist comet settings
+        self.settings.setValue("stacking/comet/enabled", self.comet_cb.isChecked())
+        self.settings.setValue("stacking/comet/blend", self.comet_blend_cb.isChecked())
+        self.settings.setValue("stacking/comet/mix", self.comet_mix.value())
+
+        # ─────────────────────────────────────────
+        # 8) Backend / Install GPU Acceleration — MOVED BELOW comet+trail row
+        # ─────────────────────────────────────────
         accel_row = QHBoxLayout()
         self.backend_label = QLabel(f"Backend: {current_backend()}")
         accel_row.addWidget(self.backend_label)
@@ -4830,14 +4981,12 @@ class StackingSuiteDialog(QDialog):
         accel_row.addWidget(gpu_help_btn)
 
         accel_row.addStretch(1)
-        mf_v.addLayout(accel_row)
+        layout.addLayout(accel_row)
 
+        # same installer wiring as before
         def _install_accel():
-            # --- UI: all created on the GUI thread ---
             self.install_accel_btn.setEnabled(False)
             self.backend_label.setText("Backend: installing…")
-
-            # Indeterminate progress dialog on GUI thread
             self._accel_pd = QProgressDialog("Preparing runtime…", "Cancel", 0, 0, self)
             self._accel_pd.setWindowTitle("Installing GPU Acceleration")
             self._accel_pd.setWindowModality(Qt.WindowModality.ApplicationModal)
@@ -4845,74 +4994,39 @@ class StackingSuiteDialog(QDialog):
             self._accel_pd.setMinimumDuration(0)
             self._accel_pd.show()
 
-            # Worker thread
             self._accel_thread = QThread(self)
             self._accel_worker = AccelInstallWorker(prefer_gpu=True)
             self._accel_worker.moveToThread(self._accel_thread)
-
-            # Start worker when thread starts (queued so it runs in worker thread)
             self._accel_thread.started.connect(self._accel_worker.run, Qt.ConnectionType.QueuedConnection)
-
-            # Pipe worker progress to both the progress dialog and your log bus (GUI thread)
             self._accel_worker.progress.connect(self._accel_pd.setLabelText, Qt.ConnectionType.QueuedConnection)
             self._accel_worker.progress.connect(lambda s: self.status_signal.emit(s), Qt.ConnectionType.QueuedConnection)
 
-            # Allow cancel to request interruption
             def _cancel():
                 if self._accel_thread.isRunning():
                     self._accel_thread.requestInterruption()
             self._accel_pd.canceled.connect(_cancel, Qt.ConnectionType.QueuedConnection)
 
-            # Finish handler (runs on GUI thread)
             def _done(ok: bool, msg: str):
-                # Close progress dialog safely
                 if getattr(self, "_accel_pd", None):
-                    self._accel_pd.reset()
-                    self._accel_pd.deleteLater()
-                    self._accel_pd = None
-
-                # Stop thread cleanly
-                self._accel_thread.quit()
-                self._accel_thread.wait()
-
-                # Re-enable UI and refresh backend label
+                    self._accel_pd.reset(); self._accel_pd.deleteLater(); self._accel_pd = None
+                self._accel_thread.quit(); self._accel_thread.wait()
                 self.install_accel_btn.setEnabled(True)
                 from pro.accel_installer import current_backend
                 self.backend_label.setText(f"Backend: {current_backend()}")
-
-                # User feedback + log
                 self.status_signal.emit(("✅ " if ok else "❌ ") + msg)
-                if ok:
-                    QMessageBox.information(self, "Acceleration", f"✅ {msg}")
-                else:
-                    QMessageBox.warning(self, "Acceleration", f"❌ {msg}")
+                if ok: QMessageBox.information(self, "Acceleration", f"✅ {msg}")
+                else:  QMessageBox.warning(self, "Acceleration", f"❌ {msg}")
 
             self._accel_worker.finished.connect(_done, Qt.ConnectionType.QueuedConnection)
-
-            # Cleanup objects when thread finishes
             self._accel_thread.finished.connect(self._accel_worker.deleteLater, Qt.ConnectionType.QueuedConnection)
             self._accel_thread.finished.connect(self._accel_thread.deleteLater, Qt.ConnectionType.QueuedConnection)
-
             self._accel_thread.start()
 
         self.install_accel_btn.clicked.connect(_install_accel)
 
-        layout.addWidget(mf_box)
-
-        # ★★ Star-Trail Mode ★★
-        trail_layout = QHBoxLayout()
-        self.trail_cb = QCheckBox("★★ Star-Trail Mode ★★ (Max-Value Stack)")
-        self.trail_cb.setChecked(self.star_trail_mode)
-        self.trail_cb.setToolTip(
-            "Skip registration/alignment and use Maximum-Intensity projection for star trails"
-        )
-        self.trail_cb.stateChanged.connect(self._on_star_trail_toggled)
-        trail_layout.addWidget(self.trail_cb)
-        layout.addLayout(trail_layout)
         # ─────────────────────────────────────────
-        # 5) Register & Integrate Buttons
+        # 9) Action Buttons
         # ─────────────────────────────────────────
-
         self.register_images_btn = QPushButton("🔥🚀Register and Integrate Images🔥🚀")
         self.register_images_btn.clicked.connect(self.register_images)
         self.register_images_btn.setStyleSheet("""
@@ -4924,9 +5038,7 @@ class StackingSuiteDialog(QDialog):
                 border-radius: 5px;
                 font-weight: bold;
             }
-            QPushButton:hover {
-                background-color: #FF6347;
-            }
+            QPushButton:hover { background-color: #FF6347; }
         """)
         layout.addWidget(self.register_images_btn)
 
@@ -4943,17 +5055,14 @@ class StackingSuiteDialog(QDialog):
                 border-radius: 5px;
                 border: 2px solid yellow;
             }
-            QPushButton:hover {
-                border: 2px solid #FFD700;
-            }
-            QPushButton:pressed {
-                background-color: #222;
-                border: 2px solid #FFA500;
-            }
+            QPushButton:hover  { border: 2px solid #FFD700; }
+            QPushButton:pressed{ background-color: #222; border: 2px solid #FFA500; }
         """)
         layout.addWidget(self.integrate_registered_btn)
 
-        # Populate the tree from your calibrated folder
+        # ─────────────────────────────────────────
+        # 10) Init + persist bits
+        # ─────────────────────────────────────────
         self.populate_calibrated_lights()
         tab.setLayout(layout)
 
@@ -4961,18 +5070,8 @@ class StackingSuiteDialog(QDialog):
         self.drizzle_scale_combo.setCurrentText(self.settings.value("stacking/drizzle_scale", "2x", type=str))
         self.drizzle_drop_shrink_spin.setValue(self.settings.value("stacking/drizzle_drop", 0.65, type=float))
 
-        self.settings.setValue("stacking/comet/enabled", self.comet_cb.isChecked())
-        self.settings.setValue("stacking/comet/blend", self.comet_blend_cb.isChecked())
-
-        self.settings.setValue("stacking/comet/mix", self.comet_mix.value())
-
-
-        self.auto_accept_ref_cb.toggled.connect(self.select_ref_frame_btn.setDisabled)
-        self.select_ref_frame_btn.setDisabled(self.auto_accept_ref_cb.isChecked())
-
-
-
         return tab
+
 
     def _show_gpu_accel_fix_help(self):
         from PyQt6.QtWidgets import QMessageBox, QApplication
@@ -4989,12 +5088,12 @@ class StackingSuiteDialog(QDialog):
         cmds = r'''
     "%LOCALAPPDATA%\SASpro\runtime\py312\venv\Scripts\python.exe" -m pip uninstall -y torch
 
-    REM Then install ONE of the following:
+    -> Then install ONE of the following:
 
-    REM AMD / Intel GPUs:
+    -> AMD / Intel GPUs:
     "%LOCALAPPDATA%\SASpro\runtime\py312\venv\Scripts\python.exe" -m pip install torch-directml
 
-    REM NVIDIA GPUs (CUDA 12.9):
+    -> NVIDIA GPUs (CUDA 12.9):
     "%LOCALAPPDATA%\SASpro\runtime\py312\venv\Scripts\python.exe" -m pip install torch --extra-index-url https://download.pytorch.org/whl/cu129
     '''.strip()
 
@@ -8140,16 +8239,38 @@ class StackingSuiteDialog(QDialog):
             all_files = [f for lst in self.light_files.values() for f in lst]
             self.update_status(f"📊 Found {len(all_files)} total frames. Now measuring in parallel batches...")
 
+            # ───────────────────────────────────────────────────────────────
+            # Detect binning for each frame and choose a target (usually 1×1)
+            # ───────────────────────────────────────────────────────────────
+            bin_map = {}  # path -> (xbin, ybin)
+            min_xbin, min_ybin = 1, 1  # default target is the finest (1x1)
+
+            # Read headers quickly (no full image load)
+            for fp in all_files:
+                try:
+                    hdr = fits.getheader(fp, ext=0)
+                except Exception:
+                    hdr = None
+                xb, yb = _parse_binning_from_header(hdr)
+                bin_map[fp] = (xb, yb)
+                min_xbin = min(min_xbin, xb)
+                min_ybin = min(min_ybin, yb)
+
+            target_xbin, target_ybin = min_xbin, min_ybin
+            self.update_status(f"🧮 Binning summary → target={target_xbin}×{target_ybin} "
+                            f"(range observed: x=[{min(b[0] for b in bin_map.values())}..{max(b[0] for b in bin_map.values())}], "
+                            f"y=[{min(b[1] for b in bin_map.values())}..{max(b[1] for b in bin_map.values())}])")
+
+
             # ─────────────────────────────────────────────────────────────────────
             # Helpers
             # ─────────────────────────────────────────────────────────────────────
-            def mono_preview_for_stats(img: np.ndarray, hdr) -> np.ndarray:
+            def mono_preview_for_stats(img: np.ndarray, hdr, fp: str) -> np.ndarray:
                 """
-                Returns a 2D float32 preview for measurement:
-                • RGB → Luma → 2×2 superpixel average
-                • CFA (2D with BAYERPAT) → 2×2 superpixel average
-                • Mono → 2×2 superpixel average
-                Always returns float32 and trims odd edges to keep even dims.
+                Returns a 2D float32 preview that is:
+                • debayer-aware (uses luma if RGB; superpixel if mono/CFA)
+                • resampled to the target bin (so previews from mixed binning match scale)
+                • superpixel-averaged 2×2 for speed
                 """
                 if img is None:
                     return None
@@ -8161,30 +8282,35 @@ class StackingSuiteDialog(QDialog):
                         return x.astype(np.float32, copy=False)
                     x = x[:h2, :w2].astype(np.float32, copy=False)
                     if x.ndim == 2:
-                        # 2D mono/CFA
                         return (x[0:h2:2, 0:w2:2] + x[0:h2:2, 1:w2:2] +
                                 x[1:h2:2, 0:w2:2] + x[1:h2:2, 1:w2:2]) * 0.25
                     else:
-                        # 3D: bin on Luma, not per-channel
                         r = x[..., 0]; g = x[..., 1]; b = x[..., 2]
                         Luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
                         return (Luma[0:h2:2, 0:w2:2] + Luma[0:h2:2, 1:w2:2] +
                                 Luma[1:h2:2, 0:w2:2] + Luma[1:h2:2, 1:w2:2]) * 0.25
 
-                # RGB
+                # 1) make a quick 2D preview (like before)
                 if img.ndim == 3 and img.shape[-1] == 3:
-                    return _superpixel2x2(img)
+                    prev2d = _superpixel2x2(img)
+                elif hdr and hdr.get('BAYERPAT') and img.ndim == 2:
+                    prev2d = _superpixel2x2(img)          # CFA → superpixel Luma-ish
+                elif img.ndim == 2:
+                    prev2d = _superpixel2x2(img)          # mono
+                else:
+                    prev2d = img.astype(np.float32, copy=False)
+                    if prev2d.ndim == 3:
+                        prev2d = _superpixel2x2(prev2d)
 
-                # CFA hinted by header (keep simple: any BAYERPAT means mosaic)
-                if hdr and hdr.get('BAYERPAT') and img.ndim == 2:
-                    return _superpixel2x2(img)
+                # 2) resample preview to the target bin (so shapes are comparable)
+                xb, yb = bin_map.get(fp, (1, 1))
+                sx = float(xb) / float(target_xbin)
+                sy = float(yb) / float(target_ybin)
+                if (abs(sx - 1.0) > 1e-6) or (abs(sy - 1.0) > 1e-6):
+                    prev2d = _resize_to_scale(prev2d, sx, sy)
 
-                # Mono (or already debayered to 2D)
-                if img.ndim == 2:
-                    return _superpixel2x2(img)
+                return np.ascontiguousarray(prev2d.astype(np.float32, copy=False))
 
-                # Fallback
-                return img.astype(np.float32, copy=False)
 
             def chunk_list(lst, size):
                 for i in range(0, len(lst), size):
@@ -8219,7 +8345,7 @@ class StackingSuiteDialog(QDialog):
                             img, hdr, _, _ = fut.result()
                             if img is None:
                                 continue
-                            preview = mono_preview_for_stats(img, hdr)
+                            preview = mono_preview_for_stats(img, hdr, fp)
                             if preview is None:
                                 continue
                             chunk_images.append(preview)
@@ -8232,6 +8358,11 @@ class StackingSuiteDialog(QDialog):
                 if not chunk_images:
                     self.update_status("⚠️ No valid images in this chunk.")
                     continue
+
+                min_h = min(im.shape[0] for im in chunk_images)
+                min_w = min(im.shape[1] for im in chunk_images)
+                if any((im.shape[0] != min_h or im.shape[1] != min_w) for im in chunk_images):
+                    chunk_images = [_center_crop_2d(im, min_h, min_w) for im in chunk_images]
 
                 self.update_status("🌍 Measuring global means in parallel...")
                 means = parallel_measure_frames(chunk_images)  # expects list/stack of 2D previews
@@ -8433,6 +8564,27 @@ class StackingSuiteDialog(QDialog):
                                         hdr['ROT180'] = (True, 'Rotated 180° pre-align by SAS')
                                     except Exception:
                                         pass
+
+                            xb, yb = bin_map.get(fp, (1, 1))
+                            # scale factor = (current_bin / target_bin)
+                            sx = float(xb) / float(target_xbin)
+                            sy = float(yb) / float(target_ybin)
+                            if (abs(sx - 1.0) > 1e-6) or (abs(sy - 1.0) > 1e-6):
+                                # We upscale (e.g., 2x2 → 1x1) when sx, sy > 1. If target is coarser, this downscales.
+                                before = img.shape[:2]
+                                img = _resize_to_scale(img, sx, sy)
+                                after  = img.shape[:2]
+                                self.update_status(f"🔧 Resampled for binning {xb}×{yb} → target {target_xbin}×{target_ybin} "
+                                                f"size {before[1]}×{before[0]} → {after[1]}×{after[0]}")
+                                # Tag header on save (below) to record original binning / scale
+                                try:
+                                    hdr['SAS_ORBX'] = (int(xb), 'Original X binning')
+                                    hdr['SAS_ORBY'] = (int(yb), 'Original Y binning')
+                                    hdr['SAS_SCLX'] = (float(sx), 'Applied X scale to reach target binning')
+                                    hdr['SAS_SCLY'] = (float(sy), 'Applied Y scale to reach target binning')
+                                    hdr['SAS_RSMP'] = (True, 'Resampled to common scale before alignment')
+                                except Exception:
+                                    pass
 
                             loaded_images.append(img)
                             valid_paths.append(fp)
@@ -11111,7 +11263,7 @@ class StackingSuiteDialog(QDialog):
         frame_weights,
         status_cb=None,
         *,
-        algo_override: str | None = None  # <--- NEW
+        algo_override: str | None = None
     ):
         log = status_cb or (lambda *_: None)
         log(f"Starting integration for group '{group_key}' with {len(file_list)} files.")
@@ -11132,7 +11284,10 @@ class StackingSuiteDialog(QDialog):
         channels = 3 if is_color else 1
         N = len(file_list)
 
-        log(f"📊 Stacking group '{group_key}' with {self.rejection_algorithm}")
+        algo = (algo_override or self.rejection_algorithm)
+        use_gpu = bool(self._hw_accel_enabled()) and _torch_ok() and _gpu_algo_supported(algo)
+
+        log(f"📊 Stacking group '{group_key}' with {algo}{' [GPU]' if use_gpu else ''}")
 
         # --- keep all FITSes open (memmap) once for the whole group ---
         sources = []
@@ -11156,13 +11311,27 @@ class StackingSuiteDialog(QDialog):
             chunk_h, chunk_w = compute_safe_chunk(height, width, N, channels, DTYPE, pref_h, pref_w)
             log(f"🔧 Using chunk size {chunk_h}×{chunk_w} for {DTYPE}")
         except MemoryError as e:
-            for s in sources:
-                s.close()
+            for s in sources: s.close()
             log(f"⚠️ {e}")
             return None, {}, None
 
-        # --- reusable Fortran-order tile buffer (frames contiguous) ---
-        tile_stack_buf = np.empty((N, chunk_h, chunk_w, channels), dtype=np.float32, order='F')
+        # --- reusable C-order tile buffers (avoid copies before GPU) ---
+        # Use pinned memory only if we’ll actually ship tiles to GPU.
+        def _mk_buf():
+            buf = np.empty((N, chunk_h, chunk_w, channels), dtype=np.float32, order='C')
+            if use_gpu:
+                # Mark as pinned (page-locked) so torch can H->D quickly if _torch_reduce_tile uses it.
+                try:
+                    import torch
+                    # torch can wrap numpy pinned via from_numpy(...).pin_memory() ONLY on tensors.
+                    # We'll keep numpy here; _torch_reduce_tile will move to pinned tensors internally.
+                    # So no-op here to avoid extra copies.
+                except Exception:
+                    pass
+            return buf
+
+        buf0 = _mk_buf()
+        buf1 = _mk_buf()
 
         # --- weights once per group ---
         weights_array = np.array([frame_weights.get(p, 1.0) for p in file_list], dtype=np.float32)
@@ -11170,95 +11339,143 @@ class StackingSuiteDialog(QDialog):
         n_rows  = math.ceil(height / chunk_h)
         n_cols  = math.ceil(width  / chunk_w)
         total_tiles = n_rows * n_cols
-        tile_idx = 0
 
         # --- group-level rejection maps (RAM-light) ---
         rej_any   = np.zeros((height, width), dtype=np.bool_)
         rej_count = np.zeros((height, width), dtype=np.uint16)
 
+        # --------- helper: read a tile into a provided buffer (blocking) ----------
+        def _read_tile_into(buf, y0, y1, x0, x1):
+            th = y1 - y0
+            tw = x1 - x0
+            # slice view (C-order)
+            ts = buf[:N, :th, :tw, :channels]
+            # sequential, low-overhead sliced reads (OS prefetch + memmap)
+            for i, src in enumerate(sources):
+                sub = src.read_tile(y0, y1, x0, x1)  # float32, (th,tw) or (th,tw,3)
+                if sub.ndim == 2:
+                    if channels == 3:
+                        sub = sub[:, :, None].repeat(3, axis=2)
+                    else:
+                        sub = sub[:, :, None]
+                ts[i, :, :, :] = sub
+            return th, tw  # actual extents for edge tiles
+
+        # Prefetcher (single background worker is enough; IO is the bottleneck)
+        from concurrent.futures import ThreadPoolExecutor
+        tp = ThreadPoolExecutor(max_workers=1)
+
+        # Precompute tile grid
+        tiles = []
         for y0 in range(0, height, chunk_h):
-            y1  = min(y0 + chunk_h, height)
-            th  = y1 - y0
+            y1 = min(y0 + chunk_h, height)
             for x0 in range(0, width, chunk_w):
-                x1  = min(x0 + chunk_w, width)
-                tw  = x1 - x0
-                tile_idx += 1
-                log(f"Integrating tile {tile_idx}/{total_tiles}…")
+                x1 = min(x0 + chunk_w, width)
+                tiles.append((y0, y1, x0, x1))
 
-                # view into the reusable buffer with *actual* edge sizes
-                ts = tile_stack_buf[:, :th, :tw, :channels]
+        # Prime first read
+        tile_idx = 0
+        y0, y1, x0, x1 = tiles[0]
+        fut = tp.submit(_read_tile_into, buf0, y0, y1, x0, x1)
+        use_buf0 = True
 
-                # sequential, low-overhead sliced reads (OS prefetch + memmap)
-                for i, src in enumerate(sources):
-                    sub = src.read_tile(y0, y1, x0, x1)  # float32, (th,tw) or (th,tw,3)
-                    if sub.ndim == 2:
-                        if channels == 3:
-                            sub = sub[:, :, None].repeat(3, axis=2)
-                        else:
-                            sub = sub[:, :, None]  # unify to 3D for assignment
-                    ts[i, :, :, :] = sub
+        # Torch inference guard (if available)
+        _ctx = _safe_torch_inference_ctx() if use_gpu else contextlib.nullcontext
+        with _ctx():
+            for tile_idx, (y0, y1, x0, x1) in enumerate(tiles, start=1):
+                t0 = time.perf_counter()
 
-                # --- rejection/integration ---
-                algo = (algo_override or self.rejection_algorithm)
-                print(f"  ◦ applying rejection algorithm: {algo}")
+                # Wait for current tile to be ready
+                th, tw = fut.result()
+                ts = (buf0 if use_buf0 else buf1)[:N, :th, :tw, :channels]
 
-                if algo in ("Comet Median", "Simple Median (No Rejection)"):
-                    tile_result  = np.median(ts, axis=0)
-                    tile_rej_map = np.zeros((N, th, tw), dtype=bool)
+                # Kick off prefetch for the NEXT tile (if any) into the other buffer
+                if tile_idx < total_tiles:
+                    ny0, ny1, nx0, nx1 = tiles[tile_idx]
+                    fut = tp.submit(_read_tile_into, (buf1 if use_buf0 else buf0), ny0, ny1, nx0, nx1)
 
-                elif algo == "Comet High-Clip Percentile":
-                    k = self.settings.value("stacking/comet_hclip_k", 1.30, type=float)
-                    p = self.settings.value("stacking/comet_hclip_p", 25.0, type=float)
-                    # keep a small dict across tiles to reuse scratch buffers
+                # --- rejection/integration for this tile ---
+                log(f"Integrating tile {tile_idx}/{total_tiles} "
+                    f"[y:{y0}:{y1} x:{x0}:{x1} size={th}×{tw}] "
+                    f"mode={'GPU' if use_gpu else 'CPU'}…")
 
-                    tile_result = _high_clip_percentile(ts, k=float(k), p=float(p))
-                    tile_rej_map = np.zeros((len(file_list), th, tw), dtype=bool)
-
-                elif algo == "Comet Lower-Trim (30%)":
-                    tile_result  = _lower_trimmed_mean(ts, trim_hi_frac=0.30)
-                    tile_rej_map = np.zeros((N, th, tw), dtype=bool)
-
-                elif algo == "Comet Percentile (40th)":
-                    tile_result  = _percentile40(ts)
-                    tile_rej_map = np.zeros((N, th, tw), dtype=bool)
-
-                elif algo == "Simple Average (No Rejection)":
-                    tile_result  = np.average(ts, axis=0, weights=weights_array)
-                    tile_rej_map = np.zeros((N, th, tw), dtype=bool)
-
-                elif algo == "Weighted Windsorized Sigma Clipping":
-                    tile_result, tile_rej_map = windsorized_sigma_clip_weighted(
-                        ts, weights_array, lower=self.sigma_low, upper=self.sigma_high
+                if use_gpu:
+                    tile_result, tile_rej_map = _torch_reduce_tile(
+                        ts,                         # NumPy view, C-contiguous
+                        weights_array,              # (N,)
+                        algo_name=algo,
+                        kappa=float(self.kappa),
+                        iterations=int(self.iterations),
+                        sigma_low=float(self.sigma_low),
+                        sigma_high=float(self.sigma_high),
+                        trim_fraction=float(self.trim_fraction),
+                        esd_threshold=float(self.esd_threshold),
+                        biweight_constant=float(self.biweight_constant),
+                        modz_threshold=float(self.modz_threshold),
+                        comet_hclip_k=float(self.settings.value("stacking/comet_hclip_k", 1.30, type=float)),
+                        comet_hclip_p=float(self.settings.value("stacking/comet_hclip_p", 25.0, type=float)),
                     )
-                elif algo == "Kappa-Sigma Clipping":
-                    tile_result, tile_rej_map = kappa_sigma_clip_weighted(
-                        ts, weights_array, kappa=self.kappa, iterations=self.iterations
-                    )
-                elif algo == "Trimmed Mean":
-                    tile_result, tile_rej_map = trimmed_mean_weighted(
-                        ts, weights_array, trim_fraction=self.trim_fraction
-                    )
-                elif algo == "Extreme Studentized Deviate (ESD)":
-                    tile_result, tile_rej_map = esd_clip_weighted(
-                        ts, weights_array, threshold=self.esd_threshold
-                    )
-                elif algo == "Biweight Estimator":
-                    tile_result, tile_rej_map = biweight_location_weighted(
-                        ts, weights_array, tuning_constant=self.biweight_constant
-                    )
-                elif algo == "Modified Z-Score Clipping":
-                    tile_result, tile_rej_map = modified_zscore_clip_weighted(
-                        ts, weights_array, threshold=self.modz_threshold
-                    )
-                elif algo == "Max Value":
-                    tile_result, tile_rej_map = max_value_stack(
-                        ts, weights_array
-                    )
+                    # _torch_reduce_tile should already return NumPy; if it returns tensors, convert here.
+                    if hasattr(tile_result, "detach"):
+                        tile_result = tile_result.detach().cpu().numpy()
+                    if hasattr(tile_rej_map, "detach"):
+                        tile_rej_map = tile_rej_map.detach().cpu().numpy()
                 else:
-                    tile_result, tile_rej_map = windsorized_sigma_clip_weighted(
-                        ts, weights_array, lower=self.sigma_low, upper=self.sigma_high
-                    )
+                    # CPU path (NumPy/Numba)
+                    if algo in ("Comet Median", "Simple Median (No Rejection)"):
+                        tile_result  = np.median(ts, axis=0)
+                        tile_rej_map = np.zeros((N, th, tw), dtype=bool)
 
+                    elif algo == "Comet High-Clip Percentile":
+                        k = self.settings.value("stacking/comet_hclip_k", 1.30, type=float)
+                        p = self.settings.value("stacking/comet_hclip_p", 25.0, type=float)
+                        tile_result  = _high_clip_percentile(ts, k=float(k), p=float(p))
+                        tile_rej_map = np.zeros((N, th, tw), dtype=bool)
+
+                    elif algo == "Comet Lower-Trim (30%)":
+                        tile_result  = _lower_trimmed_mean(ts, trim_hi_frac=0.30)
+                        tile_rej_map = np.zeros((N, th, tw), dtype=bool)
+
+                    elif algo == "Comet Percentile (40th)":
+                        tile_result  = _percentile40(ts)
+                        tile_rej_map = np.zeros((N, th, tw), dtype=bool)
+
+                    elif algo == "Simple Average (No Rejection)":
+                        tile_result  = np.average(ts, axis=0, weights=weights_array)
+                        tile_rej_map = np.zeros((N, th, tw), dtype=bool)
+
+                    elif algo == "Weighted Windsorized Sigma Clipping":
+                        tile_result, tile_rej_map = windsorized_sigma_clip_weighted(
+                            ts, weights_array, lower=self.sigma_low, upper=self.sigma_high
+                        )
+                    elif algo == "Kappa-Sigma Clipping":
+                        tile_result, tile_rej_map = kappa_sigma_clip_weighted(
+                            ts, weights_array, kappa=self.kappa, iterations=self.iterations
+                        )
+                    elif algo == "Trimmed Mean":
+                        tile_result, tile_rej_map = trimmed_mean_weighted(
+                            ts, weights_array, trim_fraction=self.trim_fraction
+                        )
+                    elif algo == "Extreme Studentized Deviate (ESD)":
+                        tile_result, tile_rej_map = esd_clip_weighted(
+                            ts, weights_array, threshold=self.esd_threshold
+                        )
+                    elif algo == "Biweight Estimator":
+                        tile_result, tile_rej_map = biweight_location_weighted(
+                            ts, weights_array, tuning_constant=self.biweight_constant
+                        )
+                    elif algo == "Modified Z-Score Clipping":
+                        tile_result, tile_rej_map = modified_zscore_clip_weighted(
+                            ts, weights_array, threshold=self.modz_threshold
+                        )
+                    elif algo == "Max Value":
+                        tile_result, tile_rej_map = max_value_stack(ts, weights_array)
+                    else:
+                        tile_result, tile_rej_map = windsorized_sigma_clip_weighted(
+                            ts, weights_array, lower=self.sigma_low, upper=self.sigma_high
+                        )
+
+                # write back
                 integrated_image[y0:y1, x0:x1, :] = tile_result
 
                 # --- rejection bookkeeping ---
@@ -11266,7 +11483,6 @@ class StackingSuiteDialog(QDialog):
                 if trm.ndim == 4:
                     trm = np.any(trm, axis=-1)  # collapse color → (N, th, tw)
 
-                # accumulate group maps
                 rej_any[y0:y1, x0:x1]  |= np.any(trm, axis=0)
                 rej_count[y0:y1, x0:x1] += trm.sum(axis=0).astype(np.uint16)
 
@@ -11276,56 +11492,37 @@ class StackingSuiteDialog(QDialog):
                     if ys.size:
                         per_file_rejections[fpath].extend(zip(x0 + xs, y0 + ys))
 
-        # close mmapped FITSes
+                # perf log
+                dt = time.perf_counter() - t0
+                # simple “work” metric: pixels processed (× frames × channels)
+                work_px = th * tw * N * channels
+                mpx_s = (work_px / 1e6) / dt if dt > 0 else float("inf")
+                log(f"  ↳ tile {tile_idx} done in {dt:.3f}s  (~{mpx_s:.1f} MPx/s)")
+
+                # flip buffer
+                use_buf0 = not use_buf0
+
+        # close mmapped FITSes and prefetch pool
+        tp.shutdown(wait=True)
         for s in sources:
             s.close()
 
         if channels == 1:
             integrated_image = integrated_image[..., 0]
 
-        # stash group-level maps so the *master* saver can MEF-embed them
+        # stash group-level maps
         if not hasattr(self, "_rej_maps"):
             self._rej_maps = {}
         rej_frac = (rej_count.astype(np.float32) / float(max(1, N)))  # [0..1]
         self._rej_maps[group_key] = {"any": rej_any, "frac": rej_frac, "count": rej_count, "n": N}
 
         log(f"Integration complete for group '{group_key}'.")
+        try:
+            _free_torch_memory()
+        except:
+            pass    
         return integrated_image, per_file_rejections, ref_header
 
-
-
-    def outlier_rejection_with_mask(self, tile_stack, weights_array):
-        """
-        Example outlier rejection routine that computes the weighted median of the tile stack
-        and returns both the integrated tile and a rejection mask.
-        
-        Parameters:
-        tile_stack: numpy array of shape (N, H, W, C)
-        weights_array: numpy array of shape (N,)
-        
-        Returns:
-        tile_result: numpy array of shape (H, W, C)
-        rejection_mask: boolean numpy array of shape (H, W) where True indicates a rejected pixel.
-        
-        This is a simple example. Replace this logic with your actual rejection algorithm.
-        """
-        # Compute the weighted median along axis 0.
-        # For simplicity, we'll use the unweighted median here.
-        tile_result = np.median(tile_stack, axis=0)
-        
-        # Compute the absolute deviation for each frame and take the median deviation.
-        # Then mark as rejected any pixel in any frame that deviates by more than a threshold.
-        # Here we define a threshold factor (this value may need tuning).
-        threshold_factor = 1.5
-        abs_deviation = np.abs(tile_stack - tile_result)
-        # Compute the median deviation per pixel over the frames.
-        median_deviation = np.median(abs_deviation, axis=0)
-        # Define a rejection mask: True if the median deviation exceeds a threshold.
-        # (For demonstration, assume threshold = threshold_factor * some constant; here we choose 0.05.)
-        rejection_mask = median_deviation[..., 0] > (threshold_factor * 0.05)
-        # If color, you might combine channels or process each channel separately.
-        
-        return tile_result, rejection_mask
 
     def _safe_component(self, s: str, *, replacement:str="_", maxlen:int=180) -> str:
         """
