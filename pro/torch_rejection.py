@@ -121,6 +121,27 @@ def _nanquantile(torch, x, q: float, dim: int):
         gather_idx = idx.gather(dim, kth.unsqueeze(dim))
         return x.gather(dim, gather_idx).squeeze(dim)
 
+# --- add near the top (after imports) ---
+def _safe_inference_ctx(torch):
+    """
+    Return a context manager for inference that won't explode on older or
+    backend-variant Torch builds (DirectML/MPS/CPU-only).
+    """
+    try:
+        # Prefer inference_mode if both the API and C++ backend support it
+        if getattr(torch, "inference_mode", None) is not None:
+            _C = getattr(torch, "_C", None)
+            if _C is not None and hasattr(_C, "_InferenceMode"):
+                return torch.inference_mode()
+    except Exception:
+        pass
+    # Fallbacks
+    if getattr(torch, "no_grad", None) is not None:
+        return torch.no_grad()
+    import contextlib
+    return contextlib.nullcontext()
+
+
 # ---------------------------------------------------------------------------
 # Public GPU reducer – lazy-loads Torch, never decorates at import time
 # ---------------------------------------------------------------------------
@@ -169,10 +190,7 @@ def torch_reduce_tile(
     valid = (ts != 0.0)
 
     # Use inference_mode if present; else nullcontext.
-    inf_ctx = getattr(torch, "inference_mode", None)
-    ctx = inf_ctx() if callable(inf_ctx) else contextlib.nullcontext()
-
-    with ctx:
+    with _safe_inference_ctx(torch):
         # ---------------- simple, no-rejection reducers ----------------
         if algo in ("Comet Median", "Simple Median (No Rejection)"):
             out = ts.median(dim=0).values
@@ -232,7 +250,7 @@ def torch_reduce_tile(
             den = w_eff.sum(dim=0).clamp_min(1e-20)
             out = (ts.mul(w_eff)).sum(dim=0).div(den)
             rej = ~keep
-            return out.contiguous().cpu().numpy(), rej.cpu().numpy__()
+            return out.contiguous().cpu().numpy(), rej.cpu().numpy()
 
         if algo == "Weighted Windsorized Sigma Clipping":
             low = float(sigma_low); high = float(sigma_high)
