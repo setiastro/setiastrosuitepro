@@ -1,9 +1,9 @@
 {
-  "version": "1.3.0",
+  "version": "1.3.1",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.0/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.0/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.0/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.1/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.1/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.1/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.3.0 Stacking Suite: Hardware Acceleration for the Integration portion for both normal integration and ImageMM. Full mixed Bin support for normal integration and ImageMM. Numerous bug fixes."
+  "notes": "Seti Astro Suite Pro V1.3.1 ImageMM SuperResolution added for completeness of ImageMM to the Sukurdeep et al. paper. This requires ~16x the compute and honestly drizzling may provide similar or better results. Added to ImageMM for completeness.  ImageMM optional iterative image output. This will save out each image step to allow you to view how each iteration affects the image and help you determine how many iterations is best for your data.  Many bug fixes."
 }
