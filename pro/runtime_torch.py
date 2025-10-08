@@ -312,7 +312,7 @@ _TORCH_VERSION_LADDER: dict[tuple[int, int], list[str]] = {
 # Torch installation with robust fallbacks
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _install_torch(venv_python: Path, prefer_cuda: bool, status_cb=print):
+def _install_torch(venv_python: Path, prefer_cuda: bool, prefer_xpu: bool, status_cb=print):
     """
     Install torch into the per-user venv with best-effort backend detection:
       • macOS arm64 → PyPI (MPS)
@@ -321,6 +321,7 @@ def _install_torch(venv_python: Path, prefer_cuda: bool, status_cb=print):
     Uses a version ladder when "no matching distribution" occurs.
     """
     import platform as _plat
+    INTEL_XPU_INDEX = "https://pytorch-extension.intel.com/release-whl/stable/xpu/us/"
 
     def _pip(*args, env=None) -> subprocess.CompletedProcess:
         e = (os.environ.copy() if env is None else env)
@@ -432,7 +433,38 @@ def _install_torch(venv_python: Path, prefer_cuda: bool, status_cb=print):
             status_cb(f"No matching CUDA {tag} wheel for this Python/OS. Trying next…")
 
         status_cb("Falling back to CPU wheels (no matching CUDA wheel).")
+    try_xpu = prefer_xpu and sysname in ("Windows", "Linux")
+    if try_xpu:
+        status_cb("Trying PyTorch Intel XPU wheels…")
+        if _try_series(INTEL_XPU_INDEX, ladder):
+            try:
+                import importlib
+                importlib.invalidate_caches()
+                torch = importlib.import_module("torch")
 
+                if not hasattr(torch, "xpu"):
+                    status_cb("Installed from Intel index but torch.xpu is missing. Uninstalling and falling back…")
+                    _pip_ok(["uninstall", "-y", "torch", "torchvision", "torchaudio"])
+                else:
+                    # Availability + quick on-device op
+                    if torch.xpu.is_available():
+                        try:
+                            x = torch.rand((128, 128), device="xpu")
+                            y = torch.rand((128, 128), device="xpu")
+                            _ = (x @ y).sum().item()
+                        except Exception as e:
+                            status_cb(f"XPU runtime test failed: {e}. Uninstalling and falling back…")
+                            _pip_ok(["uninstall", "-y", "torch", "torchvision", "torchaudio"])
+                        else:
+                            status_cb("Installed PyTorch Intel XPU (torch.xpu available).")
+                            return
+                    else:
+                        status_cb("torch.xpu not available on this system (driver/runtime?). Uninstalling and falling back…")
+                        _pip_ok(["uninstall", "-y", "torch", "torchvision", "torchaudio"])
+            except Exception as e:
+                status_cb(f"XPU verification failed: {e}.")
+        else:
+            status_cb("No matching Intel XPU wheel for this Python/OS.")    
     # CPU path
     status_cb("Installing PyTorch (CPU)…")
     if _try_series(None, ladder):
@@ -447,7 +479,7 @@ def _install_torch(venv_python: Path, prefer_cuda: bool, status_cb=print):
 # Public entry points
 # ──────────────────────────────────────────────────────────────────────────────
 
-def import_torch(prefer_cuda: bool = True, status_cb=print):
+def import_torch(prefer_cuda: bool = True, prefer_xpu: bool = False, status_cb=print):
     """
     Ensure a per-user venv exists with torch installed; return the imported module.
     Hardened against shadow imports, broken wheels, concurrent installs, and partial markers.
@@ -475,7 +507,7 @@ def import_torch(prefer_cuda: bool = True, status_cb=print):
             with _install_lock(rt):
                 # Re-check inside lock in case another process finished
                 if not marker.exists():
-                    _install_torch(vp, prefer_cuda=prefer_cuda, status_cb=status_cb)
+                    _install_torch(vp, prefer_cuda=prefer_cuda, prefer_xpu=prefer_xpu, status_cb=status_cb)
         except Exception as e:
             if _is_access_denied(e):
                 raise OSError(_access_denied_msg(rt)) from e
@@ -495,7 +527,7 @@ def import_torch(prefer_cuda: bool = True, status_cb=print):
         subprocess.run([str(vp), "-m", "pip", "uninstall", "-y", "torch"], check=False)
         subprocess.run([str(vp), "-m", "pip", "cache", "purge"], check=False)
         with _install_lock(rt):
-            _install_torch(vp, prefer_cuda=prefer_cuda, status_cb=status_cb)
+            _install_torch(vp, prefer_cuda=prefer_cuda, prefer_xpu=prefer_xpu, status_cb=status_cb)
         importlib.invalidate_caches()
         _demote_shadow_torch_paths(status_cb=status_cb)
 
