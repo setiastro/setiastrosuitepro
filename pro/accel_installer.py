@@ -10,6 +10,30 @@ LogCB = Callable[[str], None]
 def _run(cmd):
     return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 
+
+def _has_intel_arc() -> bool:
+    """
+    Return True if the machine appears to have an Intel Arc / Xe (XPU-capable) adapter.
+    Windows: CIM/WMIC name sniff.
+    Linux: lspci grep.
+    macOS: False.
+    """
+    try:
+        sysname = platform.system()
+        if sysname == "Windows":
+            ps = _run(["powershell","-NoProfile","-Command",
+                       "(Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name) -join ';'"])
+            out = (ps.stdout or "").lower()
+            # Accept 'arc' or 'iris xe' (dg/xe discrete & some laptops with XPU)
+            return ("intel" in out) and ("arc" in out or "iris xe" in out or "a770" in out or "a750" in out or "a580" in out or "a380" in out)
+        if sysname == "Linux":
+            r = _run(["bash","-lc","lspci -nn | grep -i 'vga\\|3d'"])
+            s = (r.stdout or "").lower()
+            return ("intel" in s) and ("arc" in s or "iris xe" in s or "xe" in s)
+        return False
+    except Exception:
+        return False
+
 def _has_nvidia() -> bool:
     """
     Return True if the machine *appears* to have an NVIDIA adapter.
@@ -52,62 +76,71 @@ def _nvidia_driver_ok(log_cb: LogCB) -> bool:
 
 def ensure_torch_installed(prefer_gpu: bool, log_cb: LogCB) -> tuple[bool, Optional[str]]:
     try:
-        # Detect platform/GPU
         is_windows = platform.system() == "Windows"
         has_nv = _has_nvidia() and platform.system() in ("Windows", "Linux")
+        has_intel = (not has_nv) and _has_intel_arc() and platform.system() in ("Windows", "Linux")
 
-        # Decide whether to try CUDA wheels
         prefer_cuda = prefer_gpu and has_nv
+        prefer_xpu  = prefer_gpu and (not has_nv) and has_intel
+
         if prefer_cuda and not _nvidia_driver_ok(log_cb):
             log_cb("CUDA requested but NVIDIA driver not detected/working; CUDA wheels may not initialize.")
-        log_cb(f"PyTorch install preference: prefer_cuda={prefer_cuda} (OS={platform.system()})")
+        log_cb(f"PyTorch install preference: prefer_cuda={prefer_cuda}, prefer_xpu={prefer_xpu} (OS={platform.system()})")
 
-        # Install torch (tries CUDA wheels first if prefer_cuda=True; else CPU)
-        torch = import_torch(prefer_cuda=prefer_cuda, status_cb=log_cb)
+        # Install torch (tries CUDA → XPU → CPU)
+        torch = import_torch(prefer_cuda=prefer_cuda, prefer_xpu=prefer_xpu, status_cb=log_cb)
+
         cuda_ok = bool(getattr(torch, "cuda", None) and torch.cuda.is_available())
+        xpu_ok  = bool(hasattr(torch, "xpu") and torch.xpu.is_available())
 
-        # ─────────────────────────────────────────────────────────────
-        # HARD RULE: If NVIDIA exists → NO DirectML, ever.
-        #   • If CUDA works → done.
-        #   • If CUDA doesn't work → stay CPU-only (no DML).
-        #   • Also remove any existing torch-directml from this venv.
-        # ─────────────────────────────────────────────────────────────
+        # HARD RULES about DirectML:
+        # • If NVIDIA exists: never use DML.
+        # • If XPU is active: also avoid DML to prevent confusion.
         if has_nv:
+            _maybe_uninstall_dml = True
+        else:
+            _maybe_uninstall_dml = xpu_ok
+
+        if _maybe_uninstall_dml:
             try:
                 from pro.runtime_torch import _user_runtime_dir, _venv_paths
                 rt = _user_runtime_dir(); vpy = _venv_paths(rt)["python"]
                 r = subprocess.run([str(vpy), "-m", "pip", "show", "torch-directml"],
                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
                 if r.returncode == 0 and r.stdout:
-                    log_cb("NVIDIA detected → uninstalling torch-directml (hard ban).")
+                    log_cb("Non-DML path selected → uninstalling torch-directml.")
                     subprocess.run([str(vpy), "-m", "pip", "uninstall", "-y", "torch-directml"],
                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             except Exception:
                 pass
 
-            if cuda_ok:
-                log_cb("CUDA available; DML is banned on NVIDIA systems.")
-                return True, None
-
-            log_cb("NVIDIA present but CUDA not available → staying on CPU (no DirectML).")
+        if cuda_ok:
+            log_cb("CUDA available; using NVIDIA backend.")
             return True, None
 
-        # ─────────────────────────────────────────────────────────────
-        # NO NVIDIA on Windows:
-        #   • If CUDA not available (expected), we can use DirectML.
-        #   • Try to import; if missing, install once; if install fails, stay CPU.
-        # ─────────────────────────────────────────────────────────────
+        if xpu_ok:
+            # optional: surface device name if available
+            try:
+                name = None
+                if hasattr(torch.xpu, "get_device_name"):
+                    name = torch.xpu.get_device_name(0)
+                log_cb(f"Intel XPU available{f' ({name})' if name else ''}.")
+            except Exception:
+                log_cb("Intel XPU available.")
+            return True, None
+
+        # No CUDA/XPU ⇒ evaluate DML on Windows non-NVIDIA as before
         dml_enabled = False
-        if is_windows and (not cuda_ok) and (not has_nv):
+        if is_windows and (not has_nv):
             try:
                 import importlib; importlib.invalidate_caches()
-                import torch_directml  # already present?
+                import torch_directml  # noqa
                 dml_enabled = True
                 log_cb("DirectML detected (already installed).")
             except Exception:
                 from pro.runtime_torch import _user_runtime_dir, _venv_paths
                 rt = _user_runtime_dir(); vpy = _venv_paths(rt)["python"]
-                log_cb("Installing torch-directml (Windows non-NVIDIA fallback)…")
+                log_cb("Installing torch-directml (Windows fallback)…")
                 r = subprocess.run([str(vpy), "-m", "pip", "install", "--prefer-binary", "torch-directml"],
                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
                 if r.returncode == 0:
@@ -151,17 +184,24 @@ def current_backend() -> str:
             except Exception: name = "CUDA"
             return f"CUDA ({name})"
 
+        # Intel XPU (Arc / Xe)
+        if hasattr(torch, "xpu") and torch.xpu.is_available():
+            try:
+                name = None
+                if hasattr(torch.xpu, "get_device_name"):
+                    name = torch.xpu.get_device_name(0)
+            except Exception:
+                name = None
+            return f"Intel XPU{f' ({name})' if name else ''}"
+
         cuda_tag = getattr(getattr(torch, "version", None), "cuda", None)
         has_nv = _has_nvidia() and _plat.system() in ("Windows","Linux")
-
         if cuda_tag and has_nv:
-            # built with CUDA but can’t init — driver/runtime mismatch
             return f"CPU (CUDA {cuda_tag} not available — check NVIDIA driver/CUDA runtime)"
 
         if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             return "Apple MPS"
 
-        # Only show DML when there is NO NVIDIA
         if _plat.system() == "Windows" and not has_nv:
             try:
                 import torch_directml  # noqa
@@ -172,4 +212,3 @@ def current_backend() -> str:
         return "CPU"
     except Exception:
         return "Not installed"
-
