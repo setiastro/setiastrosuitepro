@@ -36,7 +36,7 @@ from pathlib import Path
 
 from PyQt6 import sip
 # your helpers/utilities
-from imageops.stretch import stretch_mono_image, stretch_color_image
+from imageops.stretch import stretch_mono_image, stretch_color_image, siril_style_autostretch
 from legacy.numba_utils import *   
 from legacy.image_manager import load_image, save_image, get_valid_header
 from pro.star_alignment import StarRegistrationWorker, StarRegistrationThread, IDENTITY_2x3
@@ -2028,29 +2028,22 @@ class StackingSuiteDialog(QDialog):
         self.settings.setValue("stacking/comet/enabled", bool(v))
 
     def _on_mf_toggled_public(self, v: bool):
-        """
-        Gate all MFDeconv controls together (including Auto Star Mask + Auto Noise Map)
-        and persist the master enable.
-        """
         widgets = [
-            # numeric params
             getattr(self, "mf_iters_spin", None),
             getattr(self, "mf_min_iters_spin", None),
             getattr(self, "mf_kappa_spin", None),
-            # dropdowns
             getattr(self, "mf_color_combo", None),
             getattr(self, "mf_rho_combo", None),
-            # huber bits
             getattr(self, "mf_Huber_spin", None),
             getattr(self, "mf_Huber_hint", None),
-            # NEW: gate these with the MF enable
             getattr(self, "mf_use_star_mask_cb", None),
             getattr(self, "mf_use_noise_map_cb", None),
+            getattr(self, "mf_save_intermediate_cb", None),
+            getattr(self, "mf_sr_cb", None),  # NEW
         ]
         for w in widgets:
             if w is not None:
                 w.setEnabled(v)
-
         self.settings.setValue("stacking/mfdeconv/enabled", bool(v))
 
     def _elide_chars(self, s: str, max_chars: int) -> str:
@@ -2696,7 +2689,7 @@ class StackingSuiteDialog(QDialog):
         right_col.addWidget(gb_drizzle)
 
         # --- MF Deconvolution (Beta) ---
-        gb_mf = QGroupBox("Multi-frame Deconvolution (Beta)")
+        gb_mf = QGroupBox("Multi-frame Deconvolution")
         fl_mf = QFormLayout(gb_mf)
 
         def _row(lbl, w):
@@ -2732,7 +2725,7 @@ class StackingSuiteDialog(QDialog):
         )
         fl_mf.addRow(*_row("Max stars kept:", self.sm_maxobjs))
 
-        self.sm_keepfloor = QDoubleSpinBox(); self.sm_keepfloor.setRange(0.0, 0.95); self.sm_keepfloor.setDecimals(2)
+        self.sm_keepfloor = QDoubleSpinBox(); self.sm_keepfloor.setRange(0.0, 0.95); self.sm_keepfloor.setDecimals(3)
         self.sm_keepfloor.setValue(
             self.settings.value("stacking/mfdeconv/star_mask/keep_floor", _SM_DEF_KEEPF, type=float)
         )
@@ -2766,6 +2759,43 @@ class StackingSuiteDialog(QDialog):
         ))
         self.vm_floor_log.setToolTip("log10 of variance floor (DN²). -8 ≡ 1e-8.")
         fl_mf.addRow(*_row("VarMap floor (log10):", self.vm_floor_log))
+
+        btn_mf_reset = QPushButton("Reset MFDeconv to Recommended")
+        btn_mf_reset.setToolTip(
+            "Restore MFDeconv star mask + variance map tuning to the recommended defaults."
+        )
+
+        def _reset_mfdeconv_defaults():
+            # Star mask tuning
+            self.sm_thresh.setValue(4.5)     # Star detect σ
+            self.sm_grow.setValue(6)         # Dilate (+px)
+            self.sm_soft.setValue(3.0)       # Feather σ (px)
+            self.sm_rmax.setValue(36)        # Max star radius (px)
+            self.sm_maxobjs.setValue(5000)   # Max stars kept
+            self.sm_keepfloor.setValue(0.015)# Keep-floor
+            self.sm_es.setValue(1.12)        # Ellipse scale
+
+            # Variance map tuning
+            self.vm_stride.setValue(8)       # VarMap sample stride
+            self.vm_sigma.setValue(3.0)      # VarMap smooth σ
+            self.vm_floor_log.setValue(-10)  # VarMap floor (log10)
+
+            # (Optional) preload QSettings so Cancel still reverts if user wants.
+            # If you prefer to save only on OK, you can omit this block.
+            s = self.settings
+            s.setValue("stacking/mfdeconv/star_mask/thresh_sigma", 4.5)
+            s.setValue("stacking/mfdeconv/star_mask/grow_px", 6)
+            s.setValue("stacking/mfdeconv/star_mask/soft_sigma", 3.0)
+            s.setValue("stacking/mfdeconv/star_mask/max_radius_px", 36)
+            s.setValue("stacking/mfdeconv/star_mask/max_objs", 5000)
+            s.setValue("stacking/mfdeconv/star_mask/keep_floor", 0.015)
+            s.setValue("stacking/mfdeconv/star_mask/ellipse_scale", 1.12)
+            s.setValue("stacking/mfdeconv/varmap/sample_stride", 8)
+            s.setValue("stacking/mfdeconv/varmap/smooth_sigma", 3.0)
+            s.setValue("stacking/mfdeconv/varmap/floor", 10 ** (-10))  # store linear value if you persist floor linearly
+
+        btn_mf_reset.clicked.connect(_reset_mfdeconv_defaults)
+        fl_mf.addRow(btn_mf_reset)
 
         right_col.addWidget(gb_mf)
 
@@ -4285,410 +4315,6 @@ class StackingSuiteDialog(QDialog):
         rect = self._max_rectangle_in_binary(mask)
         return rect
 
-
-    def create_image_registration_tab(self):
-        """
-        Creates an Image Registration tab that mimics how the Light tab handles
-        cosmetic corrections—i.e., we have global Drizzle controls (checkbox, combo, spin),
-        and we update a text column in the QTreeWidget to show each group's drizzle state.
-        """
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-
-        # ─────────────────────────────────────────
-        # 1) QTreeWidget
-        # ─────────────────────────────────────────
-        self.reg_tree = QTreeWidget()
-        self.reg_tree.setColumnCount(3)
-        self.reg_tree.setHeaderLabels([
-            "Filter - Exposure - Size",
-            "Metadata",
-            "Drizzle"  # We'll display "Drizzle: True, Scale: 2x, Drop:0.65" here
-        ])
-        self.reg_tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-
-        # Optional: make columns resize nicely
-        header = self.reg_tree.header()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-
-        layout.addWidget(QLabel("Calibrated Light Frames"))
-        layout.addWidget(self.reg_tree)
-
-        tol_layout = QHBoxLayout()
-        tol_layout.addWidget(QLabel("Exposure Tolerance (sec):"))
-        self.exposure_tolerance_spin = QSpinBox()
-        self.exposure_tolerance_spin.setRange(0, 900)
-        self.exposure_tolerance_spin.setValue(0)
-        self.exposure_tolerance_spin.setSingleStep(5)
-        tol_layout.addWidget(self.exposure_tolerance_spin)
-        tol_layout.addStretch()
-        self.split_dualband_cb = QCheckBox("Split dual-band OSC before integration")
-        self.split_dualband_cb.setToolTip("For OSC dual-band data: SII/OIII → R=SII, G=OIII; Ha/OIII → R=Ha, G=OIII")
-        tol_layout.addWidget(self.split_dualband_cb)
-        layout.addLayout(tol_layout)
-
-        self.exposure_tolerance_spin.valueChanged.connect(lambda _: self.populate_calibrated_lights())
-
-
-
-        # ─────────────────────────────────────────
-        # 2) Buttons for Managing Files
-        # ─────────────────────────────────────────
-        btn_layout = QHBoxLayout()
-        self.add_reg_files_btn = QPushButton("Add Light Files")
-        self.add_reg_files_btn.clicked.connect(self.add_light_files_to_registration)
-        btn_layout.addWidget(self.add_reg_files_btn)
-
-        self.clear_selection_btn = QPushButton("Remove Selected")
-        self.clear_selection_btn.clicked.connect(lambda: self.clear_tree_selection_registration(self.reg_tree))
-
-        btn_layout.addWidget(self.clear_selection_btn)
-
-        layout.addLayout(btn_layout)
-
-        # ─────────────────────────────────────────
-        # 3) Global Drizzle Controls
-        # ─────────────────────────────────────────
-        drizzle_layout = QHBoxLayout()
-
-        self.drizzle_checkbox = QCheckBox("Enable Drizzle")
-        self.drizzle_checkbox.toggled.connect(self._on_drizzle_checkbox_toggled) # <─ connect signal
-        drizzle_layout.addWidget(self.drizzle_checkbox)
-
-        drizzle_layout.addWidget(QLabel("Scale:"))
-        self.drizzle_scale_combo = QComboBox()
-        self.drizzle_scale_combo.addItems(["1x", "2x", "3x"])
-        self.drizzle_scale_combo.currentIndexChanged.connect(self._on_drizzle_param_changed)  # <─ connect
-        drizzle_layout.addWidget(self.drizzle_scale_combo)
-
-        drizzle_layout.addWidget(QLabel("Drop Shrink:"))
-        self.drizzle_drop_shrink_spin = QDoubleSpinBox()
-        self.drizzle_drop_shrink_spin.setRange(0.0, 1.0)
-        self.drizzle_drop_shrink_spin.setSingleStep(0.05)
-        self.drizzle_drop_shrink_spin.setValue(0.65)
-        self.drizzle_drop_shrink_spin.valueChanged.connect(self._on_drizzle_param_changed)  # <─ connect
-        drizzle_layout.addWidget(self.drizzle_drop_shrink_spin)
-
-        self.cfa_drizzle_cb = QCheckBox("CFA Drizzle")
-        self.cfa_drizzle_cb.setChecked(self.settings.value("stacking/cfa_drizzle", False, type=bool))
-        self.cfa_drizzle_cb.toggled.connect(self._on_cfa_drizzle_toggled)
-        self.cfa_drizzle_cb.setToolTip("Map R/G/B CFA samples directly into channels and skip interpolation.")
-        drizzle_layout.addWidget(self.cfa_drizzle_cb)
-
-        layout.addLayout(drizzle_layout)
-
-        # ─────────────────────────────────────────
-        # 4) Reference Frame Selection
-        # ─────────────────────────────────────────
-        self.ref_frame_label = QLabel("Select Reference Frame:")
-        self.ref_frame_path = QLabel("No file selected")
-        self.ref_frame_path.setWordWrap(True)
-        self.select_ref_frame_btn = QPushButton("Select Reference Frame")
-        self.select_ref_frame_btn.clicked.connect(self.select_reference_frame)
-
-        # NEW: Auto-accept toggle
-        self.auto_accept_ref_cb = QCheckBox("Auto-accept measured reference")
-        self.auto_accept_ref_cb.setToolTip(
-            "When checked, the best measured frame is accepted automatically and the review dialog is skipped."
-        )
-        # restore from settings
-        self.auto_accept_ref_cb.setChecked(self.settings.value("stacking/auto_accept_ref", False, type=bool))
-        self.auto_accept_ref_cb.toggled.connect(
-            lambda v: self.settings.setValue("stacking/auto_accept_ref", bool(v))
-        )
-
-        ref_layout = QHBoxLayout()
-        ref_layout.addWidget(self.ref_frame_label)
-        ref_layout.addWidget(self.ref_frame_path, 1)
-        ref_layout.addWidget(self.select_ref_frame_btn)
-        ref_layout.addWidget(self.auto_accept_ref_cb)  # ← add to the row
-        ref_layout.addStretch()
-        layout.addLayout(ref_layout)
-
-        crop_row = QHBoxLayout()
-        self.autocrop_cb = QCheckBox("Auto-crop output")
-        self.autocrop_cb.setToolTip("Crop the final image to pixels covered by ≥ Coverage % of frames")
-        self.autocrop_pct = QDoubleSpinBox()
-        self.autocrop_pct.setRange(50.0, 100.0)
-        self.autocrop_pct.setSingleStep(1.0)
-        self.autocrop_pct.setSuffix(" %")
-        self.autocrop_pct.setValue(self.settings.value("stacking/autocrop_pct", 95.0, type=float))
-        self.autocrop_cb.setChecked(self.settings.value("stacking/autocrop_enabled", True, type=bool))
-        crop_row.addWidget(self.autocrop_cb)
-        crop_row.addWidget(QLabel("Coverage:"))
-        crop_row.addWidget(self.autocrop_pct)
-        crop_row.addStretch(1)
-        layout.addLayout(crop_row)
-
-        # In create_image_registration_tab(), after the crop_row:
-        comet_row = QHBoxLayout()
-
-        self.comet_cb = QCheckBox("🌠🌠Create comet stack (comet-aligned)🌠🌠")
-        self.comet_cb.setChecked(self.settings.value("stacking/comet/enabled", False, type=bool))
-        comet_row.addWidget(self.comet_cb)
-
-        self.comet_pick_btn = QPushButton("Pick comet center…")
-        self.comet_pick_btn.setEnabled(self.comet_cb.isChecked())
-        self.comet_pick_btn.clicked.connect(self._pick_comet_center)
-        self.comet_cb.toggled.connect(self.comet_pick_btn.setEnabled)
-        comet_row.addWidget(self.comet_pick_btn)
-
-        self.comet_blend_cb = QCheckBox("Also output Stars+Comet blend")
-        self.comet_blend_cb.setChecked(self.settings.value("stacking/comet/blend", True, type=bool))
-        comet_row.addWidget(self.comet_blend_cb)
-
-
-        comet_row.addWidget(QLabel("Mix:"))
-        self.comet_mix = QDoubleSpinBox()
-        self.comet_mix.setRange(0.0, 1.0); self.comet_mix.setSingleStep(0.05)
-        self.comet_mix.setValue(self.settings.value("stacking/comet/mix", 1.0, type=float))
-        comet_row.addWidget(self.comet_mix)
-
-
-        comet_row.addStretch(1)
-        layout.addLayout(comet_row)
-
-        mf_box = QGroupBox("MFDeconv (beta) — Multi-Frame Deconvolution (ImageMM)")
-        mf_v = QVBoxLayout(mf_box)
-
-        # sensible defaults if missing
-        def _get(key, default, t):
-            return self.settings.value(key, default, type=t)
-
-        # row 1: enable
-        mf_row1 = QHBoxLayout()
-        self.mf_enabled_cb = QCheckBox("Enable MFDeconv during integration")
-        self.mf_enabled_cb.setChecked(_get("stacking/mfdeconv/enabled", False, bool))
-        self.mf_enabled_cb.setToolTip("Runs multi-frame deconvolution during integration. Turn off if testing.")
-        mf_row1.addWidget(self.mf_enabled_cb)
-        mf_row1.addStretch(1)
-        mf_v.addLayout(mf_row1)
-
-        # row 2: iterations + kappa
-        mf_row2 = QHBoxLayout()
-        mf_row2.addWidget(QLabel("Iterations:"))
-        self.mf_iters_spin = QSpinBox()
-        self.mf_iters_spin.setRange(1, 500)
-        self.mf_iters_spin.setValue(_get("stacking/mfdeconv/iters", 20, int))
-        self.mf_iters_spin.setToolTip("Number of multiplicative update steps (e.g., 10–60).")
-        mf_row2.addWidget(self.mf_iters_spin)
-
-        mf_row2.addSpacing(16)
-        mf_row2.addWidget(QLabel("Update clip (κ):"))
-        self.mf_kappa_spin = QDoubleSpinBox()
-        self.mf_kappa_spin.setRange(0.0, 10.0)
-        self.mf_kappa_spin.setDecimals(3)
-        self.mf_kappa_spin.setSingleStep(0.1)
-        self.mf_kappa_spin.setValue(_get("stacking/mfdeconv/kappa", 2.0, float))
-        self.mf_kappa_spin.setToolTip("Kappa clipping for multiplicative updates (typ. ~2.0).")
-        mf_row2.addWidget(self.mf_kappa_spin)
-        mf_row2.addStretch(1)
-        mf_v.addLayout(mf_row2)
-
-        # row 3: color mode + Huber_delta
-        mf_row3 = QHBoxLayout()
-        mf_row3.addWidget(QLabel("Color mode:"))
-        self.mf_color_combo = QComboBox()
-        self.mf_color_combo.addItems(["PerChannel", "Luma"])
-        # ensure current text is valid
-        _cm = _get("stacking/mfdeconv/color_mode", "PerChannel", str)
-        if _cm not in ("Luma", "PerChannel"):
-            _cm = "PerChannel"
-        self.mf_color_combo.setCurrentText(_cm)
-        self.mf_color_combo.setToolTip("‘Luma’ deconvolves the luminance only; ‘PerChannel’ runs on RGB independently.")
-        mf_row3.addWidget(self.mf_color_combo)
-
-        mf_row3.addSpacing(16)
-        mf_row3.addWidget(QLabel("Huber δ:"))
-        self.mf_Huber_spin = QDoubleSpinBox()
-        self.mf_Huber_spin.setRange(-1000.0, 1000.0)   # negative allowed
-        self.mf_Huber_spin.setDecimals(4)
-        self.mf_Huber_spin.setSingleStep(0.1)
-        self.mf_Huber_spin.setValue(_get("stacking/mfdeconv/Huber_delta", -2.0, float))
-        self.mf_Huber_spin.setToolTip(
-            "Robust Huber threshold in σ units. ~2–3× background RMS is typical.\n"
-            "Negative values are scale*RMS, positive values are hardcoded deltas."
-        )
-        mf_row3.addWidget(self.mf_Huber_spin)
-        
-        self.mf_Huber_hint = QLabel("(<0 = scale×RMS, >0 = absolute Δ)")
-        self.mf_Huber_hint.setToolTip("Negative = factor times background RMS (auto). Positive = fixed absolute threshold.")
-        self.mf_Huber_hint.setStyleSheet("color: #888;")  # subtle hint color
-        mf_row3.addWidget(self.mf_Huber_hint)        
-        mf_row3.addStretch(1)
-        mf_v.addLayout(mf_row3)
-
-        # write-through bindings
-        self.mf_enabled_cb.toggled.connect(
-            lambda v: self.settings.setValue("stacking/mfdeconv/enabled", bool(v))
-        )
-        self.mf_iters_spin.valueChanged.connect(
-            lambda v: self.settings.setValue("stacking/mfdeconv/iters", int(v))
-        )
-        self.mf_kappa_spin.valueChanged.connect(
-            lambda v: self.settings.setValue("stacking/mfdeconv/kappa", float(v))
-        )
-        self.mf_color_combo.currentTextChanged.connect(
-            lambda s: self.settings.setValue("stacking/mfdeconv/color_mode", s)
-        )
-        self.mf_Huber_spin.valueChanged.connect(
-            lambda v: self.settings.setValue("stacking/mfdeconv/Huber_delta", float(v))
-        )
-
-        accel_row = QHBoxLayout()
-        self.backend_label = QLabel(f"Backend: {current_backend()}")
-        accel_row.addWidget(self.backend_label)
-
-        self.install_accel_btn = QPushButton("Install/Update GPU Acceleration…")
-        self.install_accel_btn.setToolTip("Downloads PyTorch with the right backend (CUDA/MPS/CPU). One-time per machine.")
-        accel_row.addWidget(self.install_accel_btn)
-        accel_row.addStretch(1)
-        mf_v.addLayout(accel_row)
-
-        def _install_accel():
-            # --- UI: all created on the GUI thread ---
-            self.install_accel_btn.setEnabled(False)
-            self.backend_label.setText("Backend: installing…")
-
-            # Indeterminate progress dialog on GUI thread
-            self._accel_pd = QProgressDialog("Preparing runtime…", "Cancel", 0, 0, self)
-            self._accel_pd.setWindowTitle("Installing GPU Acceleration")
-            self._accel_pd.setWindowModality(Qt.WindowModality.ApplicationModal)
-            self._accel_pd.setAutoClose(True)
-            self._accel_pd.setMinimumDuration(0)
-            self._accel_pd.show()
-
-            # Worker thread
-            self._accel_thread = QThread(self)
-            self._accel_worker = AccelInstallWorker(prefer_gpu=True)
-            self._accel_worker.moveToThread(self._accel_thread)
-
-            # Start worker when thread starts (queued so it runs in worker thread)
-            self._accel_thread.started.connect(self._accel_worker.run, Qt.ConnectionType.QueuedConnection)
-
-            # Pipe worker progress to both the progress dialog and your log bus (GUI thread)
-            self._accel_worker.progress.connect(self._accel_pd.setLabelText, Qt.ConnectionType.QueuedConnection)
-            self._accel_worker.progress.connect(lambda s: self.status_signal.emit(s), Qt.ConnectionType.QueuedConnection)
-
-            # Allow cancel to request interruption
-            def _cancel():
-                if self._accel_thread.isRunning():
-                    self._accel_thread.requestInterruption()
-            self._accel_pd.canceled.connect(_cancel, Qt.ConnectionType.QueuedConnection)
-
-            # Finish handler (runs on GUI thread)
-            def _done(ok: bool, msg: str):
-                # Close progress dialog safely
-                if getattr(self, "_accel_pd", None):
-                    self._accel_pd.reset()
-                    self._accel_pd.deleteLater()
-                    self._accel_pd = None
-
-                # Stop thread cleanly
-                self._accel_thread.quit()
-                self._accel_thread.wait()
-
-                # Re-enable UI and refresh backend label
-                self.install_accel_btn.setEnabled(True)
-                from pro.accel_installer import current_backend
-                self.backend_label.setText(f"Backend: {current_backend()}")
-
-                # User feedback + log
-                self.status_signal.emit(("✅ " if ok else "❌ ") + msg)
-                if ok:
-                    QMessageBox.information(self, "Acceleration", f"✅ {msg}")
-                else:
-                    QMessageBox.warning(self, "Acceleration", f"❌ {msg}")
-
-            self._accel_worker.finished.connect(_done, Qt.ConnectionType.QueuedConnection)
-
-            # Cleanup objects when thread finishes
-            self._accel_thread.finished.connect(self._accel_worker.deleteLater, Qt.ConnectionType.QueuedConnection)
-            self._accel_thread.finished.connect(self._accel_thread.deleteLater, Qt.ConnectionType.QueuedConnection)
-
-            self._accel_thread.start()
-
-        self.install_accel_btn.clicked.connect(_install_accel)
-
-        layout.addWidget(mf_box)
-
-        # ★★ Star-Trail Mode ★★
-        trail_layout = QHBoxLayout()
-        self.trail_cb = QCheckBox("★★ Star-Trail Mode ★★ (Max-Value Stack)")
-        self.trail_cb.setChecked(self.star_trail_mode)
-        self.trail_cb.setToolTip(
-            "Skip registration/alignment and use Maximum-Intensity projection for star trails"
-        )
-        self.trail_cb.stateChanged.connect(self._on_star_trail_toggled)
-        trail_layout.addWidget(self.trail_cb)
-        layout.addLayout(trail_layout)
-        # ─────────────────────────────────────────
-        # 5) Register & Integrate Buttons
-        # ─────────────────────────────────────────
-
-        self.register_images_btn = QPushButton("🔥🚀Register and Integrate Images🔥🚀")
-        self.register_images_btn.clicked.connect(self.register_images)
-        self.register_images_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #FF4500;
-                color: white;
-                font-size: 16px;
-                padding: 8px;
-                border-radius: 5px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #FF6347;
-            }
-        """)
-        layout.addWidget(self.register_images_btn)
-
-        self._registration_busy = False
-
-        self.integrate_registered_btn = QPushButton("Integrate Previously Registered Images")
-        self.integrate_registered_btn.clicked.connect(self.integrate_registered_images)
-        self.integrate_registered_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #333;
-                color: white;
-                font-size: 14px;
-                padding: 8px;
-                border-radius: 5px;
-                border: 2px solid yellow;
-            }
-            QPushButton:hover {
-                border: 2px solid #FFD700;
-            }
-            QPushButton:pressed {
-                background-color: #222;
-                border: 2px solid #FFA500;
-            }
-        """)
-        layout.addWidget(self.integrate_registered_btn)
-
-        # Populate the tree from your calibrated folder
-        self.populate_calibrated_lights()
-        tab.setLayout(layout)
-
-        self.drizzle_checkbox.setChecked(self.settings.value("stacking/drizzle_enabled", False, type=bool))
-        self.drizzle_scale_combo.setCurrentText(self.settings.value("stacking/drizzle_scale", "2x", type=str))
-        self.drizzle_drop_shrink_spin.setValue(self.settings.value("stacking/drizzle_drop", 0.65, type=float))
-
-        self.settings.setValue("stacking/comet/enabled", self.comet_cb.isChecked())
-        self.settings.setValue("stacking/comet/blend", self.comet_blend_cb.isChecked())
-
-        self.settings.setValue("stacking/comet/mix", self.comet_mix.value())
-
-
-        self.auto_accept_ref_cb.toggled.connect(self.select_ref_frame_btn.setDisabled)
-        self.select_ref_frame_btn.setDisabled(self.auto_accept_ref_cb.isChecked())
-
-
-
-        return tab
-
     def create_image_registration_tab(self):
         """
         Image Registration tab with:
@@ -4845,8 +4471,22 @@ class StackingSuiteDialog(QDialog):
         mf_row1 = QHBoxLayout()
         self.mf_enabled_cb = QCheckBox("Enable MFDeconv during integration")
         self.mf_enabled_cb.setChecked(_get("stacking/mfdeconv/enabled", False, bool))
-        self.mf_enabled_cb.setToolTip("Runs multi-frame deconvolution during integration.")
+        self.mf_enabled_cb.setToolTip("Runs multi-frame deconvolution during integration. Turn off if testing.")
         mf_row1.addWidget(self.mf_enabled_cb)
+
+        # NEW: Super-Resolution checkbox goes here (between Enable and Save-Intermediate)
+        self.mf_sr_cb = QCheckBox("Super Resolution (2×) (~16x the Compute)")
+        self.mf_sr_cb.setToolTip("Reconstructs on a 2× super-res grid using SR PSFs. Compute goes up ~r^4.  Drizzle usually provides better results")
+        self.mf_sr_cb.setChecked(self.settings.value("stacking/mfdeconv/sr_enabled", False, type=bool))
+        mf_row1.addWidget(self.mf_sr_cb)
+
+        mf_row1.addSpacing(16)
+
+        self.mf_save_intermediate_cb = QCheckBox("Save intermediate iterative images")
+        self.mf_save_intermediate_cb.setToolTip("If enabled, saves the seed and every iteration image into a subfolder next to the final output.")
+        self.mf_save_intermediate_cb.setChecked(self.settings.value("stacking/mfdeconv/save_intermediate", False, type=bool))
+        mf_row1.addWidget(self.mf_save_intermediate_cb)
+
         mf_row1.addStretch(1)
         mf_v.addLayout(mf_row1)
 
@@ -4919,6 +4559,8 @@ class StackingSuiteDialog(QDialog):
         self.mf_Huber_spin.valueChanged.connect(lambda v: self.settings.setValue("stacking/mfdeconv/Huber_delta", float(v)))
         self.mf_use_star_mask_cb.toggled.connect(lambda v: self.settings.setValue("stacking/mfdeconv/use_star_masks", bool(v)))
         self.mf_use_noise_map_cb.toggled.connect(lambda v: self.settings.setValue("stacking/mfdeconv/use_noise_maps", bool(v)))
+        self.mf_sr_cb.toggled.connect(lambda v: self.settings.setValue("stacking/mfdeconv/sr_enabled", bool(v)))
+        self.mf_save_intermediate_cb.toggled.connect(lambda v: self.settings.setValue("stacking/mfdeconv/save_intermediate", bool(v)))
 
         layout.addWidget(mf_box)
 
@@ -4985,6 +4627,33 @@ class StackingSuiteDialog(QDialog):
 
         # same installer wiring as before
         def _install_accel():
+            v = sys.version_info
+            if not (v.major == 3 and v.minor in (10, 11, 12)):
+                why = (f"This app is running on Python {v.major}.{v.minor}. "
+                    "GPU acceleration requires Python 3.10, 3.11, or 3.12.")
+                tip = ""
+                sysname = platform.system()
+                if sysname == "Darwin":
+                    tip = ("\n\nmacOS tip (Apple Silicon):\n"
+                        " • Install Python 3.12:  brew install python@3.12\n"
+                        " • Then relaunch the app so it can create its runtime with 3.12.")
+                elif sysname == "Windows":
+                    tip = ("\n\nWindows tip:\n"
+                        " • Install Python 3.12/3.11/3.10 (x64) from python.org\n"
+                        " • Then relaunch the app.")
+                else:
+                    tip = ("\n\nLinux tip:\n"
+                        " • Install python3.12 or 3.11 via your package manager\n"
+                        " • Then relaunch the app.")
+
+                QMessageBox.warning(self, "Unsupported Python Version", why + tip)
+                # reflect the abort in UI/status and leave button enabled
+                try:
+                    self.backend_label.setText("Backend: CPU (Python version not supported for GPU install)")
+                    self.status_signal.emit("❌ GPU Acceleration install aborted: unsupported Python version.")
+                except Exception:
+                    pass
+                return
             self.install_accel_btn.setEnabled(False)
             self.backend_label.setText("Backend: installing…")
             self._accel_pd = QProgressDialog("Preparing runtime…", "Cancel", 0, 0, self)
@@ -9255,6 +8924,10 @@ class StackingSuiteDialog(QDialog):
                     use_star_masks    = self.mf_use_star_mask_cb.isChecked()
                     use_variance_maps = self.mf_use_noise_map_cb.isChecked()
                     rho               = self.mf_rho_combo.currentText()
+                    save_intermediate = self.mf_save_intermediate_cb.isChecked()
+
+                    sr_enabled = self.settings.value("stacking/mfdeconv/sr_enabled", False, type=bool)
+                    super_res_factor = 2 if (sr_enabled and self.mf_sr_cb.isChecked()) else 1
 
                     # Build cfg dicts (even if disabled; they’ll be ignored if not used)
                     star_mask_cfg = {
@@ -9286,7 +8959,9 @@ class StackingSuiteDialog(QDialog):
                         use_variance_maps=use_variance_maps,
                         rho=rho,
                         star_mask_cfg=star_mask_cfg,        # <<< NEW
-                        varmap_cfg=varmap_cfg               # <<< NEW
+                        varmap_cfg=varmap_cfg,               # <<< NEW
+                        save_intermediate=save_intermediate, 
+                        super_res_factor=super_res_factor,
                     )
                     self._mf_worker.moveToThread(self._mf_thread)
                     self._mf_worker.progress.connect(self._on_mf_progress, Qt.ConnectionType.QueuedConnection)
@@ -10763,6 +10438,7 @@ class StackingSuiteDialog(QDialog):
             kappa = self.settings.value("stacking/mfdeconv/kappa", 2.0, type=float)
             mode  = self.mf_color_combo.currentText()
             Huber = self.settings.value("stacking/mfdeconv/Huber_delta", 0.0, type=float)
+            save_intermediate = self.mf_save_intermediate_cb.isChecked()
 
             use_star_masks   = self.mf_use_star_mask_cb.isChecked()
             use_variance_maps = self.mf_use_noise_map_cb.isChecked()   # ← keep your name
@@ -10783,6 +10459,8 @@ class StackingSuiteDialog(QDialog):
                 "floor":         self.settings.value("stacking/mfdeconv/varmap/floor",        1e-8, type=float),
             }
 
+            sr_enabled = self.settings.value("stacking/mfdeconv/sr_enabled", False, type=bool)
+            super_res_factor = 2 if (sr_enabled and self.mf_sr_cb.isChecked()) else 1
 
             # Use your earlier unique-naming helper if you added it; fallback:
             safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", str(group_key)) or "Group"
@@ -10803,7 +10481,9 @@ class StackingSuiteDialog(QDialog):
                 use_variance_maps=use_variance_maps,
                 rho=rho,
                 star_mask_cfg=star_mask_cfg,        # <<< NEW
-                varmap_cfg=varmap_cfg               # <<< NEW
+                varmap_cfg=varmap_cfg,               # <<< NEW
+                save_intermediate=save_intermediate, 
+                super_res_factor=super_res_factor,
             )
             self._mf_worker.moveToThread(self._mf_thread)
             self._mf_worker.progress.connect(self._on_post_status, Qt.ConnectionType.QueuedConnection)

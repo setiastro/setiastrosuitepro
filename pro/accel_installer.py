@@ -2,7 +2,7 @@
 from __future__ import annotations
 import platform, subprocess, sys, os
 from typing import Callable, Optional
-
+from PyQt6.QtWidgets import QMessageBox
 from pro.runtime_torch import import_torch, add_runtime_to_sys_path, _user_runtime_dir, _venv_paths
 
 LogCB = Callable[[str], None]

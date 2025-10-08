@@ -17,30 +17,167 @@ torch = None        # filled by runtime loader if available
 TORCH_OK = False
 NO_GRAD = contextlib.nullcontext  # fallback
 
+from pathlib import Path
+
+
+
+_ALLOWED = re.compile(r"[^A-Za-z0-9_-]+")
+
+# known FITS-style multi-extensions (rightmost-first match)
+_KNOWN_EXTS = [
+    ".fits.fz", ".fit.fz", ".fits.gz", ".fit.gz",
+    ".fz", ".gz",
+    ".fits", ".fit"
+]
+
+def _sanitize_token(s: str) -> str:
+    s = _ALLOWED.sub("_", s)
+    s = re.sub(r"_+", "_", s).strip("_")
+    return s
+
+def _split_known_exts(p: Path) -> tuple[str, str]:
+    """
+    Return (name_body, full_ext) where full_ext is a REAL extension block
+    (e.g. '.fits.fz'). Any junk like '.0s (1310x880)_MFDeconv' stays in body.
+    """
+    name = p.name
+    for ext in _KNOWN_EXTS:
+        if name.lower().endswith(ext):
+            body = name[:-len(ext)]
+            return body, ext
+    # fallback: single suffix
+    return p.stem, "".join(p.suffixes)
+
+_SIZE_RE = re.compile(r"\(?\s*(\d{2,5})x(\d{2,5})\s*\)?", re.IGNORECASE)
+_EXP_RE  = re.compile(r"(?<![A-Za-z0-9])(\d+(?:\.\d+)?)\s*s\b", re.IGNORECASE)
+_RX_RE   = re.compile(r"(?<![A-Za-z0-9])(\d+)x\b", re.IGNORECASE)
+
+def _extract_size(body: str) -> str | None:
+    m = _SIZE_RE.search(body)
+    return f"{m.group(1)}x{m.group(2)}" if m else None
+
+def _extract_exposure_secs(body: str) -> str | None:
+    m = _EXP_RE.search(body)
+    if not m:
+        return None
+    secs = int(round(float(m.group(1))))
+    return f"{secs}s"
+
+def _strip_metadata_from_base(body: str) -> str:
+    s = body
+
+    # normalize common separators first
+    s = s.replace(" - ", "_")
+
+    # remove known trailing marker '_MFDeconv'
+    s = re.sub(r"(?i)[\s_]+MFDeconv$", "", s)
+
+    # remove parenthetical copy counters e.g. '(1)'
+    s = re.sub(r"\(\s*\d+\s*\)$", "", s)
+
+    # remove size (with or without parens) anywhere
+    s = _SIZE_RE.sub("", s)
+
+    # remove exposures like '0s', '0.5s', ' 45 s' (even if preceded by a dot)
+    s = _EXP_RE.sub("", s)
+
+    # remove any _#x tokens
+    s = _RX_RE.sub("", s)
+
+    # collapse whitespace/underscores and sanitize
+    s = re.sub(r"[\s]+", "_", s)
+    s = _sanitize_token(s)
+    return s or "output"
+
+def _canonical_out_name_prefix(base: str, r: int, size: str | None,
+                               exposure_secs: str | None, tag: str = "MFDeconv") -> str:
+    parts = [_sanitize_token(tag), _sanitize_token(base)]
+    if size:
+        parts.append(_sanitize_token(size))
+    if exposure_secs:
+        parts.append(_sanitize_token(exposure_secs))
+    if int(max(1, r)) > 1:
+        parts.append(f"{int(r)}x")
+    return "_".join(parts)
+
+def _sr_out_path(out_path: str, r: int) -> Path:
+    """
+    Build: MFDeconv_<base>[_<HxW>][_<secs>s][_2x], preserving REAL extensions.
+    """
+    p = Path(out_path)
+    body, real_ext = _split_known_exts(p)
+
+    # harvest metadata from the whole body (not Path.stem)
+    size   = _extract_size(body)
+    ex_sec = _extract_exposure_secs(body)
+
+    # clean base
+    base = _strip_metadata_from_base(body)
+
+    new_stem = _canonical_out_name_prefix(base, r=int(max(1, r)), size=size, exposure_secs=ex_sec, tag="MFDeconv")
+    return p.with_name(f"{new_stem}{real_ext}")
+
 def _nonclobber_path(path: str) -> str:
     """
-    If `path` exists, return 'base (n).ext' with the smallest n >= 1
-    that doesn't exist. If 'base (k).ext' is already present, start at k+1.
+    Version collisions as '_v2', '_v3', ... (no spaces/parentheses).
     """
-    if not os.path.exists(path):
-        return path
+    p = Path(path)
+    if not p.exists():
+        return str(p)
 
-    d, fname = os.path.split(path)
-    root, ext = os.path.splitext(fname)
+    # keep the true extension(s)
+    body, real_ext = _split_known_exts(p)
 
-    m = re.match(r"^(.*)\s\((\d+)\)$", root)
+    # if already has _vN, bump it
+    m = re.search(r"(.*)_v(\d+)$", body)
     if m:
-        base = m.group(1)
-        n = int(m.group(2)) + 1
+        base = m.group(1); n = int(m.group(2)) + 1
     else:
-        base = root
-        n = 1
+        base = body; n = 2
 
     while True:
-        candidate = os.path.join(d, f"{base} ({n}){ext}")
-        if not os.path.exists(candidate):
-            return candidate
+        candidate = p.with_name(f"{base}_v{n}{real_ext}")
+        if not candidate.exists():
+            return str(candidate)
         n += 1
+
+def _iter_folder(basefile: str) -> str:
+    d, fname = os.path.split(basefile)
+    root, ext = os.path.splitext(fname)
+    tgt = os.path.join(d, f"{root}.iters")
+    if not os.path.exists(tgt):
+        try:
+            os.makedirs(tgt, exist_ok=True)
+        except Exception:
+            # last resort: suffix (n)
+            n = 1
+            while True:
+                cand = os.path.join(d, f"{root}.iters ({n})")
+                try:
+                    os.makedirs(cand, exist_ok=True)
+                    return cand
+                except Exception:
+                    n += 1
+    return tgt
+
+def _save_iter_image(arr, hdr_base, folder, tag, color_mode):
+    """
+    arr: numpy array (H,W) or (C,H,W) float32
+    tag: 'seed' or 'iter_###'
+    """
+    if arr.ndim == 3 and arr.shape[0] not in (1, 3) and arr.shape[-1] in (1, 3):
+        arr = np.moveaxis(arr, -1, 0)
+    if arr.ndim == 3 and arr.shape[0] == 1:
+        arr = arr[0]
+
+    hdr = fits.Header(hdr_base) if isinstance(hdr_base, fits.Header) else fits.Header()
+    hdr['MF_PART'] = (str(tag), 'MFDeconv intermediate (seed/iter)')
+    hdr['MF_COLOR'] = (str(color_mode), 'Color mode used')
+    path = os.path.join(folder, f"{tag}.fit")
+    # overwrite allowed inside the dedicated folder
+    fits.PrimaryHDU(data=arr.astype(np.float32, copy=False), header=hdr).writeto(path, overwrite=True)
+    return path
+
 
 def _process_gui_events_safely():
     app = QApplication.instance()
@@ -752,69 +889,51 @@ def _fftshape_same(H, W, kh, kw):
 
 # ---------- Torch FFT helpers (FIXED: carry padH/padW) ----------
 def _precompute_torch_psf_ffts(psfs, flip_psf, H, W, device, dtype):
-    """
-    Returns two lists of tuples:
-      psf_fft:  [(Kf, padH, padW), ...]
-      psfT_fft: [(KTf, padH, padW), ...]
-    where Kf/KTf are rfft2 of the padded kernels to (padH, padW).
-    """
-    import torch.fft as tfft
-    psf_fft  = []
-    psfT_fft = []
+    tfft = torch.fft
+    psf_fft, psfT_fft = [], []
     for k, kT in zip(psfs, flip_psf):
         kh, kw = k.shape
         padH, padW = _fftshape_same(H, W, kh, kw)
 
-        # center-place kernel into a (padH, padW) canvas
-        k_pad  = torch.zeros((padH, padW), device=device, dtype=dtype)
-        kT_pad = torch.zeros((padH, padW), device=device, dtype=dtype)
-        sy, sx = (padH - kh)//2, (padW - kw)//2
-        k_pad [sy:sy+kh,  sx:sx+kw] = torch.as_tensor(k,  device=device, dtype=dtype)
-        kT_pad[sy:sy+kh, sx:sx+kw]  = torch.as_tensor(kT, device=device, dtype=dtype)
+        # shift the small kernels to the origin, then FFT into padded size
+        k_small  = torch.as_tensor(np.fft.ifftshift(k),  device=device, dtype=dtype)
+        kT_small = torch.as_tensor(np.fft.ifftshift(kT), device=device, dtype=dtype)
 
-        # rfft over the *real* spatial size (padH, padW)
-        Kf  = tfft.rfftn(k_pad,  s=(padH, padW))
-        KTf = tfft.rfftn(kT_pad, s=(padH, padW))
+        Kf  = tfft.rfftn(k_small,  s=(padH, padW))
+        KTf = tfft.rfftn(kT_small, s=(padH, padW))
 
-        psf_fft.append((Kf,  padH, padW))
-        psfT_fft.append((KTf, padH, padW))
+        psf_fft.append((Kf,  padH, padW, kh, kw))
+        psfT_fft.append((KTf, padH, padW, kh, kw))
     return psf_fft, psfT_fft
 
 
 def _fft_conv_same_torch(x, Kf_pack, out_spatial):
-    """
-    x:         (H,W) or (C,H,W) tensor on device
-    Kf_pack:   tuple (Kf, padH, padW) from _precompute_torch_psf_ffts
-    out_spatial: preallocated tensor like x to receive the 'same' result
-    """
-    import torch.fft as tfft
-    Kf, padH, padW = Kf_pack
+    tfft = torch.fft
+    Kf, padH, padW, kh, kw = Kf_pack
     H, W = x.shape[-2], x.shape[-1]
 
     if x.ndim == 2:
         X = tfft.rfftn(x, s=(padH, padW))
         y = tfft.irfftn(X * Kf, s=(padH, padW))
-        sh, sw = (padH - H) // 2, (padW - W) // 2
+        sh, sw = kh // 2, kw // 2
         out_spatial.copy_(y[sh:sh+H, sw:sw+W])
         return out_spatial
     else:
         X = tfft.rfftn(x, s=(padH, padW), dim=(-2, -1))
         y = tfft.irfftn(X * Kf, s=(padH, padW), dim=(-2, -1))
-        sh, sw = (padH - H) // 2, (padW - W) // 2
+        sh, sw = kh // 2, kw // 2
         out_spatial.copy_(y[..., sh:sh+H, sw:sw+W])
         return out_spatial
 
 # ---------- NumPy FFT helpers ----------
 def _precompute_np_psf_ffts(psfs, flip_psf, H, W):
     import numpy.fft as fft
-    meta = []
-    Kfs  = []
-    KTfs = []
+    meta, Kfs, KTfs = [], [], []
     for k, kT in zip(psfs, flip_psf):
         kh, kw = k.shape
         fftH, fftW = _fftshape_same(H, W, kh, kw)
-        Kfs.append( fft.rfftn(k,  s=(fftH, fftW)) )
-        KTfs.append(fft.rfftn(kT, s=(fftH, fftW)) )
+        Kfs.append( fft.rfftn(np.fft.ifftshift(k),  s=(fftH, fftW)) )
+        KTfs.append(fft.rfftn(np.fft.ifftshift(kT), s=(fftH, fftW)) )
         meta.append((kh, kw, fftH, fftW))
     return Kfs, KTfs, meta
 
@@ -823,20 +942,20 @@ def _fft_conv_same_np(a, Kf, kh, kw, fftH, fftW, out):
     if a.ndim == 2:
         A = fft.rfftn(a, s=(fftH, fftW))
         y = fft.irfftn(A * Kf, s=(fftH, fftW))
-        sh, sw = (fftH - a.shape[0])//2, (fftW - a.shape[1])//2
+        sh, sw = kh // 2, kw // 2
         out[...] = y[sh:sh+a.shape[0], sw:sw+a.shape[1]]
         return out
     else:
-        # per-channel
         C, H, W = a.shape
         acc = []
         for c in range(C):
             A = fft.rfftn(a[c], s=(fftH, fftW))
             y = fft.irfftn(A * Kf, s=(fftH, fftW))
-            sh, sw = (fftH - H)//2, (fftW - W)//2
+            sh, sw = kh // 2, kw // 2
             acc.append(y[sh:sh+H, sw:sw+W])
         out[...] = np.stack(acc, 0)
         return out
+
 
 
 def _torch_device():
@@ -948,6 +1067,152 @@ def _ensure_var_list(variances, data):
             out.append(vv)
     return out
 
+# ---- SR operators (downsample / upsample-sum) ----
+def _downsample_avg(img, r: int):
+    """Average-pool over non-overlapping r×r blocks. Works for (H,W) or (C,H,W)."""
+    if r <= 1:
+        return img
+    a = np.asarray(img, dtype=np.float32)
+    if a.ndim == 2:
+        H, W = a.shape
+        Hs, Ws = (H // r) * r, (W // r) * r
+        a = a[:Hs, :Ws].reshape(Hs//r, r, Ws//r, r).mean(axis=(1,3))
+        return a
+    else:
+        C, H, W = a.shape
+        Hs, Ws = (H // r) * r, (W // r) * r
+        a = a[:, :Hs, :Ws].reshape(C, Hs//r, r, Ws//r, r).mean(axis=(2,4))
+        return a
+
+def _upsample_sum(img, r: int, target_hw: tuple[int,int] | None = None):
+    """Adjoint of average-pooling: replicate-sum each pixel into an r×r block.
+       For (H,W) or (C,H,W). If target_hw given, center-crop/pad to that size.
+    """
+    if r <= 1:
+        return img
+    a = np.asarray(img, dtype=np.float32)
+    if a.ndim == 2:
+        H, W = a.shape
+        out = np.kron(a, np.ones((r, r), dtype=np.float32))
+    else:
+        C, H, W = a.shape
+        out = np.stack([np.kron(a[c], np.ones((r, r), dtype=np.float32)) for c in range(C)], axis=0)
+    if target_hw is not None:
+        Ht, Wt = target_hw
+        out = _center_crop(out, Ht, Wt)
+    return out
+
+def _gaussian2d(ksize: int, sigma: float) -> np.ndarray:
+    r = (ksize - 1) // 2
+    y, x = np.mgrid[-r:r+1, -r:r+1].astype(np.float32)
+    g = np.exp(-(x*x + y*y)/(2.0*sigma*sigma)).astype(np.float32)
+    g /= g.sum() + EPS
+    return g
+
+def _conv2_same_np(a: np.ndarray, k: np.ndarray) -> np.ndarray:
+    # lightweight wrap for 2D conv on (H,W) or (C,H,W) with same-size output
+    return _conv_same_np(a if a.ndim==3 else a[None], k)[0] if a.ndim==2 else _conv_same_np(a, k)
+
+def _solve_super_psf_from_native(f_native: np.ndarray, r: int, sigma: float = 1.1,
+                                 iters: int = 500, lr: float = 0.1) -> np.ndarray:
+    """
+    Solve: h*  = argmin_h || f_native - (D(h) * g_sigma) ||_2^2,
+    where h is (r*k)×(r*k) if f_native is k×k. Returns normalized h (sum=1).
+    """
+    f = np.asarray(f_native, dtype=np.float32)
+    k = int(f.shape[0]); assert f.shape[0] == f.shape[1]
+    kr = int(k * r)
+
+    # build Gaussian pre-blur at native scale (match paper §4.2)
+    g = _gaussian2d(k, max(sigma, 1e-3)).astype(np.float32)
+
+    # init h by zero-insertion (nearest upsample of f) then deconvolving g very mildly
+    h0 = np.zeros((kr, kr), dtype=np.float32)
+    h0[::r, ::r] = f
+    h0 = _normalize_psf(h0)
+
+    if TORCH_OK:
+        dev = _torch_device()
+        t = torch.tensor(h0, device=dev, dtype=torch.float32, requires_grad=True)
+        f_t = torch.tensor(f,  device=dev, dtype=torch.float32)
+        g_t = torch.tensor(g,  device=dev, dtype=torch.float32)
+        opt = torch.optim.Adam([t], lr=lr)
+        for _ in range(max(10, iters)):
+            opt.zero_grad(set_to_none=True)
+            H, W = t.shape
+            Hr, Wr = H//r, W//r
+            th = t[:Hr*r, :Wr*r].reshape(Hr, r, Wr, r).mean(dim=(1,3))
+            # conv native: (Dh) * g
+            conv = torch.nn.functional.conv2d(th[None,None], g_t[None,None], padding=g_t.shape[-1]//2)[0,0]
+            loss = torch.mean((conv - f_t)**2)
+            loss.backward()
+            opt.step()
+            with torch.no_grad():
+                t.clamp_(min=0.0)
+                t /= (t.sum() + 1e-8)
+        h = t.detach().cpu().numpy().astype(np.float32)
+    else:
+        # Tiny gradient-descent fallback on numpy
+        h = h0.copy()
+        eta = float(lr)
+        for _ in range(max(50, iters)):
+            Dh = _downsample_avg(h, r)
+            conv = _conv2_same_np(Dh, g)
+            resid = (conv - f)
+            # backprop through conv and D: grad wrt Dh is resid * g^T conv; adjoint of D is upsample-sum
+            grad_Dh = _conv2_same_np(resid, np.flip(np.flip(g, 0), 1))
+            grad_h  = _upsample_sum(grad_Dh, r, target_hw=h.shape)
+            h = np.clip(h - eta * grad_h, 0.0, None)
+            s = float(h.sum());  h /= (s + 1e-8)
+            eta *= 0.995
+    return _normalize_psf(h)
+
+def _downsample_avg_t(x, r: int):
+    """
+    Average-pool over non-overlapping r×r blocks.
+    Works for (H,W) or (C,H,W). Crops to multiples of r.
+    """
+    if r <= 1:
+        return x
+    if x.ndim == 2:
+        H, W = x.shape
+        Hr, Wr = (H // r) * r, (W // r) * r
+        if Hr == 0 or Wr == 0:
+            return x  # nothing to pool
+        x2 = x[:Hr, :Wr]
+        return x2.view(Hr // r, r, Wr // r, r).mean(dim=(1, 3))
+    else:
+        C, H, W = x.shape
+        Hr, Wr = (H // r) * r, (W // r) * r
+        if Hr == 0 or Wr == 0:
+            return x
+        x2 = x[:, :Hr, :Wr]
+        return x2.view(C, Hr // r, r, Wr // r, r).mean(dim=(2, 4))
+
+def _upsample_sum_t(x, r: int):
+    if r <= 1:
+        return x
+    if x.ndim == 2:
+        return x.repeat_interleave(r, dim=0).repeat_interleave(r, dim=1)
+    else:
+        return x.repeat_interleave(r, dim=-2).repeat_interleave(r, dim=-1)
+
+def _sep_bg_rms(frames):
+    """Return a robust background RMS using SEP's background model on the first frame."""
+    if sep is None or not frames:
+        return None
+    try:
+        y0 = frames[0] if frames[0].ndim == 2 else frames[0][0]  # use luma/first channel
+        a = np.ascontiguousarray(y0, dtype=np.float32)
+        b = sep.Background(a, bw=64, bh=64, fw=3, fh=3)
+        try:
+            rms_val = float(b.globalrms)
+        except Exception:
+            # some SEP builds don’t expose globalrms; fall back to the map’s median
+            rms_val = float(np.median(np.asarray(b.rms(), dtype=np.float32)))
+        return rms_val
+    except Exception:
+        return None
 
 # -----------------------------
 # Core
@@ -966,8 +1231,15 @@ def multiframe_deconv(
     min_iters: int = 3,
     use_star_masks: bool = False,
     use_variance_maps: bool = False,
-    star_mask_cfg: dict | None = None,      # <<< NEW
-    varmap_cfg: dict | None = None          # <<< NEW
+    star_mask_cfg: dict | None = None,
+    varmap_cfg: dict | None = None,
+    save_intermediate: bool = False,
+    save_every: int = 1,
+    # >>> SR options
+    super_res_factor: int = 1,
+    sr_sigma: float = 1.1,
+    sr_psf_opt_iters: int = 250,
+    sr_psf_opt_lr: float = 0.1,
 ):
     # sanitize and clamp
     max_iters = max(1, int(iters))
@@ -988,8 +1260,8 @@ def multiframe_deconv(
     global torch, TORCH_OK
 
     # -------- try to import torch from per-user runtime venv --------
-    global TORCH_OK
     torch = None
+    TORCH_OK = False
     cuda_ok = mps_ok = dml_ok = False
     dml_device = None
     try:
@@ -1032,8 +1304,9 @@ def multiframe_deconv(
     use_torch = bool(TORCH_OK)
     if use_torch:
         try:
-            import torch.backends.cudnn as cudnn
-            cudnn.benchmark = True
+            cudnn = getattr(torch.backends, "cudnn", None)
+            if cudnn is not None:
+                cudnn.benchmark = True
         except Exception:
             pass
     _process_gui_events_safely()
@@ -1046,9 +1319,23 @@ def multiframe_deconv(
         make_varmaps=bool(use_variance_maps),
         status_cb=status_cb,
         save_dir=psf_out_dir,
-        star_mask_cfg=star_mask_cfg,            # <<< NEW
-        varmap_cfg=varmap_cfg                   # <<< NEW
+        star_mask_cfg=star_mask_cfg,
+        varmap_cfg=varmap_cfg
     )
+
+    # >>> SR: lift PSFs to super-res if requested
+    r = int(max(1, super_res_factor))
+    if r > 1:
+        status_cb(f"MFDeconv: Super-resolution r={r} with σ={sr_sigma} — solving SR PSFs…")
+        _process_gui_events_safely()
+        sr_psfs = []
+        for i, k_native in enumerate(psfs, start=1):
+            h = _solve_super_psf_from_native(k_native, r=r, sigma=float(sr_sigma),
+                                             iters=int(sr_psf_opt_iters), lr=float(sr_psf_opt_lr))
+            sr_psfs.append(h)
+            status_cb(f"  SR-PSF{i}: native {k_native.shape[0]} → {h.shape[0]} (sum={h.sum():.6f})")
+        psfs = sr_psfs
+
     flip_psf = [_flip_kernel(k) for k in psfs]
     _emit_pct(0.20, "PSF Ready")
 
@@ -1065,59 +1352,105 @@ def multiframe_deconv(
     # Numeric hygiene
     data = [_sanitize_numeric(a) for a in data]
 
-    # Build mask/var lists (2D) aligned to 'data'
+    # --- SR/native seed ---
+    seed_native = np.median(np.stack(data, axis=0), axis=0).astype(np.float32)
+    if r > 1:
+        if seed_native.ndim == 2:
+            x = _upsample_sum(seed_native / (r*r), r, target_hw=(Ht*r, Wt*r))
+        else:
+            C, Hn, Wn = seed_native.shape
+            x = np.stack(
+                [_upsample_sum(seed_native[c] / (r*r), r, target_hw=(Hn*r, Wn*r)) for c in range(C)],
+                axis=0
+            )
+    else:
+        x = seed_native
+    Hs, Ws = x.shape if x.ndim == 2 else x.shape[-2:]
+
+    # Build mask/var lists (2D) aligned to native 'data'
     auto_masks = masks_auto if use_star_masks else None
     auto_vars  = vars_auto  if use_variance_maps else None
-
-    # explicit > auto > none
     mask_list = _ensure_mask_list(masks if masks is not None else auto_masks, data)
     var_list  = _ensure_var_list(variances if variances is not None else auto_vars, data)
 
-    # Initial estimate x0 = median across frames
-    if data[0].ndim == 2:
-        x = np.median(np.stack(data, axis=0), axis=0).astype(np.float32)
-    else:
-        x = np.median(np.stack(data, axis=0), axis=0).astype(np.float32)  # (C,H,W)
+    iter_dir = None
+    hdr0_seed = None
+    if save_intermediate:
+        iter_dir = _iter_folder(out_path)
+        status_cb(f"MFDeconv: Intermediate outputs → {iter_dir}")
+        try:
+            hdr0_seed = fits.getheader(paths[0], ext=0) if os.path.exists(paths[0]) else fits.Header()
+        except Exception:
+            hdr0_seed = fits.Header()
+        _save_iter_image(x, hdr0_seed, iter_dir, "seed", color_mode)  # save seed
 
-    status_cb("MFDeconv: Starting Multiplicative Updates…")
+    status_cb("MFDeconv: Calculating Backgrounds and MADs…")
     _process_gui_events_safely()
-    bg_est = np.median([np.median(np.abs(y - np.median(y))) for y in (data if isinstance(data, list) else [data])]) * 1.4826
+    bg_est = _sep_bg_rms(data) or (np.median([np.median(np.abs(y - np.median(y))) for y in (data if isinstance(data, list) else [data])]) * 1.4826)
     status_cb(f"MFDeconv: color_mode={color_mode}, huber_delta={huber_delta} (bg RMS~{bg_est:.3g})")
     _process_gui_events_safely()
 
-    # Prepare tensors/arrays used by the main loop
-    if use_torch:
-        x_t = _to_t(_contig(x))                              # (H,W) or (C,H,W) tensor
-        y_tensors = [_to_t(_contig(y)) for y in data]        # list of tensors
-    else:
-        x_t = x                                              # numpy array
-        y_np = data                                          # list of numpy arrays
+    status_cb("Computing FFTs and Allocating Scratch…")
+    _process_gui_events_safely()
 
-    total_steps = max_iters
-    status_cb("__PROGRESS__ 0.0000 Starting iterations…")
-
-    # -------- precompute FFTs and allocate scratch --------
+    # -------- precompute and allocate scratch --------
+    per_frame_logging = (r > 1)  # only chatty inside SR mode
     if use_torch:
+        # tensors
+        x_t = _to_t(_contig(x))
+        y_tensors = [_to_t(_contig(y)) for y in data]
         mask_tensors = [torch.as_tensor(m, dtype=x_t.dtype, device=x_t.device) for m in mask_list]
         var_tensors  = [None if v is None else torch.as_tensor(v, dtype=x_t.dtype, device=x_t.device)
                         for v in var_list]
-        psf_t  = [_to_t(_contig(k))[None, None]  for k  in psfs]      # (1,1,kh,kw)
-        psfT_t = [_to_t(_contig(kT))[None, None] for kT in flip_psf]  # (1,1,kh,kw)
 
+        F = torch.nn.functional  # access via runtime torch
         num = torch.zeros_like(x_t)
         den = torch.zeros_like(x_t)
+
+        if r > 1:
+            # SR: use FFT packs on the SR grid
+            Hs, Ws = (x_t.shape if x_t.ndim == 2 else x_t.shape[-2:])
+            psf_fft, psfT_fft = _precompute_torch_psf_ffts(
+                psfs, flip_psf, int(Hs), int(Ws), device=x_t.device, dtype=x_t.dtype
+            )
+            pred_super_t = torch.empty_like(x_t)
+            tmp_t        = torch.empty_like(x_t)
+
+            def _upsample_sum_torch(low, r_: int):
+                if r_ <= 1:
+                    return low
+                if low.ndim == 2:
+                    return F.interpolate(low[None, None], scale_factor=r_, mode="nearest")[0, 0]
+                else:
+                    return F.interpolate(low[None], scale_factor=r_, mode="nearest")[0]
+        else:
+            # Native: stay in spatial conv path (no SR churn)
+            psf_t  = [_to_t(_contig(k))[None, None]  for k  in psfs]
+            psfT_t = [_to_t(_contig(kT))[None, None] for kT in flip_psf]
+            tmp_t  = torch.empty_like(x_t)
+
     else:
+        # NumPy path
         x_t = x
         y_np = data
-        if x_t.ndim == 2:
-            H, W = x_t.shape
+        if r > 1:
+            if x_t.ndim == 2:
+                Hs, Ws = x_t.shape
+            else:
+                _, Hs, Ws = x_t.shape
+            Kfs, KTfs, meta = _precompute_np_psf_ffts(psfs, flip_psf, Hs, Ws)
+            pred_super = np.empty_like(x_t)
+            tmp_out    = np.empty_like(x_t)
         else:
-            _, H, W = x_t.shape
-        Kfs, KTfs, meta = _precompute_np_psf_ffts(psfs, flip_psf, H, W)
-        num      = np.zeros_like(x_t)
-        den      = np.zeros_like(x_t)
-        pred_buf = np.empty_like(x_t)
-        tmp_out  = np.empty_like(x_t)
+            # native: we can still reuse FFT helper (it uses FFT internally), but no SR down/up
+            Kfs, KTfs, meta = _precompute_np_psf_ffts(psfs, flip_psf, Hs, Ws)
+            pred_super = np.empty_like(x_t)
+            tmp_out    = np.empty_like(x_t)
+        num = np.zeros_like(x_t)
+        den = np.zeros_like(x_t)
+
+    status_cb("Starting First Multiplicative Iteration…")
+    _process_gui_events_safely()
 
     # -------- inference/no-grad for the whole loop --------
     cm = _safe_inference_context() if use_torch else NO_GRAD
@@ -1125,73 +1458,165 @@ def multiframe_deconv(
     local_delta = 0.0 if rho_is_l2 else huber_delta
     used_iters = 0
     early_stopped = False
+
+    # cache a positive Huber δ per frame if auto (update every 5 iters)
+    auto_delta_cache = None
+    if use_torch and (huber_delta < 0) and (not rho_is_l2):
+        auto_delta_cache = [None] * len(ys_raw)
+
+    # early-stop controls
+    tol_upd = 1e-3       # threshold on median|upd-1|
+    tol_rel = 5e-4       # threshold on relative median change of x
+    patience = 2         # require this many consecutive "small" iters
+    early_cnt = 0
+
     with cm():
         for it in range(1, max_iters + 1):
             if use_torch:
                 num.zero_(); den.zero_()
-                for yt, wk, wkT, mt, vt in zip(y_tensors, psf_t, psfT_t, mask_tensors, var_tensors):
-                    pred = _conv_same_torch(x_t, wk)
-                    wmap = _weight_map(yt, pred, local_delta, var_map=vt, mask=mt)
-                    num  += _conv_same_torch(wmap * yt,   wkT)
-                    den  += _conv_same_torch(wmap * pred, wkT)
+                if r > 1:
+                    # -------- SR path (FFT + down/up) --------
+                    for fidx, (yt, Kf_pack, KTf_pack, mt, vt) in enumerate(
+                        zip(y_tensors, psf_fft, psfT_fft, mask_tensors, var_tensors)
+                    ):
+                        _fft_conv_same_torch(x_t, Kf_pack, pred_super_t)
 
-                # ---- Neutralize no-info pixels (both num≈0 and den≈0) ----
-                ratio   = num / (den + EPS)
+                        # Correct SR → native downsample (average over r×r)
+                        pred_low = _downsample_avg_t(pred_super_t, r)
+
+                        # Robust weights
+                        if auto_delta_cache is not None:
+                            if (auto_delta_cache[fidx] is None) or (it % 5 == 1):
+                                rnat = yt - pred_low
+                                med = torch.median(rnat)
+                                mad = torch.median(torch.abs(rnat - med)) + 1e-6
+                                rms = 1.4826 * mad
+                                auto_delta_cache[fidx] = float((-huber_delta) * torch.clamp(rms, min=1e-6).item())
+                            wmap_low = _weight_map(yt, pred_low, auto_delta_cache[fidx], var_map=vt, mask=mt)
+                        else:
+                            wmap_low = _weight_map(yt, pred_low, local_delta, var_map=vt, mask=mt)
+
+                        # Adjoint lift (sum-replicate, not average)
+                        up_y    = _upsample_sum_t(wmap_low * yt,       r)
+                        up_pred = _upsample_sum_t(wmap_low * pred_low, r)
+
+                        # Accumulate
+                        _fft_conv_same_torch(up_y,    KTf_pack, tmp_t); num += tmp_t
+                        _fft_conv_same_torch(up_pred, KTf_pack, tmp_t); den += tmp_t
+
+                        if per_frame_logging and ((fidx & 7) == 0):
+                            status_cb(f"Iter {it}/{max_iters} — frame {fidx+1}/{len(y_tensors)} (SR grid)")
+
+                else:
+                    # -------- Native path (spatial conv, no per-frame chatter) --------
+                    for yt, wk, wkT, mt, vt in zip(y_tensors, psf_t, psfT_t, mask_tensors, var_tensors):
+                        pred = _conv_same_torch(x_t, wk)
+                        wmap = _weight_map(yt, pred, local_delta, var_map=vt, mask=mt)
+                        up_y    = wmap * yt
+                        up_pred = wmap * pred
+                        num += _conv_same_torch(up_y,    wkT)
+                        den += _conv_same_torch(up_pred, wkT)
+
+                ratio = num / (den + EPS)
                 neutral = (den.abs() < 1e-12) & (num.abs() < 1e-12)
-                ratio   = torch.where(neutral, torch.ones_like(ratio), ratio)
-                upd     = torch.clamp(ratio, 1.0 / kappa, kappa)
-
+                ratio = torch.where(neutral, torch.ones_like(ratio), ratio)
+                upd = torch.clamp(ratio, 1.0 / kappa, kappa)
                 x_next = torch.clamp(x_t * upd, min=0.0)
-                if torch.median(torch.abs(upd - 1)) < 1e-3:
-                    if it >= min_iters:
-                        x_t = x_next
-                        used_iters = it              # <<< NEW
-                        early_stopped = True         # <<< NEW
-                        status_cb(f"MFDeconv: Iteration {it}/{max_iters} (early stop)")
-                        _process_gui_events_safely()
-                        break
-                x_t = (1.0 - relax) * x_t + relax * x_next
-            else:
-                num.fill(0.0); den.fill(0.0)
-                for (yt, Kf, KTf, (kh, kw, fftH, fftW)), m2d, v2d in zip(zip(y_np, Kfs, KTfs, meta), mask_list, var_list):
-                    _fft_conv_same_np(x_t, Kf, kh, kw, fftH, fftW, pred_buf)
-                    wmap = _weight_map(yt, pred_buf, local_delta, var_map=v2d, mask=m2d)
-                    _fft_conv_same_np(wmap * yt,       KTf, kh, kw, fftH, fftW, tmp_out); num += tmp_out
-                    _fft_conv_same_np(wmap * pred_buf, KTf, kh, kw, fftH, fftW, tmp_out); den += tmp_out
 
-                # ---- Neutralize no-info pixels (both num≈0 and den≈0) ----
-                ratio   = num / (den + EPS)
+                # --- improved early-stop ---
+                upd_med = torch.median(torch.abs(upd - 1))
+                rel_change = (torch.median(torch.abs(x_next - x_t)) /
+                            (torch.median(torch.abs(x_t)) + 1e-8))
+                small = (upd_med < tol_upd) | (rel_change < tol_rel)
+
+                if bool(small) and it >= min_iters:
+                    early_cnt += 1
+                else:
+                    early_cnt = 0
+
+                if early_cnt >= patience:
+                    x_t = x_next
+                    used_iters = it
+                    early_stopped = True
+                    status_cb(f"MFDeconv: Iteration {it}/{max_iters} (early stop)")
+                    _process_gui_events_safely()
+                    break
+
+                x_t = (1.0 - relax) * x_t + relax * x_next
+
+            else:
+                # -------- NumPy path --------
+                num.fill(0.0); den.fill(0.0)
+                if r > 1:
+                    for (Kf, KTf, (kh, kw, fftH, fftW)), m2d, v2d, y_nat in zip(
+                        zip(Kfs, KTfs, meta), mask_list, var_list, y_np):
+                        _fft_conv_same_np(x_t, Kf, kh, kw, fftH, fftW, pred_super)
+                        pred_low = _downsample_avg(pred_super, r)
+                        wmap_low = _weight_map(y_nat, pred_low, local_delta, var_map=v2d, mask=m2d)
+                        up_y    = _upsample_sum(wmap_low * y_nat,    r, target_hw=pred_super.shape[-2:])
+                        up_pred = _upsample_sum(wmap_low * pred_low, r, target_hw=pred_super.shape[-2:])
+                        _fft_conv_same_np(up_y,    KTf, kh, kw, fftH, fftW, tmp_out); num += tmp_out
+                        _fft_conv_same_np(up_pred, KTf, kh, kw, fftH, fftW, tmp_out); den += tmp_out
+                else:
+                    for (Kf, KTf, (kh, kw, fftH, fftW)), m2d, v2d, y_nat in zip(
+                        zip(Kfs, KTfs, meta), mask_list, var_list, y_np):
+                        _fft_conv_same_np(x_t, Kf, kh, kw, fftH, fftW, pred_super)
+                        pred = pred_super
+                        wmap = _weight_map(y_nat, pred, local_delta, var_map=v2d, mask=m2d)
+                        up_y, up_pred = (wmap * y_nat), (wmap * pred)
+                        _fft_conv_same_np(up_y,    KTf, kh, kw, fftH, fftW, tmp_out); num += tmp_out
+                        _fft_conv_same_np(up_pred, KTf, kh, kw, fftH, fftW, tmp_out); den += tmp_out
+
+                ratio = num / (den + EPS)
                 neutral = (np.abs(den) < 1e-12) & (np.abs(num) < 1e-12)
                 ratio[neutral] = 1.0
                 upd = np.clip(ratio, 1.0 / kappa, kappa)
-
                 x_next = np.clip(x_t * upd, 0.0, None)
-                if np.median(np.abs(upd - 1.0)) < 1e-3:
-                    if it >= min_iters:
-                        x_t = x_next
-                        used_iters = it              # <<< NEW
-                        early_stopped = True         # <<< NEW
-                        status_cb(f"MFDeconv: Iteration {it}/{max_iters} (early stop)")
-                        _process_gui_events_safely()
-                        break
+
+                # --- improved early-stop ---
+                upd_med = np.median(np.abs(upd - 1.0))
+                rel_change = (np.median(np.abs(x_next - x_t)) /
+                            (np.median(np.abs(x_t)) + 1e-8))
+                small = (upd_med < tol_upd) or (rel_change < tol_rel)
+
+                if small and it >= min_iters:
+                    early_cnt += 1
+                else:
+                    early_cnt = 0
+
+                if early_cnt >= patience:
+                    x_t = x_next
+                    used_iters = it
+                    early_stopped = True
+                    status_cb(f"MFDeconv: Iteration {it}/{max_iters} (early stop)")
+                    _process_gui_events_safely()
+                    break
+
                 x_t = (1.0 - relax) * x_t + relax * x_next
 
-            # UI throttled (don’t spam every iter)
-            if (it == 1) or (it % 1 == 0) or (it == max_iters):
-                frac = 0.25 + 0.70 * (it / float(max_iters))
-                _emit_pct(frac, f"Iteration {it}/{max_iters}")
-                status_cb(f"__PROGRESS__ {it/total_steps:.4f} Iter {it}/{max_iters}")
-                _process_gui_events_safely()
+            # save intermediate
+            if save_intermediate and (it % int(max(1, save_every)) == 0):
+                try:
+                    x_np = x_t.detach().cpu().numpy().astype(np.float32) if use_torch else x_t.astype(np.float32)
+                    _save_iter_image(x_np, hdr0_seed, iter_dir, f"iter_{it:03d}", color_mode)
+                except Exception as _e:
+                    status_cb(f"Intermediate save failed at iter {it}: {_e}")
+
+            # UI throttled — single line per iter (no per-frame spam in native mode)
+            frac = 0.25 + 0.70 * (it / float(max_iters))
+            _emit_pct(frac, f"Iteration {it}/{max_iters}")
+            status_cb(f"Iter {it}/{max_iters}")
+            _process_gui_events_safely()
 
     if not early_stopped:
         used_iters = max_iters
+
 
     # ----------------------------
     # Save result (keep FITS-friendly order: (C,H,W))
     # ----------------------------
     _emit_pct(0.97, "saving")
-    x_final = x_t.detach().cpu().numpy().astype(np.float32) if use_torch \
-              else x_t.astype(np.float32)
+    x_final = x_t.detach().cpu().numpy().astype(np.float32) if use_torch else x_t.astype(np.float32)
 
     if x_final.ndim == 3:
         if x_final.shape[0] not in (1, 3) and x_final.shape[-1] in (1, 3):
@@ -1204,14 +1629,18 @@ def multiframe_deconv(
     except Exception:
         hdr0 = fits.Header()
 
-    hdr0['MFDECONV'] = (True, 'Seti Astro multi-frame deconvolution')   # removed "(beta)"
+    hdr0['MFDECONV'] = (True, 'Seti Astro multi-frame deconvolution')
     hdr0['MF_COLOR'] = (str(color_mode), 'Color mode used')
     hdr0['MF_RHO']   = (str(rho), 'Loss: huber|l2')
     hdr0['MF_HDEL']  = (float(huber_delta), 'Huber delta (>0 abs, <0 autoxRMS)')
     hdr0['MF_MASK']  = (bool(use_star_masks),    'Used auto star masks')
     hdr0['MF_VAR']   = (bool(use_variance_maps), 'Used auto variance maps')
 
-    # >>> NEW: iteration telemetry
+    hdr0['MF_SR']     = (int(r), 'Super-resolution factor (1 := native)')
+    if r > 1:
+        hdr0['MF_SRSIG']  = (float(sr_sigma), 'Gaussian sigma for SR PSF fit (pixels at native)')
+        hdr0['MF_SRIT']   = (int(sr_psf_opt_iters), 'SR-PSF solver iters')
+
     hdr0['MF_ITMAX'] = (int(max_iters),  'Requested max iterations')
     hdr0['MF_ITERS'] = (int(used_iters), 'Actual iterations run')
     hdr0['MF_ESTOP'] = (bool(early_stopped), 'Early stop triggered')
@@ -1222,12 +1651,11 @@ def multiframe_deconv(
         elif x_final.ndim == 3:
             C, H, W = x_final.shape
             hdr0['MF_SHAPE'] = (f"{C}x{H}x{W}", 'Saved as 3D cube (CxHxW)')
-    # >>> NEW: pick a non-clobbering path
-    safe_out_path = _nonclobber_path(out_path)
-    if safe_out_path != out_path:
-        status_cb(f"Output exists — saving as: {safe_out_path}")
 
-    # write without overwrite now that the name is unique
+    save_path     = _sr_out_path(out_path, super_res_factor)
+    safe_out_path = _nonclobber_path(str(save_path))
+    if safe_out_path != str(save_path):
+        status_cb(f"Output exists — saving as: {safe_out_path}")
     fits.PrimaryHDU(data=x_final, header=hdr0).writeto(safe_out_path, overwrite=False)
 
     status_cb(f"✅ MFDeconv saved: {safe_out_path}  (iters used: {used_iters}{', early stop' if early_stopped else ''})")
@@ -1236,14 +1664,20 @@ def multiframe_deconv(
 
     try:
         if use_torch:
-            # big tensors / lists
-            del x_t
-            del y_tensors
-            del num, den
-            del psf_t, psfT_t
-            # optional: masks/vars if tensorized
+            # best-effort cleanup (guard names by branch)
             try:
-                del mask_tensors, var_tensors
+                del num, den
+            except Exception:
+                pass
+            try:
+                if r > 1:
+                    del pred_super_t, tmp_t, psf_fft, psfT_fft
+                else:
+                    del tmp_t, psf_t, psfT_t
+            except Exception:
+                pass
+            try:
+                del y_tensors, mask_tensors, var_tensors
             except Exception:
                 pass
             _free_torch_memory()
@@ -1251,7 +1685,6 @@ def multiframe_deconv(
         pass
 
     return safe_out_path
-
 
 # -----------------------------
 # Worker
@@ -1262,8 +1695,14 @@ class MultiFrameDeconvWorker(QObject):
     finished = pyqtSignal(bool, str, str)  # success, message, out_path
 
     def __init__(self, parent, aligned_paths, output_path, iters, kappa, color_mode,
-                huber_delta, min_iters, use_star_masks=False, use_variance_maps=False, rho="huber",
-                star_mask_cfg: dict | None = None, varmap_cfg: dict | None = None):
+                 huber_delta, min_iters, use_star_masks=False, use_variance_maps=False, rho="huber",
+                 star_mask_cfg: dict | None = None, varmap_cfg: dict | None = None,
+                 save_intermediate: bool = False,
+                 # NEW SR params
+                 super_res_factor: int = 1,
+                 sr_sigma: float = 1.1,
+                 sr_psf_opt_iters: int = 250,
+                 sr_psf_opt_lr: float = 0.1):
         super().__init__(parent)
         self.aligned_paths = aligned_paths
         self.output_path = output_path
@@ -1277,6 +1716,12 @@ class MultiFrameDeconvWorker(QObject):
         self.use_star_masks = use_star_masks
         self.use_variance_maps = use_variance_maps
         self.rho = rho
+        self.save_intermediate = save_intermediate   
+        self.super_res_factor = int(super_res_factor)
+        self.sr_sigma = float(sr_sigma)
+        self.sr_psf_opt_iters = int(sr_psf_opt_iters)
+        self.sr_psf_opt_lr = float(sr_psf_opt_lr)
+
 
     def _log(self, s): self.progress.emit(s)
 
@@ -1289,13 +1734,19 @@ class MultiFrameDeconvWorker(QObject):
                 kappa=self.kappa,
                 color_mode=self.color_mode,
                 huber_delta=self.huber_delta,
-                use_star_masks=self.use_star_masks,          
-                use_variance_maps=self.use_variance_maps,    
+                use_star_masks=self.use_star_masks,
+                use_variance_maps=self.use_variance_maps,
                 rho=self.rho,
                 min_iters=self.min_iters,
                 status_cb=self._log,
-                star_mask_cfg=self.star_mask_cfg,     
-                varmap_cfg=self.varmap_cfg                        
+                star_mask_cfg=self.star_mask_cfg,
+                varmap_cfg=self.varmap_cfg,
+                save_intermediate=self.save_intermediate,
+                # NEW SR forwards
+                super_res_factor=self.super_res_factor,
+                sr_sigma=self.sr_sigma,
+                sr_psf_opt_iters=self.sr_psf_opt_iters,
+                sr_psf_opt_lr=self.sr_psf_opt_lr,
             )
             self.finished.emit(True, "MF deconvolution complete.", out)
             _process_gui_events_safely()
