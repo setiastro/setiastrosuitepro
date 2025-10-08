@@ -1,6 +1,7 @@
 #pro.stacking_suite.py
 from __future__ import annotations
-import os, glob, shutil, tempfile, datetime as _dt, sys, platform
+import os, glob, shutil, tempfile, datetime as _dt
+import sys, platform
 from time import perf_counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy as np
