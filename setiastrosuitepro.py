@@ -269,7 +269,8 @@ from pro.status_log_dock import StatusLogDock
 from pro.log_bus import LogBus
 
 
-VERSION = "1.3.0"
+VERSION = "1.3.1"
+
 
 
 if hasattr(sys, '_MEIPASS'):
@@ -472,6 +473,35 @@ else:
     aberration_path = 'aberration.png'
     functionbundles_path = 'functionbundle.png'
     viewbundles_path = 'viewbundle.png'
+
+import faulthandler
+
+def _install_crash_logging():
+    faulthandler.enable(all_threads=True)
+    def _excepthook(t, v, tb):
+        logging.critical("Uncaught exception", exc_info=(t, v, tb))
+        try:
+            faulthandler.dump_traceback(file=sys.stderr)
+        except Exception:
+            pass
+    sys.excepthook = _excepthook
+
+_install_crash_logging()
+
+
+from PyQt6.QtCore import qInstallMessageHandler, QtMsgType
+
+def _qt_msg_handler(mode, ctx, msg):
+    lvl = {
+        QtMsgType.QtDebugMsg:    logging.DEBUG,
+        QtMsgType.QtInfoMsg:     logging.INFO,
+        QtMsgType.QtWarningMsg:  logging.WARNING,
+        QtMsgType.QtCriticalMsg: logging.ERROR,
+        QtMsgType.QtFatalMsg:    logging.CRITICAL,
+    }.get(mode, logging.ERROR)
+    logging.log(lvl, "Qt: %s (%s:%s)", msg, getattr(ctx, "file", "?"), getattr(ctx, "line", -1))
+
+qInstallMessageHandler(_qt_msg_handler)
 
 class MdiArea(QMdiArea):
     backgroundDoubleClicked = pyqtSignal()
@@ -940,6 +970,15 @@ class AstroSuiteProMainWindow(QMainWindow):
 
         self.status_log_dock.hide()
 
+    def _alive(self, obj) -> bool:
+        if obj is None:
+            return False
+        try:
+            _ = obj.metaObject()  # raises if C++ object already deleted
+            return True
+        except RuntimeError:
+            return False
+
     # ---------- THEME API ----------
     def _apply_workspace_theme(self):
         """Retint the QMdiArea background + viewport to current theme colors."""
@@ -1007,7 +1046,8 @@ class AstroSuiteProMainWindow(QMainWindow):
         self._repolish_top_levels()
         self._apply_workspace_theme()
         self._style_mdi_titlebars()
-
+        self._menu_view_panels = None
+        self._populate_view_panels_menu()
 
         try:
             vp = self.mdi.viewport()
@@ -2062,10 +2102,16 @@ class AstroSuiteProMainWindow(QMainWindow):
 
     # --- Shortcuts -> View Panels (dynamic) --------------------------------------
     def _ensure_view_panels_menu(self):
-        """Create (or return) the 'Shortcuts -> View Panels' submenu."""
-        if getattr(self, "_menu_view_panels", None):
+        if getattr(self, "_shutting_down", False):
+            return getattr(self, "_menu_view_panels", None)
+
+        # if cached menu died (e.g., after repolish), drop it
+        if not self._alive(getattr(self, "_menu_view_panels", None)):
+            self._menu_view_panels = None
+
+        if self._menu_view_panels:
             return self._menu_view_panels
-        # Find the existing &Shortcuts top-level menu we already create in _init_menubar
+
         shortcuts_menu = None
         for act in self.menuBar().actions():
             m = act.menu()
@@ -2073,11 +2119,10 @@ class AstroSuiteProMainWindow(QMainWindow):
                 shortcuts_menu = m
                 break
         if shortcuts_menu is None:
-            # Fallback: create it if somehow missing
             shortcuts_menu = self.menuBar().addMenu("&Shortcuts")
 
         self._menu_view_panels = shortcuts_menu.addMenu("View Panels")
-        self._view_panels_actions = {}  # objectName -> QAction
+        self._view_panels_actions = {}
         return self._menu_view_panels
 
     def _is_inactive_or_minimized(self) -> bool:
@@ -2177,11 +2222,23 @@ class AstroSuiteProMainWindow(QMainWindow):
 
 
     def _remove_dock_from_view_menu(self, name: str):
+        if getattr(self, "_shutting_down", False):
+            self._view_panels_actions.pop(name, None)
+            return
         act = self._view_panels_actions.pop(name, None)
-        if act:
-            m = self._ensure_view_panels_menu()
+        if not act:
+            return
+        m = self._ensure_view_panels_menu()
+        if not self._alive(m):
+            return
+        try:
             m.removeAction(act)
+        except RuntimeError:
+            pass
+        try:
             act.deleteLater()
+        except Exception:
+            pass
 
 
     def _populate_view_panels_menu(self):
@@ -7347,6 +7404,7 @@ class AstroSuiteProMainWindow(QMainWindow):
             QTimer.singleShot(0, lambda: self.changeEvent(QEvent(QEvent.Type.WindowStateChange)))
 
     def closeEvent(self, e):
+        self._shutting_down = True
         # Gather open docs
         docs = []
         for sw in self.mdi.subWindowList():
