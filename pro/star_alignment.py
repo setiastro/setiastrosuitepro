@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os, math, random, sys
+import os as _os, threading as _threading, ctypes as _ctypes
 from itertools import combinations
 from typing import Callable, Iterable, Tuple
 import tempfile
@@ -60,6 +61,34 @@ from pro.abe import _generate_sample_points as abe_generate_sample_points
 # ---------- Shortcut / Headless integration ----------
 
 STAR_ALIGN_CID = "star_alignment"
+
+# Put this near the top (after imports is fine) — called once per run.
+_NATIVE_THREAD_CAP_DONE = False
+_AA_LOCK = _threading.Lock()
+_CAP_DONE = False
+
+def _cap_native_threads_once():
+    global _CAP_DONE
+    if _CAP_DONE:
+        return
+    # Env must be set before libs spin up their pools
+    _os.environ.setdefault("OMP_NUM_THREADS", "1")
+    _os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+    _os.environ.setdefault("MKL_NUM_THREADS", "1")
+    _os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+    _os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
+    _os.environ.setdefault("OPENCV_OPENMP_DISABLE", "1")
+    try:
+        import numpy as _np
+        # numpy does not expose thread cap directly; env is enough for BLAS backends
+    except Exception:
+        pass
+    try:
+        import cv2 as _cv2
+        _cv2.setNumThreads(1)
+    except Exception:
+        pass
+    _CAP_DONE = True
 
 def _find_main_window_from_child(w):
     p = w
@@ -997,85 +1026,93 @@ class StarRegistrationWorker(QRunnable):
         self.signals = RegistrationWorkerSignals()
 
     def run(self):
+        """
+        Lightweight, crash-safe preview alignment:
+        • Make a small, independent float32 copy (no live memmap after with-block)
+        • Apply current transform to preview only
+        • Serialize astroalign (SEP) with a lock to avoid native crashes
+        • Emit delta keyed by ORIGINAL path
+        """
         try:
-            raw_img, img_header, img_bit_depth, img_is_mono = load_image(self.original_file)
-            if raw_img is None:
-                self.signals.error.emit(f"Could not load {self.original_file}")
-                return
+            _cap_native_threads_once()
+            # Set SEP pixstack once; don't mutate it later in worker threads
+            try:
+                curr = sep.get_extract_pixstack()
+                if curr < 1_500_000:
+                    sep.set_extract_pixstack(1_500_000)
+            except Exception:
+                pass
 
-            candidate_img = StarRegistrationThread.apply_affine_transform_static(raw_img, self.current_transform)
-            if candidate_img is None:
-                self.signals.error.emit(f"Failed to apply current transform to {self.original_file}")
-                return
+            # ---- build a small independent preview (no memmap aliasing) ----
+            with fits.open(self.original_file, memmap=True) as hdul:
+                arr = hdul[0].data
+                if arr is None:
+                    self.signals.error.emit(f"Could not load {self.original_file}")
+                    return
+                if arr.ndim == 2:
+                    gray = arr
+                else:
+                    # compute while file is still open, then copy
+                    gray = np.mean(arr, axis=2)
+                gray = np.nan_to_num(gray, nan=0.0, posinf=0.0, neginf=0.0)
 
-            img_for_alignment = np.mean(candidate_img, axis=2) if candidate_img.ndim == 3 else candidate_img
-
-            if np.isnan(img_for_alignment).any() or np.isinf(img_for_alignment).any():
-                img_for_alignment = np.nan_to_num(img_for_alignment, nan=0.0, posinf=0.0, neginf=0.0)
-
-            f = getattr(self, "downsample_factor", 1)
-            h, w = img_for_alignment.shape[:2]
+            f = max(1, int(getattr(self, "downsample_factor", 2)))
             if f > 1:
-                small = lambda im: cv2.resize(im, (max(1, w // f), max(1, h // f)), interpolation=cv2.INTER_AREA)
-                use_ref = small(self.reference_image)
-                use_img = small(img_for_alignment)
+                gray_small = gray[::f, ::f]
             else:
-                use_ref, use_img = self.reference_image, img_for_alignment
+                gray_small = gray
 
-            transform = None
-            if use_ref is not None and use_ref.ndim == 2:
-                transform = self.compute_affine_transform_astroalign(use_img, use_ref)
+            # detach from the memmap/file completely and keep it small
+            gray_small = np.ascontiguousarray(gray_small.astype(np.float32, copy=False))
+
+            ref_small = self.reference_image
+            if ref_small is None:
+                self.signals.error.emit("Worker missing reference preview.")
+                return
+
+            # ---- apply current transform to PREVIEW only ----
+            T_curr = np.array(self.current_transform, dtype=np.float32).reshape(2, 3)
+            T_prev = T_curr.copy()
+            if f > 1:
+                T_prev[0, 2] /= f
+                T_prev[1, 2] /= f
+
+            h, w = gray_small.shape[:2]
+            preview_warp = cv2.warpAffine(
+                gray_small, T_prev, (w, h),
+                flags=cv2.INTER_LINEAR,
+                borderMode=cv2.BORDER_CONSTANT, borderValue=0
+            )
+
+            # ---- astroalign (serialize to avoid SEP multi-thread crash) ----
+            transform = self.compute_affine_transform_astroalign(preview_warp, ref_small)
 
             if transform is None:
                 self.signals.error.emit(
-                    f"Astroalign failed for {os.path.basename(self.file_path)} – skipping"
+                    f"Astroalign failed for {os.path.basename(self.original_file)} – skipping"
                 )
                 return
 
-            self.signals.progress.emit(
-                f"Astroalign delta for {os.path.basename(self.file_path)}: "
-                f"dx={transform[0,2]:.2f}, dy={transform[1,2]:.2f}"
-            )
-
             transform = np.array(transform, dtype=np.float64).reshape(2, 3)
+
+            # rescale translations back to full-res units
             if f > 1:
                 transform[0, 2] *= f
                 transform[1, 2] *= f
 
-            current_transform = np.array(self.current_transform, dtype=np.float64).reshape(2, 3)
-            new_3x3 = np.vstack([transform, [0, 0, 1]])
-            curr_3x3 = np.vstack([current_transform, [0, 0, 1]])
-            T_total = (new_3x3 @ curr_3x3)[:2, :]
-
-            self.signals.result_transform.emit(self.original_file, transform)
-
-            aligned_image = StarRegistrationThread.apply_affine_transform_static(raw_img, T_total)
-            if aligned_image is None:
-                self.signals.error.emit(f"Transform application failed for {self.original_file}")
-                return
-            if np.isnan(aligned_image).any() or np.isinf(aligned_image).any():
-                self.signals.error.emit(f"Aligned image for {self.original_file} contains NaNs/Infs")
-                return
-
-            base = os.path.basename(self.file_path)
-            name, ext = os.path.splitext(base)
-            if not (name.endswith("_r") or name.endswith("_n_r")):
-                name += "_r"
-            output_filename = os.path.join(self.output_directory, f"{name}.fit")
-
-            save_image(
-                img_array=aligned_image,
-                filename=output_filename,
-                original_format="fit",
-                bit_depth=img_bit_depth,
-                original_header=img_header,
-                is_mono=img_is_mono
+            key = os.path.normpath(self.original_file)  # ORIGINAL key
+            self.signals.result_transform.emit(key, transform)
+            self.signals.progress.emit(
+                f"Astroalign delta for {os.path.basename(self.original_file)}: "
+                f"dx={transform[0,2]:.2f}, dy={transform[1,2]:.2f}"
             )
-            self.signals.result.emit(output_filename)
-            self.signals.progress.emit(f"Registered {os.path.basename(self.file_path)}")
+            self.signals.result.emit(self.original_file)
 
         except Exception as e:
+            # If a native segfault occurs, we won't reach here, but Python-side errors will
             self.signals.error.emit(f"Error processing {self.original_file}: {e}")
+
+
 
     @staticmethod
     def compute_affine_transform_astroalign(source_img, reference_img):
@@ -1115,137 +1152,123 @@ class StarRegistrationThread(QThread):
 
     def run(self):
         try:
-            # Reference image (allow active view)
+            _cap_native_threads_once()
+
+            # Resolve reference → 2D float32
             if isinstance(self.reference, str) and self.reference == "__ACTIVE_VIEW__":
                 ref_img, _, _ = _get_image_from_active_view(self.parent_window)
                 if ref_img is None:
                     self.registration_complete.emit(False, "Active view not available for reference.")
                     return
-                if ref_img.ndim == 3:
-                    ref_image = np.mean(ref_img, axis=2)
-                else:
-                    ref_image = ref_img
+                ref2d = np.mean(ref_img, axis=2) if ref_img.ndim == 3 else ref_img
             else:
-                ref_image, _, _, _ = load_image(self.reference)
-                if ref_image is None:
+                ref_img, _, _, _ = load_image(self.reference)
+                if ref_img is None:
                     self.registration_complete.emit(False, "Reference image failed to load!")
                     return
-                if ref_image.ndim == 3:
-                    ref_image = np.mean(ref_image, axis=2)
+                ref2d = np.mean(ref_img, axis=2) if ref_img.ndim == 3 else ref_img
 
-            ref_image = np.nan_to_num(ref_image, nan=0.0, posinf=0.0, neginf=0.0)
-            self.reference_image_2d = ref_image
+            ref2d = np.nan_to_num(ref2d, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
+            self.reference_image_2d = ref2d
 
-            # Detect reference stars (DAO multi-fwhm)
-            ref_stars = self.detect_stars(ref_image)
-            if len(ref_stars) < 10:
-                self.registration_complete.emit(False, "Insufficient stars in reference image!")
-                return
-            ref_triangles = self.build_triangle_dict(ref_stars)
+            # ✂️ No DAO/RANSAC: astroalign handles detection internally.
 
-            # Pre-save all files with the _n_r suffix
-            pre_saved_files = []
-            for fpath in self.files_to_align:
-                image, header, fmt, bit_depth = load_image(fpath)
-                if image is None:
-                    self.progress_update.emit(f"Error loading {fpath} during pre-save.")
-                    continue
-                base = os.path.basename(fpath)
-                name, ext = os.path.splitext(base)
-                if name.endswith("_n"):
-                    name = name[:-2]
-                if not name.endswith("_n_r"):
-                    name += "_n_r"
-                pre_saved = os.path.join(self.output_directory, f"{name}.fit")
-                save_image(
-                    img_array=image,
-                    filename=pre_saved,
-                    original_format="fit",
-                    bit_depth=bit_depth,
-                    original_header=header,
-                    is_mono=(image.ndim == 2)
-                )
-                pre_saved_files.append(pre_saved)
-                self.progress_update.emit(f"Pre-saved {base} as {os.path.basename(pre_saved)}")
-            self.files_to_align = pre_saved_files
+            # Single shared downsampled ref for workers
+            ds = 2
+            ref_small = ref2d[::ds, ::ds] if ds > 1 else ref2d
+            self.ref_small = np.ascontiguousarray(ref_small.astype(np.float32))
 
-            # Registration passes
+            # Initialize transforms to identity for EVERY original frame
+            self.alignment_matrices = {os.path.normpath(f): IDENTITY_2x3.copy() for f in self.original_files}
+            self.delta_transforms = {}
+
+            # Progress totals (units = number of worker completions across passes)
+            self._done = 0
+            self._total = len(self.original_files) * max(1, int(self.max_refinement_passes))
+
+            # Registration passes (compute deltas only)
             for pass_idx in range(self.max_refinement_passes):
                 self.progress_update.emit(f"⏳ Refinement Pass {pass_idx + 1}/{self.max_refinement_passes}…")
-                success, msg = self.run_one_registration_pass(ref_stars, ref_triangles, pass_idx)
+                success, msg = self.run_one_registration_pass(None, None, pass_idx)
                 if not success:
                     any_aligned = any(x is not None for x in self.alignment_matrices.values())
                     if not any_aligned:
                         self.registration_complete.emit(False, "No frames could be aligned. Aborting.")
                         return
-                    else:
-                        self.progress_update.emit("Partial success: some frames permanently failed.")
-                        break
+                    self.progress_update.emit("Partial success: some frames permanently failed.")
+                    break
 
+                # Convergence check on this pass’ deltas
                 if self.transform_deltas and max(self.transform_deltas[-1]) < self.shift_tolerance:
                     self.progress_update.emit("✅ Convergence reached! Stopping refinement.")
                     break
 
-            fast_mode = (self.max_refinement_passes <= 1)
+            # Finalize: single full-res read → warp → write per frame
+            self._finalize_writes()
 
-            # Final handling
-            if fast_mode:
-                # Accept everything that didn’t error out. We already wrote transformed files
-                # (or left the pre-saved *_n_r as-is for small deltas).
-                self.files_to_align = [p for p in self.file_key_to_current_path.values() if os.path.exists(p)]
-                self.progress_update.emit(
-                    f"⚡ Fast mode: accepting {len(self.files_to_align)} frame(s) after a single pass."
-                )
-            else:
-                # Original behavior: reject large last-pass deltas
-                final_shifts = self.transform_deltas[-1] if self.transform_deltas else []
-                old_files = self.files_to_align
-                new_files, rejected_files = [], []
-                for f, delta in zip(old_files, final_shifts):
-                    if delta > 2.0:
-                        rejected_files.append(f)
-                    else:
-                        new_files.append(f)
-                self.files_to_align = new_files
-                if rejected_files:
-                    self.progress_update.emit(
-                        f"🚨 Rejected {len(rejected_files)} frame(s) due to shift >2px or rotation >2°."
-                    )
-
-            aligned_count = sum(1 for v in self.alignment_matrices.values() if v is not None)
-            total_count   = len(self.alignment_matrices)
+            # Summary based on our known corpus
+            total_count = len(self.original_files)
+            aligned_count = sum(1 for f in self.original_files if os.path.exists(self.file_key_to_current_path.get(f, "")))
             summary = f"Registration complete. Valid frames: {aligned_count}/{total_count}."
             self.registration_complete.emit(True, summary)
 
         except Exception as e:
             self.registration_complete.emit(False, f"Error: {e}")
 
+
     def _increment_progress(self):
         self._done += 1
         self.progress_step.emit(self._done, self._total)
 
-    def run_one_registration_pass(self, ref_stars, ref_triangles, pass_index):
+    def run_one_registration_pass(self, _ref_stars_unused, _ref_triangles_unused, pass_index):
+        _cap_native_threads_once()
+
         pool = QThreadPool.globalInstance()
-        num_cores = os.cpu_count() or 4
-        pool.setMaxThreadCount(num_cores)
-        self.progress_update.emit(f"Using {num_cores} cores for pass {pass_index + 1}.")
+        hw = os.cpu_count() or 4
+        safe_threads = max(2, min(48, hw // 2))
+        pool.setMaxThreadCount(safe_threads)
+        self.progress_update.emit(f"Using {safe_threads} worker threads for stellar alignment (HW={hw}).")
 
-        transformed_files = {}
-        remaining_files = {}
-        skipped_files = []
+        # Build the worklist: only frames that still need refinement
+        if pass_index == 0:
+            work_list = list(self.original_files)
+        else:
+            work_list = []
+            for orig in self.original_files:
+                k = os.path.normpath(orig)
+                last_delta = self.delta_transforms.get(k, float("inf"))
+                if not (last_delta < self.shift_tolerance):
+                    work_list.append(orig)
 
-        for original_file, current_file in self.file_key_to_current_path.items():
-            current_transform = self.alignment_matrices.get(original_file, IDENTITY_2x3)
+        skipped = len(self.original_files) - len(work_list)
+        if skipped > 0:
+            self.progress_update.emit(f"Skipping {skipped} frame(s) already within {self.shift_tolerance:.2f}px.")
+
+            # Advance the progress bar for skipped items so it doesn't appear stalled
+            for _ in range(skipped):
+                self._increment_progress()
+
+        # If nothing to do in this pass, we’re already converged
+        if not work_list:
+            self.transform_deltas.append([self.delta_transforms.get(os.path.normpath(f), 0.0) for f in self.original_files])
+            return True, "Pass complete (nothing to refine)."
+
+        # Submit workers only for remaining items
+        for original_file in work_list:
+            current_file = self.file_key_to_current_path[original_file]
+            orig_key = os.path.normpath(original_file)
+            current_transform = self.alignment_matrices.get(orig_key, IDENTITY_2x3)
+
             worker = StarRegistrationWorker(
                 file_path=current_file,
-                original_file=original_file,
+                original_file=original_file,             # ORIGINAL key
                 current_transform=current_transform,
-                ref_stars=ref_stars,
-                ref_triangles=ref_triangles,
+                ref_stars=None,
+                ref_triangles=None,
                 output_directory=self.output_directory,
                 use_triangle=False,
                 use_astroalign=True,
-                reference_image=self.reference_image_2d,
+                reference_image=self.ref_small,          # shared small ref
                 downsample_factor=2
             )
             worker.signals.progress.connect(self.on_worker_progress)
@@ -1256,72 +1279,41 @@ class StarRegistrationThread(QThread):
 
         pool.waitForDone()
 
+        # Collate deltas deterministically in original order
         pass_deltas = []
         aligned_count = 0
-
-        for original_file, current_file in self.file_key_to_current_path.items():
-            delta_shift = getattr(self, "delta_transforms", {}).get(original_file, 0.0)
-            pass_deltas.append(delta_shift)
-            if delta_shift > 0.2:
-                image, original_header, original_format, bit_depth = load_image(current_file)
-                transformed_image = self.apply_affine_transform_static(image, self.alignment_matrices.get(original_file))
-                if transformed_image is not None and (np.isnan(transformed_image).any() or np.isinf(transformed_image).any()):
-                    transformed_image = np.nan_to_num(transformed_image, nan=0.0)
-                base = os.path.basename(current_file)
-                name, ext = os.path.splitext(base)
-                if not (name.endswith("_r") or name.endswith("_n_r")):
-                    name += "_r"
-                transformed_path = os.path.join(self.output_directory, f"{name}.fit")
-                save_image(
-                    img_array=transformed_image,
-                    filename=transformed_path,
-                    original_format="fit",
-                    bit_depth=bit_depth,
-                    original_header=original_header,
-                    is_mono=(transformed_image.ndim == 2)
-                )
-                transformed_files[original_file] = transformed_path
-            else:
-                remaining_files[original_file] = current_file
+        for orig in self.original_files:
+            k = os.path.normpath(orig)
+            d = self.delta_transforms.get(k, 0.0)
+            pass_deltas.append(d)
+            if d <= self.shift_tolerance:
                 aligned_count += 1
-                skipped_files.append(os.path.basename(current_file))
 
         self.transform_deltas.append(pass_deltas)
-        self.file_key_to_current_path = {**transformed_files, **remaining_files}
 
         preview = ", ".join([f"{d:.2f}" for d in pass_deltas[:10]])
         if len(pass_deltas) > 10:
             preview += f" … ({len(pass_deltas)} total)"
         self.progress_update.emit(f"Pass {pass_index + 1} delta shifts: [{preview}]")
-        if skipped_files:
-            self.progress_update.emit(f"Skipped (delta < 0.2px): {', '.join(skipped_files)}")
+        if aligned_count:
+            self.progress_update.emit(f"Skipped (delta < {self.shift_tolerance:.2f}px): {aligned_count} frame(s)")
 
-        if aligned_count == 0:
-            # This means every frame needed a transform this pass (none were under the skip threshold).
-            # That's still a successful pass; we overwrote the pre-saved _n_r files with aligned data.
-            return True, "Pass complete. All frames required transform (no < tolerance)."
-        failed_count = len(self.file_key_to_current_path) - aligned_count
-        if failed_count > 0:
-            return True, f"Pass complete. {failed_count} frame(s) failed."
-        return True, "Pass complete (all succeeded)."
+        return True, "Pass complete."
+
+
+
 
     def on_worker_result_transform(self, persistent_key, new_transform):
-        persistent_key = os.path.normpath(persistent_key)
-        new_transform = np.array(new_transform, dtype=np.float64).reshape(2, 3)
-        delta_shift = np.sqrt(new_transform[0, 2] ** 2 + new_transform[1, 2] ** 2)
-        if not hasattr(self, 'delta_transforms'):
-            self.delta_transforms = {}
-        self.delta_transforms[persistent_key] = delta_shift
+        k = os.path.normpath(persistent_key)
+        T_new = np.array(new_transform, dtype=np.float64).reshape(2, 3)
 
-        prev_transform = self.alignment_matrices.get(persistent_key)
-        if prev_transform is not None:
-            prev_transform = np.array(prev_transform, dtype=np.float64).reshape(2, 3)
-            prev_3x3 = np.vstack([prev_transform, [0, 0, 1]])
-            new_3x3 = np.vstack([new_transform, [0, 0, 1]])
-            combined = new_3x3 @ prev_3x3
-            self.alignment_matrices[persistent_key] = combined[0:2, :]
-        else:
-            self.alignment_matrices[persistent_key] = new_transform
+        self.delta_transforms[k] = float(np.hypot(T_new[0, 2], T_new[1, 2]))
+
+        T_prev = np.array(self.alignment_matrices.get(k, IDENTITY_2x3), dtype=np.float64).reshape(2, 3)
+        prev_3 = np.vstack([T_prev, [0, 0, 1]])
+        new_3  = np.vstack([T_new,  [0, 0, 1]])
+        combined = new_3 @ prev_3
+        self.alignment_matrices[k] = combined[0:2, :]
 
     def on_worker_progress(self, msg):
         self.progress_update.emit(msg)
@@ -1414,6 +1406,69 @@ class StarRegistrationThread(QThread):
                                             borderMode=cv2.BORDER_CONSTANT, borderValue=0))
             aligned = np.stack(chans, axis=2)
         return aligned
+
+    # ─────────────────────────────────────────────────────────────
+    # NEW METHOD: StarRegistrationThread._finalize_writes
+    # ─────────────────────────────────────────────────────────────
+    def _finalize_writes(self):
+        """
+        The only heavy IO:
+        • full-res read ONCE
+        • apply final 2×3 transform
+        • write *_n_r.fit ONCE
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        io_workers = max(1, min(4, (os.cpu_count() or 8) // 4))  # be gentle to disk
+
+        def _final_write(orig_path):
+            try:
+                k = os.path.normpath(orig_path)
+                T_final = np.array(self.alignment_matrices.get(k, IDENTITY_2x3), dtype=np.float32)
+                img, hdr, fmt, bit_depth = load_image(orig_path)
+                if img is None:
+                    return f"⚠️ Failed to read {os.path.basename(orig_path)}", False
+
+                aligned = StarRegistrationThread.apply_affine_transform_static(img, T_final)
+                if aligned is None:
+                    return f"⚠️ Warp failed {os.path.basename(orig_path)}", False
+                if np.isnan(aligned).any() or np.isinf(aligned).any():
+                    aligned = np.nan_to_num(aligned, nan=0.0, posinf=0.0, neginf=0.0)
+
+                base = os.path.basename(orig_path)
+                name, _ = os.path.splitext(base)
+                if name.endswith("_n"):
+                    name = name[:-2]
+                if not name.endswith("_n_r"):
+                    name += "_n_r"
+                out_path = os.path.join(self.output_directory, f"{name}.fit")
+
+                save_image(
+                    img_array=aligned,
+                    filename=out_path,
+                    original_format="fit",
+                    bit_depth=bit_depth,
+                    original_header=hdr,
+                    is_mono=(aligned.ndim == 2)
+                )
+                # update downstream mapping to the NEW path
+                self.file_key_to_current_path[k] = out_path
+                return f"💾 Wrote {os.path.basename(out_path)}", True
+            except Exception as e:
+                return f"⚠️ Finalize error {os.path.basename(orig_path)}: {e}", False
+
+        self.progress_update.emit("📝 Finalizing aligned outputs (single write per frame)…")
+        ok = 0
+        with ThreadPoolExecutor(max_workers=io_workers) as ex:
+            futs = {ex.submit(_final_write, f): f for f in self.original_files}
+            for fut in as_completed(futs):
+                msg, success = fut.result()
+                if success:
+                    ok += 1
+                self.progress_update.emit(msg)
+
+        self.progress_update.emit(f"✅ Transform file saved as alignment_transforms.sasd")
+
 
 
 # ---------------------------------------------------------------------

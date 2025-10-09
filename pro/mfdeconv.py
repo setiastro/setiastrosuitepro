@@ -19,6 +19,172 @@ NO_GRAD = contextlib.nullcontext  # fallback
 
 from pathlib import Path
 
+# at top of file with the other imports
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from queue import SimpleQueue
+
+def _compute_frame_assets(i, arr, hdr, *, make_masks, make_varmaps,
+                          star_mask_cfg, varmap_cfg, status_sink=lambda s: None):
+    """
+    Worker function: compute PSF and optional star mask / varmap for one frame.
+    Returns (index, psf, mask_or_None, var_or_None, log_lines)
+    """
+    logs = []
+    def log(s): logs.append(s)
+
+    # --- PSF sizing by FWHM ---
+    f_hdr = _estimate_fwhm_from_header(hdr)
+    f_img = _estimate_fwhm_from_image(arr)
+    f_whm = f_hdr if (np.isfinite(f_hdr)) else f_img
+    if not np.isfinite(f_whm) or f_whm <= 0:
+        f_whm = 2.5
+    k_auto = _auto_ksize_from_fwhm(f_whm)
+
+    # --- Star-derived PSF with retries ---
+    tried, psf = [], None
+    for k_try in [k_auto, max(k_auto - 4, 11), 21, 17, 15, 13, 11]:
+        if k_try in tried: continue
+        tried.append(k_try)
+        try:
+            out = compute_psf_kernel_for_image(arr, ksize=k_try, det_sigma=6.0, max_stars=80)
+            psf_try = out[0] if (isinstance(out, tuple) and len(out) >= 1) else out
+            if psf_try is not None:
+                psf = psf_try
+                break
+        except Exception:
+            psf = None
+    if psf is None:
+        psf = _gaussian_psf(f_whm, ksize=k_auto)
+    psf = _soften_psf(_normalize_psf(psf.astype(np.float32, copy=False)), sigma_px=0.25)
+
+    mask = None
+    var  = None
+
+    if make_masks or make_varmaps:
+        # one background per frame (reused by both)
+        luma = _to_luma_local(arr)
+        vmc = (varmap_cfg or {})
+        sky_map, rms_map, err_scalar = _sep_background_precompute(
+            luma, bw=int(vmc.get("bw", 64)), bh=int(vmc.get("bh", 64))
+        )
+
+        if make_masks:
+            smc = star_mask_cfg or {}
+            mask = _star_mask_from_precomputed(
+                luma, sky_map, err_scalar,
+                thresh_sigma = smc.get("thresh_sigma", THRESHOLD_SIGMA),
+                max_objs     = smc.get("max_objs", STAR_MASK_MAXOBJS),
+                grow_px      = smc.get("grow_px", GROW_PX),
+                ellipse_scale= smc.get("ellipse_scale", ELLIPSE_SCALE),
+                soft_sigma   = smc.get("soft_sigma", SOFT_SIGMA),
+                max_radius_px= smc.get("max_radius_px", MAX_STAR_RADIUS),
+                keep_floor   = smc.get("keep_floor", KEEP_FLOOR),
+                max_side     = smc.get("max_side", STAR_MASK_MAXSIDE),
+                status_cb    = log,
+            )
+
+        if make_varmaps:
+            vmc = varmap_cfg or {}
+            var = _variance_map_from_precomputed(
+                luma, sky_map, rms_map, hdr,
+                smooth_sigma = vmc.get("smooth_sigma", 1.0),
+                floor        = vmc.get("floor", 1e-8),
+                status_cb    = log,
+            )
+
+    # small per-frame summary
+    fwhm_est = _psf_fwhm_px(psf)
+    logs.insert(0, f"MFDeconv: PSF{i}: ksize={psf.shape[0]} | FWHM≈{fwhm_est:.2f}px")
+
+    return i, psf, mask, var, logs
+
+def _build_psf_and_assets(
+    ys_raw,
+    hdrs,
+    make_masks=False,
+    make_varmaps=False,
+    status_cb=lambda s: None,
+    save_dir: str | None = None,
+    star_mask_cfg: dict | None = None,
+    varmap_cfg: dict | None = None,
+    max_workers: int | None = None,
+):
+    """
+    Parallel PSF + (optional) star mask + variance map per frame.
+
+    Notes:
+      - Results are ordered to match ys_raw/hdrs indices.
+      - status_cb is only called from the main thread.
+    """
+    if save_dir:
+        os.makedirs(save_dir, exist_ok=True)
+
+    n = len(ys_raw)
+    # sensible default: up to 8, but don’t exceed CPU count
+    if max_workers is None:
+        try:
+            hw = os.cpu_count() or 4
+        except Exception:
+            hw = 4
+        max_workers = max(1, min(8, hw))
+
+    status_cb(f"MFDeconv: measuring PSFs/masks/varmaps with {max_workers} workers…")
+
+    # for GUI safety, queue logs from workers and flush here
+    log_queue: SimpleQueue[str] = SimpleQueue()
+
+    def enqueue_logs(lines):
+        for s in lines:
+            log_queue.put(s)
+
+    results = {}
+    psfs  = [None] * n
+    masks = ([None] * n) if make_masks else None
+    vars_ = ([None] * n) if make_varmaps else None
+
+    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="mfdeconv") as ex:
+        futs = []
+        for i, (arr, hdr) in enumerate(zip(ys_raw, hdrs), start=1):
+            # light progress line for the UI (main thread)
+            status_cb(f"MFDeconv: measuring PSF {i}/{n} …")
+            fut = ex.submit(
+                _compute_frame_assets,
+                i, arr, hdr,
+                make_masks=bool(make_masks),
+                make_varmaps=bool(make_varmaps),
+                star_mask_cfg=star_mask_cfg,
+                varmap_cfg=varmap_cfg,
+            )
+            futs.append(fut)
+
+        done_cnt = 0
+        for fut in as_completed(futs):
+            i, psf, m, v, logs = fut.result()
+            idx = i - 1  # 0-based slot
+            psfs[idx] = psf
+            if masks is not None: masks[idx] = m
+            if vars_  is not None: vars_[idx] = v
+            enqueue_logs(logs)
+
+            done_cnt += 1
+            if (done_cnt % 4) == 0 or done_cnt == n:
+                # flush a few logs without spamming the UI thread
+                while not log_queue.empty():
+                    try: status_cb(log_queue.get_nowait())
+                    except Exception: break
+
+    # final flush of any remaining logs
+    while not log_queue.empty():
+        try: status_cb(log_queue.get_nowait())
+        except Exception: break
+
+    # save PSFs if requested
+    if save_dir:
+        for i, k in enumerate(psfs, start=1):
+            if k is not None:
+                fits.PrimaryHDU(k).writeto(os.path.join(save_dir, f"psf_{i:03d}.fit"), overwrite=True)
+
+    return psfs, masks, vars_
 
 
 _ALLOWED = re.compile(r"[^A-Za-z0-9_-]+")
@@ -412,6 +578,28 @@ MAX_STAR_RADIUS     = 16
 SOFT_SIGMA          = 2.0
 ELLIPSE_SCALE       = 1.2
 
+def _sep_background_precompute(img_2d: np.ndarray, bw: int = 64, bh: int = 64):
+    """One-time SEP background build; returns (sky_map, rms_map, err_scalar)."""
+    if sep is None:
+        # robust fallback
+        med = float(np.median(img_2d))
+        mad = float(np.median(np.abs(img_2d - med))) + 1e-6
+        sky  = np.full_like(img_2d, med, dtype=np.float32)
+        rmsm = np.full_like(img_2d, 1.4826 * mad, dtype=np.float32)
+        return sky, rmsm, float(np.median(rmsm))
+
+    a = np.ascontiguousarray(img_2d.astype(np.float32))
+    b = sep.Background(a, bw=int(bw), bh=int(bh), fw=3, fh=3)
+    sky  = np.asarray(b.back(), dtype=np.float32)
+    try:
+        rmsm = np.asarray(b.rms(), dtype=np.float32)
+        err  = float(b.globalrms)
+    except Exception:
+        rmsm = np.full_like(a, float(np.median(b.rms())), dtype=np.float32)
+        err  = float(np.median(rmsm))
+    return sky, rmsm, err
+
+
 def _auto_star_mask_sep(
     img_2d: np.ndarray,
     thresh_sigma: float = THRESHOLD_SIGMA,
@@ -704,101 +892,168 @@ def _auto_variance_map(
     return v
 
 
+def _star_mask_from_precomputed(
+    img_2d: np.ndarray,
+    sky_map: np.ndarray,
+    err_scalar: float,
+    *,
+    thresh_sigma: float,
+    max_objs: int,
+    grow_px: int,
+    ellipse_scale: float,
+    soft_sigma: float,
+    max_radius_px: int,
+    keep_floor: float,
+    max_side: int,
+    status_cb=lambda s: None
+) -> np.ndarray:
+    # optional OpenCV fast path
+    try:
+        import cv2 as _cv2; _HAS_CV2 = True
+    except Exception:
+        _HAS_CV2 = False
 
+    H, W = img_2d.shape
+    data_sub = np.ascontiguousarray((img_2d - sky_map).astype(np.float32))
+    # --- downscale detection only (speeds large frames) ---
+    scale = 1.0
+    det = data_sub
+    if max_side and max(H, W) > int(max_side):
+        scale = float(max(H, W)) / float(max_side)
+        if _HAS_CV2:
+            det = _cv2.resize(det, (max(1, int(round(W/scale))), max(1, int(round(H/scale)))), interpolation=_cv2.INTER_AREA)
+        else:
+            s = int(max(1, round(scale)))
+            det = det[:(H//s)*s, :(W//s)*s].reshape(H//s, s, W//s, s).mean(axis=(1,3))
+            scale = float(s)
 
-def _build_psf_and_assets(
-    ys_raw,
-    hdrs,
-    make_masks=False,
-    make_varmaps=False,
-    status_cb=lambda s: None,
-    save_dir: str | None = None,
-    star_mask_cfg: dict | None = None,      # <<< NEW
-    varmap_cfg: dict | None = None          # <<< NEW
-):
-    """
-    Like _build_psf_bank_from_data_auto but also (optionally) returns
-    per-frame star masks and variance maps (both 2D).
-    """
-    if save_dir:
-        os.makedirs(save_dir, exist_ok=True)
-    psfs, masks, vars_ = [], ([] if make_masks else None), ([] if make_varmaps else None)
+    # progressive thresholds
+    thresholds = [thresh_sigma, thresh_sigma*2, thresh_sigma*4, thresh_sigma*8, thresh_sigma*16]
+    objs = None; used = float('nan'); raw = 0
+    for t in thresholds:
+        cand = sep.extract(det, thresh=t, err=err_scalar)
+        n = 0 if cand is None else len(cand)
+        if n == 0:          continue
+        if n > max_objs*12: continue
+        objs, raw, used = cand, n, float(t); break
 
-    for i, (arr, hdr) in enumerate(zip(ys_raw, hdrs), start=1):
-        status_cb(f"MFDeconv: measuring PSF {i}/{len(ys_raw)} …")
-        _process_gui_events_safely()
+    if objs is None or len(objs) == 0:
+        try:
+            cand = sep.extract(det, thresh=thresholds[-1], err=err_scalar, minarea=9)
+            if cand is not None and len(cand) > 0:
+                objs, raw, used = cand, len(cand), float(thresholds[-1])
+        except Exception:
+            pass
+    if objs is None or len(objs) == 0:
+        status_cb("Star mask: no sources found (mask disabled for this frame).")
+        return np.ones_like(img_2d, dtype=np.float32)
 
-        # --- PSF sizing by FWHM ---
-        f_hdr = _estimate_fwhm_from_header(hdr)
-        f_img = _estimate_fwhm_from_image(arr)
-        f_whm = f_hdr if (np.isfinite(f_hdr)) else f_img
-        if not np.isfinite(f_whm) or f_whm <= 0:
-            f_whm = 2.5
-        k_auto = _auto_ksize_from_fwhm(f_whm)
+    # keep brightest max_objs
+    if "flux" in objs.dtype.names:
+        idx = np.argsort(objs["flux"])[-int(max_objs):]
+        objs = objs[idx]
+    else:
+        objs = objs[:int(max_objs)]
+    kept = len(objs)
 
-        # --- Star-derived PSF with retries ---
-        tried, psf, k_used = [], None, None
-        for k_try in [k_auto, max(k_auto - 4, 11), 21, 17, 15, 13, 11]:
-            if k_try in tried:
-                continue
-            tried.append(k_try)
+    # draw back on full-res
+    mask = np.zeros((H, W), dtype=np.uint8, order="C")
+    s_back = float(scale)
+    MR = int(max(1, max_radius_px))
+    G  = int(max(0, grow_px))
+    ES = float(max(0.1, ellipse_scale))
+
+    drawn = 0
+    for o in objs:
+        x = int(round(float(o["x"]) * s_back))
+        y = int(round(float(o["y"]) * s_back))
+        if not (0 <= x < W and 0 <= y < H): continue
+        a = float(o["a"]) * s_back
+        b = float(o["b"]) * s_back
+        r = int(math.ceil(ES * max(a, b)))
+        r = min(max(r, 0) + G, MR)
+        if r <= 0: continue
+        drawn += 1
+        if _HAS_CV2:
+            _cv2.circle(mask, (x, y), r, 1, thickness=-1, lineType=_cv2.LINE_8)
+        else:
+            y0 = max(0, y - r); y1 = min(H, y + r + 1)
+            x0 = max(0, x - r); x1 = min(W, x + r + 1)
+            yy, xx = np.ogrid[y0:y1, x0:x1]
+            disk = (yy - y)*(yy - y) + (xx - x)*(xx - x) <= r*r
+            mask[y0:y1, x0:x1][disk] = 1
+
+    m = mask.astype(np.float32)
+    if soft_sigma > 0:
+        try:
+            if _HAS_CV2:
+                k = int(max(1, int(round(3*soft_sigma)))*2 + 1)
+                m = _cv2.GaussianBlur(m, (k,k), soft_sigma, borderType=_cv2.BORDER_REFLECT)
+            else:
+                from scipy.ndimage import gaussian_filter
+                m = gaussian_filter(m, sigma=float(soft_sigma), mode="reflect")
+        except Exception:
+            pass
+        np.clip(m, 0.0, 1.0, out=m)
+
+    keep = 1.0 - m
+    kf = float(max(0.0, min(0.99, keep_floor)))
+    keep = kf + (1.0 - kf) * keep
+    np.clip(keep, 0.0, 1.0, out=keep)
+
+    status_cb(f"Star mask: thresh={used:.3g} | detected={raw} | kept={kept} | drawn={drawn} | keep_floor={keep_floor}")
+    return keep
+
+def _variance_map_from_precomputed(
+    img_2d: np.ndarray,
+    sky_map: np.ndarray,
+    rms_map: np.ndarray,
+    hdr,
+    *,
+    smooth_sigma: float,
+    floor: float,
+    status_cb=lambda s: None
+) -> np.ndarray:
+    img = np.clip(np.asarray(img_2d, dtype=np.float32), 0.0, None)
+    var_bg_dn2 = np.maximum(rms_map, 1e-6) ** 2
+    obj_dn = np.clip(img - sky_map, 0.0, None)
+
+    gain = None
+    for k in ("EGAIN", "GAIN", "GAIN1", "GAIN2"):
+        if k in hdr:
             try:
-                out = compute_psf_kernel_for_image(arr, ksize=k_try, det_sigma=6.0, max_stars=80)
-                psf_try = out[0] if (isinstance(out, tuple) and len(out) >= 1) else out
-                if psf_try is not None:
-                    psf = psf_try; k_used = k_try
-                    break
+                g = float(hdr[k]);  gain = g if (np.isfinite(g) and g > 0) else None
+                if gain is not None: break
+            except Exception: pass
+
+    if gain is not None:
+        a_shot = 1.0 / gain
+    else:
+        sky_med  = float(np.median(sky_map))
+        varbg_med= float(np.median(var_bg_dn2))
+        a_shot = (varbg_med / sky_med) if sky_med > 1e-6 else 0.0
+        a_shot = float(np.clip(a_shot, 0.0, 10.0))
+
+    v = var_bg_dn2 + a_shot * obj_dn
+    if smooth_sigma > 0:
+        try:
+            import cv2 as _cv2
+            k = int(max(1, int(round(3*smooth_sigma)))*2 + 1)
+            v = _cv2.GaussianBlur(v, (k,k), float(smooth_sigma), borderType=_cv2.BORDER_REFLECT)
+        except Exception:
+            try:
+                from scipy.ndimage import gaussian_filter
+                v = gaussian_filter(v, sigma=float(smooth_sigma), mode="reflect")
             except Exception:
-                psf = None
+                pass
 
-        if psf is None:
-            psf = _gaussian_psf(f_whm, ksize=k_auto)
-
-        psf = _soften_psf(_normalize_psf(psf.astype(np.float32, copy=False)), sigma_px=0.25)
-        psfs.append(psf)
-
-        # --- Optional assets (2D, same size as arr) ---
-        if make_masks or make_varmaps:
-            status_cb(f"  PSF{i}: k={psf.shape[0]}  → building assets…")
-            _process_gui_events_safely()
-
-        if make_masks:
-            smc = star_mask_cfg or {}
-            m = _auto_star_mask_sep(
-                _to_luma_local(arr),
-                status_cb=status_cb,
-                thresh_sigma = smc.get("thresh_sigma", THRESHOLD_SIGMA),
-                grow_px      = smc.get("grow_px", GROW_PX),
-                max_objs     = smc.get("max_objs", STAR_MASK_MAXOBJS),
-                ellipse_scale= smc.get("ellipse_scale", ELLIPSE_SCALE),
-                soft_sigma   = smc.get("soft_sigma", SOFT_SIGMA),
-                max_radius_px= smc.get("max_radius_px", MAX_STAR_RADIUS),
-                keep_floor   = smc.get("keep_floor", KEEP_FLOOR),
-            )
-            masks.append(m)
-            status_cb(f"    mask done ({i}/{len(ys_raw)})"); _process_gui_events_safely()
-
-        if make_varmaps:
-            vmc = varmap_cfg or {}
-            v = _auto_variance_map(
-                _to_luma_local(arr), hdr, status_cb=status_cb,
-                sample_stride = vmc.get("sample_stride", VARMAP_SAMPLE_STRIDE),
-                bw            = vmc.get("bw", 64),
-                bh            = vmc.get("bh", 64),
-                smooth_sigma  = vmc.get("smooth_sigma", 1.0),
-                floor         = vmc.get("floor", 1e-8),
-            )
-            vars_.append(v)
-            status_cb(f"    varmap done ({i}/{len(ys_raw)})"); _process_gui_events_safely()
-
-        # Save PSF if requested
-        if save_dir:
-            fits.PrimaryHDU(psf).writeto(os.path.join(save_dir, f"psf_{i:03d}.fit"), overwrite=True)
-
-        fwhm_est = _psf_fwhm_px(psf)
-        status_cb(f"  PSF{i}: ksize={psf.shape[0]} | FWHM≈{fwhm_est:.2f}px")
-
-    return psfs, masks, vars_
+    np.clip(v, float(floor), None, out=v)
+    try:
+        rms_med = float(np.median(np.sqrt(var_bg_dn2)))
+        status_cb(f"Variance map: sky_med={float(np.median(sky_map)):.3g} DN | rms_med={rms_med:.3g} DN | smooth_sigma={smooth_sigma} | floor={floor}")
+    except Exception:
+        pass
+    return v.astype(np.float32, copy=False)
 
 
 
@@ -1214,6 +1469,200 @@ def _sep_bg_rms(frames):
     except Exception:
         return None
 
+# =========================
+# Memory/streaming helpers
+# =========================
+
+def _approx_bytes(arr_like_shape, dtype=np.float32):
+    """Rough byte estimator for a given shape/dtype."""
+    return int(np.prod(arr_like_shape)) * np.dtype(dtype).itemsize
+
+def _mem_model(
+    grid_hw: tuple[int,int],
+    r: int,
+    ksize: int,
+    channels: int,
+    mem_target_mb: int,
+    prefer_tiles: bool = False,
+    min_tile: int = 256,
+    max_tile: int = 2048,
+) -> dict:
+    """
+    Pick a batch size (#frames) and optional tile size (HxW) given a memory budget.
+    Very conservative — aims to bound peak working-set on CPU/GPU.
+    """
+    Hs, Ws = grid_hw
+    halo = (ksize // 2) * max(1, r)        # SR grid halo if r>1
+    C    = max(1, channels)
+
+    # working-set per *full-frame* conv scratch (num/den/tmp/etc.)
+    per_frame_fft_like = 3 * _approx_bytes((C, Hs, Ws))  # tmp/pred + in/out buffers
+    global_accum = 2 * _approx_bytes((C, Hs, Ws))        # num + den
+
+    budget = int(mem_target_mb * 1024 * 1024)
+
+    # Try to stay in full-frame mode first unless prefer_tiles
+    B_full = max(1, (budget - global_accum) // max(per_frame_fft_like, 1))
+    use_tiles = prefer_tiles or (B_full < 1)
+
+    if not use_tiles:
+        return dict(batch_frames=int(B_full), tiles=None, halo=int(halo), ksize=int(ksize))
+
+    # Tile mode: pick a square tile side t that fits
+    # scratch per tile ~ 3*C*(t+2h)^2 + accum(core) ~ small
+    # try descending from max_tile
+    t = int(min(max_tile, max(min_tile, 1 << int(np.floor(np.log2(min(Hs, Ws)))))))
+    while t >= min_tile:
+        th = t + 2 * halo
+        per_tile = 3 * _approx_bytes((C, th, th))
+        B_tile   = max(1, (budget - global_accum) // max(per_tile, 1))
+        if B_tile >= 1:
+            return dict(batch_frames=int(B_tile), tiles=(t, t), halo=int(halo), ksize=int(ksize))
+        t //= 2
+
+    # Worst case: 1 frame, minimal tile
+    return dict(batch_frames=1, tiles=(min_tile, min_tile), halo=int(halo), ksize=int(ksize))
+
+
+def _chunk(seq, n):
+    """Yield chunks of size n from seq."""
+    for i in range(0, len(seq), n):
+        yield seq[i:i+n]
+
+def _read_shape_fast(path) -> tuple[int,int,int]:
+    """
+    Return (C,H,W) with C in {1,3}, squeezing trailing singleton.
+    Uses memmap to avoid loading pixels.
+    """
+    with fits.open(path, memmap=True) as hdul:
+        a = hdul[0].data
+        if a is None:
+            raise ValueError(f"No data in {path}")
+        if a.ndim == 2:
+            H, W = a.shape
+            return (1, int(H), int(W))
+        if a.ndim == 3:
+            # accept (H,W,1|3) or (1|3,H,W)
+            if a.shape[-1] in (1,3):
+                C = int(a.shape[-1]); H = int(a.shape[0]); W = int(a.shape[1])
+                if C == 1:
+                    return (1, H, W)
+                return (3, H, W)
+            if a.shape[0] in (1,3):
+                return (int(a.shape[0]), int(a.shape[1]), int(a.shape[2]))
+        # fallback: treat as mono by luma-mean
+        s = tuple(map(int, a.shape))
+        H, W = s[-2], s[-1]
+        return (1, H, W)
+
+def _common_hw_from_paths(paths):
+    """Scan all files (memmap) and return minimal (H,W) intersection."""
+    Hs, Ws = [], []
+    for p in paths:
+        _, H, W = _read_shape_fast(p)
+        Hs.append(H); Ws.append(W)
+    return int(min(Hs)), int(min(Ws))
+
+def _stack_loader_memmap(paths, Ht, Wt, color_mode):
+    """
+    Stream a small batch of frames from disk (memmap), coerce to requested layout,
+    center-crop to (Ht,Wt), sanitize numeric. Returns (list_of_arrays, headers).
+    """
+    ys, hdrs = [], []
+    for p in paths:
+        with fits.open(p, memmap=True) as hdul:
+            arr = hdul[0].data
+            hdr = hdul[0].header
+        arr = np.asarray(arr, dtype=np.float32, order="C")
+        if arr.ndim == 3 and arr.shape[-1] == 1:  # squeeze trailing singleton
+            arr = np.squeeze(arr, axis=-1)
+        arr = _normalize_layout_single(arr, color_mode)   # (H,W) or (C,H,W)
+        arr = _center_crop(arr, Ht, Wt)
+        arr = _sanitize_numeric(arr)
+        ys.append(arr); hdrs.append(hdr)
+    return ys, hdrs
+
+def _tiles_of(hw: tuple[int,int], tile_hw: tuple[int,int], halo: int):
+    """
+    Yield tiles as dicts: {y0,y1,x0,x1,yc0,yc1,xc0,xc1}
+    (outer region includes halo; core (yc0:yc1, xc0:xc1) excludes halo).
+    """
+    H, W = hw
+    th, tw = tile_hw
+    th = max(1, int(th)); tw = max(1, int(tw))
+    for y in range(0, H, th):
+        for x in range(0, W, tw):
+            yc0 = y; yc1 = min(y + th, H)
+            xc0 = x; xc1 = min(x + tw, W)
+            y0  = max(0, yc0 - halo); y1 = min(H, yc1 + halo)
+            x0  = max(0, xc0 - halo); x1 = min(W, xc1 + halo)
+            yield dict(y0=y0, y1=y1, x0=x0, x1=x1, yc0=yc0, yc1=yc1, xc0=xc0, xc1=xc1)
+
+def _extract_with_halo(a, tile):
+    """
+    Slice 'a' ((H,W) or (C,H,W)) to [y0:y1, x0:x1] with channel kept.
+    """
+    y0,y1,x0,x1 = tile["y0"], tile["y1"], tile["x0"], tile["x1"]
+    if a.ndim == 2:
+        return a[y0:y1, x0:x1]
+    else:
+        return a[:, y0:y1, x0:x1]
+
+def _add_core(accum, tile_val, tile):
+    """
+    Add tile_val core into accum at (yc0:yc1, xc0:xc1).
+    Shapes match (2D) or (C,H,W).
+    """
+    yc0,yc1,xc0,xc1 = tile["yc0"], tile["yc1"], tile["xc0"], tile["xc1"]
+    if accum.ndim == 2:
+        h0 = yc0 - tile["y0"]; h1 = h0 + (yc1 - yc0)
+        w0 = xc0 - tile["x0"]; w1 = w0 + (xc1 - xc0)
+        accum[yc0:yc1, xc0:xc1] += tile_val[h0:h1, w0:w1]
+    else:
+        h0 = yc0 - tile["y0"]; h1 = h0 + (yc1 - yc0)
+        w0 = xc0 - tile["x0"]; w1 = w0 + (xc1 - xc0)
+        accum[:, yc0:yc1, xc0:xc1] += tile_val[:, h0:h1, w0:w1]
+
+def _prepare_np_fft_packs_batch(psfs, flip_psf, Hs, Ws):
+    """Precompute rFFT packs on current grid for NumPy path; returns lists aligned to batch psfs."""
+    Kfs, KTfs, meta = [], [], []
+    import numpy.fft as fft
+    for k, kT in zip(psfs, flip_psf):
+        kh, kw = k.shape
+        fftH, fftW = _fftshape_same(Hs, Ws, kh, kw)
+        Kfs.append(fft.rfftn(np.fft.ifftshift(k),  s=(fftH, fftW)))
+        KTfs.append(fft.rfftn(np.fft.ifftshift(kT), s=(fftH, fftW)))
+        meta.append((kh, kw, fftH, fftW))
+    return Kfs, KTfs, meta
+
+def _prepare_torch_fft_packs_batch(psfs, flip_psf, Hs, Ws, device, dtype):
+    """Torch FFT packs per PSF on current grid; mirrors your existing packer."""
+    return _precompute_torch_psf_ffts(psfs, flip_psf, Hs, Ws, device, dtype)
+
+def _as_chw(np_img: np.ndarray) -> np.ndarray:
+    """Return float32 CHW. Handles (H,W), (3,H,W), (H,W,3)."""
+    x = np.asarray(np_img, dtype=np.float32, order="C")
+    if x.ndim == 2:
+        return x[None, ...]                # 1,H,W
+    if x.ndim == 3 and x.shape[0] in (1, 3):   # already C,H,W
+        return x
+    if x.ndim == 3 and x.shape[-1] in (1, 3):  # H,W,C -> C,H,W
+        return np.moveaxis(x, -1, 0)
+    # last resort: treat first dim as channels
+    return x
+
+def _ensure_same_hw(ref: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+    """Center-crop to match ref's H,W if slightly off, assuming CHW."""
+    _, Hr, Wr = ref.shape
+    _, Ht, Wt = t.shape
+    if (Hr, Wr) == (Ht, Wt):
+        return t
+    dh, dw = max(0, Ht - Hr), max(0, Wt - Wr)
+    top  = dh // 2
+    left = dw // 2
+    return t[:, top:top+Hr, left:left+Wr]
+
+
 # -----------------------------
 # Core
 # -----------------------------
@@ -1255,7 +1704,7 @@ def multiframe_deconv(
     _emit_pct(0.02, "loading")
     ys_raw, hdrs = _stack_loader(paths)
     _emit_pct(0.05, "preparing")
-    relax = 0.7  # 0<alpha<=1; smaller = more damping.
+    relax = 0.7
     use_torch = False
     global torch, TORCH_OK
 
@@ -1271,11 +1720,8 @@ def multiframe_deconv(
 
         try: cuda_ok = hasattr(torch, "cuda") and torch.cuda.is_available()
         except Exception: cuda_ok = False
-
         try: mps_ok = hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
         except Exception: mps_ok = False
-
-        # DirectML (Windows: AMD/Intel iGPU/dGPU)
         try:
             import torch_directml
             dml_device = torch_directml.device()
@@ -1367,7 +1813,7 @@ def multiframe_deconv(
         x = seed_native
     Hs, Ws = x.shape if x.ndim == 2 else x.shape[-2:]
 
-    # Build mask/var lists (2D) aligned to native 'data'
+    # masks/vars aligned to native grid (2D each)
     auto_masks = masks_auto if use_star_masks else None
     auto_vars  = vars_auto  if use_variance_maps else None
     mask_list = _ensure_mask_list(masks if masks is not None else auto_masks, data)
@@ -1382,7 +1828,7 @@ def multiframe_deconv(
             hdr0_seed = fits.getheader(paths[0], ext=0) if os.path.exists(paths[0]) else fits.Header()
         except Exception:
             hdr0_seed = fits.Header()
-        _save_iter_image(x, hdr0_seed, iter_dir, "seed", color_mode)  # save seed
+        _save_iter_image(x, hdr0_seed, iter_dir, "seed", color_mode)
 
     status_cb("MFDeconv: Calculating Backgrounds and MADs…")
     _process_gui_events_safely()
@@ -1394,45 +1840,24 @@ def multiframe_deconv(
     _process_gui_events_safely()
 
     # -------- precompute and allocate scratch --------
-    per_frame_logging = (r > 1)  # only chatty inside SR mode
+    per_frame_logging = (r > 1)
     if use_torch:
-        # tensors
         x_t = _to_t(_contig(x))
-        y_tensors = [_to_t(_contig(y)) for y in data]
-        mask_tensors = [torch.as_tensor(m, dtype=x_t.dtype, device=x_t.device) for m in mask_list]
-        var_tensors  = [None if v is None else torch.as_tensor(v, dtype=x_t.dtype, device=x_t.device)
-                        for v in var_list]
-
-        F = torch.nn.functional  # access via runtime torch
         num = torch.zeros_like(x_t)
         den = torch.zeros_like(x_t)
 
         if r > 1:
-            # SR: use FFT packs on the SR grid
-            Hs, Ws = (x_t.shape if x_t.ndim == 2 else x_t.shape[-2:])
-            psf_fft, psfT_fft = _precompute_torch_psf_ffts(
-                psfs, flip_psf, int(Hs), int(Ws), device=x_t.device, dtype=x_t.dtype
-            )
-            pred_super_t = torch.empty_like(x_t)
-            tmp_t        = torch.empty_like(x_t)
-
-            def _upsample_sum_torch(low, r_: int):
-                if r_ <= 1:
-                    return low
-                if low.ndim == 2:
-                    return F.interpolate(low[None, None], scale_factor=r_, mode="nearest")[0, 0]
-                else:
-                    return F.interpolate(low[None], scale_factor=r_, mode="nearest")[0]
+            # >>> SR path now uses SPATIAL CONV (cuDNN) to avoid huge FFT buffers
+            psf_t  = [_to_t(_contig(k))[None, None]  for k  in psfs]   # (1,1,kh,kw)
+            psfT_t = [_to_t(_contig(kT))[None, None] for kT in flip_psf]
         else:
-            # Native: stay in spatial conv path (no SR churn)
+            # Native spatial (as before)
             psf_t  = [_to_t(_contig(k))[None, None]  for k  in psfs]
             psfT_t = [_to_t(_contig(kT))[None, None] for kT in flip_psf]
-            tmp_t  = torch.empty_like(x_t)
 
     else:
-        # NumPy path
         x_t = x
-        y_np = data
+        # CPU path: keep your (more RAM-tolerant) FFT packs
         if r > 1:
             if x_t.ndim == 2:
                 Hs, Ws = x_t.shape
@@ -1442,7 +1867,6 @@ def multiframe_deconv(
             pred_super = np.empty_like(x_t)
             tmp_out    = np.empty_like(x_t)
         else:
-            # native: we can still reuse FFT helper (it uses FFT internally), but no SR down/up
             Kfs, KTfs, meta = _precompute_np_psf_ffts(psfs, flip_psf, Hs, Ws)
             pred_super = np.empty_like(x_t)
             tmp_out    = np.empty_like(x_t)
@@ -1452,39 +1876,41 @@ def multiframe_deconv(
     status_cb("Starting First Multiplicative Iteration…")
     _process_gui_events_safely()
 
-    # -------- inference/no-grad for the whole loop --------
     cm = _safe_inference_context() if use_torch else NO_GRAD
     rho_is_l2 = (str(rho).lower() == "l2")
     local_delta = 0.0 if rho_is_l2 else huber_delta
     used_iters = 0
     early_stopped = False
 
-    # cache a positive Huber δ per frame if auto (update every 5 iters)
     auto_delta_cache = None
     if use_torch and (huber_delta < 0) and (not rho_is_l2):
-        auto_delta_cache = [None] * len(ys_raw)
+        auto_delta_cache = [None] * len(paths)
 
-    # early-stop controls
-    tol_upd = 1e-3       # threshold on median|upd-1|
-    tol_rel = 5e-4       # threshold on relative median change of x
-    patience = 2         # require this many consecutive "small" iters
+    tol_upd = 1e-3
+    tol_rel = 5e-4
+    patience = 2
     early_cnt = 0
 
     with cm():
         for it in range(1, max_iters + 1):
             if use_torch:
                 num.zero_(); den.zero_()
+
                 if r > 1:
-                    # -------- SR path (FFT + down/up) --------
-                    for fidx, (yt, Kf_pack, KTf_pack, mt, vt) in enumerate(
-                        zip(y_tensors, psf_fft, psfT_fft, mask_tensors, var_tensors)
-                    ):
-                        _fft_conv_same_torch(x_t, Kf_pack, pred_super_t)
+                    # -------- SR path (SPATIAL conv + stream) --------
+                    for fidx, (wk, wkT) in enumerate(zip(psf_t, psfT_t)):
+                        yt_np = data[fidx]   # CHW or HW (CPU)
+                        mt_np = mask_list[fidx]
+                        vt_np = var_list[fidx]
 
-                        # Correct SR → native downsample (average over r×r)
-                        pred_low = _downsample_avg_t(pred_super_t, r)
+                        yt = torch.as_tensor(yt_np, dtype=x_t.dtype, device=x_t.device)
+                        mt = None if mt_np is None else torch.as_tensor(mt_np, dtype=x_t.dtype, device=x_t.device)
+                        vt = None if vt_np is None else torch.as_tensor(vt_np, dtype=x_t.dtype, device=x_t.device)
 
-                        # Robust weights
+                        # SR conv on grid of x_t
+                        pred_super = _conv_same_torch(x_t, wk)              # SR grid
+                        pred_low   = _downsample_avg_t(pred_super, r)       # native grid
+
                         if auto_delta_cache is not None:
                             if (auto_delta_cache[fidx] is None) or (it % 5 == 1):
                                 rnat = yt - pred_low
@@ -1496,20 +1922,34 @@ def multiframe_deconv(
                         else:
                             wmap_low = _weight_map(yt, pred_low, local_delta, var_map=vt, mask=mt)
 
-                        # Adjoint lift (sum-replicate, not average)
+                        # lift back to SR via sum-replicate
                         up_y    = _upsample_sum_t(wmap_low * yt,       r)
                         up_pred = _upsample_sum_t(wmap_low * pred_low, r)
 
-                        # Accumulate
-                        _fft_conv_same_torch(up_y,    KTf_pack, tmp_t); num += tmp_t
-                        _fft_conv_same_torch(up_pred, KTf_pack, tmp_t); den += tmp_t
+                        # accumulate via adjoint kernel on SR grid
+                        num += _conv_same_torch(up_y,    wkT)
+                        den += _conv_same_torch(up_pred, wkT)
+
+                        # free temps as aggressively as possible
+                        del yt, mt, vt, pred_super, pred_low, wmap_low, up_y, up_pred
+                        if cuda_ok:
+                            try: torch.cuda.empty_cache()
+                            except Exception: pass
 
                         if per_frame_logging and ((fidx & 7) == 0):
-                            status_cb(f"Iter {it}/{max_iters} — frame {fidx+1}/{len(y_tensors)} (SR grid)")
+                            status_cb(f"Iter {it}/{max_iters} — frame {fidx+1}/{len(paths)} (SR spatial)")
 
                 else:
-                    # -------- Native path (spatial conv, no per-frame chatter) --------
-                    for yt, wk, wkT, mt, vt in zip(y_tensors, psf_t, psfT_t, mask_tensors, var_tensors):
+                    # -------- Native path (spatial conv, stream) --------
+                    for fidx, (wk, wkT) in enumerate(zip(psf_t, psfT_t)):
+                        yt_np = data[fidx]
+                        mt_np = mask_list[fidx]
+                        vt_np = var_list[fidx]
+
+                        yt = torch.as_tensor(yt_np, dtype=x_t.dtype, device=x_t.device)
+                        mt = None if mt_np is None else torch.as_tensor(mt_np, dtype=x_t.dtype, device=x_t.device)
+                        vt = None if vt_np is None else torch.as_tensor(vt_np, dtype=x_t.dtype, device=x_t.device)
+
                         pred = _conv_same_torch(x_t, wk)
                         wmap = _weight_map(yt, pred, local_delta, var_map=vt, mask=mt)
                         up_y    = wmap * yt
@@ -1517,16 +1957,20 @@ def multiframe_deconv(
                         num += _conv_same_torch(up_y,    wkT)
                         den += _conv_same_torch(up_pred, wkT)
 
+                        del yt, mt, vt, pred, wmap, up_y, up_pred
+                        if cuda_ok:
+                            try: torch.cuda.empty_cache()
+                            except Exception: pass
+
                 ratio = num / (den + EPS)
                 neutral = (den.abs() < 1e-12) & (num.abs() < 1e-12)
                 ratio = torch.where(neutral, torch.ones_like(ratio), ratio)
                 upd = torch.clamp(ratio, 1.0 / kappa, kappa)
                 x_next = torch.clamp(x_t * upd, min=0.0)
 
-                # --- improved early-stop ---
                 upd_med = torch.median(torch.abs(upd - 1))
                 rel_change = (torch.median(torch.abs(x_next - x_t)) /
-                            (torch.median(torch.abs(x_t)) + 1e-8))
+                              (torch.median(torch.abs(x_t)) + 1e-8))
                 small = (upd_med < tol_upd) | (rel_change < tol_rel)
 
                 if bool(small) and it >= min_iters:
@@ -1545,11 +1989,11 @@ def multiframe_deconv(
                 x_t = (1.0 - relax) * x_t + relax * x_next
 
             else:
-                # -------- NumPy path --------
+                # -------- NumPy path (unchanged) --------
                 num.fill(0.0); den.fill(0.0)
                 if r > 1:
                     for (Kf, KTf, (kh, kw, fftH, fftW)), m2d, v2d, y_nat in zip(
-                        zip(Kfs, KTfs, meta), mask_list, var_list, y_np):
+                        zip(Kfs, KTfs, meta), mask_list, var_list, data):
                         _fft_conv_same_np(x_t, Kf, kh, kw, fftH, fftW, pred_super)
                         pred_low = _downsample_avg(pred_super, r)
                         wmap_low = _weight_map(y_nat, pred_low, local_delta, var_map=v2d, mask=m2d)
@@ -1559,7 +2003,7 @@ def multiframe_deconv(
                         _fft_conv_same_np(up_pred, KTf, kh, kw, fftH, fftW, tmp_out); den += tmp_out
                 else:
                     for (Kf, KTf, (kh, kw, fftH, fftW)), m2d, v2d, y_nat in zip(
-                        zip(Kfs, KTfs, meta), mask_list, var_list, y_np):
+                        zip(Kfs, KTfs, meta), mask_list, var_list, data):
                         _fft_conv_same_np(x_t, Kf, kh, kw, fftH, fftW, pred_super)
                         pred = pred_super
                         wmap = _weight_map(y_nat, pred, local_delta, var_map=v2d, mask=m2d)
@@ -1573,10 +2017,9 @@ def multiframe_deconv(
                 upd = np.clip(ratio, 1.0 / kappa, kappa)
                 x_next = np.clip(x_t * upd, 0.0, None)
 
-                # --- improved early-stop ---
                 upd_med = np.median(np.abs(upd - 1.0))
                 rel_change = (np.median(np.abs(x_next - x_t)) /
-                            (np.median(np.abs(x_t)) + 1e-8))
+                              (np.median(np.abs(x_t)) + 1e-8))
                 small = (upd_med < tol_upd) or (rel_change < tol_rel)
 
                 if small and it >= min_iters:
@@ -1602,7 +2045,6 @@ def multiframe_deconv(
                 except Exception as _e:
                     status_cb(f"Intermediate save failed at iter {it}: {_e}")
 
-            # UI throttled — single line per iter (no per-frame spam in native mode)
             frac = 0.25 + 0.70 * (it / float(max_iters))
             _emit_pct(frac, f"Iteration {it}/{max_iters}")
             status_cb(f"Iter {it}/{max_iters}")
@@ -1610,7 +2052,6 @@ def multiframe_deconv(
 
     if not early_stopped:
         used_iters = max_iters
-
 
     # ----------------------------
     # Save result (keep FITS-friendly order: (C,H,W))
@@ -1620,9 +2061,9 @@ def multiframe_deconv(
 
     if x_final.ndim == 3:
         if x_final.shape[0] not in (1, 3) and x_final.shape[-1] in (1, 3):
-            x_final = np.moveaxis(x_final, -1, 0)  # (C,H,W)
+            x_final = np.moveaxis(x_final, -1, 0)
         if x_final.shape[0] == 1:
-            x_final = x_final[0]  # (H,W)
+            x_final = x_final[0]
 
     try:
         hdr0 = fits.getheader(paths[0], ext=0)
@@ -1664,27 +2105,17 @@ def multiframe_deconv(
 
     try:
         if use_torch:
-            # best-effort cleanup (guard names by branch)
-            try:
-                del num, den
-            except Exception:
-                pass
-            try:
-                if r > 1:
-                    del pred_super_t, tmp_t, psf_fft, psfT_fft
-                else:
-                    del tmp_t, psf_t, psfT_t
-            except Exception:
-                pass
-            try:
-                del y_tensors, mask_tensors, var_tensors
-            except Exception:
-                pass
+            try: del num, den
+            except Exception: pass
+            try: del psf_t, psfT_t
+            except Exception: pass
             _free_torch_memory()
     except Exception:
         pass
 
     return safe_out_path
+
+
 
 # -----------------------------
 # Worker
