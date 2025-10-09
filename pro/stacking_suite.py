@@ -2361,6 +2361,98 @@ def _count_tiles(h: int, w: int, ch: int, cw: int) -> int:
     tx = (w + cw - 1) // cw
     return ty * tx
 
+
+
+def _nearest_index(src_len: int, dst_len: int) -> np.ndarray:
+    """Nearest-neighbor index map from dst→src (no rounding drift)."""
+    if dst_len <= 0:
+        return np.zeros((0,), dtype=np.int32)
+    scale = src_len / float(dst_len)
+    idx = np.floor((np.arange(dst_len, dtype=np.float32) + 0.5) * scale).astype(np.int32)
+    idx[idx < 0] = 0
+    idx[idx >= src_len] = src_len - 1
+    return idx
+
+def _nearest_resize_2d(m: np.ndarray, H: int, W: int) -> np.ndarray:
+    """Resize 2-D array to (H,W) using nearest-neighbor, cv2 if available else pure NumPy."""
+    m = np.asarray(m, dtype=np.float32)
+    if cv2 is not None:
+        return cv2.resize(m, (W, H), interpolation=cv2.INTER_NEAREST).astype(np.float32, copy=False)
+    yi = _nearest_index(m.shape[0], H)
+    xi = _nearest_index(m.shape[1], W)
+    return m[yi[:, None], xi[None, :]].astype(np.float32, copy=False)
+
+def _expand_mask_for(image_like: np.ndarray, mask_like: np.ndarray) -> np.ndarray:
+    """
+    Return a float32 mask in [0..1] shaped for image_like:
+      - If image is HxW  (mono): mask -> HxW
+      - If image is HxWxC: mask -> HxWxC (repeated per channel)
+    Accepts mask as HxW, HxWx1, or HxWxC (we'll reduce to 2-D then repeat).
+    """
+    im = np.asarray(image_like)
+    m  = np.asarray(mask_like, dtype=np.float32)
+
+    # squeeze trivial last dim
+    if m.ndim == 3 and m.shape[2] == 1:
+        m = m[..., 0]
+
+    # normalize to [0..1] if mask is 0..255 or arbitrary
+    mmin, mmax = float(m.min(initial=0.0)), float(m.max(initial=1.0))
+    if mmax > 1.0 or mmin < 0.0:
+        if mmax > 0:
+            m = m / mmax
+        m = np.clip(m, 0.0, 1.0)
+
+    if im.ndim == 2:
+        # want 2-D
+        if m.ndim == 3:
+            m = m[..., 0]
+        if m.shape != im.shape:
+            m = _nearest_resize_2d(m, im.shape[0], im.shape[1])
+        return m.astype(np.float32, copy=False)
+
+    # RGB path
+    H, W, C = im.shape[:3]
+    if m.ndim == 3 and m.shape[:2] == (H, W):
+        # reduce multi-channel mask to 2-D via max then repeat
+        m = np.max(m, axis=2)
+    if m.ndim == 2:
+        if m.shape != (H, W):
+            m = _nearest_resize_2d(m, H, W)
+        m = np.repeat(m[..., None], C, axis=2)
+    return np.clip(m, 0.0, 1.0).astype(np.float32, copy=False)
+
+def _debug_dump_mask_blend(prefix: str, img: np.ndarray, mask: np.ndarray, out_dir: str):
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+        m = _expand_mask_for(img, mask)
+        # save per-channel PNGs to spot one-channel issues instantly
+        def _to8(u): 
+            u = np.clip(u.astype(np.float32), 0, 1) * 255.0
+            return u.astype(np.uint8)
+        if img.ndim == 3:
+            for i, ch in enumerate(["R","G","B"]):
+                cv2.imwrite(os.path.join(out_dir, f"{prefix}_img_{ch}.png"), _to8(img[..., i]))
+                cv2.imwrite(os.path.join(out_dir, f"{prefix}_mask_{ch}.png"), _to8(m[..., i]))
+        else:
+            cv2.imwrite(os.path.join(out_dir, f"{prefix}_img.png"), _to8(img))
+            cv2.imwrite(os.path.join(out_dir, f"{prefix}_mask.png"), _to8(m if m.ndim==2 else m[...,0]))
+    except Exception:
+        pass
+
+def _float01_to_u16(x: np.ndarray) -> np.ndarray:
+    x = np.clip(np.asarray(x, dtype=np.float32), 0.0, 1.0)
+    return (x * 65535.0 + 0.5).astype(np.uint16, copy=False)
+
+def _u16_to_float01(x: np.ndarray) -> np.ndarray:
+    if x.dtype != np.uint16:
+        # be forgiving: if someone returns 8-bit, still normalize
+        if x.dtype == np.uint8:
+            return (x.astype(np.float32) / 255.0).astype(np.float32)
+        return np.clip(x.astype(np.float32), 0.0, 1.0)
+    return (x.astype(np.float32) / 65535.0).astype(np.float32)
+
+
 class StackingSuiteDialog(QDialog):
     requestRelaunch = pyqtSignal(str, str)  # old_dir, new_dir
     status_signal = pyqtSignal(str)
@@ -10192,20 +10284,16 @@ class StackingSuiteDialog(QDialog):
                     # Optional blend
                     if getattr(self, "comet_blend_cb", None) and self.comet_blend_cb.isChecked():
                         mix = float(self.comet_mix.value())
-                        # If you want a user knob for blackpoint, expose a spinbox and read it here.
-                        blackpoint_pct = 50.0  # median; change to e.g. float(self.comet_blackpoint_pct.value())
 
-                        log(f"🟡 Blending Stars+Comet (additive; bp={blackpoint_pct:.1f}%, mix={mix:.2f})…")
+                        log(f"🟡 Blending Stars+Comet (screen after 5% stretch; mix={mix:.2f})…")
                         stars_img, comet_img = _match_channels(integrated_image, comet_only)
 
-                        # New additive blend
-                        blend = CS.blend_additive_comet(
+                        # Screen blend after identical display-stretch on both images
+                        blend = CS.blend_screen_stretched(
                             comet_only=comet_img,
                             stars_only=stars_img,
-                            blackpoint_percentile=blackpoint_pct,
-                            per_channel=True,
-                            mix=mix,
-                            preserve_dtype=False
+                            stretch_pct=0.05,
+                            mix=mix
                         )
 
                         is_mono_blend = (blend.ndim == 2) or (blend.ndim == 3 and blend.shape[2] == 1)
@@ -10320,6 +10408,10 @@ class StackingSuiteDialog(QDialog):
         *,
         algo_override: str | None = None
     ):
+        
+        debug_starrem = bool(self.settings.value("stacking/comet_starrem/debug_dump", False, type=bool))
+        debug_dir = os.path.join(self.stacking_directory, "debug_comet_starrem")
+        os.makedirs(debug_dir, exist_ok=True)        
         """
         Translate each frame so its comet centroid lands on a single reference pixel
         (from file_list[0]). Optional comet star-removal runs AFTER this alignment,
@@ -10430,16 +10522,21 @@ class StackingSuiteDialog(QDialog):
                         if csr_tool == "CosmicClarityDarkStar":
                             log("  ◦ DarkStar comet star removal…")
                             starless = CS.darkstar_starless_from_array(warped, self.settings)
+                            orig_for_blend = warped
                         else:
                             log("  ◦ StarNet comet star removal…")
                             # Frames are linear at this stage
-                            starless = CS.starnet_starless_from_array(
-                                    warped, self.settings, is_linear=True
-                                )
+                            orig_unstretched, starless = CS.starnet_starless_pair_from_array(
+                                warped, self.settings, is_linear=True,
+                                debug_save_dir=debug_dir, debug_tag=f"{i:04d}_{os.path.splitext(os.path.basename(p))[0]}"
+                            )
+                            orig_for_blend = orig_unstretched
 
                         # Protect nucleus: blend original back under soft core mask
-                        m3 = np.repeat(core_mask[..., None], 3, axis=2)
-                        protected = np.clip(starless * (1.0 - m3) + warped * m3, 0.0, 1.0).astype(np.float32)
+
+                        m3 = _expand_mask_for(warped, core_mask)
+                        protected = np.clip(starless * (1.0 - m3) + orig_for_blend * m3, 0.0, 1.0).astype(np.float32)
+
 
                         # Persist as temp FITS (comet-aligned)
                         outp = os.path.join(tmp_root, f"starless_{i:04d}.fit")

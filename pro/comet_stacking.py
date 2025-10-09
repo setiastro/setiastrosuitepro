@@ -14,6 +14,7 @@ from pro.remove_stars import (
     load_image as _rs_load_image, save_image as _rs_save_image  # reuse I/O
 )
 from legacy.image_manager import load_image, save_image
+from imageops.stretch import stretch_color_image, stretch_mono_image
 
 def _blackpoint_nonzero(img_norm: np.ndarray, p: float = 0.1) -> float:
     """Scalar blackpoint from non-zero pixels across all channels (linked).
@@ -30,41 +31,83 @@ def _blackpoint_nonzero(img_norm: np.ndarray, p: float = 0.1) -> float:
         return float(np.min(vals))
     return float(np.percentile(vals, p))
 
-def starnet_starless_from_array(src_rgb01: np.ndarray, settings, *, is_linear: bool, **_ignored) -> np.ndarray:
+def _float01_to_u16(x: np.ndarray) -> np.ndarray:
+    x = np.clip(np.asarray(x, dtype=np.float32), 0.0, 1.0)
+    return (x * 65535.0 + 0.5).astype(np.uint16, copy=False)
+
+def _u16_to_float01(x: np.ndarray) -> np.ndarray:
+    x = np.asarray(x)
+    dt = x.dtype
+
+    # Exact uint16 → normalize
+    if dt == np.uint16:
+        return (x.astype(np.float32) / 65535.0)
+
+    # TIFF/FITS readers sometimes return float32 0..65535
+    if dt in (np.float32, np.float64):
+        mx = float(np.nanmax(x)) if x.size else 0.0
+        if mx > 1.01:                       # looks like 0..65535
+            return (x.astype(np.float32) / 65535.0)
+        # already 0..1 (or very close) → just clip for safety
+        return np.clip(x.astype(np.float32), 0.0, 1.0)
+
+    # Be forgiving with 8-bit
+    if dt == np.uint8:
+        return (x.astype(np.float32) / 255.0)
+
+    # Fallback: assume 16-bit range
+    return (x.astype(np.float32) / 65535.0)
+
+# comet_stacking.py (or wherever this lives)
+
+def starnet_starless_pair_from_array(
+    src_rgb01,
+    settings,
+    *,
+    is_linear: bool,
+    debug_save_dir: str | None = None,
+    debug_tag: str | None = None,
+):
+    """
+    Standalone-like StarNet path using our imageops stretch:
+      - if linear:   stretch (per-channel) with 0.25  -> StarNet
+      - then:       pseudo-linear "unstretch" both orig & starless with 0.05
+    This avoids linked-MTF chroma issues and keeps both branches consistent.
+    """
+
+
     exe = _get_setting_any(settings, ("starnet/exe_path", "paths/starnet"), "")
     if not exe or not os.path.exists(exe):
         raise RuntimeError("StarNet executable path is not configured.")
     _ensure_exec_bit(exe)
 
-    img = src_rgb01.astype(np.float32, copy=False)
-    if img.ndim == 2: img = np.stack([img]*3, axis=-1)
-    if img.ndim == 3 and img.shape[2] == 1: img = np.repeat(img, 3, axis=2)
-    img = np.nan_to_num(img, nan=0.0, posinf=0.0, neginf=0.0)
-
-    did_stretch = False
-    mtf = None
-    scale_factor = float(np.max(img))
-
-    if is_linear:
-        did_stretch = True
-        img_norm = img / scale_factor if scale_factor > 1.0 else img
-
-        # --- normalize pedestal from data (ignore borders/zeros) ---
-        bp_norm = _blackpoint_nonzero(img_norm, p=0.1)   # use 0.0 for strict min
-        img_zerod = img_norm - bp_norm
-        np.maximum(img_zerod, 0.0, out=img_zerod)
-
-        # linked MTF exactly as before, but on zeroed data
-        mtf = _mtf_params_linked(img_zerod, shadowclip_sigma=-2.8, targetbg=0.25)
-        proc_in = _apply_mtf_linked_rgb(img_zerod, mtf)
+    # -------- normalize & shape: float32 [0..1], keep note if mono ----------
+    x = np.asarray(src_rgb01, dtype=np.float32)
+    was_mono = (x.ndim == 2) or (x.ndim == 3 and x.shape[2] == 1)
+    if x.ndim == 2:
+        x3 = np.stack([x]*3, axis=-1)
+    elif x.ndim == 3 and x.shape[2] == 1:
+        x3 = np.repeat(x, 3, axis=2)
     else:
-        proc_in = img
-        bp_norm = 0.0
+        x3 = x
+    x3 = np.nan_to_num(x3, nan=0.0, posinf=0.0, neginf=0.0)
 
+    # -------- pre-StarNet stretch (per channel), only if the data are linear ----------
+    if is_linear:
+        # channel-wise stretch to avoid red cast; your funcs expect [0..1]
+        pre = stretch_color_image(x3, 0.25, False, False, False) if not was_mono \
+              else np.stack([stretch_mono_image(x, 0.25, False, False)]*3, axis=-1)
+        pre = np.clip(pre, 0.0, 1.0).astype(np.float32, copy=False)
+    else:
+        pre = x3  # already non-linear; pass through
+
+    # -------- StarNet I/O (write float->16b TIFF; read back float) ----------
     starnet_dir = os.path.dirname(exe) or os.getcwd()
     in_path  = os.path.join(starnet_dir, "imagetoremovestars.tif")
     out_path = os.path.join(starnet_dir, "starless.tif")
-    _rs_save_image(proc_in, in_path, "tif", "16-bit", None, False, None, None)
+
+    _rs_save_image(pre, in_path, original_format="tif", bit_depth="16-bit",
+                   original_header=None, is_mono=False, image_meta=None, file_meta=None)
 
     exe_name = os.path.basename(exe).lower()
     if os.name == "nt" or sys.platform.startswith(("linux","linux2")):
@@ -78,26 +121,41 @@ def starnet_starless_from_array(src_rgb01: np.ndarray, settings, *, is_linear: b
         except Exception: pass
         raise RuntimeError(f"StarNet failed (rc={rc}).")
 
-    starless, _, _, _ = _rs_load_image(out_path)
-    try: os.remove(in_path)
-    except Exception: pass
-    try: os.remove(out_path)
-    except Exception: pass
+    starless_pre, _, _, _ = _rs_load_image(out_path)
+    try:
+        os.remove(in_path); os.remove(out_path)
+    except Exception:
+        pass
 
-    if starless is None:
-        raise RuntimeError("StarNet produced no output.")
-    if starless.ndim == 2: starless = np.stack([starless]*3, axis=-1)
-    if starless.ndim == 3 and starless.shape[2] == 1: starless = np.repeat(starless, 3, axis=2)
-    starless = starless.astype(np.float32, copy=False)
+    if starless_pre.ndim == 2:
+        starless_pre = np.stack([starless_pre]*3, axis=-1)
+    elif starless_pre.ndim == 3 and starless_pre.shape[2] == 1:
+        starless_pre = np.repeat(starless_pre, 3, axis=2)
+    starless_pre = starless_pre.astype(np.float32, copy=False)
 
-    if did_stretch:
-        # inverse MTF, then restore pedestal + original scale
-        starless = _invert_mtf_linked_rgb(starless, mtf)
-        starless = starless + bp_norm
-        if scale_factor > 1.0:
-            starless = starless * scale_factor
+    if debug_save_dir and debug_tag:
+        try:
+            _rs_save_image(starless_pre, os.path.join(debug_save_dir, f"{debug_tag}_from_starnet.tif"),
+                           original_format="tif", bit_depth="16-bit",
+                           original_header=None, is_mono=False, image_meta=None, file_meta=None)
+        except Exception:
+            pass
 
-    return np.clip(starless, 0.0, 1.0)
+    # -------- “unstretch” → shared pseudo-linear space for BOTH branches ----------
+    if is_linear:
+        # lighter per-channel stretch to approximate linear domain for blending
+        orig_unstretch = stretch_color_image(pre, 0.05, False, False, False) if not was_mono \
+                         else np.stack([stretch_mono_image(pre[...,0], 0.05, False, False)]*3, axis=-1)
+        starless_unstretch = stretch_color_image(starless_pre, 0.05, False, False, False) if not was_mono \
+                             else np.stack([stretch_mono_image(starless_pre[...,0], 0.05, False, False)]*3, axis=-1)
+    else:
+        # no transform if input was already non-linear
+        orig_unstretch = pre
+        starless_unstretch = starless_pre
+
+    orig_unstretch = np.clip(orig_unstretch, 0.0, 1.0).astype(np.float32, copy=False)
+    starless_unstretch = np.clip(starless_unstretch, 0.0, 1.0).astype(np.float32, copy=False)
+    return orig_unstretch, starless_unstretch
 
 
 
@@ -360,61 +418,68 @@ def _tail_response(L: np.ndarray, angle_deg: float,
         return np.zeros_like(resp, np.float32)
     return np.clip((resp - p1) / (p99 - p1), 0.0, 1.0).astype(np.float32)
 
-def blend_additive_comet(
+# At top of file (or near other imports)
+from imageops.stretch import stretch_color_image, stretch_mono_image
+
+def _ensure_rgb_float01(x: np.ndarray) -> np.ndarray:
+    x = np.asarray(x)
+    if x.ndim == 2:
+        x = np.stack([x]*3, axis=-1)
+    elif x.ndim == 3 and x.shape[2] == 1:
+        x = np.repeat(x, 3, axis=2)
+    x = x.astype(np.float32, copy=False)
+    x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
+    return np.clip(x, 0.0, 1.0)
+
+def _ensure_mono_float01(x: np.ndarray) -> np.ndarray:
+    x = np.asarray(x)
+    if x.ndim == 3 and x.shape[2] == 3:
+        x = x.mean(axis=2)
+    elif x.ndim == 3 and x.shape[2] == 1:
+        x = x[..., 0]
+    x = x.astype(np.float32, copy=False)
+    x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
+    return np.clip(x, 0.0, 1.0)
+
+def blend_screen_stretched(
     comet_only: np.ndarray,
     stars_only: np.ndarray,
     *,
-    blackpoint_percentile: float = 50.0,  # 50=median; 35–50 usually safe
-    per_channel: bool = True,             # per-channel blackpoint for RGB
-    mix: float = 1.0,                     # <1.0 to dial the comet back
-    preserve_dtype: bool = False          # keep input dtype (else float32 [0..1])
+    stretch_pct: float = 0.05,  # use 5% like you requested
+    mix: float = 1.0,           # 0..1, scales the comet contribution in the screen
 ) -> np.ndarray:
     """
-    Additive comet blend:
-      1) compute a robust black point from comet_only (percentile),
-      2) subtract it (floor at 0) → comet_bgzero,
-      3) out = stars_only + mix * comet_bgzero,
-      4) clip to [0,1] (or input dtype range).
+    Display-stretch both inputs with your imageops stretch, then screen blend:
+      screen(A,B) = A + B - A*B
+    We apply 'mix' only to the comet term: out = screen(mix*A, B).
 
-    Works best when comet_only is starless and roughly linear.
+    Returns float32 [0..1], RGB if any input is RGB, otherwise mono.
     """
+
     A = np.asarray(comet_only)
     B = np.asarray(stars_only)
 
-    # harmonize channels
-    if A.ndim == 2 and B.ndim == 3 and B.shape[2] == 3:
-        A = np.repeat(A[..., None], 3, axis=2)
-    if B.ndim == 2 and A.ndim == 3 and A.shape[2] == 3:
-        B = np.repeat(B[..., None], 3, axis=2)
+    is_rgb = (A.ndim == 3 and A.shape[-1] == 3) or (B.ndim == 3 and B.shape[-1] == 3)
 
-    A = A.astype(np.float32, copy=False)
-    B = B.astype(np.float32, copy=False)
-    A = np.nan_to_num(A, nan=0.0, posinf=0.0, neginf=0.0)
-    B = np.nan_to_num(B, nan=0.0, posinf=0.0, neginf=0.0)
-
-    # 1) robust black point from comet_only
-    p = float(np.clip(blackpoint_percentile, 0.0, 100.0))
-    if A.ndim == 3 and A.shape[2] == 3 and per_channel:
-        bp = np.percentile(A.reshape(-1, 3), p, axis=0).astype(np.float32)  # shape (3,)
+    # 1) normalize/rgb-mono handling
+    if is_rgb:
+        A = _ensure_rgb_float01(A)
+        B = _ensure_rgb_float01(B)
+        # 2) stretch each with your display stretch (no links, no extra ops)
+        A_s = stretch_color_image(A, stretch_pct, False, False, False).astype(np.float32, copy=False)
+        B_s = stretch_color_image(B, stretch_pct, False, False, False).astype(np.float32, copy=False)
     else:
-        bp = np.percentile(A, p).astype(np.float32)                          # scalar
+        A = _ensure_mono_float01(A)
+        B = _ensure_mono_float01(B)
+        A_s = stretch_mono_image(A, stretch_pct, False, False).astype(np.float32, copy=False)
+        B_s = stretch_mono_image(B, stretch_pct, False, False).astype(np.float32, copy=False)
 
-    # 2) zero the background
-    A0 = A - bp
-    A0[A0 < 0] = 0.0
+    # 3) screen blend with comet mix:
+    #    screen(mix*A, B) = B + mix*A - (mix*A)*B
+    mix = float(np.clip(mix, 0.0, 1.0))
+    out_s = B_s + mix*A_s - (mix*A_s)*B_s
 
-    # 3) additive blend
-    out = B + mix * A0
-
-    # 4) clip to [0,1] (assumes normalized floats in the app)
-    out = np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
-
-    if preserve_dtype and (stars_only.dtype != np.float32):
-        # simple rescale back if you keep non-float data elsewhere
-        info = np.iinfo(stars_only.dtype) if np.issubdtype(stars_only.dtype, np.integer) else None
-        if info:
-            out = (out * info.max + 0.5).astype(stars_only.dtype, copy=False)
-    return out
+    return np.clip(out_s, 0.0, 1.0).astype(np.float32, copy=False)
 
 
 # --- REPLACE measure_comet_positions with this version ---
@@ -983,7 +1048,7 @@ def _starless_frame_for_comet(img: np.ndarray,
     if tool == "CosmicClarityDarkStar":
         starless = darkstar_starless_from_array(src, settings)
     else:
-        starless = starnet_starless_from_array(src, settings, is_linear=is_linear)
+        _, starless = starnet_starless_pair_from_array(src, settings, is_linear=is_linear)
 
     # protect nucleus (blend original back where mask=1)
     m = core_mask.astype(np.float32)

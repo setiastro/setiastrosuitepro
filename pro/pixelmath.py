@@ -7,8 +7,8 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QIcon, QCursor
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGroupBox, QGridLayout, QLabel,
-    QPushButton, QPlainTextEdit, QComboBox, QDialogButtonBox, QRadioButton,
-    QTabWidget, QWidget, QMessageBox, QMenu
+    QPushButton, QPlainTextEdit, QComboBox, QDialogButtonBox, QRadioButton, QApplication,
+    QTabWidget, QWidget, QMessageBox, QMenu, QScrollArea, QButtonGroup, QListWidget, QListWidgetItem
 )
 
 # ---- Optional accelerators from legacy.numba_utils -------------------------
@@ -193,25 +193,61 @@ class _Evaluator:
     def _build_namespace(self):
         self.ns = {
             "np": np,
-            "med": self._med,
-            "mean": self._mean,
-            "min": self._min,
-            "max": self._max,
-            "std": self._std,
-            "mad": self._mad,
-            "log": self._log,
-            "iff": self._iff,
-            "mtf": self._mtf,
+            # existing:
+            "med": self._med, "mean": self._mean, "min": self._min, "max": self._max,
+            "std": self._std, "mad": self._mad, "log": self._log, "iff": self._iff, "mtf": self._mtf,
+            # new math helpers:
+            "clamp": self._clamp,
+            "rescale": self._rescale,
+            "gamma": self._gamma,
+            "pow_safe": self._pow_safe,
+            "absf": self._absf,
+            "expf": self._expf,
+            "sqrtf": self._sqrtf,
+            "sigmoid": self._sigmoid,
+            "smoothstep": self._smoothstep,
+            "lerp": self._lerp, "mix": self._lerp,
+            # stats / normalization:
+            "percentile": self._percentile,
+            "normalize01": self._normalize01,
+            "zscore": self._zscore,
+            # channels & color:
+            "ch": self._ch,
+            "luma": self._luma,
+            "compose": self._compose,
+            # mask helpers:
+            "mask": self._mask_fn,
+            "apply_mask": self._apply_mask_fn,
+            # optional filters (cv2-backed):
+            "boxblur": self._boxblur,
+            "gauss": self._gauss,
+            "median": self._median,
+            "unsharp": self._unsharp,
+            # constants:
+            "pi": float(np.pi), "e": float(np.e), "EPS": 1e-8,
         }
+
         cur = np.asarray(self.doc.image, dtype=np.float32)
         self._img_shape = cur.shape
         self.ns["img"] = PixelImage(_as_rgb(cur))
 
-        # map: raw title -> identifier (stored for rewriting + UI)
-        self.title_map: list[tuple[str, str]] = []
+        H, W = cur.shape[:2]
+        C = 1 if cur.ndim == 2 else cur.shape[2]
+        self.ns["H"], self.ns["W"], self.ns["C"] = int(H), int(W), int(C)
+        self.ns["shape"] = (int(H), int(W), int(C))
+
+        # Normalized coordinate grids (2-D, float32)
+        xx = np.linspace(0.0, 1.0, W, dtype=np.float32)
+        yy = np.linspace(0.0, 1.0, H, dtype=np.float32)
+        X, Y = np.meshgrid(xx, yy)
+        self.ns["X"] = X
+        self.ns["Y"] = Y
+
+        # map: raw title → ident (existing)
+        self.title_map = []
         open_docs = []
         if hasattr(self.parent, "_subwindow_docs"):
-            open_docs = list(self.parent._subwindow_docs())  # [(title, doc), ...]
+            open_docs = list(self.parent._subwindow_docs())
         else:
             open_docs = [(getattr(self.doc, "display_name", lambda: "view")(), self.doc)]
 
@@ -222,7 +258,6 @@ class _Evaluator:
             while ident in used:
                 ident = f"{base}_{i}"; i += 1
             used.add(ident)
-
             arr = getattr(d, "image", None)
             if arr is None:
                 continue
@@ -324,6 +359,207 @@ class _Evaluator:
         y = np.nan_to_num(y, nan=0.0, posinf=1.0, neginf=0.0)
         return PixelImage(y) if isinstance(x, PixelImage) else y
 
+    # ---- math helpers ----
+    def _clamp(self, x, lo=0.0, hi=1.0):
+        a = x.array if isinstance(x, PixelImage) else np.asarray(x, dtype=np.float32)
+        y = np.clip(a, float(lo), float(hi))
+        return PixelImage(y) if isinstance(x, PixelImage) else y
+
+    def _rescale(self, x, a, b, lo=0.0, hi=1.0):
+        a = np.asarray(x.array if isinstance(x, PixelImage) else x, dtype=np.float32)
+        src_lo, src_hi = float(a.min()), float(a.max())
+        if np.isfinite(a).any():
+            src_lo, src_hi = float(a), float(b)
+        # avoid div-by-zero
+        denom = max(src_hi - src_lo, 1e-12)
+        y = (a - src_lo) / denom
+        y = y * (hi - lo) + lo
+        return PixelImage(y) if isinstance(x, PixelImage) else y
+
+    def _gamma(self, x, g):
+        a = x.array if isinstance(x, PixelImage) else np.asarray(x, dtype=np.float32)
+        y = np.power(np.clip(a, 0.0, 1.0), float(g))
+        return PixelImage(y) if isinstance(x, PixelImage) else y
+
+    def _pow_safe(self, x, p):
+        a = x.array if isinstance(x, PixelImage) else np.asarray(x, dtype=np.float32)
+        y = np.power(np.clip(a, 1e-8, None), float(p))
+        return PixelImage(y) if isinstance(x, PixelImage) else y
+
+    def _absf(self, x):
+        a = x.array if isinstance(x, PixelImage) else np.asarray(x, dtype=np.float32)
+        y = np.abs(a)
+        return PixelImage(y) if isinstance(x, PixelImage) else y
+
+    def _expf(self, x):
+        a = x.array if isinstance(x, PixelImage) else np.asarray(x, dtype=np.float32)
+        y = np.exp(a)
+        return PixelImage(y) if isinstance(x, PixelImage) else y
+
+    def _sqrtf(self, x):
+        a = x.array if isinstance(x, PixelImage) else np.asarray(x, dtype=np.float32)
+        y = np.sqrt(np.clip(a, 0.0, None))
+        return PixelImage(y) if isinstance(x, PixelImage) else y
+
+    def _sigmoid(self, x, k=10.0, mid=0.5):
+        a = x.array if isinstance(x, PixelImage) else np.asarray(x, dtype=np.float32)
+        y = 1.0 / (1.0 + np.exp(-float(k) * (a - float(mid))))
+        return PixelImage(y) if isinstance(x, PixelImage) else y
+
+    def _smoothstep(self, e0, e1, x):
+        e0, e1 = float(e0), float(e1)
+        a = x.array if isinstance(x, PixelImage) else np.asarray(x, dtype=np.float32)
+        t = np.clip((a - e0) / max(e1 - e0, 1e-12), 0.0, 1.0)
+        y = t * t * (3 - 2 * t)
+        return PixelImage(y) if isinstance(x, PixelImage) else y
+
+    def _lerp(self, a, b, t):
+        av = a.array if isinstance(a, PixelImage) else np.asarray(a, dtype=np.float32)
+        bv = b.array if isinstance(b, PixelImage) else np.asarray(b, dtype=np.float32)
+        tv = t.array if isinstance(t, PixelImage) else np.asarray(t, dtype=np.float32)
+        y = av * (1.0 - tv) + bv * tv
+        return PixelImage(y) if any(isinstance(z, PixelImage) for z in (a, b, t)) else y
+
+    # ---- stats/normalization ----
+    def _percentile(self, x, p):
+        a = x.array if isinstance(x, PixelImage) else np.asarray(x, dtype=np.float32)
+        if a.ndim == 2:
+            v = np.percentile(a, float(p))
+            out = np.full_like(a, v)
+        else:
+            out = np.empty_like(a)
+            for c in range(a.shape[2]):
+                v = np.percentile(a[..., c], float(p))
+                out[..., c] = v
+        return PixelImage(out) if isinstance(x, PixelImage) else out
+
+    def _normalize01(self, x):
+        a = x.array if isinstance(x, PixelImage) else np.asarray(x, dtype=np.float32)
+        if a.ndim == 2:
+            lo, hi = float(a.min()), float(a.max())
+            out = (a - lo) / max(hi - lo, 1e-12)
+        else:
+            out = np.empty_like(a)
+            for c in range(a.shape[2]):
+                ch = a[..., c]
+                lo, hi = float(ch.min()), float(ch.max())
+                out[..., c] = (ch - lo) / max(hi - lo, 1e-12)
+        return PixelImage(np.clip(out, 0.0, 1.0)) if isinstance(x, PixelImage) else np.clip(out, 0.0, 1.0)
+
+    def _zscore(self, x):
+        a = x.array if isinstance(x, PixelImage) else np.asarray(x, dtype=np.float32)
+        if a.ndim == 2:
+            m, s = float(a.mean()), float(a.std())
+            out = (a - m) / max(s, 1e-12)
+        else:
+            out = np.empty_like(a)
+            for c in range(a.shape[2]):
+                ch = a[..., c]
+                m, s = float(ch.mean()), float(ch.std())
+                out[..., c] = (ch - m) / max(s, 1e-12)
+        return PixelImage(out) if isinstance(x, PixelImage) else out
+
+    # ---- channels & color ----
+    def _ch(self, x, i):
+        a = x.array if isinstance(x, PixelImage) else np.asarray(x, dtype=np.float32)
+        if a.ndim != 3: raise ValueError("ch(x,i) expects RGB image")
+        return a[..., int(i)]
+
+    def _luma(self, x):
+        a = x.array if isinstance(x, PixelImage) else np.asarray(x, dtype=np.float32)
+        if a.ndim == 2:
+            return a
+        y = 0.2126*a[...,0] + 0.7152*a[...,1] + 0.0722*a[...,2]
+        return y
+
+    def _compose(self, r, g, b):
+        R = r.array if isinstance(r, PixelImage) else np.asarray(r, dtype=np.float32)
+        G = g.array if isinstance(g, PixelImage) else np.asarray(g, dtype=np.float32)
+        B = b.array if isinstance(b, PixelImage) else np.asarray(b, dtype=np.float32)
+        if R.ndim != 2 or G.ndim != 2 or B.ndim != 2:
+            raise ValueError("compose(r,g,b) expects three 2-D planes")
+        return np.stack([R, G, B], axis=2)
+
+    # ---- mask helpers exposed to the user ----
+    def _mask_fn(self):
+        ref = _as_rgb(np.asarray(self.doc.image, dtype=np.float32))
+        m = _mask_for_ref(self.doc, ref)
+        if m is None:
+            m = np.zeros(ref.shape[:2], dtype=np.float32)
+        if m.ndim == 3:
+            m = m[...,0]
+        return m
+
+    def _apply_mask_fn(self, base, out, m):
+        basev = base.array if isinstance(base, PixelImage) else np.asarray(base, dtype=np.float32)
+        outv  = out.array  if isinstance(out, PixelImage)  else np.asarray(out,  dtype=np.float32)
+        mv    = m.array    if isinstance(m, PixelImage)    else np.asarray(m,    dtype=np.float32)
+        return _blend_masked(_as_rgb(basev), _as_rgb(outv), mv)
+
+    # ---- tiny filters (cv2 optional) ----
+    def _apply_per_channel(self, a, fn):
+        if a.ndim == 2:
+            return fn(a)
+        out = np.empty_like(a)
+        for c in range(a.shape[2]):
+            out[..., c] = fn(a[..., c])
+        return out
+
+    def _boxblur(self, x, k=3):
+        a = x.array if isinstance(x, PixelImage) else np.asarray(x, dtype=np.float32)
+        try:
+            import cv2
+            k = int(max(1, k))
+            y = self._apply_per_channel(a, lambda ch: cv2.blur(ch, (k, k)))
+        except Exception:
+            # naive fallback
+            from math import floor
+            k = int(max(1, k))
+            r = k//2
+            y = a.copy()
+            # very simple and slow fallback; okay as last resort
+            for i in range(a.shape[0]):
+                i0, i1 = max(0, i-r), min(a.shape[0], i+r+1)
+                for j in range(a.shape[1]):
+                    j0, j1 = max(0, j-r), min(a.shape[1], j+r+1)
+                    y[i, j] = a[i0:i1, j0:j1].mean(axis=(0,1))
+        return PixelImage(y) if isinstance(x, PixelImage) else y
+
+    def _gauss(self, x, sigma=1.0):
+        a = x.array if isinstance(x, PixelImage) else np.asarray(x, dtype=np.float32)
+        try:
+            import cv2
+            s = float(sigma)
+            k = int(max(1, 2*int(3*s)+1))
+            y = self._apply_per_channel(a, lambda ch: cv2.GaussianBlur(ch, (k, k), s))
+        except Exception:
+            # approximate with box blur passes
+            y = self._boxblur(a, k=max(1, int(2*sigma)+1))
+            y = y.array if isinstance(y, PixelImage) else y
+            y = self._boxblur(PixelImage(y), k=max(1, int(2*sigma)+1))
+            y = y.array if isinstance(y, PixelImage) else y
+        return PixelImage(y) if isinstance(x, PixelImage) else y
+
+    def _median(self, x, k=3):
+        a = x.array if isinstance(x, PixelImage) else np.asarray(x, dtype=np.float32)
+        try:
+            import cv2
+            k = int(max(1, k)) | 1  # must be odd
+            y = self._apply_per_channel(a, lambda ch: cv2.medianBlur(ch, k))
+        except Exception:
+            # crude fallback: percentile in local box
+            y = self._boxblur(a, k=k)  # not truly median, but better than nothing
+            y = y.array if isinstance(y, PixelImage) else y
+        return PixelImage(y) if isinstance(x, PixelImage) else y
+
+    def _unsharp(self, x, sigma=1.5, amount=1.0):
+        a = x.array if isinstance(x, PixelImage) else np.asarray(x, dtype=np.float32)
+        blur = self._gauss(PixelImage(a), sigma)
+        blur = blur.array if isinstance(blur, PixelImage) else blur
+        y = np.clip(a + float(amount) * (a - blur), 0.0, 1.0)
+        return PixelImage(y) if isinstance(x, PixelImage) else y
+
+
     # -------- core eval
     def _eval_multiline(self, expr: str):
         lines = [ln for ln in (expr or "").splitlines() if ln.strip()]
@@ -397,11 +633,41 @@ class PixelMathDialogPro(QDialog):
 
         v = QVBoxLayout(self)
 
-        # Variables mapping (raw title → identifier) so the user can copy/paste
-        map_lines = ["img (active)"] + [f"{raw} → {ident}" for raw, ident in self.ev.title_map]
-        lbl = QLabel("Variables:\n  " + ",  ".join(map_lines))
-        lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        v.addWidget(lbl)
+        # Variables mapping (raw title → identifier) in a scrollable list
+        vars_grp = QGroupBox("Variables")
+        vars_layout = QVBoxLayout(vars_grp)
+
+        self.vars_list = QListWidget()
+        self.vars_list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
+        self.vars_list.setAlternatingRowColors(True)
+
+        # First item is the active view (img)
+        self.vars_list.addItem(QListWidgetItem("img (active)"))
+        for raw, ident in self.ev.title_map:
+            self.vars_list.addItem(QListWidgetItem(f"{raw} → {ident}"))
+
+        # Make it comfortably tall but not body-stretching; vertical scroll will appear as needed
+        self.vars_list.setMinimumHeight(120)
+        self.vars_list.setMaximumHeight(180)
+
+        # Little hint label
+        hint = QLabel("Tip: double-click to copy the identifier")
+        hint.setStyleSheet("color: gray; font-size: 11px;")
+
+        vars_layout.addWidget(self.vars_list)
+        vars_layout.addWidget(hint)
+
+        # Copy ident on double-click
+        def _copy_ident(item: QListWidgetItem):
+            text = item.text()
+            # pick the thing after '→ ' if present; else keep as-is
+            ident = text.split("→", 1)[-1].strip() if "→" in text else text.strip()
+            QApplication.clipboard().setText(ident)
+
+        self.vars_list.itemDoubleClicked.connect(_copy_ident)
+
+        v.addWidget(vars_grp)
+
 
         # ----- Output group (very visible) ------------------------------------
         out_grp = QGroupBox("Output")
@@ -420,6 +686,11 @@ class PixelMathDialogPro(QDialog):
         mode_row.addWidget(self.rb_single); mode_row.addWidget(self.rb_sep); mode_row.addStretch(1)
         v.addLayout(mode_row)
 
+        self.mode_group = QButtonGroup(self)
+        self.mode_group.setExclusive(True)
+        self.mode_group.addButton(self.rb_single)
+        self.mode_group.addButton(self.rb_sep)
+
         # Editors
         self.ed_single = QPlainTextEdit()
         self.ed_single.setPlaceholderText("e.g. (img + otherView) / 2")
@@ -432,6 +703,10 @@ class PixelMathDialogPro(QDialog):
         v.addWidget(self.tabs)
 
         self.rb_single.toggled.connect(lambda on: self._mode(on))
+
+        glossary_btn = QPushButton("Glossary…")
+        glossary_btn.clicked.connect(self._open_glossary)
+        v.addWidget(glossary_btn)
 
         # ----- Examples (SAS-style list you can drop down and insert) ----------
         ex_row = QHBoxLayout()
@@ -450,15 +725,42 @@ class PixelMathDialogPro(QDialog):
         self.cb_fav = QComboBox(); self.cb_fav.addItem("Select a favorite expression")
         self._load_favorites()
         self.cb_fav.currentTextChanged.connect(self._pick_favorite)
-        b_save = QPushButton("Save as Favorite"); b_save.clicked.connect(self._save_favorite)
-        fav_row.addWidget(self.cb_fav); fav_row.addWidget(b_save)
+
+        b_save = QPushButton("Save as Favorite")
+        b_del  = QPushButton("Delete Favorite")
+
+        b_save.clicked.connect(self._save_favorite)
+        b_del.clicked.connect(self._delete_favorite)
+
+        fav_row.addWidget(self.cb_fav, 1)
+        fav_row.addWidget(b_save)
+        fav_row.addWidget(b_del)
         v.addLayout(fav_row)
+
+        def _fav_context_menu(point):
+            if self.cb_fav.currentIndex() <= 0:
+                return
+            menu = QMenu(self)
+            act_del = menu.addAction("Delete this favorite")
+            act = menu.exec(self.cb_fav.mapToGlobal(point))
+            if act == act_del:
+                self._delete_favorite()
+
+        self.cb_fav.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.cb_fav.customContextMenuRequested.connect(_fav_context_menu)
 
         # Buttons + Help
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self)
         btns.accepted.connect(self._apply); btns.rejected.connect(self.reject)
         b_help = btns.addButton("Help", QDialogButtonBox.ButtonRole.HelpRole); b_help.clicked.connect(self._help)
         v.addWidget(btns)
+
+        self.out_group = QButtonGroup(self)
+        self.out_group.setExclusive(True)
+        self.out_group.addButton(self.rb_out_overwrite)
+        self.out_group.addButton(self.rb_out_new)
+
+        QTimer.singleShot(0, lambda: self._mode(self.rb_single.isChecked()))
 
         self.resize(860, 580)
 
@@ -468,7 +770,9 @@ class PixelMathDialogPro(QDialog):
         others = [ident for (_, ident) in self.ev.title_map if ident != a]
         b = others[0] if others else a
         c = others[1] if len(others) > 1 else a
+
         return [
+            # --- existing basics ---
             ("Average two views", "single", f"({a} + {b}) / 2"),
             ("Difference (A - B)", "single", f"{a} - {b}"),
             ("Invert active", "single", f"~{a}"),
@@ -478,10 +782,148 @@ class PixelMathDialogPro(QDialog):
             ("Log transform", "single", f"log({a} + 1e-6)"),
             ("Midtones transform m=0.25", "single", f"mtf({a}, 0.25)"),
             ("If darker than median → 0 else 1", "single", f"iff({a} < med({a}), 0, 1)"),
+
             ("Per-channel: swap R↔B", "rgb", (f"{a}[2]", f"{a}[1]", f"{a}[0]")),
             ("Per-channel: avg A & B", "rgb", (f"({a}[0]+{b}[0])/2", f"({a}[1]+{b}[1])/2", f"({a}[2]+{b}[2])/2")),
             ("Per-channel: build RGB from A,B,C", "rgb", (f"{a}[0]", f"{b}[1]", f"{c}[2]")),
+
+            # --- new, single-expression tone/normalization ---
+            ("Normalize to 0–1 (per-channel)", "single", f"normalize01({a})"),
+            ("Sigmoid contrast (k=12, mid=0.4)", "single", f"sigmoid({a}, k=12, mid=0.4)"),
+            ("Gamma 0.6 (brighten midtones)", "single", f"gamma({a}, 0.6)"),
+            ("Percentile stretch 0.5–99.5%", "single",
+            f"lo = percentile({a}, 0.5)\nhi = percentile({a}, 99.5)\nclamp(({a} - lo) / (hi - lo), 0, 1)"),
+
+            # --- blending & masking ---
+            ("Blend A→B by horizontal gradient X", "single", f"t = X\nlerp({a}, {b}, t)"),
+            ("Apply active mask to blend A→B", "single", f"m = mask()\napply_mask({a}, {b}, m)"),
+
+            # --- sharpening with mask (multiline) ---
+            ("Masked unsharp (luma-based)", "single",
+            f"base = {a}\nsh = unsharp({a}, sigma=1.2, amount=0.8)\n"
+            f"m = smoothstep(0.10, 0.60, luma({a}))\napply_mask(base, sh, m)"),
+
+            # --- view matching / calibration ---
+            ("Match medians of A to B", "single", f"{a} * (med({b}) / med({a}))"),
+
+            # --- small filters ---
+            ("Gaussian blur σ=2", "single", f"gauss({a}, sigma=2.0)"),
+            ("Median filter k=3", "single", f"median({a}, k=3)"),
+
+            # --- per-channel examples using new helpers ---
+            ("Per-channel: luma to all channels", "rgb", (f"luma({a})", f"luma({a})", f"luma({a})")),
+            ("Per-channel: A’s R, B’s G, C’s B (normed)", "rgb",
+            (f"normalize01({a}[0])", f"normalize01({b}[1])", f"normalize01({c}[2])")),
         ]
+
+    def _function_glossary(self):
+        # name -> (signature / template, short description)
+        return {
+            "clamp": ("clamp(x, lo=0, hi=1)", "Limit values to [lo..hi]."),
+            "rescale": ("rescale(x, a, b, lo=0, hi=1)", "Map range [a..b] to [lo..hi]."),
+            "gamma": ("gamma(x, g)", "Apply gamma curve."),
+            "pow_safe": ("pow_safe(x, p)", "Power with EPS floor."),
+            "absf": ("absf(x)", "Absolute value."),
+            "expf": ("expf(x)", "Exponential."),
+            "sqrtf": ("sqrtf(x)", "Square root (clamped to ≥0)."),
+            "sigmoid": ("sigmoid(x, k=10, mid=0.5)", "S-shaped tone curve."),
+            "smoothstep": ("smoothstep(e0, e1, x)", "Cubic smooth ramp."),
+            "lerp/mix": ("lerp(a, b, t)", "Linear blend."),
+            "percentile": ("percentile(x, p)", "Per-channel percentile image."),
+            "normalize01": ("normalize01(x)", "Per-channel [0..1] normalization."),
+            "zscore": ("zscore(x)", "Per-channel (x-mean)/std."),
+            "ch": ("ch(x, i)", "Extract channel i (0/1/2) as 2-D."),
+            "luma": ("luma(x)", "Rec.709 luminance as 2-D."),
+            "compose": ("compose(R, G, B)", "Stack three planes to RGB."),
+            "mask": ("m = mask()", "Active mask (2-D, [0..1])."),
+            "apply_mask": ("apply_mask(base, out, m)", "Blend by mask."),
+            "boxblur": ("boxblur(x, k=3)", "Box blur (cv2 if available)."),
+            "gauss": ("gauss(x, sigma=1.0)", "Gaussian blur."),
+            "median": ("median(x, k=3)", "Median filter (cv2 if avail)."),
+            "unsharp": ("unsharp(x, sigma=1.5, amount=1.0)", "Unsharp mask."),
+            "mtf": ("mtf(x, m)", "Midtones transfer (existing)."),
+            "iff": ("iff(cond, a, b)", "Conditional (existing)."),
+            "X / Y": ("X, Y", "Normalized coordinates in [0..1]."),
+            "H/W/C": ("H, W, C, shape", "Image dimensions."),
+        }
+
+    def _open_glossary(self):
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Pixel Math Glossary")
+        lay = QVBoxLayout(dlg)
+
+        info = QLabel("Double-click to insert a template at the cursor.")
+        info.setStyleSheet("color: gray;")
+        lay.addWidget(info)
+
+        from PyQt6.QtWidgets import QLineEdit, QListWidget, QListWidgetItem, QHBoxLayout, QPushButton
+        search = QLineEdit()
+        search.setPlaceholderText("Search…")
+        lay.addWidget(search)
+
+        lst = QListWidget()
+        lst.setMinimumHeight(220)
+        lay.addWidget(lst, 1)
+
+        # fill
+        gl = self._function_glossary()
+        def _refill():
+            q = search.text().strip().lower()
+            lst.clear()
+            for name, (sig, desc) in gl.items():
+                if not q or q in name.lower() or q in sig.lower() or q in desc.lower():
+                    item = QListWidgetItem(f"{sig} — {desc}")
+                    item.setData(Qt.ItemDataRole.UserRole, sig)
+                    lst.addItem(item)
+        _refill()
+
+        def _insert_current():
+            item = lst.currentItem()
+            if not item: return
+            sig = item.data(Qt.ItemDataRole.UserRole) or ""
+            ed = self.ed_single if self.rb_single.isChecked() else (self.ed_r if self.tabs.currentIndex()==0 else self.ed_g if self.tabs.currentIndex()==1 else self.ed_b)
+            ed.insertPlainText(sig)
+
+        lst.itemDoubleClicked.connect(lambda *_: (_insert_current(), None))
+        search.textChanged.connect(lambda *_: _refill())
+
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        insert_btn = QPushButton("Insert")
+        btns.addButton(insert_btn, QDialogButtonBox.ButtonRole.ApplyRole)
+        insert_btn.clicked.connect(_insert_current)
+        btns.rejected.connect(dlg.reject)
+        lay.addWidget(btns)
+
+        dlg.resize(620, 400)
+        dlg.exec()
+
+
+    def _delete_favorite(self):
+        text = self.cb_fav.currentText()
+        if text == "Select a favorite expression":
+            return
+        # Remove from in-memory list
+        try:
+            idx_in_list = self._favs.index(text)
+        except ValueError:
+            return
+
+        self._favs.pop(idx_in_list)
+
+        # Rebuild combo to keep indices clean
+        self.cb_fav.blockSignals(True)
+        self.cb_fav.clear()
+        self.cb_fav.addItem("Select a favorite expression")
+        for f in self._favs:
+            self.cb_fav.addItem(f)
+        self.cb_fav.setCurrentIndex(0)
+        self.cb_fav.blockSignals(False)
+
+        # Persist
+        s = self._settings()
+        if s:
+            s.setValue("pixelmath_favorites", json.dumps(self._favs))
+
 
     def _apply_example_from_combo(self, idx: int):
         if idx <= 0:  # "Insert example…"
@@ -574,16 +1016,26 @@ class PixelMathDialogPro(QDialog):
         self.tabs.setVisible(not single_on)
 
     def _help(self):
-        QMessageBox.information(self, "Pixel Math Help",
-            "Operators: + - * /   ^(power)   ~(invert)\n"
-            "Comparisons: <, == (use inside iff)\n"
-            "Functions: med, mean, min, max, std, mad, log, iff(cond,a,b), mtf(x,m)\n"
-            "Variables: 'img' (active) and one per open view (window title).\n"
-            "You can also type the raw window title (e.g. 'andromeda.png'); the dialog maps it automatically.\n"
-            "Per-channel indexing: viewName[0], viewName[1], viewName[2].\n"
-            "Multiline: last line is the result.\n"
-            "Output: choose Overwrite active or Create new view."
-        )
+        gl = self._function_glossary()
+        lines = [
+            "Operators: +  -  *  /   ^(power)   ~(invert)",
+            "Comparisons: <, ==   (use inside iff)",
+            "",
+            "Variables:",
+            "  • img (active) and one per open view (by window title, auto-mapped).",
+            "  • Coordinates: X, Y in [0..1].",
+            "  • Sizes: H, W, C, shape.",
+            "",
+            "Per-channel indexing: view[0], view[1], view[2].",
+            "Multiline: last line is the result.",
+            "Output: Overwrite active or Create new view.",
+            "",
+            "Functions:"
+        ]
+        # Pretty column-ish dump
+        for name, (sig, desc) in gl.items():
+            lines.append(f"  {sig}\n    {desc}")
+        QMessageBox.information(self, "Pixel Math Help", "\n".join(lines))
 
     # ---------- Apply ----------------------------------------------------------
     def _apply(self):
