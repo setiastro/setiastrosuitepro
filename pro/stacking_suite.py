@@ -76,6 +76,52 @@ _WINDOWS_RESERVED = {
 
 _FITS_EXTS = ('.fits', '.fit', '.fts', '.fits.gz', '.fit.gz', '.fts.gz', '.fz')
 
+def _read_tile_stack(file_list, y0, y1, x0, x1, channels, out_buf):
+    """
+    Fill `out_buf` with the current tile stack.
+    out_buf shape: (N, th, tw, C) float32, C-order.
+    """
+    th = y1 - y0
+    tw = x1 - x0
+    N  = len(file_list)
+
+    # Slice to the actual extents (edge tiles)
+    ts = out_buf[:N, :th, :tw, :channels]
+
+    # Load each frame's tile in parallel
+    num_cores = os.cpu_count() or 4
+    with ThreadPoolExecutor(max_workers=num_cores) as exe:
+        fut2i = {
+            exe.submit(load_fits_tile, fpath, y0, y1, x0, x1): i
+            for i, fpath in enumerate(file_list)
+        }
+        for fut in as_completed(fut2i):
+            i = fut2i[fut]
+            sub = fut.result()
+            if sub is None:
+                continue
+            if sub.ndim == 2:
+                # (H,W) → (H,W,1) → (H,W,3) if needed
+                sub = sub[:, :, None]
+                if channels == 3:
+                    sub = np.repeat(sub, 3, axis=2)
+            elif sub.ndim == 3 and sub.shape[0] == 3 and channels == 3:
+                # CHW → HWC
+                sub = sub.transpose(1, 2, 0)
+            ts[i, :, :, :] = sub.astype(np.float32, copy=False)
+
+    return th, tw  # actual extents for this tile
+
+def _tile_grid(height, width, chunk_h, chunk_w):
+    tiles = []
+    for y0 in range(0, height, chunk_h):
+        y1 = min(y0 + chunk_h, height)
+        for x0 in range(0, width, chunk_w):
+            x1 = min(x0 + chunk_w, width)
+            tiles.append((y0, y1, x0, x1))
+    return tiles
+
+
 def _find_first_image_hdu(hdul):
     """
     Pick the first HDU that has a 2D or 3D image array.
@@ -6542,13 +6588,20 @@ class StackingSuiteDialog(QDialog):
 
 
     def create_master_dark(self):
-        """ Creates master darks with minimal RAM usage by loading frames in small tiles. """
+        """Creates master darks with minimal RAM usage by loading frames in small tiles (GPU-accelerated if available)."""
 
         if not self.stacking_directory:
             self.select_stacking_directory()
             if not self.stacking_directory:
                 QMessageBox.warning(self, "Error", "Output directory is not set.")
                 return
+
+        # Choose an UNWEIGHTED algo for calibration. If user picked a weighted one, force unweighted.
+        algo = getattr(self, "calib_rejection_algorithm", "Windsorized Sigma Clipping")
+        if algo == "Weighted Windsorized Sigma Clipping":
+            algo = "Windsorized Sigma Clipping"
+
+        use_gpu = bool(self._hw_accel_enabled()) and _torch_ok() and _gpu_algo_supported(algo)
 
         exposure_tolerance = self.exposure_tolerance_spinbox.value()
         dark_files_by_group = {}
@@ -6575,17 +6628,15 @@ class StackingSuiteDialog(QDialog):
         master_dir = os.path.join(self.stacking_directory, "Master_Calibration_Files")
         os.makedirs(master_dir, exist_ok=True)
 
-        # 3) Stack Each Group in a Chunked Manner
+        # 3) Pre-count tiles for progress
         chunk_height = self.chunk_height
         chunk_width  = self.chunk_width
         total_tiles = 0
-        group_shapes = {}  # cache (H,W,C) per group for quick reuse
+        group_shapes = {}  # cache (H,W,C) per group
         for (exposure_time, image_size), file_list in dark_files_by_group.items():
             if len(file_list) < 2:
                 continue
-            # peek shape from first valid file
-            ref_file = file_list[0]
-            ref_data, _, _, _ = load_image(ref_file)
+            ref_data, _, _, _ = load_image(file_list[0])
             if ref_data is None:
                 continue
             H, W = ref_data.shape[:2]
@@ -6593,12 +6644,10 @@ class StackingSuiteDialog(QDialog):
             group_shapes[(exposure_time, image_size)] = (H, W, C)
             total_tiles += _count_tiles(H, W, chunk_height, chunk_width)
 
-        # If nothing to do, bail early
         if total_tiles == 0:
             self.update_status("⚠️ No eligible dark groups found to stack.")
             return
 
-        # ------ NEW: progress dialog ------
         pd = _Progress(self, "Create Master Darks", total_tiles)
         try:
             for (exposure_time, image_size), file_list in dark_files_by_group.items():
@@ -6614,82 +6663,103 @@ class StackingSuiteDialog(QDialog):
                 self.update_status(f"🟢 Processing {len(file_list)} darks for {exposure_time}s ({image_size}) exposure…")
                 QApplication.processEvents()
 
-                # (A) Identify reference shape (use cached if available)
+                # reference shape
                 if (exposure_time, image_size) in group_shapes:
                     height, width, channels = group_shapes[(exposure_time, image_size)]
                 else:
-                    ref_file = file_list[0]
-                    ref_data, ref_header, bit_depth, is_mono = load_image(ref_file)
+                    ref_data, _, _, _ = load_image(file_list[0])
                     if ref_data is None:
-                        self.update_status(f"❌ Failed to load reference {os.path.basename(ref_file)}")
+                        self.update_status(f"❌ Failed to load reference {os.path.basename(file_list[0])}")
                         continue
                     height, width = ref_data.shape[:2]
                     channels = 1 if (ref_data.ndim == 2) else 3
 
-                # (B) memmap for stacked result
                 memmap_path = os.path.join(master_dir, f"temp_dark_{exposure_time}_{image_size}.dat")
                 final_stacked = np.memmap(memmap_path, dtype=self._dtype(), mode='w+', shape=(height, width, channels))
 
                 num_frames = len(file_list)
+                # dummy weights (ignored by unweighted GPU reducer, but kept for API parity)
+                weights_array = np.ones((num_frames,), dtype=np.float32)
 
-                # (C) tiles
-                for y_start in range(0, height, chunk_height):
+                self.update_status(f"⚙️ {'GPU' if use_gpu else 'CPU'} reducer for calibration — {algo}")
+                QApplication.processEvents()
+
+                # ---- double-buffer + background prefetch over tiles ----
+                tiles = _tile_grid(height, width, chunk_height, chunk_width)
+                total_tiles_group = len(tiles)
+
+                # allocate two C-order buffers sized to your chunk
+                N = num_frames
+                buf0 = np.empty((N, min(chunk_height, height), min(chunk_width, width), channels),
+                                dtype=np.float32, order="C")
+                buf1 = np.empty_like(buf0)
+
+                # prime the first read
+                from concurrent.futures import ThreadPoolExecutor
+                tp = ThreadPoolExecutor(max_workers=1)
+                (y0, y1, x0, x1) = tiles[0]
+                fut = tp.submit(_read_tile_stack, file_list, y0, y1, x0, x1, channels, buf0)
+                use0 = True
+
+                # (announce once per group)
+                self.update_status(f"⚙️ {'GPU' if use_gpu else 'CPU'} reducer for calibration — {algo}")
+                QApplication.processEvents()
+
+                for t_idx, (y0, y1, x0, x1) in enumerate(tiles, start=1):
                     if pd.cancelled:
                         break
-                    y_end = min(y_start + chunk_height, height)
-                    tile_h = y_end - y_start
 
-                    for x_start in range(0, width, chunk_width):
-                        if pd.cancelled:
-                            break
-                        x_end = min(x_start + chunk_width, width)
-                        tile_w = x_end - x_start
+                    # wait for current tile to be filled
+                    th, tw = fut.result()
+                    ts_np = (buf0 if use0 else buf1)[:N, :th, :tw, :channels]
 
-                        # label per tile (optional)
-                        pd.set_label(f"{int(exposure_time)}s ({image_size}) — y:{y_start}-{y_end} x:{x_start}-{x_end}")
+                    # prefetch the next tile into the other buffer
+                    if t_idx < total_tiles_group:
+                        ny0, ny1, nx0, nx1 = tiles[t_idx]
+                        fut = tp.submit(_read_tile_stack, file_list, ny0, ny1, nx0, nx1, channels,
+                                        (buf1 if use0 else buf0))
 
-                        tile_stack = np.zeros((num_frames, tile_h, tile_w, channels), dtype=np.float32)
+                    # label/update PD
+                    pd.set_label(f"{int(exposure_time)}s ({image_size}) — y:{y0}-{y1} x:{x0}-{x1}")
 
-                        num_cores = os.cpu_count() or 4
-                        with ThreadPoolExecutor(max_workers=num_cores) as executor:
-                            future_to_index = {}
-                            for i, fpath in enumerate(file_list):
-                                future = executor.submit(load_fits_tile, fpath, y_start, y_end, x_start, x_end)
-                                future_to_index[future] = i
-
-                            for future in as_completed(future_to_index):
-                                if pd.cancelled:
-                                    break
-                                i = future_to_index[future]
-                                sub_img = future.result()
-                                if sub_img is None:
-                                    continue
-                                if sub_img.ndim == 2 and channels == 3:
-                                    sub_img = np.repeat(sub_img[:, :, np.newaxis], 3, axis=2)
-                                elif sub_img.ndim == 2 and channels == 1:
-                                    sub_img = sub_img[:, :, np.newaxis]
-                                if sub_img.ndim == 3 and sub_img.shape[0] == 3 and channels == 3:
-                                    sub_img = sub_img.transpose(1, 2, 0)
-                                tile_stack[i] = sub_img.astype(np.float32, copy=False)
-
-                        if pd.cancelled:
-                            break
-
-                        # (D) rejection
+                    # ---- rejection (GPU or CPU) ----
+                    if use_gpu:
+                        # dummy 1s weights; your GPU reducer ignores them for unweighted algos
+                        weights_array = np.ones((N,), dtype=np.float32)
+                        tile_result, _ = _torch_reduce_tile(
+                            ts_np,
+                            weights_array,
+                            algo_name=algo,
+                            kappa=float(self.kappa),
+                            iterations=int(self.iterations),
+                            sigma_low=float(self.sigma_low),
+                            sigma_high=float(self.sigma_high),
+                            trim_fraction=float(self.trim_fraction),
+                            esd_threshold=float(self.esd_threshold),
+                            biweight_constant=float(self.biweight_constant),
+                            modz_threshold=float(self.modz_threshold),
+                            comet_hclip_k=float(self.settings.value("stacking/comet_hclip_k", 1.30, type=float)),
+                            comet_hclip_p=float(self.settings.value("stacking/comet_hclip_p", 25.0, type=float)),
+                        )
+                    else:
                         if channels == 3:
-                            tile_result = windsorized_sigma_clip_4d(tile_stack, lower=self.sigma_low, upper=self.sigma_high)
-                            if isinstance(tile_result, tuple): tile_result = tile_result[0]
+                            tile_result = windsorized_sigma_clip_4d(ts_np, lower=self.sigma_low, upper=self.sigma_high)
+                            if isinstance(tile_result, tuple):
+                                tile_result = tile_result[0]
                         else:
-                            tile_stack_3d = tile_stack[..., 0]
-                            tile_result_3d = windsorized_sigma_clip_3d(tile_stack_3d, lower=self.sigma_low, upper=self.sigma_high)
-                            if isinstance(tile_result_3d, tuple): tile_result_3d = tile_result_3d[0]
-                            tile_result = tile_result_3d[..., np.newaxis]
+                            ts3 = ts_np[..., 0]
+                            tr3 = windsorized_sigma_clip_3d(ts3, lower=self.sigma_low, upper=self.sigma_high)
+                            tile_result = (tr3[0] if isinstance(tr3, tuple) else tr3)[..., None]
 
-                        # (E) store result, step progress
-                        final_stacked[y_start:y_end, x_start:x_end, :] = tile_result
-                        pd.step()  # <<< tick 1 per tile
+                    # commit
+                    final_stacked[y0:y1, x0:x1, :] = tile_result
+                    pd.step()
 
-                # cancelled mid-group?
+                    # flip buffer for the next iteration
+                    use0 = not use0
+
+                tp.shutdown(wait=True)
+
                 if pd.cancelled:
                     try: del final_stacked
                     except Exception: pass
@@ -6697,7 +6767,7 @@ class StackingSuiteDialog(QDialog):
                     except Exception: pass
                     break
 
-                # Convert & save (unchanged)
+                # save
                 master_dark_data = np.array(final_stacked)
                 del final_stacked
 
@@ -6723,54 +6793,9 @@ class StackingSuiteDialog(QDialog):
             self.update_override_dark_combo()
             self.assign_best_master_files()
         finally:
+            try: _free_torch_memory()
+            except Exception: pass
             pd.close()
-
-
-
-    def save_master_dark(self, master_dark, output_path, exposure_time, is_mono):
-        """Saves the master dark as 32-bit floating point FITS while maintaining OSC structure."""
-        if is_mono:
-            # Mono => shape (H, W)
-            h, w = master_dark.shape
-            # Wrap in an HDU
-            hdu_data = master_dark.astype(np.float32)
-            hdu = fits.PrimaryHDU(hdu_data)
-            image_size = f"{w}x{h}"  # Width x Height
-        else:
-            # Color => shape (H, W, C)
-            h, w, c = master_dark.shape
-            # Transpose to (C, H, W)
-            hdu_data = master_dark.transpose(2, 0, 1).astype(np.float32)
-            hdu = fits.PrimaryHDU(hdu_data)
-            image_size = f"{w}x{h}"
-
-        # Now 'hdu' is a fits.PrimaryHDU in both branches
-        hdr = hdu.header
-        hdr["SIMPLE"]   = True
-        hdr["BITPIX"]   = -32
-        hdr["NAXIS"]    = 3 if not is_mono else 2
-        hdr["NAXIS1"]   = w  # Width
-        hdr["NAXIS2"]   = h  # Height
-        if not is_mono:
-            hdr["NAXIS3"] = c
-        hdr["BSCALE"]   = 1.0
-        hdr["BZERO"]    = 0.0
-        hdr["IMAGETYP"] = "MASTER DARK"
-        hdr["EXPOSURE"] = exposure_time
-        hdr["DATE-OBS"] = datetime.utcnow().isoformat()
-        hdr["CREATOR"]  = "SetiAstroSuite"
-
-        # Write the FITS file
-        hdu.writeto(output_path, overwrite=True)
-
-        # Store Master Dark path with correct key
-        key = f"{exposure_time}s ({image_size})"
-        self.master_files[key] = output_path
-        self.master_sizes[output_path] = image_size
-
-        print(f"✅ Master Dark FITS saved: {output_path}")
-        self.update_status(f"✅ Stored Master Dark -> {key}: {output_path}")
-
 
 
             
@@ -6920,16 +6945,23 @@ class StackingSuiteDialog(QDialog):
         print(f"✅ DEBUG: Override Master Dark set to: {new_dark}")
 
     def create_master_flat(self):
-        """ Creates master flats using per-frame dark subtraction before stacking. """
+        """Creates master flats using per-frame dark subtraction before stacking (GPU-accelerated if available)."""
 
         if not self.stacking_directory:
             QMessageBox.warning(self, "Error", "Please set the stacking directory first using the wrench button.")
             return
 
-        exposure_tolerance = self.flat_exposure_tolerance_spinbox.value()
-        flat_files_by_group = {}  # Group by (Exposure, Image Size, Filter, Session)
+        # Choose an UNWEIGHTED algo for calibration. If user picked a weighted one, force unweighted.
+        algo = getattr(self, "calib_rejection_algorithm", "Windsorized Sigma Clipping")
+        if algo == "Weighted Windsorized Sigma Clipping":
+            algo = "Windsorized Sigma Clipping"
 
-        # Group Flats by Filter, Exposure & Size within Tolerance
+        use_gpu = bool(self._hw_accel_enabled()) and _torch_ok() and _gpu_algo_supported(algo)
+
+        exposure_tolerance = self.flat_exposure_tolerance_spinbox.value()
+        flat_files_by_group = {}  # (Exposure, Size, Filter, Session) -> list
+
+        # Group Flats
         for (filter_exposure, session), file_list in self.flat_files.items():
             try:
                 filter_name, exposure_size = filter_exposure.split(" - ")
@@ -6960,11 +6992,11 @@ class StackingSuiteDialog(QDialog):
 
             flat_files_by_group[matched_group].extend(file_list)
 
-        # Create output folder
+        # Output folder
         master_dir = os.path.join(self.stacking_directory, "Master_Calibration_Files")
         os.makedirs(master_dir, exist_ok=True)
 
-        # Stack each grouped flat set
+        # Pre-count tiles for progress
         total_tiles = 0
         group_shapes = {}
         for (exposure_time, image_size, filter_name, session), file_list in flat_files_by_group.items():
@@ -6996,7 +7028,7 @@ class StackingSuiteDialog(QDialog):
                 self.update_status(f"🟢 Processing {len(file_list)} flats for {exposure_time}s ({image_size}) [{filter_name}] in session '{session}'…")
                 QApplication.processEvents()
 
-                # Load master dark (unchanged)
+                # Select matching master dark (optional)
                 best_diff = float("inf")
                 selected_master_dark = None
                 for key, path in self.master_files.items():
@@ -7017,7 +7049,7 @@ class StackingSuiteDialog(QDialog):
                     dark_data = None
                     self.update_status("DEBUG: No matching Master Dark found.")
 
-                # reference shape (use cache if present)
+                # reference shape
                 if (exposure_time, image_size, filter_name, session) in group_shapes:
                     height, width, channels = group_shapes[(exposure_time, image_size, filter_name, session)]
                 else:
@@ -7031,65 +7063,97 @@ class StackingSuiteDialog(QDialog):
                 memmap_path = os.path.join(master_dir, f"temp_flat_{session}_{exposure_time}_{image_size}_{filter_name}.dat")
                 final_stacked = np.memmap(memmap_path, dtype=self._dtype(), mode="w+", shape=(height, width, channels))
                 num_frames = len(file_list)
+                weights_array = np.ones((num_frames,), dtype=np.float32)  # ignored by unweighted algo
 
-                for y_start in range(0, height, self.chunk_height):
+                self.update_status(f"⚙️ {'GPU' if use_gpu else 'CPU'} reducer for calibration — {algo}")
+                QApplication.processEvents()
+
+                # ---- double-buffer + background prefetch over tiles ----
+                tiles = _tile_grid(height, width, self.chunk_height, self.chunk_width)
+                total_tiles_group = len(tiles)
+
+                N = num_frames
+                # allocate max-chunk buffers (C-order, float32)
+                buf0 = np.empty((N,
+                                min(self.chunk_height, height),
+                                min(self.chunk_width,  width),
+                                channels),
+                                dtype=np.float32, order="C")
+                buf1 = np.empty_like(buf0)
+
+                from concurrent.futures import ThreadPoolExecutor
+                tp = ThreadPoolExecutor(max_workers=1)
+
+                # prime first read
+                (y0, y1, x0, x1) = tiles[0]
+                fut = tp.submit(_read_tile_stack, file_list, y0, y1, x0, x1, channels, buf0)
+                use0 = True
+
+                self.update_status(f"⚙️ {'GPU' if use_gpu else 'CPU'} reducer for calibration — {algo}")
+                QApplication.processEvents()
+
+                for t_idx, (y0, y1, x0, x1) in enumerate(tiles, start=1):
                     if pd.cancelled:
                         break
-                    y_end = min(y_start + self.chunk_height, height)
-                    tile_h = y_end - y_start
 
-                    for x_start in range(0, width, self.chunk_width):
-                        if pd.cancelled:
-                            break
-                        x_end = min(x_start + self.chunk_width, width)
-                        tile_w = x_end - x_start
+                    # wait for current tile
+                    th, tw = fut.result()
+                    ts_np = (buf0 if use0 else buf1)[:N, :th, :tw, :channels]  # (F, th, tw, C)
 
-                        pd.set_label(f"[{filter_name}] {session} — y:{y_start}-{y_end} x:{x_start}-{x_end}")
+                    # prefetch next tile into the other buffer
+                    if t_idx < total_tiles_group:
+                        ny0, ny1, nx0, nx1 = tiles[t_idx]
+                        fut = tp.submit(_read_tile_stack, file_list, ny0, ny1, nx0, nx1, channels,
+                                        (buf1 if use0 else buf0))
 
-                        tile_stack = np.zeros((num_frames, tile_h, tile_w, channels), dtype=np.float32)
+                    pd.set_label(f"[{filter_name}] {session} — y:{y0}-{y1} x:{x0}-{x1}")
 
-                        with ThreadPoolExecutor() as executor:
-                            futures = {
-                                executor.submit(load_fits_tile, f, y_start, y_end, x_start, x_end): idx
-                                for idx, f in enumerate(file_list)
-                            }
-                            for future in as_completed(futures):
-                                if pd.cancelled:
-                                    break
-                                i = futures[future]
-                                sub_img = future.result()
-                                if sub_img is None:
-                                    self.update_status(f"⚠️ Skipping tile {i} due to load failure.")
-                                    continue
-                                if sub_img.ndim == 2:
-                                    sub_img = sub_img[:, :, np.newaxis]
-                                    if channels == 3:
-                                        sub_img = np.repeat(sub_img, 3, axis=2)
-                                elif sub_img.shape[0] == 3:
-                                    sub_img = sub_img.transpose(1, 2, 0)
-                                tile_stack[i] = sub_img
+                    # ---- per-tile dark subtraction (HWC), BEFORE rejection ----
+                    if dark_data is not None:
+                        dsub = dark_data
+                        if dsub.ndim == 3 and dsub.shape[0] in (1, 3):  # CHW → HWC
+                            dsub = dsub.transpose(1, 2, 0)
+                        d_tile = dsub[y0:y1, x0:x1].astype(np.float32, copy=False)
+                        if d_tile.ndim == 2 and channels == 3:
+                            d_tile = np.repeat(d_tile[..., None], 3, axis=2)
+                        _subtract_dark_stack_inplace_hwc(ts_np, d_tile, pedestal=0.0)
 
-                        if pd.cancelled:
-                            break
-
-                        if dark_data is not None:
-                            dsub = dark_data
-                            if dsub.ndim == 3 and dsub.shape[0] in (1,3):
-                                dsub = dsub.transpose(1, 2, 0)
-                            d_tile = dsub[y_start:y_end, x_start:x_end].astype(np.float32, copy=False)
-                            if d_tile.ndim == 2 and channels == 3:
-                                d_tile = np.repeat(d_tile[..., None], 3, axis=2)
-                            _subtract_dark_stack_inplace_hwc(tile_stack, d_tile, pedestal=0.0)
-
+                    # ---- rejection (GPU or CPU) ----
+                    if use_gpu:
+                        # unweighted path → pass ones; ignored by unweighted algos
+                        tile_result, _ = _torch_reduce_tile(
+                            ts_np,
+                            weights_array,  # np.ones((N,), dtype=np.float32)
+                            algo_name=algo,
+                            kappa=float(self.kappa),
+                            iterations=int(self.iterations),
+                            sigma_low=float(self.sigma_low),
+                            sigma_high=float(self.sigma_high),
+                            trim_fraction=float(self.trim_fraction),
+                            esd_threshold=float(self.esd_threshold),
+                            biweight_constant=float(self.biweight_constant),
+                            modz_threshold=float(self.modz_threshold),
+                            comet_hclip_k=float(self.settings.value("stacking/comet_hclip_k", 1.30, type=float)),
+                            comet_hclip_p=float(self.settings.value("stacking/comet_hclip_p", 25.0, type=float)),
+                        )
+                    else:
                         if channels == 3:
-                            tile_result = windsorized_sigma_clip_4d(tile_stack, lower=self.sigma_low, upper=self.sigma_high)[0]
+                            tile_result = windsorized_sigma_clip_4d(ts_np, lower=self.sigma_low, upper=self.sigma_high)
+                            if isinstance(tile_result, tuple):
+                                tile_result = tile_result[0]
                         else:
-                            stack_3d = tile_stack[..., 0]
-                            tile_result = windsorized_sigma_clip_3d(stack_3d, lower=self.sigma_low, upper=self.sigma_high)[0]
-                            tile_result = tile_result[..., np.newaxis]
+                            ts3 = ts_np[..., 0]
+                            tr3 = windsorized_sigma_clip_3d(ts3, lower=self.sigma_low, upper=self.sigma_high)
+                            tile_result = (tr3[0] if isinstance(tr3, tuple) else tr3)[..., None]
 
-                        final_stacked[y_start:y_end, x_start:x_end, :] = tile_result
-                        pd.step()  # <<< tick per tile
+                    # commit + progress
+                    final_stacked[y0:y1, x0:x1, :] = tile_result
+                    pd.step()
+
+                    # flip buffer
+                    use0 = not use0
+
+                tp.shutdown(wait=True)
 
                 if pd.cancelled:
                     try: del final_stacked
@@ -7125,47 +7189,9 @@ class StackingSuiteDialog(QDialog):
             self.assign_best_master_dark()
             self.assign_best_master_files()
         finally:
+            try: _free_torch_memory()
+            except Exception: pass
             pd.close()
-
-
-
-    def save_master_flat(self, master_flat, output_path, exposure_time, filter_name):
-        """ Saves master flat as both a 32-bit floating point FITS and TIFF while ensuring no unintended normalization. """
-
-        # ✅ Retrieve FITS header from a sample flat (to check if it's mono or color)
-        original_header = None
-        is_mono = True  # Default to mono
-
-        if self.flat_files:
-            sample_flat = next(iter(self.flat_files.values()))[0]  # Get the first flat file
-            try:
-                with fits.open(sample_flat) as hdul:
-                    original_header = hdul[0].header
-
-                    # **🔍 Detect if the flat is color by checking NAXIS3**
-                    if original_header.get("NAXIS", 2) == 3 and original_header.get("NAXIS3", 1) == 3:
-                        is_mono = False  # ✅ It's a color flat
-
-            except Exception as e:
-                print(f"⚠️ Warning: Could not retrieve FITS header from {sample_flat}: {e}")
-
-        # ✅ Explicitly ensure we are saving raw values (NO normalization)
-        fits_header = original_header if original_header else fits.Header()
-        fits_header["BSCALE"] = 1.0  # 🔹 Prevent rescaling
-        fits_header["BZERO"] = 0.0   # 🔹 Prevent offset
-
-        # ✅ Save as FITS
-        save_image(
-            img_array=master_flat,
-            filename=output_path,
-            original_format="fit",
-            bit_depth="32-bit floating point",
-            original_header=fits_header,
-            is_mono=is_mono
-        )
-
-        print(f"✅ Master Flat FITS saved: {output_path}")
-
 
 
 

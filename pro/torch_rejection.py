@@ -9,13 +9,14 @@ from .runtime_torch import import_torch, add_runtime_to_sys_path
 
 # Algorithms supported by the GPU path here (names match your UI/CPU counterparts)
 _SUPPORTED = {
-    "Comet Median",                        # == Simple Median (No Rejection)
+    "Comet Median",
     "Simple Median (No Rejection)",
     "Comet High-Clip Percentile",
     "Comet Lower-Trim (30%)",
     "Comet Percentile (40th)",
     "Simple Average (No Rejection)",
     "Weighted Windsorized Sigma Clipping",
+    "Windsorized Sigma Clipping",   # <<< NEW (unweighted)
     "Kappa-Sigma Clipping",
     "Trimmed Mean",
     "Extreme Studentized Deviate (ESD)",
@@ -201,6 +202,27 @@ def torch_reduce_tile(
             out = _nanquantile(torch, ts, 0.40, dim=0)
             rej = torch.zeros((F, H, W, C), dtype=torch.bool, device=dev)
             return out.contiguous().cpu().numpy(), rej.cpu().numpy()
+
+        if algo_name == "Windsorized Sigma Clipping":
+            # Unweighted: mask by k*sigma around median, then plain mean of survivors
+            low = float(sigma_low)
+            high = float(sigma_high)
+            valid = torch.isfinite(ts)
+            keep = valid.clone()
+            for _ in range(int(iterations)):
+                x = ts.masked_fill(~keep, float("nan"))
+                med = _nanmedian(torch, x, dim=0)
+                std = _nanstd(torch, x, dim=0)
+                lo = med - low * std
+                hi = med + high * std
+                keep = valid & (ts >= lo.unsqueeze(0)) & (ts <= hi.unsqueeze(0))
+            # plain (unweighted) mean of kept samples
+            kept = torch.where(keep, ts, torch.zeros_like(ts))
+            cnt  = keep.sum(dim=0).clamp_min(1).to(kept.dtype)
+            out  = kept.sum(dim=0) / cnt
+            rej  = ~keep
+            return out.contiguous().cpu().numpy(), rej.cpu().numpy()
+
 
         if algo == "Comet Lower-Trim (30%)":
             n = torch.isfinite(ts).sum(dim=0).clamp_min(1)
