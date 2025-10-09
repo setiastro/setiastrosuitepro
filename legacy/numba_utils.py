@@ -1470,6 +1470,101 @@ def compute_noise(image):
     """ Estimates noise using Median Absolute Deviation (MAD). """
     return fast_mad(image)
 
+def _downsample_for_stars(img: np.ndarray, factor: int = 4) -> np.ndarray:
+    """
+    Very cheap spatial downsample for star counting.
+    Works on mono or RGB. Returns float32 2D.
+    """
+    if img.ndim == 3 and img.shape[-1] == 3:
+        # luma first
+        r, g, b = img[..., 0], img[..., 1], img[..., 2]
+        img = 0.2126*r + 0.7152*g + 0.0722*b
+    img = np.asarray(img, dtype=np.float32, order="C")
+    if factor <= 1:
+        return img
+    # stride (fast & cache friendly), not interpolation
+    return img[::factor, ::factor]
+
+
+def fast_star_count_lite(img: np.ndarray,
+                         sample_stride: int = 8,
+                         localmax_k: int = 3,
+                         thr_sigma: float = 4.0,
+                         max_ecc_samples: int = 200) -> tuple[int, float]:
+    """
+    Super-fast star counter:
+      • sample a tiny subset to estimate background mean/std
+      • local-maxima on small image
+      • optional rough eccentricity on a small random subset
+    Returns (count, avg_ecc).
+    """
+    # img is 2D float32, already downsampled
+    H, W = img.shape
+    # 1) quick background stats on a sparse grid
+    samp = img[::sample_stride, ::sample_stride]
+    mu = float(np.mean(samp))
+    sigma = float(np.std(samp))
+    thr = mu + thr_sigma * max(sigma, 1e-6)
+
+    # 2) find local maxima above threshold
+    # small structuring element; k must be odd
+    k = localmax_k if (localmax_k % 2 == 1) else (localmax_k + 1)
+    se = np.ones((k, k), np.uint8)
+    # dilate the image (on float -> do it via cv2.dilate after scaling)
+    # scale to 16-bit to keep numeric fidelity (cheap)
+    scaled = (img * (65535.0 / max(np.max(img), 1e-6))).astype(np.uint16)
+    dil = cv2.dilate(scaled, se)
+    # peaks are pixels that equal the local max and exceed thr
+    peaks = (scaled == dil) & (img > thr)
+    count = int(np.count_nonzero(peaks))
+
+    # 3) (optional) rough eccentricity on a tiny subset
+    if count == 0:
+        return 0, 0.0
+    if max_ecc_samples <= 0:
+        return count, 0.0
+
+    ys, xs = np.where(peaks)
+    if xs.size > max_ecc_samples:
+        idx = np.random.choice(xs.size, max_ecc_samples, replace=False)
+        xs, ys = xs[idx], ys[idx]
+
+    ecc_vals = []
+    # small window around each peak
+    r = 2  # 5×5 window
+    for x, y in zip(xs, ys):
+        x0, x1 = max(0, x - r), min(W, x + r + 1)
+        y0, y1 = max(0, y - r), min(H, y + r + 1)
+        patch = img[y0:y1, x0:x1]
+        if patch.size < 9:
+            continue
+        # second moments for ellipse approximation
+        yy, xx = np.mgrid[y0:y1, x0:x1]
+        yy = yy.astype(np.float32) - y
+        xx = xx.astype(np.float32) - x
+        w = patch - patch.min()
+        s = float(w.sum())
+        if s <= 0:
+            continue
+        mxx = float((w * (xx*xx)).sum() / s)
+        myy = float((w * (yy*yy)).sum() / s)
+        # approximate major/minor from variances
+        a = math.sqrt(max(mxx, myy))
+        b = math.sqrt(min(mxx, myy))
+        if a > 1e-6:
+            e = math.sqrt(max(0.0, 1.0 - (b*b)/(a*a)))
+            ecc_vals.append(e)
+    avg_ecc = float(np.mean(ecc_vals)) if ecc_vals else 0.0
+    return count, avg_ecc
+
+
+
+def compute_star_count_fast_preview(preview_2d: np.ndarray) -> tuple[int, float]:
+    """
+    Wrapper used in measurement: downsample aggressively and run the lite counter.
+    """
+    tiny = _downsample_for_stars(preview_2d, factor=4)  # try 4–8 depending on your sensor
+    return fast_star_count_lite(tiny, sample_stride=8, localmax_k=3, thr_sigma=4.0, max_ecc_samples=120)
 
 
 
