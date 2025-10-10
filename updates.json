@@ -1,9 +1,9 @@
 {
-  "version": "1.3.3",
+  "version": "1.3.4",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.3/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.3/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.3/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.4/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.4/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.4/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.3.2 Memory Management for ImageMM! Full rework of Stacking Suite to vastily improve stacking and integration time! Major bug fix in OSC for Comet Stacking! PixelMath overhaul"
+  "notes": "Seti Astro Suite Pro V1.3.4 ImageMM memory management update. You can also find a new setting in stacking suite wrench to allow for ImageMM High Octane mode which will turn off the memory management for those users with high end resources"
 }
