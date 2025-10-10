@@ -125,31 +125,40 @@ def _doc_from_sw(sw):
 def _gray2d(a):
     return np.mean(a, axis=2) if a.ndim == 3 else a
 
-def _aa_find_transform_with_backoff_simple(tgt_gray: np.ndarray, ref_gray: np.ndarray):
-    """Fast astroalign with mild backoff (headless)."""
-    t32 = np.ascontiguousarray(tgt_gray.astype(np.float32))
-    r32 = np.ascontiguousarray(ref_gray.astype(np.float32))
+def _aa_find_transform_with_backoff(self, tgt_gray: np.ndarray, src_gray: np.ndarray):
+    tgt32 = np.ascontiguousarray(tgt_gray.astype(np.float32))
+    src32 = np.ascontiguousarray(src_gray.astype(np.float32))
+    try:
+        curr = sep.get_extract_pixstack()
+        if curr < 1_500_000:
+            sep.set_extract_pixstack(1_500_000)
+    except Exception:
+        pass
+
     tries = [
         dict(detection_sigma=5,  min_area=7,  max_control_points=75),
         dict(detection_sigma=12, min_area=9,  max_control_points=75),
         dict(detection_sigma=20, min_area=9,  max_control_points=75),
         dict(detection_sigma=30, min_area=11, max_control_points=75),
+        dict(detection_sigma=50, min_area=11, max_control_points=75),
     ]
     last_exc = None
     for kw in tries:
         try:
-            return astroalign.find_transform(t32, r32, **kw)
+            # 🔒 Serialize calls into astroalign/SEP
+            global _AA_LOCK
+            with _AA_LOCK:
+                return astroalign.find_transform(tgt32, src32, **kw)
         except Exception as e:
             last_exc = e
-            # try to expand SEP buffer if that was the issue
-            try:
-                import sep
-                if "pixel buffer full" in str(e).lower():
+            if "internal pixel buffer full" in str(e).lower():
+                try:
                     sep.set_extract_pixstack(int(sep.get_extract_pixstack() * 2))
-            except Exception:
-                pass
+                except Exception:
+                    pass
             continue
-    raise last_exc if last_exc else RuntimeError("astroalign failed")
+    raise last_exc
+
 
 def _warp_like_ref(target_img: np.ndarray, M_2x3: np.ndarray, ref_shape_hw: tuple[int,int]) -> np.ndarray:
     H, W = ref_shape_hw
@@ -486,6 +495,7 @@ class StellarAlignmentDialog(QDialog):
 
         self.source_file_path = None
         self.target_file_path = None
+        self._align_progress_in_slot = False
 
         self.initUI()
 
@@ -1116,11 +1126,14 @@ class StarRegistrationWorker(QRunnable):
 
     @staticmethod
     def compute_affine_transform_astroalign(source_img, reference_img):
+        # Serialize native SEP/astroalign to avoid instability on Windows
+        global _AA_LOCK
         try:
-            transform_obj, _ = astroalign.find_transform(source_img, reference_img)
+            with _AA_LOCK:
+                transform_obj, _ = astroalign.find_transform(source_img, reference_img)
             return transform_obj.params[0:2, :]
         except Exception as e:
-            print(f"DEBUG: astroalign failed: {e}")
+            print(f"[StarRegistrationWorker] astroalign failed: {e}")
             return None
 
 
@@ -1488,6 +1501,13 @@ class StarRegistrationWindow(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)        
         self.initUI()
 
+        self._prog_timer = QTimer(self)
+        self._prog_timer.setInterval(100)      # 10 Hz flush
+        self._prog_timer.setSingleShot(True)
+        self._prog_timer.timeout.connect(self._flush_progress)
+        self._pending_prog = None
+        self._in_progress_slot = False
+
     def initUI(self):
         self.setWindowTitle("Star Registration")
         self.setGeometry(200, 200, 600, 450)
@@ -1560,6 +1580,26 @@ class StarRegistrationWindow(QWidget):
         main_layout.addLayout(output_layout)
         main_layout.addWidget(self.progress_label)
         main_layout.addWidget(self.start_button)
+
+    def _enqueue_progress(self, message: str) -> None:
+        # Save only the latest message; start the coalescing timer
+        self._pending_prog = str(message) if message is not None else ""
+        if not self._prog_timer.isActive():
+            self._prog_timer.start()
+
+    def _flush_progress(self) -> None:
+        if self._pending_prog is None:
+            return
+        # Hard non-reentrancy guard — don’t let update trigger itself
+        if self._in_progress_slot:
+            return
+        self._in_progress_slot = True
+        try:
+            self.progress_label.setText(f"Status: {self._pending_prog}")
+        finally:
+            self._in_progress_slot = False
+            self._pending_prog = None
+
 
     # Reference selection (no slots)
     def select_reference_from_active_view(self):
@@ -1640,7 +1680,7 @@ class StarRegistrationWindow(QWidget):
             self.output_directory,
             parent_window=self.parent_window
         )
-        self.thread.progress_update.connect(self.update_progress)
+        self.thread.progress_update.connect(self._enqueue_progress)
         self.thread.registration_complete.connect(self.registration_finished)
         self.thread.start()
 
