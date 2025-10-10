@@ -46,6 +46,7 @@ from pro.log_bus import LogBus
 from pro import comet_stacking as CS
 #from pro.remove_stars import starnet_starless_from_array, darkstar_starless_from_array
 from pro.mfdeconv import MultiFrameDeconvWorker
+from pro.mfdeconvsport import MultiFrameDeconvWorkerSport
 from pro.accel_installer import current_backend
 from pro.accel_workers import AccelInstallWorker
 from pro.runtime_torch import add_runtime_to_sys_path
@@ -3186,6 +3187,14 @@ class StackingSuiteDialog(QDialog):
         self.hw_accel_cb.setChecked(self.settings.value("stacking/use_hardware_accel", True, type=bool))
         fl_perf.addRow(self.hw_accel_cb)
 
+        self.high_octane_cb = QCheckBox("High Octane Mode (Let 'er Rip MFDeconv)")
+        self.high_octane_cb.setToolTip(
+            "Use mfdeconvsport.py (MultiFrameDeconvWorkerSport): minimal memory management, "
+            "maximum throughput. Requires ample RAM/VRAM."
+        )
+        self.high_octane_cb.setChecked(self.settings.value("stacking/high_octane", False, type=bool))
+        fl_perf.addRow(self.high_octane_cb)
+
         # (Optional) show detected backend for user feedback
         try:
             backend_str = current_backend() or "CPU only"
@@ -3764,7 +3773,8 @@ class StackingSuiteDialog(QDialog):
         self.settings.setValue("stacking/mfdeconv/varmap/smooth_sigma",  float(self.vm_sigma.value()))
         vm_floor = 10.0 ** float(self.vm_floor_log.value())
         self.settings.setValue("stacking/mfdeconv/varmap/floor", vm_floor)
-
+        self.settings.setValue("stacking/high_octane", self.high_octane_cb.isChecked())
+        self.high_octane_mode = bool(self.high_octane_cb.isChecked())
         # Gradient settings
         self.settings.setValue("stacking/grad_poly2/enabled",   self.chk_poly2.isChecked())
         self.settings.setValue("stacking/grad_poly2/mode",       "divide" if self.grad_mode_combo.currentIndex() == 1 else "subtract")
@@ -9690,24 +9700,49 @@ class StackingSuiteDialog(QDialog):
                         "floor":         self.settings.value("stacking/mfdeconv/varmap/floor",        1e-8, type=float),
                     }
 
+                    use_high_octane = self.settings.value("stacking/high_octane", False, type=bool)
+
                     self._mf_thread = QThread(self)
-                    self._mf_worker = MultiFrameDeconvWorker(
-                        parent=None,
-                        aligned_paths=frames,
-                        output_path=out_path,
-                        iters=iters,
-                        kappa=kappa,
-                        color_mode=mode,
-                        huber_delta=Huber,
-                        min_iters=min_iters,
-                        use_star_masks=use_star_masks,
-                        use_variance_maps=use_variance_maps,
-                        rho=rho,
-                        star_mask_cfg=star_mask_cfg,        # <<< NEW
-                        varmap_cfg=varmap_cfg,               # <<< NEW
-                        save_intermediate=save_intermediate, 
-                        super_res_factor=super_res_factor,
-                    )
+
+                    if use_high_octane:
+                        # “Let it rip” path (legacy)
+                        self._mf_worker = MultiFrameDeconvWorkerSport(
+                            parent=None,
+                            aligned_paths=frames,
+                            output_path=out_path,
+                            iters=iters,
+                            kappa=kappa,
+                            color_mode=mode,
+                            huber_delta=Huber,
+                            min_iters=min_iters,
+                            use_star_masks=use_star_masks,
+                            use_variance_maps=use_variance_maps,
+                            rho=rho,
+                            star_mask_cfg=star_mask_cfg,
+                            varmap_cfg=varmap_cfg,
+                            save_intermediate=save_intermediate,
+                            super_res_factor=super_res_factor,
+                        )
+                    else:
+                        # Memory-managed path (current)
+                        self._mf_worker = MultiFrameDeconvWorker(
+                            parent=None,
+                            aligned_paths=frames,
+                            output_path=out_path,
+                            iters=iters,
+                            kappa=kappa,
+                            color_mode=mode,
+                            huber_delta=Huber,
+                            min_iters=min_iters,
+                            use_star_masks=use_star_masks,
+                            use_variance_maps=use_variance_maps,
+                            rho=rho,
+                            star_mask_cfg=star_mask_cfg,
+                            varmap_cfg=varmap_cfg,
+                            save_intermediate=save_intermediate,
+                            super_res_factor=super_res_factor,
+                        )
+
                     self._mf_worker.moveToThread(self._mf_thread)
                     self._mf_worker.progress.connect(self._on_mf_progress, Qt.ConnectionType.QueuedConnection)
                     self._mf_thread.started.connect(self._mf_worker.run, Qt.ConnectionType.QueuedConnection)
@@ -11218,24 +11253,49 @@ class StackingSuiteDialog(QDialog):
             out_path = os.path.join(out_dir, f"MasterLight_{safe_name}_{len(frames)}f_MFDeconv_{mode}_{iters}it_k{int(round(kappa*100))}.fit")
             batch = self.settings.value("stacking/mfdeconv/batch", 8, type=int)
 
+            use_high_octane = self.settings.value("stacking/high_octane", False, type=bool)
+
             self._mf_thread = QThread(self)
-            self._mf_worker = MultiFrameDeconvWorker(
-                parent=None,
-                aligned_paths=frames,
-                output_path=out_path,
-                iters=iters,
-                kappa=kappa,
-                color_mode=mode,
-                huber_delta=Huber,
-                min_iters=min_iters,
-                use_star_masks=use_star_masks,
-                use_variance_maps=use_variance_maps,
-                rho=rho,
-                star_mask_cfg=star_mask_cfg,        # <<< NEW
-                varmap_cfg=varmap_cfg,               # <<< NEW
-                save_intermediate=save_intermediate, 
-                super_res_factor=super_res_factor,
-            )
+
+            if use_high_octane:
+                # “Let it rip” path (legacy)
+                self._mf_worker = MultiFrameDeconvWorkerSport(
+                    parent=None,
+                    aligned_paths=frames,
+                    output_path=out_path,
+                    iters=iters,
+                    kappa=kappa,
+                    color_mode=mode,
+                    huber_delta=Huber,
+                    min_iters=min_iters,
+                    use_star_masks=use_star_masks,
+                    use_variance_maps=use_variance_maps,
+                    rho=rho,
+                    star_mask_cfg=star_mask_cfg,
+                    varmap_cfg=varmap_cfg,
+                    save_intermediate=save_intermediate,
+                    super_res_factor=super_res_factor,
+                )
+            else:
+                # Memory-managed path (current)
+                self._mf_worker = MultiFrameDeconvWorker(
+                    parent=None,
+                    aligned_paths=frames,
+                    output_path=out_path,
+                    iters=iters,
+                    kappa=kappa,
+                    color_mode=mode,
+                    huber_delta=Huber,
+                    min_iters=min_iters,
+                    use_star_masks=use_star_masks,
+                    use_variance_maps=use_variance_maps,
+                    rho=rho,
+                    star_mask_cfg=star_mask_cfg,
+                    varmap_cfg=varmap_cfg,
+                    save_intermediate=save_intermediate,
+                    super_res_factor=super_res_factor,
+                )
+
             self._mf_worker.moveToThread(self._mf_thread)
             self._mf_worker.progress.connect(self._on_mf_progress, Qt.ConnectionType.QueuedConnection)
             self._mf_thread.started.connect(self._mf_worker.run, Qt.ConnectionType.QueuedConnection)
