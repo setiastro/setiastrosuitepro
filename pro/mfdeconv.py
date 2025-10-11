@@ -1442,26 +1442,24 @@ def _solve_super_psf_from_native(f_native: np.ndarray, r: int, sigma: float = 1.
     return _normalize_psf(h)
 
 def _downsample_avg_t(x, r: int):
-    """
-    Average-pool over non-overlapping r×r blocks.
-    Works for (H,W) or (C,H,W). Crops to multiples of r.
-    """
     if r <= 1:
         return x
     if x.ndim == 2:
         H, W = x.shape
         Hr, Wr = (H // r) * r, (W // r) * r
         if Hr == 0 or Wr == 0:
-            return x  # nothing to pool
+            return x
         x2 = x[:Hr, :Wr]
-        return x2.view(Hr // r, r, Wr // r, r).mean(dim=(1, 3))
+        # ❌ .view → ✅ .reshape
+        return x2.reshape(Hr // r, r, Wr // r, r).mean(dim=(1, 3))
     else:
         C, H, W = x.shape
         Hr, Wr = (H // r) * r, (W // r) * r
         if Hr == 0 or Wr == 0:
             return x
         x2 = x[:, :Hr, :Wr]
-        return x2.view(C, Hr // r, r, Wr // r, r).mean(dim=(2, 4))
+        # ❌ .view → ✅ .reshape
+        return x2.reshape(C, Hr // r, r, Wr // r, r).mean(dim=(2, 4))
 
 def _upsample_sum_t(x, r: int):
     if r <= 1:
@@ -2118,22 +2116,31 @@ def multiframe_deconv(
             # channels-last preferred for better tensor-core perf
             if use_channels_last:
                 x_bc_hw = x_bc_hw.contiguous(memory_format=torch.channels_last)
+
             G = B * C
             kh, kw = int(w_b1kk.shape[-2]), int(w_b1kk.shape[-1])
             pad = (kw // 2, kw - kw // 2 - 1,  kh // 2, kh - kh // 2 - 1)
-            x_1ghw = x_bc_hw.view(1, G, x_bc_hw.shape[-2], x_bc_hw.shape[-1])
+
+            # ❌ .view → ✅ .reshape (safe for channels-last / non-contiguous)
+            x_1ghw = x_bc_hw.reshape(1, G, x_bc_hw.shape[-2], x_bc_hw.shape[-1])
             x_1ghw = F.pad(x_1ghw, pad, mode="reflect")
+
             w_g1kk = w_b1kk.repeat_interleave(C, dim=0)
             y_1ghw = F.conv2d(x_1ghw, w_g1kk, padding=0, groups=G)
-            y = y_1ghw.view(B, C, y_1ghw.shape[-2], y_1ghw.shape[-1])
+
+            y = y_1ghw.reshape(B, C, y_1ghw.shape[-2], y_1ghw.shape[-1])
             return y.contiguous() if not use_channels_last else y.contiguous(memory_format=torch.channels_last)
 
+
         def _downsample_avg_bt_t(x, r_):
-            if r_ <= 1: return x
+            if r_ <= 1:
+                return x
             B, C, H, W = x.shape
             Hr, Wr = (H // r_) * r_, (W // r_) * r_
-            if Hr == 0 or Wr == 0: return x
-            return x[:, :, :Hr, :Wr].view(B, C, Hr // r_, r_, Wr // r_, r_).mean(dim=(3,5))
+            if Hr == 0 or Wr == 0:
+                return x
+            # ❌ .view → ✅ .reshape
+            return x[:, :, :Hr, :Wr].reshape(B, C, Hr // r_, r_, Wr // r_, r_).mean(dim=(3, 5))
 
         def _upsample_sum_bt_t(x, r_):
             if r_ <= 1: return x
