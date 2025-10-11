@@ -269,7 +269,7 @@ from pro.status_log_dock import StatusLogDock
 from pro.log_bus import LogBus
 
 
-VERSION = "1.3.4"
+VERSION = "1.3.5"
 
 
 
@@ -5381,7 +5381,7 @@ class AstroSuiteProMainWindow(QMainWindow):
                         (str(rp.get("ref_ptr")) if rp.get("ref_ptr") is not None else "active"))
                     self._log(f"Ran Star Alignment (ref={rm}:{rn}, overwrite={'yes' if rp.get('overwrite', False) else 'no'})")
                 except Exception as e:
-                    from PyQt6.QtWidgets import QMessageBox
+                    
                     QMessageBox.warning(self, "Star Alignment", f"Apply failed:\n{e}")
                 return            
             if target_sw is None:
@@ -5427,7 +5427,7 @@ class AstroSuiteProMainWindow(QMainWindow):
                 apply_curves_via_preset(self, doc, preset or {})
                 self._log(f"Applied Curves preset to '{target_sw.windowTitle()}'")
             except Exception as e:
-                from PyQt6.QtWidgets import QMessageBox
+                
                 QMessageBox.warning(self, "Curves", f"Apply failed:\n{e}")
             return
 
@@ -5437,7 +5437,7 @@ class AstroSuiteProMainWindow(QMainWindow):
                 apply_ghs_via_preset(self, doc, preset or {})
                 self._log(f"Applied GHS preset to '{target_sw.windowTitle()}'")
             except Exception as e:
-                from PyQt6.QtWidgets import QMessageBox
+                
                 QMessageBox.warning(self, "GHS", f"Apply failed:\n{e}")
             return
 
@@ -5474,7 +5474,7 @@ class AstroSuiteProMainWindow(QMainWindow):
                 op = (preset or {}).get("op", "convolution")
                 self._log(f"Applied Convo/Deconvo preset ({op}) to '{target_sw.windowTitle()}'")
             except Exception as e:
-                from PyQt6.QtWidgets import QMessageBox
+                
                 QMessageBox.warning(self, "Convo/Deconvo", f"Apply failed:\n{e}")
             return
 
@@ -5549,7 +5549,7 @@ class AstroSuiteProMainWindow(QMainWindow):
                 rn = rp.get("ref_name") or os.path.basename(rp.get("ref_file","")) or "active"
                 self._log(f"Ran Star Alignment (ref={rm}:{rn}, overwrite={'yes' if rp.get('overwrite', False) else 'no'})")
             except Exception as e:
-                from PyQt6.QtWidgets import QMessageBox
+                
                 QMessageBox.warning(self, "Star Alignment", f"Apply failed:\n{e}")
             return
 
@@ -5599,7 +5599,7 @@ class AstroSuiteProMainWindow(QMainWindow):
                 it   = int(pp.get("iterations", 2))
                 self._log(f"Ran WaveScale Dark Enhancer (n_scales={ns}, boost={bf:.2f}, mask_gamma={mg:.2f}, iters={it})")
             except Exception as e:
-                from PyQt6.QtWidgets import QMessageBox
+                
                 QMessageBox.warning(self, "WaveScale Dark Enhancer", f"Apply failed:\n{e}")
             return
 
@@ -6141,7 +6141,7 @@ class AstroSuiteProMainWindow(QMainWindow):
         """
         sw = self.mdi.activeSubWindow()
         if not sw:
-            from PyQt6.QtWidgets import QMessageBox
+            
             QMessageBox.information(self, "No image", "Open an image first.")
             return
 
@@ -7624,7 +7624,7 @@ class _ProjectSaveWorker(QThread):
 # --- Global crash/exception handlers (Qt-safe) ---
 def install_crash_handlers(app):
     import sys, threading, traceback, faulthandler, atexit, logging
-    from PyQt6.QtWidgets import QMessageBox
+    
     from PyQt6.QtCore import QTimer
 
     # 1) Hard crashes (segfaults, access violations) → saspro_crash.log
