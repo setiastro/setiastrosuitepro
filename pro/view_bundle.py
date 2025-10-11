@@ -2,17 +2,21 @@
 from __future__ import annotations
 import json
 import uuid
+import os
 from typing import Iterable, Optional
 import sys
 from PyQt6.QtCore import Qt, QSettings, QByteArray, QMimeData, QSize, QPoint, QEventLoop
 from PyQt6.QtWidgets import (
     QDialog, QWidget, QHBoxLayout, QVBoxLayout, QListWidget, QListWidgetItem,QApplication,
-    QPushButton, QSplitter, QMessageBox, QLabel, QAbstractItemView, QDialogButtonBox,
-    QCheckBox, QFrame, QSizePolicy, QMenu, QInputDialog
+    QPushButton, QSplitter, QLabel, QAbstractItemView, QDialogButtonBox,
+    QCheckBox, QFrame, QSizePolicy, QMenu, QInputDialog, QFileDialog
 )
+import traceback
+from PyQt6.QtWidgets import QMessageBox as _QMB
 from PyQt6.QtGui import QDrag, QCloseEvent, QCursor, QShortcut, QKeySequence
-
+from legacy.image_manager import load_image, save_image
 from pro.dnd_mime import MIME_CMD, MIME_VIEWSTATE
+from pro.doc_manager import ImageDocument
 
 def _pin_on_top_mac(win: QDialog):
     if sys.platform == "darwin":
@@ -281,6 +285,24 @@ class BundleChip(QWidget):
             e.acceptProposedAction()
             return
 
+        if md.hasUrls():
+            paths = []
+            for url in md.urls():
+                p = url.toLocalFile()
+                if not p: continue
+                if os.path.isdir(p):
+                    for r, d, files in os.walk(p):
+                        for f in files:
+                            if f.lower().endswith(tuple(x.lower() for x in self._panel._file_exts())):
+                                paths.append(os.path.join(r, f))
+                else:
+                    if p.lower().endswith(tuple(x.lower() for x in self._panel._file_exts())):
+                        paths.append(p)
+            if paths:
+                self._panel._add_files_to_uuid(self._bundle_uuid, paths)
+                e.acceptProposedAction()
+                return
+
         # Apply a shortcut to all views in this bundle
         if md.hasFormat(MIME_CMD):
             try:
@@ -291,7 +313,7 @@ class BundleChip(QWidget):
                 e.acceptProposedAction()
                 return
             except Exception as ex:
-                QMessageBox.warning(self, "Apply to Bundle", f"Could not parse/execute shortcut:\n{ex}")
+                _QMB.warning(self, "Apply to Bundle", f"Could not parse/execute shortcut:\n{ex}")
         e.ignore()
 
 
@@ -352,6 +374,75 @@ class SelectViewsDialog(QDialog):
         return out
 
 
+class _HeadlessView:
+    def __init__(self, doc, mw):
+        self.document = doc
+        self._mw = mw
+
+    def apply_command(self, command_id: str, preset: dict | None = None):
+        # Best-effort fallback if someone calls this directly.
+        preset = preset or {}
+        apply_to_view = getattr(self._mw, "apply_command_to_view", None)
+        if callable(apply_to_view):
+            return apply_to_view(self, command_id, preset)
+        # If nothing else exists, just no-op (don’t raise a user-facing error).
+        return None
+
+class _FakeSubWindow:
+    """Headless stand-in that gives _handle_command_drop a .widget() with .document."""
+    def __init__(self, view):
+        self._view = view
+    def widget(self):
+        return self._view
+    def windowTitle(self):
+        # Try to mirror what a real subwindow title would show
+        try:
+            doc = getattr(self._view, "document", None)
+            if doc:
+                name = getattr(doc, "display_name", None)
+                if callable(name):
+                    return name()
+                # common fallback attribute(s)
+                return getattr(doc, "name", None) or getattr(doc, "filename", None) or "view"
+        except Exception:
+            pass
+        return "view"
+
+
+def _apply_one_shortcut_to_doc(mw, doc, payload: dict):
+    if not isinstance(payload, dict):
+        raise RuntimeError("Invalid shortcut payload")
+
+    cid = payload.get("command_id")
+    if isinstance(cid, dict):
+        payload = cid
+        cid = payload.get("command_id")
+    if not isinstance(cid, str) or not cid:
+        raise RuntimeError("Invalid command id")
+    if cid == "bundle":
+        return  # ignore nested bundles
+
+    view = _HeadlessView(doc, mw)
+
+    # 1) Primary: same as canvas → ShortcutManager path
+    handle = getattr(mw, "_handle_command_drop", None)
+    if callable(handle):
+        # Pass a fake subwindow whose widget() returns our headless view
+        fake_sw = _FakeSubWindow(view)
+        handle(payload, target_sw=fake_sw)
+        return
+
+    # 2) Secondary: explicit apply-to-view hook
+    apply_to_view = getattr(mw, "apply_command_to_view", None)
+    if callable(apply_to_view):
+        apply_to_view(view, cid, payload.get("preset") or {})
+        return
+
+    # 3) Last-resort: let the shim try a no-op-safe apply_command
+    view.apply_command(cid, payload.get("preset") or {})
+
+
+
 # ----------------------------- ViewBundleDialog -----------------------------
 class ViewBundleDialog(QDialog):
     """
@@ -363,7 +454,7 @@ class ViewBundleDialog(QDialog):
       • Compress → spawns a small Chip on the ShortcutCanvas that keeps accepting DnD
       • Multiple chips at once (one per bundle)
     """
-    SETTINGS_KEY = "viewbundles/v2"  # bumped for uuid
+    SETTINGS_KEY = "viewbundles/v3"  # bumped for uuid
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -390,13 +481,18 @@ class ViewBundleDialog(QDialog):
 
         self.docs = QListWidget()
         self.docs.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-
+        # Context menu + double-click niceties on the bundle's treebox/list
+        self.docs.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.docs.customContextMenuRequested.connect(self._docs_context_menu)
+        self.docs.itemDoubleClicked.connect(self._docs_item_activated)
         self.btn_new = QPushButton("New Bundle")
         self.btn_dup = QPushButton("Duplicate")
         self.btn_del = QPushButton("Delete")
         self.btn_clear = QPushButton("Clear Views")
         self.btn_remove_sel = QPushButton("Remove Selected")
         self.btn_add_from_open = QPushButton("Add from Open…")
+        self.btn_add_files = QPushButton("Add Files…")
+        self.btn_add_dir   = QPushButton("Add Directory (Recursive)…")        
         self.btn_compress = QPushButton("Compress to Chip")
         self.drop_hint = QLabel("Drop views here to add • Drop shortcuts here to apply to THIS bundle")
         self.drop_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -419,6 +515,10 @@ class ViewBundleDialog(QDialog):
         rrow.addWidget(self.btn_remove_sel)
         rrow.addWidget(self.btn_clear)
         right.addLayout(rrow)
+        rrow2 = QHBoxLayout()
+        rrow2.addWidget(self.btn_add_files)
+        rrow2.addWidget(self.btn_add_dir)
+        right.addLayout(rrow2)        
         right.addWidget(self.drop_hint)
         right.addWidget(self.btn_compress)
 
@@ -441,7 +541,8 @@ class ViewBundleDialog(QDialog):
         self.btn_add_from_open.clicked.connect(self._add_from_open_picker)
         self.btn_compress.clicked.connect(self._compress_to_chip)
         self.list.currentRowChanged.connect(lambda _i: self._refresh_docs_list())
-
+        self.btn_add_files.clicked.connect(self._add_files_into_bundle)
+        self.btn_add_dir.clicked.connect(self._add_directory_into_bundle)
         # populate
         self._refresh_bundle_list()
         if self.list.count():
@@ -466,12 +567,13 @@ class ViewBundleDialog(QDialog):
             if isinstance(data, list):
                 out = []
                 for b in data:
-                    if not isinstance(b, dict): continue
+                    if not isinstance(b, dict): 
+                        continue
                     nm = (b.get("name") or "Bundle").strip()
-                    arr = b.get("doc_ptrs") or []
-                    arr = [int(x) for x in arr if isinstance(x, (int, str))]
+                    ptrs = [int(x) for x in (b.get("doc_ptrs") or []) if isinstance(x, (int, str))]
+                    fps  = [str(p) for p in (b.get("file_paths") or []) if isinstance(p, (str,))]
                     u = b.get("uuid") or self._new_uuid()
-                    out.append({"uuid": u, "name": nm, "doc_ptrs": arr})
+                    out.append({"uuid": u, "name": nm, "doc_ptrs": ptrs, "file_paths": fps})
                 return out
         except Exception:
             pass
@@ -479,9 +581,52 @@ class ViewBundleDialog(QDialog):
 
     def _save_all(self):
         try:
+            # ensure keys exist
+            for b in self._bundles:
+                b.setdefault("doc_ptrs", [])
+                b.setdefault("file_paths", [])
             self._settings.setValue(self.SETTINGS_KEY, json.dumps(self._bundles, ensure_ascii=False))
         except Exception:
             pass
+
+    def _file_exts(self):
+        return (".fits", ".fit", ".fts", ".fits.gz", ".fit.gz", ".fz", ".xisf", ".tif", ".tiff", ".png", ".jpg", ".jpeg")
+
+    def _add_files_into_bundle(self):
+        u = self._current_uuid()
+        if not u:
+            return
+        last_dir = QSettings().value("last_opened_folder", "", type=str)
+        files, _ = QFileDialog.getOpenFileNames(
+            self, "Select Files for Bundle", last_dir,
+            "Images (*.fits *.fit *.fts *.fits.gz *.fit.gz *.fz *.xisf *.tif *.tiff *.png *.jpg *.jpeg)"
+        )
+        if not files:
+            return
+        QSettings().setValue("last_opened_folder", os.path.dirname(files[0]))
+        # Dedup in bundle
+        self._add_files_to_uuid(u, files)
+
+    def _add_directory_into_bundle(self):
+        u = self._current_uuid()
+        if not u:
+            return
+        last_dir = QSettings().value("last_opened_folder", "", type=str)
+        directory = QFileDialog.getExistingDirectory(self, "Select Directory for Bundle", last_dir)
+        if not directory:
+            return
+        QSettings().setValue("last_opened_folder", directory)
+        exts = tuple(x.lower() for x in self._file_exts())
+        found = []
+        for root, dirs, files in os.walk(directory):
+            for f in files:
+                if f.lower().endswith(exts):
+                    found.append(os.path.join(root, f))
+        if not found:
+            _QMB.information(self, "Add Directory", "No supported images found recursively.")
+            return
+        self._add_files_to_uuid(u, found)
+
 
     # ---------- bundle lookups / edits ----------
     def _current_index(self) -> int:
@@ -500,6 +645,9 @@ class ViewBundleDialog(QDialog):
     def _get_bundle(self, bundle_uuid: str) -> Optional[dict]:
         for b in self._bundles:
             if b.get("uuid") == bundle_uuid:
+                # normalize keys
+                b.setdefault("doc_ptrs", [])
+                b.setdefault("file_paths", [])
                 return b
         return None
 
@@ -550,6 +698,35 @@ class ViewBundleDialog(QDialog):
         if not u: return
         self._set_bundle_ptrs_by_uuid(u, ptrs)
 
+    def _set_bundle_files_by_uuid(self, bundle_uuid: str, paths: Iterable[str]):
+        b = self._get_bundle(bundle_uuid)
+        if not b:
+            return
+        uniq = []
+        seen = set()
+        for p in paths:
+            p = str(p)
+            if p not in seen:
+                seen.add(p); uniq.append(p)
+        b["file_paths"] = uniq
+        self._save_all()
+        if bundle_uuid in self._chips:
+            self._chips[bundle_uuid].sync_from_panel()
+        self._refresh_docs_list_if_current_uuid(bundle_uuid)
+
+    def _add_files_to_uuid(self, bundle_uuid: str, paths: Iterable[str]):
+        b = self._get_bundle(bundle_uuid)
+        if not b:
+            return
+        cur = list(b.get("file_paths", []))
+        merged = cur + [str(p) for p in paths]
+        self._set_bundle_files_by_uuid(bundle_uuid, merged)
+
+    def current_bundle_file_paths(self) -> list[str]:
+        b = self._current_bundle()
+        if not b: return []
+        return list(b.get("file_paths", []))
+
     # ---------- UI refresh ----------
     def _refresh_bundle_list(self):
         self.list.clear()
@@ -599,17 +776,130 @@ class ViewBundleDialog(QDialog):
     def _refresh_docs_list(self):
         self.docs.clear()
         mw = _find_main_window(self)
-        ptrs = self.current_bundle_doc_ptrs()
-        for p in ptrs:
+        # --- views ---
+        for p in self.current_bundle_doc_ptrs():
             title = f"(unresolved) [{p}]"
             if mw is not None:
                 d, sw = _resolve_doc_and_subwindow(mw, p)
                 if d is not None:
-                    # prefer the subwindow title (has mask glyphs etc.)
                     title = sw.windowTitle() if sw else (getattr(d, "display_name", lambda: "Untitled")())
-            it = QListWidgetItem(title)
+            it = QListWidgetItem(f"[view] {title}")
             it.setData(Qt.ItemDataRole.UserRole, int(p))
+            it.setData(Qt.ItemDataRole.UserRole + 1, "view")
             self.docs.addItem(it)
+        # --- files ---
+        for path in self.current_bundle_file_paths():
+            it = QListWidgetItem(f"[file] {path}")
+            it.setData(Qt.ItemDataRole.UserRole, path)
+            it.setData(Qt.ItemDataRole.UserRole + 1, "file")
+            self.docs.addItem(it)
+
+    # ---------- list niceties: context menu + double-click ----------
+    def _docs_item_kind_and_value(self, it):
+        """Return ('view'|'file', value) from a QListWidgetItem."""
+        if not it:
+            return None, None
+        kind = it.data(Qt.ItemDataRole.UserRole + 1)
+        val  = it.data(Qt.ItemDataRole.UserRole)
+        return kind, val
+
+    def _docs_item_activated(self, it):
+        """Double-click action: open file, or focus view."""
+        kind, val = self._docs_item_kind_and_value(it)
+        if kind == "file":
+            self._open_file_in_new_view(str(val))
+        elif kind == "view":
+            self._focus_view_ptr(int(val))
+
+    def _docs_context_menu(self, pos):
+        if self.docs.count() == 0:
+            return
+        # Focus the item under the cursor so actions apply sensibly
+        it = self.docs.itemAt(pos)
+        if it:
+            it.setSelected(True)
+
+        # Gather selection breakdown
+        sel = [self.docs.item(i) for i in range(self.docs.count()) if self.docs.item(i).isSelected()]
+        file_items = [s for s in sel if self._docs_item_kind_and_value(s)[0] == "file"]
+        view_items = [s for s in sel if self._docs_item_kind_and_value(s)[0] == "view"]
+        if not file_items and not view_items:
+            return
+
+        m = QMenu(self)
+        act_open_files = act_focus_views = None
+        if file_items:
+            lab = "Open in New View" if len(file_items) == 1 else f"Open {len(file_items)} Files in New Views"
+            act_open_files = m.addAction(lab)
+        if view_items:
+            labv = "Focus View" if len(view_items) == 1 else f"Focus {len(view_items)} Views"
+            act_focus_views = m.addAction(labv)
+
+        chosen = m.exec(self.docs.mapToGlobal(pos))
+        if chosen is act_open_files:
+            for itf in file_items:
+                _, path = self._docs_item_kind_and_value(itf)
+                self._open_file_in_new_view(str(path))
+        elif chosen is act_focus_views:
+            for itv in view_items:
+                _, ptr = self._docs_item_kind_and_value(itv)
+                self._focus_view_ptr(int(ptr))
+
+    def _focus_view_ptr(self, doc_ptr: int):
+        mw = _find_main_window(self)
+        if mw is None:
+            return
+        doc, sw = _resolve_doc_and_subwindow(mw, doc_ptr)
+        if sw is None:
+            return
+        try:
+            if hasattr(mw, "mdi") and mw.mdi.activeSubWindow() is not sw:
+                mw.mdi.setActiveSubWindow(sw)
+            w = getattr(sw, "widget", lambda: None)()
+            if w:
+                w.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
+            QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 50)
+        except Exception:
+            pass
+
+    def _open_file_in_new_view(self, path: str):
+        """Open a bundle-listed file into a brand-new view (no save/overwrite)."""
+        mw = _find_main_window(self)
+        if mw is None:
+            _QMB.information(self, "Open", "Main window not available.")
+            return
+        try:
+            sw = None
+            opened_doc = None
+            # Prefer docman API if present
+            if hasattr(mw, "docman") and hasattr(mw.docman, "open_path"):
+                opened_doc = mw.docman.open_path(path)
+                QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 120)
+                if opened_doc is not None and hasattr(mw, "_find_doc_by_id"):
+                    _doc, sw = mw._find_doc_by_id(id(opened_doc))
+            # Fallback to legacy open hook
+            if sw is None:
+                if hasattr(mw, "_open_image"):
+                    mw._open_image(path)
+                else:
+                    raise RuntimeError("No file-open method found on main window")
+                QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 120)
+                # best-effort: find by title tail match
+                bn = os.path.basename(path)
+                for cand in getattr(mw.mdi, "subWindowList", lambda: [])():
+                    if bn in cand.windowTitle():
+                        sw = cand
+                        break
+            # Focus the new subwindow
+            if sw is not None:
+                if hasattr(mw, "mdi") and mw.mdi.activeSubWindow() is not sw:
+                    mw.mdi.setActiveSubWindow(sw)
+                w = getattr(sw, "widget", lambda: None)()
+                if w:
+                    w.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
+                QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 50)
+        except Exception as e:
+            _QMB.warning(self, "Open", f"Could not open:\n{path}\n\n{e}")
 
     # ---------- left controls ----------
     def _new_bundle(self):
@@ -651,18 +941,33 @@ class ViewBundleDialog(QDialog):
     # ---------- right controls ----------
     def _clear_bundle(self):
         self._set_current_bundle_ptrs([])
+        u = self._current_uuid()
+        if u: self._set_bundle_files_by_uuid(u, [])
 
     def _remove_selected(self):
-        sel_ptrs = [int(self.docs.item(i).data(Qt.ItemDataRole.UserRole)) for i in range(self.docs.count())
-                    if self.docs.item(i).isSelected()]
-        if not sel_ptrs: return
-        remain = [p for p in self.current_bundle_doc_ptrs() if p not in set(sel_ptrs)]
-        self._set_current_bundle_ptrs(remain)
+        view_ptrs, file_paths = [], []
+        for i in range(self.docs.count()):
+            it = self.docs.item(i)
+            if not it.isSelected():
+                continue
+            kind = it.data(Qt.ItemDataRole.UserRole + 1)
+            if kind == "view":
+                view_ptrs.append(int(it.data(Qt.ItemDataRole.UserRole)))
+            elif kind == "file":
+                file_paths.append(str(it.data(Qt.ItemDataRole.UserRole)))
+
+        if view_ptrs:
+            remain = [p for p in self.current_bundle_doc_ptrs() if p not in set(view_ptrs)]
+            self._set_current_bundle_ptrs(remain)
+        if file_paths:
+            remain = [p for p in self.current_bundle_file_paths() if p not in set(file_paths)]
+            u = self._current_uuid()
+            if u: self._set_bundle_files_by_uuid(u, remain)
 
     def _add_from_open_picker(self):
         mw = _find_main_window(self)
         if mw is None:
-            QMessageBox.information(self, "Add from Open", "Main window not available.")
+            _QMB.information(self, "Add from Open", "Main window not available.")
             return
         choices: list[tuple[str, int]] = []
         for sw in mw.mdi.subWindowList():
@@ -671,7 +976,7 @@ class ViewBundleDialog(QDialog):
             if d is not None:
                 choices.append((sw.windowTitle(), int(id(d))))
         if not choices:
-            QMessageBox.information(self, "Add from Open", "No open views.")
+            _QMB.information(self, "Add from Open", "No open views.")
             return
         dlg = SelectViewsDialog(self, choices)
         if dlg.exec() == QDialog.DialogCode.Accepted:
@@ -686,7 +991,7 @@ class ViewBundleDialog(QDialog):
 
         mw = _find_main_window(self)
         if not mw:
-            QMessageBox.information(self, "Compress", "Main window not available.")
+            _QMB.information(self, "Compress", "Main window not available.")
             return
 
         # If a chip for this bundle already exists, just show/raise it
@@ -694,7 +999,7 @@ class ViewBundleDialog(QDialog):
         if chip is None or chip.parent() is None:
             chip = spawn_bundle_chip_on_canvas(mw, self, u, name)
             if chip is None:
-                QMessageBox.information(self, "Compress", "Shortcut canvas not available.")
+                _QMB.information(self, "Compress", "Shortcut canvas not available.")
                 return
             self._chips[u] = chip
         else:
@@ -708,11 +1013,12 @@ class ViewBundleDialog(QDialog):
 
     # ---------- DnD into the PANEL (applies to CURRENT bundle only) ----------
     def dragEnterEvent(self, e):
-        if e.mimeData().hasFormat(MIME_VIEWSTATE) or e.mimeData().hasFormat(MIME_CMD):
+        md = e.mimeData()
+        if md.hasFormat(MIME_VIEWSTATE) or md.hasFormat(MIME_CMD) or md.hasUrls():
             e.acceptProposedAction()
         else:
             e.ignore()
-
+            
     def dropEvent(self, e):
         md = e.mimeData()
         u = self._current_uuid()
@@ -730,6 +1036,25 @@ class ViewBundleDialog(QDialog):
             e.acceptProposedAction()
             return
 
+        if md.hasUrls():
+            paths = []
+            for url in md.urls():
+                p = url.toLocalFile()
+                if not p: 
+                    continue
+                if os.path.isdir(p):
+                    for r, d, files in os.walk(p):
+                        for f in files:
+                            if f.lower().endswith(tuple(x.lower() for x in self._file_exts())):
+                                paths.append(os.path.join(r, f))
+                else:
+                    if p.lower().endswith(tuple(x.lower() for x in self._file_exts())):
+                        paths.append(p)
+            if paths:
+                self._add_files_to_uuid(u, paths)
+                e.acceptProposedAction()
+                return
+
         if md.hasFormat(MIME_CMD):
             try:
                 payload = _unpack_cmd_safely(bytes(md.data(MIME_CMD)))
@@ -739,60 +1064,86 @@ class ViewBundleDialog(QDialog):
                 e.acceptProposedAction()
                 return
             except Exception as ex:
-                QMessageBox.warning(self, "Apply to Bundle", f"Could not parse/execute shortcut:\n{ex}")
+                _QMB.warning(self, "Apply to Bundle", f"Could not parse/execute shortcut:\n{ex}")
         e.ignore()
 
     # ---------- applying shortcuts to all views in a bundle ----------
     def _apply_payload_to_bundle(self, payload: dict, target_uuid: Optional[str] = None):
         mw = _find_main_window(self)
         if mw is None or not hasattr(mw, "_handle_command_drop"):
-            QMessageBox.information(self, "Apply", "Main window not available.")
+            _QMB.information(self, "Apply", "Main window not available.")
             return
+
         payload = _unwrap_cmd_payload(payload)
         cmd_val = (payload or {}).get("command_id")
         cmd = cmd_val if isinstance(cmd_val, str) else None
         if not cmd:
-            QMessageBox.information(self, "Apply", "Invalid shortcut payload.")
+            _QMB.information(self, "Apply", "Invalid shortcut payload.")
             return
-        
-        # pick doc_ptrs from the target bundle (chip drop) or current selection (panel drop)
+
+        # --- get targets: views + files (NEW) ---
         if target_uuid:
             b = self._get_bundle(target_uuid)
             ptrs = [] if not b else list(b.get("doc_ptrs", []))
-            
+            file_paths = [] if not b else list(b.get("file_paths", []))   # NEW
         else:
             ptrs = self.current_bundle_doc_ptrs()
-            
-        # Apply a Function Bundle (multiple steps) to every view in the bundle
+            file_paths = self.current_bundle_file_paths()                  # NEW
+
+        # Ignore nested view-bundle shortcuts
+        if cmd == "bundle":
+            return
+
+        total_applied = 0
+        view_applied = 0
+        total_applied = view_applied
+        errors: list[str] = []
+
+        # ---------- Apply to OPEN VIEWS (existing logic) ----------
         if cmd == "function_bundle":
-            
             # 1) normalize to plain JSON-safe dicts (deep copy)
             try:
-                
                 steps = json.loads(json.dumps((payload or {}).get("steps") or []))
             except Exception:
-                
                 steps = list((payload or {}).get("steps") or [])
-
-            # 2) sanity filter: only dict steps with a command_id
+            # 2) filter to valid steps
             norm_steps = [s for s in steps if isinstance(s, dict) and s.get("command_id")]
-            
-            if not norm_steps:
-                QMessageBox.information(self, "Apply", "This Function Bundle has no usable steps.")
-                return
 
-            # 3) apply using the same sequencing as the button
-            errors, applied = [], 0
+            if norm_steps:
+                for ptr in ptrs:
+                    _doc, sw = _resolve_doc_and_subwindow(mw, ptr)
+                    if sw is None:
+                        continue
+                    try:
+                        # make active
+                        try:
+                            if hasattr(mw, "mdi") and mw.mdi.activeSubWindow() is not sw:
+                                mw.mdi.setActiveSubWindow(sw)
+                            w = getattr(sw, "widget", lambda: None)()
+                            if w:
+                                w.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
+                            QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 50)
+                        except Exception:
+                            pass
+
+                        for st in norm_steps:
+                            mw._handle_command_drop(st, target_sw=sw)
+                            QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 0)
+                        view_applied += 1
+                    except Exception as e:
+                        errors.append(str(e))
+            else:
+                # no usable steps; we’ll still try files below (may be a file-only bundle run)
+                pass
+
+        else:
+            # single command to views
             for ptr in ptrs:
                 _doc, sw = _resolve_doc_and_subwindow(mw, ptr)
-                
                 if sw is None:
-                    print(f"    no subwindow found for doc_ptr {ptr}")
                     continue
                 try:
-                    # activate the target like the button runner does
                     try:
-                        
                         if hasattr(mw, "mdi") and mw.mdi.activeSubWindow() is not sw:
                             mw.mdi.setActiveSubWindow(sw)
                         w = getattr(sw, "widget", lambda: None)()
@@ -800,62 +1151,234 @@ class ViewBundleDialog(QDialog):
                             w.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
                         QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 50)
                     except Exception:
-                        
                         pass
 
-                    for st in norm_steps:
-                        mw._handle_command_drop(st, target_sw=sw)
-                        QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 0)
-                    applied += 1
+                    mw._handle_command_drop(payload, target_sw=sw)
+                    QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 0)
+                    view_applied += 1
                 except Exception as e:
                     errors.append(str(e))
 
-            if applied == 0 and not errors:
-                QMessageBox.information(self, "Apply", "No valid targets in the bundle.")
-            elif errors:
-                QMessageBox.warning(self, "Apply", "Applied some steps but some failed:\n\n" + "\n".join(errors))
-            return
+        # ---------- Apply to FILE PATHS (NEW) ----------
+        # Use the headless open→apply→save→close helper you already wrote.
+        if file_paths:
+            paths = (self._get_bundle(target_uuid).get("file_paths", []) if target_uuid
+                    else self.current_bundle_file_paths())
+            file_ok = 0
+            file_errs: list[str] = []
 
-        # Ignore nested view-bundle shortcuts
-        if cmd == "bundle":
-            return
-
-        # Single-step shortcut → apply to all docs in the chosen bundle
-        errors = []
-        applied = 0
-        for ptr in ptrs:
-            doc, sw = _resolve_doc_and_subwindow(mw, ptr)
-            if sw is None:
-                continue
-            try:
-                # 🔸 Make this subwindow active (some commands operate on the active view)
+            for p in file_paths:
                 try:
-                    if hasattr(mw, "mdi") and mw.mdi.activeSubWindow() is not sw:
-                        mw.mdi.setActiveSubWindow(sw)
-                    w = getattr(sw, "widget", lambda: None)()
-                    if w:
-                        w.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
-                    # Let the UI/app catch up so the command sees the right active view
-                    QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 50)
-                except Exception:
-                    pass
+                    self._apply_payload_to_single_file(payload, p, overwrite=True, out_dir=None)
+                    file_ok += 1
+                except Exception as e:
+                    tb = traceback.format_exc(limit=6)
+                    file_errs.append(
+                        f"{os.path.basename(p)}: {e.__class__.__name__}: {e}\n{tb}"
+                    )
 
-                mw._handle_command_drop(payload, target_sw=sw)
+            total_applied = view_applied + file_ok   # <— FIX: no 'applied' symbol
 
-                # Small pump so commands that spawn work or flip views settle before next doc
-                QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 0)
-                applied += 1
-            except Exception as e:
-                errors.append(str(e))
+            if total_applied == 0 and not (errors or file_errs):
+                _QMB.information(self, "Apply", "No valid targets in the bundle.")
+            elif errors or file_errs:
+                msg = []
+                if view_applied:
+                    msg.append(f"Applied to {view_applied} open view(s).")
+                if file_ok:
+                    msg.append(f"Applied to {file_ok} file(s).")
+                if errors:
+                    msg.append("View errors:\n  " + "\n  ".join(errors))
+                if file_errs:
+                    msg.append("File errors:\n  " + "\n  ".join(file_errs))
+                _QMB.warning(self, "Apply", "\n\n".join(msg))
+                return  # avoid double-dialog below
 
-        if applied == 0 and not errors:
-            QMessageBox.information(self, "Apply", "No valid targets in the bundle.")
+        # ---------- Result dialogs ----------
+        if total_applied == 0 and not errors:
+            _QMB.information(self, "Apply", "No valid targets in the bundle.")
         elif errors:
-            QMessageBox.warning(self, "Apply", f"Applied to {applied} views, but some failed:\n\n" + "\n".join(errors))
+            _QMB.warning(
+                self,
+                "Apply",
+                f"Applied to {total_applied} target(s), but some failed:\n\n" + "\n".join(errors)
+            )
+        else:
+            _QMB.information(self, "Apply", f"Finished. Applied to {total_applied} target(s).")            
+
+
 
     def closeEvent(self, e: QCloseEvent):
         # keep chips alive; nothing to do
         super().closeEvent(e)
+
+    def _path_format_from_ext(self, path: str) -> str:
+        ext = os.path.splitext(path)[1].lower().lstrip(".")
+        if ext in ("jpeg",): ext = "jpg"
+        return ext or "fits"
+
+    def _resolve_file_target(self, src_path: str, overwrite: bool, out_dir: str | None) -> str:
+        return (src_path if overwrite or not out_dir
+                else os.path.join(out_dir, os.path.basename(src_path)))
+
+    def _apply_payload_to_single_file(self, payload: dict, path: str,
+                                    overwrite: bool = True, out_dir: Optional[str] = None) -> bool:
+        """
+        Headless batch that avoids DocManager completely:
+        - load with legacy I/O
+        - wrap in a transient ImageDocument (not added to DocManager)
+        - apply shortcuts via the same dispatcher using a FakeSubWindow
+        - save with legacy I/O
+        """
+        mw = _find_main_window(self)
+        if mw is None:
+            raise RuntimeError("Main window not available")
+
+        # 1) load from disk (no signals, no UI)
+        img, header, bit_depth, is_mono = load_image(path)
+        if img is None:
+            raise RuntimeError(f"Could not load: {path}")
+
+        meta = {
+            "file_path": path,
+            "original_header": header,
+            "bit_depth": bit_depth,
+            "is_mono": is_mono,
+            "original_format": self._path_format_from_ext(path),
+        }
+        # transient doc (NOT registered anywhere)
+        doc = ImageDocument(img, meta)
+
+        # 2) apply
+        pl = _unwrap_cmd_payload(payload) or {}
+        cid = pl.get("command_id")
+        if not isinstance(cid, str):
+            raise RuntimeError("Invalid shortcut payload")
+
+        if cid == "function_bundle":
+            steps = [s for s in (pl.get("steps") or []) if isinstance(s, dict) and s.get("command_id")]
+            if not steps:
+                raise RuntimeError("Function Bundle has no usable steps")
+            for st in steps:
+                _apply_one_shortcut_to_doc(mw, doc, st)
+        elif cid != "bundle":  # ignore nested bundles
+            _apply_one_shortcut_to_doc(mw, doc, pl)
+
+        # 3) save back (still no UI)
+        target_path = self._resolve_file_target(path, overwrite, out_dir)
+        ext = os.path.splitext(target_path)[1].lower().lstrip(".")
+        # use legacy writer directly; mirror DocManager’s parameter mapping
+        save_image(
+            img_array=doc.image,
+            filename=target_path,
+            original_format=ext,
+            bit_depth=doc.metadata.get("bit_depth", "32-bit floating point"),
+            original_header=doc.metadata.get("original_header"),
+            is_mono=doc.metadata.get("is_mono", getattr(doc.image, "ndim", 2) == 2),
+            image_meta=doc.metadata.get("image_meta"),
+            file_meta=doc.metadata.get("file_meta"),
+        )
+
+        return True
+
+
+    def _apply_payload_to_single_file_via_ui(self, payload: dict, path: str,
+                                            overwrite: bool = True, out_dir: Optional[str] = None) -> bool:
+        """
+        Your previous UI-based routine, but using docman.open_path(path) (no file picker).
+        """
+        mw = _find_main_window(self)
+        if mw is None:
+            raise RuntimeError("Main window not available")
+
+        before = set(getattr(mw.mdi, "subWindowList", lambda: [])())
+        opened_sw = None
+        opened_doc = None
+        try:
+            if hasattr(mw, "docman") and hasattr(mw.docman, "open_path"):
+                opened_doc = mw.docman.open_path(path)      # no dialogs, emits documentAdded
+            elif hasattr(mw, "_open_image"):
+                mw._open_image(path)
+            else:
+                raise RuntimeError("No file-open method found on main window")
+
+            QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 150)
+
+            if opened_doc is not None and hasattr(mw, "_find_doc_by_id"):
+                _doc, sw = mw._find_doc_by_id(id(opened_doc))
+                opened_sw = sw
+
+            if opened_sw is None:
+                bn = os.path.basename(path)
+                for sw in getattr(mw.mdi, "subWindowList", lambda: [])():
+                    if bn in sw.windowTitle():
+                        opened_sw = sw
+                        break
+        except Exception as e:
+            raise RuntimeError(f"Open failed: {e}")
+
+        if opened_sw is None:
+            raise RuntimeError("Could not resolve newly opened view")
+
+        try:
+            if hasattr(mw, "mdi") and mw.mdi.activeSubWindow() is not opened_sw:
+                mw.mdi.setActiveSubWindow(opened_sw)
+            w = getattr(opened_sw, "widget", lambda: None)()
+            if w:
+                w.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
+            QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 50)
+        except Exception:
+            pass
+
+        def _apply_one(st):
+            mw._handle_command_drop(st, target_sw=opened_sw)
+
+        pl = _unwrap_cmd_payload(payload) or {}
+        if pl.get("command_id") == "function_bundle":
+            steps = pl.get("steps") or []
+            steps = [s for s in steps if isinstance(s, dict) and s.get("command_id")]
+            if not steps:
+                raise RuntimeError("Function Bundle has no usable steps")
+            for st in steps:
+                _apply_one(st)
+                QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 0)
+        elif pl.get("command_id") == "bundle":
+            pass
+        else:
+            _apply_one(pl)
+            QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 0)
+
+        # save back
+        target_path = self._resolve_file_target(path, overwrite, out_dir)
+        saved = False
+        try:
+            vw = getattr(opened_sw, "widget", lambda: None)()
+            doc = getattr(vw, "document", None) if vw else None
+            if doc and hasattr(doc, "save_to_path"):
+                doc.save_to_path(target_path); saved = True
+            elif doc and hasattr(doc, "save"):
+                try:
+                    doc.save(target_path); saved = True
+                except Exception:
+                    if hasattr(doc, "set_filename"):
+                        doc.set_filename(target_path); doc.save(); saved = True
+            if not saved and hasattr(mw, "_save_active_document_as"):
+                mw._save_active_document_as(target_path); saved = True
+            if not saved and hasattr(mw, "_save_document_as") and doc:
+                mw._save_document_as(doc, target_path); saved = True
+            if not saved and hasattr(mw, "_save_document") and doc:
+                mw._save_document(doc); saved = True
+            if not saved:
+                raise RuntimeError("No save method available")
+        finally:
+            try:
+                opened_sw.close()
+                QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 0)
+            except Exception:
+                pass
+
+        return True
+
 
 
 # ----------------------------- singleton open helpers -----------------------------

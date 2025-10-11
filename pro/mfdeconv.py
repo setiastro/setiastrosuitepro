@@ -1999,8 +1999,11 @@ def multiframe_deconv(
     gc.collect()
 
     # final SR grid size (Hs,Ws)
-    if x.ndim == 2: Hs, Ws = x.shape
-    else: _, Hs, Ws = x.shape
+    # Ensure CHW for the Torch path (mono → 1×H×W)
+    if x.ndim == 2:
+        x = x[None, ...]
+    # final SR grid size (Hs,Ws)
+    _, Hs, Ws = x.shape
 
     # ---- choose default batch size ----
     if batch_frames is None:

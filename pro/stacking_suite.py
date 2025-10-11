@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (QDialog, QWidget, QLabel, QPushButton, QVBoxLayout,
                              QFormLayout, QDialogButtonBox, QToolBar, QToolButton, QFileDialog, QTabWidget, QAbstractItemView, QSpinBox, QDoubleSpinBox, QGroupBox,
                              QSizePolicy, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QApplication, QScrollArea, QTextEdit, QMenu, QPlainTextEdit, QGraphicsEllipseItem,
                              QMessageBox, QSlider, QCheckBox, QInputDialog, QComboBox)
-from datetime import datetime, timezone
+from datetime import datetime, time, timedelta, timezone
 import pyqtgraph as pg
 from astropy.io import fits
 from astropy.stats import sigma_clipped_stats
@@ -56,6 +56,18 @@ from pro.torch_rejection import (
     gpu_algo_supported as _gpu_algo_supported,
     torch_reduce_tile as _torch_reduce_tile,
 )
+
+try:
+    # 3.9+: stdlib time zones
+    from zoneinfo import ZoneInfo
+except Exception:
+    ZoneInfo = None
+
+try:
+    # very robust parsing
+    from dateutil import parser as date_parser
+except Exception:
+    date_parser = None
 
 from pro.mfdeconv import (
     THRESHOLD_SIGMA as _SM_DEF_THRESH,
@@ -4197,6 +4209,27 @@ class StackingSuiteDialog(QDialog):
         btn_layout.addWidget(self.add_flat_files_btn)
         btn_layout.addWidget(self.add_flat_dir_btn)
         flat_frames_layout.addLayout(btn_layout)
+        # under your existing buttons:
+        opts_row = QHBoxLayout()
+        self.recurse_dirs_checkbox = QCheckBox("Recurse subfolders")
+        self.recurse_dirs_checkbox.setChecked(
+            self.settings.value("stacking/recurse_dirs", True, type=bool)
+        )
+        self.recurse_dirs_checkbox.toggled.connect(
+            lambda v: self.settings.setValue("stacking/recurse_dirs", bool(v))
+        )
+
+        self.auto_session_checkbox = QCheckBox("Auto-detect session")
+        self.auto_session_checkbox.setChecked(
+            self.settings.value("stacking/auto_session", True, type=bool)
+        )
+        self.auto_session_checkbox.toggled.connect(
+            lambda v: self.settings.setValue("stacking/auto_session", bool(v))
+        )
+
+        opts_row.addWidget(self.recurse_dirs_checkbox)
+        opts_row.addWidget(self.auto_session_checkbox)
+        flat_frames_layout.addLayout(opts_row)  # or flat_frames_layout.addLayout(...)        
         # 🔧 Session Tag Hint
         session_hint_label = QLabel("Right Click to Assign Session Keys if desired")
         session_hint_label.setStyleSheet("color: #888; font-style: italic; font-size: 11px; margin-left: 4px;")
@@ -4323,6 +4356,27 @@ class StackingSuiteDialog(QDialog):
         btn_layout.addWidget(self.add_light_files_btn)
         btn_layout.addWidget(self.add_light_dir_btn)
         layout.addLayout(btn_layout)
+        # under your existing buttons:
+        opts_row = QHBoxLayout()
+        self.recurse_dirs_checkbox = QCheckBox("Recurse subfolders")
+        self.recurse_dirs_checkbox.setChecked(
+            self.settings.value("stacking/recurse_dirs", True, type=bool)
+        )
+        self.recurse_dirs_checkbox.toggled.connect(
+            lambda v: self.settings.setValue("stacking/recurse_dirs", bool(v))
+        )
+
+        self.auto_session_checkbox = QCheckBox("Auto-detect session")
+        self.auto_session_checkbox.setChecked(
+            self.settings.value("stacking/auto_session", True, type=bool)
+        )
+        self.auto_session_checkbox.toggled.connect(
+            lambda v: self.settings.setValue("stacking/auto_session", bool(v))
+        )
+
+        opts_row.addWidget(self.recurse_dirs_checkbox)
+        opts_row.addWidget(self.auto_session_checkbox)
+        layout.addLayout(opts_row)  # or flat_frames_layout.addLayout(...)        
         session_hint_label = QLabel("Right Click to Assign Session Keys if desired")
         session_hint_label.setStyleSheet("color: #888; font-style: italic; font-size: 11px; margin-left: 4px;")
         layout.addWidget(session_hint_label)
@@ -6359,7 +6413,7 @@ class StackingSuiteDialog(QDialog):
 
 
     def add_directory(self, tree, title, expected_type):
-        """ Adds all FITS files from a directory and assigns best master files if needed. """
+        """Adds all FITS files from a directory (optionally recursive) and auto-tags sessions."""
         last_dir = self.settings.value("last_opened_folder", "", type=str)
         directory = QFileDialog.getExistingDirectory(self, title, last_dir)
         if not directory:
@@ -6367,17 +6421,16 @@ class StackingSuiteDialog(QDialog):
 
         self.settings.setValue("last_opened_folder", directory)
 
-        # Collect files first so we know the total for the progress range
-        exts = (".fits", ".fit", ".fts", ".fits.gz", ".fit.gz", ".fz")
-        paths = [
-            os.path.join(directory, f)
-            for f in os.listdir(directory)
-            if f.lower().endswith(exts)
-        ]
+        recursive = self.settings.value("stacking/recurse_dirs", True, type=bool)
+        paths = self._collect_fits_paths(directory, recursive=recursive)
         if not paths:
             return
 
-        # Standalone progress while ingesting
+        # Optional: auto session mapping BEFORE ingest for better speed (one header read per path)
+        auto_session = self.settings.value("stacking/auto_session", True, type=bool)
+        session_by_path = self._auto_tag_sessions_for_paths(paths) if auto_session else {}
+
+        # Ingest
         self._ingest_paths_with_progress(
             paths=paths,
             tree=tree,
@@ -6385,13 +6438,261 @@ class StackingSuiteDialog(QDialog):
             title=f"Adding {expected_type.title()} from Directory…"
         )
 
-        # Auto-assign after ingest (LIGHT only, same behavior you had)
+        # Apply session tags to internal dict & UI after the items exist in the tree
+        if auto_session:
+            target_dict = self.flat_files if expected_type.upper() == "FLAT" else self.light_files
+            self._apply_session_tags_to_tree(tree=tree, target_dict=target_dict, session_by_path=session_by_path)
+
+        # Auto-assign masters as you already do
         if expected_type.upper() == "LIGHT":
             busy = self._busy_progress("Assigning best Master Dark/Flat…")
             try:
                 self.assign_best_master_files()
             finally:
                 busy.close()
+        elif expected_type.upper() == "FLAT":
+            self.assign_best_master_dark()
+            self.rebuild_flat_tree()
+
+
+    # --- Directory walking ---------------------------------------------------------
+    def _collect_fits_paths(self, root: str, recursive: bool = True) -> list[str]:
+        exts = (".fits", ".fit", ".fts", ".fits.gz", ".fit.gz", ".fz")
+        paths = []
+        if recursive:
+            for d, _subdirs, files in os.walk(root):
+                for f in files:
+                    if f.lower().endswith(exts):
+                        paths.append(os.path.join(d, f))
+        else:
+            for f in os.listdir(root):
+                if f.lower().endswith(exts):
+                    paths.append(os.path.join(root, f))
+        # stable order (helps reproducibility + nice UX)
+        paths.sort(key=lambda p: (os.path.dirname(p).lower(), os.path.basename(p).lower()))
+        return paths
+
+
+    # --- Session autodetect --------------------------------------------------------
+    _SESSION_PATTERNS = [
+        # "Night1", "night_02", "Session-3", "sess7"
+        (re.compile(r"(session|sess|night|noche|nuit)[ _-]?(\d{1,2})", re.I),
+        lambda m: f"Session-{int(m.group(2)):02d}"),
+
+        # ISO-ish dates in folder names: 2024-10-09, 2024_10_09, 20241009
+        (re.compile(r"\b(20\d{2})[-_]?([01]\d)[-_]?([0-3]\d)\b"),
+        lambda m: f"{m.group(1)}-{m.group(2)}-{m.group(3)}"),
+    ]
+
+    def _auto_session_from_path(self, path: str, hdr=None) -> str:
+        # 1) Prefer DATE-OBS → local night bucket
+        if hdr:
+            sess = _session_from_dateobs_local_night(self, hdr)
+            if sess:
+                return sess
+
+        # 2) Otherwise fall back to folder patterns (unchanged)
+        parts = [p.lower() for p in Path(path).parts][:-1]
+        for name in reversed(parts):
+            for rx, fmt in _SESSION_PATTERNS:
+                m = rx.search(name)
+                if m:
+                    return fmt(m)
+
+        # 3) Parent folder name
+        try:
+            parent = Path(path).parent.name.strip()
+            if parent:
+                return re.sub(r"\s+", "_", parent)
+        except Exception:
+            pass
+
+        return "Default"
+
+    def _get_site_timezone(self, hdr=None):
+        """
+        Resolve a tz for 'local night' bucketing.
+
+        Priority:
+        1) QSettings key 'stacking/site_timezone' (e.g., 'America/Los_Angeles')
+        2) FITS header TZ-like hints (TIMEZONE, TZ)
+        3) System local timezone (ZoneInfo needs a name; as a last resort, use local offset NOW)
+        """
+        # 1) From app settings
+        tz_name = self.settings.value("stacking/site_timezone", "", type=str) or ""
+        if tz_name and ZoneInfo:
+            try:
+                return ZoneInfo(tz_name)
+            except Exception:
+                pass
+
+        # 2) From header
+        if hdr:
+            for key in ("TIMEZONE", "TZ"):
+                if key in hdr:
+                    tz_hdr = str(hdr[key]).strip()
+                    if ZoneInfo:
+                        try:
+                            return ZoneInfo(tz_hdr)
+                        except Exception:
+                            pass
+
+        # 3) System local timezone
+        if ZoneInfo:
+            # Best effort: try /etc/localtime link name via tzlocal-like heuristic
+            try:
+                import tzlocal  # optional dependency; if you have it, great
+                return ZoneInfo(str(tzlocal.get_localzone()))
+            except Exception:
+                pass
+
+        # 3b) Fallback to a fixed offset (not ideal, but better than UTC)
+        # Use current local offset
+        try:
+            now = datetime.now().astimezone()
+            return now.tzinfo or timezone.utc
+        except Exception:
+            return timezone.utc
+
+
+    def _parse_date_obs(s: str):
+        """
+        Parse DATE-OBS robustly → aware UTC datetime if possible.
+        Accepts ISO8601 with or without 'Z', fractional seconds, or date-only.
+        """
+        if not s:
+            return None
+        s = str(s).strip()
+
+        # Use dateutil if available
+        if date_parser:
+            try:
+                dt = date_parser.isoparse(s)
+                # If naive, treat as UTC (FITS DATE-OBS is typically UTC)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt.astimezone(timezone.utc)
+            except Exception:
+                pass
+
+        # Minimal manual fallbacks
+        for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S",
+                    "%Y-%m-%d"):
+            try:
+                dt = datetime.strptime(s, fmt)
+                if fmt.endswith("Z") or "T" in fmt:
+                    # Treat naive as UTC when time present
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                else:
+                    # date-only; assume 12:00 UTC so we don't accidentally flip
+                    dt = dt.replace(tzinfo=timezone.utc, hour=12)
+                return dt.astimezone(timezone.utc)
+            except Exception:
+                continue
+        return None
+
+
+    def _session_from_dateobs_local_night(self, hdr, cutoff_hour: int = None) -> str | None:
+        """
+        Return 'YYYY-MM-DD' session key by snapping DATE-OBS to local 'night'.
+
+        Rule: if local_time < cutoff_hour → use previous calendar date.
+        Default cutoff = self.settings('stacking/night_cutoff_hour', 12)  # noon
+        """
+        date_obs = hdr.get("DATE-OBS")
+        dt_utc = _parse_date_obs(date_obs) if date_obs else None
+        if dt_utc is None:
+            return None
+
+        # cutoff config
+        if cutoff_hour is None:
+            cutoff_hour = int(self.settings.value("stacking/night_cutoff_hour", 12, type=int))
+
+        tz = _get_site_timezone(self, hdr)
+        dt_local = dt_utc.astimezone(tz)
+
+        # Shift to "observing night" date
+        cutoff = time(hour=max(0, min(23, cutoff_hour)), minute=0)
+        local_date = dt_local.date()
+        if dt_local.time() < cutoff:
+            # before cutoff → belongs to the previous night
+            local_date = (dt_local - timedelta(days=1)).date()
+
+        return local_date.isoformat()  # 'YYYY-MM-DD'
+
+    def _auto_tag_sessions_for_paths(self, paths: list[str]) -> dict[str, str]:
+        """
+        Build {path: session} using fast header sniff + folder names.
+        """
+        session_map = {}
+        for p in paths:
+            try:
+                hdr, _ = get_valid_header(p)
+            except Exception:
+                hdr = None
+            session_map[p] = self._auto_session_from_path(p, hdr)
+        return session_map
+
+
+    # --- Apply session tags to your internal dicts and tree -----------------------
+    def _apply_session_tags_to_tree(self, *, tree: QTreeWidget, target_dict: dict, session_by_path: dict[str,str]):
+        """
+        After ingest, set self.session_tags[path] and update the UI 'Metadata' column
+        to include 'Session: <tag>'. Also move items across the (group_key, session) buckets.
+        """
+        # Build reverse index: basename -> full path we just tagged
+        by_base = {os.path.basename(p): p for p in session_by_path.keys()}
+
+        def _update_leaf(leaf: QTreeWidgetItem):
+            base = leaf.text(0)
+            full = by_base.get(base)
+            if not full:
+                return
+            sess = session_by_path.get(full, "Default")
+            self.session_tags[full] = sess
+
+            # Update the metadata column
+            old_meta = leaf.text(1) or ""
+            if "Session:" in old_meta:
+                new_meta = re.sub(r"Session:\s*[^|]*", f"Session: {sess}", old_meta)
+            else:
+                new_meta = (old_meta + (" | " if old_meta else "") + f"Session: {sess}")
+            leaf.setText(1, new_meta)
+
+            # Move file into (group_key, session) bucket in target_dict
+            # group_key currently your "Filter & Exposure" string for that leaf's top-level parent
+            # Ascend to find the top-level "Filter & Exposure" node:
+            parent = leaf.parent()
+            while parent and parent.parent():
+                parent = parent.parent()
+            group_key = parent.text(0) if parent else "Unknown"
+
+            # locate and move inside target_dict
+            for key in list(target_dict.keys()):
+                files = target_dict.get(key, [])
+                if full in files:
+                    old_session = key[1] if (isinstance(key, tuple) and len(key) == 2) else "Default"
+                    if old_session != sess:
+                        # remove from old bucket
+                        files.remove(full)
+                        if not files:
+                            target_dict.pop(key, None)
+                        new_key = (key[0] if isinstance(key, tuple) else group_key, sess)
+                        target_dict.setdefault(new_key, []).append(full)
+                    break
+
+        # Walk all leaves
+        root_count = tree.topLevelItemCount()
+        for i in range(root_count):
+            g = tree.topLevelItem(i)
+            for j in range(g.childCount()):
+                e = g.child(j)
+                for k in range(e.childCount()):
+                    leaf = e.child(k)
+                    if leaf.childCount() == 0:
+                        _update_leaf(leaf)
+
 
     def _ingest_paths_with_progress(self, paths, tree, expected_type, title):
         """
@@ -7925,8 +8226,25 @@ class StackingSuiteDialog(QDialog):
                         if flat_data is not None:
                             if not flat_is_mono and flat_data.ndim == 3 and flat_data.shape[-1] == 3:
                                 flat_data = flat_data.transpose(2, 0, 1)  # HWC -> CHW
+
+                            # Ensure float32 and normalize flat to mean 1.0 to preserve flux scaling
                             flat_data = flat_data.astype(np.float32, copy=False)
-                            flat_data[flat_data == 0] = 1.0  # safety
+                            # Avoid zero/NaN in flats
+                            flat_data = np.nan_to_num(flat_data, nan=1.0, posinf=1.0, neginf=1.0)
+                            if flat_data.ndim == 2:
+                                denom = np.median(flat_data[flat_data > 0])
+                                if not np.isfinite(denom) or denom <= 0: denom = 1.0
+                                flat_data /= denom
+                            else:  # CHW: normalize per-channel
+                                for c in range(flat_data.shape[0]):
+                                    band = flat_data[c]
+                                    denom = np.median(band[band > 0])
+                                    if not np.isfinite(denom) or denom <= 0: denom = 1.0
+                                    flat_data[c] = band / denom
+
+                            # Safety: forbid exact zeros in denominator
+                            flat_data[flat_data == 0] = 1.0
+
                             light_data = apply_flat_division_numba(light_data, flat_data)
                             self.update_status(f"Flat Applied: {os.path.basename(master_flat_path)}")
                             QApplication.processEvents()
@@ -7966,24 +8284,37 @@ class StackingSuiteDialog(QDialog):
                         QApplication.processEvents()
 
                     # Back to HWC for saving if color
+                    # Back to HWC for saving if color
                     if not is_mono and light_data.ndim == 3 and light_data.shape[0] == 3:
                         light_data = light_data.transpose(1, 2, 0)  # CHW -> HWC
 
-                    min_val = float(light_data.min())
-                    max_val = float(light_data.max())
+                    # Sanitize numerics but DO NOT rescale
+                    light_data = np.nan_to_num(light_data.astype(np.float32, copy=False), nan=0.0, posinf=0.0, neginf=0.0)
+
+                    min_val = float(np.min(light_data))
+                    max_val = float(np.max(light_data))
                     self.update_status(f"Before saving: min = {min_val:.4f}, max = {max_val:.4f}")
                     print(f"Before saving: min = {min_val:.4f}, max = {max_val:.4f}")
                     QApplication.processEvents()
+
+                    # Annotate header
+                    try:
+                        hdr['HISTORY'] = 'Calibrated: bias/dark sub, flat division'
+                        hdr['CALMIN']  = (min_val, 'Min pixel before save (float)')
+                        hdr['CALMAX']  = (max_val, 'Max pixel before save (float)')
+                    except Exception:
+                        pass
 
                     calibrated_filename = os.path.join(
                         calibrated_dir, os.path.basename(light_file).replace(".fit", "_c.fit")
                     )
 
+                    # Force float32 FITS regardless of camera bit depth
                     save_image(
                         img_array=light_data,
                         filename=calibrated_filename,
                         original_format="fit",
-                        bit_depth=bit_depth,
+                        bit_depth="32-bit floating point",          # << force float32 to avoid clipping negatives
                         original_header=hdr,
                         is_mono=is_mono
                     )
