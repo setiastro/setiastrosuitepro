@@ -627,77 +627,75 @@ def _auto_star_mask_sep(
     max_side: int = STAR_MASK_MAXSIDE,
     ellipse_scale: float = ELLIPSE_SCALE,
     soft_sigma: float = SOFT_SIGMA,
-    max_semiaxis_px: float | None = None,
-    max_area_px2: float | None = None,
+    max_semiaxis_px: float | None = None,      # kept for API compat; unused
+    max_area_px2: float | None = None,         # kept for API compat; unused
     max_radius_px: int = MAX_STAR_RADIUS,
-    keep_floor: float = KEEP_FLOOR,           # <<< NEW
+    keep_floor: float = KEEP_FLOOR,
     status_cb=lambda s: None
 ) -> np.ndarray:
     """
-    Build a KEEP mask (1=keep, 0=masked) using simple filled disks + soft edges:
-      - SEP detect on the full-resolution image with threshold backoff.
-      - For each source: r = ellipse_scale * max(a,b), then clamp to max_radius_px.
-      - Dilate by adding grow_px to r (full-res pixels).
-      - Draw a filled circle for each detection (cv2 fast path; NumPy fallback).
-      - Apply a Gaussian blur of 'soft_sigma' pixels to feather edges (soft weights).
-    Emits a status line with counts: detected, kept, drawn, masked area (px).
+    Build a KEEP weight map (float32 in [0,1]) using SEP detections.
+    **Never writes to img_2d** and draws only into a fresh mask buffer.
     """
     if sep is None:
-        return np.ones_like(img_2d, dtype=np.float32)
+        # No SEP available: neutral weights
+        return np.ones_like(img_2d, dtype=np.float32, order="C")
 
-    # Optional OpenCV (fast draw + fast blur)
+    # Optional OpenCV path for fast drawing/blur
     try:
         import cv2 as _cv2
         _HAS_CV2 = True
     except Exception:
         _HAS_CV2 = False
+        _cv2 = None  # type: ignore
 
-    h, w = img_2d.shape
-    data = np.ascontiguousarray(img_2d.astype(np.float32, copy=False))
+    h, w = map(int, img_2d.shape)
+    # Work on our own contiguous copy for SEP math; we will not modify it.
+    data = np.ascontiguousarray(img_2d, dtype=np.float32)
 
-    # Background and residual
+    # Background & residual
     bkg = sep.Background(data)
     data_sub = np.ascontiguousarray(data - bkg.back(), dtype=np.float32)
     try:
-        err = bkg.globalrms
+        err = float(bkg.globalrms)
     except Exception:
         err = float(np.median(bkg.rms()))
 
-    # Progressive thresholds to avoid explosion on super-dense fields
-    thresholds = [thresh_sigma, thresh_sigma * 2, thresh_sigma * 4, thresh_sigma * 8, thresh_sigma * 16]
+    # Progressive thresholding to limit explosion on dense fields
+    thresholds = [thresh_sigma, thresh_sigma*2, thresh_sigma*4,
+                  thresh_sigma*8, thresh_sigma*16]
     objs = None
-    used_thresh = float('nan')
+    used_thresh = float("nan")
     raw_detected = 0
     for t in thresholds:
         try:
-            cand = sep.extract(data_sub, thresh=t, err=err)
-            count = 0 if (cand is None) else len(cand)
-            if count == 0:
-                continue
-            # If SEP returned an overwhelming number, try a higher threshold
-            if count > max_objs * 12:
-                continue
-            objs = cand
-            raw_detected = count
-            used_thresh = float(t)
-            break
+            cand = sep.extract(data_sub, thresh=float(t), err=err)
         except Exception:
+            cand = None
+        n = 0 if (cand is None) else len(cand)
+        if n == 0:
             continue
+        if n > max_objs * 12:
+            continue  # too many; tighten threshold
+        objs = cand
+        raw_detected = n
+        used_thresh = float(t)
+        break
+
     if objs is None or len(objs) == 0:
-        # Last-ditch: very high threshold + prune tiny speckles
+        # last-ditch: very high threshold w/ minarea
         try:
             cand = sep.extract(data_sub, thresh=thresholds[-1], err=err, minarea=9)
-            if cand is not None and len(cand) > 0:
-                objs = cand
-                raw_detected = len(cand)
-                used_thresh = float(thresholds[-1])
         except Exception:
-            objs = None
-    if objs is None or len(objs) == 0:
-        status_cb("Star mask: no sources found (mask disabled for this frame).")
-        return np.ones_like(img_2d, dtype=np.float32)
+            cand = None
+        if cand is None or len(cand) == 0:
+            status_cb("Star mask: no sources found (mask disabled for this frame).")
+            return np.ones((h, w), dtype=np.float32, order="C")
+        objs = cand
+        raw_detected = len(cand)
+        used_thresh = float(thresholds[-1])
 
-    # Keep the brightest max_objs
+    # Keep only the brightest max_objs detections
     if "flux" in objs.dtype.names:
         idx = np.argsort(objs["flux"])[-int(max_objs):]
         objs = objs[idx]
@@ -705,85 +703,82 @@ def _auto_star_mask_sep(
         objs = objs[:int(max_objs)]
     kept_after_cap = int(len(objs))
 
-    # Binary star MASK (1 = masked star region)
-    mask = np.zeros((h, w), dtype=np.uint8, order="C")
+    # ---- draw into a brand-new, owned buffer (no aliasing possible) ----
+    mask_u8 = np.zeros((h, w), dtype=np.uint8, order="C")
     MR = int(max(1, max_radius_px))
     G  = int(max(0, grow_px))
     ES = float(max(0.1, ellipse_scale))
 
-    # Draw each source as a filled circle; count how many we actually draw
     drawn = 0
-    for o in objs:
-        x = int(round(float(o["x"])))
-        y = int(round(float(o["y"])))
-        if not (0 <= x < w and 0 <= y < h):
-            continue
-
-        a = float(o["a"])
-        b = float(o["b"])
-        r = int(math.ceil(ES * max(a, b)))  # base radius
-        if r <= 0:
-            continue
-
-        r = min(r + G, MR)                  # clamp & dilate
-        if r <= 0:
-            continue
-
-        drawn += 1
-        if _HAS_CV2:
-            _cv2.circle(mask, (x, y), r, 1, thickness=-1, lineType=_cv2.LINE_8)
-        else:
-            # NumPy fallback: draw in a local box
+    if _HAS_CV2:
+        for o in objs:
+            x = int(round(float(o["x"])))
+            y = int(round(float(o["y"])))
+            if not (0 <= x < w and 0 <= y < h):
+                continue
+            a = float(o["a"]); b = float(o["b"])
+            r = int(math.ceil(ES * max(a, b)))
+            if r <= 0:
+                continue
+            r = min(r + G, MR)
+            if r <= 0:
+                continue
+            _cv2.circle(mask_u8, (x, y), r, 1, thickness=-1, lineType=_cv2.LINE_8)
+            drawn += 1
+    else:
+        # NumPy fallback: local disk draw
+        yy, xx = np.ogrid[:h, :w]
+        for o in objs:
+            x = int(round(float(o["x"])))
+            y = int(round(float(o["y"])))
+            if not (0 <= x < w and 0 <= y < h):
+                continue
+            a = float(o["a"]); b = float(o["b"])
+            r = int(math.ceil(ES * max(a, b)))
+            if r <= 0:
+                continue
+            r = min(r + G, MR)
+            if r <= 0:
+                continue
             y0 = max(0, y - r); y1 = min(h, y + r + 1)
             x0 = max(0, x - r); x1 = min(w, x + r + 1)
-            yy, xx = np.ogrid[y0:y1, x0:x1]
-            if yy.size == 0 or xx.size == 0:
-                drawn -= 1
-                continue
-            disk = (yy - y) * (yy - y) + (xx - x) * (xx - x) <= (r * r)
-            mask[y0:y1, x0:x1][disk] = 1
+            ys = yy[y0:y1] - y
+            xs = xx[x0:x1] - x
+            disk = (ys * ys + xs * xs) <= (r * r)
+            mask_u8[y0:y1, x0:x1][disk] = 1
+            drawn += 1
 
-    masked_px_hard = int(mask.sum())
+    masked_px_hard = int(mask_u8.sum())
 
-    # Convert to float and optionally soften edges (Gaussian feather)
-    m = mask.astype(np.float32, copy=False)
+    # Convert to float and feather edges (still on a scratch buffer)
+    m = mask_u8.astype(np.float32, copy=False)
     if soft_sigma and soft_sigma > 0.0:
         try:
             if _HAS_CV2:
-                # Choose ksize from sigma (≈ 3σ on each side)
                 k = int(max(1, math.ceil(soft_sigma * 3)) * 2 + 1)
-                m = _cv2.GaussianBlur(m, (k, k), soft_sigma, borderType=_cv2.BORDER_REFLECT)
+                m = _cv2.GaussianBlur(m, (k, k), float(soft_sigma),
+                                      borderType=_cv2.BORDER_REFLECT)
             else:
-                try:
-                    from scipy.ndimage import gaussian_filter
-                    m = gaussian_filter(m, sigma=float(soft_sigma), mode="reflect")
-                except Exception:
-                    # Fallback: small Gaussian via our FFT-based conv
-                    r = int(max(1, round(3 * float(soft_sigma))))
-                    yy, xx = np.mgrid[-r:r+1, -r:r+1].astype(np.float32)
-                    g = np.exp(-(xx*xx + yy*yy) / (2.0 * float(soft_sigma) * float(soft_sigma))).astype(np.float32)
-                    g /= (g.sum() + EPS)
-                    m = _conv_same_np(m, g)
+                from scipy.ndimage import gaussian_filter
+                m = gaussian_filter(m, sigma=float(soft_sigma), mode="reflect")
         except Exception:
-            # If anything fails, keep the hard mask
+            # best effort; keep hard mask
             pass
+        np.clip(m, 0.0, 1.0, out=m)
 
-        m = np.clip(m, 0.0, 1.0, out=m)
+    # ---- produce a KEEP weight map (not a binary hole-punch) ----
+    keep = 1.0 - m
+    kf = float(max(0.0, min(0.99, keep_floor)))
+    keep = kf + (1.0 - kf) * keep
+    np.clip(keep, 0.0, 1.0, out=keep)
 
-    # --- NEW: convert to KEEP weights with a floor (down-weight, don't zero) ---
-    # KEEP map (1 keep, 0 mask), with configurable floor in [0, 1)
-    keep = (1.0 - m).astype(np.float32, copy=False)
-    if keep_floor is not None:
-        kf = float(max(0.0, min(0.99, keep_floor)))
-        keep = kf + (1.0 - kf) * keep          # linear remap to [kf, 1]
-        keep = np.clip(keep, 0.0, 1.0, out=keep)
-
-    # Telemetry (add keep_floor too)
     status_cb(
         f"Star mask: thresh={used_thresh:.3g} | detected={raw_detected} | kept={kept_after_cap} | "
         f"drawn={drawn} | masked_px={masked_px_hard} | grow_px={G} | soft_sigma={soft_sigma} | keep_floor={keep_floor}"
     )
-    return keep
+    # Return as a new, contiguous float32 array
+    return np.ascontiguousarray(keep, dtype=np.float32)
+
 
 def _auto_variance_map(
     img_2d: np.ndarray,
@@ -926,48 +921,62 @@ def _star_mask_from_precomputed(
     max_side: int,
     status_cb=lambda s: None
 ) -> np.ndarray:
-    # optional OpenCV fast path
+    """
+    Build a KEEP weight map using a *downscaled detection / full-res draw* path.
+    **Never writes to img_2d**; all drawing happens in a fresh `mask_u8`.
+    """
+    # Optional OpenCV fast path
     try:
-        import cv2 as _cv2; _HAS_CV2 = True
+        import cv2 as _cv2
+        _HAS_CV2 = True
     except Exception:
         _HAS_CV2 = False
+        _cv2 = None  # type: ignore
 
-    H, W = img_2d.shape
+    H, W = map(int, img_2d.shape)
+
+    # Residual for detection (contiguous, separate buffer)
     data_sub = np.ascontiguousarray((img_2d - sky_map).astype(np.float32))
-    # --- downscale detection only (speeds large frames) ---
-    scale = 1.0
+
+    # Downscale *detection only* to speed up, never the draw step
     det = data_sub
+    scale = 1.0
     if max_side and max(H, W) > int(max_side):
         scale = float(max(H, W)) / float(max_side)
         if _HAS_CV2:
-            det = _cv2.resize(det, (max(1, int(round(W/scale))), max(1, int(round(H/scale)))), interpolation=_cv2.INTER_AREA)
+            det = _cv2.resize(
+                det,
+                (max(1, int(round(W / scale))), max(1, int(round(H / scale)))),
+                interpolation=_cv2.INTER_AREA
+            )
         else:
             s = int(max(1, round(scale)))
-            det = det[:(H//s)*s, :(W//s)*s].reshape(H//s, s, W//s, s).mean(axis=(1,3))
+            det = det[:(H // s) * s, :(W // s) * s].reshape(H // s, s, W // s, s).mean(axis=(1, 3))
             scale = float(s)
 
-    # progressive thresholds
-    thresholds = [thresh_sigma, thresh_sigma*2, thresh_sigma*4, thresh_sigma*8, thresh_sigma*16]
-    objs = None; used = float('nan'); raw = 0
+    # Threshold ladder
+    thresholds = [thresh_sigma, thresh_sigma*2, thresh_sigma*4,
+                  thresh_sigma*8, thresh_sigma*16]
+    objs = None; used = float("nan"); raw = 0
     for t in thresholds:
-        cand = sep.extract(det, thresh=t, err=err_scalar)
+        cand = sep.extract(det, thresh=float(t), err=float(err_scalar))
         n = 0 if cand is None else len(cand)
         if n == 0:          continue
         if n > max_objs*12: continue
-        objs, raw, used = cand, n, float(t); break
+        objs, raw, used = cand, n, float(t)
+        break
 
     if objs is None or len(objs) == 0:
         try:
-            cand = sep.extract(det, thresh=thresholds[-1], err=err_scalar, minarea=9)
-            if cand is not None and len(cand) > 0:
-                objs, raw, used = cand, len(cand), float(thresholds[-1])
+            cand = sep.extract(det, thresh=thresholds[-1], err=float(err_scalar), minarea=9)
         except Exception:
-            pass
-    if objs is None or len(objs) == 0:
-        status_cb("Star mask: no sources found (mask disabled for this frame).")
-        return np.ones_like(img_2d, dtype=np.float32)
+            cand = None
+        if cand is None or len(cand) == 0:
+            status_cb("Star mask: no sources found (mask disabled for this frame).")
+            return np.ones((H, W), dtype=np.float32, order="C")
+        objs, raw, used = cand, len(cand), float(thresholds[-1])
 
-    # keep brightest max_objs
+    # Brightest max_objs
     if "flux" in objs.dtype.names:
         idx = np.argsort(objs["flux"])[-int(max_objs):]
         objs = objs[idx]
@@ -975,39 +984,55 @@ def _star_mask_from_precomputed(
         objs = objs[:int(max_objs)]
     kept = len(objs)
 
-    # draw back on full-res
-    mask = np.zeros((H, W), dtype=np.uint8, order="C")
+    # ---- draw back on full-res into a brand-new buffer ----
+    mask_u8 = np.zeros((H, W), dtype=np.uint8, order="C")
     s_back = float(scale)
     MR = int(max(1, max_radius_px))
     G  = int(max(0, grow_px))
     ES = float(max(0.1, ellipse_scale))
 
     drawn = 0
-    for o in objs:
-        x = int(round(float(o["x"]) * s_back))
-        y = int(round(float(o["y"]) * s_back))
-        if not (0 <= x < W and 0 <= y < H): continue
-        a = float(o["a"]) * s_back
-        b = float(o["b"]) * s_back
-        r = int(math.ceil(ES * max(a, b)))
-        r = min(max(r, 0) + G, MR)
-        if r <= 0: continue
-        drawn += 1
-        if _HAS_CV2:
-            _cv2.circle(mask, (x, y), r, 1, thickness=-1, lineType=_cv2.LINE_8)
-        else:
+    if _HAS_CV2:
+        for o in objs:
+            x = int(round(float(o["x"]) * s_back))
+            y = int(round(float(o["y"]) * s_back))
+            if not (0 <= x < W and 0 <= y < H):
+                continue
+            a = float(o["a"]) * s_back
+            b = float(o["b"]) * s_back
+            r = int(math.ceil(ES * max(a, b)))
+            r = min(max(r, 0) + G, MR)
+            if r <= 0:
+                continue
+            _cv2.circle(mask_u8, (x, y), r, 1, thickness=-1, lineType=_cv2.LINE_8)
+            drawn += 1
+    else:
+        for o in objs:
+            x = int(round(float(o["x"]) * s_back))
+            y = int(round(float(o["y"]) * s_back))
+            if not (0 <= x < W and 0 <= y < H):
+                continue
+            a = float(o["a"]) * s_back
+            b = float(o["b"]) * s_back
+            r = int(math.ceil(ES * max(a, b)))
+            r = min(max(r, 0) + G, MR)
+            if r <= 0:
+                continue
             y0 = max(0, y - r); y1 = min(H, y + r + 1)
             x0 = max(0, x - r); x1 = min(W, x + r + 1)
             yy, xx = np.ogrid[y0:y1, x0:x1]
             disk = (yy - y)*(yy - y) + (xx - x)*(xx - x) <= r*r
-            mask[y0:y1, x0:x1][disk] = 1
+            mask_u8[y0:y1, x0:x1][disk] = 1
+            drawn += 1
 
-    m = mask.astype(np.float32)
+    # Feather + convert to keep weights
+    m = mask_u8.astype(np.float32, copy=False)
     if soft_sigma > 0:
         try:
             if _HAS_CV2:
                 k = int(max(1, int(round(3*soft_sigma)))*2 + 1)
-                m = _cv2.GaussianBlur(m, (k,k), soft_sigma, borderType=_cv2.BORDER_REFLECT)
+                m = _cv2.GaussianBlur(m, (k, k), float(soft_sigma),
+                                      borderType=_cv2.BORDER_REFLECT)
             else:
                 from scipy.ndimage import gaussian_filter
                 m = gaussian_filter(m, sigma=float(soft_sigma), mode="reflect")
@@ -1021,7 +1046,8 @@ def _star_mask_from_precomputed(
     np.clip(keep, 0.0, 1.0, out=keep)
 
     status_cb(f"Star mask: thresh={used:.3g} | detected={raw} | kept={kept} | drawn={drawn} | keep_floor={keep_floor}")
-    return keep
+    return np.ascontiguousarray(keep, dtype=np.float32)
+
 
 def _variance_map_from_precomputed(
     img_2d: np.ndarray,
@@ -1163,15 +1189,18 @@ def _fftshape_same(H, W, kh, kw):
 
 # ---------- Torch FFT helpers (FIXED: carry padH/padW) ----------
 def _precompute_torch_psf_ffts(psfs, flip_psf, H, W, device, dtype):
+    """
+    FP32-only Torch FFT packs. 'dtype' is ignored on purpose to prevent
+    accidental half/bfloat16. Everything is torch.float32.
+    """
     tfft = torch.fft
     psf_fft, psfT_fft = [], []
     for k, kT in zip(psfs, flip_psf):
         kh, kw = k.shape
         padH, padW = _fftshape_same(H, W, kh, kw)
 
-        # shift the small kernels to the origin, then FFT into padded size
-        k_small  = torch.as_tensor(np.fft.ifftshift(k),  device=device, dtype=dtype)
-        kT_small = torch.as_tensor(np.fft.ifftshift(kT), device=device, dtype=dtype)
+        k_small  = torch.as_tensor(np.fft.ifftshift(k),  device=device, dtype=torch.float32)
+        kT_small = torch.as_tensor(np.fft.ifftshift(kT), device=device, dtype=torch.float32)
 
         Kf  = tfft.rfftn(k_small,  s=(padH, padW))
         KTf = tfft.rfftn(kT_small, s=(padH, padW))
@@ -1842,6 +1871,7 @@ def multiframe_deconv(
     Streaming multi-frame deconvolution with optional SR (r>1).
     Optimized GPU path: AMP for convs, channels-last, pinned-memory prefetch, optional FFT for large kernels.
     """
+    mixed_precision = False
     # ---------- local helpers (kept self-contained) ----------
     def _emit_pct(pct: float, msg: str | None = None):
         pct = float(max(0.0, min(1.0, pct)))
@@ -2069,54 +2099,45 @@ def multiframe_deconv(
     if use_torch:
         F = torch.nn.functional
         device = _torch_device()
-        x_t  = _to_t(_contig(x))            # FP32
-        num  = torch.zeros_like(x_t)        # FP32
-        den  = torch.zeros_like(x_t)        # FP32
 
-        # GPU-friendly memory format
+        # Force FP32 tensors
+        x_t  = _to_t(_contig(x)).to(torch.float32)
+        num  = torch.zeros_like(x_t, dtype=torch.float32)
+        den  = torch.zeros_like(x_t, dtype=torch.float32)
+
+        # channels-last preference kept (does not change dtype)
         if use_channels_last is None:
             use_channels_last = bool(cuda_ok or mps_ok)
         if use_channels_last:
-            # NOTE: 3D tensors don't support channels_last — we'll format 4D batches later
-            pass
+            pass  # CHW tensors will be batched later with channels_last
 
-        # PSF tensors
-        psf_t  = [_to_t(_contig(k))[None, None]  for k  in psfs]    # (1,1,kh,kw)
-        psfT_t = [_to_t(_contig(kT))[None, None] for kT in flip_psf]
+        # PSF tensors strictly FP32
+        psf_t  = [_to_t(_contig(k)).to(torch.float32)[None, None]  for k  in psfs]    # (1,1,kh,kw)
+        psfT_t = [_to_t(_contig(kT)).to(torch.float32)[None, None] for kT in flip_psf]
 
-        # AMP policy
-        if mixed_precision is None:
-            mixed_precision = bool(cuda_ok or mps_ok)
-        use_amp = bool(mixed_precision)
-        amp_dtype = torch.float16 if cuda_ok else (torch.bfloat16 if mps_ok else torch.float32)
-        if cuda_ok:
-            amp_cm = torch.cuda.amp.autocast
-            amp_kwargs = {}
-        elif mps_ok:
-            amp_cm = torch.autocast
-            amp_kwargs = dict(device_type="mps", dtype=amp_dtype)
-        else:
-            amp_cm = None
-            amp_kwargs = {}
+        # No mixed precision, no autocast
+        use_amp = False
+        amp_cm = None
+        amp_kwargs = {}
 
-        # FFT gate (only worth it for large kernels / SR)
+        # FFT gate (worth it for large kernels / SR); still FP32
         use_fft = False
         if (Kmax >= int(fft_kernel_threshold)) or (r > 1 and Kmax >= max(21, fft_kernel_threshold - 4)):
             use_fft = True
-            psf_fft, psfT_fft = _precompute_torch_psf_ffts(psfs, flip_psf, Hs, Ws, device=x_t.device, dtype=x_t.dtype)
+            psf_fft, psfT_fft = _precompute_torch_psf_ffts(psfs, flip_psf, Hs, Ws,
+                                                           device=x_t.device, dtype=torch.float32)
         else:
             psf_fft = psfT_fft = None
     else:
-        x_t = _contig(x)
-        num = np.zeros_like(x_t)
-        den = np.zeros_like(x_t)
+        x_t = _contig(x).astype(np.float32, copy=False)
+        num = np.zeros_like(x_t, dtype=np.float32)
+        den = np.zeros_like(x_t, dtype=np.float32)
         use_amp = False
         use_fft = False
 
     # ---- batched torch helper (grouped depthwise per-sample) ----
     if use_torch:
         def _grouped_conv_same_torch_per_sample(x_bc_hw, w_b1kk, B, C):
-            # channels-last preferred for better tensor-core perf
             if use_channels_last:
                 x_bc_hw = x_bc_hw.contiguous(memory_format=torch.channels_last)
 
@@ -2124,7 +2145,6 @@ def multiframe_deconv(
             kh, kw = int(w_b1kk.shape[-2]), int(w_b1kk.shape[-1])
             pad = (kw // 2, kw - kw // 2 - 1,  kh // 2, kh - kh // 2 - 1)
 
-            # ❌ .view → ✅ .reshape (safe for channels-last / non-contiguous)
             x_1ghw = x_bc_hw.reshape(1, G, x_bc_hw.shape[-2], x_bc_hw.shape[-1])
             x_1ghw = F.pad(x_1ghw, pad, mode="reflect")
 
@@ -2134,7 +2154,6 @@ def multiframe_deconv(
             y = y_1ghw.reshape(B, C, y_1ghw.shape[-2], y_1ghw.shape[-1])
             return y.contiguous() if not use_channels_last else y.contiguous(memory_format=torch.channels_last)
 
-
         def _downsample_avg_bt_t(x, r_):
             if r_ <= 1:
                 return x
@@ -2142,16 +2161,18 @@ def multiframe_deconv(
             Hr, Wr = (H // r_) * r_, (W // r_) * r_
             if Hr == 0 or Wr == 0:
                 return x
-            # ❌ .view → ✅ .reshape
             return x[:, :, :Hr, :Wr].reshape(B, C, Hr // r_, r_, Wr // r_, r_).mean(dim=(3, 5))
 
         def _upsample_sum_bt_t(x, r_):
-            if r_ <= 1: return x
+            if r_ <= 1:
+                return x
             return x.repeat_interleave(r_, dim=-2).repeat_interleave(r_, dim=-1)
 
         def _make_pinned_batch(idx, C_expected, to_device_dtype):
-            """Assemble a batch into pinned CPU tensors and async-copy to device."""
-            # numpy → pinned CPU tensors
+            """
+            Assemble a batch -> **always FP32** pinned CPU tensors -> device FP32.
+            'to_device_dtype' is ignored to keep FP32 everywhere.
+            """
             y_list, m_list, v_list = [], [], []
             for fi in idx:
                 y_nat = _sanitize_numeric(data[fi])
@@ -2161,20 +2182,20 @@ def multiframe_deconv(
                 m2d = _mask_for(fi, y_chw)
                 v2d = _var_for(fi, y_chw)
                 y_list.append(y_chw); m_list.append(m2d); v_list.append(v2d)
-            y_cpu = torch.from_numpy(np.stack(y_list, 0))
-            m_cpu = torch.from_numpy(np.stack(m_list, 0))
-            have_v = all(v is not None for v in v_list)
-            vb_cpu = None if not have_v else torch.from_numpy(np.stack(v_list, 0))
 
-            # pin if CUDA for true async H2D; on MPS non_blocking still helps avoid syncs
+            y_cpu = torch.from_numpy(np.stack(y_list, 0)).to(torch.float32)
+            m_cpu = torch.from_numpy(np.stack(m_list, 0)).to(torch.float32)
+            have_v = all(v is not None for v in v_list)
+            vb_cpu = None if not have_v else torch.from_numpy(np.stack(v_list, 0)).to(torch.float32)
+
             if cuda_ok:
                 y_cpu = y_cpu.pin_memory(); m_cpu = m_cpu.pin_memory()
                 if vb_cpu is not None: vb_cpu = vb_cpu.pin_memory()
 
-            yb = y_cpu.to(x_t.device, dtype=to_device_dtype, non_blocking=True)
-            mb = m_cpu.to(x_t.device, dtype=to_device_dtype, non_blocking=True)
-            vb = None if vb_cpu is None else vb_cpu.to(x_t.device, dtype=to_device_dtype, non_blocking=True)
-            # (B,C,H,W) and (B,H,W)
+            yb = y_cpu.to(x_t.device, dtype=torch.float32, non_blocking=True)
+            mb = m_cpu.to(x_t.device, dtype=torch.float32, non_blocking=True)
+            vb = None if vb_cpu is None else vb_cpu.to(x_t.device, dtype=torch.float32, non_blocking=True)
+
             if use_channels_last:
                 yb = yb.contiguous(memory_format=torch.channels_last)
             return yb, mb, vb
@@ -2244,16 +2265,14 @@ def multiframe_deconv(
                         # gather device batches (with prefetch)
                         if prefetch_batches and (yb_next is not None):
                             yb, mb, vb = yb_next, mb_next, vb_next
-                            # prefetch next
                             ci2 = ci + B_cur
                             if ci2 < n_frames:
                                 idx2 = frame_idx[ci2:ci2+B_cur]
                                 Cn = Cn or (_as_chw(_sanitize_numeric(data[idx[0]])).shape[0])
-                                yb_next, mb_next, vb_next = _make_pinned_batch(idx2, Cn, x_t.dtype)
+                                yb_next, mb_next, vb_next = _make_pinned_batch(idx2, Cn, torch.float32)
                             else:
                                 yb_next = mb_next = vb_next = None
                         else:
-                            # no prefetch path
                             y_list, m_list, v_list = [], [], []
                             Cn = None
                             for fi in idx:
@@ -2264,95 +2283,105 @@ def multiframe_deconv(
                                     raise RuntimeError(f"Mixed channel counts in batch: expected C={Cn} but got C={y_chw.shape[0]} for frame {fi}.")
                                 m2d = _mask_for(fi, y_chw); v2d = _var_for(fi, y_chw)
                                 y_list.append(y_chw); m_list.append(m2d); v_list.append(v2d)
-                            yb = torch.as_tensor(np.stack(y_list, 0), device=x_t.device, dtype=x_t.dtype)
-                            mb = torch.as_tensor(np.stack(m_list, 0), device=x_t.device, dtype=x_t.dtype)
+                            yb = torch.as_tensor(np.stack(y_list, 0), device=x_t.device, dtype=torch.float32)
+                            mb = torch.as_tensor(np.stack(m_list, 0), device=x_t.device, dtype=torch.float32)
                             have_v = all(v is not None for v in v_list)
-                            vb = None if not have_v else torch.as_tensor(np.stack(v_list, 0), device=x_t.device, dtype=x_t.dtype)
+                            vb = None if not have_v else torch.as_tensor(np.stack(v_list, 0), device=x_t.device, dtype=torch.float32)
                             if use_channels_last:
                                 yb = yb.contiguous(memory_format=torch.channels_last)
 
-                        # PSF packs for this batch
+                        # PSF packs for this batch (FP32)
                         wk  = torch.cat([psf_t[fi]  for fi in idx], dim=0)  # (B,1,kh,kw)
                         wkT = torch.cat([psfT_t[fi] for fi in idx], dim=0)  # (B,1,kh,kw)
 
-                        with _maybe_amp():
-                            # --- predict on SR grid ---
-                            x_bc_hw = x_t.unsqueeze(0).expand(B, -1, -1, -1).contiguous()
-                            if use_channels_last:
-                                x_bc_hw = x_bc_hw.contiguous(memory_format=torch.channels_last)
+                        # --- predict on SR grid ---
+                        x_bc_hw = x_t.unsqueeze(0).expand(B, -1, -1, -1).contiguous()
+                        if use_channels_last:
+                            x_bc_hw = x_bc_hw.contiguous(memory_format=torch.channels_last)
 
-                            if use_fft:
-                                # per-sample per-channel FFT conv
-                                pred_list = []
+                        if use_fft:
+                            pred_list = []
+                            for j, fi in enumerate(idx):
+                                C_here = x_bc_hw.shape[1]
+                                pred_j = torch.empty_like(x_bc_hw[j], dtype=torch.float32)
+                                for c in range(C_here):
+                                    _fft_conv_same_torch(x_bc_hw[j, c], psf_fft[fi], out_spatial=pred_j[c])
+                                pred_list.append(pred_j)
+                            pred_super = torch.stack(pred_list, 0)
+                        else:
+                            pred_super = _grouped_conv_same_torch_per_sample(x_bc_hw, wk, B, Cn)
+
+                        pred_low = _downsample_avg_bt_t(pred_super, r) if r > 1 else pred_super
+
+                        # --- robust weights ---
+                        rnat = yb - pred_low
+
+                        if (it == 1) and (idx and (idx[0] == 0)):
+                            try:
+                                status_cb(f"DBG rnat shape: {tuple(rnat.shape)}")
+                            except Exception:
+                                pass
+
+                        # Auto Huber delta cache
+                        if huber_delta < 0:
+                            if auto_delta_cache is not None and (it % 5 == 1 or any(auto_delta_cache[fi] is None for fi in idx)):
+                                flat = rnat.flatten(start_dim=1)
+                                med  = flat.median(dim=1, keepdim=True).values
+                                mad  = (flat - med).abs().median(dim=1, keepdim=True).values + 1e-6
+                                rms  = 1.4826 * mad
                                 for j, fi in enumerate(idx):
-                                    C_here = x_bc_hw.shape[1]
-                                    pred_j = torch.empty_like(x_bc_hw[j])
-                                    for c in range(C_here):
-                                        _fft_conv_same_torch(x_bc_hw[j, c], psf_fft[fi], out_spatial=pred_j[c])
-                                    pred_list.append(pred_j)
-                                pred_super = torch.stack(pred_list, 0)  # (B,C,Hs,Ws)
-                            else:
-                                pred_super = _grouped_conv_same_torch_per_sample(x_bc_hw, wk, B, Cn)  # (B,C,Hs,Ws)
+                                    auto_delta_cache[fi] = float((-huber_delta) * torch.clamp(rms[j, 0], min=1e-6).item())
+                            deltas = torch.tensor([auto_delta_cache[fi] for fi in idx], device=x_t.device,
+                                                  dtype=torch.float32).view(B, 1, 1, 1)
+                        else:
+                            deltas = torch.tensor(float(huber_delta), device=x_t.device,
+                                                  dtype=torch.float32).view(1, 1, 1, 1)
 
-                            pred_low = _downsample_avg_bt_t(pred_super, r) if r > 1 else pred_super  # (B,C,Hn,Wn)
+                        absr = rnat.abs()
+                        psi_over_r = torch.where(absr <= deltas, torch.ones_like(absr),
+                                                 deltas / (absr + EPS))
 
-                            # --- robust weights ---
-                            rnat = yb - pred_low
-                            if huber_delta < 0:
-                                if auto_delta_cache is not None and (it % 5 == 1 or any(auto_delta_cache[fi] is None for fi in idx)):
-                                    # robust RMS per-frame (median of |r|, collapsed)
-                                    med = rnat.median(dim=-1, keepdim=True).values.median(dim=-2, keepdim=True).values.median(dim=1, keepdim=True).values
-                                    mad = (rnat - med).abs().median(dim=-1, keepdim=True).values.median(dim=-2, keepdim=True).values.median(dim=1, keepdim=True).values + 1e-6
-                                    rms = 1.4826 * mad
-                                    for j, fi in enumerate(idx):
-                                        auto_delta_cache[fi] = float((-huber_delta) * torch.clamp(rms[j], min=1e-6).item())
-                                deltas = torch.tensor([auto_delta_cache[fi] for fi in idx], device=x_t.device, dtype=x_t.dtype).view(B,1,1,1)
-                            else:
-                                deltas = torch.tensor(float(huber_delta), device=x_t.device, dtype=x_t.dtype).view(1,1,1,1)
+                        # Per-pixel variance map.
+                        if vb is None:
+                            flat_v = rnat.flatten(start_dim=1)
+                            med_v  = flat_v.median(dim=1, keepdim=True).values
+                            mad_v  = (flat_v - med_v).abs().median(dim=1, keepdim=True).values + 1e-6
+                            vmap   = (1.4826 * mad_v) ** 2
+                            vmap   = vmap.view(B, 1, 1, 1).expand(-1, Cn, rnat.shape[-2], rnat.shape[-1])
+                        else:
+                            vmap = vb.unsqueeze(1).expand(-1, Cn, -1, -1)
 
-                            absr = rnat.abs()
-                            psi_over_r = torch.where(absr <= deltas, torch.ones_like(absr), deltas / (absr + EPS))
+                        wmap_low = psi_over_r / (vmap + EPS)
+                        wmap_low = wmap_low * mb.unsqueeze(1)
 
-                            if vb is None:
-                                med_v = rnat.median(dim=-1, keepdim=True).values.median(dim=-2, keepdim=True).values.median(dim=1, keepdim=True).values
-                                mad_v = (rnat - med_v).abs().median(dim=-1, keepdim=True).values.median(dim=-2, keepdim=True).values.median(dim=1, keepdim=True).values + 1e-6
-                                vmap = (1.4826 * mad_v) ** 2
-                                vmap = vmap.expand(-1, Cn, rnat.shape[-2], rnat.shape[-1])
-                            else:
-                                vmap = vb.unsqueeze(1).expand(-1, Cn, -1, -1)
+                        # --- adjoint (upsample if SR) ---
+                        if r > 1:
+                            up_y    = _upsample_sum_bt_t(wmap_low * yb,       r)
+                            up_pred = _upsample_sum_bt_t(wmap_low * pred_low,  r)
+                        else:
+                            up_y, up_pred = wmap_low * yb, wmap_low * pred_low
 
-                            wmap_low = psi_over_r / (vmap + EPS)
-                            wmap_low = wmap_low * mb.unsqueeze(1)
-
-                            # --- adjoint (upsample if SR) ---
-                            if r > 1:
-                                up_y    = _upsample_sum_bt_t(wmap_low * yb,       r)       # (B,C,Hs,Ws)
-                                up_pred = _upsample_sum_bt_t(wmap_low * pred_low,  r)
-                            else:
-                                up_y, up_pred = wmap_low * yb, wmap_low * pred_low
-
-                            # --- backproject ---
-                            if use_fft:
-                                back_num_list, back_den_list = [], []
-                                for j, fi in enumerate(idx):
-                                    C_here = up_y.shape[1]
-                                    bn_j = torch.empty_like(x_t)
-                                    bd_j = torch.empty_like(x_t)
-                                    # per-channel with psfT
-                                    for c in range(C_here):
-                                        _fft_conv_same_torch(up_y[j, c],    psfT_fft[fi], out_spatial=bn_j[c] if x_t.ndim==3 else bn_j)
-                                        _fft_conv_same_torch(up_pred[j, c], psfT_fft[fi], out_spatial=bd_j[c] if x_t.ndim==3 else bd_j)
-                                    back_num_list.append(bn_j)
-                                    back_den_list.append(bd_j)
-                                back_num = torch.stack(back_num_list, 0).sum(dim=0)
-                                back_den = torch.stack(back_den_list, 0).sum(dim=0)
-                            else:
-                                back_num = _grouped_conv_same_torch_per_sample(up_y,    wkT, B, Cn).sum(dim=0)
-                                back_den = _grouped_conv_same_torch_per_sample(up_pred, wkT, B, Cn).sum(dim=0)
+                        # --- backproject ---
+                        if use_fft:
+                            back_num_list, back_den_list = [], []
+                            for j, fi in enumerate(idx):
+                                C_here = up_y.shape[1]
+                                bn_j = torch.empty_like(x_t, dtype=torch.float32)
+                                bd_j = torch.empty_like(x_t, dtype=torch.float32)
+                                for c in range(C_here):
+                                    _fft_conv_same_torch(up_y[j, c],    psfT_fft[fi], out_spatial=bn_j[c] if x_t.ndim==3 else bn_j)
+                                    _fft_conv_same_torch(up_pred[j, c], psfT_fft[fi], out_spatial=bd_j[c] if x_t.ndim==3 else bd_j)
+                                back_num_list.append(bn_j)
+                                back_den_list.append(bd_j)
+                            back_num = torch.stack(back_num_list, 0).sum(dim=0)
+                            back_den = torch.stack(back_den_list, 0).sum(dim=0)
+                        else:
+                            back_num = _grouped_conv_same_torch_per_sample(up_y,    wkT, B, Cn).sum(dim=0)
+                            back_den = _grouped_conv_same_torch_per_sample(up_pred, wkT, B, Cn).sum(dim=0)
 
                         # accumulate in FP32
-                        num += back_num.to(dtype=num.dtype)
-                        den += back_den.to(dtype=den.dtype)
+                        num += back_num
+                        den += back_den
 
                         ci += B
 
@@ -2361,11 +2390,11 @@ def multiframe_deconv(
                         if ("out of memory" in emsg or "resource" in emsg or "alloc" in emsg) and B_cur > 1:
                             B_cur = max(1, B_cur // 2)
                             status_cb(f"GPU OOM: reducing batch_frames → {B_cur} and retrying this chunk.")
-                            # reset prefetch for the new batch size
                             if prefetch_batches:
                                 yb_next = mb_next = vb_next = None
                             continue
                         raise
+
 
                 _process_gui_events_safely()
 

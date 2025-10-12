@@ -608,77 +608,75 @@ def _auto_star_mask_sep(
     max_side: int = STAR_MASK_MAXSIDE,
     ellipse_scale: float = ELLIPSE_SCALE,
     soft_sigma: float = SOFT_SIGMA,
-    max_semiaxis_px: float | None = None,
-    max_area_px2: float | None = None,
+    max_semiaxis_px: float | None = None,      # kept for API compat; unused
+    max_area_px2: float | None = None,         # kept for API compat; unused
     max_radius_px: int = MAX_STAR_RADIUS,
-    keep_floor: float = KEEP_FLOOR,           # <<< NEW
+    keep_floor: float = KEEP_FLOOR,
     status_cb=lambda s: None
 ) -> np.ndarray:
     """
-    Build a KEEP mask (1=keep, 0=masked) using simple filled disks + soft edges:
-      - SEP detect on the full-resolution image with threshold backoff.
-      - For each source: r = ellipse_scale * max(a,b), then clamp to max_radius_px.
-      - Dilate by adding grow_px to r (full-res pixels).
-      - Draw a filled circle for each detection (cv2 fast path; NumPy fallback).
-      - Apply a Gaussian blur of 'soft_sigma' pixels to feather edges (soft weights).
-    Emits a status line with counts: detected, kept, drawn, masked area (px).
+    Build a KEEP weight map (float32 in [0,1]) using SEP detections.
+    **Never writes to img_2d** and draws only into a fresh mask buffer.
     """
     if sep is None:
-        return np.ones_like(img_2d, dtype=np.float32)
+        # No SEP available: neutral weights
+        return np.ones_like(img_2d, dtype=np.float32, order="C")
 
-    # Optional OpenCV (fast draw + fast blur)
+    # Optional OpenCV path for fast drawing/blur
     try:
         import cv2 as _cv2
         _HAS_CV2 = True
     except Exception:
         _HAS_CV2 = False
+        _cv2 = None  # type: ignore
 
-    h, w = img_2d.shape
-    data = np.ascontiguousarray(img_2d.astype(np.float32, copy=False))
+    h, w = map(int, img_2d.shape)
+    # Work on our own contiguous copy for SEP math; we will not modify it.
+    data = np.ascontiguousarray(img_2d, dtype=np.float32)
 
-    # Background and residual
+    # Background & residual
     bkg = sep.Background(data)
     data_sub = np.ascontiguousarray(data - bkg.back(), dtype=np.float32)
     try:
-        err = bkg.globalrms
+        err = float(bkg.globalrms)
     except Exception:
         err = float(np.median(bkg.rms()))
 
-    # Progressive thresholds to avoid explosion on super-dense fields
-    thresholds = [thresh_sigma, thresh_sigma * 2, thresh_sigma * 4, thresh_sigma * 8, thresh_sigma * 16]
+    # Progressive thresholding to limit explosion on dense fields
+    thresholds = [thresh_sigma, thresh_sigma*2, thresh_sigma*4,
+                  thresh_sigma*8, thresh_sigma*16]
     objs = None
-    used_thresh = float('nan')
+    used_thresh = float("nan")
     raw_detected = 0
     for t in thresholds:
         try:
-            cand = sep.extract(data_sub, thresh=t, err=err)
-            count = 0 if (cand is None) else len(cand)
-            if count == 0:
-                continue
-            # If SEP returned an overwhelming number, try a higher threshold
-            if count > max_objs * 12:
-                continue
-            objs = cand
-            raw_detected = count
-            used_thresh = float(t)
-            break
+            cand = sep.extract(data_sub, thresh=float(t), err=err)
         except Exception:
+            cand = None
+        n = 0 if (cand is None) else len(cand)
+        if n == 0:
             continue
+        if n > max_objs * 12:
+            continue  # too many; tighten threshold
+        objs = cand
+        raw_detected = n
+        used_thresh = float(t)
+        break
+
     if objs is None or len(objs) == 0:
-        # Last-ditch: very high threshold + prune tiny speckles
+        # last-ditch: very high threshold w/ minarea
         try:
             cand = sep.extract(data_sub, thresh=thresholds[-1], err=err, minarea=9)
-            if cand is not None and len(cand) > 0:
-                objs = cand
-                raw_detected = len(cand)
-                used_thresh = float(thresholds[-1])
         except Exception:
-            objs = None
-    if objs is None or len(objs) == 0:
-        status_cb("Star mask: no sources found (mask disabled for this frame).")
-        return np.ones_like(img_2d, dtype=np.float32)
+            cand = None
+        if cand is None or len(cand) == 0:
+            status_cb("Star mask: no sources found (mask disabled for this frame).")
+            return np.ones((h, w), dtype=np.float32, order="C")
+        objs = cand
+        raw_detected = len(cand)
+        used_thresh = float(thresholds[-1])
 
-    # Keep the brightest max_objs
+    # Keep only the brightest max_objs detections
     if "flux" in objs.dtype.names:
         idx = np.argsort(objs["flux"])[-int(max_objs):]
         objs = objs[idx]
@@ -686,85 +684,82 @@ def _auto_star_mask_sep(
         objs = objs[:int(max_objs)]
     kept_after_cap = int(len(objs))
 
-    # Binary star MASK (1 = masked star region)
-    mask = np.zeros((h, w), dtype=np.uint8, order="C")
+    # ---- draw into a brand-new, owned buffer (no aliasing possible) ----
+    mask_u8 = np.zeros((h, w), dtype=np.uint8, order="C")
     MR = int(max(1, max_radius_px))
     G  = int(max(0, grow_px))
     ES = float(max(0.1, ellipse_scale))
 
-    # Draw each source as a filled circle; count how many we actually draw
     drawn = 0
-    for o in objs:
-        x = int(round(float(o["x"])))
-        y = int(round(float(o["y"])))
-        if not (0 <= x < w and 0 <= y < h):
-            continue
-
-        a = float(o["a"])
-        b = float(o["b"])
-        r = int(math.ceil(ES * max(a, b)))  # base radius
-        if r <= 0:
-            continue
-
-        r = min(r + G, MR)                  # clamp & dilate
-        if r <= 0:
-            continue
-
-        drawn += 1
-        if _HAS_CV2:
-            _cv2.circle(mask, (x, y), r, 1, thickness=-1, lineType=_cv2.LINE_8)
-        else:
-            # NumPy fallback: draw in a local box
+    if _HAS_CV2:
+        for o in objs:
+            x = int(round(float(o["x"])))
+            y = int(round(float(o["y"])))
+            if not (0 <= x < w and 0 <= y < h):
+                continue
+            a = float(o["a"]); b = float(o["b"])
+            r = int(math.ceil(ES * max(a, b)))
+            if r <= 0:
+                continue
+            r = min(r + G, MR)
+            if r <= 0:
+                continue
+            _cv2.circle(mask_u8, (x, y), r, 1, thickness=-1, lineType=_cv2.LINE_8)
+            drawn += 1
+    else:
+        # NumPy fallback: local disk draw
+        yy, xx = np.ogrid[:h, :w]
+        for o in objs:
+            x = int(round(float(o["x"])))
+            y = int(round(float(o["y"])))
+            if not (0 <= x < w and 0 <= y < h):
+                continue
+            a = float(o["a"]); b = float(o["b"])
+            r = int(math.ceil(ES * max(a, b)))
+            if r <= 0:
+                continue
+            r = min(r + G, MR)
+            if r <= 0:
+                continue
             y0 = max(0, y - r); y1 = min(h, y + r + 1)
             x0 = max(0, x - r); x1 = min(w, x + r + 1)
-            yy, xx = np.ogrid[y0:y1, x0:x1]
-            if yy.size == 0 or xx.size == 0:
-                drawn -= 1
-                continue
-            disk = (yy - y) * (yy - y) + (xx - x) * (xx - x) <= (r * r)
-            mask[y0:y1, x0:x1][disk] = 1
+            ys = yy[y0:y1] - y
+            xs = xx[x0:x1] - x
+            disk = (ys * ys + xs * xs) <= (r * r)
+            mask_u8[y0:y1, x0:x1][disk] = 1
+            drawn += 1
 
-    masked_px_hard = int(mask.sum())
+    masked_px_hard = int(mask_u8.sum())
 
-    # Convert to float and optionally soften edges (Gaussian feather)
-    m = mask.astype(np.float32, copy=False)
+    # Convert to float and feather edges (still on a scratch buffer)
+    m = mask_u8.astype(np.float32, copy=False)
     if soft_sigma and soft_sigma > 0.0:
         try:
             if _HAS_CV2:
-                # Choose ksize from sigma (≈ 3σ on each side)
                 k = int(max(1, math.ceil(soft_sigma * 3)) * 2 + 1)
-                m = _cv2.GaussianBlur(m, (k, k), soft_sigma, borderType=_cv2.BORDER_REFLECT)
+                m = _cv2.GaussianBlur(m, (k, k), float(soft_sigma),
+                                      borderType=_cv2.BORDER_REFLECT)
             else:
-                try:
-                    from scipy.ndimage import gaussian_filter
-                    m = gaussian_filter(m, sigma=float(soft_sigma), mode="reflect")
-                except Exception:
-                    # Fallback: small Gaussian via our FFT-based conv
-                    r = int(max(1, round(3 * float(soft_sigma))))
-                    yy, xx = np.mgrid[-r:r+1, -r:r+1].astype(np.float32)
-                    g = np.exp(-(xx*xx + yy*yy) / (2.0 * float(soft_sigma) * float(soft_sigma))).astype(np.float32)
-                    g /= (g.sum() + EPS)
-                    m = _conv_same_np(m, g)
+                from scipy.ndimage import gaussian_filter
+                m = gaussian_filter(m, sigma=float(soft_sigma), mode="reflect")
         except Exception:
-            # If anything fails, keep the hard mask
+            # best effort; keep hard mask
             pass
+        np.clip(m, 0.0, 1.0, out=m)
 
-        m = np.clip(m, 0.0, 1.0, out=m)
+    # ---- produce a KEEP weight map (not a binary hole-punch) ----
+    keep = 1.0 - m
+    kf = float(max(0.0, min(0.99, keep_floor)))
+    keep = kf + (1.0 - kf) * keep
+    np.clip(keep, 0.0, 1.0, out=keep)
 
-    # --- NEW: convert to KEEP weights with a floor (down-weight, don't zero) ---
-    # KEEP map (1 keep, 0 mask), with configurable floor in [0, 1)
-    keep = (1.0 - m).astype(np.float32, copy=False)
-    if keep_floor is not None:
-        kf = float(max(0.0, min(0.99, keep_floor)))
-        keep = kf + (1.0 - kf) * keep          # linear remap to [kf, 1]
-        keep = np.clip(keep, 0.0, 1.0, out=keep)
-
-    # Telemetry (add keep_floor too)
     status_cb(
         f"Star mask: thresh={used_thresh:.3g} | detected={raw_detected} | kept={kept_after_cap} | "
         f"drawn={drawn} | masked_px={masked_px_hard} | grow_px={G} | soft_sigma={soft_sigma} | keep_floor={keep_floor}"
     )
-    return keep
+    # Return as a new, contiguous float32 array
+    return np.ascontiguousarray(keep, dtype=np.float32)
+
 
 def _auto_variance_map(
     img_2d: np.ndarray,
@@ -891,7 +886,6 @@ def _auto_variance_map(
 
     return v
 
-
 def _star_mask_from_precomputed(
     img_2d: np.ndarray,
     sky_map: np.ndarray,
@@ -907,48 +901,62 @@ def _star_mask_from_precomputed(
     max_side: int,
     status_cb=lambda s: None
 ) -> np.ndarray:
-    # optional OpenCV fast path
+    """
+    Build a KEEP weight map using a *downscaled detection / full-res draw* path.
+    **Never writes to img_2d**; all drawing happens in a fresh `mask_u8`.
+    """
+    # Optional OpenCV fast path
     try:
-        import cv2 as _cv2; _HAS_CV2 = True
+        import cv2 as _cv2
+        _HAS_CV2 = True
     except Exception:
         _HAS_CV2 = False
+        _cv2 = None  # type: ignore
 
-    H, W = img_2d.shape
+    H, W = map(int, img_2d.shape)
+
+    # Residual for detection (contiguous, separate buffer)
     data_sub = np.ascontiguousarray((img_2d - sky_map).astype(np.float32))
-    # --- downscale detection only (speeds large frames) ---
-    scale = 1.0
+
+    # Downscale *detection only* to speed up, never the draw step
     det = data_sub
+    scale = 1.0
     if max_side and max(H, W) > int(max_side):
         scale = float(max(H, W)) / float(max_side)
         if _HAS_CV2:
-            det = _cv2.resize(det, (max(1, int(round(W/scale))), max(1, int(round(H/scale)))), interpolation=_cv2.INTER_AREA)
+            det = _cv2.resize(
+                det,
+                (max(1, int(round(W / scale))), max(1, int(round(H / scale)))),
+                interpolation=_cv2.INTER_AREA
+            )
         else:
             s = int(max(1, round(scale)))
-            det = det[:(H//s)*s, :(W//s)*s].reshape(H//s, s, W//s, s).mean(axis=(1,3))
+            det = det[:(H // s) * s, :(W // s) * s].reshape(H // s, s, W // s, s).mean(axis=(1, 3))
             scale = float(s)
 
-    # progressive thresholds
-    thresholds = [thresh_sigma, thresh_sigma*2, thresh_sigma*4, thresh_sigma*8, thresh_sigma*16]
-    objs = None; used = float('nan'); raw = 0
+    # Threshold ladder
+    thresholds = [thresh_sigma, thresh_sigma*2, thresh_sigma*4,
+                  thresh_sigma*8, thresh_sigma*16]
+    objs = None; used = float("nan"); raw = 0
     for t in thresholds:
-        cand = sep.extract(det, thresh=t, err=err_scalar)
+        cand = sep.extract(det, thresh=float(t), err=float(err_scalar))
         n = 0 if cand is None else len(cand)
         if n == 0:          continue
         if n > max_objs*12: continue
-        objs, raw, used = cand, n, float(t); break
+        objs, raw, used = cand, n, float(t)
+        break
 
     if objs is None or len(objs) == 0:
         try:
-            cand = sep.extract(det, thresh=thresholds[-1], err=err_scalar, minarea=9)
-            if cand is not None and len(cand) > 0:
-                objs, raw, used = cand, len(cand), float(thresholds[-1])
+            cand = sep.extract(det, thresh=thresholds[-1], err=float(err_scalar), minarea=9)
         except Exception:
-            pass
-    if objs is None or len(objs) == 0:
-        status_cb("Star mask: no sources found (mask disabled for this frame).")
-        return np.ones_like(img_2d, dtype=np.float32)
+            cand = None
+        if cand is None or len(cand) == 0:
+            status_cb("Star mask: no sources found (mask disabled for this frame).")
+            return np.ones((H, W), dtype=np.float32, order="C")
+        objs, raw, used = cand, len(cand), float(thresholds[-1])
 
-    # keep brightest max_objs
+    # Brightest max_objs
     if "flux" in objs.dtype.names:
         idx = np.argsort(objs["flux"])[-int(max_objs):]
         objs = objs[idx]
@@ -956,39 +964,55 @@ def _star_mask_from_precomputed(
         objs = objs[:int(max_objs)]
     kept = len(objs)
 
-    # draw back on full-res
-    mask = np.zeros((H, W), dtype=np.uint8, order="C")
+    # ---- draw back on full-res into a brand-new buffer ----
+    mask_u8 = np.zeros((H, W), dtype=np.uint8, order="C")
     s_back = float(scale)
     MR = int(max(1, max_radius_px))
     G  = int(max(0, grow_px))
     ES = float(max(0.1, ellipse_scale))
 
     drawn = 0
-    for o in objs:
-        x = int(round(float(o["x"]) * s_back))
-        y = int(round(float(o["y"]) * s_back))
-        if not (0 <= x < W and 0 <= y < H): continue
-        a = float(o["a"]) * s_back
-        b = float(o["b"]) * s_back
-        r = int(math.ceil(ES * max(a, b)))
-        r = min(max(r, 0) + G, MR)
-        if r <= 0: continue
-        drawn += 1
-        if _HAS_CV2:
-            _cv2.circle(mask, (x, y), r, 1, thickness=-1, lineType=_cv2.LINE_8)
-        else:
+    if _HAS_CV2:
+        for o in objs:
+            x = int(round(float(o["x"]) * s_back))
+            y = int(round(float(o["y"]) * s_back))
+            if not (0 <= x < W and 0 <= y < H):
+                continue
+            a = float(o["a"]) * s_back
+            b = float(o["b"]) * s_back
+            r = int(math.ceil(ES * max(a, b)))
+            r = min(max(r, 0) + G, MR)
+            if r <= 0:
+                continue
+            _cv2.circle(mask_u8, (x, y), r, 1, thickness=-1, lineType=_cv2.LINE_8)
+            drawn += 1
+    else:
+        for o in objs:
+            x = int(round(float(o["x"]) * s_back))
+            y = int(round(float(o["y"]) * s_back))
+            if not (0 <= x < W and 0 <= y < H):
+                continue
+            a = float(o["a"]) * s_back
+            b = float(o["b"]) * s_back
+            r = int(math.ceil(ES * max(a, b)))
+            r = min(max(r, 0) + G, MR)
+            if r <= 0:
+                continue
             y0 = max(0, y - r); y1 = min(H, y + r + 1)
             x0 = max(0, x - r); x1 = min(W, x + r + 1)
             yy, xx = np.ogrid[y0:y1, x0:x1]
             disk = (yy - y)*(yy - y) + (xx - x)*(xx - x) <= r*r
-            mask[y0:y1, x0:x1][disk] = 1
+            mask_u8[y0:y1, x0:x1][disk] = 1
+            drawn += 1
 
-    m = mask.astype(np.float32)
+    # Feather + convert to keep weights
+    m = mask_u8.astype(np.float32, copy=False)
     if soft_sigma > 0:
         try:
             if _HAS_CV2:
                 k = int(max(1, int(round(3*soft_sigma)))*2 + 1)
-                m = _cv2.GaussianBlur(m, (k,k), soft_sigma, borderType=_cv2.BORDER_REFLECT)
+                m = _cv2.GaussianBlur(m, (k, k), float(soft_sigma),
+                                      borderType=_cv2.BORDER_REFLECT)
             else:
                 from scipy.ndimage import gaussian_filter
                 m = gaussian_filter(m, sigma=float(soft_sigma), mode="reflect")
@@ -1002,7 +1026,8 @@ def _star_mask_from_precomputed(
     np.clip(keep, 0.0, 1.0, out=keep)
 
     status_cb(f"Star mask: thresh={used:.3g} | detected={raw} | kept={kept} | drawn={drawn} | keep_floor={keep_floor}")
-    return keep
+    return np.ascontiguousarray(keep, dtype=np.float32)
+
 
 def _variance_map_from_precomputed(
     img_2d: np.ndarray,

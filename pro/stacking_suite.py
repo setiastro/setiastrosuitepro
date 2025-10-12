@@ -19,6 +19,9 @@ from PyQt6.QtWidgets import (QDialog, QWidget, QLabel, QPushButton, QVBoxLayout,
                              QSizePolicy, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QApplication, QScrollArea, QTextEdit, QMenu, QPlainTextEdit, QGraphicsEllipseItem,
                              QMessageBox, QSlider, QCheckBox, QInputDialog, QComboBox)
 from datetime import datetime, time, timedelta, timezone
+# keep: import time
+from datetime import datetime as dt_datetime, time as dt_time, timedelta as dt_timedelta, timezone as dt_timezone
+
 import pyqtgraph as pg
 from astropy.io import fits
 from astropy.stats import sigma_clipped_stats
@@ -88,6 +91,15 @@ _WINDOWS_RESERVED = {
 
 
 _FITS_EXTS = ('.fits', '.fit', '.fts', '.fits.gz', '.fit.gz', '.fts.gz', '.fz')
+
+def get_valid_header(path):
+    try:
+        from astropy.io import fits
+        hdr = fits.getheader(path, ext=0)
+        return hdr, True
+    except Exception:
+        return None, False
+
 
 def _read_tile_stack(file_list, y0, y1, x0, x1, channels, out_buf):
     """
@@ -570,14 +582,79 @@ def normalize_images(stack: np.ndarray,
 # ----- small helpers -----
 
 def _downsample_area(img: np.ndarray, scale: int) -> np.ndarray:
-    if scale <= 1:
-        return img.astype(np.float32, copy=False)
-    h, w = img.shape[:2]
-    return cv2.resize(img, (max(1, w // scale), max(1, h // scale)),
-                      interpolation=cv2.INTER_AREA).astype(np.float32, copy=False)
+    """
+    Robust area downsample by an integer scale (>=1).
+    - Prefers exact block-mean pooling (no OpenCV) when full blocks fit.
+    - Falls back to cv2.resize with a clamped, non-zero dsize.
+    - Final fallback uses stride slicing (nearest-like) so this never throws.
+    """
+    if img is None:
+        return None
+
+    # Normalize inputs
+    scale = int(max(1, scale))
+    a = np.asarray(img, dtype=np.float32)
+    if a.ndim < 2 or a.size == 0:
+        return a
+
+    H, W = int(a.shape[0]), int(a.shape[1])
+    if H <= 0 or W <= 0 or scale == 1:
+        return a
+
+    # ---- Prefer exact block mean when we have whole blocks ----
+    Hs = (H // scale) * scale
+    Ws = (W // scale) * scale
+    if Hs >= scale and Ws >= scale:
+        a_c = np.ascontiguousarray(a[:Hs, :Ws, ...])  # ensure contiguous for reshape
+        if a.ndim == 2:
+            out = a_c.reshape(Hs // scale, scale, Ws // scale, scale).mean(axis=(1, 3))
+            return out.astype(np.float32, copy=False)
+        else:
+            C = a.shape[2]
+            out = a_c.reshape(Hs // scale, scale, Ws // scale, scale, C).mean(axis=(1, 3))
+            return out.astype(np.float32, copy=False)
+
+    # ---- Fallback to OpenCV with explicit, clamped dsize ----
+    tw = max(1, W // scale)
+    th = max(1, H // scale)
+    if tw == W and th == H:
+        return a  # nothing to do
+
+    try:
+        import cv2
+        a_c = np.ascontiguousarray(a)  # OpenCV likes contiguous
+        out = cv2.resize(a_c, (int(tw), int(th)), interpolation=cv2.INTER_AREA)
+        return np.asarray(out, dtype=np.float32, copy=False)
+    except Exception:
+        # Last resort: stride slicing (nearest-ish), always returns something
+        if a.ndim == 2:
+            return a[::scale, ::scale].astype(np.float32, copy=False)
+        else:
+            return a[::scale, ::scale, :].astype(np.float32, copy=False)
+
+
 
 def _upscale_bg(bg_small: np.ndarray, oh: int, ow: int) -> np.ndarray:
-    return cv2.resize(bg_small, (ow, oh), interpolation=cv2.INTER_LANCZOS4).astype(np.float32, copy=False)
+    """
+    Robust upscale of the background model to (oh, ow). Never passes 0 sizes to cv2.
+    """
+    oh = int(max(1, oh)); ow = int(max(1, ow))
+    if bg_small is None:
+        return np.zeros((oh, ow), dtype=np.float32)
+
+    b = np.asarray(bg_small, dtype=np.float32)
+    if b.ndim < 2 or b.shape[0] == 0 or b.shape[1] == 0:
+        return np.zeros((oh, ow), dtype=np.float32)
+
+    try:
+        import cv2
+        return cv2.resize(b, (ow, oh), interpolation=cv2.INTER_LANCZOS4).astype(np.float32, copy=False)
+    except Exception:
+        # Safe pure-numpy nearest-neighbor fallback
+        y_idx = (np.linspace(0, b.shape[0]-1, oh)).astype(np.int32)
+        x_idx = (np.linspace(0, b.shape[1]-1, ow)).astype(np.int32)
+        return b[y_idx][:, x_idx].astype(np.float32, copy=False)
+
 
 def _to_Luma(img: np.ndarray) -> np.ndarray:
     if img.ndim == 2:
@@ -593,9 +670,28 @@ def _build_poly_terms_deg2(x: np.ndarray, y: np.ndarray) -> np.ndarray:
 # ----- ABE-like sampling (corners, borders, quartiles with bright-avoid & descent) -----
 
 def _exclude_bright_regions(gray_small: np.ndarray, exclusion_fraction: float = 0.5) -> np.ndarray:
-    flat = gray_small.ravel()
-    thresh = np.percentile(flat, 100 * (1 - exclusion_fraction))
-    return (gray_small < thresh)
+    """
+    Returns a boolean mask selecting the dimmer ~exclusion_fraction of pixels.
+    Robust to empty arrays and NaNs — never throws.
+    """
+    a = np.asarray(gray_small, dtype=np.float32)
+    if a.size == 0:
+        return np.zeros_like(a, dtype=bool)
+
+    # Use nanpercentile; if everything is NaN, allow all (avoid empty elig later)
+    q = max(0.0, min(100.0, 100.0 * (1.0 - float(exclusion_fraction))))
+    try:
+        thresh = np.nanpercentile(a, q)
+    except Exception:
+        # Fallback: if something went wrong, just allow all
+        return np.ones_like(a, dtype=bool)
+
+    mask = a < thresh
+    # If mask ends up all False (flat image, or numeric quirks), allow all
+    if not np.any(mask):
+        mask = np.ones_like(a, dtype=bool)
+    return mask
+
 
 def _gradient_descent_to_dim_spot(gray_small: np.ndarray, x: int, y: int, patch: int) -> tuple[int, int]:
     H, W = gray_small.shape[:2]
@@ -629,37 +725,53 @@ def _generate_sample_points_small(
     H, W = img_small.shape[:2]
     gray = _to_Luma(img_small) if img_small.ndim == 3 else img_small
     pts: list[tuple[int, int]] = []
-    border = max(6, patch_size)  # keep patch fully inside
+
+    # If the downsampled image is extremely small, fallback to a minimal grid
+    if H < max(3, patch_size*2+1) or W < max(3, patch_size*2+1):
+        g = max(2, min(4, int(np.sqrt(max(1, num_samples)))))
+        xs = np.linspace(0, max(W-1, 0), g, dtype=int)
+        ys = np.linspace(0, max(H-1, 0), g, dtype=int)
+        for y in ys:
+            for x in xs:
+                pts.append((int(x), int(y)))
+        return np.asarray(pts, dtype=np.int32)
+
+    border = max(6, patch_size)
 
     def allowed(x, y):
-        if exclusion_mask_small is None: return True
-        return bool(exclusion_mask_small[min(max(0,y), H-1), min(max(0,x), W-1)])
+        if exclusion_mask_small is None: 
+            return True
+        yy = int(np.clip(y, 0, H-1)); xx = int(np.clip(x, 0, W-1))
+        return bool(exclusion_mask_small[yy, xx])
 
-    # corners
+    # corners (guard each)
     for (x, y) in [(border, border), (W-border-1, border), (border, H-border-1), (W-border-1, H-border-1)]:
-        if not allowed(x, y): continue
-        nx, ny = _gradient_descent_to_dim_spot(gray, x, y, patch_size)
-        if allowed(nx, ny): pts.append((nx, ny))
+        if 0 <= x < W and 0 <= y < H and allowed(x, y):
+            nx, ny = _gradient_descent_to_dim_spot(gray, x, y, patch_size)
+            if allowed(nx, ny):
+                pts.append((nx, ny))
 
-    # borders (5 along each side)
-    xs = np.linspace(border, W-border-1, 5, dtype=int)
-    ys = np.linspace(border, H-border-1, 5, dtype=int)
+    # borders (guard each)
+    xs = np.linspace(border, max(W-border-1, border), 5, dtype=int)
+    ys = np.linspace(border, max(H-border-1, border), 5, dtype=int)
+    xs = np.unique(xs); ys = np.unique(ys)
+
     for x in xs:
-        if allowed(x, border):
-            nx, ny = _gradient_descent_to_dim_spot(gray, x, border, patch_size); 
+        if 0 <= x < W and 0 <= border < H and allowed(x, border):
+            nx, ny = _gradient_descent_to_dim_spot(gray, x, border, patch_size)
             if allowed(nx, ny): pts.append((nx, ny))
-        if allowed(x, H-border-1):
-            nx, ny = _gradient_descent_to_dim_spot(gray, x, H-border-1, patch_size); 
+        if 0 <= x < W and 0 <= (H-border-1) < H and allowed(x, H-border-1):
+            nx, ny = _gradient_descent_to_dim_spot(gray, x, H-border-1, patch_size)
             if allowed(nx, ny): pts.append((nx, ny))
     for y in ys:
-        if allowed(border, y):
-            nx, ny = _gradient_descent_to_dim_spot(gray, border, y, patch_size); 
+        if 0 <= border < W and 0 <= y < H and allowed(border, y):
+            nx, ny = _gradient_descent_to_dim_spot(gray, border, y, patch_size)
             if allowed(nx, ny): pts.append((nx, ny))
-        if allowed(W-border-1, y):
-            nx, ny = _gradient_descent_to_dim_spot(gray, W-border-1, y, patch_size); 
+        if 0 <= (W-border-1) < W and 0 <= y < H and allowed(W-border-1, y):
+            nx, ny = _gradient_descent_to_dim_spot(gray, W-border-1, y, patch_size)
             if allowed(nx, ny): pts.append((nx, ny))
 
-    # quartiles: choose dim locations avoiding bright half
+    # quartiles: guard empty slices and skip those that collapse
     hh, ww = H // 2, W // 2
     quads = [
         (slice(0, hh),    slice(0, ww),    (0, 0)),
@@ -667,29 +779,41 @@ def _generate_sample_points_small(
         (slice(hh, H),    slice(0, ww),    (0, hh)),
         (slice(hh, H),    slice(ww, W),    (ww, hh)),
     ]
+    per_quad = max(1, num_samples // 4)
+
     for ysl, xsl, (x0, y0) in quads:
         sub = gray[ysl, xsl]
+        if sub.size == 0:
+            continue
         mask_sub = _exclude_bright_regions(sub, exclusion_fraction=0.5)
         if exclusion_mask_small is not None:
-            mask_sub &= exclusion_mask_small[ysl, xsl]
+            em = exclusion_mask_small[ysl, xsl]
+            if em.size == mask_sub.size:
+                mask_sub = mask_sub & em
         elig = np.argwhere(mask_sub)
         if elig.size == 0:
             continue
-        k = min(len(elig), max(1, num_samples // 4))
+        k = min(len(elig), per_quad)
         sel = elig[np.random.choice(len(elig), k, replace=False)]
         for (yy, xx) in sel:
             gx, gy = x0 + int(xx), y0 + int(yy)
-            nx, ny = _gradient_descent_to_dim_spot(gray, gx, gy, patch_size)
-            if allowed(nx, ny): pts.append((nx, ny))
+            if 0 <= gx < W and 0 <= gy < H and allowed(gx, gy):
+                nx, ny = _gradient_descent_to_dim_spot(gray, gx, gy, patch_size)
+                if allowed(nx, ny):
+                    pts.append((nx, ny))
 
-    if len(pts) == 0:
-        # fall back to simple grid
+    # Absolute fallback if pts stayed empty (degenerate case): small grid
+    if not pts:
         g = max(3, int(np.sqrt(max(16, num_samples))))
         xs = np.linspace(border, W-border-1, g, dtype=int)
         ys = np.linspace(border, H-border-1, g, dtype=int)
-        pts = [(x, y) for y in ys for x in xs if allowed(x, y)]
+        for y in ys:
+            for x in xs:
+                if 0 <= x < W and 0 <= y < H and allowed(x, y):
+                    pts.append((int(x), int(y)))
 
     return np.asarray(pts, dtype=np.int32)
+
 
 # ----- fit/eval on small image -----
 
@@ -722,171 +846,199 @@ def _fit_poly2_on_small(img_small: np.ndarray, pts_small: np.ndarray, patch_size
 def remove_poly2_gradient_abe(
     image: np.ndarray,
     *,
-    mode: str = "subtract",         # "subtract" or "divide"
-    num_samples: int = 120,          # like ABE
-    downsample: int = 6,             # like ABE
-    patch_size: int = 15,            # area median window on small image
-    min_strength: float = 0.01,      # skip if gradient <1% of bg median (5–95% spread)
-    gain_clip: tuple[float,float] = (0.2, 5.0),  # for divide mode
-    exclusion_mask: np.ndarray | None = None,    # optional (H,W) bool
-    log_fn=None
-) -> np.ndarray:
-    """
-    ABE-like degree-2 background model:
-      1) Downsample (AREA) for speed.
-      2) Sample corners/borders/quartiles, avoid bright half, walk to dim spots.
-      3) Fit deg-2 poly on small via patch medians at points.
-      4) Upscale background and apply (subtract or divide) + median re-center.
-      5) Luma-only fit; apply to all channels to avoid color shifts.
-    """
-    if image is None:
-        return image
-    img = np.asarray(image).astype(np.float32, copy=False)
-    mono = (img.ndim == 2)
-
-    H, W = img.shape[:2]
-    t0 = perf_counter()
-
-    # downsample image and (optional) mask
-    img_small = _downsample_area(img, max(1, int(downsample)))
-    mask_small = None
-    if exclusion_mask is not None:
-        mask_small = _downsample_area(exclusion_mask.astype(np.float32), max(1, int(downsample))) >= 0.5
-
-    # generate points + fit
-    pts_small = _generate_sample_points_small(img_small, num_samples=int(num_samples),
-                                              patch_size=int(patch_size),
-                                              exclusion_mask_small=mask_small)
-    bg_small = _fit_poly2_on_small(img_small, pts_small, patch_size=int(patch_size))
-    bg = _upscale_bg(bg_small, H, W)
-    t1 = perf_counter()
-
-    # quick strength check (like your guard)
-    bg_med = float(np.nanmedian(bg)) or 1e-6
-    p5, p95 = np.nanpercentile(bg, 5), np.nanpercentile(bg, 95)
-    rel_amp = float((p95 - p5) / max(bg_med, 1e-6))
-    if log_fn:
-        log_fn(f"ABE poly2: samples={num_samples}, ds={downsample}, patch={patch_size} | "
-               f"bg_med={bg_med:.6f}, rel_amp={rel_amp*100:.2f}% | {t1-t0:.3f}s")
-
-    if rel_amp < float(min_strength):
-        if log_fn: log_fn(f"ABE poly2: gradient weak ({rel_amp*100:.2f}% < {min_strength*100:.2f}%), skipping.")
-        return img
-
-    # apply on channels with *same* bg to avoid color shifts
-    def _apply_sub(ch: np.ndarray) -> np.ndarray:
-        med0 = float(np.nanmedian(ch)) or 1e-6
-        out = ch - bg
-        med1 = float(np.nanmedian(out)) or 1e-6
-        out += (med0 - med1)           # ABE: re-center by adding a constant, no scaling
-        return out
-
-    def _apply_div(ch: np.ndarray) -> np.ndarray:
-        med0 = float(np.nanmedian(ch)) or 1e-6
-        norm_bg = bg / bg_med
-        lo, hi = gain_clip
-        norm_bg = np.clip(norm_bg, lo, hi)
-        out = ch / norm_bg
-        med1 = float(np.nanmedian(out)) or 1e-6
-        out *= (med0 / med1)
-        return out
-
-    if mono:
-        ch = img
-        out = _apply_sub(ch) if mode.lower() == "subtract" else _apply_div(ch)
-        return out.astype(np.float32, copy=False)
-
-    # color (HWC)
-    r = _apply_sub(img[...,0]) if mode.lower() == "subtract" else _apply_div(img[...,0])
-    g = _apply_sub(img[...,1]) if mode.lower() == "subtract" else _apply_div(img[...,1])
-    b = _apply_sub(img[...,2]) if mode.lower() == "subtract" else _apply_div(img[...,2])
-    return np.stack([r,g,b], axis=-1).astype(np.float32, copy=False)
-
-def remove_gradient_stack_abe(
-    stack: np.ndarray,
-    *,
     mode: str = "subtract",
     num_samples: int = 120,
     downsample: int = 6,
     patch_size: int = 15,
     min_strength: float = 0.01,
     gain_clip: tuple[float,float] = (0.2, 5.0),
-    log_fn=None,
-    max_workers: int | None = None,   # NEW: default -> auto
+    exclusion_mask: np.ndarray | None = None,
+    log_fn=None
 ) -> np.ndarray:
-    """
-    Parallel ABE Poly² across frames. Uses threads (NumPy/OpenCV release the GIL).
-    Logs only from the main thread when each frame finishes to keep Qt happy.
-    """
-    F = int(stack.shape[0])
-    out = np.empty_like(stack, dtype=np.float32)
+    if image is None:
+        return image
 
+    img = np.asarray(image, dtype=np.float32, copy=False)
+
+    # ---- Detect original layout
+    is_2d  = (img.ndim == 2)
+    is_hwc = (img.ndim == 3 and img.shape[-1] in (1, 3))
+    is_chw = (img.ndim == 3 and img.shape[0]  in (1, 3) and not is_hwc)
+
+    # ---- Convert to HWC "work" view (internal processing)
+    if is_2d:
+        work = img
+    elif is_hwc:
+        work = img
+    elif is_chw:
+        work = np.moveaxis(img, 0, -1)  # CHW -> HWC
+    else:
+        # Unexpected layout; treat as 2D luma via mean over last axis
+        work = img.mean(axis=-1).astype(np.float32, copy=False)
+
+    H, W = work.shape[:2]
+
+    # --- Downsample image & optional mask
+    img_small = _downsample_area(work, max(1, int(downsample)))
+    mask_small = None
+    if exclusion_mask is not None:
+        em = np.asarray(exclusion_mask, dtype=np.float32, copy=False)
+        mask_small = _downsample_area(em, max(1, int(downsample))) >= 0.5
+
+    # --- Sample & fit
+    pts_small = _generate_sample_points_small(
+        img_small, num_samples=int(num_samples),
+        patch_size=int(patch_size),
+        exclusion_mask_small=mask_small
+    )
+    bg_small = _fit_poly2_on_small(img_small, pts_small, patch_size=int(patch_size))
+    bg = _upscale_bg(bg_small, H, W)
+
+    # --- Strength check
+    bg_med = float(np.nanmedian(bg)) or 1e-6
+    p5, p95 = np.nanpercentile(bg, 5), np.nanpercentile(bg, 95)
+    rel_amp = float((p95 - p5) / max(bg_med, 1e-6))
     if log_fn:
-        log_fn(f"🌀 ABE poly2 on {F} frame(s): mode={mode}, samples={num_samples}, ds={downsample}, "
-               f"patch={patch_size}, min_strength={min_strength*100:.2f}%, gain_clip={gain_clip}")
+        log_fn(f"ABE poly2: samples={num_samples}, ds={downsample}, patch={patch_size} | "
+               f"bg_med={bg_med:.6f}, rel_amp={rel_amp*100:.2f}%")
 
-    # choose a sane worker count
-    ncpu = os.cpu_count() or 8
-    if max_workers is None:
-        # keep a little headroom; ABE is light but OpenBLAS/OpenCV may thread too
-        max_workers = max(2, min(8, ncpu))
-    elif max_workers < 1:
-        max_workers = 1
+    if rel_amp < float(min_strength):
+        # Return original image in original layout
+        return img
 
-    # worker wrapper (NO UI calls here)
-    def _worker(idx_img):
-        i, img = idx_img
-        t0 = perf_counter()
-        res = remove_poly2_gradient_abe(
-            img,
-            mode=mode, num_samples=num_samples, downsample=downsample,
-            patch_size=patch_size, min_strength=min_strength,
-            gain_clip=gain_clip,
-            log_fn=None  # avoid cross-thread UI
-        )
-        t1 = perf_counter()
-        return i, res.astype(np.float32, copy=False), (t1 - t0)
+    # --- Apply (luma-only fit, channel-consistent apply)
+    def _apply_sub(ch):  # re-center to preserve median
+        med0 = float(np.nanmedian(ch)) or 1e-6
+        out = ch - bg
+        med1 = float(np.nanmedian(out)) or 1e-6
+        out += (med0 - med1)
+        return out
 
-    # temporarily reduce OpenCV threads to avoid oversubscription
-    ocv_prev = None
-    try:
-        import cv2
-        ocv_prev = cv2.getNumThreads()
-        cv2.setNumThreads(max(1, min(4, ncpu // 2)))
-    except Exception:
-        pass
+    def _apply_div(ch):
+        med0 = float(np.nanmedian(ch)) or 1e-6
+        norm_bg = np.clip(bg / bg_med, gain_clip[0], gain_clip[1])
+        out = ch / norm_bg
+        med1 = float(np.nanmedian(out)) or 1e-6
+        out *= (med0 / med1)
+        return out
 
-    try:
-        # small optimization: avoid copying big arrays into the futures — pass views
-        items = [(i, stack[i]) for i in range(F)]
-
-        # serial fallback
-        if max_workers == 1:
-            for i, img in items:
-                i_, res, dt = _worker((i, img))
-                out[i_] = res
-                if log_fn:
-                    log_fn(f"[{i_+1}/{F}] ABE done in {dt:.3f}s")
+    if work.ndim == 2:
+        ch = work
+        out_work = _apply_sub(ch) if mode.lower() == "subtract" else _apply_div(ch)
+    else:
+        # HWC
+        if mode.lower() == "subtract":
+            r = _apply_sub(work[..., 0])
+            g = _apply_sub(work[..., 1]) if work.shape[-1] > 1 else r
+            b = _apply_sub(work[..., 2]) if work.shape[-1] > 2 else r
         else:
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-            with ThreadPoolExecutor(max_workers=max_workers) as ex:
-                futs = {ex.submit(_worker, it): it[0] for it in items}
-                done = 0
-                for fut in as_completed(futs):
-                    i_, res, dt = fut.result()
-                    out[i_] = res
-                    done += 1
-                    if log_fn:
-                        log_fn(f"[{done}/{F}] ABE done (frame #{i_+1}) in {dt:.3f}s")
-    finally:
-        # restore OpenCV threads
-        try:
-            if ocv_prev is not None:
-                cv2.setNumThreads(ocv_prev)
-        except Exception:
-            pass
+            r = _apply_div(work[..., 0])
+            g = _apply_div(work[..., 1]) if work.shape[-1] > 1 else r
+            b = _apply_div(work[..., 2]) if work.shape[-1] > 2 else r
+        out_work = np.stack([r, g, b], axis=-1) if work.shape[-1] == 3 else r[..., None]
+
+    out_work = out_work.astype(np.float32, copy=False)
+
+    # ---- Convert back to original layout
+    if is_2d:
+        return out_work
+    if is_hwc:
+        return out_work
+    if is_chw:
+        return np.moveaxis(out_work, -1, 0).astype(np.float32, copy=False)
+    # Fallback: shape-preserving best effort
+    return out_work
+
+
+def _ensure_like(x: np.ndarray, like: np.ndarray) -> np.ndarray:
+    """Return x with the same layout/shape as like (2D, HWC, or CHW)."""
+    if x.shape == like.shape:
+        return x
+
+    # 2D cases
+    if like.ndim == 2:
+        if x.ndim == 3 and x.shape[-1] in (1,3):  # HWC -> 2D (luma)
+            return (0.2126*x[...,0] + 0.7152*x[...,1] + 0.0722*x[...,2]).astype(np.float32, copy=False) if x.shape[-1]==3 else x[...,0]
+        if x.ndim == 3 and x.shape[0] in (1,3):   # CHW -> 2D (first/mean)
+            return x[0]
+        return x
+
+    # HWC target
+    if like.ndim == 3 and like.shape[-1] in (1,3):
+        if x.ndim == 3 and x.shape[0] in (1,3):   # CHW -> HWC
+            return np.moveaxis(x, 0, -1).astype(np.float32, copy=False)
+        if x.ndim == 2 and like.shape[-1] == 3:   # 2D -> HWC repeat
+            return np.repeat(x[..., None], 3, axis=-1).astype(np.float32, copy=False)
+        if x.ndim == 2 and like.shape[-1] == 1:
+            return x[..., None].astype(np.float32, copy=False)
+        return x
+
+    # CHW target
+    if like.ndim == 3 and like.shape[0] in (1,3):
+        if x.ndim == 3 and x.shape[-1] in (1,3):  # HWC -> CHW
+            return np.moveaxis(x, -1, 0).astype(np.float32, copy=False)
+        if x.ndim == 2 and like.shape[0] == 3:    # 2D -> CHW repeat
+            return np.repeat(x[None, ...], 3, axis=0).astype(np.float32, copy=False)
+        if x.ndim == 2 and like.shape[0] == 1:
+            return x[None, ...].astype(np.float32, copy=False)
+        return x
+
+    return x
+
+def remove_gradient_stack_abe(stack, **kw):
+    """
+    stack: (N,H,W) or (N,H,W,C) or (N,C,H,W)
+    Returns the same shape/layout as 'stack'.
+    """
+    arr = np.asarray(stack, dtype=np.float32, copy=False)
+    N = arr.shape[0]
+    out = np.empty_like(arr)
+
+    # Use first frame as layout reference
+    ref = arr[0]
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    with ThreadPoolExecutor(max_workers=min(8, os.cpu_count() or 4)) as ex:
+        futs = {}
+        for i in range(N):
+            img = arr[i]
+            futs[ex.submit(remove_poly2_gradient_abe, img, **kw)] = i
+
+        for fut in as_completed(futs):
+            i_ = futs[fut]
+            res = fut.result()
+            res = _ensure_like(res, ref)   # <<< normalize layout
+            # Also guard size mismatch by center-cropping if necessary
+            if res.shape != ref.shape:
+                def _cc(a, tgt):
+                    if a.ndim == 2:
+                        h,w = a.shape; ht,wt = tgt.shape
+                        y0 = max(0,(h-ht)//2); x0 = max(0,(w-wt)//2)
+                        return a[y0:y0+ht, x0:x0+wt]
+                    if a.ndim == 3:
+                        if tgt.shape[-1] in (1,3) and a.shape[-1] in (1,3):  # HWC
+                            h,w,c = a.shape; ht,wt,ct = tgt.shape
+                            y0 = max(0,(h-ht)//2); x0 = max(0,(w-wt)//2)
+                            a2 = a[y0:y0+ht, x0:x0+wt, :]
+                            if c != ct:
+                                if ct == 1: a2 = a2[..., :1]
+                                else:       a2 = np.repeat(a2[..., :1], ct, axis=-1)
+                            return a2
+                        if tgt.shape[0] in (1,3) and a.shape[0] in (1,3):   # CHW
+                            c,h,w = a.shape; ct,ht,wt = tgt.shape
+                            y0 = max(0,(h-ht)//2); x0 = max(0,(w-wt)//2)
+                            a2 = a[:, y0:y0+ht, x0:x0+wt]
+                            if c != ct:
+                                if ct == 1: a2 = a2[:1]
+                                else:       a2 = np.repeat(a2[:1], ct, axis=0)
+                            return a2
+                    return a
+                res = _cc(res, ref)
+
+            out[i_] = res.astype(out.dtype, copy=False)
 
     return out
+
 
 
 
@@ -6317,30 +6469,63 @@ class StackingSuiteDialog(QDialog):
 
 
     def add_flat_directory(self):
-        self.prompt_session_before_adding("FLAT", directory_mode=True)
+        auto = self.settings.value("stacking/auto_session", True, type=bool)
+        if auto:
+            # No prompt — auto session tagging happens inside add_directory()
+            self.add_directory(self.flat_tree, "Select Flat Directory", "FLAT")
+            self.assign_best_master_dark()
+            self.rebuild_flat_tree()
+        else:
+            # Manual path (will prompt once for a session name)
+            self.prompt_session_before_adding("FLAT", directory_mode=True)
 
 
     
     def add_light_files(self):
-        self.prompt_session_before_adding("LIGHT")
+        auto = self.settings.value("stacking/auto_session", True, type=bool)
+        if auto:
+            self.add_files(self.light_tree, "Select Light Files", "LIGHT")
+            self.assign_best_master_files()
+        else:
+            self.prompt_session_before_adding("LIGHT", directory_mode=False)
 
     
     def add_light_directory(self):
-        self.prompt_session_before_adding("LIGHT", directory_mode=True)
+        auto = self.settings.value("stacking/auto_session", True, type=bool)
+        if auto:
+            self.add_directory(self.light_tree, "Select Light Directory", "LIGHT")
+            self.assign_best_master_files()
+        else:
+            self.prompt_session_before_adding("LIGHT", directory_mode=True)
 
 
     def prompt_session_before_adding(self, frame_type, directory_mode=False):
-        # 🔥 Prompt user first
+        # Respect auto-detect; do nothing here if auto is ON
+        if self.settings.value("stacking/auto_session", True, type=bool):
+            # Defer to the non-prompt paths
+            if frame_type.upper() == "FLAT":
+                if directory_mode:
+                    self.add_directory(self.flat_tree, "Select Flat Directory", "FLAT")
+                    self.assign_best_master_dark()
+                    self.rebuild_flat_tree()
+                else:
+                    self.add_files(self.flat_tree, "Select Flat Files", "FLAT")
+                    self.assign_best_master_dark()
+                    self.rebuild_flat_tree()
+            else:
+                if directory_mode:
+                    self.add_directory(self.light_tree, "Select Light Directory", "LIGHT")
+                else:
+                    self.add_files(self.light_tree, "Select Light Files", "LIGHT")
+                self.assign_best_master_files()
+            return
+
+        # Manual session flow (auto OFF): ask once
         text, ok = QInputDialog.getText(self, "Set Session Tag", "Enter session name:", text="Default")
         if not (ok and text.strip()):
             return
+        self.current_session_tag = text.strip()
 
-        session_name = text.strip()
-
-        # 🔥 Set it globally before adding
-        self.current_session_tag = session_name
-
-        # 🔥 Then add files or directory
         if frame_type.upper() == "FLAT":
             if directory_mode:
                 self.add_directory(self.flat_tree, "Select Flat Directory", "FLAT")
@@ -6348,13 +6533,13 @@ class StackingSuiteDialog(QDialog):
                 self.add_files(self.flat_tree, "Select Flat Files", "FLAT")
             self.assign_best_master_dark()
             self.rebuild_flat_tree()
-
-        elif frame_type.upper() == "LIGHT":
+        else:
             if directory_mode:
                 self.add_directory(self.light_tree, "Select Light Directory", "LIGHT")
             else:
                 self.add_files(self.light_tree, "Select Light Files", "LIGHT")
             self.assign_best_master_files()
+
 
     def load_master_dark(self):
         """ Loads a Master Dark and updates the UI. """
@@ -6410,15 +6595,17 @@ class StackingSuiteDialog(QDialog):
             finally:
                 busy.close()
 
+    def on_auto_session_toggled(self, checked: bool):
+        self.settings.setValue("stacking/auto_session", bool(checked))
+        self.sessionNameEdit.setEnabled(not checked)      # text box
+        self.sessionNameButton.setEnabled(not checked)    # any “set session” button
 
 
     def add_directory(self, tree, title, expected_type):
-        """Adds all FITS files from a directory (optionally recursive) and auto-tags sessions."""
         last_dir = self.settings.value("last_opened_folder", "", type=str)
         directory = QFileDialog.getExistingDirectory(self, title, last_dir)
         if not directory:
             return
-
         self.settings.setValue("last_opened_folder", directory)
 
         recursive = self.settings.value("stacking/recurse_dirs", True, type=bool)
@@ -6426,24 +6613,35 @@ class StackingSuiteDialog(QDialog):
         if not paths:
             return
 
-        # Optional: auto session mapping BEFORE ingest for better speed (one header read per path)
         auto_session = self.settings.value("stacking/auto_session", True, type=bool)
+
+        # ✅ Only build auto session map if auto is ON
         session_by_path = self._auto_tag_sessions_for_paths(paths) if auto_session else {}
 
-        # Ingest
+        # ✅ Manual session name ONLY if auto is OFF
+        manual_session_name = None
+        if not auto_session:
+            from PyQt6.QtWidgets import QInputDialog
+            session_name, ok = QInputDialog.getText(self, "Session name",
+                                                    "Enter a session name (e.g. 2024-10-09):")
+            if ok and session_name.strip():
+                manual_session_name = session_name.strip()
+
+        # Ingest (tell it the manual_session_name – it may be None)
         self._ingest_paths_with_progress(
             paths=paths,
             tree=tree,
             expected_type=expected_type,
-            title=f"Adding {expected_type.title()} from Directory…"
+            title=f"Adding {expected_type.title()} from Directory…",
+            manual_session_name=manual_session_name,   # NEW
         )
 
-        # Apply session tags to internal dict & UI after the items exist in the tree
+        # ✅ Apply auto tags to the UI only when auto is ON
         if auto_session:
             target_dict = self.flat_files if expected_type.upper() == "FLAT" else self.light_files
             self._apply_session_tags_to_tree(tree=tree, target_dict=target_dict, session_by_path=session_by_path)
 
-        # Auto-assign masters as you already do
+        # As before…
         if expected_type.upper() == "LIGHT":
             busy = self._busy_progress("Assigning best Master Dark/Flat…")
             try:
@@ -6453,6 +6651,7 @@ class StackingSuiteDialog(QDialog):
         elif expected_type.upper() == "FLAT":
             self.assign_best_master_dark()
             self.rebuild_flat_tree()
+
 
 
     # --- Directory walking ---------------------------------------------------------
@@ -6487,7 +6686,7 @@ class StackingSuiteDialog(QDialog):
     def _auto_session_from_path(self, path: str, hdr=None) -> str:
         # 1) Prefer DATE-OBS → local night bucket
         if hdr:
-            sess = _session_from_dateobs_local_night(self, hdr)
+            sess = self._session_from_dateobs_local_night(hdr)
             if sess:
                 return sess
 
@@ -6516,10 +6715,15 @@ class StackingSuiteDialog(QDialog):
         Priority:
         1) QSettings key 'stacking/site_timezone' (e.g., 'America/Los_Angeles')
         2) FITS header TZ-like hints (TIMEZONE, TZ)
-        3) System local timezone (ZoneInfo needs a name; as a last resort, use local offset NOW)
+        3) System local timezone; finally, a best-effort local offset or UTC
         """
-        # 1) From app settings
+        # 1) App setting
         tz_name = self.settings.value("stacking/site_timezone", "", type=str) or ""
+        try:
+            from zoneinfo import ZoneInfo
+        except Exception:
+            ZoneInfo = None
+
         if tz_name and ZoneInfo:
             try:
                 return ZoneInfo(tz_name)
@@ -6529,33 +6733,29 @@ class StackingSuiteDialog(QDialog):
         # 2) From header
         if hdr:
             for key in ("TIMEZONE", "TZ"):
-                if key in hdr:
-                    tz_hdr = str(hdr[key]).strip()
-                    if ZoneInfo:
-                        try:
-                            return ZoneInfo(tz_hdr)
-                        except Exception:
-                            pass
+                if key in hdr and ZoneInfo:
+                    try:
+                        return ZoneInfo(str(hdr[key]).strip())
+                    except Exception:
+                        pass
 
         # 3) System local timezone
         if ZoneInfo:
-            # Best effort: try /etc/localtime link name via tzlocal-like heuristic
             try:
-                import tzlocal  # optional dependency; if you have it, great
+                import tzlocal
                 return ZoneInfo(str(tzlocal.get_localzone()))
             except Exception:
                 pass
 
-        # 3b) Fallback to a fixed offset (not ideal, but better than UTC)
-        # Use current local offset
+        # 3b) Fallback to the current local offset (aware tzinfo) or UTC
         try:
-            now = datetime.now().astimezone()
-            return now.tzinfo or timezone.utc
+            now = dt_datetime.now().astimezone()
+            return now.tzinfo or dt_timezone.utc
         except Exception:
-            return timezone.utc
+            return dt_timezone.utc
 
 
-    def _parse_date_obs(s: str):
+    def _parse_date_obs(self, s: str):
         """
         Parse DATE-OBS robustly → aware UTC datetime if possible.
         Accepts ISO8601 with or without 'Z', fractional seconds, or date-only.
@@ -6564,30 +6764,35 @@ class StackingSuiteDialog(QDialog):
             return None
         s = str(s).strip()
 
-        # Use dateutil if available
+        # Prefer dateutil if present
+        try:
+            from dateutil import parser as date_parser
+        except Exception:
+            date_parser = None
+
         if date_parser:
             try:
                 dt = date_parser.isoparse(s)
-                # If naive, treat as UTC (FITS DATE-OBS is typically UTC)
                 if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=timezone.utc)
-                return dt.astimezone(timezone.utc)
+                    dt = dt.replace(tzinfo=dt_timezone.utc)
+                return dt.astimezone(dt_timezone.utc)
             except Exception:
                 pass
 
-        # Minimal manual fallbacks
-        for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S",
+        # Manual fallbacks
+        for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ",
+                    "%Y-%m-%dT%H:%M:%SZ",
+                    "%Y-%m-%dT%H:%M:%S",
                     "%Y-%m-%d"):
             try:
-                dt = datetime.strptime(s, fmt)
+                dt = dt_datetime.strptime(s, fmt)
                 if fmt.endswith("Z") or "T" in fmt:
-                    # Treat naive as UTC when time present
                     if dt.tzinfo is None:
-                        dt = dt.replace(tzinfo=timezone.utc)
+                        dt = dt.replace(tzinfo=dt_timezone.utc)
                 else:
-                    # date-only; assume 12:00 UTC so we don't accidentally flip
-                    dt = dt.replace(tzinfo=timezone.utc, hour=12)
-                return dt.astimezone(timezone.utc)
+                    # date-only; assume midday UTC to avoid accidental date flips
+                    dt = dt.replace(tzinfo=dt_timezone.utc, hour=12)
+                return dt.astimezone(dt_timezone.utc)
             except Exception:
                 continue
         return None
@@ -6600,38 +6805,35 @@ class StackingSuiteDialog(QDialog):
         Rule: if local_time < cutoff_hour → use previous calendar date.
         Default cutoff = self.settings('stacking/night_cutoff_hour', 12)  # noon
         """
-        date_obs = hdr.get("DATE-OBS")
-        dt_utc = _parse_date_obs(date_obs) if date_obs else None
+        date_obs = hdr.get("DATE-OBS") if hdr else None
+        dt_utc = self._parse_date_obs(date_obs) if date_obs else None
         if dt_utc is None:
             return None
 
-        # cutoff config
         if cutoff_hour is None:
             cutoff_hour = int(self.settings.value("stacking/night_cutoff_hour", 12, type=int))
 
-        tz = _get_site_timezone(self, hdr)
+        tz = self._get_site_timezone(hdr)
         dt_local = dt_utc.astimezone(tz)
 
-        # Shift to "observing night" date
-        cutoff = time(hour=max(0, min(23, cutoff_hour)), minute=0)
+        # ✅ Use datetime.time alias, not the 'time' module
+        cutoff = dt_time(hour=max(0, min(23, int(cutoff_hour))), minute=0)
+
         local_date = dt_local.date()
         if dt_local.time() < cutoff:
-            # before cutoff → belongs to the previous night
-            local_date = (dt_local - timedelta(days=1)).date()
+            local_date = (dt_local - dt_timedelta(days=1)).date()
 
-        return local_date.isoformat()  # 'YYYY-MM-DD'
+        return local_date.isoformat()
+
 
     def _auto_tag_sessions_for_paths(self, paths: list[str]) -> dict[str, str]:
-        """
-        Build {path: session} using fast header sniff + folder names.
-        """
         session_map = {}
         for p in paths:
             try:
                 hdr, _ = get_valid_header(p)
             except Exception:
                 hdr = None
-            session_map[p] = self._auto_session_from_path(p, hdr)
+            session_map[p] = self._auto_session_from_path(p, hdr)           # ✅ self.
         return session_map
 
 
@@ -6693,8 +6895,92 @@ class StackingSuiteDialog(QDialog):
                     if leaf.childCount() == 0:
                         _update_leaf(leaf)
 
+    def _get_file_dt_cache(self):
+        # lazy init
+        cache = getattr(self, "_file_dt_cache", None)
+        if cache is None:
+            cache = {}
+            self._file_dt_cache = cache
+        return cache
 
-    def _ingest_paths_with_progress(self, paths, tree, expected_type, title):
+    def _file_local_night_date(self, path: str, hdr=None):
+        """
+        Return a date() representing the local 'night' for this file,
+        using DATE-OBS and the app/site timezone & cutoff logic you already have.
+        """
+        cache = self._get_file_dt_cache()
+        if path in cache:
+            return cache[path]
+
+        try:
+            if hdr is None:
+                with fits.open(path, memmap=True) as hdul:
+                    hdr = hdul[0].header
+        except Exception:
+            hdr = None
+
+        sess = self._session_from_dateobs_local_night(hdr) if hdr else None
+        # sess is 'YYYY-MM-DD' or None
+        import datetime as _dt
+        d = _dt.date.fromisoformat(sess) if sess else None
+        cache[path] = d
+        return d
+
+    def _closest_flat_for(self, *, filter_name: str, image_size: str, light_path: str):
+        """
+        Choose a flat master path by:
+        1) exact key 'Filter (WxH) [Session]' matching light's session (if present)
+        2) else among 'Filter (WxH) ...', pick by nearest local-night date to light.
+        Returns path or None.
+        """
+        # normalize filter token the same way you build master keys
+        ftoken = self._sanitize_name(filter_name)
+        # light's date
+        light_d = self._file_local_night_date(light_path)
+
+        # Collect candidate flats (same filter+size)
+        candidates = []
+        for key, path in self.master_files.items():
+            # flats often keyed like "Filter (WxH) [Session]" or "Filter (WxH)"
+            if (ftoken in key) and (f"({image_size})" in key):
+                candidates.append((key, path))
+
+        if not candidates:
+            return None
+
+        # 1) exact session match if we can infer the light's session name
+        light_hdr = None
+        try:
+            with fits.open(light_path, memmap=True) as hdul:
+                light_hdr = hdul[0].header
+        except Exception:
+            pass
+        light_session = self._session_from_dateobs_local_night(light_hdr) if light_hdr else None
+
+        if light_session:
+            exact_key = f"{ftoken} ({image_size}) [{light_session}]"
+            for key, path in candidates:
+                if key == exact_key:
+                    return path
+
+        # 2) otherwise pick by nearest date (local night)
+        if light_d is None:
+            # No DATE-OBS for light → fall back to first candidate
+            return candidates[0][1]
+
+        best = (None, 10**9)  # (path, |Δdays|)
+        for _key, fpath in candidates:
+            fd = self._file_local_night_date(fpath)
+            if fd is None:
+                continue
+            delta = abs((fd - light_d).days)
+            if delta < best[1]:
+                best = (fpath, delta)
+
+        return best[0] if best[0] else candidates[0][1]
+
+
+    def _ingest_paths_with_progress(self, paths, tree, expected_type, title, manual_session_name=None):
         """
         Show a small standalone progress dialog while ingesting headers,
         with cancel support. Keeps UI responsive via processEvents().
@@ -6718,7 +7004,7 @@ class StackingSuiteDialog(QDialog):
                 dlg.setLabelText(f"{base}  ({i}/{total})")
                 # Process events so the dialog repaints & remains responsive
                 QCoreApplication.processEvents()
-                self.process_fits_header(path, tree, expected_type)
+                self.process_fits_header(path, tree, expected_type, manual_session_name=manual_session_name)
                 added += 1
             except Exception as e:
                 # Optional: log or show a brief error — keep going
@@ -6761,34 +7047,39 @@ class StackingSuiteDialog(QDialog):
         """
         return re.sub(r"[^\w\s\-]", "_", name)
     
-    def process_fits_header(self, file_path, tree, expected_type):
+    def process_fits_header(self, path, tree, expected_type, manual_session_name=None):
         try:
-            # Read only the FITS header (fast)
-            header, _ = get_valid_header(file_path)
+            # --- Read header only (fast) ---
+            header, _ = get_valid_header(path)   # FIX: use 'path', not 'file_path'
 
+            # --- Basic image size ---
             try:
                 width = int(header.get("NAXIS1"))
                 height = int(header.get("NAXIS2"))
-            except Exception as e:
-                self.update_status(f"Warning: Could not convert dimensions to int for {file_path}: {e}")
-                width, height = None, None
-
-            if width is not None and height is not None:
                 image_size = f"{width}x{height}"
-            else:
+            except Exception as e:
+                self.update_status(f"Warning: Could not read dimensions for {os.path.basename(path)}: {e}")
+                width = height = None
                 image_size = "Unknown"
 
-            # Retrieve IMAGETYP (default to "UNKNOWN" if not present)
-            imagetyp = header.get("IMAGETYP", "UNKNOWN").lower()
+            # --- Image type & exposure ---
+            imagetyp = str(header.get("IMAGETYP", "UNKNOWN")).lower()
 
-            # Retrieve exposure from either EXPOSURE or EXPTIME
-            exposure_val = header.get("EXPOSURE")
-            if not exposure_val:
-                exposure_val = header.get("EXPTIME")
-            if not exposure_val:
-                exposure_val = "Unknown"  # fallback if neither keyword is present
+            exp_val = header.get("EXPOSURE")
+            if exp_val is None:
+                exp_val = header.get("EXPTIME")
+            if exp_val is None:
+                exposure_text = "Unknown"
+            else:
+                try:
+                    # canonical like "300s" or "0.5s"
+                    fexp = float(exp_val)
+                    # use :g for tidy formatting (no trailing .0 unless needed)
+                    exposure_text = f"{fexp:g}s"
+                except Exception:
+                    exposure_text = str(exp_val)
 
-            # Define forbidden keywords per expected type.
+            # --- Mismatch prompt (respects "Yes to all / No to all") ---
             if expected_type.upper() == "DARK":
                 forbidden = ["light", "flat"]
             elif expected_type.upper() == "FLAT":
@@ -6798,24 +7089,19 @@ class StackingSuiteDialog(QDialog):
             else:
                 forbidden = []
 
-            # Determine attribute name for auto-confirm decision (per expected type)
             decision_attr = f"auto_confirm_{expected_type.lower()}"
-            # If a decision has already been made, use it.
             if hasattr(self, decision_attr):
                 decision = getattr(self, decision_attr)
                 if decision is False:
-                    # Skip this file automatically.
                     return
-                # If decision is True, then add without prompting.
-            elif any(word in imagetyp for word in forbidden):
-                # Prompt the user with Yes, Yes to All, No, and No to All options.
+                # if True, continue without prompting
+            elif any(w in imagetyp for w in forbidden):
                 msgBox = QMessageBox(self)
                 msgBox.setWindowTitle("Mismatched Image Type")
                 msgBox.setText(
-                    f"The file:\n{os.path.basename(file_path)}\n"
-                    f"has IMAGETYP = {header.get('IMAGETYP')} "
-                    f"which does not match the expected type ({expected_type}).\n\n"
-                    f"Do you want to add it anyway?"
+                    f"The file:\n{os.path.basename(path)}\n"
+                    f"has IMAGETYP = {header.get('IMAGETYP')} which does not match "
+                    f"the expected type ({expected_type}).\n\nAdd anyway?"
                 )
                 yesButton = msgBox.addButton("Yes", QMessageBox.ButtonRole.YesRole)
                 yesToAllButton = msgBox.addButton("Yes to All", QMessageBox.ButtonRole.YesRole)
@@ -6831,93 +7117,98 @@ class StackingSuiteDialog(QDialog):
                 elif clicked == noButton:
                     return
 
-            # Now handle each expected type
-            if expected_type.upper() == "DARK":
-                key = f"{exposure_val} ({image_size})"
-                if key not in self.dark_files:
-                    self.dark_files[key] = []
-                self.dark_files[key].append(file_path)
-
-                items = tree.findItems(key, Qt.MatchFlag.MatchExactly, 0)
-                if not items:
-                    exposure_item = QTreeWidgetItem([key])
-                    tree.addTopLevelItem(exposure_item)
-                else:
-                    exposure_item = items[0]
-                metadata = f"Size: {image_size}"
-                exposure_item.addChild(QTreeWidgetItem([os.path.basename(file_path), metadata]))
-
-            elif expected_type.upper() == "FLAT":
-                filter_name = header.get("FILTER", "Unknown")
-                filter_name = self._sanitize_name(filter_name)
-                flat_key = f"{filter_name} - {exposure_val} ({image_size})"
+            # --- Resolve session tag (auto vs manual vs legacy current_session_tag) ---
+            auto_session = self.settings.value("stacking/auto_session", True, type=bool)
+            if manual_session_name:                           # only passed when auto is OFF and user typed one
+                session_tag = manual_session_name.strip()
+            elif auto_session:
+                session_tag = self._auto_session_from_path(path, header) or "Default"
+            else:
                 session_tag = getattr(self, "current_session_tag", "Default")
+
+            # --- Common helpers ---
+            filter_name_raw = header.get("FILTER", "Unknown")
+            filter_name     = self._sanitize_name(filter_name_raw)
+
+            # === DARKs ===
+            if expected_type.upper() == "DARK":
+                key = f"{exposure_text} ({image_size})"
+                self.dark_files.setdefault(key, []).append(path)
+
+                # Tree: top-level = key; child = file
+                items = tree.findItems(key, Qt.MatchFlag.MatchExactly, 0)
+                exposure_item = items[0] if items else QTreeWidgetItem([key])
+                if not items:
+                    tree.addTopLevelItem(exposure_item)
+
+                metadata = f"Size: {image_size} | Session: {session_tag}"
+                leaf = QTreeWidgetItem([os.path.basename(path), metadata])
+                leaf.setData(0, Qt.ItemDataRole.UserRole, path)  # store full path
+                exposure_item.addChild(leaf)
+
+            # === FLATs ===
+            elif expected_type.upper() == "FLAT":
+                # internal dict keying (group by filter+exp+size, partition by session)
+                flat_key = f"{filter_name} - {exposure_text} ({image_size})"
                 composite_key = (flat_key, session_tag)
+                self.flat_files.setdefault(composite_key, []).append(path)
+                self.session_tags[path] = session_tag
 
-                if composite_key not in self.flat_files:
-                    self.flat_files[composite_key] = []
-                self.flat_files[composite_key].append(file_path)
-
-                # ✅ Also store session tag internally
-                self.session_tags[file_path] = session_tag
-
-                # Tree UI update
+                # Tree: top-level = filter; second = "exp (WxH)"; leaf = file
                 filter_items = tree.findItems(filter_name, Qt.MatchFlag.MatchExactly, 0)
+                filter_item = filter_items[0] if filter_items else QTreeWidgetItem([filter_name])
                 if not filter_items:
-                    filter_item = QTreeWidgetItem([filter_name])
                     tree.addTopLevelItem(filter_item)
-                else:
-                    filter_item = filter_items[0]
 
-                exposure_items = [filter_item.child(i) for i in range(filter_item.childCount())]
-                exposure_item = next((item for item in exposure_items
-                                    if item.text(0) == f"{exposure_val} ({image_size})"), None)
-                if not exposure_item:
-                    exposure_item = QTreeWidgetItem([f"{exposure_val} ({image_size})"])
+                want_label = f"{exposure_text} ({image_size})"
+                exposure_item = None
+                for i in range(filter_item.childCount()):
+                    if filter_item.child(i).text(0) == want_label:
+                        exposure_item = filter_item.child(i); break
+                if exposure_item is None:
+                    exposure_item = QTreeWidgetItem([want_label])
                     filter_item.addChild(exposure_item)
 
                 metadata = f"Size: {image_size} | Session: {session_tag}"
-                exposure_item.addChild(QTreeWidgetItem([os.path.basename(file_path), metadata]))
+                leaf = QTreeWidgetItem([os.path.basename(path), metadata])
+                leaf.setData(0, Qt.ItemDataRole.UserRole, path)  # store full path
+                exposure_item.addChild(leaf)
 
-
+            # === LIGHTs ===
             elif expected_type.upper() == "LIGHT":
-                filter_name = header.get("FILTER", "Unknown")
-                filter_name = self._sanitize_name(filter_name)
-                session_tag = getattr(self, "current_session_tag", "Default")  # ⭐️ Step 1: Get session label
-
-                light_key = f"{filter_name} - {exposure_val} ({image_size})"
+                light_key = f"{filter_name} - {exposure_text} ({image_size})"
                 composite_key = (light_key, session_tag)
+                self.light_files.setdefault(composite_key, []).append(path)
+                self.session_tags[path] = session_tag
 
-                if composite_key not in self.light_files:
-                    self.light_files[composite_key] = []
-                self.light_files[composite_key].append(file_path)
-
-                # Update Tree UI
+                # Tree: top-level = filter; second = "exp (WxH)"; leaf = file
                 filter_items = tree.findItems(filter_name, Qt.MatchFlag.MatchExactly, 0)
+                filter_item = filter_items[0] if filter_items else QTreeWidgetItem([filter_name])
                 if not filter_items:
-                    filter_item = QTreeWidgetItem([filter_name])
                     tree.addTopLevelItem(filter_item)
-                else:
-                    filter_item = filter_items[0]
 
-                exposure_items = [filter_item.child(i) for i in range(filter_item.childCount())]
-                exposure_item = next((item for item in exposure_items
-                                    if item.text(0) == f"{exposure_val} ({image_size})"), None)
-                if not exposure_item:
-                    exposure_item = QTreeWidgetItem([f"{exposure_val} ({image_size})"])
+                want_label = f"{exposure_text} ({image_size})"
+                exposure_item = None
+                for i in range(filter_item.childCount()):
+                    if filter_item.child(i).text(0) == want_label:
+                        exposure_item = filter_item.child(i); break
+                if exposure_item is None:
+                    exposure_item = QTreeWidgetItem([want_label])
                     filter_item.addChild(exposure_item)
 
-                leaf_item = QTreeWidgetItem([os.path.basename(file_path), f"Size: {image_size} | Session: {session_tag}"])
-                exposure_item.addChild(leaf_item)
-                self.session_tags[file_path] = session_tag  # ✅ Store per-file session tag here
+                metadata = f"Size: {image_size} | Session: {session_tag}"
+                leaf = QTreeWidgetItem([os.path.basename(path), metadata])
+                leaf.setData(0, Qt.ItemDataRole.UserRole, path)  # ✅ needed for date-aware flat fallback
+                exposure_item.addChild(leaf)
 
-
-            self.update_status(f"✅ Added {os.path.basename(file_path)} as {expected_type}")
+            # --- Done ---
+            self.update_status(f"✅ Added {os.path.basename(path)} as {expected_type}")
             QApplication.processEvents()
 
         except Exception as e:
-            self.update_status(f"❌ ERROR: Could not read FITS header for {file_path} - {e}")
+            self.update_status(f"❌ ERROR: Could not read FITS header for {os.path.basename(path)} - {e}")
             QApplication.processEvents()
+
 
 
     def add_master_files(self, tree, file_type, files):
@@ -7703,7 +7994,6 @@ class StackingSuiteDialog(QDialog):
                             dark_choice = os.path.basename(best_dark_match) if best_dark_match else ("None" if not curr_dark else curr_dark)
 
                     # ---------- FLAT RESOLUTION ----------
-                    # 1) Manual overrides: prefer "Filter - exposure" then bare exposure
                     flat_key_full  = f"{filter_name_raw} - {exposure_text}"
                     flat_key_short = exposure_text
                     flat_override  = flat_over.get(flat_key_full) or flat_over.get(flat_key_short)
@@ -7711,31 +8001,27 @@ class StackingSuiteDialog(QDialog):
                     if flat_override:
                         flat_choice = os.path.basename(flat_override)
                     else:
-                        # 2) If fill_only and cell already nonempty & not "None", keep it
                         if fill_only and curr_flat and curr_flat.lower() != "none":
                             flat_choice = curr_flat
                         else:
-                            # 3) Prefer session-matched flat with same filter & size; else fallback
-                            best_flat_match = None
-                            # Fast path: exact key commonly stored by your loader
+                            # Get the full path of the light leaf (we stored it during ingest)
+                            light_path = leaf_item.data(0, Qt.ItemDataRole.UserRole)
+                            # Prefer exact session match; otherwise nearest-night fallback
+                            best_flat_path = None
+
+                            # Fast exact-key path
                             exact_key = f"{filter_name} ({image_size}) [{session_name}]"
                             if exact_key in self.master_files:
-                                best_flat_match = self.master_files[exact_key]
+                                best_flat_path = self.master_files[exact_key]
                             else:
-                                # Search any matching filter & size, prioritize ones that mention session
-                                for flat_key, flat_path in self.master_files.items():
-                                    if (filter_name in flat_key) and (f"({image_size})" in flat_key):
-                                        if session_name in flat_key:
-                                            best_flat_match = flat_path
-                                            break
-                                        if best_flat_match is None:
-                                            best_flat_match = flat_path
-                                # Fallback to simple key if you keep one like "Filter (WxH)"
-                                if not best_flat_match:
-                                    fallback_key = f"{filter_name} ({image_size})"
-                                    best_flat_match = self.master_files.get(fallback_key)
+                                # Date-aware fallback across same filter+size
+                                best_flat_path = self._closest_flat_for(
+                                    filter_name=filter_name,
+                                    image_size=image_size,
+                                    light_path=light_path
+                                )
 
-                            flat_choice = os.path.basename(best_flat_match) if best_flat_match else ("None" if not curr_flat else curr_flat)
+                            flat_choice = os.path.basename(best_flat_path) if best_flat_path else ("None" if not curr_flat else curr_flat)
 
                     # ---------- WRITE CELLS ----------
                     leaf_item.setText(2, dark_choice)
