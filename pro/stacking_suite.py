@@ -2624,53 +2624,70 @@ class StackingSuiteDialog(QDialog):
 
     def __init__(self, parent=None, wrench_path=None, spinner_path=None, **_ignored):
         super().__init__(parent)
-        self.settings = QSettings()         
+        self.settings = QSettings()
         self._wrench_path = wrench_path
         self._spinner_path = spinner_path
         self._post_progress_label = None
-        # ...
+
         self.wrench_button = QPushButton()
         self.wrench_button.setIcon(QIcon(self._wrench_path))
         self.setWindowTitle("Stacking Suite")
         self.setGeometry(300, 200, 800, 600)
+
         self.per_group_drizzle = {}
-        self.manual_dark_overrides = {}  
+        self.manual_dark_overrides = {}
         self.manual_flat_overrides = {}
         self.conversion_output_directory = None
         self.reg_files = {}
-        self.session_tags = {}  # 🔑 file_path => session_tag (e.g., "Session1", "Blue Flats", etc.)
+        self.session_tags = {}           # file_path => session_tag
         self.deleted_calibrated_files = []
         self._norm_map = {}
-        self._gui_thread = QThread.currentThread()        # remember GUI thread
-        self.status_signal.connect(self._update_status_gui)  # queued to GUI
-        self._cfa_for_this_run = None  # None = follow checkbox; True/False = override for this run
- 
-        self.reference_frame = None     # make it explicit from the start
-        self._comet_seed = None         # {'path': <original file>, 'xy': (x,y)}
-        self._orig2norm = {}            # map original path -> normalized *_n.fit
-        self._comet_ref_xy = None       # comet coordinate in reference frame (filled post-align)
-        
-        self.manual_light_files = []
-        self._reg_excluded_files = set() 
 
-        # --- singleton status console (no parent, recreate if gone) ---
+        # Remember GUI thread for fast-path updates
+        self._gui_thread = QThread.currentThread()
+
+        # Status bus (singleton across app)
         app = QApplication.instance()
         if not hasattr(app, "_sasd_log_bus"):
             app._sasd_log_bus = LogBus()
         self._log_bus = app._sasd_log_bus
+
+        # Connect status signal ONCE, queued to GUI thread
+        try:
+            self.status_signal.disconnect()
+        except Exception:
+            pass
+        self.status_signal.connect(self._update_status_gui, Qt.ConnectionType.QueuedConnection)
         self.status_signal.connect(self._log_bus.posted.emit, Qt.ConnectionType.QueuedConnection)
 
-        # show the dock (if the main window created it)
+        self._cfa_for_this_run = None  # None = follow checkbox; True/False = override for this run
+
+        # Debounced progress (alignment)
+        self._align_prog_timer = QTimer(self)
+        self._align_prog_timer.setSingleShot(True)
+        self._align_prog_timer.timeout.connect(self._flush_align_progress)
+        self._align_prog_pending = None      # tuple[int, int] (done, total)
+        self._align_prog_in_slot = False
+        self._align_prog_last = None
+
+        self.reference_frame = None
+        self._comet_seed = None             # {'path': <original file>, 'xy': (x,y)}
+        self._orig2norm = {}                # original path -> normalized *_n.fit
+        self._comet_ref_xy = None           # comet coordinate in reference frame
+
+        self.manual_light_files = []
+        self._reg_excluded_files = set()
+
+        # Show docking log window (if main window created it)
         self._ensure_log_visible_once()
 
+        # Settings
         self.auto_rot180 = self.settings.value("stacking/auto_rot180", True, type=bool)
-        self.auto_rot180_tol_deg = self.settings.value("stacking/auto_rot180_tol_deg", 89.0, type=float)             
-
-        # QSettings for your app
+        self.auto_rot180_tol_deg = self.settings.value("stacking/auto_rot180_tol_deg", 89.0, type=float)
 
         dtype_str = self.settings.value("stacking/internal_dtype", "float64", type=str)
-        self.internal_dtype = np.float64 if dtype_str == "float64" else np.float32  
-        self.star_trail_mode = self.settings.value("stacking/star_trail_mode", False, type=bool)        
+        self.internal_dtype = np.float64 if dtype_str == "float64" else np.float32
+        self.star_trail_mode = self.settings.value("stacking/star_trail_mode", False, type=bool)
 
         self.align_refinement_passes = self.settings.value("stacking/refinement_passes", 3, type=int)
         self.align_shift_tolerance = self.settings.value("stacking/shift_tolerance_px", 0.2, type=float)
@@ -2680,9 +2697,7 @@ class StackingSuiteDialog(QDialog):
         self.sigma_high = self.settings.value("stacking/sigma_high", 3.0, type=float)
         self.sigma_low = self.settings.value("stacking/sigma_low", 3.0, type=float)
         self.rejection_algorithm = self.settings.value(
-            "stacking/rejection_algorithm",
-            "Weighted Windsorized Sigma Clipping",
-            type=str
+            "stacking/rejection_algorithm", "Weighted Windsorized Sigma Clipping", type=str
         )
         self.kappa = self.settings.value("stacking/kappa", 2.5, type=float)
         self.iterations = self.settings.value("stacking/iterations", 3, type=int)
@@ -2691,7 +2706,7 @@ class StackingSuiteDialog(QDialog):
         self.trim_fraction = self.settings.value("stacking/trim_fraction", 0.1, type=float)
         self.modz_threshold = self.settings.value("stacking/modz_threshold", 3.5, type=float)
         self.chunk_height = self.settings.value("stacking/chunk_height", 2048, type=int)
-        self.chunk_width = self.settings.value("stacking/chunk_width", 2048, type=int)        
+        self.chunk_width = self.settings.value("stacking/chunk_width", 2048, type=int)
 
         # Dictionaries to store file paths
         self.conversion_files = {}
@@ -2701,28 +2716,30 @@ class StackingSuiteDialog(QDialog):
         self.master_files = {}
         self.master_sizes = {}
 
+        # Layout & tabs
         layout = QVBoxLayout(self)
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs)
-        self.dir_path_edit = QLineEdit(self.stacking_directory)  # Add this here
-        # Create the new Conversion tab.
+
+        self.dir_path_edit = QLineEdit(self.stacking_directory)
+
+        # Create tabs
         self.conversion_tab = self.create_conversion_tab()
-        # Existing tabs...
         self.dark_tab = self.create_dark_tab()
         self.flat_tab = self.create_flat_tab()
         self.light_tab = self.create_light_tab()
         add_runtime_to_sys_path(status_cb=lambda *_: None)
         self.image_integration_tab = self.create_image_registration_tab()
 
-        # Add the tabs in desired order. (Conversion first)
+        # Add tabs
         self.tabs.addTab(self.conversion_tab, "Convert Non-FITS Formats")
         self.tabs.addTab(self.dark_tab, "Darks")
         self.tabs.addTab(self.flat_tab, "Flats")
         self.tabs.addTab(self.light_tab, "Lights")
         self.tabs.addTab(self.image_integration_tab, "Image Integration")
-        self.tabs.setCurrentIndex(1)  # Default to Darks tab
+        self.tabs.setCurrentIndex(1)
 
-        # Wrench button, status bar, etc.
+        # Header row
         self.wrench_button = QPushButton()
         self.wrench_button.setIcon(QIcon(self._wrench_path))
         self.wrench_button.setToolTip("Set Stacking Directory & Sigma Clipping")
@@ -2740,22 +2757,25 @@ class StackingSuiteDialog(QDialog):
                 background-color: #FF6347;
             }
         """)
+
         header_row = QHBoxLayout()
         header_row.addWidget(self.wrench_button)
 
         self.stacking_path_display = QLineEdit(self.stacking_directory or "")
         self.stacking_path_display.setReadOnly(True)
         self.stacking_path_display.setPlaceholderText("No stacking folder selected")
-        self.stacking_path_display.setFrame(False)  # nicer, label-like look
+        self.stacking_path_display.setFrame(False)
         self.stacking_path_display.setToolTip(self.stacking_directory or "No stacking folder selected")
-        header_row.addWidget(self.stacking_path_display, 1)  # stretch
+        header_row.addWidget(self.stacking_path_display, 1)
 
         layout.addLayout(header_row)
+
         self.log_btn = QToolButton(self)
         self.log_btn.setText("Open Log")
         self.log_btn.setToolTip("Show the Stacking Suite log window")
         self.log_btn.clicked.connect(self._show_log_window)
         header_row.addWidget(self.log_btn)
+
         self.tabs.currentChanged.connect(self.on_tab_changed)
         self.restore_saved_master_calibrations()
         self._update_stacking_path_display()
@@ -2763,7 +2783,7 @@ class StackingSuiteDialog(QDialog):
         if self.settings.value("stacking/mfdeconv/after_mf_run_integration", None) is None:
             self.settings.setValue("stacking/mfdeconv/after_mf_run_integration", False)
 
-        # Drizzle: enable/disable its params when toggled
+        # Drizzle UI wiring
         self.drizzle_checkbox.toggled.connect(
             lambda v: (
                 self.drizzle_scale_combo.setEnabled(v),
@@ -2771,7 +2791,6 @@ class StackingSuiteDialog(QDialog):
                 self.settings.setValue("stacking/drizzle_enabled", bool(v))
             )
         )
-        # Initialize enabled state
         drizzle_on = self.settings.value("stacking/drizzle_enabled", False, type=bool)
         self.drizzle_scale_combo.setEnabled(drizzle_on)
         self.drizzle_drop_shrink_spin.setEnabled(drizzle_on)
@@ -2779,15 +2798,14 @@ class StackingSuiteDialog(QDialog):
         # Comet wiring
         self.comet_cb.toggled.connect(self._on_comet_toggled_public)
         self._on_comet_toggled_public(self.comet_cb.isChecked())
-
         self.comet_blend_cb.toggled.connect(lambda v: self.settings.setValue("stacking/comet/blend", bool(v)))
         self.comet_mix.valueChanged.connect(lambda v: self.settings.setValue("stacking/comet/mix", float(v)))
 
-        # MF wiring
+        # Multi-frame wiring
         self.mf_enabled_cb.toggled.connect(self._on_mf_toggled_public)
         self._on_mf_toggled_public(self.mf_enabled_cb.isChecked())
 
-        # Mutual exclusivity trigger (fires only when turning ON)
+        # Mutually exclusive modes
         self.drizzle_checkbox.toggled.connect(lambda v: v and self._apply_mode_enforcement(self.drizzle_checkbox))
         self.comet_cb.toggled.connect(        lambda v: v and self._apply_mode_enforcement(self.comet_cb))
         self.mf_enabled_cb.toggled.connect(   lambda v: v and self._apply_mode_enforcement(self.mf_enabled_cb))
@@ -2799,6 +2817,58 @@ class StackingSuiteDialog(QDialog):
                 break
 
         self.use_gpu_integration = self.settings.value("stacking/use_hardware_accel", True, type=bool)
+
+
+    def _on_align_progress(self, done: int, total: int):
+        """
+        Queued, debounced progress sink. DO NOT emit any signals from here.
+        Only update local state and schedule a single UI update via QTimer.
+        """
+        # Optional: drop exact duplicates to reduce churn
+        tup = (int(done), int(total))
+        if tup == self._align_prog_last:
+            return
+        self._align_prog_last = tup
+
+        self._align_prog_pending = tup
+
+        # If you created a QProgressDialog earlier, make sure its range matches total
+        if getattr(self, "align_progress", None) and total > 0:
+            if self.align_progress.maximum() != total:
+                self.align_progress.setRange(0, total)
+                self.align_progress.setAutoClose(True)
+                self.align_progress.setAutoReset(True)
+
+        # Coalesce bursts to a single UI update on the event loop
+        if not self._align_prog_timer.isActive():
+            self._align_prog_timer.start(0)
+
+    def _flush_align_progress(self):
+        """
+        Coalesced progress update for the align QProgressDialog.
+        Called by self._align_prog_timer (singleShot).
+        """
+        if self._align_prog_in_slot or self._align_prog_pending is None:
+            return
+        self._align_prog_in_slot = True
+        try:
+            dlg = getattr(self, "align_progress", None)
+            if dlg is not None:
+                done, total = self._align_prog_pending
+                if total > 0:
+                    done = max(0, min(int(done), int(total)))
+                    dlg.setRange(0, int(total))
+                    dlg.setValue(int(done))
+                    dlg.setLabelText(f"Aligning stars… ({int(done)}/{int(total)})")
+                else:
+                    # unknown total: keep it as a pulsing dialog
+                    dlg.setRange(0, 0)
+                    dlg.setLabelText("Aligning stars…")
+        finally:
+            self._align_prog_in_slot = False
+            self._align_prog_pending = None
+
+
 
     def _hw_accel_enabled(self) -> bool:
         try:
@@ -3235,19 +3305,36 @@ class StackingSuiteDialog(QDialog):
 
     @pyqtSlot(str)
     def _update_status_gui(self, message: str):
-        # tiny ‘now’ indicator in the dialog header
-        if hasattr(self, "_last_status_label"):
+        # Update in-dialog status label if you have one
+        if hasattr(self, "_last_status_label") and self._last_status_label:
             self._last_status_label.setText(message)
-            self._set_last_status(message)
+
+        # Optional: your own helper for status breadcrumb/history
+        if hasattr(self, "_set_last_status"):
+            try:
+                self._set_last_status(message)
+            except Exception:
+                pass
 
 
     def update_status(self, message: str):
+        """
+        Thread-safe status update:
+        • If already on GUI thread -> update immediately + push to log bus directly
+        • If from worker thread    -> emit once; slots are queued to GUI + log
+        """
         if QThread.currentThread() is self._gui_thread:
+            # Immediate UI update
             self._update_status_gui(message)
-            # ALSO emit so the log window gets the line if we’re on the GUI thread
-            self.status_signal.emit(message)
+            # Send to log window directly (don’t signal back into ourselves)
+            try:
+                self._log_bus.posted.emit(message)
+            except Exception:
+                pass
         else:
+            # One queued signal fan-out to GUI + log
             self.status_signal.emit(message)
+
 
     @pyqtSlot(str)
     def _on_post_status(self, msg: str):
@@ -3342,31 +3429,60 @@ class StackingSuiteDialog(QDialog):
 
         left_col.addWidget(gb_general)
 
-        # --- Performance ---
-        gb_perf = QGroupBox("Performance")
-        fl_perf = QFormLayout(gb_perf)
+        # --- Distortion / Transform model ---
+        # --- Distortion / Transform model ---
+        disto_box = QGroupBox("Distortion / Transform")
+        disto_form = QFormLayout(disto_box)
 
-        self.hw_accel_cb = QCheckBox("Use hardware acceleration if available")
-        self.hw_accel_cb.setToolTip("Enable GPU/MPS via PyTorch when supported; falls back to CPU automatically.")
-        self.hw_accel_cb.setChecked(self.settings.value("stacking/use_hardware_accel", True, type=bool))
-        fl_perf.addRow(self.hw_accel_cb)
+        self.align_model_combo = QComboBox()
+        self.align_model_combo.addItems(["Affine (fast)", "Homography (projective)", "Thin Plate Spline (nonlinear)"])
+        _saved_model = (self.settings.value("stacking/align/model", "affine") or "affine").lower()
+        self.align_model_combo.setCurrentIndex(0 if _saved_model=="affine" else (1 if _saved_model=="homography" else 2))
+        disto_form.addRow("Model:", self.align_model_combo)
 
-        self.high_octane_cb = QCheckBox("High Octane Mode (Let 'er Rip MFDeconv)")
-        self.high_octane_cb.setToolTip(
-            "Use mfdeconvsport.py (MultiFrameDeconvWorkerSport): minimal memory management, "
-            "maximum throughput. Requires ample RAM/VRAM."
-        )
-        self.high_octane_cb.setChecked(self.settings.value("stacking/high_octane", False, type=bool))
-        fl_perf.addRow(self.high_octane_cb)
+        # Shared
+        self.align_max_cp = QSpinBox()
+        self.align_max_cp.setRange(20, 2000)
+        self.align_max_cp.setValue(self.settings.value("stacking/align/max_cp", 250, type=int))
+        disto_form.addRow("Max control points:", self.align_max_cp)
 
-        # (Optional) show detected backend for user feedback
-        try:
-            backend_str = current_backend() or "CPU only"
-        except Exception:
-            backend_str = "CPU only"
-        fl_perf.addRow("Detected backend:", QLabel(backend_str))
+        self.align_downsample = QSpinBox()
+        self.align_downsample.setRange(1, 8)
+        self.align_downsample.setValue(self.settings.value("stacking/align/downsample", 2, type=int))
+        disto_form.addRow("Solve downsample:", self.align_downsample)
 
-        left_col.addWidget(gb_perf)
+        # Homography-specific
+        self.h_ransac_reproj = QDoubleSpinBox()
+        self.h_ransac_reproj.setRange(0.1, 10.0)
+        self.h_ransac_reproj.setDecimals(2)
+        self.h_ransac_reproj.setSingleStep(0.1)
+        self.h_ransac_reproj.setValue(self.settings.value("stacking/align/h_reproj", 3.0, type=float))
+        self._h_label = QLabel("Homog. RANSAC reproj (px):")
+        disto_form.addRow(self._h_label, self.h_ransac_reproj)
+
+        # TPS-specific
+        self.tps_lambda = QDoubleSpinBox()
+        self.tps_lambda.setRange(0.0, 5.0)
+        self.tps_lambda.setDecimals(3)
+        self.tps_lambda.setSingleStep(0.01)
+        self.tps_lambda.setValue(self.settings.value("stacking/align/tps_lambda", 0.10, type=float))
+        self._tps_label = QLabel("TPS λ (bending):")
+        disto_form.addRow(self._tps_label, self.tps_lambda)
+
+        def _toggle_disto_rows():
+            m = self.align_model_combo.currentIndex()
+            is_h = (m == 1)
+            is_t = (m == 2)
+            # Toggle only the specific label+editor pairs
+            self._h_label.setEnabled(is_h)
+            self.h_ransac_reproj.setEnabled(is_h)
+            self._tps_label.setEnabled(is_t)
+            self.tps_lambda.setEnabled(is_t)
+
+        _toggle_disto_rows()
+        self.align_model_combo.currentIndexChanged.connect(lambda _: _toggle_disto_rows())
+
+        left_col.addWidget(disto_box)
 
         # --- Alignment ---
         gb_align = QGroupBox("Alignment")
@@ -3403,7 +3519,36 @@ class StackingSuiteDialog(QDialog):
         fl_align.addRow("Sigma Clipping:", w_hs)
 
         left_col.addWidget(gb_align)
+        
+
+        # --- Performance ---
+        gb_perf = QGroupBox("Performance")
+        fl_perf = QFormLayout(gb_perf)
+
+        self.hw_accel_cb = QCheckBox("Use hardware acceleration if available")
+        self.hw_accel_cb.setToolTip("Enable GPU/MPS via PyTorch when supported; falls back to CPU automatically.")
+        self.hw_accel_cb.setChecked(self.settings.value("stacking/use_hardware_accel", True, type=bool))
+        fl_perf.addRow(self.hw_accel_cb)
+
+        self.high_octane_cb = QCheckBox("High Octane Mode (Let 'er Rip MFDeconv)")
+        self.high_octane_cb.setToolTip(
+            "Use mfdeconvsport.py (MultiFrameDeconvWorkerSport): minimal memory management, "
+            "maximum throughput. Requires ample RAM/VRAM."
+        )
+        self.high_octane_cb.setChecked(self.settings.value("stacking/high_octane", False, type=bool))
+        fl_perf.addRow(self.high_octane_cb)
+
+        # (Optional) show detected backend for user feedback
+        try:
+            backend_str = current_backend() or "CPU only"
+        except Exception:
+            backend_str = "CPU only"
+        fl_perf.addRow("Detected backend:", QLabel(backend_str))
+
+        left_col.addWidget(gb_perf)
         left_col.addStretch(1)
+
+
 
         # ========== RIGHT COLUMN ==========
         # --- Normalization & Gradient (ABE poly2) ---
@@ -3756,7 +3901,7 @@ class StackingSuiteDialog(QDialog):
         _update_algo_params()
 
         right_col.addWidget(gb_rej)
-        right_col.addStretch(1)
+
 
         # --- Cosmetic Correction (Advanced) ---
         gb_cosm = QGroupBox("Cosmetic Correction (Advanced)")
@@ -3857,6 +4002,7 @@ class StackingSuiteDialog(QDialog):
 
         fl_comet.addRow(row_hclip)
         right_col.addWidget(gb_comet)
+        right_col.addStretch(1)
 
         # --- Buttons ---
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
@@ -3922,6 +4068,14 @@ class StackingSuiteDialog(QDialog):
         self.settings.setValue("stacking/chunk_width", self.chunk_width)
         self.settings.setValue("stacking/autocrop_enabled", self.autocrop_cb.isChecked())
         self.settings.setValue("stacking/autocrop_pct", float(self.autocrop_pct.value()))
+
+        model_idx = self.align_model_combo.currentIndex()
+        model_name = "affine" if model_idx == 0 else ("homography" if model_idx == 1 else "tps")
+        self.settings.setValue("stacking/align/model", model_name)
+        self.settings.setValue("stacking/align/max_cp", int(self.align_max_cp.value()))
+        self.settings.setValue("stacking/align/downsample", int(self.align_downsample.value()))
+        self.settings.setValue("stacking/align/h_reproj", float(self.h_ransac_reproj.value()))
+        self.settings.setValue("stacking/align/tps_lambda", float(self.tps_lambda.value()))
 
         # Star mask params
         self.settings.setValue("stacking/mfdeconv/star_mask/thresh_sigma",  float(self.sm_thresh.value()))
@@ -9752,7 +9906,15 @@ class StackingSuiteDialog(QDialog):
                 shift_tolerance=shift_tol,
                 parent_window=self
             )
-            self.alignment_thread.progress_update.connect(self.update_status)
+            # progress messages → queued
+            try:
+                self.alignment_thread.progress_update.disconnect(self.update_status)
+            except TypeError:
+                pass
+            self.alignment_thread.progress_update.connect(
+                self.update_status, Qt.ConnectionType.QueuedConnection
+            )
+
             self.alignment_thread.registration_complete.connect(self.on_registration_complete)
 
             self.align_progress = QProgressDialog("Aligning stars…", None, 0, 0, self)
@@ -9763,27 +9925,82 @@ class StackingSuiteDialog(QDialog):
             self.align_progress.setValue(0)
             self.align_progress.show()
 
-            self.alignment_thread.progress_step.connect(self._on_align_progress)
-            self.alignment_thread.registration_complete.connect(self._on_align_done)
+            # progress counts → queued & debounced
+            try:
+                self.alignment_thread.progress_step.disconnect(self._on_align_progress)
+            except TypeError:
+                pass
+            self.alignment_thread.progress_step.connect(
+                self._on_align_progress, Qt.ConnectionType.QueuedConnection
+            )
+            try:
+                self.alignment_thread.registration_complete.disconnect(self._on_align_done)
+            except TypeError:
+                pass
+            self.alignment_thread.registration_complete.connect(
+                self._on_align_done, Qt.ConnectionType.QueuedConnection
+            )
             self.alignment_thread.start()
         except Exception as e:
             # on unexpected error, re-enable the UI
             self._set_registration_busy(False)
             raise
         
-    @pyqtSlot(int, int)
-    def _on_align_progress(self, done, total):
-        self.align_progress.setLabelText(f"Aligning stars… ({done}/{total})")
-        self.align_progress.setMaximum(total)
-        self.align_progress.setValue(done)
-        QApplication.processEvents()
 
     @pyqtSlot(bool, str)
-    def _on_align_done(self, success, message):
-        if hasattr(self, "align_progress"):
-            self.align_progress.close()
-            del self.align_progress
-        self.update_status(message)
+    def _on_align_done(self, success: bool, message: str):
+        # Stop any coalesced progress updates
+        try:
+            if hasattr(self, "_align_prog_timer") and self._align_prog_timer.isActive():
+                self._align_prog_timer.stop()
+            # Clear pending state (if you added the debounce members)
+            if hasattr(self, "_align_prog_in_slot"):
+                self._align_prog_in_slot = False
+            if hasattr(self, "_align_prog_pending"):
+                self._align_prog_pending = None
+        except Exception:
+            pass
+
+        # Close/reset the progress dialog without triggering more signals
+        dlg = getattr(self, "align_progress", None)
+        if dlg is not None:
+            try:
+                # If total is known this forces the bar to 100% (purely cosmetic)
+                if dlg.maximum() > 0:
+                    dlg.setValue(dlg.maximum())
+            except Exception:
+                pass
+            try:
+                # If AutoClose/AutoReset is set, this both resets and closes
+                dlg.reset()
+            except Exception:
+                try:
+                    dlg.close()
+                except Exception:
+                    pass
+            # Remove the attribute to avoid stale references
+            try:
+                del self.align_progress
+            except Exception:
+                try:
+                    self.align_progress = None
+                except Exception:
+                    pass
+
+        # Re-enable UI / busy state
+        try:
+            self._set_registration_busy(False)
+        except Exception:
+            pass
+
+        # Update any local label directly (avoid update_status to prevent feedback)
+        try:
+            if hasattr(self, "progress_label"):
+                color = "green" if success else "red"
+                self.progress_label.setText(f"Status: {message}")
+                self.progress_label.setStyleSheet(f"color: {color}; font-weight: bold;")
+        except Exception:
+            pass
 
     def save_alignment_matrices_sasd(self, transforms_dict):
         out_path = os.path.join(self.stacking_directory, "alignment_transforms.sasd")

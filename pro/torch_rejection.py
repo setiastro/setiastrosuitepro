@@ -233,31 +233,30 @@ def torch_reduce_tile(
             low = float(sigma_low)
             high = float(sigma_high)
             valid = torch.isfinite(ts)
+
             keep = valid.clone()
             for _ in range(int(iterations)):
                 x = ts.masked_fill(~keep, float("nan"))
-                med = _nanmedian(torch, x, dim=0)
-                std = _nanstd(torch, x, dim=0)
+                med = _nanmedian(torch, x, dim=0)          # (H,W,C)
+                std = _nanstd(torch, x, dim=0)             # (H,W,C)
                 lo = med - low * std
                 hi = med + high * std
                 keep = valid & (ts >= lo.unsqueeze(0)) & (ts <= hi.unsqueeze(0))
-            # plain (unweighted) mean of kept samples
+
+            # Numerator/denominator over frames -> (H,W,C)
             kept = torch.where(keep, ts, torch.zeros_like(ts))
-            cnt  = keep.sum(dim=0)
+            num  = kept.sum(dim=0)                         # (H,W,C)
+            cnt  = keep.sum(dim=0).to(ts.dtype)            # (H,W,C)
 
             # Fallback to nanmedian where nothing survived
-            mask_no = (cnt == 0)
-            if mask_no.any():
-                x = ts.masked_fill(~torch.isfinite(ts), float("nan"))
-                fallback = _nanmedian(torch, x, dim=0)
-                kept = kept.clone()
-                kept[mask_no] = fallback[mask_no]
-                cnt = torch.where(mask_no, torch.ones_like(cnt), cnt)
+            x = ts.masked_fill(~valid, float("nan"))
+            fallback = _nanmedian(torch, x, dim=0)         # (H,W,C)
 
-            out = kept.sum(dim=0) / cnt.clamp_min(1)
-            rej  = ~keep
+            out = torch.where(cnt <= 0, fallback, num / cnt.clamp_min(1))
+            rej = ~keep
             assert out.dtype == torch.float32, f"reducer produced {out.dtype}, expected float32"
             return out.contiguous().cpu().numpy(), rej.cpu().numpy()
+
 
 
         if algo == "Comet Lower-Trim (30%)":
