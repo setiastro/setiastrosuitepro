@@ -270,7 +270,7 @@ from pro.log_bus import LogBus
 
 
 VERSION = "1.3.6"
-
+SUBVERSION = "b"
 
 
 if hasattr(sys, '_MEIPASS'):
