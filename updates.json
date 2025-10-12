@@ -1,9 +1,9 @@
 {
-  "version": "1.3.5",
+  "version": "1.3.7",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.5/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.5/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.5/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.7/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.7/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.7/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.3.5 View Bundles can now Add Files so you can batch process files (ie crop a ton of files in bulk, or run ABE on files in bulk, or run statistical stretch on file in bulk, etc).  ImageMM error around a -2 error some people saw bug fix."
+  "notes": "Seti Astro Suite Pro V1.3.7 Many Bug Fixes."
 }
