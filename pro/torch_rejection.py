@@ -122,6 +122,31 @@ def _nanquantile(torch, x, q: float, dim: int):
         gather_idx = idx.gather(dim, kth.unsqueeze(dim))
         return x.gather(dim, gather_idx).squeeze(dim)
 
+def _no_amp_ctx(torch, dev):
+    """
+    Return a context that disables autocast on this thread for the current device.
+    Works across torch 1.13–2.x and CUDA/CPU/MPS. No-ops if unsupported.
+    """
+    import contextlib
+    # PyTorch 2.x unified API
+    try:
+        ac = getattr(torch, "autocast", None)
+        if ac is not None:
+            dt = "cuda" if getattr(dev, "type", "") == "cuda" else \
+                 "mps"  if getattr(dev, "type", "") == "mps"  else "cpu"
+            return ac(device_type=dt, enabled=False)
+    except Exception:
+        pass
+    # Older CUDA AMP API
+    try:
+        amp = getattr(getattr(torch, "cuda", None), "amp", None)
+        if amp and hasattr(amp, "autocast"):
+            return amp.autocast(enabled=False)
+    except Exception:
+        pass
+    return contextlib.nullcontext()
+
+
 # --- add near the top (after imports) ---
 def _safe_inference_ctx(torch):
     """
@@ -178,20 +203,20 @@ def torch_reduce_tile(
     F, H, W, C = ts_np.shape
 
     # Host → device
-    ts = torch.from_numpy(ts_np).to(dev, non_blocking=True)  # (F,H,W,C)
+    ts = torch.from_numpy(ts_np).to(dev, dtype=torch.float32, non_blocking=True)
 
     # Weights broadcast to 4D
     weights_np = np.asarray(weights_np, dtype=np.float32)
     if weights_np.ndim == 1:
-        w = torch.from_numpy(weights_np).to(dev, non_blocking=True).view(F, 1, 1, 1)
+        w = torch.from_numpy(weights_np).to(dev, dtype=torch.float32, non_blocking=True).view(F,1,1,1)
     else:
-        w = torch.from_numpy(weights_np).to(dev, non_blocking=True)
+        w = torch.from_numpy(weights_np).to(dev, dtype=torch.float32, non_blocking=True)
 
     algo = algo_name
-    valid = (ts != 0.0)
+    valid = torch.isfinite(ts)
 
     # Use inference_mode if present; else nullcontext.
-    with _safe_inference_ctx(torch):
+    with _safe_inference_ctx(torch), _no_amp_ctx(torch, dev):
         # ---------------- simple, no-rejection reducers ----------------
         if algo in ("Comet Median", "Simple Median (No Rejection)"):
             out = ts.median(dim=0).values
@@ -218,9 +243,20 @@ def torch_reduce_tile(
                 keep = valid & (ts >= lo.unsqueeze(0)) & (ts <= hi.unsqueeze(0))
             # plain (unweighted) mean of kept samples
             kept = torch.where(keep, ts, torch.zeros_like(ts))
-            cnt  = keep.sum(dim=0).clamp_min(1).to(kept.dtype)
-            out  = kept.sum(dim=0) / cnt
+            cnt  = keep.sum(dim=0)
+
+            # Fallback to nanmedian where nothing survived
+            mask_no = (cnt == 0)
+            if mask_no.any():
+                x = ts.masked_fill(~torch.isfinite(ts), float("nan"))
+                fallback = _nanmedian(torch, x, dim=0)
+                kept = kept.clone()
+                kept[mask_no] = fallback[mask_no]
+                cnt = torch.where(mask_no, torch.ones_like(cnt), cnt)
+
+            out = kept.sum(dim=0) / cnt.clamp_min(1)
             rej  = ~keep
+            assert out.dtype == torch.float32, f"reducer produced {out.dtype}, expected float32"
             return out.contiguous().cpu().numpy(), rej.cpu().numpy()
 
 
@@ -235,6 +271,7 @@ def torch_reduce_tile(
             keep_orig = torch.zeros_like(keep)
             keep_orig.scatter_(0, idx, keep)
             rej = ~keep_orig
+            assert out.dtype == torch.float32, f"reducer produced {out.dtype}, expected float32"
             return out.contiguous().cpu().numpy(), rej.cpu().numpy()
 
         if algo == "Comet High-Clip Percentile":
@@ -244,6 +281,7 @@ def torch_reduce_tile(
             clipped = torch.minimum(ts, hi.unsqueeze(0))
             out = _nanquantile(torch, clipped, float(comet_hclip_p) / 100.0, dim=0)
             rej = torch.zeros((F, H, W, C), dtype=torch.bool, device=dev)
+            assert out.dtype == torch.float32, f"reducer produced {out.dtype}, expected float32"
             return out.contiguous().cpu().numpy(), rej.cpu().numpy()
 
         if algo == "Simple Average (No Rejection)":
@@ -251,6 +289,7 @@ def torch_reduce_tile(
             den = w.sum(dim=0).clamp_min(1e-20)
             out = (num / den)
             rej = torch.zeros((F, H, W, C), dtype=torch.bool, device=dev)
+            assert out.dtype == torch.float32, f"reducer produced {out.dtype}, expected float32"
             return out.contiguous().cpu().numpy(), rej.cpu().numpy()
 
         if algo == "Max Value":
@@ -272,6 +311,7 @@ def torch_reduce_tile(
             den = w_eff.sum(dim=0).clamp_min(1e-20)
             out = (ts.mul(w_eff)).sum(dim=0).div(den)
             rej = ~keep
+            assert out.dtype == torch.float32, f"reducer produced {out.dtype}, expected float32"
             return out.contiguous().cpu().numpy(), rej.cpu().numpy()
 
         if algo == "Weighted Windsorized Sigma Clipping":
@@ -296,6 +336,7 @@ def torch_reduce_tile(
             if (~mask_no).any():
                 out[~mask_no] = (num[~mask_no] / den[~mask_no])
             rej = ~keep
+            assert out.dtype == torch.float32, f"reducer produced {out.dtype}, expected float32"
             return out.contiguous().cpu().numpy(), rej.cpu().numpy()
 
         if algo == "Trimmed Mean":
@@ -307,6 +348,7 @@ def torch_reduce_tile(
             den = w_eff.sum(dim=0).clamp_min(1e-20)
             out = (ts.mul(w_eff)).sum(dim=0).div(den)
             rej = ~keep
+            assert out.dtype == torch.float32, f"reducer produced {out.dtype}, expected float32"
             return out.contiguous().cpu().numpy(), rej.cpu().numpy()
 
         if algo == "Extreme Studentized Deviate (ESD)":
@@ -319,6 +361,7 @@ def torch_reduce_tile(
             den = w_eff.sum(dim=0).clamp_min(1e-20)
             out = (ts.mul(w_eff)).sum(dim=0).div(den)
             rej = ~keep
+            assert out.dtype == torch.float32, f"reducer produced {out.dtype}, expected float32"
             return out.contiguous().cpu().numpy(), rej.cpu().numpy()
 
         if algo == "Biweight Estimator":
@@ -333,6 +376,7 @@ def torch_reduce_tile(
             den = ((one_minus_u2**2) * w_eff).sum(dim=0)
             out = torch.where(den > 0, m + num / den, m)
             rej = ~mask
+            assert out.dtype == torch.float32, f"reducer produced {out.dtype}, expected float32"
             return out.contiguous().cpu().numpy(), rej.cpu().numpy()
 
         if algo == "Modified Z-Score Clipping":
@@ -345,6 +389,7 @@ def torch_reduce_tile(
             den = w_eff.sum(dim=0).clamp_min(1e-20)
             out = (ts.mul(w_eff)).sum(dim=0).div(den)
             rej = ~keep
+            assert out.dtype == torch.float32, f"reducer produced {out.dtype}, expected float32"
             return out.contiguous().cpu().numpy(), rej.cpu().numpy()
 
         raise NotImplementedError(f"GPU path not implemented for: {algo_name}")
