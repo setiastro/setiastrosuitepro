@@ -34,7 +34,7 @@ from PyQt6.QtCore import Qt, QThread, QRunnable, QThreadPool, pyqtSignal, QObjec
 from PyQt6.QtGui import QImage, QPixmap, QIcon, QMovie
 from PyQt6.QtWidgets import (
     QDialog, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QGroupBox, QAbstractItemView, QListWidget, QInputDialog, QApplication, QProgressBar, QProgressDialog, 
-    QRadioButton, QFileDialog, QComboBox, QMessageBox, QTextEdit, QDialogButtonBox, QTreeWidget,QCheckBox, QFormLayout, QListWidgetItem, QScrollArea, QTreeWidgetItem
+    QRadioButton, QFileDialog, QComboBox, QMessageBox, QTextEdit, QDialogButtonBox, QTreeWidget,QCheckBox, QFormLayout, QListWidgetItem, QScrollArea, QTreeWidgetItem, QSpinBox, QDoubleSpinBox
 )
 # I/O & stretch (same stack we used for Plate Solver)
 from legacy.image_manager import load_image, save_image

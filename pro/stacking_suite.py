@@ -3431,7 +3431,7 @@ class StackingSuiteDialog(QDialog):
 
         # --- Distortion / Transform model ---
         # --- Distortion / Transform model ---
-        disto_box = QGroupBox("Distortion / Transform")
+        disto_box = QGroupBox("Distortion / Transform - PLACEHOLDER")
         disto_form = QFormLayout(disto_box)
 
         self.align_model_combo = QComboBox()

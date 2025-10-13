@@ -1979,8 +1979,8 @@ def multiframe_deconv(
         if cuda_ok and getattr(torch.backends, "cudnn", None) is not None:
             # Avoid fast TF32/cuDNN autotuned kernels that can corrupt tiles
             torch.backends.cuda.matmul.allow_tf32 = False
-            torch.backends.cudnn.allow_tf32 = False
-            torch.backends.cudnn.benchmark   = False
+            torch.backends.cudnn.allow_tf32 = True
+            torch.backends.cudnn.benchmark   = True
             # Deterministic algorithms prefer safe kernels
             try:
                 torch.use_deterministic_algorithms(True)
