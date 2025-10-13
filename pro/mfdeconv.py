@@ -1815,46 +1815,45 @@ def _conv_same_np_spatial(a: np.ndarray, k: np.ndarray, out: np.ndarray | None =
 
 def _grouped_conv_same_torch_per_sample(x_bc_hw, w_b1kk, B, C):
     """
-    Depthwise grouped conv per-sample with reflect padding (safe NCHW).
-    Inputs:
-      x_bc_hw : (B, C, H, W) tensor, any memory_format (we force contiguous NCHW)
-      w_b1kk  : (B, 1, kh, kw) per-sample kernels on device (FP32)
-      B, C    : ints
-    Returns:
-      y : (B, C, H, W) contiguous (NCHW)
+    x_bc_hw : (B,C,H,W), torch.float32 on device
+    w_b1kk  : (B,1,kh,kw), torch.float32 on device
+    Returns (B,C,H,W) contiguous (NCHW).
     """
-    # use the globally-loaded torch (from pro.runtime_torch.import_torch)
     F = torch.nn.functional
 
-    if x_bc_hw.ndim != 4:
-        raise RuntimeError(f"_grouped_conv_same_torch_per_sample: expected 4D (B,C,H,W), got {tuple(x_bc_hw.shape)}")
-    if w_b1kk.ndim != 4 or w_b1kk.shape[0] != B or w_b1kk.shape[1] != 1:
-        raise RuntimeError(f"_grouped_conv_same_torch_per_sample: bad kernel pack shape {tuple(w_b1kk.shape)} (want (B,1,kh,kw))")
-
-    # ---- FORCE standard contiguous (NCHW) tensors (no channels_last) ----
+    # Force standard NCHW contiguous tensors
     x_bc_hw = x_bc_hw.to(memory_format=torch.contiguous_format).contiguous()
     w_b1kk  = w_b1kk.to(memory_format=torch.contiguous_format).contiguous()
 
     kh, kw = int(w_b1kk.shape[-2]), int(w_b1kk.shape[-1])
-    pad = (kw // 2, kw - kw // 2 - 1,  # left, right
-           kh // 2, kh - kh // 2 - 1)  # top, bottom
+    pad = (kw // 2, kw - kw // 2 - 1,  kh // 2, kh - kh // 2 - 1)
 
-    # pack to (1, G, H, W) with G=B*C, then grouped conv with G groups
+    if x_bc_hw.device.type == "mps":
+        # Safe, slower path: convolve each channel separately, no groups
+        ys = []
+        for j in range(B):                      # per sample
+            xj = x_bc_hw[j:j+1]                # (1,C,H,W)
+            # reflect pad once per sample
+            xj = F.pad(xj, pad, mode="reflect")
+            cj_out = []
+            # one shared kernel per sample j: (1,1,kh,kw)
+            kj = w_b1kk[j:j+1]                 # keep shape (1,1,kh,kw)
+            for c in range(C):
+                # slice that channel as its own (1,1,H,W) tensor
+                xjc = xj[:, c:c+1, ...]
+                yjc = F.conv2d(xjc, kj, padding=0, groups=1)  # no groups
+                cj_out.append(yjc)
+            ys.append(torch.cat(cj_out, dim=1))  # (1,C,H,W)
+        return torch.stack([y[0] for y in ys], 0).contiguous()
+
+
+    # ---- FAST PATH (CUDA/CPU): single grouped conv with G=B*C ----
     G = int(B * C)
-    # reflect pad per-sample, per-channel
     x_1ghw = x_bc_hw.reshape(1, G, x_bc_hw.shape[-2], x_bc_hw.shape[-1])
     x_1ghw = F.pad(x_1ghw, pad, mode="reflect")
-
-    # expand kernels from (B,1,kh,kw) → (G,1,kh,kw) (one kernel per (sample,channel))
-    w_g1kk = w_b1kk.repeat_interleave(C, dim=0)
-
-    # grouped conv
+    w_g1kk = w_b1kk.repeat_interleave(C, dim=0)        # (G,1,kh,kw)
     y_1ghw = F.conv2d(x_1ghw, w_g1kk, padding=0, groups=G)
-
-    # reshape back to (B,C,H,W), return contiguous NCHW
-    y = y_1ghw.reshape(B, C, y_1ghw.shape[-2], y_1ghw.shape[-1]).contiguous()
-    return y
-
+    return y_1ghw.reshape(B, C, y_1ghw.shape[-2], y_1ghw.shape[-1]).contiguous()
 
 # -----------------------------
 # Core
@@ -1889,12 +1888,14 @@ def multiframe_deconv(
     fft_kernel_threshold: int = 31,           # switch to FFT if K >= this (or lower if SR)
     prefetch_batches: bool = True,            # CPU→GPU double-buffer prefetch
     use_channels_last: bool | None = None,    # default: auto (True on CUDA/MPS)
+    force_cpu: bool = False,
 ):
     """
     Streaming multi-frame deconvolution with optional SR (r>1).
     Optimized GPU path: AMP for convs, channels-last, pinned-memory prefetch, optional FFT for large kernels.
     """
     mixed_precision = False
+    DEBUG_FLAT_WEIGHTS = True 
     # ---------- local helpers (kept self-contained) ----------
     def _emit_pct(pct: float, msg: str | None = None):
         pct = float(max(0.0, min(1.0, pct)))
@@ -1977,14 +1978,24 @@ def multiframe_deconv(
             f"PyTorch {getattr(torch,'__version__','?')} backend: "
             + ("CUDA" if cuda_ok else "MPS" if mps_ok else "DirectML" if dml_ok else "CPU")
         )
-        try:
-            if hasattr(torch.backends, "cudnn") and torch.backends.cudnn is not None:
-                torch.backends.cudnn.benchmark = True
-        except Exception:
-            pass
+        if cuda_ok and getattr(torch.backends, "cudnn", None) is not None:
+            # Avoid fast TF32/cuDNN autotuned kernels that can corrupt tiles
+            torch.backends.cuda.matmul.allow_tf32 = False
+            torch.backends.cudnn.allow_tf32 = False
+            torch.backends.cudnn.benchmark   = False
+            # Deterministic algorithms prefer safe kernels
+            try:
+                torch.use_deterministic_algorithms(True)
+            except Exception:
+                # Older PyTorch:
+                torch.backends.cudnn.deterministic = True
     except Exception as e:
         TORCH_OK = False
         status_cb(f"PyTorch not available → CPU path. ({e})")
+
+    if force_cpu:
+        status_cb("⚠️ CPU-only debug mode: disabling PyTorch path.")
+        TORCH_OK = False
 
     _process_gui_events_safely()
 
@@ -2149,7 +2160,7 @@ def multiframe_deconv(
 
         # FFT gate (worth it for large kernels / SR); still FP32
         use_fft = False
-        if (Kmax >= int(fft_kernel_threshold)) or (r > 1 and Kmax >= max(21, fft_kernel_threshold - 4)):
+        if device.type == "cuda" and ((Kmax >= int(fft_kernel_threshold)) or (r > 1 and Kmax >= max(21, fft_kernel_threshold - 4))):
             use_fft = True
             psf_fft, psfT_fft = _precompute_torch_psf_ffts(psfs, flip_psf, Hs, Ws,
                                                            device=x_t.device, dtype=torch.float32)
@@ -2164,21 +2175,49 @@ def multiframe_deconv(
 
     # ---- batched torch helper (grouped depthwise per-sample) ----
     if use_torch:
+        # inside `if use_torch:` block in multiframe_deconv — replace the whole inner helper
         def _grouped_conv_same_torch_per_sample(x_bc_hw, w_b1kk, B, C):
-            x_bc_hw = x_bc_hw.contiguous(memory_format=torch.channels_last)
+            """
+            x_bc_hw : (B,C,H,W), torch.float32 on device
+            w_b1kk  : (B,1,kh,kw), torch.float32 on device
+            Returns (B,C,H,W) contiguous (NCHW).
+            """
+            F = torch.nn.functional
 
-            G = B * C
+            # Force standard NCHW contiguous tensors
+            x_bc_hw = x_bc_hw.to(memory_format=torch.contiguous_format).contiguous()
+            w_b1kk  = w_b1kk.to(memory_format=torch.contiguous_format).contiguous()
+
             kh, kw = int(w_b1kk.shape[-2]), int(w_b1kk.shape[-1])
             pad = (kw // 2, kw - kw // 2 - 1,  kh // 2, kh - kh // 2 - 1)
 
+            if x_bc_hw.device.type == "mps":
+                # Safe, slower path: convolve each channel separately, no groups
+                ys = []
+                for j in range(B):                      # per sample
+                    xj = x_bc_hw[j:j+1]                # (1,C,H,W)
+                    # reflect pad once per sample
+                    xj = F.pad(xj, pad, mode="reflect")
+                    cj_out = []
+                    # one shared kernel per sample j: (1,1,kh,kw)
+                    kj = w_b1kk[j:j+1]                 # keep shape (1,1,kh,kw)
+                    for c in range(C):
+                        # slice that channel as its own (1,1,H,W) tensor
+                        xjc = xj[:, c:c+1, ...]
+                        yjc = F.conv2d(xjc, kj, padding=0, groups=1)  # no groups
+                        cj_out.append(yjc)
+                    ys.append(torch.cat(cj_out, dim=1))  # (1,C,H,W)
+                return torch.stack([y[0] for y in ys], 0).contiguous()
+
+
+            # ---- FAST PATH (CUDA/CPU): single grouped conv with G=B*C ----
+            G = int(B * C)
             x_1ghw = x_bc_hw.reshape(1, G, x_bc_hw.shape[-2], x_bc_hw.shape[-1])
             x_1ghw = F.pad(x_1ghw, pad, mode="reflect")
-
-            w_g1kk = w_b1kk.repeat_interleave(C, dim=0)
+            w_g1kk = w_b1kk.repeat_interleave(C, dim=0)        # (G,1,kh,kw)
             y_1ghw = F.conv2d(x_1ghw, w_g1kk, padding=0, groups=G)
+            return y_1ghw.reshape(B, C, y_1ghw.shape[-2], y_1ghw.shape[-1]).contiguous()
 
-            y = y_1ghw.reshape(B, C, y_1ghw.shape[-2], y_1ghw.shape[-1])
-            return y.contiguous() if not use_channels_last else y.contiguous(memory_format=torch.channels_last)
 
         def _downsample_avg_bt_t(x, r_):
             if r_ <= 1:
@@ -2250,12 +2289,18 @@ def multiframe_deconv(
         _save_iter_image(x, hdr0_seed, iter_dir, "seed", color_mode)
 
     # ---- iterative loop ----
-    tol_upd = 1e-3
+    tol_upd = 2e-4
     tol_rel = 5e-4
     patience = 2
+    ema_um = None   # EMA of |upd-1|
+    ema_rc = None   # EMA of relative x-change
+    base_um = None  # first-iter baselines
+    base_rc = None
+    ema_alpha = 0.5  # smoothing factor    
     early_cnt = 0
     used_iters = 0
     early_stopped = False
+    early_frac = 0.40
 
     auto_delta_cache = None
     if use_torch and (huber_delta < 0) and (not rho_is_l2):
@@ -2314,8 +2359,9 @@ def multiframe_deconv(
                                 yb = yb.contiguous(memory_format=torch.channels_last)
 
                         # PSF packs for this batch (FP32)
-                        wk  = torch.cat([psf_t[fi]  for fi in idx], dim=0)  # (B,1,kh,kw)
-                        wkT = torch.cat([psfT_t[fi] for fi in idx], dim=0)  # (B,1,kh,kw)
+                        wk  = torch.cat([psf_t[fi]  for fi in idx], dim=0).to(memory_format=torch.contiguous_format).contiguous()
+                        wkT = torch.cat([psfT_t[fi] for fi in idx], dim=0).to(memory_format=torch.contiguous_format).contiguous()
+
 
                         # --- predict on SR grid ---
                         x_bc_hw = x_t.unsqueeze(0).expand(B, -1, -1, -1).contiguous()
@@ -2327,8 +2373,12 @@ def multiframe_deconv(
                             for j, fi in enumerate(idx):
                                 C_here = x_bc_hw.shape[1]
                                 pred_j = torch.empty_like(x_bc_hw[j], dtype=torch.float32)
-                                for c in range(C_here):
-                                    _fft_conv_same_torch(x_bc_hw[j, c], psf_fft[fi], out_spatial=pred_j[c])
+                                pred_j[c] = torch.nn.functional.conv2d(
+                                    torch.nn.functional.pad(x_bc_hw[j, c][None, None],
+                                                            (Kmax//2, Kmax - Kmax//2 - 1, Kmax//2, Kmax - Kmax//2 - 1),
+                                                            mode="reflect"),
+                                    psf_t[fi], padding=0
+                                )[0,0]
                                 pred_list.append(pred_j)
                             pred_super = torch.stack(pred_list, 0)
                         else:
@@ -2377,8 +2427,12 @@ def multiframe_deconv(
                         else:
                             vmap = vb.unsqueeze(1).expand(-1, Cn, -1, -1)
 
-                        wmap_low = psi_over_r / (vmap + EPS)
-                        wmap_low = wmap_low * mb.unsqueeze(1)
+                        if DEBUG_FLAT_WEIGHTS:
+                            # neutral weights per channel (mask only) – matches “good” CPU behavior
+                            wmap_low = mb.unsqueeze(1)
+                        else:
+                            wmap_low = psi_over_r / (vmap + EPS)
+                            wmap_low = wmap_low * mb.unsqueeze(1)
 
                         # --- adjoint (upsample if SR) ---
                         if r > 1:
@@ -2440,7 +2494,10 @@ def multiframe_deconv(
                         pred_super = _conv_np_same(x_t, k)
                         pred_low = _downsample_avg(pred_super, r) if pred_super.ndim == 3 else _downsample_avg(pred_super, r)[None, ...]
                         yC = y_chw
-                        wmap_low = _weight_map(yC, pred_low, local_delta, var_map=v2d, mask=m2d)
+                        if DEBUG_FLAT_WEIGHTS:
+                            wmap_low = np.broadcast_to(m2d, yC.shape)    # SR path
+                        else:
+                            wmap_low = _weight_map(yC, pred_low, local_delta, var_map=v2d, mask=m2d)
                         up_y    = _upsample_sum(wmap_low * yC,    r, target_hw=pred_super.shape[-2:])
                         up_pred = _upsample_sum(wmap_low * pred_low, r, target_hw=pred_super.shape[-2:])
                         num += _conv_np_same(up_y,    kT)
@@ -2448,7 +2505,10 @@ def multiframe_deconv(
                     else:
                         pred = _conv_np_same(x_t, k)
                         yC   = y_chw
-                        wmap = _weight_map(yC, pred, local_delta, var_map=v2d, mask=m2d)
+                        if DEBUG_FLAT_WEIGHTS:
+                            wmap = np.broadcast_to(m2d, yC.shape)        # native path
+                        else:
+                            wmap = _weight_map(yC, pred, local_delta, var_map=v2d, mask=m2d)
                         num += _conv_np_same(wmap * yC,   kT)
                         den += _conv_np_same(wmap * pred, kT)
 
@@ -2462,14 +2522,40 @@ def multiframe_deconv(
                 ratio = torch.where(neutral, torch.ones_like(ratio), ratio)
                 upd = torch.clamp(ratio, 1.0 / kappa, kappa)
                 x_next = torch.clamp(x_t * upd, min=0.0)
+                # Robust scalars
                 upd_med = torch.median(torch.abs(upd - 1))
                 rel_change = (torch.median(torch.abs(x_next - x_t)) /
-                              (torch.median(torch.abs(x_t)) + 1e-8))
-                small = (upd_med < tol_upd) | (rel_change < tol_rel)
-                if bool(small) and it >= min_iters:
+                            (torch.median(torch.abs(x_t)) + 1e-8))
+
+                um = float(upd_med.detach().item())
+                rc = float(rel_change.detach().item())
+
+                # Initialize EMA + baselines on iter 1
+                if it == 1 or ema_um is None:
+                    ema_um = um
+                    ema_rc = rc
+                    base_um = um
+                    base_rc = rc
+                else:
+                    ema_um = ema_alpha * um + (1.0 - ema_alpha) * ema_um
+                    ema_rc = ema_alpha * rc + (1.0 - ema_alpha) * ema_rc
+
+                # Adaptive tolerances: at least the fixed floor, or 2% of first-iter magnitude
+                tol_upd_dyn = max(tol_upd, early_frac * (base_um if (base_um is not None and base_um > 0) else um))
+                tol_rel_dyn = max(tol_rel, early_frac * (base_rc if (base_rc is not None and base_rc > 0) else rc))
+                small = (ema_um < tol_upd_dyn) or (ema_rc < tol_rel_dyn)
+
+                # Optional: log once so you can see what it’s doing
+                if it == 1 or (it % 5 == 0):
+                    status_cb(f"EarlyStop dbg: it={it} um={um:.4g} rc={rc:.4g} | "
+                            f"ema_um={ema_um:.4g} ema_rc={ema_rc:.4g} | "
+                            f"tol_um={tol_upd_dyn:.4g} tol_rc={tol_rel_dyn:.4g}")
+
+                if small and it >= min_iters:
                     early_cnt += 1
                 else:
                     early_cnt = 0
+
                 if early_cnt >= patience:
                     x_t = x_next
                     used_iters = it
@@ -2477,6 +2563,7 @@ def multiframe_deconv(
                     status_cb(f"MFDeconv: Iteration {it}/{max_iters} (early stop)")
                     _process_gui_events_safely()
                     break
+
                 x_t = (1.0 - relax) * x_t + relax * x_next
             else:
                 ratio = num / (den + EPS)
@@ -2484,14 +2571,35 @@ def multiframe_deconv(
                 if np.any(neutral): ratio[neutral] = 1.0
                 upd = np.clip(ratio, 1.0 / kappa, kappa)
                 x_next = np.clip(x_t * upd, 0.0, None)
-                upd_med = np.median(np.abs(upd - 1.0))
-                rel_change = (np.median(np.abs(x_next - x_t)) /
-                              (np.median(np.abs(x_t)) + 1e-8))
-                small = (upd_med < tol_upd) or (rel_change < tol_rel)
+
+                um = float(np.median(np.abs(upd - 1.0)))
+                rc = float(np.median(np.abs(x_next - x_t)) / (np.median(np.abs(x_t)) + 1e-8))
+
+                # Initialize EMA + baselines on iter 1
+                if it == 1 or ema_um is None:
+                    ema_um = um
+                    ema_rc = rc
+                    base_um = um
+                    base_rc = rc
+                else:
+                    ema_um = ema_alpha * um + (1.0 - ema_alpha) * ema_um
+                    ema_rc = ema_alpha * rc + (1.0 - ema_alpha) * ema_rc
+
+                tol_upd_dyn = max(tol_upd, 0.02 * (base_um if (base_um is not None and base_um > 0) else um))
+                tol_rel_dyn = max(tol_rel, 0.02 * (base_rc if (base_rc is not None and base_rc > 0) else rc))
+
+                small = (ema_um < tol_upd_dyn) or (ema_rc < tol_rel_dyn)
+
+                if it == 1 or (it % 5 == 0):
+                    status_cb(f"EarlyStop dbg: it={it} um={um:.4g} rc={rc:.4g} | "
+                            f"ema_um={ema_um:.4g} ema_rc={ema_rc:.4g} | "
+                            f"tol_um={tol_upd_dyn:.4g} tol_rc={tol_rel_dyn:.4g}")
+
                 if small and it >= min_iters:
                     early_cnt += 1
                 else:
                     early_cnt = 0
+
                 if early_cnt >= patience:
                     x_t = x_next
                     used_iters = it
@@ -2499,7 +2607,9 @@ def multiframe_deconv(
                     status_cb(f"MFDeconv: Iteration {it}/{max_iters} (early stop)")
                     _process_gui_events_safely()
                     break
+
                 x_t = (1.0 - relax) * x_t + relax * x_next
+
 
             # ---- save intermediates ----
             if save_intermediate and (it % int(max(1, save_every)) == 0):
