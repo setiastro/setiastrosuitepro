@@ -2744,7 +2744,6 @@ class MultiFrameDeconvWorker(QObject):
                 star_mask_cfg=self.star_mask_cfg,
                 varmap_cfg=self.varmap_cfg,
                 save_intermediate=self.save_intermediate,
-                # NEW SR forwards
                 super_res_factor=self.super_res_factor,
                 sr_sigma=self.sr_sigma,
                 sr_psf_opt_iters=self.sr_psf_opt_iters,
@@ -2754,3 +2753,28 @@ class MultiFrameDeconvWorker(QObject):
             _process_gui_events_safely()
         except Exception as e:
             self.finished.emit(False, f"MF deconvolution failed: {e}", "")
+        finally:
+            # Hard cleanup: drop references + free GPU memory
+            try:
+                # Drop big Python refs that might keep tensors alive indirectly
+                self.aligned_paths = []
+                self.star_mask_cfg = {}
+                self.varmap_cfg = {}
+            except Exception:
+                pass
+            try:
+                _free_torch_memory()  # your helper: del tensors, gc.collect(), etc.
+            except Exception:
+                pass
+            try:
+                import torch as _t
+                if hasattr(_t, "cuda") and _t.cuda.is_available():
+                    _t.cuda.synchronize()
+                    _t.cuda.empty_cache()
+                if hasattr(_t, "mps") and getattr(_t.backends, "mps", None) and _t.backends.mps.is_available():
+                    # PyTorch 2.x has this
+                    if hasattr(_t.mps, "empty_cache"):
+                        _t.mps.empty_cache()
+                # DirectML usually frees on GC; nothing special to call.
+            except Exception:
+                pass

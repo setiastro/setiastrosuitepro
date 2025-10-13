@@ -1774,12 +1774,33 @@ def multiframe_deconv(
 
     use_torch = bool(TORCH_OK)
     if use_torch:
+        # ----- Precision policy (Sport mode but strict FP32) -----
         try:
-            cudnn = getattr(torch.backends, "cudnn", None)
-            if cudnn is not None:
-                cudnn.benchmark = True
+            # Keep autotune for speed
+            torch.backends.cudnn.benchmark = True
+
+            # Force true FP32 everywhere (no TF32 shortcuts)
+            if hasattr(torch.backends, "cudnn"):
+                torch.backends.cudnn.allow_tf32 = False
+            if hasattr(torch.backends, "cuda") and hasattr(torch.backends.cuda, "matmul"):
+                torch.backends.cuda.matmul.allow_tf32 = False
+            if hasattr(torch, "set_float32_matmul_precision"):
+                torch.set_float32_matmul_precision("highest")
         except Exception:
             pass
+
+        # (optional: telemetry)
+        try:
+            c_tf32 = getattr(torch.backends.cudnn, "allow_tf32", None)
+            m_tf32 = getattr(getattr(torch.backends.cuda, "matmul", object()), "allow_tf32", None)
+            status_cb(
+                f"Precision: cudnn.allow_tf32={c_tf32} | "
+                f"matmul.allow_tf32={m_tf32} | "
+                f"benchmark={torch.backends.cudnn.benchmark}"
+            )
+        except Exception:
+            pass
+
     _process_gui_events_safely()
 
     # PSFs (auto-size per frame) + flipped copies
