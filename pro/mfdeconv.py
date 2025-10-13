@@ -632,14 +632,13 @@ def _auto_star_mask_sep(
     status_cb=lambda s: None
 ) -> np.ndarray:
     """
-    Build a KEEP weight map (float32 in [0,1]) using SEP detections.
+    Build a KEEP weight map (float32 in [0,1]) using SEP detections only.
     **Never writes to img_2d** and draws only into a fresh mask buffer.
     """
     if sep is None:
-        # No SEP available: neutral weights
         return np.ones_like(img_2d, dtype=np.float32, order="C")
 
-    # Optional OpenCV path for fast drawing/blur
+    # Optional OpenCV path for fast draw/blur
     try:
         import cv2 as _cv2
         _HAS_CV2 = True
@@ -648,26 +647,37 @@ def _auto_star_mask_sep(
         _cv2 = None  # type: ignore
 
     h, w = map(int, img_2d.shape)
-    # Work on our own contiguous copy for SEP math; we will not modify it.
-    data = np.ascontiguousarray(img_2d, dtype=np.float32)
 
-    # Background & residual
+    # Background / residual on our own contiguous buffer
+    data = np.ascontiguousarray(img_2d.astype(np.float32))
     bkg = sep.Background(data)
     data_sub = np.ascontiguousarray(data - bkg.back(), dtype=np.float32)
     try:
-        err = float(bkg.globalrms)
+        err_scalar = float(bkg.globalrms)
     except Exception:
-        err = float(np.median(bkg.rms()))
+        err_scalar = float(np.median(np.asarray(bkg.rms(), dtype=np.float32)))
 
-    # Progressive thresholding to limit explosion on dense fields
-    # Threshold ladder
-    thresholds = [thresh_sigma, thresh_sigma*2, thresh_sigma*4,
-                  thresh_sigma*8, thresh_sigma*16]
+    # Downscale for detection only
+    det = data_sub
+    scale = 1.0
+    if max_side and max(h, w) > int(max_side):
+        scale = float(max(h, w)) / float(max_side)
+        if _HAS_CV2:
+            det = _cv2.resize(
+                det,
+                (max(1, int(round(w / scale))), max(1, int(round(h / scale)))),
+                interpolation=_cv2.INTER_AREA
+            )
+        else:
+            s = int(max(1, round(scale)))
+            det = det[:(h // s) * s, :(w // s) * s].reshape(h // s, s, w // s, s).mean(axis=(1, 3))
+            scale = float(s)
 
-    # IMPORTANT: when we downscale by 'scale', per-pixel noise goes down by ~scale
-    # (AREA/mean pooling). Use a scaled err for detection to keep sigma thresholds comparable.
+    # When averaging down by 'scale', per-pixel noise scales ~ 1/scale
     err_det = float(err_scalar) / float(max(1.0, scale))
 
+    thresholds = [thresh_sigma, thresh_sigma*2, thresh_sigma*4,
+                  thresh_sigma*8, thresh_sigma*16]
     objs = None; used = float("nan"); raw = 0
     for t in thresholds:
         try:
@@ -682,15 +692,15 @@ def _auto_star_mask_sep(
 
     if objs is None or len(objs) == 0:
         try:
-            cand = sep.extract(det, thresh=thresholds[-1], err=err_det, minarea=9)
+            cand = sep.extract(det, thresh=float(thresholds[-1]), err=err_det, minarea=9)
         except Exception:
             cand = None
         if cand is None or len(cand) == 0:
             status_cb("Star mask: no sources found (mask disabled for this frame).")
-            return np.ones((H, W), dtype=np.float32, order="C")
+            return np.ones((h, w), dtype=np.float32, order="C")
         objs, raw, used = cand, len(cand), float(thresholds[-1])
 
-    # Keep only the brightest max_objs detections
+    # Keep brightest max_objs
     if "flux" in objs.dtype.names:
         idx = np.argsort(objs["flux"])[-int(max_objs):]
         objs = objs[idx]
@@ -698,8 +708,9 @@ def _auto_star_mask_sep(
         objs = objs[:int(max_objs)]
     kept_after_cap = int(len(objs))
 
-    # ---- draw into a brand-new, owned buffer (no aliasing possible) ----
+    # Draw on full-res fresh buffer
     mask_u8 = np.zeros((h, w), dtype=np.uint8, order="C")
+    s_back = float(scale)
     MR = int(max(1, max_radius_px))
     G  = int(max(0, grow_px))
     ES = float(max(0.1, ellipse_scale))
@@ -707,32 +718,29 @@ def _auto_star_mask_sep(
     drawn = 0
     if _HAS_CV2:
         for o in objs:
-            x = int(round(float(o["x"])))
-            y = int(round(float(o["y"])))
+            x = int(round(float(o["x"]) * s_back))
+            y = int(round(float(o["y"]) * s_back))
             if not (0 <= x < w and 0 <= y < h):
                 continue
-            a = float(o["a"]); b = float(o["b"])
+            a = float(o["a"]) * s_back
+            b = float(o["b"]) * s_back
             r = int(math.ceil(ES * max(a, b)))
-            if r <= 0:
-                continue
-            r = min(r + G, MR)
+            r = min(max(r, 0) + G, MR)
             if r <= 0:
                 continue
             _cv2.circle(mask_u8, (x, y), r, 1, thickness=-1, lineType=_cv2.LINE_8)
             drawn += 1
     else:
-        # NumPy fallback: local disk draw
         yy, xx = np.ogrid[:h, :w]
         for o in objs:
-            x = int(round(float(o["x"])))
-            y = int(round(float(o["y"])))
+            x = int(round(float(o["x"]) * s_back))
+            y = int(round(float(o["y"]) * s_back))
             if not (0 <= x < w and 0 <= y < h):
                 continue
-            a = float(o["a"]); b = float(o["b"])
+            a = float(o["a"]) * s_back
+            b = float(o["b"]) * s_back
             r = int(math.ceil(ES * max(a, b)))
-            if r <= 0:
-                continue
-            r = min(r + G, MR)
+            r = min(max(r, 0) + G, MR)
             if r <= 0:
                 continue
             y0 = max(0, y - r); y1 = min(h, y + r + 1)
@@ -745,7 +753,7 @@ def _auto_star_mask_sep(
 
     masked_px_hard = int(mask_u8.sum())
 
-    # Convert to float and feather edges (still on a scratch buffer)
+    # Feather and convert to KEEP weights in [0,1]
     m = mask_u8.astype(np.float32, copy=False)
     if soft_sigma and soft_sigma > 0.0:
         try:
@@ -757,22 +765,20 @@ def _auto_star_mask_sep(
                 from scipy.ndimage import gaussian_filter
                 m = gaussian_filter(m, sigma=float(soft_sigma), mode="reflect")
         except Exception:
-            # best effort; keep hard mask
             pass
         np.clip(m, 0.0, 1.0, out=m)
 
-    # ---- produce a KEEP weight map (not a binary hole-punch) ----
     keep = 1.0 - m
     kf = float(max(0.0, min(0.99, keep_floor)))
     keep = kf + (1.0 - kf) * keep
     np.clip(keep, 0.0, 1.0, out=keep)
 
     status_cb(
-        f"Star mask: thresh={used_thresh:.3g} | detected={raw_detected} | kept={kept_after_cap} | "
+        f"Star mask: thresh={used:.3g} | detected={raw} | kept={kept_after_cap} | "
         f"drawn={drawn} | masked_px={masked_px_hard} | grow_px={G} | soft_sigma={soft_sigma} | keep_floor={keep_floor}"
     )
-    # Return as a new, contiguous float32 array
     return np.ascontiguousarray(keep, dtype=np.float32)
+
 
 
 def _auto_variance_map(
@@ -2015,17 +2021,6 @@ def multiframe_deconv(
             status_cb(f"  SR-PSF{i}: native {k_native.shape[0]} → {h.shape[0]} (sum={h.sum():.6f})")
         psfs = sr_psfs
 
-    # ---- pad PSFs to a common odd size for batched conv ----
-    Kmax = max(int(k.shape[0]) for k in psfs)
-    if (Kmax % 2) == 0:
-        Kmax += 1
-    if any(int(k.shape[0]) != Kmax for k in psfs):
-        status_cb(f"MFDeconv: normalizing PSF sizes → {Kmax}×{Kmax}")
-        psfs = [_pad_kernel_to(k, Kmax) for k in psfs]
-
-    flip_psf = [_flip_kernel(k) for k in psfs]
-    _emit_pct(0.20, "PSF Ready")
-
     # ---- Seed (streaming) with robust bootstrap already in file helpers ----
     _emit_pct(0.25, "Calculating Seed Image...")
     def _seed_progress(frac, msg):
@@ -2052,7 +2047,11 @@ def multiframe_deconv(
         x = seed_native
     try: del seed_native
     except Exception: pass
+
     gc.collect()
+
+    flip_psf = [_flip_kernel(k) for k in psfs]
+    _emit_pct(0.20, "PSF Ready")
 
     # final SR grid size (Hs,Ws)
     # Ensure CHW for the Torch path (mono → 1×H×W)
@@ -2151,13 +2150,28 @@ def multiframe_deconv(
         amp_kwargs = {}
 
         # FFT gate (worth it for large kernels / SR); still FP32
+        # Decide FFT vs spatial FIRST, based on native kernel sizes (no global padding!)
+        K_native_max = max(int(k.shape[0]) for k in psfs)
         use_fft = False
-        if device.type == "cuda" and ((Kmax >= int(fft_kernel_threshold)) or (r > 1 and Kmax >= max(21, fft_kernel_threshold - 4))):
+        if device.type == "cuda" and ((K_native_max >= int(fft_kernel_threshold)) or (r > 1 and K_native_max >= max(21, int(fft_kernel_threshold) - 4))):
             use_fft = True
+            # Precompute FFT packs with each kernel at its native size
             psf_fft, psfT_fft = _precompute_torch_psf_ffts(psfs, flip_psf, Hs, Ws,
-                                                           device=x_t.device, dtype=torch.float32)
+                                                        device=x_t.device, dtype=torch.float32)
         else:
             psf_fft = psfT_fft = None
+            # Spatial path needs a uniform kernel size → pad once, here
+            Kmax = K_native_max
+            if (Kmax % 2) == 0:
+                Kmax += 1
+            if any(int(k.shape[0]) != Kmax for k in psfs):
+                status_cb(f"MFDeconv: normalizing PSF sizes → {Kmax}×{Kmax}")
+                psfs = [_pad_kernel_to(k, Kmax) for k in psfs]
+                flip_psf = [_flip_kernel(k) for k in psfs]  # keep flip in sync
+
+        # build spatial kernels (strict FP32) if we’re on the spatial branch
+        psf_t  = [_to_t(_contig(k)).to(torch.float32)[None, None]  for k  in psfs]
+        psfT_t = [_to_t(_contig(kT)).to(torch.float32)[None, None] for kT in flip_psf]
     else:
         x_t = _contig(x).astype(np.float32, copy=False)
         num = np.zeros_like(x_t, dtype=np.float32)
@@ -2361,20 +2375,19 @@ def multiframe_deconv(
                             x_bc_hw = x_bc_hw.contiguous(memory_format=torch.channels_last)
 
                         if use_fft:
+                            # True FFT forward on the super-res grid (each PSF at native size)
                             pred_list = []
                             for j, fi in enumerate(idx):
                                 C_here = x_bc_hw.shape[1]
                                 pred_j = torch.empty_like(x_bc_hw[j], dtype=torch.float32)
-                                pred_j[c] = torch.nn.functional.conv2d(
-                                    torch.nn.functional.pad(x_bc_hw[j, c][None, None],
-                                                            (Kmax//2, Kmax - Kmax//2 - 1, Kmax//2, Kmax - Kmax//2 - 1),
-                                                            mode="reflect"),
-                                    psf_t[fi], padding=0
-                                )[0,0]
+                                Kf_pack = psf_fft[fi]  # (Kf, padH, padW, kh, kw)
+                                for c in range(C_here):
+                                    _fft_conv_same_torch(x_bc_hw[j, c], Kf_pack, out_spatial=pred_j[c])
                                 pred_list.append(pred_j)
-                            pred_super = torch.stack(pred_list, 0)
+                            pred_super = torch.stack(pred_list, 0).contiguous()
                         else:
                             pred_super = _grouped_conv_same_torch_per_sample(x_bc_hw, wk, B, Cn)
+
 
                         pred_low = _downsample_avg_bt_t(pred_super, r) if r > 1 else pred_super
 
@@ -2437,9 +2450,10 @@ def multiframe_deconv(
                                 C_here = up_y.shape[1]
                                 bn_j = torch.empty_like(x_t, dtype=torch.float32)
                                 bd_j = torch.empty_like(x_t, dtype=torch.float32)
+                                KTf_pack = psfT_fft[fi]
                                 for c in range(C_here):
-                                    _fft_conv_same_torch(up_y[j, c],    psfT_fft[fi], out_spatial=bn_j[c] if x_t.ndim==3 else bn_j)
-                                    _fft_conv_same_torch(up_pred[j, c], psfT_fft[fi], out_spatial=bd_j[c] if x_t.ndim==3 else bd_j)
+                                    _fft_conv_same_torch(up_y[j, c],    KTf_pack, out_spatial=bn_j[c])
+                                    _fft_conv_same_torch(up_pred[j, c], KTf_pack, out_spatial=bd_j[c])
                                 back_num_list.append(bn_j)
                                 back_den_list.append(bd_j)
                             back_num = torch.stack(back_num_list, 0).sum(dim=0)
