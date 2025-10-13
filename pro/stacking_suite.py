@@ -5450,7 +5450,7 @@ class StackingSuiteDialog(QDialog):
         self.cfa_drizzle_cb = QCheckBox("CFA Drizzle")
         self.cfa_drizzle_cb.setChecked(self.settings.value("stacking/cfa_drizzle", False, type=bool))
         self.cfa_drizzle_cb.toggled.connect(self._on_cfa_drizzle_toggled)
-        self.cfa_drizzle_cb.setToolTip("Map R/G/B CFA samples directly into channels and skip interpolation.")
+        self.cfa_drizzle_cb.setToolTip("Requires 'Enable Drizzle'. Maps R/G/B CFA samples directly into channels (no interpolation).")
         drizzle_layout.addWidget(self.cfa_drizzle_cb)
 
         layout.addLayout(drizzle_layout)
@@ -5764,6 +5764,15 @@ class StackingSuiteDialog(QDialog):
         self.drizzle_scale_combo.setCurrentText(self.settings.value("stacking/drizzle_scale", "2x", type=str))
         self.drizzle_drop_shrink_spin.setValue(self.settings.value("stacking/drizzle_drop", 0.65, type=float))
 
+        drizzle_on = self.settings.value("stacking/drizzle_enabled", False, type=bool)
+        self.cfa_drizzle_cb.setEnabled(drizzle_on)
+        if not drizzle_on and self.cfa_drizzle_cb.isChecked():
+            self.cfa_drizzle_cb.blockSignals(True)
+            self.cfa_drizzle_cb.setChecked(False)
+            self.cfa_drizzle_cb.blockSignals(False)
+            self.settings.setValue("stacking/cfa_drizzle", False)
+        self._update_drizzle_summary_columns()
+
         return tab
 
 
@@ -5804,12 +5813,21 @@ class StackingSuiteDialog(QDialog):
 
 
     def _on_drizzle_checkbox_toggled(self, checked: bool):
-        """(If you still call this elsewhere) keep as a thin wrapper or remove if unused."""
+        """Drizzle master switch."""
         self.drizzle_scale_combo.setEnabled(checked)
         self.drizzle_drop_shrink_spin.setEnabled(checked)
+
+        # NEW: make CFA Drizzle depend on Enable Drizzle
+        self.cfa_drizzle_cb.setEnabled(checked)
+        if not checked and self.cfa_drizzle_cb.isChecked():
+            # force false without re-entering handlers
+            self.cfa_drizzle_cb.blockSignals(True)
+            self.cfa_drizzle_cb.setChecked(False)
+            self.cfa_drizzle_cb.blockSignals(False)
+            self.settings.setValue("stacking/cfa_drizzle", False)
+
         self.settings.setValue("stacking/drizzle_enabled", bool(checked))
-        # If you update tree rows with drizzle state, you can trigger that here:
-        # self._refresh_reg_tree_drizzle_column()
+        self._update_drizzle_summary_columns()
 
     def _on_drizzle_param_changed(self, *_):
         # Persist drizzle params whenever changed
@@ -5817,45 +5835,6 @@ class StackingSuiteDialog(QDialog):
         self.settings.setValue("stacking/drizzle_drop", float(self.drizzle_drop_shrink_spin.value()))
         # If you reflect params to tree rows, update here:
         # self._refresh_reg_tree_drizzle_column()
-
-    def _on_cfa_drizzle_toggled(self, checked: bool):
-        self.settings.setValue("stacking/cfa_drizzle", bool(checked))
-
-    def _on_star_trail_toggled(self, enabled: bool):
-        """
-        When Star-Trail mode is ON, we skip registration/alignment and use max-value stack.
-        Disable other registration-dependent features (drizzle/comet/MFDeconv) to avoid confusion.
-        """
-        # Controls to gate
-        drizzle_widgets = (self.drizzle_checkbox, self.drizzle_scale_combo, self.drizzle_drop_shrink_spin, self.cfa_drizzle_cb)
-        comet_widgets = (self.comet_cb, self.comet_pick_btn, self.comet_blend_cb, self.comet_mix)
-        mf_widgets = (self.mf_enabled_cb, self.mf_iters_spin, self.mf_kappa_spin, self.mf_color_combo, self.mf_Huber_spin)
-
-        for w in drizzle_widgets + comet_widgets + mf_widgets:
-            w.setEnabled(not enabled)
-
-        if enabled:
-            self.status_signal.emit("⭐ Star-Trail Mode enabled: Drizzle, Comet stack, and MFDeconv disabled.")
-        else:
-            self.status_signal.emit("⭐ Star-Trail Mode disabled: other options re-enabled.")
-
-    def _on_drizzle_checkbox_toggled(self, checked: bool):
-        """(If you still call this elsewhere) keep as a thin wrapper or remove if unused."""
-        self.drizzle_scale_combo.setEnabled(checked)
-        self.drizzle_drop_shrink_spin.setEnabled(checked)
-        self.settings.setValue("stacking/drizzle_enabled", bool(checked))
-        # If you update tree rows with drizzle state, you can trigger that here:
-        # self._refresh_reg_tree_drizzle_column()
-
-    def _on_drizzle_param_changed(self, *_):
-        # Persist drizzle params whenever changed
-        self.settings.setValue("stacking/drizzle_scale", self.drizzle_scale_combo.currentText())
-        self.settings.setValue("stacking/drizzle_drop", float(self.drizzle_drop_shrink_spin.value()))
-        # If you reflect params to tree rows, update here:
-        # self._refresh_reg_tree_drizzle_column()
-
-    def _on_cfa_drizzle_toggled(self, checked: bool):
-        self.settings.setValue("stacking/cfa_drizzle", bool(checked))
 
     def _on_star_trail_toggled(self, enabled: bool):
         """
@@ -5931,6 +5910,14 @@ class StackingSuiteDialog(QDialog):
 
 
     def _on_cfa_drizzle_toggled(self, checked: bool):
+        # If Drizzle is OFF, CFA Drizzle must remain False
+        if not self.drizzle_checkbox.isChecked():
+            if checked:
+                self.cfa_drizzle_cb.blockSignals(True)
+                self.cfa_drizzle_cb.setChecked(False)
+                self.cfa_drizzle_cb.blockSignals(False)
+            checked = False
+
         self.settings.setValue("stacking/cfa_drizzle", bool(checked))
         self._update_drizzle_summary_columns()
 
@@ -5947,8 +5934,8 @@ class StackingSuiteDialog(QDialog):
             scale = self.drizzle_scale_combo.currentText()
             drop  = self.drizzle_drop_shrink_spin.value()
             desc = f"ON, Scale {scale}, Drop {drop:.2f}"
-        if self.cfa_drizzle_cb.isChecked():
-            desc += " + CFA"
+            if self.cfa_drizzle_cb.isChecked():
+                desc += " + CFA"
 
         root = self.reg_tree.invisibleRootItem()
         for i in range(root.childCount()):
@@ -6531,10 +6518,6 @@ class StackingSuiteDialog(QDialog):
                 "scale": float(scale_str.replace("x","", 1)),
                 "drop": drop_val
             }
-
-    def _on_drizzle_checkbox_toggled(self, checked: bool):
-        self.settings.setValue("stacking/drizzle_enabled", bool(checked))
-        self._update_drizzle_summary_columns()
 
     def _on_drizzle_param_changed(self, *_):
         enabled = self.drizzle_checkbox.isChecked()
@@ -11040,8 +11023,6 @@ class StackingSuiteDialog(QDialog):
                 # 1) Measure comet centers (auto baseline)
                 log("🟢 Measuring comet centers (template match)…")
                 comet_xy = CS.measure_comet_positions(sorted_files, seeds=seeds, status_cb=log)
-                CS.debug_save_marks(sorted_files, comet_xy,
-                                    os.path.join(self.stacking_directory, "debug_comet_xy"))
 
                 # 2) Offer preview (GUI) via worker signal
                 ui_target = None

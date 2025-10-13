@@ -133,13 +133,6 @@ def starnet_starless_pair_from_array(
         starless_pre = np.repeat(starless_pre, 3, axis=2)
     starless_pre = starless_pre.astype(np.float32, copy=False)
 
-    if debug_save_dir and debug_tag:
-        try:
-            _rs_save_image(starless_pre, os.path.join(debug_save_dir, f"{debug_tag}_from_starnet.tif"),
-                           original_format="tif", bit_depth="16-bit",
-                           original_header=None, is_mono=False, image_meta=None, file_meta=None)
-        except Exception:
-            pass
 
     # -------- “unstretch” → shared pseudo-linear space for BOTH branches ----------
     if is_linear:
@@ -1005,18 +998,6 @@ def blend_comet_stars(
 
 time_key = _minmax_time_key 
 
-def debug_save_marks(file_list, comet_xy, out_dir, radius=12):
-    os.makedirs(out_dir, exist_ok=True)
-    for fp in file_list:
-        img, _, _, _ = load_image(fp)
-        if img is None or fp not in comet_xy: 
-            continue
-        x,y = comet_xy[fp]
-        L = _to_luma(img)
-        disp = cv2.normalize(L, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-        rgb = cv2.cvtColor(disp, cv2.COLOR_GRAY2BGR)
-        cv2.circle(rgb, (int(round(x)), int(round(y))), radius, (0,255,0), 2, cv2.LINE_AA)
-        cv2.imwrite(os.path.join(out_dir, os.path.basename(fp) + ".png"), rgb)
 
 def _protect_core_mask(h: int, w: int, cx: float, cy: float, r: float, soft: float) -> np.ndarray:
     """
