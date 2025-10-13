@@ -146,11 +146,11 @@ def _build_psf_and_assets(
     # --- worker wrapper: load one file, compute assets, return ordered slot ---
     def _compute_one(i: int, path: str):
         # local import to avoid keeping files open in parent
-        with fits.open(path, memmap=True) as hdul:
-            arr = np.asarray(hdul[0].data, dtype=np.float32, order="C")
+        with fits.open(path, memmap=False) as hdul:   # ⬅ change True→False
+            arr = np.array(hdul[0].data, dtype=np.float32, copy=True)  # ⬅ force copy here
             if arr.ndim == 3 and arr.shape[-1] == 1:
                 arr = np.squeeze(arr, axis=-1)
-            hdr = hdul[0].header
+            hdr = hdul[0].header.copy()
         return _compute_frame_assets(
             i, arr, hdr,
             make_masks=bool(make_masks),
@@ -378,11 +378,11 @@ EPS = 1e-6
 # new: lightweight loader that yields one frame at a time
 def _iter_fits(paths):
     for p in paths:
-        with fits.open(p, memmap=True) as hdul:
-            arr = np.asarray(hdul[0].data, dtype=np.float32)
+        with fits.open(p, memmap=False) as hdul:  # ⬅ False
+            arr = np.array(hdul[0].data, dtype=np.float32, copy=True)  # ⬅ copy
             if arr.ndim == 3 and arr.shape[-1] == 1:
                 arr = np.squeeze(arr, axis=-1)
-            hdr = hdul[0].header
+            hdr = hdul[0].header.copy()
         yield arr, hdr
 
 def _to_luma_local(a: np.ndarray) -> np.ndarray:
@@ -401,11 +401,9 @@ def _to_luma_local(a: np.ndarray) -> np.ndarray:
 def _stack_loader(paths):
     ys, hdrs = [], []
     for p in paths:
-        with fits.open(p, memmap=True) as hdul:
-            arr = hdul[0].data
-            hdr = hdul[0].header
-        arr = np.asarray(arr, dtype=np.float32)
-        # squeeze trailing singleton channel
+        with fits.open(p, memmap=False) as hdul:  # ⬅ False
+            arr = np.array(hdul[0].data, dtype=np.float32, copy=True)  # ⬅ copy inside with
+            hdr = hdul[0].header.copy()
         if arr.ndim == 3 and arr.shape[-1] == 1:
             arr = np.squeeze(arr, axis=-1)
         ys.append(arr)
@@ -1671,7 +1669,7 @@ def _read_shape_fast(path) -> tuple[int,int,int]:
     Return (C,H,W) with C in {1,3}, squeezing trailing singleton.
     Uses memmap to avoid loading pixels.
     """
-    with fits.open(path, memmap=True) as hdul:
+    with fits.open(path, memmap=False) as hdul:  # ⬅ False
         a = hdul[0].data
         if a is None:
             raise ValueError(f"No data in {path}")
@@ -1701,19 +1699,15 @@ def _common_hw_from_paths(paths):
     return int(min(Hs)), int(min(Ws))
 
 def _stack_loader_memmap(paths, Ht, Wt, color_mode):
-    """
-    Stream a small batch of frames from disk (memmap), coerce to requested layout,
-    center-crop to (Ht,Wt), sanitize numeric. Returns (list_of_arrays, headers).
-    """
     ys, hdrs = [], []
     for p in paths:
-        with fits.open(p, memmap=True) as hdul:
-            arr = hdul[0].data
-            hdr = hdul[0].header
-        arr = np.asarray(arr, dtype=np.float32, order="C")
-        if arr.ndim == 3 and arr.shape[-1] == 1:  # squeeze trailing singleton
+        with fits.open(p, memmap=False) as hdul:  # ⬅ False
+            raw = np.array(hdul[0].data, dtype=np.float32, copy=True)  # ⬅ copy
+            hdr = hdul[0].header.copy()
+        arr = raw
+        if arr.ndim == 3 and arr.shape[-1] == 1:
             arr = np.squeeze(arr, axis=-1)
-        arr = _normalize_layout_single(arr, color_mode)   # (H,W) or (C,H,W)
+        arr = _normalize_layout_single(arr, color_mode)
         arr = _center_crop(arr, Ht, Wt)
         arr = _sanitize_numeric(arr)
         ys.append(arr); hdrs.append(hdr)
@@ -1777,27 +1771,25 @@ def _prepare_torch_fft_packs_batch(psfs, flip_psf, Hs, Ws, device, dtype):
     return _precompute_torch_psf_ffts(psfs, flip_psf, Hs, Ws, device, dtype)
 
 def _as_chw(np_img: np.ndarray) -> np.ndarray:
-    """Return float32 CHW. Handles (H,W), (3,H,W), (H,W,3)."""
     x = np.asarray(np_img, dtype=np.float32, order="C")
+    if x.size == 0:
+        raise RuntimeError(f"Empty image array after load; raw shape={np_img.shape}")
     if x.ndim == 2:
-        return x[None, ...]                # 1,H,W
-    if x.ndim == 3 and x.shape[0] in (1, 3):   # already C,H,W
+        return x[None, ...]  # 1,H,W
+    if x.ndim == 3 and x.shape[0] in (1, 3):
+        if x.shape[0] == 0:
+            raise RuntimeError(f"Zero channels in CHW array; shape={x.shape}")
         return x
-    if x.ndim == 3 and x.shape[-1] in (1, 3):  # H,W,C -> C,H,W
+    if x.ndim == 3 and x.shape[-1] in (1, 3):
+        if x.shape[-1] == 0:
+            raise RuntimeError(f"Zero channels in HWC array; shape={x.shape}")
         return np.moveaxis(x, -1, 0)
-    # last resort: treat first dim as channels
+    # last resort: treat first dim as channels, but reject zero
+    if x.shape[0] == 0:
+        raise RuntimeError(f"Zero channels in array; shape={x.shape}")
     return x
 
-def _ensure_same_hw(ref: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-    """Center-crop to match ref's H,W if slightly off, assuming CHW."""
-    _, Hr, Wr = ref.shape
-    _, Ht, Wt = t.shape
-    if (Hr, Wr) == (Ht, Wt):
-        return t
-    dh, dw = max(0, Ht - Hr), max(0, Wt - Wr)
-    top  = dh // 2
-    left = dw // 2
-    return t[:, top:top+Hr, left:left+Wr]
+
 
 def _conv_same_np_spatial(a: np.ndarray, k: np.ndarray, out: np.ndarray | None = None):
     try:
@@ -1821,17 +1813,48 @@ def _conv_same_np_spatial(a: np.ndarray, k: np.ndarray, out: np.ndarray | None =
             out[c] = cv2.filter2D(a[c], -1, kf, borderType=cv2.BORDER_REFLECT)
         return out
 
-def _load_frame_i(i):
-    pth = paths[i]
-    ys, _ = _stack_loader_memmap([pth], Ht, Wt, color_mode)
-    return ys[0]
+def _grouped_conv_same_torch_per_sample(x_bc_hw, w_b1kk, B, C):
+    """
+    Depthwise grouped conv per-sample with reflect padding (safe NCHW).
+    Inputs:
+      x_bc_hw : (B, C, H, W) tensor, any memory_format (we force contiguous NCHW)
+      w_b1kk  : (B, 1, kh, kw) per-sample kernels on device (FP32)
+      B, C    : ints
+    Returns:
+      y : (B, C, H, W) contiguous (NCHW)
+    """
+    # use the globally-loaded torch (from pro.runtime_torch.import_torch)
+    F = torch.nn.functional
 
-# Build small adapters so the rest of the loop doesn't change too much:
-class _FrameSeq:
-    def __len__(self): return len(paths)
-    def __getitem__(self, i): return _load_frame_i(i)
+    if x_bc_hw.ndim != 4:
+        raise RuntimeError(f"_grouped_conv_same_torch_per_sample: expected 4D (B,C,H,W), got {tuple(x_bc_hw.shape)}")
+    if w_b1kk.ndim != 4 or w_b1kk.shape[0] != B or w_b1kk.shape[1] != 1:
+        raise RuntimeError(f"_grouped_conv_same_torch_per_sample: bad kernel pack shape {tuple(w_b1kk.shape)} (want (B,1,kh,kw))")
 
-data = _FrameSeq()
+    # ---- FORCE standard contiguous (NCHW) tensors (no channels_last) ----
+    x_bc_hw = x_bc_hw.to(memory_format=torch.contiguous_format).contiguous()
+    w_b1kk  = w_b1kk.to(memory_format=torch.contiguous_format).contiguous()
+
+    kh, kw = int(w_b1kk.shape[-2]), int(w_b1kk.shape[-1])
+    pad = (kw // 2, kw - kw // 2 - 1,  # left, right
+           kh // 2, kh - kh // 2 - 1)  # top, bottom
+
+    # pack to (1, G, H, W) with G=B*C, then grouped conv with G groups
+    G = int(B * C)
+    # reflect pad per-sample, per-channel
+    x_1ghw = x_bc_hw.reshape(1, G, x_bc_hw.shape[-2], x_bc_hw.shape[-1])
+    x_1ghw = F.pad(x_1ghw, pad, mode="reflect")
+
+    # expand kernels from (B,1,kh,kw) → (G,1,kh,kw) (one kernel per (sample,channel))
+    w_g1kk = w_b1kk.repeat_interleave(C, dim=0)
+
+    # grouped conv
+    y_1ghw = F.conv2d(x_1ghw, w_g1kk, padding=0, groups=G)
+
+    # reshape back to (B,C,H,W), return contiguous NCHW
+    y = y_1ghw.reshape(B, C, y_1ghw.shape[-2], y_1ghw.shape[-1]).contiguous()
+    return y
+
 
 # -----------------------------
 # Core
@@ -2035,6 +2058,10 @@ def multiframe_deconv(
     # final SR grid size (Hs,Ws)
     _, Hs, Ws = x.shape
 
+    C_EXPECTED = int(x.shape[0])
+    if C_EXPECTED <= 0:
+        raise RuntimeError("MFDeconv: invalid zero-channel seed; expected C in {1,3}.")
+
     # ---- choose default batch size ----
     if batch_frames is None:
         px = Hs * Ws
@@ -2107,9 +2134,9 @@ def multiframe_deconv(
 
         # channels-last preference kept (does not change dtype)
         if use_channels_last is None:
-            use_channels_last = bool(cuda_ok or mps_ok)
-        if use_channels_last:
-            pass  # CHW tensors will be batched later with channels_last
+            use_channels_last = bool(cuda_ok)   # <- never enable on MPS
+        if mps_ok:
+            use_channels_last = False           # <- force NCHW on MPS
 
         # PSF tensors strictly FP32
         psf_t  = [_to_t(_contig(k)).to(torch.float32)[None, None]  for k  in psfs]    # (1,1,kh,kw)
@@ -2138,8 +2165,7 @@ def multiframe_deconv(
     # ---- batched torch helper (grouped depthwise per-sample) ----
     if use_torch:
         def _grouped_conv_same_torch_per_sample(x_bc_hw, w_b1kk, B, C):
-            if use_channels_last:
-                x_bc_hw = x_bc_hw.contiguous(memory_format=torch.channels_last)
+            x_bc_hw = x_bc_hw.contiguous(memory_format=torch.channels_last)
 
             G = B * C
             kh, kw = int(w_b1kk.shape[-2]), int(w_b1kk.shape[-1])
@@ -2168,37 +2194,48 @@ def multiframe_deconv(
                 return x
             return x.repeat_interleave(r_, dim=-2).repeat_interleave(r_, dim=-1)
 
-        def _make_pinned_batch(idx, C_expected, to_device_dtype):
-            """
-            Assemble a batch -> **always FP32** pinned CPU tensors -> device FP32.
-            'to_device_dtype' is ignored to keep FP32 everywhere.
-            """
-            y_list, m_list, v_list = [], [], []
-            for fi in idx:
-                y_nat = _sanitize_numeric(data[fi])
-                y_chw = _as_chw(y_nat).astype(np.float32, copy=False)
-                if C_expected is not None and y_chw.shape[0] != C_expected:
-                    raise RuntimeError(f"Mixed channel counts: expected C={C_expected}, got C={y_chw.shape[0]} (frame {fi})")
-                m2d = _mask_for(fi, y_chw)
-                v2d = _var_for(fi, y_chw)
-                y_list.append(y_chw); m_list.append(m2d); v_list.append(v2d)
+    def _make_pinned_batch(idx, C_expected, to_device_dtype):
+        """
+        Assemble a batch -> always FP32 CPU tensors -> device FP32.
+        Enforces channel count and **returns NCHW contiguous** tensors.
+        """
+        y_list, m_list, v_list = [], [], []
+        for fi in idx:
+            y_nat = _sanitize_numeric(data[fi])
+            y_chw = _as_chw(y_nat).astype(np.float32, copy=False)
 
-            y_cpu = torch.from_numpy(np.stack(y_list, 0)).to(torch.float32)
-            m_cpu = torch.from_numpy(np.stack(m_list, 0)).to(torch.float32)
-            have_v = all(v is not None for v in v_list)
-            vb_cpu = None if not have_v else torch.from_numpy(np.stack(v_list, 0)).to(torch.float32)
+            # enforce CHW and consistent channel count
+            if y_chw.ndim != 3:
+                raise RuntimeError(f"Frame {fi}: expected CHW after normalization, got shape {tuple(y_chw.shape)}")
+            C_here = int(y_chw.shape[0])
+            if C_here <= 0:
+                raise RuntimeError(f"Frame {fi}: zero channels after normalization (shape={tuple(y_chw.shape)})")
+            if C_expected is not None and C_here != C_expected:
+                raise RuntimeError(f"Mixed channel counts: expected C={C_expected}, got C={C_here} (frame {fi})")
 
-            if cuda_ok:
-                y_cpu = y_cpu.pin_memory(); m_cpu = m_cpu.pin_memory()
-                if vb_cpu is not None: vb_cpu = vb_cpu.pin_memory()
+            m2d = _mask_for(fi, y_chw)
+            v2d = _var_for(fi, y_chw)
+            y_list.append(y_chw); m_list.append(m2d); v_list.append(v2d)
 
-            yb = y_cpu.to(x_t.device, dtype=torch.float32, non_blocking=True)
-            mb = m_cpu.to(x_t.device, dtype=torch.float32, non_blocking=True)
-            vb = None if vb_cpu is None else vb_cpu.to(x_t.device, dtype=torch.float32, non_blocking=True)
+        # CPU (NCHW) tensors
+        y_cpu = torch.from_numpy(np.stack(y_list, 0)).to(torch.float32).contiguous()
+        m_cpu = torch.from_numpy(np.stack(m_list, 0)).to(torch.float32).contiguous()
+        have_v = all(v is not None for v in v_list)
+        vb_cpu = None if not have_v else torch.from_numpy(np.stack(v_list, 0)).to(torch.float32).contiguous()
 
-            if use_channels_last:
-                yb = yb.contiguous(memory_format=torch.channels_last)
-            return yb, mb, vb
+        # optional pin for faster H2D on CUDA
+        if hasattr(torch, "cuda") and torch.cuda.is_available():
+            y_cpu = y_cpu.pin_memory(); m_cpu = m_cpu.pin_memory()
+            if vb_cpu is not None: vb_cpu = vb_cpu.pin_memory()
+
+        # move to device in FP32, keep NCHW contiguous format
+        yb = y_cpu.to(x_t.device, dtype=torch.float32, non_blocking=True).contiguous()
+        mb = m_cpu.to(x_t.device, dtype=torch.float32, non_blocking=True).contiguous()
+        vb = None if vb_cpu is None else vb_cpu.to(x_t.device, dtype=torch.float32, non_blocking=True).contiguous()
+
+        return yb, mb, vb
+
+
 
     # ---- intermediates folder ----
     iter_dir = None
@@ -2250,14 +2287,11 @@ def multiframe_deconv(
                 # prefetch first batch
                 if prefetch_batches:
                     idx0 = frame_idx[ci:ci+B_cur]
-                    if len(idx0) == 0:
-                        idx0 = []
                     if idx0:
-                        Cn = Cn or (_as_chw(_sanitize_numeric(data[idx0[0]])).shape[0])
+                        Cn = C_EXPECTED
                         yb_next, mb_next, vb_next = _make_pinned_batch(idx0, Cn, x_t.dtype)
                     else:
                         yb_next = mb_next = vb_next = None
-
                 while ci < n_frames:
                     idx = frame_idx[ci:ci + B_cur]
                     B = len(idx)
@@ -2273,20 +2307,9 @@ def multiframe_deconv(
                             else:
                                 yb_next = mb_next = vb_next = None
                         else:
-                            y_list, m_list, v_list = [], [], []
-                            Cn = None
-                            for fi in idx:
-                                y_nat = _sanitize_numeric(data[fi])
-                                y_chw = _as_chw(y_nat).astype(np.float32, copy=False)
-                                if Cn is None: Cn = y_chw.shape[0]
-                                if y_chw.shape[0] != Cn:
-                                    raise RuntimeError(f"Mixed channel counts in batch: expected C={Cn} but got C={y_chw.shape[0]} for frame {fi}.")
-                                m2d = _mask_for(fi, y_chw); v2d = _var_for(fi, y_chw)
-                                y_list.append(y_chw); m_list.append(m2d); v_list.append(v2d)
-                            yb = torch.as_tensor(np.stack(y_list, 0), device=x_t.device, dtype=torch.float32)
-                            mb = torch.as_tensor(np.stack(m_list, 0), device=x_t.device, dtype=torch.float32)
-                            have_v = all(v is not None for v in v_list)
-                            vb = None if not have_v else torch.as_tensor(np.stack(v_list, 0), device=x_t.device, dtype=torch.float32)
+                            # No prefetch: still enforce fixed channel count
+                            Cn = C_EXPECTED
+                            yb, mb, vb = _make_pinned_batch(idx, Cn, torch.float32)
                             if use_channels_last:
                                 yb = yb.contiguous(memory_format=torch.channels_last)
 
@@ -2325,7 +2348,10 @@ def multiframe_deconv(
                         # Auto Huber delta cache
                         if huber_delta < 0:
                             if auto_delta_cache is not None and (it % 5 == 1 or any(auto_delta_cache[fi] is None for fi in idx)):
-                                flat = rnat.flatten(start_dim=1)
+                                B, C_here, H0, W0 = rnat.shape
+                                if C_here == 0 or H0 == 0 or W0 == 0:
+                                    raise RuntimeError(f"Empty residual map shape {tuple(rnat.shape)}")
+                                flat = rnat.reshape(B, -1)              # explicit reshape
                                 med  = flat.median(dim=1, keepdim=True).values
                                 mad  = (flat - med).abs().median(dim=1, keepdim=True).values + 1e-6
                                 rms  = 1.4826 * mad
