@@ -660,38 +660,35 @@ def _auto_star_mask_sep(
         err = float(np.median(bkg.rms()))
 
     # Progressive thresholding to limit explosion on dense fields
+    # Threshold ladder
     thresholds = [thresh_sigma, thresh_sigma*2, thresh_sigma*4,
                   thresh_sigma*8, thresh_sigma*16]
-    objs = None
-    used_thresh = float("nan")
-    raw_detected = 0
+
+    # IMPORTANT: when we downscale by 'scale', per-pixel noise goes down by ~scale
+    # (AREA/mean pooling). Use a scaled err for detection to keep sigma thresholds comparable.
+    err_det = float(err_scalar) / float(max(1.0, scale))
+
+    objs = None; used = float("nan"); raw = 0
     for t in thresholds:
         try:
-            cand = sep.extract(data_sub, thresh=float(t), err=err)
+            cand = sep.extract(det, thresh=float(t), err=err_det)
         except Exception:
             cand = None
-        n = 0 if (cand is None) else len(cand)
-        if n == 0:
-            continue
-        if n > max_objs * 12:
-            continue  # too many; tighten threshold
-        objs = cand
-        raw_detected = n
-        used_thresh = float(t)
+        n = 0 if cand is None else len(cand)
+        if n == 0:          continue
+        if n > max_objs*12: continue
+        objs, raw, used = cand, n, float(t)
         break
 
     if objs is None or len(objs) == 0:
-        # last-ditch: very high threshold w/ minarea
         try:
-            cand = sep.extract(data_sub, thresh=thresholds[-1], err=err, minarea=9)
+            cand = sep.extract(det, thresh=thresholds[-1], err=err_det, minarea=9)
         except Exception:
             cand = None
         if cand is None or len(cand) == 0:
             status_cb("Star mask: no sources found (mask disabled for this frame).")
-            return np.ones((h, w), dtype=np.float32, order="C")
-        objs = cand
-        raw_detected = len(cand)
-        used_thresh = float(thresholds[-1])
+            return np.ones((H, W), dtype=np.float32, order="C")
+        objs, raw, used = cand, len(cand), float(thresholds[-1])
 
     # Keep only the brightest max_objs detections
     if "flux" in objs.dtype.names:
@@ -1364,6 +1361,7 @@ def _ensure_var_list(variances, data):
                 Ht, Wt = base.shape
                 vv = _center_crop(vv, Ht, Wt)
             # clip tiny/negatives
+            vv = np.nan_to_num(vv, nan=1e-8, posinf=1e8, neginf=1e8, copy=False)
             vv = np.clip(vv, 1e-8, None).astype(np.float32, copy=False)
             out.append(vv)
     return out
@@ -1814,46 +1812,21 @@ def _conv_same_np_spatial(a: np.ndarray, k: np.ndarray, out: np.ndarray | None =
         return out
 
 def _grouped_conv_same_torch_per_sample(x_bc_hw, w_b1kk, B, C):
-    """
-    x_bc_hw : (B,C,H,W), torch.float32 on device
-    w_b1kk  : (B,1,kh,kw), torch.float32 on device
-    Returns (B,C,H,W) contiguous (NCHW).
-    """
     F = torch.nn.functional
-
-    # Force standard NCHW contiguous tensors
     x_bc_hw = x_bc_hw.to(memory_format=torch.contiguous_format).contiguous()
     w_b1kk  = w_b1kk.to(memory_format=torch.contiguous_format).contiguous()
 
     kh, kw = int(w_b1kk.shape[-2]), int(w_b1kk.shape[-1])
     pad = (kw // 2, kw - kw // 2 - 1,  kh // 2, kh - kh // 2 - 1)
 
-    if x_bc_hw.device.type == "mps":
-        # Safe, slower path: convolve each channel separately, no groups
-        ys = []
-        for j in range(B):                      # per sample
-            xj = x_bc_hw[j:j+1]                # (1,C,H,W)
-            # reflect pad once per sample
-            xj = F.pad(xj, pad, mode="reflect")
-            cj_out = []
-            # one shared kernel per sample j: (1,1,kh,kw)
-            kj = w_b1kk[j:j+1]                 # keep shape (1,1,kh,kw)
-            for c in range(C):
-                # slice that channel as its own (1,1,H,W) tensor
-                xjc = xj[:, c:c+1, ...]
-                yjc = F.conv2d(xjc, kj, padding=0, groups=1)  # no groups
-                cj_out.append(yjc)
-            ys.append(torch.cat(cj_out, dim=1))  # (1,C,H,W)
-        return torch.stack([y[0] for y in ys], 0).contiguous()
-
-
-    # ---- FAST PATH (CUDA/CPU): single grouped conv with G=B*C ----
+    # unified path (CUDA/CPU/MPS): one grouped conv with G=B*C
     G = int(B * C)
     x_1ghw = x_bc_hw.reshape(1, G, x_bc_hw.shape[-2], x_bc_hw.shape[-1])
     x_1ghw = F.pad(x_1ghw, pad, mode="reflect")
     w_g1kk = w_b1kk.repeat_interleave(C, dim=0)        # (G,1,kh,kw)
     y_1ghw = F.conv2d(x_1ghw, w_g1kk, padding=0, groups=G)
     return y_1ghw.reshape(B, C, y_1ghw.shape[-2], y_1ghw.shape[-1]).contiguous()
+
 
 # put near other small helpers
 def _robust_med_mad_t(x, max_elems_per_sample: int = 2_000_000):
@@ -2436,19 +2409,20 @@ def multiframe_deconv(
 
                         # Per-pixel variance map.
                         if vb is None:
-                            med_v, mad_v = _robust_med_mad_t(rnat, max_elems_per_sample=2_000_000)
-                            vmap = (1.4826 * mad_v) ** 2
-                            vmap = vmap.expand(-1, Cn, rnat.shape[-2], rnat.shape[-1])
+                            # robust scalar per-frame -> expand to (B,C,H,W) with repeat
+                            med, mad = _robust_med_mad_t(rnat, max_elems_per_sample=2_000_000)
+                            vmap = (1.4826 * mad) ** 2                 # (B,1,1,1)
+                            vmap = vmap.repeat(1, Cn, rnat.shape[-2], rnat.shape[-1]).contiguous()
                         else:
-                            vmap = vb.unsqueeze(1).expand(-1, Cn, -1, -1)
-
+                            vmap = vb.unsqueeze(1).repeat(1, Cn, 1, 1).contiguous()
                         if DEBUG_FLAT_WEIGHTS:
                             # neutral weights per channel (mask only) – matches “good” CPU behavior
                             wmap_low = mb.unsqueeze(1)
                         else:
-                            wmap_low = psi_over_r / (vmap + EPS)
-                            wmap_low = wmap_low * mb.unsqueeze(1)
-
+                            wmap_low = (psi_over_r / (vmap + EPS))
+                            m1 = mb.unsqueeze(1).repeat(1, Cn, 1, 1).contiguous()
+                            wmap_low = wmap_low * m1
+                            wmap_low = torch.nan_to_num(wmap_low, nan=0.0, posinf=0.0, neginf=0.0)
                         # --- adjoint (upsample if SR) ---
                         if r > 1:
                             up_y    = _upsample_sum_bt_t(wmap_low * yb,       r)
