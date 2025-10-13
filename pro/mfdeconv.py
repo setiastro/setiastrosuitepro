@@ -1855,6 +1855,25 @@ def _grouped_conv_same_torch_per_sample(x_bc_hw, w_b1kk, B, C):
     y_1ghw = F.conv2d(x_1ghw, w_g1kk, padding=0, groups=G)
     return y_1ghw.reshape(B, C, y_1ghw.shape[-2], y_1ghw.shape[-1]).contiguous()
 
+# put near other small helpers
+def _robust_med_mad_t(x, max_elems_per_sample: int = 2_000_000):
+    """
+    x: (B, C, H, W) tensor on device.
+    Returns (median[B,1,1,1], mad[B,1,1,1]) computed on a strided subsample
+    to avoid 'quantile() input tensor is too large'.
+    """
+    import math, torch
+    B = x.shape[0]
+    flat = x.reshape(B, -1)
+    N = flat.shape[1]
+    if N > max_elems_per_sample:
+        stride = int(math.ceil(N / float(max_elems_per_sample)))
+        flat = flat[:, ::stride]  # strided subsample
+    med = torch.quantile(flat, 0.5, dim=1, keepdim=True)
+    mad = torch.quantile((flat - med).abs(), 0.5, dim=1, keepdim=True) + 1e-6
+    return med.view(B,1,1,1), mad.view(B,1,1,1)
+
+
 # -----------------------------
 # Core
 # -----------------------------
@@ -1895,7 +1914,7 @@ def multiframe_deconv(
     Optimized GPU path: AMP for convs, channels-last, pinned-memory prefetch, optional FFT for large kernels.
     """
     mixed_precision = False
-    DEBUG_FLAT_WEIGHTS = True 
+    DEBUG_FLAT_WEIGHTS = False 
     # ---------- local helpers (kept self-contained) ----------
     def _emit_pct(pct: float, msg: str | None = None):
         pct = float(max(0.0, min(1.0, pct)))
@@ -2401,12 +2420,10 @@ def multiframe_deconv(
                                 B, C_here, H0, W0 = rnat.shape
                                 if C_here == 0 or H0 == 0 or W0 == 0:
                                     raise RuntimeError(f"Empty residual map shape {tuple(rnat.shape)}")
-                                flat = rnat.reshape(B, -1)              # explicit reshape
-                                med  = flat.median(dim=1, keepdim=True).values
-                                mad  = (flat - med).abs().median(dim=1, keepdim=True).values + 1e-6
-                                rms  = 1.4826 * mad
+                                med, mad = _robust_med_mad_t(rnat, max_elems_per_sample=2_000_000)
+                                rms = 1.4826 * mad
                                 for j, fi in enumerate(idx):
-                                    auto_delta_cache[fi] = float((-huber_delta) * torch.clamp(rms[j, 0], min=1e-6).item())
+                                    auto_delta_cache[fi] = float((-huber_delta) * torch.clamp(rms[j, 0, 0, 0], min=1e-6).item())
                             deltas = torch.tensor([auto_delta_cache[fi] for fi in idx], device=x_t.device,
                                                   dtype=torch.float32).view(B, 1, 1, 1)
                         else:
@@ -2419,11 +2436,9 @@ def multiframe_deconv(
 
                         # Per-pixel variance map.
                         if vb is None:
-                            flat_v = rnat.flatten(start_dim=1)
-                            med_v  = flat_v.median(dim=1, keepdim=True).values
-                            mad_v  = (flat_v - med_v).abs().median(dim=1, keepdim=True).values + 1e-6
-                            vmap   = (1.4826 * mad_v) ** 2
-                            vmap   = vmap.view(B, 1, 1, 1).expand(-1, Cn, rnat.shape[-2], rnat.shape[-1])
+                            med_v, mad_v = _robust_med_mad_t(rnat, max_elems_per_sample=2_000_000)
+                            vmap = (1.4826 * mad_v) ** 2
+                            vmap = vmap.expand(-1, Cn, rnat.shape[-2], rnat.shape[-1])
                         else:
                             vmap = vb.unsqueeze(1).expand(-1, Cn, -1, -1)
 
