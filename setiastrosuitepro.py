@@ -269,7 +269,7 @@ from pro.status_log_dock import StatusLogDock
 from pro.log_bus import LogBus
 
 
-VERSION = "1.3.8"
+VERSION = "1.3.9"
 
 
 
@@ -5201,6 +5201,10 @@ class AstroSuiteProMainWindow(QMainWindow):
                 "cosmicclarity": "cosmic_clarity",
                 "cosmic_clarity": "cosmic_clarity",  
 
+                "crop": "crop",
+                "geom_crop": "crop",
+
+
                 "wavescale_hdr": "wavescale_hdr",
                 "wavescalehdr": "wavescale_hdr",
                 "wavescale": "wavescale_hdr",   
@@ -5371,6 +5375,15 @@ class AstroSuiteProMainWindow(QMainWindow):
                 
                 open_curves_with_preset(self, preset)
                 return
+            if cid == "crop":
+                try:
+                    from pro.crop_preset import run_crop_via_preset
+                    run_crop_via_preset(self, preset or {}, target_doc=None)
+                    self._log("Ran Crop headlessly on active view.")
+                except Exception as e:
+                    QMessageBox.warning(self, "Crop", f"Apply failed:\n{e}")
+                return
+            
             if cid == "star_align":
                 try:
                     from pro.star_alignment_preset import run_star_alignment_via_preset
@@ -5439,6 +5452,14 @@ class AstroSuiteProMainWindow(QMainWindow):
             except Exception as e:
                 
                 QMessageBox.warning(self, "GHS", f"Apply failed:\n{e}")
+            return
+        if cid == "crop":
+            try:
+                from pro.crop_preset import apply_crop_via_preset
+                apply_crop_via_preset(self, doc, preset or {})
+                self._log(f"Applied Crop preset to '{target_sw.windowTitle()}'")
+            except Exception as e:
+                QMessageBox.warning(self, "Crop", f"Apply failed:\n{e}")
             return
 
         if cid == "pedestal":
