@@ -2617,6 +2617,11 @@ def _u16_to_float01(x: np.ndarray) -> np.ndarray:
         return np.clip(x.astype(np.float32), 0.0, 1.0)
     return (x.astype(np.float32) / 65535.0).astype(np.float32)
 
+def _write_poly_or_unknown(fh, file_key: str, kind_name: str):
+    """Helper: write a block with no numeric matrix (loader maps to (kind, None))."""
+    fh.write(f"FILE: {file_key}\n")
+    fh.write(f"KIND: {kind_name}\n")
+    fh.write("MATRIX:\nUNSUPPORTED\n\n")
 
 class StackingSuiteDialog(QDialog):
     requestRelaunch = pyqtSignal(str, str)  # old_dir, new_dir
@@ -3431,13 +3436,27 @@ class StackingSuiteDialog(QDialog):
 
         # --- Distortion / Transform model ---
         # --- Distortion / Transform model ---
-        disto_box = QGroupBox("Distortion / Transform - PLACEHOLDER")
+        disto_box  = QGroupBox("Distortion / Transform")
         disto_form = QFormLayout(disto_box)
 
         self.align_model_combo = QComboBox()
-        self.align_model_combo.addItems(["Affine (fast)", "Homography (projective)", "Thin Plate Spline (nonlinear)"])
+        # Order matters for index mapping below
+        self.align_model_combo.addItems([
+            "Affine (fast)",
+            "Homography (projective)",
+            "Polynomial 3rd-order",
+            "Polynomial 4th-order",
+        ])
+
+        # Map saved string -> index
         _saved_model = (self.settings.value("stacking/align/model", "affine") or "affine").lower()
-        self.align_model_combo.setCurrentIndex(0 if _saved_model=="affine" else (1 if _saved_model=="homography" else 2))
+        _model_to_idx = {
+            "affine": 0,
+            "homography": 1,
+            "poly3": 2,
+            "poly4": 3,
+        }
+        self.align_model_combo.setCurrentIndex(_model_to_idx.get(_saved_model, 0))
         disto_form.addRow("Model:", self.align_model_combo)
 
         # Shared
@@ -3460,29 +3479,20 @@ class StackingSuiteDialog(QDialog):
         self._h_label = QLabel("Homog. RANSAC reproj (px):")
         disto_form.addRow(self._h_label, self.h_ransac_reproj)
 
-        # TPS-specific
-        self.tps_lambda = QDoubleSpinBox()
-        self.tps_lambda.setRange(0.0, 5.0)
-        self.tps_lambda.setDecimals(3)
-        self.tps_lambda.setSingleStep(0.01)
-        self.tps_lambda.setValue(self.settings.value("stacking/align/tps_lambda", 0.10, type=float))
-        self._tps_label = QLabel("TPS λ (bending):")
-        disto_form.addRow(self._tps_label, self.tps_lambda)
+        # (Removed TPS controls)
 
         def _toggle_disto_rows():
             m = self.align_model_combo.currentIndex()
-            is_h = (m == 1)
-            is_t = (m == 2)
-            # Toggle only the specific label+editor pairs
+            is_h = (m == 1)             # homography
+            # enable only homography controls when selected
             self._h_label.setEnabled(is_h)
             self.h_ransac_reproj.setEnabled(is_h)
-            self._tps_label.setEnabled(is_t)
-            self.tps_lambda.setEnabled(is_t)
 
         _toggle_disto_rows()
         self.align_model_combo.currentIndexChanged.connect(lambda _: _toggle_disto_rows())
 
         left_col.addWidget(disto_box)
+
 
         # --- Alignment ---
         gb_align = QGroupBox("Alignment")
@@ -4069,13 +4079,16 @@ class StackingSuiteDialog(QDialog):
         self.settings.setValue("stacking/autocrop_enabled", self.autocrop_cb.isChecked())
         self.settings.setValue("stacking/autocrop_pct", float(self.autocrop_pct.value()))
 
+        # ----- alignment model (affine | homography | poly3 | poly4) -----
         model_idx = self.align_model_combo.currentIndex()
-        model_name = "affine" if model_idx == 0 else ("homography" if model_idx == 1 else "tps")
+        if   model_idx == 0: model_name = "affine"
+        elif model_idx == 1: model_name = "homography"
+        elif model_idx == 2: model_name = "poly3"
+        else:                model_name = "poly4"
         self.settings.setValue("stacking/align/model", model_name)
-        self.settings.setValue("stacking/align/max_cp", int(self.align_max_cp.value()))
-        self.settings.setValue("stacking/align/downsample", int(self.align_downsample.value()))
-        self.settings.setValue("stacking/align/h_reproj", float(self.h_ransac_reproj.value()))
-        self.settings.setValue("stacking/align/tps_lambda", float(self.tps_lambda.value()))
+        self.settings.setValue("stacking/align/max_cp",      int(self.align_max_cp.value()))
+        self.settings.setValue("stacking/align/downsample",  int(self.align_downsample.value()))
+        self.settings.setValue("stacking/align/h_reproj",    float(self.h_ransac_reproj.value()))
 
         # Star mask params
         self.settings.setValue("stacking/mfdeconv/star_mask/thresh_sigma",  float(self.sm_thresh.value()))
@@ -10008,35 +10021,40 @@ class StackingSuiteDialog(QDialog):
 
 
     def load_alignment_matrices_custom(self, file_path):
-
         transforms = {}
         with open(file_path, "r") as f:
             content = f.read()
 
         blocks = re.split(r"\n\s*\n", content.strip())
-
         for block in blocks:
-            lines = [line.strip() for line in block.splitlines() if line.strip()]
-            if not lines:
+            lines = [ln.strip() for ln in block.splitlines() if ln.strip() and not ln.strip().startswith("#")]
+            if not lines or not lines[0].startswith("FILE:"):
                 continue
-            if lines[0].startswith("FILE:"):
-                raw_file_path = lines[0].replace("FILE:", "").strip()
-                # *** KEY FIX: normalize here
-                curr_file = os.path.normpath(raw_file_path)
-            else:
-                continue
-            
-            if len(lines) < 4 or not lines[1].startswith("MATRIX:"):
+            curr_file = os.path.normpath(lines[0].replace("FILE:", "").strip())
+            # find "MATRIX:" line
+            try:
+                m_idx = next(i for i,l in enumerate(lines) if l.startswith("MATRIX:"))
+            except StopIteration:
                 continue
 
-            row0 = lines[2].split(",")
-            row1 = lines[3].split(",")
-            a, b, tx = [float(x) for x in row0]
-            c, d, ty = [float(x) for x in row1]
-
-            transforms[curr_file] = np.array([[a, b, tx],
-                                            [c, d, ty]], dtype=np.float32)
+            # Try parse 2×3 first, else 3×3
+            try:
+                r0 = [float(x) for x in lines[m_idx+1].split(",")]
+                r1 = [float(x) for x in lines[m_idx+2].split(",")]
+                if len(r0) == 3 and len(r1) == 3:
+                    transforms[curr_file] = np.array([[r0[0], r0[1], r0[2]],
+                                                    [r1[0], r1[1], r1[2]]], dtype=np.float32)
+                    continue
+                # 3×3
+                r2 = [float(x) for x in lines[m_idx+3].split(",")]
+                if len(r0) == len(r1) == len(r2) == 3:
+                    H = np.array([r0, r1, r2], dtype=np.float32)
+                    transforms[curr_file] = H
+            except Exception:
+                # skip malformed block
+                continue
         return transforms
+
 
     def _make_star_trail(self):
         # 1) collect all your calibrated light frames
@@ -10108,7 +10126,7 @@ class StackingSuiteDialog(QDialog):
 
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             default_name = self._safe_component(f"StarTrail_{n_frames:03d}frames_{ts}")
-            filters = "TIFF (*.tif);;PNG (*.png);;JPEG (*.jpg *.jpeg);;FITS (*.fits);;XISF (*.xisf')"
+            filters = "TIFF (*.tif);;PNG (*.png);;JPEG (*.jpg *.jpeg);;FITS (*.fits);;XISF (*.xisf)"
             path, chosen_filter = QFileDialog.getSaveFileName(
                 self, "Save Star-Trail Image",
                 os.path.join(self.stacking_directory, default_name),
@@ -10214,15 +10232,20 @@ class StackingSuiteDialog(QDialog):
         return arr, header
 
     def _dither_phase_fill(self, matrices: dict[str, np.ndarray], bins=8) -> float:
-        """Return fraction of occupied (dx,dy) phase bins in [0,1)×[0,1)."""
         hist = np.zeros((bins, bins), dtype=np.int32)
         for M in matrices.values():
-            # fractional translation at origin
-            tx, ty = float(M[0,2]), float(M[1,2])
+            M = np.asarray(M)
+            if M.shape == (2,3):
+                tx, ty = float(M[0,2]), float(M[1,2])
+            elif M.shape == (3,3):
+                # translation at origin for homography
+                tx, ty = float(M[0,2]), float(M[1,2])
+            else:
+                continue
             fx = (tx - math.floor(tx)) % 1.0
             fy = (ty - math.floor(ty)) % 1.0
-            ix = min(int(fx * bins), bins-1)
-            iy = min(int(fy * bins), bins-1)
+            ix = min(int(fx * bins), bins - 1)
+            iy = min(int(fy * bins), bins - 1)
             hist[iy, ix] += 1
         return float(np.count_nonzero(hist)) / float(hist.size)
 
@@ -10283,8 +10306,27 @@ class StackingSuiteDialog(QDialog):
         self.valid_matrices = {
             os.path.normpath(k): np.asarray(v, dtype=np.float32)
             for k, v in valid_matrices.items() if v is not None
-                }        
-        self.save_alignment_matrices_sasd(valid_matrices)
+        }
+
+        # ✅ Write SASD v2 using model-aware transforms captured by the thread
+        try:
+            sasd_out = os.path.join(self.stacking_directory, "alignment_transforms.sasd")
+            # pull over the per-file model-aware xforms and reference info
+            self.drizzle_xforms = dict(getattr(alignment_thread, "drizzle_xforms", {}))
+            self.ref_shape_for_drizzle = tuple(getattr(alignment_thread, "reference_image_2d", np.zeros((1,1), np.float32)).shape[:2])
+            self.ref_path_for_drizzle  = alignment_thread.reference if isinstance(alignment_thread.reference, str) else "__ACTIVE_VIEW__"
+            self._save_alignment_transforms_sasd_v2(
+                out_path=sasd_out,
+                ref_shape=self.ref_shape_for_drizzle,
+                ref_path=self.ref_path_for_drizzle,
+                drizzle_xforms=self.drizzle_xforms,
+                fallback_affine=self.valid_matrices,  # in case a few files missed model-aware
+            )
+            self.update_status("✅ Transform file saved as alignment_transforms.sasd (v2)")
+        except Exception as e:
+            self.update_status(f"⚠️ Failed to write SASD v2 ({e}); writing affine-only fallback.")
+            self.save_alignment_matrices_sasd(valid_matrices)  # old writer as last resort
+
 
         try:
             if self._comet_seed and self.reference_frame and getattr(self, "valid_matrices", None):
@@ -10320,6 +10362,18 @@ class StackingSuiteDialog(QDialog):
             for k in accepted
             if k in final_map and os.path.exists(final_map[k])
         }
+
+        self.matrix_by_aligned = {}
+        self.orig_by_aligned   = {}
+        for norm_path, aligned_path in self.valid_transforms.items():
+            M = self.valid_matrices.get(norm_path)
+            if M is not None:
+                self.matrix_by_aligned[os.path.normpath(aligned_path)] = M
+            self.orig_by_aligned[os.path.normpath(aligned_path)] = os.path.normpath(norm_path)
+        # For drizzle: keep model-aware xforms and reference geometry
+        self.drizzle_xforms = dict(getattr(alignment_thread, "drizzle_xforms", {}))
+        self.ref_shape_for_drizzle = tuple(getattr(alignment_thread, "reference_image_2d", np.zeros((1,1), np.float32)).shape[:2])
+        self.ref_path_for_drizzle  = alignment_thread.reference if isinstance(alignment_thread.reference, str) else "__ACTIVE_VIEW__"
 
         # finalize alignment phase
         self.alignment_thread = None
@@ -10425,7 +10479,7 @@ class StackingSuiteDialog(QDialog):
                 self.update_status("⚠️ No aligned frames available for MF deconvolution.")
             else:
                 self._mf_pd = QProgressDialog("Multi-frame deconvolving…", "Cancel", 0, len(mf_groups), self)
-                self._mf_pd.setWindowModality(Qt.WindowModality.ApplicationModal)
+                #self._mf_pd.setWindowModality(Qt.WindowModality.ApplicationModal)
                 self._mf_pd.setMinimumDuration(0)
                 self._mf_pd.setWindowTitle("MF Deconvolution")
                 self._mf_pd.setValue(0)
@@ -10996,7 +11050,7 @@ class StackingSuiteDialog(QDialog):
 
                     # 3) transform XY into registered frame
                     if reg_path:
-                        M = self.valid_matrices.get(os.path.normpath(reg_path))
+                        M = self.matrix_by_aligned.get(os.path.normpath(reg_path))
                         if M is not None and np.asarray(M).shape == (2,3):
                             x, y = seed_xy
                             a,b,tx = M[0]; c,d,ty = M[1]
@@ -11201,7 +11255,15 @@ class StackingSuiteDialog(QDialog):
                 log(f"ℹ️ Skipping rejection map save for '{group_key}' (drizzle disabled).")
 
         QApplication.processEvents()
-
+        # Build ORIGINALS list for each group (needed for true drizzle)
+        originals_by_group = {}
+        for group, reg_list in grouped_files.items():
+            orig_list = []
+            for rp in reg_list:  # registered path
+                op = self.orig_by_aligned.get(os.path.normpath(rp))
+                if op:
+                    orig_list.append(op)
+            originals_by_group[group] = orig_list
         # ---- Drizzle pass (only for groups with drizzle enabled) ----
         for group_key, file_list in grouped_files.items():
             dconf = drizzle_dict.get(group_key)
@@ -11218,14 +11280,15 @@ class StackingSuiteDialog(QDialog):
 
             self.drizzle_stack_one_group(
                 group_key=group_key,
-                file_list=file_list,
-                transforms_dict=transforms_dict,   # kept for compatibility; method reloads from disk
+                file_list=file_list,                          # registered (for headers/labels)
+                original_list=originals_by_group.get(group_key, []),  # <-- NEW
+                transforms_dict=transforms_dict,
                 frame_weights=frame_weights,
                 scale_factor=scale_factor,
                 drop_shrink=drop_shrink,
                 rejection_map=rejections_for_group,
                 autocrop_enabled=autocrop_enabled,
-                rect_override=global_rect,         # drizzle path already handles rect internally
+                rect_override=global_rect,
                 status_cb=log
             )
 
@@ -11991,7 +12054,7 @@ class StackingSuiteDialog(QDialog):
         self._mf_groups_done = 0        
         self._mf_pd = QProgressDialog("Multi-frame deconvolving…", "Cancel", 0, self._mf_total_groups * 1000, self)
         self._mf_pd.setValue(0)
-        self._mf_pd.setWindowModality(Qt.WindowModality.ApplicationModal)
+        #self._mf_pd.setWindowModality(Qt.WindowModality.ApplicationModal)
         self._mf_pd.setMinimumDuration(0)
         self._mf_pd.setWindowTitle("MF Deconvolution")
         self._mf_pd.setRange(0, self._mf_total_groups * 1000)
@@ -12361,21 +12424,178 @@ class StackingSuiteDialog(QDialog):
         result = matrix[:, :2] @ point + matrix[:, 2]
         return result[0], result[1]
 
+    def _save_alignment_transforms_sasd_v2(
+        self,
+        *,
+        out_path: str,
+        ref_shape: tuple[int, int],
+        ref_path: str,
+        drizzle_xforms: dict,
+        fallback_affine: dict,
+    ):
+        """
+        Write SASD v2 with per-file KIND and proper matrix sizes.
+
+        drizzle_xforms: {orig_path: (kind, matrix_or_None)}
+            kind ∈ {"affine","homography","poly3","poly4","tps","thin_plate_spline"} (case-insensitive)
+            For poly*/tps, matrix must be None (we'll write a sentinel).
+
+        fallback_affine: {orig_path: 2x3}
+            Used only if we truly lack model info for a file, or the numeric
+            matrix for an affine/homography entry is malformed.
+        """
+
+        # --- header dimensions ---
+        try:
+            Href, Wref = (int(ref_shape[0]), int(ref_shape[1]))
+        except Exception:
+            Href, Wref = 0, 0
+
+        # --- normalize keys once ---
+        def _normdict(d):
+            return {os.path.normpath(k): v for k, v in (d or {}).items()}
+
+        dx = _normdict(drizzle_xforms or {})
+        fa = _normdict(fallback_affine or {})
+
+        # Deterministic union of originals we know about
+        originals = sorted(set(dx.keys()) | set(fa.keys()))
+
+        # Helper to write non-matrix kinds (poly*/tps/unknown) with UNSUPPORTED sentinel
+        def _write_poly_or_unknown(_f, _k, _kind_text: str):
+            _f.write(f"FILE: {_k}\n")
+            _f.write(f"KIND: {_kind_text}\n")
+            _f.write("MATRIX:\n")
+            _f.write("UNSUPPORTED\n\n")
+
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write(f"REF_SHAPE: {Href}, {Wref}\n")
+            f.write(f"REF_PATH: {ref_path}\n")
+            f.write("MODEL: mixed\n\n")
+
+            for k in originals:
+                kind, M = (None, None)
+                if k in dx:
+                    kind, M = dx[k]
+
+                kind = (kind or "").strip().lower()
+
+                # --- Decide whether to use fallback affine ---
+                # We ONLY use fallback when:
+                #   a) there is no kind at all, or
+                #   b) kind is affine/homography but matrix is missing/malformed.
+                use_fallback_affine = False
+                if not kind:
+                    use_fallback_affine = True
+                elif kind in ("affine", "homography"):
+                    # We'll validate below; mark for possible fallback
+                    use_fallback_affine = (M is None)
+
+                if use_fallback_affine and (k in fa):
+                    kind = "affine"
+                    M = np.asarray(fa[k], np.float32).reshape(2, 3)
+
+                # --- Write by kind ---
+                if kind == "homography":
+                    # Expect 3x3; if bad, try fallback or write UNSUPPORTED homography
+                    try:
+                        H = np.asarray(M, np.float64).reshape(3, 3)
+                    except Exception:
+                        if k in fa:
+                            # Fallback to affine numbers if available
+                            A = np.asarray(fa[k], np.float64).reshape(2, 3)
+                            f.write(f"FILE: {k}\n")
+                            f.write("KIND: affine\n")
+                            f.write("MATRIX:\n")
+                            f.write(f"{A[0,0]:.9f}, {A[0,1]:.9f}, {A[0,2]:.9f}\n")
+                            f.write(f"{A[1,0]:.9f}, {A[1,1]:.9f}, {A[1,2]:.9f}\n\n")
+                        else:
+                            _write_poly_or_unknown(f, k, "homography")
+                        continue
+
+                    f.write(f"FILE: {k}\n")
+                    f.write("KIND: homography\n")
+                    f.write("MATRIX:\n")
+                    f.write(f"{H[0,0]:.9f}, {H[0,1]:.9f}, {H[0,2]:.9f}\n")
+                    f.write(f"{H[1,0]:.9f}, {H[1,1]:.9f}, {H[1,2]:.9f}\n")
+                    f.write(f"{H[2,0]:.9f}, {H[2,1]:.9f}, {H[2,2]:.9f}\n\n")
+                    continue
+
+                if kind == "affine":
+                    # Expect 2x3; if bad, try fallback or write UNSUPPORTED affine
+                    try:
+                        A = np.asarray(M, np.float64).reshape(2, 3)
+                    except Exception:
+                        if k in fa:
+                            A = np.asarray(fa[k], np.float64).reshape(2, 3)
+                        else:
+                            _write_poly_or_unknown(f, k, "affine")
+                            continue
+
+                    f.write(f"FILE: {k}\n")
+                    f.write("KIND: affine\n")
+                    f.write("MATRIX:\n")
+                    f.write(f"{A[0,0]:.9f}, {A[0,1]:.9f}, {A[0,2]:.9f}\n")
+                    f.write(f"{A[1,0]:.9f}, {A[1,1]:.9f}, {A[1,2]:.9f}\n\n")
+                    continue
+
+                # Non-matrix kinds we want to preserve (identity deposit on _n_r):
+                if kind in ("poly3", "poly4", "tps", "thin_plate_spline"):
+                    _write_poly_or_unknown(f, k, kind)
+                    continue
+
+                # Unknown but present -> keep KIND so loader can choose strategy; mark matrix unsupported
+                if kind:
+                    _write_poly_or_unknown(f, k, kind)
+                    continue
+
+                # Truly nothing for this file: skip writing a broken block
+                # (drizzle will simply not see this frame)
+                continue
+
+
+
     def drizzle_stack_one_group(
         self,
+        *,
         group_key,
-        file_list,
+        file_list,           # registered _n_r.fit (keep for headers/metadata)
+        original_list,       # NEW: originals (normalized), used as pixel sources
         transforms_dict,
         frame_weights,
-        scale_factor=2.0,
-        drop_shrink=0.65,
-        rejection_map=None,
-        *,
-        autocrop_enabled: bool = False,
-        rect_override=None,
-        status_cb=None
+        scale_factor,
+        drop_shrink,
+        rejection_map,
+        autocrop_enabled,
+        rect_override,
+        status_cb
     ):
-        log = status_cb or (lambda *_: None)
+        # Load per-frame transforms (SASD v2)
+        log = status_cb or (lambda *_: None)        
+        sasd_path = os.path.join(self.stacking_directory, "alignment_transforms.sasd")
+        ref_H, ref_W, xforms = self._load_sasd_v2(sasd_path)
+        if not (ref_H and ref_W):
+            # Fallback to in-memory shape captured at alignment time
+            rs = getattr(self, "ref_shape_for_drizzle", None)
+            if isinstance(rs, tuple) and len(rs) == 2 and all(int(v) > 0 for v in rs):
+                ref_H, ref_W = int(rs[0]), int(rs[1])
+                status_cb(f"ℹ️ Using in-memory REF_SHAPE fallback: {ref_H}×{ref_W}")
+            else:
+                status_cb("⚠️ Missing REF_SHAPE in SASD; cannot drizzle.")
+                return
+
+        log(f"✅ SASD v2: loaded {len(xforms)} transform(s).")
+        # Debug (first few):
+        try:
+            sample_need = [os.path.basename(p) for p in original_list[:5]]
+            sample_have = [os.path.basename(p) for p in list(xforms.keys())[:5]]
+            log(f"   originals needed (sample): {sample_need}")
+            log(f"   sasd FILEs (sample):       {sample_have}")
+        except Exception:
+            pass
+
+        canvas_H, canvas_W = int(ref_H * scale_factor), int(ref_W * scale_factor)        
+
 
         # --- kernel config from settings ---
         kernel_name = self.settings.value("stacking/drizzle_kernel", "square", type=str).lower()
@@ -12395,14 +12615,6 @@ class StackingSuiteDialog(QDialog):
         if len(file_list) < 2:
             log(f"⚠️ Group '{group_key}' does not have enough frames to drizzle.")
             return
-
-        transforms_path = os.path.join(self.stacking_directory, "alignment_transforms.sasd")
-        if not os.path.exists(transforms_path):
-            log(f"⚠️ No alignment_transforms.sasd found at {transforms_path}!")
-            return
-
-        new_transforms_dict = self.load_alignment_matrices_custom(transforms_path)
-        log(f"✅ Loaded {len(new_transforms_dict)} transforms from disk for drizzle.")
 
         # --- establish geometry + is_mono before choosing depositor ---
         first_file = file_list[0]
@@ -12431,83 +12643,156 @@ class StackingSuiteDialog(QDialog):
         log(f"Using {kinf} kernel drizzle ({'mono' if is_mono else 'color'}).")
 
         # --- allocate buffers ---
-        out_h = int(h * scale_factor)
-        out_w = int(w * scale_factor)
+        out_h = int(canvas_H)
+        out_w = int(canvas_W)
         drizzle_buffer  = np.zeros((out_h, out_w) if is_mono else (out_h, out_w, c), dtype=self._dtype())
         coverage_buffer = np.zeros_like(drizzle_buffer, dtype=self._dtype())
         finalize_func   = finalize_drizzle_2d if is_mono else finalize_drizzle_3d
 
+        def _invert_2x3(A23: np.ndarray) -> np.ndarray:
+            A23 = np.asarray(A23, np.float32).reshape(2, 3)
+            A33 = np.eye(3, dtype=np.float32); A33[:2] = A23
+            return np.linalg.inv(A33)  # 3x3
+
+        def _apply_H_point(H: np.ndarray, x: float, y: float) -> tuple[int, int]:
+            v = H @ np.array([x, y, 1.0], dtype=np.float32)
+            if abs(v[2]) < 1e-8:
+                return (int(round(v[0])), int(round(v[1])))
+            return (int(round(v[0] / v[2])), int(round(v[1] / v[2])))
+
+
         # --- main loop ---
-        for aligned_file in file_list:
-            aligned_base = os.path.basename(aligned_file)
-            raw_base = aligned_base.replace("_n_r.fit", "_n.fit") if aligned_base.endswith("_n_r.fit") else aligned_base
-            raw_file = os.path.join(self.stacking_directory, "Normalized_Images", raw_base)
+        # Map original (normalized) → aligned path (for weights & rejection map lookups)
+        orig_to_aligned = {}
+        for op in original_list:
+            ap = transforms_dict.get(os.path.normpath(op))
+            if ap:
+                orig_to_aligned[os.path.normpath(op)] = os.path.normpath(ap)
 
-            raw_img_data, _, _, _ = load_image(raw_file)
-            if raw_img_data is None:
-                log(f"⚠️ Could not load raw file '{raw_file}' for drizzle!")
+        for orig_file in original_list:
+            orig_key = os.path.normpath(orig_file)
+            aligned_file = orig_to_aligned.get(orig_key)
+
+            weight = frame_weights.get(aligned_file, frame_weights.get(orig_key, 1.0))
+
+            kind, X = xforms.get(orig_key, (None, None))
+            log(f"🧭 Drizzle uses {kind or '-'} for {os.path.basename(orig_key)}")
+            if kind is None:
+                log(f"⚠️ No usable transform for {os.path.basename(orig_file)} – skipping")
                 continue
 
-            raw_key = os.path.normpath(raw_file)
-            transform = new_transforms_dict.get(raw_key, None)
-            if transform is None:
-                log(f"⚠️ No transform found for raw '{raw_base}'! Skipping drizzle.")
+            # --- choose pixel source + mapping ---
+            pixels_are_registered = False
+            img_data = None
+
+            if isinstance(kind, str) and (kind.startswith("poly") or kind in ("tps","thin_plate_spline")):
+                # Already warped to reference during registration
+                pixel_path = aligned_file
+                if not pixel_path:
+                    log(f"⚠️ {kind} frame has no aligned counterpart – skipping {os.path.basename(orig_file)}")
+                    continue
+                H_canvas = np.eye(3, dtype=np.float32)
+                pixels_are_registered = True
+
+            elif kind == "affine" and X is not None:
+                pixel_path = orig_file
+                H_canvas = np.eye(3, dtype=np.float32)
+                H_canvas[:2] = np.asarray(X, np.float32).reshape(2, 3)
+
+            elif kind == "homography" and X is not None:
+                # Pre-warp originals -> reference, then identity deposit
+                pixel_path = orig_file
+                raw_img, _, _, _ = load_image(pixel_path)
+                if raw_img is None:
+                    log(f"⚠️ Failed to read {os.path.basename(pixel_path)} – skipping")
+                    continue
+                H = np.asarray(X, np.float32).reshape(3, 3)
+                if raw_img.ndim == 2:
+                    img_data = cv2.warpPerspective(
+                        raw_img, H, (ref_W, ref_H),
+                        flags=cv2.INTER_LANCZOS4,
+                        borderMode=cv2.BORDER_CONSTANT, borderValue=0
+                    )
+                else:
+                    img_data = np.stack([
+                        cv2.warpPerspective(
+                            raw_img[..., ch], H, (ref_W, ref_H),
+                            flags=cv2.INTER_LANCZOS4,
+                            borderMode=cv2.BORDER_CONSTANT, borderValue=0
+                        ) for ch in range(raw_img.shape[2])
+                    ], axis=2)
+                H_canvas = np.eye(3, dtype=np.float32)
+                pixels_are_registered = True
+
+            else:
+                log(f"⚠️ Unsupported transform '{kind}' – skipping {os.path.basename(orig_file)}")
                 continue
 
-            log(f"🧩 Drizzling (raw): {raw_base}")
-            log(f"    Matrix: [[{transform[0,0]:.4f}, {transform[0,1]:.4f}, {transform[0,2]:.4f}], "
-                f"[{transform[1,0]:.4f}, {transform[1,1]:.4f}, {transform[1,2]:.4f}]]")
+            # read pixels if not produced above
+            if img_data is None:
+                img_data, _, _, _ = load_image(pixel_path)
+                if img_data is None:
+                    log(f"⚠️ Failed to read {os.path.basename(pixel_path)} – skipping")
+                    continue
 
-            weight = frame_weights.get(aligned_file, 1.0)
-            if transform.dtype != np.float32:
-                transform = transform.astype(np.float32)
+            # --- debug bbox once ---
+            if orig_file is original_list[0]:
+                x0, y0 = 0, 0; x1, y1 = ref_W-1, ref_H-1
+                p0 = H_canvas @ np.array([x0, y0, 1], np.float32); p0 /= max(p0[2], 1e-8)
+                p1 = H_canvas @ np.array([x1, y1, 1], np.float32); p1 /= max(p1[2], 1e-8)
+                log(f"   bbox(ref)→reg: ({p0[0]:.1f},{p0[1]:.1f}) to ({p1[0]:.1f},{p1[1]:.1f}); "
+                    f"canvas {int(ref_W*scale_factor)}×{int(ref_H*scale_factor)} @ {scale_factor}×")
 
-            # dilation settings (square or diamond), defaults safe to 0 (disabled)
-            dilate_px = int(self.settings.value("stacking/reject_dilate_px", 0, type=int))
-            dilate_shape = self.settings.value("stacking/reject_dilate_shape", "square", type=str).lower()
+            # --- apply per-file rejections ---
+            if rejection_map and aligned_file in rejection_map:
+                coords_for_this_file = rejection_map.get(aligned_file, [])
+                if coords_for_this_file:
+                    dilate_px = int(self.settings.value("stacking/reject_dilate_px", 0, type=int))
+                    dilate_shape = self.settings.value("stacking/reject_dilate_shape", "square", type=str).lower()
+                    offsets = [(0, 0)]
+                    if dilate_px > 0:
+                        r = dilate_px
+                        offsets = [(dx, dy) for dx in range(-r, r+1) for dy in range(-r, r+1)]
+                        if dilate_shape.startswith("dia"):
+                            offsets = [(dx, dy) for (dx,dy) in offsets if (abs(dx)+abs(dy) <= r)]
 
-            # precompute integer offsets for dilation (in ALIGNED space)
-            _offsets = [(0, 0)]
-            if dilate_px > 0:
-                r = dilate_px
-                if dilate_shape.startswith("dia"):  # diamond = L1 radius
-                    _offsets = [(dx, dy) for dx in range(-r, r+1)
-                                    for dy in range(-r, r+1)
-                                    if (abs(dx) + abs(dy) <= r)]
-                else:  # square = Chebyshev radius
-                    _offsets = [(dx, dy) for dx in range(-r, r+1)
-                                    for dy in range(-r, r+1)]
+                    Hraw, Wraw = img_data.shape[0], img_data.shape[1]
 
-            # zero out rejected raw pixels (sparse, coordinate-based)
-            coords_for_this_file = rejection_map.get(aligned_file, []) if rejection_map else []
-            if coords_for_this_file:
-                inv_transform = self.invert_affine_transform(transform)
-                Hraw, Wraw = raw_img_data.shape[:2]
-                for (x_r, y_r) in coords_for_this_file:
-                    for (ox, oy) in _offsets:
-                        xr, yr = x_r + ox, y_r + oy
-                        x_raw, y_raw = self.apply_affine_transform_point(inv_transform, xr, yr)
-                        x_raw = int(round(x_raw)); y_raw = int(round(y_raw))
-                        if 0 <= x_raw < Wraw and 0 <= y_raw < Hraw:
-                            raw_img_data[y_raw, x_raw] = 0.0
+                    if pixels_are_registered:
+                        # Directly zero registered pixels
+                        for (x_r, y_r) in coords_for_this_file:
+                            for (ox, oy) in offsets:
+                                xr, yr = x_r + ox, y_r + oy
+                                if 0 <= xr < Wraw and 0 <= yr < Hraw:
+                                    img_data[yr, xr] = 0.0
+                    else:
+                        # Back-project via inverse affine
+                        Hinv = np.linalg.inv(H_canvas)
+                        for (x_r, y_r) in coords_for_this_file:
+                            for (ox, oy) in offsets:
+                                xr, yr = x_r + ox, y_r + oy
+                                v = Hinv @ np.array([xr, yr, 1.0], np.float32)
+                                x_raw = int(round(v[0] / max(v[2], 1e-8)))
+                                y_raw = int(round(v[1] / max(v[2], 1e-8)))
+                                if 0 <= x_raw < Wraw and 0 <= y_raw < Hraw:
+                                    img_data[y_raw, x_raw] = 0.0
 
-            # deposit
+            # --- deposit (identity for registered pixels) ---
             if deposit_func is drizzle_deposit_numba_naive:
                 drizzle_buffer, coverage_buffer = deposit_func(
-                    raw_img_data, transform, drizzle_buffer, coverage_buffer,
-                    scale_factor, weight
+                    img_data, H_canvas[:2], drizzle_buffer, coverage_buffer, scale_factor, weight
                 )
             elif deposit_func is drizzle_deposit_color_naive:
                 drizzle_buffer, coverage_buffer = deposit_func(
-                    raw_img_data, transform, drizzle_buffer, coverage_buffer,
-                    scale_factor, drop_shrink, weight
+                    img_data, H_canvas[:2], drizzle_buffer, coverage_buffer, scale_factor, drop_shrink, weight
                 )
             else:
-                # kernelized (square/circular/gaussian)
+                A23 = H_canvas[:2, :]
                 drizzle_buffer, coverage_buffer = deposit_func(
-                    raw_img_data, transform, drizzle_buffer, coverage_buffer,
+                    img_data, A23, drizzle_buffer, coverage_buffer,
                     scale_factor, drop_shrink, weight, _kcode, float(gauss_sigma)
                 )
+
 
         # --- finalize, save, optional autocrop ---
         final_drizzle = np.zeros_like(drizzle_buffer, dtype=np.float32)
@@ -12578,6 +12863,105 @@ class StackingSuiteDialog(QDialog):
                 self._autocrop_outputs = []
             self._autocrop_outputs.append((group_key, out_path_crop))
             log(f"✂️ Drizzle (auto-cropped) saved: {out_path_crop}")
+
+    def _load_sasd_v2(self, path: str):
+        """
+        Returns (ref_H, ref_W, xforms) where xforms maps
+        normalized original paths → (kind, matrix)
+        Supports:
+        • HEADER: REF_SHAPE, REF_PATH, MODEL
+        • Per-file: FILE, KIND, MATRIX with either 2 rows (affine) or 3 rows (homography)
+        """
+        if not os.path.exists(path):
+            return 0, 0, {}
+
+        ref_H = ref_W = 0
+        xforms = {}
+        cur_file = None
+        cur_kind = None
+        reading_matrix = False
+        mat_rows = []
+        matrix_unsupported = False   # <— NEW
+
+        def _commit_block():
+            nonlocal cur_file, cur_kind, mat_rows, matrix_unsupported
+            if cur_file and cur_kind:
+                k = os.path.normpath(cur_file)
+                ck = (cur_kind or "").lower()
+
+                if ck == "homography" and (mat_rows and len(mat_rows) == 3 and len(mat_rows[0]) == 3):
+                    M = np.array(mat_rows, dtype=np.float32).reshape(3, 3)
+                    xforms[k] = ("homography", M)
+
+                elif ck == "affine" and (mat_rows and len(mat_rows) == 2 and len(mat_rows[0]) == 3):
+                    M = np.array(mat_rows, dtype=np.float32).reshape(2, 3)
+                    xforms[k] = ("affine", M)
+
+                elif ck.startswith("poly"):
+                    # poly3 / poly4 are callable in-memory; SASD stores no numeric matrix
+                    xforms[k] = (ck, None)
+
+                elif matrix_unsupported:
+                    # Future kinds that explicitly say UNSUPPORTED: keep kind, no matrix
+                    xforms[k] = (ck, None)
+
+            cur_file = None
+            cur_kind = None
+            mat_rows = []
+            matrix_unsupported = False  # <— reset
+
+        with open(path, "r", encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line:
+                    if reading_matrix:
+                        reading_matrix = False
+                    _commit_block()
+                    continue
+
+                if reading_matrix:
+                    # Handle explicit sentinel
+                    if line.upper().startswith("UNSUPPORTED"):
+                        matrix_unsupported = True          # <— flag it
+                        reading_matrix = False
+                        continue
+                    # Try numeric row
+                    try:
+                        row = [float(x.strip()) for x in line.split(",")]
+                        mat_rows.append(row)
+                    except Exception:
+                        # Non-numeric inside MATRIX: treat as unsupported for safety
+                        matrix_unsupported = True
+                        reading_matrix = False
+                    continue
+
+                if line.startswith("REF_SHAPE:"):
+                    ...
+                    continue
+
+                if line.startswith("FILE:"):
+                    _commit_block()
+                    cur_file = line.split(":", 1)[1].strip()
+                    continue
+
+                if line.startswith("KIND:"):
+                    cur_kind = line.split(":", 1)[1].strip().lower()
+                    continue
+
+                if line.startswith("MATRIX:"):
+                    reading_matrix = True
+                    mat_rows = []
+                    matrix_unsupported = False
+                    continue
+
+                if line.startswith("MODEL:"):
+                    continue
+
+        if reading_matrix or cur_file:
+            _commit_block()
+
+        return int(ref_H), int(ref_W), xforms
+
 
 
     def normal_integration_with_rejection(

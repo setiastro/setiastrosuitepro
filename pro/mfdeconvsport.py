@@ -1,4 +1,4 @@
-# pro/mfdeconv.py
+# pro/mfdeconvsport.py
 from __future__ import annotations
 import os, math, re
 import numpy as np

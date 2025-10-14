@@ -36,6 +36,9 @@ from PyQt6.QtWidgets import (
     QDialog, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QGroupBox, QAbstractItemView, QListWidget, QInputDialog, QApplication, QProgressBar, QProgressDialog, 
     QRadioButton, QFileDialog, QComboBox, QMessageBox, QTextEdit, QDialogButtonBox, QTreeWidget,QCheckBox, QFormLayout, QListWidgetItem, QScrollArea, QTreeWidgetItem, QSpinBox, QDoubleSpinBox
 )
+
+from skimage.transform import warp, PolynomialTransform 
+
 # I/O & stretch (same stack we used for Plate Solver)
 from legacy.image_manager import load_image, save_image
 try:
@@ -57,14 +60,23 @@ from pro.abe import _generate_sample_points as abe_generate_sample_points
 # Small helpers to work with the *active view/document* (no slots)
 # ---------------------------------------------------------------------
 
+def _apply_affine_to_pts(A_2x3: np.ndarray, pts_xy: np.ndarray) -> np.ndarray:
+    ones = np.ones((pts_xy.shape[0], 1), dtype=np.float32)
+    P = np.hstack([pts_xy.astype(np.float32), ones])
+    return (A_2x3.astype(np.float32) @ P.T).T  # (N,2)
+
+
 def _align_prefs(settings: QSettings) -> dict:
     m = (settings.value("stacking/align/model", "affine") or "affine").lower()
+    # Back-compat: old TPS -> poly3
+    if m == "tps":
+        m = "poly3"
+        settings.setValue("stacking/align/model", m)
     return {
-        "model": m,  # "affine" | "homography" | "tps"
+        "model": m,  # "affine" | "homography" | "poly3" | "poly4"
         "max_cp": int(settings.value("stacking/align/max_cp", 250, type=int)),
         "downsample": int(settings.value("stacking/align/downsample", 2, type=int)),
         "h_reproj": float(settings.value("stacking/align/h_reproj", 3.0, type=float)),
-        "tps_lambda": float(settings.value("stacking/align/tps_lambda", 0.10, type=float)),
     }
 
 # ---------- Shortcut / Headless integration ----------
@@ -134,7 +146,12 @@ def _doc_from_sw(sw):
 def _gray2d(a):
     return np.mean(a, axis=2) if a.ndim == 3 else a
 
-def _aa_find_transform_with_backoff(self, tgt_gray: np.ndarray, src_gray: np.ndarray):
+
+def aa_find_transform_with_backoff(tgt_gray: np.ndarray, src_gray: np.ndarray):
+    """
+    Retry astroalign.find_transform() with progressively stricter detection,
+    serializing SEP usage via _AA_LOCK; returns (transform_obj, (src_pts, tgt_pts)).
+    """
     tgt32 = np.ascontiguousarray(tgt_gray.astype(np.float32))
     src32 = np.ascontiguousarray(src_gray.astype(np.float32))
     try:
@@ -154,7 +171,6 @@ def _aa_find_transform_with_backoff(self, tgt_gray: np.ndarray, src_gray: np.nda
     last_exc = None
     for kw in tries:
         try:
-            # 🔒 Serialize calls into astroalign/SEP
             global _AA_LOCK
             with _AA_LOCK:
                 return astroalign.find_transform(tgt32, src32, **kw)
@@ -488,48 +504,6 @@ def _cap_points(src_pts: np.ndarray, tgt_pts: np.ndarray, max_cp: int) -> tuple[
     idx = np.linspace(0, src_pts.shape[0]-1, max_cp, dtype=int)
     return src_pts[idx], tgt_pts[idx]
 
-def _estimate_transform_from_pairs(model: str,
-                                   src_pts_xy: np.ndarray,
-                                   tgt_pts_xy: np.ndarray,
-                                   h_reproj: float,
-                                   tps_lambda: float):
-    """
-    Returns (kind, transform) where:
-      kind="affine": transform is 2x3
-      kind="homography": transform is 3x3
-      kind="tps": transform is a callable warp function f(image, out_hw)->image
-    """
-    model = (model or "affine").lower()
-    if model == "homography":
-        H, mask = cv2.findHomography(src_pts_xy, tgt_pts_xy, method=cv2.RANSAC, ransacReprojThreshold=float(h_reproj))
-        if H is None:
-            raise RuntimeError("Homography estimation failed")
-        return "homography", H.astype(np.float32, copy=False)
-
-    if model == "tps":
-        try:
-            from skimage.transform import warp, ThinPlateSplineTransform
-            t = ThinPlateSplineTransform()
-            t.estimate(src_pts_xy, tgt_pts_xy, reg=tps_lambda)
-            # Build a small wrapper so caller can warp per-channel
-            def _warp_tps(img: np.ndarray, out_hw: tuple[int,int]) -> np.ndarray:
-                H, W = out_hw
-                if img.ndim == 2:
-                    return (warp(img.astype(np.float32), inverse_map=t.inverse, output_shape=(H, W)).astype(np.float32))
-                chans = [warp(img[..., c].astype(np.float32), inverse_map=t.inverse, output_shape=(H, W)).astype(np.float32)
-                         for c in range(img.shape[2])]
-                return np.stack(chans, axis=2)
-            return "tps", _warp_tps
-        except Exception as e:
-            # Fallback gracefully to affine if skimage TPS unavailable
-            pass  # fall through to affine
-
-    # default / fallback: affine (full 2D, allows shear)
-    A, inliers = cv2.estimateAffine2D(src_pts_xy, tgt_pts_xy, method=cv2.RANSAC, ransacReprojThreshold=float(h_reproj))
-    if A is None:
-        raise RuntimeError("Affine estimation failed")
-    return "affine", A.astype(np.float32, copy=False)
-
 
 # ---------------------------------------------------------------------
 # Stellar Alignment (Dialog) — uses Active View or File (no slots)
@@ -637,9 +611,17 @@ class StellarAlignmentDialog(QDialog):
         xf = QFormLayout(xform_box)
 
         self.xf_model = QComboBox()
-        self.xf_model.addItems(["Affine (fast)", "Homography (projective)", "Thin Plate Spline (nonlinear)"])
+        self.xf_model.addItems([
+            "Affine (fast)",
+            "Homography (projective)",
+            "Polynomial (order 3)",
+            "Polynomial (order 4)",
+        ])
+        # map saved value to index
         prefs = _align_prefs(self.settings)
-        self.xf_model.setCurrentIndex(0 if prefs["model"]=="affine" else (1 if prefs["model"]=="homography" else 2))
+        _model = prefs["model"]
+        idx = 0 if _model=="affine" else 1 if _model=="homography" else 2 if _model=="poly3" else 3
+        self.xf_model.setCurrentIndex(idx)
         xf.addRow("Model:", self.xf_model)
 
         self.xf_maxcp = QSpinBox(); self.xf_maxcp.setRange(20, 2000); self.xf_maxcp.setValue(prefs["max_cp"])
@@ -652,14 +634,14 @@ class StellarAlignmentDialog(QDialog):
         self.xf_h_reproj.setValue(prefs["h_reproj"])
         xf.addRow("Homog. RANSAC reproj (px):", self.xf_h_reproj)
 
-        self.xf_tps_lambda = QDoubleSpinBox(); self.xf_tps_lambda.setRange(0.0, 5.0); self.xf_tps_lambda.setDecimals(3)
-        self.xf_tps_lambda.setValue(prefs["tps_lambda"])
-        xf.addRow("TPS λ (bending):", self.xf_tps_lambda)
-
         def _toggle_rows():
-            m = self.xf_model.currentIndex()
-            self.xf_h_reproj.parent().setEnabled(m==1)
-            self.xf_tps_lambda.parent().setEnabled(m==2)
+            is_h = (self.xf_model.currentIndex() == 1)  # 1 = Homography
+            # Enable/disable only the control…
+            self.xf_h_reproj.setEnabled(is_h)
+            # …and its label in the form layout (if present)
+            lab = xf.labelForField(self.xf_h_reproj)
+            if lab is not None:
+                lab.setEnabled(is_h)
         _toggle_rows()
         self.xf_model.currentIndexChanged.connect(lambda _ : _toggle_rows())
 
@@ -707,13 +689,13 @@ class StellarAlignmentDialog(QDialog):
         self._populate_view_combos()
 
     def _persist_xform_from_dialog(self):
-        m = ["affine","homography","tps"][self.xf_model.currentIndex()]
+        idx = self.xf_model.currentIndex()
+        model = "affine" if idx==0 else ("homography" if idx==1 else ("poly3" if idx==2 else "poly4"))
         s = self.settings
-        s.setValue("stacking/align/model", m)
+        s.setValue("stacking/align/model", model)
         s.setValue("stacking/align/max_cp", int(self.xf_maxcp.value()))
         s.setValue("stacking/align/downsample", int(self.xf_downsample.value()))
         s.setValue("stacking/align/h_reproj", float(self.xf_h_reproj.value()))
-        s.setValue("stacking/align/tps_lambda", float(self.xf_tps_lambda.value()))
 
     # ------------------------
     # Source/Target loaders (File / Active View)
@@ -931,7 +913,7 @@ class StellarAlignmentDialog(QDialog):
     # -----------------------------
     # Astroalign (with backoff) + warp
     # -----------------------------
-    def aa_find_transform_with_backoff(tgt_gray: np.ndarray, src_gray: np.ndarray):
+    def aa_find_transform_with_backoff(self, tgt_gray: np.ndarray, src_gray: np.ndarray):
         """
         Retry astroalign.find_transform() with progressively stricter detection,
         serializing SEP usage via _AA_LOCK; returns (transform_obj, (src_pts, tgt_pts)).
@@ -970,6 +952,8 @@ class StellarAlignmentDialog(QDialog):
 
     def run_alignment(self):
         # Persist dialog choices back to QSettings (safe if the method isn’t present)
+        self.status_label.setText("Starting Alignment…")
+        QApplication.processEvents()
         try:
             self._persist_xform_from_dialog()
         except Exception:
@@ -998,47 +982,113 @@ class StellarAlignmentDialog(QDialog):
         def _estimate_transform_from_pairs(model: str,
                                         src_xy: np.ndarray,
                                         tgt_xy: np.ndarray,
-                                        h_reproj: float,
-                                        tps_lambda: float):
+                                        h_reproj: float) -> tuple[str, object]:
             """
             Returns (kind, transform):
-            kind = "affine"      -> transform = 2x3 float32
-                = "homography"  -> transform = 3x3 float32
-                = "tps"         -> transform = callable(img, out_hw)->img
+            kind="affine"      -> 2x3 float32
+            kind="homography"  -> 3x3 float32
+            kind="poly3|poly4" -> callable(img, out_hw)->img  (base warp + polynomial residual)
             """
             model = (model or "affine").lower()
+
+            # Base model first (affine or homography)
             if model == "homography":
                 H, _ = cv2.findHomography(src_xy, tgt_xy, method=cv2.RANSAC,
                                         ransacReprojThreshold=float(h_reproj))
                 if H is None:
                     raise RuntimeError("Homography estimation failed.")
-                return "homography", H.astype(np.float32, copy=False)
+                base_kind, base_X = "homography", H.astype(np.float32)
+            else:
+                A, _ = cv2.estimateAffine2D(src_xy, tgt_xy, method=cv2.RANSAC,
+                                            ransacReprojThreshold=float(h_reproj))
+                if A is None:
+                    raise RuntimeError("Affine estimation failed.")
+                base_kind, base_X = "affine", A.astype(np.float32)
 
-            if model == "tps":
+            if model not in ("poly3", "poly4"):
+                return base_kind, base_X
+
+            # Predict with base model
+            if base_kind == "affine":
+                ones = np.ones((src_xy.shape[0], 1), dtype=np.float32)
+                P = np.hstack([src_xy, ones])
+                pred_on_ref = (base_X @ P.T).T
+            else:
+                ones = np.ones((src_xy.shape[0], 1), dtype=np.float32)
+                P = np.hstack([src_xy, ones]).T
+                Q = (base_X @ P)
+                pred_on_ref = (Q[:2, :] / Q[2:3, :]).T
+
+            # Inlier selection for stable poly residual fit
+            resid = np.linalg.norm(pred_on_ref - tgt_xy, axis=1)
+            r_thresh = max(2.0, h_reproj * 1.5)
+            inliers = resid < r_thresh
+            if inliers.sum() < 20:
+                return base_kind, base_X
+
+            P_ref  = tgt_xy[inliers].astype(np.float32)
+            P_pred = pred_on_ref[inliers].astype(np.float32)
+
+            # Normalize to [0,1] domain for conditioning
+            Hh, Ww = self.stellar_source.shape[:2]  # or use reference size if you prefer
+            scale = np.array([Ww, Hh], dtype=np.float32)
+            P_ref_n  = P_ref / scale
+            P_pred_n = P_pred / scale
+
+            order = 3 if model == "poly3" else 4
+            t_poly = PolynomialTransform()
+            ok = t_poly.estimate(P_ref_n, P_pred_n, order=order)  # ref_n -> basewarped_n
+            if not ok:
+                return base_kind, base_X
+
+            def _warp_poly_residual(img: np.ndarray, out_hw: tuple[int,int]) -> np.ndarray:
+                Hout, Wout = out_hw
+
+                # Pass A: base warp to reference grid
+                if base_kind == "affine":
+                    if img.ndim == 2:
+                        base_img = cv2.warpAffine(img, base_X, (Wout, Hout),
+                                                flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+                    else:
+                        base_img = np.stack([cv2.warpAffine(img[..., c], base_X, (Wout, Hout),
+                                                            flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+                                            for c in range(img.shape[2])], axis=2)
+                else:
+                    if img.ndim == 2:
+                        base_img = cv2.warpPerspective(img, base_X, (Wout, Hout),
+                                                    flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+                    else:
+                        base_img = np.stack([cv2.warpPerspective(img[..., c], base_X, (Wout, Hout),
+                                                                flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+                                            for c in range(img.shape[2])], axis=2)
+
+                # Pass B: polynomial residual via inverse_map (ref->basewarped), with normalization
+                class _InvMap:
+                    def __call__(self, coords):
+                        coords_n = coords.astype(np.float32) / scale
+                        mapped_n = t_poly(coords_n)
+                        return mapped_n * scale
+
+                inv = _InvMap()
                 try:
-                    from skimage.transform import warp, ThinPlateSplineTransform
-                    t = ThinPlateSplineTransform()
-                    t.estimate(src_xy, tgt_xy, reg=float(tps_lambda))
-                    def _warp_tps(img: np.ndarray, out_hw: tuple[int, int]) -> np.ndarray:
-                        Hh, Ww = out_hw
-                        if img.ndim == 2:
-                            return warp(img.astype(np.float32), inverse_map=t.inverse,
-                                        output_shape=(Hh, Ww)).astype(np.float32)
-                        chans = [warp(img[..., c].astype(np.float32), inverse_map=t.inverse,
-                                    output_shape=(Hh, Ww)).astype(np.float32)
-                                for c in range(img.shape[2])]
-                        return np.stack(chans, axis=2)
-                    return "tps", _warp_tps
-                except Exception:
-                    # Fall back gracefully
-                    pass
+                    out = warp(base_img.astype(np.float32, copy=False),
+                            inverse_map=inv,
+                            output_shape=(Hout, Wout),
+                            preserve_range=True,
+                            channel_axis=(-1 if base_img.ndim == 3 else None))
+                except TypeError:
+                    # older skimage: per-channel
+                    if base_img.ndim == 2:
+                        out = warp(base_img.astype(np.float32), inverse_map=inv,
+                                output_shape=(Hout, Wout), preserve_range=True)
+                    else:
+                        out = np.stack([warp(base_img[..., c].astype(np.float32), inverse_map=inv,
+                                            output_shape=(Hout, Wout), preserve_range=True)
+                                        for c in range(base_img.shape[2])], axis=2)
+                return out.astype(np.float32, copy=False)
 
-            # Default / fallback: Affine (full 2D)
-            A, _ = cv2.estimateAffine2D(src_xy, tgt_xy, method=cv2.RANSAC,
-                                        ransacReprojThreshold=float(h_reproj))
-            if A is None:
-                raise RuntimeError("Affine estimation failed.")
-            return "affine", A.astype(np.float32, copy=False)
+            return f"poly{order}", _warp_poly_residual
+
 
         # Prepare grayscale for detection
         src = self.stellar_source
@@ -1047,11 +1097,10 @@ class StellarAlignmentDialog(QDialog):
         tgt_gray = np.mean(tgt, axis=2) if tgt.ndim == 3 else tgt
 
         # Read dialog prefs
-        model = ["affine", "homography", "tps"][self.xf_model.currentIndex()]
+        model = ["affine", "homography", "poly3", "poly4"][self.xf_model.currentIndex()]
         max_cp = int(self.xf_maxcp.value())
         ds = int(self.xf_downsample.value())
         h_reproj = float(self.xf_h_reproj.value())
-        tps_lambda = float(self.xf_tps_lambda.value())
 
         # Downsample for faster star matching (solve stage only)
         if ds > 1:
@@ -1063,11 +1112,12 @@ class StellarAlignmentDialog(QDialog):
             src_small, tgt_small = src_gray, tgt_gray
 
         self.status_label.setText("Computing alignment with astroalign…")
+        QApplication.processEvents()
         try:
             # NOTE: astroalign returns matched points as (src_pts, tgt_pts)
             #       but we called it with (tgt_small, src_small), so:
             #       src_pts are in tgt_small coords, tgt_pts in src_small coords
-            transform_obj, (src_pts_s, tgt_pts_s) = aa_find_transform_with_backoff(tgt_small, src_small)
+            transform_obj, (src_pts_s, tgt_pts_s) = self.aa_find_transform_with_backoff(tgt_small, src_small)
         except Exception as e:
             QMessageBox.warning(self, "Alignment Error", f"Astroalign failed: {e}")
             return
@@ -1086,12 +1136,13 @@ class StellarAlignmentDialog(QDialog):
 
         # Estimate chosen transform on (possibly rescaled) full-res pairs
         try:
-            kind, X = _estimate_transform_from_pairs(model, src_xy, tgt_xy, h_reproj, tps_lambda)
+            kind, X = _estimate_transform_from_pairs(model, src_xy, tgt_xy, h_reproj)
         except Exception as e:
             QMessageBox.warning(self, "Alignment Error", f"Transform estimation failed: {e}")
             return
 
         self.status_label.setText("Warping target image…")
+        QApplication.processEvents()
         H, W = src.shape[:2]
 
         # Apply the transform
@@ -1134,24 +1185,12 @@ class StellarAlignmentDialog(QDialog):
             except Exception:
                 pass
 
-        else:  # TPS callable
+        else:  # polynomial residual callable
             try:
-                warped_target = X(tgt, (H, W))  # X is the TPS warp(img, out_hw) callable
+                warped_target = X(tgt, (H, W))
             except Exception as e:
-                QMessageBox.warning(self, "Alignment Error", f"TPS warp failed ({e}); falling back to affine.")
-                # Safe fallback: use astroalign’s affine for the warp
-                mat_3x3 = transform_obj.params.astype(np.float32, copy=False)
-                A = mat_3x3[0:2, :]
-                if tgt.ndim == 2:
-                    warped_target = cv2.warpAffine(tgt, A, (W, H), flags=cv2.INTER_LANCZOS4)
-                else:
-                    warped_target = np.stack(
-                        [cv2.warpAffine(tgt[..., i], A, (W, H), flags=cv2.INTER_LANCZOS4)
-                        for i in range(tgt.shape[2])],
-                        axis=2
-                    )
-                transform_3x3 = np.eye(3, dtype=np.float32); transform_3x3[:2] = A
-                self.show_transform_info(transform_3x3)
+                QMessageBox.warning(self, "Alignment Error", f"Polynomial warp failed ({e}); falling back to affine.")
+
 
         # Store + preview (with optional AutoStretch)
         self.aligned_image = warped_target.astype(np.float32, copy=False)
@@ -1162,6 +1201,7 @@ class StellarAlignmentDialog(QDialog):
         disp = self.stretched_image if (self.autostretch_enabled and self.stretched_image is not None) else self.aligned_image
         self.update_preview(self.result_preview_label, disp)
         self.status_label.setText(f"Alignment complete ({model}).")
+        QApplication.processEvents()
         QMessageBox.information(self, "Alignment Complete", f"Alignment completed using {model}.")
 
 
@@ -1276,8 +1316,10 @@ IDENTITY_2x3 = np.array([[1, 0, 0], [0, 1, 0]], dtype=np.float64)
 
 class StarRegistrationWorker(QRunnable):
     def __init__(self, file_path, original_file, current_transform,
-                 ref_stars, ref_triangles, output_directory,
-                 use_triangle=False, use_astroalign=False, reference_image=None, downsample_factor: int = 2):
+                ref_stars, ref_triangles, output_directory,
+                use_triangle=False, use_astroalign=False, reference_image=None,
+                downsample_factor: int = 2, model_name: str = "affine"):
+
         super().__init__()
         self.file_path = file_path
         self.original_file = original_file
@@ -1290,6 +1332,7 @@ class StarRegistrationWorker(QRunnable):
         self.reference_image = reference_image  # 2D reference image
         self.downsample_factor = downsample_factor
         self.signals = RegistrationWorkerSignals()
+        self.model_name = str(model_name).lower()
 
     def run(self):
         """
@@ -1369,8 +1412,8 @@ class StarRegistrationWorker(QRunnable):
             key = os.path.normpath(self.original_file)  # ORIGINAL key
             self.signals.result_transform.emit(key, transform)
             self.signals.progress.emit(
-                f"Astroalign delta for {os.path.basename(self.original_file)}: "
-                f"dx={transform[0,2]:.2f}, dy={transform[1,2]:.2f}"
+                f"Astroalign delta for {os.path.basename(self.original_file)} "
+                f"(model={self.model_name}): dx={transform[0,2]:.2f}, dy={transform[1,2]:.2f}"
             )
             self.signals.result.emit(self.original_file)
 
@@ -1419,8 +1462,178 @@ class StarRegistrationThread(QThread):
         self._done = 0
         self._total = len(self.original_files) * self.max_refinement_passes
         self.align_prefs = align_prefs or _align_prefs(QSettings())
+        self.align_model = str(self.align_prefs.get("model", "affine")).lower()
+        self.h_reproj   = float(self.align_prefs.get("h_reproj", 3.0))
+
+        self.downsample = int(self.align_prefs.get("downsample", 2))
+        self.drizzle_xforms = {}  # {orig_norm_path: (kind, matrix)}
+
+    def _estimate_model_transform(self, src_gray_full: np.ndarray) -> tuple[str, object]:
+        """
+        Recompute a final, full-res transform from src_gray_full → reference (self.reference_image_2d)
+        using the chosen model. Returns (kind, X) where:
+        kind="affine"     and X is 2x3 float32
+        kind="homography" and X is 3x3 float32
+        """
+        # Downsample for the match stage (like your dialog code), then scale CPs back up
+        f = max(1, int(self.downsample))
+        ref_small = self.ref_small                          # made in run()
+        src_small = src_gray_full[::f, ::f] if f > 1 else src_gray_full
+
+        # Lock astroalign; get matches (src_pts in src_small, tgt_pts in ref_small)
+        with _AA_LOCK:
+            transform_obj, (src_pts_s, tgt_pts_s) = astroalign.find_transform(
+                np.ascontiguousarray(src_small.astype(np.float32)),
+                np.ascontiguousarray(ref_small.astype(np.float32))
+            )
+
+        src_xy = np.asarray(src_pts_s, np.float32)
+        tgt_xy = np.asarray(tgt_pts_s, np.float32)
+        if f > 1:
+            src_xy *= f
+            tgt_xy *= f
+
+        # Re-estimate with the requested model (affine/homography/TPS)
+        model = (self.align_model or "affine").lower()
+
+        # 1) Base model: affine or homography (use homography if requested; else affine)
+        if model == "homography":
+            H, _ = cv2.findHomography(src_xy, tgt_xy, method=cv2.RANSAC,
+                                      ransacReprojThreshold=float(self.h_reproj))
+            if H is None:
+                raise RuntimeError("Homography estimation failed.")
+            base_kind, base_X = "homography", H.astype(np.float32)
+        else:
+            A, _ = cv2.estimateAffine2D(src_xy, tgt_xy, method=cv2.RANSAC,
+                                        ransacReprojThreshold=float(self.h_reproj))
+            if A is None:
+                raise RuntimeError("Affine estimation failed.")
+            base_kind, base_X = "affine", A.astype(np.float32)
+
+        # Quick exit if we're not doing a polynomial residual
+        if model not in ("poly3", "poly4"):
+            return base_kind, base_X
+
+        # 2) Compute residuals in reference space
+        if base_kind == "affine":
+            pred_on_ref = _apply_affine_to_pts(base_X, src_xy)        # src -> ref (pred)
+        else:
+            # homography: warp points
+            ones = np.ones((src_xy.shape[0], 1), dtype=np.float32)
+            P = np.hstack([src_xy.astype(np.float32), ones]).T        # (3,N)
+            Q = (base_X.astype(np.float32) @ P)                        # (3,N)
+            Q = (Q[:2, :] / Q[2:3, :]).T                               # (N,2)
+            pred_on_ref = Q
+
+        resid = np.linalg.norm(pred_on_ref - tgt_xy, axis=1)
+
+        # 3) Inlier selection (keep robust subset for stable poly fit)
+        r_thresh = max(2.0, self.h_reproj * 1.5)
+        inliers = resid < r_thresh
+        if inliers.sum() < 20:
+            # not enough for a stable poly fit; fall back to base only
+            return base_kind, base_X
+
+        P_ref   = tgt_xy[inliers].astype(np.float32)        # reference coords
+        P_pred  = pred_on_ref[inliers].astype(np.float32)   # base-warped coords
+
+        # 4) (Optional but helpful) normalize coordinates to improve conditioning
+        Href, Wref = self.reference_image_2d.shape[:2]
+        scale = np.array([Wref, Href], dtype=np.float32)
+        P_ref_n  = P_ref / scale
+        P_pred_n = P_pred / scale
+
+        order = 3 if model == "poly3" else 4
+        t_poly = PolynomialTransform()
+        ok = t_poly.estimate(P_ref_n, P_pred_n, order=order)  # maps ref_n -> basewarped_n
+        if not ok:
+            # if polynomial fit fails, return base
+            return base_kind, base_X
+
+        def _warp_poly_residual(img: np.ndarray, out_hw: tuple[int,int]) -> np.ndarray:
+            Hh, Ww = out_hw
+
+            # Pass A: base warp to reference grid
+            if base_kind == "affine":
+                img_base = (cv2.warpAffine(img if img.ndim==2 else img[...,0], base_X, (Ww, Hh),
+                                           flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+                            if img.ndim == 2 else
+                            np.stack([cv2.warpAffine(img[..., c], base_X, (Ww, Hh),
+                                                     flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+                                      for c in range(img.shape[2])], axis=2))
+            else:
+                if img.ndim == 2:
+                    img_base = cv2.warpPerspective(img, base_X, (Ww, Hh),
+                                                   flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+                else:
+                    img_base = np.stack([cv2.warpPerspective(img[..., c], base_X, (Ww, Hh),
+                                                             flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+                                         for c in range(img.shape[2])], axis=2)
+
+            # Pass B: polynomial residual (inverse map needs ref->basewarped)
+            # We fitted on normalized coords, so supply a wrapper that normalizes query coords
+            class _InvMap:
+                def __call__(self, coords):
+                    # coords: (N, 2) in reference pixel units
+                    coords_n = coords.astype(np.float32) / scale
+                    mapped_n = t_poly(coords_n)             # ref_n -> basewarped_n
+                    return mapped_n * scale
+
+            inv = _InvMap()
+            try:
+                out = warp(img_base.astype(np.float32, copy=False),
+                           inverse_map=inv,
+                           output_shape=(Hh, Ww),
+                           preserve_range=True,
+                           channel_axis=(-1 if img_base.ndim == 3 else None))
+            except TypeError:
+                # older skimage (no channel_axis): per-channel
+                if img_base.ndim == 2:
+                    out = warp(img_base.astype(np.float32), inverse_map=inv,
+                               output_shape=(Hh, Ww), preserve_range=True)
+                else:
+                    chs = [warp(img_base[..., c].astype(np.float32), inverse_map=inv,
+                                output_shape=(Hh, Ww), preserve_range=True)
+                           for c in range(img_base.shape[2])]
+                    out = np.stack(chs, axis=2)
+
+            return out.astype(np.float32, copy=False)
+
+        # Return a composed model: ('poly3'/'poly4', callable)
+        return f"poly{order}", _warp_poly_residual
+
+
+    def _warp_with_kind(self, img: np.ndarray, kind: str, X: object, out_hw: tuple[int,int]) -> np.ndarray:
+        Hh, Ww = out_hw
+        if kind == "affine":
+            A = np.asarray(X, np.float32)
+            if img.ndim == 2:
+                return cv2.warpAffine(img, A, (Ww, Hh), flags=cv2.INTER_LANCZOS4,
+                                    borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+            return np.stack([cv2.warpAffine(img[..., c], A, (Ww, Hh),
+                                            flags=cv2.INTER_LANCZOS4,
+                                            borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+                            for c in range(img.shape[2])], axis=2)
+
+        if kind.startswith("poly"):
+            return X(img, (Hh, Ww))
+
+        if kind == "homography":
+            H = np.asarray(X, np.float32)
+            if img.ndim == 2:
+                return cv2.warpPerspective(img, H, (Ww, Hh), flags=cv2.INTER_LANCZOS4,
+                                        borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+            return np.stack([cv2.warpPerspective(img[..., c], H, (Ww, Hh),
+                                                flags=cv2.INTER_LANCZOS4,
+                                                borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+                            for c in range(img.shape[2])], axis=2)
+
+        # TPS: X is a callable(img, out_hw) -> img
+        return X(img, (Hh, Ww))
+
 
     def run(self):
+        self.progress_update.emit(f"Alignment model = {self.align_model}")
         try:
             _cap_native_threads_once()
 
@@ -1541,7 +1754,8 @@ class StarRegistrationThread(QThread):
                 use_triangle=False,
                 use_astroalign=True,
                 reference_image=self.ref_small,
-                downsample_factor=ds
+                downsample_factor=ds,
+                model_name=self.align_model  # ← add this
             )
             worker.signals.progress.connect(self.on_worker_progress)
             worker.signals.error.connect(self.on_worker_error)
@@ -1689,7 +1903,9 @@ class StarRegistrationThread(QThread):
         • apply final 2×3 transform
         • write *_n_r.fit ONCE
         """
+        
         from concurrent.futures import ThreadPoolExecutor, as_completed
+        self.drizzle_xforms = {}  # { orig_norm_path : (kind, matrix_or_None_for_TPS) }
 
         io_workers = max(1, min(4, (os.cpu_count() or 8) // 4))  # be gentle to disk
 
@@ -1701,9 +1917,43 @@ class StarRegistrationThread(QThread):
                 if img is None:
                     return f"⚠️ Failed to read {os.path.basename(orig_path)}", False
 
-                aligned = StarRegistrationThread.apply_affine_transform_static(img, T_final)
+                # Full-res, model-aware warp
+                src_gray_full = np.mean(img, axis=2) if img.ndim == 3 else img
+                src_gray_full = np.nan_to_num(src_gray_full, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
+                Href, Wref = self.reference_image_2d.shape[:2]
+
+                try:
+                    kind, X = self._estimate_model_transform(src_gray_full)
+                except Exception as e:
+                    self.progress_update.emit(f"⚠️ {os.path.basename(orig_path)} model solve failed ({self.align_model}): {e}. Falling back to affine.")
+
+                    kind, X = "affine", np.array(self.alignment_matrices.get(k, IDENTITY_2x3), np.float32)
+                self.progress_update.emit(f"🌀 {os.path.basename(orig_path)}: warp={kind}")
+                # Record drizzle transform (don’t np.asarray() a callable)
+
+                aligned = self._warp_with_kind(img, kind, X, (Href, Wref))
                 if aligned is None:
                     return f"⚠️ Warp failed {os.path.basename(orig_path)}", False
+
+                # ✅ keep the exact model-aware transform for drizzle (per ORIGINAL key)
+                try:
+                    k_norm = os.path.normpath(orig_path)
+                    if kind == "affine":
+                        A = np.asarray(X, np.float32).reshape(2, 3)
+                        self.drizzle_xforms[k_norm] = ("affine", A)
+                    elif kind == "homography":
+                        H = np.asarray(X, np.float32).reshape(3, 3)
+                        self.drizzle_xforms[k_norm] = ("homography", H)
+                    elif kind.startswith("poly"):
+                        self.drizzle_xforms[k_norm] = (kind, None)
+                    else:
+                        # fall back to affine
+                        A = np.asarray(X, np.float32).reshape(2, 3)
+                        self.drizzle_xforms[k_norm] = ("affine", A)
+                except Exception:
+                    pass
+
+
                 if np.isnan(aligned).any() or np.isinf(aligned).any():
                     aligned = np.nan_to_num(aligned, nan=0.0, posinf=0.0, neginf=0.0)
 
@@ -1725,12 +1975,14 @@ class StarRegistrationThread(QThread):
                 )
                 # update downstream mapping to the NEW path
                 self.file_key_to_current_path[k] = out_path
-                return f"💾 Wrote {os.path.basename(out_path)}", True
+                return f"💾 Wrote {os.path.basename(out_path)} [{kind}]", True
             except Exception as e:
                 return f"⚠️ Finalize error {os.path.basename(orig_path)}: {e}", False
 
         self.progress_update.emit("📝 Finalizing aligned outputs (single write per frame)…")
         ok = 0
+        Href, Wref = self.reference_image_2d.shape[:2]
+        self._ref_shape_for_sasd = (Href, Wref)        
         with ThreadPoolExecutor(max_workers=io_workers) as ex:
             futs = {ex.submit(_final_write, f): f for f in self.original_files}
             for fut in as_completed(futs):
@@ -1739,7 +1991,78 @@ class StarRegistrationThread(QThread):
                     ok += 1
                 self.progress_update.emit(msg)
 
-        self.progress_update.emit(f"✅ Transform file saved as alignment_transforms.sasd")
+        try:
+            sasd_path = os.path.join(self.output_directory, "alignment_transforms.sasd")
+            self._save_alignment_transforms_sasd(sasd_path)
+            self.progress_update.emit(f"✅ Transform file saved as alignment_transforms.sasd")
+        except Exception as e:
+            self.progress_update.emit(f"⚠️ Failed to save alignment_transforms.sasd: {e}")
+
+    def _save_alignment_transforms_sasd(self, out_path: str):
+        """
+        SASD v2.1 format:
+
+            REF_SHAPE: <H>, <W>
+            REF_PATH: <reference path or __ACTIVE_VIEW__>
+            MODEL: mixed               # informative; real model is per file
+
+            FILE: <abs path to *_n.fit>
+            KIND: affine|homography|tps
+            MATRIX:
+            a, b, tx
+            c, d, ty
+
+            FILE: <next>
+            KIND: homography
+            MATRIX:
+            h00, h01, h02
+            h10, h11, h12
+            h20, h21, h22
+
+        Blank line between blocks.
+        """
+        # reference geometry + path
+        try:
+            Href, Wref = self.reference_image_2d.shape[:2]
+        except Exception:
+            Href, Wref = 0, 0
+        ref_path = self.reference if isinstance(self.reference, str) else "__ACTIVE_VIEW__"
+
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write(f"REF_SHAPE: {int(Href)}, {int(Wref)}\n")
+            f.write(f"REF_PATH: {ref_path}\n")
+            f.write("MODEL: mixed\n\n")
+
+            # prefer model-aware drizzle_xforms; fall back to affine stack if missing
+            for orig_key in self.original_files:
+                k = os.path.normpath(orig_key)
+                kind = None
+                M = None
+
+                if isinstance(getattr(self, "drizzle_xforms", None), dict) and k in self.drizzle_xforms:
+                    kind, M = self.drizzle_xforms[k]
+                else:
+                    # fallback: affine-only (2x3) from accumulated alignment_matrices
+                    M_aff = np.asarray(self.alignment_matrices.get(k, IDENTITY_2x3), dtype=np.float32)
+                    kind, M = "affine", M_aff
+
+                f.write(f"FILE: {k}\n")
+                f.write(f"KIND: {kind}\n")
+                f.write("MATRIX:\n")
+
+                if kind == "homography":
+                    H = np.asarray(M, np.float64).reshape(3, 3)
+                    f.write(f"{H[0,0]:.9f}, {H[0,1]:.9f}, {H[0,2]:.9f}\n")
+                    f.write(f"{H[1,0]:.9f}, {H[1,1]:.9f}, {H[1,2]:.9f}\n")
+                    f.write(f"{H[2,0]:.9f}, {H[2,1]:.9f}, {H[2,2]:.9f}\n\n")
+                elif kind == "affine":
+                    A = np.asarray(M, np.float64).reshape(2, 3)
+                    f.write(f"{A[0,0]:.9f}, {A[0,1]:.9f}, {A[0,2]:.9f}\n")
+                    f.write(f"{A[1,0]:.9f}, {A[1,1]:.9f}, {A[1,2]:.9f}\n\n")
+                else:
+                    # TPS or unknown: write a sentinel block; drizzle will skip
+                    f.write("MATRIX: \nUNSUPPORTED\n\n")
+
 
 
 
@@ -2261,7 +2584,7 @@ class MosaicPreviewWindow(QDialog):
           - Left-button press => start dragging
           - Mouse move => if dragging, pan
           - Left-button release => stop dragging
-          - Wheel => zoom in/out
+          - Wweel => zoom in/out
         """
         if source == self.scroll_area.viewport():
             if event.type() == QEvent.Type.MouseButtonPress:
@@ -2286,7 +2609,7 @@ class MosaicPreviewWindow(QDialog):
                 if event.button() == Qt.MouseButton.LeftButton:
                     self.dragging = False
                     return True
-            elif event.type() == QEvent.Type.Wheel:
+            elif event.type() == QEvent.Type.Wweel:
                 # Zoom in or out
                 if event.angleDelta().y() > 0:
                     self.zoom_in()
@@ -2908,7 +3231,7 @@ class MosaicMasterDialog(QDialog):
         checkbox_layout.addWidget(self.forceBlindCheckBox)
         # New Seestar Mode checkbox:
         self.seestarCheckBox = QCheckBox("Seestar Mode")
-        self.seestarCheckBox.setToolTip("When enabled, images are aligned iteratively using astroalign without plate solving.")
+        self.seestarCheckBox.setToolTip("Wwen enabled, images are aligned iteratively using astroalign without plate solving.")
         checkbox_layout.addWidget(self.seestarCheckBox)
         layout.addLayout(checkbox_layout)
 

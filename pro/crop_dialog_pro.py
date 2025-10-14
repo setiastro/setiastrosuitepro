@@ -35,6 +35,8 @@ def siril_style_autostretch(image: np.ndarray, sigma: float = 3.0) -> np.ndarray
 HANDLE_SIZE = 8  # screen pixels (handles stay constant size)
 EDGE_GRAB_PX = 12  # screen-pixel tolerance for grabbing edges when zoomed out
 
+
+
 class ResizableRotatableRectItem(QGraphicsRectItem):
     def __init__(self, rect: QRectF, parent=None):
         super().__init__(rect, parent)
@@ -390,6 +392,45 @@ class CropDialogPro(QDialog):
         self._fit_view()
 
     # ---------- image plumbing ----------
+    def _quad_is_axis_aligned(self, pts: np.ndarray, tol: float = 1e-2) -> bool:
+        """
+        pts: (4,2) in image pixel coords, order: TL, TR, BR, BL
+        Returns True if edges are parallel to axes within tolerance.
+        """
+        if pts.shape != (4, 2):
+            return False
+        xL, xR = (pts[0,0] + pts[3,0]) * 0.5, (pts[1,0] + pts[2,0]) * 0.5
+        yT, yB = (pts[0,1] + pts[1,1]) * 0.5, (pts[2,1] + pts[3,1]) * 0.5
+        # vertical edges nearly vertical, horizontal edges nearly horizontal
+        # Check that each edge's "other" dimension differs by very little.
+        left_dx  = abs(pts[0,0] - pts[3,0])
+        right_dx = abs(pts[1,0] - pts[2,0])
+        top_dy   = abs(pts[0,1] - pts[1,1])
+        bot_dy   = abs(pts[2,1] - pts[3,1])
+
+        return (left_dx < tol and right_dx < tol and top_dy < tol and bot_dy < tol)
+
+    def _int_bounds_from_quad(self, pts: np.ndarray, W: int, H: int) -> tuple[int,int,int,int] | None:
+        """
+        pts: (4,2) image-space corners. Returns (x0, x1, y0, y1) clamped to image
+        using floor/ceil so we keep all intended pixels.
+        """
+        if pts.size != 8:
+            return None
+        xs = pts[:,0]; ys = pts[:,1]
+        # inclusive-exclusive slice bounds
+        x0 = int(np.floor(xs.min() + 1e-6))
+        y0 = int(np.floor(ys.min() + 1e-6))
+        x1 = int(np.ceil (xs.max() - 1e-6))
+        y1 = int(np.ceil (ys.max() - 1e-6))
+        # clamp
+        x0 = max(0, min(W, x0)); x1 = max(0, min(W, x1))
+        y0 = max(0, min(H, y0)); y1 = max(0, min(H, y1))
+        if x1 <= x0 or y1 <= y0:
+            return None
+        return x0, x1, y0, y1
+
+
     def _img01_from_doc(self) -> np.ndarray:
         arr = np.asarray(self.doc.image)
         if arr.dtype.kind in "ui":
@@ -662,31 +703,51 @@ class CropDialogPro(QDialog):
         height = np.linalg.norm(src[3] - src[0])
         dst = np.array([[0,0],[width,0],[width,height],[0,height]], dtype=np.float32)
 
-        # Homography src->dst and crop
-        M = cv2.getPerspectiveTransform(src, dst)
-        w_out = int(round(width))
-        h_out = int(round(height))
-        if w_out <= 0 or h_out <= 0:
-            QMessageBox.critical(self, "Apply failed", "Invalid crop size.")
-            return
+        # ---- Axis-aligned? → exact slice; else → rotate with Lanczos ----
+        H_img, W_img = self._orig_h, self._orig_w
+        axis_aligned = self._quad_is_axis_aligned(src)
 
-        out = cv2.warpPerspective(self._full01, M, (w_out, h_out), flags=cv2.INTER_LINEAR)
+        if axis_aligned:
+            # Pixel-perfect slice
+            bounds = self._int_bounds_from_quad(src, W_img, H_img)
+            if bounds is None:
+                QMessageBox.critical(self, "Apply failed", "Invalid crop bounds.")
+                return
+            x0, x1, y0, y1 = bounds
+            out = self._full01[y0:y1, x0:x1].copy()
 
-        # Build updated metadata (WCS-aware)
+            # Build a pure-translation H so WCS update remains correct
+            M = np.array([[1.0, 0.0, -float(x0)],
+                          [0.0, 1.0, -float(y0)],
+                          [0.0, 0.0,  1.0]], dtype=np.float32)
+            w_out, h_out = (x1 - x0), (y1 - y0)
+
+        else:
+            # Rotated/keystoned selection → perspective crop with sharp filter
+            M = cv2.getPerspectiveTransform(src, dst)
+            w_out = int(round(width))
+            h_out = int(round(height))
+            if w_out <= 0 or h_out <= 0:
+                QMessageBox.critical(self, "Apply failed", "Invalid crop size.")
+                return
+
+            out = cv2.warpPerspective(
+                self._full01, M, (w_out, h_out),
+                flags=cv2.INTER_LANCZOS4  # crisper rotation, no resizing implied
+            )
+
+        # ---- WCS & bookkeeping (unchanged) ----
         new_meta = dict(self.doc.metadata or {})
         try:
             if update_wcs_after_crop is not None:
                 new_meta = update_wcs_after_crop(new_meta, M_src_to_dst=M, out_w=w_out, out_h=h_out)
         except Exception:
-            # If WCS update fails, keep going with pixel crop only.
             pass
 
-        # Record previous crop state (for “Load Previous”)
         CropDialogPro._prev_rect  = QRectF(self._rect_item.rect())
         CropDialogPro._prev_angle = float(self._rect_item.rotation())
         CropDialogPro._prev_pos   = QPointF(self._rect_item.pos())
 
-        # Push back to document (float [0..1]) with updated metadata
         try:
             self.doc.apply_edit(out.copy(), metadata={**new_meta, "step_name": "Crop"}, step_name="Crop")
             self._maybe_notify_wcs_update(new_meta)
@@ -735,21 +796,32 @@ class CropDialogPro(QDialog):
                 src01 = img.astype(np.float32) / np.iinfo(d.image.dtype).max
             else:
                 src01 = img.astype(np.float32, copy=False)
+
             h, w = src01.shape[:2]
-            src_pts = norm * np.array([w, h], dtype=np.float32)
+            src_pts = norm * np.array([w, h], dtype=np.float32)  # (4,2)
 
-            w_out  = int(round(np.linalg.norm(src_pts[1] - src_pts[0])))
-            h_out  = int(round(np.linalg.norm(src_pts[3] - src_pts[0])))
-            if w_out <= 0 or h_out <= 0:
-                continue
+            axis_aligned = self._quad_is_axis_aligned(src_pts)
 
-            dst = np.array([[0,0],[w_out,0],[w_out,h_out],[0,h_out]], dtype=np.float32)
+            if axis_aligned:
+                b = self._int_bounds_from_quad(src_pts, w, h)
+                if b is None:
+                    continue
+                x0, x1, y0, y1 = b
+                cropped = src01[y0:y1, x0:x1].copy()
+                w_out, h_out = (x1 - x0), (y1 - y0)
+                M = np.array([[1.0, 0.0, -float(x0)],
+                              [0.0, 1.0, -float(y0)],
+                              [0.0, 0.0,  1.0]], dtype=np.float32)
+            else:
+                w_out  = int(round(np.linalg.norm(src_pts[1] - src_pts[0])))
+                h_out  = int(round(np.linalg.norm(src_pts[3] - src_pts[0])))
+                if w_out <= 0 or h_out <= 0:
+                    continue
+                dst = np.array([[0,0],[w_out,0],[w_out,h_out],[0,h_out]], dtype=np.float32)
+                M = cv2.getPerspectiveTransform(src_pts.astype(np.float32), dst)
+                cropped = cv2.warpPerspective(src01, M, (w_out, h_out), flags=cv2.INTER_LANCZOS4)
 
-            # Per-doc homography and crop
-            M = cv2.getPerspectiveTransform(src_pts.astype(np.float32), dst)
-            cropped = cv2.warpPerspective(src01, M, (w_out, h_out), flags=cv2.INTER_LINEAR)
-
-            # Update that doc’s metadata/WCS
+            # WCS update per doc
             meta_this = dict(d.metadata or {})
             try:
                 if update_wcs_after_crop is not None:

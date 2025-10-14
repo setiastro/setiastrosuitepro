@@ -1,4 +1,4 @@
-# pro/mfdeconv.py
+# pro/mfdeconv.py non-sport normal version
 from __future__ import annotations
 import os, math, re
 import numpy as np
@@ -23,6 +23,22 @@ from pathlib import Path
 # at top of file with the other imports
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from queue import SimpleQueue
+
+# --- CUDA busy/unavailable detector (runtime fallback helper) ---
+def _is_cuda_busy_error(e: Exception) -> bool:
+    """
+    Return True for 'device busy/unavailable' style CUDA errors that can pop up
+    mid-run on shared Linux systems. We *exclude* OOM here (handled elsewhere).
+    """
+    em = str(e).lower()
+    if "out of memory" in em:
+        return False  # OOM handled by your batch size backoff
+    return (
+        ("cuda" in em and ("busy" in em or "unavailable" in em))
+        or ("device-side" in em and "assert" in em)
+        or ("driver shutting down" in em)
+    )
+
 
 def _compute_frame_assets(i, arr, hdr, *, make_masks, make_varmaps,
                           star_mask_cfg, varmap_cfg, status_sink=lambda s: None):
@@ -56,7 +72,7 @@ def _compute_frame_assets(i, arr, hdr, *, make_masks, make_varmaps,
             psf = None
     if psf is None:
         psf = _gaussian_psf(f_whm, ksize=k_auto)
-    psf = _soften_psf(_normalize_psf(psf.astype(np.float32, copy=False)), sigma_px=0.25)
+    psf = _soften_psf(_normalize_psf(psf.astype(np.float32, copy=False)), sigma_px=0.0)
 
     mask = None
     var  = None
@@ -160,7 +176,6 @@ def _build_psf_and_assets(
         )
 
     # --- submit jobs ---
-    from concurrent.futures import ThreadPoolExecutor, as_completed
     with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="mfdeconv") as ex:
         futs = []
         for i, p in enumerate(paths, start=1):
@@ -556,18 +571,17 @@ def _conv_same_np(img, psf):
 def _normalize_psf(psf):
     psf = np.maximum(psf, 0.0).astype(np.float32, copy=False)
     s = float(psf.sum())
-    if not np.isfinite(s) or s <= EPS:
+    if not np.isfinite(s) or s <= 1e-6:
         return psf
     return (psf / s).astype(np.float32, copy=False)
 
 def _soften_psf(psf, sigma_px=0.25):
-    # optional tiny Gaussian soften to reduce ringing; sigma<=0 disables
     if sigma_px <= 0:
         return psf
     r = int(max(1, round(3 * sigma_px)))
     y, x = np.mgrid[-r:r+1, -r:r+1]
     g = np.exp(-(x*x + y*y) / (2 * sigma_px * sigma_px)).astype(np.float32)
-    g /= g.sum() + EPS
+    g /= g.sum() + 1e-6
     return _conv_same_np(psf[None], g)[0]
 
 def _psf_fwhm_px(psf: np.ndarray) -> float:
@@ -1107,11 +1121,7 @@ def _variance_map_from_precomputed(
 # Robust weighting (Huber)
 # -----------------------------
 
-def _estimate_scalar_variance_t(r):
-    # r: tensor on device
-    med = torch.median(r)
-    mad = torch.median(torch.abs(r - med)) + 1e-6
-    return (1.4826 * mad) ** 2
+EPS = 1e-6
 
 def _estimate_scalar_variance(a):
     med = np.median(a)
@@ -1120,65 +1130,37 @@ def _estimate_scalar_variance(a):
 
 def _weight_map(y, pred, huber_delta, var_map=None, mask=None):
     """
-    Robust per-pixel weights for the MM update.
-    W = [psi(r)/r] * 1/(var + eps) * mask
-    If huber_delta < 0, delta = (-huber_delta) * RMS(residual) (auto).
-    var_map: per-pixel variance (2D); if None, fall back to robust scalar via MAD.
-    mask: 2D {0,1} validity; if None, treat as ones.
+    W = [psi(r)/r] * 1/(var + eps) * mask, psi=Huber
+    If huber_delta<0, delta = (-huber_delta) * RMS(residual) via MAD.
+    y,pred: (H,W) or (C,H,W). var_map/mask are 2D; broadcast if needed.
     """
     r = y - pred
-    eps = EPS
-
-    # resolve Huber delta
+    # auto delta?
     if huber_delta < 0:
-        if TORCH_OK and isinstance(r, torch.Tensor):
-            med = torch.median(r)
-            mad = torch.median(torch.abs(r - med)) + 1e-6
-            rms = 1.4826 * mad
-            delta = (-huber_delta) * torch.clamp(rms, min=1e-6)
-        else:
-            med = np.median(r)
-            mad = np.median(np.abs(r - med)) + 1e-6
-            rms = 1.4826 * mad
-            delta = (-huber_delta) * max(rms, 1e-6)
+        med = np.median(r)
+        mad = np.median(np.abs(r - med)) + 1e-6
+        rms = 1.4826 * mad
+        delta = (-huber_delta) * max(rms, 1e-6)
     else:
         delta = huber_delta
 
-    # psi(r)/r
-    if TORCH_OK and isinstance(r, torch.Tensor):
-        absr = torch.abs(r)
-        if float(delta) > 0:
-            psi_over_r = torch.where(absr <= delta, torch.ones_like(r), delta / (absr + eps))
-        else:
-            psi_over_r = torch.ones_like(r)
-        if var_map is None:
-            v = _estimate_scalar_variance_t(r)
-        else:
-            v = var_map
-            if v.ndim == 2 and r.ndim == 3:
-                v = v[None, ...]  # broadcast over channels
-        w = psi_over_r / (v + eps)
-        if mask is not None:
-            m = mask if mask.ndim == w.ndim else (mask[None, ...] if w.ndim == 3 else mask)
-            w = w * m
-        return w
+    absr = np.abs(r)
+    if float(delta) > 0:
+        psi_over_r = np.where(absr <= delta, 1.0, delta / (absr + EPS)).astype(np.float32)
     else:
-        absr = np.abs(r)
-        if float(delta) > 0:
-            psi_over_r = np.where(absr <= delta, 1.0, delta / (absr + eps)).astype(np.float32)
-        else:
-            psi_over_r = np.ones_like(r, dtype=np.float32)
-        if var_map is None:
-            v = _estimate_scalar_variance(r)
-        else:
-            v = var_map
-            if v.ndim == 2 and r.ndim == 3:
-                v = v[None, ...]
-        w = psi_over_r / (v + eps)
-        if mask is not None:
-            m = mask if mask.ndim == w.ndim else (mask[None, ...] if w.ndim == 3 else mask)
-            w = w * m
-        return w
+        psi_over_r = np.ones_like(r, dtype=np.float32)
+
+    if var_map is None:
+        v = _estimate_scalar_variance(r)
+    else:
+        v = var_map
+        if v.ndim == 2 and r.ndim == 3:
+            v = v[None, ...]
+    w = psi_over_r / (v + EPS)
+    if mask is not None:
+        m = mask if mask.ndim == w.ndim else (mask[None, ...] if w.ndim == 3 else mask)
+        w = w * m
+    return w
 
 
 # -----------------------------
@@ -1191,21 +1173,18 @@ def _fftshape_same(H, W, kh, kw):
 # ---------- Torch FFT helpers (FIXED: carry padH/padW) ----------
 def _precompute_torch_psf_ffts(psfs, flip_psf, H, W, device, dtype):
     """
-    FP32-only Torch FFT packs. 'dtype' is ignored on purpose to prevent
-    accidental half/bfloat16. Everything is torch.float32.
+    Pack (Kf,padH,padW,kh,kw) so the conv can crop correctly to SAME.
+    Kernel is ifftshifted before padding.
     """
     tfft = torch.fft
     psf_fft, psfT_fft = [], []
     for k, kT in zip(psfs, flip_psf):
         kh, kw = k.shape
         padH, padW = _fftshape_same(H, W, kh, kw)
-
-        k_small  = torch.as_tensor(np.fft.ifftshift(k),  device=device, dtype=torch.float32)
-        kT_small = torch.as_tensor(np.fft.ifftshift(kT), device=device, dtype=torch.float32)
-
+        k_small  = torch.as_tensor(np.fft.ifftshift(k),  device=device, dtype=dtype)
+        kT_small = torch.as_tensor(np.fft.ifftshift(kT), device=device, dtype=dtype)
         Kf  = tfft.rfftn(k_small,  s=(padH, padW))
         KTf = tfft.rfftn(kT_small, s=(padH, padW))
-
         psf_fft.append((Kf,  padH, padW, kh, kw))
         psfT_fft.append((KTf, padH, padW, kh, kw))
     return psf_fft, psfT_fft
@@ -1215,17 +1194,16 @@ def _fft_conv_same_torch(x, Kf_pack, out_spatial):
     tfft = torch.fft
     Kf, padH, padW, kh, kw = Kf_pack
     H, W = x.shape[-2], x.shape[-1]
-
     if x.ndim == 2:
         X = tfft.rfftn(x, s=(padH, padW))
         y = tfft.irfftn(X * Kf, s=(padH, padW))
-        sh, sw = kh // 2, kw // 2
+        sh, sw = (kh - 1)//2, (kw - 1)//2
         out_spatial.copy_(y[sh:sh+H, sw:sw+W])
         return out_spatial
     else:
-        X = tfft.rfftn(x, s=(padH, padW), dim=(-2, -1))
-        y = tfft.irfftn(X * Kf, s=(padH, padW), dim=(-2, -1))
-        sh, sw = kh // 2, kw // 2
+        X = tfft.rfftn(x, s=(padH, padW), dim=(-2,-1))
+        y = tfft.irfftn(X * Kf, s=(padH, padW), dim=(-2,-1))
+        sh, sw = (kh - 1)//2, (kw - 1)//2
         out_spatial.copy_(y[..., sh:sh+H, sw:sw+W])
         return out_spatial
 
@@ -1246,7 +1224,7 @@ def _fft_conv_same_np(a, Kf, kh, kw, fftH, fftW, out):
     if a.ndim == 2:
         A = fft.rfftn(a, s=(fftH, fftW))
         y = fft.irfftn(A * Kf, s=(fftH, fftW))
-        sh, sw = kh // 2, kw // 2
+        sh, sw = (kh - 1)//2, (kw - 1)//2
         out[...] = y[sh:sh+a.shape[0], sw:sw+a.shape[1]]
         return out
     else:
@@ -1255,7 +1233,7 @@ def _fft_conv_same_np(a, Kf, kh, kw, fftH, fftW, out):
         for c in range(C):
             A = fft.rfftn(a[c], s=(fftH, fftW))
             y = fft.irfftn(A * Kf, s=(fftH, fftW))
-            sh, sw = kh // 2, kw // 2
+            sh, sw = (kh - 1)//2, (kw - 1)//2
             acc.append(y[sh:sh+H, sw:sw+W])
         out[...] = np.stack(acc, 0)
         return out
@@ -1977,16 +1955,24 @@ def multiframe_deconv(
             + ("CUDA" if cuda_ok else "MPS" if mps_ok else "DirectML" if dml_ok else "CPU")
         )
         if cuda_ok and getattr(torch.backends, "cudnn", None) is not None:
-            # Avoid fast TF32/cuDNN autotuned kernels that can corrupt tiles
+            # Avoid TF32 everywhere; stick to true FP32
             torch.backends.cuda.matmul.allow_tf32 = False
-            torch.backends.cudnn.allow_tf32 = True
-            torch.backends.cudnn.benchmark   = True
-            # Deterministic algorithms prefer safe kernels
+            torch.backends.cudnn.allow_tf32 = False  # <-- was True
+
+            # Determinism helps avoid flaky kernel picks
             try:
                 torch.use_deterministic_algorithms(True)
             except Exception:
-                # Older PyTorch:
                 torch.backends.cudnn.deterministic = True
+
+            # Optional but nice on PyTorch 2+: prefer highest-precision FP32 matmul
+            try:
+                torch.set_float32_matmul_precision("highest")
+            except Exception:
+                pass
+
+            # Benchmark is fine; determinism limits it anyway
+            torch.backends.cudnn.benchmark = True
     except Exception as e:
         TORCH_OK = False
         status_cb(f"PyTorch not available → CPU path. ({e})")
@@ -2017,6 +2003,8 @@ def multiframe_deconv(
         for i, k_native in enumerate(psfs, start=1):
             h = _solve_super_psf_from_native(k_native, r=r, sigma=float(sr_sigma),
                                             iters=int(sr_psf_opt_iters), lr=float(sr_psf_opt_lr))
+            if (h.shape[0] % 2) == 0:
+                h = _pad_kernel_to(h, h.shape[0] + 1)   # renormalizes inside            
             sr_psfs.append(h)
             status_cb(f"  SR-PSF{i}: native {k_native.shape[0]} → {h.shape[0]} (sum={h.sum():.6f})")
         psfs = sr_psfs
@@ -2155,23 +2143,25 @@ def multiframe_deconv(
         use_fft = False
         if device.type == "cuda" and ((K_native_max >= int(fft_kernel_threshold)) or (r > 1 and K_native_max >= max(21, int(fft_kernel_threshold) - 4))):
             use_fft = True
-            # Precompute FFT packs with each kernel at its native size
-            psf_fft, psfT_fft = _precompute_torch_psf_ffts(psfs, flip_psf, Hs, Ws,
-                                                        device=x_t.device, dtype=torch.float32)
+            # Force NCHW for FFT branch to keep channel slices contiguous/sane
+            use_channels_last = False
+            # Precompute FFT packs…
+            psf_fft, psfT_fft = _precompute_torch_psf_ffts(
+                psfs, flip_psf, Hs, Ws, device=x_t.device, dtype=torch.float32
+            )
         else:
             psf_fft = psfT_fft = None
-            # Spatial path needs a uniform kernel size → pad once, here
             Kmax = K_native_max
             if (Kmax % 2) == 0:
                 Kmax += 1
             if any(int(k.shape[0]) != Kmax for k in psfs):
                 status_cb(f"MFDeconv: normalizing PSF sizes → {Kmax}×{Kmax}")
                 psfs = [_pad_kernel_to(k, Kmax) for k in psfs]
-                flip_psf = [_flip_kernel(k) for k in psfs]  # keep flip in sync
+                flip_psf = [_flip_kernel(k) for k in psfs]
 
-        # build spatial kernels (strict FP32) if we’re on the spatial branch
-        psf_t  = [_to_t(_contig(k)).to(torch.float32)[None, None]  for k  in psfs]
-        psfT_t = [_to_t(_contig(kT)).to(torch.float32)[None, None] for kT in flip_psf]
+        # (Re)build spatial kernels strictly as contiguous FP32 tensors
+        psf_t  = [_to_t(_contig(k))[None, None].to(torch.float32).contiguous()  for k  in psfs]
+        psfT_t = [_to_t(_contig(kT))[None, None].to(torch.float32).contiguous() for kT in flip_psf]
     else:
         x_t = _contig(x).astype(np.float32, copy=False)
         num = np.zeros_like(x_t, dtype=np.float32)
@@ -2321,202 +2311,224 @@ def multiframe_deconv(
                 num.fill(0.0); den.fill(0.0)
 
             if use_torch:
-                # ---- batched GPU path ----
-                frame_idx = list(range(n_frames))
-                B_cur = int(max(1, auto_B))
-                ci = 0
-                Cn = None
+                # ---- batched GPU path (hardened with busy→CPU fallback) ----
+                retry_cpu = False  # if True, we’ll redo this iteration’s accumulators on CPU
 
-                # AMP context helper
-                def _maybe_amp():
-                    if use_amp and (amp_cm is not None):
-                        return amp_cm(**amp_kwargs)
-                    # null-context
-                    from contextlib import nullcontext
-                    return nullcontext()
+                try:
+                    frame_idx = list(range(n_frames))
+                    B_cur = int(max(1, auto_B))
+                    ci = 0
+                    Cn = None
 
-                # prefetch first batch
-                if prefetch_batches:
-                    idx0 = frame_idx[ci:ci+B_cur]
-                    if idx0:
-                        Cn = C_EXPECTED
-                        yb_next, mb_next, vb_next = _make_pinned_batch(idx0, Cn, x_t.dtype)
-                    else:
-                        yb_next = mb_next = vb_next = None
-                while ci < n_frames:
-                    idx = frame_idx[ci:ci + B_cur]
-                    B = len(idx)
-                    try:
-                        # gather device batches (with prefetch)
-                        if prefetch_batches and (yb_next is not None):
-                            yb, mb, vb = yb_next, mb_next, vb_next
-                            ci2 = ci + B_cur
-                            if ci2 < n_frames:
-                                idx2 = frame_idx[ci2:ci2+B_cur]
-                                Cn = Cn or (_as_chw(_sanitize_numeric(data[idx[0]])).shape[0])
-                                yb_next, mb_next, vb_next = _make_pinned_batch(idx2, Cn, torch.float32)
-                            else:
-                                yb_next = mb_next = vb_next = None
-                        else:
-                            # No prefetch: still enforce fixed channel count
+                    # AMP context helper
+                    def _maybe_amp():
+                        if use_amp and (amp_cm is not None):
+                            return amp_cm(**amp_kwargs)
+                        from contextlib import nullcontext
+                        return nullcontext()
+
+                    # prefetch first batch (unchanged)
+                    if prefetch_batches:
+                        idx0 = frame_idx[ci:ci+B_cur]
+                        if idx0:
                             Cn = C_EXPECTED
-                            yb, mb, vb = _make_pinned_batch(idx, Cn, torch.float32)
+                            yb_next, mb_next, vb_next = _make_pinned_batch(idx0, Cn, x_t.dtype)
+                        else:
+                            yb_next = mb_next = vb_next = None
+
+                    while ci < n_frames:
+                        idx = frame_idx[ci:ci + B_cur]
+                        B = len(idx)
+                        try:
+                            # ---- existing gather/conv/weights/backproject code (UNCHANGED) ----
+                            if prefetch_batches and (yb_next is not None):
+                                yb, mb, vb = yb_next, mb_next, vb_next
+                                ci2 = ci + B_cur
+                                if ci2 < n_frames:
+                                    idx2 = frame_idx[ci2:ci2+B_cur]
+                                    Cn = Cn or (_as_chw(_sanitize_numeric(data[idx[0]])).shape[0])
+                                    yb_next, mb_next, vb_next = _make_pinned_batch(idx2, Cn, torch.float32)
+                                else:
+                                    yb_next = mb_next = vb_next = None
+                            else:
+                                Cn = C_EXPECTED
+                                yb, mb, vb = _make_pinned_batch(idx, Cn, torch.float32)
+                                if use_channels_last:
+                                    yb = yb.contiguous(memory_format=torch.channels_last)
+
+                            wk  = torch.cat([psf_t[fi]  for fi in idx], dim=0).to(memory_format=torch.contiguous_format).contiguous()
+                            wkT = torch.cat([psfT_t[fi] for fi in idx], dim=0).to(memory_format=torch.contiguous_format).contiguous()
+
+                            # --- predict on SR grid ---
+                            x_bc_hw = x_t.unsqueeze(0).expand(B, -1, -1, -1).contiguous()
                             if use_channels_last:
-                                yb = yb.contiguous(memory_format=torch.channels_last)
+                                x_bc_hw = x_bc_hw.contiguous(memory_format=torch.channels_last)
 
-                        # PSF packs for this batch (FP32)
-                        wk  = torch.cat([psf_t[fi]  for fi in idx], dim=0).to(memory_format=torch.contiguous_format).contiguous()
-                        wkT = torch.cat([psfT_t[fi] for fi in idx], dim=0).to(memory_format=torch.contiguous_format).contiguous()
-
-
-                        # --- predict on SR grid ---
-                        x_bc_hw = x_t.unsqueeze(0).expand(B, -1, -1, -1).contiguous()
-                        if use_channels_last:
-                            x_bc_hw = x_bc_hw.contiguous(memory_format=torch.channels_last)
-
-                        if use_fft:
-                            # True FFT forward on the super-res grid (each PSF at native size)
-                            pred_list = []
-                            for j, fi in enumerate(idx):
-                                C_here = x_bc_hw.shape[1]
-                                pred_j = torch.empty_like(x_bc_hw[j], dtype=torch.float32)
-                                Kf_pack = psf_fft[fi]  # (Kf, padH, padW, kh, kw)
-                                for c in range(C_here):
-                                    _fft_conv_same_torch(x_bc_hw[j, c], Kf_pack, out_spatial=pred_j[c])
-                                pred_list.append(pred_j)
-                            pred_super = torch.stack(pred_list, 0).contiguous()
-                        else:
-                            pred_super = _grouped_conv_same_torch_per_sample(x_bc_hw, wk, B, Cn)
-
-
-                        pred_low = _downsample_avg_bt_t(pred_super, r) if r > 1 else pred_super
-
-                        # --- robust weights ---
-                        rnat = yb - pred_low
-
-                        if (it == 1) and (idx and (idx[0] == 0)):
-                            try:
-                                status_cb(f"DBG rnat shape: {tuple(rnat.shape)}")
-                            except Exception:
-                                pass
-
-                        # Auto Huber delta cache
-                        if huber_delta < 0:
-                            if auto_delta_cache is not None and (it % 5 == 1 or any(auto_delta_cache[fi] is None for fi in idx)):
-                                B, C_here, H0, W0 = rnat.shape
-                                if C_here == 0 or H0 == 0 or W0 == 0:
-                                    raise RuntimeError(f"Empty residual map shape {tuple(rnat.shape)}")
-                                med, mad = _robust_med_mad_t(rnat, max_elems_per_sample=2_000_000)
-                                rms = 1.4826 * mad
+                            if use_fft:
+                                pred_list = []
                                 for j, fi in enumerate(idx):
-                                    auto_delta_cache[fi] = float((-huber_delta) * torch.clamp(rms[j, 0, 0, 0], min=1e-6).item())
-                            deltas = torch.tensor([auto_delta_cache[fi] for fi in idx], device=x_t.device,
-                                                  dtype=torch.float32).view(B, 1, 1, 1)
-                        else:
-                            deltas = torch.tensor(float(huber_delta), device=x_t.device,
-                                                  dtype=torch.float32).view(1, 1, 1, 1)
+                                    C_here = x_bc_hw.shape[1]
+                                    # Allocate a fresh, contiguous NCHW (C,H,W)
+                                    pred_j = torch.empty_like(x_t, dtype=torch.float32)
+                                    Kf_pack = psf_fft[fi]  # (Kf, padH, padW, kh, kw)
+                                    for c in range(C_here):
+                                        _fft_conv_same_torch(x_bc_hw[j, c], Kf_pack, out_spatial=pred_j[c])
+                                    pred_list.append(pred_j.contiguous())
+                                pred_super = torch.stack(pred_list, 0).contiguous()
+                            else:
+                                pred_super = _grouped_conv_same_torch_per_sample(
+                                    x_bc_hw, wk, B, Cn
+                                ).contiguous()
 
-                        absr = rnat.abs()
-                        psi_over_r = torch.where(absr <= deltas, torch.ones_like(absr),
-                                                 deltas / (absr + EPS))
+                            pred_low = _downsample_avg_bt_t(pred_super, r) if r > 1 else pred_super
 
-                        # Per-pixel variance map.
-                        if vb is None:
-                            # robust scalar per-frame -> expand to (B,C,H,W) with repeat
-                            med, mad = _robust_med_mad_t(rnat, max_elems_per_sample=2_000_000)
-                            vmap = (1.4826 * mad) ** 2                 # (B,1,1,1)
-                            vmap = vmap.repeat(1, Cn, rnat.shape[-2], rnat.shape[-1]).contiguous()
-                        else:
-                            vmap = vb.unsqueeze(1).repeat(1, Cn, 1, 1).contiguous()
-                        if DEBUG_FLAT_WEIGHTS:
-                            # neutral weights per channel (mask only) – matches “good” CPU behavior
-                            wmap_low = mb.unsqueeze(1)
-                        else:
-                            wmap_low = (psi_over_r / (vmap + EPS))
-                            m1 = mb.unsqueeze(1).repeat(1, Cn, 1, 1).contiguous()
-                            wmap_low = wmap_low * m1
-                            wmap_low = torch.nan_to_num(wmap_low, nan=0.0, posinf=0.0, neginf=0.0)
-                        # --- adjoint (upsample if SR) ---
-                        if r > 1:
-                            up_y    = _upsample_sum_bt_t(wmap_low * yb,       r)
-                            up_pred = _upsample_sum_bt_t(wmap_low * pred_low,  r)
-                        else:
-                            up_y, up_pred = wmap_low * yb, wmap_low * pred_low
+                            # --- robust weights (UNCHANGED) ---
+                            rnat = yb - pred_low
+                            if huber_delta < 0:
+                                if auto_delta_cache is not None and (it % 5 == 1 or any(auto_delta_cache[fi] is None for fi in idx)):
+                                    Btmp, C_here, H0, W0 = rnat.shape
+                                    med, mad = _robust_med_mad_t(rnat, max_elems_per_sample=2_000_000)
+                                    rms = 1.4826 * mad
+                                    for j, fi in enumerate(idx):
+                                        auto_delta_cache[fi] = float((-huber_delta) * torch.clamp(rms[j, 0, 0, 0], min=1e-6).item())
+                                deltas = torch.tensor([auto_delta_cache[fi] for fi in idx], device=x_t.device,
+                                                    dtype=torch.float32).view(B, 1, 1, 1)
+                            else:
+                                deltas = torch.tensor(float(huber_delta), device=x_t.device,
+                                                    dtype=torch.float32).view(1, 1, 1, 1)
+                            absr = rnat.abs()
+                            psi_over_r = torch.where(absr <= deltas, torch.ones_like(absr),
+                                                    deltas / (absr + EPS))
+                            if vb is None:
+                                med, mad = _robust_med_mad_t(rnat, max_elems_per_sample=2_000_000)
+                                vmap = (1.4826 * mad) ** 2
+                                vmap = vmap.repeat(1, Cn, rnat.shape[-2], rnat.shape[-1]).contiguous()
+                            else:
+                                vmap = vb.unsqueeze(1).repeat(1, Cn, 1, 1).contiguous()
+                            if DEBUG_FLAT_WEIGHTS:
+                                wmap_low = mb.unsqueeze(1)
+                            else:
+                                wmap_low = (psi_over_r / (vmap + EPS))
+                                m1 = mb.unsqueeze(1).repeat(1, Cn, 1, 1).contiguous()
+                                wmap_low = wmap_low * m1
+                                wmap_low = torch.nan_to_num(wmap_low, nan=0.0, posinf=0.0, neginf=0.0)
 
-                        # --- backproject ---
-                        if use_fft:
-                            back_num_list, back_den_list = [], []
-                            for j, fi in enumerate(idx):
-                                C_here = up_y.shape[1]
-                                bn_j = torch.empty_like(x_t, dtype=torch.float32)
-                                bd_j = torch.empty_like(x_t, dtype=torch.float32)
-                                KTf_pack = psfT_fft[fi]
-                                for c in range(C_here):
-                                    _fft_conv_same_torch(up_y[j, c],    KTf_pack, out_spatial=bn_j[c])
-                                    _fft_conv_same_torch(up_pred[j, c], KTf_pack, out_spatial=bd_j[c])
-                                back_num_list.append(bn_j)
-                                back_den_list.append(bd_j)
-                            back_num = torch.stack(back_num_list, 0).sum(dim=0)
-                            back_den = torch.stack(back_den_list, 0).sum(dim=0)
-                        else:
-                            back_num = _grouped_conv_same_torch_per_sample(up_y,    wkT, B, Cn).sum(dim=0)
-                            back_den = _grouped_conv_same_torch_per_sample(up_pred, wkT, B, Cn).sum(dim=0)
+                            # --- adjoint + backproject (UNCHANGED) ---
+                            if r > 1:
+                                up_y    = _upsample_sum_bt_t(wmap_low * yb,       r)
+                                up_pred = _upsample_sum_bt_t(wmap_low * pred_low,  r)
+                            else:
+                                up_y, up_pred = wmap_low * yb, wmap_low * pred_low
 
-                        # accumulate in FP32
-                        num += back_num
-                        den += back_den
+                            if use_fft:
+                                back_num_list, back_den_list = [], []
+                                for j, fi in enumerate(idx):
+                                    C_here = up_y.shape[1]
+                                    bn_j = torch.empty_like(x_t, dtype=torch.float32)
+                                    bd_j = torch.empty_like(x_t, dtype=torch.float32)
+                                    KTf_pack = psfT_fft[fi]
+                                    for c in range(C_here):
+                                        _fft_conv_same_torch(up_y[j, c],    KTf_pack, out_spatial=bn_j[c])
+                                        _fft_conv_same_torch(up_pred[j, c], KTf_pack, out_spatial=bd_j[c])
+                                    back_num_list.append(bn_j)
+                                    back_den_list.append(bd_j)
+                                back_num = torch.stack(back_num_list, 0).sum(dim=0)
+                                back_den = torch.stack(back_den_list, 0).sum(dim=0)
+                            else:
+                                back_num = _grouped_conv_same_torch_per_sample(up_y,    wkT, B, Cn).sum(dim=0)
+                                back_den = _grouped_conv_same_torch_per_sample(up_pred, wkT, B, Cn).sum(dim=0)
 
-                        ci += B
+                            num += back_num
+                            den += back_den
+                            ci += B
 
-                    except RuntimeError as e:
-                        emsg = str(e).lower()
-                        if ("out of memory" in emsg or "resource" in emsg or "alloc" in emsg) and B_cur > 1:
-                            B_cur = max(1, B_cur // 2)
-                            status_cb(f"GPU OOM: reducing batch_frames → {B_cur} and retrying this chunk.")
-                            if prefetch_batches:
-                                yb_next = mb_next = vb_next = None
-                            continue
+                            if os.environ.get("MFDECONV_DEBUG_SYNC", "0") == "1":
+                                try:
+                                    torch.cuda.synchronize()
+                                except Exception:
+                                    pass
+
+                        except RuntimeError as e:
+                            emsg = str(e).lower()
+                            # existing OOM backoff stays the same
+                            if ("out of memory" in emsg or "resource" in emsg or "alloc" in emsg) and B_cur > 1:
+                                B_cur = max(1, B_cur // 2)
+                                status_cb(f"GPU OOM: reducing batch_frames → {B_cur} and retrying this chunk.")
+                                if prefetch_batches:
+                                    yb_next = mb_next = vb_next = None
+                                continue
+                            # NEW: busy/unavailable → trigger CPU retry for this iteration
+                            if _is_cuda_busy_error(e):
+                                status_cb("CUDA became unavailable mid-run → retrying this iteration on CPU and switching to CPU for the rest.")
+                                retry_cpu = True
+                                break  # break the inner while; we'll recompute on CPU
+                            raise
+
+                    _process_gui_events_safely()
+
+                except RuntimeError as e:
+                    # Catch outer-level CUDA busy/unavailable too (e.g., from syncs)
+                    if _is_cuda_busy_error(e):
+                        status_cb("CUDA error indicates device busy/unavailable → retrying this iteration on CPU and switching to CPU for the rest.")
+                        retry_cpu = True
+                    else:
                         raise
 
+                if retry_cpu:
+                    # flip to CPU for this and subsequent iterations
+                    globals()["cuda_usable"] = False
+                    use_torch = False
+                    try:
+                        torch.cuda.empty_cache()
+                    except Exception:
+                        pass
 
-                _process_gui_events_safely()
+                    # Rebuild accumulators on CPU for this iteration:
+                    # 1) convert x_t (seed/current estimate) to NumPy
+                    x_t = x_t.detach().cpu().numpy()
+                    # 2) reset accumulators as NumPy arrays
+                    num = np.zeros_like(x_t, dtype=np.float32)
+                    den = np.zeros_like(x_t, dtype=np.float32)
 
-            else:
-                # ---- NumPy path (fallback) ----
-                for fi in range(n_frames):
-                    y_nat = data[fi]
-                    y_nat = _sanitize_numeric(y_nat)
-                    y_chw = _as_chw(y_nat)
-                    Cn, Hn, Wn = y_chw.shape
-                    m2d = _mask_for(fi, y_chw)
-                    v2d = _var_for(fi, y_chw)
-                    k  = psfs[fi]
-                    kT = flip_psf[fi]
+                    # 3) RUN THE EXISTING NUMPY ACCUMULATION (same as your else: block below)
+                    # 3) recompute this iteration’s accumulators on CPU
+                    for fi in range(n_frames):
+                        # load one frame as CHW (float32, sanitized)
+                        y_nat = _sanitize_numeric(_load_frame_i(fi))
+                        y_chw = _as_chw(y_nat)
 
-                    if r > 1:
-                        pred_super = _conv_np_same(x_t, k)
-                        pred_low = _downsample_avg(pred_super, r) if pred_super.ndim == 3 else _downsample_avg(pred_super, r)[None, ...]
-                        yC = y_chw
-                        if DEBUG_FLAT_WEIGHTS:
-                            wmap_low = np.broadcast_to(m2d, yC.shape)    # SR path
+                        # forward predict (super grid) with this frame's PSF
+                        pred_super = _conv_np_same(x_t, psfs[fi])
+
+                        # downsample to native if SR was on
+                        pred_low = _downsample_avg(pred_super, r) if r > 1 else pred_super
+
+                        # per-frame mask/variance
+                        m2d = _mask_for(fi, y_chw)         # 2D, [0..1]
+                        v2d = _var_for(fi, y_chw)          # 2D or None
+
+                        # robust weights per pixel/channel
+                        w = _weight_map(
+                            y=y_chw, pred=pred_low,
+                            huber_delta=huber_delta,   # negative = auto
+                            var_map=v2d, mask=m2d
+                        ).astype(np.float32, copy=False)
+
+                        # adjoint (backproject) on super grid
+                        if r > 1:
+                            up_y    = _upsample_sum(w * y_chw,     r, target_hw=x_t.shape[-2:])
+                            up_pred = _upsample_sum(w * pred_low,  r, target_hw=x_t.shape[-2:])
                         else:
-                            wmap_low = _weight_map(yC, pred_low, local_delta, var_map=v2d, mask=m2d)
-                        up_y    = _upsample_sum(wmap_low * yC,    r, target_hw=pred_super.shape[-2:])
-                        up_pred = _upsample_sum(wmap_low * pred_low, r, target_hw=pred_super.shape[-2:])
-                        num += _conv_np_same(up_y,    kT)
-                        den += _conv_np_same(up_pred, kT)
-                    else:
-                        pred = _conv_np_same(x_t, k)
-                        yC   = y_chw
-                        if DEBUG_FLAT_WEIGHTS:
-                            wmap = np.broadcast_to(m2d, yC.shape)        # native path
-                        else:
-                            wmap = _weight_map(yC, pred, local_delta, var_map=v2d, mask=m2d)
-                        num += _conv_np_same(wmap * yC,   kT)
-                        den += _conv_np_same(wmap * pred, kT)
+                            up_y, up_pred = (w * y_chw), (w * pred_low)
 
-                    if (fi & 7) == 0:
-                        _process_gui_events_safely()
+                        num += _conv_np_same(up_y,    flip_psf[fi])
+                        den += _conv_np_same(up_pred, flip_psf[fi])
+
+                    # ensure strictly positive denominator
+                    den = np.clip(den, 1e-8, None).astype(np.float32, copy=False)
+
+                    # switch everything to NumPy for the remainder of the run
+                    psf_fft = psfT_fft = None  # (Torch packs no longer used)
 
             # ---- multiplicative RL/MM step with clamping ----
             if use_torch:

@@ -350,6 +350,17 @@ class ShortcutButton(QToolButton):
                 QMessageBox.information(self, "Preset saved", "Preset stored on shortcut.")
             return
 
+        if cid == "crop":
+            dlg = _CropPresetDialog(self, initial=cur or {
+                "mode": "margins",
+                "margins": {"top": 0, "right": 0, "bottom": 0, "left": 0},
+                "create_new_view": False
+            })
+            if dlg.exec() == QDialog.DialogCode.Accepted:
+                self._save_preset(dlg.result_dict())
+                QMessageBox.information(self, "Preset saved", "Crop preset stored on shortcut.")
+            return
+
         if cid == "curves":
             cur = self._load_preset() or {"shape": "linear", "amount": 0.5, "mode": "K (Brightness)"}
             dlg = _CurvesPresetDialog(self, initial=cur)
@@ -2273,3 +2284,97 @@ class _ABEPresetDialog(QDialog):
             "make_background_doc": bool(self.mk_bg.isChecked()),
             # exclusion polygons: intentionally unsupported here
         }        
+class _CropPresetDialog(QDialog):
+    def __init__(self, parent=None, initial: dict | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Crop Preset")
+        init = dict(initial or {})
+        mode = str(init.get("mode", "margins")).lower()
+        margins = dict(init.get("margins", {}))
+
+        lay = QVBoxLayout(self)
+        form = QFormLayout()
+
+        # --- Mode + help button row --------------------------------------
+        self.cmb_mode = QComboBox()
+        self.cmb_mode.addItems(["margins", "rect_norm", "quad_norm"])
+        self.cmb_mode.setCurrentText(mode)
+        # Per-item tooltips
+        self.cmb_mode.setItemData(0, "Crop by pixel margins from each edge.", Qt.ItemDataRole.ToolTipRole)
+        self.cmb_mode.setItemData(1, "Axis-aligned rectangle in 0..1 normalized coords (optional rotation).", Qt.ItemDataRole.ToolTipRole)
+        self.cmb_mode.setItemData(2, "Four corners (TL,TR,BR,BL) in 0..1 normalized coords for perspective/keystone.", Qt.ItemDataRole.ToolTipRole)
+
+        # Tiny "?" button
+        self.btn_mode_help = QToolButton()
+        self.btn_mode_help.setText("?")
+        self.btn_mode_help.setToolTip("What do these modes mean?")
+        self.btn_mode_help.setFixedWidth(24)
+        self.btn_mode_help.clicked.connect(self._show_mode_help)
+
+        # Put combo + help button on one row for the form
+        mode_row = QWidget(self)
+        mode_row_lay = QHBoxLayout(mode_row)
+        mode_row_lay.setContentsMargins(0, 0, 0, 0)
+        mode_row_lay.addWidget(self.cmb_mode, 1)
+        mode_row_lay.addWidget(self.btn_mode_help, 0)
+        form.addRow("Mode:", mode_row)
+        # -----------------------------------------------------------------
+
+        # Margins UI
+        self.top = QSpinBox(); self.right = QSpinBox(); self.bottom = QSpinBox(); self.left = QSpinBox()
+        for sb in (self.top, self.right, self.bottom, self.left):
+            sb.setRange(0, 1_000_000)
+        self.top.setValue(int(margins.get("top", 0)))
+        self.right.setValue(int(margins.get("right", 0)))
+        self.bottom.setValue(int(margins.get("bottom", 0)))
+        self.left.setValue(int(margins.get("left", 0)))
+
+        self.cb_new = QCheckBox("Create new view")
+        self.cb_new.setChecked(bool(init.get("create_new_view", False)))
+        self.le_title = QLineEdit(init.get("title", "Crop"))
+
+        form.addRow("Top (px):", self.top)
+        form.addRow("Right (px):", self.right)
+        form.addRow("Bottom (px):", self.bottom)
+        form.addRow("Left (px):", self.left)
+        form.addRow("", self.cb_new)
+        form.addRow("New view title:", self.le_title)
+        lay.addLayout(form)
+
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self)
+        btns.accepted.connect(self.accept); btns.rejected.connect(self.reject)
+        lay.addWidget(btns)
+
+    def _show_mode_help(self):
+        current = self.cmb_mode.currentText()
+        txt = (
+            "<b>Crop modes</b><br><br>"
+            "<b>margins</b> — Crop by pixel offsets from each image edge.<br>"
+            "• <i>top/right/bottom/left</i> are in pixels.<br><br>"
+            "<b>rect_norm</b> — Axis-aligned rectangle (optionally rotated) expressed in normalized 0..1 units.<br>"
+            "• Schema: { mode:'rect_norm', rect:{ x, y, w, h, angle_deg } }<br>"
+            "• x,y: top-left; w,h: size; angle_deg: CCW rotation around center (optional).<br><br>"
+            "<b>quad_norm</b> — Arbitrary 4-corner crop in normalized 0..1 units (perspective/keystone).<br>"
+            "• Schema: { mode:'quad_norm', quad:[[xTL,yTL],[xTR,yTR],[xBR,yBR],[xBL,yBL]] }<br>"
+            "• Order: TL, TR, BR, BL. (0,0)=top-left, (1,1)=bottom-right."
+        )
+        # Small extra hint for the selected item
+        if current == "rect_norm":
+            txt += "<br><br><i>Tip:</i> Use rect_norm for regular boxes; add a small angle when needed."
+        elif current == "quad_norm":
+            txt += "<br><br><i>Tip:</i> Use quad_norm when the box edges aren’t parallel (keystone or tilt)."
+
+        QMessageBox.information(self, "Crop modes help", txt)
+
+    def result_dict(self) -> dict:
+        return {
+            "mode": self.cmb_mode.currentText(),
+            "margins": {
+                "top": int(self.top.value()),
+                "right": int(self.right.value()),
+                "bottom": int(self.bottom.value()),
+                "left": int(self.left.value()),
+            },
+            "create_new_view": bool(self.cb_new.isChecked()),
+            "title": self.le_title.text().strip() or "Crop",
+        }
