@@ -1,3 +1,4 @@
+#legacy.xisf.py
 # coding: utf-8
 
 """
