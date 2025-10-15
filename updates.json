@@ -1,9 +1,9 @@
 {
-  "version": "1.3.9",
+  "version": "1.3.10",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.9/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.9/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.9/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.10/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.10/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.10/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.3.9 Stacking Suite and Star Alignment Distortion Correction Available (Affine, Homography, Poly 3, and Poly 4). Hopefully little squares are gone now for some users with ImageMM. Crop update to include shortcut presets to batch crop files and exact pixelwise slicing for non-rotation crops."
+  "notes": "Seti Astro Suite Pro V1.3.10 Stacking Suite Image Integration Tab now Accepts XISF formats. You can use your previously PI calibrated images or registered images directly in that tab to run ImageMM.  More code hardening for artifacts seen on some computers for ImageMM.  Minor Bug Fixes"
 }
