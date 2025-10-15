@@ -17,11 +17,191 @@ torch = None        # filled by runtime loader if available
 TORCH_OK = False
 NO_GRAD = contextlib.nullcontext  # fallback
 
-from pathlib import Path
+_XISF_READERS = []
+try:
+    # e.g. your legacy module
+    from legacy import xisf as _legacy_xisf
+    if hasattr(_legacy_xisf, "read"):
+        _XISF_READERS.append(lambda p: _legacy_xisf.read(p))
+    elif hasattr(_legacy_xisf, "open"):
+        _XISF_READERS.append(lambda p: _legacy_xisf.open(p)[0])
+except Exception:
+    pass
+try:
+    # sometimes projects expose a generic load_image
+    from legacy.image_manager import load_image as _generic_load_image  # adjust if needed
+    _XISF_READERS.append(lambda p: _generic_load_image(p)[0])
+except Exception:
+    pass
 
 # at top of file with the other imports
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from queue import SimpleQueue
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Unified image I/O for MFDeconv (FITS + XISF)
+# ─────────────────────────────────────────────────────────────────────────────
+import os
+import numpy as np
+from astropy.io import fits
+
+from pathlib import Path
+
+def _is_xisf(path: str) -> bool:
+    return os.path.splitext(path)[1].lower() == ".xisf"
+
+def _read_xisf_numpy(path: str) -> np.ndarray:
+    if not _XISF_READERS:
+        raise RuntimeError(
+            "No XISF readers registered. Ensure one of "
+            "legacy.xisf.read/open or *.image_io.load_image is importable."
+        )
+    last_err = None
+    for fn in _XISF_READERS:
+        try:
+            arr = fn(path)
+            if isinstance(arr, tuple):
+                arr = arr[0]
+            return np.asarray(arr)
+        except Exception as e:
+            last_err = e
+    raise RuntimeError(f"All XISF readers failed for {path}: {last_err}")
+
+def _fits_open_data(path: str):
+    # ignore_missing_simple=True lets us open headers missing SIMPLE
+    with fits.open(path, memmap=True, ignore_missing_simple=True) as hdul:
+        hdu = hdul[0]
+        if hdu.data is None:
+            # find first image HDU if primary is header-only
+            for h in hdul[1:]:
+                if getattr(h, "data", None) is not None:
+                    hdu = h
+                    break
+        data = np.asanyarray(hdu.data)
+        hdr  = hdu.header
+        return data, hdr
+
+def _load_image_array(path: str) -> tuple[np.ndarray, "fits.Header | None"]:
+    """
+    Return (numpy array, fits.Header or None). Color-last if 3D.
+    dtype left as-is; callers cast to float32. Array is C-contig & writeable.
+    """
+    if _is_xisf(path):
+        arr = _read_xisf_numpy(path)
+        hdr = None
+    else:
+        arr, hdr = _fits_open_data(path)
+
+    a = np.asarray(arr)
+    # Move color axis to last if 3D with a leading channel axis
+    if a.ndim == 3 and a.shape[0] in (1, 3) and a.shape[-1] not in (1, 3):
+        a = np.moveaxis(a, 0, -1)
+    # Ensure contiguous, writeable float32 decisions happen later; here we just ensure writeable
+    if (not a.flags.c_contiguous) or (not a.flags.writeable):
+        a = np.array(a, copy=True)
+    return a, hdr
+
+def _probe_hw(path: str) -> tuple[int, int, int | None]:
+    """
+    Returns (H, W, C_or_None) without changing data. Moves color to last if needed.
+    """
+    a, _ = _load_image_array(path)
+    if a.ndim == 2:
+        return a.shape[0], a.shape[1], None
+    if a.ndim == 3:
+        h, w, c = a.shape
+        # treat mono-3D as (H,W,1)
+        if c not in (1, 3) and a.shape[0] in (1, 3):
+            a = np.moveaxis(a, 0, -1)
+            h, w, c = a.shape
+        return h, w, c if c in (1, 3) else None
+    raise ValueError(f"Unsupported ndim={a.ndim} for {path}")
+
+def _common_hw_from_paths(paths: list[str]) -> tuple[int, int]:
+    """
+    Replacement for the old FITS-only version: min(H), min(W) across files.
+    """
+    Hs, Ws = [], []
+    for p in paths:
+        h, w, _ = _probe_hw(p)
+        Hs.append(int(h)); Ws.append(int(w))
+    return int(min(Hs)), int(min(Ws))
+
+def _to_chw_float32(img: np.ndarray, color_mode: str) -> np.ndarray:
+    """
+    Convert to CHW float32:
+      - mono → (1,H,W)
+      - RGB → (3,H,W) if 'PerChannel'; (1,H,W) if 'luma'
+    """
+    x = np.asarray(img)
+    if x.ndim == 2:
+        y = x.astype(np.float32, copy=False)[None, ...]  # (1,H,W)
+        return y
+    if x.ndim == 3:
+        # color-last (H,W,C) expected
+        if x.shape[-1] == 1:
+            return x[..., 0].astype(np.float32, copy=False)[None, ...]
+        if x.shape[-1] == 3:
+            if str(color_mode).lower() in ("perchannel", "per_channel", "perchannelrgb"):
+                r, g, b = x[..., 0], x[..., 1], x[..., 2]
+                return np.stack([r.astype(np.float32, copy=False),
+                                 g.astype(np.float32, copy=False),
+                                 b.astype(np.float32, copy=False)], axis=0)
+            # luma
+            r, g, b = x[..., 0].astype(np.float32, copy=False), x[..., 1].astype(np.float32, copy=False), x[..., 2].astype(np.float32, copy=False)
+            L = 0.2126*r + 0.7152*g + 0.0722*b
+            return L[None, ...]
+        # rare mono-3D
+        if x.shape[0] in (1, 3) and x.shape[-1] not in (1, 3):
+            x = np.moveaxis(x, 0, -1)
+            return _to_chw_float32(x, color_mode)
+    raise ValueError(f"Unsupported image shape {x.shape}")
+
+def _center_crop_hw(img: np.ndarray, Ht: int, Wt: int) -> np.ndarray:
+    h, w = img.shape[:2]
+    y0 = max(0, (h - Ht)//2); x0 = max(0, (w - Wt)//2)
+    return img[y0:y0+Ht, x0:x0+Wt, ...].copy() if (Ht < h or Wt < w) else img
+
+def _stack_loader_memmap(paths: list[str], Ht: int, Wt: int, color_mode: str):
+    """
+    Drop-in replacement of the old FITS-only helper.
+    Returns (ys, hdrs):
+      ys   : list of CHW float32 arrays cropped to (Ht,Wt)
+      hdrs : list of fits.Header or None (XISF)
+    """
+    ys, hdrs = [], []
+    for p in paths:
+        arr, hdr = _load_image_array(p)
+        arr = _center_crop_hw(arr, Ht, Wt)
+        # normalize integer data to [0,1] like the rest of your code
+        if arr.dtype.kind in "ui":
+            mx = np.float32(np.iinfo(arr.dtype).max)
+            arr = arr.astype(np.float32, copy=False) / (mx if mx > 0 else 1.0)
+        elif arr.dtype.kind == "f":
+            arr = arr.astype(np.float32, copy=False)
+        else:
+            arr = arr.astype(np.float32, copy=False)
+
+        y = _to_chw_float32(arr, color_mode)
+        if (not y.flags.c_contiguous) or (not y.flags.writeable):
+            y = np.ascontiguousarray(y.astype(np.float32, copy=True))
+        ys.append(y)
+        hdrs.append(hdr if isinstance(hdr, fits.Header) else None)
+    return ys, hdrs
+
+def _safe_primary_header(path: str) -> fits.Header:
+    if _is_xisf(path):
+        # best-effort synthetic header
+        h = fits.Header()
+        h["SIMPLE"]  = (True, "created by MFDeconv")
+        h["BITPIX"]  = -32
+        h["NAXIS"]   = 2
+        return h
+    try:
+        return fits.getheader(path, ext=0, ignore_missing_simple=True)
+    except Exception:
+        return fits.Header()
+
 
 def _compute_frame_assets(i, arr, hdr, *, make_masks, make_varmaps,
                           star_mask_cfg, varmap_cfg, status_sink=lambda s: None):
@@ -99,8 +279,7 @@ def _compute_frame_assets(i, arr, hdr, *, make_masks, make_varmaps,
     return i, psf, mask, var, logs
 
 def _build_psf_and_assets(
-    ys_raw,
-    hdrs,
+    paths,                      # paths: list[str]
     make_masks=False,
     make_varmaps=False,
     status_cb=lambda s: None,
@@ -110,16 +289,18 @@ def _build_psf_and_assets(
     max_workers: int | None = None,
 ):
     """
-    Parallel PSF + (optional) star mask + variance map per frame.
+    Parallel PSF + (optional) star mask + variance map per frame, loading each
+    image inside the worker so we don't keep all frames in RAM at once.
 
     Notes:
-      - Results are ordered to match ys_raw/hdrs indices.
+      - Results preserve the order of `paths`.
       - status_cb is only called from the main thread.
     """
     if save_dir:
         os.makedirs(save_dir, exist_ok=True)
 
-    n = len(ys_raw)
+    n = len(paths)
+
     # sensible default: up to 8, but don’t exceed CPU count
     if max_workers is None:
         try:
@@ -131,58 +312,91 @@ def _build_psf_and_assets(
     status_cb(f"MFDeconv: measuring PSFs/masks/varmaps with {max_workers} workers…")
 
     # for GUI safety, queue logs from workers and flush here
-    log_queue: SimpleQueue[str] = SimpleQueue()
+    log_queue: SimpleQueue = SimpleQueue()
 
     def enqueue_logs(lines):
         for s in lines:
             log_queue.put(s)
 
-    results = {}
     psfs  = [None] * n
     masks = ([None] * n) if make_masks else None
     vars_ = ([None] * n) if make_varmaps else None
 
+    # --- worker wrapper: load one file (FITS or XISF), compute assets, return ordered slot ---
+    def _compute_one(i: int, path: str):
+        # Use our unified loader; returns ndarray + (fits.Header or None)
+        arr, hdr = _load_image_array(path)
+
+        # ensure float32, writeable, contiguous
+        if arr.dtype.kind in "ui":
+            mx = np.float32(np.iinfo(arr.dtype).max)
+            arr = arr.astype(np.float32, copy=False) / (mx if mx > 0 else 1.0)
+        elif arr.dtype.kind == "f":
+            arr = arr.astype(np.float32, copy=False)
+        else:
+            arr = arr.astype(np.float32, copy=False)
+
+        if arr.ndim == 3 and arr.shape[-1] == 1:
+            arr = np.squeeze(arr, axis=-1)
+
+        if (not arr.flags.c_contiguous) or (not arr.flags.writeable):
+            arr = np.ascontiguousarray(arr.copy())
+
+        # synthesize a safe header for XISF (hdr=None) or headers missing SIMPLE
+        if hdr is None:
+            hdr = _safe_primary_header(path)
+
+        return _compute_frame_assets(
+            i, arr, hdr,
+            make_masks=bool(make_masks),
+            make_varmaps=bool(make_varmaps),
+            star_mask_cfg=star_mask_cfg,
+            varmap_cfg=varmap_cfg,
+        )
+
+    # --- submit jobs ---
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="mfdeconv") as ex:
         futs = []
-        for i, (arr, hdr) in enumerate(zip(ys_raw, hdrs), start=1):
+        for i, p in enumerate(paths, start=1):
             # light progress line for the UI (main thread)
             status_cb(f"MFDeconv: measuring PSF {i}/{n} …")
-            fut = ex.submit(
-                _compute_frame_assets,
-                i, arr, hdr,
-                make_masks=bool(make_masks),
-                make_varmaps=bool(make_varmaps),
-                star_mask_cfg=star_mask_cfg,
-                varmap_cfg=varmap_cfg,
-            )
-            futs.append(fut)
+            futs.append(ex.submit(_compute_one, i, p))
 
         done_cnt = 0
         for fut in as_completed(futs):
             i, psf, m, v, logs = fut.result()
             idx = i - 1  # 0-based slot
             psfs[idx] = psf
-            if masks is not None: masks[idx] = m
-            if vars_  is not None: vars_[idx] = v
+            if masks is not None:
+                masks[idx] = m
+            if vars_ is not None:
+                vars_[idx] = v
             enqueue_logs(logs)
 
             done_cnt += 1
             if (done_cnt % 4) == 0 or done_cnt == n:
                 # flush a few logs without spamming the UI thread
                 while not log_queue.empty():
-                    try: status_cb(log_queue.get_nowait())
-                    except Exception: break
+                    try:
+                        status_cb(log_queue.get_nowait())
+                    except Exception:
+                        break
 
     # final flush of any remaining logs
     while not log_queue.empty():
-        try: status_cb(log_queue.get_nowait())
-        except Exception: break
+        try:
+            status_cb(log_queue.get_nowait())
+        except Exception:
+            break
 
     # save PSFs if requested
     if save_dir:
         for i, k in enumerate(psfs, start=1):
             if k is not None:
-                fits.PrimaryHDU(k).writeto(os.path.join(save_dir, f"psf_{i:03d}.fit"), overwrite=True)
+                fits.PrimaryHDU(k.astype(np.float32, copy=False)).writeto(
+                    os.path.join(save_dir, f"psf_{i:03d}.fit"), overwrite=True
+                )
 
     return psfs, masks, vars_
 
@@ -1580,33 +1794,6 @@ def _read_shape_fast(path) -> tuple[int,int,int]:
         H, W = s[-2], s[-1]
         return (1, H, W)
 
-def _common_hw_from_paths(paths):
-    """Scan all files (memmap) and return minimal (H,W) intersection."""
-    Hs, Ws = [], []
-    for p in paths:
-        _, H, W = _read_shape_fast(p)
-        Hs.append(H); Ws.append(W)
-    return int(min(Hs)), int(min(Ws))
-
-def _stack_loader_memmap(paths, Ht, Wt, color_mode):
-    """
-    Stream a small batch of frames from disk (memmap), coerce to requested layout,
-    center-crop to (Ht,Wt), sanitize numeric. Returns (list_of_arrays, headers).
-    """
-    ys, hdrs = [], []
-    for p in paths:
-        with fits.open(p, memmap=True) as hdul:
-            arr = hdul[0].data
-            hdr = hdul[0].header
-        arr = np.asarray(arr, dtype=np.float32, order="C")
-        if arr.ndim == 3 and arr.shape[-1] == 1:  # squeeze trailing singleton
-            arr = np.squeeze(arr, axis=-1)
-        arr = _normalize_layout_single(arr, color_mode)   # (H,W) or (C,H,W)
-        arr = _center_crop(arr, Ht, Wt)
-        arr = _sanitize_numeric(arr)
-        ys.append(arr); hdrs.append(hdr)
-    return ys, hdrs
-
 def _tiles_of(hw: tuple[int,int], tile_hw: tuple[int,int], halo: int):
     """
     Yield tiles as dicts: {y0,y1,x0,x1,yc0,yc1,xc0,xc1}
@@ -1727,8 +1914,13 @@ def multiframe_deconv(
 
     status_cb(f"MFDeconv: loading {len(paths)} aligned frames…")
     _emit_pct(0.02, "loading")
-    ys_raw, hdrs = _stack_loader(paths)
+
+    # Use unified probe to pick a common crop without loading full images
+    Ht, Wt = _common_hw_from_paths(paths)
     _emit_pct(0.05, "preparing")
+
+    # Stream actual pixels cropped to (Ht,Wt), float32 CHW/2D + headers
+    ys_raw, hdrs = _stack_loader_memmap(paths, Ht, Wt, color_mode)
     relax = 0.7
     use_torch = False
     global torch, TORCH_OK
@@ -1806,13 +1998,13 @@ def multiframe_deconv(
     # PSFs (auto-size per frame) + flipped copies
     psf_out_dir = None
     psfs, masks_auto, vars_auto = _build_psf_and_assets(
-        ys_raw, hdrs,
+        paths,
         make_masks=bool(use_star_masks),
         make_varmaps=bool(use_variance_maps),
         status_cb=status_cb,
         save_dir=psf_out_dir,
         star_mask_cfg=star_mask_cfg,
-        varmap_cfg=varmap_cfg
+        varmap_cfg=varmap_cfg,
     )
 
     # >>> SR: lift PSFs to super-res if requested
@@ -1871,7 +2063,7 @@ def multiframe_deconv(
         iter_dir = _iter_folder(out_path)
         status_cb(f"MFDeconv: Intermediate outputs → {iter_dir}")
         try:
-            hdr0_seed = fits.getheader(paths[0], ext=0) if os.path.exists(paths[0]) else fits.Header()
+            hdr0_seed = _safe_primary_header(paths[0])
         except Exception:
             hdr0_seed = fits.Header()
         _save_iter_image(x, hdr0_seed, iter_dir, "seed", color_mode)
@@ -2112,10 +2304,9 @@ def multiframe_deconv(
             x_final = x_final[0]
 
     try:
-        hdr0 = fits.getheader(paths[0], ext=0)
+        hdr0 = _safe_primary_header(paths[0])
     except Exception:
         hdr0 = fits.Header()
-
     hdr0['MFDECONV'] = (True, 'Seti Astro multi-frame deconvolution')
     hdr0['MF_COLOR'] = (str(color_mode), 'Color mode used')
     hdr0['MF_RHO']   = (str(rho), 'Loss: huber|l2')

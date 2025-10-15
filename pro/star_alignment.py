@@ -2584,7 +2584,7 @@ class MosaicPreviewWindow(QDialog):
           - Left-button press => start dragging
           - Mouse move => if dragging, pan
           - Left-button release => stop dragging
-          - Wweel => zoom in/out
+          - Wheel => zoom in/out
         """
         if source == self.scroll_area.viewport():
             if event.type() == QEvent.Type.MouseButtonPress:
@@ -2609,7 +2609,7 @@ class MosaicPreviewWindow(QDialog):
                 if event.button() == Qt.MouseButton.LeftButton:
                     self.dragging = False
                     return True
-            elif event.type() == QEvent.Type.Wweel:
+            elif event.type() == QEvent.Type.Wheel:
                 # Zoom in or out
                 if event.angleDelta().y() > 0:
                     self.zoom_in()

@@ -3,8 +3,8 @@ from __future__ import annotations
 from PyQt6.QtCore import QObject, pyqtSignal
 import os
 import numpy as np
-
-
+from legacy.xisf import XISF as XISFReader
+from astropy.io import fits  # local import; optional dep
 from legacy.image_manager import load_image as legacy_load_image, save_image as legacy_save_image
 from legacy.image_manager import list_fits_extensions, load_fits_extension
 
@@ -242,40 +242,191 @@ class DocManager(QObject):
         self._docs.append(doc)
         self.documentAdded.emit(doc)
 
-        # ⬇️ NEW: if FITS/MEF, auto-open known rejection layers as sibling docs
+        # ------- FITS/MEF: enumerate all HDUs as sibling docs (no dedup) -------
+        # ------- FITS/MEF: enumerate all non-PRIMARY HDUs as sibling docs (endian-safe) -------
         try:
             if ext in ("fits", "fit", "fits.gz", "fit.gz", "fz"):
-                exts = list_fits_extensions(path)
-                # canonical names we emit when saving masters
-                for key, nice in (("REJ_LOW","(Rej Low)"),
-                                  ("REJ_HIGH","(Rej High)"),
-                                  ("REJ_COMB","(Rej Combined)")):
-                    if key in exts:
-                        aux_img, aux_hdr, aux_depth, aux_mono = load_fits_extension(path, key)
+                exts = list_fits_extensions(path) or []
+
+                # normalize to a simple list of keys we can iterate
+                if isinstance(exts, dict):
+                    keys = list(exts.keys())
+                elif isinstance(exts, (list, tuple)):
+                    keys = list(exts)
+                else:
+                    keys = []
+
+                base = os.path.basename(path)
+
+                REJ_LABELS = {
+                    "REJ_LOW":  "(Rej Low)",
+                    "REJ_HIGH": "(Rej High)",
+                    "REJ_COMB": "(Rej Combined)",
+                    "REJ_ANY":  "(Rejection Any)",
+                    "REJ_FRAC": "(Rejection Frac)",
+                }
+
+                # helper: coerce ndarray to native float32 (ints -> [0..1])
+                def _coerce_native_f32(arr: np.ndarray) -> np.ndarray:
+                    a = np.asarray(arr)
+                    if a.dtype.kind in "ui":
+                        return a.astype(np.float32, copy=False) / np.float32(np.iinfo(a.dtype).max)
+                    elif a.dtype.kind == "f":
+                        return a.astype(np.float32, copy=False)
+                    elif a.dtype.kind == "b":  # bool
+                        return a.astype(np.float32, copy=False)
+                    else:
+                        return a.astype(np.float32, copy=False)
+
+                for i, key in enumerate(keys):
+                    # We already opened the main image (PRIMARY). Skip it here.
+                    if i == 0:
+                        continue
+                    if isinstance(key, (str, bytes)) and str(key).strip().upper() == "PRIMARY":
+                        continue
+
+                    try:
+                        # 1) Try legacy loader
+                        try:
+                            ext_img, ext_hdr, ext_depth, ext_mono = load_fits_extension(path, key)
+                            ext_img = _coerce_native_f32(ext_img)
+                            ext_depth = "32-bit floating point"
+                            ext_mono = bool(ext_img.ndim == 2 or (ext_img.ndim == 3 and ext_img.shape[2] == 1))
+                        except Exception as e_legacy:
+                            # 2) Fallback to astropy, then normalize
+                            try:
+                                with fits.open(path, memmap=True) as hdul:
+                                    if isinstance(key, (str, bytes)) and (key in hdul):
+                                        hdu = hdul[key]
+                                    else:
+                                        hdu = hdul[i]
+                                    if hdu.data is None:
+                                        raise RuntimeError("HDU has no image data")
+                                    ext_img = _coerce_native_f32(np.asanyarray(hdu.data))
+                                    ext_hdr = hdu.header
+                                    ext_depth = "32-bit floating point"
+                                    ext_mono = bool(ext_img.ndim == 2 or (ext_img.ndim == 3 and ext_img.shape[2] == 1))
+                            except Exception as e_astropy:
+                                raise RuntimeError(f"Fallback read failed: {e_astropy}") from e_legacy
+
+                        # Build a friendly display title (EXTNAME/EXTVER beats label dict)
+                        extname = ""
+                        try:
+                            en = str(ext_hdr.get("EXTNAME", "")).strip()
+                            ev = ext_hdr.get("EXTVER", None)
+                            if en:
+                                extname = f"{en}[{int(ev)}]" if isinstance(ev, (int, np.integer)) else en
+                        except Exception:
+                            pass
+
+                        key_str = str(key) if isinstance(key, (str, bytes)) else f"HDU {i}"
+                        nice = extname or REJ_LABELS.get(str(key).upper(), f"[{key_str}]")
+                        disp = f"{base} {nice}"
+
                         aux_meta = {
-                            "file_path": f"{path}::{key}",
-                            "original_header": aux_hdr,
-                            "bit_depth": aux_depth,
-                            "is_mono": aux_mono,
+                            "file_path": f"{path}::{key_str}",
+                            "original_header": ext_hdr,
+                            "bit_depth": ext_depth or meta.get("bit_depth"),
+                            "is_mono": bool(ext_mono),
                             "original_format": "fits",
-                            # mark as derived/readonly so tools don’t overwrite originals by accident
-                            "image_meta": {"derived_from": path, "layer": key, "readonly": True},
+                            "image_meta": {"derived_from": path, "layer": key_str, "readonly": True},
+                            "display_name": disp,
                         }
                         _snapshot_header_for_metadata(aux_meta)
-                        aux_doc = ImageDocument(aux_img, aux_meta)
+
+                        aux_doc = ImageDocument(ext_img, aux_meta)
                         self._docs.append(aux_doc)
                         self.documentAdded.emit(aux_doc)
-                        # give it a nicer display title
                         try:
-                            aux_doc.metadata["display_name"] = f"{os.path.basename(path)} {nice}"
                             aux_doc.changed.emit()
                         except Exception:
                             pass
+
+                    except Exception as _e:
+                        print(f"[DocManager] Skipped FITS HDU {key} ({i}): {_e}")
         except Exception as _e:
-            # Non-fatal: if anything goes wrong we still opened the main image
-            print(f"[DocManager] MEF aux open skipped: {_e}")
+            print(f"[DocManager] FITS HDU enumeration failed: {_e}")
+
+
+
+        # ------- XISF: enumerate additional Image blocks as sibling docs -------
+        try:
+            if _normalize_ext(ext) == "xisf":
+                # helpers (local to avoid cluttering module scope)
+                def _bit_depth_from_dtype(dt: np.dtype) -> str:
+                    dt = np.dtype(dt)
+                    if dt == np.float32: return "32-bit floating point"
+                    if dt == np.float64: return "64-bit floating point"
+                    if dt == np.uint8:   return "8-bit"
+                    if dt == np.uint16:  return "16-bit"
+                    if dt == np.uint32:  return "32-bit unsigned"
+                    return "32-bit floating point"
+
+                def _to_float32_01(arr: np.ndarray) -> np.ndarray:
+                    a = np.asarray(arr)
+                    if a.dtype == np.float32:
+                        return a
+                    if a.dtype.kind in "iu":
+                        return (a.astype(np.float32) / np.iinfo(a.dtype).max).clip(0.0, 1.0)
+                    return a.astype(np.float32, copy=False)
+
+                xisf = XISFReader(path)
+                metas = xisf.get_images_metadata() or []
+
+                # We already opened image #0 via legacy_load_image; add 1..N-1
+                base = os.path.basename(path)
+                for i in range(1, len(metas)):
+                    try:
+                        m = metas[i]
+                        arr = xisf.read_image(i, data_format="channels_last")
+                        arr_f32 = _to_float32_01(arr)
+
+                        bd = _bit_depth_from_dtype(m.get("dtype", arr.dtype))
+                        is_mono_i = (arr_f32.ndim == 2) or (arr_f32.ndim == 3 and arr_f32.shape[2] == 1)
+
+                        # Friendly label: prefer XISF image id, else EXTNAME/EXTVER from FITSKeywords, else index
+                        label = None
+                        try:
+                            label = m.get("id") or None
+                        except Exception:
+                            label = None
+                        if not label:
+                            try:
+                                fk = m.get("FITSKeywords", {})
+                                en = (fk.get("EXTNAME") or [{}])[0].get("value", "")
+                                ev = (fk.get("EXTVER")  or [{}])[0].get("value", "")
+                                if en:
+                                    label = f"{en}[{ev}]" if ev else en
+                            except Exception:
+                                pass
+                        if not label:
+                            label = f"Image[{i}]"
+
+                        md = {
+                            "file_path": f"{path}::XISF[{i}]",
+                            "original_header": m,  # snapshot; sanitized below
+                            "bit_depth": bd,
+                            "is_mono": is_mono_i,
+                            "original_format": "xisf",
+                            "image_meta": {"derived_from": path, "layer_index": i, "readonly": True},
+                            "display_name": f"{base} {label}",
+                        }
+                        _snapshot_header_for_metadata(md)
+
+                        sib = ImageDocument(arr_f32, md)
+                        self._docs.append(sib)
+                        self.documentAdded.emit(sib)
+                        try:
+                            sib.changed.emit()
+                        except Exception:
+                            pass
+                    except Exception as _e:
+                        print(f"[DocManager] XISF image {i} skipped: {_e}")
+        except Exception as _e:
+            print(f"[DocManager] XISF multi-image open failed: {_e}")
 
         return doc
+
     
     # --- Slot -> Document ---
     def open_from_slot(self, slot_idx: int | None = None) -> "ImageDocument | None":

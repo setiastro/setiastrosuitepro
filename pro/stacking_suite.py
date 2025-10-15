@@ -8,6 +8,7 @@ import numpy as np
 import numpy.ma as ma
 import hashlib
 from numpy.lib.format import open_memmap 
+import tzlocal
 import re, unicodedata
 import math            # used in compute_safe_chunk
 import psutil          # used in bytes_available / compute_safe_chunk
@@ -38,7 +39,7 @@ NO_GRAD = contextlib.nullcontext  # fallback when torch isn’t present
 from typing import List, Tuple, Optional
 import sep
 from pathlib import Path
-
+from legacy.xisf import XISF  # ← add this
 from PyQt6 import sip
 # your helpers/utilities
 from imageops.stretch import stretch_mono_image, stretch_color_image, siril_style_autostretch
@@ -347,45 +348,6 @@ def _quick_preview_from_fits(fp: str, target_xbin: int, target_ybin: int) -> np.
         prev = _resize_to_scale_fast(prev, sx, sy)
 
     return np.ascontiguousarray(prev, dtype=np.float32)
-def _quick_preview_from_fits(fp: str, target_xbin: int, target_ybin: int) -> np.ndarray | None:
-    # Robust read (no autoscale; we scale manually)
-    arr, hdr, _ = _fits_read_any_hdu_noscale(fp, memmap=True)
-    if arr is None:
-        return None
-
-    # Luma/collapse for 2D preview
-    if arr.ndim == 3 and arr.shape[-1] == 3:
-        r, g, b = arr[..., 0], arr[..., 1], arr[..., 2]
-        prev2d = 0.2126*r + 0.7152*g + 0.0722*b
-    elif arr.ndim == 3 and arr.shape[0] == 3:
-        r, g, b = arr[0], arr[1], arr[2]
-        prev2d = 0.2126*r + 0.7152*g + 0.0722*b
-    elif arr.ndim == 3:
-        prev2d = np.mean(arr, axis=-1)
-    else:
-        prev2d = arr
-
-    prev2d = np.asarray(prev2d, dtype=np.float32, order="C")
-    prev2d = np.nan_to_num(prev2d, nan=0.0, posinf=0.0, neginf=0.0)
-
-    # Superpixel 2×2
-    prev = _superpixel2x2_fast(prev2d)
-
-    # Use per-frame binning from this HDU’s header if present, else fallback
-    xb = int(hdr.get("XBINNING", hdr.get("XBIN", 1))) if hdr else 1
-    yb = int(hdr.get("YBINNING", hdr.get("YBIN", 1))) if hdr else 1
-    if xb <= 0 or yb <= 0:
-        xb, yb = _bin_from_header_fast(fp)
-
-    sx = float(xb) / float(max(1, target_xbin))
-    sy = float(yb) / float(max(1, target_ybin))
-    if (abs(sx - 1.0) > 1e-6) or (abs(sy - 1.0) > 1e-6):
-        prev = _resize_to_scale_fast(prev, sx, sy)
-
-    return np.ascontiguousarray(prev, dtype=np.float32)
-
-
-
 
 
 def _safe_hard_or_soft_link(src: str, dst: str) -> bool:
@@ -2622,6 +2584,430 @@ def _write_poly_or_unknown(fh, file_key: str, kind_name: str):
     fh.write(f"FILE: {file_key}\n")
     fh.write(f"KIND: {kind_name}\n")
     fh.write("MATRIX:\nUNSUPPORTED\n\n")
+
+_SESSION_PATTERNS = [
+    # "Night1", "night_02", "Session-3", "sess7"
+    (re.compile(r"(session|sess|night|noche|nuit)[ _-]?(\d{1,2})", re.I),
+    lambda m: f"Session-{int(m.group(2)):02d}"),
+
+    # ISO-ish dates in folder names: 2024-10-09, 2024_10_09, 20241009
+    (re.compile(r"\b(20\d{2})[-_]?([01]\d)[-_]?([0-3]\d)\b"),
+    lambda m: f"{m.group(1)}-{m.group(2)}-{m.group(3)}"),
+]
+
+def _to_writable_f32(arr):
+    import numpy as np
+    a = np.asarray(arr)
+    if a.dtype != np.float32:
+        a = a.astype(np.float32, copy=False)
+    # Make sure we can write into it (mmap/XISF often returns read-only views)
+    if (not a.flags.writeable) or (not a.flags.c_contiguous):
+        a = np.ascontiguousarray(a.copy())
+    return a
+
+def _is_fits(path: str) -> bool:
+    p = path.lower()
+    return p.endswith(".fit") or p.endswith(".fits") or p.endswith(".fz")
+
+def _is_xisf(path: str) -> bool:
+    return path.lower().endswith(".xisf")
+
+def _xisf_first_kw(meta_dict: dict, key: str, cast=str):
+    """
+    XISF images_meta['FITSKeywords'] → { KEY: [ {value, comment}, ...], ... }.
+    Return first value if present, casted.
+    """
+    try:
+        v = meta_dict.get("FITSKeywords", {}).get(key, [])
+        if not v: return None
+        val = v[0]["value"]
+        return cast(val) if cast and val is not None else val
+    except Exception:
+        return None
+
+def _get_header_fast(path: str):
+    """
+    FITS: std fast header. XISF: synthesize a dict with common keys used upstream.
+    """
+    if _is_fits(path):
+        try:
+            return fits.getheader(path, ext=0)
+        except Exception:
+            return {}
+    if _is_xisf(path):
+        try:
+            x = XISF(path)
+            im = x.get_images_metadata()[0]  # first image block
+            # Build a tiny FITS-like dict
+            hdr = {}
+            # Common bits we use elsewhere
+            filt = _xisf_first_kw(im, "FILTER", str)
+            if filt is not None:
+                hdr["FILTER"] = filt
+            # Exposure: EXPTIME/EXPOSURE
+            for k in ("EXPOSURE", "EXPTIME"):
+                v = _xisf_first_kw(im, k, float)
+                if v is not None:
+                    hdr[k] = v
+                    break
+            # Bayer pattern (PI often writes CFA pattern as a keyword too)
+            bp = _xisf_first_kw(im, "BAYERPAT", str)
+            if bp:
+                hdr["BAYERPAT"] = bp
+            # Some PI exports use XISF properties instead of FITS keywords.
+            props = im.get("XISFProperties", {})
+            # Try a few common property ids for convenience
+            for cand in ("Instrument:FILTER", "FILTER", "Filter:Name", "FilterName"):
+                if cand in props and "value" in props[cand]:
+                    hdr.setdefault("FILTER", str(props[cand]["value"]))
+                    break
+            for cand in ("Exposure:Time", "EXPTIME"):
+                if cand in props and "value" in props[cand]:
+                    try:
+                        hdr.setdefault("EXPTIME", float(props[cand]["value"]))
+                    except Exception:
+                        pass
+                    break
+            return hdr
+        except Exception:
+            return {}
+    return {}
+
+def _quick_preview_from_path(path: str, *, target_xbin=1, target_ybin=1) -> np.ndarray | None:
+    """
+    Debayer-aware, tiny, 2D float32 preview for FITS or XISF.
+    Mirrors your _quick_preview_from_fits behavior but supports XISF.
+    Returned image is small-ish, writeable, contiguous.
+    """
+    def _superpixel2x2(x: np.ndarray) -> np.ndarray:
+        h, w = x.shape[:2]
+        h2, w2 = h - (h % 2), w - (w % 2)
+        if h2 <= 0 or w2 <= 0:
+            return x.astype(np.float32, copy=False)
+        x = x[:h2, :w2].astype(np.float32, copy=False)
+        if x.ndim == 2:
+            return (x[0:h2:2, 0:w2:2] + x[0:h2:2, 1:w2:2] +
+                    x[1:h2:2, 0:w2:2] + x[1:h2:2, 1:w2:2]) * 0.25
+        # RGB → luma then superpixel
+        r, g, b = x[..., 0], x[..., 1], x[..., 2]
+        L = 0.2126 * r + 0.7152 * g + 0.0722 * b
+        return (L[0:h2:2, 0:w2:2] + L[0:h2:2, 1:w2:2] +
+                L[1:h2:2, 0:w2:2] + L[1:h2:2, 1:w2:2]) * 0.25
+
+    try:
+        if _is_fits(path):
+            # Reuse your existing routine if you like; otherwise a tiny inline path:
+            from astropy.io import fits
+            with fits.open(path, memmap=True) as hdul:
+                # Prefer primary image HDU; fall back to first image-like HDU
+                hdu = None
+                for cand in (0,):
+                    try:
+                        h = hdul[cand]
+                        if getattr(h, "data", None) is not None:
+                            hdu = h; break
+                    except Exception:
+                        pass
+                if hdu is None:
+                    for h in hdul:
+                        if getattr(h, "data", None) is not None:
+                            hdu = h; break
+                if hdu is None or hdu.data is None:
+                    return None
+                data = np.asanyarray(hdu.data)
+                # Make small, 2D, float32
+                if data.ndim == 3 and data.shape[-1] == 1:
+                    data = np.squeeze(data, axis=-1)
+                data = data.astype(np.float32, copy=False)
+                prev = _superpixel2x2(data)
+                return np.ascontiguousarray(prev, dtype=np.float32)
+        elif _is_xisf(path):
+            x = XISF(path)
+            im = x.read_image(0)  # channels_last
+            if im is None:
+                return None
+            if im.ndim == 3 and im.shape[-1] == 1:
+                im = np.squeeze(im, axis=-1)
+            im = im.astype(np.float32, copy=False)
+            prev = _superpixel2x2(im)
+            return np.ascontiguousarray(prev, dtype=np.float32)
+        else:
+            # Non-FITS raster: you can fall back to PIL if desired
+            return None
+    except Exception:
+        return None
+
+def _synth_header_from_xisf_meta(im_meta: dict) -> fits.Header:
+    """Make a minimal FITS-like Header from XISF image metadata."""
+    h = fits.Header()
+    try:
+        # FITSKeywords shape: { KEY: [ {value, comment}, ...] }
+        kwords = im_meta.get("FITSKeywords", {}) or {}
+        def _first(key):
+            v = kwords.get(key)
+            return None if not v else v[0].get("value")
+        # Filter / Exposure
+        flt = _first("FILTER")
+        if flt is not None: h["FILTER"] = str(flt)
+        for k in ("EXPOSURE", "EXPTIME"):
+            v = _first(k)
+            if v is not None:
+                try: h[k] = float(v)
+                except Exception: h[k] = v
+                break
+        bp = _first("BAYERPAT")
+        if bp: h["BAYERPAT"] = str(bp)
+        # A couple of safe hints
+        h["ORIGIN"] = "XISF-import"
+    except Exception:
+        pass
+    return h
+
+def _load_image_for_stack(path: str):
+    """
+    Return (img_float32_contig, header, is_mono) for either FITS or XISF.
+    Never returns a read-only view; always writeable contiguous float32.
+    """
+    p = path.lower()
+    if p.endswith((".fit", ".fits", ".fz")):
+        with fits.open(path, memmap=True) as hdul:
+            # choose first image-like HDU
+            hdu = None
+            for h in hdul:
+                if getattr(h, "data", None) is not None:
+                    hdu = h; break
+            if hdu is None or hdu.data is None:
+                raise IOError(f"No image data in FITS: {path}")
+            arr = np.asanyarray(hdu.data)
+            # Make a safe float32 copy (writeable, native-endian, contiguous)
+            img = np.array(arr, dtype=np.float32, copy=True, order="C")
+            if img.ndim == 3 and img.shape[-1] == 1:
+                img = np.squeeze(img, axis=-1)
+            hdr = hdu.header or fits.Header()
+            is_mono = bool(img.ndim == 2 or (img.ndim == 3 and img.shape[-1] == 1))
+            return img, hdr, is_mono
+
+    if p.endswith(".xisf"):
+        x = XISF(path)
+        im_meta = x.get_images_metadata()[0]
+        arr = x.read_image(0)  # channels_last
+        if arr is None:
+            raise IOError(f"No image data in XISF: {path}")
+        img = np.array(arr, dtype=np.float32, copy=True, order="C")
+        if img.ndim == 3 and img.shape[-1] == 1:
+            img = np.squeeze(img, axis=-1)
+        hdr = _synth_header_from_xisf_meta(im_meta)
+        is_mono = bool(img.ndim == 2 or (img.ndim == 3 and img.shape[-1] == 1))
+        return img, hdr, is_mono
+
+    # Fallback: try FITS loader so we get a useful error
+    with fits.open(path, memmap=True) as hdul:
+        hdu = hdul[0]
+        arr = np.asanyarray(hdu.data)
+        img = np.array(arr, dtype=np.float32, copy=True, order="C")
+        hdr = hdu.header or fits.Header()
+        is_mono = bool(img.ndim == 2 or (img.ndim == 3 and img.shape[-1] == 1))
+        return img, hdr, is_mono
+
+class _MMImage:
+    """
+    Unified memory-friendly reader for FITS (memmap) and XISF.
+    Exposes: .shape, .ndim, .read_tile(y0,y1,x0,x1), .read_full(), .close()
+    Always returns float32 arrays (writeable) with color last if present.
+    """
+
+    def __init__(self, path: str):
+        self.path = path
+        self._kind = None          # "fits" | "xisf"
+        self._scale = None         # integer -> [0..1] scale
+        self._fits_hdul = None
+        self._xisf = None
+        self._xisf_memmap = None   # np.memmap when possible
+        self._xisf_arr = None      # decompressed ndarray when needed
+        self._xisf_color_axis = None
+        self._xisf_spat_axes = (0, 1)
+        self._xisf_dtype = None
+
+        p = path.lower()
+        if p.endswith((".fit", ".fits", ".fz")):
+            self._open_fits(path)
+            self._kind = "fits"
+        elif p.endswith(".xisf"):
+            if XISF is None:
+                raise RuntimeError("XISF support not available (import failed).")
+            self._open_xisf(path)
+            self._kind = "xisf"
+        else:
+            # let FITS try anyway so you get a useful error text
+            self._open_fits(path)
+            self._kind = "fits"
+
+    # ---------------- FITS ----------------
+    def _open_fits(self, path: str):
+        self._fits_hdul = fits.open(path, memmap=True)
+        # choose first image-like HDU (don’t assume PRIMARY only)
+        hdu = None
+        for h in self._fits_hdul:
+            if getattr(h, "data", None) is not None:
+                hdu = h; break
+        if hdu is None or hdu.data is None:
+            raise ValueError(f"Empty FITS: {path}")
+
+        d = hdu.data
+        self._fits_data = d
+        self.shape = d.shape
+        self.ndim  = d.ndim
+        self._orig_dtype = d.dtype
+
+        # Detect color axis (size==3) and spatial axes once
+        if self.ndim == 2:
+            self._color_axis = None
+            self._spat_axes  = (0, 1)
+        elif self.ndim == 3:
+            dims = self.shape
+            self._color_axis = next((i for i, s in enumerate(dims) if s == 3), None)
+            self._spat_axes  = (0, 1) if self._color_axis is None else tuple(i for i in range(3) if i != self._color_axis)
+        else:
+            raise ValueError(f"Unsupported ndim={self.ndim} for {path}")
+
+        # late normalization scale for integer data
+        if   self._orig_dtype == np.uint8:  self._scale = 1.0/255.0
+        elif self._orig_dtype == np.uint16: self._scale = 1.0/65535.0
+        else:                                self._scale = None
+
+    # ---------------- XISF ----------------
+    def _open_xisf(self, path: str):
+        x = XISF(path)
+        ims = x.get_images_metadata()
+        if not ims:
+            raise ValueError(f"Empty XISF: {path}")
+        m0 = ims[0]
+        self._xisf = x
+        self._xisf_dtype = m0["dtype"]              # numpy dtype
+        w, h, chc = m0["geometry"]                  # (width, height, channels)
+        self.shape = (h, w) if chc == 1 else (h, w, chc)
+        self.ndim  = 2 if chc == 1 else 3
+
+        # color and spatial axes (image data is planar CHW on disk, we expose HWC)
+        self._xisf_color_axis = None if chc == 1 else 2
+        self._xisf_spat_axes  = (0, 1)
+
+        # choose integer scale (same convention as FITS branch)
+        if   self._xisf_dtype == np.dtype("uint8"):  self._scale = 1.0/255.0
+        elif self._xisf_dtype == np.dtype("uint16"): self._scale = 1.0/65535.0
+        else:                                        self._scale = None
+
+        # Try zero-copy memmap only when the image block is an uncompressed attachment.
+        loc = m0.get("location", None)
+        comp = m0.get("compression", None)
+        if isinstance(loc, tuple) and loc[0] == "attachment" and not comp:
+            # location = ("attachment", pos, size)
+            pos = int(loc[1])
+            # on-disk order for XISF planar is (C,H,W). We memmap that and rearrange at slice time.
+            chc = 1 if self.ndim == 2 else self.shape[2]
+            shp_on_disk = (chc, self.shape[0], self.shape[1])
+            # Align dtype endianness to native when mapping
+            dt = self._xisf_dtype.newbyteorder("<") if self._xisf_dtype.byteorder == ">" else self._xisf_dtype
+            self._xisf_memmap = np.memmap(path, mode="r", dtype=dt, offset=pos, shape=shp_on_disk)
+            self._xisf_arr = None
+        else:
+            # Compressed / inline / embedded → must decompress whole image once
+            arr = x.read_image(0)  # HWC float/uint per metadata
+            # Ensure we own a writeable, contiguous float32 buffer
+            self._xisf_arr = np.array(arr, dtype=np.float32, copy=True, order="C")
+            self._xisf_memmap = None
+
+    # ---------------- common API ----------------
+    def read_tile(self, y0, y1, x0, x1) -> np.ndarray:
+        if self._kind == "fits":
+            d = self._fits_data
+            if self.ndim == 2:
+                tile = d[y0:y1, x0:x1]
+            else:
+                sl = [slice(None)]*3
+                sl[self._spat_axes[0]] = slice(y0, y1)
+                sl[self._spat_axes[1]] = slice(x0, x1)
+                tile = d[tuple(sl)]
+                if (self._color_axis is not None) and (self._color_axis != 2):
+                    tile = np.moveaxis(tile, self._color_axis, -1)
+        else:
+            if self._xisf_memmap is not None:
+                # memmapped (C,H,W) → slice, then move to (H,W,C)
+                C = 1 if self.ndim == 2 else self.shape[2]
+                if C == 1:
+                    tile = self._xisf_memmap[0, y0:y1, x0:x1]
+                else:
+                    tile = np.moveaxis(self._xisf_memmap[:, y0:y1, x0:x1], 0, -1)
+            else:
+                # decompressed full array (H,W[,C]) → slice
+                tile = self._xisf_arr[y0:y1, x0:x1]  # already HWC or HW
+
+        # late normalize → float32 writeable, contiguous
+        if self._scale is None:
+            out = np.array(tile, dtype=np.float32, copy=True, order="C")
+        else:
+            out = np.array(tile, dtype=np.float32, copy=True, order="C")
+            out *= self._scale
+
+        # ensure (h,w,3) or (h,w)
+        if out.ndim == 3 and out.shape[-1] not in (1, 3):
+            if out.shape[0] == 3 and out.shape[-1] != 3:
+                out = np.moveaxis(out, 0, -1)
+        if out.ndim == 3 and out.shape[-1] == 1:
+            out = np.squeeze(out, axis=-1)
+        return out
+
+    def read_full(self) -> np.ndarray:
+        if self._kind == "fits":
+            d = self._fits_data
+            if self.ndim == 2:
+                full = d
+            else:
+                full = d
+                if (self._color_axis is not None) and (self._color_axis != 2):
+                    full = np.moveaxis(full, self._color_axis, -1)
+        else:
+            if self._xisf_memmap is not None:
+                C = 1 if self.ndim == 2 else self.shape[2]
+                full = self._xisf_memmap[0] if C == 1 else np.moveaxis(self._xisf_memmap, 0, -1)
+            else:
+                full = self._xisf_arr
+
+        # late normalize → float32 writeable, contiguous
+        if self._scale is None:
+            out = np.array(full, dtype=np.float32, copy=True, order="C")
+        else:
+            out = np.array(full, dtype=np.float32, copy=True, order="C")
+            out *= self._scale
+
+        if out.ndim == 3 and out.shape[-1] not in (1, 3):
+            if out.shape[0] == 3 and out.shape[-1] != 3:
+                out = np.moveaxis(out, 0, -1)
+        if out.ndim == 3 and out.shape[-1] == 1:
+            out = np.squeeze(out, axis=-1)
+        return out
+
+    def close(self):
+        try:
+            if self._fits_hdul is not None:
+                self._fits_hdul.close()
+        except Exception:
+            pass
+
+def _open_sources_for_mfdeconv(paths, log):
+    srcs = []
+    try:
+        for p in paths:
+            srcs.append(_MMImage(p))   # <-- handles FITS or XISF
+        return srcs
+    except Exception as e:
+        # close anything we already opened
+        for s in srcs:
+            try: s.close()
+            except Exception: pass
+        raise RuntimeError(f"{e}")
+
+
 
 class StackingSuiteDialog(QDialog):
     requestRelaunch = pyqtSignal(str, str)  # old_dir, new_dir
@@ -5022,7 +5408,8 @@ class StackingSuiteDialog(QDialog):
         if not os.path.exists(transforms_path):
             self.update_status(f"✂️ Auto-crop: no transforms file at {transforms_path}")
             return None
-
+        self.update_status(f"✂️ Auto-crop: Loading transforms...")
+        QApplication.processEvents()
         transforms = self.load_alignment_matrices_custom(transforms_path)
 
         # --- Robust transform lookup: key by normalized full path AND by basename ---
@@ -5088,6 +5475,7 @@ class StackingSuiteDialog(QDialog):
         need = int(np.ceil((coverage_pct / 100.0) * used))
         mask = (cov >= need)
         self.update_status(f"✂️ Auto-crop: rasterized {used}/{len(file_list)} frames; need {need} per-pixel.")
+        QApplication.processEvents()
         if not mask.any():
             self.update_status("✂️ Auto-crop: threshold produced empty mask.")
             return None
@@ -5273,85 +5661,6 @@ class StackingSuiteDialog(QDialog):
         return mask
 
 
-
-    def _compute_autocrop_rect(self, file_list: List[str], transforms_path: str, coverage_pct: float):
-        """
-        Build a coverage-count image (aligned canvas), threshold at pct, and extract largest rectangle.e
-        Returns (x0, y0, x1, y1) or None.
-        """
-        if not file_list:
-            return None
-
-        # Load aligned reference to get canvas size
-        ref_img, ref_hdr, _, _ = load_image(file_list[0])
-        if ref_img is None:
-            return None
-        if ref_img.ndim == 2:
-            H, W = ref_img.shape
-        else:
-            H, W = ref_img.shape[:2]
-
-        # Load transforms (raw _n path -> 2x3 matrix mapping raw->aligned)
-        if not os.path.exists(transforms_path):
-            return None
-        transforms = self.load_alignment_matrices_custom(transforms_path)
-
-        # We need the raw (normalized) image size for each file to transform its corners
-        # From aligned name "..._n_r.fit" get raw name "..._n.fit" (like in your drizzle code)
-        cov = np.zeros((H, W), dtype=np.uint16)
-        for aligned_path in file_list:
-            base = os.path.basename(aligned_path)
-            if base.endswith("_n_r.fit"):
-                raw_base = base.replace("_n_r.fit", "_n.fit")
-            elif base.endswith("_r.fit"):
-                raw_base = base.replace("_r.fit", ".fit")  # fallback
-            else:
-                raw_base = base  # fallback
-
-            raw_path = os.path.join(self.stacking_directory, "Normalized_Images", raw_base)
-            # Fallback if normalized folder differs:
-            raw_key = os.path.normpath(raw_path)
-            M = transforms.get(raw_key, None)
-            if M is None:
-                # Try direct key (some pipelines use normalized path equal to aligned key)
-                M = transforms.get(os.path.normpath(aligned_path), None)
-            if M is None:
-                continue
-
-            # Determine raw size
-            raw_img, _, _, _ = load_image(raw_key) if os.path.exists(raw_key) else (None, None, None, None)
-            if raw_img is None:
-                # last resort: assume same canvas; still yields a conservative crop
-                h_raw, w_raw = H, W
-            else:
-                if raw_img.ndim == 2:
-                    h_raw, w_raw = raw_img.shape
-                else:
-                    h_raw, w_raw = raw_img.shape[:2]
-
-            # Transform raw rectangle corners into aligned coords
-            corners = np.array([
-                [0,       0      ],
-                [w_raw-1, 0      ],
-                [w_raw-1, h_raw-1],
-                [0,       h_raw-1]
-            ], dtype=np.float32)
-
-            # Apply affine: [x' y']^T = A*[x y]^T + t
-            A = M[:, :2]; t = M[:, 2]
-            quad = (corners @ A.T) + t  # shape (4,2)
-
-            # Rasterize into coverage
-            self._quad_coverage_add(cov, quad)
-
-        # Threshold at requested coverage
-        N = len(file_list)
-        need = int(np.ceil((coverage_pct / 100.0) * N))
-        mask = (cov >= need)
-
-        # Largest rectangle of 1s
-        rect = self._max_rectangle_in_binary(mask)
-        return rect
 
     def create_image_registration_tab(self):
         """
@@ -6336,9 +6645,85 @@ class StackingSuiteDialog(QDialog):
                     h, w = arr.shape[:2]
         return w, h
 
+    def _probe_fits_meta(self, fp: str):
+        """
+        Return (filter:str, exposure:float, size_str:'WxH') from FITS PRIMARY HDU.
+        Robust to missing keywords.
+        """
+        try:
+            hdr0 = fits.getheader(fp, ext=0)
+            filt = self._sanitize_name(hdr0.get("FILTER", "Unknown"))
+            # exposure can be EXPTIME or EXPOSURE, sometimes a string
+            exp_raw = hdr0.get("EXPTIME", hdr0.get("EXPOSURE", 0.0))
+            try:
+                exp = float(exp_raw)
+            except Exception:
+                exp = 0.0
+            # size
+            data0 = fits.getdata(fp, ext=0)
+            h, w = (int(data0.shape[-2]), int(data0.shape[-1])) if hasattr(data0, "shape") else (0, 0)
+            size = f"{w}x{h}" if (w and h) else "Unknown"
+            return filt or "Unknown", float(exp), size
+        except Exception as e:
+            print(f"⚠️ Could not read FITS {fp}: {e}; treating as generic image")
+            return "Unknown", 0.0, "Unknown"
+
+
+    def _probe_xisf_meta(self, fp: str):
+        """
+        Return (filter:str, exposure:float, size_str:'WxH') from XISF header.
+        Uses first <Image> block; never loads full pixel data.
+        """
+        try:
+            x = XISF(fp)
+            ims = x.get_images_metadata()
+            if not ims:
+                return "Unknown", 0.0, "Unknown"
+            m0 = ims[0]  # first image block
+            # size from geometry tuple (w,h,channels)
+            try:
+                w, h, _ = m0.get("geometry", (0, 0, 0))
+                size = f"{int(w)}x{int(h)}" if (w and h) else "Unknown"
+            except Exception:
+                size = "Unknown"
+
+            # FITS-like keywords are stored in dict of lists: {"FILTER":[{"value":..., "comment":...}], ...}
+            def _kw(name, default=None):
+                lst = m0.get("FITSKeywords", {}).get(name)
+                if lst and isinstance(lst, list) and lst[0] and "value" in lst[0]:
+                    return lst[0]["value"]
+                return default
+
+            filt = self._sanitize_name(_kw("FILTER", "Unknown"))
+
+            exp_raw = _kw("EXPTIME", None)
+            if exp_raw is None:
+                exp_raw = _kw("EXPOSURE", 0.0)
+            try:
+                exp = float(exp_raw)
+            except Exception:
+                exp = 0.0
+
+            # bonus: sometimes exposure is in XISF properties (project dependent). Try a few common ids.
+            if exp == 0.0:
+                props = m0.get("XISFProperties", {}) or {}
+                for pid in ("EXPTIME", "ExposureTime", "XISF:ExposureTime"):
+                    v = props.get(pid, {}).get("value")
+                    try:
+                        exp = float(v)
+                        break
+                    except Exception:
+                        pass
+
+            return filt or "Unknown", float(exp), size
+        except Exception as e:
+            print(f"⚠️ Could not read XISF {fp}: {e}; treating as generic image")
+            return "Unknown", 0.0, "Unknown"
+
 
     def populate_calibrated_lights(self):
         from PIL import Image
+
         def _fmt(enabled, scale, drop):
             return (f"Drizzle: True, Scale: {scale:g}x, Drop: {drop:.2f}" if enabled else "Drizzle: False")
 
@@ -6349,7 +6734,7 @@ class StackingSuiteDialog(QDialog):
         for col in (0, 1, 2):
             hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
 
-        # 2) gather files
+        # gather files
         calibrated_folder = os.path.join(self.stacking_directory or "", "Calibrated")
         files = []
         if os.path.isdir(calibrated_folder):
@@ -6359,17 +6744,15 @@ class StackingSuiteDialog(QDialog):
         # include manual files
         files += self.manual_light_files
 
-        # NEW: filter out exclusions + dedupe while preserving order
+        # filter exclusions + dedupe
         if self._reg_excluded_files:
             files = [f for f in files if f not in self._reg_excluded_files]
         files = list(dict.fromkeys(files))
-
         if not files:
-            # keep internal state coherent
             self.light_files = {}
             return
 
-        # 3) group by header (or defaults)
+        # group by (filter, ~exposure, size) within tolerance
         grouped = {}  # key -> list of dicts: {"path", "exp", "size"}
         tol = self.exposure_tolerance_spin.value()
 
@@ -6379,24 +6762,12 @@ class StackingSuiteDialog(QDialog):
             exp = 0.0
             size = "Unknown"
 
-            if ext in (".fits", ".fit"):
-                try:
-                    hdr0 = fits.getheader(fp, ext=0)
-                    filt = self._sanitize_name(hdr0.get("FILTER", "Unknown"))
-                    exp_raw = hdr0.get("EXPOSURE", hdr0.get("EXPTIME", None))
-                    try:
-                        exp = float(exp_raw)
-                    except (TypeError, ValueError):
-                        print(f"⚠️ Exposure invalid in {fp}, defaulting to 0.0s")
-                        exp = 0.0
-                    data0 = fits.getdata(fp, ext=0)
-                    h, w = data0.shape[-2:]
-                    size = f"{w}x{h}"
-                except Exception as e:
-                    print(f"⚠️ Could not read FITS {fp}: {e}; treating as generic image")
-
-            if filt == "Unknown" and ext not in (".fits", ".fit"):
-                # generic image via PIL/utility
+            if ext in (".fits", ".fit", ".fz"):
+                filt, exp, size = self._probe_fits_meta(fp)
+            elif ext == ".xisf":
+                filt, exp, size = self._probe_xisf_meta(fp)
+            else:
+                # generic image (TIFF/PNG/JPEG, etc.)
                 try:
                     w, h = self._get_image_size(fp)
                     size = f"{w}x{h}"
@@ -6404,7 +6775,7 @@ class StackingSuiteDialog(QDialog):
                     print(f"⚠️ Cannot read image size for {fp}: {e}")
                     continue
 
-            # find existing group
+            # find existing group with same filter+size and exposure within tolerance
             match_key = None
             for key in grouped:
                 f2, e2, s2 = self.parse_group_key(key)
@@ -6415,10 +6786,10 @@ class StackingSuiteDialog(QDialog):
             key = match_key or f"{filt} - {exp:.1f}s ({size})"
             grouped.setdefault(key, []).append({"path": fp, "exp": exp, "size": size})
 
-        # 4) populate tree & self.light_files
+        # populate tree & self.light_files
         self.light_files = {}
 
-        # read current global drizzle controls (used as default)
+        # current global drizzle defaults
         global_enabled = self.drizzle_checkbox.isChecked()
         try:
             global_scale = float(self.drizzle_scale_combo.currentText().replace("x", "", 1))
@@ -6438,17 +6809,12 @@ class StackingSuiteDialog(QDialog):
             else:
                 top.setText(1, f"{len(paths)} file")
 
-            # Use saved per-group drizzle state if present; else default to global controls
+            # per-group drizzle state (persisted), default to global
             state = self.per_group_drizzle.get(key)
             if state is None:
-                state = {
-                    "enabled": bool(global_enabled),
-                    "scale":   float(global_scale),
-                    "drop":    float(global_drop),
-                }
-                self.per_group_drizzle[key] = state  # persist default for this group
+                state = {"enabled": bool(global_enabled), "scale": float(global_scale), "drop": float(global_drop)}
+                self.per_group_drizzle[key] = state
 
-            # Show in column 2
             try:
                 top.setText(2, self._format_drizzle_text(state["enabled"], state["scale"], state["drop"]))
             except AttributeError:
@@ -6457,7 +6823,7 @@ class StackingSuiteDialog(QDialog):
             top.setData(0, Qt.ItemDataRole.UserRole, paths)
             self.reg_tree.addTopLevelItem(top)
 
-            # leaf rows: show basename + *per-file* size (fixes the old "same size for all leaves" issue)
+            # leaf rows: show basename + per-file size
             for d in entries:
                 fp = d["path"]
                 leaf = QTreeWidgetItem([os.path.basename(fp), f"Size: {d['size']}"])
@@ -6466,6 +6832,7 @@ class StackingSuiteDialog(QDialog):
 
             top.setExpanded(True)
             self.light_files[key] = paths
+
 
     def _iter_group_items(self):
         for i in range(self.reg_tree.topLevelItemCount()):
@@ -6892,7 +7259,7 @@ class StackingSuiteDialog(QDialog):
         # 3) System local timezone
         if ZoneInfo:
             try:
-                import tzlocal
+
                 return ZoneInfo(str(tzlocal.get_localzone()))
             except Exception:
                 pass
@@ -9167,30 +9534,88 @@ class StackingSuiteDialog(QDialog):
 
     def _extract_pa_deg(self, hdr):
         """
-        Try common FITS keys for camera/sky position angle.
-        Fallback: estimate from WCS CD/PC matrix (CROTA2-ish).
-        Returns float degrees or None.
+        Try common FITS/PI keys for camera/sky position angle (degrees).
+        Works with both astropy FITS Header and XISF image-metadata dicts.
+
+        Heuristics:
+        1) Direct keywords (first match wins): POSANGLE, ANGLE, ROTANGLE, ROTSKYPA,
+            ROTATOR, PA, ORIENTAT, CROTA2, CROTA1.
+            • Values may be numbers or strings like '123.4 deg' — we parse the first float.
+        2) WCS fallback:
+            • CD matrix:  pa = atan2(-CD1_2, CD2_2)
+            • PC matrix (+ optional CDELT scaling): pa = atan2(-PC1_2, PC2_2)
+        Returns float in degrees, or None if unknown.
         """
+        import re
+        import numpy as _np
+
         if hdr is None:
             return None
-        keys = ("POSANGLE","ANGLE","ROTANGLE","ROTSKYPA","ROTATOR",
-                "PA","CROTA2","CROTA1")
-        for k in keys:
-            if k in hdr:
+
+        # helper: unified header getter (FITS Header or XISF dict)
+        def _get(k, default=None):
+            try:
+                return self._hdr_get(hdr, k, default)
+            except Exception:
+                # fall back to direct mapping-like access if needed
                 try:
-                    return float(hdr[k])
+                    return hdr.get(k, default)
                 except Exception:
-                    pass
-        # crude WCS fallback (angle of +Y axis on detector)
-        try:
-            cd11 = float(hdr.get('CD1_1', hdr.get('PC1_1')))
-            cd12 = float(hdr.get('CD1_2', hdr.get('PC1_2')))
-            cd22 = float(hdr.get('CD2_2', hdr.get('PC2_2')))
-            # common CROTA2-style estimate
-            pa = np.degrees(np.arctan2(-cd12, cd22))
-            return float(pa)
-        except Exception:
-            return None
+                    return default
+
+        # parse possibly-string value → float
+        def _as_float_deg(v):
+            if v is None:
+                return None
+            if isinstance(v, (int, float, _np.integer, _np.floating)):
+                try:
+                    return float(v)
+                except Exception:
+                    return None
+            # strings like "123.4", "123.4 deg", "123,4", etc.
+            try:
+                s = str(v)
+                m = re.search(r"[-+]?\d+(?:[.,]\d+)?", s)
+                if not m:
+                    return None
+                val = float(m.group(0).replace(",", "."))
+                return val
+            except Exception:
+                return None
+
+        # 1) direct keyword attempts (first hit wins)
+        direct_keys = (
+            "POSANGLE", "ANGLE", "ROTANGLE", "ROTSKYPA", "ROTATOR",
+            "PA", "ORIENTAT", "CROTA2", "CROTA1"
+        )
+        for k in direct_keys:
+            v = _get(k, None)
+            ang = _as_float_deg(v)
+            if ang is not None:
+                return float(ang)
+
+        # 2) WCS fallback using CD or PC matrices
+        # CD first
+        cd11 = _get('CD1_1'); cd12 = _get('CD1_2'); cd22 = _get('CD2_2')
+        if cd11 is not None and cd12 is not None and cd22 is not None:
+            try:
+                pa = _np.degrees(_np.arctan2(-float(cd12), float(cd22)))
+                return float(pa)
+            except Exception:
+                pass
+
+        # PC (optionally combined with CDELT)
+        pc11 = _get('PC1_1'); pc12 = _get('PC1_2'); pc22 = _get('PC2_2')
+        if pc11 is not None and pc12 is not None and pc22 is not None:
+            try:
+                # If CDELT present, rotation is still given by PC (scale cancels out for angle)
+                pa = _np.degrees(_np.arctan2(-float(pc12), float(pc22)))
+                return float(pa)
+            except Exception:
+                pass
+
+        return None
+
 
     def _maybe_rot180(self, img, pa_cur, pa_ref, tol_deg):
         """
@@ -9289,6 +9714,170 @@ class StackingSuiteDialog(QDialog):
             pass
         return bool(self.settings.value("stacking/cosmetic_enabled", True, type=bool))
 
+    # ——— generic header access ———
+    def _hdr_get(self, hdr, key, default=None):
+        """Uniform header getter for FITS (astropy Header) or XISF (dict with FITSKeywords)."""
+        if hdr is None:
+            return default
+        # FITS Header
+        try:
+            if hasattr(hdr, "get"):
+                return hdr.get(key, default)
+        except Exception:
+            pass
+        # XISF-style dict from XISF.get_images_metadata()[i]
+        try:
+            # FITSKeywords: { KEY: [ {value, comment}, ... ] }
+            fkw = hdr.get("FITSKeywords", {})
+            lst = fkw.get(key)
+            if lst and isinstance(lst, list) and "value" in lst[0]:
+                return lst[0]["value"]
+        except Exception:
+            pass
+        # fall back to plain dict
+        try:
+            return hdr.get(key, default)
+        except Exception:
+            return default
+
+
+    # ——— binning for either format ———
+    def _bin_from_header_fast_any(self, fp: str) -> tuple[int,int]:
+        ext = os.path.splitext(fp)[1].lower()
+        # FITS quick path
+        if ext in (".fits", ".fit", ".fz"):
+            try:
+                h = fits.getheader(fp, ext=0)
+                # common variants
+                xb = int(h.get("XBINNING", h.get("XBIN", 1)))
+                yb = int(h.get("YBINNING", h.get("YBIN", 1)))
+                return max(1, xb), max(1, yb)
+            except Exception:
+                return (1,1)
+        # XISF path
+        if ext == ".xisf":
+            try:
+                from legacy.xisf import XISF
+                x = XISF(fp)
+                ims = x.get_images_metadata()
+                if not ims:
+                    return (1,1)
+                m0 = ims[0]
+                fkw = m0.get("FITSKeywords", {})
+                def _kw(name, default=None):
+                    vals = fkw.get(name)
+                    return vals[0]["value"] if vals and "value" in vals[0] else default
+                xb = int(_kw("XBINNING", _kw("XBIN", 1)) or 1)
+                yb = int(_kw("YBINNING", _kw("YBIN", 1)) or 1)
+                return max(1, xb), max(1, yb)
+            except Exception:
+                return (1,1)
+        return (1,1)
+
+
+    # ——— fast preview for either format (2D float32 at target bin scale) ———
+    def _quick_preview_any(self, fp: str, target_xbin: int, target_ybin: int) -> np.ndarray | None:
+        ext = os.path.splitext(fp)[1].lower()
+        # 1) Load a small-ish *image* block without full decode work
+        img = None; hdr = None
+
+        def _superpixel2x2(x: np.ndarray) -> np.ndarray:
+            h, w = x.shape[:2]
+            h2, w2 = h - (h % 2), w - (w % 2)
+            if h2 <= 0 or w2 <= 0:
+                return x.astype(np.float32, copy=False)
+            x = x[:h2, :w2].astype(np.float32, copy=False)
+            if x.ndim == 2:
+                return (x[0:h2:2, 0:w2:2] + x[0:h2:2, 1:w2:2] +
+                        x[1:h2:2, 0:w2:2] + x[1:h2:2, 1:w2:2]) * 0.25
+            else:
+                r = x[..., 0]; g = x[..., 1]; b = x[..., 2]
+                L = 0.2126*r + 0.7152*g + 0.0722*b
+                return (L[0:h2:2, 0:w2:2] + L[0:h2:2, 1:w2:2] +
+                        L[1:h2:2, 0:w2:2] + L[1:h2:2, 1:w2:2]) * 0.25
+
+        try:
+            if ext in (".fits", ".fit", ".fz"):
+                # primary data only for speed
+                data = fits.getdata(fp, ext=0)
+                hdr  = fits.getheader(fp, ext=0)
+                img = np.asanyarray(data)
+            elif ext == ".xisf":
+                from legacy.xisf import XISF
+                x = XISF(fp)
+                ims = x.get_images_metadata()
+                if not ims:
+                    return None
+                hdr = ims[0]  # carry XISF image metadata dict as "header"
+                img = x.read_image(0)  # channels-last
+            else:
+                # generic formats: use your existing thumb path
+                w, h = self._get_image_size(fp)
+                # cheap preview load (PIL) — grayscale
+                from PIL import Image
+                im = Image.open(fp).convert("L")
+                img = np.asarray(im, dtype=np.float32) / 255.0
+                hdr = {}
+
+            a = np.asarray(img)
+            if a.ndim == 3 and a.shape[-1] == 1:
+                a = a[...,0]
+            # if it’s color, make a luma-like 2×2 superpixel preview; if mono/CFA, same superpixel trick
+            if a.ndim == 3 and a.shape[-1] == 3:
+                prev2d = _superpixel2x2(a)
+            else:
+                prev2d = _superpixel2x2(a)
+
+            # resample preview to the target bin scale
+            xb, yb = self._bin_from_header_fast_any(fp)
+            sx = float(xb) / float(target_xbin)
+            sy = float(yb) / float(target_ybin)
+            if (abs(sx - 1.0) > 1e-6) or (abs(sy - 1.0) > 1e-6):
+                prev2d = _resize_to_scale(prev2d, sx, sy)
+
+            return np.ascontiguousarray(prev2d.astype(np.float32, copy=False))
+        except Exception:
+            return None
+
+
+    # ——— on-demand full load (float32, header-like), for normalization stage ———
+    def _load_image_any(self, fp: str):
+        """
+        Return (img, hdr_like) for FITS/XISF/other.
+        img is float32, channels-last if color, shape (H,W) if mono.
+        hdr_like: FITS Header for FITS; XISF image metadata dict for XISF; {} otherwise.
+        """
+        ext = os.path.splitext(fp)[1].lower()
+        try:
+            if ext in (".fits", ".fit", ".fz"):
+                from legacy.image_manager import load_image as legacy_load_image
+                img, hdr, _, _ = legacy_load_image(fp)
+                return img, (hdr or fits.Header())
+            if ext == ".xisf":
+                from legacy.xisf import XISF
+                x = XISF(fp)
+                ims = x.get_images_metadata()
+                if not ims:
+                    return None, {}
+                img = x.read_image(0)  # channels-last
+                # normalize integer types to [0..1] just like FITS path
+                a = np.asarray(img)
+                if a.dtype.kind in "ui":
+                    a = a.astype(np.float32) / np.float32(np.iinfo(a.dtype).max)
+                elif a.dtype.kind == "f":
+                    a = a.astype(np.float32, copy=False)
+                else:
+                    a = a.astype(np.float32, copy=False)
+                hdr_like = ims[0]  # carry XISF image metadata dict
+                return a, hdr_like
+            # generic images (TIFF/PNG/JPEG)
+            from legacy.image_manager import load_image as legacy_load_image
+            img, hdr, _, _ = legacy_load_image(fp)
+            return img, (hdr or {})
+        except Exception:
+            return None, {}
+
+
     def register_images(self):
 
         if getattr(self, "_registration_busy", False):
@@ -9298,8 +9887,6 @@ class StackingSuiteDialog(QDialog):
         self._set_registration_busy(True)
 
         try:
-            """Measure → choose reference → DEBAYER ref → DEBAYER+normalize all → align."""
-
             if self.star_trail_mode:
                 self.update_status("🌠 Star-Trail Mode enabled: skipping registration & using max-value stack")
                 QApplication.processEvents()
@@ -9308,41 +9895,30 @@ class StackingSuiteDialog(QDialog):
             self.update_status("🔄 Image Registration Started...")
             self.extract_light_files_from_tree(debug=True)
 
-            # Determine comet mode from checkbox (safe if widget missing)
             comet_mode = bool(getattr(self, "comet_cb", None) and self.comet_cb.isChecked())
-
             if comet_mode:
-                # Force a seed BEFORE any loops or registration compute
                 self.update_status("🌠 Comet mode: please click the comet center to continue…")
                 QApplication.processEvents()
-
                 ok = self._ensure_comet_seed_now()
                 if not ok:
-                    # Hard-stop: we don't want the trash fallback
-                    QMessageBox.information(
-                        self, "Comet Mode",
-                        "No comet center was selected. Registration has been cancelled so you can try again."
-                    )
+                    QMessageBox.information(self, "Comet Mode",
+                        "No comet center was selected. Registration has been cancelled so you can try again.")
                     self.update_status("❌ Registration cancelled (no comet seed).")
                     return
                 else:
-                    # Clear any stale mapped ref coords from a previous run; we’ll recompute post-align
                     self._comet_ref_xy = None
                     self.update_status("✅ Comet seed set. Proceeding with registration…")
                     QApplication.processEvents()
-
-                
 
             if not self.light_files:
                 self.update_status("⚠️ No light files to register!")
                 return
 
-            # Which groups are selected? (used for optional dual-band split)
+            # dual-band split unchanged...
             selected_groups = set()
             for it in self.reg_tree.selectedItems():
                 top = it if it.parent() is None else it.parent()
                 selected_groups.add(top.text(0))
-
             if self.split_dualband_cb.isChecked():
                 self.update_status("🌈 Splitting dual-band OSC frames into Ha / SII / OIII...")
                 self._split_dual_band_osc(selected_groups=selected_groups)
@@ -9350,17 +9926,14 @@ class StackingSuiteDialog(QDialog):
 
             self._maybe_warn_cfa_low_frames()
 
-            # Flatten to get all files
             all_files = [f for lst in self.light_files.values() for f in lst]
             self.update_status(f"📊 Found {len(all_files)} total frames. Now measuring in parallel batches...")
 
-            # ───────────────────────────────────────────────────────────────
-            # Detect binning for each frame and choose a target (usually 1×1)
-            # ───────────────────────────────────────────────────────────────
+            # ── binning (now FITS/XISF aware) ─────────────────────────────
             bin_map = {}
             min_xbin, min_ybin = None, None
             for fp in all_files:
-                xb, yb = _bin_from_header_fast(fp)
+                xb, yb = self._bin_from_header_fast_any(fp)   # ← changed
                 bin_map[fp] = (xb, yb)
                 if min_xbin is None or xb < min_xbin:
                     min_xbin = xb
@@ -9368,9 +9941,11 @@ class StackingSuiteDialog(QDialog):
                     min_ybin = yb
 
             target_xbin, target_ybin = (min_xbin or 1), (min_ybin or 1)
-            self.update_status(f"🧮 Binning summary → target={target_xbin}×{target_ybin} "
-                            f"(range observed: x=[{min(b[0] for b in bin_map.values())}..{max(b[0] for b in bin_map.values())}], "
-                            f"y=[{min(b[1] for b in bin_map.values())}..{max(b[1] for b in bin_map.values())}])")
+            self.update_status(
+                f"🧮 Binning summary → target={target_xbin}×{target_ybin} "
+                f"(range observed: x=[{min(b[0] for b in bin_map.values())}..{max(b[0] for b in bin_map.values())}], "
+                f"y=[{min(b[1] for b in bin_map.values())}..{max(b[1] for b in bin_map.values())}])"
+            )
 
 
             # ─────────────────────────────────────────────────────────────────────
@@ -9434,10 +10009,13 @@ class StackingSuiteDialog(QDialog):
             mean_values = {}
             star_counts = {}
             measured_frames = []
-            preview_medians = {} 
+            preview_medians = {}
 
             max_workers = os.cpu_count() or 4
             chunk_size = max_workers
+            def chunk_list(lst, size):
+                for i in range(0, len(lst), size):
+                    yield lst[i:i+size]
             chunks = list(chunk_list(all_files, chunk_size))
             total_chunks = len(chunks)
 
@@ -9450,7 +10028,8 @@ class StackingSuiteDialog(QDialog):
 
                 self.update_status(f"🌍 Loading {len(chunk)} previews in parallel (up to {max_workers} threads)...")
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    futs = {executor.submit(_quick_preview_from_fits, fp, target_xbin, target_ybin): fp for fp in chunk}
+                    futs = {executor.submit(self._quick_preview_any, fp, target_xbin, target_ybin): fp  # ← changed
+                            for fp in chunk}
                     for fut in as_completed(futs):
                         fp = futs[fut]
                         try:
@@ -9540,15 +10119,16 @@ class StackingSuiteDialog(QDialog):
             # ─────────────────────────────────────────────────────────────────────
             # Debayer the reference ONCE and compute ref_median from debayered ref
             # ─────────────────────────────────────────────────────────────────────
-            ref_img_raw, ref_hdr, _, _ = load_image(self.reference_frame)
+            ref_img_raw, ref_hdr = self._load_image_any(self.reference_frame)  # ← changed
             if ref_img_raw is None:
                 self.update_status(f"🚨 Could not load reference {self.reference_frame}. Aborting.")
                 return
 
-            # If CFA, debayer; if already color, keep; if mono but 3D with last=1, squeeze.
-            if ref_hdr and ref_hdr.get('BAYERPAT') and not ref_hdr.get('SPLITDB', False) and (ref_img_raw.ndim == 2 or (ref_img_raw.ndim == 3 and ref_img_raw.shape[-1] == 1)):
+            bayer = self._hdr_get(ref_hdr, 'BAYERPAT')
+            splitdb = bool(self._hdr_get(ref_hdr, 'SPLITDB', False))
+            if bayer and not splitdb and (ref_img_raw.ndim == 2 or (ref_img_raw.ndim == 3 and ref_img_raw.shape[-1] == 1)):
                 self.update_status("📦 Debayering reference frame…")
-                ref_img = self.debayer_image(ref_img_raw, self.reference_frame, ref_hdr)  # HxWx3
+                ref_img = self.debayer_image(ref_img_raw, self.reference_frame, ref_hdr)
             else:
                 ref_img = ref_img_raw
                 if ref_img.ndim == 3 and ref_img.shape[-1] == 1:
@@ -9648,8 +10228,9 @@ class StackingSuiteDialog(QDialog):
             # ─────────────────────────────────────────────────────────────────────
             # PHASE 1b: Meridian flips
             # ─────────────────────────────────────────────────────────────────────
-            ref_pa = self._extract_pa_deg(ref_hdr)
+            ref_pa = self._extract_pa_deg(ref_hdr)  # if this reads hdr.get(), update it to use _hdr_get inside
             self.update_status(f"🧭 Reference PA: {ref_pa:.2f}°" if ref_pa is not None else "🧭 Reference PA: (unknown)")
+
 
             # ─────────────────────────────────────────────────────────────────────
             # PHASE 2: normalize (DEBAYER everything once here)
@@ -9669,13 +10250,12 @@ class StackingSuiteDialog(QDialog):
             total_chunks = len(chunks)
 
             ncpu = os.cpu_count() or 8
-            io_workers = min(8, max(2, ncpu // 2))   # too many hurts disk
+            io_workers = min(8, max(2, ncpu // 2))
 
             for idx, chunk in enumerate(chunks, 1):
                 self.update_status(f"🌀 Normalizing chunk {idx}/{total_chunks} ({len(chunk)} frames)…")
                 QApplication.processEvents()
 
-                # ABE flag (per your setting)
                 abe_enabled = bool(self.settings.value("stacking/grad_poly2/enabled", False, type=bool))
                 if abe_enabled:
                     mode         = "divide" if self.settings.value("stacking/grad_poly2/mode", "subtract") == "divide" else "subtract"
@@ -9686,18 +10266,13 @@ class StackingSuiteDialog(QDialog):
                     gain_lo      = float(self.settings.value("stacking/grad_poly2/gain_lo", 0.20, type=float))
                     gain_hi      = float(self.settings.value("stacking/grad_poly2/gain_hi", 5.0, type=float))
 
-                # Per-chunk buffers (only used if ABE is on)
-                scaled_images = []    # list[np.ndarray] aligned with scaled_paths
-                scaled_paths  = []    # list[str] original file paths for this chunk
-                scaled_hdrs   = []    # list[fits.Header] for writeback
+                scaled_images = []; scaled_paths = []; scaled_hdrs = []
 
                 from concurrent.futures import ThreadPoolExecutor, as_completed
                 self.update_status(f"🌍 Loading {len(chunk)} images in parallel for normalization (up to {io_workers} threads)…")
-
-                # 1) Load → debayer → optional 180 → resample → scale (do NOT write yet)
                 with ThreadPoolExecutor(max_workers=io_workers) as ex:
-                    futs = {ex.submit(load_image_fast_norm, fp): fp for fp in chunk}
-
+                    futs = {ex.submit(self._load_image_any, fp): fp  # ← changed
+                            for fp in chunk}
                     for fut in as_completed(futs):
                         fp = futs[fut]
                         try:
@@ -9706,30 +10281,34 @@ class StackingSuiteDialog(QDialog):
                                 self.update_status(f"⚠️ No data for {fp}")
                                 continue
 
-                            # Debayer if needed
-                            if hdr and hdr.get('BAYERPAT') and not hdr.get('SPLITDB', False) and (img.ndim == 2 or (img.ndim == 3 and img.shape[-1] == 1)):
-                                img = self.debayer_image(img, fp, hdr)  # → HxWx3
+                            # 🔧 make sure we can safely do in-place ops from here on
+                            img = _to_writable_f32(img)
+
+                            bayer = self._hdr_get(hdr, 'BAYERPAT')
+                            splitdb = bool(self._hdr_get(hdr, 'SPLITDB', False))
+                            if bayer and not splitdb and (img.ndim == 2 or (img.ndim == 3 and img.shape[-1] == 1)):
+                                img = self.debayer_image(img, fp, hdr)  # HxWx3
                             else:
                                 if img.ndim == 3 and img.shape[-1] == 1:
                                     img = np.squeeze(img, axis=-1)
 
-                            # Meridian flip assist
+                            # meridian flip assist (unchanged logic, just ensure _extract_pa_deg uses _hdr_get)
                             if self.auto_rot180 and ref_pa is not None:
                                 pa = self._extract_pa_deg(hdr)
                                 img, did = self._maybe_rot180(img, pa, ref_pa, self.auto_rot180_tol_deg)
                                 if did:
                                     self.update_status(f"↻ 180° rotate (PA Δ≈180°): {os.path.basename(fp)}")
                                     try:
-                                        hdr['ROT180'] = (True, 'Rotated 180° pre-align by SAS')
+                                        if hasattr(hdr, "__setitem__"):  # FITS Header
+                                            hdr['ROT180'] = (True, 'Rotated 180° pre-align by SAS')
                                     except Exception:
                                         pass
 
-                            # Resample for target binning
+                            # resample to target bin
                             xb, yb = bin_map.get(fp, (1, 1))
                             sx = float(xb) / float(target_xbin)
                             sy = float(yb) / float(target_ybin)
-                            resampled = (abs(sx - 1.0) > 1e-6) or (abs(sy - 1.0) > 1e-6)
-                            if resampled:
+                            if (abs(sx - 1.0) > 1e-6) or (abs(sy - 1.0) > 1e-6):
                                 before = img.shape[:2]
                                 img = _resize_to_scale(img, sx, sy)
                                 after = img.shape[:2]
@@ -9737,33 +10316,19 @@ class StackingSuiteDialog(QDialog):
                                     f"🔧 Resampled for binning {xb}×{yb} → {target_xbin}×{target_ybin} "
                                     f"size {before[1]}×{before[0]} → {after[1]}×{after[0]}"
                                 )
-                                try:
-                                    hdr['SAS_ORBX'] = (int(xb), 'Original X binning')
-                                    hdr['SAS_ORBY'] = (int(yb), 'Original Y binning')
-                                    hdr['SAS_SCLX'] = (float(sx), 'Applied X scale to reach target binning')
-                                    hdr['SAS_SCLY'] = (float(sy), 'Applied Y scale to reach target binning')
-                                    hdr['SAS_RSMP'] = (True, 'Resampled to common scale before alignment')
-                                except Exception:
-                                    pass
 
-                            # Normalization (preview guess + tiny refine)
+                            # normalization scale (unchanged)
                             pm = float(preview_medians.get(fp, 0.0))
-                            s = _compute_scale(
-                                ref_target_median=ref_target_median,
-                                preview_median=pm if pm > 0 else 1.0,
-                                img=img,
-                                refine_stride=8,
-                                refine_if_rel_err=0.10
-                            )
+                            s = _compute_scale(ref_target_median, pm if pm > 0 else 1.0,
+                                            img, refine_stride=8, refine_if_rel_err=0.10)
                             img = _apply_scale_inplace(img, s)
 
-                            # Buffer for writeout (ABE later) or immediate write if ABE off
                             if abe_enabled:
                                 scaled_images.append(img.astype(np.float32, copy=False))
                                 scaled_paths.append(fp)
                                 scaled_hdrs.append(hdr)
                             else:
-                                # write immediately
+                                # write out normalized FITS (unchanged)
                                 base = os.path.basename(fp)
                                 if base.endswith("_n.fit"):
                                     base = base.replace("_n.fit", ".fit")
@@ -9776,7 +10341,10 @@ class StackingSuiteDialog(QDialog):
                                 out_path = os.path.join(norm_dir, out_name)
 
                                 try:
-                                    orig_header = fits.getheader(fp, ext=0)
+                                    if os.path.splitext(fp)[1].lower() in (".fits", ".fit", ".fz"):
+                                        orig_header = fits.getheader(fp, ext=0)
+                                    else:
+                                        orig_header = fits.Header()
                                 except Exception:
                                     orig_header = fits.Header()
 
@@ -10470,6 +11038,53 @@ class StackingSuiteDialog(QDialog):
 
             self._set_registration_busy(False)
 
+        try:
+            autocrop_enabled_ui = self.autocrop_cb.isChecked()
+            autocrop_pct_ui = float(self.autocrop_pct.value())
+        except Exception:
+            autocrop_enabled_ui = self.settings.value("stacking/autocrop_enabled", False, type=bool)
+            autocrop_pct_ui = float(self.settings.value("stacking/autocrop_pct", 95.0, type=float))
+
+        # Build a single global rect from all aligned frames (registered paths)
+        _mf_global_rect = None
+        if autocrop_enabled_ui:
+            _mf_global_rect = None
+            pd = QProgressDialog("Calculating autocrop bounding box…", None, 0, 0, self)
+            pd.setWindowTitle("Auto Crop")
+            pd.setWindowModality(Qt.WindowModality.WindowModal)
+            pd.setCancelButton(None)          # simple busy dialog; no cancel
+            pd.setMinimumDuration(0)
+            pd.setRange(0, 0)                 # indeterminate spinner
+            pd.show()
+            QApplication.processEvents()
+
+            try:
+                # Optional status line in your log/status area
+                self.update_status("✂️ (MF) Auto Crop Bounding Box Calculating…")
+                QApplication.processEvents()
+
+                # Do the heavy work (still on UI thread, but with a visible busy UI)
+                _mf_global_rect = self._compute_common_autocrop_rect(
+                    aligned_light_files,
+                    autocrop_pct_ui,
+                    status_cb=self.update_status
+                )
+
+                self.update_status("✂️ (MF) Auto Crop Bounding Box Calculated")
+                QApplication.processEvents()
+            except Exception as e:
+                self.update_status(f"⚠️ (MF) Global crop failed: {e}")
+                _mf_global_rect = None
+            finally:
+                try:
+                    pd.reset()
+                    pd.deleteLater()
+                except Exception:
+                    pass
+        self._mf_autocrop_rect = _mf_global_rect
+        self._mf_autocrop_enabled = bool(autocrop_enabled_ui)
+        self._mf_autocrop_pct = float(autocrop_pct_ui)
+
         mf_enabled = self.settings.value("stacking/mfdeconv/enabled", False, type=bool)
         if mf_enabled:
             self.update_status("🧪 Multi-frame PSF-aware deconvolution path enabled.")
@@ -10631,18 +11246,39 @@ class StackingSuiteDialog(QDialog):
 
                         if ok and out:
                             self._mf_results[group_key] = out
-                        else:
-                            self.update_status(f"❌ MFDeconv failed for '{group_key}': {message}")
 
-                        try:
-                            self._mf_thread.quit()
-                            self._mf_thread.wait()
-                        except Exception:
-                            pass
-                        self._mf_thread = None
-                        self._mf_worker = None
+                            # ✂️ Post-crop MF output if requested
+                            if getattr(self, "_mf_autocrop_enabled", False) and getattr(self, "_mf_autocrop_rect", None):
+                                try:
+                                    from astropy.io import fits
+                                    with fits.open(out, memmap=False) as hdul:
+                                        img = hdul[0].data
+                                        hdr = hdul[0].header
 
-                        QTimer.singleShot(0, _start_next_mf_job)
+                                    rect = tuple(map(int, self._mf_autocrop_rect))  # (x1,y1,x2,y2)
+                                    # If super-res was used for this group, scale the rect
+                                    sr_enabled = self.settings.value("stacking/mfdeconv/sr_enabled", False, type=bool)
+                                    sr_factor = 2 if (sr_enabled and self.mf_sr_cb.isChecked()) else 1
+                                    if sr_factor > 1:
+                                        x1,y1,x2,y2 = rect
+                                        rect = (x1*sr_factor, y1*sr_factor, x2*sr_factor, y2*sr_factor)
+
+                                    x1,y1,x2,y2 = rect
+                                    if img.ndim == 2:
+                                        crop = img[y1:y2, x1:x2]
+                                    elif img.ndim == 3:
+                                        # FITS saved as (H,W) or (C,H,W); your saver writes mono as 2D and 3-channel as C,H,W
+                                        if img.shape[0] in (1,3):
+                                            crop = img[:, y1:y2, x1:x2]
+                                        else:
+                                            # (H,W,C) fallback
+                                            crop = img[y1:y2, x1:x2, :]
+
+                                    out_crop = out.replace(".fit", "_autocrop.fit").replace(".fits", "_autocrop.fits")
+                                    fits.PrimaryHDU(data=crop.astype(np.float32, copy=False), header=hdr).writeto(out_crop, overwrite=True)
+                                    self.update_status(f"✂️ (MF) Saved auto-cropped copy → {out_crop}")
+                                except Exception as e:
+                                    self.update_status(f"⚠️ (MF) Auto-crop of output failed: {e}")
 
                     self._mf_worker.finished.connect(_job_finished, Qt.ConnectionType.QueuedConnection)
 
@@ -10859,7 +11495,8 @@ class StackingSuiteDialog(QDialog):
         """
         log = status_cb or (lambda *_: None)
         comet_mode = bool(getattr(self, "comet_cb", None) and self.comet_cb.isChecked())
-
+        if not hasattr(self, "orig_by_aligned") or not isinstance(getattr(self, "orig_by_aligned"), dict):
+            self.orig_by_aligned = {}
         # Comet-mode defaults (surface later if desired)
         COMET_ALGO = "Comet High-Clip Percentile"          # or "Comet Lower-Trim (30%)"
         STARS_ALGO = "Comet High-Clip Percentile"          # star-aligned stack: median best suppresses moving comet
@@ -11257,10 +11894,11 @@ class StackingSuiteDialog(QDialog):
         QApplication.processEvents()
         # Build ORIGINALS list for each group (needed for true drizzle)
         originals_by_group = {}
+        oba = getattr(self, "orig_by_aligned", {}) or {}
         for group, reg_list in grouped_files.items():
             orig_list = []
-            for rp in reg_list:  # registered path
-                op = self.orig_by_aligned.get(os.path.normpath(rp))
+            for rp in reg_list:
+                op = oba.get(os.path.normpath(rp))
                 if op:
                     orig_list.append(op)
             originals_by_group[group] = orig_list
@@ -11354,7 +11992,7 @@ class StackingSuiteDialog(QDialog):
         sources = []
         try:
             for p in file_list:
-                sources.append(_MMFits(p))
+                sources.append(_MMImage(p))   # << was _MMFits
         except Exception as e:
             for s in sources:
                 try: s.close()
@@ -12250,12 +12888,16 @@ class StackingSuiteDialog(QDialog):
             # Prefer already-normalized/registered frames
             def _looks_norm_reg(p: str) -> bool:
                 bn = os.path.basename(p).lower()
-                # adjust these as needed for your naming
-                if bn.endswith("_n.fit") or bn.endswith("_n.fits") or bn.endswith("_n_r.fit") or bn.endswith("_n_r.fits") or ("aligned_images" in os.path.normpath(p).lower()):
+                if (
+                    bn.endswith("_n.fit") or bn.endswith("_n.fits")
+                    or bn.endswith("_n_r.fit") or bn.endswith("_n_r.fits")
+                    or ("aligned_images" in os.path.normpath(p).lower())
+                    or bn.endswith(".xisf")  # ← treat XISF as already prepared by PI
+                ):
                     return True
-                # header fallback: quick peek without full load
+                # header fallback
                 try:
-                    hdr = _get_header_fast(p)
+                    hdr = _get_header_fast(p)  # now supports XISF
                     if hdr and (hdr.get("DEBAYERED") is not None or hdr.get("SAS_RSMP") or hdr.get("SAS_NORM") or hdr.get("NORMALIZ")):
                         return True
                 except Exception:
@@ -12298,8 +12940,7 @@ class StackingSuiteDialog(QDialog):
                 paths_ok = []
 
                 def _preview_job(fp: str):
-                    # same helper you already have; uses debayer-aware superpixel and returns 2D float32
-                    return _quick_preview_from_fits(fp, target_xbin=1, target_ybin=1)
+                    return _quick_preview_from_path(fp, target_xbin=1, target_ybin=1)
 
                 with ThreadPoolExecutor(max_workers=max_workers) as ex:
                     futs = {ex.submit(_preview_job, fp): fp for fp in chunk}
@@ -13001,10 +13642,11 @@ class StackingSuiteDialog(QDialog):
         sources = []
         try:
             for p in file_list:
-                sources.append(_MMFits(p))
+                sources.append(_MMImage(p))   # << was _MMFits
         except Exception as e:
             for s in sources:
-                s.close()
+                try: s.close()
+                except Exception: pass
             log(f"⚠️ Failed to open images (memmap): {e}")
             return None, {}, None
 
