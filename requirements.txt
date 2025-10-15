@@ -27,6 +27,7 @@ photutils
 astroalign
 sep
 reproject
+tzlocal
 
 # performance
 numba
