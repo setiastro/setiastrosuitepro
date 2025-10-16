@@ -4060,9 +4060,24 @@ class StackingSuiteDialog(QDialog):
         # --- MF Deconvolution  ---
         gb_mf = QGroupBox("Multi-frame Deconvolution")
         fl_mf = QFormLayout(gb_mf)
-
         def _row(lbl, w):
             c = QWidget(); h = QHBoxLayout(c); h.setContentsMargins(0,0,0,0); h.addWidget(w, 1); return (lbl, c)
+        
+        self.mf_seed_combo = QComboBox()
+        self.mf_seed_combo.addItems([
+            "Robust μ–σ (live stack)",
+            "Median (Sukhdeep et al.)"
+        ])
+        # Persisted value → UI
+        seed_mode_saved = str(self.settings.value("stacking/mfdeconv/seed_mode", "robust"))
+        seed_idx = 0 if seed_mode_saved.lower() != "median" else 1
+        self.mf_seed_combo.setCurrentIndex(seed_idx)
+        self.mf_seed_combo.setToolTip(
+            "Choose the initial seed image for MFDeconv:\n"
+            "• Robust μ–σ: running mean with sigma clipping (RAM-friendly, default)\n"
+            "• Median: tiled median stack (more outlier-resistant; heavier I/O, esp. for XISF)"
+        )
+        fl_mf.addRow(*_row("Seed image:", self.mf_seed_combo))
 
         self.sm_thresh = QDoubleSpinBox(); self.sm_thresh.setRange(0.1, 20.0); self.sm_thresh.setDecimals(2)
         self.sm_thresh.setValue(
@@ -4136,6 +4151,7 @@ class StackingSuiteDialog(QDialog):
 
         def _reset_mfdeconv_defaults():
             # Star mask tuning
+            self.mf_seed_combo.setCurrentIndex(0)
             self.sm_thresh.setValue(4.5)     # Star detect σ
             self.sm_grow.setValue(6)         # Dilate (+px)
             self.sm_soft.setValue(3.0)       # Feather σ (px)
@@ -4152,6 +4168,7 @@ class StackingSuiteDialog(QDialog):
             # (Optional) preload QSettings so Cancel still reverts if user wants.
             # If you prefer to save only on OK, you can omit this block.
             s = self.settings
+            s.setValue("stacking/mfdeconv/seed_mode", "robust")
             s.setValue("stacking/mfdeconv/star_mask/thresh_sigma", 4.5)
             s.setValue("stacking/mfdeconv/star_mask/grow_px", 6)
             s.setValue("stacking/mfdeconv/star_mask/soft_sigma", 3.0)
@@ -4475,6 +4492,11 @@ class StackingSuiteDialog(QDialog):
         self.settings.setValue("stacking/align/max_cp",      int(self.align_max_cp.value()))
         self.settings.setValue("stacking/align/downsample",  int(self.align_downsample.value()))
         self.settings.setValue("stacking/align/h_reproj",    float(self.h_ransac_reproj.value()))
+
+        # Seed mode (persist as stable tokens: 'robust' | 'median')
+        seed_idx = int(self.mf_seed_combo.currentIndex())
+        seed_mode_val = "median" if seed_idx == 1 else "robust"
+        self.settings.setValue("stacking/mfdeconv/seed_mode", seed_mode_val)
 
         # Star mask params
         self.settings.setValue("stacking/mfdeconv/star_mask/thresh_sigma",  float(self.sm_thresh.value()))
@@ -5822,10 +5844,24 @@ class StackingSuiteDialog(QDialog):
         mf_row1.addWidget(self.mf_enabled_cb)
 
         # NEW: Super-Resolution checkbox goes here (between Enable and Save-Intermediate)
-        self.mf_sr_cb = QCheckBox("Super Resolution (2×) (~16x the Compute)")
-        self.mf_sr_cb.setToolTip("Reconstructs on a 2× super-res grid using SR PSFs. Compute goes up ~r^4.  Drizzle usually provides better results")
+        self.mf_sr_cb = QCheckBox("Super Resolution")
+        self.mf_sr_cb.setToolTip(
+            "Reconstruct on an r× super-res grid using SR PSFs.\n"
+            "Compute cost grows roughly ~ r^4. Drizzle usually provides better results."
+        )
         self.mf_sr_cb.setChecked(self.settings.value("stacking/mfdeconv/sr_enabled", False, type=bool))
         mf_row1.addWidget(self.mf_sr_cb)
+
+        # Integer box to the RIGHT of the checkbox (2..4× typical; tweak if you want bigger)
+        mf_row1.addSpacing(6)
+        self.mf_sr_factor_spin = QSpinBox()
+        self.mf_sr_factor_spin.setRange(2, 4)         # set 2..8 if you dare; r^4 cost!
+        self.mf_sr_factor_spin.setSingleStep(1)
+        self.mf_sr_factor_spin.setSuffix("×")
+        self.mf_sr_factor_spin.setToolTip("Super-resolution scale factor r (integer ≥2).")
+        self.mf_sr_factor_spin.setValue(self.settings.value("stacking/mfdeconv/sr_factor", 2, type=int))
+        self.mf_sr_factor_spin.setEnabled(self.mf_sr_cb.isChecked())
+        mf_row1.addWidget(self.mf_sr_factor_spin)
 
         mf_row1.addSpacing(16)
 
@@ -5855,6 +5891,13 @@ class StackingSuiteDialog(QDialog):
         self.mf_kappa_spin = QDoubleSpinBox(); self.mf_kappa_spin.setRange(0.0, 10.0)
         self.mf_kappa_spin.setDecimals(3); self.mf_kappa_spin.setSingleStep(0.1)
         self.mf_kappa_spin.setValue(_get("stacking/mfdeconv/kappa", 2.0, float))
+        # NEW: κ tooltip (layman’s terms)
+        self.mf_kappa_spin.setToolTip(
+            "κ (kappa) limits how big each multiplicative update can be per iteration.\n"
+            "• κ = 1.0 → no change (1×); larger κ allows bigger step sizes.\n"
+            "• Lower values = gentler, safer updates; higher values = faster but riskier.\n"
+            "Typical: 1.05–1.5 for conservative, ~2 for punchier updates."
+        )
         mf_row2.addWidget(self.mf_kappa_spin)
         mf_row2.addStretch(1)
         mf_v.addLayout(mf_row2)
@@ -5881,6 +5924,15 @@ class StackingSuiteDialog(QDialog):
         self.mf_Huber_spin = QDoubleSpinBox()
         self.mf_Huber_spin.setRange(-1000.0, 1000.0); self.mf_Huber_spin.setDecimals(4); self.mf_Huber_spin.setSingleStep(0.1)
         self.mf_Huber_spin.setValue(_get("stacking/mfdeconv/Huber_delta", -2.0, float))
+        # NEW: Huber tooltip (layman’s terms)
+        self.mf_Huber_spin.setToolTip(
+            "Huber δ sets the cutoff between ‘quadratic’ (treat as normal) and ‘linear’ (treat as outlier) behavior.\n"
+            "• |residual| ≤ δ → quadratic (more aggressive corrections)\n"
+            "• |residual| > δ → linear (gentler, more robust)\n"
+            "Negative values mean ‘scale by RMS’: e.g., δ = -2 uses 2×RMS.\n"
+            "Smaller |δ| (closer to 0) → more pixels counted as outliers → more conservative.\n"
+            "Examples: κ=1.1 & δ=-0.7 = gentle; κ=2 & δ=-2 = more aggressive."
+        )
         mf_row3.addWidget(self.mf_Huber_spin)
 
         self.mf_Huber_hint = QLabel("(<0 = scale×RMS, >0 = absolute Δ)")
@@ -6094,6 +6146,12 @@ class StackingSuiteDialog(QDialog):
             self.cfa_drizzle_cb.blockSignals(False)
             self.settings.setValue("stacking/cfa_drizzle", False)
         self._update_drizzle_summary_columns()
+
+        # persist SR on/off and factor
+        self.mf_sr_cb.toggled.connect(lambda v: self.settings.setValue("stacking/mfdeconv/sr_enabled", bool(v)))
+        self.mf_sr_cb.toggled.connect(self.mf_sr_factor_spin.setEnabled)
+        self.mf_sr_factor_spin.valueChanged.connect(lambda v: self.settings.setValue("stacking/mfdeconv/sr_factor", int(v)))
+
 
         return tab
 
@@ -11161,14 +11219,16 @@ class StackingSuiteDialog(QDialog):
                     mode  = self.mf_color_combo.currentText()
                     Huber = self.settings.value("stacking/mfdeconv/Huber_delta", 0.0, type=float)
                     batch = self.settings.value("stacking/mfdeconv/batch", 8, type=int)
-
+                    seed_mode_cfg = str(self.settings.value("stacking/mfdeconv/seed_mode", "robust"))
                     use_star_masks    = self.mf_use_star_mask_cb.isChecked()
                     use_variance_maps = self.mf_use_noise_map_cb.isChecked()
                     rho               = self.mf_rho_combo.currentText()
                     save_intermediate = self.mf_save_intermediate_cb.isChecked()
 
-                    sr_enabled = self.settings.value("stacking/mfdeconv/sr_enabled", False, type=bool)
-                    super_res_factor = 2 if (sr_enabled and self.mf_sr_cb.isChecked()) else 1
+                    sr_enabled_ui = self.mf_sr_cb.isChecked()
+                    sr_factor_ui  = getattr(self, "mf_sr_factor_spin", None)
+                    sr_factor_val = sr_factor_ui.value() if sr_factor_ui is not None else self.settings.value("stacking/mfdeconv/sr_factor", 2, type=int)
+                    super_res_factor = int(sr_factor_val) if sr_enabled_ui else 1
 
                     # Build cfg dicts (even if disabled; they’ll be ignored if not used)
                     star_mask_cfg = {
@@ -11189,6 +11249,7 @@ class StackingSuiteDialog(QDialog):
                     use_high_octane = self.settings.value("stacking/high_octane", False, type=bool)
 
                     self._mf_thread = QThread(self)
+                    star_mask_ref = self.reference_frame if use_star_masks else None
 
                     if use_high_octane:
                         # “Let it rip” path (legacy)
@@ -11208,6 +11269,8 @@ class StackingSuiteDialog(QDialog):
                             varmap_cfg=varmap_cfg,
                             save_intermediate=save_intermediate,
                             super_res_factor=super_res_factor,
+                            star_mask_ref_path=star_mask_ref,   
+                            seed_mode=seed_mode_cfg,
                         )
                     else:
                         # Memory-managed path (current)
@@ -11227,6 +11290,8 @@ class StackingSuiteDialog(QDialog):
                             varmap_cfg=varmap_cfg,
                             save_intermediate=save_intermediate,
                             super_res_factor=super_res_factor,
+                            star_mask_ref_path=star_mask_ref,   
+                            seed_mode=seed_mode_cfg,
                         )
 
                     self._mf_worker.moveToThread(self._mf_thread)
@@ -11257,8 +11322,10 @@ class StackingSuiteDialog(QDialog):
 
                                     rect = tuple(map(int, self._mf_autocrop_rect))  # (x1,y1,x2,y2)
                                     # If super-res was used for this group, scale the rect
-                                    sr_enabled = self.settings.value("stacking/mfdeconv/sr_enabled", False, type=bool)
-                                    sr_factor = 2 if (sr_enabled and self.mf_sr_cb.isChecked()) else 1
+                                    sr_enabled_ui = self.mf_sr_cb.isChecked()
+                                    sr_factor_ui  = getattr(self, "mf_sr_factor_spin", None)
+                                    sr_factor_val = sr_factor_ui.value() if sr_factor_ui is not None else self.settings.value("stacking/mfdeconv/sr_factor", 2, type=int)
+                                    sr_factor = int(sr_factor_val) if sr_enabled_ui else 1
                                     if sr_factor > 1:
                                         x1,y1,x2,y2 = rect
                                         rect = (x1*sr_factor, y1*sr_factor, x2*sr_factor, y2*sr_factor)
@@ -12741,7 +12808,7 @@ class StackingSuiteDialog(QDialog):
             mode  = self.mf_color_combo.currentText()
             Huber = self.settings.value("stacking/mfdeconv/Huber_delta", 0.0, type=float)
             save_intermediate = self.mf_save_intermediate_cb.isChecked()
-
+            seed_mode_cfg = str(self.settings.value("stacking/mfdeconv/seed_mode", "robust"))
             use_star_masks   = self.mf_use_star_mask_cb.isChecked()
             use_variance_maps = self.mf_use_noise_map_cb.isChecked()   # ← keep your name
             rho              = self.mf_rho_combo.currentText()
@@ -12761,8 +12828,10 @@ class StackingSuiteDialog(QDialog):
                 "floor":         self.settings.value("stacking/mfdeconv/varmap/floor",        1e-8, type=float),
             }
 
-            sr_enabled = self.settings.value("stacking/mfdeconv/sr_enabled", False, type=bool)
-            super_res_factor = 2 if (sr_enabled and self.mf_sr_cb.isChecked()) else 1
+            sr_enabled_ui = self.mf_sr_cb.isChecked()
+            sr_factor_ui  = getattr(self, "mf_sr_factor_spin", None)
+            sr_factor_val = sr_factor_ui.value() if sr_factor_ui is not None else self.settings.value("stacking/mfdeconv/sr_factor", 2, type=int)
+            super_res_factor = int(sr_factor_val) if sr_enabled_ui else 1
 
             # Use your earlier unique-naming helper if you added it; fallback:
             safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", str(group_key)) or "Group"
@@ -12772,6 +12841,7 @@ class StackingSuiteDialog(QDialog):
             use_high_octane = self.settings.value("stacking/high_octane", False, type=bool)
 
             self._mf_thread = QThread(self)
+            star_mask_ref = self.reference_frame if use_star_masks else None
 
             if use_high_octane:
                 # “Let it rip” path (legacy)
@@ -12791,6 +12861,8 @@ class StackingSuiteDialog(QDialog):
                     varmap_cfg=varmap_cfg,
                     save_intermediate=save_intermediate,
                     super_res_factor=super_res_factor,
+                    star_mask_ref_path=star_mask_ref, 
+                    seed_mode=seed_mode_cfg,
                 )
             else:
                 # Memory-managed path (current)
@@ -12810,6 +12882,8 @@ class StackingSuiteDialog(QDialog):
                     varmap_cfg=varmap_cfg,
                     save_intermediate=save_intermediate,
                     super_res_factor=super_res_factor,
+                    star_mask_ref_path=star_mask_ref, 
+                    seed_mode=seed_mode_cfg,
                 )
 
             self._mf_worker.moveToThread(self._mf_thread)

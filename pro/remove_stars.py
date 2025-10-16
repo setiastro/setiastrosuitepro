@@ -739,6 +739,58 @@ def _mask_blend_with_doc_mask(doc, starless_rgb: np.ndarray, original_rgb: np.nd
     return np.clip(starless_rgb * m3 + original_rgb * (1.0 - m3), 0.0, 1.0).astype(np.float32, copy=False)
 
 
+def _derive_view_base_title(main, doc) -> str:
+    """
+    Prefer the active view's title (respecting per-view rename/override),
+    fallback to the document display name, then to doc.name, and finally 'Image'.
+    Also strips any decorations (mask glyph, 'Active View:' prefix) if available.
+    """
+    # 1) Ask main for a subwindow for this document, if it exposes a helper
+    try:
+        if hasattr(main, "_subwindow_for_document"):
+            sw = main._subwindow_for_document(doc)
+            if sw:
+                w = sw.widget() if hasattr(sw, "widget") else sw
+                # Preferred: view's effective title (includes per-view override)
+                if hasattr(w, "_effective_title"):
+                    t = w._effective_title() or ""
+                else:
+                    t = sw.windowTitle() if hasattr(sw, "windowTitle") else ""
+                if hasattr(w, "_strip_decorations"):
+                    t, _ = w._strip_decorations(t)
+                if t.strip():
+                    return t.strip()
+    except Exception:
+        pass
+
+    # 2) Try scanning MDI for a subwindow whose widget holds this document
+    try:
+        mdi = (getattr(main, "mdi_area", None)
+               or getattr(main, "mdiArea", None)
+               or getattr(main, "mdi", None))
+        if mdi and hasattr(mdi, "subWindowList"):
+            for sw in mdi.subWindowList():
+                w = sw.widget()
+                if getattr(w, "document", None) is doc:
+                    t = sw.windowTitle() if hasattr(sw, "windowTitle") else ""
+                    if hasattr(w, "_strip_decorations"):
+                        t, _ = w._strip_decorations(t)
+                    if t.strip():
+                        return t.strip()
+    except Exception:
+        pass
+
+    # 3) Fallback to document's display name (then name, then generic)
+    try:
+        if hasattr(doc, "display_name"):
+            t = doc.display_name()
+            if t and t.strip():
+                return t.strip()
+    except Exception:
+        pass
+    return (getattr(doc, "name", "") or "Image").strip()
+
+
 # ------------------------------------------------------------
 # New document helper
 # ------------------------------------------------------------
@@ -747,21 +799,26 @@ def _push_as_new_doc(main, doc, arr: np.ndarray, title_suffix="_stars", source="
     if not dm or not hasattr(dm, "open_array"):
         return
     try:
-        base = ""
-        if hasattr(doc, "display_name") and callable(doc.display_name):
-            base = doc.display_name()
+        # Use the current view's title if available (respects per-view rename)
+        base = _derive_view_base_title(main, doc)
+
+        # avoid double-suffix if user already named it with the suffix
+        if title_suffix and base.endswith(title_suffix):
+            title = base
         else:
-            base = getattr(doc, "name", "") or "Image"
+            title = f"{base}{title_suffix}"
+
         meta = {
             "bit_depth": "32-bit floating point",
             "is_mono": (arr.ndim == 2),
-            "source": source
+            "source": source,
         }
-        newdoc = dm.open_array(arr.astype(np.float32, copy=False), metadata=meta, title=f"{base}{title_suffix}")
+        newdoc = dm.open_array(arr.astype(np.float32, copy=False), metadata=meta, title=title)
         if hasattr(main, "_spawn_subwindow_for"):
             main._spawn_subwindow_for(newdoc)
     except Exception:
         pass
+
 
 
 # ------------------------------------------------------------

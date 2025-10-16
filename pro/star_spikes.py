@@ -38,8 +38,10 @@ class PreviewView(QGraphicsView):
         self.setRenderHints(self.renderHints() | QPainter.RenderHint.SmoothPixmapTransform)
         self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.SmartViewportUpdate)
 
-
 class StarSpikesDialogPro(QDialog):
+    WARN_LIMIT = 1000
+    MAX_AUTO_RETRIES = 2
+
     def __init__(self, parent=None, doc_manager=None,
                  initial_doc=None,
                  jwstpupil_path: str | None = None,
@@ -70,60 +72,113 @@ class StarSpikesDialogPro(QDialog):
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
         splitter.setChildrenCollapsible(False)
 
-        # ----- LEFT: controls panel -----
+        # ----- LEFT: controls panel (stacked groups) -----
         left = QWidget()
         left_v = QVBoxLayout(left)
-        form = QFormLayout()
+        left_v.setContentsMargins(10, 10, 10, 10)
+        left_v.setSpacing(10)
+
+        def dspin(lo, hi, step, val, decimals=2):
+            sp = QDoubleSpinBox()
+            sp.setRange(lo, hi)
+            sp.setSingleStep(step)
+            sp.setDecimals(decimals)
+            sp.setValue(val)
+            sp.setMaximumWidth(140)
+            return sp
+
+        def ispin(lo, hi, step, val):
+            sp = QSpinBox()
+            sp.setRange(lo, hi)
+            sp.setSingleStep(step)
+            sp.setValue(val)
+            sp.setMaximumWidth(140)
+            return sp
+
+        # --- Group: Star Detection ---
+        grp_detect = QGroupBox("Star Detection")
+        f_detect = QFormLayout(grp_detect)
+        f_detect.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        f_detect.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+
+        self.flux_min = dspin(0.0, 999999.0, 10.0, 30.0, decimals=1)
+        self.detect_thresh = dspin(0.5, 50.0, 0.5, float(self.advanced.get("detect_thresh", 5.0)), decimals=2)
+        self.detect_thresh.setToolTip("σ threshold for SEP detection (higher = fewer stars).")
+        # keep self.advanced in sync if user edits
+        self.detect_thresh.valueChanged.connect(lambda v: self.advanced.__setitem__("detect_thresh", float(v)))
+
+        f_detect.addRow("Flux Min:", self.flux_min)
+        f_detect.addRow("Detection Threshold (σ):", self.detect_thresh)
+
+        # --- Group: Aperture (Geometry) ---
+        grp_ap = QGroupBox("Aperture")
+        f_ap = QFormLayout(grp_ap)
+        f_ap.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        f_ap.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
         self.pupil_jwst = QPushButton("Circular")
         self.pupil_jwst.setCheckable(True)
         self.pupil_jwst.setChecked(False)
         self.pupil_jwst.toggled.connect(lambda on: self._toggle_pupil(on))
+        self.pupil_jwst.setToolTip("Toggle between circular aperture and JWST pupil image.")
         self.pupil_jwst.setStyleSheet("""
-            QPushButton { min-width: 60px; max-width: 60px; min-height: 28px; max-height: 28px;
-                        border-radius: 14px; background:#ccc; border:1px solid #999;}
+            QPushButton { min-width: 72px; max-width: 72px; min-height: 28px; max-height: 28px;
+                          border-radius: 14px; background:#ccc; border:1px solid #999;}
             QPushButton:checked { background:#66bb6a; }
         """)
-        form.addRow("Aperture Type:", self.pupil_jwst)
+        f_ap.addRow("Aperture Type:", self.pupil_jwst)
 
-        def dspin(lo, hi, step, val):
-            sp = QDoubleSpinBox(); sp.setRange(lo, hi); sp.setSingleStep(step); sp.setValue(val); return sp
-        def ispin(lo, hi, step, val):
-            sp = QSpinBox(); sp.setRange(lo, hi); sp.setSingleStep(step); sp.setValue(val); return sp
+        self.radius      = dspin(1.0, 512.0, 1.0, 128.0, decimals=1)
+        self.obstruction = dspin(0.0, 0.99, 0.01, 0.2, decimals=2)
+        self.num_vanes   = ispin(2, 8, 1, 4)
+        self.vane_width  = dspin(0.0, 50.0, 0.5, 4.0, decimals=2)
+        self.rotation    = dspin(0.0, 360.0, 1.0, 0.0, decimals=1)
 
-        self.radius      = dspin(1.0, 512.0, 1.0, 128.0);     form.addRow("Pupil Radius:", self.radius)
-        self.obstruction = dspin(0.0, 0.99, 0.01, 0.2);       form.addRow("Obstruction:", self.obstruction)
-        self.num_vanes   = ispin(2, 8, 1, 4);                 form.addRow("Number of Vanes:", self.num_vanes)
-        self.vane_width  = dspin(0.0, 50.0, 0.5, 4.0);        form.addRow("Vane Width:", self.vane_width)
-        self.rotation    = dspin(0.0, 360.0, 1.0, 0.0);       form.addRow("Rotation (deg):", self.rotation)
+        f_ap.addRow("Pupil Radius:", self.radius)
+        f_ap.addRow("Obstruction:", self.obstruction)
+        f_ap.addRow("Number of Vanes:", self.num_vanes)
+        f_ap.addRow("Vane Width:", self.vane_width)
+        f_ap.addRow("Rotation (deg):", self.rotation)
 
-        self.color_boost = dspin(0.1, 10.0, 0.1, 1.5);        form.addRow("Spike Boost:", self.color_boost)
-        self.blur_sigma  = dspin(0.1, 10.0, 0.1, 2.0);        form.addRow("PSF Blur Sigma:", self.blur_sigma)
-        self.flux_min    = dspin(0.0, 999999.0, 10.0, 30.0);  form.addRow("Flux Min:", self.flux_min)
+        # --- Group: PSF & Synthesis ---
+        grp_psf = QGroupBox("PSF & Synthesis")
+        f_psf = QFormLayout(grp_psf)
+        f_psf.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        f_psf.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
-        left_v.addLayout(form)
+        self.color_boost = dspin(0.1, 10.0, 0.1, 1.5, decimals=2)
+        self.blur_sigma  = dspin(0.1, 10.0, 0.1, 2.0, decimals=2)
 
-        # action buttons under the form
-        row = QHBoxLayout()
+        f_psf.addRow("Spike Boost:", self.color_boost)
+        f_psf.addRow("PSF Blur Sigma:", self.blur_sigma)
+
+        # --- Actions ---
+        row_actions = QHBoxLayout()
+        row_actions.setSpacing(8)
         self.btn_run = QPushButton("Generate Spikes")
         self.btn_run.clicked.connect(self._run)
-        row.addWidget(self.btn_run)
-
         self.btn_apply = QPushButton("Apply to Active Document")
         self.btn_apply.clicked.connect(self._apply_to_doc)
         self.btn_apply.setEnabled(False)
-        row.addWidget(self.btn_apply)
-
         self.btn_help = QPushButton("Aperture Help")
         self.btn_help.clicked.connect(self._show_help)
-        row.addWidget(self.btn_help)
+        row_actions.addWidget(self.btn_run)
+        row_actions.addWidget(self.btn_apply)
+        row_actions.addWidget(self.btn_help)
+        row_actions.addStretch(1)
 
-        left_v.addLayout(row)
-
+        # --- Status ---
         self.status = QLabel("Ready")
         self.status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.status.setWordWrap(True)
+
+        # assemble left panel
+        left_v.addWidget(grp_detect)
+        left_v.addWidget(grp_ap)
+        left_v.addWidget(grp_psf)
+        left_v.addLayout(row_actions)
         left_v.addWidget(self.status)
-        left_v.addStretch(1)  # push content up
+        left_v.addStretch(1)
 
         splitter.addWidget(left)
 
@@ -151,7 +206,7 @@ class StarSpikesDialogPro(QDialog):
         self.view.setScene(self.scene)
         self.view.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.view.setMinimumSize(600, 450)  # make it substantial
+        self.view.setMinimumSize(600, 450)
         self.pix   = QGraphicsPixmapItem()
         self.scene.addItem(self.pix)
         right_v.addWidget(self.view, 1)
@@ -161,7 +216,7 @@ class StarSpikesDialogPro(QDialog):
         # make preview side bigger by default
         splitter.setStretchFactor(0, 0)  # left
         splitter.setStretchFactor(1, 1)  # right
-        splitter.setSizes([350, 900])
+        splitter.setSizes([360, 900])
 
         # top-level layout contains just the splitter
         root = QVBoxLayout(self)
@@ -174,9 +229,9 @@ class StarSpikesDialogPro(QDialog):
         self._zoom = 1.0
         self._fit_mode = True  # start fitted
 
-
     def _toggle_pupil(self, jwst: bool):
         self.pupil_jwst.setText("JWST" if jwst else "Circular")
+        # hide circular-only params when JWST pupil is used
         for w in (self.num_vanes, self.vane_width, self.obstruction, self.radius):
             w.setVisible(not jwst)
 
@@ -208,6 +263,7 @@ class StarSpikesDialogPro(QDialog):
         self.advanced["shrink_min"] = float(p.get("shrink_min", self.advanced["shrink_min"]))
         self.advanced["shrink_max"] = float(p.get("shrink_max", self.advanced["shrink_max"]))
         self.advanced["detect_thresh"] = float(p.get("detect_thresh", self.advanced["detect_thresh"]))
+        self.detect_thresh.setValue(float(self.advanced["detect_thresh"]))  # reflect in UI
         self.radius.setValue(float(p.get("radius", self.radius.value())))
         self.obstruction.setValue(float(p.get("obstruction", self.obstruction.value())))
         self.num_vanes.setValue(int(p.get("num_vanes", self.num_vanes.value())))
@@ -233,7 +289,7 @@ class StarSpikesDialogPro(QDialog):
             QMessageBox.critical(self, "Missing Dependency", "scipy.ndimage is required.")
             return
 
-        self.status.setText("Detecting stars...")
+        self.status.setText("Detecting stars…")
         QApplication.processEvents()
         img = self._img_src
         # un-stretch via midtones(0.95) for detection
@@ -243,12 +299,50 @@ class StarSpikesDialogPro(QDialog):
                 lin[..., c] = self._midtones_m(lin[..., c], 0.95)
             base = 0.2126*lin[...,0] + 0.7152*lin[...,1] + 0.0722*lin[...,2]
         else:
-            lin = self._midtones_m(img, 0.95); base = lin
+            lin = self._midtones_m(img, 0.95)
+            base = lin
 
+        # initial detection
+        thresh = float(self.detect_thresh.value())
         stars = self._detect_stars(base,
-                                   threshold=self.advanced["detect_thresh"],
+                                   threshold=thresh,
                                    flux_min=self.flux_min.value(),
                                    size_min=1.0)
+
+        # interactive guardrail for dense fields
+        tries = 0
+        while len(stars) > self.WARN_LIMIT and tries < self.MAX_AUTO_RETRIES:
+            suggested = min(50.0, max(thresh + 1.0,
+                                      thresh * (len(stars) / float(self.WARN_LIMIT))**0.5))
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Too Many Stars Detected")
+            msg.setIcon(QMessageBox.Icon.Warning)
+            msg.setText(f"{len(stars)} stars detected (limit {self.WARN_LIMIT}).\n"
+                        "Increase the detection threshold to reduce clutter?")
+            raise_btn = msg.addButton(f"Raise to σ={suggested:.2f}", QMessageBox.ButtonRole.AcceptRole)
+            cont_btn  = msg.addButton("Continue Anyway", QMessageBox.ButtonRole.DestructiveRole)
+            cancel_btn= msg.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+            msg.setDefaultButton(raise_btn)
+            msg.exec()
+
+            clicked = msg.clickedButton()
+            if clicked is raise_btn:
+                thresh = suggested
+                self.detect_thresh.setValue(thresh)  # reflect in UI
+                self.status.setText(f"Re-detecting stars at σ={thresh:.2f}…")
+                QApplication.processEvents()
+                stars = self._detect_stars(base,
+                                           threshold=thresh,
+                                           flux_min=self.flux_min.value(),
+                                           size_min=1.0)
+                tries += 1
+                continue
+            elif clicked is cont_btn:
+                break
+            else:  # cancel
+                self.status.setText("Cancelled.")
+                return
+
         if len(stars) == 0:
             self.status.setText("No stars found.")
             QMessageBox.information(self, "Diffraction Spikes", "No stars found above flux_min.")
@@ -550,9 +644,7 @@ class StarSpikesDialogPro(QDialog):
         # keep original where mask == 1.0 (protection mask semantics)
         return a
 
-
     def _apply_zoom(self):
-        """Apply current zoom transform (when not in fit mode)."""
         if self._fit_mode:
             self.view.fitInView(self.pix, Qt.AspectRatioMode.KeepAspectRatio)
             return
@@ -562,7 +654,6 @@ class StarSpikesDialogPro(QDialog):
     def _zoom_in(self):
         if self.pix.pixmap().isNull():
             return
-        # exit fit mode if we were in it
         if self._fit_mode:
             self._fit_mode = False
             self._zoom = 1.0

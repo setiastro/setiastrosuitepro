@@ -7,6 +7,9 @@ from PyQt6.QtCore import QObject, pyqtSignal
 from pro.psf_utils import compute_psf_kernel_for_image
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QThread
+from threadpoolctl import threadpool_limits
+from concurrent.futures import ThreadPoolExecutor, as_completed, ProcessPoolExecutor
+_USE_PROCESS_POOL_FOR_ASSETS = True
 import contextlib
 try:
     import sep
@@ -38,6 +41,14 @@ except Exception:
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from queue import SimpleQueue
 
+# ── XISF decode cache → memmap on disk ─────────────────────────────────
+import tempfile, threading, uuid, atexit
+_XISF_CACHE = {}
+_XISF_LOCK  = threading.Lock()
+_XISF_TMPFILES = []
+
+from collections import OrderedDict
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Unified image I/O for MFDeconv (FITS + XISF)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -46,6 +57,141 @@ import numpy as np
 from astropy.io import fits
 
 from pathlib import Path
+
+
+from collections import OrderedDict
+
+# ── CHW LRU (float32) built on top of FITS memmap & XISF memmap ────────────────
+class _FrameCHWLRU:
+    def __init__(self, capacity=8):
+        self.cap = int(max(1, capacity))
+        self.od = OrderedDict()
+
+    def clear(self):
+        self.od.clear()
+
+    def get(self, path, Ht, Wt, color_mode):
+        key = (path, Ht, Wt, str(color_mode).lower())
+        hit = self.od.get(key)
+        if hit is not None:
+            self.od.move_to_end(key)
+            return hit
+
+        # Load backing array cheaply (memmap for FITS, cached memmap for XISF)
+        ext = os.path.splitext(path)[1].lower()
+        if ext == ".xisf":
+            a = _xisf_cached_array(path)  # float32, HW/HWC/CHW
+        else:
+            # FITS path: use astropy memmap (no data copy)
+            with fits.open(path, memmap=True, ignore_missing_simple=True) as hdul:
+                arr = None
+                for h in hdul:
+                    if getattr(h, "data", None) is not None:
+                        arr = h.data
+                        break
+                if arr is None:
+                    raise ValueError(f"No image data in {path}")
+                a = np.asarray(arr)
+                # dtype normalize once; keep float32
+                if a.dtype.kind in "ui":
+                    a = a.astype(np.float32) / (float(np.iinfo(a.dtype).max) or 1.0)
+                else:
+                    a = a.astype(np.float32, copy=False)
+
+        # Center-crop to (Ht, Wt) and convert to CHW
+        a = np.asarray(a)  # float32
+        a = _center_crop(a, Ht, Wt)
+
+        # Respect color_mode: “luma” → 1×H×W, “PerChannel” → 3×H×W if RGB present
+        cm = str(color_mode).lower()
+        if cm == "luma":
+            a_chw = _as_chw(_to_luma_local(a)).astype(np.float32, copy=False)
+        else:
+            a_chw = _as_chw(a).astype(np.float32, copy=False)
+            if a_chw.shape[0] == 1 and cm != "luma":
+                # still OK (mono data)
+                pass
+
+        # LRU insert
+        self.od[key] = a_chw
+        if len(self.od) > self.cap:
+            self.od.popitem(last=False)
+        return a_chw
+
+_FRAME_LRU = _FrameCHWLRU(capacity=8)  # tune if you like
+
+def _clear_all_caches():
+    try: _clear_xisf_cache()
+    except Exception: pass
+    try: _FRAME_LRU.clear()
+    except Exception: pass
+
+def _as_chw(np_img: np.ndarray) -> np.ndarray:
+    x = np.asarray(np_img, dtype=np.float32, order="C")
+    if x.size == 0:
+        raise RuntimeError(f"Empty image array after load; raw shape={np_img.shape}")
+    if x.ndim == 2:
+        return x[None, ...]  # 1,H,W
+    if x.ndim == 3 and x.shape[0] in (1, 3):
+        if x.shape[0] == 0:
+            raise RuntimeError(f"Zero channels in CHW array; shape={x.shape}")
+        return x
+    if x.ndim == 3 and x.shape[-1] in (1, 3):
+        if x.shape[-1] == 0:
+            raise RuntimeError(f"Zero channels in HWC array; shape={x.shape}")
+        return np.moveaxis(x, -1, 0)
+    # last resort: treat first dim as channels, but reject zero
+    if x.shape[0] == 0:
+        raise RuntimeError(f"Zero channels in array; shape={x.shape}")
+    return x
+
+def _normalize_to_float32(a: np.ndarray) -> np.ndarray:
+    if a.dtype.kind in "ui":
+        return (a.astype(np.float32) / (float(np.iinfo(a.dtype).max) or 1.0))
+    if a.dtype == np.float32:
+        return a
+    return a.astype(np.float32, copy=False)
+
+def _xisf_cached_array(path: str) -> np.memmap:
+    """
+    Decode an XISF image exactly once and back it by a read-only float32 memmap.
+    Returns a memmap that can be sliced cheaply for tiles.
+    """
+    with _XISF_LOCK:
+        hit = _XISF_CACHE.get(path)
+        if hit is not None:
+            fn, shape = hit
+            return np.memmap(fn, dtype=np.float32, mode="r", shape=shape)
+
+        # Decode once
+        arr, _ = _load_image_array(path)  # your existing loader
+        if arr is None:
+            raise ValueError(f"XISF loader returned None for {path}")
+        arr = np.asarray(arr)
+        arrf = _normalize_to_float32(arr)
+
+        # Create a temp file-backed memmap
+        tmpdir = tempfile.gettempdir()
+        fn = os.path.join(tmpdir, f"xisf_cache_{uuid.uuid4().hex}.mmap")
+        mm = np.memmap(fn, dtype=np.float32, mode="w+", shape=arrf.shape)
+        mm[...] = arrf[...]
+        mm.flush()
+        del mm  # close writer handle; re-open below as read-only
+
+        _XISF_CACHE[path] = (fn, arrf.shape)
+        _XISF_TMPFILES.append(fn)
+        return np.memmap(fn, dtype=np.float32, mode="r", shape=arrf.shape)
+
+def _clear_xisf_cache():
+    with _XISF_LOCK:
+        for fn in _XISF_TMPFILES:
+            try: os.remove(fn)
+            except Exception: pass
+        _XISF_CACHE.clear()
+        _XISF_TMPFILES.clear()
+
+atexit.register(_clear_xisf_cache)
+
 
 def _is_xisf(path: str) -> bool:
     return os.path.splitext(path)[1].lower() == ".xisf"
@@ -278,8 +424,32 @@ def _compute_frame_assets(i, arr, hdr, *, make_masks, make_varmaps,
 
     return i, psf, mask, var, logs
 
+def _compute_one_worker(args):
+    """
+    Top-level picklable worker for ProcessPoolExecutor.
+    args: (i, path, make_masks_in_worker, make_varmaps, star_mask_cfg, varmap_cfg)
+    Returns (i, psf, mask, var, logs)
+    """
+    (i, path, make_masks_in_worker, make_varmaps, star_mask_cfg, varmap_cfg) = args
+    # avoid BLAS/OMP storm inside each process
+    with threadpool_limits(limits=1):
+        arr, hdr = _load_image_array(path)           # FITS or XISF
+        arr = np.asarray(arr, dtype=np.float32, order="C")
+        if arr.ndim == 3 and arr.shape[-1] == 1:
+            arr = np.squeeze(arr, axis=-1)
+        if not isinstance(hdr, fits.Header):         # synthesize FITS-like header for XISF
+            hdr = _safe_primary_header(path)
+        return _compute_frame_assets(
+            i, arr, hdr,
+            make_masks=bool(make_masks_in_worker),
+            make_varmaps=bool(make_varmaps),
+            star_mask_cfg=star_mask_cfg,
+            varmap_cfg=varmap_cfg,
+        )
+
+
 def _build_psf_and_assets(
-    paths,                      # paths: list[str]
+    paths,                      # list[str]
     make_masks=False,
     make_varmaps=False,
     status_cb=lambda s: None,
@@ -287,21 +457,32 @@ def _build_psf_and_assets(
     star_mask_cfg: dict | None = None,
     varmap_cfg: dict | None = None,
     max_workers: int | None = None,
+    star_mask_ref_path: str | None = None,   # build one mask from this frame if provided
+    # NEW (passed from multiframe_deconv so we don’t re-probe/convert):
+    Ht: int | None = None,
+    Wt: int | None = None,
+    color_mode: str = "luma",
 ):
     """
-    Parallel PSF + (optional) star mask + variance map per frame, loading each
-    image inside the worker so we don't keep all frames in RAM at once.
+    Parallel PSF + (optional) star mask + variance map per frame.
 
-    Notes:
-      - Results preserve the order of `paths`.
-      - status_cb is only called from the main thread.
+    Changes from the original:
+      • Reuses the decoded frame cache (_FRAME_LRU) for FITS/XISF so we never re-decode.
+      • Automatically switches to threads for XISF (so memmaps are shared across workers).
+      • Builds a single reference star mask (if requested) from the cached frame and
+        center-pads/crops it for all frames (no extra I/O).
+      • Preserves return order and streams worker logs back to the UI.
     """
     if save_dir:
         os.makedirs(save_dir, exist_ok=True)
 
     n = len(paths)
 
-    # sensible default: up to 8, but don’t exceed CPU count
+    # Resolve target intersection size if caller didn't pass it
+    if Ht is None or Wt is None:
+        Ht, Wt = _common_hw_from_paths(paths)
+
+    # Sensible default worker count (cap at 8)
     if max_workers is None:
         try:
             hw = os.cpu_count() or 4
@@ -309,9 +490,61 @@ def _build_psf_and_assets(
             hw = 4
         max_workers = max(1, min(8, hw))
 
-    status_cb(f"MFDeconv: measuring PSFs/masks/varmaps with {max_workers} workers…")
+    # Decide executor: for any XISF, prefer threads so the memmap/cache is shared
+    any_xisf = any(os.path.splitext(p)[1].lower() == ".xisf" for p in paths)
+    use_proc_pool = (not any_xisf) and _USE_PROCESS_POOL_FOR_ASSETS
+    Executor = ProcessPoolExecutor if use_proc_pool else ThreadPoolExecutor
+    pool_kind = "process" if use_proc_pool else "thread"
+    status_cb(f"MFDeconv: measuring PSFs/masks/varmaps with {max_workers} {pool_kind}s…")
 
-    # for GUI safety, queue logs from workers and flush here
+    # ---- helper: pad-or-crop a 2D array to (Ht,Wt), centered ----
+    def _center_pad_or_crop_2d(a2d: np.ndarray, Ht: int, Wt: int, fill: float = 1.0) -> np.ndarray:
+        a2d = np.asarray(a2d, dtype=np.float32)
+        H, W = int(a2d.shape[0]), int(a2d.shape[1])
+        # crop first if bigger
+        y0 = max(0, (H - Ht) // 2); x0 = max(0, (W - Wt) // 2)
+        y1 = min(H, y0 + Ht);       x1 = min(W, x0 + Wt)
+        cropped = a2d[y0:y1, x0:x1]
+        ch, cw = cropped.shape
+        if ch == Ht and cw == Wt:
+            return np.ascontiguousarray(cropped, dtype=np.float32)
+        # pad if smaller
+        out = np.full((Ht, Wt), float(fill), dtype=np.float32)
+        oy = (Ht - ch) // 2; ox = (Wt - cw) // 2
+        out[oy:oy+ch, ox:ox+cw] = cropped
+        return out
+
+    # ---- optional: build one mask from the reference frame and reuse ----
+    base_ref_mask = None
+    if make_masks and star_mask_ref_path:
+        try:
+            status_cb(f"Star mask: using reference frame for all masks → {os.path.basename(star_mask_ref_path)}")
+            # Pull from the shared frame cache as luma on (Ht,Wt)
+            ref_chw = _FRAME_LRU.get(star_mask_ref_path, Ht, Wt, "luma")  # (1,H,W) or (H,W)
+            L = ref_chw[0] if (ref_chw.ndim == 3) else ref_chw           # 2D float32
+
+            vmc = (varmap_cfg or {})
+            sky_map, rms_map, err_scalar = _sep_background_precompute(
+                L, bw=int(vmc.get("bw", 64)), bh=int(vmc.get("bh", 64))
+            )
+            smc = (star_mask_cfg or {})
+            base_ref_mask = _star_mask_from_precomputed(
+                L, sky_map, err_scalar,
+                thresh_sigma = smc.get("thresh_sigma", THRESHOLD_SIGMA),
+                max_objs     = smc.get("max_objs", STAR_MASK_MAXOBJS),
+                grow_px      = smc.get("grow_px", GROW_PX),
+                ellipse_scale= smc.get("ellipse_scale", ELLIPSE_SCALE),
+                soft_sigma   = smc.get("soft_sigma", SOFT_SIGMA),
+                max_radius_px= smc.get("max_radius_px", MAX_STAR_RADIUS),
+                keep_floor   = smc.get("keep_floor", KEEP_FLOOR),
+                max_side     = smc.get("max_side", STAR_MASK_MAXSIDE),
+                status_cb    = status_cb,
+            )
+        except Exception as e:
+            status_cb(f"⚠️ Star mask (reference) failed: {e}. Falling back to per-frame masks.")
+            base_ref_mask = None
+
+    # for GUI safety, queue logs from workers and flush in the main thread
     log_queue: SimpleQueue = SimpleQueue()
 
     def enqueue_logs(lines):
@@ -321,52 +554,50 @@ def _build_psf_and_assets(
     psfs  = [None] * n
     masks = ([None] * n) if make_masks else None
     vars_ = ([None] * n) if make_varmaps else None
+    make_masks_in_worker = bool(make_masks and (base_ref_mask is None))
 
-    # --- worker wrapper: load one file (FITS or XISF), compute assets, return ordered slot ---
+    # --- thread worker: get frame from cache and compute assets ---
     def _compute_one(i: int, path: str):
-        # Use our unified loader; returns ndarray + (fits.Header or None)
-        arr, hdr = _load_image_array(path)
+        # avoid heavy BLAS oversubscription inside each worker
+        with threadpool_limits(limits=1):
+            # Pull frame from cache honoring color_mode & target (Ht,Wt)
+            img_chw = _FRAME_LRU.get(path, Ht, Wt, color_mode)  # (C,H,W) float32
+            # For PSF/mask/varmap we operate on a 2D plane (luma/mono)
+            arr2d = img_chw[0] if (img_chw.ndim == 3) else img_chw  # (H,W) float32
 
-        # ensure float32, writeable, contiguous
-        if arr.dtype.kind in "ui":
-            mx = np.float32(np.iinfo(arr.dtype).max)
-            arr = arr.astype(np.float32, copy=False) / (mx if mx > 0 else 1.0)
-        elif arr.dtype.kind == "f":
-            arr = arr.astype(np.float32, copy=False)
-        else:
-            arr = arr.astype(np.float32, copy=False)
+            # Header: synthesize a safe FITS-like header (works for XISF too)
+            try:
+                hdr = _safe_primary_header(path)
+            except Exception:
+                hdr = fits.Header()
 
-        if arr.ndim == 3 and arr.shape[-1] == 1:
-            arr = np.squeeze(arr, axis=-1)
-
-        if (not arr.flags.c_contiguous) or (not arr.flags.writeable):
-            arr = np.ascontiguousarray(arr.copy())
-
-        # synthesize a safe header for XISF (hdr=None) or headers missing SIMPLE
-        if hdr is None:
-            hdr = _safe_primary_header(path)
-
-        return _compute_frame_assets(
-            i, arr, hdr,
-            make_masks=bool(make_masks),
-            make_varmaps=bool(make_varmaps),
-            star_mask_cfg=star_mask_cfg,
-            varmap_cfg=varmap_cfg,
-        )
+            return _compute_frame_assets(
+                i, arr2d, hdr,
+                make_masks=bool(make_masks_in_worker),
+                make_varmaps=bool(make_varmaps),
+                star_mask_cfg=star_mask_cfg,
+                varmap_cfg=varmap_cfg,
+            )
 
     # --- submit jobs ---
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="mfdeconv") as ex:
+    with Executor(max_workers=max_workers) as ex:
         futs = []
         for i, p in enumerate(paths, start=1):
-            # light progress line for the UI (main thread)
             status_cb(f"MFDeconv: measuring PSF {i}/{n} …")
-            futs.append(ex.submit(_compute_one, i, p))
+            if use_proc_pool:
+                # Process-safe path: worker re-loads inside the subprocess
+                futs.append(ex.submit(
+                    _compute_one_worker,
+                    (i, p, bool(make_masks_in_worker), bool(make_varmaps), star_mask_cfg, varmap_cfg)
+                ))
+            else:
+                # Thread path: hits the shared cache (fast path for XISF/FITS)
+                futs.append(ex.submit(_compute_one, i, p))
 
         done_cnt = 0
         for fut in as_completed(futs):
             i, psf, m, v, logs = fut.result()
-            idx = i - 1  # 0-based slot
+            idx = i - 1
             psfs[idx] = psf
             if masks is not None:
                 masks[idx] = m
@@ -376,12 +607,16 @@ def _build_psf_and_assets(
 
             done_cnt += 1
             if (done_cnt % 4) == 0 or done_cnt == n:
-                # flush a few logs without spamming the UI thread
                 while not log_queue.empty():
                     try:
                         status_cb(log_queue.get_nowait())
                     except Exception:
                         break
+
+    # If we built a single reference mask, apply it to every frame (center pad/crop)
+    if base_ref_mask is not None and masks is not None:
+        for idx in range(n):
+            masks[idx] = _center_pad_or_crop_2d(base_ref_mask, int(Ht), int(Wt), fill=1.0)
 
     # final flush of any remaining logs
     while not log_queue.empty():
@@ -399,7 +634,6 @@ def _build_psf_and_assets(
                 )
 
     return psfs, masks, vars_
-
 
 _ALLOWED = re.compile(r"[^A-Za-z0-9_-]+")
 
@@ -571,14 +805,6 @@ EPS = 1e-6
 # -----------------------------
 
 # new: lightweight loader that yields one frame at a time
-def _iter_fits(paths):
-    for p in paths:
-        with fits.open(p, memmap=True) as hdul:
-            arr = np.asarray(hdul[0].data, dtype=np.float32)
-            if arr.ndim == 3 and arr.shape[-1] == 1:
-                arr = np.squeeze(arr, axis=-1)
-            hdr = hdul[0].header
-        yield arr, hdr
 
 def _to_luma_local(a: np.ndarray) -> np.ndarray:
     a = np.asarray(a, dtype=np.float32)
@@ -593,19 +819,6 @@ def _to_luma_local(a: np.ndarray) -> np.ndarray:
         return (0.2126*r + 0.7152*g + 0.0722*b).astype(np.float32, copy=False)
     return a.mean(axis=-1).astype(np.float32, copy=False)
 
-def _stack_loader(paths):
-    ys, hdrs = [], []
-    for p in paths:
-        with fits.open(p, memmap=True) as hdul:
-            arr = hdul[0].data
-            hdr = hdul[0].header
-        arr = np.asarray(arr, dtype=np.float32)
-        # squeeze trailing singleton channel
-        if arr.ndim == 3 and arr.shape[-1] == 1:
-            arr = np.squeeze(arr, axis=-1)
-        ys.append(arr)
-        hdrs.append(hdr)
-    return ys, hdrs
 
 def _normalize_layout_single(a, color_mode):
     """
@@ -813,292 +1026,6 @@ def _sep_background_precompute(img_2d: np.ndarray, bw: int = 64, bh: int = 64):
         err  = float(np.median(rmsm))
     return sky, rmsm, err
 
-
-def _auto_star_mask_sep(
-    img_2d: np.ndarray,
-    thresh_sigma: float = THRESHOLD_SIGMA,
-    grow_px: int = GROW_PX,
-    max_objs: int = STAR_MASK_MAXOBJS,
-    max_side: int = STAR_MASK_MAXSIDE,
-    ellipse_scale: float = ELLIPSE_SCALE,
-    soft_sigma: float = SOFT_SIGMA,
-    max_semiaxis_px: float | None = None,      # kept for API compat; unused
-    max_area_px2: float | None = None,         # kept for API compat; unused
-    max_radius_px: int = MAX_STAR_RADIUS,
-    keep_floor: float = KEEP_FLOOR,
-    status_cb=lambda s: None
-) -> np.ndarray:
-    """
-    Build a KEEP weight map (float32 in [0,1]) using SEP detections.
-    **Never writes to img_2d** and draws only into a fresh mask buffer.
-    """
-    if sep is None:
-        # No SEP available: neutral weights
-        return np.ones_like(img_2d, dtype=np.float32, order="C")
-
-    # Optional OpenCV path for fast drawing/blur
-    try:
-        import cv2 as _cv2
-        _HAS_CV2 = True
-    except Exception:
-        _HAS_CV2 = False
-        _cv2 = None  # type: ignore
-
-    h, w = map(int, img_2d.shape)
-    # Work on our own contiguous copy for SEP math; we will not modify it.
-    data = np.ascontiguousarray(img_2d, dtype=np.float32)
-
-    # Background & residual
-    bkg = sep.Background(data)
-    data_sub = np.ascontiguousarray(data - bkg.back(), dtype=np.float32)
-    try:
-        err = float(bkg.globalrms)
-    except Exception:
-        err = float(np.median(bkg.rms()))
-
-    # Progressive thresholding to limit explosion on dense fields
-    thresholds = [thresh_sigma, thresh_sigma*2, thresh_sigma*4,
-                  thresh_sigma*8, thresh_sigma*16]
-    objs = None
-    used_thresh = float("nan")
-    raw_detected = 0
-    for t in thresholds:
-        try:
-            cand = sep.extract(data_sub, thresh=float(t), err=err)
-        except Exception:
-            cand = None
-        n = 0 if (cand is None) else len(cand)
-        if n == 0:
-            continue
-        if n > max_objs * 12:
-            continue  # too many; tighten threshold
-        objs = cand
-        raw_detected = n
-        used_thresh = float(t)
-        break
-
-    if objs is None or len(objs) == 0:
-        # last-ditch: very high threshold w/ minarea
-        try:
-            cand = sep.extract(data_sub, thresh=thresholds[-1], err=err, minarea=9)
-        except Exception:
-            cand = None
-        if cand is None or len(cand) == 0:
-            status_cb("Star mask: no sources found (mask disabled for this frame).")
-            return np.ones((h, w), dtype=np.float32, order="C")
-        objs = cand
-        raw_detected = len(cand)
-        used_thresh = float(thresholds[-1])
-
-    # Keep only the brightest max_objs detections
-    if "flux" in objs.dtype.names:
-        idx = np.argsort(objs["flux"])[-int(max_objs):]
-        objs = objs[idx]
-    else:
-        objs = objs[:int(max_objs)]
-    kept_after_cap = int(len(objs))
-
-    # ---- draw into a brand-new, owned buffer (no aliasing possible) ----
-    mask_u8 = np.zeros((h, w), dtype=np.uint8, order="C")
-    MR = int(max(1, max_radius_px))
-    G  = int(max(0, grow_px))
-    ES = float(max(0.1, ellipse_scale))
-
-    drawn = 0
-    if _HAS_CV2:
-        for o in objs:
-            x = int(round(float(o["x"])))
-            y = int(round(float(o["y"])))
-            if not (0 <= x < w and 0 <= y < h):
-                continue
-            a = float(o["a"]); b = float(o["b"])
-            r = int(math.ceil(ES * max(a, b)))
-            if r <= 0:
-                continue
-            r = min(r + G, MR)
-            if r <= 0:
-                continue
-            _cv2.circle(mask_u8, (x, y), r, 1, thickness=-1, lineType=_cv2.LINE_8)
-            drawn += 1
-    else:
-        # NumPy fallback: local disk draw
-        yy, xx = np.ogrid[:h, :w]
-        for o in objs:
-            x = int(round(float(o["x"])))
-            y = int(round(float(o["y"])))
-            if not (0 <= x < w and 0 <= y < h):
-                continue
-            a = float(o["a"]); b = float(o["b"])
-            r = int(math.ceil(ES * max(a, b)))
-            if r <= 0:
-                continue
-            r = min(r + G, MR)
-            if r <= 0:
-                continue
-            y0 = max(0, y - r); y1 = min(h, y + r + 1)
-            x0 = max(0, x - r); x1 = min(w, x + r + 1)
-            ys = yy[y0:y1] - y
-            xs = xx[x0:x1] - x
-            disk = (ys * ys + xs * xs) <= (r * r)
-            mask_u8[y0:y1, x0:x1][disk] = 1
-            drawn += 1
-
-    masked_px_hard = int(mask_u8.sum())
-
-    # Convert to float and feather edges (still on a scratch buffer)
-    m = mask_u8.astype(np.float32, copy=False)
-    if soft_sigma and soft_sigma > 0.0:
-        try:
-            if _HAS_CV2:
-                k = int(max(1, math.ceil(soft_sigma * 3)) * 2 + 1)
-                m = _cv2.GaussianBlur(m, (k, k), float(soft_sigma),
-                                      borderType=_cv2.BORDER_REFLECT)
-            else:
-                from scipy.ndimage import gaussian_filter
-                m = gaussian_filter(m, sigma=float(soft_sigma), mode="reflect")
-        except Exception:
-            # best effort; keep hard mask
-            pass
-        np.clip(m, 0.0, 1.0, out=m)
-
-    # ---- produce a KEEP weight map (not a binary hole-punch) ----
-    keep = 1.0 - m
-    kf = float(max(0.0, min(0.99, keep_floor)))
-    keep = kf + (1.0 - kf) * keep
-    np.clip(keep, 0.0, 1.0, out=keep)
-
-    status_cb(
-        f"Star mask: thresh={used_thresh:.3g} | detected={raw_detected} | kept={kept_after_cap} | "
-        f"drawn={drawn} | masked_px={masked_px_hard} | grow_px={G} | soft_sigma={soft_sigma} | keep_floor={keep_floor}"
-    )
-    # Return as a new, contiguous float32 array
-    return np.ascontiguousarray(keep, dtype=np.float32)
-
-
-def _auto_variance_map(
-    img_2d: np.ndarray,
-    hdr,
-    status_cb=lambda s: None,
-    sample_stride: int = VARMAP_SAMPLE_STRIDE,  # kept for signature compat; not used
-    bw: int = 64,   # SEP background box width  (pixels)
-    bh: int = 64,   # SEP background box height (pixels)
-    smooth_sigma: float = 1.0,  # Gaussian sigma (px) to smooth the variance map
-    floor: float = 1e-8,        # hard floor to prevent blow-up in 1/var
-) -> np.ndarray:
-    """
-    Build a per-pixel variance map in DN^2:
-
-      var_DN ≈ (object_only_DN)/gain  +  var_bg_DN^2
-
-    where:
-      - object_only_DN = max(img - sky_DN, 0)
-      - var_bg_DN^2 comes from SEP's local background rms (Poisson(sky)+readnoise)
-      - if GAIN is missing, estimate 1/gain ≈ median(var_bg)/median(sky)
-
-    Returns float32 array, clipped below by `floor`, optionally smoothed with a
-    small Gaussian to stabilize weights. Emits a summary status line.
-    """
-    img = np.clip(np.asarray(img_2d, dtype=np.float32), 0.0, None)
-
-    # --- Parse header for camera params (optional) ---
-    gain = None
-    for k in ("EGAIN", "GAIN", "GAIN1", "GAIN2"):
-        if k in hdr:
-            try:
-                g = float(hdr[k])
-                if np.isfinite(g) and g > 0:
-                    gain = g
-                    break
-            except Exception:
-                pass
-
-    readnoise = None
-    for k in ("RDNOISE", "READNOISE", "RN"):
-        if k in hdr:
-            try:
-                rn = float(hdr[k])
-                if np.isfinite(rn) and rn >= 0:
-                    readnoise = rn
-                    break
-            except Exception:
-                pass
-
-    # --- Local background (full-res) ---
-    if sep is not None:
-        try:
-            b = sep.Background(img, bw=int(bw), bh=int(bh), fw=3, fh=3)
-            sky_dn_map = np.asarray(b.back(), dtype=np.float32)
-            try:
-                rms_dn_map = np.asarray(b.rms(), dtype=np.float32)
-            except Exception:
-                rms_dn_map = np.full_like(img, float(np.median(b.rms())), dtype=np.float32)
-        except Exception:
-            sky_dn_map = np.full_like(img, float(np.median(img)), dtype=np.float32)
-            med = float(np.median(img))
-            mad = float(np.median(np.abs(img - med))) + 1e-6
-            rms_dn_map = np.full_like(img, float(1.4826 * mad), dtype=np.float32)
-    else:
-        sky_dn_map = np.full_like(img, float(np.median(img)), dtype=np.float32)
-        med = float(np.median(img))
-        mad = float(np.median(np.abs(img - med))) + 1e-6
-        rms_dn_map = np.full_like(img, float(1.4826 * mad), dtype=np.float32)
-
-    # Background variance in DN^2
-    var_bg_dn2 = np.maximum(rms_dn_map, 1e-6) ** 2
-
-    # Object-only DN
-    obj_dn = np.clip(img - sky_dn_map, 0.0, None)
-
-    # Shot-noise coefficient
-    if gain is not None and np.isfinite(gain) and gain > 0:
-        a_shot = 1.0 / gain
-    else:
-        sky_med = float(np.median(sky_dn_map))
-        varbg_med = float(np.median(var_bg_dn2))
-        if sky_med > 1e-6:
-            a_shot = np.clip(varbg_med / sky_med, 0.0, 10.0)  # ~ 1/gain estimate
-        else:
-            a_shot = 0.0
-
-    # Total variance: background + shot noise from object-only flux
-    v = var_bg_dn2 + a_shot * obj_dn
-    v_raw = v.copy()
-
-    # Optional mild smoothing
-    if smooth_sigma and smooth_sigma > 0:
-        try:
-            import cv2 as _cv2
-            k = int(max(1, int(round(3 * float(smooth_sigma)))) * 2 + 1)
-            v = _cv2.GaussianBlur(v, (k, k), float(smooth_sigma), borderType=_cv2.BORDER_REFLECT)
-        except Exception:
-            try:
-                from scipy.ndimage import gaussian_filter
-                v = gaussian_filter(v, sigma=float(smooth_sigma), mode="reflect")
-            except Exception:
-                r = int(max(1, round(3 * float(smooth_sigma))))
-                yy, xx = np.mgrid[-r:r+1, -r:r+1].astype(np.float32)
-                gk = np.exp(-(xx*xx + yy*yy) / (2.0 * float(smooth_sigma) * float(smooth_sigma))).astype(np.float32)
-                gk /= (gk.sum() + EPS)
-                v = _conv_same_np(v, gk)
-
-    # Clip to avoid zero/negative variances
-    v = np.clip(v, float(floor), None).astype(np.float32, copy=False)
-
-    # Emit telemetry
-    try:
-        sky_med  = float(np.median(sky_dn_map))
-        rms_med  = float(np.median(np.sqrt(var_bg_dn2)))
-        floor_pct = float((v <= floor).mean() * 100.0)
-        status_cb(
-            "Variance map: "
-            f"sky_med={sky_med:.3g} DN | rms_med={rms_med:.3g} DN | "
-            f"gain={(gain if gain is not None else 'NA')} | rn={(readnoise if readnoise is not None else 'NA')} | "
-            f"smooth_sigma={smooth_sigma} | floor={floor} ({floor_pct:.2f}% at floor)"
-        )
-    except Exception:
-        pass
-
-    return v
 
 def _star_mask_from_precomputed(
     img_2d: np.ndarray,
@@ -1401,23 +1328,6 @@ def _precompute_torch_psf_ffts(psfs, flip_psf, H, W, device, dtype):
     return psf_fft, psfT_fft
 
 
-def _fft_conv_same_torch(x, Kf_pack, out_spatial):
-    tfft = torch.fft
-    Kf, padH, padW, kh, kw = Kf_pack
-    H, W = x.shape[-2], x.shape[-1]
-
-    if x.ndim == 2:
-        X = tfft.rfftn(x, s=(padH, padW))
-        y = tfft.irfftn(X * Kf, s=(padH, padW))
-        sh, sw = kh // 2, kw // 2
-        out_spatial.copy_(y[sh:sh+H, sw:sw+W])
-        return out_spatial
-    else:
-        X = tfft.rfftn(x, s=(padH, padW), dim=(-2, -1))
-        y = tfft.irfftn(X * Kf, s=(padH, padW), dim=(-2, -1))
-        sh, sw = kh // 2, kw // 2
-        out_spatial.copy_(y[..., sh:sh+H, sw:sw+W])
-        return out_spatial
 
 # ---------- NumPy FFT helpers ----------
 def _precompute_np_psf_ffts(psfs, flip_psf, H, W):
@@ -1716,67 +1626,24 @@ def _approx_bytes(arr_like_shape, dtype=np.float32):
     """Rough byte estimator for a given shape/dtype."""
     return int(np.prod(arr_like_shape)) * np.dtype(dtype).itemsize
 
-def _mem_model(
-    grid_hw: tuple[int,int],
-    r: int,
-    ksize: int,
-    channels: int,
-    mem_target_mb: int,
-    prefer_tiles: bool = False,
-    min_tile: int = 256,
-    max_tile: int = 2048,
-) -> dict:
-    """
-    Pick a batch size (#frames) and optional tile size (HxW) given a memory budget.
-    Very conservative — aims to bound peak working-set on CPU/GPU.
-    """
-    Hs, Ws = grid_hw
-    halo = (ksize // 2) * max(1, r)        # SR grid halo if r>1
-    C    = max(1, channels)
 
-    # working-set per *full-frame* conv scratch (num/den/tmp/etc.)
-    per_frame_fft_like = 3 * _approx_bytes((C, Hs, Ws))  # tmp/pred + in/out buffers
-    global_accum = 2 * _approx_bytes((C, Hs, Ws))        # num + den
-
-    budget = int(mem_target_mb * 1024 * 1024)
-
-    # Try to stay in full-frame mode first unless prefer_tiles
-    B_full = max(1, (budget - global_accum) // max(per_frame_fft_like, 1))
-    use_tiles = prefer_tiles or (B_full < 1)
-
-    if not use_tiles:
-        return dict(batch_frames=int(B_full), tiles=None, halo=int(halo), ksize=int(ksize))
-
-    # Tile mode: pick a square tile side t that fits
-    # scratch per tile ~ 3*C*(t+2h)^2 + accum(core) ~ small
-    # try descending from max_tile
-    t = int(min(max_tile, max(min_tile, 1 << int(np.floor(np.log2(min(Hs, Ws)))))))
-    while t >= min_tile:
-        th = t + 2 * halo
-        per_tile = 3 * _approx_bytes((C, th, th))
-        B_tile   = max(1, (budget - global_accum) // max(per_tile, 1))
-        if B_tile >= 1:
-            return dict(batch_frames=int(B_tile), tiles=(t, t), halo=int(halo), ksize=int(ksize))
-        t //= 2
-
-    # Worst case: 1 frame, minimal tile
-    return dict(batch_frames=1, tiles=(min_tile, min_tile), halo=int(halo), ksize=int(ksize))
-
-
-def _chunk(seq, n):
-    """Yield chunks of size n from seq."""
-    for i in range(0, len(seq), n):
-        yield seq[i:i+n]
 
 def _read_shape_fast(path) -> tuple[int,int,int]:
     """
     Return (C,H,W) with C in {1,3}, squeezing trailing singleton.
-    Uses memmap to avoid loading pixels.
+    FITS: light-weight via memmap; XISF: uses unified loader (loads once).
     """
-    with fits.open(path, memmap=True) as hdul:
-        a = hdul[0].data
+    if _is_xisf(path):
+        a, _ = _load_image_array(path)
         if a is None:
+
             raise ValueError(f"No data in {path}")
+        a = np.asarray(a)
+    else:
+        with fits.open(path, memmap=True, ignore_missing_simple=True) as hdul:
+            a = hdul[0].data
+            if a is None:
+                raise ValueError(f"No data in {path}")
         if a.ndim == 2:
             H, W = a.shape
             return (1, int(H), int(W))
@@ -1794,86 +1661,109 @@ def _read_shape_fast(path) -> tuple[int,int,int]:
         H, W = s[-2], s[-1]
         return (1, H, W)
 
-def _tiles_of(hw: tuple[int,int], tile_hw: tuple[int,int], halo: int):
-    """
-    Yield tiles as dicts: {y0,y1,x0,x1,yc0,yc1,xc0,xc1}
-    (outer region includes halo; core (yc0:yc1, xc0:xc1) excludes halo).
-    """
-    H, W = hw
-    th, tw = tile_hw
-    th = max(1, int(th)); tw = max(1, int(tw))
-    for y in range(0, H, th):
-        for x in range(0, W, tw):
-            yc0 = y; yc1 = min(y + th, H)
-            xc0 = x; xc1 = min(x + tw, W)
-            y0  = max(0, yc0 - halo); y1 = min(H, yc1 + halo)
-            x0  = max(0, xc0 - halo); x1 = min(W, xc1 + halo)
-            yield dict(y0=y0, y1=y1, x0=x0, x1=x1, yc0=yc0, yc1=yc1, xc0=xc0, xc1=xc1)
+def _read_tile_fits_any(path: str, y0: int, y1: int, x0: int, x1: int) -> np.ndarray:
+    """FITS/XISF-aware tile read: returns spatial tile; supports 2D, HWC, and CHW."""
+    ext = os.path.splitext(path)[1].lower()
 
-def _extract_with_halo(a, tile):
+    if ext == ".xisf":
+        a, _ = _load_image_array(path)  # helper returns array-like + hdr/metadata
+        if a is None:
+            raise ValueError(f"XISF loader returned None for {path}")
+        a = np.asarray(a)
+        if a.ndim == 2:  # HW
+            return np.array(a[y0:y1, x0:x1], copy=True)
+        elif a.ndim == 3:
+            if a.shape[-1] in (1, 3):            # HWC
+                out = a[y0:y1, x0:x1, :]
+                if out.shape[-1] == 1:
+                    out = out[..., 0]
+                return np.array(out, copy=True)
+            elif a.shape[0] in (1, 3):           # CHW
+                out = a[:, y0:y1, x0:x1]
+                if out.shape[0] == 1:
+                    out = out[0]
+                return np.array(out, copy=True)
+            else:
+                raise ValueError(f"Unsupported XISF 3D shape {a.shape} in {path}")
+        else:
+            raise ValueError(f"Unsupported XISF ndim {a.ndim} in {path}")
+
+    # FITS
+    with fits.open(path, memmap=True, ignore_missing_simple=True) as hdul:
+        a = None
+        for h in hdul:
+            if getattr(h, "data", None) is not None:
+                a = h.data
+                break
+        if a is None:
+            raise ValueError(f"No image data in {path}")
+
+        a = np.asarray(a)
+
+        if a.ndim == 2:                           # HW
+            return np.array(a[y0:y1, x0:x1], copy=True)
+
+        if a.ndim == 3:
+            if a.shape[0] in (1, 3):              # CHW (planes, rows, cols)
+                out = a[:, y0:y1, x0:x1]
+                if out.shape[0] == 1: out = out[0]
+                return np.array(out, copy=True)
+            if a.shape[-1] in (1, 3):             # HWC
+                out = a[y0:y1, x0:x1, :]
+                if out.shape[-1] == 1: out = out[..., 0]
+                return np.array(out, copy=True)
+
+        # Fallback: assume last two axes are spatial (…, H, W)
+        try:
+            out = a[(..., slice(y0, y1), slice(x0, x1))]
+            return np.array(out, copy=True)
+        except Exception:
+            raise ValueError(f"Unsupported FITS data shape {a.shape} in {path}")
+
+
+def _seed_median_full_from_data(data_list):
     """
-    Slice 'a' ((H,W) or (C,H,W)) to [y0:y1, x0:x1] with channel kept.
+    data_list: list of np.ndarray each shaped either (H,W) or (C,H,W),
+               already cropped/sanitized to the same size by the caller.
+    Returns:   (H,W) or (C,H,W) median image in float32.
     """
-    y0,y1,x0,x1 = tile["y0"], tile["y1"], tile["x0"], tile["x1"]
-    if a.ndim == 2:
-        return a[y0:y1, x0:x1]
+    if not data_list:
+        raise ValueError("Empty stack for median seed")
+
+    a0 = data_list[0]
+    if a0.ndim == 2:
+        # (N, H, W) -> (H, W)
+        cube = np.stack([np.asarray(a, dtype=np.float32, order="C") for a in data_list], axis=0)
+        med = np.median(cube, axis=0).astype(np.float32, copy=False)
+        return np.ascontiguousarray(med)
     else:
-        return a[:, y0:y1, x0:x1]
+        # (N, C, H, W) -> (C, H, W)
+        cube = np.stack([np.asarray(a, dtype=np.float32, order="C") for a in data_list], axis=0)
+        med = np.median(cube, axis=0).astype(np.float32, copy=False)
+        return np.ascontiguousarray(med)
 
-def _add_core(accum, tile_val, tile):
-    """
-    Add tile_val core into accum at (yc0:yc1, xc0:xc1).
-    Shapes match (2D) or (C,H,W).
-    """
-    yc0,yc1,xc0,xc1 = tile["yc0"], tile["yc1"], tile["xc0"], tile["xc1"]
-    if accum.ndim == 2:
-        h0 = yc0 - tile["y0"]; h1 = h0 + (yc1 - yc0)
-        w0 = xc0 - tile["x0"]; w1 = w0 + (xc1 - xc0)
-        accum[yc0:yc1, xc0:xc1] += tile_val[h0:h1, w0:w1]
-    else:
-        h0 = yc0 - tile["y0"]; h1 = h0 + (yc1 - yc0)
-        w0 = xc0 - tile["x0"]; w1 = w0 + (xc1 - xc0)
-        accum[:, yc0:yc1, xc0:xc1] += tile_val[:, h0:h1, w0:w1]
 
-def _prepare_np_fft_packs_batch(psfs, flip_psf, Hs, Ws):
-    """Precompute rFFT packs on current grid for NumPy path; returns lists aligned to batch psfs."""
-    Kfs, KTfs, meta = [], [], []
-    import numpy.fft as fft
-    for k, kT in zip(psfs, flip_psf):
-        kh, kw = k.shape
-        fftH, fftW = _fftshape_same(Hs, Ws, kh, kw)
-        Kfs.append(fft.rfftn(np.fft.ifftshift(k),  s=(fftH, fftW)))
-        KTfs.append(fft.rfftn(np.fft.ifftshift(kT), s=(fftH, fftW)))
-        meta.append((kh, kw, fftH, fftW))
-    return Kfs, KTfs, meta
-
-def _prepare_torch_fft_packs_batch(psfs, flip_psf, Hs, Ws, device, dtype):
-    """Torch FFT packs per PSF on current grid; mirrors your existing packer."""
-    return _precompute_torch_psf_ffts(psfs, flip_psf, Hs, Ws, device, dtype)
-
-def _as_chw(np_img: np.ndarray) -> np.ndarray:
-    """Return float32 CHW. Handles (H,W), (3,H,W), (H,W,3)."""
-    x = np.asarray(np_img, dtype=np.float32, order="C")
-    if x.ndim == 2:
-        return x[None, ...]                # 1,H,W
-    if x.ndim == 3 and x.shape[0] in (1, 3):   # already C,H,W
-        return x
-    if x.ndim == 3 and x.shape[-1] in (1, 3):  # H,W,C -> C,H,W
-        return np.moveaxis(x, -1, 0)
-    # last resort: treat first dim as channels
-    return x
-
-def _ensure_same_hw(ref: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-    """Center-crop to match ref's H,W if slightly off, assuming CHW."""
-    _, Hr, Wr = ref.shape
-    _, Ht, Wt = t.shape
-    if (Hr, Wr) == (Ht, Wt):
-        return t
-    dh, dw = max(0, Ht - Hr), max(0, Wt - Wr)
-    top  = dh // 2
-    left = dw // 2
-    return t[:, top:top+Hr, left:left+Wr]
-
+def _build_seed_running_mu_sigma_from_paths(paths, Ht, Wt, color_mode,
+                                            *, bootstrap_frames=20, clip_sigma=5.0,
+                                            status_cb=lambda s: None, progress_cb=lambda f,m='': None):
+    K = max(1, min(int(bootstrap_frames), len(paths)))
+    def _load_chw(i):
+        ys, _ = _stack_loader_memmap([paths[i]], Ht, Wt, color_mode)
+        return _as_chw(ys[0]).astype(np.float32, copy=False)
+    x0 = _load_chw(0).copy()
+    mean = x0; m2 = np.zeros_like(mean); count = 1
+    for i in range(1, K):
+        x = _load_chw(i); count += 1
+        d = x - mean; mean += d/count; m2 += d*(x-mean)
+        progress_cb(i/K*0.5, "μ-σ bootstrap")
+    var = m2 / max(1, count-1); sigma = np.sqrt(np.clip(var, 1e-12, None)).astype(np.float32)
+    lo = mean - float(clip_sigma)*sigma; hi = mean + float(clip_sigma)*sigma
+    acc = np.zeros_like(mean); n=0
+    for i in range(len(paths)):
+        x = _load_chw(i); x = np.clip(x, lo, hi, out=x)
+        acc += x; n += 1; progress_cb(0.5 + 0.5*(i+1)/len(paths), "clipped mean")
+    seed = (acc/max(1,n)).astype(np.float32)
+    return seed[0] if (seed.ndim==3 and seed.shape[0]==1) else seed
 
 # -----------------------------
 # Core
@@ -1884,6 +1774,7 @@ def multiframe_deconv(
     iters=20,
     kappa=2.0,
     color_mode="luma",
+    seed_mode: str = "robust", 
     huber_delta=0.0,
     masks=None,
     variances=None,
@@ -1901,6 +1792,7 @@ def multiframe_deconv(
     sr_sigma: float = 1.1,
     sr_psf_opt_iters: int = 250,
     sr_psf_opt_lr: float = 0.1,
+    star_mask_ref_path: str | None = None,     
 ):
     # sanitize and clamp
     max_iters = max(1, int(iters))
@@ -2002,9 +1894,12 @@ def multiframe_deconv(
         make_masks=bool(use_star_masks),
         make_varmaps=bool(use_variance_maps),
         status_cb=status_cb,
-        save_dir=psf_out_dir,
+        save_dir=None,
         star_mask_cfg=star_mask_cfg,
         varmap_cfg=varmap_cfg,
+        star_mask_ref_path=star_mask_ref_path,
+        # NEW:
+        Ht=Ht, Wt=Wt, color_mode=color_mode,
     )
 
     # >>> SR: lift PSFs to super-res if requested
@@ -2037,7 +1932,22 @@ def multiframe_deconv(
     data = [_sanitize_numeric(a) for a in data]
 
     # --- SR/native seed ---
-    seed_native = np.median(np.stack(data, axis=0), axis=0).astype(np.float32)
+    # --- Seed (choose robust μ-σ or median) ---
+    seed_mode_s = str(seed_mode).lower().strip()
+    if seed_mode_s not in ("robust","median"):
+        seed_mode_s = "robust"
+
+    if seed_mode_s == "median":
+        status_cb("MFDeconv: Building median seed (in-memory)…")
+        # Use already normalized, cropped, sanitized frames
+        seed_native = _seed_median_full_from_data(data)
+    else:
+        status_cb("MFDeconv: Building robust seed (live μ-σ stacking)…")
+        seed_native = _build_seed_running_mu_sigma_from_paths(
+            paths, Ht, Wt, color_mode,
+            bootstrap_frames=20, clip_sigma=5.0,
+            status_cb=status_cb, progress_cb=lambda f,m='': None
+        )
     if r > 1:
         if seed_native.ndim == 2:
             x = _upsample_sum(seed_native / (r*r), r, target_hw=(Ht*r, Wt*r))
@@ -2366,11 +2276,13 @@ class MultiFrameDeconvWorkerSport(QObject):
                  huber_delta, min_iters, use_star_masks=False, use_variance_maps=False, rho="huber",
                  star_mask_cfg: dict | None = None, varmap_cfg: dict | None = None,
                  save_intermediate: bool = False,
+                 seed_mode: str = "robust",
                  # NEW SR params
                  super_res_factor: int = 1,
                  sr_sigma: float = 1.1,
                  sr_psf_opt_iters: int = 250,
-                 sr_psf_opt_lr: float = 0.1):
+                 sr_psf_opt_lr: float = 0.1,
+                 star_mask_ref_path: str | None = None):
         super().__init__(parent)
         self.aligned_paths = aligned_paths
         self.output_path = output_path
@@ -2389,6 +2301,8 @@ class MultiFrameDeconvWorkerSport(QObject):
         self.sr_sigma = float(sr_sigma)
         self.sr_psf_opt_iters = int(sr_psf_opt_iters)
         self.sr_psf_opt_lr = float(sr_psf_opt_lr)
+        self.star_mask_ref_path = star_mask_ref_path 
+        self.seed_mode = seed_mode
 
 
     def _log(self, s): self.progress.emit(s)
@@ -2401,6 +2315,7 @@ class MultiFrameDeconvWorkerSport(QObject):
                 iters=self.iters,
                 kappa=self.kappa,
                 color_mode=self.color_mode,
+                seed_mode=self.seed_mode,
                 huber_delta=self.huber_delta,
                 use_star_masks=self.use_star_masks,
                 use_variance_maps=self.use_variance_maps,
@@ -2415,6 +2330,7 @@ class MultiFrameDeconvWorkerSport(QObject):
                 sr_sigma=self.sr_sigma,
                 sr_psf_opt_iters=self.sr_psf_opt_iters,
                 sr_psf_opt_lr=self.sr_psf_opt_lr,
+                star_mask_ref_path=self.star_mask_ref_path,
             )
             self.finished.emit(True, "MF deconvolution complete.", out)
             _process_gui_events_safely()

@@ -2,12 +2,16 @@
 from __future__ import annotations
 import os, math, re
 import numpy as np
+import time
 from astropy.io import fits
 from PyQt6.QtCore import QObject, pyqtSignal
 from pro.psf_utils import compute_psf_kernel_for_image
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QThread
 import contextlib
+from threadpoolctl import threadpool_limits
+from concurrent.futures import ThreadPoolExecutor, as_completed, ProcessPoolExecutor
+_USE_PROCESS_POOL_FOR_ASSETS = True
 import gc
 try:
     import sep
@@ -37,8 +41,129 @@ except Exception:
 from pathlib import Path
 
 # at top of file with the other imports
-from concurrent.futures import ThreadPoolExecutor, as_completed
+
 from queue import SimpleQueue
+
+# ── XISF decode cache → memmap on disk ─────────────────────────────────
+import tempfile, threading, uuid, atexit
+_XISF_CACHE = {}
+_XISF_LOCK  = threading.Lock()
+_XISF_TMPFILES = []
+
+from collections import OrderedDict
+
+# ── CHW LRU (float32) built on top of FITS memmap & XISF memmap ────────────────
+class _FrameCHWLRU:
+    def __init__(self, capacity=8):
+        self.cap = int(max(1, capacity))
+        self.od = OrderedDict()
+
+    def clear(self):
+        self.od.clear()
+
+    def get(self, path, Ht, Wt, color_mode):
+        key = (path, Ht, Wt, str(color_mode).lower())
+        hit = self.od.get(key)
+        if hit is not None:
+            self.od.move_to_end(key)
+            return hit
+
+        # Load backing array cheaply (memmap for FITS, cached memmap for XISF)
+        ext = os.path.splitext(path)[1].lower()
+        if ext == ".xisf":
+            a = _xisf_cached_array(path)  # float32, HW/HWC/CHW
+        else:
+            # FITS path: use astropy memmap (no data copy)
+            with fits.open(path, memmap=True, ignore_missing_simple=True) as hdul:
+                arr = None
+                for h in hdul:
+                    if getattr(h, "data", None) is not None:
+                        arr = h.data
+                        break
+                if arr is None:
+                    raise ValueError(f"No image data in {path}")
+                a = np.asarray(arr)
+                # dtype normalize once; keep float32
+                if a.dtype.kind in "ui":
+                    a = a.astype(np.float32) / (float(np.iinfo(a.dtype).max) or 1.0)
+                else:
+                    a = a.astype(np.float32, copy=False)
+
+        # Center-crop to (Ht, Wt) and convert to CHW
+        a = np.asarray(a)  # float32
+        a = _center_crop(a, Ht, Wt)
+
+        # Respect color_mode: “luma” → 1×H×W, “PerChannel” → 3×H×W if RGB present
+        cm = str(color_mode).lower()
+        if cm == "luma":
+            a_chw = _as_chw(_to_luma_local(a)).astype(np.float32, copy=False)
+        else:
+            a_chw = _as_chw(a).astype(np.float32, copy=False)
+            if a_chw.shape[0] == 1 and cm != "luma":
+                # still OK (mono data)
+                pass
+
+        # LRU insert
+        self.od[key] = a_chw
+        if len(self.od) > self.cap:
+            self.od.popitem(last=False)
+        return a_chw
+
+_FRAME_LRU = _FrameCHWLRU(capacity=8)  # tune if you like
+
+def _clear_all_caches():
+    try: _clear_xisf_cache()
+    except Exception: pass
+    try: _FRAME_LRU.clear()
+    except Exception: pass
+
+
+def _normalize_to_float32(a: np.ndarray) -> np.ndarray:
+    if a.dtype.kind in "ui":
+        return (a.astype(np.float32) / (float(np.iinfo(a.dtype).max) or 1.0))
+    if a.dtype == np.float32:
+        return a
+    return a.astype(np.float32, copy=False)
+
+def _xisf_cached_array(path: str) -> np.memmap:
+    """
+    Decode an XISF image exactly once and back it by a read-only float32 memmap.
+    Returns a memmap that can be sliced cheaply for tiles.
+    """
+    with _XISF_LOCK:
+        hit = _XISF_CACHE.get(path)
+        if hit is not None:
+            fn, shape = hit
+            return np.memmap(fn, dtype=np.float32, mode="r", shape=shape)
+
+        # Decode once
+        arr, _ = _load_image_array(path)  # your existing loader
+        if arr is None:
+            raise ValueError(f"XISF loader returned None for {path}")
+        arr = np.asarray(arr)
+        arrf = _normalize_to_float32(arr)
+
+        # Create a temp file-backed memmap
+        tmpdir = tempfile.gettempdir()
+        fn = os.path.join(tmpdir, f"xisf_cache_{uuid.uuid4().hex}.mmap")
+        mm = np.memmap(fn, dtype=np.float32, mode="w+", shape=arrf.shape)
+        mm[...] = arrf[...]
+        mm.flush()
+        del mm  # close writer handle; re-open below as read-only
+
+        _XISF_CACHE[path] = (fn, arrf.shape)
+        _XISF_TMPFILES.append(fn)
+        return np.memmap(fn, dtype=np.float32, mode="r", shape=arrf.shape)
+
+def _clear_xisf_cache():
+    with _XISF_LOCK:
+        for fn in _XISF_TMPFILES:
+            try: os.remove(fn)
+            except Exception: pass
+        _XISF_CACHE.clear()
+        _XISF_TMPFILES.clear()
+
+atexit.register(_clear_xisf_cache)
 
 
 def _is_xisf(path: str) -> bool:
@@ -287,8 +412,32 @@ def _compute_frame_assets(i, arr, hdr, *, make_masks, make_varmaps,
 
     return i, psf, mask, var, logs
 
+def _compute_one_worker(args):
+    """
+    Top-level picklable worker for ProcessPoolExecutor.
+    args: (i, path, make_masks_in_worker, make_varmaps, star_mask_cfg, varmap_cfg)
+    Returns (i, psf, mask, var, logs)
+    """
+    (i, path, make_masks_in_worker, make_varmaps, star_mask_cfg, varmap_cfg) = args
+    # avoid BLAS/OMP storm inside each process
+    with threadpool_limits(limits=1):
+        arr, hdr = _load_image_array(path)           # FITS or XISF
+        arr = np.asarray(arr, dtype=np.float32, order="C")
+        if arr.ndim == 3 and arr.shape[-1] == 1:
+            arr = np.squeeze(arr, axis=-1)
+        if not isinstance(hdr, fits.Header):         # synthesize FITS-like header for XISF
+            hdr = _safe_primary_header(path)
+        return _compute_frame_assets(
+            i, arr, hdr,
+            make_masks=bool(make_masks_in_worker),
+            make_varmaps=bool(make_varmaps),
+            star_mask_cfg=star_mask_cfg,
+            varmap_cfg=varmap_cfg,
+        )
+
+
 def _build_psf_and_assets(
-    paths,                      # paths: list[str]
+    paths,                      # list[str]
     make_masks=False,
     make_varmaps=False,
     status_cb=lambda s: None,
@@ -296,21 +445,32 @@ def _build_psf_and_assets(
     star_mask_cfg: dict | None = None,
     varmap_cfg: dict | None = None,
     max_workers: int | None = None,
+    star_mask_ref_path: str | None = None,   # build one mask from this frame if provided
+    # NEW (passed from multiframe_deconv so we don’t re-probe/convert):
+    Ht: int | None = None,
+    Wt: int | None = None,
+    color_mode: str = "luma",
 ):
     """
-    Parallel PSF + (optional) star mask + variance map per frame, loading each
-    image inside the worker so we don't keep all frames in RAM at once.
+    Parallel PSF + (optional) star mask + variance map per frame.
 
-    Notes:
-      - Results preserve the order of `paths`.
-      - status_cb is only called from the main thread.
+    Changes from the original:
+      • Reuses the decoded frame cache (_FRAME_LRU) for FITS/XISF so we never re-decode.
+      • Automatically switches to threads for XISF (so memmaps are shared across workers).
+      • Builds a single reference star mask (if requested) from the cached frame and
+        center-pads/crops it for all frames (no extra I/O).
+      • Preserves return order and streams worker logs back to the UI.
     """
     if save_dir:
         os.makedirs(save_dir, exist_ok=True)
 
     n = len(paths)
 
-    # sensible default: up to 8, but don’t exceed CPU count
+    # Resolve target intersection size if caller didn't pass it
+    if Ht is None or Wt is None:
+        Ht, Wt = _common_hw_from_paths(paths)
+
+    # Sensible default worker count (cap at 8)
     if max_workers is None:
         try:
             hw = os.cpu_count() or 4
@@ -318,9 +478,61 @@ def _build_psf_and_assets(
             hw = 4
         max_workers = max(1, min(8, hw))
 
-    status_cb(f"MFDeconv: measuring PSFs/masks/varmaps with {max_workers} workers…")
+    # Decide executor: for any XISF, prefer threads so the memmap/cache is shared
+    any_xisf = any(os.path.splitext(p)[1].lower() == ".xisf" for p in paths)
+    use_proc_pool = (not any_xisf) and _USE_PROCESS_POOL_FOR_ASSETS
+    Executor = ProcessPoolExecutor if use_proc_pool else ThreadPoolExecutor
+    pool_kind = "process" if use_proc_pool else "thread"
+    status_cb(f"MFDeconv: measuring PSFs/masks/varmaps with {max_workers} {pool_kind}s…")
 
-    # for GUI safety, queue logs from workers and flush here
+    # ---- helper: pad-or-crop a 2D array to (Ht,Wt), centered ----
+    def _center_pad_or_crop_2d(a2d: np.ndarray, Ht: int, Wt: int, fill: float = 1.0) -> np.ndarray:
+        a2d = np.asarray(a2d, dtype=np.float32)
+        H, W = int(a2d.shape[0]), int(a2d.shape[1])
+        # crop first if bigger
+        y0 = max(0, (H - Ht) // 2); x0 = max(0, (W - Wt) // 2)
+        y1 = min(H, y0 + Ht);       x1 = min(W, x0 + Wt)
+        cropped = a2d[y0:y1, x0:x1]
+        ch, cw = cropped.shape
+        if ch == Ht and cw == Wt:
+            return np.ascontiguousarray(cropped, dtype=np.float32)
+        # pad if smaller
+        out = np.full((Ht, Wt), float(fill), dtype=np.float32)
+        oy = (Ht - ch) // 2; ox = (Wt - cw) // 2
+        out[oy:oy+ch, ox:ox+cw] = cropped
+        return out
+
+    # ---- optional: build one mask from the reference frame and reuse ----
+    base_ref_mask = None
+    if make_masks and star_mask_ref_path:
+        try:
+            status_cb(f"Star mask: using reference frame for all masks → {os.path.basename(star_mask_ref_path)}")
+            # Pull from the shared frame cache as luma on (Ht,Wt)
+            ref_chw = _FRAME_LRU.get(star_mask_ref_path, Ht, Wt, "luma")  # (1,H,W) or (H,W)
+            L = ref_chw[0] if (ref_chw.ndim == 3) else ref_chw           # 2D float32
+
+            vmc = (varmap_cfg or {})
+            sky_map, rms_map, err_scalar = _sep_background_precompute(
+                L, bw=int(vmc.get("bw", 64)), bh=int(vmc.get("bh", 64))
+            )
+            smc = (star_mask_cfg or {})
+            base_ref_mask = _star_mask_from_precomputed(
+                L, sky_map, err_scalar,
+                thresh_sigma = smc.get("thresh_sigma", THRESHOLD_SIGMA),
+                max_objs     = smc.get("max_objs", STAR_MASK_MAXOBJS),
+                grow_px      = smc.get("grow_px", GROW_PX),
+                ellipse_scale= smc.get("ellipse_scale", ELLIPSE_SCALE),
+                soft_sigma   = smc.get("soft_sigma", SOFT_SIGMA),
+                max_radius_px= smc.get("max_radius_px", MAX_STAR_RADIUS),
+                keep_floor   = smc.get("keep_floor", KEEP_FLOOR),
+                max_side     = smc.get("max_side", STAR_MASK_MAXSIDE),
+                status_cb    = status_cb,
+            )
+        except Exception as e:
+            status_cb(f"⚠️ Star mask (reference) failed: {e}. Falling back to per-frame masks.")
+            base_ref_mask = None
+
+    # for GUI safety, queue logs from workers and flush in the main thread
     log_queue: SimpleQueue = SimpleQueue()
 
     def enqueue_logs(lines):
@@ -330,52 +542,50 @@ def _build_psf_and_assets(
     psfs  = [None] * n
     masks = ([None] * n) if make_masks else None
     vars_ = ([None] * n) if make_varmaps else None
+    make_masks_in_worker = bool(make_masks and (base_ref_mask is None))
 
-    # --- worker wrapper: load one file (FITS or XISF), compute assets, return ordered slot ---
+    # --- thread worker: get frame from cache and compute assets ---
     def _compute_one(i: int, path: str):
-        # Use our unified loader; returns ndarray + (fits.Header or None)
-        arr, hdr = _load_image_array(path)
+        # avoid heavy BLAS oversubscription inside each worker
+        with threadpool_limits(limits=1):
+            # Pull frame from cache honoring color_mode & target (Ht,Wt)
+            img_chw = _FRAME_LRU.get(path, Ht, Wt, color_mode)  # (C,H,W) float32
+            # For PSF/mask/varmap we operate on a 2D plane (luma/mono)
+            arr2d = img_chw[0] if (img_chw.ndim == 3) else img_chw  # (H,W) float32
 
-        # ensure float32, writeable, contiguous
-        if arr.dtype.kind in "ui":
-            mx = np.float32(np.iinfo(arr.dtype).max)
-            arr = arr.astype(np.float32, copy=False) / (mx if mx > 0 else 1.0)
-        elif arr.dtype.kind == "f":
-            arr = arr.astype(np.float32, copy=False)
-        else:
-            arr = arr.astype(np.float32, copy=False)
+            # Header: synthesize a safe FITS-like header (works for XISF too)
+            try:
+                hdr = _safe_primary_header(path)
+            except Exception:
+                hdr = fits.Header()
 
-        if arr.ndim == 3 and arr.shape[-1] == 1:
-            arr = np.squeeze(arr, axis=-1)
-
-        if (not arr.flags.c_contiguous) or (not arr.flags.writeable):
-            arr = np.ascontiguousarray(arr.copy())
-
-        # synthesize a safe header for XISF (hdr=None) or headers missing SIMPLE
-        if hdr is None:
-            hdr = _safe_primary_header(path)
-
-        return _compute_frame_assets(
-            i, arr, hdr,
-            make_masks=bool(make_masks),
-            make_varmaps=bool(make_varmaps),
-            star_mask_cfg=star_mask_cfg,
-            varmap_cfg=varmap_cfg,
-        )
+            return _compute_frame_assets(
+                i, arr2d, hdr,
+                make_masks=bool(make_masks_in_worker),
+                make_varmaps=bool(make_varmaps),
+                star_mask_cfg=star_mask_cfg,
+                varmap_cfg=varmap_cfg,
+            )
 
     # --- submit jobs ---
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="mfdeconv") as ex:
+    with Executor(max_workers=max_workers) as ex:
         futs = []
         for i, p in enumerate(paths, start=1):
-            # light progress line for the UI (main thread)
             status_cb(f"MFDeconv: measuring PSF {i}/{n} …")
-            futs.append(ex.submit(_compute_one, i, p))
+            if use_proc_pool:
+                # Process-safe path: worker re-loads inside the subprocess
+                futs.append(ex.submit(
+                    _compute_one_worker,
+                    (i, p, bool(make_masks_in_worker), bool(make_varmaps), star_mask_cfg, varmap_cfg)
+                ))
+            else:
+                # Thread path: hits the shared cache (fast path for XISF/FITS)
+                futs.append(ex.submit(_compute_one, i, p))
 
         done_cnt = 0
         for fut in as_completed(futs):
             i, psf, m, v, logs = fut.result()
-            idx = i - 1  # 0-based slot
+            idx = i - 1
             psfs[idx] = psf
             if masks is not None:
                 masks[idx] = m
@@ -385,12 +595,16 @@ def _build_psf_and_assets(
 
             done_cnt += 1
             if (done_cnt % 4) == 0 or done_cnt == n:
-                # flush a few logs without spamming the UI thread
                 while not log_queue.empty():
                     try:
                         status_cb(log_queue.get_nowait())
                     except Exception:
                         break
+
+    # If we built a single reference mask, apply it to every frame (center pad/crop)
+    if base_ref_mask is not None and masks is not None:
+        for idx in range(n):
+            masks[idx] = _center_pad_or_crop_2d(base_ref_mask, int(Ht), int(Wt), fill=1.0)
 
     # final flush of any remaining logs
     while not log_queue.empty():
@@ -1845,12 +2059,19 @@ def _chunk(seq, n):
 def _read_shape_fast(path) -> tuple[int,int,int]:
     """
     Return (C,H,W) with C in {1,3}, squeezing trailing singleton.
-    Uses memmap to avoid loading pixels.
+    FITS: light-weight via memmap; XISF: uses unified loader (loads once).
     """
-    with fits.open(path, memmap=False) as hdul:  # ⬅ False
-        a = hdul[0].data
+    if _is_xisf(path):
+        a, _ = _load_image_array(path)
         if a is None:
+
             raise ValueError(f"No data in {path}")
+        a = np.asarray(a)
+    else:
+        with fits.open(path, memmap=True, ignore_missing_simple=True) as hdul:
+            a = hdul[0].data
+            if a is None:
+                raise ValueError(f"No data in {path}")
         if a.ndim == 2:
             H, W = a.shape
             return (1, int(H), int(W))
@@ -1867,6 +2088,7 @@ def _read_shape_fast(path) -> tuple[int,int,int]:
         s = tuple(map(int, a.shape))
         H, W = s[-2], s[-1]
         return (1, H, W)
+
 
 
 def _tiles_of(hw: tuple[int,int], tile_hw: tuple[int,int], halo: int):
@@ -2020,6 +2242,370 @@ def _torch_should_use_spatial(psf_ksize: int) -> bool:
         return True
     return False
 
+def _read_tile_fits(path: str, y0: int, y1: int, x0: int, x1: int) -> np.ndarray:
+    """Return a (H,W) or (H,W,3|1) tile via FITS memmap, without loading whole image."""
+    with fits.open(path, memmap=True, ignore_missing_simple=True) as hdul:
+        hdu = hdul[0]
+        a = hdu.data
+        if a is None:
+            # find first image HDU if primary is header-only
+            for h in hdul[1:]:
+                if getattr(h, "data", None) is not None:
+                    a = h.data; break
+        a = np.asarray(a)  # still lazy until sliced
+        # squeeze trailing singleton if present to keep your conventions
+        if a.ndim == 3 and a.shape[-1] == 1:
+            a = np.squeeze(a, axis=-1)
+        tile = a[y0:y1, x0:x1, ...]
+        # copy so we own the buffer (we will cast/normalize)
+        return np.array(tile, copy=True)
+
+def _read_tile_fits_any(path: str, y0: int, y1: int, x0: int, x1: int) -> np.ndarray:
+    """FITS/XISF-aware tile read: returns spatial tile; supports 2D, HWC, and CHW."""
+    ext = os.path.splitext(path)[1].lower()
+
+    if ext == ".xisf":
+        a = _xisf_cached_array(path)  # float32 memmap; cheap slicing
+        # a is HW, HWC, or CHW (whatever _load_image_array returned)
+        if a.ndim == 2:
+            return np.array(a[y0:y1, x0:x1], copy=True)
+        elif a.ndim == 3:
+            if a.shape[-1] in (1, 3):            # HWC
+                out = a[y0:y1, x0:x1, :]
+                if out.shape[-1] == 1: out = out[..., 0]
+                return np.array(out, copy=True)
+            elif a.shape[0] in (1, 3):           # CHW
+                out = a[:, y0:y1, x0:x1]
+                if out.shape[0] == 1: out = out[0]
+                return np.array(out, copy=True)
+            else:
+                raise ValueError(f"Unsupported XISF 3D shape {a.shape} in {path}")
+        else:
+            raise ValueError(f"Unsupported XISF ndim {a.ndim} in {path}")
+
+    # FITS
+    with fits.open(path, memmap=True, ignore_missing_simple=True) as hdul:
+        a = None
+        for h in hdul:
+            if getattr(h, "data", None) is not None:
+                a = h.data
+                break
+        if a is None:
+            raise ValueError(f"No image data in {path}")
+
+        a = np.asarray(a)
+
+        if a.ndim == 2:                           # HW
+            return np.array(a[y0:y1, x0:x1], copy=True)
+
+        if a.ndim == 3:
+            if a.shape[0] in (1, 3):              # CHW (planes, rows, cols)
+                out = a[:, y0:y1, x0:x1]
+                if out.shape[0] == 1:
+                    out = out[0]
+                return np.array(out, copy=True)
+            if a.shape[-1] in (1, 3):             # HWC
+                out = a[y0:y1, x0:x1, :]
+                if out.shape[-1] == 1:
+                    out = out[..., 0]
+                return np.array(out, copy=True)
+
+        # Fallback: assume last two axes are spatial (…, H, W)
+        try:
+            out = a[(..., slice(y0, y1), slice(x0, x1))]
+            return np.array(out, copy=True)
+        except Exception:
+            raise ValueError(f"Unsupported FITS data shape {a.shape} in {path}")
+
+def _infer_channels_from_tile(p: str, Ht: int, Wt: int) -> int:
+    """Look at a 1×1 tile to infer channel count; supports HW, HWC, CHW."""
+    y1 = min(1, Ht); x1 = min(1, Wt)
+    t = _read_tile_fits_any(p, 0, y1, 0, x1)  # returns np.ndarray
+    if t.ndim == 2:
+        return 1
+    if t.ndim == 3:
+        # prefer semantic channels of 1 or 3
+        if t.shape[-1] in (1, 3): return int(t.shape[-1])   # HWC
+        if t.shape[0]  in (1, 3): return int(t.shape[0])    # CHW
+        # unknown 3D layout → treat as mono
+        return 1
+    return 1
+
+
+def _seed_median_streaming(
+    paths,
+    Ht,
+    Wt,
+    *,
+    color_mode="luma",
+    tile_hw=(256, 256),
+    status_cb=lambda s: None,
+    progress_cb=lambda f, m="": None,
+    use_torch: bool | None = None,     # auto by default
+):
+    """
+    Exact per-pixel median via tiling; RAM-bounded.
+    Now shows per-tile progress and uses Torch on GPU if available.
+    Parallelizes per-tile slab reads to hide I/O and luma work.
+    """
+
+    th, tw = int(tile_hw[0]), int(tile_hw[1])
+    # old: want_c = 1 if str(color_mode).lower() == "luma" else (3 if _read_shape_fast(paths[0])[0] == 3 else 1)
+    if str(color_mode).lower() == "luma":
+        want_c = 1
+    else:
+        want_c = _infer_channels_from_tile(paths[0], Ht, Wt)
+    seed     = np.zeros((Ht, Wt), np.float32) if want_c == 1 else np.zeros((want_c, Ht, Wt), np.float32)
+    tiles    = [(y, min(y + th, Ht), x, min(x + tw, Wt)) for y in range(0, Ht, th) for x in range(0, Wt, tw)]
+    total    = len(tiles)
+    n_frames = len(paths)
+
+    # Choose a sensible number of I/O workers (bounded by frames)
+    try:
+        _cpu = (os.cpu_count() or 4)
+    except Exception:
+        _cpu = 4
+    io_workers = max(1, min(8, _cpu, n_frames))
+
+    # Torch autodetect (once)
+    TORCH_OK = False
+    device = None
+    if use_torch is not False:
+        try:
+            from pro.runtime_torch import import_torch
+            _t = import_torch(prefer_cuda=True, status_cb=status_cb)
+            dev = None
+            if hasattr(_t, "cuda") and _t.cuda.is_available():
+                dev = _t.device("cuda")
+            elif hasattr(_t.backends, "mps") and _t.backends.mps.is_available():
+                dev = _t.device("mps")
+            else:
+                dev = None  # CPU tensors slower than NumPy for median; only use if forced
+            if dev is not None:
+                TORCH_OK = True
+                device = dev
+                status_cb(f"Median seed: using Torch device {device}")
+        except Exception as e:
+            status_cb(f"Median seed: Torch unavailable → NumPy fallback ({e})")
+            TORCH_OK = False
+            device = None
+
+    def _tile_msg(ti, tn):
+        return f"median tiles {ti}/{tn}"
+
+    done = 0
+
+    for (y0, y1, x0, x1) in tiles:
+        h, w = (y1 - y0), (x1 - x0)
+
+        # per-tile slab reader with incremental progress (parallel)
+        def _read_slab_for_channel(csel=None):
+            """
+            Returns slab of shape (N, h, w) float32 in [0,1]-ish (normalized if input was integer).
+            If csel is None and luma is requested, computes luma.
+            """
+            # parallel worker returns (i, tile2d)
+            def _load_one(i):
+                t = _read_tile_fits_any(paths[i], y0, y1, x0, x1)
+
+                # normalize dtype
+                if t.dtype.kind in "ui":
+                    t = t.astype(np.float32) / (float(np.iinfo(t.dtype).max) or 1.0)
+                else:
+                    t = t.astype(np.float32, copy=False)
+
+                # luma / channel selection
+                if want_c == 1:
+                    if t.ndim == 3:
+                        t = _to_luma_local(t)
+                    elif t.ndim != 2:
+                        t = _to_luma_local(t)
+                else:
+                    if t.ndim == 2:
+                        pass
+                    elif t.ndim == 3 and t.shape[-1] == 3:  # HWC
+                        t = t[..., csel]
+                    elif t.ndim == 3 and t.shape[0] == 3:   # CHW
+                        t = t[csel]
+                    else:
+                        t = _to_luma_local(t)
+                return i, np.ascontiguousarray(t, dtype=np.float32)
+
+            slab = np.empty((n_frames, h, w), np.float32)
+            done_local = 0
+            # cap workers by n_frames so we don't spawn useless threads
+            with ThreadPoolExecutor(max_workers=min(io_workers, n_frames)) as ex:
+                futures = [ex.submit(_load_one, i) for i in range(n_frames)]
+                for fut in as_completed(futures):
+                    i, t2d = fut.result()
+                    # quick sanity (avoid silent mis-shapes)
+                    if t2d.shape != (h, w):
+                        raise RuntimeError(
+                            f"Tile read mismatch at frame {i}: got {t2d.shape}, expected {(h, w)} "
+                            f"tile={(y0,y1,x0,x1)}"
+                        )
+                    slab[i] = t2d
+                    done_local += 1
+                    if (done_local & 7) == 0 or done_local == n_frames:
+                        tile_base = done / total
+                        tile_span = 1.0 / total
+                        inner     = done_local / n_frames
+                        progress_cb(tile_base + 0.8 * tile_span * inner, _tile_msg(done + 1, total))
+            return slab
+
+        try:
+            if want_c == 1:
+                t0 = time.perf_counter()
+                slab = _read_slab_for_channel()
+                t1 = time.perf_counter()
+                if TORCH_OK:
+                    import torch as _t
+                    slab_t = _t.as_tensor(slab, device=device, dtype=_t.float32)  # one H2D
+                    med_t  = slab_t.median(dim=0).values
+                    med_np = med_t.detach().cpu().numpy().astype(np.float32, copy=False)
+                    # no per-tile empty_cache() — avoid forced syncs
+                else:
+                    med_np = np.median(slab, axis=0).astype(np.float32, copy=False)
+                t2 = time.perf_counter()
+                seed[y0:y1, x0:x1] = med_np
+                # lightweight telemetry to confirm bottleneck
+                status_cb(f"seed tile {y0}:{y1},{x0}:{x1} I/O={t1-t0:.3f}s  median={'GPU' if TORCH_OK else 'CPU'}={t2-t1:.3f}s")
+            else:
+                for c in range(want_c):
+                    slab = _read_slab_for_channel(csel=c)
+                    if TORCH_OK:
+                        import torch as _t
+                        slab_t = _t.as_tensor(slab, device=device, dtype=_t.float32)
+                        med_t  = slab_t.median(dim=0).values
+                        med_np = med_t.detach().cpu().numpy().astype(np.float32, copy=False)
+                    else:
+                        med_np = np.median(slab, axis=0).astype(np.float32, copy=False)
+                    seed[c, y0:y1, x0:x1] = med_np
+
+        except RuntimeError as e:
+            # Per-tile GPU OOM or device issues → fallback to NumPy for this tile
+            msg = str(e).lower()
+            if TORCH_OK and ("out of memory" in msg or "resource" in msg or "alloc" in msg):
+                status_cb(f"Median seed: GPU OOM on tile ({h}x{w}); falling back to NumPy for this tile.")
+                if want_c == 1:
+                    slab = _read_slab_for_channel()
+                    seed[y0:y1, x0:x1] = np.median(slab, axis=0).astype(np.float32, copy=False)
+                else:
+                    for c in range(want_c):
+                        slab = _read_slab_for_channel(csel=c)
+                        seed[c, y0:y1, x0:x1] = np.median(slab, axis=0).astype(np.float32, copy=False)
+            else:
+                raise
+
+        done += 1
+        # report tile completion (remaining 20% of tile span reserved for median compute)
+        progress_cb(done / total, _tile_msg(done, total))
+
+        if (done & 3) == 0:
+            _process_gui_events_safely()
+
+    return seed
+
+def _seed_bootstrap_streaming(paths, Ht, Wt, color_mode,
+                              bootstrap_frames: int = 20,
+                              clip_sigma: float = 5.0,
+                              status_cb=lambda s: None,
+                              progress_cb=None):
+    """
+    Seed = average first B frames, estimate global MAD threshold, masked-mean on B,
+    then stream the remaining frames with σ-clipped Welford μ–σ updates.
+
+    Returns float32, CHW for per-channel mode, or CHW(1,...) for luma (your caller later squeezes if needed).
+    """
+    def p(frac, msg):
+        if progress_cb:
+            progress_cb(float(max(0.0, min(1.0, frac))), msg)
+
+    n = len(paths)
+    B = int(max(1, min(int(bootstrap_frames), n)))
+    status_cb(f"Seed: bootstrap={B}, clip_sigma={clip_sigma}")
+
+    # ---------- pass 1: running mean over the first B frames (Welford μ only) ----------
+    cnt = None
+    mu  = None
+    for i, pth in enumerate(paths[:B], 1):
+        ys, _ = _stack_loader_memmap([pth], Ht, Wt, color_mode)
+        x = ys[0].astype(np.float32, copy=False)
+        if mu is None:
+            mu  = x.copy()
+            cnt = np.ones_like(x, dtype=np.float32)
+        else:
+            delta = x - mu
+            cnt  += 1.0
+            mu   += delta / cnt
+        if (i == B) or (i % 4) == 0:
+            p(0.20 * (i / float(B)), f"bootstrap mean {i}/{B}")
+
+    # ---------- pass 2: estimate a *global* MAD around μ using strided samples ----------
+    stride = 4 if max(Ht, Wt) > 1500 else 2
+    # CHW or HW → build a slice that keeps C and strides H,W
+    samp_slices = (slice(None) if mu.ndim == 3 else slice(None),
+                   slice(None, None, stride),
+                   slice(None, None, stride)) if mu.ndim == 3 else \
+                  (slice(None, None, stride), slice(None, None, stride))
+
+    mad_samples = []
+    for i, pth in enumerate(paths[:B], 1):
+        ys, _ = _stack_loader_memmap([pth], Ht, Wt, color_mode)
+        x = ys[0].astype(np.float32, copy=False)
+        d = np.abs(x - mu)
+        mad_samples.append(d[samp_slices].ravel())
+        if (i == B) or (i % 8) == 0:
+            p(0.35 + 0.10 * (i / float(B)), f"bootstrap MAD {i}/{B}")
+
+    # robust MAD estimate (scalar) → 4·MAD clip band
+    mad_est = float(np.median(np.concatenate(mad_samples).astype(np.float32)))
+    thr = 4.0 * max(mad_est, 1e-6)
+
+    # ---------- pass 3: masked mean over first B frames using the global threshold ----------
+    sum_acc = np.zeros_like(mu, dtype=np.float32)
+    cnt_acc = np.zeros_like(mu, dtype=np.float32)
+    for i, pth in enumerate(paths[:B], 1):
+        ys, _ = _stack_loader_memmap([pth], Ht, Wt, color_mode)
+        x = ys[0].astype(np.float32, copy=False)
+        m = (np.abs(x - mu) <= thr).astype(np.float32, copy=False)
+        sum_acc += x * m
+        cnt_acc += m
+        if (i == B) or (i % 4) == 0:
+            p(0.48 + 0.12 * (i / float(B)), f"masked mean {i}/{B}")
+
+    seed = mu.copy()
+    np.divide(sum_acc, np.maximum(cnt_acc, 1.0), out=seed, where=(cnt_acc > 0.5))
+
+    # ---------- pass 4: μ–σ streaming on the remaining frames (σ-clipped Welford) ----------
+    M2  = np.zeros_like(seed, dtype=np.float32)     # sum of squared diffs
+    cnt = np.full_like(seed, float(B), dtype=np.float32)
+    mu  = seed.astype(np.float32, copy=False)
+
+    remain = n - B
+    k = float(clip_sigma)
+    for j, pth in enumerate(paths[B:], 1):
+        ys, _ = _stack_loader_memmap([pth], Ht, Wt, color_mode)
+        x = ys[0].astype(np.float32, copy=False)
+
+        var   = M2 / np.maximum(cnt - 1.0, 1.0)
+        sigma = np.sqrt(np.maximum(var, 1e-12, dtype=np.float32))
+
+        acc   = (np.abs(x - mu) <= (k * sigma)).astype(np.float32, copy=False)  # {0,1} mask
+        n_new = cnt + acc
+        delta = x - mu
+        mu_n  = mu + (acc * delta) / np.maximum(n_new, 1.0)
+        M2    = M2 + acc * delta * (x - mu_n)
+
+        mu, cnt = mu_n, n_new
+
+        if (j == remain) or (j % 8) == 0:
+            p(0.60 + 0.40 * (j / float(max(1, remain))), f"μ–σ refine {j}/{remain}")
+
+    return np.clip(mu, 0.0, None).astype(np.float32, copy=False)
+
+
+
 
 # -----------------------------
 # Core
@@ -2030,6 +2616,7 @@ def multiframe_deconv(
     iters=20,
     kappa=2.0,
     color_mode="luma",
+    seed_mode: str = "robust",
     huber_delta=0.0,
     masks=None,
     variances=None,
@@ -2051,10 +2638,12 @@ def multiframe_deconv(
     batch_frames: int | None = None,
     # GPU tuning (optional knobs)
     mixed_precision: bool | None = None,      # default: auto (True on CUDA/MPS)
-    fft_kernel_threshold: int = 31,           # switch to FFT if K >= this (or lower if SR)
+    fft_kernel_threshold: int = 1024,           # switch to FFT if K >= this (or lower if SR)
     prefetch_batches: bool = True,            # CPU→GPU double-buffer prefetch
     use_channels_last: bool | None = None,    # default: auto (True on CUDA/MPS)
     force_cpu: bool = False,
+    star_mask_ref_path: str | None = None,     
+    low_mem: bool = False,
 ):
     """
     Streaming multi-frame deconvolution with optional SR (r>1).
@@ -2093,16 +2682,48 @@ def multiframe_deconv(
     Ht, Wt = _common_hw_from_paths(paths)
     _emit_pct(0.05, "preparing")
 
+    # --- LOW-MEM PATCH (begin) ---
+    if low_mem:
+        # Cap decoded-frame LRU to keep peak RAM sane on 16 GB laptops
+        try:
+            _FRAME_LRU.cap = max(1, min(getattr(_FRAME_LRU, "cap", 8), 2))
+        except Exception:
+            pass
+
+        # Disable CPU→GPU prefetch to avoid double-buffering allocations
+        prefetch_batches = False
+
+        # Relax SEP background grid & star detection canvas when requested
+        if use_variance_maps:
+            varmap_cfg = {**(varmap_cfg or {})}
+            # fewer, larger tiles → fewer big temporaries
+            varmap_cfg.setdefault("bw", 96)
+            varmap_cfg.setdefault("bh", 96)
+
+        if use_star_masks:
+            star_mask_cfg = {**(star_mask_cfg or {})}
+            # shrink detection canvas to limit temp buffers inside SEP/mask draw
+            star_mask_cfg["max_side"] = int(min(1024, int(star_mask_cfg.get("max_side", 2048))))
+    # --- LOW-MEM PATCH (end) ---
+
+
+    if any(os.path.splitext(p)[1].lower() == ".xisf" for p in paths):
+        status_cb("MFDeconv: priming XISF cache (one-time decode per frame)…")
+        for i, p in enumerate(paths, 1):
+            try:
+                _ = _xisf_cached_array(p)  # decode once, store memmap
+            except Exception as e:
+                status_cb(f"XISF cache failed for {p}: {e}")
+            if (i & 7) == 0 or i == len(paths):
+                _process_gui_events_safely()
+
     # per-frame loader & sequence view (closures capture Ht/Wt/color_mode/paths)
-    def _load_frame_i(i: int):
-        pth = paths[i]
-        ys, _hdrs = _stack_loader_memmap([pth], Ht, Wt, color_mode)
-        return ys[0]
+    def _load_frame_chw(i: int):
+        return _FRAME_LRU.get(paths[i], Ht, Wt, color_mode)
 
     class _FrameSeq:
         def __len__(self): return len(paths)
-        def __getitem__(self, i): return _load_frame_i(i)
-
+        def __getitem__(self, i): return _load_frame_chw(i)
     data = _FrameSeq()
 
     # ---- torch detection (optional) ----
@@ -2186,7 +2807,16 @@ def multiframe_deconv(
         save_dir=None,
         star_mask_cfg=star_mask_cfg,
         varmap_cfg=varmap_cfg,
+        star_mask_ref_path=star_mask_ref_path,
+        # NEW:
+        Ht=Ht, Wt=Wt, color_mode=color_mode,
     )
+
+    try:
+        import gc as _gc
+        _gc.collect()
+    except Exception:
+        pass
 
     # ---- SR lift of PSFs if needed ----
     r = int(max(1, super_res_factor))
@@ -2208,12 +2838,25 @@ def multiframe_deconv(
     def _seed_progress(frac, msg):
         _emit_pct(0.25 + 0.15 * float(frac), f"seed: {msg}")
 
-    seed_native = _build_seed_running_mu_sigma_from_paths(
-        paths, Ht, Wt, color_mode,
-        bootstrap_frames=20,
-        clip_sigma=5,
-        status_cb=status_cb, progress_cb=_seed_progress
-    )
+    seed_mode_s = str(seed_mode).lower().strip()
+    if seed_mode_s not in ("robust", "median"):
+        seed_mode_s = "robust"
+    if seed_mode_s == "median":
+        status_cb("MFDeconv: Building median seed (tiled, streaming)…")
+        seed_native = _seed_median_streaming(
+            paths, Ht, Wt,
+            color_mode=color_mode,
+            tile_hw=(256, 256),
+            status_cb=status_cb,
+            progress_cb=_seed_progress,
+            use_torch=TORCH_OK,   # ← auto: GPU if available, else NumPy
+        )
+    else:
+        seed_native = _seed_bootstrap_streaming(
+            paths, Ht, Wt, color_mode,
+            bootstrap_frames=20, clip_sigma=5,
+            status_cb=status_cb, progress_cb=_seed_progress
+        )
 
     # lift seed if SR
     if r > 1:
@@ -2230,7 +2873,11 @@ def multiframe_deconv(
     try: del seed_native
     except Exception: pass
 
-    gc.collect()
+    try:
+        import gc as _gc
+        _gc.collect()
+    except Exception:
+        pass
 
     flip_psf = [_flip_kernel(k) for k in psfs]
     _emit_pct(0.20, "PSF Ready")
@@ -2254,6 +2901,10 @@ def multiframe_deconv(
         else:                    auto_B = 8
     else:
         auto_B = int(max(1, batch_frames))
+
+    # --- LOW-MEM PATCH: clamp batch size hard ---
+    if low_mem:
+        auto_B = max(1, min(auto_B, 2))
 
     # ---- background/MAD telemetry (first frame) ----
     status_cb("MFDeconv: Calculating Backgrounds and MADs…")
@@ -2428,21 +3079,12 @@ def multiframe_deconv(
             return x.repeat_interleave(r_, dim=-2).repeat_interleave(r_, dim=-1)
 
     def _make_pinned_batch(idx, C_expected, to_device_dtype):
-        """
-        Assemble a batch -> always FP32 CPU tensors -> device FP32.
-        Enforces channel count and **returns NCHW contiguous** tensors.
-        """
         y_list, m_list, v_list = [], [], []
         for fi in idx:
-            y_nat = _sanitize_numeric(data[fi])
-            y_chw = _as_chw(y_nat).astype(np.float32, copy=False)
-
-            # enforce CHW and consistent channel count
+            y_chw = _load_frame_chw(fi)  # CHW float32 from cache
             if y_chw.ndim != 3:
-                raise RuntimeError(f"Frame {fi}: expected CHW after normalization, got shape {tuple(y_chw.shape)}")
+                raise RuntimeError(f"Frame {fi}: expected CHW, got {tuple(y_chw.shape)}")
             C_here = int(y_chw.shape[0])
-            if C_here <= 0:
-                raise RuntimeError(f"Frame {fi}: zero channels after normalization (shape={tuple(y_chw.shape)})")
             if C_expected is not None and C_here != C_expected:
                 raise RuntimeError(f"Mixed channel counts: expected C={C_expected}, got C={C_here} (frame {fi})")
 
@@ -2564,14 +3206,15 @@ def multiframe_deconv(
 
                             if use_fft:
                                 pred_list = []
+                                chan_tmp  = torch.empty_like(x_t[0], dtype=torch.float32)  # (H,W) single-channel
                                 for j, fi in enumerate(idx):
                                     C_here = x_bc_hw.shape[1]
-                                    # Allocate a fresh, contiguous NCHW (C,H,W)
-                                    pred_j = torch.empty_like(x_t, dtype=torch.float32)
-                                    Kf_pack = psf_fft[fi]  # (Kf, padH, padW, kh, kw)
+                                    pred_j = torch.empty_like(x_t, dtype=torch.float32)    # (C,H,W)
+                                    Kf_pack = psf_fft[fi]
                                     for c in range(C_here):
-                                        _fft_conv_same_torch(x_bc_hw[j, c], Kf_pack, out_spatial=pred_j[c])
-                                    pred_list.append(pred_j.contiguous())
+                                        _fft_conv_same_torch(x_bc_hw[j, c], Kf_pack, out_spatial=chan_tmp)  # write into chan_tmp
+                                        pred_j[c].copy_(chan_tmp)                                           # copy once
+                                    pred_list.append(pred_j)
                                 pred_super = torch.stack(pred_list, 0).contiguous()
                             else:
                                 pred_super = _grouped_conv_same_torch_per_sample(
@@ -2681,6 +3324,12 @@ def multiframe_deconv(
                     except Exception:
                         pass
 
+                    try:
+                        import gc as _gc
+                        _gc.collect()
+                    except Exception:
+                        pass
+
                     # Rebuild accumulators on CPU for this iteration:
                     # 1) convert x_t (seed/current estimate) to NumPy
                     x_t = x_t.detach().cpu().numpy()
@@ -2693,7 +3342,7 @@ def multiframe_deconv(
                     for fi in range(n_frames):
                         # load one frame as CHW (float32, sanitized)
                         y_nat = _sanitize_numeric(_load_frame_i(fi))
-                        y_chw = _as_chw(y_nat)
+                        y_chw = _load_frame_chw(fi)  # CHW float32 from cache
 
                         # forward predict (super grid) with this frame's PSF
                         pred_super = _conv_np_same(x_t, psfs[fi])
@@ -2823,6 +3472,36 @@ def multiframe_deconv(
 
                 x_t = (1.0 - relax) * x_t + relax * x_next
 
+            # --- LOW-MEM CLEANUP (per-iteration) ---
+            if low_mem:
+                # Torch temporaries we created in the iteration (best-effort deletes)
+                to_kill = [
+                    "pred_super", "pred_low", "wmap_low", "yb", "mb", "vb", "wk", "wkT",
+                    "back_num", "back_den", "pred_list", "back_num_list", "back_den_list",
+                    "x_bc_hw", "up_y", "up_pred", "psi_over_r", "vmap", "rnat", "deltas", "chan_tmp"
+                ]
+                loc = locals()
+                for _name in to_kill:
+                    if _name in loc:
+                        try:
+                            del loc[_name]
+                        except Exception:
+                            pass
+
+                # Proactively release CUDA cache every other iter
+                if use_torch:
+                    try:
+                        dev = _torch_device()
+                        if dev.type == "cuda" and (it % 2) == 0:
+                            import torch as _t
+                            _t.cuda.empty_cache()
+                    except Exception:
+                        pass
+
+                # Encourage Python to return big NumPy buffers to the OS sooner
+                import gc as _gc
+                _gc.collect()
+
 
             # ---- save intermediates ----
             if save_intermediate and (it % int(max(1, save_every)) == 0):
@@ -2896,6 +3575,11 @@ def multiframe_deconv(
     except Exception:
         pass
 
+    try:
+        _clear_all_caches()
+    except Exception:
+        pass
+
     return safe_out_path
 
 # -----------------------------
@@ -2910,11 +3594,14 @@ class MultiFrameDeconvWorker(QObject):
                  huber_delta, min_iters, use_star_masks=False, use_variance_maps=False, rho="huber",
                  star_mask_cfg: dict | None = None, varmap_cfg: dict | None = None,
                  save_intermediate: bool = False,
+                 seed_mode: str = "robust",
                  # NEW SR params
                  super_res_factor: int = 1,
                  sr_sigma: float = 1.1,
                  sr_psf_opt_iters: int = 250,
-                 sr_psf_opt_lr: float = 0.1):
+                 sr_psf_opt_lr: float = 0.1,
+                 star_mask_ref_path: str | None = None):
+
         super().__init__(parent)
         self.aligned_paths = aligned_paths
         self.output_path = output_path
@@ -2933,6 +3620,8 @@ class MultiFrameDeconvWorker(QObject):
         self.sr_sigma = float(sr_sigma)
         self.sr_psf_opt_iters = int(sr_psf_opt_iters)
         self.sr_psf_opt_lr = float(sr_psf_opt_lr)
+        self.star_mask_ref_path = star_mask_ref_path 
+        self.seed_mode = seed_mode
 
 
     def _log(self, s): self.progress.emit(s)
@@ -2945,6 +3634,7 @@ class MultiFrameDeconvWorker(QObject):
                 iters=self.iters,
                 kappa=self.kappa,
                 color_mode=self.color_mode,
+                seed_mode=self.seed_mode,
                 huber_delta=self.huber_delta,
                 use_star_masks=self.use_star_masks,
                 use_variance_maps=self.use_variance_maps,
@@ -2958,6 +3648,7 @@ class MultiFrameDeconvWorker(QObject):
                 sr_sigma=self.sr_sigma,
                 sr_psf_opt_iters=self.sr_psf_opt_iters,
                 sr_psf_opt_lr=self.sr_psf_opt_lr,
+                star_mask_ref_path=self.star_mask_ref_path,
             )
             self.finished.emit(True, "MF deconvolution complete.", out)
             _process_gui_events_safely()
