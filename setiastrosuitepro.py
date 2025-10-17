@@ -269,7 +269,7 @@ from pro.status_log_dock import StatusLogDock
 from pro.log_bus import LogBus
 
 
-VERSION = "1.3.11"
+VERSION = "1.3.12"
 
 
 
@@ -7742,8 +7742,11 @@ if __name__ == "__main__":
 
     # --- Splash FIRST ---
     _pm = _splash_pixmap()
-    splash = QSplashScreen(_pm)
+    # Use the SplashScreen window type; keep frameless; ensure it will be deleted.
+    splash = QSplashScreen(_pm, Qt.WindowType.SplashScreen)
     splash.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
+    splash.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+
     splash.show()
     splash.showMessage(
         "Starting Seti Astro Suite Pro…",
@@ -7751,7 +7754,6 @@ if __name__ == "__main__":
         QColor("white"),
     )
     app.processEvents()
-
     # --- Windows exe / multiprocessing friendly (after splash is visible) ---
     try:
         multiprocessing.freeze_support()
@@ -7783,14 +7785,24 @@ if __name__ == "__main__":
         win = AstroSuiteProMainWindow(image_manager=imgr)
         win.show()
 
-        splash.finish(win)
+        # Ensure the splash cannot resurrect later:
+        try:
+            splash.finish(win)   # hide and wait for first paint of win
+        finally:
+            splash.hide()
+            splash.close()       # triggers WA_DeleteOnClose if set
+            splash.deleteLater() # in case close doesn't destroy immediately
+            splash = None        # drop all references
         print(f"Seti Astro Suite Pro v{VERSION} (build {BUILD_TIMESTAMP}) up and running!")
         sys.exit(app.exec())
 
     except Exception:
         import traceback
         try:
-            splash.close()
+            if splash is not None:
+                splash.hide()
+                splash.close()
+                splash.deleteLater()
         except Exception:
             pass
         tb = traceback.format_exc()
