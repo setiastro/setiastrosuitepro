@@ -96,7 +96,88 @@ def _invert_mtf_linked_rgb(img_rgb01: np.ndarray, p: dict) -> np.ndarray:
     return y
 
 
+def _mtf_params_unlinked(img_rgb01: np.ndarray,
+                         shadowclip_sigma: float = -2.8,
+                         targetbg: float = 0.25):
+    """
+    Compute per-channel MTF parameters for RGB image in [0..1].
+    Returns dict with arrays: {'s': (3,), 'm': (3,), 'h': (3,)}
+    Exact inverse possible with _invert_mtf_unlinked_rgb using same params.
+    """
+    x = np.asarray(img_rgb01, dtype=np.float32)
+    if x.ndim == 2:
+        x = np.stack([x]*3, axis=-1)
+    elif x.ndim == 3 and x.shape[2] == 1:
+        x = np.repeat(x, 3, axis=2)
 
+    C = x.shape[2]
+    s = np.zeros(C, dtype=np.float32)
+    m = np.zeros(C, dtype=np.float32)
+    h = np.ones (C, dtype=np.float32)  # we normalize to ≤1 before 16-bit write
+
+    # robust peak/sigma per channel
+    for c in range(C):
+        ch = x[..., c]
+        # use your robust peak/sigma if available; fallback to median/MAD
+        try:
+            peak_c, sigma_c = _robust_peak_sigma(ch)
+        except NameError:
+            med = float(np.median(ch))
+            mad = float(np.median(np.abs(ch - med))) + 1e-12
+            peak_c  = med
+            sigma_c = 1.4826 * mad
+
+        # compute shadows s_c and clamp to [min, max-eps]
+        s_c = float(peak_c + shadowclip_sigma * sigma_c)
+        xmin = float(np.min(ch)) if ch.size else 0.0
+        xmax = float(np.max(ch)) if ch.size else 1.0
+        eps  = 1e-6
+        s_c  = float(np.clip(s_c, xmin, max(xmax - eps, xmin)))
+
+        # solve midtones m so that mtf maps peak→targetbg
+        denom = max(1e-12, (h[c] - s_c))
+        xnorm = (peak_c - s_c) / denom
+        xnorm = float(np.clip(xnorm, 1e-6, 1.0 - 1e-6))
+        y     = float(np.clip(targetbg, 1e-6, 1.0 - 1e-6))
+        d     = (2.0 * y * xnorm) - y - xnorm
+        m_c   = (xnorm * (y - 1.0)) / d if abs(d) > 1e-12 else 0.5
+        m_c   = float(np.clip(m_c, 1e-4, 1.0 - 1e-4))
+
+        s[c], m[c] = s_c, m_c
+
+    return {"s": s, "m": m, "h": h}
+
+
+def _apply_mtf_unlinked_rgb(img_rgb01: np.ndarray, p: dict) -> np.ndarray:
+    """
+    Apply per-channel MTF exactly. p from _mtf_params_unlinked.
+    """
+    x = np.asarray(img_rgb01, dtype=np.float32)
+    if x.ndim == 2:
+        x = np.stack([x]*3, axis=-1)
+    elif x.ndim == 3 and x.shape[2] == 1:
+        x = np.repeat(x, 3, axis=2)
+
+    out = np.empty_like(x, dtype=np.float32)
+    for c in range(x.shape[2]):
+        out[..., c] = _mtf_apply(x[..., c], float(p["s"][c]), float(p["m"][c]), float(p["h"][c]))
+    return np.clip(out, 0.0, 1.0)
+
+
+def _invert_mtf_unlinked_rgb(img_rgb01: np.ndarray, p: dict) -> np.ndarray:
+    """
+    Exact analytic inverse per channel (uses same s/m/h arrays).
+    """
+    y = np.asarray(img_rgb01, dtype=np.float32)
+    if y.ndim == 2:
+        y = np.stack([y]*3, axis=-1)
+    elif y.ndim == 3 and y.shape[2] == 1:
+        y = np.repeat(y, 3, axis=2)
+
+    out = np.empty_like(y, dtype=np.float32)
+    for c in range(y.shape[2]):
+        out[..., c] = _mtf_inverse(y[..., c], float(p["s"][c]), float(p["m"][c]), float(p["h"][c]))
+    return np.clip(out, 0.0, 1.0)
 
 def _stat_stretch_rgb(img: np.ndarray,
                       lo_pct: float = 0.25,
@@ -168,8 +249,20 @@ def _get_setting_any(settings, keys: tuple[str, ...], default: str = "") -> str:
 
 def starnet_starless_from_array(arr_rgb01: np.ndarray, settings, *, tmp_prefix="comet") -> np.ndarray:
     """
-    Always: MTF pre-stretch -> StarNet -> inverse MTF -> rescale -> starless RGB [0..1].
+    Statistical-Stretch round-trip for 32-bit data (pedestal-safe):
+      1) Record per-channel first-nonzero blackpoints (BP[c]); subtract them
+      2) Record per-channel medians M0[c]
+      3) Unlinked statistical stretch to target 0.25 (per-channel) -> write 16-bit TIFF
+      4) StarNet -> read starless TIFF
+      5) Per-channel statistical stretch back to each original median M0[c]
+      6) Add back BP[c]
+    Returns starless RGB float32 in [0..1] (or scaled back if you fed >1).
     """
+    import os, platform, subprocess
+    import numpy as np
+    from imageops.stretch import stretch_color_image, stretch_mono_image
+    # save_image / load_image / _get_setting_any / _safe_rm assumed available in this module
+
     exe = _get_setting_any(settings, ("starnet/exe_path", "paths/starnet"), "")
     if not exe or not os.path.exists(exe):
         raise RuntimeError("StarNet executable not configured (settings 'paths/starnet').")
@@ -178,27 +271,59 @@ def starnet_starless_from_array(arr_rgb01: np.ndarray, settings, *, tmp_prefix="
     in_path  = os.path.join(workdir, f"{tmp_prefix}_in.tif")
     out_path = os.path.join(workdir, f"{tmp_prefix}_out.tif")
 
-    # ensure RGB float32
-    x = arr_rgb01.astype(np.float32, copy=False)
-    if x.ndim == 2: x = np.stack([x]*3, axis=-1)
-    elif x.ndim == 3 and x.shape[2] == 1: x = np.repeat(x, 3, axis=2)
+    # --- Normalize input shape and safe values
+    x = np.asarray(arr_rgb01, dtype=np.float32)
+    if x.ndim == 2:
+        x = np.stack([x]*3, axis=-1)
+    elif x.ndim == 3 and x.shape[2] == 1:
+        x = np.repeat(x, 3, axis=2)
+    x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
 
-    # --- ALWAYS do deterministic MTF stretch like SASv2 ---
-    scale_factor = float(np.max(x)) if np.isfinite(np.max(x)) else 1.0
-    x_norm = x / scale_factor if scale_factor > 1.0 else x
-    mtf = _mtf_params_linked(x_norm, shadowclip_sigma=-2.8, targetbg=0.25)
-    x_stretched = _apply_mtf_linked_rgb(x_norm, mtf)
+    # Preserve original numeric scale if users pass >1.0
+    xmax = float(np.max(x)) if x.size else 1.0
+    scale_factor = xmax if xmax > 1.01 else 1.0
+    xin = (x / scale_factor) if scale_factor > 1.0 else x
+    xin = np.clip(xin, 0.0, 1.0)
 
-    # StarNet expects 16-bit TIFF in its folder
-    save_image(x_stretched, in_path, original_format="tif", bit_depth="16-bit",
-               original_header=None, is_mono=False, image_meta=None, file_meta=None)
+    H, W, _ = xin.shape
 
-    # run StarNet
-    import subprocess, platform
+    # --- Helper: per-channel first-nonzero (minimum positive) blackpoint
+    def _first_nonzero_bp_per_channel(img3):
+        bps = np.zeros(3, dtype=np.float32)
+        for c in range(3):
+            ch = img3[..., c].reshape(-1)
+            pos = ch[ch > 0.0]
+            bps[c] = float(pos.min()) if pos.size else 0.0
+        return bps
+
+    # 1) Per-channel "first non-zero" blackpoints, subtract pedestals
+    bp = _first_nonzero_bp_per_channel(xin)
+    xin_ped = xin - bp.reshape((1, 1, 3))
+    xin_ped = np.clip(xin_ped, 0.0, 1.0)
+
+    # 2) Record per-channel medians after pedestal removal
+    m0 = np.array([float(np.median(xin_ped[..., c])) for c in range(3)], dtype=np.float32)
+
+    # 3) Unlinked statistical stretch -> target 0.25
+    #    (uses your SAS math internally, per-channel)
+    target_bg = 0.25
+    x_for_starnet = stretch_color_image(
+        xin_ped, target_median=target_bg,
+        linked=False, normalize=False, apply_curves=False, curves_boost=0.0
+    ).astype(np.float32, copy=False)
+
+    # Write 16-bit TIFF for StarNet
+    save_image(
+        x_for_starnet, in_path,
+        original_format="tif", bit_depth="16-bit",
+        original_header=None, is_mono=False, image_meta=None, file_meta=None
+    )
+
+    # 4) Run StarNet
     exe_name = os.path.basename(exe).lower()
     if platform.system() in ("Windows", "Linux"):
         cmd = [exe, in_path, out_path, "256"]
-    else:  # macOS
+    else:
         cmd = [exe, "--input", in_path, "--output", out_path] if "starnet2" in exe_name else [exe, in_path, out_path]
 
     rc = subprocess.call(cmd, cwd=workdir)
@@ -206,18 +331,39 @@ def starnet_starless_from_array(arr_rgb01: np.ndarray, settings, *, tmp_prefix="
         _safe_rm(in_path); _safe_rm(out_path)
         raise RuntimeError(f"StarNet failed rc={rc}")
 
-    starless, _, _, _ = load_image(out_path)
+    starless_s, _, _, _ = load_image(out_path)
     _safe_rm(in_path); _safe_rm(out_path)
 
-    if starless.ndim == 2: starless = np.stack([starless]*3, axis=-1)
-    starless = starless.astype(np.float32, copy=False)
+    if starless_s.ndim == 2:
+        starless_s = np.stack([starless_s]*3, axis=-1)
+    elif starless_s.ndim == 3 and starless_s.shape[2] == 1:
+        starless_s = np.repeat(starless_s, 3, axis=2)
+    starless_s = np.clip(starless_s.astype(np.float32, copy=False), 0.0, 1.0)
 
-    # --- ALWAYS inverse the MTF & restore scale ---
-    starless = _invert_mtf_linked_rgb(starless, mtf)
+    # 5) Per-channel statistical stretch back to original per-channel medians (M0)
+    #    We use your mono stretch per channel so targets can differ by channel.
+    def _per_channel_to_targets(img3, targets_rgb):
+        out = np.empty_like(img3, dtype=np.float32)
+        for c in range(3):
+            ch = img3[..., c]
+            out[..., c] = stretch_mono_image(
+                ch, target_median=float(targets_rgb[c]),
+                normalize=False, apply_curves=False, curves_boost=0.0
+            )
+        return out
+
+    starless_back = _per_channel_to_targets(starless_s, m0)
+
+    # 6) Add back the original pedestals
+    starless_lin = starless_back + bp.reshape((1, 1, 3))
+
+    # Restore original scale if we normalized earlier
     if scale_factor > 1.0:
-        starless *= scale_factor
+        starless_lin *= scale_factor
 
-    return np.clip(starless, 0.0, 1.0)
+    # Match previous function’s contract (float32, clipped to [0..1])
+    return np.clip(starless_lin, 0.0, 1.0).astype(np.float32, copy=False)
+
 
 
 
@@ -291,10 +437,96 @@ def remove_stars(main):
         _run_starnet(main, doc)
 
 
+def _first_nonzero_bp_per_channel(img3: np.ndarray) -> np.ndarray:
+    """Per-channel minimum positive sample (0 if none)."""
+    bps = np.zeros(3, dtype=np.float32)
+    for c in range(3):
+        ch = img3[..., c].reshape(-1)
+        pos = ch[ch > 0.0]
+        bps[c] = float(pos.min()) if pos.size else 0.0
+    return bps
+
+
+def _prepare_statstretch_input_for_starnet(img_rgb01: np.ndarray) -> tuple[np.ndarray, dict]:
+    """
+    Build the input to StarNet using your statistical stretch flow:
+      • record per-channel first-nonzero blackpoints
+      • subtract pedestals
+      • record per-channel medians
+      • unlinked statistical stretch to target 0.25
+    Returns: (stretched_for_starnet_01, meta_dict)
+    """
+    import numpy as np
+    from imageops.stretch import stretch_color_image
+
+    x = np.asarray(img_rgb01, dtype=np.float32)
+    if x.ndim == 2:
+        x = np.stack([x]*3, axis=-1)
+    elif x.ndim == 3 and x.shape[2] == 1:
+        x = np.repeat(x, 3, axis=2)
+    x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
+    x = np.clip(x, 0.0, 1.0)
+
+    # per-channel pedestal
+    bp = _first_nonzero_bp_per_channel(x)
+    xin_ped = np.clip(x - bp.reshape((1, 1, 3)), 0.0, 1.0)
+
+    # per-channel medians (after pedestal removal)
+    m0 = np.array([float(np.median(xin_ped[..., c])) for c in range(3)], dtype=np.float32)
+
+    # unlinked stat-stretch to 0.25
+    x_for_starnet = stretch_color_image(
+        xin_ped, target_median=0.25, linked=False,
+        normalize=False, apply_curves=False, curves_boost=0.0
+    ).astype(np.float32, copy=False)
+
+    meta = {
+        "statstretch": True,
+        "bp": bp,              # pedestals we subtracted (in 0..1 domain)
+        "m0": m0,              # per-channel original medians (post-pedestal)
+    }
+    return x_for_starnet, meta
+
+
+def _inverse_statstretch_from_starless(starless_s01: np.ndarray, meta: dict) -> np.ndarray:
+    """
+    Inverse of the stat-stretch prep:
+      • per-channel stretch back to each original median m0[c]
+      • add back the saved pedestal bp[c]
+    Returns starless in 0..1 domain (float32).
+    """
+    import numpy as np
+    from imageops.stretch import stretch_mono_image
+
+    s = np.asarray(starless_s01, dtype=np.float32)
+    if s.ndim == 2:
+        s = np.stack([s]*3, axis=-1)
+    elif s.ndim == 3 and s.shape[2] == 1:
+        s = np.repeat(s, 3, axis=2)
+    s = np.clip(s, 0.0, 1.0)
+
+    bp = np.asarray(meta.get("bp"), dtype=np.float32).reshape((1, 1, 3))
+    m0 = np.asarray(meta.get("m0"), dtype=np.float32)
+
+    out = np.empty_like(s, dtype=np.float32)
+    for c in range(3):
+        out[..., c] = stretch_mono_image(
+            s[..., c], target_median=float(m0[c]),
+            normalize=False, apply_curves=False, curves_boost=0.0
+        )
+
+    out = out + bp
+    return np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
+
+
 # ------------------------------------------------------------
 # StarNet (SASv2-like: 16-bit TIFF in StarNet folder)
 # ------------------------------------------------------------
 def _run_starnet(main, doc):
+    import os, platform, numpy as np
+    from PyQt6.QtWidgets import QFileDialog, QMessageBox
+
+    # --- Resolve StarNet exe, persist in settings
     exe = _get_setting_any(getattr(main, "settings", None),
                            ("starnet/exe_path", "paths/starnet"), "")
     if not exe or not os.path.exists(exe):
@@ -316,62 +548,65 @@ def _run_starnet(main, doc):
                              f"The current operating system '{sysname}' is not supported.")
         return
 
-    # SASv2: ask linearity
+    # --- Ask linearity (SASv2 behavior)
     reply = QMessageBox.question(
         main, "Image Linearity", "Is the current image linear?",
         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         QMessageBox.StandardButton.No
     )
     is_linear = (reply == QMessageBox.StandardButton.Yes)
+    did_stretch = is_linear 
 
-    # ensure RGB for StarNet
+    # --- Ensure RGB float32 in safe range
     src = np.asarray(doc.image)
     if src.ndim == 2:
-        processing_image = np.stack([src] * 3, axis=-1)
+        processing_image = np.stack([src]*3, axis=-1)
     elif src.ndim == 3 and src.shape[2] == 1:
         processing_image = np.repeat(src, 3, axis=2)
     else:
         processing_image = src
-    processing_image = processing_image.astype(np.float32, copy=False)
+    processing_image = np.nan_to_num(processing_image.astype(np.float32, copy=False),
+                                     nan=0.0, posinf=0.0, neginf=0.0)
 
-    # optional stretch (SASv2)
-    did_stretch = False
-    if is_linear:
-        did_stretch = True
-        # normalize if >1.0 (Siril rescales to avoid clipping on 16-bit TIFF)
-        scale_factor = float(np.max(processing_image))
-        if scale_factor > 1.0:
-            processing_norm = processing_image / scale_factor
-        else:
-            processing_norm = processing_image
-
-        mtf_params = _mtf_params_linked(processing_norm, shadowclip_sigma=-2.8, targetbg=0.25)
-        processing_image = _apply_mtf_linked_rgb(processing_norm, mtf_params)
-
-        # stash params for inverse step
-        setattr(main, "_starnet_last_mtf_params", {
-            "s": mtf_params["s"], "m": mtf_params["m"], "h": mtf_params["h"],
-            "scale": scale_factor
-        })
+    # --- Scale normalization if >1.0 (same reason as before: 16-bit export safety)
+    scale_factor = float(np.max(processing_image))
+    if scale_factor > 1.0:
+        processing_norm = processing_image / scale_factor
     else:
-        if hasattr(main, "_starnet_last_mtf_params"):
-            delattr(main, "_starnet_last_mtf_params")
+        processing_norm = processing_image
 
-    # write input/output paths in StarNet folder
+    # --- Build input/output paths
     starnet_dir = os.path.dirname(exe) or os.getcwd()
-    input_image_path = os.path.join(starnet_dir, "imagetoremovestars.tif")
+    input_image_path  = os.path.join(starnet_dir, "imagetoremovestars.tif")
     output_image_path = os.path.join(starnet_dir, "starless.tif")
 
+    # --- Prepare input for StarNet
+    meta = None
+    img_for_starnet = processing_norm
+    if is_linear:
+        # Statistical round-trip preparation (records pedestals+medians)
+        img_for_starnet, meta = _prepare_statstretch_input_for_starnet(processing_norm)
+        # 🔐 Stash the exact meta for inverse step later
+        setattr(main, "_starnet_stat_meta", {
+            "bp": meta["bp"],         # exact per-channel first-nonzero BP used
+            "m0": meta["m0"],         # exact per-channel medians after pedestal removal
+            "scale": scale_factor,    # pre-export normalization scale
+        })
+    else:
+        # make sure no stale meta lingers
+        if hasattr(main, "_starnet_stat_meta"):
+            delattr(main, "_starnet_stat_meta")
+
+    # --- Write TIFF for StarNet
     try:
-        # StarNet requires 16-bit TIFF
-        save_image(processing_image, input_image_path,
+        save_image(img_for_starnet, input_image_path,
                    original_format="tif", bit_depth="16-bit",
-                   original_header=None, is_mono=False,
-                   image_meta=None, file_meta=None)
+                   original_header=None, is_mono=False, image_meta=None, file_meta=None)
     except Exception as e:
         QMessageBox.critical(main, "StarNet", f"Failed to write input TIFF:\n{e}")
         return
 
+    # --- Launch StarNet in a worker (keeps your progress dialog)
     exe_name = os.path.basename(exe).lower()
     if sysname in ("Windows", "Linux"):
         command = [exe, input_image_path, output_image_path, "256"]
@@ -384,8 +619,12 @@ def _run_starnet(main, doc):
     dlg = _ProcDialog(main, title="StarNet Progress")
     thr = _ProcThread(command, cwd=starnet_dir)
     thr.output_signal.connect(dlg.append_text)
+
+    # Capture everything we need in the closure for finish handler
     thr.finished_signal.connect(
-        lambda rc: _on_starnet_finished(main, doc, rc, dlg, input_image_path, output_image_path, did_stretch)
+        lambda rc, ds=did_stretch: _on_starnet_finished(
+            main, doc, rc, dlg, input_image_path, output_image_path, ds
+        )
     )
     dlg.cancel_button.clicked.connect(thr.terminate)
 
@@ -395,6 +634,18 @@ def _run_starnet(main, doc):
 
 
 def _on_starnet_finished(main, doc, return_code, dialog, input_path, output_path, did_stretch):
+    import os, numpy as np
+    from PyQt6.QtWidgets import QMessageBox
+    from imageops.stretch import stretch_mono_image  # used for statistical inverse
+
+    def _first_nonzero_bp_per_channel(img3: np.ndarray) -> np.ndarray:
+        bps = np.zeros(3, dtype=np.float32)
+        for c in range(3):
+            ch = img3[..., c].reshape(-1)
+            pos = ch[ch > 0.0]
+            bps[c] = float(pos.min()) if pos.size else 0.0
+        return bps
+
     dialog.append_text(f"\nProcess finished with return code {return_code}.\n")
     if return_code != 0:
         QMessageBox.critical(main, "StarNet Error", f"StarNet failed with return code {return_code}.")
@@ -410,28 +661,21 @@ def _on_starnet_finished(main, doc, return_code, dialog, input_path, output_path
 
     dialog.append_text(f"Starless image found at {output_path}. Loading image...\n")
     starless_rgb, _, _, _ = load_image(output_path)
+    _safe_rm(input_path); _safe_rm(output_path)
+
     if starless_rgb is None:
         QMessageBox.critical(main, "StarNet Error", "Failed to load starless image.")
-        _safe_rm(input_path); _safe_rm(output_path)
         dialog.close()
         return
 
-    # ensure 3ch
-    if starless_rgb.ndim == 2 or (starless_rgb.ndim == 3 and starless_rgb.shape[2] == 1):
+    # ensure 3ch float32 in [0..1]
+    if starless_rgb.ndim == 2:
         starless_rgb = np.stack([starless_rgb] * 3, axis=-1)
-    starless_rgb = starless_rgb.astype(np.float32, copy=False)
+    elif starless_rgb.ndim == 3 and starless_rgb.shape[2] == 1:
+        starless_rgb = np.repeat(starless_rgb, 3, axis=2)
+    starless_rgb = np.clip(starless_rgb.astype(np.float32, copy=False), 0.0, 1.0)
 
-    # unstretch (if we stretched)
-    if did_stretch:
-        params = getattr(main, "_starnet_last_mtf_params", None)
-        if params:
-            starless_rgb = _invert_mtf_linked_rgb(starless_rgb, params)
-            if float(params.get("scale", 1.0)) > 1.0:
-                starless_rgb = starless_rgb * float(params["scale"])
-            # keep numeric sanity
-            starless_rgb = np.clip(starless_rgb, 0.0, 1.0)
-            
-    # original image (from the doc)
+    # original image (from the doc) as 3ch float32
     orig = np.asarray(doc.image)
     if orig.ndim == 2:
         original_rgb = np.stack([orig] * 3, axis=-1)
@@ -441,12 +685,69 @@ def _on_starnet_finished(main, doc, return_code, dialog, input_path, output_path
         original_rgb = orig
     original_rgb = original_rgb.astype(np.float32, copy=False)
 
-    # Stars-Only (SASv2 formula)
+    # ---- Inversion back to the document’s domain ----
+    if did_stretch:
+        mtf_params = getattr(main, "_starnet_last_mtf_params", None)
+
+        if mtf_params:
+            # Back-compat: old MTF path
+            dialog.append_text("Unstretching (MTF inverse)...\n")
+            try:
+                starless_rgb = _invert_mtf_linked_rgb(starless_rgb, mtf_params)
+                sc = float(mtf_params.get("scale", 1.0))
+                if sc > 1.0:
+                    starless_rgb = starless_rgb * sc
+            except Exception as e:
+                dialog.append_text(f"⚠️ MTF inverse failed: {e}\n")
+            starless_rgb = np.clip(starless_rgb, 0.0, 1.0)
+
+        else:
+            # ✅ Statistical round-trip inverse using the EXACT meta captured during prep
+            dialog.append_text("Unstretching (statistical inverse w/ original BP/M0)...\n")
+
+            meta = getattr(main, "_starnet_stat_meta", None)
+            if meta is None:
+                # Fallback (shouldn't happen, but be safe): recompute from original
+                dialog.append_text("⚠️ Missing stat meta; recomputing BP/M0 from original.\n")
+                scale_factor = float(np.max(original_rgb)) if original_rgb.size else 1.0
+                orig_norm = np.clip(original_rgb / scale_factor, 0.0, 1.0) if scale_factor > 1.0 else np.clip(original_rgb, 0.0, 1.0)
+                bp_vec = _first_nonzero_bp_per_channel(orig_norm)
+                m0_vec = np.array(
+                    [float(np.median(np.clip(orig_norm[..., c] - bp_vec[c], 0.0, 1.0))) for c in range(3)],
+                    dtype=np.float32
+                )
+            else:
+                bp_vec = np.asarray(meta.get("bp"), dtype=np.float32)
+                m0_vec = np.asarray(meta.get("m0"), dtype=np.float32)
+                scale_factor = float(meta.get("scale", 1.0))
+
+            # Per-channel inverse: stretch back to each original median m0[c]
+            inv = np.empty_like(starless_rgb, dtype=np.float32)
+            for c in range(3):
+                inv[..., c] = stretch_mono_image(
+                    starless_rgb[..., c],
+                    target_median=float(m0_vec[c]),
+                    normalize=False, apply_curves=False, curves_boost=0.0
+                )
+
+            # 🔁 Add back the EXACT original pedestals
+            inv += bp_vec.reshape((1, 1, 3))
+            inv = np.clip(inv, 0.0, 1.0)
+
+            # Restore original numeric scale, if any
+            if scale_factor > 1.0:
+                inv = inv * scale_factor
+
+            starless_rgb = np.clip(inv, 0.0, 1.0)
+
+            # Clean up stashed meta so it can't leak to the next run
+            if hasattr(main, "_starnet_stat_meta"):
+                delattr(main, "_starnet_stat_meta")
+
+
+    # ---- Stars-Only = original − starless (linear-domain diff) ----
     dialog.append_text("Generating stars-only image...\n")
-    with np.errstate(divide='ignore', invalid='ignore'):
-        stars_only = (original_rgb - starless_rgb) / np.clip(1.0 - starless_rgb, 1e-6, None)
-        stars_only = np.nan_to_num(stars_only, nan=0.0, posinf=0.0, neginf=0.0)
-    stars_only = np.clip(stars_only, 0.0, 1.0)
+    stars_only = np.clip(original_rgb - starless_rgb, 0.0, 1.0)
 
     # apply active mask (doc-based)
     m3 = _active_mask3_from_doc(doc, stars_only.shape[1], stars_only.shape[0])
@@ -460,11 +761,10 @@ def _on_starnet_finished(main, doc, return_code, dialog, input_path, output_path
     _push_as_new_doc(main, doc, stars_only, title_suffix="_stars", source="Stars-Only (StarNet)")
     dialog.append_text("Stars-only image pushed.\n")
 
-    # mask-blend starless with original using active mask
+    # mask-blend starless with original using active mask, then overwrite current view
     dialog.append_text("Preparing to update current view with starless (mask-blend)...\n")
     final_starless = _mask_blend_with_doc_mask(doc, starless_rgb, original_rgb)
 
-    # overwrite the current doc view
     try:
         meta = {
             "step_name": "Stars Removed",
@@ -477,9 +777,9 @@ def _on_starnet_finished(main, doc, return_code, dialog, input_path, output_path
     except Exception as e:
         QMessageBox.critical(main, "StarNet Error", f"Failed to apply starless result:\n{e}")
 
-    _safe_rm(input_path); _safe_rm(output_path)
     dialog.append_text("Temporary files cleaned up.\n")
     dialog.close()
+
 
 
 # ------------------------------------------------------------

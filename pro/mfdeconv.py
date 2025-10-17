@@ -3225,33 +3225,50 @@ def multiframe_deconv(
 
                             # --- robust weights (UNCHANGED) ---
                             rnat = yb - pred_low
-                            if huber_delta < 0:
-                                if auto_delta_cache is not None and (it % 5 == 1 or any(auto_delta_cache[fi] is None for fi in idx)):
-                                    Btmp, C_here, H0, W0 = rnat.shape
-                                    med, mad = _robust_med_mad_t(rnat, max_elems_per_sample=2_000_000)
-                                    rms = 1.4826 * mad
-                                    for j, fi in enumerate(idx):
-                                        auto_delta_cache[fi] = float((-huber_delta) * torch.clamp(rms[j, 0, 0, 0], min=1e-6).item())
-                                deltas = torch.tensor([auto_delta_cache[fi] for fi in idx], device=x_t.device,
-                                                    dtype=torch.float32).view(B, 1, 1, 1)
-                            else:
-                                deltas = torch.tensor(float(huber_delta), device=x_t.device,
-                                                    dtype=torch.float32).view(1, 1, 1, 1)
-                            absr = rnat.abs()
-                            psi_over_r = torch.where(absr <= deltas, torch.ones_like(absr),
-                                                    deltas / (absr + EPS))
+
+                            # Build/estimate variance map on the native grid (per batch)
                             if vb is None:
+                                # robust per-batch variance estimate
                                 med, mad = _robust_med_mad_t(rnat, max_elems_per_sample=2_000_000)
                                 vmap = (1.4826 * mad) ** 2
+                                # repeat across channels
                                 vmap = vmap.repeat(1, Cn, rnat.shape[-2], rnat.shape[-1]).contiguous()
                             else:
                                 vmap = vb.unsqueeze(1).repeat(1, Cn, 1, 1).contiguous()
-                            if DEBUG_FLAT_WEIGHTS:
-                                wmap_low = mb.unsqueeze(1)
+
+                            if str(rho).lower() == "l2":
+                                # L2 ⇒ psi/r = 1 (no robust clipping). Weighted LS with mask/variance.
+                                psi_over_r = torch.ones_like(rnat, dtype=torch.float32, device=x_t.device)
                             else:
-                                wmap_low = (psi_over_r / (vmap + EPS))
+                                # Huber ⇒ auto-delta or fixed delta
+                                if huber_delta < 0:
+                                    # ensure we have auto deltas
+                                    if (auto_delta_cache is None) or any(auto_delta_cache[fi] is None for fi in idx) or (it % 5 == 1):
+                                        Btmp, C_here, H0, W0 = rnat.shape
+                                        med, mad = _robust_med_mad_t(rnat, max_elems_per_sample=2_000_000)
+                                        rms = 1.4826 * mad
+                                        # store per-frame deltas
+                                        if auto_delta_cache is None:
+                                            # should not happen because we gated creation earlier, but be safe
+                                            auto_delta_cache = [None] * n_frames
+                                        for j, fi in enumerate(idx):
+                                            auto_delta_cache[fi] = float((-huber_delta) * torch.clamp(rms[j, 0, 0, 0], min=1e-6).item())
+                                    deltas = torch.tensor([auto_delta_cache[fi] for fi in idx],
+                                                        device=x_t.device, dtype=torch.float32).view(B, 1, 1, 1)
+                                else:
+                                    deltas = torch.tensor(float(huber_delta), device=x_t.device,
+                                                        dtype=torch.float32).view(1, 1, 1, 1)
+
+                                absr = rnat.abs()
+                                psi_over_r = torch.where(absr <= deltas, torch.ones_like(absr, dtype=torch.float32),
+                                                        deltas / (absr + EPS))
+
+                            # compose weights with mask and variance
+                            if DEBUG_FLAT_WEIGHTS:
+                                wmap_low = mb.unsqueeze(1)  # debug: mask-only weighting
+                            else:
                                 m1 = mb.unsqueeze(1).repeat(1, Cn, 1, 1).contiguous()
-                                wmap_low = wmap_low * m1
+                                wmap_low = (psi_over_r / (vmap + EPS)) * m1
                                 wmap_low = torch.nan_to_num(wmap_low, nan=0.0, posinf=0.0, neginf=0.0)
 
                             # --- adjoint + backproject (UNCHANGED) ---

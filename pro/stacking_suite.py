@@ -12141,19 +12141,20 @@ class StackingSuiteDialog(QDialog):
                             log("  ◦ DarkStar comet star removal…")
                             starless = CS.darkstar_starless_from_array(warped, self.settings)
                             orig_for_blend = warped
+
+                            m3 = _expand_mask_for(warped, core_mask)
+                            protected = np.clip(starless * (1.0 - m3) + orig_for_blend * m3, 0.0, 1.0).astype(np.float32)                            
                         else:
                             log("  ◦ StarNet comet star removal…")
                             # Frames are linear at this stage
-                            orig_unstretched, starless = CS.starnet_starless_pair_from_array(
+                            protected, _ = CS.starnet_starless_pair_from_array(
                                 warped, self.settings, is_linear=True,
-                                debug_save_dir=debug_dir, debug_tag=f"{i:04d}_{os.path.splitext(os.path.basename(p))[0]}"
+                                debug_save_dir=debug_dir, debug_tag=f"{i:04d}_{os.path.splitext(os.path.basename(p))[0]}", core_mask=core_mask
                             )
-                            orig_for_blend = orig_unstretched
+                            protected = np.clip(protected, 0.0, 1.0).astype(np.float32)
 
                         # Protect nucleus: blend original back under soft core mask
 
-                        m3 = _expand_mask_for(warped, core_mask)
-                        protected = np.clip(starless * (1.0 - m3) + orig_for_blend * m3, 0.0, 1.0).astype(np.float32)
 
 
                         # Persist as temp FITS (comet-aligned)

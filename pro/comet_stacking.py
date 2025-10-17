@@ -10,10 +10,10 @@ import sep
 from pro.remove_stars import (
     _get_setting_any,
     _mtf_params_linked, _apply_mtf_linked_rgb, _invert_mtf_linked_rgb,
-    _resolve_darkstar_exe, _ensure_exec_bit, _purge_darkstar_io,
-    load_image as _rs_load_image, save_image as _rs_save_image  # reuse I/O
+    _resolve_darkstar_exe, _ensure_exec_bit, _purge_darkstar_io
+
 )
-from legacy.image_manager import load_image, save_image
+from legacy.image_manager import (load_image, save_image)
 from imageops.stretch import stretch_color_image, stretch_mono_image
 
 def _blackpoint_nonzero(img_norm: np.ndarray, p: float = 0.1) -> float:
@@ -67,6 +67,7 @@ def starnet_starless_pair_from_array(
     is_linear: bool,
     debug_save_dir: str | None = None,
     debug_tag: str | None = None,
+    core_mask: np.ndarray | None = None,   # <-- added (keyword-only)
 ):
     """
     Standalone-like StarNet path using our imageops stretch:
@@ -74,7 +75,6 @@ def starnet_starless_pair_from_array(
       - then:       pseudo-linear "unstretch" both orig & starless with 0.05
     This avoids linked-MTF chroma issues and keeps both branches consistent.
     """
-
 
     exe = _get_setting_any(settings, ("starnet/exe_path", "paths/starnet"), "")
     if not exe or not os.path.exists(exe):
@@ -95,9 +95,8 @@ def starnet_starless_pair_from_array(
     # -------- pre-StarNet stretch (per channel), only if the data are linear ----------
     if is_linear:
         # channel-wise stretch to avoid red cast; your funcs expect [0..1]
-        pre = stretch_color_image(x3, 0.25, False, False, False) if not was_mono \
-              else np.stack([stretch_mono_image(x, 0.25, False, False)]*3, axis=-1)
-        pre = np.clip(pre, 0.0, 1.0).astype(np.float32, copy=False)
+        pre = stretch_color_image(x3, 0.25, False, False, False)
+
     else:
         pre = x3  # already non-linear; pass through
 
@@ -106,7 +105,7 @@ def starnet_starless_pair_from_array(
     in_path  = os.path.join(starnet_dir, "imagetoremovestars.tif")
     out_path = os.path.join(starnet_dir, "starless.tif")
 
-    _rs_save_image(pre, in_path, original_format="tif", bit_depth="16-bit",
+    save_image(pre, in_path, original_format="tif", bit_depth="16-bit",
                    original_header=None, is_mono=False, image_meta=None, file_meta=None)
 
     exe_name = os.path.basename(exe).lower()
@@ -121,7 +120,7 @@ def starnet_starless_pair_from_array(
         except Exception: pass
         raise RuntimeError(f"StarNet failed (rc={rc}).")
 
-    starless_pre, _, _, _ = _rs_load_image(out_path)
+    starless_pre, _, _, _ = load_image(out_path)
     try:
         os.remove(in_path); os.remove(out_path)
     except Exception:
@@ -133,23 +132,26 @@ def starnet_starless_pair_from_array(
         starless_pre = np.repeat(starless_pre, 3, axis=2)
     starless_pre = starless_pre.astype(np.float32, copy=False)
 
-
-    # -------- “unstretch” → shared pseudo-linear space for BOTH branches ----------
-    if is_linear:
-        # lighter per-channel stretch to approximate linear domain for blending
-        orig_unstretch = stretch_color_image(pre, 0.05, False, False, False) if not was_mono \
-                         else np.stack([stretch_mono_image(pre[...,0], 0.05, False, False)]*3, axis=-1)
-        starless_unstretch = stretch_color_image(starless_pre, 0.05, False, False, False) if not was_mono \
-                             else np.stack([stretch_mono_image(starless_pre[...,0], 0.05, False, False)]*3, axis=-1)
+    # ---- mask-protect in the SAME (stretched) domain as pre/starless_pre ----
+    if core_mask is not None:
+        m = np.clip(core_mask.astype(np.float32), 0.0, 1.0)
+        m3 = np.repeat(m[..., None], 3, axis=2)
+        protected_stretched = starless_pre * (1.0 - m3) + pre * m3
     else:
-        # no transform if input was already non-linear
-        orig_unstretch = pre
-        starless_unstretch = starless_pre
+        protected_stretched = starless_pre
 
-    orig_unstretch = np.clip(orig_unstretch, 0.0, 1.0).astype(np.float32, copy=False)
-    starless_unstretch = np.clip(starless_unstretch, 0.0, 1.0).astype(np.float32, copy=False)
-    return orig_unstretch, starless_unstretch
+    # -------- “unstretch” → shared pseudo-linear space (once, after blend) ----------
+    if is_linear:
+        protected_unstretch = stretch_color_image(
+            protected_stretched, 0.05, False, False, False
+        )
+    else:
+        protected_unstretch = protected_stretched
 
+    protected_unstretch = np.clip(
+        protected_unstretch.astype(np.float32, copy=False), 0.0, 1.0
+    )
+    return protected_unstretch, protected_unstretch
 
 
 
@@ -182,7 +184,7 @@ def darkstar_starless_from_array(src_rgb01: np.ndarray, settings, **_ignored) ->
     out_path = os.path.join(output_dir, "imagetoremovestars_starless.tif")
 
     # save input as float32 TIFF
-    _rs_save_image(img, in_path, original_format="tif", bit_depth="32-bit floating point",
+    save_image(img, in_path, original_format="tif", bit_depth="32-bit floating point",
                    original_header=None, is_mono=False, image_meta=None, file_meta=None)
 
     # build command (SASv2 parity): default unscreen, show extracted stars off, stride 512
@@ -194,7 +196,7 @@ def darkstar_starless_from_array(src_rgb01: np.ndarray, settings, **_ignored) ->
         except Exception: pass
         raise RuntimeError(f"DarkStar failed (rc={rc}).")
 
-    starless, _, _, _ = _rs_load_image(out_path)
+    starless, _, _, _ = load_image(out_path)
     # cleanup
     try:
         os.remove(in_path)
@@ -1027,15 +1029,22 @@ def _starless_frame_for_comet(img: np.ndarray,
 
     # run
     if tool == "CosmicClarityDarkStar":
+        # DarkStar returns in the same domain we fed in.
+        base_for_mask = src
         starless = darkstar_starless_from_array(src, settings)
-    else:
-        _, starless = starnet_starless_pair_from_array(src, settings, is_linear=is_linear)
 
-    # protect nucleus (blend original back where mask=1)
-    m = core_mask.astype(np.float32)
-    m3 = np.repeat(m[...,None], 3, axis=2)
-    protected = starless * (1.0 - m3) + src * m3
-    return np.clip(protected, 0.0, 1.0)
+        # protect nucleus (blend original back where mask=1), in *current* domain
+        m = core_mask.astype(np.float32)
+        m3 = np.repeat(m[..., None], 3, axis=2)
+        protected = starless * (1.0 - m3) + base_for_mask * m3
+        return np.clip(protected, 0.0, 1.0)
+
+    else:
+        # StarNet path: do mask-blend inside the function (in its stretched domain)
+        protected, _ = starnet_starless_pair_from_array(
+            src, settings, is_linear=is_linear, core_mask=core_mask  # NOTE: keyword arg
+        )
+        return np.clip(protected, 0.0, 1.0)
 
 
 def _gamma_stretch(x: np.ndarray, gamma: float = 0.6,

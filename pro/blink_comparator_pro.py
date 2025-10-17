@@ -100,15 +100,43 @@ class MetricsPanel(QWidget):
             data = data.astype(np.float32, copy=False)
 
         try:
-            star_cnt, fwhm, ecc = measure_stars_sep(
-                data,
-                thresh_sigma=7.0,
+            # --- match old Blink’s SEP pipeline ---
+            bkg = sep.Background(data)
+            back = bkg.back()
+            try:
+                gr = float(bkg.globalrms)
+            except Exception:
+                # some SEP builds only expose per-cell rms map
+                gr = float(np.median(np.asarray(bkg.rms(), dtype=np.float32)))
+
+            cat = sep.extract(
+                data - back,
+                thresh=7.0,
+                err=gr,
                 minarea=16,
+                clean=True,
                 deblend_nthresh=32,
-                aggregate="median",
             )
+
+            if len(cat) > 0:
+                # FWHM via geometric-mean sigma (old Blink)
+                sig = np.sqrt(cat['a'] * cat['b']).astype(np.float32, copy=False)
+                fwhm = float(np.nanmedian(2.3548 * sig))
+
+                # TRUE eccentricity: e = sqrt(1 - (b/a)^2)  (old Blink)
+                # guard against divide-by-zero and NaNs
+                a = np.maximum(cat['a'].astype(np.float32, copy=False), 1e-12)
+                b = np.clip(cat['b'].astype(np.float32, copy=False), 0.0, None)
+                q = np.clip(b / a, 0.0, 1.0)  # b/a
+                e_true = np.sqrt(np.maximum(0.0, 1.0 - q * q))
+                ecc = float(np.nanmedian(e_true))
+
+                star_cnt = int(len(cat))
+            else:
+                fwhm, ecc, star_cnt = np.nan, np.nan, 0
+
         except Exception:
-            # same sentinel as before if you prefer
+            # same sentinel behavior as before
             fwhm, ecc, star_cnt = 10.0, 1.0, 0
 
         orig_back = entry.get('orig_background', np.nan)
