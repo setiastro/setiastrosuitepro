@@ -2882,16 +2882,35 @@ def multiframe_deconv(
     flip_psf = [_flip_kernel(k) for k in psfs]
     _emit_pct(0.20, "PSF Ready")
 
-    # final SR grid size (Hs,Ws)
-    # Ensure CHW for the Torch path (mono → 1×H×W)
+    # --- Harmonize seed channels with the actual frames ---
+    # Probe the first frame's channel count (CHW from the cache)
+    try:
+        y0_probe = _load_frame_chw(0)               # CHW float32
+        C_ref = 1 if y0_probe.ndim == 2 else int(y0_probe.shape[0])
+    except Exception:
+        # Fallback: infer from seed if probing fails
+        C_ref = 1 if x.ndim == 2 else int(x.shape[0])
+
+    # If median seed came back mono but frames are RGB, broadcast it
+    if x.ndim == 2 and C_ref == 3:
+        x = np.stack([x] * 3, axis=0)
+    elif x.ndim == 3 and x.shape[0] == 1 and C_ref == 3:
+        x = np.repeat(x, 3, axis=0)
+    # If seed is RGB but frames are mono (rare), collapse to luma
+    elif x.ndim == 3 and x.shape[0] == 3 and C_ref == 1:
+        # ITU-R BT.709 luma (safe in float)
+        x = (0.2126 * x[0] + 0.7152 * x[1] + 0.0722 * x[2]).astype(np.float32)
+
+    # Ensure CHW shape for the rest of the pipeline
     if x.ndim == 2:
         x = x[None, ...]
-    # final SR grid size (Hs,Ws)
+    elif x.ndim == 3 and x.shape[0] not in (1, 3) and x.shape[-1] in (1, 3):
+        x = np.moveaxis(x, -1, 0)
+
+    # Set the expected channel count from the FRAMES, not from the seed
+    C_EXPECTED = int(C_ref)
     _, Hs, Ws = x.shape
 
-    C_EXPECTED = int(x.shape[0])
-    if C_EXPECTED <= 0:
-        raise RuntimeError("MFDeconv: invalid zero-channel seed; expected C in {1,3}.")
 
     # ---- choose default batch size ----
     if batch_frames is None:
@@ -3374,7 +3393,7 @@ def multiframe_deconv(
                         # robust weights per pixel/channel
                         w = _weight_map(
                             y=y_chw, pred=pred_low,
-                            huber_delta=huber_delta,   # negative = auto
+                            huber_delta=local_delta,   # 0.0 for L2, else huber_delta
                             var_map=v2d, mask=m2d
                         ).astype(np.float32, copy=False)
 
