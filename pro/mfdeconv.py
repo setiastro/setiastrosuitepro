@@ -2320,16 +2320,28 @@ def _read_tile_fits_any(path: str, y0: int, y1: int, x0: int, x1: int) -> np.nda
 def _infer_channels_from_tile(p: str, Ht: int, Wt: int) -> int:
     """Look at a 1×1 tile to infer channel count; supports HW, HWC, CHW."""
     y1 = min(1, Ht); x1 = min(1, Wt)
-    t = _read_tile_fits_any(p, 0, y1, 0, x1)  # returns np.ndarray
+    t = _read_tile_fits_any(p, 0, y1, 0, x1)
+
     if t.ndim == 2:
         return 1
+
     if t.ndim == 3:
-        # prefer semantic channels of 1 or 3
-        if t.shape[-1] in (1, 3): return int(t.shape[-1])   # HWC
-        if t.shape[0]  in (1, 3): return int(t.shape[0])    # CHW
-        # unknown 3D layout → treat as mono
+        # Prefer the axis that actually carries the color planes
+        ch_first  = t.shape[0]  in (1, 3)
+        ch_last   = t.shape[-1] in (1, 3)
+
+        if ch_first and not ch_last:
+            return int(t.shape[0])
+        if ch_last and not ch_first:
+            return int(t.shape[-1])
+
+        # Ambiguous tiny tile (e.g. CHW 3×1×1 or HWC 1×1×3):
+        if t.shape[0] == 3 or t.shape[-1] == 3:
+            return 3
         return 1
+
     return 1
+
 
 
 def _seed_median_streaming(
@@ -2503,7 +2515,7 @@ def _seed_median_streaming(
 
         if (done & 3) == 0:
             _process_gui_events_safely()
-
+    status_cb(f"Median seed: want_c={want_c}, seed_shape={seed.shape}")
     return seed
 
 def _seed_bootstrap_streaming(paths, Ht, Wt, color_mode,
@@ -2911,6 +2923,7 @@ def multiframe_deconv(
     C_EXPECTED = int(C_ref)
     _, Hs, Ws = x.shape
 
+    
 
     # ---- choose default batch size ----
     if batch_frames is None:
@@ -3377,7 +3390,7 @@ def multiframe_deconv(
                     # 3) recompute this iteration’s accumulators on CPU
                     for fi in range(n_frames):
                         # load one frame as CHW (float32, sanitized)
-                        y_nat = _sanitize_numeric(_load_frame_i(fi))
+
                         y_chw = _load_frame_chw(fi)  # CHW float32 from cache
 
                         # forward predict (super grid) with this frame's PSF
