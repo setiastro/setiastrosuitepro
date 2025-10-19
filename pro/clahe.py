@@ -30,23 +30,33 @@ class ZoomableGraphicsView(QGraphicsView):
             dy = e.angleDelta().y()
             if dy == 0:
                 e.accept(); return
-            factor = self._step if dy > 0 else (1.0 / self._step)
-            new_zoom = max(self._min, min(self._max, self._zoom * factor))
-            factor = new_zoom / self._zoom
-            if factor != 1.0:
-                self.scale(factor, factor)
-                self._zoom = new_zoom
+            self._apply_zoom(up=(dy > 0), anchor=QGraphicsView.ViewportAnchor.AnchorUnderMouse)
             e.accept()
         else:
             super().wheelEvent(e)
 
+    # ---- NEW: direct zoom helpers (no synthetic wheel events) ----
+    def _apply_zoom(self, up: bool, anchor: QGraphicsView.ViewportAnchor | None = None):
+        old_anchor = self.transformationAnchor()
+        if anchor is not None:
+            self.setTransformationAnchor(anchor)
+
+        step = self._step if up else (1.0 / self._step)
+        new_zoom = max(self._min, min(self._max, self._zoom * step))
+        factor = new_zoom / self._zoom
+        if factor != 1.0:
+            self.scale(factor, factor)
+            self._zoom = new_zoom
+
+        if anchor is not None:
+            self.setTransformationAnchor(old_anchor)
+
     def zoom_in(self):
-        self.wheelEvent(QWheelEvent(self.viewport().rect().center(), 120, Qt.MouseButton.NoButton,
-                                    Qt.KeyboardModifier.ControlModifier, Qt.ScrollPhase.ScrollUpdate, False))
+        # zoom around view center for button press
+        self._apply_zoom(True, anchor=QGraphicsView.ViewportAnchor.AnchorViewCenter)
 
     def zoom_out(self):
-        self.wheelEvent(QWheelEvent(self.viewport().rect().center(), -120, Qt.MouseButton.NoButton,
-                                    Qt.KeyboardModifier.ControlModifier, Qt.ScrollPhase.ScrollUpdate, False))
+        self._apply_zoom(False, anchor=QGraphicsView.ViewportAnchor.AnchorViewCenter)
 
     def fit_to_item(self, item):
         if not item or item.pixmap().isNull():
@@ -54,6 +64,7 @@ class ZoomableGraphicsView(QGraphicsView):
         self._zoom = 1.0
         self.resetTransform()
         self.fitInView(item, Qt.AspectRatioMode.KeepAspectRatio)
+
 
 # ----------------------- Core -----------------------
 def apply_clahe(image: np.ndarray, clip_limit: float = 2.0, tile_grid_size: tuple = (8, 8)) -> np.ndarray:
@@ -205,7 +216,7 @@ class CLAHEDialogPro(QDialog):
         self.s_clip.valueChanged.connect(lambda val: self.lbl_clip.setText(f"{val/10.0:.1f}"))
         self.s_clip.valueChanged.connect(self._debounce_preview)
 
-        self.s_tile = QSlider(Qt.Orientation.Horizontal); self.s_tile.setRange(1, 32); self.s_tile.setValue(8)
+        self.s_tile = QSlider(Qt.Orientation.Horizontal); self.s_tile.setRange(1, 128); self.s_tile.setValue(8)
         self.lbl_tile = QLabel("8")
         self.s_tile.valueChanged.connect(lambda val: self.lbl_tile.setText(str(val)))
         self.s_tile.valueChanged.connect(self._debounce_preview)
