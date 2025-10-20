@@ -723,6 +723,97 @@ def _find_main_window(w):
     return p
 
 
+# --- MarkerLayer: one lightweight item that draws all markers efficiently ---
+from PyQt6.QtWidgets import QGraphicsItem
+from PyQt6.QtCore import QRectF, QPointF, Qt
+from PyQt6.QtGui import QPainter, QPen, QColor
+
+class MarkerLayer(QGraphicsItem):
+    def __init__(self, image_w, image_h, show_names_fn, color_fn, style_fn,
+                 selected_name_fn=lambda: None, radius_px=6, cell=64, parent=None):
+        super().__init__(parent)
+        self._w, self._h = image_w, image_h
+        self._bounds = QRectF(0, 0, self._w, self._h)
+        self._radius = radius_px
+        self._cell = cell
+        self._grid = {}
+        self._show_names = show_names_fn
+        self._color = color_fn              # fallback color
+        self._style = style_fn
+        self._selected_name = selected_name_fn
+        self.setZValue(100)
+        self.setCacheMode(QGraphicsItem.CacheMode.DeviceCoordinateCache)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemUsesExtendedStyleOption, True)
+        self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+
+    def boundingRect(self) -> QRectF:
+        return self._bounds
+
+    def resize(self, w, h):
+        if w == self._w and h == self._h:
+            return
+        self.prepareGeometryChange()
+        self._w, self._h = w, h
+        self._bounds = QRectF(0, 0, w, h)
+
+    def set_points(self, pts):
+        self._grid.clear()
+        c = self._cell
+        for p in pts:
+            x, y = p["x"], p["y"]
+            gx, gy = int(x // c), int(y // c)
+            self._grid.setdefault((gx, gy), []).append(p)
+        self.update()
+
+    def paint(self, p: QPainter, option, widget):
+        vr = option.exposedRect.adjusted(-self._cell, -self._cell, self._cell, self._cell)
+        c = self._cell
+
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        base_pen = QPen()
+        base_pen.setCosmetic(True)
+        base_pen.setWidth(1)
+
+        r = self._radius
+        show_names = self._show_names()
+        style = self._style()
+        selected_name = self._selected_name()
+
+        gx0, gy0 = int(max(0, int(vr.left() // c))),  int(max(0, int(vr.top() // c)))
+        gx1, gy1 = int(int(vr.right() // c)),         int(int(vr.bottom() // c))
+
+        for gy in range(gy0, gy1 + 1):
+            for gx in range(gx0, gx1 + 1):
+                for pt in self._grid.get((gx, gy), ()):
+                    x, y = pt["x"], pt["y"]
+                    if not vr.contains(QPointF(x, y)):
+                        continue
+
+                    # pick color: green if selected, else per-point color, else fallback
+                    col = QColor(0, 255, 0) if selected_name and pt.get("name") == selected_name \
+                          else pt.get("color", self._color())
+                    base_pen.setColor(col)
+                    p.setPen(base_pen)
+
+                    if style == "Crosshair":
+                        p.drawLine(x - r, y, x + r, y)
+                        p.drawLine(x, y - r, x, y + r)
+                    else:
+                        p.drawEllipse(QPointF(x, y), r, r)
+
+                    if show_names and pt.get("name"):
+                        # draw text in a high-contrast color so it can't disappear
+                        text_pen = QPen(QColor(255, 255, 255))
+                        print("name to draw:", pt["name"])
+                        text_pen.setCosmetic(True)
+                        p.setPen(text_pen)
+                        # optional: ensure readable font
+                        # p.setFont(QFont("Arial", 10))
+                        p.drawText(x + r + 2, y - r - 2, pt["name"])
+                        # restore the marker pen for subsequent shapes
+                        p.setPen(base_pen)
+
+
 class CustomGraphicsView(QGraphicsView):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -735,6 +826,7 @@ class CustomGraphicsView(QGraphicsView):
         self.annotation_items = []  # Store annotation items  
         self.drawing_measurement = False
         self.measurement_start = QPointF()    
+        self._search_circle_item = None
          
 
         self.selected_object = None  # Initialize selected_object to None
@@ -1065,6 +1157,7 @@ class CustomGraphicsView(QGraphicsView):
         if self.parent.main_image and self.circle_center is not None and self.circle_radius > 0:
             # Clear the main scene and add the main image back
             self.parent.main_scene.clear()
+            self.parent._marker_layer = None  # <--- add this line
             self.parent.main_scene.addPixmap(self.parent.main_image)
 
             # Redraw all shapes and annotations from stored properties
@@ -1155,19 +1248,30 @@ class CustomGraphicsView(QGraphicsView):
                         
             
             # Draw the search circle
+            # >>> Recreate + repopulate the marker layer so query results persist
+            self.parent._ensure_marker_layer()            # <--- add this line
+            self.parent._set_marker_points_from_results() # <--- add this line
+
+            # Draw the search circle
             pen_circle = QPen(QColor(255, 0, 0), 2)
-            self.parent.main_scene.addEllipse(
+            pen_circle.setCosmetic(True)                  # stays same width while zooming (optional)
+            circle = self.parent.main_scene.addEllipse(
                 int(self.circle_center.x() - self.circle_radius),
                 int(self.circle_center.y() - self.circle_radius),
                 int(self.circle_radius * 2),
                 int(self.circle_radius * 2),
                 pen_circle
             )
+            circle.setZValue(10_000)                      # keep circle above markers/pixmap (optional)
+
             self.update_mini_preview()
         else:
-            # If circle is disabled (e.g., during save), clear without drawing
+            # If circle is disabled, restore base layers and markers too
             self.parent.main_scene.clear()
+            self.parent._marker_layer = None              # <--- add this line
             self.parent.main_scene.addPixmap(self.parent.main_image)
+            self.parent._ensure_marker_layer()            # <--- add this line
+            self.parent._set_marker_points_from_results() # <--- add this line
 
     def delete_selected_object(self):
         if self.selected_object is None:
@@ -1195,6 +1299,46 @@ class CustomGraphicsView(QGraphicsView):
         # Update the status label
         self.parent.status_label.setText("Selected object and marker removed.")
 
+    def delete_selected_objects(self):
+        items = self.parent.results_tree.selectedItems()
+        if not items:
+            self.parent.status_label.setText("No objects selected to delete.")
+            return
+
+        # Collect names from the selected rows (column 2 is "Name")
+        names_to_delete = {it.text(2) for it in items if it.text(2)}
+
+        # Remove from results
+        before = len(self.parent.results)
+        self.parent.results = [obj for obj in self.parent.results if obj.get("name") not in names_to_delete]
+        after = len(self.parent.results)
+
+        # Remove the rows from the tree (handle both top-level and children just in case)
+        for it in items:
+            parent = it.parent()
+            if parent is None:
+                idx = self.parent.results_tree.indexOfTopLevelItem(it)
+                if idx != -1:
+                    self.parent.results_tree.takeTopLevelItem(idx)
+            else:
+                parent.removeChild(it)
+
+        # Clear selection & selected highlight
+        self.selected_object = None
+        if hasattr(self.parent, "_set_selected_name"):
+            self.parent._set_selected_name(None)
+
+        # Update marker layer + mini preview (no scene clears, so we don’t delete the layer)
+        self.parent._ensure_marker_layer()
+        self.parent._set_marker_points_from_results()
+        if self.parent._marker_layer:
+            self.parent._marker_layer.update()
+        self.update_mini_preview()
+
+        # Update counters / status
+        self.parent.object_count_label.setText(f"Objects Found: {after}")
+        removed = before - after
+        self.parent.status_label.setText(f"Removed {removed} object(s).")
 
 
     def scrollContentsBy(self, dx, dy):
@@ -1665,14 +1809,15 @@ class CustomGraphicsView(QGraphicsView):
 
 
     def select_object(self, selected_obj):
-        """Select or deselect the specified object and update visuals."""
         self.selected_object = selected_obj if self.selected_object != selected_obj else None
-        self.draw_query_results()  # Redraw to reflect selection
+        sel_name = self.selected_object["name"] if self.selected_object else None
+        # tell the dialog (and thus the MarkerLayer)
+        self.parent._set_selected_name(sel_name)
 
         # Update the TreeWidget selection in MainWindow
         for i in range(self.parent.results_tree.topLevelItemCount()):
             item = self.parent.results_tree.topLevelItem(i)
-            if item.text(2) == selected_obj["name"]:  # Assuming 'name' is the unique identifier
+            if item.text(2) == selected_obj["name"]:
                 self.parent.results_tree.setCurrentItem(item if self.selected_object else None)
                 break
 
@@ -2516,7 +2661,24 @@ class WIMIDialog(QDialog):
         self.main_preview = CustomGraphicsView(self)
         self.main_scene = QGraphicsScene(self.main_preview)
         self.main_preview.setScene(self.main_scene)
-        self.main_preview.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self.main_scene.setItemIndexMethod(QGraphicsScene.ItemIndexMethod.BspTreeIndex)
+        self.main_preview.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.SmartViewportUpdate)
+        self.main_preview.setOptimizationFlag(QGraphicsView.OptimizationFlag.DontSavePainterState, True)
+        self.main_preview.setOptimizationFlag(QGraphicsView.OptimizationFlag.DontAdjustForAntialiasing, True)
+        self.main_preview.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        #try:
+        #    from PyQt6.QtOpenGLWidgets import QOpenGLWidget  # optional boost
+        #    self.main_preview.setViewport(QOpenGLWidget())
+        #except Exception:
+        #    pass
+
+        # Our marker layer handle
+        self._marker_layer = None
+
+        # ---- monkey-patch existing calls on CustomGraphicsView to our fast paths ----
+        self.main_preview.set_query_results = lambda results: self._cg_set_query_results_proxy(results)
+        self.main_preview.draw_query_results = lambda: self._cg_draw_query_results_proxy()
+        self.main_preview.clear_query_results = lambda: self._cg_clear_query_results_proxy()
         self.main_preview.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         right_panel.addWidget(self.main_preview)
 
@@ -2581,6 +2743,7 @@ class WIMIDialog(QDialog):
         self.results_tree.customContextMenuRequested.connect(self.open_context_menu)
         self.results_tree.itemClicked.connect(self.on_tree_item_clicked)
         self.results_tree.itemDoubleClicked.connect(self.on_tree_item_double_clicked)
+        self.results_tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.results_tree.setSortingEnabled(True)
         right_panel.addWidget(self.results_tree)
 
@@ -2644,9 +2807,9 @@ class WIMIDialog(QDialog):
         self.clear_annotations_button.clicked.connect(self.main_preview.clear_annotations)  # Connect to clear_annotations in CustomGraphicsView
 
         # Delete Selected Object button
-        self.delete_selected_object_button = QPushButton("Delete Selected Object")
+        self.delete_selected_object_button = QPushButton("Delete Selected Object(s)")
         self.delete_selected_object_button.setIcon(QApplication.style().standardIcon(QStyle.StandardPixmap.SP_DialogCloseButton))  # Trash icon
-        self.delete_selected_object_button.clicked.connect(self.main_preview.delete_selected_object)  # Connect to delete_selected_object in CustomGraphicsView
+        self.delete_selected_object_button.clicked.connect(self.main_preview.delete_selected_objects)
 
         # Add the instruction label to the top of the grid layout (row 0, spanning multiple columns)
         annotation_tools_layout.addWidget(annotation_instruction_label, 0, 0, 1, 4)  # Span 5 columns to center it
@@ -2740,6 +2903,9 @@ class WIMIDialog(QDialog):
         main_layout.addLayout(right_panel)
         main_layout.addWidget(self.advanced_search_panel_widget)
         
+        delete_shortcut = QShortcut(QKeySequence.StandardKey.Delete, self.results_tree)
+        delete_shortcut.activated.connect(self.main_preview.delete_selected_objects)
+
         self.setLayout(main_layout)
 
         self.image_path = None
@@ -2755,6 +2921,7 @@ class WIMIDialog(QDialog):
         self.circle_center = None
         self.circle_radius = 0  
         self.results = []
+        self._selected_name = None
         self.wcs = None  # Initialize WCS to None
         # Initialize selected color and font with default values
         self.selected_color = QColor(Qt.GlobalColor.red)  # Default annotation color
@@ -2764,6 +2931,87 @@ class WIMIDialog(QDialog):
         legend = LegendDialog(self)
         legend.setModal(False)
     
+
+    def toggle_object_names(self, state=None):
+        self.show_names = self.show_names_checkbox.isChecked() if state is None else bool(state)
+        self._ensure_marker_layer()
+        if self._marker_layer:
+            self._marker_layer.setCacheMode(QGraphicsItem.CacheMode.NoCache)
+            self._marker_layer.update(self._marker_layer.boundingRect())
+            self.main_scene.invalidate(self.main_scene.sceneRect(), QGraphicsScene.SceneLayer.AllLayers)
+            self._marker_layer.setCacheMode(QGraphicsItem.CacheMode.DeviceCoordinateCache)
+
+    def _set_selected_name(self, name: Optional[str]):
+        self._selected_name = name
+        if self._marker_layer:
+            self._marker_layer.update()
+
+    def _ensure_marker_layer(self):
+        if self.main_image is None:
+            return
+        w, h = self.main_image.width(), self.main_image.height()
+        if self._marker_layer is None:
+            self._marker_layer = MarkerLayer(
+                image_w=w, image_h=h,
+                show_names_fn=lambda: self.show_names,
+                color_fn=lambda: self.selected_color,
+                style_fn=lambda: self.marker_style,
+                selected_name_fn=lambda: self._selected_name
+            )
+            self.main_scene.addItem(self._marker_layer)
+        else:
+            self._marker_layer.resize(w, h)
+
+    def _set_marker_points_from_results(self):
+        if self._marker_layer is None or self.wcs is None:
+            return
+        pts = []
+        for obj in self.results:
+            ra, dec = obj.get('ra'), obj.get('dec')
+            if ra is None or dec is None:
+                continue
+            x, y = self.calculate_pixel_from_ra_dec(ra, dec)
+            if x is None or y is None:
+                continue
+            name_val = obj.get("name")
+            if not name_val:
+                name_val = obj.get("Name")  # fallback if key differs
+            pts.append({
+                "x": x, "y": y,
+                "name": str(name_val or ""),
+                "color": obj.get("color")
+            })
+        self._marker_layer.set_points(pts)
+
+
+    # ---- drop-in replacements (proxies) that your existing code already calls ----
+    def _cg_set_query_results_proxy(self, results):
+        # Recreate the color/category tagging that used to happen in CustomGraphicsView.set_query_results
+        for obj in results:
+            short_type = obj.get("short_type", "")
+            category = OTYPE_TO_CATEGORY.get(short_type, "Errors & Artefacts")
+            obj["category"] = category
+            obj["color"] = CATEGORY_TO_COLOR.get(category, QColor(255, 255, 255))
+        self.results = results
+
+        self._ensure_marker_layer()
+        self._set_marker_points_from_results()
+
+    def _cg_draw_query_results_proxy(self):
+        """Keeps existing call sites working: self.main_preview.draw_query_results()"""
+        self._ensure_marker_layer()
+        # Re-derive points (cheap) in case self.results changed elsewhere
+        self._set_marker_points_from_results()
+        if self._marker_layer:
+            self._marker_layer.update()
+
+    def _cg_clear_query_results_proxy(self):
+        """Keeps existing call sites working: self.main_preview.clear_query_results()"""
+        self.results = []
+        if self._marker_layer:
+            self._marker_layer.set_points([])
+
+
     def _doc_for_solver(self):
         # Prefer the real pro document if we loaded from a view
         if getattr(self, "_loaded_doc", None) is not None:
@@ -3086,76 +3334,46 @@ class WIMIDialog(QDialog):
         self.show_annotations_button.setText("Hide Annotation Tools" if not is_visible else "Show Annotation Tools")
 
     def save_plate_solved_fits(self):
-        """Save the plate-solved FITS file with WCS header data and the desired bit depth."""
-        # Prompt user to select bit depth
         bit_depth, ok = QInputDialog.getItem(
-            self, 
-            "Select Bit Depth", 
-            "Choose the bit depth for the FITS file:",
-            ["8-bit", "16-bit", "32-bit"], 
-            0, False
+            self, "Select Bit Depth", "Choose the bit depth for the FITS file:",
+            ["8-bit", "16-bit", "32-bit"], 0, False
         )
-
-        if not ok:
-            return  # User cancelled the selection
-
-        # Open file dialog to select where to save the FITS file
-        output_image_path, _ = QFileDialog.getSaveFileName(
-            self, "Save Plate Solved FITS", "", "FITS Files (*.fits *.fit)"
-        )
-
-        if not output_image_path:
-            return  # User cancelled save file dialog
-
-        # Verify WCS header data is available
-        if not hasattr(self, 'wcs') or self.wcs is None:
+        if not ok: return
+        out_path, _ = QFileDialog.getSaveFileName(self, "Save Plate Solved FITS", "", "FITS Files (*.fits *.fit)")
+        if not out_path: return
+        if self.wcs is None:
             QMessageBox.warning(self, "WCS Data Missing", "WCS header data is not available.")
             return
 
-        # Retrieve image data and WCS header
-        image_data = self.image_data  # Raw image data
-        wcs_header = self.wcs.to_header(relax=True)  # WCS header, including non-standard keywords
-        combined_header = self.original_header.copy() if self.original_header else fits.Header()
-        combined_header.update(wcs_header)  # Combine original header with WCS data
-
-        # Convert image data based on selected bit depth
-        if self.is_mono:
-            # Grayscale (2D) image
-            if bit_depth == "8-bit":
-                scaled_image = (image_data[:, :, 0] / np.max(image_data) * 255).astype(np.uint8)
-                combined_header['BITPIX'] = 8
-            elif bit_depth == "16-bit":
-                scaled_image = (image_data[:, :, 0] * 65535).astype(np.uint16)
-                combined_header['BITPIX'] = 16
-            elif bit_depth == "32-bit":
-                scaled_image = image_data[:, :, 0].astype(np.float32)
-                combined_header['BITPIX'] = -32
+        img = self.image_data
+        # normalize to [0,1] if not already
+        img = img.astype(np.float32)
+        if img.ndim == 2:
+            src = img
         else:
-            # RGB (3D) image: Transpose to FITS format (channels, height, width)
-            transformed_image = np.transpose(image_data, (2, 0, 1))
-            if bit_depth == "8-bit":
-                scaled_image = (transformed_image / np.max(transformed_image) * 255).astype(np.uint8)
-                combined_header['BITPIX'] = 8
-            elif bit_depth == "16-bit":
-                scaled_image = (transformed_image * 65535).astype(np.uint16)
-                combined_header['BITPIX'] = 16
-            elif bit_depth == "32-bit":
-                scaled_image = transformed_image.astype(np.float32)
-                combined_header['BITPIX'] = -32
+            # if RGB, choose luminance plane for FITS primary (or consider writing separate planes)
+            src = img[..., 0]
 
-            # Update header to reflect 3D structure
-            combined_header['NAXIS'] = 3
-            combined_header['NAXIS1'] = transformed_image.shape[2]
-            combined_header['NAXIS2'] = transformed_image.shape[1]
-            combined_header['NAXIS3'] = transformed_image.shape[0]
+        if bit_depth == "8-bit":
+            arr = (np.clip(src, 0, 1) * 255.0).astype(np.uint8)
+        elif bit_depth == "16-bit":
+            arr = (np.clip(src, 0, 1) * 65535.0).astype(np.uint16)
+        else:  # 32-bit float
+            arr = src.astype(np.float32)
 
-        # Save the image with combined header (including WCS and original data)
-        hdu = fits.PrimaryHDU(scaled_image, header=combined_header)
+        hdr = (self.original_header.copy() if self.original_header else fits.Header())
         try:
-            hdu.writeto(output_image_path, overwrite=True)
-            QMessageBox.information(self, "File Saved", f"FITS file saved as {output_image_path}")
+            hdr.update(self.wcs.to_header(relax=True))
+        except Exception:
+            pass  # still save whatever we have
+
+        # Let astropy infer NAXIS/BITPIX from data; don’t set them manually
+        try:
+            fits.writeto(out_path, arr, header=hdr, overwrite=True)
+            QMessageBox.information(self, "File Saved", f"FITS file saved as {out_path}")
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to save FITS file: {str(e)}")
+            QMessageBox.critical(self, "Error", f"Failed to save FITS file: {e}")
+
 
 
 
@@ -3286,6 +3504,7 @@ class WIMIDialog(QDialog):
 
         # Create an empty black RGB image for the collage
         collage_image = Image.new("RGB", (collage_width, collage_height), (0, 0, 0))
+        draw = ImageDraw.Draw(collage_image)   # <— add this
 
         # Temporarily disable annotations
         original_show_names = self.show_names
@@ -3307,32 +3526,23 @@ class WIMIDialog(QDialog):
                 ra, dec = obj["ra"], obj["dec"]
                 x, y = self.calculate_pixel_from_ra_dec(ra, dec)
 
-                # Render the main image without annotations onto a QPixmap
-                patch = QPixmap(self.main_image.size())
-                patch.fill(Qt.GlobalColor.black)
-                painter = QPainter(patch)
-                self.main_scene.clear()  # Clear any previous drawings on the scene
-                self.main_scene.addPixmap(self.main_image)  # Add only the main image without annotations
-                self.main_scene.render(painter)  # Render the scene onto the patch
-
-                # End the painter early to prevent QPaintDevice errors
-                painter.end()
 
                 # Crop the relevant area for the object
                 rect = QRectF(x - patch_size // 2, y - patch_size // 2, patch_size, patch_size)
-                cropped_patch = patch.copy(rect.toRect())
-                cropped_image = cropped_patch.toImage().scaled(patch_size, patch_size).convertToFormat(QImage.Format.Format_RGB888)
+                cropped = self.main_image.copy(rect.toRect()).toImage().convertToFormat(QImage.Format.Format_RGB888)
 
-                # Convert QImage to PIL format for adding to the collage
-                bytes_img = cropped_image.bits().asstring(cropped_image.width() * cropped_image.height() * 3)
-                pil_patch = Image.frombytes("RGB", (patch_size, patch_size), bytes_img)
-
-                # Paste the patch in the correct location on the collage
+                buf = cropped.bits()
+                buf.setsize(cropped.width() * cropped.height() * 3)
+                pil_patch = Image.frombytes("RGB", (cropped.width(), cropped.height()), bytes(buf))
+                from PIL import Image as _PILImage
+                pil_patch = pil_patch.resize((patch_size, patch_size), _PILImage.Resampling.BILINEAR)
                 collage_image.paste(pil_patch, (offset_x, offset_y))
 
-                # Draw the selected information below the patch
-                draw = ImageDraw.Draw(collage_image)
-                font = ImageFont.truetype("arial.ttf", 12)  # Adjust font path as needed
+                # Font fallback
+                try:
+                    font = ImageFont.truetype("arial.ttf", 12)
+                except Exception:
+                    font = ImageFont.load_default()
                 text_y = offset_y + patch_size + 5
 
                 for field in selected_fields:
@@ -3377,7 +3587,12 @@ class WIMIDialog(QDialog):
         # Restore the search circle in the custom graphics view
         self.main_preview.circle_center = original_circle_center
         self.main_preview.circle_radius = original_circle_radius
-        self.main_preview.draw_query_results()  # Redraw the scene with the circle
+
+        # Re-sync the fast marker layer without clearing the scene again
+        self._ensure_marker_layer()
+        self._set_marker_points_from_results()
+        if self._marker_layer:
+            self._marker_layer.update()
 
     def show_3d_model_view(self):
         # ─── 0) Engineering‐notation helper ────────────────────────────
@@ -4058,6 +4273,7 @@ class WIMIDialog(QDialog):
 
         # Update the results and redraw the markers
         self.results = filtered_results
+        self.main_preview.results = filtered_results
         self.update_results_tree()
         self.main_preview.draw_query_results()
 
@@ -4135,13 +4351,6 @@ class WIMIDialog(QDialog):
             ])
             self.results_tree.addTopLevelItem(item)
 
-    def toggle_object_names(self, state):
-        """Toggle the visibility of object names based on the checkbox state."""
-        self.show_names = state == Qt.CheckState.Checked
-        self.show_names = bool(state)        
-        self.main_preview.draw_query_results()  # Redraw to apply the change
-
-
     # Function to clear search results and remove markers
     def clear_search_results(self):
         """Clear the search results and remove all markers."""
@@ -4196,9 +4405,12 @@ class WIMIDialog(QDialog):
             except ValueError:
                 return parse_value(result[key])
 
+        def _close(a, b, tol=1e-8):
+            return abs(a - b) <= tol
+
         entry = next(
             (r for r in self.query_results
-            if get_parsed(r, 'ra') == ra and get_parsed(r, 'dec') == dec),
+            if _close(get_parsed(r, 'ra'), ra) and _close(get_parsed(r, 'dec'), dec)),
             None
         )
         source = (entry.get('source') if entry else 'Simbad') or 'Simbad'
@@ -4339,6 +4551,10 @@ class WIMIDialog(QDialog):
         self.main_preview.resetTransform()
         self.main_preview.centerOn(self.main_scene.sceneRect().center())
 
+
+        self._ensure_marker_layer()
+        # If you already have results from a prior query, show them over the new image:
+        self._set_marker_points_from_results()
         # keep your mini-preview sync code if you have it
         if hasattr(self, "mini_preview") and self.mini_preview is not None:
             scaled = pm.scaled(self.mini_preview.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
@@ -4567,16 +4783,32 @@ class WIMIDialog(QDialog):
             print(f"Header CROTA2 Value: {header.get('CROTA2', 'Not Found')}")
 
             # Display WCS information
+            from astropy.wcs.utils import proj_plane_pixel_scales
+
+            # pixel scale (arcsec/px) – average the two axes (or keep both if you want)
+            scales = proj_plane_pixel_scales(self.wcs) * 3600.0  # arcsec/pixel
+            self.pixscale = float(np.mean(scales))
+
+            # orientation
+            def _cd_orientation(hdr):
+                c11 = hdr.get("CD1_1"); c12 = hdr.get("CD1_2"); c21 = hdr.get("CD2_1"); c22 = hdr.get("CD2_2")
+                pc11 = hdr.get("PC1_1"); pc12 = hdr.get("PC1_2"); pc21 = hdr.get("PC2_1"); pc22 = hdr.get("PC2_2")
+                if None not in (c11, c12, c21, c22):
+                    return np.degrees(np.arctan2(-c12, c11))
+                if None not in (pc11, pc12, pc21, pc22):
+                    # If PC given, use CDELT to scale
+                    cdelt1 = float(header.get("CDELT1", 1.0))
+                    return np.degrees(np.arctan2(-pc12 * cdelt1, pc11 * cdelt1))
+                return None
+
             if 'CROTA2' in header:
                 try:
-                    self.orientation = float(header['CROTA2'])  # Convert to float
-                except (ValueError, TypeError):
-                    self.orientation = None
-                    print("CROTA2 found, but could not convert to float.")
+                    self.orientation = float(header['CROTA2'])
+                except Exception:
+                    self.orientation = _cd_orientation(header)
             else:
-                self.orientation = calculate_orientation(header)
-                if self.orientation is None:
-                    print("Orientation: CD matrix elements not found in WCS header.")
+                self.orientation = _cd_orientation(header)
+            self.orientation_label.setText(f"Orientation: {self.orientation:.2f}°" if self.orientation is not None else "Orientation: N/A")
 
             # --- ✅ Ensure `self.orientation` is a float before using it ---
             if self.orientation is not None:
@@ -4706,15 +4938,10 @@ class WIMIDialog(QDialog):
             print(f"{corner_name}: RA={ra_hms}, Dec={dec_dms}")
 
     def calculate_ra_dec_from_pixel(self, x, y):
-        """Convert pixel coordinates (x, y) to RA/Dec using Astropy WCS."""
-        if not hasattr(self, 'wcs'):
-            print("WCS not initialized.")
+        if not hasattr(self, 'wcs') or self.wcs is None:
             return None, None
-
-        # Convert pixel coordinates to sky coordinates
-        ra, dec = self.wcs.all_pix2world(x, y, 0)
-
-        return ra, dec
+        ra, dec = self.wcs.pixel_to_world_values(x, y)
+        return float(ra), float(dec)
                         
 
 
