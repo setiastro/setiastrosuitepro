@@ -665,6 +665,11 @@ class BlinkTab(QWidget):
 
         left_layout.addLayout(speed_layout)
 
+        self.export_button = QPushButton("Export Video…", self)
+        self.export_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton))
+        self.export_button.clicked.connect(self.export_blink_video)
+        left_layout.addWidget(self.export_button)
+
         # Tree view for file names
         self.fileTree = QTreeWidget(self)
         self.fileTree.setColumnCount(1)
@@ -775,6 +780,273 @@ class BlinkTab(QWidget):
         self.scroll_area.horizontalScrollBar().valueChanged.connect(lambda _: self._capture_view_center_norm())
         self.scroll_area.verticalScrollBar().valueChanged.connect(lambda _: self._capture_view_center_norm())
         self.imagesChanged.connect(self._update_loaded_count_label)
+
+    def export_blink_video(self):
+        """Export the blink sequence to a video. Defaults to all frames in current tree order."""
+        # Ensure we have frames
+        leaves = self.get_all_leaf_items()
+        if not leaves:
+            QMessageBox.information(self, "No Images", "Load images before exporting.")
+            return
+
+        # Ask options first (size, fps, selection scope)
+        opts = self._ask_video_options(default_fps=float(self.play_fps))
+        if opts is None:
+            return
+        target_w, target_h = opts["size"]
+        fps = max(0.1, min(60.0, float(opts["fps"])))
+        only_selected = bool(opts.get("only_selected", False))
+
+        # Decide frame order
+        if only_selected:
+            sel_leaves = [it for it in self.fileTree.selectedItems() if it.childCount() == 0]
+            if not sel_leaves:
+                QMessageBox.information(self, "No Selection", "No individual frames selected.")
+                return
+            names = {it.text(0).lstrip("⚠️ ").strip() for it in sel_leaves}
+            order = [i for i in self._tree_order_indices()
+                    if os.path.basename(self.image_paths[i]) in names]
+        else:
+            order = self._tree_order_indices()
+
+        if not order:
+            QMessageBox.information(self, "No Frames", "Nothing to export.")
+            return
+
+        if len(order) < 2:
+            ret = QMessageBox.question(
+                self, "Only one frame",
+                "You're about to export a video with a single frame. Continue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if ret != QMessageBox.StandardButton.Yes:
+                return
+
+        # Ask where to save
+        out_path, _ = QFileDialog.getSaveFileName(
+            self, "Export Blink Video", "blink.mp4", "Video (*.mp4 *.avi)"
+        )
+        if not out_path:
+            return
+        # Let _open_video_writer_portable decide the real extension; we pass requested
+        writer, out_path, backend = self._open_video_writer_portable(out_path, (target_w, target_h), fps)
+        if writer is None:
+            QMessageBox.critical(self, "Export",
+                "No compatible video codec found.\n\n"
+                "Tip: install FFmpeg or `pip install imageio[ffmpeg]` for a portable fallback."
+            )
+            return
+
+        # Progress UI
+        prog = QProgressDialog("Rendering video…", "Cancel", 0, len(order), self)
+        prog.setWindowTitle("Export Blink Video")
+        prog.setAutoClose(True)
+        prog.setMinimumDuration(300)
+
+        using_imageio = (backend == "imageio-ffmpeg")
+        frames_written = 0
+
+        try:
+            for i, idx in enumerate(order):
+                if prog.wasCanceled():
+                    break
+
+                entry = self.loaded_images[idx]
+                f = self._make_display_frame(entry)  # uint8, gray or RGB
+
+                # Ensure 3-channel RGB
+                if f.ndim == 2:
+                    f = cv2.cvtColor(f, cv2.COLOR_GRAY2RGB)
+
+                # Letterbox into target (keep aspect)
+                tw, th = (target_w, target_h)
+                h, w = f.shape[:2]
+                s = min(tw / float(w), th / float(h))
+                nw, nh = max(1, int(round(w * s))), max(1, int(round(h * s)))
+                resized = cv2.resize(f, (nw, nh), interpolation=cv2.INTER_AREA)
+                rgb_canvas = np.zeros((th, tw, 3), dtype=np.uint8)
+                x0, y0 = (tw - nw) // 2, (th - nh) // 2
+                rgb_canvas[y0:y0+nh, x0:x0+nw] = resized
+
+                if using_imageio:
+                    writer.append_data(rgb_canvas)  # RGB
+                else:
+                    writer.write(cv2.cvtColor(rgb_canvas, cv2.COLOR_RGB2BGR))  # BGR
+                frames_written += 1
+
+                prog.setValue(i + 1)
+                QApplication.processEvents()
+        finally:
+            try:
+                writer.close() if using_imageio else writer.release()
+            except Exception:
+                pass
+
+        if prog.wasCanceled():
+            try:
+                os.remove(out_path)
+            except Exception:
+                pass
+            QMessageBox.information(self, "Export", "Export canceled.")
+            return
+
+        if frames_written == 0:
+            QMessageBox.critical(self, "Export", "No frames were written (codec/back-end issue?).")
+            return
+
+        QMessageBox.information(self, "Export", f"Saved: {out_path}\nFrames: {frames_written} @ {fps} fps")
+
+
+
+    def _ask_video_options(self, default_fps: float):
+        """Options dialog for size, fps, and whether to limit to current selection."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Video Options")
+        layout = QGridLayout(dlg)
+
+        # Size
+        layout.addWidget(QLabel("Size:"), 0, 0)
+        size_combo = QComboBox(dlg)
+        size_combo.addItem("HD 1280×720", (1280, 720))
+        size_combo.addItem("Full HD 1920×1080", (1920, 1080))
+        size_combo.addItem("Square 1080×1080", (1080, 1080))
+        size_combo.setCurrentIndex(0)
+        layout.addWidget(size_combo, 0, 1)
+
+        # FPS
+        layout.addWidget(QLabel("FPS:"), 1, 0)
+        fps_edit = QDoubleSpinBox(dlg)
+        fps_edit.setRange(0.1, 60.0)
+        fps_edit.setDecimals(2)
+        fps_edit.setSingleStep(0.1)
+        fps_edit.setValue(float(default_fps))
+        layout.addWidget(fps_edit, 1, 1)
+
+        # Only selected?
+        only_selected = QCheckBox("Export only selected frames", dlg)
+        only_selected.setChecked(False)  # default: export everything in tree order
+        layout.addWidget(only_selected, 2, 0, 1, 2)
+
+        # Buttons
+        btns = QHBoxLayout()
+        ok = QPushButton("OK", dlg); cancel = QPushButton("Cancel", dlg)
+        ok.clicked.connect(dlg.accept); cancel.clicked.connect(dlg.reject)
+        btns.addWidget(ok); btns.addWidget(cancel)
+        layout.addLayout(btns, 3, 0, 1, 2)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return {
+            "size": size_combo.currentData(),
+            "fps": fps_edit.value(),
+            "only_selected": only_selected.isChecked()
+        }
+
+
+
+    def _make_display_frame(self, entry):
+        """
+        Build an 8-bit display frame from cached stretched data,
+        respecting 'Aggressive Stretch' toggle just like preview.
+        Returns uint8 ndarray (H×W or H×W×3), RGB if color.
+        """
+        stored = entry['image_data']  # already stretched & clipped on load
+        use_aggr = bool(self.aggressive_stretch_enabled)
+
+        if not use_aggr:
+            # Fast path: convert cached dtype to 8-bit
+            if stored.dtype == np.uint8:
+                disp8 = stored
+            elif stored.dtype == np.uint16:
+                disp8 = (stored >> 8).astype(np.uint8)
+            else:
+                disp8 = (np.clip(stored, 0.0, 1.0) * 255.0).astype(np.uint8)
+        else:
+            base01 = self._as_float01(stored)
+            disp = siril_style_autostretch(base01, sigma=self.current_sigma)
+            disp8 = (np.clip(disp, 0.0, 1.0) * 255.0).astype(np.uint8)
+
+        # Ensure RGB for color, keep 1ch for mono
+        if disp8.ndim == 3:
+            # assume RGB
+            return disp8
+        else:
+            return disp8
+
+
+    def _fit_letterbox(self, frame_bgr_or_rgb, target_size):
+        """
+        Fit 'frame' into target_size with letterboxing (black borders).
+        Accepts uint8, shape (H,W,3). Returns BGR uint8 (H_t,W_t,3).
+        """
+        tw, th = target_size
+        h, w = frame_bgr_or_rgb.shape[:2]
+        # Compute scale to fit inside
+        s = min(tw / float(w), th / float(h))
+        nw, nh = max(1, int(round(w * s))), max(1, int(round(h * s)))
+
+        # Resize (OpenCV uses BGR—this function doesn’t swap channels)
+        resized = cv2.resize(frame_bgr_or_rgb, (nw, nh), interpolation=cv2.INTER_AREA)
+
+        # Pad into target
+        out = np.zeros((th, tw, 3), dtype=np.uint8)
+        x0 = (tw - nw) // 2
+        y0 = (th - nh) // 2
+        out[y0:y0+nh, x0:x0+nw] = resized if resized.ndim == 3 else cv2.cvtColor(resized, cv2.COLOR_GRAY2BGR)
+        return out
+
+    def _open_video_writer_portable(self, requested_path: str, size: tuple[int, int], fps: float):
+        """
+        Try several (container, fourcc) combos that work across platforms.
+        Returns (writer, out_path, backend_name). If OpenCV fails, tries imageio-ffmpeg.
+        Never writes a probe frame, so no accidental extra first frame.
+        """
+        tw, th = size
+        candidates = [
+            (".mp4", "mp4v", "OpenCV-mp4v"),
+            (".mp4", "avc1", "OpenCV-avc1"),   # H.264 if available
+            (".mp4", "H264", "OpenCV-H264"),
+            (".avi", "MJPG", "OpenCV-MJPG"),
+            (".avi", "XVID", "OpenCV-XVID"),
+        ]
+        base, _ = os.path.splitext(requested_path)
+
+        # Try OpenCV containers/codecs first (without writing a test frame)
+        for ext, fourcc_tag, label in candidates:
+            out_path = base + ext
+            fourcc = cv2.VideoWriter_fourcc(*fourcc_tag)
+
+            # open/close once to check the container initialization
+            vw = cv2.VideoWriter(out_path, fourcc, float(fps), (tw, th))
+            ok = vw.isOpened()
+            try:
+                vw.release()
+            except Exception:
+                pass
+
+            # some backends leave a tiny stub — clean it up before the real open
+            try:
+                if os.path.exists(out_path) and os.path.getsize(out_path) < 1024:
+                    os.remove(out_path)
+            except Exception:
+                pass
+
+            if ok:
+                vw2 = cv2.VideoWriter(out_path, fourcc, float(fps), (tw, th))
+                if vw2.isOpened():
+                    return vw2, out_path, label
+
+        # Fallback: imageio-ffmpeg (portable, needs imageio[ffmpeg])
+        try:
+            import imageio
+            writer = imageio.get_writer(base + ".mp4", fps=float(fps), macro_block_size=None)  # expects RGB frames
+            return writer, base + ".mp4", "imageio-ffmpeg"
+        except Exception:
+            return None, None, None
+
+
+
 
     def _update_loaded_count_label(self, n: int):
         # pluralize nicely
