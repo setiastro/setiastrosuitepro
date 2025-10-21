@@ -757,13 +757,23 @@ class MarkerLayer(QGraphicsItem):
         self._bounds = QRectF(0, 0, w, h)
 
     def set_points(self, pts):
+        try:
+            if self.scene() is None:
+                return
+        except RuntimeError:
+            return
+
         self._grid.clear()
         c = self._cell
         for p in pts:
             x, y = p["x"], p["y"]
             gx, gy = int(x // c), int(y // c)
             self._grid.setdefault((gx, gy), []).append(p)
-        self.update()
+        try:
+            self.update()
+        except RuntimeError:
+            pass
+
 
     def paint(self, p: QPainter, option, widget):
         vr = option.exposedRect.adjusted(-self._cell, -self._cell, self._cell, self._cell)
@@ -812,6 +822,26 @@ class MarkerLayer(QGraphicsItem):
                         p.drawText(x + r + 2, y - r - 2, pt["name"])
                         # restore the marker pen for subsequent shapes
                         p.setPen(base_pen)
+
+
+def _qt_is_alive(obj) -> bool:
+    if obj is None:
+        return False
+    try:
+        import shiboken6
+        return shiboken6.isValid(obj)
+    except Exception:
+        pass
+    try:
+        import sip
+        return not sip.isdeleted(obj)
+    except Exception:
+        pass
+    try:
+        _ = obj.scene()
+        return True
+    except RuntimeError:
+        return False
 
 
 class CustomGraphicsView(QGraphicsView):
@@ -1545,6 +1575,29 @@ class CustomGraphicsView(QGraphicsView):
             }
         ))
 
+    def _set_marker_points_from_results(self):
+        self._ensure_marker_layer()
+        if not _qt_is_alive(self._marker_layer):
+            return
+        pts = []
+        for obj in getattr(self, "results", []):
+            ra, dec = obj.get("ra"), obj.get("dec")
+            xy = self.calculate_pixel_from_ra_dec(ra, dec)
+            if not xy: continue
+            x, y = xy
+            if x is None or y is None: continue
+            pts.append({"x": float(x), "y": float(y),
+                        "name": obj.get("name"),
+                        "color": obj.get("color", QColor(255,255,255))})
+        try:
+            self._marker_layer.set_points(pts)
+        except RuntimeError:
+            self._marker_layer = None
+            self._ensure_marker_layer()
+            if _qt_is_alive(self._marker_layer):
+                self._marker_layer.set_points(pts)
+
+
     def zoom_to_coordinates(self, ra, dec):
         """Zoom to the specified RA/Dec coordinates and center the view on that position."""
         # Calculate the pixel position from RA and Dec
@@ -1567,6 +1620,10 @@ class CustomGraphicsView(QGraphicsView):
             # Clear the main scene and re-add the main image
             self.parent.main_scene.clear()
             self.parent.main_scene.addPixmap(self.parent.main_image)
+
+            self.parent._marker_layer = None
+            self.parent._ensure_marker_layer()
+            self.parent._set_marker_points_from_results()
 
             # Redraw all shapes and annotations from stored properties
             for item in self.annotation_items:
@@ -1696,7 +1753,11 @@ class CustomGraphicsView(QGraphicsView):
         self.parent.main_scene.clear()
         if self.parent.main_image:
             self.parent.main_scene.addPixmap(self.parent.main_image)
-        
+
+        self.parent._marker_layer = None
+        self.parent._ensure_marker_layer()
+        self.parent._set_marker_points_from_results()
+
         # Redraw the stored annotation items
         for item in self.annotation_items:
             if item[0] == 'ellipse':
@@ -1832,6 +1893,11 @@ class CustomGraphicsView(QGraphicsView):
             if self.parent.main_image:
                 self.parent.main_scene.addPixmap(self.parent.main_image)
 
+            # NEW:
+            self.parent._marker_layer = None
+            self.parent._ensure_marker_layer()
+            self.parent._set_marker_points_from_results()
+
             # Redraw remaining annotations
             self.redraw_annotations()
 
@@ -1843,7 +1909,11 @@ class CustomGraphicsView(QGraphicsView):
         # Clear all items in annotation_items and update the scene
         self.annotation_items.clear()
         self.parent.main_scene.clear()
-        
+
+        self.parent._marker_layer = None
+        self.parent._ensure_marker_layer()
+        self.parent._set_marker_points_from_results()
+
         # Redraw only the main image
         if self.parent.main_image:
             self.parent.main_scene.addPixmap(self.parent.main_image)
@@ -2947,10 +3017,18 @@ class WIMIDialog(QDialog):
             self._marker_layer.update()
 
     def _ensure_marker_layer(self):
-        if self.main_image is None:
+        # need a scene and a pixmap
+        if getattr(self, "main_scene", None) is None or self.main_image is None:
             return
-        w, h = self.main_image.width(), self.main_image.height()
-        if self._marker_layer is None:
+
+        w = int(self.main_image.width())
+        h = int(self.main_image.height())
+
+        # drop dead/dangling layers
+        if getattr(self, "_marker_layer", None) is not None and not _qt_is_alive(self._marker_layer):
+            self._marker_layer = None
+
+        if getattr(self, "_marker_layer", None) is None:
             self._marker_layer = MarkerLayer(
                 image_w=w, image_h=h,
                 show_names_fn=lambda: self.show_names,
@@ -2961,6 +3039,9 @@ class WIMIDialog(QDialog):
             self.main_scene.addItem(self._marker_layer)
         else:
             self._marker_layer.resize(w, h)
+
+    def _get_selected_name(self):
+        return self._selected_name
 
     def _set_marker_points_from_results(self):
         if self._marker_layer is None or self.wcs is None:
@@ -2983,6 +3064,27 @@ class WIMIDialog(QDialog):
             })
         self._marker_layer.set_points(pts)
 
+    def _set_marker_points_from_results(self):
+        self._ensure_marker_layer()
+        if not _qt_is_alive(self._marker_layer):
+            return
+        pts = []
+        for obj in getattr(self, "results", []):
+            ra, dec = obj.get("ra"), obj.get("dec")
+            xy = self.calculate_pixel_from_ra_dec(ra, dec)
+            if not xy: continue
+            x, y = xy
+            if x is None or y is None: continue
+            pts.append({"x": float(x), "y": float(y),
+                        "name": obj.get("name"),
+                        "color": obj.get("color", QColor(255,255,255))})
+        try:
+            self._marker_layer.set_points(pts)
+        except RuntimeError:
+            self._marker_layer = None
+            self._ensure_marker_layer()
+            if _qt_is_alive(self._marker_layer):
+                self._marker_layer.set_points(pts)
 
     # ---- drop-in replacements (proxies) that your existing code already calls ----
     def _cg_set_query_results_proxy(self, results):
@@ -3280,6 +3382,9 @@ class WIMIDialog(QDialog):
 
         self.main_scene.clear()
         self.main_scene.addPixmap(pixmap)
+        self._marker_layer = None
+        self._ensure_marker_layer()
+        self._set_marker_points_from_results()        
         self.main_preview.setSceneRect(QRectF(pixmap.rect()))
         self.zoom_level = 1.0
         self.main_preview.resetTransform()
