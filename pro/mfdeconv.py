@@ -1813,52 +1813,99 @@ def _solve_super_psf_from_native(f_native: np.ndarray, r: int, sigma: float = 1.
     where h is (r*k)×(r*k) if f_native is k×k. Returns normalized h (sum=1).
     """
     f = np.asarray(f_native, dtype=np.float32)
-    k = int(f.shape[0]); assert f.shape[0] == f.shape[1]
+
+    # NEW: sanitize to 2D odd square before anything else
+    if f.ndim != 2:
+        f = np.squeeze(f)
+        if f.ndim != 2:
+            raise ValueError(f"PSF must be 2D, got shape {f.shape}")
+
+    H, W = int(f.shape[0]), int(f.shape[1])
+    k_sq = min(H, W)
+    # center-crop to square if needed
+    if H != W:
+        y0 = (H - k_sq) // 2
+        x0 = (W - k_sq) // 2
+        f = f[y0:y0 + k_sq, x0:x0 + k_sq]
+        H = W = k_sq
+
+    # enforce odd size (required by SAME padding math)
+    if (H % 2) == 0:
+        # drop one pixel border to make it odd (centered)
+        f = f[1:, 1:]
+        H = W = f.shape[0]
+
+    k = int(H)                     # k is now odd and square
     kr = int(k * r)
 
-    # build Gaussian pre-blur at native scale (match paper §4.2)
+
     g = _gaussian2d(k, max(sigma, 1e-3)).astype(np.float32)
 
-    # init h by zero-insertion (nearest upsample of f) then deconvolving g very mildly
     h0 = np.zeros((kr, kr), dtype=np.float32)
     h0[::r, ::r] = f
     h0 = _normalize_psf(h0)
 
     if TORCH_OK:
+        import torch.nn.functional as F
         dev = _torch_device()
-        t = torch.tensor(h0, device=dev, dtype=torch.float32, requires_grad=True)
+
+        # (1) Make sure Gaussian kernel is odd-sized for SAME conv padding
+        g_pad = g
+        if (g.shape[-1] % 2) == 0:
+            # ensure odd + renormalize
+            gg = _pad_kernel_to(g, g.shape[-1] + 1)
+            g_pad = gg.astype(np.float32, copy=False)
+
+        t   = torch.tensor(h0, device=dev, dtype=torch.float32, requires_grad=True)
         f_t = torch.tensor(f,  device=dev, dtype=torch.float32)
-        g_t = torch.tensor(g,  device=dev, dtype=torch.float32)
+        g_t = torch.tensor(g_pad, device=dev, dtype=torch.float32)
         opt = torch.optim.Adam([t], lr=lr)
-        for _ in range(max(10, iters)):
-            opt.zero_grad(set_to_none=True)
-            H, W = t.shape
-            Hr, Wr = H//r, W//r
-            th = t[:Hr*r, :Wr*r].reshape(Hr, r, Wr, r).mean(dim=(1,3))
-            # conv native: (Dh) * g
-            conv = torch.nn.functional.conv2d(th[None,None], g_t[None,None], padding=g_t.shape[-1]//2)[0,0]
-            loss = torch.mean((conv - f_t)**2)
-            loss.backward()
-            opt.step()
-            with torch.no_grad():
-                t.clamp_(min=0.0)
-                t /= (t.sum() + 1e-8)
-        h = t.detach().cpu().numpy().astype(np.float32)
-    else:
-        # Tiny gradient-descent fallback on numpy
+
+        # Helpful assertion avoids silent shape traps
+        H, W = t.shape
+        assert (H % r) == 0 and (W % r) == 0, f"h shape {t.shape} not divisible by r={r}"
+        Hr, Wr = H // r, W // r
+
+        try:
+            for _ in range(max(10, iters)):
+                opt.zero_grad(set_to_none=True)
+
+                # (2) Downsample with avg_pool2d instead of reshape/mean
+                blk = t.narrow(0, 0, Hr * r).narrow(1, 0, Wr * r).contiguous()
+                th  = F.avg_pool2d(blk[None, None], kernel_size=r, stride=r)[0, 0]  # (k,k)
+
+                # (3) Native-space blur with guaranteed-odd g_t
+                pad = g_t.shape[-1] // 2
+                conv = F.conv2d(th[None, None], g_t[None, None], padding=pad)[0, 0]
+
+                loss = torch.mean((conv - f_t) ** 2)
+                loss.backward()
+                opt.step()
+                with torch.no_grad():
+                    t.clamp_(min=0.0)
+                    t /= (t.sum() + 1e-8)
+            h = t.detach().cpu().numpy().astype(np.float32)
+        except Exception:
+            # (4) Conservative safety net: if a backend balks (commonly at r=2),
+            #     fall back to the NumPy solver *just for this kernel*.
+            h = None
+
+    if not TORCH_OK or h is None:
+        # NumPy fallback (unchanged)
         h = h0.copy()
         eta = float(lr)
         for _ in range(max(50, iters)):
-            Dh = _downsample_avg(h, r)
-            conv = _conv2_same_np(Dh, g)
+            Dh    = _downsample_avg(h, r)
+            conv  = _conv2_same_np(Dh, g)
             resid = (conv - f)
-            # backprop through conv and D: grad wrt Dh is resid * g^T conv; adjoint of D is upsample-sum
             grad_Dh = _conv2_same_np(resid, np.flip(np.flip(g, 0), 1))
             grad_h  = _upsample_sum(grad_Dh, r, target_hw=h.shape)
             h = np.clip(h - eta * grad_h, 0.0, None)
-            s = float(h.sum());  h /= (s + 1e-8)
+            s = float(h.sum()); h /= (s + 1e-8)
             eta *= 0.995
+
     return _normalize_psf(h)
+
 
 def _downsample_avg_t(x, r: int):
     if r <= 1:
@@ -2617,6 +2664,29 @@ def _seed_bootstrap_streaming(paths, Ht, Wt, color_mode,
     return np.clip(mu, 0.0, None).astype(np.float32, copy=False)
 
 
+def _coerce_sr_factor(srf, *, default_on_bad=2):
+    """
+    Parse super-res factor robustly:
+    - accepts 2, '2', '2x', ' 2 X ', 2.0
+    - clamps to integers >= 1
+    - if invalid/missing → returns default_on_bad (we want 2 by your request)
+    """
+    if srf is None:
+        return int(default_on_bad)
+    if isinstance(srf, (float, int)):
+        r = int(round(float(srf)))
+        return int(r if r >= 1 else default_on_bad)
+    s = str(srf).strip().lower()
+    # common GUIs pass e.g. "2x", "3×", etc.
+    s = s.replace("×", "x")
+    if s.endswith("x"):
+        s = s[:-1]
+    try:
+        r = int(round(float(s)))
+        return int(r if r >= 1 else default_on_bad)
+    except Exception:
+        return int(default_on_bad)
+
 
 
 # -----------------------------
@@ -2830,20 +2900,51 @@ def multiframe_deconv(
     except Exception:
         pass
 
+    psfs_native = psfs  # keep a reference to the original native PSFs for fallback
+
     # ---- SR lift of PSFs if needed ----
-    r = int(max(1, super_res_factor))
+    r_req = _coerce_sr_factor(super_res_factor, default_on_bad=2)
+    status_cb(f"MFDeconv: SR factor requested={super_res_factor!r} → using r={r_req}")
+    r = int(r_req)
+
     if r > 1:
         status_cb(f"MFDeconv: Super-resolution r={r} with σ={sr_sigma} — solving SR PSFs…")
         _process_gui_events_safely()
+
+        def _naive_sr_from_native(f_nat: np.ndarray, r_: int) -> np.ndarray:
+            f2 = np.asarray(f_nat, np.float32)
+            H, W = f2.shape[:2]
+            k_sq = min(H, W)
+            if H != W:
+                y0 = (H - k_sq) // 2; x0 = (W - k_sq) // 2
+                f2 = f2[y0:y0+k_sq, x0:x0+k_sq]
+            if (f2.shape[0] % 2) == 0:
+                f2 = f2[1:, 1:]  # make odd
+            f2 = _normalize_psf(f2)
+            h0 = np.zeros((f2.shape[0]*r_, f2.shape[1]*r_), np.float32)
+            h0[::r_, ::r_] = f2
+            return _normalize_psf(h0)
+
         sr_psfs = []
         for i, k_native in enumerate(psfs, start=1):
-            h = _solve_super_psf_from_native(k_native, r=r, sigma=float(sr_sigma),
-                                            iters=int(sr_psf_opt_iters), lr=float(sr_psf_opt_lr))
+            try:
+                status_cb(f"  SR-PSF{i}: native shape={np.asarray(k_native).shape}")
+                h = _solve_super_psf_from_native(
+                    k_native, r=r, sigma=float(sr_sigma),
+                    iters=int(sr_psf_opt_iters), lr=float(sr_psf_opt_lr)
+                )
+            except Exception as e:
+                status_cb(f"  SR-PSF{i} failed: {e!r} → using naïve upsample")
+                h = _naive_sr_from_native(k_native, r)
+
+            # guarantee odd size for downstream SAME-padding math
             if (h.shape[0] % 2) == 0:
-                h = _pad_kernel_to(h, h.shape[0] + 1)   # renormalizes inside            
-            sr_psfs.append(h)
-            status_cb(f"  SR-PSF{i}: native {k_native.shape[0]} → {h.shape[0]} (sum={h.sum():.6f})")
+                h = h[:-1, :-1]
+            sr_psfs.append(h.astype(np.float32, copy=False))
+            status_cb(f"  SR-PSF{i}: native {np.asarray(k_native).shape[0]} → {h.shape[0]} (sum={h.sum():.6f})")
         psfs = sr_psfs
+
+
 
     # ---- Seed (streaming) with robust bootstrap already in file helpers ----
     _emit_pct(0.25, "Calculating Seed Image...")
@@ -2872,16 +2973,28 @@ def multiframe_deconv(
 
     # lift seed if SR
     if r > 1:
+        target_hw = (Ht * r, Wt * r)
         if seed_native.ndim == 2:
-            x = _upsample_sum(seed_native / (r*r), r, target_hw=(Ht*r, Wt*r))
+            x = _upsample_sum(seed_native / (r*r), r, target_hw=target_hw)
         else:
             C, Hn, Wn = seed_native.shape
             x = np.stack(
-                [_upsample_sum(seed_native[c] / (r*r), r, target_hw=(Hn*r, Wn*r)) for c in range(C)],
+                [_upsample_sum(seed_native[c] / (r*r), r, target_hw=target_hw) for c in range(C)],
                 axis=0
             )
     else:
         x = seed_native
+
+    # FINAL SHAPE CHECKS (auto-correct if a GUI sent something odd)
+    if x.ndim == 2: x = x[None, ...]
+    Hs, Ws = x.shape[-2], x.shape[-1]
+    if r > 1:
+        expected_H, expected_W = Ht * r, Wt * r
+        if (Hs, Ws) != (expected_H, expected_W):
+            status_cb(f"SR seed grid mismatch: got {(Hs, Ws)}, expected {(expected_H, expected_W)} → correcting")
+            # Rebuild from the native mean to ensure exact SR size
+            x = _upsample_sum(x if x.ndim==2 else x[0], r, target_hw=(expected_H, expected_W))
+            if x.ndim == 2: x = x[None, ...]
     try: del seed_native
     except Exception: pass
 
