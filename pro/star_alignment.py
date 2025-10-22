@@ -162,11 +162,11 @@ def aa_find_transform_with_backoff(tgt_gray: np.ndarray, src_gray: np.ndarray):
         pass
 
     tries = [
-        dict(detection_sigma=5,  min_area=7,  max_control_points=75),
-        dict(detection_sigma=12, min_area=9,  max_control_points=75),
-        dict(detection_sigma=20, min_area=9,  max_control_points=75),
-        dict(detection_sigma=30, min_area=11, max_control_points=75),
-        dict(detection_sigma=50, min_area=11, max_control_points=75),
+        dict(detection_sigma=15,  min_area=7,  max_control_points=75),
+        dict(detection_sigma=25, min_area=9,  max_control_points=75),
+        dict(detection_sigma=50, min_area=9,  max_control_points=75),
+        dict(detection_sigma=80, min_area=11, max_control_points=75),
+        dict(detection_sigma=120, min_area=11, max_control_points=75),
     ]
     last_exc = None
     for kw in tries:
@@ -178,7 +178,7 @@ def aa_find_transform_with_backoff(tgt_gray: np.ndarray, src_gray: np.ndarray):
             last_exc = e
             if "internal pixel buffer full" in str(e).lower():
                 try:
-                    sep.set_extract_pixstack(int(sep.get_extract_pixstack() * 2))
+                    sep.set_extract_pixstack(int(sep.get_extract_pixstack() * 5))
                 except Exception:
                     pass
             continue
@@ -188,9 +188,9 @@ def aa_find_transform_with_backoff(tgt_gray: np.ndarray, src_gray: np.ndarray):
 def _warp_like_ref(target_img: np.ndarray, M_2x3: np.ndarray, ref_shape_hw: tuple[int,int]) -> np.ndarray:
     H, W = ref_shape_hw
     if target_img.ndim == 2:
-        return cv2.warpAffine(target_img, M_2x3.astype(np.float32), (W, H),
-                              flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
-    chs = [cv2.warpAffine(target_img[..., i], M_2x3.astype(np.float32), (W, H),
+        return cv2.warpAffine(target_img, M_2x3, (W, H),
+                               flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+    chs = [cv2.warpAffine(target_img[..., i], M_2x3, (W, H),
                            flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
            for i in range(target_img.shape[2])]
     return np.stack(chs, axis=2)
@@ -276,24 +276,24 @@ def run_star_alignment_headless(mw, target_sw, preset: dict) -> bool:
                 pass
 
         # ---------- downsample (optional) ----------
-        ds = int(max(1, (preset or {}).get("downsample", 2)))
+        #ds = int(max(1, (preset or {}).get("downsample", 2)))
         ref_gray = _gray2d(ref_img)
         tgt_gray = _gray2d(tgt_img)
-        if ds > 1:
-            new_hw_ref = (max(1, ref_gray.shape[1] // ds), max(1, ref_gray.shape[0] // ds))
-            new_hw_tgt = (max(1, tgt_gray.shape[1] // ds), max(1, tgt_gray.shape[0] // ds))
-            ref_small = cv2.resize(ref_gray, new_hw_ref, interpolation=cv2.INTER_AREA)
-            tgt_small = cv2.resize(tgt_gray, new_hw_tgt, interpolation=cv2.INTER_AREA)
-        else:
-            ref_small, tgt_small = ref_gray, tgt_gray
-
+        #if ds > 1:
+        #    new_hw_ref = (max(1, ref_gray.shape[1] // ds), max(1, ref_gray.shape[0] // ds))
+        #    new_hw_tgt = (max(1, tgt_gray.shape[1] // ds), max(1, tgt_gray.shape[0] // ds))
+        #    ref_small = cv2.resize(ref_gray, new_hw_ref, interpolation=cv2.INTER_AREA)
+        #    tgt_small = cv2.resize(tgt_gray, new_hw_tgt, interpolation=cv2.INTER_AREA)
+        #else:
+        #    ref_small, tgt_small = ref_gray, tgt_gray
+        ref_small, tgt_small = ref_gray, tgt_gray
         # ---------- find transform ----------
         transform_obj, _pts = aa_find_transform_with_backoff(tgt_small, ref_small)
-        M2 = transform_obj.params[0:2, :].astype(np.float32)
-        if ds > 1:
-            M2 = M2.copy()
-            M2[0, 2] *= ds
-            M2[1, 2] *= ds
+        M2 = np.array(transform_obj.params[0:2, :], dtype=np.float64)  # keep full precision
+        #if ds > 1:
+        #    M2 = M2.copy()
+        #    M2[0, 2] *= ds
+        #    M2[1, 2] *= ds
 
         # ---------- warp target like reference size ----------
         ref_h, ref_w = ref_gray.shape[:2]
@@ -997,13 +997,13 @@ class StellarAlignmentDialog(QDialog):
                                         ransacReprojThreshold=float(h_reproj))
                 if H is None:
                     raise RuntimeError("Homography estimation failed.")
-                base_kind, base_X = "homography", H.astype(np.float32)
+                base_kind, base_X = "homography", np.array(H, dtype=np.float64)
             else:
                 A, _ = cv2.estimateAffine2D(src_xy, tgt_xy, method=cv2.RANSAC,
                                             ransacReprojThreshold=float(h_reproj))
                 if A is None:
                     raise RuntimeError("Affine estimation failed.")
-                base_kind, base_X = "affine", A.astype(np.float32)
+                base_kind, base_X = "affine", np.array(A, dtype=np.float64)
 
             if model not in ("poly3", "poly4"):
                 return base_kind, base_X
@@ -1099,17 +1099,18 @@ class StellarAlignmentDialog(QDialog):
         # Read dialog prefs
         model = ["affine", "homography", "poly3", "poly4"][self.xf_model.currentIndex()]
         max_cp = int(self.xf_maxcp.value())
-        ds = int(self.xf_downsample.value())
+        #ds = int(self.xf_downsample.value())
         h_reproj = float(self.xf_h_reproj.value())
 
         # Downsample for faster star matching (solve stage only)
-        if ds > 1:
-            new_ref = (max(1, src_gray.shape[1] // ds), max(1, src_gray.shape[0] // ds))
-            new_tgt = (max(1, tgt_gray.shape[1] // ds), max(1, tgt_gray.shape[0] // ds))
-            src_small = cv2.resize(src_gray, new_ref, interpolation=cv2.INTER_AREA)
-            tgt_small = cv2.resize(tgt_gray, new_tgt, interpolation=cv2.INTER_AREA)
-        else:
-            src_small, tgt_small = src_gray, tgt_gray
+        #if ds > 1:
+        ##    new_ref = (max(1, src_gray.shape[1] // ds), max(1, src_gray.shape[0] // ds))
+        #    new_tgt = (max(1, tgt_gray.shape[1] // ds), max(1, tgt_gray.shape[0] // ds))
+        #    src_small = cv2.resize(src_gray, new_ref, interpolation=cv2.INTER_AREA)
+        #    tgt_small = cv2.resize(tgt_gray, new_tgt, interpolation=cv2.INTER_AREA)
+        #else:
+        #    src_small, tgt_small = src_gray, tgt_gray
+        src_small, tgt_small = src_gray, tgt_gray
 
         self.status_label.setText("Computing alignment with astroalign…")
         QApplication.processEvents()
@@ -1130,9 +1131,9 @@ class StellarAlignmentDialog(QDialog):
         src_xy, tgt_xy = _cap_points(src_xy, tgt_xy, max_cp)
 
         # If we solved on a downsampled pair, re-fit transform at full resolution for accuracy
-        if ds > 1:
-            src_xy *= ds
-            tgt_xy *= ds
+        #if ds > 1:
+        #    src_xy *= ds
+        #    tgt_xy *= ds
 
         # Estimate chosen transform on (possibly rescaled) full-res pairs
         try:
@@ -1181,7 +1182,7 @@ class StellarAlignmentDialog(QDialog):
                 )
             # Optional: show homography info as well
             try:
-                self.show_transform_info(X.astype(np.float32, copy=False))
+                self.show_transform_info(np.array(X, dtype=np.float64, copy=False))
             except Exception:
                 pass
 
@@ -1365,16 +1366,14 @@ class StarRegistrationWorker(QRunnable):
                     gray = np.mean(arr, axis=2)
                 gray = np.nan_to_num(gray, nan=0.0, posinf=0.0, neginf=0.0)
 
-            f = max(1, int(getattr(self, "downsample_factor", 2)))
-            if f > 1:
-                new_hw = (max(1, gray.shape[1] // f), max(1, gray.shape[0] // f))
-                gray_small = cv2.resize(gray, new_hw, interpolation=cv2.INTER_AREA)
-            else:
-                gray_small = gray
-            gray_small = np.ascontiguousarray(gray_small.astype(np.float32, copy=False))
-
-            # detach from the memmap/file completely and keep it small
-            gray_small = np.ascontiguousarray(gray_small.astype(np.float32, copy=False))
+            #f = max(1, int(getattr(self, "downsample_factor", 2)))
+            #if f > 1:
+            #    new_hw = (max(1, gray.shape[1] // f), max(1, gray.shape[0] // f))  # (W, H)
+            #    gray_small = cv2.resize(gray, new_hw, interpolation=cv2.INTER_AREA)
+            #else:
+            #    gray_small = gray
+            #gray_small = np.ascontiguousarray(gray_small.astype(np.float32, copy=False))
+            gray_small = np.ascontiguousarray(gray.astype(np.float32, copy=False))
 
             ref_small = self.reference_image
             if ref_small is None:
@@ -1384,9 +1383,9 @@ class StarRegistrationWorker(QRunnable):
             # ---- apply current transform to PREVIEW only ----
             T_curr = np.array(self.current_transform, dtype=np.float32).reshape(2, 3)
             T_prev = T_curr.copy()
-            if f > 1:
-                T_prev[0, 2] /= f
-                T_prev[1, 2] /= f
+            #if f > 1:
+            #    T_prev[0, 2] /= f
+            #    T_prev[1, 2] /= f
 
             h, w = gray_small.shape[:2]
             preview_warp = cv2.warpAffine(
@@ -1407,9 +1406,9 @@ class StarRegistrationWorker(QRunnable):
             transform = np.array(transform, dtype=np.float64).reshape(2, 3)
 
             # rescale translations back to full-res units
-            if f > 1:
-                transform[0, 2] *= f
-                transform[1, 2] *= f
+            #if f > 1:
+            #    transform[0, 2] *= f
+            #    transform[1, 2] *= f
 
             key = os.path.normpath(self.original_file)  # ORIGINAL key
             self.signals.result_transform.emit(key, transform)
@@ -1478,14 +1477,14 @@ class StarRegistrationThread(QThread):
         kind="homography" and X is 3x3 float32
         """
         # Downsample for the match stage (like your dialog code), then scale CPs back up
-        f = max(1, int(self.downsample))
+        #f = max(1, int(self.downsample))
         ref_small = self.ref_small
-        if f > 1:
-            new_hw = (max(1, src_gray_full.shape[1] // f), max(1, src_gray_full.shape[0] // f))
-            src_small = cv2.resize(src_gray_full, new_hw, interpolation=cv2.INTER_AREA)
-        else:
-            src_small = src_gray_full
-
+        #if f > 1:
+        #    new_hw = (max(1, src_gray_full.shape[1] // f), max(1, src_gray_full.shape[0] // f))  # (W, H)
+        #    src_small = cv2.resize(src_gray_full, new_hw, interpolation=cv2.INTER_AREA)
+        #else:
+        #    src_small = src_gray_full
+        src_small = src_gray_full
         # Lock astroalign; get matches (src_pts in src_small, tgt_pts in ref_small)
         with _AA_LOCK:
             transform_obj, (src_pts_s, tgt_pts_s) = astroalign.find_transform(
@@ -1495,9 +1494,9 @@ class StarRegistrationThread(QThread):
 
         src_xy = np.asarray(src_pts_s, np.float32)
         tgt_xy = np.asarray(tgt_pts_s, np.float32)
-        if f > 1:
-            src_xy *= f
-            tgt_xy *= f
+        #if f > 1:
+        #    src_xy *= f
+        #    tgt_xy *= f
 
         # Re-estimate with the requested model (affine/homography/TPS)
         model = (self.align_model or "affine").lower()
@@ -1508,13 +1507,13 @@ class StarRegistrationThread(QThread):
                                       ransacReprojThreshold=float(self.h_reproj))
             if H is None:
                 raise RuntimeError("Homography estimation failed.")
-            base_kind, base_X = "homography", H.astype(np.float32)
+            base_kind, base_X = "homography", np.array(H, dtype=np.float64)
         else:
             A, _ = cv2.estimateAffine2D(src_xy, tgt_xy, method=cv2.RANSAC,
                                         ransacReprojThreshold=float(self.h_reproj))
             if A is None:
                 raise RuntimeError("Affine estimation failed.")
-            base_kind, base_X = "affine", A.astype(np.float32)
+            base_kind, base_X = "affine", np.array(A, dtype=np.float64)
 
         # Quick exit if we're not doing a polynomial residual
         if model not in ("poly3", "poly4"):
@@ -1612,7 +1611,7 @@ class StarRegistrationThread(QThread):
     def _warp_with_kind(self, img: np.ndarray, kind: str, X: object, out_hw: tuple[int,int]) -> np.ndarray:
         Hh, Ww = out_hw
         if kind == "affine":
-            A = np.asarray(X, np.float32)
+            A = np.asarray(X, np.float64)
             if img.ndim == 2:
                 return cv2.warpAffine(img, A, (Ww, Hh), flags=cv2.INTER_LANCZOS4,
                                     borderMode=cv2.BORDER_CONSTANT, borderValue=0)
@@ -1625,7 +1624,7 @@ class StarRegistrationThread(QThread):
             return X(img, (Hh, Ww))
 
         if kind == "homography":
-            H = np.asarray(X, np.float32)
+            H = np.asarray(X, np.float64)
             if img.ndim == 2:
                 return cv2.warpPerspective(img, H, (Ww, Hh), flags=cv2.INTER_LANCZOS4,
                                         borderMode=cv2.BORDER_CONSTANT, borderValue=0)
@@ -1663,13 +1662,14 @@ class StarRegistrationThread(QThread):
             # ✂️ No DAO/RANSAC: astroalign handles detection internally.
 
             # Single shared downsampled ref for workers
-            ds = max(1, int(self.align_prefs.get("downsample", 2)))
-            if ds > 1:
-                new_hw = (max(1, ref2d.shape[1] // ds), max(1, ref2d.shape[0] // ds))
-                ref_small = cv2.resize(ref2d, new_hw, interpolation=cv2.INTER_AREA)
-            else:
-                ref_small = ref2d
-            self.ref_small = np.ascontiguousarray(ref_small.astype(np.float32))
+            #ds = max(1, int(self.align_prefs.get("downsample", 2)))
+            #if ds > 1:
+            #    new_hw = (max(1, ref2d.shape[1] // ds), max(1, ref2d.shape[0] // ds))  # (W, H)
+            #    ref_small = cv2.resize(ref2d, new_hw, interpolation=cv2.INTER_AREA)
+            #else:
+            #    ref_small = ref2d
+            #self.ref_small = np.ascontiguousarray(ref_small.astype(np.float32))
+            self.ref_small = np.ascontiguousarray(ref2d.astype(np.float32))
 
             # Initialize transforms to identity for EVERY original frame
             self.alignment_matrices = {os.path.normpath(f): IDENTITY_2x3.copy() for f in self.original_files}
@@ -1716,7 +1716,7 @@ class StarRegistrationThread(QThread):
     def run_one_registration_pass(self, _ref_stars_unused, _ref_triangles_unused, pass_index):
         _cap_native_threads_once()
 
-        ds = max(1, int(self.align_prefs.get("downsample", 2)))
+        #ds = max(1, int(self.align_prefs.get("downsample", 2)))
 
         pool = QThreadPool.globalInstance()
         hw = os.cpu_count() or 4
@@ -1764,7 +1764,7 @@ class StarRegistrationThread(QThread):
                 use_triangle=False,
                 use_astroalign=True,
                 reference_image=self.ref_small,
-                downsample_factor=ds,
+                downsample_factor=1,
                 model_name=self.align_model  # ← add this
             )
             worker.signals.progress.connect(self.on_worker_progress)
@@ -1937,7 +1937,7 @@ class StarRegistrationThread(QThread):
                 except Exception as e:
                     self.progress_update.emit(f"⚠️ {os.path.basename(orig_path)} model solve failed ({self.align_model}): {e}. Falling back to affine.")
 
-                    kind, X = "affine", np.array(self.alignment_matrices.get(k, IDENTITY_2x3), np.float32)
+                    kind, X = "affine", np.array(self.alignment_matrices.get(k, IDENTITY_2x3), np.float64)
                 self.progress_update.emit(f"🌀 {os.path.basename(orig_path)}: warp={kind}")
                 # Record drizzle transform (don’t np.asarray() a callable)
 
@@ -2061,6 +2061,8 @@ class StarRegistrationThread(QThread):
                 f.write("MATRIX:\n")
 
                 _fmt = lambda x: f"{float(x):.16g}"
+
+                # then for writing:
                 if kind == "homography":
                     H = np.asarray(M, np.float64).reshape(3, 3)
                     f.write(f"{_fmt(H[0,0])}, {_fmt(H[0,1])}, {_fmt(H[0,2])}\n")
@@ -2071,25 +2073,7 @@ class StarRegistrationThread(QThread):
                     f.write(f"{_fmt(A[0,0])}, {_fmt(A[0,1])}, {_fmt(A[0,2])}\n")
                     f.write(f"{_fmt(A[1,0])}, {_fmt(A[1,1])}, {_fmt(A[1,2])}\n\n")
                 else:
-                    # TPS or unknown: write a sentinel block; drizzle will skip
                     f.write("MATRIX: \nUNSUPPORTED\n\n")
-
-        try:
-            with open(out_path, "r", encoding="utf-8") as _fh:
-                s = _fh.read()
-            tx, ty = [], []
-            for blk in s.split("FILE:")[1:]:
-                if "KIND: affine" in blk:
-                    nums = list(map(float, re.findall(r"[-+]?\d*\.\d+|\d+", blk.split("MATRIX:")[1])))
-                    if len(nums) >= 6:
-                        tx.append(nums[2]); ty.append(nums[5])
-            if tx:
-                fx = np.mod(tx, 1.0); fy = np.mod(ty, 1.0)
-                uniq_x = sorted(set(np.round(fx / 0.25) * 0.25))
-                uniq_y = sorted(set(np.round(fy / 0.25) * 0.25))
-                self.progress_update.emit(f"Phase check (tx/ty ~0.25 steps): {uniq_x} / {uniq_y}")
-        except Exception:
-            pass
 
 
 

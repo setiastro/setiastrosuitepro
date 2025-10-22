@@ -11249,6 +11249,7 @@ class StackingSuiteDialog(QDialog):
         self._mf_autocrop_pct = float(autocrop_pct_ui)
 
         mf_enabled = self.settings.value("stacking/mfdeconv/enabled", False, type=bool)
+
         if mf_enabled:
             self.update_status("🧪 Multi-frame PSF-aware deconvolution path enabled.")
 
@@ -11284,12 +11285,10 @@ class StackingSuiteDialog(QDialog):
 
                 def _finish_mf_phase_and_exit():
                     """Tear down MF UI/threads and either continue or exit."""
-                    # Close PD
                     if getattr(self, "_mf_pd", None):
                         self._mf_pd.reset()
                         self._mf_pd.deleteLater()
                         self._mf_pd = None
-                    # Stop stray thread
                     try:
                         if self._mf_thread:
                             self._mf_thread.quit()
@@ -11299,7 +11298,6 @@ class StackingSuiteDialog(QDialog):
                     self._mf_thread = None
                     self._mf_worker = None
 
-                    # Decide: continue into normal integration, or finish here
                     run_after = self.settings.value("stacking/mfdeconv/after_mf_run_integration", False, type=bool)
                     if run_after:
                         _start_after_align_worker(aligned_light_files)
@@ -11335,7 +11333,6 @@ class StackingSuiteDialog(QDialog):
                     sr_factor_val = sr_factor_ui.value() if sr_factor_ui is not None else self.settings.value("stacking/mfdeconv/sr_factor", 2, type=int)
                     super_res_factor = int(sr_factor_val) if sr_enabled_ui else 1
 
-                    # Build cfg dicts
                     star_mask_cfg = {
                         "thresh_sigma":  self.settings.value("stacking/mfdeconv/star_mask/thresh_sigma",  _SM_DEF_THRESH, type=float),
                         "grow_px":       self.settings.value("stacking/mfdeconv/star_mask/grow_px",       _SM_DEF_GROW, type=int),
@@ -11357,7 +11354,6 @@ class StackingSuiteDialog(QDialog):
                     star_mask_ref = self.reference_frame if use_star_masks else None
 
                     if use_high_octane:
-                        # “Let it rip” path (legacy)
                         self._mf_worker = MultiFrameDeconvWorkerSport(
                             parent=None,
                             aligned_paths=frames,
@@ -11378,7 +11374,6 @@ class StackingSuiteDialog(QDialog):
                             seed_mode=seed_mode_cfg,
                         )
                     else:
-                        # Memory-managed path (current)
                         self._mf_worker = MultiFrameDeconvWorker(
                             parent=None,
                             aligned_paths=frames,
@@ -11403,7 +11398,7 @@ class StackingSuiteDialog(QDialog):
                     self._mf_worker.progress.connect(self._on_mf_progress, Qt.ConnectionType.QueuedConnection)
                     self._mf_thread.started.connect(self._mf_worker.run, Qt.ConnectionType.QueuedConnection)
 
-                    # Always stop and clean the thread after a worker finishes
+                    # ensure the thread stops and cleans up
                     self._mf_worker.finished.connect(self._mf_thread.quit, Qt.ConnectionType.QueuedConnection)
                     self._mf_thread.finished.connect(self._mf_worker.deleteLater, Qt.ConnectionType.QueuedConnection)
                     self._mf_thread.finished.connect(self._mf_thread.deleteLater, Qt.ConnectionType.QueuedConnection)
@@ -11411,32 +11406,26 @@ class StackingSuiteDialog(QDialog):
                     def _job_finished(ok: bool, message: str, out: str):
                         if getattr(self, "_mf_pd", None):
                             self._mf_groups_done = min(self._mf_groups_done + 1, self._mf_total_groups)
-                            # Snap to the boundary of the finished segment
                             self._mf_pd.setValue(self._mf_groups_done * 1000)
                             self._mf_pd.setLabelText(f"{'✅' if ok else '❌'} {group_key}: {message}")
 
                         if ok and out:
                             self._mf_results[group_key] = out
-
-                            # ✂️ Post-crop MF output if requested
                             if getattr(self, "_mf_autocrop_enabled", False) and getattr(self, "_mf_autocrop_rect", None):
                                 try:
                                     from astropy.io import fits
                                     with fits.open(out, memmap=False) as hdul:
                                         img = hdul[0].data
                                         hdr = hdul[0].header
-
                                     rect = tuple(map(int, self._mf_autocrop_rect))  # (x1,y1,x2,y2)
-                                    # If super-res was used for this group, scale the rect
                                     sr_enabled_ui = self.mf_sr_cb.isChecked()
                                     sr_factor_ui  = getattr(self, "mf_sr_factor_spin", None)
                                     sr_factor_val = sr_factor_ui.value() if sr_factor_ui is not None else self.settings.value("stacking/mfdeconv/sr_factor", 2, type=int)
                                     sr_factor = int(sr_factor_val) if sr_enabled_ui else 1
                                     if sr_factor > 1:
-                                        x1,y1,x2,y2 = rect
+                                        x1, y1, x2, y2 = rect
                                         rect = (x1*sr_factor, y1*sr_factor, x2*sr_factor, y2*sr_factor)
-
-                                    x1,y1,x2,y2 = rect
+                                    x1, y1, x2, y2 = rect
                                     if img.ndim == 2:
                                         crop = img[y1:y2, x1:x2]
                                     elif img.ndim == 3:
@@ -11444,30 +11433,26 @@ class StackingSuiteDialog(QDialog):
                                             crop = img[:, y1:y2, x1:x2]
                                         else:
                                             crop = img[y1:y2, x1:x2, :]
-
                                     out_crop = out.replace(".fit", "_autocrop.fit").replace(".fits", "_autocrop.fits")
                                     fits.PrimaryHDU(data=crop.astype(np.float32, copy=False), header=hdr).writeto(out_crop, overwrite=True)
                                     self.update_status(f"✂️ (MF) Saved auto-cropped copy → {out_crop}")
                                 except Exception as e:
                                     self.update_status(f"⚠️ (MF) Auto-crop of output failed: {e}")
 
-                    # NEW: wrapper that records results, then chains next job after thread is down
+                    # wrapper: record results, then chain next job after the thread is fully down
                     def _on_worker_finished(ok: bool, message: str, out: str):
                         try:
                             _job_finished(ok, message, out)
                         finally:
-                            # ensure we queue the next job only after THIS thread fully finishes
                             def _after_thread_down():
                                 try:
                                     self._mf_thread.finished.disconnect(_after_thread_down)
                                 except Exception:
                                     pass
                                 QTimer.singleShot(0, _start_next_mf_job)
-
                             try:
                                 self._mf_thread.finished.connect(_after_thread_down, Qt.ConnectionType.QueuedConnection)
                             except Exception:
-                                # fallback: still try to chain
                                 QTimer.singleShot(0, _start_next_mf_job)
 
                     self._mf_worker.finished.connect(_on_worker_finished, Qt.ConnectionType.QueuedConnection)
@@ -11477,12 +11462,12 @@ class StackingSuiteDialog(QDialog):
                     if getattr(self, "_mf_pd", None):
                         self._mf_pd.setLabelText(f"Deconvolving '{group_key}' ({len(frames)} frames)…")
 
-                # Kick off the first job
                 QTimer.singleShot(0, _start_next_mf_job)
 
-                # Defer the rest of the pipeline; we'll decide at MF completion.
+                # Defer rest of pipeline; MF block will decide at completion.
                 self._set_registration_busy(False)
                 return
+
 
         # ----------------------------
         # Snapshot UI-dependent settings
