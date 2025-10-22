@@ -269,7 +269,7 @@ from pro.status_log_dock import StatusLogDock
 from pro.log_bus import LogBus
 
 
-VERSION = "1.3.14"
+VERSION = "1.3.15"
 
 
 
@@ -6601,8 +6601,6 @@ class AstroSuiteProMainWindow(QMainWindow):
                 QMessageBox.warning(self, "Open failed", f"{p}\n\n{e}")
 
 
-
-
     def save_active(self):
         doc = self._active_doc()
         if not doc:
@@ -6616,15 +6614,40 @@ class AstroSuiteProMainWindow(QMainWindow):
             "JPEG (*.jpg *.jpeg)"
         )
 
-        # Default dir: last save dir or home
-        last = self.settings.value("paths/last_save_dir", "", type=str) or str(Path.home())
-        # Suggest current doc name if you have it:
-        suggested = _best_doc_name(doc)
-        # drop any extension the name might already include
-        suggested = os.path.splitext(suggested)[0]
-        suggested_safe = _sanitize_filename(suggested)
-        suggested_path = os.path.join(last, suggested_safe)
+        # --- Determine initial directory nicely -----------------------------
+        # 1) Try the document's original file path (strip any "::HDU" or "::XISF[...]" suffix)
+        orig_path = (doc.metadata or {}).get("file_path", "") or ""
+        if "::" in orig_path:
+            # e.g. "/foo/bar/file.fits::HDU 2" or "...::XISF[3]"
+            orig_path_fs = orig_path.split("::", 1)[0]
+        else:
+            orig_path_fs = orig_path
 
+        candidate_dir = ""
+        try:
+            if orig_path_fs:
+                pdir = os.path.dirname(orig_path_fs)
+                if pdir and os.path.isdir(pdir):
+                    candidate_dir = pdir
+        except Exception:
+            candidate_dir = ""
+
+        # 2) Else, fall back to last save dir setting
+        if not candidate_dir:
+            candidate_dir = self.settings.value("paths/last_save_dir", "", type=str) or ""
+
+        # 3) Else, home directory
+        if not candidate_dir or not os.path.isdir(candidate_dir):
+            from pathlib import Path
+            candidate_dir = str(Path.home())
+
+        # --- Suggest a sane filename ---------------------------------------
+        suggested = _best_doc_name(doc)
+        suggested = os.path.splitext(suggested)[0]               # remove any ext
+        suggested_safe = _sanitize_filename(suggested)
+        suggested_path = os.path.join(candidate_dir, suggested_safe)
+
+        # --- Open dialog ----------------------------------------------------
         path, selected_filter = QFileDialog.getSaveFileName(self, "Save As", suggested_path, filters)
         if not path:
             return
@@ -6632,10 +6655,11 @@ class AstroSuiteProMainWindow(QMainWindow):
         before = path
         path, ext_norm = _normalize_save_path_chosen_filter(path, selected_filter)
 
-        # If we changed the path (e.g., removed spaces or illegal chars), give a heads-up once
+        # If we changed the path (e.g., sanitized), inform once
         if before != path:
             self._log(f"Adjusted filename for safety:\n  {before}\n→ {path}")
 
+        # --- Bit depth selection -------------------------------------------
         from pro.save_options import SaveOptionsDialog
         current_bd = doc.metadata.get("bit_depth")
         dlg = SaveOptionsDialog(self, ext_norm, current_bd)
@@ -6643,12 +6667,14 @@ class AstroSuiteProMainWindow(QMainWindow):
             return
         chosen_bd = dlg.selected_bit_depth()
 
+        # --- Save & remember folder ----------------------------------------
         try:
             self.docman.save_document(doc, path, bit_depth_override=chosen_bd)
             self._log(f"Saved: {path} ({chosen_bd})")
             self.settings.setValue("paths/last_save_dir", os.path.dirname(path))
         except Exception as e:
             QMessageBox.critical(self, "Save failed", str(e))
+
 
 
 
