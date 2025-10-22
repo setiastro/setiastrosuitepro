@@ -11257,7 +11257,7 @@ class StackingSuiteDialog(QDialog):
                 self.update_status("⚠️ No aligned frames available for MF deconvolution.")
             else:
                 self._mf_pd = QProgressDialog("Multi-frame deconvolving…", "Cancel", 0, len(mf_groups), self)
-                #self._mf_pd.setWindowModality(Qt.WindowModality.ApplicationModal)
+                # self._mf_pd.setWindowModality(Qt.WindowModality.ApplicationModal)
                 self._mf_pd.setMinimumDuration(0)
                 self._mf_pd.setWindowTitle("MF Deconvolution")
                 self._mf_pd.setValue(0)
@@ -11266,9 +11266,10 @@ class StackingSuiteDialog(QDialog):
                 if getattr(self, "_mf_pd", None):
                     self._mf_pd.setLabelText("Preparing MF deconvolution…")
                     self._mf_pd.setMinimumWidth(520)
+
                 self._mf_total_groups = len(mf_groups)
                 self._mf_groups_done = 0
-                # progress range = groups * 1000 (each group gets a 0..1000 sub-range)
+                # progress range = groups * 1000 (each group gets 0..1000)
                 self._mf_pd.setRange(0, self._mf_total_groups * 1000)
                 self._mf_pd.setValue(0)
                 self._mf_queue = list(mf_groups)
@@ -11301,10 +11302,9 @@ class StackingSuiteDialog(QDialog):
                     # Decide: continue into normal integration, or finish here
                     run_after = self.settings.value("stacking/mfdeconv/after_mf_run_integration", False, type=bool)
                     if run_after:
-                        _start_after_align_worker(aligned_light_files)   # ← your existing helper
+                        _start_after_align_worker(aligned_light_files)
                     else:
                         self.update_status("✅ MFDeconv complete for all groups. Skipping normal integration as requested.")
-                        # Release busy state so user can start another job
                         self._set_registration_busy(False)
 
                 def _start_next_mf_job():
@@ -11335,7 +11335,7 @@ class StackingSuiteDialog(QDialog):
                     sr_factor_val = sr_factor_ui.value() if sr_factor_ui is not None else self.settings.value("stacking/mfdeconv/sr_factor", 2, type=int)
                     super_res_factor = int(sr_factor_val) if sr_enabled_ui else 1
 
-                    # Build cfg dicts (even if disabled; they’ll be ignored if not used)
+                    # Build cfg dicts
                     star_mask_cfg = {
                         "thresh_sigma":  self.settings.value("stacking/mfdeconv/star_mask/thresh_sigma",  _SM_DEF_THRESH, type=float),
                         "grow_px":       self.settings.value("stacking/mfdeconv/star_mask/grow_px",       _SM_DEF_GROW, type=int),
@@ -11374,7 +11374,7 @@ class StackingSuiteDialog(QDialog):
                             varmap_cfg=varmap_cfg,
                             save_intermediate=save_intermediate,
                             super_res_factor=super_res_factor,
-                            star_mask_ref_path=star_mask_ref,   
+                            star_mask_ref_path=star_mask_ref,
                             seed_mode=seed_mode_cfg,
                         )
                     else:
@@ -11395,17 +11395,18 @@ class StackingSuiteDialog(QDialog):
                             varmap_cfg=varmap_cfg,
                             save_intermediate=save_intermediate,
                             super_res_factor=super_res_factor,
-                            star_mask_ref_path=star_mask_ref,   
+                            star_mask_ref_path=star_mask_ref,
                             seed_mode=seed_mode_cfg,
                         )
 
                     self._mf_worker.moveToThread(self._mf_thread)
                     self._mf_worker.progress.connect(self._on_mf_progress, Qt.ConnectionType.QueuedConnection)
                     self._mf_thread.started.connect(self._mf_worker.run, Qt.ConnectionType.QueuedConnection)
-                    self._mf_worker.finished.connect(self._mf_thread.quit, Qt.ConnectionType.QueuedConnection)
-                    self._mf_thread.finished.connect(self._mf_worker.deleteLater)   # ✅ free worker on thread end
-                    self._mf_thread.finished.connect(self._mf_thread.deleteLater)   # ✅ free thread object
 
+                    # Always stop and clean the thread after a worker finishes
+                    self._mf_worker.finished.connect(self._mf_thread.quit, Qt.ConnectionType.QueuedConnection)
+                    self._mf_thread.finished.connect(self._mf_worker.deleteLater, Qt.ConnectionType.QueuedConnection)
+                    self._mf_thread.finished.connect(self._mf_thread.deleteLater, Qt.ConnectionType.QueuedConnection)
 
                     def _job_finished(ok: bool, message: str, out: str):
                         if getattr(self, "_mf_pd", None):
@@ -11439,11 +11440,9 @@ class StackingSuiteDialog(QDialog):
                                     if img.ndim == 2:
                                         crop = img[y1:y2, x1:x2]
                                     elif img.ndim == 3:
-                                        # FITS saved as (H,W) or (C,H,W); your saver writes mono as 2D and 3-channel as C,H,W
-                                        if img.shape[0] in (1,3):
+                                        if img.shape[0] in (1, 3):
                                             crop = img[:, y1:y2, x1:x2]
                                         else:
-                                            # (H,W,C) fallback
                                             crop = img[y1:y2, x1:x2, :]
 
                                     out_crop = out.replace(".fit", "_autocrop.fit").replace(".fits", "_autocrop.fits")
@@ -11452,7 +11451,26 @@ class StackingSuiteDialog(QDialog):
                                 except Exception as e:
                                     self.update_status(f"⚠️ (MF) Auto-crop of output failed: {e}")
 
-                    self._mf_worker.finished.connect(_job_finished, Qt.ConnectionType.QueuedConnection)
+                    # NEW: wrapper that records results, then chains next job after thread is down
+                    def _on_worker_finished(ok: bool, message: str, out: str):
+                        try:
+                            _job_finished(ok, message, out)
+                        finally:
+                            # ensure we queue the next job only after THIS thread fully finishes
+                            def _after_thread_down():
+                                try:
+                                    self._mf_thread.finished.disconnect(_after_thread_down)
+                                except Exception:
+                                    pass
+                                QTimer.singleShot(0, _start_next_mf_job)
+
+                            try:
+                                self._mf_thread.finished.connect(_after_thread_down, Qt.ConnectionType.QueuedConnection)
+                            except Exception:
+                                # fallback: still try to chain
+                                QTimer.singleShot(0, _start_next_mf_job)
+
+                    self._mf_worker.finished.connect(_on_worker_finished, Qt.ConnectionType.QueuedConnection)
 
                     self._mf_thread.start()
 
@@ -11465,6 +11483,7 @@ class StackingSuiteDialog(QDialog):
                 # Defer the rest of the pipeline; we'll decide at MF completion.
                 self._set_registration_busy(False)
                 return
+
         # ----------------------------
         # Snapshot UI-dependent settings
         # ----------------------------
