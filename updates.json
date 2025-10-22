@@ -1,9 +1,9 @@
 {
-  "version": "1.3.14",
+  "version": "1.3.16",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.14/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.14/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.14/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.16/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.16/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.16/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.3.14 SuperRes 2x Bug Fix.  WIMI markerlayer bug fix"
+  "notes": "Seti Astro Suite Pro V1.3.16 Drizzle bug fix. MFDeconv stopping fix. Further hardening for square artifacts in MFDeconv. Option to register and integrate immediately after calibration. Save AS location fix. Curves preview sizing bug fix"
 }
