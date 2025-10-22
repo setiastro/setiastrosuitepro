@@ -1367,9 +1367,11 @@ class StarRegistrationWorker(QRunnable):
 
             f = max(1, int(getattr(self, "downsample_factor", 2)))
             if f > 1:
-                gray_small = gray[::f, ::f]
+                new_hw = (max(1, gray.shape[1] // f), max(1, gray.shape[0] // f))
+                gray_small = cv2.resize(gray, new_hw, interpolation=cv2.INTER_AREA)
             else:
                 gray_small = gray
+            gray_small = np.ascontiguousarray(gray_small.astype(np.float32, copy=False))
 
             # detach from the memmap/file completely and keep it small
             gray_small = np.ascontiguousarray(gray_small.astype(np.float32, copy=False))
@@ -1477,8 +1479,12 @@ class StarRegistrationThread(QThread):
         """
         # Downsample for the match stage (like your dialog code), then scale CPs back up
         f = max(1, int(self.downsample))
-        ref_small = self.ref_small                          # made in run()
-        src_small = src_gray_full[::f, ::f] if f > 1 else src_gray_full
+        ref_small = self.ref_small
+        if f > 1:
+            new_hw = (max(1, src_gray_full.shape[1] // f), max(1, src_gray_full.shape[0] // f))
+            src_small = cv2.resize(src_gray_full, new_hw, interpolation=cv2.INTER_AREA)
+        else:
+            src_small = src_gray_full
 
         # Lock astroalign; get matches (src_pts in src_small, tgt_pts in ref_small)
         with _AA_LOCK:
@@ -1658,7 +1664,11 @@ class StarRegistrationThread(QThread):
 
             # Single shared downsampled ref for workers
             ds = max(1, int(self.align_prefs.get("downsample", 2)))
-            ref_small = ref2d[::ds, ::ds] if ds > 1 else ref2d
+            if ds > 1:
+                new_hw = (max(1, ref2d.shape[1] // ds), max(1, ref2d.shape[0] // ds))
+                ref_small = cv2.resize(ref2d, new_hw, interpolation=cv2.INTER_AREA)
+            else:
+                ref_small = ref2d
             self.ref_small = np.ascontiguousarray(ref_small.astype(np.float32))
 
             # Initialize transforms to identity for EVERY original frame
@@ -1939,16 +1949,16 @@ class StarRegistrationThread(QThread):
                 try:
                     k_norm = os.path.normpath(orig_path)
                     if kind == "affine":
-                        A = np.asarray(X, np.float32).reshape(2, 3)
+                        A = np.asarray(X, np.float64).reshape(2, 3)
                         self.drizzle_xforms[k_norm] = ("affine", A)
                     elif kind == "homography":
-                        H = np.asarray(X, np.float32).reshape(3, 3)
+                        H = np.asarray(X, np.float64).reshape(3, 3)
                         self.drizzle_xforms[k_norm] = ("homography", H)
                     elif kind.startswith("poly"):
                         self.drizzle_xforms[k_norm] = (kind, None)
                     else:
                         # fall back to affine
-                        A = np.asarray(X, np.float32).reshape(2, 3)
+                        A = np.asarray(X, np.float64).reshape(2, 3)
                         self.drizzle_xforms[k_norm] = ("affine", A)
                 except Exception:
                     pass
@@ -2050,19 +2060,36 @@ class StarRegistrationThread(QThread):
                 f.write(f"KIND: {kind}\n")
                 f.write("MATRIX:\n")
 
+                _fmt = lambda x: f"{float(x):.16g}"
                 if kind == "homography":
                     H = np.asarray(M, np.float64).reshape(3, 3)
-                    f.write(f"{H[0,0]:.9f}, {H[0,1]:.9f}, {H[0,2]:.9f}\n")
-                    f.write(f"{H[1,0]:.9f}, {H[1,1]:.9f}, {H[1,2]:.9f}\n")
-                    f.write(f"{H[2,0]:.9f}, {H[2,1]:.9f}, {H[2,2]:.9f}\n\n")
+                    f.write(f"{_fmt(H[0,0])}, {_fmt(H[0,1])}, {_fmt(H[0,2])}\n")
+                    f.write(f"{_fmt(H[1,0])}, {_fmt(H[1,1])}, {_fmt(H[1,2])}\n")
+                    f.write(f"{_fmt(H[2,0])}, {_fmt(H[2,1])}, {_fmt(H[2,2])}\n\n")
                 elif kind == "affine":
                     A = np.asarray(M, np.float64).reshape(2, 3)
-                    f.write(f"{A[0,0]:.9f}, {A[0,1]:.9f}, {A[0,2]:.9f}\n")
-                    f.write(f"{A[1,0]:.9f}, {A[1,1]:.9f}, {A[1,2]:.9f}\n\n")
+                    f.write(f"{_fmt(A[0,0])}, {_fmt(A[0,1])}, {_fmt(A[0,2])}\n")
+                    f.write(f"{_fmt(A[1,0])}, {_fmt(A[1,1])}, {_fmt(A[1,2])}\n\n")
                 else:
                     # TPS or unknown: write a sentinel block; drizzle will skip
                     f.write("MATRIX: \nUNSUPPORTED\n\n")
 
+        try:
+            with open(out_path, "r", encoding="utf-8") as _fh:
+                s = _fh.read()
+            tx, ty = [], []
+            for blk in s.split("FILE:")[1:]:
+                if "KIND: affine" in blk:
+                    nums = list(map(float, re.findall(r"[-+]?\d*\.\d+|\d+", blk.split("MATRIX:")[1])))
+                    if len(nums) >= 6:
+                        tx.append(nums[2]); ty.append(nums[5])
+            if tx:
+                fx = np.mod(tx, 1.0); fy = np.mod(ty, 1.0)
+                uniq_x = sorted(set(np.round(fx / 0.25) * 0.25))
+                uniq_y = sorted(set(np.round(fy / 0.25) * 0.25))
+                self.progress_update.emit(f"Phase check (tx/ty ~0.25 steps): {uniq_x} / {uniq_y}")
+        except Exception:
+            pass
 
 
 

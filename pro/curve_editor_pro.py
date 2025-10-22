@@ -884,7 +884,9 @@ class CurvesDialogPro(QDialog):
         self._pan_start = QPointF()
         self._did_initial_fit = False
         self._apply_when_ready = False
-
+        self._preview_orig = None     # downsampled original
+        self._preview_proc = None     # downsampled processed (latest)
+        self._show_proc = False       # A/B: False=show original, True=show processed
         self._cdf = None
         self._cdf_bins = 1024
         self._cdf_total = 0
@@ -942,15 +944,13 @@ class CurvesDialogPro(QDialog):
 
         # buttons
         rowb = QHBoxLayout()
-        self.btn_preview = QPushButton("Preview")
+        self.btn_preview = QToolButton(self)
+        self.btn_preview.setText("Toggle Preview")
+        self.btn_preview.setCheckable(True)                  # ⬅️ toggle
         self.btn_apply   = QPushButton("Apply to Document")
-        self.btn_reset   = QToolButton()
-        self.btn_reset.setText("Reset")
-        rowb.addWidget(self.btn_preview)
-        rowb.addWidget(self.btn_apply)
-        rowb.addWidget(self.btn_reset)
+        self.btn_reset   = QToolButton(); self.btn_reset.setText("Reset")
+        rowb.addWidget(self.btn_preview); rowb.addWidget(self.btn_apply); rowb.addWidget(self.btn_reset)
         left.addLayout(rowb)
-
         left.addStretch(1)
         top.addLayout(left, 0)
 
@@ -1003,6 +1003,7 @@ class CurvesDialogPro(QDialog):
 
         # wire
         self.btn_preview.clicked.connect(self._run_preview)
+        self.btn_preview.toggled.connect(self._toggle_preview)   # ⬅️ new
         self.btn_apply.clicked.connect(self._apply)
         self.btn_reset.clicked.connect(self._reset_curve)
         b_out.clicked.connect(lambda: self._set_zoom(self._zoom / 1.25))
@@ -1015,10 +1016,69 @@ class CurvesDialogPro(QDialog):
 
         # seed images
         self._load_from_doc()
-        QTimer.singleShot(0, self._fit_once)
+        QTimer.singleShot(0, self._fit_after_load)
         self.editor.setSymmetryCallback(self._on_symmetry_pick)
+        self.btn_preview.setChecked(True) 
 
         self._rebuild_presets_menu()
+
+    def _fit_after_load(self, tries: int = 0):
+        """
+        Run Fit-to-Preview once the dialog is visible, the pixmap is ready,
+        and the viewport knows its final size. Retries a few ticks if needed.
+        """
+        if self._did_initial_fit:
+            return
+
+        if not self.isVisible():
+            QTimer.singleShot(0, lambda: self._fit_after_load(tries))
+            return
+
+        # need a pixmap and a live viewport size
+        pm = self.label.pixmap()
+        vp = self.scroll.viewport() if hasattr(self, "scroll") else None
+        have_pm = bool(pm and not pm.isNull())
+        have_sizes = bool(vp and vp.width() > 0 and vp.height() > 0)
+
+        if not (self._pix and have_pm and have_sizes):
+            if tries < 20:  # ~ a handful of event-loop turns
+                QTimer.singleShot(15, lambda: self._fit_after_load(tries + 1))
+            return
+
+        # finally do the fit-once
+        self._did_initial_fit = True
+        self._fit()
+
+    def _capture_view(self):
+        """Return (fx, fy, zoom) where f* are fractional center coords in label space."""
+        try:
+            vp = self.scroll.viewport()
+            h  = self.scroll.horizontalScrollBar()
+            v  = self.scroll.verticalScrollBar()
+            lw = max(1, self.label.width())
+            lh = max(1, self.label.height())
+            cx = h.value() + vp.width()  / 2.0
+            cy = v.value() + vp.height() / 2.0
+            fx = float(cx) / float(lw)
+            fy = float(cy) / float(lh)
+            return (fx, fy, float(self._zoom))
+        except Exception:
+            return (0.5, 0.5, float(self._zoom))
+
+    def _restore_view(self, fx: float, fy: float, zoom: float):
+        """Restore zoom and recenter viewport to previous fractional center."""
+        self._set_zoom(zoom)  # calls _apply_zoom() internally
+        vp = self.scroll.viewport()
+        h  = self.scroll.horizontalScrollBar()
+        v  = self.scroll.verticalScrollBar()
+        cx = int(round(fx * max(1, self.label.width())))
+        cy = int(round(fy * max(1, self.label.height())))
+        hx = cx - vp.width()  // 2
+        vy = cy - vp.height() // 2
+        # clamp
+        h.setValue(max(h.minimum(), min(h.maximum(), hx)))
+        v.setValue(max(v.minimum(), min(v.maximum(), vy)))
+
 
     def _build_preview_luma_cdf(self):
         """Compute a luminance CDF once from the preview image for fast clipping lookups.
@@ -1093,10 +1153,13 @@ class CurvesDialogPro(QDialog):
         self._quick_preview()
 
     def _fit_once(self):
-        if self._pix is None or self._did_initial_fit:
-            return
-        self._did_initial_fit = True
-        self._fit()
+        if not self._did_initial_fit:
+            self._fit_after_load(0)
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        # kick the fit after this show/layout pass
+        QTimer.singleShot(0, self._fit_after_load)
 
     def _on_preview_mouse_moved(self, x: float, y: float):
         if self._preview_img is None:
@@ -1290,10 +1353,18 @@ class CurvesDialogPro(QDialog):
         else:
             arr = arr.astype(np.float32)
         self._full_img = arr
-        self._preview_img = _downsample_for_preview(arr, 1200)
-        self._update_preview_pix(self._preview_img)
+        self._preview_img  = _downsample_for_preview(arr, 1200)
+        self._preview_orig = self._preview_img.copy()
+        self._preview_proc = None
+
+        self._show_proc = True                      # ⬅️ start with preview ON
+        self._quick_preview()                       # ⬅️ build first processed DS frame
+        self._update_preview_pix(                   # ⬅️ show processed immediately
+            self._preview_proc if self._preview_proc is not None else self._preview_orig,
+            preserve_view=False
+        )
         self._build_preview_luma_cdf()
-        self._build_preview_rgb_cdfs() 
+        self._build_preview_rgb_cdfs()
 
     # ----- building LUT from editor -----
     def _build_lut01(self) -> np.ndarray | None:
@@ -1309,6 +1380,17 @@ class CurvesDialogPro(QDialog):
             self._set_status(f"LUT build failed: {type(e).__name__}: {e}")
             return None
 
+    def _toggle_preview(self, on: bool):
+        self._show_proc = bool(on)
+        # Ensure we have a processed frame ready
+        if self._preview_proc is None:
+            self._quick_preview()
+        # Pick which buffer to show (both are downsampled)
+        img = self._preview_proc if (self._show_proc and self._preview_proc is not None) else self._preview_orig
+        self._update_preview_pix(img)
+        self._set_status("Preview ON" if self._show_proc else "Preview OFF")
+
+
     # ----- quick (in-UI) preview on downsample -----
     def _quick_preview(self):
         if self._preview_img is None:
@@ -1317,9 +1399,12 @@ class CurvesDialogPro(QDialog):
         if lut is None:
             return
         mode = self._current_mode()
-        out = _apply_mode_any(self._preview_img, mode, lut)
-        out = self._blend_with_mask(out)               # ✅ blend
-        self._update_preview_pix(out)
+        proc = _apply_mode_any(self._preview_img, mode, lut)
+        proc = self._blend_with_mask(proc)          # same-size DS blend
+        self._preview_proc = proc                   # ⬅️ cache processed DS
+        # Update view ONLY if user is showing preview
+        if self._show_proc:
+            self._update_preview_pix(self._preview_proc)
         try:
             bt, wt = self.editor.current_black_white_thresholds()
 
@@ -1344,26 +1429,22 @@ class CurvesDialogPro(QDialog):
 
     # ----- threaded full-res preview (also used for Apply path if needed) -----
     def _run_preview(self):
+        # (optional) keep if you want to precompute full-res in background,
+        # but do not update UI from it.
         lut = self._build_lut01()
         if lut is None or self._full_img is None:
             return
-        self.btn_preview.setEnabled(False)
         self.btn_apply.setEnabled(False)
         self._thr = _CurvesWorker(self._full_img, self._current_mode(), lut)
         self._thr.done.connect(self._on_preview_ready)
-        self._thr.finished.connect(lambda: (self.btn_preview.setEnabled(True), self.btn_apply.setEnabled(True)))
+        self._thr.finished.connect(lambda: self.btn_apply.setEnabled(True))
         self._thr.start()
 
     def _on_preview_ready(self, out01: np.ndarray):
-        out_masked = self._blend_with_mask(out01)      # ✅ blend full-res
-        self._update_preview_pix(out_masked)
-        self._last_preview = out_masked                # store blended for Apply
-        self._set_status("Preview updated.")
-
-        # If Apply was requested before preview finished, finish now with blended frame
-        if getattr(self, "_apply_when_ready", False):
-            self._apply_when_ready = False
-            self._commit(self._last_preview)
+        # NOTE: do not push full-res into the label
+        out_masked = self._blend_with_mask(out01)
+        self._last_preview = out_masked         # cache for Apply
+        self._set_status("Full-res ready (not shown).")
 
     def _clip_counts_from_thresholds(self, black_t: float | None, white_t: float | None):
         """
@@ -1462,12 +1543,15 @@ class CurvesDialogPro(QDialog):
 
     # ----- apply to document -----
     def _apply(self):
-        # If user never ran Preview, compute once and apply when ready.
+        # Ensure we have a full-res result; compute now if needed.
         if not hasattr(self, "_last_preview"):
-            self._apply_when_ready = True
-            self._run_preview()
-            return
-        # Already have a full-res, mask-blended preview
+            lut = self._build_lut01()
+            if lut is None or self._full_img is None:
+                return
+            out01 = _apply_mode_any(self._full_img, self._current_mode(), lut)
+            out01 = self._blend_with_mask(out01)
+            self._last_preview = out01
+        # Commit (this reloads downsampled original from doc afterwards)
         self._commit(self._last_preview)
 
     def _commit(self, out01: np.ndarray):
@@ -1521,16 +1605,25 @@ class CurvesDialogPro(QDialog):
         self.lbl_status.setText(s)
 
     # preview label drawing
-    def _update_preview_pix(self, img01: np.ndarray | None):
+    def _update_preview_pix(self, img01: np.ndarray | None, preserve_view: bool = True):
         if img01 is None:
             self.label.clear(); self._pix = None; return
+
+        state = self._capture_view() if preserve_view else None
+
         qimg = _float_to_qimage_rgb8(img01)
         pm = QPixmap.fromImage(qimg)
         self._pix = pm
-        self._apply_zoom()
-        # trigger a one-time fit once layout knows sizes
-        if not self._did_initial_fit:
-            QTimer.singleShot(0, self._fit_once)
+
+        if preserve_view and state is not None:
+            fx, fy, zoom = state
+            # Avoid any auto-fit when we explicitly preserve view
+            self._restore_view(fx, fy, zoom)
+        else:
+            self._apply_zoom()
+            if not self._did_initial_fit:
+                QTimer.singleShot(0, self._fit_once)
+
 
     # --- mask helpers ---------------------------------------------------
     def _active_mask_layer(self):

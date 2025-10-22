@@ -3208,6 +3208,16 @@ class StackingSuiteDialog(QDialog):
                 break
 
         self.use_gpu_integration = self.settings.value("stacking/use_hardware_accel", True, type=bool)
+        self._migrate_drizzle_keys_once()
+
+    def _migrate_drizzle_keys_once(self):
+        s = self.settings
+        if s.value("stacking/drizzle_pixfrac", None) is None:
+            # take whichever existed, prefer Integration tab value
+            v = s.value("stacking/drizzle_drop", None, type=float)
+            if v is None:
+                v = s.value("stacking/drop_shrink", 0.65, type=float)
+            self._set_drizzle_pixfrac(v)
 
 
     def _on_align_progress(self, done: int, total: int):
@@ -4035,10 +4045,10 @@ class StackingSuiteDialog(QDialog):
         fl_dz.addRow("Kernel:", self.drizzle_kernel_combo)
 
         self.drop_shrink_spin = QDoubleSpinBox()
-        self.drop_shrink_spin.setRange(0.05, 2.0)
+        self.drop_shrink_spin.setRange(0.0, 1.0)  # make this the same concept: pixfrac
         self.drop_shrink_spin.setDecimals(3)
-        self.drop_shrink_spin.setSingleStep(0.05)
-        self.drop_shrink_spin.setValue(self.settings.value("stacking/drop_shrink", 0.65, type=float))
+        self.drop_shrink_spin.setValue(self._get_drizzle_pixfrac())
+        self.drop_shrink_spin.valueChanged.connect(lambda v: self._set_drizzle_pixfrac(v))
         fl_dz.addRow("Kernel width:", self.drop_shrink_spin)
 
         # Optional: a separate σ for Gaussian (if you want it distinct)
@@ -4425,6 +4435,54 @@ class StackingSuiteDialog(QDialog):
 
         dialog.resize(900, 640)
         dialog.exec()
+
+    # --- Drizzle config: single source of truth ---
+    def _get_drizzle_pixfrac(self) -> float:
+        s = self.settings
+        # new canonical -> old aliases -> default
+        v = s.value("stacking/drizzle_pixfrac", None, type=float)
+        if v is None:
+            v = s.value("stacking/drizzle_drop", None, type=float)
+        if v is None:
+            v = s.value("stacking/drop_shrink", 0.65, type=float)
+        # clamp to [0, 1]
+        return float(max(0.0, min(1.0, v)))
+
+    def _set_drizzle_pixfrac(self, v: float) -> None:
+        v = float(max(0.0, min(1.0, v)))
+        s = self.settings
+        # write to canonical + legacy keys (back-compat)
+        s.setValue("stacking/drizzle_pixfrac", v)
+        s.setValue("stacking/drizzle_drop", v)
+        s.setValue("stacking/drop_shrink", v)
+
+        # reflect in any live widgets without feedback loops
+        for wname in ("drizzle_drop_shrink_spin", "drop_shrink_spin"):
+            w = getattr(self, wname, None)
+            if w is not None and abs(float(w.value()) - v) > 1e-9:
+                w.blockSignals(True); w.setValue(v); w.blockSignals(False)
+
+    def _get_drizzle_scale(self) -> float:
+        # Accepts "1x/2x/3x" or numeric
+        val = self.settings.value("stacking/drizzle_scale", "2x", type=str)
+        if isinstance(val, str) and val.endswith("x"):
+            try: return float(val[:-1])
+            except: return 2.0
+        return float(val)
+
+    def _set_drizzle_scale(self, r: float | str) -> None:
+        if isinstance(r, str):
+            try: r = float(r.rstrip("xX"))
+            except: r = 2.0
+        r = float(max(1.0, min(3.0, r)))
+        # store as “Nx” so the combo’s string stays in sync
+        self.settings.setValue("stacking/drizzle_scale", f"{int(r)}x")
+        if hasattr(self, "drizzle_scale_combo"):
+            txt = f"{int(r)}x"
+            if self.drizzle_scale_combo.currentText() != txt:
+                self.drizzle_scale_combo.blockSignals(True)
+                self.drizzle_scale_combo.setCurrentText(txt)
+                self.drizzle_scale_combo.blockSignals(False)
 
 
     def closeEvent(self, e):
@@ -5101,8 +5159,22 @@ class StackingSuiteDialog(QDialog):
             lambda v: self.settings.setValue("stacking/auto_session", bool(v))
         )
 
+        # NEW: auto roll into Registration+Integration after calibration
+        self.auto_register_after_calibration_cb = QCheckBox("Auto-register & integrate after calibration")
+        self.auto_register_after_calibration_cb.setToolTip(
+            "When checked, once calibration finishes the app will switch to Image Registration and run "
+            "‘Register and Integrate Images’ automatically."
+        )
+        self.auto_register_after_calibration_cb.setChecked(
+            self.settings.value("stacking/auto_register_after_cal", False, type=bool)
+        )
+        self.auto_register_after_calibration_cb.toggled.connect(
+            lambda v: self.settings.setValue("stacking/auto_register_after_cal", bool(v))
+        )
+
         opts_row.addWidget(self.recurse_dirs_checkbox)
         opts_row.addWidget(self.auto_session_checkbox)
+        opts_row.addWidget(self.auto_register_after_calibration_cb) 
         layout.addLayout(opts_row)  # or flat_frames_layout.addLayout(...)        
         session_hint_label = QLabel("Right Click to Assign Session Keys if desired")
         session_hint_label.setStyleSheet("color: #888; font-style: italic; font-size: 11px; margin-left: 4px;")
@@ -5785,10 +5857,10 @@ class StackingSuiteDialog(QDialog):
 
         drizzle_layout.addWidget(QLabel("Drop Shrink:"))
         self.drizzle_drop_shrink_spin = QDoubleSpinBox()
-        self.drizzle_drop_shrink_spin.setRange(0.0, 1.0)
-        self.drizzle_drop_shrink_spin.setSingleStep(0.05)
-        self.drizzle_drop_shrink_spin.setValue(0.65)
-        self.drizzle_drop_shrink_spin.valueChanged.connect(self._on_drizzle_param_changed)
+        self.drizzle_drop_shrink_spin.setRange(0.0, 1.0)  # pixfrac is [0..1]
+        self.drizzle_drop_shrink_spin.setDecimals(3)
+        self.drizzle_drop_shrink_spin.setValue(self._get_drizzle_pixfrac())
+        self.drizzle_drop_shrink_spin.valueChanged.connect(lambda v: self._set_drizzle_pixfrac(v))
         drizzle_layout.addWidget(self.drizzle_drop_shrink_spin)
 
         self.cfa_drizzle_cb = QCheckBox("CFA Drizzle")
@@ -9189,6 +9261,39 @@ class StackingSuiteDialog(QDialog):
         self.populate_calibrated_lights()
 
 
+        # ── NEW: optionally roll straight into registration+integration ──
+        try:
+            if self.settings.value("stacking/auto_register_after_cal", False, type=bool):
+                # Switch UI to the Image Registration tab, if we can find it
+                if hasattr(self, "tabs") and self.tabs is not None:
+                    try:
+                        for i in range(self.tabs.count()):
+                            # match by tab label if available
+                            if self.tabs.tabText(i).lower().startswith("image registration"):
+                                self.tabs.setCurrentIndex(i)
+                                break
+                    except Exception:
+                        pass  # harmless if tab text lookup fails
+
+                self.update_status("⚙️ Auto: starting registration & integration…")
+                QApplication.processEvents()
+
+                # Prefer button .click() (preserves any guard/flags)
+                if hasattr(self, "register_images_btn") and self.register_images_btn is not None:
+                    # Guard against re-entrancy if a run is already in progress
+                    if not getattr(self, "_registration_busy", False):
+                        self.register_images_btn.click()
+                    else:
+                        self.update_status("ℹ️ Registration already in progress; auto-run skipped.")
+                # Fallback: call the method directly
+                elif hasattr(self, "register_images"):
+                    if not getattr(self, "_registration_busy", False):
+                        self.register_images()
+                    else:
+                        self.update_status("ℹ️ Registration already in progress; auto-run skipped.")
+        except Exception as e:
+            self.update_status(f"⚠️ Auto register/integrate failed: {e}")
+
     def extract_light_files_from_tree(self):
         """
         Walks self.reg_tree and rebuilds self.light_files as
@@ -11976,8 +12081,12 @@ class StackingSuiteDialog(QDialog):
                 log(f"✅ Group '{group_key}' not set for drizzle. Integrated image already saved.")
                 continue
 
-            scale_factor = float(dconf["scale_factor"])
-            drop_shrink  = float(dconf["drop_shrink"])
+            scale_factor = self._get_drizzle_scale()
+            drop_shrink  = self._get_drizzle_pixfrac()
+
+            # Optional: also read kernel for logging/branching
+            kernel = (self.settings.value("stacking/drizzle_kernel", "square", type=str) or "square").lower()
+            status_cb(f"Drizzle cfg → scale={scale_factor}×, pixfrac={drop_shrink:.3f}, kernel={kernel}")
             rejections_for_group = group_integration_data[group_key]["rejection_map"]
             n_frames_group = group_integration_data[group_key]["n_frames"]
 

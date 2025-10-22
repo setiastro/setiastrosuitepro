@@ -810,15 +810,21 @@ def _to_luma_local(a: np.ndarray) -> np.ndarray:
     a = np.asarray(a, dtype=np.float32)
     if a.ndim == 2:
         return a
-    # (H,W,3) or (3,H,W)
-    if a.ndim == 3 and a.shape[-1] == 3:
-        r, g, b = a[..., 0], a[..., 1], a[..., 2]
-        return (0.2126*r + 0.7152*g + 0.0722*b).astype(np.float32, copy=False)
-    if a.ndim == 3 and a.shape[0] == 3:
-        r, g, b = a[0], a[1], a[2]
-        return (0.2126*r + 0.7152*g + 0.0722*b).astype(np.float32, copy=False)
+    if a.ndim == 3:
+        # mono fast paths
+        if a.shape[-1] == 1:         # HWC mono
+            return a[..., 0].astype(np.float32, copy=False)
+        if a.shape[0] == 1:          # CHW mono
+            return a[0].astype(np.float32, copy=False)
+        # RGB
+        if a.shape[-1] == 3:         # HWC RGB
+            r, g, b = a[..., 0], a[..., 1], a[..., 2]
+            return (0.2126*r + 0.7152*g + 0.0722*b).astype(np.float32, copy=False)
+        if a.shape[0] == 3:          # CHW RGB
+            r, g, b = a[0], a[1], a[2]
+            return (0.2126*r + 0.7152*g + 0.0722*b).astype(np.float32, copy=False)
+    # fallback: average last axis
     return a.mean(axis=-1).astype(np.float32, copy=False)
-
 
 def _normalize_layout_single(a, color_mode):
     """
@@ -1920,6 +1926,12 @@ def multiframe_deconv(
 
     # Normalize layout BEFORE size harmonization
     data = _normalize_layout_batch(ys_raw, color_mode)  # list of (H,W) or (3,H,W)
+    if str(color_mode).lower() != "luma":
+        # Force strict CHW for every frame
+        data = [_as_chw(a) for a in data]
+        Cs = {a.shape[0] for a in data}
+        if len(Cs) != 1:
+            raise ValueError(f"Inconsistent channel counts in PerChannel mode: {Cs}")
     _emit_pct(0.25, "Calculating Seed Image...")
 
     # Center-crop all to common intersection
@@ -2038,6 +2050,16 @@ def multiframe_deconv(
     tol_rel = 5e-4
     patience = 2
     early_cnt = 0
+
+    x_ndim = 2 if (np.ndim(x) == 2) else 3
+    fixed = 0
+    for i, a in enumerate(data):
+        if a.ndim != x_ndim:
+            # fix common mono cases only
+            if x_ndim == 2 and a.ndim == 3 and a.shape[0] == 1:
+                data[i] = a[0]; fixed += 1
+            elif x_ndim == 2 and a.ndim == 3 and a.shape[-1] == 1:
+                data[i] = a[..., 0]; fixed += 1
 
     with cm():
         for it in range(1, max_iters + 1):
