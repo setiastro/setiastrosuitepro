@@ -9,6 +9,7 @@ import numpy.ma as ma
 import hashlib
 from numpy.lib.format import open_memmap 
 import tzlocal
+import weakref
 import re, unicodedata
 import math            # used in compute_safe_chunk
 import psutil          # used in bytes_available / compute_safe_chunk
@@ -16,7 +17,7 @@ from typing import List
 from PyQt6.QtCore import Qt, QTimer, QSettings, pyqtSignal, QObject, pyqtSlot, QThread, QEvent, QPoint, QSize, QEventLoop, QCoreApplication, QRectF, QPointF, QMetaObject
 from PyQt6.QtGui import QIcon, QImage, QPixmap, QAction, QIntValidator, QDoubleValidator, QFontMetrics, QTextCursor, QPalette, QPainter, QPen, QTransform, QColor, QBrush, QCursor
 from PyQt6.QtWidgets import (QDialog, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QLineEdit, QTreeWidget, QHeaderView, QTreeWidgetItem, QProgressBar, QProgressDialog,
-                             QFormLayout, QDialogButtonBox, QToolBar, QToolButton, QFileDialog, QTabWidget, QAbstractItemView, QSpinBox, QDoubleSpinBox, QGroupBox,
+                             QFormLayout, QDialogButtonBox, QToolBar, QToolButton, QFileDialog, QTabWidget, QAbstractItemView, QSpinBox, QDoubleSpinBox, QGroupBox,QRadioButton,
                              QSizePolicy, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QApplication, QScrollArea, QTextEdit, QMenu, QPlainTextEdit, QGraphicsEllipseItem,
                              QMessageBox, QSlider, QCheckBox, QInputDialog, QComboBox)
 from datetime import datetime, time, timedelta, timezone
@@ -50,6 +51,7 @@ from pro.log_bus import LogBus
 from pro import comet_stacking as CS
 #from pro.remove_stars import starnet_starless_from_array, darkstar_starless_from_array
 from pro.mfdeconv import MultiFrameDeconvWorker
+from pro.mfdeconvcudnn import MultiFrameDeconvWorkercuDNN
 from pro.mfdeconvsport import MultiFrameDeconvWorkerSport
 from pro.accel_installer import current_backend
 from pro.accel_workers import AccelInstallWorker
@@ -3033,7 +3035,8 @@ class StackingSuiteDialog(QDialog):
         self.session_tags = {}           # file_path => session_tag
         self.deleted_calibrated_files = []
         self._norm_map = {}
-
+        if not hasattr(self, "_mismatch_policy"):
+            self._mismatch_policy = {}
         # Remember GUI thread for fast-path updates
         self._gui_thread = QThread.currentThread()
 
@@ -3936,13 +3939,23 @@ class StackingSuiteDialog(QDialog):
         self.hw_accel_cb.setChecked(self.settings.value("stacking/use_hardware_accel", True, type=bool))
         fl_perf.addRow(self.hw_accel_cb)
 
-        self.high_octane_cb = QCheckBox("High Octane Mode (Let 'er Rip MFDeconv)")
-        self.high_octane_cb.setToolTip(
-            "Use mfdeconvsport.py (MultiFrameDeconvWorkerSport): minimal memory management, "
-            "maximum throughput. Requires ample RAM/VRAM."
-        )
-        self.high_octane_cb.setChecked(self.settings.value("stacking/high_octane", False, type=bool))
-        fl_perf.addRow(self.high_octane_cb)
+        # NEW: MFDeconv engine choice (radio buttons)
+        eng_box = QGroupBox("MFDeconv Engine")
+        eng_row = QHBoxLayout(eng_box)
+        self.mf_eng_normal_rb = QRadioButton("Normal")
+        self.mf_eng_cudnn_rb  = QRadioButton("Normal (cuDNN-free)")
+        self.mf_eng_sport_rb  = QRadioButton("High-Octane (Let ’er rip)")
+
+        # restore from settings (default "normal")
+        _saved_eng = (self.settings.value("stacking/mfdeconv/engine", "normal", type=str) or "normal").lower()
+        if   _saved_eng == "cudnn_free": self.mf_eng_cudnn_rb.setChecked(True)
+        elif _saved_eng == "sport":      self.mf_eng_sport_rb.setChecked(True)
+        else:                            self.mf_eng_normal_rb.setChecked(True)
+
+        eng_row.addWidget(self.mf_eng_normal_rb)
+        eng_row.addWidget(self.mf_eng_cudnn_rb)
+        eng_row.addWidget(self.mf_eng_sport_rb)
+        fl_perf.addRow(eng_box)
 
         # (Optional) show detected backend for user feedback
         try:
@@ -4495,6 +4508,21 @@ class StackingSuiteDialog(QDialog):
             pass
         super().closeEvent(e)
 
+    def _mf_worker_class_from_settings(self):
+        """Return (WorkerClass, engine_name) from settings."""
+        # local import avoids import-time cost if user never runs MFDeconv
+        from pro.mfdeconv import MultiFrameDeconvWorker
+        from pro.mfdeconvcudnn import MultiFrameDeconvWorkercuDNN
+        from pro.mfdeconvsport import MultiFrameDeconvWorkerSport
+
+        eng = str(self.settings.value("stacking/mfdeconv/engine", "normal", type=str) or "normal").lower()
+        if eng == "cudnn_free":
+            return (MultiFrameDeconvWorkercuDNN, "Normal (cuDNN-free)")
+        if eng == "sport":
+            return (MultiFrameDeconvWorkerSport, "High-Octane")
+        return (MultiFrameDeconvWorker, "Normal")
+
+
     def save_stacking_settings(self, dialog):
         """
         Save settings and restart the Stacking Suite if the directory OR internal dtype changed.
@@ -4570,8 +4598,15 @@ class StackingSuiteDialog(QDialog):
         self.settings.setValue("stacking/mfdeconv/varmap/smooth_sigma",  float(self.vm_sigma.value()))
         vm_floor = 10.0 ** float(self.vm_floor_log.value())
         self.settings.setValue("stacking/mfdeconv/varmap/floor", vm_floor)
-        self.settings.setValue("stacking/high_octane", self.high_octane_cb.isChecked())
-        self.high_octane_mode = bool(self.high_octane_cb.isChecked())
+
+        # MFDeconv engine selection
+        if   self.mf_eng_cudnn_rb.isChecked(): mf_engine = "cudnn_free"
+        elif self.mf_eng_sport_rb.isChecked(): mf_engine = "sport"
+        else:                                   mf_engine = "normal"
+        self.settings.setValue("stacking/mfdeconv/engine", mf_engine)
+
+        # (compat: drop the legacy boolean; keep it synced for older configs if you like)
+        self.settings.setValue("stacking/high_octane", mf_engine == "sport")
         # Gradient settings
         self.settings.setValue("stacking/grad_poly2/enabled",   self.chk_poly2.isChecked())
         self.settings.setValue("stacking/grad_poly2/mode",       "divide" if self.grad_mode_combo.currentIndex() == 1 else "subtract")
@@ -4848,7 +4883,38 @@ class StackingSuiteDialog(QDialog):
             self.settings.setValue("stacking/dir", directory)  # Save the new directory
             self._update_stacking_path_display()
 
+    def _bind_shared_setting_checkbox(self, key: str, checkbox: QCheckBox, default: bool = True):
+        """Bind a QCheckBox to a shared QSettings key and keep all bound boxes in sync."""
+        # registry of sets of checkboxes per setting key
+        if not hasattr(self, "_shared_checkboxes"):
+            self._shared_checkboxes = {}
 
+        # initialize from settings
+        val = self.settings.value(key, default, type=bool)
+        checkbox.blockSignals(True)
+        checkbox.setChecked(bool(val))
+        checkbox.blockSignals(False)
+
+        # track this checkbox (weak so GC is fine when tabs close)
+        boxset = self._shared_checkboxes.setdefault(key, weakref.WeakSet())
+        boxset.add(checkbox)
+
+        # when this one toggles, update settings and all siblings
+        def _on_toggled(v: bool):
+            self.settings.setValue(key, bool(v))
+            # sync siblings without re-emitting signals
+            for cb in list(self._shared_checkboxes.get(key, [])):
+                if cb is checkbox:
+                    continue
+                try:
+                    cb.blockSignals(True)
+                    cb.setChecked(bool(v))
+                    cb.blockSignals(False)
+                except RuntimeError:
+                    # widget was likely deleted; ignore
+                    pass
+
+        checkbox.toggled.connect(_on_toggled, Qt.ConnectionType.QueuedConnection)
 
     def create_dark_tab(self):
         tab = QWidget()
@@ -4964,6 +5030,72 @@ class StackingSuiteDialog(QDialog):
 
         return tab
 
+    def _tree_for_type(self, t: str):
+        t = (t or "").upper()
+        if t == "LIGHT": return getattr(self, "light_tree", None)
+        if t == "FLAT":  return getattr(self, "flat_tree", None)
+        if t == "DARK":  return getattr(self, "dark_tree", None)
+        return None
+
+    def _guess_type_from_imagetyp(self, imagetyp: str) -> str | None:
+        s = (imagetyp or "").strip().lower()
+        # common patterns
+        if "flat" in s: return "FLAT"
+        if "dark" in s: return "DARK"
+        if "bias" in s or "offset" in s: return "DARK"  # treat bias as darks bucket if you like
+        if "light" in s or "object" in s: return "LIGHT"
+        return None
+
+    def _parse_exposure_from_groupkey(self, group_key: str) -> float | None:
+        # expects "... - 300s (WxH)" → 300
+
+        m = re.search(r"\s-\s([0-9.]+)s\s*\(", group_key)
+        if not m: return None
+        try:
+            return float(m.group(1))
+        except Exception:
+            return None
+
+
+    def _report_group_summary(self, expected_type: str):
+        """
+        Print #files and total integration per group (and session when applicable).
+        For LIGHT/FLAT we key by (group_key, session_tag). For DARK we key by group_key.
+        """
+        t = (expected_type or "").upper()
+        if t == "LIGHT":
+            store = getattr(self, "light_files", {})
+            # store keys: (group_key, session_tag)
+            self.update_status("📈 Light groups summary:")
+            seen = set()
+            for (gkey, sess), paths in store.items():
+                if not paths: continue
+                exp = self._parse_exposure_from_groupkey(gkey) or 0.0
+                tot = exp * len(paths)
+                label = f"• {gkey}  |  session: {sess}  →  {len(paths)} files, {self._fmt_hms(tot)}"
+                if (gkey, sess) not in seen:
+                    self.update_status(label)
+                    seen.add((gkey, sess))
+        elif t == "FLAT":
+            store = getattr(self, "flat_files", {})
+            self.update_status("📈 Flat groups summary:")
+            seen = set()
+            for (gkey, sess), paths in store.items():
+                if not paths: continue
+                exp = self._parse_exposure_from_groupkey(gkey) or 0.0
+                tot = exp * len(paths)
+                label = f"• {gkey}  |  session: {sess}  →  {len(paths)} files, {self._fmt_hms(tot)}"
+                if (gkey, sess) not in seen:
+                    self.update_status(label)
+                    seen.add((gkey, sess))
+        elif t == "DARK":
+            store = getattr(self, "dark_files", {})
+            self.update_status("📈 Dark groups summary:")
+            for gkey, paths in store.items():
+                if not paths: continue
+                exp = self._parse_exposure_from_groupkey(gkey) or 0.0
+                tot = exp * len(paths)
+                self.update_status(f"• {gkey}  →  {len(paths)} files, {self._fmt_hms(tot)}")
 
 
     def create_flat_tab(self):
@@ -4996,25 +5128,16 @@ class StackingSuiteDialog(QDialog):
         flat_frames_layout.addLayout(btn_layout)
         # under your existing buttons:
         opts_row = QHBoxLayout()
-        self.recurse_dirs_checkbox = QCheckBox("Recurse subfolders")
-        self.recurse_dirs_checkbox.setChecked(
-            self.settings.value("stacking/recurse_dirs", True, type=bool)
-        )
-        self.recurse_dirs_checkbox.toggled.connect(
-            lambda v: self.settings.setValue("stacking/recurse_dirs", bool(v))
-        )
 
-        self.auto_session_checkbox = QCheckBox("Auto-detect session")
-        self.auto_session_checkbox.setChecked(
-            self.settings.value("stacking/auto_session", True, type=bool)
-        )
-        self.auto_session_checkbox.toggled.connect(
-            lambda v: self.settings.setValue("stacking/auto_session", bool(v))
-        )
+        self.flat_recurse_cb = QCheckBox("Recurse subfolders")
+        self._bind_shared_setting_checkbox("stacking/recurse_dirs", self.flat_recurse_cb, default=True)
 
-        opts_row.addWidget(self.recurse_dirs_checkbox)
-        opts_row.addWidget(self.auto_session_checkbox)
-        flat_frames_layout.addLayout(opts_row)  # or flat_frames_layout.addLayout(...)        
+        self.flat_auto_session_cb = QCheckBox("Auto-detect session")
+        self._bind_shared_setting_checkbox("stacking/auto_session", self.flat_auto_session_cb, default=True)
+
+        opts_row.addWidget(self.flat_recurse_cb)
+        opts_row.addWidget(self.flat_auto_session_cb)
+        flat_frames_layout.addLayout(opts_row)      
         # 🔧 Session Tag Hint
         session_hint_label = QLabel("Right Click to Assign Session Keys if desired")
         session_hint_label.setStyleSheet("color: #888; font-style: italic; font-size: 11px; margin-left: 4px;")
@@ -5114,6 +5237,51 @@ class StackingSuiteDialog(QDialog):
             if action == set_session_action:
                 self.prompt_set_session(item, "flat")
 
+    def _refresh_light_tree_summaries(self):
+        """
+        Fill the Metadata column (col=1) with:
+        • for each exposure node:  "<N> files · <HHh MMm SSs>"
+        • for each filter node:    "<N_total> files · <HHh MMm SSs> (sum of all children)"
+        """
+        tree = getattr(self, "light_tree", None)
+        if tree is None:
+            return
+
+        total_filters = tree.topLevelItemCount()
+        for i in range(total_filters):
+            filt_item = tree.topLevelItem(i)
+            if filt_item is None:
+                continue
+
+            filt_total_files = 0
+            filt_total_secs  = 0.0
+
+            # children are exposure-size groups like "20s (1080x1920)"
+            for j in range(filt_item.childCount()):
+                exp_item = filt_item.child(j)
+                if exp_item is None:
+                    continue
+
+                exp_seconds = self._exposure_from_label(exp_item.text(0)) or 0.0
+                n_files     = exp_item.childCount()
+                n_secs      = exp_seconds * n_files
+
+                # set exposure-row metadata
+                if n_files == 1:
+                    exp_item.setText(1, f"1 file · {self._fmt_hms(n_secs)}")
+                else:
+                    exp_item.setText(1, f"{n_files} files · {self._fmt_hms(n_secs)}")
+
+                filt_total_files += n_files
+                filt_total_secs  += n_secs
+
+            # set filter-row metadata (sum of children)
+            if filt_total_files == 1:
+                filt_item.setText(1, f"1 file · {self._fmt_hms(filt_total_secs)}")
+            else:
+                filt_item.setText(1, f"{filt_total_files} files · {self._fmt_hms(filt_total_secs)}")
+
+
     def create_light_tab(self):
         tab = QWidget()
         layout = QVBoxLayout(tab)
@@ -5143,23 +5311,14 @@ class StackingSuiteDialog(QDialog):
         layout.addLayout(btn_layout)
         # under your existing buttons:
         opts_row = QHBoxLayout()
-        self.recurse_dirs_checkbox = QCheckBox("Recurse subfolders")
-        self.recurse_dirs_checkbox.setChecked(
-            self.settings.value("stacking/recurse_dirs", True, type=bool)
-        )
-        self.recurse_dirs_checkbox.toggled.connect(
-            lambda v: self.settings.setValue("stacking/recurse_dirs", bool(v))
-        )
 
-        self.auto_session_checkbox = QCheckBox("Auto-detect session")
-        self.auto_session_checkbox.setChecked(
-            self.settings.value("stacking/auto_session", True, type=bool)
-        )
-        self.auto_session_checkbox.toggled.connect(
-            lambda v: self.settings.setValue("stacking/auto_session", bool(v))
-        )
+        self.light_recurse_cb = QCheckBox("Recurse subfolders")
+        self._bind_shared_setting_checkbox("stacking/recurse_dirs", self.light_recurse_cb, default=True)
 
-        # NEW: auto roll into Registration+Integration after calibration
+        self.light_auto_session_cb = QCheckBox("Auto-detect session")
+        self._bind_shared_setting_checkbox("stacking/auto_session", self.light_auto_session_cb, default=True)
+
+        # keep this one — it's independent of the shared pair
         self.auto_register_after_calibration_cb = QCheckBox("Auto-register & integrate after calibration")
         self.auto_register_after_calibration_cb.setToolTip(
             "When checked, once calibration finishes the app will switch to Image Registration and run "
@@ -5172,10 +5331,10 @@ class StackingSuiteDialog(QDialog):
             lambda v: self.settings.setValue("stacking/auto_register_after_cal", bool(v))
         )
 
-        opts_row.addWidget(self.recurse_dirs_checkbox)
-        opts_row.addWidget(self.auto_session_checkbox)
-        opts_row.addWidget(self.auto_register_after_calibration_cb) 
-        layout.addLayout(opts_row)  # or flat_frames_layout.addLayout(...)        
+        opts_row.addWidget(self.light_recurse_cb)
+        opts_row.addWidget(self.light_auto_session_cb)
+        opts_row.addWidget(self.auto_register_after_calibration_cb)
+        layout.addLayout(opts_row)       
         session_hint_label = QLabel("Right Click to Assign Session Keys if desired")
         session_hint_label.setStyleSheet("color: #888; font-style: italic; font-size: 11px; margin-left: 4px;")
         layout.addWidget(session_hint_label)
@@ -5754,6 +5913,64 @@ class StackingSuiteDialog(QDialog):
             return None
         return mask
 
+    def _refresh_reg_tree_summaries(self):
+        """
+        Image Integration (Registration) tree:
+        • For a top-level group like "LP - 20s (1080x1920)":  "<N> files · <HHh MMm SSs>"
+        • For a parent filter row (if present):               sum over its children.
+        """
+        tree = getattr(self, "reg_tree", None)
+        if tree is None:
+            return
+
+        def _summarize_item(item) -> tuple[int, float]:
+            """Return (n_files_total, seconds_total) for this node (recurses children)."""
+            if item is None:
+                return (0, 0.0)
+
+            # If this node has leaf children (files), assume label carries exposure (e.g., "… 20s (…)").
+            n_children = item.childCount()
+            if n_children == 0:
+                # leaf (file) → contribute 1 file, but exposure is taken from parent; return (1, 0) so parent can add its exp
+                return (1, 0.0)
+
+            # group / parent
+            label_exp = self._exposure_from_label(item.text(0))  # may be None for pure filter rows
+            total_files = 0
+            total_secs  = 0.0
+
+            for i in range(n_children):
+                ch = item.child(i)
+                ch_files, ch_secs = _summarize_item(ch)
+                total_files += ch_files
+                total_secs  += ch_secs
+
+            # If this node itself encodes an exposure, multiply its exposure by its direct leaf count
+            # (i.e., files directly under this group).
+            if label_exp is not None:
+                direct_files = sum(1 for i in range(n_children) if item.child(i).childCount() == 0)
+                total_secs += (label_exp * direct_files)
+
+                # Also set this row's Metadata to its own group’s numbers:
+                if direct_files > 0:
+                    item.setText(1, (f"{direct_files} file · {self._fmt_hms(label_exp * direct_files)}"
+                                    if direct_files == 1 else
+                                    f"{direct_files} files · {self._fmt_hms(label_exp * direct_files)}"))
+                else:
+                    # clear if empty
+                    item.setText(1, "")
+
+            # For a pure parent (filter) row with no exposure in its label, show the sum across children
+            if label_exp is None:
+                if total_files == 1:
+                    item.setText(1, f"1 file · {self._fmt_hms(total_secs)}")
+                else:
+                    item.setText(1, f"{total_files} files · {self._fmt_hms(total_secs)}")
+
+            return (total_files, total_secs)
+
+        for i in range(tree.topLevelItemCount()):
+            _summarize_item(tree.topLevelItem(i))
 
 
     def create_image_registration_tab(self):
@@ -5790,6 +6007,10 @@ class StackingSuiteDialog(QDialog):
         layout.addWidget(QLabel("Calibrated Light Frames"))
         layout.addWidget(self.reg_tree)
 
+        model = self.reg_tree.model()
+        model.rowsInserted.connect(lambda *_: QTimer.singleShot(0, self._refresh_reg_tree_summaries))
+        model.rowsRemoved.connect(lambda *_: QTimer.singleShot(0, self._refresh_reg_tree_summaries))
+
         # ─────────────────────────────────────────
         # 2) Exposure tolerance + Auto-crop + Split dual-band (same row)
         # ─────────────────────────────────────────
@@ -5824,7 +6045,9 @@ class StackingSuiteDialog(QDialog):
         tol_layout.addWidget(self.split_dualband_cb)
 
         layout.addLayout(tol_layout)
-        self.exposure_tolerance_spin.valueChanged.connect(lambda _: self.populate_calibrated_lights())
+        self.exposure_tolerance_spin.valueChanged.connect(
+                lambda _ : (self.populate_calibrated_lights(), self._refresh_reg_tree_summaries())
+            )
 
         # ─────────────────────────────────────────
         # 3) Buttons for Managing Files
@@ -6204,6 +6427,7 @@ class StackingSuiteDialog(QDialog):
         # 10) Init + persist bits
         # ─────────────────────────────────────────
         self.populate_calibrated_lights()
+        self._refresh_reg_tree_summaries()
         tab.setLayout(layout)
 
         self.drizzle_checkbox.setChecked(self.settings.value("stacking/drizzle_enabled", False, type=bool))
@@ -6510,6 +6734,8 @@ class StackingSuiteDialog(QDialog):
                             del self.light_files[key]
                     parent.removeChild(item)
 
+        self._refresh_light_tree_summaries()            
+
     def clear_tree_selection_flat(self, tree, file_dict):
         """Clears the selection in the given tree widget and removes items from the corresponding dictionary."""
         selected_items = tree.selectedItems()
@@ -6641,6 +6867,7 @@ class StackingSuiteDialog(QDialog):
 
         # Optional but helpful: rebuild so empty groups disappear cleanly
         self.populate_calibrated_lights()
+        self._refresh_reg_tree_summaries()
 
     def rebuild_flat_tree(self):
         """Regroup flat frames in the flat_tree based on the exposure tolerance."""
@@ -7093,6 +7320,8 @@ class StackingSuiteDialog(QDialog):
         self.manual_light_files = merged
 
         self.populate_calibrated_lights()
+        self._refresh_reg_tree_summaries()
+
 
 
 
@@ -7665,12 +7894,42 @@ class StackingSuiteDialog(QDialog):
         dlg.setValue(total)
         QCoreApplication.processEvents()
 
+        try:
+            self._report_group_summary(expected_type)
+        except Exception:
+            pass
+
+        try:
+            if (expected_type or "").upper() == "LIGHT":
+                self._refresh_light_tree_summaries()
+        except Exception:
+            pass
+
         # Optional: brief status line (non-intrusive)
         try:
             if expected_type.upper() == "LIGHT":
                 self.statusBar().showMessage(f"Added {added}/{total} Light frames", 3000)
         except Exception:
             pass
+
+    def _fmt_hms(self, seconds: float) -> str:
+        s = int(round(max(0.0, float(seconds))))
+        h, r = divmod(s, 3600)
+        m, s = divmod(r, 60)
+        if h: return f"{h}h {m}m {s}s"
+        if m: return f"{m}m {s}s"
+        return f"{s}s"
+
+    def _exposure_from_label(self, label: str) -> float | None:
+        # Parses "20s (1080x1920)" → 20.0
+
+        m = re.search(r"([0-9]*\.?[0-9]+)\s*s\b", (label or ""))
+        if not m: return None
+        try:
+            return float(m.group(1))
+        except Exception:
+            return None
+
 
     def _busy_progress(self, text):
         """
@@ -7727,6 +7986,7 @@ class StackingSuiteDialog(QDialog):
                     exposure_text = str(exp_val)
 
             # --- Mismatch prompt (respects "Yes to all / No to all") ---
+            # --- Mismatch prompt (redirect/keep/skip with 'apply to all') ---
             if expected_type.upper() == "DARK":
                 forbidden = ["light", "flat"]
             elif expected_type.upper() == "FLAT":
@@ -7736,33 +7996,76 @@ class StackingSuiteDialog(QDialog):
             else:
                 forbidden = []
 
+            actual_type = self._guess_type_from_imagetyp(header.get("IMAGETYP"))
+            decision_key = (expected_type.upper(), actual_type or "UNKNOWN")
+
+            # Respect prior "Yes to all/No to all" style cache first
+            # (compat with your existing decision_attr if you want)
             decision_attr = f"auto_confirm_{expected_type.lower()}"
             if hasattr(self, decision_attr):
                 decision = getattr(self, decision_attr)
                 if decision is False:
                     return
-                # if True, continue without prompting
-            elif any(w in imagetyp for w in forbidden):
-                msgBox = QMessageBox(self)
-                msgBox.setWindowTitle("Mismatched Image Type")
-                msgBox.setText(
-                    f"The file:\n{os.path.basename(path)}\n"
-                    f"has IMAGETYP = {header.get('IMAGETYP')} which does not match "
-                    f"the expected type ({expected_type}).\n\nAdd anyway?"
-                )
-                yesButton = msgBox.addButton("Yes", QMessageBox.ButtonRole.YesRole)
-                yesToAllButton = msgBox.addButton("Yes to All", QMessageBox.ButtonRole.YesRole)
-                noButton = msgBox.addButton("No", QMessageBox.ButtonRole.NoRole)
-                noToAllButton = msgBox.addButton("No to All", QMessageBox.ButtonRole.NoRole)
-                msgBox.exec()
-                clicked = msgBox.clickedButton()
-                if clicked == yesToAllButton:
-                    setattr(self, decision_attr, True)
-                elif clicked == noToAllButton:
-                    setattr(self, decision_attr, False)
+                # if True, keep going as-is (legacy behavior)
+
+            # New logic: if actual looks forbidden, propose options
+            if (actual_type is not None) and (actual_type.lower() in forbidden):
+                # has the user already decided during this ingest burst?
+                cached = self._mismatch_policy.get(decision_key)
+                if cached == "skip":
                     return
-                elif clicked == noButton:
-                    return
+                elif cached == "redirect":
+                    # Re-route to the proper tab
+                    dst_tree = self._tree_for_type(actual_type)
+                    if dst_tree is not None:
+                        # Recursively ingest into the correct type & tree
+                        self.process_fits_header(path, dst_tree, actual_type, manual_session_name=manual_session_name)
+                        return
+                    # if no tree (shouldn't happen), fall through to prompt
+
+                elif cached == "keep":
+                    pass  # keep going in current tab
+
+                else:
+                    # Prompt the user
+                    msg = QMessageBox(self)
+                    msg.setWindowTitle("Mismatched Image Type")
+                    pretty_actual = actual_type or "Unknown"
+                    msg.setText(
+                        f"Found '{os.path.basename(path)}' with IMAGETYP = {header.get('IMAGETYP')}\n"
+                        f"which looks like **{pretty_actual}**, not {expected_type}.\n\n"
+                        f"What would you like to do?"
+                    )
+                    btn_redirect = msg.addButton(f"Send to {pretty_actual.title()} tab", QMessageBox.ButtonRole.YesRole)
+                    btn_keep     = msg.addButton(f"Add to {expected_type.title()} tab", QMessageBox.ButtonRole.YesRole)
+                    btn_cancel   = msg.addButton("Skip file", QMessageBox.ButtonRole.RejectRole)
+
+                    # “Apply to all” for the rest of this add session
+                    from PyQt6.QtWidgets import QCheckBox
+                    apply_all_cb = QCheckBox("Apply this choice to all remaining mismatches of this kind")
+                    msg.setCheckBox(apply_all_cb)
+
+                    msg.exec()
+                    clicked = msg.clickedButton()
+                    apply_all = bool(apply_all_cb.isChecked())
+
+                    if clicked is btn_cancel:
+                        choice = "skip"
+                    elif clicked is btn_redirect:
+                        choice = "redirect"
+                    else:
+                        choice = "keep"
+
+                    if apply_all:
+                        self._mismatch_policy[decision_key] = choice
+
+                    if choice == "skip":
+                        return
+                    if choice == "redirect":
+                        dst_tree = self._tree_for_type(actual_type)
+                        if dst_tree is not None:
+                            self.process_fits_header(path, dst_tree, actual_type, manual_session_name=manual_session_name)
+                            return
 
             # --- Resolve session tag (auto vs manual vs legacy current_session_tag) ---
             auto_session = self.settings.value("stacking/auto_session", True, type=bool)
@@ -9709,8 +10012,7 @@ class StackingSuiteDialog(QDialog):
             • PC matrix (+ optional CDELT scaling): pa = atan2(-PC1_2, PC2_2)
         Returns float in degrees, or None if unknown.
         """
-        import re
-        import numpy as _np
+
 
         if hdr is None:
             return None
@@ -9730,7 +10032,7 @@ class StackingSuiteDialog(QDialog):
         def _as_float_deg(v):
             if v is None:
                 return None
-            if isinstance(v, (int, float, _np.integer, _np.floating)):
+            if isinstance(v, (int, float, np.integer, np.floating)):
                 try:
                     return float(v)
                 except Exception:
@@ -9762,7 +10064,7 @@ class StackingSuiteDialog(QDialog):
         cd11 = _get('CD1_1'); cd12 = _get('CD1_2'); cd22 = _get('CD2_2')
         if cd11 is not None and cd12 is not None and cd22 is not None:
             try:
-                pa = _np.degrees(_np.arctan2(-float(cd12), float(cd22)))
+                pa = np.degrees(np.arctan2(-float(cd12), float(cd22)))
                 return float(pa)
             except Exception:
                 pass
@@ -9772,7 +10074,7 @@ class StackingSuiteDialog(QDialog):
         if pc11 is not None and pc12 is not None and pc22 is not None:
             try:
                 # If CDELT present, rotation is still given by PC (scale cancels out for angle)
-                pa = _np.degrees(_np.arctan2(-float(pc12), float(pc22)))
+                pa = np.degrees(np.arctan2(-float(pc12), float(pc22)))
                 return float(pa)
             except Exception:
                 pass
@@ -11286,8 +11588,11 @@ class StackingSuiteDialog(QDialog):
                 def _finish_mf_phase_and_exit():
                     """Tear down MF UI/threads and either continue or exit."""
                     if getattr(self, "_mf_pd", None):
-                        self._mf_pd.reset()
-                        self._mf_pd.deleteLater()
+                        try:
+                            self._mf_pd.reset()
+                            self._mf_pd.deleteLater()
+                        except Exception:
+                            pass
                         self._mf_pd = None
                     try:
                         if self._mf_thread:
@@ -11306,6 +11611,7 @@ class StackingSuiteDialog(QDialog):
                         self._set_registration_busy(False)
 
                 def _start_next_mf_job():
+                    # end of queue or canceled → finish
                     if self._mf_cancelled or not self._mf_queue:
                         _finish_mf_phase_and_exit()
                         return
@@ -11316,12 +11622,12 @@ class StackingSuiteDialog(QDialog):
                     os.makedirs(out_dir, exist_ok=True)
                     out_path = os.path.join(out_dir, f"MasterLight_{group_key}_MFDeconv.fit")
 
+                    # ── read config ─────────────────────────────────────────
                     iters = self.settings.value("stacking/mfdeconv/iters", 20, type=int)
                     min_iters = self.settings.value("stacking/mfdeconv/min_iters", 3, type=int)
                     kappa = self.settings.value("stacking/mfdeconv/kappa", 2.0, type=float)
                     mode  = self.mf_color_combo.currentText()
                     Huber = self.settings.value("stacking/mfdeconv/Huber_delta", 0.0, type=float)
-                    batch = self.settings.value("stacking/mfdeconv/batch", 8, type=int)
                     seed_mode_cfg = str(self.settings.value("stacking/mfdeconv/seed_mode", "robust"))
                     use_star_masks    = self.mf_use_star_mask_cb.isChecked()
                     use_variance_maps = self.mf_use_noise_map_cb.isChecked()
@@ -11348,125 +11654,123 @@ class StackingSuiteDialog(QDialog):
                         "floor":         self.settings.value("stacking/mfdeconv/varmap/floor",        1e-8, type=float),
                     }
 
-                    use_high_octane = self.settings.value("stacking/high_octane", False, type=bool)
-
                     self._mf_thread = QThread(self)
                     star_mask_ref = self.reference_frame if use_star_masks else None
 
-                    if use_high_octane:
-                        self._mf_worker = MultiFrameDeconvWorkerSport(
-                            parent=None,
-                            aligned_paths=frames,
-                            output_path=out_path,
-                            iters=iters,
-                            kappa=kappa,
-                            color_mode=mode,
-                            huber_delta=Huber,
-                            min_iters=min_iters,
-                            use_star_masks=use_star_masks,
-                            use_variance_maps=use_variance_maps,
-                            rho=rho,
-                            star_mask_cfg=star_mask_cfg,
-                            varmap_cfg=varmap_cfg,
-                            save_intermediate=save_intermediate,
-                            super_res_factor=super_res_factor,
-                            star_mask_ref_path=star_mask_ref,
-                            seed_mode=seed_mode_cfg,
-                        )
-                    else:
-                        self._mf_worker = MultiFrameDeconvWorker(
-                            parent=None,
-                            aligned_paths=frames,
-                            output_path=out_path,
-                            iters=iters,
-                            kappa=kappa,
-                            color_mode=mode,
-                            huber_delta=Huber,
-                            min_iters=min_iters,
-                            use_star_masks=use_star_masks,
-                            use_variance_maps=use_variance_maps,
-                            rho=rho,
-                            star_mask_cfg=star_mask_cfg,
-                            varmap_cfg=varmap_cfg,
-                            save_intermediate=save_intermediate,
-                            super_res_factor=super_res_factor,
-                            star_mask_ref_path=star_mask_ref,
-                            seed_mode=seed_mode_cfg,
-                        )
+                    # ── choose engine plainly (Normal / cuDNN-free / High Octane) ─────────────
+                    # Expect a setting saved by your radio buttons: "normal" | "cudnn" | "sport"
+                    engine = str(self.settings.value("stacking/mfdeconv/engine", "normal")).lower()
 
+                    try:
+                        if engine == "cudnn":
+                            from pro.mfdeconvcudnn import MultiFrameDeconvWorkercuDNN as MFCls
+                            eng_name = "Normal (cuDNN-free)"
+                        elif engine == "sport":  # High Octane let 'er rip
+                            from pro.mfdeconvsport import MultiFrameDeconvWorkerSport as MFCls
+                            eng_name = "High Octane"
+                        else:
+                            from pro.mfdeconv import MultiFrameDeconvWorker as MFCls
+                            eng_name = "Normal"
+                    except Exception as e:
+                        # if an import fails, fall back to the safe Normal path
+                        self.update_status(f"⚠️ MFDeconv engine import failed ({e}); falling back to Normal.")
+                        from pro.mfdeconv import MultiFrameDeconvWorker as MFCls
+                        eng_name = "Normal (fallback)"
+
+                    self.update_status(f"⚙️ MFDeconv engine: {eng_name}")
+
+                    # ── build worker exactly the same in all modes ────────────────────────────
+                    self._mf_worker = MFCls(
+                        parent=None,
+                        aligned_paths=frames,
+                        output_path=out_path,
+                        iters=iters,
+                        kappa=kappa,
+                        color_mode=mode,
+                        huber_delta=Huber,
+                        min_iters=min_iters,
+                        use_star_masks=use_star_masks,
+                        use_variance_maps=use_variance_maps,
+                        rho=rho,
+                        star_mask_cfg=star_mask_cfg,
+                        varmap_cfg=varmap_cfg,
+                        save_intermediate=save_intermediate,
+                        super_res_factor=super_res_factor,
+                        star_mask_ref_path=star_mask_ref,
+                        seed_mode=seed_mode_cfg,
+                    )
+
+                    # ── standard Qt wiring (no gymnastics) ───────────────────────────────────
                     self._mf_worker.moveToThread(self._mf_thread)
                     self._mf_worker.progress.connect(self._on_mf_progress, Qt.ConnectionType.QueuedConnection)
-                    self._mf_thread.started.connect(self._mf_worker.run, Qt.ConnectionType.QueuedConnection)
 
-                    # ensure the thread stops and cleans up
-                    self._mf_worker.finished.connect(self._mf_thread.quit, Qt.ConnectionType.QueuedConnection)
-                    self._mf_thread.finished.connect(self._mf_worker.deleteLater, Qt.ConnectionType.QueuedConnection)
-                    self._mf_thread.finished.connect(self._mf_thread.deleteLater, Qt.ConnectionType.QueuedConnection)
-
+                    # when the worker says finished, log & cleanup; the *thread* quitting will trigger starting the next job
                     def _job_finished(ok: bool, message: str, out: str):
                         if getattr(self, "_mf_pd", None):
-                            self._mf_groups_done = min(self._mf_groups_done + 1, self._mf_total_groups)
-                            self._mf_pd.setValue(self._mf_groups_done * 1000)
                             self._mf_pd.setLabelText(f"{'✅' if ok else '❌'} {group_key}: {message}")
-
                         if ok and out:
                             self._mf_results[group_key] = out
                             if getattr(self, "_mf_autocrop_enabled", False) and getattr(self, "_mf_autocrop_rect", None):
                                 try:
                                     from astropy.io import fits
                                     with fits.open(out, memmap=False) as hdul:
-                                        img = hdul[0].data
-                                        hdr = hdul[0].header
-                                    rect = tuple(map(int, self._mf_autocrop_rect))  # (x1,y1,x2,y2)
+                                        img = hdul[0].data; hdr = hdul[0].header
+                                    rect = tuple(map(int, self._mf_autocrop_rect))
                                     sr_enabled_ui = self.mf_sr_cb.isChecked()
                                     sr_factor_ui  = getattr(self, "mf_sr_factor_spin", None)
                                     sr_factor_val = sr_factor_ui.value() if sr_factor_ui is not None else self.settings.value("stacking/mfdeconv/sr_factor", 2, type=int)
                                     sr_factor = int(sr_factor_val) if sr_enabled_ui else 1
                                     if sr_factor > 1:
-                                        x1, y1, x2, y2 = rect
+                                        x1,y1,x2,y2 = rect
                                         rect = (x1*sr_factor, y1*sr_factor, x2*sr_factor, y2*sr_factor)
-                                    x1, y1, x2, y2 = rect
+                                    x1,y1,x2,y2 = rect
                                     if img.ndim == 2:
                                         crop = img[y1:y2, x1:x2]
                                     elif img.ndim == 3:
-                                        if img.shape[0] in (1, 3):
-                                            crop = img[:, y1:y2, x1:x2]
-                                        else:
-                                            crop = img[y1:y2, x1:x2, :]
+                                        crop = (img[:, y1:y2, x1:x2] if img.shape[0] in (1,3)
+                                                else img[y1:y2, x1:x2, :])
                                     out_crop = out.replace(".fit", "_autocrop.fit").replace(".fits", "_autocrop.fits")
                                     fits.PrimaryHDU(data=crop.astype(np.float32, copy=False), header=hdr).writeto(out_crop, overwrite=True)
                                     self.update_status(f"✂️ (MF) Saved auto-cropped copy → {out_crop}")
                                 except Exception as e:
                                     self.update_status(f"⚠️ (MF) Auto-crop of output failed: {e}")
 
-                    # wrapper: record results, then chain next job after the thread is fully down
-                    def _on_worker_finished(ok: bool, message: str, out: str):
+                        # advance progress segment
+                        if getattr(self, "_mf_pd", None):
+                            self._mf_groups_done = min(self._mf_groups_done + 1, self._mf_total_groups)
+                            self._mf_pd.setValue(self._mf_groups_done * 1000)
+
+                    self._mf_worker.finished.connect(_job_finished, Qt.ConnectionType.QueuedConnection)
+
+                    # thread start/stop
+                    self._mf_thread.started.connect(self._mf_worker.run, Qt.ConnectionType.QueuedConnection)
+                    self._mf_worker.finished.connect(self._mf_thread.quit, Qt.ConnectionType.QueuedConnection)
+                    self._mf_thread.finished.connect(self._mf_worker.deleteLater, Qt.ConnectionType.QueuedConnection)
+                    self._mf_thread.finished.connect(self._mf_thread.deleteLater, Qt.ConnectionType.QueuedConnection)
+
+                    # when the thread is fully down, kick the next job
+                    def _next_after_thread():
                         try:
-                            _job_finished(ok, message, out)
-                        finally:
-                            def _after_thread_down():
-                                try:
-                                    self._mf_thread.finished.disconnect(_after_thread_down)
-                                except Exception:
-                                    pass
-                                QTimer.singleShot(0, _start_next_mf_job)
-                            try:
-                                self._mf_thread.finished.connect(_after_thread_down, Qt.ConnectionType.QueuedConnection)
-                            except Exception:
-                                QTimer.singleShot(0, _start_next_mf_job)
+                            self._mf_thread.finished.disconnect(_next_after_thread)
+                        except Exception:
+                            pass
+                        QTimer.singleShot(0, _start_next_mf_job)
 
-                    self._mf_worker.finished.connect(_on_worker_finished, Qt.ConnectionType.QueuedConnection)
+                    self._mf_thread.finished.connect(_next_after_thread, Qt.ConnectionType.QueuedConnection)
 
+                    # go
                     self._mf_thread.start()
-
                     if getattr(self, "_mf_pd", None):
                         self._mf_pd.setLabelText(f"Deconvolving '{group_key}' ({len(frames)} frames)…")
 
+
+                # Kick off the first job (queue-driven)
                 QTimer.singleShot(0, _start_next_mf_job)
 
-                # Defer rest of pipeline; MF block will decide at completion.
+                # Defer rest of pipeline; MF block will decide at MF completion.
                 self._set_registration_busy(False)
                 return
+
 
 
         # ----------------------------
@@ -12854,6 +13158,8 @@ class StackingSuiteDialog(QDialog):
             return None
         return pd
 
+
+
     def _run_mfdeconv_then_continue(self, aligned_light_files: dict[str, list[str]]):
         """Queue MFDeconv per group if enabled, then continue into AfterAlignWorker for all groups."""
         mf_enabled = self.settings.value("stacking/mfdeconv/enabled", False, type=bool)
@@ -12870,10 +13176,10 @@ class StackingSuiteDialog(QDialog):
 
         # Progress UI for the entire MF phase
         self._mf_total_groups = len(mf_groups)
-        self._mf_groups_done = 0        
+        self._mf_groups_done = 0
         self._mf_pd = QProgressDialog("Multi-frame deconvolving…", "Cancel", 0, self._mf_total_groups * 1000, self)
         self._mf_pd.setValue(0)
-        #self._mf_pd.setWindowModality(Qt.WindowModality.ApplicationModal)
+        # self._mf_pd.setWindowModality(Qt.WindowModality.ApplicationModal)
         self._mf_pd.setMinimumDuration(0)
         self._mf_pd.setWindowTitle("MF Deconvolution")
         self._mf_pd.setRange(0, self._mf_total_groups * 1000)
@@ -12891,6 +13197,7 @@ class StackingSuiteDialog(QDialog):
         self._mf_pd.canceled.connect(_cancel_all, Qt.ConnectionType.QueuedConnection)
 
         def _start_next():
+            # End of queue or canceled → finish gracefully
             if self._mf_cancelled or not self._mf_queue:
                 if getattr(self, "_mf_pd", None):
                     pd = self._pd_alive()
@@ -12906,6 +13213,7 @@ class StackingSuiteDialog(QDialog):
                     pass
                 self._mf_thread = None
                 self._mf_worker = None
+
                 # Continue the normal pipeline for ALL groups
                 self._suppress_normal_integration_once = True
                 self.update_status("✅ MFDeconv complete for all groups. Skipping normal integration.")
@@ -12916,16 +13224,17 @@ class StackingSuiteDialog(QDialog):
             out_dir = os.path.join(self.stacking_directory, "Masters")
             os.makedirs(out_dir, exist_ok=True)
 
+            # Settings snapshot
             iters = self.settings.value("stacking/mfdeconv/iters", 20, type=int)
             min_iters = self.settings.value("stacking/mfdeconv/min_iters", 3, type=int)
             kappa = self.settings.value("stacking/mfdeconv/kappa", 2.0, type=float)
-            mode  = self.mf_color_combo.currentText()
+            mode = self.mf_color_combo.currentText()
             Huber = self.settings.value("stacking/mfdeconv/Huber_delta", 0.0, type=float)
             save_intermediate = self.mf_save_intermediate_cb.isChecked()
             seed_mode_cfg = str(self.settings.value("stacking/mfdeconv/seed_mode", "robust"))
-            use_star_masks   = self.mf_use_star_mask_cb.isChecked()
-            use_variance_maps = self.mf_use_noise_map_cb.isChecked()   # ← keep your name
-            rho              = self.mf_rho_combo.currentText()
+            use_star_masks = self.mf_use_star_mask_cb.isChecked()
+            use_variance_maps = self.mf_use_noise_map_cb.isChecked()
+            rho = self.mf_rho_combo.currentText()
 
             star_mask_cfg = {
                 "thresh_sigma":  self.settings.value("stacking/mfdeconv/star_mask/thresh_sigma",  _SM_DEF_THRESH, type=float),
@@ -12943,70 +13252,68 @@ class StackingSuiteDialog(QDialog):
             }
 
             sr_enabled_ui = self.mf_sr_cb.isChecked()
-            sr_factor_ui  = getattr(self, "mf_sr_factor_spin", None)
+            sr_factor_ui = getattr(self, "mf_sr_factor_spin", None)
             sr_factor_val = sr_factor_ui.value() if sr_factor_ui is not None else self.settings.value("stacking/mfdeconv/sr_factor", 2, type=int)
             super_res_factor = int(sr_factor_val) if sr_enabled_ui else 1
 
-            # Use your earlier unique-naming helper if you added it; fallback:
+            # Unique, safe filename
             safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", str(group_key)) or "Group"
             out_path = os.path.join(out_dir, f"MasterLight_{safe_name}_{len(frames)}f_MFDeconv_{mode}_{iters}it_k{int(round(kappa*100))}.fit")
-            batch = self.settings.value("stacking/mfdeconv/batch", 8, type=int)
 
-            use_high_octane = self.settings.value("stacking/high_octane", False, type=bool)
-
+            # Thread + worker
             self._mf_thread = QThread(self)
             star_mask_ref = self.reference_frame if use_star_masks else None
 
-            if use_high_octane:
-                # “Let it rip” path (legacy)
-                self._mf_worker = MultiFrameDeconvWorkerSport(
-                    parent=None,
-                    aligned_paths=frames,
-                    output_path=out_path,
-                    iters=iters,
-                    kappa=kappa,
-                    color_mode=mode,
-                    huber_delta=Huber,
-                    min_iters=min_iters,
-                    use_star_masks=use_star_masks,
-                    use_variance_maps=use_variance_maps,
-                    rho=rho,
-                    star_mask_cfg=star_mask_cfg,
-                    varmap_cfg=varmap_cfg,
-                    save_intermediate=save_intermediate,
-                    super_res_factor=super_res_factor,
-                    star_mask_ref_path=star_mask_ref, 
-                    seed_mode=seed_mode_cfg,
-                )
-            else:
-                # Memory-managed path (current)
-                self._mf_worker = MultiFrameDeconvWorker(
-                    parent=None,
-                    aligned_paths=frames,
-                    output_path=out_path,
-                    iters=iters,
-                    kappa=kappa,
-                    color_mode=mode,
-                    huber_delta=Huber,
-                    min_iters=min_iters,
-                    use_star_masks=use_star_masks,
-                    use_variance_maps=use_variance_maps,
-                    rho=rho,
-                    star_mask_cfg=star_mask_cfg,
-                    varmap_cfg=varmap_cfg,
-                    save_intermediate=save_intermediate,
-                    super_res_factor=super_res_factor,
-                    star_mask_ref_path=star_mask_ref, 
-                    seed_mode=seed_mode_cfg,
-                )
+            # ── choose engine plainly (Normal / cuDNN-free / High Octane) ─────────────
+            # Expect a setting saved by your radio buttons: "normal" | "cudnn" | "sport"
+            engine = str(self.settings.value("stacking/mfdeconv/engine", "normal")).lower()
 
+            try:
+                if engine == "cudnn":
+                    from pro.mfdeconvcudnn import MultiFrameDeconvWorkercuDNN as MFCls
+                    eng_name = "Normal (cuDNN-free)"
+                elif engine == "sport":  # High Octane let 'er rip
+                    from pro.mfdeconvsport import MultiFrameDeconvWorkerSport as MFCls
+                    eng_name = "High Octane"
+                else:
+                    from pro.mfdeconv import MultiFrameDeconvWorker as MFCls
+                    eng_name = "Normal"
+            except Exception as e:
+                # if an import fails, fall back to the safe Normal path
+                self.update_status(f"⚠️ MFDeconv engine import failed ({e}); falling back to Normal.")
+                from pro.mfdeconv import MultiFrameDeconvWorker as MFCls
+                eng_name = "Normal (fallback)"
+
+            self.update_status(f"⚙️ MFDeconv engine: {eng_name}")
+
+            # ── build worker exactly the same in all modes ────────────────────────────
+            self._mf_worker = MFCls(
+                parent=None,
+                aligned_paths=frames,
+                output_path=out_path,
+                iters=iters,
+                kappa=kappa,
+                color_mode=mode,
+                huber_delta=Huber,
+                min_iters=min_iters,
+                use_star_masks=use_star_masks,
+                use_variance_maps=use_variance_maps,
+                rho=rho,
+                star_mask_cfg=star_mask_cfg,
+                varmap_cfg=varmap_cfg,
+                save_intermediate=save_intermediate,
+                super_res_factor=super_res_factor,
+                star_mask_ref_path=star_mask_ref,
+                seed_mode=seed_mode_cfg,
+            )
+
+            # Wiring
             self._mf_worker.moveToThread(self._mf_thread)
             self._mf_worker.progress.connect(self._on_mf_progress, Qt.ConnectionType.QueuedConnection)
             self._mf_thread.started.connect(self._mf_worker.run, Qt.ConnectionType.QueuedConnection)
             self._mf_worker.finished.connect(self._mf_thread.quit, Qt.ConnectionType.QueuedConnection)
-            self._mf_thread.finished.connect(self._mf_worker.deleteLater)   # ✅ free worker on thread end
-            self._mf_thread.finished.connect(self._mf_thread.deleteLater)   # ✅ free thread object
-
+            self._mf_thread.finished.connect(self._mf_worker.deleteLater)    # free worker on thread end
+            self._mf_thread.finished.connect(self._mf_thread.deleteLater)    # free thread object
 
             def _done(ok: bool, message: str, out: str):
                 pd = self._pd_alive()
@@ -13016,8 +13323,8 @@ class StackingSuiteDialog(QDialog):
                         val = min(pd.value() + 1000, pd.maximum())
                         pd.setValue(val)
                         pd.setLabelText(f"{'✅' if ok else '❌'} {group_key}: {message}")
-                    except:
-                        pass    
+                    except Exception:
+                        pass
 
                 if ok and out:
                     self._mf_results[group_key] = out
@@ -13044,6 +13351,7 @@ class StackingSuiteDialog(QDialog):
                     pd.setLabelText(f"Deconvolving '{group_key}' ({len(frames)} frames)…")
 
         QTimer.singleShot(0, _start_next)
+
 
 
     def integrate_registered_images(self):
