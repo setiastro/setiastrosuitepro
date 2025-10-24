@@ -24,6 +24,31 @@ _ALLOWED_DEPTHS = {
     "xisf": {"16-bit", "32-bit unsigned", "32-bit floating point"},
 }
 
+class TableDocument(QObject):
+    changed = pyqtSignal()
+
+    def __init__(self, rows: list[list], headers: list[str], metadata: dict | None = None, parent=None):
+        super().__init__(parent)
+        self.rows = rows              # list of list (2D) for QAbstractTableModel
+        self.headers = headers        # list of column names
+        self.metadata = dict(metadata or {})
+        self._undo = []
+        self._redo = []
+
+    def display_name(self) -> str:
+        dn = self.metadata.get("display_name")
+        if dn:
+            return dn
+        p = self.metadata.get("file_path")
+        return os.path.basename(p) if p else "Untitled Table"
+
+    def can_undo(self) -> bool: return False
+    def can_redo(self) -> bool: return False
+    def last_undo_name(self) -> str | None: return None
+    def last_redo_name(self) -> str | None: return None
+    def undo(self) -> str | None: return None
+    def redo(self) -> str | None: return None
+
 class ImageDocument(QObject):
     changed = pyqtSignal()
 
@@ -210,6 +235,93 @@ def _snapshot_header_for_metadata(meta: dict):
     if snap:
         meta["__header_snapshot__"] = snap
 
+def _safe_str(x) -> str:
+    try:
+        return str(x)
+    except Exception:
+        try:
+            return repr(x)
+        except Exception:
+            return "<unrepr>"
+
+def _fits_table_to_csv(hdu, out_csv_path: str, max_rows: int = 250000):
+    """
+    Convert a FITS (Bin)Table HDU to CSV. Returns the CSV path.
+    Limits to max_rows to avoid giant dumps.
+    """
+    try:
+        data = hdu.data
+        if data is None:
+            raise RuntimeError("No table data")
+
+        # Astropy table→numpy recarray is fine; iterate to strings
+        rec = np.asarray(data)
+        nrows = int(rec.shape[0]) if rec.ndim >= 1 else 0
+        if nrows == 0:
+            # write headers only
+            names = [str(n) for n in (getattr(data, "names", None) or [])]
+            with open(out_csv_path, "w", encoding="utf-8", newline="") as f:
+                if names:
+                    f.write(",".join(names) + "\n")
+            return out_csv_path
+
+        # Column names (fallback to numeric if missing)
+        names = list(getattr(data, "names", [])) or [f"C{i+1}" for i in range(rec.shape[1] if rec.ndim == 2 else len(rec.dtype.names or []))]
+
+        import csv
+        with open(out_csv_path, "w", encoding="utf-8", newline="") as f:
+            w = csv.writer(f)
+            w.writerow([_safe_str(n) for n in names])
+
+            # Decide how to iterate rows depending on structured vs 2D numeric
+            if rec.dtype.names:  # structured/record array
+                for ri in range(min(nrows, max_rows)):
+                    row = rec[ri]
+                    w.writerow([_safe_str(row[name]) for name in rec.dtype.names])
+            else:
+                # plain 2D numeric table
+                if rec.ndim == 1:
+                    for ri in range(min(nrows, max_rows)):
+                        w.writerow([_safe_str(rec[ri])])
+                else:
+                    for ri in range(min(nrows, max_rows)):
+                        w.writerow([_safe_str(x) for x in rec[ri]])
+
+        return out_csv_path
+    except Exception as e:
+        raise
+
+def _fits_table_to_rows_headers(hdu, max_rows: int = 500000) -> tuple[list[list], list[str]]:
+    """
+    Convert a FITS (Bin)Table/Table HDU to (rows, headers).
+    Truncates to max_rows for safety.
+    """
+    data = hdu.data
+    if data is None:
+        return [], []
+    rec = np.asarray(data)
+    # Column names
+    names = list(getattr(data, "names", [])) or (
+        list(rec.dtype.names) if rec.dtype.names else [f"C{i+1}" for i in range(rec.shape[1] if rec.ndim == 2 else 1)]
+    )
+    rows = []
+    nrows = int(rec.shape[0]) if rec.ndim >= 1 else 0
+    nrows = min(nrows, max_rows)
+    if rec.dtype.names:  # structured array
+        for ri in range(nrows):
+            row = rec[ri]
+            rows.append([_safe_str(row[name]) for name in rec.dtype.names])
+    else:
+        # numeric 2D/1D table
+        if rec.ndim == 1:
+            for ri in range(nrows):
+                rows.append([_safe_str(rec[ri])])
+        else:
+            for ri in range(nrows):
+                rows.append([_safe_str(x) for x in rec[ri]])
+    return rows, [str(n) for n in names]
+
+
 class DocManager(QObject):
     documentAdded = pyqtSignal(object)   # ImageDocument
     documentRemoved = pyqtSignal(object) # ImageDocument
@@ -222,137 +334,154 @@ class DocManager(QObject):
         self._mdi: "QMdiArea | None" = None  # type: ignore
 
 
-    # --- File -> Document ---
-    def open_path(self, path: str) -> "ImageDocument":
-        img, header, bit_depth, is_mono = legacy_load_image(path)
-        if img is None:
-            raise IOError(f"Could not load: {path}")
-
+        # --- File -> Document ---
+    def open_path(self, path: str):
         ext = os.path.splitext(path)[1].lower().lstrip('.')
-        meta = {
-            "file_path": path,
-            "original_header": header,
-            "bit_depth": bit_depth,
-            "is_mono": is_mono,
-            "original_format": _normalize_ext(ext),
-        }
-        _snapshot_header_for_metadata(meta)
+        norm_ext = _normalize_ext(ext)
+        is_fits = ext in ("fits", "fit", "fits.gz", "fit.gz", "fz")
+        is_xisf = (norm_ext == "xisf")
 
-        doc = ImageDocument(img, meta)
-        self._docs.append(doc)
-        self.documentAdded.emit(doc)
+        primary_doc = None
+        created_any = False
 
-        # ------- FITS/MEF: enumerate all HDUs as sibling docs (no dedup) -------
-        # ------- FITS/MEF: enumerate all non-PRIMARY HDUs as sibling docs (endian-safe) -------
+        # ---------- 1) Try the universal loader first (ALL formats) ----------
+        img = header = bit_depth = is_mono = None
         try:
-            if ext in ("fits", "fit", "fits.gz", "fit.gz", "fz"):
-                exts = list_fits_extensions(path) or []
+            img, header, bit_depth, is_mono = legacy_load_image(path)
+        except Exception as e:
+            print(f"[DocManager] legacy_load_image failed (non-fatal if FITS/XISF): {e}")
 
-                # normalize to a simple list of keys we can iterate
-                if isinstance(exts, dict):
-                    keys = list(exts.keys())
-                elif isinstance(exts, (list, tuple)):
-                    keys = list(exts)
-                else:
-                    keys = []
+        if img is not None:
+            meta = {
+                "file_path": path,
+                "original_header": header,
+                "bit_depth": bit_depth,
+                "is_mono": is_mono,
+                "original_format": norm_ext,
+            }
+            _snapshot_header_for_metadata(meta)
+            primary_doc = ImageDocument(img, meta)
+            self._docs.append(primary_doc)
+            self.documentAdded.emit(primary_doc)
+            created_any = True
+            print(f"[DocManager] Primary ImageDocument created by legacy loader: '{primary_doc.display_name()}'")
 
-                base = os.path.basename(path)
+        # ---------- 2) FITS: enumerate HDUs (tables + extra images + ICC) ----------
+        if is_fits:
+            try:
+                with fits.open(path, memmap=True) as hdul:
+                    base = os.path.basename(path)
+                    print(f"[DocManager] Enumerating FITS HDUs in {base}: count={len(hdul)}")
 
-                REJ_LABELS = {
-                    "REJ_LOW":  "(Rej Low)",
-                    "REJ_HIGH": "(Rej High)",
-                    "REJ_COMB": "(Rej Combined)",
-                    "REJ_ANY":  "(Rejection Any)",
-                    "REJ_FRAC": "(Rejection Frac)",
-                }
+                    for i, hdu in enumerate(hdul):
+                        name_up = (getattr(hdu, "name", "PRIMARY") or "PRIMARY").upper()
+                        if primary_doc is not None and (i == 0 or name_up == "PRIMARY"):
+                            print(f"[DocManager] HDU {i}: {type(hdu).__name__} (PRIMARY) — skipped (already opened)")
+                            continue
 
-                # helper: coerce ndarray to native float32 (ints -> [0..1])
-                def _coerce_native_f32(arr: np.ndarray) -> np.ndarray:
-                    a = np.asarray(arr)
-                    if a.dtype.kind in "ui":
-                        return a.astype(np.float32, copy=False) / np.float32(np.iinfo(a.dtype).max)
-                    elif a.dtype.kind == "f":
-                        return a.astype(np.float32, copy=False)
-                    elif a.dtype.kind == "b":  # bool
-                        return a.astype(np.float32, copy=False)
-                    else:
-                        return a.astype(np.float32, copy=False)
-
-                for i, key in enumerate(keys):
-                    # We already opened the main image (PRIMARY). Skip it here.
-                    if i == 0:
-                        continue
-                    if isinstance(key, (str, bytes)) and str(key).strip().upper() == "PRIMARY":
-                        continue
-
-                    try:
-                        # 1) Try legacy loader
-                        try:
-                            ext_img, ext_hdr, ext_depth, ext_mono = load_fits_extension(path, key)
-                            ext_img = _coerce_native_f32(ext_img)
-                            ext_depth = "32-bit floating point"
-                            ext_mono = bool(ext_img.ndim == 2 or (ext_img.ndim == 3 and ext_img.shape[2] == 1))
-                        except Exception as e_legacy:
-                            # 2) Fallback to astropy, then normalize
-                            try:
-                                with fits.open(path, memmap=True) as hdul:
-                                    if isinstance(key, (str, bytes)) and (key in hdul):
-                                        hdu = hdul[key]
-                                    else:
-                                        hdu = hdul[i]
-                                    if hdu.data is None:
-                                        raise RuntimeError("HDU has no image data")
-                                    ext_img = _coerce_native_f32(np.asanyarray(hdu.data))
-                                    ext_hdr = hdu.header
-                                    ext_depth = "32-bit floating point"
-                                    ext_mono = bool(ext_img.ndim == 2 or (ext_img.ndim == 3 and ext_img.shape[2] == 1))
-                            except Exception as e_astropy:
-                                raise RuntimeError(f"Fallback read failed: {e_astropy}") from e_legacy
-
-                        # Build a friendly display title (EXTNAME/EXTVER beats label dict)
-                        extname = ""
+                        ext_hdr = hdu.header
                         try:
                             en = str(ext_hdr.get("EXTNAME", "")).strip()
                             ev = ext_hdr.get("EXTVER", None)
-                            if en:
-                                extname = f"{en}[{int(ev)}]" if isinstance(ev, (int, np.integer)) else en
+                            extname = f"{en}[{int(ev)}]" if (en and isinstance(ev, (int, np.integer))) else (en or "")
                         except Exception:
-                            pass
+                            extname = ""
 
-                        key_str = str(key) if isinstance(key, (str, bytes)) else f"HDU {i}"
-                        nice = extname or REJ_LABELS.get(str(key).upper(), f"[{key_str}]")
-                        disp = f"{base} {nice}"
+                        # --- Tables → TableDocument ---
+                        if isinstance(hdu, (fits.BinTableHDU, fits.TableHDU)):
+                            key_str = extname or f"HDU{i}"
+                            nice = key_str
+                            print(f"[DocManager] HDU {i}: {type(hdu).__name__} '{nice}' → Table")
 
-                        aux_meta = {
-                            "file_path": f"{path}::{key_str}",
-                            "original_header": ext_hdr,
-                            "bit_depth": ext_depth or meta.get("bit_depth"),
-                            "is_mono": bool(ext_mono),
-                            "original_format": "fits",
-                            "image_meta": {"derived_from": path, "layer": key_str, "readonly": True},
-                            "display_name": disp,
-                        }
-                        _snapshot_header_for_metadata(aux_meta)
+                            # Optional CSV export
+                            csv_name = f"{os.path.splitext(path)[0]}_{key_str}.csv".replace(" ", "_")
+                            try:
+                                _ = _fits_table_to_csv(hdu, csv_name)
+                            except Exception as e_csv:
+                                print(f"[DocManager] Table CSV export failed ({nice}): {e_csv}")
+                                csv_name = None
 
-                        aux_doc = ImageDocument(ext_img, aux_meta)
-                        self._docs.append(aux_doc)
-                        self.documentAdded.emit(aux_doc)
+                            # Build in-app table
+                            try:
+                                rows, headers = _fits_table_to_rows_headers(hdu, max_rows=500000)
+                                tmeta = {
+                                    "file_path": f"{path}::{key_str}",
+                                    "original_header": ext_hdr,
+                                    "original_format": "fits",
+                                    "display_name": f"{base} {key_str} (Table)",
+                                    "doc_type": "table",
+                                    "table_csv": csv_name if (csv_name and os.path.exists(csv_name)) else None,
+                                }
+                                _snapshot_header_for_metadata(tmeta)
+                                tdoc = TableDocument(rows, headers, tmeta, parent=self.parent())
+                                self._docs.append(tdoc)
+                                self.documentAdded.emit(tdoc)
+                                try: tdoc.changed.emit()
+                                except Exception: pass
+                                created_any = True
+                                print(f"[DocManager] Added TableDocument: rows={len(rows)} cols={len(headers)} title='{tdoc.display_name()}'")
+                            except Exception as e_tab:
+                                print(f"[DocManager] Table HDU {nice} → in-app view failed: {e_tab}")
+                            continue  # IMPORTANT: don’t treat a table as an image
+
+                        # --- Not a table: ICC or image ---
+                        if hdu.data is None:
+                            print(f"[DocManager] HDU {i} '{extname or f'HDU{i}'}' has no data — noted as aux")
+                            continue
+
+                        arr = np.asanyarray(hdu.data)
+                        en_up = (extname or "").upper()
+                        is_probable_icc = ("ICC" in en_up or "PROFILE" in en_up)
+
+                        # ICC ONLY if name suggests ICC/profile AND data is 1-D uint8
+                        if arr.ndim == 1 and arr.dtype == np.uint8 and is_probable_icc:
+                            try:
+                                icc_path = f"{os.path.splitext(path)[0]}_{extname or f'HDU{i}'}_.icc".replace(" ", "_")
+                                with open(icc_path, "wb") as f:
+                                    f.write(arr.tobytes())
+                                print(f"[DocManager] Extracted ICC profile → {icc_path}")
+                                created_any = True
+                                continue
+                            except Exception as e_icc:
+                                print(f"[DocManager] ICC export failed: {e_icc} — will try as image")
+
+                        # Otherwise: treat as image doc
                         try:
-                            aux_doc.changed.emit()
-                        except Exception:
-                            pass
+                            if arr.dtype.kind in "ui":
+                                a = arr.astype(np.float32, copy=False) / np.float32(np.iinfo(arr.dtype).max)
+                            else:
+                                a = arr.astype(np.float32, copy=False)
+                            ext_depth = "32-bit floating point"
+                            ext_mono = bool(a.ndim == 2 or (a.ndim == 3 and a.shape[2] == 1))
+                            key_str = extname or f"HDU {i}"
+                            disp = f"{base} {key_str}"
 
-                    except Exception as _e:
-                        print(f"[DocManager] Skipped FITS HDU {key} ({i}): {_e}")
-        except Exception as _e:
-            print(f"[DocManager] FITS HDU enumeration failed: {_e}")
+                            aux_meta = {
+                                "file_path": f"{path}::{key_str}",
+                                "original_header": ext_hdr,
+                                "bit_depth": ext_depth,
+                                "is_mono": bool(ext_mono),
+                                "original_format": "fits",
+                                "image_meta": {"derived_from": path, "layer": key_str, "readonly": True},
+                                "display_name": disp,
+                            }
+                            _snapshot_header_for_metadata(aux_meta)
+                            aux_doc = ImageDocument(a, aux_meta)
+                            self._docs.append(aux_doc)
+                            self.documentAdded.emit(aux_doc)
+                            try: aux_doc.changed.emit()
+                            except Exception: pass
+                            created_any = True
+                            print(f"[DocManager] Added ImageDocument from FITS HDU {i}: '{disp}'  shape={a.shape}")
+                        except Exception as e_img:
+                            print(f"[DocManager] FITS HDU {i} image build failed: {e_img}")
+            except Exception as _e:
+                print(f"[DocManager] FITS HDU enumeration failed: {_e}")
 
-
-
-        # ------- XISF: enumerate additional Image blocks as sibling docs -------
-        try:
-            if _normalize_ext(ext) == "xisf":
-                # helpers (local to avoid cluttering module scope)
+        # ---------- 3) XISF: create primary if needed, then enumerate extras ----------
+        if is_xisf:
+            try:
+                # helpers
                 def _bit_depth_from_dtype(dt: np.dtype) -> str:
                     dt = np.dtype(dt)
                     if dt == np.float32: return "32-bit floating point"
@@ -372,9 +501,39 @@ class DocManager(QObject):
 
                 xisf = XISFReader(path)
                 metas = xisf.get_images_metadata() or []
-
-                # We already opened image #0 via legacy_load_image; add 1..N-1
                 base = os.path.basename(path)
+
+                # If legacy did NOT create a primary, build image #0 now
+                if primary_doc is None and len(metas) >= 1:
+                    try:
+                        arr0 = xisf.read_image(0, data_format="channels_last")
+                        arr0_f32 = _to_float32_01(arr0)
+                        bd0 = _bit_depth_from_dtype(metas[0].get("dtype", arr0.dtype))
+                        is_mono0 = (arr0_f32.ndim == 2) or (arr0_f32.ndim == 3 and arr0_f32.shape[2] == 1)
+
+                        # Friendly label for #0
+                        label0 = metas[0].get("id") or "Image[0]"
+                        md0 = {
+                            "file_path": f"{path}::XISF[0]",
+                            "original_header": metas[0],  # will be sanitized
+                            "bit_depth": bd0,
+                            "is_mono": is_mono0,
+                            "original_format": "xisf",
+                            "image_meta": {"derived_from": path, "layer_index": 0, "readonly": True},
+                            "display_name": f"{base} {label0}",
+                        }
+                        _snapshot_header_for_metadata(md0)
+                        primary_doc = ImageDocument(arr0_f32, md0)
+                        self._docs.append(primary_doc)
+                        self.documentAdded.emit(primary_doc)
+                        try: primary_doc.changed.emit()
+                        except Exception: pass
+                        created_any = True
+                        print(f"[DocManager] Primary ImageDocument created from XISF: '{primary_doc.display_name()}'  shape={arr0_f32.shape}")
+                    except Exception as e0:
+                        print(f"[DocManager] XISF primary (index 0) open failed: {e0}")
+
+                # Add images 1..N-1 as siblings (even if primary came from legacy)
                 for i in range(1, len(metas)):
                     try:
                         m = metas[i]
@@ -384,12 +543,8 @@ class DocManager(QObject):
                         bd = _bit_depth_from_dtype(m.get("dtype", arr.dtype))
                         is_mono_i = (arr_f32.ndim == 2) or (arr_f32.ndim == 3 and arr_f32.shape[2] == 1)
 
-                        # Friendly label: prefer XISF image id, else EXTNAME/EXTVER from FITSKeywords, else index
-                        label = None
-                        try:
-                            label = m.get("id") or None
-                        except Exception:
-                            label = None
+                        # Friendly label: prefer id, else EXTNAME/EXTVER in FITSKeywords, else index
+                        label = m.get("id") or None
                         if not label:
                             try:
                                 fk = m.get("FITSKeywords", {})
@@ -416,16 +571,22 @@ class DocManager(QObject):
                         sib = ImageDocument(arr_f32, md)
                         self._docs.append(sib)
                         self.documentAdded.emit(sib)
-                        try:
-                            sib.changed.emit()
-                        except Exception:
-                            pass
+                        try: sib.changed.emit()
+                        except Exception: pass
+                        created_any = True
+                        print(f"[DocManager] Added ImageDocument from XISF image {i}: '{sib.display_name()}'  shape={arr_f32.shape}")
                     except Exception as _e:
                         print(f"[DocManager] XISF image {i} skipped: {_e}")
-        except Exception as _e:
-            print(f"[DocManager] XISF multi-image open failed: {_e}")
+            except Exception as _e:
+                print(f"[DocManager] XISF open/enumeration failed: {_e}")
 
-        return doc
+        # ---------- 4) Return sensible doc or raise ----------
+        if primary_doc is not None:
+            return primary_doc
+        if created_any:
+            return self._docs[-1]  # e.g., a table-only FITS or extra XISF image
+
+        raise IOError(f"Could not load: {path}")
 
     
     # --- Slot -> Document ---

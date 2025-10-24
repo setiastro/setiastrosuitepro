@@ -4215,6 +4215,7 @@ class StackingSuiteDialog(QDialog):
         self.csr_enable = QCheckBox("Remove stars on comet-aligned frames")
         self.csr_enable.setChecked(self.settings.value("stacking/comet_starrem/enabled", False, type=bool))
         fl_csr.addRow(self.csr_enable)
+        self.csr_enable.toggled.connect(lambda v: self.settings.setValue("stacking/comet_starrem/enabled", bool(v)))
 
         self.csr_tool = QComboBox()
         self.csr_tool.addItems(["StarNet", "CosmicClarityDarkStar"])
@@ -4448,6 +4449,11 @@ class StackingSuiteDialog(QDialog):
 
         dialog.resize(900, 640)
         dialog.exec()
+
+        try:
+            self._refresh_comet_starless_enable()
+        except Exception:
+            pass        
 
     # --- Drizzle config: single source of truth ---
     def _get_drizzle_pixfrac(self) -> float:
@@ -6291,14 +6297,20 @@ class StackingSuiteDialog(QDialog):
         self.comet_mix = QDoubleSpinBox(); self.comet_mix.setRange(0.0, 1.0); self.comet_mix.setSingleStep(0.05)
         self.comet_mix.setValue(self.settings.value("stacking/comet/mix", 1.0, type=float))
         comet_opts.addWidget(self.comet_mix)
+        self.comet_save_starless_cb = QCheckBox("Save all starless comet-aligned frames")
+        self.comet_save_starless_cb.setChecked(self.settings.value("stacking/comet/save_starless", False, type=bool))
+        comet_opts.addWidget(self.comet_save_starless_cb)        
         comet_opts.addStretch(1)
+
         layout.addLayout(comet_opts)
 
         # persist comet settings
         self.settings.setValue("stacking/comet/enabled", self.comet_cb.isChecked())
         self.settings.setValue("stacking/comet/blend", self.comet_blend_cb.isChecked())
         self.settings.setValue("stacking/comet/mix", self.comet_mix.value())
-
+        self.comet_save_starless_cb.toggled.connect(
+            lambda v: self.settings.setValue("stacking/comet/save_starless", bool(v))
+        )
         # ─────────────────────────────────────────
         # 8) Backend / Install GPU Acceleration — MOVED BELOW comet+trail row
         # ─────────────────────────────────────────
@@ -6447,6 +6459,38 @@ class StackingSuiteDialog(QDialog):
         self.mf_sr_cb.toggled.connect(lambda v: self.settings.setValue("stacking/mfdeconv/sr_enabled", bool(v)))
         self.mf_sr_cb.toggled.connect(self.mf_sr_factor_spin.setEnabled)
         self.mf_sr_factor_spin.valueChanged.connect(lambda v: self.settings.setValue("stacking/mfdeconv/sr_factor", int(v)))
+
+
+        # If comet star-removal is globally disabled, gray this out with a helpful tooltip
+        csr_enabled_globally = self.settings.value("stacking/comet_starrem/enabled", False, type=bool)
+
+        def _refresh_comet_starless_enable():
+            csr_on   = bool(self.settings.value("stacking/comet_starrem/enabled", False, type=bool))
+            comet_on = bool(self.comet_cb.isChecked())
+            ok = comet_on and csr_on
+
+            self.comet_save_starless_cb.setEnabled(ok)
+
+            tip = ("Save all comet-aligned starless frames.\n"
+                "Requires: ‘Create comet stack’ AND ‘Remove stars on comet-aligned frames’.")
+            if not csr_on:
+                tip += "\n\n(Comet Star Removal is currently OFF in Settings.)"
+            self.comet_save_starless_cb.setToolTip(tip)
+
+            if not ok and self.comet_save_starless_cb.isChecked():
+                self.comet_save_starless_cb.blockSignals(True)
+                self.comet_save_starless_cb.setChecked(False)
+                self.comet_save_starless_cb.blockSignals(False)
+                self.settings.setValue("stacking/comet/save_starless", False)
+
+        self._refresh_comet_starless_enable = _refresh_comet_starless_enable  # expose to self
+
+        # wire it
+        self.comet_cb.toggled.connect(lambda _v: self._refresh_comet_starless_enable())
+        self.comet_save_starless_cb.toggled.connect(lambda _v: self._refresh_comet_starless_enable())  # optional belt/suspenders
+
+        # run once AFTER you restore all initial states from settings
+        self._refresh_comet_starless_enable()
 
 
         return tab
@@ -12584,6 +12628,19 @@ class StackingSuiteDialog(QDialog):
                             original_header=ref_header,  # simple header OK
                             is_mono=False
                         )
+                        if self.settings.value("stacking/comet/save_starless", False, type=bool):
+                            save_dir = os.path.join(self.stacking_directory, "starless_comet_aligned")
+                            os.makedirs(save_dir, exist_ok=True)
+                            base_name = os.path.splitext(os.path.basename(p))[0]
+                            out_user = os.path.join(save_dir, f"{base_name}_starless.fit")
+                            save_image(
+                                img_array=protected,
+                                filename=out_user,
+                                original_format="fit",
+                                bit_depth="32-bit floating point",
+                                original_header=ref_header,
+                                is_mono=False
+                            )                        
                         starless_temp_paths.append(outp)
                         starless_map[p] = outp    
                         log(f"    ✓ [{i}/{len(file_list)}] starless saved")

@@ -7,6 +7,7 @@ from PyQt6 import sip
 import numpy as np
 import json
 import math
+import os
 
 from .autostretch import autostretch   # ← uses pro/imageops/stretch.py
 
@@ -14,6 +15,45 @@ from pro.dnd_mime import MIME_VIEWSTATE, MIME_MASK, MIME_ASTROMETRY, MIME_CMD
 from pro.shortcuts import _unpack_cmd_payload
 
 from .layers import composite_stack, ImageLayer, BLEND_MODES
+
+# --- NEW: simple table model for TableDocument ---
+from PyQt6.QtCore import QAbstractTableModel, QModelIndex, Qt, QVariant
+
+__all__ = ["ImageSubWindow", "TableSubWindow"]
+
+class SimpleTableModel(QAbstractTableModel):
+    def __init__(self, rows: list[list], headers: list[str], parent=None):
+        super().__init__(parent)
+        self._rows = rows
+        self._headers = headers
+
+    def rowCount(self, parent=QModelIndex()) -> int:
+        return 0 if parent.isValid() else len(self._rows)
+
+    def columnCount(self, parent=QModelIndex()) -> int:
+        return 0 if parent.isValid() else (len(self._headers) if self._headers else (len(self._rows[0]) if self._rows else 0))
+
+    def data(self, index: QModelIndex, role=Qt.ItemDataRole.DisplayRole):
+        if not index.isValid():
+            return QVariant()
+        if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole):
+            try:
+                return str(self._rows[index.row()][index.column()])
+            except Exception:
+                return ""
+        return QVariant()
+
+    def headerData(self, section: int, orientation: Qt.Orientation, role=Qt.ItemDataRole.DisplayRole):
+        if role != Qt.ItemDataRole.DisplayRole:
+            return QVariant()
+        if orientation == Qt.Orientation.Horizontal:
+            try:
+                return self._headers[section] if self._headers and 0 <= section < len(self._headers) else f"C{section+1}"
+            except Exception:
+                return f"C{section+1}"
+        else:
+            return str(section + 1)
+
 
 class _DragTab(QLabel):
     """
@@ -753,6 +793,13 @@ class ImageSubWindow(QWidget):
                 return
             arr = np.asarray(img)
 
+            # --- Coerce non-image arrays (0-D/1-D) to 2-D so we can display them ---
+            # e.g. vector HDU → show as a 1×N strip; scalar → 1×1 pixel
+            if arr.ndim == 0:
+                arr = arr.reshape(1, 1)
+            elif arr.ndim == 1:
+                arr = arr[np.newaxis, :]  # 1×N
+
             # detect mono now so we can ignore "linked" for mono images
             is_mono = (arr.ndim == 2) or (arr.ndim == 3 and arr.shape[2] == 1)
 
@@ -768,7 +815,6 @@ class ImageSubWindow(QWidget):
                     if mx > 5.0:  # wildly large floats → compress to [0..1]
                         arr_f = arr_f / mx
 
-                # >>> this is the important bit: honor linked flag unless mono
                 vis = autostretch(
                     arr_f,
                     target_median=self.autostretch_target,
@@ -793,13 +839,19 @@ class ImageSubWindow(QWidget):
             else:
                 buf8 = (np.clip(vis, 0.0, 1.0) * 255.0).astype(np.uint8)
 
-            # ensure 3 channels
+            # --- Final safety: force H×W×3 no matter what came in ---
             if buf8.ndim == 2:
-                buf8 = np.stack([buf8]*3, axis=-1)
+                buf8 = np.stack([buf8] * 3, axis=-1)
             elif buf8.ndim == 3 and buf8.shape[2] == 1:
                 buf8 = np.repeat(buf8, 3, axis=2)
+            elif buf8.ndim != 3 or buf8.shape[2] < 3:
+                # rare/odd cases: pad/truncate to 3 channels
+                if buf8.ndim == 3 and buf8.shape[2] > 3:
+                    buf8 = buf8[..., :3]
+                else:
+                    buf8 = np.stack([buf8.squeeze()] * 3, axis=-1)
 
-            # --- MASK OVERLAY (unchanged) ---
+            # --- MASK OVERLAY (unchanged logic) ---
             if self.show_mask_overlay:
                 m = self._active_mask_array()
                 if m is not None:
@@ -823,15 +875,22 @@ class ImageSubWindow(QWidget):
 
             self._buf8 = buf8  # keep backing memory alive
             ptr = sip.voidptr(self._buf8.ctypes.data)
-            self._qimg_src = QImage(ptr, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+            try:
+                self._qimg_src = QImage(ptr, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+            except Exception:
+                # absolute last-resort guard: build from a copy if direct wrap fails
+                buf8c = np.array(self._buf8, copy=True, order="C")
+                self._buf8 = buf8c
+                ptr = sip.voidptr(self._buf8.ctypes.data)
+                self._qimg_src = QImage(ptr, w, h, bytes_per_line, QImage.Format.Format_RGB888)
 
         # scale and show
         qimg = self._qimg_src
         if qimg is None:
             return
 
-        sw = int(qimg.width() * self.scale)
-        sh = int(qimg.height() * self.scale)
+        sw = max(1, int(qimg.width() * self.scale))
+        sh = max(1, int(qimg.height() * self.scale))
         scaled = qimg.scaled(
             sw, sh,
             Qt.AspectRatioMode.KeepAspectRatio,
@@ -839,6 +898,7 @@ class ImageSubWindow(QWidget):
         )
         self.label.setPixmap(QPixmap.fromImage(scaled))
         self.label.resize(scaled.size())
+
 
     # ---------- interaction ----------
     def _zoom_at_anchor(self, factor: float):
@@ -962,3 +1022,110 @@ class ImageSubWindow(QWidget):
         except Exception:
             pass
         super().closeEvent(e)
+
+# --- NEW: TableSubWindow -------------------------------------------------
+from PyQt6.QtWidgets import QTableView, QPushButton, QFileDialog
+
+class TableSubWindow(QWidget):
+    """
+    Lightweight subwindow to render TableDocument (rows/headers) in a QTableView.
+    Provides: copy, export CSV, row count display.
+    """
+    viewTitleChanged = pyqtSignal(object, str)  # to mirror ImageSubWindow emissions (if needed)
+
+    def __init__(self, table_document, parent=None):
+        super().__init__(parent)
+        self.document = table_document
+        self._last_title_for_emit = None
+
+        lyt = QVBoxLayout(self)
+        title_row = QHBoxLayout()
+        self.title_lbl = QLabel(self.document.display_name())
+        title_row.addWidget(self.title_lbl)
+        title_row.addStretch(1)
+
+        self.export_btn = QPushButton("Export CSV…")
+        self.export_btn.clicked.connect(self._export_csv)
+        title_row.addWidget(self.export_btn)
+        lyt.addLayout(title_row)
+
+        self.table = QTableView(self)
+        self.table.setSortingEnabled(True)
+        self.table.setAlternatingRowColors(True)
+        self.table.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QTableView.SelectionMode.ExtendedSelection)
+        lyt.addWidget(self.table, 1)
+
+        rows = getattr(self.document, "rows", [])
+        headers = getattr(self.document, "headers", [])
+        self._model = SimpleTableModel(rows, headers, self)
+        self.table.setModel(self._model)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.resizeColumnsToContents()
+
+        self._sync_host_title()
+        print(f"[TableSubWindow] init rows={self._model.rowCount()} cols={self._model.columnCount()} title='{self.document.display_name()}'")
+        # react to doc rename if you add such behavior later
+        try:
+            self.document.changed.connect(self._on_doc_changed)
+        except Exception:
+            pass
+
+    def _on_doc_changed(self):
+        # if title changes or content updates in future
+        self.title_lbl.setText(self.document.display_name())
+        self._sync_host_title()
+
+    def _mdi_subwindow(self) -> QMdiSubWindow | None:
+        w = self.parent()
+        while w is not None and not isinstance(w, QMdiSubWindow):
+            w = w.parent()
+        return w
+
+    def _sync_host_title(self):
+        sub = self._mdi_subwindow()
+        if not sub:
+            return
+        title = self.document.display_name()
+        if title != sub.windowTitle():
+            sub.setWindowTitle(title)
+            sub.setToolTip(title)
+            if title != self._last_title_for_emit:
+                self._last_title_for_emit = title
+                try:
+                    self.viewTitleChanged.emit(self, title)
+                except Exception:
+                    pass
+
+    def _export_csv(self):
+        # Prefer already-exported CSV from metadata when available, otherwise prompt
+        existing = self.document.metadata.get("table_csv")
+        if existing and os.path.exists(existing):
+            # Offer to open/save-as that CSV
+            dst, ok = QFileDialog.getSaveFileName(self, "Save CSV As…", os.path.basename(existing), "CSV Files (*.csv)")
+            if ok and dst:
+                try:
+                    import shutil
+                    shutil.copyfile(existing, dst)
+                except Exception as e:
+                    QMessageBox.warning(self, "Export CSV", f"Failed to copy CSV:\n{e}")
+            return
+
+        # No pre-export → write one from the model
+        dst, ok = QFileDialog.getSaveFileName(self, "Export CSV…", "table.csv", "CSV Files (*.csv)")
+        if not ok or not dst:
+            return
+        try:
+            import csv
+            with open(dst, "w", encoding="utf-8", newline="") as f:
+                w = csv.writer(f)
+                # headers
+                cols = self._model.columnCount()
+                hdrs = [self._model.headerData(c, Qt.Orientation.Horizontal) for c in range(cols)]
+                w.writerow([str(h) for h in hdrs])
+                # rows
+                rows = self._model.rowCount()
+                for r in range(rows):
+                    w.writerow([self._model.data(self._model.index(r, c), Qt.ItemDataRole.DisplayRole) for c in range(cols)])
+        except Exception as e:
+            QMessageBox.warning(self, "Export CSV", f"Failed to export CSV:\n{e}")
