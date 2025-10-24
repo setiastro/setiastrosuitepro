@@ -1,9 +1,9 @@
 {
-  "version": "1.3.17",
+  "version": "1.3.18",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.17/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.17/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.17/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.18/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.18/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.18/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.3.17 ImageMM Normal, Normal cuDNN free (may help with square artifacts if you have them), High Octane.  Stacking Suite now displays integration time in the Light and Image Integration tab file lists.  Bug fix: ImageMM now will correctly cycle through all groups of filters from Register and Integrate Images.  Bug fix: Recursive Checkbox.  Recursive Search now can detect and direct all files to their correct tabs."
+  "notes": "Seti Astro Suite Pro V1.3.18 SASpro can now open all tables within FITS HDU's allowing downloading and viewing full science data. New View Menu: Cascade, Tile, Smart Tile your View Windows. Option to Save starless only comet images during comet integration."
 }
