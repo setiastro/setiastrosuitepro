@@ -184,7 +184,7 @@ import math
 
 
 from pro.doc_manager import DocManager
-from pro.subwindow import ImageSubWindow
+from pro.subwindow import ImageSubWindow, TableSubWindow
 from legacy.image_manager import ImageManager
 from pro.header_viewer import HeaderViewerDock
 from pro.batch_convert import BatchConvertDialog
@@ -269,7 +269,7 @@ from pro.status_log_dock import StatusLogDock
 from pro.log_bus import LogBus
 
 
-VERSION = "1.3.17"
+VERSION = "1.3.18"
 
 
 
@@ -841,6 +841,40 @@ def _best_doc_name(doc) -> str:
 
     return "untitled"
 
+def _doc_looks_like_table(doc) -> bool:
+    md = getattr(doc, "metadata", {}) or {}
+
+    # explicit type hints from your own pipeline
+    if str(md.get("doc_type", "")).lower() in {"table", "catalog", "fits_table"}:
+        return True
+    if str(md.get("fits_hdu_type", "")).lower().endswith("tablehdu"):
+        return True
+    if str(md.get("hdu_class", "")).lower().endswith("tablehdu"):
+        return True
+
+    # FITS header inspection (common with astropy)
+    hdr = md.get("original_header") or md.get("fits_header") or {}
+    try:
+        xt = str(hdr.get("XTENSION", "")).upper()
+        if xt in {"TABLE", "BINTABLE", "ASCIITABLE"}:
+            return True
+    except Exception:
+        pass
+
+    # structural hints from the doc
+    if hasattr(doc, "table"):
+        return True
+    if hasattr(doc, "columns"):
+        return True
+    if hasattr(doc, "rows") or hasattr(doc, "headers"):
+        return True
+
+    # last resort: no image but we clearly have column metadata
+    if getattr(doc, "image", None) is None and isinstance(md.get("columns"), (list, tuple)):
+        return True
+
+    return False
+
 class AstroSuiteProMainWindow(QMainWindow):
     currentDocumentChanged = pyqtSignal(object)  # ImageDocument | None
 
@@ -915,6 +949,8 @@ class AstroSuiteProMainWindow(QMainWindow):
         self.mdi.astrometryDropped.connect(self._on_astrometry_drop)
         self.docman.documentAdded.connect(lambda _d: self._refresh_mask_action_states())
         self.docman.documentRemoved.connect(lambda _d: self._refresh_mask_action_states())
+        self.docman.documentAdded.connect(self._on_document_added)
+
         self.doc_manager.set_mdi_area(self.mdi)
 
         self.shortcuts.load_shortcuts()
@@ -1013,6 +1049,18 @@ class AstroSuiteProMainWindow(QMainWindow):
 
         except Exception:
             pass
+
+    def _on_document_added(self, doc):
+        # Helpful debug:
+        try:
+            is_table = (getattr(doc, "metadata", {}).get("doc_type") == "table") or \
+                    (hasattr(doc, "rows") and hasattr(doc, "headers"))
+            self._log(f"[documentAdded] {type(doc).__name__}  table={is_table}  name={getattr(doc, 'display_name', lambda:'?')()}")
+        except Exception:
+            pass
+
+        self._spawn_subwindow_for(doc)
+
 
     def apply_theme_from_settings(self):
         mode = self._theme_mode()
@@ -1436,7 +1484,27 @@ class AstroSuiteProMainWindow(QMainWindow):
         self.act_save.setStatusTip("Save the active image")
         self.act_save.triggered.connect(self.save_active)
 
+        self.act_cascade = QAction("Cascade Views", self)
+        self.act_cascade.setStatusTip("Cascade all subwindows")
+        self.act_cascade.setShortcut(QKeySequence("Ctrl+Shift+C"))
+        self.act_cascade.triggered.connect(self._cascade_views)
 
+        self.act_tile = QAction("Tile Views", self)
+        self.act_tile.setStatusTip("Tile all subwindows")
+        self.act_tile.setShortcut(QKeySequence("Ctrl+Shift+T"))
+        self.act_tile.triggered.connect(self._tile_views)
+
+        self.act_tile_vert = QAction("Tile Vertically", self)
+        self.act_tile_vert.setStatusTip("Split the workspace into equal vertical columns")
+        self.act_tile_vert.triggered.connect(lambda: self._tile_views_direction("v"))
+
+        self.act_tile_horiz = QAction("Tile Horizontally", self)
+        self.act_tile_horiz.setStatusTip("Split the workspace into equal horizontal rows")
+        self.act_tile_horiz.triggered.connect(lambda: self._tile_views_direction("h"))
+
+        self.act_tile_grid = QAction("Smart Grid", self)
+        self.act_tile_grid.setStatusTip("Arrange subwindows in a near-square grid")
+        self.act_tile_grid.triggered.connect(self._tile_views_grid)
 
         self.act_undo = QAction(QIcon(undoicon_path), "Undo", self)
         self.act_redo = QAction(QIcon(redoicon_path), "Redo", self)
@@ -2089,6 +2157,12 @@ class AstroSuiteProMainWindow(QMainWindow):
         m_short.addAction(act_save_sc)
         m_short.addAction(act_clear_sc)
 
+        m_view = mb.addMenu("&View")
+        m_view.addAction(self.act_cascade)
+        m_view.addAction(self.act_tile)
+        m_view.addAction(self.act_tile_vert)
+        m_view.addAction(self.act_tile_horiz)
+        m_view.addAction(self.act_tile_grid)  
 
         m_settings = mb.addMenu("&Settings")
         m_settings.addAction("Preferences…", self._open_settings)
@@ -2101,6 +2175,61 @@ class AstroSuiteProMainWindow(QMainWindow):
         self.update_undo_redo_action_labels()
 
     # --- Shortcuts -> View Panels (dynamic) --------------------------------------
+    def _visible_subwindows(self):
+        # Only arrange visible, non-minimized views
+        subs = [sw for sw in self.mdi.subWindowList()
+                if sw.isVisible() and not (sw.windowState() & Qt.WindowState.WindowMinimized)]
+        return subs
+
+    def _cascade_views(self):
+        self.mdi.cascadeSubWindows()
+
+    def _tile_views(self):
+        self.mdi.tileSubWindows()
+
+    def _tile_views_direction(self, direction: str):
+        """direction: 'v' for vertical columns, 'h' for horizontal rows"""
+        subs = self._visible_subwindows()
+        if not subs:
+            return
+        area = self.mdi.viewport().rect()
+        # account for MDI viewport origin in global coords
+        off = self.mdi.viewport().mapTo(self.mdi, area.topLeft())
+        origin_x, origin_y = off.x(), off.y()
+
+        n = len(subs)
+        if direction == "v":  # columns
+            col_w = max(1, area.width() // n)
+            for i, sw in enumerate(subs):
+                sw.setGeometry(origin_x + i*col_w, origin_y, col_w, area.height())
+        else:  # rows
+            row_h = max(1, area.height() // n)
+            for i, sw in enumerate(subs):
+                sw.setGeometry(origin_x, origin_y + i*row_h, area.width(), row_h)
+
+    def _tile_views_grid(self):
+        """Arrange near-square grid across the MDI area."""
+        subs = self._visible_subwindows()
+        if not subs:
+            return
+        area = self.mdi.viewport().rect()
+        off = self.mdi.viewport().mapTo(self.mdi, area.topLeft())
+        origin_x, origin_y = off.x(), off.y()
+
+        n = len(subs)
+        # rows x cols ≈ square
+        cols = int(max(1, math.ceil(math.sqrt(n))))
+        rows = int(max(1, math.ceil(n / cols)))
+
+        cell_w = max(1, area.width() // cols)
+        cell_h = max(1, area.height() // rows)
+
+        for idx, sw in enumerate(subs):
+            r = idx // cols
+            c = idx % cols
+            sw.setGeometry(origin_x + c*cell_w, origin_y + r*cell_h, cell_w, cell_h)
+
+
     def _ensure_view_panels_menu(self):
         if getattr(self, "_shutting_down", False):
             return getattr(self, "_menu_view_panels", None)
@@ -3144,10 +3273,20 @@ class AstroSuiteProMainWindow(QMainWindow):
         return getattr(vw, "document", None)
 
     def _find_subwindow_for_doc(self, doc):
+        """Find the QMdiSubWindow that hosts this exact doc object.
+        Falls back to a tagged id() property if present."""
+        want_ptr = id(doc)
         for sw in self.mdi.subWindowList():
             vw = sw.widget()
+            # primary: exact object identity
             if getattr(vw, "document", None) is doc:
                 return sw
+            # fallback: compare a tagged pointer if the widget exposes it
+            try:
+                if int(vw.property("doc_ptr") or 0) == want_ptr:
+                    return sw
+            except Exception:
+                pass
         return None
 
     def _open_subwindow_for_added_doc(self, doc):
@@ -3155,12 +3294,12 @@ class AstroSuiteProMainWindow(QMainWindow):
         if self._find_subwindow_for_doc(doc):
             return
         try:
-            # Use the same path you use everywhere else (sizes, signals, etc.)
-            self._spawn_subwindow_for(doc)
-            # Bring it to the front
-            sw = self._find_subwindow_for_doc(doc)
+            # Create it and use the returned subwindow directly
+            sw = self._spawn_subwindow_for(doc)
             if sw:
-                self.mdi.setActiveSubWindow(sw)
+                # Activate on the next loop tick so Qt has applied flags/layout
+                from PyQt6.QtCore import QTimer
+                QTimer.singleShot(0, lambda: self.mdi.setActiveSubWindow(sw))
         except Exception as e:
             # Safe fallback: show *something* and log why
             try:
@@ -4564,10 +4703,6 @@ class AstroSuiteProMainWindow(QMainWindow):
         act_batch = QAction("Batch Convert…", self)
         act_batch.triggered.connect(self._open_batch_convert)
         tools.addAction(act_batch)
-
-    def _open_batch_convert(self):
-        dlg = BatchConvertDialog(self)
-        dlg.show()
 
 
 
@@ -6726,25 +6861,51 @@ class AstroSuiteProMainWindow(QMainWindow):
         self.mdi.setActiveSubWindow(last)
 
     def _spawn_subwindow_for(self, doc):
-        # Reuse an existing view if it’s already open
         existing = self._find_subwindow_for_doc(doc)
         if existing:
             self.mdi.setActiveSubWindow(existing)
             return existing
 
-        # Create the view widget
-        view = ImageSubWindow(doc, parent=self.mdi)   # ← parent MDI, not self
+        # --- choose the right view type (keep your detection) ---
+        try:
+            from pro.subwindow import ImageSubWindow, TableSubWindow
+        except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            QMessageBox.critical(self, "View Import Error",
+                                f"Failed to import view classes from pro.subwindow:\n{e}\n\n{tb}")
+            # limp to a label so *something* shows:
+            from PyQt6.QtWidgets import QLabel, QMdiSubWindow
+            w = QLabel(doc.display_name()); setattr(w, "document", doc)
+            wrapper = self.mdi.addSubWindow(w); wrapper.show()
+            return wrapper
 
-        # Add to MDI
+        # your table detector
+        is_table = (
+            (getattr(doc, "metadata", {}) or {}).get("doc_type") == "table" or
+            hasattr(doc, "rows") and hasattr(doc, "headers")
+        )
+
+        # ---- construct the view; LOG ALL ERRORS ----
+        try:
+            view = TableSubWindow(doc) if is_table else ImageSubWindow(doc)
+        except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            self._log(f"[spawn] View construction failed: {e}\n{tb}")
+            QMessageBox.critical(self, "View Construction Error",
+                                f"Could not create {'Table' if is_table else 'Image'} view:\n{e}\n\n{tb}")
+            # safe fallback:
+            from PyQt6.QtWidgets import QLabel
+            view = QLabel(doc.display_name()); setattr(view, "document", doc)
+
         sw = self.mdi.addSubWindow(view)
         sw.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         sw.setWindowTitle(doc.display_name())
         sw.setWindowIcon(self.app_icon)
+        sw.show()
 
-        # inside _spawn_subwindow_for after you create sw = self.mdi.addSubWindow(view)
-
-        # ── Shelf / minimize wiring ─────────────────────────────────────────────
-        # Keep the normal titlebar buttons; just ADD hints so they show.
+        # Window flags (apply then show)
         flags = sw.windowFlags()
         flags |= Qt.WindowType.WindowCloseButtonHint
         flags |= Qt.WindowType.WindowMinimizeButtonHint
@@ -6752,66 +6913,76 @@ class AstroSuiteProMainWindow(QMainWindow):
         sw.setWindowFlags(flags)
         sw.show()
 
-        # Intercept minimize requests and send to the Shelf
+        # Intercept minimize → Shelf (if you have one)
         if hasattr(self, "_minimize_interceptor"):
             sw.installEventFilter(self._minimize_interceptor)
-
-        # If this subwindow dies elsewhere, let the shelf clean up its button
         try:
             sw.destroyed.connect(lambda _=None, s=sw:
                 hasattr(self, "window_shelf") and self.window_shelf.remove_for_subwindow(s))
         except Exception:
             pass
-        # ───────────────────────────────────────────────────────────────────────
 
         # Close bookkeeping
-        view.aboutToClose.connect(lambda d=doc: self._safe_close_doc(d))
-        view.aboutToClose.connect(lambda d=doc: self._log(f"Closed: {d.display_name()}"))
+        if hasattr(view, "aboutToClose"):
+            try:
+                view.aboutToClose.connect(lambda d=doc: self._safe_close_doc(d))
+                view.aboutToClose.connect(lambda d=doc: self._log(f"Closed: {d.display_name()}"))
+            except Exception:
+                pass
+        else:
+            try:
+                sw.destroyed.connect(lambda _=None, d=doc: self._safe_close_doc(d))
+            except Exception:
+                pass
 
-        # Keep toolbar toggle in sync if this view changes internally
-        view.autostretchChanged.connect(self._sync_autostretch_action)
-        doc.changed.connect(self.update_undo_redo_action_labels)
-
-        # Decide sizing
-        w = h = None
+        # Doc change → undo/redo labels
         try:
-            img = getattr(doc, "image", None)
-            if isinstance(img, np.ndarray) and img.size:
-                h, w = img.shape[:2]
+            doc.changed.connect(self.update_undo_redo_action_labels)
         except Exception:
             pass
-
-        # Show subwindow now that flags are set
-        sw.show()
-        self.mdi.setActiveSubWindow(sw)
 
         # Size/scale
-        if w and h and w <= 900 and h <= 700:
-            view.set_scale(1.0)
-            QTimer.singleShot(0, sw.adjustSize)
+        if is_table:
+            sw.resize(1000, 700)
         else:
-            sw.resize(900, 700)
-            if w and h:
-                view.set_scale(min(900 / float(w), 700 / float(h)))
+            # try to size to content
+            w = h = None
+            try:
+                img = getattr(doc, "image", None)
+                if isinstance(img, np.ndarray) and img.size:
+                    h, w = img.shape[:2]
+            except Exception:
+                pass
+            if w and h and w <= 900 and h <= 700 and hasattr(view, "set_scale"):
+                view.set_scale(1.0)
+                from PyQt6.QtCore import QTimer
+                QTimer.singleShot(0, sw.adjustSize)
+            else:
+                sw.resize(900, 700)
+                if w and h and hasattr(view, "set_scale"):
+                    view.set_scale(min(900 / float(w), 700 / float(h)))
 
+        # Keep toolbar toggle in sync if this is an image view
+        if hasattr(view, "autostretch_enabled"):
+            try:
+                self._sync_autostretch_action(view.autostretch_enabled)
+            except Exception:
+                pass
 
-        QTimer.singleShot(0, sw.adjustSize)
-        # Toolbar toggle reflects this new window's state
-        self._sync_autostretch_action(view.autostretch_enabled)
-        view.requestDuplicate.connect(self._duplicate_view_from_signal)
+        if hasattr(view, "requestDuplicate"):
+            try:
+                view.requestDuplicate.connect(self._duplicate_view_from_signal)
+            except Exception:
+                pass
 
-        # Mask cue on the frame/title
-        try:
-            view._set_mask_highlight(bool(getattr(doc, "active_mask_id", None)))
-        except Exception:
-            pass
+        if not is_table and getattr(doc, "image", None) is None:
+            try:
+                self._log(f"[spawn] No image and not recognized as table; metadata keys: {list((getattr(doc,'metadata',{}) or {}).keys())}")
+            except Exception:
+                pass
 
         self._on_subwindow_activated(sw)
-
         return sw
-
-
-
 
 
     def _connect_view_signals(self, view):
