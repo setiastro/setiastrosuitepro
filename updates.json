@@ -1,9 +1,9 @@
 {
-  "version": "1.3.16",
+  "version": "1.3.17",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.16/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.16/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.16/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.17/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.17/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.17/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.3.16 Drizzle bug fix. MFDeconv stopping fix. Further hardening for square artifacts in MFDeconv. Option to register and integrate immediately after calibration. Save AS location fix. Curves preview sizing bug fix"
+  "notes": "Seti Astro Suite Pro V1.3.17 ImageMM Normal, Normal cuDNN free (may help with square artifacts if you have them), High Octane.  Stacking Suite now displays integration time in the Light and Image Integration tab file lists.  Bug fix: ImageMM now will correctly cycle through all groups of filters from Register and Integrate Images.  Bug fix: Recursive Checkbox.  Recursive Search now can detect and direct all files to their correct tabs."
 }
