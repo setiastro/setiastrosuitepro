@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 #setiastrosuitepro.py
 import sys
 import importlib

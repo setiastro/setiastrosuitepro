@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 #setiastrosuitepro.py
 from pro.runtime_torch import add_runtime_to_sys_path, _ban_shadow_torch_paths, _purge_bad_torch_from_sysmodules
 add_runtime_to_sys_path(status_cb=lambda *_: None)
