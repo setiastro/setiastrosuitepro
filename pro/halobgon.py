@@ -19,6 +19,8 @@ except Exception:
     _lut_mono_inplace = None
     _lut_color_inplace = None
 
+
+
 # =============================================================================
 # Helpers
 # =============================================================================
@@ -331,43 +333,83 @@ class HaloBGonDialogPro(QDialog):
         except Exception as e:
             QMessageBox.warning(self, "Halo-B-Gon", f"Preview failed:\n{e}")
 
+    def _apply_overwrite(self, out: np.ndarray):
+        if hasattr(self.doc, "set_image"):
+            self.doc.set_image(out, step_name="Halo-B-Gon")
+        elif hasattr(self.doc, "apply_numpy"):
+            self.doc.apply_numpy(out, step_name="Halo-B-Gon")
+        else:
+            self.doc.image = out
+
     def _apply(self):
         lvl, lin = self._params()
         try:
             out = compute_halo_b_gon(self.orig, reduction_level=lvl, is_linear=lin)
 
-            # Mask blend (mirror SASv2 updatePreview path):
-            # processed * mask + original * (1 - mask), with shapes that match the original.
+            # Mask blend (same as your preview path)
             m = _maybe_get_mask(self.parent_ref, np.asarray(self.orig, dtype=np.float32))
             if m is not None:
-                # If original is mono 2D and mask is 3D (shouldn't happen when we pass orig),
-                # reduce mask to 2D by taking the first channel.
                 if self.orig.ndim == 2 and m.ndim == 3:
                     m = m[..., 0]
-                # If original is (H,W,1) and mask is 2D, add a channel to mask
                 if self.orig.ndim == 3 and self.orig.shape[2] == 1 and m.ndim == 2:
                     m = m[:, :, None]
-
                 out = np.clip(out * m + self.orig * (1.0 - m), 0.0, 1.0)
 
             out = np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
 
-            if self.cmb_target.currentIndex() == 0 or not hasattr(self.parent(), "_spawn_new_view_from_numpy"):
-                # Overwrite current
-                if hasattr(self.doc, "set_image"):
-                    self.doc.set_image(out, step_name="Halo-B-Gon")
-                elif hasattr(self.doc, "apply_numpy"):
-                    self.doc.apply_numpy(out, step_name="Halo-B-Gon")
-                else:
-                    self.doc.image = out
-            else:
-                # New view
-                title = getattr(self.doc, "display_name", lambda: "Image")()
-                self.parent()._spawn_new_view_from_numpy(out, f"{title} [Halo-B-Gon]")
+            # If user chose "Create new view", go through DocManager so the UI spawns the window.
+            create_new = (self.cmb_target.currentIndex() == 1)
 
+            if create_new:
+                # Try to find a DocManager on the dialog's parent (preferred) or parent_ref.
+                dm = getattr(self.parent(), "doc_manager", None)
+                if dm is None:
+                    dm = getattr(self.parent_ref, "doc_manager", None)
+
+                if dm is not None:
+                    # Carry forward useful metadata; let DocManager’s signal create the view.
+                    title = self.doc.display_name() if hasattr(self.doc, "display_name") else "Image"
+                    meta = dict(getattr(self.doc, "metadata", {}) or {})
+                    # Ensure expected fields exist
+                    try:
+                        meta.setdefault("bit_depth", "32-bit floating point")
+                        if "is_mono" not in meta:
+                            meta["is_mono"] = (out.ndim == 2 or (out.ndim == 3 and out.shape[2] == 1))
+                    except Exception:
+                        pass
+
+                    new_doc = dm.create_document(out.copy(), metadata=meta, name=f"{title} [Halo-B-Gon]")
+                    try:
+                        dm.set_active_document(new_doc)
+                    except Exception:
+                        pass
+
+                    self.accept()
+                    return
+                else:
+                    # Fallback: try legacy spawner if present; else warn and overwrite.
+                    spawner = getattr(self.parent(), "_spawn_new_view_from_numpy", None)
+                    if spawner is None:
+                        spawner = getattr(self.parent_ref, "_spawn_new_view_from_numpy", None)
+                    if callable(spawner):
+                        title = self.doc.display_name() if hasattr(self.doc, "display_name") else "Image"
+                        spawner(out, f"{title} [Halo-B-Gon]")
+                        self.accept()
+                        return
+                    else:
+                        QMessageBox.warning(
+                            self, "Halo-B-Gon",
+                            "Could not find DocManager or window spawner; applying to the active view instead."
+                        )
+                        # fall through to overwrite
+
+            # Overwrite current (original behavior)
+            self._apply_overwrite(out)
             self.accept()
+
         except Exception as e:
             QMessageBox.critical(self, "Halo-B-Gon", f"Failed to apply:\n{e}")
+
 
     def _reset(self):
         self.sl.setValue(0)

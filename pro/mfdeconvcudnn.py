@@ -1,19 +1,19 @@
-# pro/mfdeconv.py non-sport normal version
+# pro/mfdeconvsport.py
 from __future__ import annotations
 import os, math, re
 import numpy as np
-import time
+import tempfile, uuid, atexit
 from astropy.io import fits
 from PyQt6.QtCore import QObject, pyqtSignal
 from pro.psf_utils import compute_psf_kernel_for_image
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QThread
-import contextlib
 from threadpoolctl import threadpool_limits
 from concurrent.futures import ThreadPoolExecutor, as_completed, ProcessPoolExecutor
 _USE_PROCESS_POOL_FOR_ASSETS = True
+import numpy.fft as _fft
+import contextlib
 import gc
-from contextlib import nullcontext
 try:
     import sep
 except Exception:
@@ -22,6 +22,8 @@ from pro.free_torch_memory import _free_torch_memory
 torch = None        # filled by runtime loader if available
 TORCH_OK = False
 NO_GRAD = contextlib.nullcontext  # fallback
+
+_SCRATCH_MMAPS = []
 _XISF_READERS = []
 try:
     # e.g. your legacy module
@@ -39,10 +41,8 @@ try:
 except Exception:
     pass
 
-from pathlib import Path
-
 # at top of file with the other imports
-
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from queue import SimpleQueue
 
 # ── XISF decode cache → memmap on disk ─────────────────────────────────
@@ -52,6 +52,43 @@ _XISF_LOCK  = threading.Lock()
 _XISF_TMPFILES = []
 
 from collections import OrderedDict
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Unified image I/O for MFDeconv (FITS + XISF)
+# ─────────────────────────────────────────────────────────────────────────────
+
+from pathlib import Path
+
+
+from collections import OrderedDict
+
+_VAR_DTYPE = np.float32 
+
+def _mm_create(shape, dtype, scratch_dir=None, tag="scratch"):
+    """Create a disk-backed memmap array, zero-initialized."""
+    scratch_dir = scratch_dir or tempfile.gettempdir()
+    fn = os.path.join(scratch_dir, f"mfdeconv_{tag}_{uuid.uuid4().hex}.mmap")
+    mm = np.memmap(fn, mode="w+", dtype=dtype, shape=tuple(map(int, shape)))
+    mm[...] = 0
+    mm.flush()
+    _SCRATCH_MMAPS.append(fn)
+    return mm
+
+def _maybe_memmap(shape, dtype=np.float32, *,
+                  force_mm=False, threshold_mb=512, scratch_dir=None, tag="scratch"):
+    """Return either np.zeros(...) or a zeroed memmap based on size/flags."""
+    nbytes = int(np.prod(shape)) * np.dtype(dtype).itemsize
+    if force_mm or (nbytes >= threshold_mb * 1024 * 1024):
+        return _mm_create(shape, dtype, scratch_dir, tag)
+    return np.zeros(shape, dtype=dtype)
+
+def _cleanup_scratch_mm():
+    for fn in _SCRATCH_MMAPS[:]:
+        try: os.remove(fn)
+        except Exception: pass
+    _SCRATCH_MMAPS.clear()
+
+atexit.register(_cleanup_scratch_mm)
 
 # ── CHW LRU (float32) built on top of FITS memmap & XISF memmap ────────────────
 class _FrameCHWLRU:
@@ -118,6 +155,24 @@ def _clear_all_caches():
     try: _FRAME_LRU.clear()
     except Exception: pass
 
+def _as_chw(np_img: np.ndarray) -> np.ndarray:
+    x = np.asarray(np_img, dtype=np.float32, order="C")
+    if x.size == 0:
+        raise RuntimeError(f"Empty image array after load; raw shape={np_img.shape}")
+    if x.ndim == 2:
+        return x[None, ...]  # 1,H,W
+    if x.ndim == 3 and x.shape[0] in (1, 3):
+        if x.shape[0] == 0:
+            raise RuntimeError(f"Zero channels in CHW array; shape={x.shape}")
+        return x
+    if x.ndim == 3 and x.shape[-1] in (1, 3):
+        if x.shape[-1] == 0:
+            raise RuntimeError(f"Zero channels in HWC array; shape={x.shape}")
+        return np.moveaxis(x, -1, 0)
+    # last resort: treat first dim as channels, but reject zero
+    if x.shape[0] == 0:
+        raise RuntimeError(f"Zero channels in array; shape={x.shape}")
+    return x
 
 def _normalize_to_float32(a: np.ndarray) -> np.ndarray:
     if a.dtype.kind in "ui":
@@ -322,28 +377,15 @@ def _safe_primary_header(path: str) -> fits.Header:
     except Exception:
         return fits.Header()
 
-# --- CUDA busy/unavailable detector (runtime fallback helper) ---
-def _is_cuda_busy_error(e: Exception) -> bool:
-    """
-    Return True for 'device busy/unavailable' style CUDA errors that can pop up
-    mid-run on shared Linux systems. We *exclude* OOM here (handled elsewhere).
-    """
-    em = str(e).lower()
-    if "out of memory" in em:
-        return False  # OOM handled by your batch size backoff
-    return (
-        ("cuda" in em and ("busy" in em or "unavailable" in em))
-        or ("device-side" in em and "assert" in em)
-        or ("driver shutting down" in em)
-    )
-
 
 def _compute_frame_assets(i, arr, hdr, *, make_masks, make_varmaps,
                           star_mask_cfg, varmap_cfg, status_sink=lambda s: None):
     """
     Worker function: compute PSF and optional star mask / varmap for one frame.
-    Returns (index, psf, mask_or_None, var_or_None, log_lines)
+    Returns (index, psf, mask_or_None, var_or_None, var_path_or_None, log_lines)
     """
+
+
     logs = []
     def log(s): logs.append(s)
 
@@ -358,7 +400,8 @@ def _compute_frame_assets(i, arr, hdr, *, make_masks, make_varmaps,
     # --- Star-derived PSF with retries ---
     tried, psf = [], None
     for k_try in [k_auto, max(k_auto - 4, 11), 21, 17, 15, 13, 11]:
-        if k_try in tried: continue
+        if k_try in tried:
+            continue
         tried.append(k_try)
         try:
             out = compute_psf_kernel_for_image(arr, ksize=k_try, det_sigma=6.0, max_stars=80)
@@ -370,19 +413,20 @@ def _compute_frame_assets(i, arr, hdr, *, make_masks, make_varmaps,
             psf = None
     if psf is None:
         psf = _gaussian_psf(f_whm, ksize=k_auto)
-    psf = _soften_psf(_normalize_psf(psf.astype(np.float32, copy=False)), sigma_px=0.0)
+    psf = _soften_psf(_normalize_psf(psf.astype(np.float32, copy=False)), sigma_px=0.25)
 
     mask = None
     var  = None
+    var_path = None
 
     if make_masks or make_varmaps:
-        # one background per frame (reused by both)
         luma = _to_luma_local(arr)
         vmc = (varmap_cfg or {})
         sky_map, rms_map, err_scalar = _sep_background_precompute(
             luma, bw=int(vmc.get("bw", 64)), bh=int(vmc.get("bh", 64))
         )
 
+        # ---------- Star mask ----------
         if make_masks:
             smc = star_mask_cfg or {}
             mask = _star_mask_from_precomputed(
@@ -397,44 +441,142 @@ def _compute_frame_assets(i, arr, hdr, *, make_masks, make_varmaps,
                 max_side     = smc.get("max_side", STAR_MASK_MAXSIDE),
                 status_cb    = log,
             )
+            # keep masks compact
+            if mask is not None and mask.dtype != np.uint8:
+                mask = (mask > 0.5).astype(np.uint8, copy=False)
 
+        # ---------- Variance map (memmap path; Option B) ----------
         if make_varmaps:
             vmc = varmap_cfg or {}
-            var = _variance_map_from_precomputed(
-                luma, sky_map, rms_map, hdr,
-                smooth_sigma = vmc.get("smooth_sigma", 1.0),
-                floor        = vmc.get("floor", 1e-8),
-                status_cb    = log,
-            )
+            def _vprog(frac: float, msg: str = ""):
+                try: log(f"__PROGRESS__ {0.16 + 0.02*float(frac):.4f} {msg}")
+                except Exception: pass
 
-    # small per-frame summary
+            var_path = _variance_map_from_precomputed_memmap(
+                luma, sky_map, rms_map, hdr,
+                smooth_sigma = float(vmc.get("smooth_sigma", 1.0)),
+                floor        = float(vmc.get("floor", 1e-8)),
+                tile_hw      = tuple(vmc.get("tile_hw", (512, 512))),
+                scratch_dir  = vmc.get("scratch_dir", None),
+                tag          = f"varmap_{i:04d}",
+                status_cb    = log,
+                progress_cb  = _vprog,
+            )
+            var = None  # Option B: don't keep an open memmap handle
+
+        # 🔻 free heavy temporaries immediately
+        try:
+            del luma
+            del sky_map
+            del rms_map
+        except Exception:
+            pass
+        gc.collect()
+
+    # per-frame summary
     fwhm_est = _psf_fwhm_px(psf)
     logs.insert(0, f"MFDeconv: PSF{i}: ksize={psf.shape[0]} | FWHM≈{fwhm_est:.2f}px")
-
-    return i, psf, mask, var, logs
+    return i, psf, mask, var, var_path, logs
 
 def _compute_one_worker(args):
     """
-    Top-level picklable worker for ProcessPoolExecutor.
-    args: (i, path, make_masks_in_worker, make_varmaps, star_mask_cfg, varmap_cfg)
-    Returns (i, psf, mask, var, logs)
+    Process-safe worker wrapper.
+    Args tuple: (i, path, make_masks, make_varmaps, star_mask_cfg, varmap_cfg, Ht, Wt, color_mode)
+    Returns: (i, psf, mask, var_or_None, var_path_or_None, logs)
     """
-    (i, path, make_masks_in_worker, make_varmaps, star_mask_cfg, varmap_cfg) = args
-    # avoid BLAS/OMP storm inside each process
-    with threadpool_limits(limits=1):
-        arr, hdr = _load_image_array(path)           # FITS or XISF
-        arr = np.asarray(arr, dtype=np.float32, order="C")
-        if arr.ndim == 3 and arr.shape[-1] == 1:
-            arr = np.squeeze(arr, axis=-1)
-        if not isinstance(hdr, fits.Header):         # synthesize FITS-like header for XISF
-            hdr = _safe_primary_header(path)
-        return _compute_frame_assets(
-            i, arr, hdr,
-            make_masks=bool(make_masks_in_worker),
-            make_varmaps=bool(make_varmaps),
-            star_mask_cfg=star_mask_cfg,
-            varmap_cfg=varmap_cfg,
-        )
+    (i, path, make_masks, make_varmaps, star_mask_cfg, varmap_cfg, Ht, Wt, color_mode) = (
+        args if len(args) == 9 else (*args, None, None, None)  # allow old callers
+    )[:9]
+
+    # lightweight load (center-crop to Ht,Wt, get header)
+    try:
+        hdr = _safe_primary_header(path)
+    except Exception:
+        hdr = fits.Header()
+
+    # read full image then crop center; keep float32 luma/mono 2D
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".xisf":
+        arr_all, _ = _load_image_array(path)
+        arr_all = np.asarray(arr_all)
+    else:
+        with fits.open(path, memmap=True, ignore_missing_simple=True) as hdul:
+            arr_all = np.asarray(hdul[0].data)
+
+    # to luma/2D
+    if arr_all.ndim == 3:
+        if arr_all.shape[0] in (1, 3):   # CHW → take first/luma
+            arr2d = arr_all[0].astype(np.float32, copy=False)
+        elif arr_all.shape[-1] in (1, 3):  # HWC → to luma then 2D
+            arr2d = _to_luma_local(arr_all).astype(np.float32, copy=False)
+        else:
+            arr2d = _to_luma_local(arr_all).astype(np.float32, copy=False)
+    else:
+        arr2d = np.asarray(arr_all, dtype=np.float32)
+
+    # center-crop/pad to (Ht,Wt) if needed
+    H, W = arr2d.shape
+    y0 = max(0, (H - Ht) // 2); x0 = max(0, (W - Wt) // 2)
+    y1 = min(H, y0 + Ht);       x1 = min(W, x0 + Wt)
+    arr2d = np.ascontiguousarray(arr2d[y0:y1, x0:x1], dtype=np.float32)
+    if arr2d.shape != (Ht, Wt):
+        out = np.zeros((Ht, Wt), dtype=np.float32)
+        oy = (Ht - arr2d.shape[0]) // 2; ox = (Wt - arr2d.shape[1]) // 2
+        out[oy:oy+arr2d.shape[0], ox:ox+arr2d.shape[1]] = arr2d
+        arr2d = out
+
+    # compute assets
+    i2, psf, mask, var, var_path, logs = _compute_frame_assets(
+        i, arr2d, hdr,
+        make_masks=bool(make_masks),
+        make_varmaps=bool(make_varmaps),
+        star_mask_cfg=star_mask_cfg,
+        varmap_cfg=varmap_cfg,
+    )
+
+    # Force Option B behavior: close any memmap and only pass a path
+    if isinstance(var, np.memmap):
+        try: var.flush()
+        except Exception: pass
+        var = None
+
+    return i2, psf, mask, var, var_path, logs
+
+
+def _normalize_assets_result(res):
+    """
+    Accept worker results in legacy and new shapes and normalize to:
+      (i, psf, mask, var_or_None, var_path_or_None, logs_list)
+    Supported inputs:
+      - (i, psf, mask, var, logs)
+      - (i, psf, mask, var, var_path, logs)
+      - (i, psf, mask, var, var_mm, var_path, logs)  # legacy where both returned
+    """
+    if not isinstance(res, (tuple, list)) or len(res) < 5:
+        raise ValueError(f"Unexpected assets result: {type(res)} len={len(res) if hasattr(res,'__len__') else 'na'}")
+
+    i = res[0]
+    psf = res[1]
+    mask = res[2]
+    logs = res[-1]
+
+    middle = res[3:-1]  # everything between mask and logs
+    var = None
+    var_path = None
+
+    # Try to recover var (np.ndarray/np.memmap) and a path (str)
+    for x in middle:
+        if var is None and hasattr(x, "shape"):  # ndarray/memmap/torch?
+            var = x
+        if var_path is None and isinstance(x, str):
+            var_path = x
+
+    # Back-compat for 5-tuple
+    if len(res) == 5:
+        var = middle[0] if middle else None
+        var_path = None
+
+    return i, psf, mask, var, var_path, logs
 
 
 def _build_psf_and_assets(
@@ -455,13 +597,16 @@ def _build_psf_and_assets(
     """
     Parallel PSF + (optional) star mask + variance map per frame.
 
-    Changes from the original:
-      • Reuses the decoded frame cache (_FRAME_LRU) for FITS/XISF so we never re-decode.
-      • Automatically switches to threads for XISF (so memmaps are shared across workers).
-      • Builds a single reference star mask (if requested) from the cached frame and
-        center-pads/crops it for all frames (no extra I/O).
-      • Preserves return order and streams worker logs back to the UI.
+    Changes:
+      • Variance maps are written to disk as memmaps (Option B) and **paths** are returned.
+      • If a single reference star mask is requested, it is built once and reused.
+      • Returns: (psfs, masks, vars_, var_paths) — vars_ contains None for varmaps.
+      • RAM bounded: frees per-frame temporaries, drains logs, trims frame cache.
     """
+
+    # Local helpers expected from your module scope:
+    # _FRAME_LRU, _common_hw_from_paths, _safe_primary_header, fits, _gaussian_psf, etc.
+
     if save_dir:
         os.makedirs(save_dir, exist_ok=True)
 
@@ -471,13 +616,14 @@ def _build_psf_and_assets(
     if Ht is None or Wt is None:
         Ht, Wt = _common_hw_from_paths(paths)
 
-    # Sensible default worker count (cap at 8)
+    # Conservative default worker count to cap concurrent RAM
     if max_workers is None:
         try:
             hw = os.cpu_count() or 4
         except Exception:
             hw = 4
-        max_workers = max(1, min(8, hw))
+        # half the cores, max 4 (keeps sky/rms/luma concurrency modest)
+        max_workers = max(1, min(4, hw // 2))
 
     # Decide executor: for any XISF, prefer threads so the memmap/cache is shared
     any_xisf = any(os.path.splitext(p)[1].lower() == ".xisf" for p in paths)
@@ -508,7 +654,6 @@ def _build_psf_and_assets(
     if make_masks and star_mask_ref_path:
         try:
             status_cb(f"Star mask: using reference frame for all masks → {os.path.basename(star_mask_ref_path)}")
-            # Pull from the shared frame cache as luma on (Ht,Wt)
             ref_chw = _FRAME_LRU.get(star_mask_ref_path, Ht, Wt, "luma")  # (1,H,W) or (H,W)
             L = ref_chw[0] if (ref_chw.ndim == 3) else ref_chw           # 2D float32
 
@@ -529,37 +674,39 @@ def _build_psf_and_assets(
                 max_side     = smc.get("max_side", STAR_MASK_MAXSIDE),
                 status_cb    = status_cb,
             )
+            # keep mask compact
+            if base_ref_mask is not None and base_ref_mask.dtype != np.uint8:
+                base_ref_mask = (base_ref_mask > 0.5).astype(np.uint8, copy=False)
+            # free temps
+            del L, sky_map, rms_map
+            gc.collect()
         except Exception as e:
             status_cb(f"⚠️ Star mask (reference) failed: {e}. Falling back to per-frame masks.")
             base_ref_mask = None
 
     # for GUI safety, queue logs from workers and flush in the main thread
+    from queue import SimpleQueue
     log_queue: SimpleQueue = SimpleQueue()
 
     def enqueue_logs(lines):
         for s in lines:
             log_queue.put(s)
 
-    psfs  = [None] * n
-    masks = ([None] * n) if make_masks else None
-    vars_ = ([None] * n) if make_varmaps else None
+    psfs       = [None] * n
+    masks      = ([None] * n) if make_masks else None
+    vars_      = ([None] * n) if make_varmaps else None  # Option B: keep None placeholders
+    var_paths  = ([None] * n) if make_varmaps else None  # on-disk paths for varmaps
     make_masks_in_worker = bool(make_masks and (base_ref_mask is None))
 
-    # --- thread worker: get frame from cache and compute assets ---
+    # --- worker thunk (thread mode hits shared cache; process mode has its own worker fn) ---
     def _compute_one(i: int, path: str):
-        # avoid heavy BLAS oversubscription inside each worker
         with threadpool_limits(limits=1):
-            # Pull frame from cache honoring color_mode & target (Ht,Wt)
             img_chw = _FRAME_LRU.get(path, Ht, Wt, color_mode)  # (C,H,W) float32
-            # For PSF/mask/varmap we operate on a 2D plane (luma/mono)
             arr2d = img_chw[0] if (img_chw.ndim == 3) else img_chw  # (H,W) float32
-
-            # Header: synthesize a safe FITS-like header (works for XISF too)
             try:
                 hdr = _safe_primary_header(path)
             except Exception:
                 hdr = fits.Header()
-
             return _compute_frame_assets(
                 i, arr2d, hdr,
                 make_masks=bool(make_masks_in_worker),
@@ -568,39 +715,56 @@ def _build_psf_and_assets(
                 varmap_cfg=varmap_cfg,
             )
 
+    # Optional: tighten the frame cache during this phase if your LRU supports it
+    try:
+        _FRAME_LRU.set_limits(max_items=max(4, max_workers + 2))
+    except Exception:
+        pass
+
     # --- submit jobs ---
     with Executor(max_workers=max_workers) as ex:
         futs = []
         for i, p in enumerate(paths, start=1):
             status_cb(f"MFDeconv: measuring PSF {i}/{n} …")
             if use_proc_pool:
-                # Process-safe path: worker re-loads inside the subprocess
                 futs.append(ex.submit(
                     _compute_one_worker,
-                    (i, p, bool(make_masks_in_worker), bool(make_varmaps), star_mask_cfg, varmap_cfg)
+                    (i, p, bool(make_masks_in_worker), bool(make_varmaps), star_mask_cfg, varmap_cfg, Ht, Wt, color_mode)
                 ))
             else:
-                # Thread path: hits the shared cache (fast path for XISF/FITS)
                 futs.append(ex.submit(_compute_one, i, p))
 
         done_cnt = 0
         for fut in as_completed(futs):
-            i, psf, m, v, logs = fut.result()
+            res = fut.result()
+            i, psf, m, v, vpath, logs = _normalize_assets_result(res)
+
             idx = i - 1
             psfs[idx] = psf
             if masks is not None:
                 masks[idx] = m
             if vars_ is not None:
-                vars_[idx] = v
+                # Option B: don't hold open memmaps in RAM
+                vars_[idx] = None
+            if var_paths is not None:
+                var_paths[idx] = vpath
+
             enqueue_logs(logs)
 
+            try:
+                _FRAME_LRU.drop(paths[idx])
+            except Exception:
+                pass
+
             done_cnt += 1
-            if (done_cnt % 4) == 0 or done_cnt == n:
-                while not log_queue.empty():
-                    try:
-                        status_cb(log_queue.get_nowait())
-                    except Exception:
-                        break
+            while not log_queue.empty():
+                try:
+                    status_cb(log_queue.get_nowait())
+                except Exception:
+                    break
+
+            if (done_cnt % 8) == 0:
+                gc.collect()
 
     # If we built a single reference mask, apply it to every frame (center pad/crop)
     if base_ref_mask is not None and masks is not None:
@@ -622,9 +786,7 @@ def _build_psf_and_assets(
                     os.path.join(save_dir, f"psf_{i:03d}.fit"), overwrite=True
                 )
 
-    return psfs, masks, vars_
-
-
+    return psfs, masks, vars_, var_paths
 _ALLOWED = re.compile(r"[^A-Za-z0-9_-]+")
 
 # known FITS-style multi-extensions (rightmost-first match)
@@ -795,39 +957,26 @@ EPS = 1e-6
 # -----------------------------
 
 # new: lightweight loader that yields one frame at a time
-def _iter_fits(paths):
-    for p in paths:
-        with fits.open(p, memmap=False) as hdul:  # ⬅ False
-            arr = np.array(hdul[0].data, dtype=np.float32, copy=True)  # ⬅ copy
-            if arr.ndim == 3 and arr.shape[-1] == 1:
-                arr = np.squeeze(arr, axis=-1)
-            hdr = hdul[0].header.copy()
-        yield arr, hdr
 
 def _to_luma_local(a: np.ndarray) -> np.ndarray:
     a = np.asarray(a, dtype=np.float32)
     if a.ndim == 2:
         return a
-    # (H,W,3) or (3,H,W)
-    if a.ndim == 3 and a.shape[-1] == 3:
-        r, g, b = a[..., 0], a[..., 1], a[..., 2]
-        return (0.2126*r + 0.7152*g + 0.0722*b).astype(np.float32, copy=False)
-    if a.ndim == 3 and a.shape[0] == 3:
-        r, g, b = a[0], a[1], a[2]
-        return (0.2126*r + 0.7152*g + 0.0722*b).astype(np.float32, copy=False)
+    if a.ndim == 3:
+        # mono fast paths
+        if a.shape[-1] == 1:         # HWC mono
+            return a[..., 0].astype(np.float32, copy=False)
+        if a.shape[0] == 1:          # CHW mono
+            return a[0].astype(np.float32, copy=False)
+        # RGB
+        if a.shape[-1] == 3:         # HWC RGB
+            r, g, b = a[..., 0], a[..., 1], a[..., 2]
+            return (0.2126*r + 0.7152*g + 0.0722*b).astype(np.float32, copy=False)
+        if a.shape[0] == 3:          # CHW RGB
+            r, g, b = a[0], a[1], a[2]
+            return (0.2126*r + 0.7152*g + 0.0722*b).astype(np.float32, copy=False)
+    # fallback: average last axis
     return a.mean(axis=-1).astype(np.float32, copy=False)
-
-def _stack_loader(paths):
-    ys, hdrs = [], []
-    for p in paths:
-        with fits.open(p, memmap=False) as hdul:  # ⬅ False
-            arr = np.array(hdul[0].data, dtype=np.float32, copy=True)  # ⬅ copy inside with
-            hdr = hdul[0].header.copy()
-        if arr.ndim == 3 and arr.shape[-1] == 1:
-            arr = np.squeeze(arr, axis=-1)
-        ys.append(arr)
-        hdrs.append(hdr)
-    return ys, hdrs
 
 def _normalize_layout_single(a, color_mode):
     """
@@ -955,44 +1104,38 @@ def _flip_kernel(psf):
     return np.flip(np.flip(psf, -1), -2).copy()
 
 def _conv_same_np(img, psf):
-    """
-    NumPy FFT-based SAME convolution for (H,W) or (C,H,W).
-    IMPORTANT: ifftshift the PSF so its peak is at [0,0] before FFT.
-    """
-    import numpy as _np, numpy.fft as _fft
-
-    kh, kw = psf.shape
-
+    # img: (H,W) or (C,H,W) numpy
+    import numpy.fft as fft
     def fftconv2(a, k):
-        # a is (1,H,W); k is (kh,kw)
         H, W = a.shape[-2:]
-        fftH, fftW = _fftshape_same(H, W, kh, kw)
-        A  = _fft.rfftn(a, s=(fftH, fftW), axes=(-2, -1))
-        K  = _fft.rfftn(_np.fft.ifftshift(k), s=(fftH, fftW), axes=(-2, -1))
-        y  = _fft.irfftn(A * K, s=(fftH, fftW), axes=(-2, -1))
+        kh, kw = k.shape
+        pad_h, pad_w = H + kh - 1, W + kw - 1
+        A = fft.rfftn(a, s=(pad_h, pad_w), axes=(-2, -1))
+        K = fft.rfftn(k, s=(pad_h, pad_w), axes=(-2, -1))
+        Y = A * K
+        y = fft.irfftn(Y, s=(pad_h, pad_w), axes=(-2, -1))
         sh, sw = (kh - 1)//2, (kw - 1)//2
         return y[..., sh:sh+H, sw:sw+W]
-
     if img.ndim == 2:
         return fftconv2(img[None], psf)[0]
     else:
-        # per-channel
-        return _np.stack([fftconv2(img[c:c+1], psf)[0] for c in range(img.shape[0])], axis=0)
+        return np.stack([fftconv2(img[c:c+1], psf)[0] for c in range(img.shape[0])], axis=0)
 
 def _normalize_psf(psf):
     psf = np.maximum(psf, 0.0).astype(np.float32, copy=False)
     s = float(psf.sum())
-    if not np.isfinite(s) or s <= 1e-6:
+    if not np.isfinite(s) or s <= EPS:
         return psf
     return (psf / s).astype(np.float32, copy=False)
 
 def _soften_psf(psf, sigma_px=0.25):
+    # optional tiny Gaussian soften to reduce ringing; sigma<=0 disables
     if sigma_px <= 0:
         return psf
     r = int(max(1, round(3 * sigma_px)))
     y, x = np.mgrid[-r:r+1, -r:r+1]
     g = np.exp(-(x*x + y*y) / (2 * sigma_px * sigma_px)).astype(np.float32)
-    g /= g.sum() + 1e-6
+    g /= g.sum() + EPS
     return _conv_same_np(psf[None], g)[0]
 
 def _psf_fwhm_px(psf: np.ndarray) -> float:
@@ -1040,296 +1183,6 @@ def _sep_background_precompute(img_2d: np.ndarray, bw: int = 64, bh: int = 64):
         rmsm = np.full_like(a, float(np.median(b.rms())), dtype=np.float32)
         err  = float(np.median(rmsm))
     return sky, rmsm, err
-
-
-def _auto_star_mask_sep(
-    img_2d: np.ndarray,
-    thresh_sigma: float = THRESHOLD_SIGMA,
-    grow_px: int = GROW_PX,
-    max_objs: int = STAR_MASK_MAXOBJS,
-    max_side: int = STAR_MASK_MAXSIDE,
-    ellipse_scale: float = ELLIPSE_SCALE,
-    soft_sigma: float = SOFT_SIGMA,
-    max_semiaxis_px: float | None = None,      # kept for API compat; unused
-    max_area_px2: float | None = None,         # kept for API compat; unused
-    max_radius_px: int = MAX_STAR_RADIUS,
-    keep_floor: float = KEEP_FLOOR,
-    status_cb=lambda s: None
-) -> np.ndarray:
-    """
-    Build a KEEP weight map (float32 in [0,1]) using SEP detections only.
-    **Never writes to img_2d** and draws only into a fresh mask buffer.
-    """
-    if sep is None:
-        return np.ones_like(img_2d, dtype=np.float32, order="C")
-
-    # Optional OpenCV path for fast draw/blur
-    try:
-        import cv2 as _cv2
-        _HAS_CV2 = True
-    except Exception:
-        _HAS_CV2 = False
-        _cv2 = None  # type: ignore
-
-    h, w = map(int, img_2d.shape)
-
-    # Background / residual on our own contiguous buffer
-    data = np.ascontiguousarray(img_2d.astype(np.float32))
-    bkg = sep.Background(data)
-    data_sub = np.ascontiguousarray(data - bkg.back(), dtype=np.float32)
-    try:
-        err_scalar = float(bkg.globalrms)
-    except Exception:
-        err_scalar = float(np.median(np.asarray(bkg.rms(), dtype=np.float32)))
-
-    # Downscale for detection only
-    det = data_sub
-    scale = 1.0
-    if max_side and max(h, w) > int(max_side):
-        scale = float(max(h, w)) / float(max_side)
-        if _HAS_CV2:
-            det = _cv2.resize(
-                det,
-                (max(1, int(round(w / scale))), max(1, int(round(h / scale)))),
-                interpolation=_cv2.INTER_AREA
-            )
-        else:
-            s = int(max(1, round(scale)))
-            det = det[:(h // s) * s, :(w // s) * s].reshape(h // s, s, w // s, s).mean(axis=(1, 3))
-            scale = float(s)
-
-    # When averaging down by 'scale', per-pixel noise scales ~ 1/scale
-    err_det = float(err_scalar) / float(max(1.0, scale))
-
-    thresholds = [thresh_sigma, thresh_sigma*2, thresh_sigma*4,
-                  thresh_sigma*8, thresh_sigma*16]
-    objs = None; used = float("nan"); raw = 0
-    for t in thresholds:
-        try:
-            cand = sep.extract(det, thresh=float(t), err=err_det)
-        except Exception:
-            cand = None
-        n = 0 if cand is None else len(cand)
-        if n == 0:          continue
-        if n > max_objs*12: continue
-        objs, raw, used = cand, n, float(t)
-        break
-
-    if objs is None or len(objs) == 0:
-        try:
-            cand = sep.extract(det, thresh=float(thresholds[-1]), err=err_det, minarea=9)
-        except Exception:
-            cand = None
-        if cand is None or len(cand) == 0:
-            status_cb("Star mask: no sources found (mask disabled for this frame).")
-            return np.ones((h, w), dtype=np.float32, order="C")
-        objs, raw, used = cand, len(cand), float(thresholds[-1])
-
-    # Keep brightest max_objs
-    if "flux" in objs.dtype.names:
-        idx = np.argsort(objs["flux"])[-int(max_objs):]
-        objs = objs[idx]
-    else:
-        objs = objs[:int(max_objs)]
-    kept_after_cap = int(len(objs))
-
-    # Draw on full-res fresh buffer
-    mask_u8 = np.zeros((h, w), dtype=np.uint8, order="C")
-    s_back = float(scale)
-    MR = int(max(1, max_radius_px))
-    G  = int(max(0, grow_px))
-    ES = float(max(0.1, ellipse_scale))
-
-    drawn = 0
-    if _HAS_CV2:
-        for o in objs:
-            x = int(round(float(o["x"]) * s_back))
-            y = int(round(float(o["y"]) * s_back))
-            if not (0 <= x < w and 0 <= y < h):
-                continue
-            a = float(o["a"]) * s_back
-            b = float(o["b"]) * s_back
-            r = int(math.ceil(ES * max(a, b)))
-            r = min(max(r, 0) + G, MR)
-            if r <= 0:
-                continue
-            _cv2.circle(mask_u8, (x, y), r, 1, thickness=-1, lineType=_cv2.LINE_8)
-            drawn += 1
-    else:
-        yy, xx = np.ogrid[:h, :w]
-        for o in objs:
-            x = int(round(float(o["x"]) * s_back))
-            y = int(round(float(o["y"]) * s_back))
-            if not (0 <= x < w and 0 <= y < h):
-                continue
-            a = float(o["a"]) * s_back
-            b = float(o["b"]) * s_back
-            r = int(math.ceil(ES * max(a, b)))
-            r = min(max(r, 0) + G, MR)
-            if r <= 0:
-                continue
-            y0 = max(0, y - r); y1 = min(h, y + r + 1)
-            x0 = max(0, x - r); x1 = min(w, x + r + 1)
-            ys = yy[y0:y1] - y
-            xs = xx[x0:x1] - x
-            disk = (ys * ys + xs * xs) <= (r * r)
-            mask_u8[y0:y1, x0:x1][disk] = 1
-            drawn += 1
-
-    masked_px_hard = int(mask_u8.sum())
-
-    # Feather and convert to KEEP weights in [0,1]
-    m = mask_u8.astype(np.float32, copy=False)
-    if soft_sigma and soft_sigma > 0.0:
-        try:
-            if _HAS_CV2:
-                k = int(max(1, math.ceil(soft_sigma * 3)) * 2 + 1)
-                m = _cv2.GaussianBlur(m, (k, k), float(soft_sigma),
-                                      borderType=_cv2.BORDER_REFLECT)
-            else:
-                from scipy.ndimage import gaussian_filter
-                m = gaussian_filter(m, sigma=float(soft_sigma), mode="reflect")
-        except Exception:
-            pass
-        np.clip(m, 0.0, 1.0, out=m)
-
-    keep = 1.0 - m
-    kf = float(max(0.0, min(0.99, keep_floor)))
-    keep = kf + (1.0 - kf) * keep
-    np.clip(keep, 0.0, 1.0, out=keep)
-
-    status_cb(
-        f"Star mask: thresh={used:.3g} | detected={raw} | kept={kept_after_cap} | "
-        f"drawn={drawn} | masked_px={masked_px_hard} | grow_px={G} | soft_sigma={soft_sigma} | keep_floor={keep_floor}"
-    )
-    return np.ascontiguousarray(keep, dtype=np.float32)
-
-
-
-def _auto_variance_map(
-    img_2d: np.ndarray,
-    hdr,
-    status_cb=lambda s: None,
-    sample_stride: int = VARMAP_SAMPLE_STRIDE,  # kept for signature compat; not used
-    bw: int = 64,   # SEP background box width  (pixels)
-    bh: int = 64,   # SEP background box height (pixels)
-    smooth_sigma: float = 1.0,  # Gaussian sigma (px) to smooth the variance map
-    floor: float = 1e-8,        # hard floor to prevent blow-up in 1/var
-) -> np.ndarray:
-    """
-    Build a per-pixel variance map in DN^2:
-
-      var_DN ≈ (object_only_DN)/gain  +  var_bg_DN^2
-
-    where:
-      - object_only_DN = max(img - sky_DN, 0)
-      - var_bg_DN^2 comes from SEP's local background rms (Poisson(sky)+readnoise)
-      - if GAIN is missing, estimate 1/gain ≈ median(var_bg)/median(sky)
-
-    Returns float32 array, clipped below by `floor`, optionally smoothed with a
-    small Gaussian to stabilize weights. Emits a summary status line.
-    """
-    img = np.clip(np.asarray(img_2d, dtype=np.float32), 0.0, None)
-
-    # --- Parse header for camera params (optional) ---
-    gain = None
-    for k in ("EGAIN", "GAIN", "GAIN1", "GAIN2"):
-        if k in hdr:
-            try:
-                g = float(hdr[k])
-                if np.isfinite(g) and g > 0:
-                    gain = g
-                    break
-            except Exception:
-                pass
-
-    readnoise = None
-    for k in ("RDNOISE", "READNOISE", "RN"):
-        if k in hdr:
-            try:
-                rn = float(hdr[k])
-                if np.isfinite(rn) and rn >= 0:
-                    readnoise = rn
-                    break
-            except Exception:
-                pass
-
-    # --- Local background (full-res) ---
-    if sep is not None:
-        try:
-            b = sep.Background(img, bw=int(bw), bh=int(bh), fw=3, fh=3)
-            sky_dn_map = np.asarray(b.back(), dtype=np.float32)
-            try:
-                rms_dn_map = np.asarray(b.rms(), dtype=np.float32)
-            except Exception:
-                rms_dn_map = np.full_like(img, float(np.median(b.rms())), dtype=np.float32)
-        except Exception:
-            sky_dn_map = np.full_like(img, float(np.median(img)), dtype=np.float32)
-            med = float(np.median(img))
-            mad = float(np.median(np.abs(img - med))) + 1e-6
-            rms_dn_map = np.full_like(img, float(1.4826 * mad), dtype=np.float32)
-    else:
-        sky_dn_map = np.full_like(img, float(np.median(img)), dtype=np.float32)
-        med = float(np.median(img))
-        mad = float(np.median(np.abs(img - med))) + 1e-6
-        rms_dn_map = np.full_like(img, float(1.4826 * mad), dtype=np.float32)
-
-    # Background variance in DN^2
-    var_bg_dn2 = np.maximum(rms_dn_map, 1e-6) ** 2
-
-    # Object-only DN
-    obj_dn = np.clip(img - sky_dn_map, 0.0, None)
-
-    # Shot-noise coefficient
-    if gain is not None and np.isfinite(gain) and gain > 0:
-        a_shot = 1.0 / gain
-    else:
-        sky_med = float(np.median(sky_dn_map))
-        varbg_med = float(np.median(var_bg_dn2))
-        if sky_med > 1e-6:
-            a_shot = np.clip(varbg_med / sky_med, 0.0, 10.0)  # ~ 1/gain estimate
-        else:
-            a_shot = 0.0
-
-    # Total variance: background + shot noise from object-only flux
-    v = var_bg_dn2 + a_shot * obj_dn
-    v_raw = v.copy()
-
-    # Optional mild smoothing
-    if smooth_sigma and smooth_sigma > 0:
-        try:
-            import cv2 as _cv2
-            k = int(max(1, int(round(3 * float(smooth_sigma)))) * 2 + 1)
-            v = _cv2.GaussianBlur(v, (k, k), float(smooth_sigma), borderType=_cv2.BORDER_REFLECT)
-        except Exception:
-            try:
-                from scipy.ndimage import gaussian_filter
-                v = gaussian_filter(v, sigma=float(smooth_sigma), mode="reflect")
-            except Exception:
-                r = int(max(1, round(3 * float(smooth_sigma))))
-                yy, xx = np.mgrid[-r:r+1, -r:r+1].astype(np.float32)
-                gk = np.exp(-(xx*xx + yy*yy) / (2.0 * float(smooth_sigma) * float(smooth_sigma))).astype(np.float32)
-                gk /= (gk.sum() + EPS)
-                v = _conv_same_np(v, gk)
-
-    # Clip to avoid zero/negative variances
-    v = np.clip(v, float(floor), None).astype(np.float32, copy=False)
-
-    # Emit telemetry
-    try:
-        sky_med  = float(np.median(sky_dn_map))
-        rms_med  = float(np.median(np.sqrt(var_bg_dn2)))
-        floor_pct = float((v <= floor).mean() * 100.0)
-        status_cb(
-            "Variance map: "
-            f"sky_med={sky_med:.3g} DN | rms_med={rms_med:.3g} DN | "
-            f"gain={(gain if gain is not None else 'NA')} | rn={(readnoise if readnoise is not None else 'NA')} | "
-            f"smooth_sigma={smooth_sigma} | floor={floor} ({floor_pct:.2f}% at floor)"
-        )
-    except Exception:
-        pass
-
-    return v
 
 
 def _star_mask_from_precomputed(
@@ -1475,6 +1328,22 @@ def _star_mask_from_precomputed(
     return np.ascontiguousarray(keep, dtype=np.float32)
 
 
+def _ensure_scratch_dir(scratch_dir: str | None) -> str:
+    """Ensure a writable scratch directory exists; default to system temp."""
+    if scratch_dir is None or not isinstance(scratch_dir, str) or not scratch_dir.strip():
+        scratch_dir = tempfile.gettempdir()
+    os.makedirs(scratch_dir, exist_ok=True)
+    return scratch_dir
+
+def _mm_unique_path(scratch_dir: str, tag: str, ext: str = ".mm") -> str:
+    """Return a unique file path (closed fd) for a memmap file."""
+    fd, path = tempfile.mkstemp(prefix=f"sas_{tag}_", suffix=ext, dir=scratch_dir)
+    try:
+        os.close(fd)
+    except Exception:
+        pass
+    return path
+
 def _variance_map_from_precomputed(
     img_2d: np.ndarray,
     sky_map: np.ndarray,
@@ -1527,12 +1396,84 @@ def _variance_map_from_precomputed(
     return v.astype(np.float32, copy=False)
 
 
+def _variance_map_from_precomputed_memmap(
+    luma: np.ndarray,
+    sky_map: np.ndarray,
+    rms_map: np.ndarray,
+    hdr,
+    *,
+    smooth_sigma: float = 1.0,
+    floor: float = 1e-8,
+    tile_hw: tuple[int, int] = (512, 512),
+    scratch_dir: str | None = None,
+    tag: str = "varmap",
+    status_cb=lambda s: None,
+    progress_cb=lambda f, m="": None,
+) -> str:
+    """
+    Compute a per-pixel variance map exactly like _variance_map_from_precomputed,
+    but stream to a disk-backed memmap file (RAM bounded). Returns the file path.
+    """
+    luma    = np.asarray(luma, dtype=np.float32)
+    sky_map = np.asarray(sky_map, dtype=np.float32)
+    rms_map = np.asarray(rms_map, dtype=np.float32)
+
+    H, W = int(luma.shape[0]), int(luma.shape[1])
+    th, tw = int(tile_hw[0]), int(tile_hw[1])
+
+    scratch_dir = _ensure_scratch_dir(scratch_dir)
+    var_path = _mm_unique_path(scratch_dir, tag, ext=".mm")
+
+    # create writeable memmap
+    var_mm = np.memmap(var_path, mode="w+", dtype=np.float32, shape=(H, W))
+
+    tiles = [(y, min(y + th, H), x, min(x + tw, W)) for y in range(0, H, th) for x in range(0, W, tw)]
+    total = len(tiles)
+
+    for ti, (y0, y1, x0, x1) in enumerate(tiles, start=1):
+        # compute tile using the existing exact routine
+        v_tile = _variance_map_from_precomputed(
+            luma[y0:y1, x0:x1],
+            sky_map[y0:y1, x0:x1],
+            rms_map[y0:y1, x0:x1],
+            hdr,
+            smooth_sigma=smooth_sigma,
+            floor=floor,
+            status_cb=lambda _s: None
+        )
+        var_mm[y0:y1, x0:x1] = v_tile
+
+        # free tile buffer promptly to avoid resident growth
+        del v_tile
+
+        # periodic flush + progress
+        if (ti & 7) == 0 or ti == total:
+            try: var_mm.flush()
+            except Exception: pass
+        try:
+            progress_cb(ti / float(total), f"varmap tiles {ti}/{total}")
+        except Exception:
+            pass
+
+    try: var_mm.flush()
+    except Exception: pass
+    # drop the handle (Option B)
+    del var_mm
+
+    status_cb(f"Variance map written (memmap): {var_path} ({H}x{W})")
+    return var_path
+
+
 
 # -----------------------------
 # Robust weighting (Huber)
 # -----------------------------
 
-EPS = 1e-6
+def _estimate_scalar_variance_t(r):
+    # r: tensor on device
+    med = torch.median(r)
+    mad = torch.median(torch.abs(r - med)) + 1e-6
+    return (1.4826 * mad) ** 2
 
 def _estimate_scalar_variance(a):
     med = np.median(a)
@@ -1541,37 +1482,65 @@ def _estimate_scalar_variance(a):
 
 def _weight_map(y, pred, huber_delta, var_map=None, mask=None):
     """
-    W = [psi(r)/r] * 1/(var + eps) * mask, psi=Huber
-    If huber_delta<0, delta = (-huber_delta) * RMS(residual) via MAD.
-    y,pred: (H,W) or (C,H,W). var_map/mask are 2D; broadcast if needed.
+    Robust per-pixel weights for the MM update.
+    W = [psi(r)/r] * 1/(var + eps) * mask
+    If huber_delta < 0, delta = (-huber_delta) * RMS(residual) (auto).
+    var_map: per-pixel variance (2D); if None, fall back to robust scalar via MAD.
+    mask: 2D {0,1} validity; if None, treat as ones.
     """
     r = y - pred
-    # auto delta?
+    eps = EPS
+
+    # resolve Huber delta
     if huber_delta < 0:
-        med = np.median(r)
-        mad = np.median(np.abs(r - med)) + 1e-6
-        rms = 1.4826 * mad
-        delta = (-huber_delta) * max(rms, 1e-6)
+        if TORCH_OK and isinstance(r, torch.Tensor):
+            med = torch.median(r)
+            mad = torch.median(torch.abs(r - med)) + 1e-6
+            rms = 1.4826 * mad
+            delta = (-huber_delta) * torch.clamp(rms, min=1e-6)
+        else:
+            med = np.median(r)
+            mad = np.median(np.abs(r - med)) + 1e-6
+            rms = 1.4826 * mad
+            delta = (-huber_delta) * max(rms, 1e-6)
     else:
         delta = huber_delta
 
-    absr = np.abs(r)
-    if float(delta) > 0:
-        psi_over_r = np.where(absr <= delta, 1.0, delta / (absr + EPS)).astype(np.float32)
+    # psi(r)/r
+    if TORCH_OK and isinstance(r, torch.Tensor):
+        absr = torch.abs(r)
+        if float(delta) > 0:
+            psi_over_r = torch.where(absr <= delta, torch.ones_like(r), delta / (absr + eps))
+        else:
+            psi_over_r = torch.ones_like(r)
+        if var_map is None:
+            v = _estimate_scalar_variance_t(r)
+        else:
+            v = var_map
+            if v.ndim == 2 and r.ndim == 3:
+                v = v[None, ...]  # broadcast over channels
+        w = psi_over_r / (v + eps)
+        if mask is not None:
+            m = mask if mask.ndim == w.ndim else (mask[None, ...] if w.ndim == 3 else mask)
+            w = w * m
+        return w
     else:
-        psi_over_r = np.ones_like(r, dtype=np.float32)
-
-    if var_map is None:
-        v = _estimate_scalar_variance(r)
-    else:
-        v = var_map
-        if v.ndim == 2 and r.ndim == 3:
-            v = v[None, ...]
-    w = psi_over_r / (v + EPS)
-    if mask is not None:
-        m = mask if mask.ndim == w.ndim else (mask[None, ...] if w.ndim == 3 else mask)
-        w = w * m
-    return w
+        absr = np.abs(r)
+        if float(delta) > 0:
+            psi_over_r = np.where(absr <= delta, 1.0, delta / (absr + eps)).astype(np.float32)
+        else:
+            psi_over_r = np.ones_like(r, dtype=np.float32)
+        if var_map is None:
+            v = _estimate_scalar_variance(r)
+        else:
+            v = var_map
+            if v.ndim == 2 and r.ndim == 3:
+                v = v[None, ...]
+        w = psi_over_r / (v + eps)
+        if mask is not None:
+            m = mask if mask.ndim == w.ndim else (mask[None, ...] if w.ndim == 3 else mask)
+            w = w * m
+        return w
 
 
 # -----------------------------
@@ -1583,40 +1552,24 @@ def _fftshape_same(H, W, kh, kw):
 
 # ---------- Torch FFT helpers (FIXED: carry padH/padW) ----------
 def _precompute_torch_psf_ffts(psfs, flip_psf, H, W, device, dtype):
-    """
-    Pack (Kf,padH,padW,kh,kw) so the conv can crop correctly to SAME.
-    Kernel is ifftshifted before padding.
-    """
     tfft = torch.fft
     psf_fft, psfT_fft = [], []
     for k, kT in zip(psfs, flip_psf):
         kh, kw = k.shape
         padH, padW = _fftshape_same(H, W, kh, kw)
+
+        # shift the small kernels to the origin, then FFT into padded size
         k_small  = torch.as_tensor(np.fft.ifftshift(k),  device=device, dtype=dtype)
         kT_small = torch.as_tensor(np.fft.ifftshift(kT), device=device, dtype=dtype)
+
         Kf  = tfft.rfftn(k_small,  s=(padH, padW))
         KTf = tfft.rfftn(kT_small, s=(padH, padW))
+
         psf_fft.append((Kf,  padH, padW, kh, kw))
         psfT_fft.append((KTf, padH, padW, kh, kw))
     return psf_fft, psfT_fft
 
 
-def _fft_conv_same_torch(x, Kf_pack, out_spatial):
-    tfft = torch.fft
-    Kf, padH, padW, kh, kw = Kf_pack
-    H, W = x.shape[-2], x.shape[-1]
-    if x.ndim == 2:
-        X = tfft.rfftn(x, s=(padH, padW))
-        y = tfft.irfftn(X * Kf, s=(padH, padW))
-        sh, sw = (kh - 1)//2, (kw - 1)//2
-        out_spatial.copy_(y[sh:sh+H, sw:sw+W])
-        return out_spatial
-    else:
-        X = tfft.rfftn(x, s=(padH, padW), dim=(-2,-1))
-        y = tfft.irfftn(X * Kf, s=(padH, padW), dim=(-2,-1))
-        sh, sw = (kh - 1)//2, (kw - 1)//2
-        out_spatial.copy_(y[..., sh:sh+H, sw:sw+W])
-        return out_spatial
 
 # ---------- NumPy FFT helpers ----------
 def _precompute_np_psf_ffts(psfs, flip_psf, H, W):
@@ -1635,7 +1588,7 @@ def _fft_conv_same_np(a, Kf, kh, kw, fftH, fftW, out):
     if a.ndim == 2:
         A = fft.rfftn(a, s=(fftH, fftW))
         y = fft.irfftn(A * Kf, s=(fftH, fftW))
-        sh, sw = (kh - 1)//2, (kw - 1)//2
+        sh, sw = kh // 2, kw // 2
         out[...] = y[sh:sh+a.shape[0], sw:sw+a.shape[1]]
         return out
     else:
@@ -1644,7 +1597,7 @@ def _fft_conv_same_np(a, Kf, kh, kw, fftH, fftW, out):
         for c in range(C):
             A = fft.rfftn(a[c], s=(fftH, fftW))
             y = fft.irfftn(A * Kf, s=(fftH, fftW))
-            sh, sw = (kh - 1)//2, (kw - 1)//2
+            sh, sw = kh // 2, kw // 2
             acc.append(y[sh:sh+H, sw:sw+W])
         out[...] = np.stack(acc, 0)
         return out
@@ -1697,17 +1650,26 @@ def _conv_same_torch(img_t, psf_t):
         return y[0]
 
 def _safe_inference_context():
+    """
+    Return a valid, working no-grad context:
+      - prefer torch.inference_mode() if it exists *and* can be entered,
+      - otherwise fall back to torch.no_grad(),
+      - if torch is unavailable, return NO_GRAD.
+    """
     if not (TORCH_OK and (torch is not None)):
-        return NO_GRAD()
+        return NO_GRAD
+
     cm = getattr(torch, "inference_mode", None)
     if cm is None:
-        return torch.no_grad()
+        return torch.no_grad
+
+    # Probe inference_mode once; if it explodes on this build, fall back.
     try:
         with cm():
             pass
-        return cm()
+        return cm
     except Exception:
-        return torch.no_grad()
+        return torch.no_grad
 
 def _ensure_mask_list(masks, data):
     # 1s where valid, 0s where invalid (soft edges allowed)
@@ -1747,7 +1709,6 @@ def _ensure_var_list(variances, data):
                 Ht, Wt = base.shape
                 vv = _center_crop(vv, Ht, Wt)
             # clip tiny/negatives
-            vv = np.nan_to_num(vv, nan=1e-8, posinf=1e8, neginf=1e8, copy=False)
             vv = np.clip(vv, 1e-8, None).astype(np.float32, copy=False)
             out.append(vv)
     return out
@@ -1805,119 +1766,74 @@ def _solve_super_psf_from_native(f_native: np.ndarray, r: int, sigma: float = 1.
     where h is (r*k)×(r*k) if f_native is k×k. Returns normalized h (sum=1).
     """
     f = np.asarray(f_native, dtype=np.float32)
-
-    # NEW: sanitize to 2D odd square before anything else
-    if f.ndim != 2:
-        f = np.squeeze(f)
-        if f.ndim != 2:
-            raise ValueError(f"PSF must be 2D, got shape {f.shape}")
-
-    H, W = int(f.shape[0]), int(f.shape[1])
-    k_sq = min(H, W)
-    # center-crop to square if needed
-    if H != W:
-        y0 = (H - k_sq) // 2
-        x0 = (W - k_sq) // 2
-        f = f[y0:y0 + k_sq, x0:x0 + k_sq]
-        H = W = k_sq
-
-    # enforce odd size (required by SAME padding math)
-    if (H % 2) == 0:
-        # drop one pixel border to make it odd (centered)
-        f = f[1:, 1:]
-        H = W = f.shape[0]
-
-    k = int(H)                     # k is now odd and square
+    k = int(f.shape[0]); assert f.shape[0] == f.shape[1]
     kr = int(k * r)
 
-
+    # build Gaussian pre-blur at native scale (match paper §4.2)
     g = _gaussian2d(k, max(sigma, 1e-3)).astype(np.float32)
 
+    # init h by zero-insertion (nearest upsample of f) then deconvolving g very mildly
     h0 = np.zeros((kr, kr), dtype=np.float32)
     h0[::r, ::r] = f
     h0 = _normalize_psf(h0)
 
     if TORCH_OK:
-        import torch.nn.functional as F
         dev = _torch_device()
-
-        # (1) Make sure Gaussian kernel is odd-sized for SAME conv padding
-        g_pad = g
-        if (g.shape[-1] % 2) == 0:
-            # ensure odd + renormalize
-            gg = _pad_kernel_to(g, g.shape[-1] + 1)
-            g_pad = gg.astype(np.float32, copy=False)
-
-        t   = torch.tensor(h0, device=dev, dtype=torch.float32, requires_grad=True)
+        t = torch.tensor(h0, device=dev, dtype=torch.float32, requires_grad=True)
         f_t = torch.tensor(f,  device=dev, dtype=torch.float32)
-        g_t = torch.tensor(g_pad, device=dev, dtype=torch.float32)
+        g_t = torch.tensor(g,  device=dev, dtype=torch.float32)
         opt = torch.optim.Adam([t], lr=lr)
-
-        # Helpful assertion avoids silent shape traps
-        H, W = t.shape
-        assert (H % r) == 0 and (W % r) == 0, f"h shape {t.shape} not divisible by r={r}"
-        Hr, Wr = H // r, W // r
-
-        try:
-            for _ in range(max(10, iters)):
-                opt.zero_grad(set_to_none=True)
-
-                # (2) Downsample with avg_pool2d instead of reshape/mean
-                blk = t.narrow(0, 0, Hr * r).narrow(1, 0, Wr * r).contiguous()
-                th  = F.avg_pool2d(blk[None, None], kernel_size=r, stride=r)[0, 0]  # (k,k)
-
-                # (3) Native-space blur with guaranteed-odd g_t
-                pad = g_t.shape[-1] // 2
-                conv = F.conv2d(th[None, None], g_t[None, None], padding=pad)[0, 0]
-
-                loss = torch.mean((conv - f_t) ** 2)
-                loss.backward()
-                opt.step()
-                with torch.no_grad():
-                    t.clamp_(min=0.0)
-                    t /= (t.sum() + 1e-8)
-            h = t.detach().cpu().numpy().astype(np.float32)
-        except Exception:
-            # (4) Conservative safety net: if a backend balks (commonly at r=2),
-            #     fall back to the NumPy solver *just for this kernel*.
-            h = None
-
-    if not TORCH_OK or h is None:
-        # NumPy fallback (unchanged)
+        for _ in range(max(10, iters)):
+            opt.zero_grad(set_to_none=True)
+            H, W = t.shape
+            Hr, Wr = H//r, W//r
+            th = t[:Hr*r, :Wr*r].reshape(Hr, r, Wr, r).mean(dim=(1,3))
+            # conv native: (Dh) * g
+            conv = torch.nn.functional.conv2d(th[None,None], g_t[None,None], padding=g_t.shape[-1]//2)[0,0]
+            loss = torch.mean((conv - f_t)**2)
+            loss.backward()
+            opt.step()
+            with torch.no_grad():
+                t.clamp_(min=0.0)
+                t /= (t.sum() + 1e-8)
+        h = t.detach().cpu().numpy().astype(np.float32)
+    else:
+        # Tiny gradient-descent fallback on numpy
         h = h0.copy()
         eta = float(lr)
         for _ in range(max(50, iters)):
-            Dh    = _downsample_avg(h, r)
-            conv  = _conv2_same_np(Dh, g)
+            Dh = _downsample_avg(h, r)
+            conv = _conv2_same_np(Dh, g)
             resid = (conv - f)
+            # backprop through conv and D: grad wrt Dh is resid * g^T conv; adjoint of D is upsample-sum
             grad_Dh = _conv2_same_np(resid, np.flip(np.flip(g, 0), 1))
             grad_h  = _upsample_sum(grad_Dh, r, target_hw=h.shape)
             h = np.clip(h - eta * grad_h, 0.0, None)
-            s = float(h.sum()); h /= (s + 1e-8)
+            s = float(h.sum());  h /= (s + 1e-8)
             eta *= 0.995
-
     return _normalize_psf(h)
 
-
 def _downsample_avg_t(x, r: int):
+    """
+    Average-pool over non-overlapping r×r blocks.
+    Works for (H,W) or (C,H,W). Crops to multiples of r.
+    """
     if r <= 1:
         return x
     if x.ndim == 2:
         H, W = x.shape
         Hr, Wr = (H // r) * r, (W // r) * r
         if Hr == 0 or Wr == 0:
-            return x
+            return x  # nothing to pool
         x2 = x[:Hr, :Wr]
-        # ❌ .view → ✅ .reshape
-        return x2.reshape(Hr // r, r, Wr // r, r).mean(dim=(1, 3))
+        return x2.view(Hr // r, r, Wr // r, r).mean(dim=(1, 3))
     else:
         C, H, W = x.shape
         Hr, Wr = (H // r) * r, (W // r) * r
         if Hr == 0 or Wr == 0:
             return x
         x2 = x[:, :Hr, :Wr]
-        # ❌ .view → ✅ .reshape
-        return x2.reshape(C, Hr // r, r, Wr // r, r).mean(dim=(2, 4))
+        return x2.view(C, Hr // r, r, Wr // r, r).mean(dim=(2, 4))
 
 def _upsample_sum_t(x, r: int):
     if r <= 1:
@@ -1952,164 +1868,19 @@ def _approx_bytes(arr_like_shape, dtype=np.float32):
     """Rough byte estimator for a given shape/dtype."""
     return int(np.prod(arr_like_shape)) * np.dtype(dtype).itemsize
 
-def _mem_model(
-    grid_hw: tuple[int,int],
-    r: int,
-    ksize: int,
-    channels: int,
-    mem_target_mb: int,
-    prefer_tiles: bool = False,
-    min_tile: int = 256,
-    max_tile: int = 2048,
-) -> dict:
-    """
-    Pick a batch size (#frames) and optional tile size (HxW) given a memory budget.
-    Very conservative — aims to bound peak working-set on CPU/GPU.
-    """
-    Hs, Ws = grid_hw
-    halo = (ksize // 2) * max(1, r)        # SR grid halo if r>1
-    C    = max(1, channels)
 
-    # working-set per *full-frame* conv scratch (num/den/tmp/etc.)
-    per_frame_fft_like = 3 * _approx_bytes((C, Hs, Ws))  # tmp/pred + in/out buffers
-    global_accum = 2 * _approx_bytes((C, Hs, Ws))        # num + den
-
-    budget = int(mem_target_mb * 1024 * 1024)
-
-    # Try to stay in full-frame mode first unless prefer_tiles
-    B_full = max(1, (budget - global_accum) // max(per_frame_fft_like, 1))
-    use_tiles = prefer_tiles or (B_full < 1)
-
-    if not use_tiles:
-        return dict(batch_frames=int(B_full), tiles=None, halo=int(halo), ksize=int(ksize))
-
-    # Tile mode: pick a square tile side t that fits
-    # scratch per tile ~ 3*C*(t+2h)^2 + accum(core) ~ small
-    # try descending from max_tile
-    t = int(min(max_tile, max(min_tile, 1 << int(np.floor(np.log2(min(Hs, Ws)))))))
-    while t >= min_tile:
-        th = t + 2 * halo
-        per_tile = 3 * _approx_bytes((C, th, th))
-        B_tile   = max(1, (budget - global_accum) // max(per_tile, 1))
-        if B_tile >= 1:
-            return dict(batch_frames=int(B_tile), tiles=(t, t), halo=int(halo), ksize=int(ksize))
-        t //= 2
-
-    # Worst case: 1 frame, minimal tile
-    return dict(batch_frames=1, tiles=(min_tile, min_tile), halo=int(halo), ksize=int(ksize))
-
-def _build_seed_running_mu_sigma_from_paths(
-    paths, Ht, Wt, color_mode,
-    *, bootstrap_frames=24, clip_sigma=3.5,  # clip_sigma used for streaming updates
-    status_cb=lambda s: None, progress_cb=None
-):
-    """
-    Seed:
-      1) Load first B frames -> mean0
-      2) MAD around mean0 -> ±4·MAD mask -> masked-mean seed (one mini-iteration)
-      3) Stream remaining frames with σ-clipped Welford updates (unchanged behavior)
-    Returns float32 image in (H,W) or (C,H,W) matching color_mode.
-    """
-    def p(frac, msg):
-        if progress_cb:
-            progress_cb(float(max(0.0, min(1.0, frac))), msg)
-
-    n_total = len(paths)
-    B = int(max(1, min(int(bootstrap_frames), n_total)))
-    status_cb(f"MFDeconv: Seed bootstrap {B} frame(s) with ±4·MAD clip on the average…")
-    p(0.00, f"bootstrap load 0/{B}")
-
-    # ---------- load first B frames ----------
-    boot = []
-    for i, pth in enumerate(paths[:B], start=1):
-        ys, _ = _stack_loader_memmap([pth], Ht, Wt, color_mode)
-        boot.append(ys[0].astype(np.float32, copy=False))
-        if (i == B) or (i % 4 == 0):
-            p(0.25 * (i / float(B)), f"bootstrap load {i}/{B}")
-
-    stack = np.stack(boot, axis=0)  # (B,H,W) or (B,C,H,W)
-    del boot
-
-    # ---------- mean0 ----------
-    mean0 = np.mean(stack, axis=0, dtype=np.float32)
-    p(0.28, "bootstrap mean computed")
-
-    # ---------- ±4·MAD clip around mean0, then masked mean (one pass) ----------
-    # MAD per-pixel: median(|x - mean0|)
-    abs_dev = np.abs(stack - mean0[None, ...])
-    mad = np.median(abs_dev, axis=0).astype(np.float32, copy=False)
-
-    thr = 4.0 * mad + EPS
-    mask = (abs_dev <= thr)
-
-    # masked mean with fallback to mean0 where all rejected
-    m = mask.astype(np.float32, copy=False)
-    sum_acc = np.sum(stack * m, axis=0, dtype=np.float32)
-    cnt_acc = np.sum(m, axis=0, dtype=np.float32)
-    seed = mean0.copy()
-    np.divide(sum_acc, np.maximum(cnt_acc, 1.0), out=seed, where=(cnt_acc > 0.5))
-    p(0.36, "±4·MAD masked mean computed")
-
-    # ---------- initialize Welford state from seed ----------
-    # Start μ=seed, set an initial variance envelope from the bootstrap dispersion
-    dif = stack - seed[None, ...]
-    M2 = np.sum(dif * dif, axis=0, dtype=np.float32)
-    cnt = np.full_like(seed, float(B), dtype=np.float32)
-    mu  = seed.astype(np.float32, copy=False)
-    del stack, abs_dev, mad, m, sum_acc, cnt_acc, dif
-
-    p(0.40, "seed initialized; streaming refinements…")
-
-    # ---------- stream remaining frames with σ-clipped Welford updates ----------
-    remain = n_total - B
-    if remain > 0:
-        status_cb(f"MFDeconv: Seed μ–σ clipping {remain} remaining frame(s) (k={clip_sigma:.2f})…")
-
-    k = float(clip_sigma)
-    for j, pth in enumerate(paths[B:], start=1):
-        ys, _ = _stack_loader_memmap([pth], Ht, Wt, color_mode)
-        x = ys[0].astype(np.float32, copy=False)
-
-        var  = M2 / np.maximum(cnt - 1.0, 1.0)
-        sigma = np.sqrt(np.maximum(var, 1e-12, dtype=np.float32))
-
-        accept = (np.abs(x - mu) <= (k * sigma))
-        acc = accept.astype(np.float32, copy=False)
-
-        n_new = cnt + acc
-        delta = x - mu
-        mu_n  = mu + (acc * delta) / np.maximum(n_new, 1.0)
-        M2    = M2 + acc * delta * (x - mu_n)
-
-        mu, cnt = mu_n, n_new
-
-        if (j == remain) or (j % 8 == 0):
-            p(0.40 + 0.60 * (j / float(remain)), f"μ–σ refine {j}/{remain}")
-
-    p(1.0, "seed ready")
-    return np.clip(mu, 0.0, None).astype(np.float32, copy=False)
-
-
-def _chunk(seq, n):
-    """Yield chunks of size n from seq."""
-    for i in range(0, len(seq), n):
-        yield seq[i:i+n]
 
 def _read_shape_fast(path) -> tuple[int,int,int]:
+    """
+    Return (C,H,W) with C in {1,3}, squeezing trailing singleton.
+    FITS: light-weight via memmap; XISF: uses unified loader (loads once).
+    """
     if _is_xisf(path):
         a, _ = _load_image_array(path)
+        if a is None:
+
+            raise ValueError(f"No data in {path}")
         a = np.asarray(a)
-        if a.ndim == 2:
-            H, W = a.shape
-            return (1, int(H), int(W))
-        if a.ndim == 3:
-            if a.shape[-1] in (1, 3):        # HWC
-                C = int(a.shape[-1]); H = int(a.shape[0]); W = int(a.shape[1])
-                return (C if C in (1,3) else 1, H, W)
-            if a.shape[0] in (1, 3):         # CHW
-                return (int(a.shape[0]), int(a.shape[1]), int(a.shape[2]))
-        H, W = a.shape[-2], a.shape[-1]
-        return (1, int(H), int(W))
     else:
         with fits.open(path, memmap=True, ignore_missing_simple=True) as hdul:
             a = hdul[0].data
@@ -2132,199 +1903,27 @@ def _read_shape_fast(path) -> tuple[int,int,int]:
         H, W = s[-2], s[-1]
         return (1, H, W)
 
-
-
-def _tiles_of(hw: tuple[int,int], tile_hw: tuple[int,int], halo: int):
-    """
-    Yield tiles as dicts: {y0,y1,x0,x1,yc0,yc1,xc0,xc1}
-    (outer region includes halo; core (yc0:yc1, xc0:xc1) excludes halo).
-    """
-    H, W = hw
-    th, tw = tile_hw
-    th = max(1, int(th)); tw = max(1, int(tw))
-    for y in range(0, H, th):
-        for x in range(0, W, tw):
-            yc0 = y; yc1 = min(y + th, H)
-            xc0 = x; xc1 = min(x + tw, W)
-            y0  = max(0, yc0 - halo); y1 = min(H, yc1 + halo)
-            x0  = max(0, xc0 - halo); x1 = min(W, xc1 + halo)
-            yield dict(y0=y0, y1=y1, x0=x0, x1=x1, yc0=yc0, yc1=yc1, xc0=xc0, xc1=xc1)
-
-def _extract_with_halo(a, tile):
-    """
-    Slice 'a' ((H,W) or (C,H,W)) to [y0:y1, x0:x1] with channel kept.
-    """
-    y0,y1,x0,x1 = tile["y0"], tile["y1"], tile["x0"], tile["x1"]
-    if a.ndim == 2:
-        return a[y0:y1, x0:x1]
-    else:
-        return a[:, y0:y1, x0:x1]
-
-def _add_core(accum, tile_val, tile):
-    """
-    Add tile_val core into accum at (yc0:yc1, xc0:xc1).
-    Shapes match (2D) or (C,H,W).
-    """
-    yc0,yc1,xc0,xc1 = tile["yc0"], tile["yc1"], tile["xc0"], tile["xc1"]
-    if accum.ndim == 2:
-        h0 = yc0 - tile["y0"]; h1 = h0 + (yc1 - yc0)
-        w0 = xc0 - tile["x0"]; w1 = w0 + (xc1 - xc0)
-        accum[yc0:yc1, xc0:xc1] += tile_val[h0:h1, w0:w1]
-    else:
-        h0 = yc0 - tile["y0"]; h1 = h0 + (yc1 - yc0)
-        w0 = xc0 - tile["x0"]; w1 = w0 + (xc1 - xc0)
-        accum[:, yc0:yc1, xc0:xc1] += tile_val[:, h0:h1, w0:w1]
-
-def _prepare_np_fft_packs_batch(psfs, flip_psf, Hs, Ws):
-    """Precompute rFFT packs on current grid for NumPy path; returns lists aligned to batch psfs."""
-    Kfs, KTfs, meta = [], [], []
-    import numpy.fft as fft
-    for k, kT in zip(psfs, flip_psf):
-        kh, kw = k.shape
-        fftH, fftW = _fftshape_same(Hs, Ws, kh, kw)
-        Kfs.append(fft.rfftn(np.fft.ifftshift(k),  s=(fftH, fftW)))
-        KTfs.append(fft.rfftn(np.fft.ifftshift(kT), s=(fftH, fftW)))
-        meta.append((kh, kw, fftH, fftW))
-    return Kfs, KTfs, meta
-
-def _prepare_torch_fft_packs_batch(psfs, flip_psf, Hs, Ws, device, dtype):
-    """Torch FFT packs per PSF on current grid; mirrors your existing packer."""
-    return _precompute_torch_psf_ffts(psfs, flip_psf, Hs, Ws, device, dtype)
-
-def _as_chw(np_img: np.ndarray) -> np.ndarray:
-    x = np.asarray(np_img, dtype=np.float32, order="C")
-    if x.size == 0:
-        raise RuntimeError(f"Empty image array after load; raw shape={np_img.shape}")
-    if x.ndim == 2:
-        return x[None, ...]  # 1,H,W
-    if x.ndim == 3 and x.shape[0] in (1, 3):
-        if x.shape[0] == 0:
-            raise RuntimeError(f"Zero channels in CHW array; shape={x.shape}")
-        return x
-    if x.ndim == 3 and x.shape[-1] in (1, 3):
-        if x.shape[-1] == 0:
-            raise RuntimeError(f"Zero channels in HWC array; shape={x.shape}")
-        return np.moveaxis(x, -1, 0)
-    # last resort: treat first dim as channels, but reject zero
-    if x.shape[0] == 0:
-        raise RuntimeError(f"Zero channels in array; shape={x.shape}")
-    return x
-
-
-
-def _conv_same_np_spatial(a: np.ndarray, k: np.ndarray, out: np.ndarray | None = None):
-    try:
-        import cv2
-    except Exception:
-        return None  # no opencv -> caller falls back to FFT
-
-    # cv2 wants HxW single-channel float32
-    kf = np.ascontiguousarray(k.astype(np.float32))
-    kf = np.flip(np.flip(kf, 0), 1)  # OpenCV uses correlation; flip to emulate conv
-
-    if a.ndim == 2:
-        y = cv2.filter2D(a, -1, kf, borderType=cv2.BORDER_REFLECT)
-        if out is None: return y
-        out[...] = y; return out
-    else:
-        C, H, W = a.shape
-        if out is None:
-            out = np.empty_like(a)
-        for c in range(C):
-            out[c] = cv2.filter2D(a[c], -1, kf, borderType=cv2.BORDER_REFLECT)
-        return out
-
-def _grouped_conv_same_torch_per_sample(x_bc_hw, w_b1kk, B, C):
-    """
-    x_bc_hw : (B,C,H,W) float32 (NCHW)
-    w_b1kk  : (B,1,kh,kw) float32
-    returns : (B,C,H,W)
-    """
-    F = torch.nn.functional
-    kh, kw = int(w_b1kk.shape[-2]), int(w_b1kk.shape[-1])
-    pad = (kw // 2, kw - kw // 2 - 1, kh // 2, kh - kh // 2 - 1)
-
-    outs = []
-    for j in range(B):
-        xj = x_bc_hw[j:j+1]                # (1,C,H,W)
-        kj = w_b1kk[j:j+1]                 # (1,1,kh,kw)
-        # expand to depthwise C groups w/ identical kernel per channel
-        kjC = kj.repeat(C, 1, 1, 1)        # (C,1,kh,kw)
-        xj = F.pad(xj, pad, mode="reflect")
-        yj = F.conv2d(xj, kjC, groups=C)   # depthwise C groups; full fp32
-        outs.append(yj)
-    return torch.cat(outs, dim=0).contiguous()
-
-
-# put near other small helpers
-def _robust_med_mad_t(x, max_elems_per_sample: int = 2_000_000):
-    """
-    x: (B, C, H, W) tensor on device.
-    Returns (median[B,1,1,1], mad[B,1,1,1]) computed on a strided subsample
-    to avoid 'quantile() input tensor is too large'.
-    """
-    import math, torch
-    B = x.shape[0]
-    flat = x.reshape(B, -1)
-    N = flat.shape[1]
-    if N > max_elems_per_sample:
-        stride = int(math.ceil(N / float(max_elems_per_sample)))
-        flat = flat[:, ::stride]  # strided subsample
-    med = torch.quantile(flat, 0.5, dim=1, keepdim=True)
-    mad = torch.quantile((flat - med).abs(), 0.5, dim=1, keepdim=True) + 1e-6
-    return med.view(B,1,1,1), mad.view(B,1,1,1)
-
-def _torch_should_use_spatial(psf_ksize: int) -> bool:
-    # Prefer spatial on non-CUDA backends and for modest kernels.
-    try:
-        dev = _torch_device()
-        if dev.type in ("mps", "privateuseone"):  # privateuseone = DirectML
-            return True
-        if dev.type == "cuda":
-            return psf_ksize <= 51  # typical PSF sizes; spatial is fast & stable
-    except Exception:
-        pass
-    # Allow override via env
-    import os as _os
-    if _os.environ.get("MF_SPATIAL", "") == "1":
-        return True
-    return False
-
-def _read_tile_fits(path: str, y0: int, y1: int, x0: int, x1: int) -> np.ndarray:
-    """Return a (H,W) or (H,W,3|1) tile via FITS memmap, without loading whole image."""
-    with fits.open(path, memmap=True, ignore_missing_simple=True) as hdul:
-        hdu = hdul[0]
-        a = hdu.data
-        if a is None:
-            # find first image HDU if primary is header-only
-            for h in hdul[1:]:
-                if getattr(h, "data", None) is not None:
-                    a = h.data; break
-        a = np.asarray(a)  # still lazy until sliced
-        # squeeze trailing singleton if present to keep your conventions
-        if a.ndim == 3 and a.shape[-1] == 1:
-            a = np.squeeze(a, axis=-1)
-        tile = a[y0:y1, x0:x1, ...]
-        # copy so we own the buffer (we will cast/normalize)
-        return np.array(tile, copy=True)
-
 def _read_tile_fits_any(path: str, y0: int, y1: int, x0: int, x1: int) -> np.ndarray:
     """FITS/XISF-aware tile read: returns spatial tile; supports 2D, HWC, and CHW."""
     ext = os.path.splitext(path)[1].lower()
 
     if ext == ".xisf":
-        a = _xisf_cached_array(path)  # float32 memmap; cheap slicing
-        # a is HW, HWC, or CHW (whatever _load_image_array returned)
-        if a.ndim == 2:
+        a, _ = _load_image_array(path)  # helper returns array-like + hdr/metadata
+        if a is None:
+            raise ValueError(f"XISF loader returned None for {path}")
+        a = np.asarray(a)
+        if a.ndim == 2:  # HW
             return np.array(a[y0:y1, x0:x1], copy=True)
         elif a.ndim == 3:
             if a.shape[-1] in (1, 3):            # HWC
                 out = a[y0:y1, x0:x1, :]
-                if out.shape[-1] == 1: out = out[..., 0]
+                if out.shape[-1] == 1:
+                    out = out[..., 0]
                 return np.array(out, copy=True)
             elif a.shape[0] in (1, 3):           # CHW
                 out = a[:, y0:y1, x0:x1]
-                if out.shape[0] == 1: out = out[0]
+                if out.shape[0] == 1:
+                    out = out[0]
                 return np.array(out, copy=True)
             else:
                 raise ValueError(f"Unsupported XISF 3D shape {a.shape} in {path}")
@@ -2349,13 +1948,11 @@ def _read_tile_fits_any(path: str, y0: int, y1: int, x0: int, x1: int) -> np.nda
         if a.ndim == 3:
             if a.shape[0] in (1, 3):              # CHW (planes, rows, cols)
                 out = a[:, y0:y1, x0:x1]
-                if out.shape[0] == 1:
-                    out = out[0]
+                if out.shape[0] == 1: out = out[0]
                 return np.array(out, copy=True)
             if a.shape[-1] in (1, 3):             # HWC
                 out = a[y0:y1, x0:x1, :]
-                if out.shape[-1] == 1:
-                    out = out[..., 0]
+                if out.shape[-1] == 1: out = out[..., 0]
                 return np.array(out, copy=True)
 
         # Fallback: assume last two axes are spatial (…, H, W)
@@ -2365,31 +1962,29 @@ def _read_tile_fits_any(path: str, y0: int, y1: int, x0: int, x1: int) -> np.nda
         except Exception:
             raise ValueError(f"Unsupported FITS data shape {a.shape} in {path}")
 
-def _infer_channels_from_tile(p: str, Ht: int, Wt: int) -> int:
-    """Look at a 1×1 tile to infer channel count; supports HW, HWC, CHW."""
-    y1 = min(1, Ht); x1 = min(1, Wt)
-    t = _read_tile_fits_any(p, 0, y1, 0, x1)
+def _select_io_workers(n_frames: int,
+                       user_io_workers: int | None,
+                       tile_hw: tuple[int,int] = (256,256),
+                       disk_bound: bool = True) -> int:
+    """Heuristic picker for I/O threadpool size."""
+    try:
+        cpu = os.cpu_count() or 4
+    except Exception:
+        cpu = 4
 
-    if t.ndim == 2:
-        return 1
+    if user_io_workers is not None:
+        # Respect caller, but clamp to sane bounds
+        return max(1, min(cpu, int(user_io_workers)))
 
-    if t.ndim == 3:
-        # Prefer the axis that actually carries the color planes
-        ch_first  = t.shape[0]  in (1, 3)
-        ch_last   = t.shape[-1] in (1, 3)
+    # Default: don’t oversubscribe CPU; don’t exceed frame count
+    base = min(cpu, 8, int(n_frames))
 
-        if ch_first and not ch_last:
-            return int(t.shape[0])
-        if ch_last and not ch_first:
-            return int(t.shape[-1])
+    # If we’re disk-bound (memmaps/tiling) or tiles are small, cap lower to reduce thrash
+    th, tw = tile_hw
+    if disk_bound or (th * tw <= 256 * 256):
+        base = min(base, 4)
 
-        # Ambiguous tiny tile (e.g. CHW 3×1×1 or HWC 1×1×3):
-        if t.shape[0] == 3 or t.shape[-1] == 3:
-            return 3
-        return 1
-
-    return 1
-
+    return max(1, base)
 
 
 def _seed_median_streaming(
@@ -2401,312 +1996,381 @@ def _seed_median_streaming(
     tile_hw=(256, 256),
     status_cb=lambda s: None,
     progress_cb=lambda f, m="": None,
-    use_torch: bool | None = None,     # auto by default
+    io_workers: int = 4,
+    scratch_dir: str | None = None,
+    tile_loader=None,              # NEW
 ):
-    """
-    Exact per-pixel median via tiling; RAM-bounded.
-    Now shows per-tile progress and uses Torch on GPU if available.
-    Parallelizes per-tile slab reads to hide I/O and luma work.
-    """
-
+    import time, gc
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    scratch_dir = _ensure_scratch_dir(scratch_dir)
     th, tw = int(tile_hw[0]), int(tile_hw[1])
-    # old: want_c = 1 if str(color_mode).lower() == "luma" else (3 if _read_shape_fast(paths[0])[0] == 3 else 1)
+
+    # Prefer channel hint from tile_loader (so we don't reopen original files)
     if str(color_mode).lower() == "luma":
         want_c = 1
     else:
-        want_c = _infer_channels_from_tile(paths[0], Ht, Wt)
-    seed     = np.zeros((Ht, Wt), np.float32) if want_c == 1 else np.zeros((want_c, Ht, Wt), np.float32)
-    tiles    = [(y, min(y + th, Ht), x, min(x + tw, Wt)) for y in range(0, Ht, th) for x in range(0, Wt, tw)]
+        want_c = getattr(tile_loader, "want_c", None)
+        if not want_c:
+            want_c = _infer_channels_from_tile(paths[0], Ht, Wt)
+
+    seed = (np.zeros((Ht, Wt), np.float32)
+            if want_c == 1 else np.zeros((want_c, Ht, Wt), np.float32))
+
+    tiles = [(y, min(y + th, Ht), x, min(x + tw, Wt))
+             for y in range(0, Ht, th)
+             for x in range(0, Wt, tw)]
     total    = len(tiles)
     n_frames = len(paths)
 
-    # Choose a sensible number of I/O workers (bounded by frames)
-    try:
-        _cpu = (os.cpu_count() or 4)
-    except Exception:
-        _cpu = 4
-    io_workers = max(1, min(8, _cpu, n_frames))
+    io_workers_eff = _select_io_workers(n_frames, io_workers, tile_hw=tile_hw, disk_bound=True)
 
-    # Torch autodetect (once)
-    TORCH_OK = False
-    device = None
-    if use_torch is not False:
-        try:
-            from pro.runtime_torch import import_torch
-            _t = import_torch(prefer_cuda=True, status_cb=status_cb)
-            dev = None
-            if hasattr(_t, "cuda") and _t.cuda.is_available():
-                dev = _t.device("cuda")
-            elif hasattr(_t.backends, "mps") and _t.backends.mps.is_available():
-                dev = _t.device("mps")
-            else:
-                dev = None  # CPU tensors slower than NumPy for median; only use if forced
-            if dev is not None:
-                TORCH_OK = True
-                device = dev
-                status_cb(f"Median seed: using Torch device {device}")
-        except Exception as e:
-            status_cb(f"Median seed: Torch unavailable → NumPy fallback ({e})")
-            TORCH_OK = False
-            device = None
-
-    def _tile_msg(ti, tn):
-        return f"median tiles {ti}/{tn}"
-
+    def _tile_msg(ti, tn): return f"median tiles {ti}/{tn}"
     done = 0
 
-    for (y0, y1, x0, x1) in tiles:
+    def _read_slab_for_channel(y0, y1, x0, x1, csel=None):
         h, w = (y1 - y0), (x1 - x0)
+        # use fp16 slabs to halve peak RAM; we cast to f32 only for the median op
+        slab = np.empty((n_frames, h, w), np.float16)
 
-        # per-tile slab reader with incremental progress (parallel)
-        def _read_slab_for_channel(csel=None):
-            """
-            Returns slab of shape (N, h, w) float32 in [0,1]-ish (normalized if input was integer).
-            If csel is None and luma is requested, computes luma.
-            """
-            # parallel worker returns (i, tile2d)
-            def _load_one(i):
+        def _load_one(i):
+            if tile_loader is not None:
+                t = tile_loader(i, y0, y1, x0, x1, csel=csel)
+            else:
                 t = _read_tile_fits_any(paths[i], y0, y1, x0, x1)
-
-                # normalize dtype
-                if t.dtype.kind in "ui":
-                    t = t.astype(np.float32) / (float(np.iinfo(t.dtype).max) or 1.0)
-                else:
-                    t = t.astype(np.float32, copy=False)
-
-                # luma / channel selection
+                # luma/channel selection only for file reads
                 if want_c == 1:
-                    if t.ndim == 3:
-                        t = _to_luma_local(t)
-                    elif t.ndim != 2:
+                    if t.ndim != 2:
                         t = _to_luma_local(t)
                 else:
                     if t.ndim == 2:
                         pass
-                    elif t.ndim == 3 and t.shape[-1] == 3:  # HWC
-                        t = t[..., csel]
-                    elif t.ndim == 3 and t.shape[0] == 3:   # CHW
-                        t = t[csel]
+                    elif t.ndim == 3 and t.shape[-1] == 3:
+                        t = t[..., int(csel)]
+                    elif t.ndim == 3 and t.shape[0] == 3:
+                        t = t[int(csel)]
                     else:
                         t = _to_luma_local(t)
-                return i, np.ascontiguousarray(t, dtype=np.float32)
 
-            slab = np.empty((n_frames, h, w), np.float32)
-            done_local = 0
-            # cap workers by n_frames so we don't spawn useless threads
-            with ThreadPoolExecutor(max_workers=min(io_workers, n_frames)) as ex:
-                futures = [ex.submit(_load_one, i) for i in range(n_frames)]
-                for fut in as_completed(futures):
-                    i, t2d = fut.result()
-                    # quick sanity (avoid silent mis-shapes)
-                    if t2d.shape != (h, w):
-                        raise RuntimeError(
-                            f"Tile read mismatch at frame {i}: got {t2d.shape}, expected {(h, w)} "
-                            f"tile={(y0,y1,x0,x1)}"
-                        )
-                    slab[i] = t2d
-                    done_local += 1
-                    if (done_local & 7) == 0 or done_local == n_frames:
-                        tile_base = done / total
-                        tile_span = 1.0 / total
-                        inner     = done_local / n_frames
-                        progress_cb(tile_base + 0.8 * tile_span * inner, _tile_msg(done + 1, total))
-            return slab
-
-        try:
-            if want_c == 1:
-                t0 = time.perf_counter()
-                slab = _read_slab_for_channel()
-                t1 = time.perf_counter()
-                if TORCH_OK:
-                    import torch as _t
-                    slab_t = _t.as_tensor(slab, device=device, dtype=_t.float32)  # one H2D
-                    med_t  = slab_t.median(dim=0).values
-                    med_np = med_t.detach().cpu().numpy().astype(np.float32, copy=False)
-                    # no per-tile empty_cache() — avoid forced syncs
-                else:
-                    med_np = np.median(slab, axis=0).astype(np.float32, copy=False)
-                t2 = time.perf_counter()
-                seed[y0:y1, x0:x1] = med_np
-                # lightweight telemetry to confirm bottleneck
-                status_cb(f"seed tile {y0}:{y1},{x0}:{x1} I/O={t1-t0:.3f}s  median={'GPU' if TORCH_OK else 'CPU'}={t2-t1:.3f}s")
+            # normalize to [0,1] if integer; store as fp16
+            if t.dtype.kind in "ui":
+                t = (t.astype(np.float32) / (float(np.iinfo(t.dtype).max) or 1.0)).astype(np.float16)
             else:
-                for c in range(want_c):
-                    slab = _read_slab_for_channel(csel=c)
-                    if TORCH_OK:
-                        import torch as _t
-                        slab_t = _t.as_tensor(slab, device=device, dtype=_t.float32)
-                        med_t  = slab_t.median(dim=0).values
-                        med_np = med_t.detach().cpu().numpy().astype(np.float32, copy=False)
-                    else:
-                        med_np = np.median(slab, axis=0).astype(np.float32, copy=False)
-                    seed[c, y0:y1, x0:x1] = med_np
+                t = t.astype(np.float16, copy=False)
+            return i, np.ascontiguousarray(t, dtype=np.float16)
 
-        except RuntimeError as e:
-            # Per-tile GPU OOM or device issues → fallback to NumPy for this tile
-            msg = str(e).lower()
-            if TORCH_OK and ("out of memory" in msg or "resource" in msg or "alloc" in msg):
-                status_cb(f"Median seed: GPU OOM on tile ({h}x{w}); falling back to NumPy for this tile.")
-                if want_c == 1:
-                    slab = _read_slab_for_channel()
-                    seed[y0:y1, x0:x1] = np.median(slab, axis=0).astype(np.float32, copy=False)
-                else:
-                    for c in range(want_c):
-                        slab = _read_slab_for_channel(csel=c)
-                        seed[c, y0:y1, x0:x1] = np.median(slab, axis=0).astype(np.float32, copy=False)
-            else:
-                raise
+        done_local = 0
+        with ThreadPoolExecutor(max_workers=min(io_workers_eff, n_frames)) as ex:
+            futures = [ex.submit(_load_one, i) for i in range(n_frames)]
+            for fut in as_completed(futures):
+                i, t2d = fut.result()
+                if t2d.shape != (h, w):
+                    raise RuntimeError(
+                        f"Tile read mismatch at frame {i}: got {t2d.shape}, expected {(h, w)} "
+                        f"tile={(y0,y1,x0,x1)}"
+                    )
+                slab[i] = t2d
+                done_local += 1
+                if (done_local & 7) == 0 or done_local == n_frames:
+                    tile_base = done / total
+                    tile_span = 1.0 / total
+                    inner     = done_local / n_frames
+                    progress_cb(tile_base + 0.8 * tile_span * inner, _tile_msg(done + 1, total))
+        return slab
+
+    for (y0, y1, x0, x1) in tiles:
+        h, w = (y1 - y0), (x1 - x0)
+        t0 = time.perf_counter()
+
+        if want_c == 1:
+            slab = _read_slab_for_channel(y0, y1, x0, x1)
+            t1 = time.perf_counter()
+            med_np = np.median(slab.astype(np.float32, copy=False), axis=0).astype(np.float32, copy=False)
+            t2 = time.perf_counter()
+            seed[y0:y1, x0:x1] = med_np
+            status_cb(f"seed tile {y0}:{y1},{x0}:{x1} I/O={t1-t0:.3f}s  median=CPU={t2-t1:.3f}s")
+        else:
+            for c in range(int(want_c)):
+                slab = _read_slab_for_channel(y0, y1, x0, x1, csel=c)
+                med_np = np.median(slab.astype(np.float32, copy=False), axis=0).astype(np.float32, copy=False)
+                seed[c, y0:y1, x0:x1] = med_np
+
+        # free tile buffers aggressively
+        del slab
+        try: del med_np
+        except Exception: pass
 
         done += 1
-        # report tile completion (remaining 20% of tile span reserved for median compute)
+        if (done & 1) == 0:
+            gc.collect()  # encourage RSS to drop
         progress_cb(done / total, _tile_msg(done, total))
-
         if (done & 3) == 0:
             _process_gui_events_safely()
-    status_cb(f"Median seed: want_c={want_c}, seed_shape={seed.shape}")
+
+    status_cb(f"Median seed (CPU): want_c={want_c}, seed_shape={seed.shape}")
     return seed
 
-def _seed_bootstrap_streaming(paths, Ht, Wt, color_mode,
-                              bootstrap_frames: int = 20,
-                              clip_sigma: float = 5.0,
-                              status_cb=lambda s: None,
-                              progress_cb=None):
+
+
+def _seed_median_full_from_data(data_list):
     """
-    Seed = average first B frames, estimate global MAD threshold, masked-mean on B,
-    then stream the remaining frames with σ-clipped Welford μ–σ updates.
-
-    Returns float32, CHW for per-channel mode, or CHW(1,...) for luma (your caller later squeezes if needed).
+    data_list: list of np.ndarray each shaped either (H,W) or (C,H,W),
+               already cropped/sanitized to the same size by the caller.
+    Returns:   (H,W) or (C,H,W) median image in float32.
     """
-    def p(frac, msg):
-        if progress_cb:
-            progress_cb(float(max(0.0, min(1.0, frac))), msg)
+    if not data_list:
+        raise ValueError("Empty stack for median seed")
 
-    n = len(paths)
-    B = int(max(1, min(int(bootstrap_frames), n)))
-    status_cb(f"Seed: bootstrap={B}, clip_sigma={clip_sigma}")
+    a0 = data_list[0]
+    if a0.ndim == 2:
+        # (N, H, W) -> (H, W)
+        cube = np.stack([np.asarray(a, dtype=np.float32, order="C") for a in data_list], axis=0)
+        med = np.median(cube, axis=0).astype(np.float32, copy=False)
+        return np.ascontiguousarray(med)
+    else:
+        # (N, C, H, W) -> (C, H, W)
+        cube = np.stack([np.asarray(a, dtype=np.float32, order="C") for a in data_list], axis=0)
+        med = np.median(cube, axis=0).astype(np.float32, copy=False)
+        return np.ascontiguousarray(med)
 
-    # ---------- pass 1: running mean over the first B frames (Welford μ only) ----------
-    cnt = None
-    mu  = None
-    for i, pth in enumerate(paths[:B], 1):
-        ys, _ = _stack_loader_memmap([pth], Ht, Wt, color_mode)
-        x = ys[0].astype(np.float32, copy=False)
-        if mu is None:
-            mu  = x.copy()
-            cnt = np.ones_like(x, dtype=np.float32)
-        else:
-            delta = x - mu
-            cnt  += 1.0
-            mu   += delta / cnt
-        if (i == B) or (i % 4) == 0:
-            p(0.20 * (i / float(B)), f"bootstrap mean {i}/{B}")
-
-    # ---------- pass 2: estimate a *global* MAD around μ using strided samples ----------
-    stride = 4 if max(Ht, Wt) > 1500 else 2
-    # CHW or HW → build a slice that keeps C and strides H,W
-    samp_slices = (slice(None) if mu.ndim == 3 else slice(None),
-                   slice(None, None, stride),
-                   slice(None, None, stride)) if mu.ndim == 3 else \
-                  (slice(None, None, stride), slice(None, None, stride))
-
-    mad_samples = []
-    for i, pth in enumerate(paths[:B], 1):
-        ys, _ = _stack_loader_memmap([pth], Ht, Wt, color_mode)
-        x = ys[0].astype(np.float32, copy=False)
-        d = np.abs(x - mu)
-        mad_samples.append(d[samp_slices].ravel())
-        if (i == B) or (i % 8) == 0:
-            p(0.35 + 0.10 * (i / float(B)), f"bootstrap MAD {i}/{B}")
-
-    # robust MAD estimate (scalar) → 4·MAD clip band
-    mad_est = float(np.median(np.concatenate(mad_samples).astype(np.float32)))
-    thr = 4.0 * max(mad_est, 1e-6)
-
-    # ---------- pass 3: masked mean over first B frames using the global threshold ----------
-    sum_acc = np.zeros_like(mu, dtype=np.float32)
-    cnt_acc = np.zeros_like(mu, dtype=np.float32)
-    for i, pth in enumerate(paths[:B], 1):
-        ys, _ = _stack_loader_memmap([pth], Ht, Wt, color_mode)
-        x = ys[0].astype(np.float32, copy=False)
-        m = (np.abs(x - mu) <= thr).astype(np.float32, copy=False)
-        sum_acc += x * m
-        cnt_acc += m
-        if (i == B) or (i % 4) == 0:
-            p(0.48 + 0.12 * (i / float(B)), f"masked mean {i}/{B}")
-
-    seed = mu.copy()
-    np.divide(sum_acc, np.maximum(cnt_acc, 1.0), out=seed, where=(cnt_acc > 0.5))
-
-    # ---------- pass 4: μ–σ streaming on the remaining frames (σ-clipped Welford) ----------
-    M2  = np.zeros_like(seed, dtype=np.float32)     # sum of squared diffs
-    cnt = np.full_like(seed, float(B), dtype=np.float32)
-    mu  = seed.astype(np.float32, copy=False)
-
-    remain = n - B
-    k = float(clip_sigma)
-    for j, pth in enumerate(paths[B:], 1):
-        ys, _ = _stack_loader_memmap([pth], Ht, Wt, color_mode)
-        x = ys[0].astype(np.float32, copy=False)
-
-        var   = M2 / np.maximum(cnt - 1.0, 1.0)
-        sigma = np.sqrt(np.maximum(var, 1e-12, dtype=np.float32))
-
-        acc   = (np.abs(x - mu) <= (k * sigma)).astype(np.float32, copy=False)  # {0,1} mask
-        n_new = cnt + acc
-        delta = x - mu
-        mu_n  = mu + (acc * delta) / np.maximum(n_new, 1.0)
-        M2    = M2 + acc * delta * (x - mu_n)
-
-        mu, cnt = mu_n, n_new
-
-        if (j == remain) or (j % 8) == 0:
-            p(0.60 + 0.40 * (j / float(max(1, remain))), f"μ–σ refine {j}/{remain}")
-
-    return np.clip(mu, 0.0, None).astype(np.float32, copy=False)
-
-
-def _coerce_sr_factor(srf, *, default_on_bad=2):
+def _infer_channels_from_tile(path: str, Ht: int, Wt: int) -> int:
     """
-    Parse super-res factor robustly:
-    - accepts 2, '2', '2x', ' 2 X ', 2.0
-    - clamps to integers >= 1
-    - if invalid/missing → returns default_on_bad (we want 2 by your request)
+    Decide output channel count for median seeding in PerChannel mode.
+    Returns 3 if the source is RGB, else 1.
     """
-    if srf is None:
-        return int(default_on_bad)
-    if isinstance(srf, (float, int)):
-        r = int(round(float(srf)))
-        return int(r if r >= 1 else default_on_bad)
-    s = str(srf).strip().lower()
-    # common GUIs pass e.g. "2x", "3×", etc.
-    s = s.replace("×", "x")
-    if s.endswith("x"):
-        s = s[:-1]
+    C, _, _ = _read_shape_fast(path)  # (C,H,W) with C in {1,3}
+    return 3 if C == 3 else 1
+
+
+def _build_seed_running_mu_sigma_from_paths(paths, Ht, Wt, color_mode,
+                                            *, bootstrap_frames=20, clip_sigma=5.0,
+                                            status_cb=lambda s: None, progress_cb=lambda f,m='': None):
+    K = max(1, min(int(bootstrap_frames), len(paths)))
+    def _load_chw(i):
+        ys, _ = _stack_loader_memmap([paths[i]], Ht, Wt, color_mode)
+        return _as_chw(ys[0]).astype(np.float32, copy=False)
+    x0 = _load_chw(0).copy()
+    mean = x0; m2 = np.zeros_like(mean); count = 1
+    for i in range(1, K):
+        x = _load_chw(i); count += 1
+        d = x - mean; mean += d/count; m2 += d*(x-mean)
+        progress_cb(i/K*0.5, "μ-σ bootstrap")
+    var = m2 / max(1, count-1); sigma = np.sqrt(np.clip(var, 1e-12, None)).astype(np.float32)
+    lo = mean - float(clip_sigma)*sigma; hi = mean + float(clip_sigma)*sigma
+    acc = np.zeros_like(mean); n=0
+    for i in range(len(paths)):
+        x = _load_chw(i); x = np.clip(x, lo, hi, out=x)
+        acc += x; n += 1; progress_cb(0.5 + 0.5*(i+1)/len(paths), "clipped mean")
+    seed = (acc/max(1,n)).astype(np.float32)
+    return seed[0] if (seed.ndim==3 and seed.shape[0]==1) else seed
+
+def _flush_memmaps(*arrs):
+    for a in arrs:
+        try:
+            mm = a[0] if (isinstance(a, tuple) and isinstance(a[0], np.memmap)) else a
+            if isinstance(mm, np.memmap):
+                mm.flush()
+        except Exception:
+            pass
+
+def _mm_create(shape, dtype=np.float32, scratch_dir=None, tag="mm"):
+    root = scratch_dir or tempfile.gettempdir()
+    os.makedirs(root, exist_ok=True)
+    fd, path = tempfile.mkstemp(prefix=f"{tag}_", suffix=".dat", dir=root)
+    os.close(fd)
+    mm = np.memmap(path, mode="w+", dtype=dtype, shape=tuple(shape))
+    return mm, path
+
+def _mm_flush(*arrs):
+    for a in arrs:
+        try:
+            if isinstance(a, np.memmap):
+                a.flush()
+        except Exception:
+            pass
+
+def _gauss_tile(a, sigma):
+    """
+    Small helper: Gaussian blur a tile (2D float32), reflect borders.
+    Prefers OpenCV; falls back to SciPy; otherwise no-op.
+    """
+    if sigma <= 0:
+        return a
+    k = int(max(1, int(round(3*sigma))) * 2 + 1)
     try:
-        r = int(round(float(s)))
-        return int(r if r >= 1 else default_on_bad)
+        import cv2
+        return cv2.GaussianBlur(a, (k, k), float(sigma), borderType=cv2.BORDER_REFLECT)
     except Exception:
-        return int(default_on_bad)
+        try:
+            from scipy.ndimage import gaussian_filter
+            return gaussian_filter(a, sigma=float(sigma), mode="reflect")
+        except Exception:
+            return a
 
-def _pad_kernel_to(k: np.ndarray, target_odd: int) -> np.ndarray:
-    """Center-pad a square 2D kernel to an odd size, preserving sum."""
-    k = np.asarray(k, dtype=np.float32)
-    h, w = k.shape
-    assert h == w, f"kernel must be square, got {k.shape}"
-    t = int(target_odd)
-    if (t % 2) == 0:
-        t += 1
-    if t <= h:
-        # center-crop if somehow larger than target
-        d = (h - t) // 2
-        return k[d:d+t, d:d+t].copy()
-    pad = (t - h) // 2
-    out = np.zeros((t, t), dtype=np.float32)
-    out[pad:pad+h, pad:pad+w] = k
-    s = float(out.sum())
-    if s > 0:
-        out /= s
-    return out
+# 1) add a tiny helper near _prepare_frame_stack_memmap
+def _make_memmap_tile_loader(frame_infos, max_open=32):
+    """
+    Returns tile_loader(i, y0,y1,x0,x1, csel=None) that slices from each frame's memmap.
+    Keeps a tiny LRU cache of opened memmaps (handles only; not image-sized arrays).
+    """
+    opened = OrderedDict()
+
+    def _open_mm(i):
+        fi = frame_infos[i]
+        mm = np.memmap(fi["path"], mode="r", dtype=fi["dtype"], shape=fi["shape"])
+        opened[i] = mm
+        # evict least-recently used beyond max_open
+        while len(opened) > int(max_open):
+            _, old = opened.popitem(last=False)
+            try: del old
+            except Exception: pass
+        return mm
+
+    def tile_loader(i, y0, y1, x0, x1, csel=None):
+        # reuse or open on demand
+        mm = opened.get(i)
+        if mm is None:
+            mm = _open_mm(i)
+        else:
+            # bump LRU
+            opened.move_to_end(i, last=True)
+
+        a = mm   # (H,W) or (C,H,W)
+        if a.ndim == 2:
+            t = a[y0:y1, x0:x1]
+        else:
+            # (C,H,W); pick channel or default to first (luma-equivalent)
+            cc = 0 if csel is None else int(csel)
+            t = a[cc, y0:y1, x0:x1]
+        # return a copy so median slab is independent/contiguous
+        return np.array(t, copy=True)
+
+    # advertise channel count so the seeder doesn't reopen original files
+    shp = frame_infos[0]["shape"]
+    tile_loader.want_c = (shp[0] if (len(shp) == 3) else 1)
+
+    def _close():
+        # drop handles
+        while opened:
+            _, mm = opened.popitem(last=False)
+            try: del mm
+            except Exception: pass
+    tile_loader.close = _close
+
+    return tile_loader
+
+
+def _prepare_frame_stack_memmap(
+    paths: list[str],
+    Ht: int,
+    Wt: int,
+    color_mode: str = "luma",
+    *,
+    scratch_dir: str | None = None,
+    dtype: np.dtype | str = np.float32,
+    tile_hw: tuple[int,int] = (512, 512),
+    status_cb=lambda s: None,
+):
+    """
+    Create one disk-backed memmap per input frame, already cropped to (Ht,Wt)
+    and normalized to float32 (or requested dtype). Returns:
+      frame_infos: list[dict(path, shape, dtype)]
+      hdrs:        list[fits.Header]
+    Each memmap stores (H,W) or (C,H,W) in row-major order.
+    """
+    scratch_dir = _ensure_scratch_dir(scratch_dir)
+
+    # normalize dtype
+    if isinstance(dtype, str):
+        _d = dtype.lower().strip()
+        out_dtype = np.float16 if _d in ("float16","fp16","half") else np.float32
+    else:
+        out_dtype = np.dtype(dtype)
+
+    th, tw = int(tile_hw[0]), int(tile_hw[1])
+    infos, hdrs = [], []
+
+    status_cb(f"Preparing {len(paths)} frame memmaps → {scratch_dir}")
+    for idx, p in enumerate(paths, start=1):
+        try:
+            hdr = _safe_primary_header(p)
+        except Exception:
+            hdr = fits.Header()
+        hdrs.append(hdr)
+
+        mode = str(color_mode).lower().strip()
+        if mode == "luma":
+            shape = (Ht, Wt)            # 2D
+            C_out = 1
+        else:
+            # Per-channel path: keep CHW even if mono → (1,H,W) or (3,H,W)
+            C0, _, _ = _read_shape_fast(p)
+            C_out = 3 if C0 == 3 else 1
+            shape = (C_out, Ht, Wt)     # 3D
+
+        mm_path = _mm_unique_path(scratch_dir, tag=f"frame_{idx:04d}", ext=".mm")
+        mm = np.memmap(mm_path, mode="w+", dtype=out_dtype, shape=shape)
+        mm_is_3d = (mm.ndim == 3)
+
+        tiles = [(y, min(y + th, Ht), x, min(x + tw, Wt))
+                 for y in range(0, Ht, th) for x in range(0, Wt, tw)]
+
+        for (y0, y1, x0, x1) in tiles:
+            # 1) read source tile
+            t = _read_tile_fits_any(p, y0, y1, x0, x1)
+
+            # 2) normalize to float32 in [0,1] if integer input
+            if t.dtype.kind in "ui":
+                t = t.astype(np.float32) / (float(np.iinfo(t.dtype).max) or 1.0)
+            else:
+                t = t.astype(np.float32, copy=False)
+
+            # 3) layout to match memmap
+            if not mm_is_3d:
+                # target is 2D (Ht,Wt) — luma tile must be 2D
+                if t.ndim == 3:
+                    t = _to_luma_local(t)
+                elif t.ndim != 2:
+                    t = _to_luma_local(t)
+                if out_dtype != np.float32:
+                    t = t.astype(out_dtype, copy=False)
+                mm[y0:y1, x0:x1] = t
+            else:
+                # target is 3D (C,H,W)
+                if C_out == 3:
+                    # ensure CHW
+                    if t.ndim == 2:
+                        # replicate luma across 3 channels
+                        t = np.stack([t, t, t], axis=0)  # CHW
+                    elif t.ndim == 3 and t.shape[-1] == 3:   # HWC → CHW
+                        t = np.moveaxis(t, -1, 0)
+                    elif t.ndim == 3 and t.shape[0] == 3:    # already CHW
+                        pass
+                    else:
+                        t = _to_luma_local(t)
+                        t = np.stack([t, t, t], axis=0)
+                    if out_dtype != np.float32:
+                        t = t.astype(out_dtype, copy=False)
+                    mm[:, y0:y1, x0:x1] = t
+                else:
+                    # C_out == 1: store single channel at mm[0, ...]
+                    if t.ndim == 3:
+                        t = _to_luma_local(t)
+                    # t must be 2D here
+                    if out_dtype != np.float32:
+                        t = t.astype(out_dtype, copy=False)
+                    mm[0, y0:y1, x0:x1] = t
+
+        try: mm.flush()
+        except Exception: pass
+        del mm
+
+        infos.append({"path": mm_path, "shape": tuple(shape), "dtype": out_dtype})
+
+        if (idx % 8) == 0 or idx == len(paths):
+            status_cb(f"Frame memmaps: {idx}/{len(paths)} ready")
+            gc.collect()
+
+    return infos, hdrs
 
 
 # -----------------------------
@@ -2718,7 +2382,7 @@ def multiframe_deconv(
     iters=20,
     kappa=2.0,
     color_mode="luma",
-    seed_mode: str = "robust",
+    seed_mode: str = "robust", 
     huber_delta=0.0,
     masks=None,
     variances=None,
@@ -2731,154 +2395,89 @@ def multiframe_deconv(
     varmap_cfg: dict | None = None,
     save_intermediate: bool = False,
     save_every: int = 1,
-    # SR options
+    # >>> SR options
     super_res_factor: int = 1,
     sr_sigma: float = 1.1,
     sr_psf_opt_iters: int = 250,
     sr_psf_opt_lr: float = 0.1,
-    # NEW
-    batch_frames: int | None = None,
-    # GPU tuning (optional knobs)
-    mixed_precision: bool | None = None,      # default: auto (True on CUDA/MPS)
-    fft_kernel_threshold: int = 1024,           # switch to FFT if K >= this (or lower if SR)
-    prefetch_batches: bool = True,            # CPU→GPU double-buffer prefetch
-    use_channels_last: bool | None = None,    # default: auto (True on CUDA/MPS)
-    force_cpu: bool = False,
-    star_mask_ref_path: str | None = None,     
-    low_mem: bool = False,
+    star_mask_ref_path: str | None = None,   
+    scratch_to_disk: bool = True,          # spill large scratch arrays to memmap
+    scratch_dir: str | None = None,        # where to put memmaps (default: tempdir)
+    memmap_threshold_mb: int = 512,        # always memmap if buffer > this
+    force_cpu: bool = False,                # disable torch entirely unless caller opts in
+    cache_psf_ffts: str = "disk",          # 'disk' | 'ram' | 'none'  (see §3)
+    fft_reuse_across_iters: bool = True,   # keep PSF FFTs across iters (same math)
+    io_workers: int | None = None,         # cap I/O threadpool (seed/tiles)
+    blas_threads: int = 1,                 # limit BLAS threads to avoid oversub      
 ):
-    """
-    Streaming multi-frame deconvolution with optional SR (r>1).
-    Optimized GPU path: AMP for convs, channels-last, pinned-memory prefetch, optional FFT for large kernels.
-    """
-    mixed_precision = False
-    DEBUG_FLAT_WEIGHTS = False 
-    # ---------- local helpers (kept self-contained) ----------
-    def _emit_pct(pct: float, msg: str | None = None):
-        pct = float(max(0.0, min(1.0, pct)))
-        status_cb(f"__PROGRESS__ {pct:.4f}" + (f" {msg}" if msg else ""))
-
-    def _pad_kernel_to(k: np.ndarray, K: int) -> np.ndarray:
-        """Pad/center an odd-sized kernel to K×K (K odd)."""
-        k = np.asarray(k, dtype=np.float32)
-        kh, kw = int(k.shape[0]), int(k.shape[1])
-        assert (kh % 2 == 1) and (kw % 2 == 1)
-        if kh == K and kw == K:
-            return k
-        out = np.zeros((K, K), dtype=np.float32)
-        y0 = (K - kh)//2; x0 = (K - kw)//2
-        out[y0:y0+kh, x0:x0+kw] = k
-        s = float(out.sum())
-        return out if s <= 0 else (out / s).astype(np.float32, copy=False)
-
+    # sanitize and clamp
     max_iters = max(1, int(iters))
     min_iters = max(1, int(min_iters))
     if min_iters > max_iters:
         min_iters = max_iters
 
-    n_frames = len(paths)
-    status_cb(f"MFDeconv: scanning {n_frames} aligned frames (memmap)…")
-    _emit_pct(0.02, "scanning")
+    def _emit_pct(pct: float, msg: str | None = None):
+        pct = float(max(0.0, min(1.0, pct)))
+        status_cb(f"__PROGRESS__ {pct:.4f}" + (f" {msg}" if msg else ""))
 
-    # choose common intersection size without loading full pixels
+    status_cb(f"MFDeconv: loading {len(paths)} aligned frames…")
+    _emit_pct(0.02, "loading")
+
+    # Use unified probe to pick a common crop without loading full images
     Ht, Wt = _common_hw_from_paths(paths)
     _emit_pct(0.05, "preparing")
 
-    # --- LOW-MEM PATCH (begin) ---
-    if low_mem:
-        # Cap decoded-frame LRU to keep peak RAM sane on 16 GB laptops
-        try:
-            _FRAME_LRU.cap = max(1, min(getattr(_FRAME_LRU, "cap", 8), 2))
-        except Exception:
-            pass
+    # Stream actual pixels cropped to (Ht,Wt), float32 CHW/2D + headers
+    frame_infos, hdrs = _prepare_frame_stack_memmap(
+        paths, Ht, Wt, color_mode,
+        scratch_dir=scratch_dir,
+        dtype=np.float32,                    # or pull from a cfg
+        tile_hw=(512, 512),
+        status_cb=status_cb,
+    )
 
-        # Disable CPU→GPU prefetch to avoid double-buffering allocations
-        prefetch_batches = False
+    tile_loader = _make_memmap_tile_loader(frame_infos, max_open=32)
 
-        # Relax SEP background grid & star detection canvas when requested
-        if use_variance_maps:
-            varmap_cfg = {**(varmap_cfg or {})}
-            # fewer, larger tiles → fewer big temporaries
-            varmap_cfg.setdefault("bw", 96)
-            varmap_cfg.setdefault("bh", 96)
+    def _open_frame_numpy(i: int) -> np.ndarray:
+        fi = frame_infos[i]
+        a = np.memmap(fi["path"], mode="r", dtype=fi["dtype"], shape=fi["shape"])
+        # Solver expects float32 math; cast on read (no copy if already f32)
+        return np.asarray(a, dtype=np.float32)
 
-        if use_star_masks:
-            star_mask_cfg = {**(star_mask_cfg or {})}
-            # shrink detection canvas to limit temp buffers inside SEP/mask draw
-            star_mask_cfg["max_side"] = int(min(1024, int(star_mask_cfg.get("max_side", 2048))))
-    # --- LOW-MEM PATCH (end) ---
+    # For functions that only need luma/HW:
+    def _open_frame_hw(i: int) -> np.ndarray:
+        arr = _open_frame_numpy(i)
+        if arr.ndim == 3:
+            return arr[0]  # use first/luma channel consistently
+        return arr
 
 
-    if any(os.path.splitext(p)[1].lower() == ".xisf" for p in paths):
-        status_cb("MFDeconv: priming XISF cache (one-time decode per frame)…")
-        for i, p in enumerate(paths, 1):
-            try:
-                _ = _xisf_cached_array(p)  # decode once, store memmap
-            except Exception as e:
-                status_cb(f"XISF cache failed for {p}: {e}")
-            if (i & 7) == 0 or i == len(paths):
-                _process_gui_events_safely()
-
-    # per-frame loader & sequence view (closures capture Ht/Wt/color_mode/paths)
-    def _load_frame_chw(i: int):
-        return _FRAME_LRU.get(paths[i], Ht, Wt, color_mode)
-
-    class _FrameSeq:
-        def __len__(self): return len(paths)
-        def __getitem__(self, i): return _load_frame_chw(i)
-    data = _FrameSeq()
-
-    # ---- torch detection (optional) ----
+    relax = 0.7
+    use_torch = False
     global torch, TORCH_OK
+
+    # -------- try to import torch from per-user runtime venv --------
+    # -------- try to import torch from per-user runtime venv --------
     torch = None
     TORCH_OK = False
     cuda_ok = mps_ok = dml_ok = False
     dml_device = None
-
     try:
         from pro.runtime_torch import import_torch
         torch = import_torch(prefer_cuda=True, status_cb=status_cb)
-        if getattr(torch.backends, "cudnn", None) is not None:
-            torch.backends.cudnn.enabled = True
-            torch.backends.cudnn.benchmark = False         # <- was True before; turn OFF
-            torch.backends.cudnn.deterministic = True      # <- stable, no heuristic tile changes
-            try:
-                torch.backends.cudnn.allow_tf32 = False
-            except Exception:
-                pass
-
-        # Conv/FFT should not sneak into TF32 or half reductions
-        try:
-            if getattr(torch.backends, "cuda", None) and getattr(torch.backends.cuda, "matmul", None):
-                torch.backends.cuda.matmul.allow_tf32 = False
-        except Exception:
-            pass
-
-        # No autocast anywhere (guard against external/global contexts)
-        try:
-            import contextlib
-            autocast_off = getattr(torch, "autocast", None)
-            GLOBAL_NO_AMP = (contextlib.nullcontext() if autocast_off is None
-                            else autocast_off(device_type="cuda", dtype=torch.float32, enabled=False))
-        except Exception:
-            GLOBAL_NO_AMP = None        
         TORCH_OK = True
+
         try: cuda_ok = hasattr(torch, "cuda") and torch.cuda.is_available()
-        except Exception: pass
+        except Exception: cuda_ok = False
         try: mps_ok = hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
-        except Exception: pass
+        except Exception: mps_ok = False
         try:
             import torch_directml
             dml_device = torch_directml.device()
             _ = (torch.ones(1, device=dml_device) + 1).item()
             dml_ok = True
-            # NEW: expose to _torch_device()
-            globals()["dml_ok"] = True
-            globals()["dml_device"] = dml_device
         except Exception:
             dml_ok = False
-            globals()["dml_ok"] = False
-            globals()["dml_device"] = None
 
         if cuda_ok:
             status_cb(f"PyTorch CUDA available: True | device={torch.cuda.get_device_name(0)}")
@@ -2888,44 +2487,64 @@ def multiframe_deconv(
             status_cb("PyTorch DirectML (Windows) available: True")
         else:
             status_cb("PyTorch present, using CPU backend.")
+
         status_cb(
-            f"PyTorch {getattr(torch,'__version__','?')} backend: "
+            f"PyTorch {getattr(torch, '__version__', '?')} backend: "
             + ("CUDA" if cuda_ok else "MPS" if mps_ok else "DirectML" if dml_ok else "CPU")
         )
-
-        try:
-            # keep cuDNN autotune on
-            if getattr(torch.backends, "cudnn", None) is not None:
-                torch.backends.cudnn.benchmark = True
-                torch.backends.cudnn.allow_tf32 = False
-        except Exception:
-            pass
-
-        try:
-            # disable TF32 matmul shortcuts if present (CUDA-only; safe no-op elsewhere)
-            if getattr(getattr(torch.backends, "cuda", None), "matmul", None) is not None:
-                torch.backends.cuda.matmul.allow_tf32 = False
-        except Exception:
-            pass
-
-        try:
-            # prefer highest FP32 precision on PT 2.x
-            if hasattr(torch, "set_float32_matmul_precision"):
-                torch.set_float32_matmul_precision("highest")
-        except Exception:
-            pass
     except Exception as e:
         TORCH_OK = False
         status_cb(f"PyTorch not available → CPU path. ({e})")
 
+    # ----------------------------
+    # Torch usage policy gate (STEP 5)
+    # ----------------------------
+    # 1) Hard off-switch from caller
     if force_cpu:
-        status_cb("⚠️ CPU-only debug mode: disabling PyTorch path.")
         TORCH_OK = False
+        torch = None
+        status_cb("Torch disabled by policy: force_cpu=True → using NumPy everywhere.")
+
+    # 2) (Optional) clamp BLAS threads globally to avoid oversubscription
+    try:
+        from threadpoolctl import threadpool_limits
+        _blas_ctx = threadpool_limits(limits=int(max(1, blas_threads)))
+    except Exception:
+        _blas_ctx = contextlib.nullcontext()
+
+    use_torch = bool(TORCH_OK)
+
+    # Only configure Torch backends if policy allowed Torch
+    if use_torch:
+        # ----- Precision policy (strict FP32) -----
+        try:
+            torch.backends.cudnn.benchmark = True
+            if hasattr(torch.backends, "cudnn"):
+                torch.backends.cudnn.allow_tf32 = False
+            if hasattr(torch.backends, "cuda") and hasattr(torch.backends.cuda, "matmul"):
+                torch.backends.cuda.matmul.allow_tf32 = False
+            if hasattr(torch, "set_float32_matmul_precision"):
+                torch.set_float32_matmul_precision("highest")
+        except Exception:
+            pass
+
+        try:
+            c_tf32 = getattr(torch.backends.cudnn, "allow_tf32", None)
+            m_tf32 = getattr(getattr(torch.backends.cuda, "matmul", object()), "allow_tf32", None)
+            status_cb(
+                f"Precision: cudnn.allow_tf32={c_tf32} | "
+                f"matmul.allow_tf32={m_tf32} | "
+                f"benchmark={getattr(torch.backends.cudnn, 'benchmark', None)}"
+            )
+        except Exception:
+            pass
+
 
     _process_gui_events_safely()
 
-    # ---- PSFs + optional assets (computed in parallel, streaming I/O) ----
-    psfs, masks_auto, vars_auto = _build_psf_and_assets(
+    # PSFs (auto-size per frame) + flipped copies
+    psf_out_dir = None
+    psfs, masks_auto, vars_auto, var_paths = _build_psf_and_assets(
         paths,
         make_masks=bool(use_star_masks),
         make_varmaps=bool(use_variance_maps),
@@ -2934,806 +2553,485 @@ def multiframe_deconv(
         star_mask_cfg=star_mask_cfg,
         varmap_cfg=varmap_cfg,
         star_mask_ref_path=star_mask_ref_path,
-        # NEW:
         Ht=Ht, Wt=Wt, color_mode=color_mode,
     )
 
-    try:
-        import gc as _gc
-        _gc.collect()
-    except Exception:
-        pass
-
-    psfs_native = psfs  # keep a reference to the original native PSFs for fallback
-
-    # ---- SR lift of PSFs if needed ----
-    r_req = _coerce_sr_factor(super_res_factor, default_on_bad=2)
-    status_cb(f"MFDeconv: SR factor requested={super_res_factor!r} → using r={r_req}")
-    r = int(r_req)
-
+    # >>> SR: lift PSFs to super-res if requested
+    r = int(max(1, super_res_factor))
     if r > 1:
         status_cb(f"MFDeconv: Super-resolution r={r} with σ={sr_sigma} — solving SR PSFs…")
         _process_gui_events_safely()
-
-        def _naive_sr_from_native(f_nat: np.ndarray, r_: int) -> np.ndarray:
-            f2 = np.asarray(f_nat, np.float32)
-            H, W = f2.shape[:2]
-            k_sq = min(H, W)
-            if H != W:
-                y0 = (H - k_sq) // 2; x0 = (W - k_sq) // 2
-                f2 = f2[y0:y0+k_sq, x0:x0+k_sq]
-            if (f2.shape[0] % 2) == 0:
-                f2 = f2[1:, 1:]  # make odd
-            f2 = _normalize_psf(f2)
-            h0 = np.zeros((f2.shape[0]*r_, f2.shape[1]*r_), np.float32)
-            h0[::r_, ::r_] = f2
-            return _normalize_psf(h0)
-
         sr_psfs = []
         for i, k_native in enumerate(psfs, start=1):
-            try:
-                status_cb(f"  SR-PSF{i}: native shape={np.asarray(k_native).shape}")
-                h = _solve_super_psf_from_native(
-                    k_native, r=r, sigma=float(sr_sigma),
-                    iters=int(sr_psf_opt_iters), lr=float(sr_psf_opt_lr)
-                )
-            except Exception as e:
-                status_cb(f"  SR-PSF{i} failed: {e!r} → using naïve upsample")
-                h = _naive_sr_from_native(k_native, r)
-
-            # guarantee odd size for downstream SAME-padding math
-            if (h.shape[0] % 2) == 0:
-                h = h[:-1, :-1]
-            sr_psfs.append(h.astype(np.float32, copy=False))
-            status_cb(f"  SR-PSF{i}: native {np.asarray(k_native).shape[0]} → {h.shape[0]} (sum={h.sum():.6f})")
+            h = _solve_super_psf_from_native(k_native, r=r, sigma=float(sr_sigma),
+                                             iters=int(sr_psf_opt_iters), lr=float(sr_psf_opt_lr))
+            sr_psfs.append(h)
+            status_cb(f"  SR-PSF{i}: native {k_native.shape[0]} → {h.shape[0]} (sum={h.sum():.6f})")
         psfs = sr_psfs
-
-
-
-    # ---- Seed (streaming) with robust bootstrap already in file helpers ----
-    _emit_pct(0.25, "Calculating Seed Image...")
-    def _seed_progress(frac, msg):
-        _emit_pct(0.25 + 0.15 * float(frac), f"seed: {msg}")
-
-    seed_mode_s = str(seed_mode).lower().strip()
-    if seed_mode_s not in ("robust", "median"):
-        seed_mode_s = "robust"
-    if seed_mode_s == "median":
-        status_cb("MFDeconv: Building median seed (tiled, streaming)…")
-        seed_native = _seed_median_streaming(
-            paths, Ht, Wt,
-            color_mode=color_mode,
-            tile_hw=(256, 256),
-            status_cb=status_cb,
-            progress_cb=_seed_progress,
-            use_torch=TORCH_OK,   # ← auto: GPU if available, else NumPy
-        )
-    else:
-        seed_native = _seed_bootstrap_streaming(
-            paths, Ht, Wt, color_mode,
-            bootstrap_frames=20, clip_sigma=5,
-            status_cb=status_cb, progress_cb=_seed_progress
-        )
-
-    # lift seed if SR
-    if r > 1:
-        target_hw = (Ht * r, Wt * r)
-        if seed_native.ndim == 2:
-            x = _upsample_sum(seed_native / (r*r), r, target_hw=target_hw)
-        else:
-            C, Hn, Wn = seed_native.shape
-            x = np.stack(
-                [_upsample_sum(seed_native[c] / (r*r), r, target_hw=target_hw) for c in range(C)],
-                axis=0
-            )
-    else:
-        x = seed_native
-
-    # FINAL SHAPE CHECKS (auto-correct if a GUI sent something odd)
-    if x.ndim == 2: x = x[None, ...]
-    Hs, Ws = x.shape[-2], x.shape[-1]
-    if r > 1:
-        expected_H, expected_W = Ht * r, Wt * r
-        if (Hs, Ws) != (expected_H, expected_W):
-            status_cb(f"SR seed grid mismatch: got {(Hs, Ws)}, expected {(expected_H, expected_W)} → correcting")
-            # Rebuild from the native mean to ensure exact SR size
-            x = _upsample_sum(x if x.ndim==2 else x[0], r, target_hw=(expected_H, expected_W))
-            if x.ndim == 2: x = x[None, ...]
-    try: del seed_native
-    except Exception: pass
-
-    try:
-        import gc as _gc
-        _gc.collect()
-    except Exception:
-        pass
 
     flip_psf = [_flip_kernel(k) for k in psfs]
     _emit_pct(0.20, "PSF Ready")
 
-    # --- Harmonize seed channels with the actual frames ---
-    # Probe the first frame's channel count (CHW from the cache)
-    try:
-        y0_probe = _load_frame_chw(0)               # CHW float32
-        C_ref = 1 if y0_probe.ndim == 2 else int(y0_probe.shape[0])
-    except Exception:
-        # Fallback: infer from seed if probing fails
-        C_ref = 1 if x.ndim == 2 else int(x.shape[0])
 
-    # If median seed came back mono but frames are RGB, broadcast it
-    if x.ndim == 2 and C_ref == 3:
-        x = np.stack([x] * 3, axis=0)
-    elif x.ndim == 3 and x.shape[0] == 1 and C_ref == 3:
-        x = np.repeat(x, 3, axis=0)
-    # If seed is RGB but frames are mono (rare), collapse to luma
-    elif x.ndim == 3 and x.shape[0] == 3 and C_ref == 1:
-        # ITU-R BT.709 luma (safe in float)
-        x = (0.2126 * x[0] + 0.7152 * x[1] + 0.0722 * x[2]).astype(np.float32)
+    # --- SR/native seed ---
+    seed_mode_s = str(seed_mode).lower().strip()
+    if seed_mode_s not in ("robust", "median"):
+        seed_mode_s = "robust"
 
-    # Ensure CHW shape for the rest of the pipeline
-    if x.ndim == 2:
-        x = x[None, ...]
-    elif x.ndim == 3 and x.shape[0] not in (1, 3) and x.shape[-1] in (1, 3):
-        x = np.moveaxis(x, -1, 0)
-
-    # Set the expected channel count from the FRAMES, not from the seed
-    C_EXPECTED = int(C_ref)
-    _, Hs, Ws = x.shape
-
-    
-
-    # ---- choose default batch size ----
-    if batch_frames is None:
-        px = Hs * Ws
-        if px >= 16_000_000:     auto_B = 2
-        elif px >= 8_000_000:    auto_B = 4
-        else:                    auto_B = 8
-    else:
-        auto_B = int(max(1, batch_frames))
-
-    # --- LOW-MEM PATCH: clamp batch size hard ---
-    if low_mem:
-        auto_B = max(1, min(auto_B, 2))
-
-    # ---- background/MAD telemetry (first frame) ----
-    status_cb("MFDeconv: Calculating Backgrounds and MADs…")
-    _process_gui_events_safely()
-    try:
-        y0 = data[0]; y0l = y0 if y0.ndim == 2 else y0[0]
-        med = float(np.median(y0l)); mad = float(np.median(np.abs(y0l - med))) + 1e-6
-        bg_est = 1.4826 * mad
-    except Exception:
-        bg_est = 0.0
-    status_cb(f"MFDeconv: color_mode={color_mode}, huber_delta={huber_delta} (bg RMS~{bg_est:.3g})")
-
-    # ---- mask/variance accessors ----
-    def _mask_for(i, like_img):
-        src = (masks if masks is not None else masks_auto)
-        if src is None:  # no masks at all
-            return np.ones((like_img.shape[-2], like_img.shape[-1]), dtype=np.float32)
-        m = src[i]
-        if m is None:
-            return np.ones((like_img.shape[-2], like_img.shape[-1]), dtype=np.float32)
-        m = np.asarray(m, dtype=np.float32)
-        if m.ndim == 3: m = m[0]
-        return _center_crop(m, like_img.shape[-2], like_img.shape[-1]).astype(np.float32, copy=False)
-
-    def _var_for(i, like_img):
-        src = (variances if variances is not None else vars_auto)
-        if src is None: return None
-        v = src[i]
-        if v is None: return None
-        v = np.asarray(v, dtype=np.float32)
-        if v.ndim == 3: v = v[0]
-        v = _center_crop(v, like_img.shape[-2], like_img.shape[-1])
-        return np.clip(v, 1e-8, None).astype(np.float32, copy=False)
-
-    # ---- NumPy path conv helper (keep as-is) ----
-    def _conv_np_same(a, k, out=None):
-        y = _conv_same_np_spatial(a, k, out)
-        if y is not None:
-            return y
-        # No OpenCV → always use the ifftshifted FFT path
-        import numpy as _np, numpy.fft as _fft
-        H, W = a.shape[-2:]
-        kh, kw = k.shape
-        fftH, fftW = _fftshape_same(H, W, kh, kw)
-        Kf = _fft.rfftn(_np.fft.ifftshift(k), s=(fftH, fftW))
-        if out is None:
-            out = _np.empty_like(a, dtype=_np.float32)
-        return _fft_conv_same_np(a, Kf, kh, kw, fftH, fftW, out)
-
-    # ---- allocate scratch & prepare PSF tensors if torch ----
-    status_cb("MFDeconv: preparing scratch buffers…")
-    relax = 0.7
-    use_torch = bool(TORCH_OK)
-    cm = _safe_inference_context() if use_torch else NO_GRAD
-    rho_is_l2 = (str(rho).lower() == "l2")
-    local_delta = 0.0 if rho_is_l2 else huber_delta
-
-    if use_torch:
-        status_cb("MFDeconv: preparing torch tensors…")
-        F = torch.nn.functional
-        device = _torch_device()
-
-        # Force FP32 tensors
-        x_t  = _to_t(_contig(x)).to(torch.float32)
-        num  = torch.zeros_like(x_t, dtype=torch.float32)
-        den  = torch.zeros_like(x_t, dtype=torch.float32)
-
-        # channels-last preference kept (does not change dtype)
-        if use_channels_last is None:
-            use_channels_last = bool(cuda_ok)   # <- never enable on MPS
-        if mps_ok:
-            use_channels_last = False           # <- force NCHW on MPS
-
-        # PSF tensors strictly FP32
-        psf_t  = [_to_t(_contig(k))[None, None]  for k  in psfs]     # (1,1,kh,kw)
-        psfT_t = [_to_t(_contig(kT))[None, None] for kT in flip_psf]
-        use_spatial = _torch_should_use_spatial(psf_t[0].shape[-1])
-
-        # No mixed precision, no autocast
-        use_amp = False
-        amp_cm = None
-        amp_kwargs = {}
-
-        # ---- FORCE FFT PATH ON CUDA (avoids cuDNN conv heuristics) ----
-        use_fft = (device.type == "cuda")
-        if use_fft:
-            # FFT path uses NCHW; don't steer cuDNN via NHWC
-            use_channels_last = False
-            psf_fft, psfT_fft = _precompute_torch_psf_ffts(
-                psfs, flip_psf, Hs, Ws, device=x_t.device, dtype=torch.float32
+    if seed_mode_s == "median":
+        status_cb("MFDeconv: Building median seed (streaming, CPU)…")
+        try:
+            seed_native = _seed_median_streaming(
+                paths,
+                Ht,
+                Wt,
+                color_mode=color_mode,
+                tile_hw=(256, 256),
+                status_cb=status_cb,
+                progress_cb=lambda f, m="": _emit_pct(0.10 + 0.10 * f, f"median seed: {m}"),
+                io_workers=io_workers,
+                scratch_dir=scratch_dir,
+                tile_loader=tile_loader,   # <<< use the memmap-backed tiles
             )
-            status_cb("FFT: precompute packs done")
-        else:
-            psf_fft = psfT_fft = None
-            # non-CUDA backends can keep spatial path as-is
-            K_native_max = max(int(k.shape[0]) for k in psfs)
-            Kmax = K_native_max if (K_native_max % 2 == 1) else (K_native_max + 1)
-            if any(int(k.shape[0]) != Kmax for k in psfs):
-                status_cb(f"MFDeconv: normalizing PSF sizes → {Kmax}×{Kmax}")
-                psfs = [_pad_kernel_to(k, Kmax) for k in psfs]
-                flip_psf = [_flip_kernel(k) for k in psfs]
-
-        # (Re)build spatial kernels strictly as contiguous FP32 tensors
-        status_cb("MFDeconv: preparing PSF tensors…")
-        psf_t  = [_to_t(_contig(k))[None, None].to(torch.float32).contiguous()  for k  in psfs]
-        psfT_t = [_to_t(_contig(kT))[None, None].to(torch.float32).contiguous() for kT in flip_psf]
-        status_cb("MFDeconv: PSF tensors ready")
+        finally:
+            # drop any open memmap handles held by the loader
+            try: tile_loader.close()
+            except Exception: pass
+            import gc as _gc; _gc.collect()
     else:
-        x_t = _contig(x).astype(np.float32, copy=False)
-        num = np.zeros_like(x_t, dtype=np.float32)
-        den = np.zeros_like(x_t, dtype=np.float32)
-        use_amp = False
-        use_fft = False
+        status_cb("MFDeconv: Building robust seed (live μ-σ stacking)…")
+        seed_native = _build_seed_running_mu_sigma_from_paths(
+            paths, Ht, Wt, color_mode,
+            bootstrap_frames=20, clip_sigma=5.0,
+            status_cb=status_cb, progress_cb=lambda f,m='': None
+        )
+    if r > 1:
+        if seed_native.ndim == 2:
+            x = _upsample_sum(seed_native / (r*r), r, target_hw=(Ht*r, Wt*r))
+        else:
+            C, Hn, Wn = seed_native.shape
+            x = np.stack(
+                [_upsample_sum(seed_native[c] / (r*r), r, target_hw=(Hn*r, Wn*r)) for c in range(C)],
+                axis=0
+            )
+    else:
+        x = seed_native
+    # Ensure CHW shape under PerChannel, even for mono (C=1)
+    if str(color_mode).lower() != "luma" and x.ndim == 2:
+        x = x[None, ...]  # (1,H,W) to match frame & Torch ops
 
-    # ---- batched torch helper (grouped depthwise per-sample) ----
-    if use_torch:
-        # inside `if use_torch:` block in multiframe_deconv — replace the whole inner helper
-        def _grouped_conv_same_torch_per_sample(x_bc_hw, w_b1kk, B, C):
-            """
-            x_bc_hw : (B,C,H,W), torch.float32 on device
-            w_b1kk  : (B,1,kh,kw), torch.float32 on device
-            Returns (B,C,H,W) contiguous (NCHW).
-            """
-            F = torch.nn.functional
+    # Robust H,W extraction
+    Hs, Ws = (x.shape[-2], x.shape[-1]) if x.ndim >= 2 else (Ht, Wt)
 
-            # Force standard NCHW contiguous tensors
-            x_bc_hw = x_bc_hw.to(memory_format=torch.contiguous_format).contiguous()
-            w_b1kk  = w_b1kk.to(memory_format=torch.contiguous_format).contiguous()
+    # masks/vars aligned to native grid (2D each)
+    auto_masks = masks_auto if use_star_masks else None
+    auto_vars  = vars_auto  if use_variance_maps else None
+    base_template = np.empty((Ht, Wt), dtype=np.float32)
+    data_like = [base_template] * len(paths)
 
-            kh, kw = int(w_b1kk.shape[-2]), int(w_b1kk.shape[-1])
-            pad = (kw // 2, kw - kw // 2 - 1,  kh // 2, kh - kh // 2 - 1)
+    # replace the bad call with:
+    mask_list = _ensure_mask_list(
+        masks if masks is not None else masks_auto,
+        data_like
+    )
+    # ...
+    if use_variance_maps and var_paths is not None:
+        def _open_var_mm(p):
+            return None if p is None else np.memmap(p, mode="r", dtype=_VAR_DTYPE, shape=(Ht, Wt))
+        var_list = [_open_var_mm(p) for p in var_paths]
+    else:
+        var_list = [None] * len(paths)
 
-            if x_bc_hw.device.type == "mps":
-                # Safe, slower path: convolve each channel separately, no groups
-                ys = []
-                for j in range(B):                      # per sample
-                    xj = x_bc_hw[j:j+1]                # (1,C,H,W)
-                    # reflect pad once per sample
-                    xj = F.pad(xj, pad, mode="reflect")
-                    cj_out = []
-                    # one shared kernel per sample j: (1,1,kh,kw)
-                    kj = w_b1kk[j:j+1]                 # keep shape (1,1,kh,kw)
-                    for c in range(C):
-                        # slice that channel as its own (1,1,H,W) tensor
-                        xjc = xj[:, c:c+1, ...]
-                        yjc = F.conv2d(xjc, kj, padding=0, groups=1)  # no groups
-                        cj_out.append(yjc)
-                    ys.append(torch.cat(cj_out, dim=1))  # (1,C,H,W)
-                return torch.stack([y[0] for y in ys], 0).contiguous()
-
-
-            # ---- FAST PATH (CUDA/CPU): single grouped conv with G=B*C ----
-            G = int(B * C)
-            x_1ghw = x_bc_hw.reshape(1, G, x_bc_hw.shape[-2], x_bc_hw.shape[-1])
-            x_1ghw = F.pad(x_1ghw, pad, mode="reflect")
-            w_g1kk = w_b1kk.repeat_interleave(C, dim=0)        # (G,1,kh,kw)
-            y_1ghw = F.conv2d(x_1ghw, w_g1kk, padding=0, groups=G)
-            return y_1ghw.reshape(B, C, y_1ghw.shape[-2], y_1ghw.shape[-1]).contiguous()
-
-
-        def _downsample_avg_bt_t(x, r_):
-            if r_ <= 1:
-                return x
-            B, C, H, W = x.shape
-            Hr, Wr = (H // r_) * r_, (W // r_) * r_
-            if Hr == 0 or Wr == 0:
-                return x
-            return x[:, :, :Hr, :Wr].reshape(B, C, Hr // r_, r_, Wr // r_, r_).mean(dim=(3, 5))
-
-        def _upsample_sum_bt_t(x, r_):
-            if r_ <= 1:
-                return x
-            return x.repeat_interleave(r_, dim=-2).repeat_interleave(r_, dim=-1)
-
-    def _make_pinned_batch(idx, C_expected, to_device_dtype):
-        y_list, m_list, v_list = [], [], []
-        for fi in idx:
-            y_chw = _load_frame_chw(fi)  # CHW float32 from cache
-            if y_chw.ndim != 3:
-                raise RuntimeError(f"Frame {fi}: expected CHW, got {tuple(y_chw.shape)}")
-            C_here = int(y_chw.shape[0])
-            if C_expected is not None and C_here != C_expected:
-                raise RuntimeError(f"Mixed channel counts: expected C={C_expected}, got C={C_here} (frame {fi})")
-
-            m2d = _mask_for(fi, y_chw)
-            v2d = _var_for(fi, y_chw)
-            y_list.append(y_chw); m_list.append(m2d); v_list.append(v2d)
-
-        # CPU (NCHW) tensors
-        y_cpu = torch.from_numpy(np.stack(y_list, 0)).to(torch.float32).contiguous()
-        m_cpu = torch.from_numpy(np.stack(m_list, 0)).to(torch.float32).contiguous()
-        have_v = all(v is not None for v in v_list)
-        vb_cpu = None if not have_v else torch.from_numpy(np.stack(v_list, 0)).to(torch.float32).contiguous()
-
-        # optional pin for faster H2D on CUDA
-        if hasattr(torch, "cuda") and torch.cuda.is_available():
-            y_cpu = y_cpu.pin_memory(); m_cpu = m_cpu.pin_memory()
-            if vb_cpu is not None: vb_cpu = vb_cpu.pin_memory()
-
-        # move to device in FP32, keep NCHW contiguous format
-        yb = y_cpu.to(x_t.device, dtype=torch.float32, non_blocking=True).contiguous()
-        mb = m_cpu.to(x_t.device, dtype=torch.float32, non_blocking=True).contiguous()
-        vb = None if vb_cpu is None else vb_cpu.to(x_t.device, dtype=torch.float32, non_blocking=True).contiguous()
-
-        return yb, mb, vb
-
-
-
-    # ---- intermediates folder ----
     iter_dir = None
     hdr0_seed = None
-    status_cb("MFDeconv: Starting main iteration loop…")
-    GLOBAL_NO_AMP = None
-    NO_GRAD = nullcontext()
-    cm = (lambda: nullcontext())
-    status_cb("DBG: contexts disabled → using nullcontext()")    
     if save_intermediate:
         iter_dir = _iter_folder(out_path)
         status_cb(f"MFDeconv: Intermediate outputs → {iter_dir}")
         try:
-            hdr0 = _safe_primary_header(paths[0])
+            hdr0_seed = _safe_primary_header(paths[0])
         except Exception:
-            hdr0 = fits.Header()
-        _save_iter_image(x, hdr0, iter_dir, "seed", color_mode)
+            hdr0_seed = fits.Header()
+        _save_iter_image(x, hdr0_seed, iter_dir, "seed", color_mode)
 
-    # ---- iterative loop ----
-    tol_upd = 2e-4
-    tol_rel = 5e-4
-    patience = 2
-    ema_um = None   # EMA of |upd-1|
-    ema_rc = None   # EMA of relative x-change
-    base_um = None  # first-iter baselines
-    base_rc = None
-    ema_alpha = 0.5  # smoothing factor    
-    early_cnt = 0
+    status_cb("MFDeconv: Calculating Backgrounds and MADs…")
+    _process_gui_events_safely()
+    y0 = _open_frame_hw(0)
+    bg_est = _sep_bg_rms([y0]) or (np.median(np.abs(y0 - np.median(y0))) * 1.4826)
+    del y0
+    status_cb(f"MFDeconv: color_mode={color_mode}, huber_delta={huber_delta} (bg RMS~{bg_est:.3g})")
+    _process_gui_events_safely()
+
+    status_cb("Computing FFTs and Allocating Scratch…")
+    _process_gui_events_safely()
+
+    # -------- precompute and allocate scratch --------
+    pred_super = None   # CPU-only temp; avoid UnboundLocal on Torch path
+    tmp_out    = None   # CPU-only temp; avoid UnboundLocal on Torch path    
+    def _arr_only(x):
+        """Accept either ndarray/memmap or (memmap, path) and return the array."""
+        if isinstance(x, tuple) and len(x) == 2 and hasattr(x[0], "dtype"):
+            return x[0]
+        return x    
+    per_frame_logging = (r > 1)
+    if use_torch:
+        x_t = _to_t(_contig(x))
+        num = torch.zeros_like(x_t)
+        den = torch.zeros_like(x_t)
+
+        if r > 1:
+            # >>> SR path now uses SPATIAL CONV (cuDNN) to avoid huge FFT buffers
+            psf_t  = [_to_t(_contig(k))[None, None]  for k  in psfs]   # (1,1,kh,kw)
+            psfT_t = [_to_t(_contig(kT))[None, None] for kT in flip_psf]
+        else:
+            # Native spatial (as before)
+            psf_t  = [_to_t(_contig(k))[None, None]  for k  in psfs]
+            psfT_t = [_to_t(_contig(kT))[None, None] for kT in flip_psf]
+
+    else:
+        # ---------- CPU path (NumPy) ----------
+        x_t = x
+
+        # Determine working size
+        if x_t.ndim == 2:
+            Hs, Ws = x_t.shape
+        else:
+            _, Hs, Ws = x_t.shape
+
+        # Choose PSF FFT caching policy
+        # Expect this to be threaded in from function args; fallback to "ram"
+        cache_psf_ffts = locals().get("cache_psf_ffts", "ram")
+        scratch_dir = locals().get("scratch_dir", None)
+
+        import numpy.fft as _fft
+
+        Kfs = KTfs = meta = None
+
+        if cache_psf_ffts == "ram":
+            # Original behavior: keep FFTs in RAM
+            Kfs, KTfs, meta = _precompute_np_psf_ffts(psfs, flip_psf, Hs, Ws)
+
+        elif cache_psf_ffts == "disk":
+            # New behavior: keep FFTs in disk-backed memmaps to save RAM
+            # Requires _mm_create() helper (Step 2). If not added yet, set cache_psf_ffts="ram".
+            Kfs, KTfs, meta = [], [], []
+            for idx, (k, kT) in enumerate(zip(psfs, flip_psf), start=1):
+                kh, kw = k.shape
+                fftH, fftW = _fftshape_same(Hs, Ws, kh, kw)
+
+                # Create complex64 memmaps for rfftn grids (H, W//2+1)
+                Kf_mm,  Kf_path  = _mm_create((fftH, fftW//2 + 1), np.complex64, scratch_dir, tag=f"Kf_{idx}")
+                KTf_mm, KTf_path = _mm_create((fftH, fftW//2 + 1), np.complex64, scratch_dir, tag=f"KTf_{idx}")
+
+                # Compute once into the memmaps (same math)
+                Kf_mm[...]  = _fft.rfftn(np.fft.ifftshift(k).astype(np.float32, copy=False),  s=(fftH, fftW)).astype(np.complex64, copy=False)
+                KTf_mm[...] = _fft.rfftn(np.fft.ifftshift(kT).astype(np.float32, copy=False), s=(fftH, fftW)).astype(np.complex64, copy=False)
+                Kf_mm.flush(); KTf_mm.flush()
+
+                Kfs.append(Kf_mm)
+                KTfs.append(KTf_mm)
+                meta.append((kh, kw, fftH, fftW))
+
+        elif cache_psf_ffts == "none":
+            # Don’t precompute; compute per-frame inside the iter loop (same math, less RAM, more CPU).
+            Kfs = KTfs = meta = None
+        else:
+            # Fallback to RAM behavior
+            cache_psf_ffts = "ram"
+            Kfs, KTfs, meta = _precompute_np_psf_ffts(psfs, flip_psf, Hs, Ws)
+
+        # Allocate CPU scratch (keep as-is for Step 3)
+        def _shape_of(a): return a.shape, a.dtype
+
+        # Always keep x_t in RAM for speed (it’s the only array updated iteratively)
+        # But allow opting into memmap if strictly necessary:
+        if scratch_to_disk and (_approx_bytes(x.shape, x.dtype) / 1e6 > memmap_threshold_mb):
+            x_mm, x_path = _mm_create(x.shape, x.dtype, scratch_dir, tag="x")
+            x_mm[...] = x  # copy the seed into the memmap
+            x_t = x_mm
+        else:
+            x_t = x
+
+        num = _arr_only(_maybe_memmap(x_t.shape, x_t.dtype,
+                                    force_mm=scratch_to_disk,
+                                    threshold_mb=memmap_threshold_mb,
+                                    scratch_dir=scratch_dir, tag="num"))
+        den = _arr_only(_maybe_memmap(x_t.shape, x_t.dtype,
+                                    force_mm=scratch_to_disk,
+                                    threshold_mb=memmap_threshold_mb,
+                                    scratch_dir=scratch_dir, tag="den"))
+
+        pred_super = _arr_only(_maybe_memmap(x_t.shape, x_t.dtype,
+                                            force_mm=scratch_to_disk,
+                                            threshold_mb=memmap_threshold_mb,
+                                            scratch_dir=scratch_dir, tag="pred"))
+        tmp_out    = _arr_only(_maybe_memmap(x_t.shape, x_t.dtype,
+                                            force_mm=scratch_to_disk,
+                                            threshold_mb=memmap_threshold_mb,
+                                            scratch_dir=scratch_dir, tag="tmp"))
+
+
+    _to_check = [('x_t', x_t), ('num', num), ('den', den)]
+    if not use_torch:
+        _to_check += [('pred_super', pred_super), ('tmp_out', tmp_out)]
+    for _name, _arr in _to_check:
+        assert hasattr(_arr, 'shape'), f"{_name} must be array-like with .shape, got {type(_arr)}"
+    _flush_memmaps(num, den)
+
+    # CPU-only scratch; may not exist on Torch path
+    if isinstance(pred_super, np.memmap):
+        _flush_memmaps(pred_super)
+    if isinstance(tmp_out, np.memmap):
+        _flush_memmaps(tmp_out)
+
+
+    status_cb("Starting First Multiplicative Iteration…")
+    _process_gui_events_safely()
+
+    cm = _safe_inference_context() if use_torch else NO_GRAD
+    rho_is_l2 = (str(rho).lower() == "l2")
+    local_delta = 0.0 if rho_is_l2 else huber_delta
     used_iters = 0
     early_stopped = False
-    early_frac = 0.40
 
     auto_delta_cache = None
     if use_torch and (huber_delta < 0) and (not rho_is_l2):
-        auto_delta_cache = [None] * n_frames
+        auto_delta_cache = [None] * len(paths)
 
-    status_cb("DBG: about to enter cm()")
-    try:
-        with cm():
-            status_cb("DBG: inside cm(), entering iteration loop")
+    tol_upd = 1e-3
+    tol_rel = 5e-4
+    patience = 2
+    early_cnt = 0
 
-            for it in range(1, max_iters + 1):
-                # reset accumulators
-                if use_torch:
-                    num.zero_(); den.zero_()
-                else:
-                    num.fill(0.0); den.fill(0.0)
+    with cm():
+        for it in range(1, max_iters + 1):
+            if use_torch:
+                num.zero_(); den.zero_()
 
-                if use_torch:
-                    # ---- batched GPU path (hardened with busy→CPU fallback) ----
-                    retry_cpu = False  # if True, we’ll redo this iteration’s accumulators on CPU
+                if r > 1:
+                    # -------- SR path (SPATIAL conv + stream) --------
+                    for fidx, (wk, wkT) in enumerate(zip(psf_t, psfT_t)):
+                        yt_np = _open_frame_numpy(fidx)  # CHW or HW (CPU)
+                        mt_np = mask_list[fidx]
+                        vt_np = var_list[fidx]
 
-                    try:
-                        frame_idx = list(range(n_frames))
-                        B_cur = int(max(1, auto_B))
-                        ci = 0
-                        Cn = None
+                        yt = torch.as_tensor(yt_np, dtype=x_t.dtype, device=x_t.device)
+                        mt = None if mt_np is None else torch.as_tensor(mt_np, dtype=x_t.dtype, device=x_t.device)
+                        vt = None if vt_np is None else torch.as_tensor(vt_np, dtype=x_t.dtype, device=x_t.device)
 
-                        # AMP context helper
-                        def _maybe_amp():
-                            if use_amp and (amp_cm is not None):
-                                return amp_cm(**amp_kwargs)
-                            from contextlib import nullcontext
-                            return nullcontext()
+                        # SR conv on grid of x_t
+                        pred_sr = _conv_same_torch(x_t, wk)                 # SR grid
+                        pred_low = _downsample_avg_t(pred_sr, r)            # native grid
 
-                        # prefetch first batch (unchanged)
-                        if prefetch_batches:
-                            idx0 = frame_idx[ci:ci+B_cur]
-                            if idx0:
-                                Cn = C_EXPECTED
-                                yb_next, mb_next, vb_next = _make_pinned_batch(idx0, Cn, x_t.dtype)
-                            else:
-                                yb_next = mb_next = vb_next = None
-
-                        status_cb(f"loop: enter while  B_cur={B_cur}  prefetch={prefetch_batches}")
-                        while ci < n_frames:
-                            idx = frame_idx[ci:ci + B_cur]
-                            B = len(idx)
-                            try:
-                                # ---- per-batch gather/conv/weights/backproject (FFT-gated) ----
-                                if prefetch_batches and (yb_next is not None):
-                                    yb, mb, vb = yb_next, mb_next, vb_next
-                                    ci2 = ci + B_cur
-                                    if ci2 < n_frames:
-                                        idx2 = frame_idx[ci2:ci2+B_cur]
-                                        Cn = Cn or (_as_chw(_sanitize_numeric(data[idx[0]])).shape[0])
-                                        yb_next, mb_next, vb_next = _make_pinned_batch(idx2, Cn, torch.float32)
-                                    else:
-                                        yb_next = mb_next = vb_next = None
-                                else:
-                                    Cn = C_EXPECTED
-                                    yb, mb, vb = _make_pinned_batch(idx, Cn, torch.float32)
-                                    if use_channels_last:
-                                        yb = yb.contiguous(memory_format=torch.channels_last)
-
-                                # Build spatial kernels ONLY if we're NOT using FFT
-                                if not use_fft:
-                                    wk  = torch.cat([psf_t[fi]  for fi in idx], dim=0).to(memory_format=torch.contiguous_format).contiguous()
-                                    wkT = torch.cat([psfT_t[fi] for fi in idx], dim=0).to(memory_format=torch.contiguous_format).contiguous()
-
-                                # --- predict on SR grid ---
-                                x_bc_hw = x_t.unsqueeze(0).expand(B, -1, -1, -1).contiguous()
-                                if use_channels_last:
-                                    x_bc_hw = x_bc_hw.contiguous(memory_format=torch.channels_last)
-
-                                if use_fft:
-                                    pred_list = []
-                                    chan_tmp  = torch.empty_like(x_t[0], dtype=torch.float32)  # (H,W)
-                                    for j, fi in enumerate(idx):
-                                        C_here = x_bc_hw.shape[1]
-                                        pred_j = torch.empty_like(x_t, dtype=torch.float32)    # (C,H,W)
-                                        Kf_pack = psf_fft[fi]
-                                        for c in range(C_here):
-                                            _fft_conv_same_torch(x_bc_hw[j, c], Kf_pack, out_spatial=chan_tmp)
-                                            pred_j[c].copy_(chan_tmp)
-                                        pred_list.append(pred_j)
-                                    pred_super = torch.stack(pred_list, 0).contiguous()
-                                else:
-                                    pred_super = _grouped_conv_same_torch_per_sample(x_bc_hw, wk, B, Cn).contiguous()
-
-                                pred_low = _downsample_avg_bt_t(pred_super, r) if r > 1 else pred_super
-
-                                # --- residuals and weights ---
-                                rnat = yb - pred_low
-
-                                if vb is None:
-                                    med, mad = _robust_med_mad_t(rnat, max_elems_per_sample=2_000_000)
-                                    vmap = (1.4826 * mad) ** 2
-                                    vmap = vmap.repeat(1, Cn, rnat.shape[-2], rnat.shape[-1]).contiguous()
-                                else:
-                                    vmap = vb.unsqueeze(1).repeat(1, Cn, 1, 1).contiguous()
-
-                                if str(rho).lower() == "l2":
-                                    psi_over_r = torch.ones_like(rnat, dtype=torch.float32, device=x_t.device)
-                                else:
-                                    if huber_delta < 0:
-                                        if (auto_delta_cache is None) or any(auto_delta_cache[fi] is None for fi in idx) or (it % 5 == 1):
-                                            Btmp, C_here, H0, W0 = rnat.shape
-                                            med, mad = _robust_med_mad_t(rnat, max_elems_per_sample=2_000_000)
-                                            rms = 1.4826 * mad
-                                            if auto_delta_cache is None:
-                                                auto_delta_cache = [None] * n_frames
-                                            for j, fi in enumerate(idx):
-                                                auto_delta_cache[fi] = float((-huber_delta) * torch.clamp(rms[j, 0, 0, 0], min=1e-6).item())
-                                        deltas = torch.tensor([auto_delta_cache[fi] for fi in idx],
-                                                            device=x_t.device, dtype=torch.float32).view(B, 1, 1, 1)
-                                    else:
-                                        deltas = torch.tensor(float(huber_delta), device=x_t.device,
-                                                            dtype=torch.float32).view(1, 1, 1, 1)
-
-                                    absr = rnat.abs()
-                                    psi_over_r = torch.where(absr <= deltas,
-                                                            torch.ones_like(absr, dtype=torch.float32),
-                                                            deltas / (absr + EPS))
-
-                                if DEBUG_FLAT_WEIGHTS:
-                                    wmap_low = mb.unsqueeze(1)
-                                else:
-                                    m1 = mb.unsqueeze(1).repeat(1, Cn, 1, 1).contiguous()
-                                    wmap_low = (psi_over_r / (vmap + EPS)) * m1
-                                    wmap_low = torch.nan_to_num(wmap_low, nan=0.0, posinf=0.0, neginf=0.0)
-
-                                # --- adjoint + backprojection ---
-                                if r > 1:
-                                    up_y    = _upsample_sum_bt_t(wmap_low * yb,       r)
-                                    up_pred = _upsample_sum_bt_t(wmap_low * pred_low, r)
-                                else:
-                                    up_y, up_pred = wmap_low * yb, wmap_low * pred_low
-
-                                if use_fft:
-                                    back_num_list, back_den_list = [], []
-                                    for j, fi in enumerate(idx):
-                                        C_here = up_y.shape[1]
-                                        bn_j = torch.empty_like(x_t, dtype=torch.float32)
-                                        bd_j = torch.empty_like(x_t, dtype=torch.float32)
-                                        KTf_pack = psfT_fft[fi]
-                                        for c in range(C_here):
-                                            _fft_conv_same_torch(up_y[j, c],    KTf_pack, out_spatial=bn_j[c])
-                                            _fft_conv_same_torch(up_pred[j, c], KTf_pack, out_spatial=bd_j[c])
-                                        back_num_list.append(bn_j)
-                                        back_den_list.append(bd_j)
-                                    back_num = torch.stack(back_num_list, 0).sum(dim=0)
-                                    back_den = torch.stack(back_den_list, 0).sum(dim=0)
-                                else:
-                                    back_num = _grouped_conv_same_torch_per_sample(up_y,    wkT, B, Cn).sum(dim=0)
-                                    back_den = _grouped_conv_same_torch_per_sample(up_pred, wkT, B, Cn).sum(dim=0)
-
-                                num += back_num
-                                den += back_den
-                                ci += B
-
-                                if os.environ.get("MFDECONV_DEBUG_SYNC", "0") == "1":
-                                    try:
-                                        torch.cuda.synchronize()
-                                    except Exception:
-                                        pass
-
-                            except RuntimeError as e:
-                                emsg = str(e).lower()
-                                # existing OOM backoff stays the same
-                                if ("out of memory" in emsg or "resource" in emsg or "alloc" in emsg) and B_cur > 1:
-                                    B_cur = max(1, B_cur // 2)
-                                    status_cb(f"GPU OOM: reducing batch_frames → {B_cur} and retrying this chunk.")
-                                    if prefetch_batches:
-                                        yb_next = mb_next = vb_next = None
-                                    continue
-                                # NEW: busy/unavailable → trigger CPU retry for this iteration
-                                if _is_cuda_busy_error(e):
-                                    status_cb("CUDA became unavailable mid-run → retrying this iteration on CPU and switching to CPU for the rest.")
-                                    retry_cpu = True
-                                    break  # break the inner while; we'll recompute on CPU
-                                raise
-
-                        _process_gui_events_safely()
-
-                    except RuntimeError as e:
-                        # Catch outer-level CUDA busy/unavailable too (e.g., from syncs)
-                        if _is_cuda_busy_error(e):
-                            status_cb("CUDA error indicates device busy/unavailable → retrying this iteration on CPU and switching to CPU for the rest.")
-                            retry_cpu = True
+                        if auto_delta_cache is not None:
+                            if (auto_delta_cache[fidx] is None) or (it % 5 == 1):
+                                rnat = yt - pred_low
+                                med = torch.median(rnat)
+                                mad = torch.median(torch.abs(rnat - med)) + 1e-6
+                                rms = 1.4826 * mad
+                                auto_delta_cache[fidx] = float((-huber_delta) * torch.clamp(rms, min=1e-6).item())
+                            wmap_low = _weight_map(yt, pred_low, auto_delta_cache[fidx], var_map=vt, mask=mt)
                         else:
-                            raise
+                            wmap_low = _weight_map(yt, pred_low, local_delta, var_map=vt, mask=mt)
 
-                    if retry_cpu:
-                        # flip to CPU for this and subsequent iterations
-                        globals()["cuda_usable"] = False
-                        use_torch = False
-                        try:
-                            torch.cuda.empty_cache()
-                        except Exception:
-                            pass
+                        # lift back to SR via sum-replicate
+                        up_y    = _upsample_sum_t(wmap_low * yt,       r)
+                        up_pred = _upsample_sum_t(wmap_low * pred_low, r)
 
-                        try:
-                            import gc as _gc
-                            _gc.collect()
-                        except Exception:
-                            pass
+                        # accumulate via adjoint kernel on SR grid
+                        num += _conv_same_torch(up_y,    wkT)
+                        den += _conv_same_torch(up_pred, wkT)
 
-                        # Rebuild accumulators on CPU for this iteration:
-                        # 1) convert x_t (seed/current estimate) to NumPy
-                        x_t = x_t.detach().cpu().numpy()
-                        # 2) reset accumulators as NumPy arrays
-                        num = np.zeros_like(x_t, dtype=np.float32)
-                        den = np.zeros_like(x_t, dtype=np.float32)
+                        # free temps as aggressively as possible
+                        del yt, mt, vt, pred_sr, pred_low, wmap_low, up_y, up_pred
+                        if cuda_ok:
+                            try: torch.cuda.empty_cache()
+                            except Exception: pass
 
-                        # 3) RUN THE EXISTING NUMPY ACCUMULATION (same as your else: block below)
-                        # 3) recompute this iteration’s accumulators on CPU
-                        for fi in range(n_frames):
-                            # load one frame as CHW (float32, sanitized)
+                        if per_frame_logging and ((fidx & 7) == 0):
+                            status_cb(f"Iter {it}/{max_iters} — frame {fidx+1}/{len(paths)} (SR spatial)")
 
-                            y_chw = _load_frame_chw(fi)  # CHW float32 from cache
+                        del yt_np    
 
-                            # forward predict (super grid) with this frame's PSF
-                            pred_super = _conv_np_same(x_t, psfs[fi])
-
-                            # downsample to native if SR was on
-                            pred_low = _downsample_avg(pred_super, r) if r > 1 else pred_super
-
-                            # per-frame mask/variance
-                            m2d = _mask_for(fi, y_chw)         # 2D, [0..1]
-                            v2d = _var_for(fi, y_chw)          # 2D or None
-
-                            # robust weights per pixel/channel
-                            w = _weight_map(
-                                y=y_chw, pred=pred_low,
-                                huber_delta=local_delta,   # 0.0 for L2, else huber_delta
-                                var_map=v2d, mask=m2d
-                            ).astype(np.float32, copy=False)
-
-                            # adjoint (backproject) on super grid
-                            if r > 1:
-                                up_y    = _upsample_sum(w * y_chw,     r, target_hw=x_t.shape[-2:])
-                                up_pred = _upsample_sum(w * pred_low,  r, target_hw=x_t.shape[-2:])
-                            else:
-                                up_y, up_pred = (w * y_chw), (w * pred_low)
-
-                            num += _conv_np_same(up_y,    flip_psf[fi])
-                            den += _conv_np_same(up_pred, flip_psf[fi])
-
-                        # ensure strictly positive denominator
-                        den = np.clip(den, 1e-8, None).astype(np.float32, copy=False)
-
-                        # switch everything to NumPy for the remainder of the run
-                        psf_fft = psfT_fft = None  # (Torch packs no longer used)
-
-                # ---- multiplicative RL/MM step with clamping ----
-                if use_torch:
-                    ratio = num / (den + EPS)
-                    neutral = (den.abs() < 1e-12) & (num.abs() < 1e-12)
-                    ratio = torch.where(neutral, torch.ones_like(ratio), ratio)
-                    upd = torch.clamp(ratio, 1.0 / kappa, kappa)
-                    x_next = torch.clamp(x_t * upd, min=0.0)
-                    # Robust scalars
-                    upd_med = torch.median(torch.abs(upd - 1))
-                    rel_change = (torch.median(torch.abs(x_next - x_t)) /
-                                (torch.median(torch.abs(x_t)) + 1e-8))
-
-                    um = float(upd_med.detach().item())
-                    rc = float(rel_change.detach().item())
-
-                    # Initialize EMA + baselines on iter 1
-                    if it == 1 or ema_um is None:
-                        ema_um = um
-                        ema_rc = rc
-                        base_um = um
-                        base_rc = rc
-                    else:
-                        ema_um = ema_alpha * um + (1.0 - ema_alpha) * ema_um
-                        ema_rc = ema_alpha * rc + (1.0 - ema_alpha) * ema_rc
-
-                    # Adaptive tolerances: at least the fixed floor, or 2% of first-iter magnitude
-                    tol_upd_dyn = max(tol_upd, early_frac * (base_um if (base_um is not None and base_um > 0) else um))
-                    tol_rel_dyn = max(tol_rel, early_frac * (base_rc if (base_rc is not None and base_rc > 0) else rc))
-                    small = (ema_um < tol_upd_dyn) or (ema_rc < tol_rel_dyn)
-
-                    # Optional: log once so you can see what it’s doing
-                    if it == 1 or (it % 5 == 0):
-                        status_cb(f"EarlyStop dbg: it={it} um={um:.4g} rc={rc:.4g} | "
-                                f"ema_um={ema_um:.4g} ema_rc={ema_rc:.4g} | "
-                                f"tol_um={tol_upd_dyn:.4g} tol_rc={tol_rel_dyn:.4g}")
-
-                    if small and it >= min_iters:
-                        early_cnt += 1
-                    else:
-                        early_cnt = 0
-
-                    if early_cnt >= patience:
-                        x_t = x_next
-                        used_iters = it
-                        early_stopped = True
-                        status_cb(f"MFDeconv: Iteration {it}/{max_iters} (early stop)")
-                        _process_gui_events_safely()
-                        break
-
-                    x_t = (1.0 - relax) * x_t + relax * x_next
                 else:
-                    ratio = num / (den + EPS)
-                    neutral = (np.abs(den) < 1e-12) & (np.abs(num) < 1e-12)
-                    if np.any(neutral): ratio[neutral] = 1.0
-                    upd = np.clip(ratio, 1.0 / kappa, kappa)
-                    x_next = np.clip(x_t * upd, 0.0, None)
+                    # -------- Native path (spatial conv, stream) --------
+                    for fidx, (wk, wkT) in enumerate(zip(psf_t, psfT_t)):
+                        yt_np = _open_frame_numpy(fidx)  # CHW or HW (CPU → to Torch tensor)
+                        mt_np = mask_list[fidx]
+                        vt_np = var_list[fidx]
 
-                    um = float(np.median(np.abs(upd - 1.0)))
-                    rc = float(np.median(np.abs(x_next - x_t)) / (np.median(np.abs(x_t)) + 1e-8))
+                        yt = torch.as_tensor(yt_np, dtype=x_t.dtype, device=x_t.device)
+                        mt = None if mt_np is None else torch.as_tensor(mt_np, dtype=x_t.dtype, device=x_t.device)
+                        vt = None if vt_np is None else torch.as_tensor(vt_np, dtype=x_t.dtype, device=x_t.device)
 
-                    # Initialize EMA + baselines on iter 1
-                    if it == 1 or ema_um is None:
-                        ema_um = um
-                        ema_rc = rc
-                        base_um = um
-                        base_rc = rc
+                        pred = _conv_same_torch(x_t, wk)
+                        wmap = _weight_map(yt, pred, local_delta, var_map=vt, mask=mt)
+                        up_y    = wmap * yt
+                        up_pred = wmap * pred
+                        num += _conv_same_torch(up_y,    wkT)
+                        den += _conv_same_torch(up_pred, wkT)
+
+                        del yt, mt, vt, pred, wmap, up_y, up_pred
+                        if cuda_ok:
+                            try: torch.cuda.empty_cache()
+                            except Exception: pass
+
+                ratio = num / (den + EPS)
+                neutral = (den.abs() < 1e-12) & (num.abs() < 1e-12)
+                ratio = torch.where(neutral, torch.ones_like(ratio), ratio)
+                upd = torch.clamp(ratio, 1.0 / kappa, kappa)
+                x_next = torch.clamp(x_t * upd, min=0.0)
+
+                upd_med = torch.median(torch.abs(upd - 1))
+                rel_change = (torch.median(torch.abs(x_next - x_t)) /
+                              (torch.median(torch.abs(x_t)) + 1e-8))
+                small = (upd_med < tol_upd) | (rel_change < tol_rel)
+
+                if bool(small) and it >= min_iters:
+                    early_cnt += 1
+                else:
+                    early_cnt = 0
+
+                if early_cnt >= patience:
+                    x_t = x_next
+                    used_iters = it
+                    early_stopped = True
+                    status_cb(f"MFDeconv: Iteration {it}/{max_iters} (early stop)")
+                    _process_gui_events_safely()
+                    break
+
+                x_t = (1.0 - relax) * x_t + relax * x_next
+
+            else:
+                # -------- NumPy path (unchanged) --------
+                num.fill(0.0); den.fill(0.0)
+                if r > 1:
+                    # -------- SR (NumPy) --------
+                    if cache_psf_ffts == "none":
+                        for fidx, (y_nat, m2d, v2d) in enumerate(zip(data, mask_list, var_list)):
+                            # Compute per-frame PSF FFTs on the fly (same math)
+                            k, kT = psfs[fidx], flip_psf[fidx]
+                            kh, kw = k.shape
+                            fftH, fftW = _fftshape_same(Hs, Ws, kh, kw)
+                            Kf  = _fft.rfftn(np.fft.ifftshift(k),  s=(fftH, fftW))
+                            KTf = _fft.rfftn(np.fft.ifftshift(kT), s=(fftH, fftW))
+
+                            _fft_conv_same_np(x_t, Kf, kh, kw, fftH, fftW, pred_super)
+                            pred_low = _downsample_avg(pred_super, r)
+                            wmap_low = _weight_map(y_nat, pred_low, local_delta, var_map=v2d, mask=m2d)
+                            up_y     = _upsample_sum(wmap_low * y_nat,    r, target_hw=pred_super.shape[-2:])
+                            up_pred  = _upsample_sum(wmap_low * pred_low, r, target_hw=pred_super.shape[-2:])
+                            _fft_conv_same_np(up_y,    KTf, kh, kw, fftH, fftW, tmp_out); num += tmp_out
+                            _fft_conv_same_np(up_pred, KTf, kh, kw, fftH, fftW, tmp_out); den += tmp_out
                     else:
-                        ema_um = ema_alpha * um + (1.0 - ema_alpha) * ema_um
-                        ema_rc = ema_alpha * rc + (1.0 - ema_alpha) * ema_rc
+                        for (Kf, KTf, (kh, kw, fftH, fftW)), m2d, pvar, fidx in zip(zip(Kfs, KTfs, meta), mask_list, (var_paths or [None]*len(frame_infos)), range(len(frame_infos))):
+                            y_nat = _open_frame_numpy(fidx)  # CHW or HW
+                            vt_np = None
+                            if use_variance_maps and pvar is not None:
+                                vt_np = np.memmap(pvar, mode="r", dtype=_VAR_DTYPE, shape=(Ht, Wt))
 
-                    tol_upd_dyn = max(tol_upd, 0.02 * (base_um if (base_um is not None and base_um > 0) else um))
-                    tol_rel_dyn = max(tol_rel, 0.02 * (base_rc if (base_rc is not None and base_rc > 0) else rc))
+                            _fft_conv_same_np(x_t, Kf, kh, kw, fftH, fftW, pred_super)
+                            pred = pred_super
+                            wmap = _weight_map(y_nat, pred, local_delta, var_map=vt_np, mask=m2d)
+                            up_y, up_pred = (wmap * y_nat), (wmap * pred)
+                            _fft_conv_same_np(up_y,    KTf, kh, kw, fftH, fftW, tmp_out); num += tmp_out
+                            _fft_conv_same_np(up_pred, KTf, kh, kw, fftH, fftW, tmp_out); den += tmp_out
 
-                    small = (ema_um < tol_upd_dyn) or (ema_rc < tol_rel_dyn)
+                            # close per-frame resources
+                            if vt_np is not None:
+                                try: del vt_np
+                                except Exception: pass
+                            del y_nat
+                else:
+                    # -------- Native (NumPy) --------
+                    if cache_psf_ffts == "none":
+                        for fidx, (y_nat, m2d, v2d) in enumerate(zip(data, mask_list, var_list)):
+                            k, kT = psfs[fidx], flip_psf[fidx]
+                            kh, kw = k.shape
+                            fftH, fftW = _fftshape_same(Hs, Ws, kh, kw)
+                            Kf  = _fft.rfftn(np.fft.ifftshift(k),  s=(fftH, fftW))
+                            KTf = _fft.rfftn(np.fft.ifftshift(kT), s=(fftH, fftW))
 
-                    if it == 1 or (it % 5 == 0):
-                        status_cb(f"EarlyStop dbg: it={it} um={um:.4g} rc={rc:.4g} | "
-                                f"ema_um={ema_um:.4g} ema_rc={ema_rc:.4g} | "
-                                f"tol_um={tol_upd_dyn:.4g} tol_rc={tol_rel_dyn:.4g}")
-
-                    if small and it >= min_iters:
-                        early_cnt += 1
+                            _fft_conv_same_np(x_t, Kf, kh, kw, fftH, fftW, pred_super)
+                            pred = pred_super
+                            wmap = _weight_map(y_nat, pred, local_delta, var_map=v2d, mask=m2d)
+                            up_y, up_pred = (wmap * y_nat), (wmap * pred)
+                            _fft_conv_same_np(up_y,    KTf, kh, kw, fftH, fftW, tmp_out); num += tmp_out
+                            _fft_conv_same_np(up_pred, KTf, kh, kw, fftH, fftW, tmp_out); den += tmp_out
                     else:
-                        early_cnt = 0
+                        for (Kf, KTf, (kh, kw, fftH, fftW)), m2d, pvar, fidx in zip(zip(Kfs, KTfs, meta), mask_list, (var_paths or [None]*len(frame_infos)), range(len(frame_infos))):
+                            y_nat = _open_frame_numpy(fidx)  # CHW or HW
+                            vt_np = None
+                            if use_variance_maps and pvar is not None:
+                                vt_np = np.memmap(pvar, mode="r", dtype=_VAR_DTYPE, shape=(Ht, Wt))
 
-                    if early_cnt >= patience:
-                        x_t = x_next
-                        used_iters = it
-                        early_stopped = True
-                        status_cb(f"MFDeconv: Iteration {it}/{max_iters} (early stop)")
-                        _process_gui_events_safely()
-                        break
+                            _fft_conv_same_np(x_t, Kf, kh, kw, fftH, fftW, pred_super)
+                            pred = pred_super
+                            wmap = _weight_map(y_nat, pred, local_delta, var_map=vt_np, mask=m2d)
+                            up_y, up_pred = (wmap * y_nat), (wmap * pred)
+                            _fft_conv_same_np(up_y,    KTf, kh, kw, fftH, fftW, tmp_out); num += tmp_out
+                            _fft_conv_same_np(up_pred, KTf, kh, kw, fftH, fftW, tmp_out); den += tmp_out
 
-                    x_t = (1.0 - relax) * x_t + relax * x_next
+                            # close per-frame resources
+                            if vt_np is not None:
+                                try: del vt_np
+                                except Exception: pass
+                            del y_nat
 
-                # --- LOW-MEM CLEANUP (per-iteration) ---
-                if low_mem:
-                    # Torch temporaries we created in the iteration (best-effort deletes)
-                    to_kill = [
-                        "pred_super", "pred_low", "wmap_low", "yb", "mb", "vb", "wk", "wkT",
-                        "back_num", "back_den", "pred_list", "back_num_list", "back_den_list",
-                        "x_bc_hw", "up_y", "up_pred", "psi_over_r", "vmap", "rnat", "deltas", "chan_tmp"
-                    ]
-                    loc = locals()
-                    for _name in to_kill:
-                        if _name in loc:
-                            try:
-                                del loc[_name]
-                            except Exception:
-                                pass
+                ratio = num / (den + EPS)
+                neutral = (np.abs(den) < 1e-12) & (np.abs(num) < 1e-12)
+                ratio[neutral] = 1.0
+                upd = np.clip(ratio, 1.0 / kappa, kappa)
+                x_next = np.clip(x_t * upd, 0.0, None)
 
-                    # Proactively release CUDA cache every other iter
-                    if use_torch:
-                        try:
-                            dev = _torch_device()
-                            if dev.type == "cuda" and (it % 2) == 0:
-                                import torch as _t
-                                _t.cuda.empty_cache()
-                        except Exception:
-                            pass
+                upd_med = np.median(np.abs(upd - 1.0))
+                rel_change = (np.median(np.abs(x_next - x_t)) /
+                              (np.median(np.abs(x_t)) + 1e-8))
+                small = (upd_med < tol_upd) or (rel_change < tol_rel)
 
-                    # Encourage Python to return big NumPy buffers to the OS sooner
-                    import gc as _gc
-                    _gc.collect()
+                if small and it >= min_iters:
+                    early_cnt += 1
+                else:
+                    early_cnt = 0
 
+                if early_cnt >= patience:
+                    x_t = x_next
+                    used_iters = it
+                    early_stopped = True
+                    status_cb(f"MFDeconv: Iteration {it}/{max_iters} (early stop)")
+                    _process_gui_events_safely()
+                    break
 
-                # ---- save intermediates ----
-                if save_intermediate and (it % int(max(1, save_every)) == 0):
-                    try:
-                        x_np = x_t.detach().cpu().numpy().astype(np.float32) if use_torch else x_t.astype(np.float32)
-                        _save_iter_image(x_np, hdr0_seed, iter_dir, f"iter_{it:03d}", color_mode)
-                    except Exception as _e:
-                        status_cb(f"Intermediate save failed at iter {it}: {_e}")
+                x_t = (1.0 - relax) * x_t + relax * x_next
 
-                frac = 0.25 + 0.70 * (it / float(max_iters))
-                _emit_pct(frac, f"Iteration {it}/{max_iters}")
-                status_cb(f"Iter {it}/{max_iters}")
-                _process_gui_events_safely()
+            # save intermediate
+            if save_intermediate and (it % int(max(1, save_every)) == 0):
+                try:
+                    x_np = x_t.detach().cpu().numpy().astype(np.float32) if use_torch else x_t.astype(np.float32)
+                    _save_iter_image(x_np, hdr0_seed, iter_dir, f"iter_{it:03d}", color_mode)
+                except Exception as _e:
+                    status_cb(f"Intermediate save failed at iter {it}: {_e}")
 
-    except Exception as e:
-        status_cb(f"DBG: cm() raised: {e!r}")
+            frac = 0.25 + 0.70 * (it / float(max_iters))
+            _emit_pct(frac, f"Iteration {it}/{max_iters}")
+            status_cb(f"Iter {it}/{max_iters}")
+            _process_gui_events_safely()
+            _flush_memmaps(num, den)
+
+            # If present in your CPU path / SR path:
+            if isinstance(pred_super, np.memmap):
+                _flush_memmaps(pred_super)
+            if isinstance(tmp_out, np.memmap):
+                _flush_memmaps(tmp_out)        
 
     if not early_stopped:
         used_iters = max_iters
 
-    # ---- save result ----
+    # ----------------------------
+    # Save result (keep FITS-friendly order: (C,H,W))
+    # ----------------------------
     _emit_pct(0.97, "saving")
     x_final = x_t.detach().cpu().numpy().astype(np.float32) if use_torch else x_t.astype(np.float32)
+
     if x_final.ndim == 3:
         if x_final.shape[0] not in (1, 3) and x_final.shape[-1] in (1, 3):
             x_final = np.moveaxis(x_final, -1, 0)
@@ -3744,18 +3042,18 @@ def multiframe_deconv(
         hdr0 = _safe_primary_header(paths[0])
     except Exception:
         hdr0 = fits.Header()
-
     hdr0['MFDECONV'] = (True, 'Seti Astro multi-frame deconvolution')
     hdr0['MF_COLOR'] = (str(color_mode), 'Color mode used')
     hdr0['MF_RHO']   = (str(rho), 'Loss: huber|l2')
     hdr0['MF_HDEL']  = (float(huber_delta), 'Huber delta (>0 abs, <0 autoxRMS)')
     hdr0['MF_MASK']  = (bool(use_star_masks),    'Used auto star masks')
     hdr0['MF_VAR']   = (bool(use_variance_maps), 'Used auto variance maps')
-    r = int(max(1, super_res_factor))
-    hdr0['MF_SR']    = (int(r), 'Super-resolution factor (1 := native)')
+
+    hdr0['MF_SR']     = (int(r), 'Super-resolution factor (1 := native)')
     if r > 1:
-        hdr0['MF_SRSIG'] = (float(sr_sigma), 'Gaussian sigma for SR PSF fit (native px)')
-        hdr0['MF_SRIT']  = (int(sr_psf_opt_iters), 'SR-PSF solver iters')
+        hdr0['MF_SRSIG']  = (float(sr_sigma), 'Gaussian sigma for SR PSF fit (pixels at native)')
+        hdr0['MF_SRIT']   = (int(sr_psf_opt_iters), 'SR-PSF solver iters')
+
     hdr0['MF_ITMAX'] = (int(max_iters),  'Requested max iterations')
     hdr0['MF_ITERS'] = (int(used_iters), 'Actual iterations run')
     hdr0['MF_ESTOP'] = (bool(early_stopped), 'Early stop triggered')
@@ -3766,7 +3064,11 @@ def multiframe_deconv(
         elif x_final.ndim == 3:
             C, H, W = x_final.shape
             hdr0['MF_SHAPE'] = (f"{C}x{H}x{W}", 'Saved as 3D cube (CxHxW)')
-
+    _flush_memmaps(x_t, num, den)
+    if isinstance(pred_super, np.memmap):
+        _flush_memmaps(pred_super)
+    if isinstance(tmp_out, np.memmap):
+        _flush_memmaps(tmp_out)   
     save_path     = _sr_out_path(out_path, super_res_factor)
     safe_out_path = _nonclobber_path(str(save_path))
     if safe_out_path != str(save_path):
@@ -3787,12 +3089,9 @@ def multiframe_deconv(
     except Exception:
         pass
 
-    try:
-        _clear_all_caches()
-    except Exception:
-        pass
-
     return safe_out_path
+
+
 
 # -----------------------------
 # Worker
@@ -3813,7 +3112,6 @@ class MultiFrameDeconvWorkercuDNN(QObject):
                  sr_psf_opt_iters: int = 250,
                  sr_psf_opt_lr: float = 0.1,
                  star_mask_ref_path: str | None = None):
-
         super().__init__(parent)
         self.aligned_paths = aligned_paths
         self.output_path = output_path
@@ -3856,6 +3154,7 @@ class MultiFrameDeconvWorkercuDNN(QObject):
                 star_mask_cfg=self.star_mask_cfg,
                 varmap_cfg=self.varmap_cfg,
                 save_intermediate=self.save_intermediate,
+                # NEW SR forwards
                 super_res_factor=self.super_res_factor,
                 sr_sigma=self.sr_sigma,
                 sr_psf_opt_iters=self.sr_psf_opt_iters,
@@ -3866,28 +3165,3 @@ class MultiFrameDeconvWorkercuDNN(QObject):
             _process_gui_events_safely()
         except Exception as e:
             self.finished.emit(False, f"MF deconvolution failed: {e}", "")
-        finally:
-            # Hard cleanup: drop references + free GPU memory
-            try:
-                # Drop big Python refs that might keep tensors alive indirectly
-                self.aligned_paths = []
-                self.star_mask_cfg = {}
-                self.varmap_cfg = {}
-            except Exception:
-                pass
-            try:
-                _free_torch_memory()  # your helper: del tensors, gc.collect(), etc.
-            except Exception:
-                pass
-            try:
-                import torch as _t
-                if hasattr(_t, "cuda") and _t.cuda.is_available():
-                    _t.cuda.synchronize()
-                    _t.cuda.empty_cache()
-                if hasattr(_t, "mps") and getattr(_t.backends, "mps", None) and _t.backends.mps.is_available():
-                    # PyTorch 2.x has this
-                    if hasattr(_t.mps, "empty_cache"):
-                        _t.mps.empty_cache()
-                # DirectML usually frees on GC; nothing special to call.
-            except Exception:
-                pass

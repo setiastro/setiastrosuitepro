@@ -3948,7 +3948,7 @@ class StackingSuiteDialog(QDialog):
 
         # restore from settings (default "normal")
         _saved_eng = (self.settings.value("stacking/mfdeconv/engine", "normal", type=str) or "normal").lower()
-        if   _saved_eng == "cudnn_free": self.mf_eng_cudnn_rb.setChecked(True)
+        if   _saved_eng == "cudnn": self.mf_eng_cudnn_rb.setChecked(True)
         elif _saved_eng == "sport":      self.mf_eng_sport_rb.setChecked(True)
         else:                            self.mf_eng_normal_rb.setChecked(True)
 
@@ -4522,7 +4522,7 @@ class StackingSuiteDialog(QDialog):
         from pro.mfdeconvsport import MultiFrameDeconvWorkerSport
 
         eng = str(self.settings.value("stacking/mfdeconv/engine", "normal", type=str) or "normal").lower()
-        if eng == "cudnn_free":
+        if eng == "cudnn":
             return (MultiFrameDeconvWorkercuDNN, "Normal (cuDNN-free)")
         if eng == "sport":
             return (MultiFrameDeconvWorkerSport, "High-Octane")
@@ -4606,7 +4606,7 @@ class StackingSuiteDialog(QDialog):
         self.settings.setValue("stacking/mfdeconv/varmap/floor", vm_floor)
 
         # MFDeconv engine selection
-        if   self.mf_eng_cudnn_rb.isChecked(): mf_engine = "cudnn_free"
+        if   self.mf_eng_cudnn_rb.isChecked(): mf_engine = "cudnn"
         elif self.mf_eng_sport_rb.isChecked(): mf_engine = "sport"
         else:                                   mf_engine = "normal"
         self.settings.setValue("stacking/mfdeconv/engine", mf_engine)
@@ -12613,9 +12613,6 @@ class StackingSuiteDialog(QDialog):
                                 debug_save_dir=debug_dir, debug_tag=f"{i:04d}_{os.path.splitext(os.path.basename(p))[0]}", core_mask=core_mask
                             )
                             protected = np.clip(protected, 0.0, 1.0).astype(np.float32)
-
-                        # Protect nucleus: blend original back under soft core mask
-
 
 
                         # Persist as temp FITS (comet-aligned)

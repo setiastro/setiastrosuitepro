@@ -1,6 +1,7 @@
 from __future__ import annotations
 import os, glob, shutil, tempfile, datetime as _dt
 import numpy as np
+import time
 
 from PyQt6.QtCore import Qt, QTimer, QSettings, pyqtSignal
 from PyQt6.QtGui import QIcon, QImage, QPixmap, QAction, QIntValidator, QDoubleValidator
@@ -509,6 +510,12 @@ class LiveStackWindow(QDialog):
         self.is_running = False
         self.frame_count = 0
         self.current_stack = None
+
+        self._probe = {}  # path -> {"size": int, "mtime": float, "since": float, "penalty_until": float}
+        # Tunables:
+        self.FILE_STABLE_SECS = 3.0          # how long size+mtime must stay unchanged
+        self.OPEN_RETRY_PENALTY_SECS = 10.0  # cool-down after a read/permission failure
+        self.MAX_FILE_WAIT_SECS = 600.0      # optional safety cap (unused by default logic)
 
         # ── Load persisted settings ───────────────────────────────
         s = QSettings()
@@ -1299,13 +1306,74 @@ class LiveStackWindow(QDialog):
         #self.flat_status_label.setStyleSheet("color: #cccccc; font-weight: bold;")        
 
 
+    def _update_probe(self, path: str) -> dict:
+        """Update probe info (size, mtime) for path and return the info dict."""
+        try:
+            st = os.stat(path)
+        except FileNotFoundError:
+            # file disappeared; clear any probe info
+            self._probe.pop(path, None)
+            return None
+        now = time.time()
+        size, mtime = st.st_size, st.st_mtime
+
+        info = self._probe.get(path)
+        if info is None:
+            info = {"size": size, "mtime": mtime, "since": now, "penalty_until": 0.0}
+            self._probe[path] = info
+            return info
+
+        # If size or mtime changed, reset stability timer
+        if size != info["size"] or mtime != info["mtime"]:
+            info["size"] = size
+            info["mtime"] = mtime
+            info["since"] = now
+        return info
+
+    def _can_open_for_read(self, path: str) -> bool:
+        """
+        Try a tiny open+read to ensure the writer has released the handle.
+        If we hit PermissionError / OSError, we mark a penalty and say 'not ready'.
+        """
+        try:
+            with open(path, "rb") as f:
+                _ = f.read(1)
+            return True
+        except (PermissionError, OSError):
+            # mark a penalty window so we don't hammer the file immediately
+            info = self._probe.get(path) or self._update_probe(path)
+            if info:
+                info["penalty_until"] = time.time() + self.OPEN_RETRY_PENALTY_SECS
+            return False
+
+    def _file_ready(self, path: str) -> bool:
+        """
+        A file is 'ready' when:
+          - we are not inside a penalty window,
+          - size+mtime have been unchanged for FILE_STABLE_SECS,
+          - and we can actually open it for reading.
+        """
+        info = self._update_probe(path)
+        if info is None:
+            return False  # missing
+
+        now = time.time()
+        if now < info.get("penalty_until", 0.0):
+            return False
+
+        # Require size+mtime to be unchanged for FILE_STABLE_SECS
+        if (now - info["since"]) < self.FILE_STABLE_SECS:
+            return False
+
+        # Finally confirm we can open the file (this also sets penalty if it fails)
+        return self._can_open_for_read(path)
 
 
     def check_for_new_frames(self):
         if not self.is_running or not self.watch_folder:
             return
 
-        # build the list of files with supported extensions
+        # Gather candidates
         exts = (
             "*.fit", "*.fits", "*.tif", "*.tiff",
             "*.cr2", "*.cr3", "*.nef", "*.arw",
@@ -1316,20 +1384,55 @@ class LiveStackWindow(QDialog):
         for ext in exts:
             all_paths += glob.glob(os.path.join(self.watch_folder, ext))
 
-        # only pick the ones we haven’t seen yet
-        new = [p for p in sorted(all_paths) if p not in self.processed_files]
-        if not new:
+        # Only consider paths not yet processed
+        candidates = [p for p in sorted(all_paths) if p not in self.processed_files]
+        if not candidates:
             return
 
-        # update status
-        first = os.path.basename(new[0])
-        self.status_label.setText(f"➜ New frame: {first}")
+        # Show first new file name (status only)
+        self.status_label.setText(f"➜ New/updated files: {len(candidates)}")
+        QApplication.processEvents()
 
-        for path in new:
+        # Probe each candidate: only process when 'ready'
+        processed_now = 0
+        for path in candidates:
+            # Skip if we recently penalized this path
+            info = self._probe.get(path)
+            if info and time.time() < info.get("penalty_until", 0.0):
+                continue
+
+            # Check readiness: stable size/mtime and can open-for-read
+            if not self._file_ready(path):
+                continue  # not yet ready; we'll see it again on the next tick
+
+            # Only *now* do we mark as processed and actually process the frame
             self.processed_files.add(path)
-            self.process_frame(path)
+            base = os.path.basename(path)
+            self.status_label.setText(f"→ Processing: {base}")
+            QApplication.processEvents()
+
+            try:
+                self.process_frame(path)
+                processed_now += 1
+            except Exception as e:
+                # If anything unexpected happens, clear 'processed' so we can retry later
+                # but add a penalty to avoid tight loops.
+                self.processed_files.discard(path)
+                info = self._probe.get(path) or self._update_probe(path)
+                if info:
+                    info["penalty_until"] = time.time() + self.OPEN_RETRY_PENALTY_SECS
+                self.status_label.setText(f"⚠ Error on {base}: {e}")
+                QApplication.processEvents()
+
+        if processed_now > 0:
+            self.status_label.setText(f"✔ Processed {processed_now} file(s)")
+            QApplication.processEvents()
 
     def process_frame(self, path):
+        if not self._file_ready(path):
+            # do not mark as processed here; monitor will retry after cool-down
+            return
+
         # if star-trail mode is on, bypass the normal pipeline entirely:
         if self.star_trail_mode:
             return self._process_star_trail(path)
