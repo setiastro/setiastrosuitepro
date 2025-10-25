@@ -1,9 +1,9 @@
 {
-  "version": "1.3.18",
+  "version": "1.3.19",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.18/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.18/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.18/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.19/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.19/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.19/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.3.18 SASpro can now open all tables within FITS HDU's allowing downloading and viewing full science data. New View Menu: Cascade, Tile, Smart Tile your View Windows. Option to Save starless only comet images during comet integration."
+  "notes": "Seti Astro Suite Pro V1.3.19 Completely overhauled ImageMM Normal cuDNN free version for those with square artifacts to try. It is slower as more items are ran on the CPU but I am hoping it will clear your artifacts now.Live Stacking file read bug fixHalo-b-gon not creating new view bug fix"
 }
