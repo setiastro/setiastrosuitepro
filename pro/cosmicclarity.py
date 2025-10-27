@@ -144,7 +144,7 @@ def _ensure_dirs(root: str):
     os.makedirs(os.path.join(root, "output"), exist_ok=True)
 
 _IMG_EXTS = ('.png', '.tif', '.tiff', '.fit', '.fits', '.xisf',
-             '.cr2', '.nef', '.arw', '.dng', '.orf', '.rw2', '.pef',
+             '.cr2', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2', '.pef',
              '.jpg', '.jpeg')
 
 def _purge_dir(path: str, *, prefix: str | None = None):
@@ -1052,7 +1052,7 @@ class CosmicClaritySatelliteDialogPro(QDialog):
         if not folder or not os.path.isdir(folder): return
         for fn in sorted(os.listdir(folder)):
             if fn.lower().endswith(('.png', '.tif', '.tiff', '.fit', '.fits', '.xisf',
-                                    '.cr2', '.nef', '.arw', '.dng', '.orf', '.rw2', '.pef', '.jpg', '.jpeg')):
+                                    '.cr2', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2', '.pef', '.jpg', '.jpeg')):
                 QTreeWidgetItem(tree, [fn])
 
     # ---------- Sensitivity ----------
@@ -1219,7 +1219,7 @@ class CosmicClaritySatelliteDialogPro(QDialog):
         # --- Branch 2: Process a FILE on disk ---
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Select Image", "",
-            "Image Files (*.png *.tif *.tiff *.fit *.fits *.xisf *.cr2 *.nef *.arw *.dng *.orf *.rw2 *.pef *.jpg *.jpeg)"
+            "Image Files (*.png *.tif *.tiff *.fit *.fits *.xisf *.cr2 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef *.jpg *.jpeg)"
         )
         if not file_path:
             QMessageBox.warning(self, "Warning", "No file selected.")

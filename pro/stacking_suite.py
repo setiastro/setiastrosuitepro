@@ -106,39 +106,87 @@ def get_valid_header(path):
 
 def _read_tile_stack(file_list, y0, y1, x0, x1, channels, out_buf):
     """
-    Fill `out_buf` with the current tile stack.
-    out_buf shape: (N, th, tw, C) float32, C-order.
+    Fill `out_buf` with the tile stack for (y0:y1, x0:x1).
+    out_buf: (N, th, tw, C) float32, C-order (preallocated by caller).
+    Returns (th, tw) = actual tile extents.
     """
-    th = y1 - y0
-    tw = x1 - x0
+    th = int(y1 - y0)
+    tw = int(x1 - x0)
     N  = len(file_list)
 
-    # Slice to the actual extents (edge tiles)
+    # Slice to actual extents (edge tiles); zero-fill defensively
     ts = out_buf[:N, :th, :tw, :channels]
+    ts[...] = 0.0
 
-    # Load each frame's tile in parallel
-    num_cores = os.cpu_count() or 4
-    with ThreadPoolExecutor(max_workers=num_cores) as exe:
+    # Helper: coerce any incoming array to float32 HWC with requested channel count
+    def _coerce_to_f32_hwc(a: np.ndarray, want_c: int) -> np.ndarray:
+        if a is None:
+            return None
+
+        # ---- layout normalize to HWC ----
+        if a.ndim == 2:
+            a = a[:, :, None]  # (H,W) -> (H,W,1)
+        elif a.ndim == 3:
+            # Heuristics: treat (3,H,W) as CHW and transpose; keep (H,W,3) as is
+            if a.shape[0] in (1, 3) and a.shape[1] >= 8 and a.shape[2] >= 8 and a.shape[-1] not in (1, 3):
+                # looks like CHW -> HWC
+                a = a.transpose(1, 2, 0)
+        else:
+            # unknown layout; bail to None so caller zeros
+            return None
+
+        # ---- crop/guard (should already match) ----
+        if a.shape[0] != th or a.shape[1] != tw:
+            a = a[:th, :tw, ...]
+
+        # ---- channel reconcile ----
+        Csrc = a.shape[2]
+        if Csrc == want_c:
+            pass
+        elif Csrc == 1 and want_c == 3:
+            a = np.repeat(a, 3, axis=2)
+        elif Csrc == 3 and want_c == 1:
+            # For calibration masters, deterministic luminance/mean is fine.
+            # (Mean avoids color bias if channels differ a bit.)
+            a = a.mean(axis=2, keepdims=True)
+        else:
+            # Fallback: slice/expand as best-effort
+            if Csrc > want_c:
+                a = a[:, :, :want_c]
+            else:
+                a = np.repeat(a, want_c, axis=2)
+
+        # ---- dtype/finite ----
+        a = np.asarray(a, dtype=np.float32, order="C")
+        if not np.isfinite(a).all():
+            np.nan_to_num(a, copy=False, posinf=0.0, neginf=0.0)
+
+        return a
+
+    # Load each frame's tile in parallel (avoid oversubscribing)
+    max_workers = min(N, max(1, (os.cpu_count() or 4)))
+    with ThreadPoolExecutor(max_workers=max_workers) as exe:
         fut2i = {
             exe.submit(load_fits_tile, fpath, y0, y1, x0, x1): i
             for i, fpath in enumerate(file_list)
         }
         for fut in as_completed(fut2i):
             i = fut2i[fut]
-            sub = fut.result()
+            try:
+                sub = fut.result()
+            except Exception:
+                # leave zeros for this frame/tile
+                continue
+
+            sub = _coerce_to_f32_hwc(sub, channels)
             if sub is None:
                 continue
-            if sub.ndim == 2:
-                # (H,W) → (H,W,1) → (H,W,3) if needed
-                sub = sub[:, :, None]
-                if channels == 3:
-                    sub = np.repeat(sub, 3, axis=2)
-            elif sub.ndim == 3 and sub.shape[0] == 3 and channels == 3:
-                # CHW → HWC
-                sub = sub.transpose(1, 2, 0)
-            ts[i, :, :, :] = sub.astype(np.float32, copy=False)
 
-    return th, tw  # actual extents for this tile
+            # Commit (shapes now match by construction)
+            ts[i, :, :, :] = sub
+
+    return th, tw
+
 
 def _tile_grid(height, width, chunk_h, chunk_w):
     tiles = []
@@ -3009,6 +3057,97 @@ def _open_sources_for_mfdeconv(paths, log):
             except Exception: pass
         raise RuntimeError(f"{e}")
 
+# --- RAW helpers ------------------------------------------------------------
+
+def _rawpy_pattern_to_token(rp) -> Optional[str]:
+    """
+    Turn rawpy's 2x2 raw_pattern + color_desc into 'RGGB' | 'BGGR' | 'GRBG' | 'GBRG'.
+    Returns None if not Bayer.
+    """
+    try:
+        pat = np.array(getattr(rp, "raw_pattern"))
+        desc = getattr(rp, "color_desc")  # e.g. b'RGBG' or similar
+        if pat.shape != (2, 2) or desc is None:
+            return None
+        # Map indices in raw_pattern (0..3) to letters in color_desc
+        letters = []
+        for y in range(2):
+            for x in range(2):
+                idx = int(pat[y, x])
+                c = chr(desc[idx]).upper() if isinstance(desc, (bytes, bytearray)) else str(desc[idx]).upper()
+                # Normalize to R/G/B only
+                if c.startswith('R'): c = 'R'
+                elif c.startswith('G'): c = 'G'
+                elif c.startswith('B'): c = 'B'
+                else: return None
+                letters.append(c)
+        token = ''.join(letters)
+        return token if token in {"RGGB","BGGR","GRBG","GBRG"} else None
+    except Exception:
+        return None
+
+
+def _is_xtrans_from_path(path: str) -> Optional[bool]:
+    """
+    Returns True if X-Trans, False if definitely Bayer, None if unknown.
+    """
+    try:
+        import rawpy
+        with rawpy.imread(path) as rp:
+            if getattr(rp, "xtrans_pattern", None) is not None:
+                return True
+            if getattr(rp, "raw_pattern", None) is not None:
+                return False
+    except Exception:
+        pass
+    return None
+
+def _probably_fuji_xtrans(file_path: str, header) -> bool:
+    p = str(file_path).lower()
+    if p.endswith(".raf"):
+        return True  # RAF is Fujifilm; X-Series uses X-Trans (GFX uses Bayer but extension still RAF)
+    # Look at header if present
+    try:
+        make  = str(header.get("MAKE", "") or header.get("CAMERAM", "")).upper()
+        model = str(header.get("MODEL", "")).upper()
+    except Exception:
+        make = model = ""
+    if "FUJIFILM" in make and any(t in model for t in (
+        "X-T", "X-E", "X-PRO", "X-H", "X100", "X-S", "X30", "X70"
+    )):
+        return True
+    return False
+
+
+def _rawpy_is_xtrans_or_bayer(rp) -> str:
+    """
+    Returns 'XTRANS', 'BAYER', or 'UNKNOWN' from a rawpy handle without trusting a single flag.
+    """
+    try:
+        # Prefer explicit X-Trans structure if available
+        if getattr(rp, "xtrans_pattern", None) is not None:
+            return "XTRANS"
+    except Exception:
+        pass
+    try:
+        pat = getattr(rp, "raw_pattern", None)
+        if pat is not None and np.asarray(pat).shape == (2, 2):
+            return "BAYER"
+    except Exception:
+        pass
+    # LibRaw builds vary; check metadata as a heuristic
+    try:
+        md = getattr(rp, "metadata", None)
+        make  = (md.make or "").upper() if md else ""
+        model = (md.model or "").upper() if md else ""
+        if "FUJIFILM" in make and ("GFX" not in model):  # GFX medium format is Bayer
+            return "XTRANS"
+    except Exception:
+        pass
+    return "UNKNOWN"
+
+def _fmt2(x):
+    return "NA" if x is None else f"{float(x):.2f}"
 
 
 class StackingSuiteDialog(QDialog):
@@ -3033,6 +3172,7 @@ class StackingSuiteDialog(QDialog):
         self.conversion_output_directory = None
         self.reg_files = {}
         self.session_tags = {}           # file_path => session_tag
+        self.flat_dark_override = {}  # {(group_key:str): path | None | "__NO_DARK__"}
         self.deleted_calibrated_files = []
         self._norm_map = {}
         if not hasattr(self, "_mismatch_policy"):
@@ -3172,6 +3312,7 @@ class StackingSuiteDialog(QDialog):
 
         self.tabs.currentChanged.connect(self.on_tab_changed)
         self.restore_saved_master_calibrations()
+        self.update_override_dark_combo()  
         self._update_stacking_path_display()
 
         if self.settings.value("stacking/mfdeconv/after_mf_run_integration", None) is None:
@@ -3212,6 +3353,7 @@ class StackingSuiteDialog(QDialog):
 
         self.use_gpu_integration = self.settings.value("stacking/use_hardware_accel", True, type=bool)
         self._migrate_drizzle_keys_once()
+
 
     def _migrate_drizzle_keys_once(self):
         s = self.settings
@@ -3446,7 +3588,7 @@ class StackingSuiteDialog(QDialog):
     def add_conversion_files(self):
         last_dir = self.settings.value("last_opened_folder", "", type=str)
         files, _ = QFileDialog.getOpenFileNames(self, "Select Files for Conversion", last_dir,
-                                                "Supported Files (*.fits *.fit *.fz *.fz *.fits.gz *.fit.gz *.tiff *.tif *.png *.jpg *.jpeg *.cr2 *.cr3 *.nef *.arw *.dng *.orf *.rw2 *.pef *.xisf)")
+                                                "Supported Files (*.fits *.fit *.fz *.fz *.fits.gz *.fit.gz *.tiff *.tif *.png *.jpg *.jpeg *.cr2 *.cr3 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef *.xisf)")
         if files:
             self.settings.setValue("last_opened_folder", os.path.dirname(files[0]))
             for file in files:
@@ -3461,7 +3603,7 @@ class StackingSuiteDialog(QDialog):
             self.settings.setValue("last_opened_folder", directory)
             for file in os.listdir(directory):
                 if file.lower().endswith((".fits", ".fit", ".fz", ".fz", ".fit.gz", ".fits.gz", ".tiff", ".tif", ".png", ".jpg", ".jpeg", 
-                                           ".cr2", ".cr3", ".nef", ".arw", ".dng", ".orf", ".rw2", ".pef", ".xisf")):
+                                           ".cr2", ".cr3", ".nef", ".arw", ".dng", ".raf", ".orf", ".rw2", ".pef", ".xisf")):
                     full_path = os.path.join(directory, file)
                     item = QTreeWidgetItem([file, "Pending"])
                     item.setData(0, 1000, full_path)
@@ -3542,8 +3684,20 @@ class StackingSuiteDialog(QDialog):
             if image.ndim == 3:
                 is_mono = False
 
+            if image.ndim == 3:
+                header['COLOR'] = True
+                header['NAXIS'] = 3
+                header['NAXIS1'] = image.shape[1]
+                header['NAXIS2'] = image.shape[0]
+                header['NAXIS3'] = image.shape[2]
+            else:
+                header['COLOR'] = False
+                header['NAXIS'] = 2
+                header['NAXIS1'] = image.shape[1]
+                header['NAXIS2'] = image.shape[0]
+
             # If it's a RAW format, definitely treat as color
-            if file_path.lower().endswith(('.cr2', '.cr3', '.nef', '.arw', '.dng', '.orf', '.rw2', '.pef')):
+            if file_path.lower().endswith(('.cr2', '.cr3', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2', '.pef')):
                 is_mono = False
 
                 # Try extracting EXIF metadata
@@ -3633,7 +3787,9 @@ class StackingSuiteDialog(QDialog):
             base = os.path.basename(file_path)
             name, _ = os.path.splitext(base)
             output_filename = os.path.join(self.conversion_output_directory, f"{name}.fit")
-            image=image/np.max(image)
+            maxv = float(np.max(image))
+            if maxv > 0:
+                image = image / maxv
 
             try:
                 save_image(
@@ -3660,20 +3816,95 @@ class StackingSuiteDialog(QDialog):
 
 
     def debayer_image(self, image, file_path, header):
+        """
+        Returns RGB if debayered, otherwise returns input unchanged.
+        Also stamps header with BAYERPAT or XTRANS where possible.
+        """
         # per-run override if set, else honor the checkbox
         if self._cfa_for_this_run is None:
             cfa = bool(getattr(self, "cfa_drizzle_cb", None) and self.cfa_drizzle_cb.isChecked())
         else:
             cfa = bool(self._cfa_for_this_run)
         print(f"[DEBUG] Debayering with CFA drizzle = {cfa}")
+
         ext = file_path.lower()
-        if ext.endswith(('.cr2','.cr3','.nef','.arw','.dng','.orf','.rw2','.pef')):
-            return debayer_raw_fast(image, cfa_drizzle=cfa)
-        elif ext.endswith(('.fits','.fit','.fz')):
-            bp = (header.get('BAYERPAT') or header.get('BAYERPATN') or "").upper()
-            if bp:
-                return debayer_fits_fast(image, bp, cfa_drizzle=cfa)
+        is_raw = ext.endswith(('.cr2','.cr3','.nef','.arw','.dng','.raf','.orf','.rw2','.pef'))
+
+        # --- RAW files ---
+        if is_raw:
+            try:
+                import rawpy
+                with rawpy.imread(file_path) as rp:
+                    fam = _rawpy_is_xtrans_or_bayer(rp)
+                    if fam == "BAYER":
+                        # Try to get a concrete 2x2 token
+                        token = _rawpy_pattern_to_token(rp)
+                        if token:
+                            try: header['BAYERPAT'] = token
+                            except Exception: pass
+                            try:
+                                from legacy.numba_utils import debayer_raw_fast
+                                return debayer_raw_fast(image, bayer_pattern=token, cfa_drizzle=cfa, method="edge")
+                            except Exception:
+                                return debayer_fits_fast(image, token, cfa_drizzle=cfa)
+
+                    # X-Trans or ambiguous → treat Fuji RAF/X-Series as X-Trans
+                    if fam == "XTRANS" or _probably_fuji_xtrans(file_path, header):
+                        print("[INFO] Demosaicing via rawpy (X-Trans path).")
+                        rgb16 = rp.postprocess(
+                            demosaic_algorithm=rawpy.DemosaicAlgorithm.AHD,  # or DHT
+                            no_auto_bright=True,
+                            gamma=(1.0, 1.0),
+                            output_bps=16,
+                            use_camera_wb=True,
+                            fbdd_noise_reduction=rawpy.FBDDNoiseReductionMode.Off,
+                            four_color_rgb=False,
+                            half_size=False,
+                            bright=1.0,
+                            highlight_mode=rawpy.HighlightMode.Clip
+                        )
+                        rgb = (rgb16.astype(np.float32) / 65535.0)
+                        try: header['XTRANS'] = True
+                        except Exception: pass
+                        return rgb
+
+                    # If still unknown, last attempt: if we do have a 2x2 pattern, use it
+                    token = _rawpy_pattern_to_token(rp)
+                    if token:
+                        try: header['BAYERPAT'] = token
+                        except Exception: pass
+                        try:
+                            from legacy.numba_utils import debayer_raw_fast
+                            return debayer_raw_fast(image, bayer_pattern=token, cfa_drizzle=cfa, method="edge")
+                        except Exception:
+                            return debayer_fits_fast(image, token, cfa_drizzle=cfa)
+
+                    print("[WARN] RAW family unknown; leaving as-is.")
+            except Exception as e:
+                print(f"[WARN] rawpy probe failed for {file_path}: {e}")
+                # fall through
+
+        # --- FITS (already mosaic) ---
+        if ext.endswith(('.fits','.fit','.fz')):
+            bp = (str(header.get('BAYERPAT') or header.get('BAYERPATN') or header.get('CFA_PATTERN') or "")).upper()
+            if bp in {"RGGB","BGGR","GRBG","GBRG"}:
+                try:
+                    from legacy.numba_utils import debayer_raw_fast
+                    return debayer_raw_fast(image, bayer_pattern=bp, cfa_drizzle=cfa, method="edge")
+                except Exception:
+                    return debayer_fits_fast(image, bp, cfa_drizzle=cfa)
+
+            # If FITS came from Fuji RAW (RAF) and no BAYERPAT, it was likely X-Trans;
+            # without the RAW we cannot demosaic now, so keep mosaic but mark it.
+            if _probably_fuji_xtrans(file_path, header):
+                try: header['XTRANS'] = True
+                except Exception: pass
+                print("[INFO] FITS likely from X-Trans; cannot demosaic without RAW. Keeping mosaic.")
+                return image
+
         return image
+
+
 
     def setup_status_bar(self, layout):
         """ Sets up a scrollable status log at the bottom of the UI. """
@@ -5232,6 +5463,10 @@ class StackingSuiteDialog(QDialog):
                     self.save_master_paths_to_settings())
         )
         main_layout.addWidget(self.clear_master_flat_selection_btn)
+        self.override_dark_combo.currentIndexChanged[int].connect(self.override_selected_master_dark_for_flats)
+        self.update_override_dark_combo()
+        self.rebuild_flat_tree()
+    
         return tab
 
     def flat_tree_context_menu(self, position):
@@ -5610,6 +5845,86 @@ class StackingSuiteDialog(QDialog):
         _, x0, y0, x1, y1 = best
         return (x0, y0, x1, y1)
 
+
+    def _rect_from_transforms_fast(
+        transforms: dict[str, np.ndarray],
+        src_hw: tuple[int, int],
+        coverage_pct: float = 95.0,
+        *,
+        allow_homography: bool = True,
+        min_side: int = 16
+    ) -> tuple[int,int,int,int] | None:
+        """
+        transforms: {path -> 2x3 affine or 3x3 homography} mapping *source frame* -> *reference space*
+        src_hw: (H, W) of the frames before warp (the alignment reference geometry)
+        coverage_pct: require the rectangle be covered by at least this % of frames
+        Returns (x0, y0, x1, y1) in *reference* pixel coords, or None if empty.
+        """
+        H, W = map(int, src_hw)
+        if not transforms:
+            return None
+
+        # corners in source image coords
+        corners = np.array([[0,0,1],
+                            [W,0,1],
+                            [W,H,1],
+                            [0,H,1]], dtype=np.float64)
+
+        lefts, rights, tops, bottoms = [], [], [], []
+
+        for M in transforms.values():
+            M = np.asarray(M)
+            if M.shape == (2,3):
+                # affine: augment to 3x3
+                A = np.eye(3, dtype=np.float64); A[:2,:3] = M
+                M = A
+            elif M.shape == (3,3):
+                if not allow_homography:
+                    continue
+            else:
+                # unknown transform type; skip
+                continue
+
+            pts = (M @ corners.T)  # 3x4
+            # homography divide
+            w = pts[2, :]
+            w = np.where(np.abs(w) < 1e-12, 1.0, w)
+            xs = (pts[0, :] / w)
+            ys = (pts[1, :] / w)
+
+            lefts.append(xs.min()); rights.append(xs.max())
+            tops.append(ys.min());  bottoms.append(ys.max())
+
+        if not lefts:
+            return None
+
+        lefts   = np.asarray(lefts,   dtype=np.float64)
+        rights  = np.asarray(rights,  dtype=np.float64)
+        tops    = np.asarray(tops,    dtype=np.float64)
+        bottoms = np.asarray(bottoms, dtype=np.float64)
+
+        p = float(np.clip(coverage_pct, 0.0, 100.0)) / 100.0
+        # Require coverage by ≥ p of frames → take p-quantile of left/top, (1-p)-quantile of right/bottom
+        x0 = float(np.quantile(lefts,  p))
+        y0 = float(np.quantile(tops,   p))
+        x1 = float(np.quantile(rights, 1.0 - p))
+        y1 = float(np.quantile(bottoms,1.0 - p))
+
+        # enforce valid rectangle
+        if not np.isfinite([x0,y0,x1,y1]).all():
+            return None
+
+        # round *inwards* to be safe
+        xi0 = int(np.ceil (x0))
+        yi0 = int(np.ceil (y0))
+        xi1 = int(np.floor(x1))
+        yi1 = int(np.floor(y1))
+
+        if xi1 - xi0 < min_side or yi1 - yi0 < min_side:
+            return None
+
+        return (xi0, yi0, xi1, yi1)
+
     def _compute_common_autocrop_rect(self, grouped_files: dict, coverage_pct: float, status_cb=None):
         log = status_cb or self.update_status
         transforms_path = os.path.join(self.stacking_directory, "alignment_transforms.sasd")
@@ -5820,104 +6135,6 @@ class StackingSuiteDialog(QDialog):
         # Largest rectangle of 1s
         rect = self._max_rectangle_in_binary(mask)
         return rect
-
-
-
-    def _first_non_none(self, *vals):
-        for v in vals:
-            if v is not None:
-                return v
-        return None
-
-    def _compute_coverage_mask(self, file_list: List[str], transforms_path: str, coverage_pct: float):
-        """
-        Build a coverage-count image on the aligned canvas for 'file_list'.
-        Threshold at coverage_pct, but use the number of frames we ACTUALLY rasterized (N_eff).
-        Returns a bool mask (H×W) or None if nothing rasterized.
-        """
-        if not file_list:
-            return None
-
-        # Canvas from first aligned image
-        ref_img, _, _, _ = load_image(file_list[0])
-        if ref_img is None:
-            self.update_status("✂️ Auto-crop: could not load first aligned ref.")
-            return None
-        H, W = (ref_img.shape if ref_img.ndim == 2 else ref_img.shape[:2])
-
-        if not os.path.exists(transforms_path):
-            self.update_status(f"✂️ Auto-crop: no transforms file at {transforms_path}")
-            return None
-
-        transforms = self.load_alignment_matrices_custom(transforms_path)
-
-        # --- Robust transform lookup: key by normalized full path AND by basename ---
-        def _normcase(p):  # windows-insensitive
-            p = os.path.normpath(os.path.abspath(p))
-            return p.lower() if os.name == "nt" else p
-
-        xforms_by_full = { _normcase(k): v for k, v in transforms.items() }
-        xforms_by_name = {}
-        for k, v in transforms.items():
-            xforms_by_name.setdefault(os.path.basename(k), v)
-
-        cov = np.zeros((H, W), dtype=np.uint16)
-        used = 0
-
-        for aligned_path in file_list:
-            base = os.path.basename(aligned_path)
-            if base.endswith("_n_r.fit"):
-                raw_base = base.replace("_n_r.fit", "_n.fit")
-            elif base.endswith("_r.fit"):
-                raw_base = base.replace("_r.fit", ".fit")
-            else:
-                raw_base = base
-
-            # try normalized-Images location first
-            raw_path_guess = os.path.join(self.stacking_directory, "Normalized_Images", raw_base)
-
-            # find transform
-            M = self._first_non_none(
-                xforms_by_full.get(_normcase(raw_path_guess)),
-                xforms_by_full.get(_normcase(aligned_path)),
-                transforms.get(raw_path_guess),
-                transforms.get(os.path.normpath(aligned_path)),
-                xforms_by_name.get(raw_base),
-            )
-
-            if M is None:
-                # Can't rasterize this frame
-                continue
-
-            # raw size
-            h_raw = w_raw = None
-            if os.path.exists(raw_path_guess):
-                raw_img, _, _, _ = load_image(raw_path_guess)
-                if raw_img is not None:
-                    h_raw, w_raw = (raw_img.shape if raw_img.ndim == 2 else raw_img.shape[:2])
-
-            if h_raw is None or w_raw is None:
-                # fallback to aligned canvas size (still okay; affine provides placement)
-                h_raw, w_raw = H, W
-
-            corners = np.array([[0,0],[w_raw-1,0],[w_raw-1,h_raw-1],[0,h_raw-1]], dtype=np.float32)
-            A = M[:, :2]; t = M[:, 2]
-            quad = (corners @ A.T) + t
-
-            self._quad_coverage_add(cov, quad)
-            used += 1
-
-        if used == 0:
-            self.update_status("✂️ Auto-crop: 0/{} frames had usable transforms; skipping.".format(len(file_list)))
-            return None
-
-        need = int(np.ceil((coverage_pct / 100.0) * used))
-        mask = (cov >= need)
-        self.update_status(f"✂️ Auto-crop: rasterized {used}/{len(file_list)} frames; need {need} per-pixel.")
-        if not mask.any():
-            self.update_status("✂️ Auto-crop: threshold produced empty mask.")
-            return None
-        return mask
 
     def _refresh_reg_tree_summaries(self):
         """
@@ -6460,6 +6677,16 @@ class StackingSuiteDialog(QDialog):
         self.mf_sr_cb.toggled.connect(self.mf_sr_factor_spin.setEnabled)
         self.mf_sr_factor_spin.valueChanged.connect(lambda v: self.settings.setValue("stacking/mfdeconv/sr_factor", int(v)))
 
+        # persist auto-crop settings
+        self.autocrop_cb.toggled.connect(
+            lambda v: (self.settings.setValue("stacking/autocrop_enabled", bool(v)),
+                    self.settings.sync())
+        )
+        self.autocrop_pct.valueChanged.connect(
+            lambda v: (self.settings.setValue("stacking/autocrop_pct", float(v)),
+                    self.settings.sync())
+        )
+
 
         # If comet star-removal is globally disabled, gray this out with a helpful tooltip
         csr_enabled_globally = self.settings.value("stacking/comet_starrem/enabled", False, type=bool)
@@ -6916,76 +7143,80 @@ class StackingSuiteDialog(QDialog):
     def rebuild_flat_tree(self):
         """Regroup flat frames in the flat_tree based on the exposure tolerance."""
         self.flat_tree.clear()
-
         if not self.flat_files:
             return
 
-        tolerance = self.flat_exposure_tolerance_spinbox.value()
+        tol = float(self.flat_exposure_tolerance_spinbox.value())
 
-        # Flatten all flats into a list
+        # Flatten
         all_flats = []
         for (filter_exp_size, session_tag), files in self.flat_files.items():
-            for file in files:
-                all_flats.append((filter_exp_size, session_tag, file))
+            for f in files:
+                all_flats.append((filter_exp_size, session_tag, f))
 
-        # Group the flats
-        grouped = {}
-
+        # Group
+        grouped = {}  # (filter_name, min_exp, max_exp, image_size) -> [(path, exposure, session)]
         for (filter_exp_size, session_tag, file_path) in all_flats:
             try:
-                header = fits.getheader(file_path, ext=0)
-                filter_name = header.get("FILTER", "Unknown")
-                filter_name     = self._sanitize_name(filter_name)
-                exposure = header.get("EXPOSURE", header.get("EXPTIME", "Unknown"))
-                width = header.get("NAXIS1", 0)
-                height = header.get("NAXIS2", 0)
-                image_size = f"{width}x{height}" if width and height else "Unknown"
-                exposure = float(exposure)
+                hdr = fits.getheader(file_path, ext=0)
+                filter_name = self._sanitize_name(hdr.get("FILTER", "Unknown"))
+                exposure    = float(hdr.get("EXPOSURE", hdr.get("EXPTIME", 0.0)) or 0.0)
+                W, H        = hdr.get("NAXIS1", 0), hdr.get("NAXIS2", 0)
+                image_size  = f"{W}x{H}" if (W and H) else "Unknown"
 
-                found_group = None
-                for group_key in grouped.keys():
-                    g_filter, g_min_exp, g_max_exp, g_size = group_key
-                    if (
-                        filter_name == g_filter and
-                        image_size == g_size and
-                        g_min_exp - tolerance <= exposure <= g_max_exp + tolerance
-                    ):
-                        found_group = group_key
-                        break
+                # find compatible bucket (by filter+size+exp within tol)
+                found = None
+                for (filt, mn, mx, sz) in grouped.keys():
+                    if filt == filter_name and sz == image_size and (mn - tol) <= exposure <= (mx + tol):
+                        found = (filt, mn, mx, sz); break
 
-                if found_group:
-                    grouped[found_group].append((file_path, exposure))
+                if found:
+                    grouped[found].append((file_path, exposure, session_tag))
                 else:
-                    new_key = (filter_name, exposure, exposure, image_size)
-                    grouped[new_key] = [(file_path, exposure)]
+                    key = (filter_name, exposure, exposure, image_size)
+                    grouped.setdefault(key, []).append((file_path, exposure, session_tag))
 
             except Exception as e:
                 print(f"⚠️ Failed reading {file_path}: {e}")
 
-        # Now create the tree
+        # Build tree
         for (filter_name, min_exp, max_exp, image_size), files in grouped.items():
+            # normalize the bin so it’s stable
+            e_min = min(p[1] for p in files)
+            e_max = max(p[1] for p in files)
+            # A readable label range (you can tweak formatting)
+            expmin = np.floor(e_min)
+            exposure_str = f"{expmin:.1f}s–{(expmin + tol):.1f}s" if len(files) > 1 else f"{e_min:.1f}s"
+
             top_item = QTreeWidgetItem()
-            expmin = np.floor(min_exp)
-            tolerance = self.flat_exposure_tolerance_spinbox.value()
-
-            if len(files) > 1:
-                exposure_str = f"{expmin:.1f}s–{(expmin + tolerance):.1f}s"
-            else:
-                exposure_str = f"{min_exp:.1f}s"
-
             top_item.setText(0, f"{filter_name} - {exposure_str} ({image_size})")
             top_item.setText(1, f"{len(files)} files")
-            top_item.setText(2, "Auto-Selected Dark" if self.auto_select_dark_checkbox.isChecked() else "None")
+
+            # ---- canonical group_key (used everywhere) ----
+            group_key = f"{filter_name}|{image_size}|{expmin:.3f}|{(expmin+tol):.3f}"
+            top_item.setData(0, Qt.ItemDataRole.UserRole, group_key)
+
+            # column 3 shows what will be used
+            ud = self.flat_dark_override.get(group_key, None)  # None→Auto, "__NO_DARK__", or path
+            if ud is None:
+                col2_txt = "Auto" if self.auto_select_dark_checkbox.isChecked() else "None"
+            elif ud == "__NO_DARK__":
+                col2_txt = "No Calibration"
+            else:
+                col2_txt = os.path.basename(ud)
+            top_item.setText(2, col2_txt)
+            top_item.setData(2, Qt.ItemDataRole.UserRole, ud)
 
             self.flat_tree.addTopLevelItem(top_item)
 
-            for file_path, _ in files:
-                session_tag = self.session_tags.get(file_path, "Default")
+            # leaves
+            for file_path, _, session_tag in files:
                 leaf_item = QTreeWidgetItem([
                     os.path.basename(file_path),
                     f"Size: {image_size} | Session: {session_tag}"
                 ])
                 top_item.addChild(leaf_item)
+
 
 
     def exposures_within_tolerance(self, exp1, exp2, tolerance):
@@ -7367,15 +7598,13 @@ class StackingSuiteDialog(QDialog):
         self._refresh_reg_tree_summaries()
 
 
+    def on_tab_changed(self, idx):
+        try:
+            if self.tabs.tabText(idx) == "Flats":
+                self.update_override_dark_combo()
+        except Exception:
+            pass
 
-
-
-
-    def on_tab_changed(self, index):
-        """ Detects when user switches to the Flats tab and triggers auto-assign. """
-        if self.tabs.tabText(index) == "Flats":
-            print("🔄 Auto-checking best Master Darks for Flats...")
-            self.assign_best_master_dark()
 
 
     def add_dark_files(self):
@@ -8273,28 +8502,24 @@ class StackingSuiteDialog(QDialog):
                 self.update_status(f"❌ ERROR: Failed to load master file {file_path} - {e}")
                 QApplication.processEvents()
 
-
-
     def create_master_dark(self):
-        """Creates master darks with minimal RAM usage by loading frames in small tiles (GPU-accelerated if available)."""
-
+        """Creates master darks with minimal RAM usage by loading frames in small tiles (GPU-accelerated if available),
+        with adaptive reducers."""
         if not self.stacking_directory:
             self.select_stacking_directory()
             if not self.stacking_directory:
                 QMessageBox.warning(self, "Error", "Output directory is not set.")
                 return
 
-        # Choose an UNWEIGHTED algo for calibration. If user picked a weighted one, force unweighted.
-        algo = getattr(self, "calib_rejection_algorithm", "Windsorized Sigma Clipping")
-        if algo == "Weighted Windsorized Sigma Clipping":
-            algo = "Windsorized Sigma Clipping"
-
-        use_gpu = bool(self._hw_accel_enabled()) and _torch_ok() and _gpu_algo_supported(algo)
+        # Keep both paths available; we'll override algo selection per group.
+        ui_algo = getattr(self, "calib_rejection_algorithm", "Windsorized Sigma Clipping")
+        if ui_algo == "Weighted Windsorized Sigma Clipping":
+            ui_algo = "Windsorized Sigma Clipping"
 
         exposure_tolerance = self.exposure_tolerance_spinbox.value()
         dark_files_by_group = {}
 
-        # 1) Group dark files by exposure time & image size within tolerance
+        # group darks by exposure + size
         for exposure_key, file_list in self.dark_files.items():
             exposure_time_str, image_size = exposure_key.split(" (")
             image_size = image_size.rstrip(")")
@@ -8305,22 +8530,19 @@ class StackingSuiteDialog(QDialog):
                 if abs(existing_exposure - exposure_time) <= exposure_tolerance and existing_size == image_size:
                     matched_group = (existing_exposure, existing_size)
                     break
-
             if matched_group is None:
                 matched_group = (exposure_time, image_size)
                 dark_files_by_group[matched_group] = []
-
             dark_files_by_group[matched_group].extend(file_list)
 
-        # 2) Create Master Calibration Directory
         master_dir = os.path.join(self.stacking_directory, "Master_Calibration_Files")
         os.makedirs(master_dir, exist_ok=True)
 
-        # 3) Pre-count tiles for progress
+        # Pre-count tiles
         chunk_height = self.chunk_height
         chunk_width  = self.chunk_width
         total_tiles = 0
-        group_shapes = {}  # cache (H,W,C) per group
+        group_shapes = {}
         for (exposure_time, image_size), file_list in dark_files_by_group.items():
             if len(file_list) < 2:
                 continue
@@ -8336,6 +8558,43 @@ class StackingSuiteDialog(QDialog):
             self.update_status("⚠️ No eligible dark groups found to stack.")
             return
 
+        # ------- small helpers (local) -------------------------------------------
+        def _select_reducer(kind: str, N: int):
+            if kind == "dark":
+                if N < 16:
+                    return ("Kappa-Sigma Clipping", {"kappa": 3.0, "iterations": 1}, "kappa1")
+                elif N <= 200:
+                    return ("Simple Median (No Rejection)", {}, "median")
+                else:
+                    return ("Trimmed Mean", {"trim_fraction": 0.05}, "trimmed")
+            else:
+                raise ValueError("wrong kind")
+
+        def _cpu_tile_median(ts4: np.ndarray) -> np.ndarray:
+            return np.median(ts4, axis=0).astype(np.float32, copy=False)
+
+        def _cpu_tile_trimmed_mean(ts4: np.ndarray, frac: float) -> np.ndarray:
+            if frac <= 0.0:
+                return ts4.mean(axis=0, dtype=np.float32)
+            F = ts4.shape[0]
+            k = int(max(1, round(frac * F)))
+            if 2 * k >= F:
+                return _cpu_tile_median(ts4)
+            s = np.sort(ts4, axis=0)
+            core = s[k:F - k]
+            return core.mean(axis=0, dtype=np.float32)
+
+        def _cpu_tile_kappa_sigma_1iter(ts4: np.ndarray, kappa: float = 3.0) -> np.ndarray:
+            med = np.median(ts4, axis=0)
+            std = ts4.std(axis=0, dtype=np.float32)
+            lo = med - kappa * std
+            hi = med + kappa * std
+            mask = (ts4 >= lo) & (ts4 <= hi)
+            num = (ts4 * mask).sum(axis=0, dtype=np.float32)
+            cnt = mask.sum(axis=0).astype(np.float32)
+            out = np.where(cnt > 0, num / np.maximum(cnt, 1.0), med)
+            return out.astype(np.float32, copy=False)
+
         pd = _Progress(self, "Create Master Darks", total_tiles)
         try:
             for (exposure_time, image_size), file_list in dark_files_by_group.items():
@@ -8343,7 +8602,6 @@ class StackingSuiteDialog(QDialog):
                     self.update_status(f"⚠️ Skipping {exposure_time}s ({image_size}) - Not enough frames to stack.")
                     QApplication.processEvents()
                     continue
-
                 if pd.cancelled:
                     self.update_status("⛔ Master Dark creation cancelled.")
                     break
@@ -8362,88 +8620,75 @@ class StackingSuiteDialog(QDialog):
                     height, width = ref_data.shape[:2]
                     channels = 1 if (ref_data.ndim == 2) else 3
 
-                memmap_path = os.path.join(master_dir, f"temp_dark_{exposure_time}_{image_size}.dat")
-                final_stacked = np.memmap(memmap_path, dtype=self._dtype(), mode='w+', shape=(height, width, channels))
-
-                num_frames = len(file_list)
-                # dummy weights (ignored by unweighted GPU reducer, but kept for API parity)
-                weights_array = np.ones((num_frames,), dtype=np.float32)
-
-                self.update_status(f"⚙️ {'GPU' if use_gpu else 'CPU'} reducer for calibration — {algo}")
+                # --- choose reducer adaptively ---
+                N = len(file_list)
+                algo_name, params, cpu_label = _select_reducer("dark", N)
+                use_gpu = bool(self._hw_accel_enabled()) and _torch_ok() and _gpu_algo_supported(algo_name)
+                self.update_status(f"⚙️ {'GPU' if use_gpu else 'CPU'} reducer for darks — {algo_name} ({'k=%.1f' % params.get('kappa', 0) if cpu_label=='kappa1' else 'trim=%.0f%%' % (params.get('trim_fraction', 0)*100) if cpu_label=='trimmed' else 'median'})")
                 QApplication.processEvents()
 
-                # ---- double-buffer + background prefetch over tiles ----
+                memmap_path = os.path.join(master_dir, f"temp_dark_{exposure_time}_{image_size}.dat")
+                final_stacked = np.memmap(memmap_path, dtype=np.float32, mode='w+', shape=(height, width, channels))
+
                 tiles = _tile_grid(height, width, chunk_height, chunk_width)
                 total_tiles_group = len(tiles)
 
-                # allocate two C-order buffers sized to your chunk
-                N = num_frames
+                # double-buffer
                 buf0 = np.empty((N, min(chunk_height, height), min(chunk_width, width), channels),
                                 dtype=np.float32, order="C")
                 buf1 = np.empty_like(buf0)
 
-                # prime the first read
                 from concurrent.futures import ThreadPoolExecutor
                 tp = ThreadPoolExecutor(max_workers=1)
+
+                # prime first read
                 (y0, y1, x0, x1) = tiles[0]
                 fut = tp.submit(_read_tile_stack, file_list, y0, y1, x0, x1, channels, buf0)
                 use0 = True
-
-                # (announce once per group)
-                self.update_status(f"⚙️ {'GPU' if use_gpu else 'CPU'} reducer for calibration — {algo}")
-                QApplication.processEvents()
 
                 for t_idx, (y0, y1, x0, x1) in enumerate(tiles, start=1):
                     if pd.cancelled:
                         break
 
-                    # wait for current tile to be filled
                     th, tw = fut.result()
                     ts_np = (buf0 if use0 else buf1)[:N, :th, :tw, :channels]
 
-                    # prefetch the next tile into the other buffer
+                    # prefetch next
                     if t_idx < total_tiles_group:
                         ny0, ny1, nx0, nx1 = tiles[t_idx]
                         fut = tp.submit(_read_tile_stack, file_list, ny0, ny1, nx0, nx1, channels,
                                         (buf1 if use0 else buf0))
 
-                    # label/update PD
                     pd.set_label(f"{int(exposure_time)}s ({image_size}) — y:{y0}-{y1} x:{x0}-{x1}")
 
-                    # ---- rejection (GPU or CPU) ----
+                    # ---- reduction (GPU or CPU) ----
                     if use_gpu:
-                        # dummy 1s weights; your GPU reducer ignores them for unweighted algos
-                        weights_array = np.ones((N,), dtype=np.float32)
                         tile_result, _ = _torch_reduce_tile(
                             ts_np,
-                            weights_array,
-                            algo_name=algo,
-                            kappa=float(self.kappa),
-                            iterations=int(self.iterations),
-                            sigma_low=float(self.sigma_low),
-                            sigma_high=float(self.sigma_high),
-                            trim_fraction=float(self.trim_fraction),
-                            esd_threshold=float(self.esd_threshold),
-                            biweight_constant=float(self.biweight_constant),
-                            modz_threshold=float(self.modz_threshold),
+                            np.ones((N,), dtype=np.float32),
+                            algo_name=algo_name,
+                            kappa=float(params.get("kappa", getattr(self, "kappa", 3.0))),
+                            iterations=int(params.get("iterations", getattr(self, "iterations", 1))),
+                            sigma_low=float(getattr(self, "sigma_low", 2.5)),
+                            sigma_high=float(getattr(self, "sigma_high", 2.5)),
+                            trim_fraction=float(params.get("trim_fraction", getattr(self, "trim_fraction", 0.05))),
+                            esd_threshold=float(getattr(self, "esd_threshold", 3.0)),
+                            biweight_constant=float(getattr(self, "biweight_constant", 6.0)),
+                            modz_threshold=float(getattr(self, "modz_threshold", 3.5)),
                             comet_hclip_k=float(self.settings.value("stacking/comet_hclip_k", 1.30, type=float)),
                             comet_hclip_p=float(self.settings.value("stacking/comet_hclip_p", 25.0, type=float)),
                         )
                     else:
-                        if channels == 3:
-                            tile_result = windsorized_sigma_clip_4d(ts_np, lower=self.sigma_low, upper=self.sigma_high)
-                            if isinstance(tile_result, tuple):
-                                tile_result = tile_result[0]
-                        else:
-                            ts3 = ts_np[..., 0]
-                            tr3 = windsorized_sigma_clip_3d(ts3, lower=self.sigma_low, upper=self.sigma_high)
-                            tile_result = (tr3[0] if isinstance(tr3, tuple) else tr3)[..., None]
+                        if cpu_label == "median":
+                            tile_result = _cpu_tile_median(ts_np)
+                        elif cpu_label == "trimmed":
+                            tile_result = _cpu_tile_trimmed_mean(ts_np, float(params.get("trim_fraction", 0.05)))
+                        else:  # 'kappa1'
+                            tile_result = _cpu_tile_kappa_sigma_1iter(ts_np, float(params.get("kappa", 3.0)))
 
                     # commit
                     final_stacked[y0:y1, x0:x1, :] = tile_result
                     pd.step()
-
-                    # flip buffer for the next iteration
                     use0 = not use0
 
                 tp.shutdown(wait=True)
@@ -8455,8 +8700,7 @@ class StackingSuiteDialog(QDialog):
                     except Exception: pass
                     break
 
-                # save
-                master_dark_data = np.array(final_stacked)
+                master_dark_data = np.asarray(final_stacked, dtype=np.float32)
                 del final_stacked
 
                 master_dark_stem = f"MasterDark_{int(exposure_time)}s_{image_size}"
@@ -8485,11 +8729,19 @@ class StackingSuiteDialog(QDialog):
             except Exception: pass
             pd.close()
 
-
             
     def add_master_dark_to_tree(self, exposure_time, master_dark_path):
         """ Adds the newly created Master Dark to the Master Dark TreeBox and updates the dropdown. """
+        try:
+            with fits.open(master_dark_path, memmap=False) as hdul:
+                h, w = hdul[0].data.shape[:2]
+                size = f"{w}x{h}"
+        except Exception:
+            size = "Unknown"
 
+        # record for all tabs
+        self.master_files[exposure_key] = master_dark_path
+        self.master_sizes[master_dark_path] = size
         exposure_key = f"{exposure_time}s"
 
         # ✅ Store in the dictionary
@@ -8597,59 +8849,77 @@ class StackingSuiteDialog(QDialog):
 
 
     def update_override_dark_combo(self):
-        """ Populates the dropdown with available Master Darks and prevents duplicate entries. """
-        self.override_dark_combo.clear()
-        self.override_dark_combo.addItem("None (Use Auto-Select)")
-        self.override_dark_combo.addItem("None (Use no Dark to Calibrate)")
-
-        seen_files = set()
-        for exposure, path in self.master_files.items():
-            file_name = os.path.basename(path)
-            if file_name not in seen_files:
-                self.override_dark_combo.addItem(f"{file_name} ({exposure})")
-                seen_files.add(file_name)
-
-        print("✅ DEBUG: Updated Override Master Dark dropdown with unique entries.")
-
-
-    def override_selected_master_dark_for_flats(self):
-        """ Overrides the selected master dark for the currently highlighted flat group. """
-        selected_items = self.flat_tree.selectedItems()
-        if not selected_items:
+        """Populate the dropdown with available Master Darks (from self.master_files)."""
+        if not hasattr(self, "override_dark_combo"):
             return
 
-        new_dark = self.override_dark_combo.currentText()
+        self.override_dark_combo.blockSignals(True)
+        try:
+            self.override_dark_combo.clear()
+            self.override_dark_combo.addItem("None (Use Auto-Select)", userData=None)
+            self.override_dark_combo.addItem("None (Use no Dark to Calibrate)", userData="__NO_DARK__")
 
-        # ✅ Handle "None (Use no Dark to Calibrate)" explicitly
-        if new_dark == "None (Use no Dark to Calibrate)":
-            new_dark = "No Calibration"  # Show "No Calibration" in the UI
-        elif new_dark == "None (Use Auto-Select)":
-            new_dark = None  # Auto-select behavior
+            seen = set()
+            for key, path in (self.master_files or {}).items():
+                fn = os.path.basename(path or "")
+                if not fn:
+                    continue
+                # Keep only dark-like files (bias-as-dark is fine)
+                if ("masterdark" in fn.lower()) or fn.lower().startswith(("masterbias", "master_bias")):
+                    if path and os.path.exists(path) and fn not in seen:
+                        self.override_dark_combo.addItem(fn, userData=path)
+                        seen.add(fn)
+            print(f"✅ DEBUG: override_dark_combo items = {self.override_dark_combo.count()}")
+        finally:
+            self.override_dark_combo.blockSignals(False)
 
-        for item in selected_items:
-            if item.parent():  # Ensure it's an exposure group, not the top filter name
-                item.setText(2, new_dark if new_dark else "Auto")
 
-        print(f"✅ DEBUG: Override Master Dark set to: {new_dark}")
+
+    def override_selected_master_dark_for_flats(self, idx: int):
+        """Apply combo choice to selected flat groups; stores path/token in row + dict."""
+        items = self.flat_tree.selectedItems()
+        if not items:
+            return
+
+        # read combo selection (userData carries the path or sentinel)
+        ud = self.override_dark_combo.itemData(idx)   # None | "__NO_DARK__" | "/path/to/MasterDark_..."
+        txt = self.override_dark_combo.currentText()
+
+        disp = ("Auto" if ud is None else
+                "No Calibration" if ud == "__NO_DARK__" else
+                os.path.basename(str(ud)))
+
+        for it in items:
+            # ensure we’re on a group row (no parent)
+            if it.parent():
+                continue
+            gk = it.data(0, Qt.ItemDataRole.UserRole)
+            if not gk:
+                continue
+            it.setText(2, disp)
+            it.setData(2, Qt.ItemDataRole.UserRole, ud)
+            self.flat_dark_override[gk] = ud
+
+        print(f"✅ Override Master Dark applied → {disp}")
+
+
 
     def create_master_flat(self):
-        """Creates master flats using per-frame dark subtraction before stacking (GPU-accelerated if available)."""
-
+        """Creates master flats using per-frame dark subtraction before stacking (GPU-accelerated if available),
+        with adaptive reducers and fast per-frame normalization."""
         if not self.stacking_directory:
             QMessageBox.warning(self, "Error", "Please set the stacking directory first using the wrench button.")
             return
 
-        # Choose an UNWEIGHTED algo for calibration. If user picked a weighted one, force unweighted.
-        algo = getattr(self, "calib_rejection_algorithm", "Windsorized Sigma Clipping")
-        if algo == "Weighted Windsorized Sigma Clipping":
-            algo = "Windsorized Sigma Clipping"
-
-        use_gpu = bool(self._hw_accel_enabled()) and _torch_ok() and _gpu_algo_supported(algo)
+        # Keep both paths available; we'll override algo selection per group.
+        ui_algo = getattr(self, "calib_rejection_algorithm", "Windsorized Sigma Clipping")
+        if ui_algo == "Weighted Windsorized Sigma Clipping":
+            ui_algo = "Windsorized Sigma Clipping"
 
         exposure_tolerance = self.flat_exposure_tolerance_spinbox.value()
         flat_files_by_group = {}  # (Exposure, Size, Filter, Session) -> list
 
-        # Group Flats
+        # --- group flats exactly as before ---
         for (filter_exposure, session), file_list in self.flat_files.items():
             try:
                 filter_name, exposure_size = filter_exposure.split(" - ")
@@ -8677,14 +8947,13 @@ class StackingSuiteDialog(QDialog):
             if matched_group is None:
                 matched_group = (exposure_time, image_size, filter_name, session)
                 flat_files_by_group[matched_group] = []
-
             flat_files_by_group[matched_group].extend(file_list)
 
         # Output folder
         master_dir = os.path.join(self.stacking_directory, "Master_Calibration_Files")
         os.makedirs(master_dir, exist_ok=True)
 
-        # Pre-count tiles for progress
+        # Pre-count tiles
         total_tiles = 0
         group_shapes = {}
         for (exposure_time, image_size, filter_name, session), file_list in flat_files_by_group.items():
@@ -8702,13 +8971,111 @@ class StackingSuiteDialog(QDialog):
             self.update_status("⚠️ No eligible flat groups found to stack.")
             return
 
+        # ------- helpers (local to this function) --------------------------------
+        def _select_reducer(kind: str, N: int):
+            """
+            kind: 'flat' or 'dark'; return (algo_name, params_dict, cpu_label)
+            algo_name is a GPU-string if GPU is used; CPU gets cpu_label switch.
+            """
+            if kind == "flat":
+                # <16: robust median; 17–200: trimmed mean 5%; >200: trimmed mean 2% (nearly mean)
+                if N < 16:
+                    return ("Simple Median (No Rejection)", {}, "median")
+                elif N <= 200:
+                    return ("Trimmed Mean", {"trim_fraction": 0.05}, "trimmed")
+                else:
+                    return ("Trimmed Mean", {"trim_fraction": 0.02}, "trimmed")
+            else:  # darks
+                # <16: Kappa-Sigma 1-iter; 17–200: simple median; >200: trimmed mean 5% to reduce noise
+                if N < 16:
+                    return ("Kappa-Sigma Clipping", {"kappa": 3.0, "iterations": 1}, "kappa1")
+                elif N <= 200:
+                    return ("Simple Median (No Rejection)", {}, "median")
+                else:
+                    return ("Trimmed Mean", {"trim_fraction": 0.05}, "trimmed")
+
+        def _cpu_tile_median(ts4: np.ndarray) -> np.ndarray:
+            # ts4: (F, th, tw, C)
+            return np.median(ts4, axis=0).astype(np.float32, copy=False)
+
+        def _cpu_tile_trimmed_mean(ts4: np.ndarray, frac: float) -> np.ndarray:
+            if frac <= 0.0:
+                return ts4.mean(axis=0, dtype=np.float32)
+            F = ts4.shape[0]
+            k = int(max(1, round(frac * F)))
+            if 2 * k >= F:  # if too aggressive, fall back to median
+                return _cpu_tile_median(ts4)
+            # sort along frame axis and average middle slice
+            s = np.sort(ts4, axis=0)
+            core = s[k:F - k]
+            return core.mean(axis=0, dtype=np.float32)
+
+        def _cpu_tile_kappa_sigma_1iter(ts4: np.ndarray, kappa: float = 3.0) -> np.ndarray:
+            med = np.median(ts4, axis=0)
+            std = ts4.std(axis=0, dtype=np.float32)
+            lo = med - kappa * std
+            hi = med + kappa * std
+            mask = (ts4 >= lo) & (ts4 <= hi)
+            # avoid division by zero
+            num = (ts4 * mask).sum(axis=0, dtype=np.float32)
+            cnt = mask.sum(axis=0).astype(np.float32)
+            out = np.where(cnt > 0, num / np.maximum(cnt, 1.0), med)
+            return out.astype(np.float32, copy=False)
+
+        def _estimate_flat_scales(file_list: list[str], H: int, W: int, C: int, dark_data: np.ndarray | None):
+            """
+            Read one central patch (min(512, H/W)) from each frame, subtract dark (if present),
+            compute per-frame median, and normalize scales to overall median.
+            """
+            # central patch
+            th = min(512, H); tw = min(512, W)
+            y0 = (H - th) // 2; y1 = y0 + th
+            x0 = (W - tw) // 2; x1 = x0 + tw
+
+            N = len(file_list)
+            meds = np.empty((N,), dtype=np.float64)
+
+            # small parallel read
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            with ThreadPoolExecutor(max_workers=min(os.cpu_count() or 4, 8)) as exe:
+                fut2i = {exe.submit(load_fits_tile, fp, y0, y1, x0, x1): i for i, fp in enumerate(file_list)}
+                for fut in as_completed(fut2i):
+                    i = fut2i[fut]
+                    sub = fut.result()
+                    if sub is None:
+                        meds[i] = 1.0
+                        continue
+                    # to HWC f32
+                    if sub.ndim == 2:
+                        sub = sub[:, :, None]
+                    elif sub.ndim == 3 and sub.shape[0] in (1, 3):
+                        sub = sub.transpose(1, 2, 0)
+                    sub = sub.astype(np.float32, copy=False)
+
+                    if dark_data is not None:
+                        dd = dark_data
+                        if dd.ndim == 3 and dd.shape[0] in (1, 3):
+                            dd = dd.transpose(1, 2, 0)
+                        d_tile = dd[y0:y1, x0:x1].astype(np.float32, copy=False)
+                        if d_tile.ndim == 2 and sub.shape[2] == 3:
+                            d_tile = np.repeat(d_tile[..., None], 3, axis=2)
+                        sub = sub - d_tile
+
+                    meds[i] = np.median(sub, axis=(0, 1, 2))
+            # normalize to global median
+            gmed = np.median(meds) if np.all(np.isfinite(meds)) else 1.0
+            gmed = 1.0 if gmed == 0.0 else gmed
+            scales = meds / gmed
+            # clamp to sane range
+            scales = np.clip(scales, 1e-3, 1e3).astype(np.float32)
+            return scales
+
         pd = _Progress(self, "Create Master Flats", total_tiles)
         try:
             for (exposure_time, image_size, filter_name, session), file_list in flat_files_by_group.items():
                 if len(file_list) < 2:
                     self.update_status(f"⚠️ Skipping {exposure_time}s ({image_size}) [{filter_name}] [{session}] - Not enough frames to stack.")
                     continue
-
                 if pd.cancelled:
                     self.update_status("⛔ Master Flat creation cancelled.")
                     break
@@ -8717,25 +9084,54 @@ class StackingSuiteDialog(QDialog):
                 QApplication.processEvents()
 
                 # Select matching master dark (optional)
-                best_diff = float("inf")
-                selected_master_dark = None
-                for key, path in self.master_files.items():
-                    match = re.match(r"([\d.]+)s", key)
-                    if not match:
-                        continue
-                    dark_exposure = float(match.group(1))
-                    dark_size = self.master_sizes.get(path, "Unknown")
-                    if dark_size == image_size:
-                        diff = abs(dark_exposure - exposure_time)
-                        if diff < best_diff:
-                            best_diff = diff
-                            selected_master_dark = path
+                # --- resolve override / auto-select per group ---
+                # rebuild the SAME key we stored on the tree
+                expmin = math.floor(float(exposure_time))
+                tol    = float(self.flat_exposure_tolerance_spinbox.value())
+                group_key = f"{filter_name}|{image_size}|{expmin:.3f}|{(expmin+tol):.3f}"
 
+                override_val = self.flat_dark_override.get(group_key, None)  # None | "__NO_DARK__" | path
+                selected_master_dark = None
+
+                if override_val == "__NO_DARK__":
+                    self.update_status("ℹ️ This flat group: override = No Calibration.")
+                elif isinstance(override_val, str):
+                    if os.path.exists(override_val):
+                        selected_master_dark = override_val
+                        self.update_status(f"🌓 This flat group: using OVERRIDE dark → {os.path.basename(selected_master_dark)}")
+                    else:
+                        self.update_status("⚠️ Override dark missing on disk; falling back to Auto/None.")
+                        override_val = None  # fall through
+
+                if (override_val is None) and self.auto_select_dark_checkbox.isChecked():
+                    # Auto-select closest exposure, same size
+                    best_diff = float("inf")
+                    for key, path in (getattr(self, "master_files", {}) or {}).items():
+                        # keep only MasterDark files
+                        if "MasterDark" not in os.path.basename(path):
+                            continue
+                        dark_size = self.master_sizes.get(path, "Unknown")
+                        m = re.match(r"([\d.]+)s", key or "")
+                        dark_exp = float(m.group(1)) if m else float("inf")
+                        if dark_size == image_size:
+                            diff = abs(dark_exp - float(exposure_time))
+                            if diff < best_diff:
+                                best_diff = diff
+                                selected_master_dark = path
+
+                    if selected_master_dark:
+                        self.update_status(f"🌓 This flat group: using AUTO dark → {os.path.basename(selected_master_dark)}")
+                    else:
+                        self.update_status("ℹ️ This flat group: no matching Master Dark (size) — proceeding without subtraction.")
+                elif (override_val is None) and (not self.auto_select_dark_checkbox.isChecked()):
+                    # explicit: no auto and no override → no dark
+                    self.update_status("ℹ️ This flat group: Auto-Select is OFF and no override set → No Calibration.")
+
+                # Load the chosen dark if any
                 if selected_master_dark:
                     dark_data, _, _, _ = load_image(selected_master_dark)
                 else:
                     dark_data = None
-                    self.update_status("DEBUG: No matching Master Dark found.")
 
                 # reference shape
                 if (exposure_time, image_size, filter_name, session) in group_shapes:
@@ -8748,24 +9144,26 @@ class StackingSuiteDialog(QDialog):
                     height, width = ref_data.shape[:2]
                     channels = 1 if ref_data.ndim == 2 else 3
 
-                memmap_path = os.path.join(master_dir, f"temp_flat_{session}_{exposure_time}_{image_size}_{filter_name}.dat")
-                final_stacked = np.memmap(memmap_path, dtype=self._dtype(), mode="w+", shape=(height, width, channels))
-                num_frames = len(file_list)
-                weights_array = np.ones((num_frames,), dtype=np.float32)  # ignored by unweighted algo
+                # --- choose reducer based on N (adaptive) ---
+                N = len(file_list)
+                algo_name, params, cpu_label = _select_reducer("flat", N)
+                use_gpu = bool(self._hw_accel_enabled()) and _torch_ok() and _gpu_algo_supported(algo_name)
+                self.update_status(f"⚙️ Normalizing {N} flats by per-frame medians (central patch).")
+                QApplication.processEvents()
+                # --- precompute normalization scales (fast, one central patch) ---
+                scales = _estimate_flat_scales(file_list, height, width, channels, dark_data)
 
-                self.update_status(f"⚙️ {'GPU' if use_gpu else 'CPU'} reducer for calibration — {algo}")
+                self.update_status(f"⚙️ {'GPU' if use_gpu else 'CPU'} reducer for flats — {algo_name} ({'k=%.1f' % params.get('kappa', 0) if cpu_label=='kappa1' else 'trim=%.0f%%' % (params.get('trim_fraction', 0)*100) if cpu_label=='trimmed' else 'median'})")
                 QApplication.processEvents()
 
-                # ---- double-buffer + background prefetch over tiles ----
+                memmap_path = os.path.join(master_dir, f"temp_flat_{session}_{exposure_time}_{image_size}_{filter_name}.dat")
+                final_stacked = np.memmap(memmap_path, dtype=np.float32, mode="w+", shape=(height, width, channels))
+
                 tiles = _tile_grid(height, width, self.chunk_height, self.chunk_width)
                 total_tiles_group = len(tiles)
 
-                N = num_frames
                 # allocate max-chunk buffers (C-order, float32)
-                buf0 = np.empty((N,
-                                min(self.chunk_height, height),
-                                min(self.chunk_width,  width),
-                                channels),
+                buf0 = np.empty((N, min(self.chunk_height, height), min(self.chunk_width, width), channels),
                                 dtype=np.float32, order="C")
                 buf1 = np.empty_like(buf0)
 
@@ -8777,18 +9175,14 @@ class StackingSuiteDialog(QDialog):
                 fut = tp.submit(_read_tile_stack, file_list, y0, y1, x0, x1, channels, buf0)
                 use0 = True
 
-                self.update_status(f"⚙️ {'GPU' if use_gpu else 'CPU'} reducer for calibration — {algo}")
-                QApplication.processEvents()
-
                 for t_idx, (y0, y1, x0, x1) in enumerate(tiles, start=1):
                     if pd.cancelled:
                         break
 
-                    # wait for current tile
                     th, tw = fut.result()
                     ts_np = (buf0 if use0 else buf1)[:N, :th, :tw, :channels]  # (F, th, tw, C)
 
-                    # prefetch next tile into the other buffer
+                    # prefetch next
                     if t_idx < total_tiles_group:
                         ny0, ny1, nx0, nx1 = tiles[t_idx]
                         fut = tp.submit(_read_tile_stack, file_list, ny0, ny1, nx0, nx1, channels,
@@ -8796,7 +9190,7 @@ class StackingSuiteDialog(QDialog):
 
                     pd.set_label(f"[{filter_name}] {session} — y:{y0}-{y1} x:{x0}-{x1}")
 
-                    # ---- per-tile dark subtraction (HWC), BEFORE rejection ----
+                    # ---- per-tile dark subtraction (HWC), BEFORE normalization ----
                     if dark_data is not None:
                         dsub = dark_data
                         if dsub.ndim == 3 and dsub.shape[0] in (1, 3):  # CHW → HWC
@@ -8806,39 +9200,38 @@ class StackingSuiteDialog(QDialog):
                             d_tile = np.repeat(d_tile[..., None], 3, axis=2)
                         _subtract_dark_stack_inplace_hwc(ts_np, d_tile, pedestal=0.0)
 
-                    # ---- rejection (GPU or CPU) ----
+                    # ---- fast per-frame normalization (divide by precomputed scale) ----
+                    ts_np /= scales.reshape(N, 1, 1, 1)
+
+                    # ---- reduction (GPU or CPU) ----
                     if use_gpu:
-                        # unweighted path → pass ones; ignored by unweighted algos
+                        # pass parameters through the GPU reducer
                         tile_result, _ = _torch_reduce_tile(
                             ts_np,
-                            weights_array,  # np.ones((N,), dtype=np.float32)
-                            algo_name=algo,
-                            kappa=float(self.kappa),
-                            iterations=int(self.iterations),
-                            sigma_low=float(self.sigma_low),
-                            sigma_high=float(self.sigma_high),
-                            trim_fraction=float(self.trim_fraction),
-                            esd_threshold=float(self.esd_threshold),
-                            biweight_constant=float(self.biweight_constant),
-                            modz_threshold=float(self.modz_threshold),
+                            np.ones((N,), dtype=np.float32),
+                            algo_name=algo_name,
+                            kappa=float(params.get("kappa", getattr(self, "kappa", 3.0))),
+                            iterations=int(params.get("iterations", getattr(self, "iterations", 1))),
+                            sigma_low=float(getattr(self, "sigma_low", 2.5)),
+                            sigma_high=float(getattr(self, "sigma_high", 2.5)),
+                            trim_fraction=float(params.get("trim_fraction", getattr(self, "trim_fraction", 0.05))),
+                            esd_threshold=float(getattr(self, "esd_threshold", 3.0)),
+                            biweight_constant=float(getattr(self, "biweight_constant", 6.0)),
+                            modz_threshold=float(getattr(self, "modz_threshold", 3.5)),
                             comet_hclip_k=float(self.settings.value("stacking/comet_hclip_k", 1.30, type=float)),
                             comet_hclip_p=float(self.settings.value("stacking/comet_hclip_p", 25.0, type=float)),
                         )
                     else:
-                        if channels == 3:
-                            tile_result = windsorized_sigma_clip_4d(ts_np, lower=self.sigma_low, upper=self.sigma_high)
-                            if isinstance(tile_result, tuple):
-                                tile_result = tile_result[0]
-                        else:
-                            ts3 = ts_np[..., 0]
-                            tr3 = windsorized_sigma_clip_3d(ts3, lower=self.sigma_low, upper=self.sigma_high)
-                            tile_result = (tr3[0] if isinstance(tr3, tuple) else tr3)[..., None]
+                        if cpu_label == "median":
+                            tile_result = _cpu_tile_median(ts_np)
+                        elif cpu_label == "trimmed":
+                            tile_result = _cpu_tile_trimmed_mean(ts_np, float(params.get("trim_fraction", 0.05)))
+                        else:  # 'kappa1'
+                            tile_result = _cpu_tile_kappa_sigma_1iter(ts_np, float(params.get("kappa", 3.0)))
 
                     # commit + progress
                     final_stacked[y0:y1, x0:x1, :] = tile_result
                     pd.step()
-
-                    # flip buffer
                     use0 = not use0
 
                 tp.shutdown(wait=True)
@@ -8850,7 +9243,7 @@ class StackingSuiteDialog(QDialog):
                     except Exception: pass
                     break
 
-                master_flat_data = np.array(final_stacked)
+                master_flat_data = np.asarray(final_stacked, dtype=np.float32)
                 del final_stacked
 
                 master_flat_stem = f"MasterFlat_{session}_{int(exposure_time)}s_{image_size}_{filter_name}"
@@ -8858,15 +9251,14 @@ class StackingSuiteDialog(QDialog):
 
                 header = fits.Header()
                 header["IMAGETYP"] = "FLAT"
-                header["EXPTIME"] = (exposure_time, "grouped exposure")
-                header["FILTER"] = filter_name
-                header["NAXIS"] = 3 if channels == 3 else 2
-                header["NAXIS1"] = width
-                header["NAXIS2"] = height
+                header["EXPTIME"]  = (exposure_time, "grouped exposure")
+                header["FILTER"]   = filter_name
+                header["NAXIS"]    = 3 if channels == 3 else 2
+                header["NAXIS1"]   = width
+                header["NAXIS2"]   = height
                 if channels == 3: header["NAXIS3"] = 3
 
                 save_image(master_flat_data, master_flat_path, "fit", "32-bit floating point", header, is_mono=(channels == 1))
-
                 key = f"{filter_name} ({image_size}) [{session}]"
                 self.master_files[key] = master_flat_path
                 self.master_sizes[master_flat_path] = image_size
@@ -8880,7 +9272,6 @@ class StackingSuiteDialog(QDialog):
             try: _free_torch_memory()
             except Exception: pass
             pd.close()
-
 
 
     def add_master_flat_to_tree(self, filter_name, master_flat_path):
@@ -10438,11 +10829,11 @@ class StackingSuiteDialog(QDialog):
             all_files = [f for lst in self.light_files.values() for f in lst]
             self.update_status(f"📊 Found {len(all_files)} total frames. Now measuring in parallel batches...")
 
-            # ── binning (now FITS/XISF aware) ─────────────────────────────
+            # ── binning (FITS/XISF aware) ─────────────────────────────
             bin_map = {}
             min_xbin, min_ybin = None, None
             for fp in all_files:
-                xb, yb = self._bin_from_header_fast_any(fp)   # ← changed
+                xb, yb = self._bin_from_header_fast_any(fp)
                 bin_map[fp] = (xb, yb)
                 if min_xbin is None or xb < min_xbin:
                     min_xbin = xb
@@ -10455,7 +10846,6 @@ class StackingSuiteDialog(QDialog):
                 f"(range observed: x=[{min(b[0] for b in bin_map.values())}..{max(b[0] for b in bin_map.values())}], "
                 f"y=[{min(b[1] for b in bin_map.values())}..{max(b[1] for b in bin_map.values())}])"
             )
-
 
             # ─────────────────────────────────────────────────────────────────────
             # Helpers
@@ -10485,7 +10875,7 @@ class StackingSuiteDialog(QDialog):
                         return (Luma[0:h2:2, 0:w2:2] + Luma[0:h2:2, 1:w2:2] +
                                 Luma[1:h2:2, 0:w2:2] + Luma[1:h2:2, 1:w2:2]) * 0.25
 
-                # 1) make a quick 2D preview (like before)
+                # 1) quick 2D preview
                 if img.ndim == 3 and img.shape[-1] == 3:
                     prev2d = _superpixel2x2(img)
                 elif hdr and hdr.get('BAYERPAT') and img.ndim == 2:
@@ -10497,7 +10887,7 @@ class StackingSuiteDialog(QDialog):
                     if prev2d.ndim == 3:
                         prev2d = _superpixel2x2(prev2d)
 
-                # 2) resample preview to the target bin (so shapes are comparable)
+                # 2) resample preview to the target bin
                 xb, yb = bin_map.get(fp, (1, 1))
                 sx = float(xb) / float(target_xbin)
                 sy = float(yb) / float(target_ybin)
@@ -10505,7 +10895,6 @@ class StackingSuiteDialog(QDialog):
                     prev2d = _resize_to_scale(prev2d, sx, sy)
 
                 return np.ascontiguousarray(prev2d.astype(np.float32, copy=False))
-
 
             def chunk_list(lst, size):
                 for i in range(0, len(lst), size):
@@ -10522,9 +10911,6 @@ class StackingSuiteDialog(QDialog):
 
             max_workers = os.cpu_count() or 4
             chunk_size = max_workers
-            def chunk_list(lst, size):
-                for i in range(0, len(lst), size):
-                    yield lst[i:i+size]
             chunks = list(chunk_list(all_files, chunk_size))
             total_chunks = len(chunks)
 
@@ -10537,7 +10923,7 @@ class StackingSuiteDialog(QDialog):
 
                 self.update_status(f"🌍 Loading {len(chunk)} previews in parallel (up to {max_workers} threads)...")
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    futs = {executor.submit(self._quick_preview_any, fp, target_xbin, target_ybin): fp  # ← changed
+                    futs = {executor.submit(self._quick_preview_any, fp, target_xbin, target_ybin): fp
                             for fp in chunk}
                     for fut in as_completed(futs):
                         fp = futs[fut]
@@ -10555,7 +10941,7 @@ class StackingSuiteDialog(QDialog):
                     self.update_status("⚠️ No valid previews in this chunk (couldn’t find image data in any HDU).")
                     continue
 
-                # size align (crop) before stats as you already do
+                # size align (crop) before stats
                 min_h = min(im.shape[0] for im in chunk_images)
                 min_w = min(im.shape[1] for im in chunk_images)
                 if any((im.shape[0] != min_h or im.shape[1] != min_w) for im in chunk_images):
@@ -10563,20 +10949,17 @@ class StackingSuiteDialog(QDialog):
 
                 self.update_status("🌍 Measuring global means in parallel...")
                 means = np.array([float(np.mean(ci)) for ci in chunk_images], dtype=np.float32)
-
                 mean_values.update({fp: float(means[i]) for i, fp in enumerate(chunk_valid_files)})
 
                 def _star_job(i_fp):
                     i, fp = i_fp
                     p = chunk_images[i]
-                    # preview median for normalization
                     pmin = float(np.nanmin(p))
                     med = float(np.median(p - pmin))
-                    # ultra-fast star count on further-downsampled preview
                     c, ecc = compute_star_count_fast_preview(p)
                     return fp, med, c, ecc
 
-                star_workers = min(max_workers, 8)  # not too many; it’s light
+                star_workers = min(max_workers, 8)
                 with ThreadPoolExecutor(max_workers=star_workers) as ex:
                     for fp, med, c, ecc in ex.map(_star_job, enumerate(chunk_valid_files)):
                         preview_medians[fp] = med
@@ -10592,43 +10975,147 @@ class StackingSuiteDialog(QDialog):
             self.update_status(f"✅ All chunks complete! Measured {len(measured_frames)} frames total.")
 
             # ─────────────────────────────────────────────────────────────────────
-            # Pick reference & compute weights
+            # Pick reference optimized for ASTROALIGN robustness
             # ─────────────────────────────────────────────────────────────────────
-            self.update_status("⚖️ Computing frame weights...")
-            debug_log = "\n📊 **Frame Weights Debug Log:**\n"
-            for fp in measured_frames:
-                c = star_counts[fp]["count"]
-                ecc = star_counts[fp]["eccentricity"]
-                m = mean_values[fp]
-                c = max(c, 1)
-                m = max(m, 1e-6)
-                raw_w = (c * min(1.0, max(1.0 - ecc, 0.0))) / m
-                self.frame_weights[fp] = raw_w
-                debug_log += f"📂 {os.path.basename(fp)} → StarCount={c}, Ecc={ecc:.4f}, Mean={m:.4f}, Weight={raw_w:.4f}\n"
-            self.update_status(debug_log)
-            QApplication.processEvents()
+            self.update_status("🧠 Selecting reference optimized for AstroAlign…")
 
-            max_w = max(self.frame_weights.values()) if self.frame_weights else 0.0
-            if max_w > 0:
-                for k in self.frame_weights:
-                    self.frame_weights[k] /= max_w
+            def _dominant_pa_cluster_simple(fps, get_pa, tol=12.0):
+                # Cluster PAs in [0,180); return list of inlier fps from largest cluster
+                vals = []
+                for fp in fps:
+                    pa = get_pa(fp)
+                    if pa is None:
+                        continue
+                    v = ((pa % 180.0) + 180.0) % 180.0
+                    vals.append((fp, v))
+                if not vals:
+                    return fps
+                vals.sort(key=lambda t: t[1])
+                best, best_span = [], -1
+                for i in range(len(vals)):
+                    center = vals[i][1]
+                    inliers = []
+                    for fp, v in vals:
+                        d = abs(v - center); d = min(d, 180.0 - d)
+                        if d <= tol: inliers.append(fp)
+                    if len(inliers) > best_span:
+                        best, best_span = inliers, len(inliers)
+                return best if best else fps
 
-            # Choose reference (path)
-            if getattr(self, "reference_frame", None):
-                self.update_status(f"📌 Using user-specified reference: {self.reference_frame}")
+            def _grid_coverage(star_xy, hw, bins=4):
+                # fraction of grid cells that contain ≥1 star (encourages wide spread)
+                if not star_xy: return 0.0
+                h, w = hw
+                gx = np.clip((np.array([x for x, y in star_xy]) / max(1, w)) * bins, 0, bins-1).astype(int)
+                gy = np.clip((np.array([y for x, y in star_xy]) / max(1, h)) * bins, 0, bins-1).astype(int)
+                cells = set(zip(gx.tolist(), gy.tolist()))
+                return len(cells) / float(bins*bins)
+
+            def _extract_keypoints(preview):
+                # Return list of (x,y) star-like points in preview image (2D float32)
+                pts = []
+                try:
+                    if sep is not None:
+                        bg = sep.Background(preview, bw=64, bh=64, fw=3, fh=3)
+                        data_sub = preview - bg
+                        objs = sep.extract(data_sub, thresh=3.0, minarea=5)
+                        # take up to 200 brightest by flux
+                        if objs is not None and len(objs) > 0:
+                            order = np.argsort(objs['flux'])[::-1][:200]
+                            for i in order:
+                                pts.append((float(objs['x'][i]), float(objs['y'][i])))
+                    else:
+                        import cv2
+                        p8 = cv2.normalize(preview, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+                        corners = cv2.goodFeaturesToTrack(p8, maxCorners=250, qualityLevel=0.01, minDistance=8, blockSize=7)
+                        if corners is not None:
+                            for c in corners:
+                                x, y = c.ravel().tolist()
+                                pts.append((float(x), float(y)))
+                except Exception:
+                    pass
+                return pts
+
+            def _edge_penalty(preview):
+                h, w = preview.shape
+                m = max(8, min(h, w)//16)
+                edges = np.r_[preview[:m,:].ravel(), preview[-m:,:].ravel(),
+                            preview[:, :m].ravel(), preview[:, -m:].ravel()]
+                center = preview[m:-m, m:-m] if (h>2*m and w>2*m) else preview
+                e_med = float(np.median(edges)) if edges.size else float(np.median(preview))
+                c_med = float(np.median(center))
+                ratio = e_med / max(1e-6, c_med)  # <1 if strong vignetting/edge darkness
+                return max(0.3, min(1.2, ratio))  # clamp
+
+            def _astroalign_ref_score(fp, preview_2d):
+                """Higher = better ref for astroalign."""
+                info = star_counts.get(fp, {"count": 0, "eccentricity": 0.0})
+                c = max(1, int(info["count"]))
+                ecc = float(info["eccentricity"])
+                kps = _extract_keypoints(preview_2d)
+                cov = _grid_coverage(kps, preview_2d.shape, bins=4)  # 0..1
+                edge = _edge_penalty(preview_2d)                      # ~0.3..1.2
+                # more stars, wide coverage, round stars, healthy edges
+                base = np.log1p(c) * cov * (1.0 - min(1.0, max(0.0, ecc))) * edge
+                # slight nudge by your previous weight to break ties
+                base *= (0.90 + 0.10 * float(self.frame_weights.get(fp, 0.0)))
+                return float(base)
+
+            # 1) Respect manual reference if provided
+            user_ref = getattr(self, "reference_frame", None)
+            if user_ref:
+                self.update_status(f"📌 Using user-specified reference: {user_ref}")
+                self.reference_frame = user_ref
             else:
-                self.reference_frame = self.select_reference_frame_robust(self.frame_weights, sigma_threshold=2.0)
-                self.update_status(f"📌 Auto-selected robust reference frame: {self.reference_frame}")
+                # 2) Restrict candidates to dominant PA cluster
+                def _pa_of(fp):
+                    try:
+                        hdr0 = fits.getheader(fp, ext=0)
+                        return self._extract_pa_deg(hdr0)
+                    except Exception:
+                        return None
+                candidates = _dominant_pa_cluster_simple(measured_frames, _pa_of, tol=12.0)
+                if not candidates:
+                    candidates = measured_frames[:]
 
-            # Stats for the chosen reference from the measurement pass
-            ref_stats_meas = star_counts.get(self.reference_frame, {"count": 0, "eccentricity": 0.0})
-            ref_count = ref_stats_meas["count"]
-            ref_ecc   = ref_stats_meas["eccentricity"]
+                # 3) Build/align previews for fair scoring
+                preview_cache = {}
+                min_h = None; min_w = None
+                for fp in candidates:
+                    p = self._quick_preview_any(fp, target_xbin, target_ybin)
+                    if p is None:      # skip if no data
+                        continue
+                    p = np.ascontiguousarray(p.astype(np.float32, copy=False))
+                    preview_cache[fp] = p
+                    h, w = p.shape
+                    min_h = h if min_h is None else min(min_h, h)
+                    min_w = w if min_w is None else min(min_w, w)
+                for fp, p in list(preview_cache.items()):
+                    if p.shape != (min_h, min_w):
+                        preview_cache[fp] = _center_crop_2d(p, min_h, min_w)
 
+                # 4) Score for astroalign and pick the best
+                best_fp, best_s = None, -1.0
+                for fp, p in preview_cache.items():
+                    s = _astroalign_ref_score(fp, p)
+                    if s > best_s:
+                        best_fp, best_s = fp, s
+
+                # 5) Fallback if needed
+                if best_fp is None and measured_frames:
+                    best_fp = max(measured_frames, key=lambda f: self.frame_weights.get(f, 0.0))
+
+                self.reference_frame = best_fp
+                self.update_status(f"📌 Auto-selected reference: {os.path.basename(self.reference_frame)}")
+                if best_s <= 0.15:
+                    self.update_status("⚠️ Low astroalign score; results may be fragile. Consider manual reference pick.")
+                ref_stats_meas = star_counts.get(self.reference_frame, {"count": 0, "eccentricity": 0.0})
+                ref_count = ref_stats_meas["count"]
+                ref_ecc   = ref_stats_meas["eccentricity"]
             # ─────────────────────────────────────────────────────────────────────
             # Debayer the reference ONCE and compute ref_median from debayered ref
             # ─────────────────────────────────────────────────────────────────────
-            ref_img_raw, ref_hdr = self._load_image_any(self.reference_frame)  # ← changed
+            ref_img_raw, ref_hdr = self._load_image_any(self.reference_frame)
             if ref_img_raw is None:
                 self.update_status(f"🚨 Could not load reference {self.reference_frame}. Aborting.")
                 return
@@ -10652,46 +11139,30 @@ class StackingSuiteDialog(QDialog):
                 ref_median = float(np.median(ref_img))
 
             self.update_status(f"📊 Reference (debayered) median: {ref_median:.4f}")
-
-            # Show review dialog; if user changes reference, redo debayer+median
+            ref_stats_meas = star_counts.get(self.reference_frame, {"count": 0, "eccentricity": 0.0})
+            ref_count = ref_stats_meas["count"]
+            ref_ecc   = ref_stats_meas["eccentricity"]    
+            # Modeless ref review (unchanged)
             stats_payload = {"star_count": ref_count, "eccentricity": ref_ecc, "mean": ref_median}
 
             if self.auto_accept_ref_cb.isChecked():
-                # ✅ Auto-accept path: no dialog
                 self.update_status("✅ Auto-accept measured reference is enabled; using the measured best frame.")
-                # If you show the chosen path somewhere in the UI, update it:
                 try:
                     self.ref_frame_path.setText(self.reference_frame or "No file selected")
                 except Exception:
                     pass
             else:
-                # Show review dialog (existing behavior)
                 dialog = ReferenceFrameReviewDialog(self.reference_frame, stats_payload, parent=self)
-
-                # Make it non-modal but raised/focused
                 dialog.setModal(False)
                 dialog.setWindowModality(Qt.WindowModality.NonModal)
-                dialog.show()
-                dialog.raise_()
-                dialog.activateWindow()
-
-                # Wait here without freezing UI (modeless pseudo-modal)
-                _loop = QEventLoop(self)
-                dialog.finished.connect(_loop.quit)   # finished(int) -> quit loop
-                _loop.exec()
-
-                # After the user closes the dialog, proceed exactly as before:
-                result = dialog.result()
-                user_choice = dialog.getUserChoice()   # "use", "select_other", or None
-
-                if result == QDialog.DialogCode.Accepted:
-                    self.update_status("User accepted the reference frame.")
-                elif user_choice == "select_other":
+                dialog.show(); dialog.raise_(); dialog.activateWindow()
+                _loop = QEventLoop(self); dialog.finished.connect(_loop.quit); _loop.exec()
+                result = dialog.result(); user_choice = dialog.getUserChoice()
+                if result != QDialog.DialogCode.Accepted and user_choice == "select_other":
                     new_ref = self.prompt_for_reference_frame()
                     if new_ref:
                         self.reference_frame = new_ref
                         self.update_status(f"User selected a new reference frame: {new_ref}")
-                        # re-load and debayer/median the new reference (same logic as above)
                         ref_img_raw, ref_hdr, _, _ = load_image(self.reference_frame)
                         if ref_img_raw is None:
                             self.update_status(f"🚨 Could not load reference {self.reference_frame}. Aborting.")
@@ -10710,10 +11181,9 @@ class StackingSuiteDialog(QDialog):
                         else:
                             ref_median = float(np.median(ref_img))
                         self.update_status(f"📊 (New) reference median: {ref_median:.4f}")
+                    
                     else:
                         self.update_status("No new reference selected; using previous reference.")
-                else:
-                    self.update_status("Dialog closed without explicit choice; using selected reference.")
 
             ref_L = _Luma(ref_img)
             ref_min = float(np.nanmin(ref_L))
@@ -10733,13 +11203,103 @@ class StackingSuiteDialog(QDialog):
             if missing:
                 self.update_status(f"ℹ️ {len(missing)} frame(s) had zero/NaN preview medians; using neutral scale for those.")
 
-
             # ─────────────────────────────────────────────────────────────────────
             # PHASE 1b: Meridian flips
             # ─────────────────────────────────────────────────────────────────────
-            ref_pa = self._extract_pa_deg(ref_hdr)  # if this reads hdr.get(), update it to use _hdr_get inside
+            ref_pa = self._extract_pa_deg(ref_hdr)
             self.update_status(f"🧭 Reference PA: {ref_pa:.2f}°" if ref_pa is not None else "🧭 Reference PA: (unknown)")
 
+            # ─────────────────────────────────────────────────────────────────────
+            # NEW: build arcsec/px map & choose target = reference scale
+            # ─────────────────────────────────────────────────────────────────────
+            self.arcsec_per_px = {}  # fp -> (sx, sy)
+
+            # --- helpers placed just above the normalize loop (once) --------------------
+            def _scale_from_header_raw(hdr):
+                """
+                Return (sx, sy) in arcsec/px as the file is stored on disk (no bin correction).
+                Priority: CD matrix -> CDELT(+PC) -> pixel size + focal length.
+                Pixel-size fallback avoids double-counting bin: PIXSIZE* are unbinned; XPIXSZ/YPIXSZ are typically effective.
+                """
+                try:
+                    # 1) CD matrix (deg/pix)
+                    if all(k in hdr for k in ("CD1_1","CD1_2","CD2_1","CD2_2")):
+                        cd11 = float(hdr["CD1_1"]); cd12 = float(hdr["CD1_2"])
+                        cd21 = float(hdr["CD2_1"]); cd22 = float(hdr["CD2_2"])
+                        sx_deg = (cd11**2 + cd12**2) ** 0.5
+                        sy_deg = (cd21**2 + cd22**2) ** 0.5
+                        return abs(sx_deg) * 3600.0, abs(sy_deg) * 3600.0
+
+                    # 2) CDELT (+ optional PC)
+                    if ("CDELT1" in hdr) and ("CDELT2" in hdr):
+                        cdelt1 = float(hdr["CDELT1"]); cdelt2 = float(hdr["CDELT2"])
+                        pc11 = float(hdr.get("PC1_1", 1.0)); pc12 = float(hdr.get("PC1_2", 0.0))
+                        pc21 = float(hdr.get("PC2_1", 0.0)); pc22 = float(hdr.get("PC2_2", 1.0))
+                        m11 = cdelt1 * pc11; m12 = cdelt1 * pc12
+                        m21 = cdelt2 * pc21; m22 = cdelt2 * pc22
+                        sx_deg = (m11**2 + m12**2) ** 0.5
+                        sy_deg = (m21**2 + m22**2) ** 0.5
+                        return abs(sx_deg) * 3600.0, abs(sy_deg) * 3600.0
+
+                    # 3) Pixel-size + focal length (arcsec/px)
+                    fl_mm = float(hdr.get("FOCALLEN", 0.0) or 0.0)
+                    if fl_mm <= 0:
+                        return (None, None)
+
+                    # Prefer unbinned physical sizes (PIXSIZE*), else use effective (XPIXSZ/YPIXSZ)
+                    pxsize1 = hdr.get("PIXSIZE1"); pxsize2 = hdr.get("PIXSIZE2")
+                    if (pxsize1 is not None) or (pxsize2 is not None):
+                        px_um = float(pxsize1 or pxsize2 or 0.0)        # unbinned
+                        py_um = float(pxsize2 or pxsize1 or px_um)
+                        xb = int(hdr.get("XBINNING", hdr.get("BINX", 1)) or 1)
+                        yb = int(hdr.get("YBINNING", hdr.get("BINY", 1)) or 1)
+                        sx = 206.265 * (px_um * xb) / fl_mm            # include bin here
+                        sy = 206.265 * (py_um * yb) / fl_mm
+                        return sx, sy
+
+                    xpixsz = hdr.get("XPIXSZ"); ypixsz = hdr.get("YPIXSZ")
+                    if (xpixsz is not None) or (ypixsz is not None):
+                        # Typically already effective (post-binning) pitch
+                        px_um = float(xpixsz or ypixsz or 0.0)
+                        py_um = float(ypixsz or xpixsz or px_um)
+                        sx = 206.265 * px_um / fl_mm                   # do NOT multiply by bin again
+                        sy = 206.265 * py_um / fl_mm
+                        return sx, sy
+                except Exception:
+                    pass
+                return (None, None)
+
+
+            def _effective_scale_for_target_bin(raw_sx, raw_sy, xb, yb, target_xbin, target_ybin):
+                """
+                Given the scale as stored (raw_sx, raw_sy) and the fact that we then resampled
+                geometry by (xb/target_xbin, yb/target_ybin) to bin-normalize, return the
+                new (effective) scales after that step. Resampling by k makes arcsec/px divide by k.
+                """
+                if (raw_sx is None) or (raw_sy is None):
+                    return (None, None)
+                kx = float(xb) / float(target_xbin)
+                ky = float(yb) / float(target_ybin)
+                eff_sx = float(raw_sx) / max(1e-12, kx)
+                eff_sy = float(raw_sy) / max(1e-12, ky)
+                return eff_sx, eff_sy
+
+
+            # Fill map for all measured frames (cheap header read)
+            for fp in measured_frames:
+                try:
+                    hdr0 = fits.getheader(fp, ext=0)
+                except Exception:
+                    hdr0 = {}
+                self.arcsec_per_px[fp] = _scale_from_header_raw(hdr0)
+
+            # Reference (true) pixel scale is our target
+            target_sx, target_sy = _scale_from_header_raw(ref_hdr)
+            if target_sx and target_sy:
+                self.update_status(f"🎯 Target pixel scale = reference: {target_sx:.3f}\"/px × {target_sy:.3f}\"/px")
+            else:
+                self.update_status("🎯 Target pixel scale unknown (no WCS/pixel size). Will skip scale normalization.")
+                target_sx = target_sy = None
 
             # ─────────────────────────────────────────────────────────────────────
             # PHASE 2: normalize (DEBAYER everything once here)
@@ -10780,8 +11340,7 @@ class StackingSuiteDialog(QDialog):
                 from concurrent.futures import ThreadPoolExecutor, as_completed
                 self.update_status(f"🌍 Loading {len(chunk)} images in parallel for normalization (up to {io_workers} threads)…")
                 with ThreadPoolExecutor(max_workers=io_workers) as ex:
-                    futs = {ex.submit(self._load_image_any, fp): fp  # ← changed
-                            for fp in chunk}
+                    futs = {ex.submit(self._load_image_any, fp): fp for fp in chunk}
                     for fut in as_completed(futs):
                         fp = futs[fut]
                         try:
@@ -10790,7 +11349,7 @@ class StackingSuiteDialog(QDialog):
                                 self.update_status(f"⚠️ No data for {fp}")
                                 continue
 
-                            # 🔧 make sure we can safely do in-place ops from here on
+                            # make writable float32
                             img = _to_writable_f32(img)
 
                             bayer = self._hdr_get(hdr, 'BAYERPAT')
@@ -10801,19 +11360,19 @@ class StackingSuiteDialog(QDialog):
                                 if img.ndim == 3 and img.shape[-1] == 1:
                                     img = np.squeeze(img, axis=-1)
 
-                            # meridian flip assist (unchanged logic, just ensure _extract_pa_deg uses _hdr_get)
+                            # meridian flip assist
                             if self.auto_rot180 and ref_pa is not None:
                                 pa = self._extract_pa_deg(hdr)
                                 img, did = self._maybe_rot180(img, pa, ref_pa, self.auto_rot180_tol_deg)
                                 if did:
                                     self.update_status(f"↻ 180° rotate (PA Δ≈180°): {os.path.basename(fp)}")
                                     try:
-                                        if hasattr(hdr, "__setitem__"):  # FITS Header
+                                        if hasattr(hdr, "__setitem__"):
                                             hdr['ROT180'] = (True, 'Rotated 180° pre-align by SAS')
                                     except Exception:
                                         pass
 
-                            # resample to target bin
+                            # 1) resample to target bin
                             xb, yb = bin_map.get(fp, (1, 1))
                             sx = float(xb) / float(target_xbin)
                             sy = float(yb) / float(target_ybin)
@@ -10826,6 +11385,48 @@ class StackingSuiteDialog(QDialog):
                                     f"size {before[1]}×{before[0]} → {after[1]}×{after[0]}"
                                 )
 
+                            # 2) Pixel-scale normalize (arcsec/px), corrected for binning already applied
+                            # 2) Pixel-scale normalize (arcsec/px), corrected for the bin step we just did
+                            # Read raw scales (as on disk)
+                            raw_psx, raw_psy = _scale_from_header_raw(hdr)
+                            raw_ref_psx, raw_ref_psy = _scale_from_header_raw(ref_hdr)
+
+                            # Compute effective scales after step (1) bin-normalization resample
+                            xb, yb = bin_map.get(fp, (1, 1))
+                            ref_xb, ref_yb = bin_map.get(self.reference_frame, (1, 1))
+                            eff_psx,     eff_psy     = _effective_scale_for_target_bin(raw_psx,     raw_psy,     xb,     yb,     target_xbin, target_ybin)
+                            eff_ref_psx, eff_ref_psy = _effective_scale_for_target_bin(raw_ref_psx, raw_ref_psy, ref_xb, ref_yb, target_xbin, target_ybin)
+
+                            rx = ry = 1.0
+                            if (eff_psx and eff_psy and eff_ref_psx and eff_ref_psy):
+                                rx = float(eff_psx) / float(eff_ref_psx)
+                                ry = float(eff_psy) / float(eff_ref_psy)
+
+                                # Only warp if materially different
+                                if (abs(rx - 1.0) > 1e-3) or (abs(ry - 1.0) > 1e-3):
+                                    before_hw = img.shape[:2]
+                                    img = _resize_to_scale(img, rx, ry)
+                                    after_hw = img.shape[:2]
+                                    self.update_status(
+                                        f"📏 Pixel-scale normalize "
+                                        f"{_fmt2(eff_psx)}\"/{_fmt2(eff_psy)}\" → {_fmt2(eff_ref_psx)}\"/{_fmt2(eff_ref_psy)}\" "
+                                        f"| size {before_hw[1]}×{before_hw[0]} → {after_hw[1]}×{after_hw[0]}"
+                                    )
+                            else:
+                                self.update_status("⚠️ Pixel-scale normalize skipped (insufficient header scale info).")
+
+                            try:
+                                self.update_status(
+                                    "⚖️ Scales (arcsec/px): "
+                                    f"raw(frame)=({_fmt2(raw_psx)},{_fmt2(raw_psy)}), "
+                                    f"raw(ref)=({_fmt2(raw_ref_psx)},{_fmt2(raw_ref_psy)}) → "
+                                    f"eff(frame→tbin)=({_fmt2(eff_psx)},{_fmt2(eff_psy)}), "
+                                    f"eff(ref→tbin)=({_fmt2(eff_ref_psx)},{_fmt2(eff_ref_psy)}) ; "
+                                    f"resize=(rx={_fmt2(rx)}, ry={_fmt2(ry)})"
+                                )
+                            except Exception:
+                                pass
+
                             # normalization scale (unchanged)
                             pm = float(preview_medians.get(fp, 0.0))
                             s = _compute_scale(ref_target_median, pm if pm > 0 else 1.0,
@@ -10837,7 +11438,7 @@ class StackingSuiteDialog(QDialog):
                                 scaled_paths.append(fp)
                                 scaled_hdrs.append(hdr)
                             else:
-                                # write out normalized FITS (unchanged)
+                                # write out normalized FITS
                                 base = os.path.basename(fp)
                                 if base.endswith("_n.fit"):
                                     base = base.replace("_n.fit", ".fit")
@@ -10871,7 +11472,7 @@ class StackingSuiteDialog(QDialog):
                         finally:
                             QApplication.processEvents()
 
-                # 2) If ABE is enabled, run it once per chunk on the already-normalized images, then write
+                # 2) ABE (unchanged)
                 if abe_enabled and scaled_images:
                     self.update_status(
                         f"Gradient removal (ABE Poly²): mode={mode}, samples={samples}, "
@@ -10892,11 +11493,8 @@ class StackingSuiteDialog(QDialog):
                         log_fn=(self._ui_log if hasattr(self, "_ui_log") else self.update_status),
                     )
 
-                    # write ABE’d outputs
                     for i, fp in enumerate(scaled_paths):
-                        img_out = abe_stack[i]
-                        hdr = scaled_hdrs[i]
-
+                        img_out = abe_stack[i]; hdr = scaled_hdrs[i]
                         base = os.path.basename(fp)
                         if base.endswith("_n.fit"):
                             base = base.replace("_n.fit", ".fit")
@@ -10928,7 +11526,6 @@ class StackingSuiteDialog(QDialog):
                     cv2.setNumThreads(ocv_prev)
             except Exception:
                 pass
-
 
             # Update self.light_files to *_n.fit
             for group, file_list in self.light_files.items():
@@ -10979,7 +11576,6 @@ class StackingSuiteDialog(QDialog):
                 shift_tolerance=shift_tol,
                 parent_window=self
             )
-            # progress messages → queued
             try:
                 self.alignment_thread.progress_update.disconnect(self.update_status)
             except TypeError:
@@ -10998,7 +11594,6 @@ class StackingSuiteDialog(QDialog):
             self.align_progress.setValue(0)
             self.align_progress.show()
 
-            # progress counts → queued & debounced
             try:
                 self.alignment_thread.progress_step.disconnect(self._on_align_progress)
             except TypeError:
@@ -11014,10 +11609,11 @@ class StackingSuiteDialog(QDialog):
                 self._on_align_done, Qt.ConnectionType.QueuedConnection
             )
             self.alignment_thread.start()
+
         except Exception as e:
-            # on unexpected error, re-enable the UI
             self._set_registration_busy(False)
             raise
+
         
 
     @pyqtSlot(bool, str)
@@ -11557,29 +12153,60 @@ class StackingSuiteDialog(QDialog):
         # Build a single global rect from all aligned frames (registered paths)
         _mf_global_rect = None
         if autocrop_enabled_ui:
-            _mf_global_rect = None
             pd = QProgressDialog("Calculating autocrop bounding box…", None, 0, 0, self)
             pd.setWindowTitle("Auto Crop")
             pd.setWindowModality(Qt.WindowModality.WindowModal)
-            pd.setCancelButton(None)          # simple busy dialog; no cancel
+            pd.setCancelButton(None)
             pd.setMinimumDuration(0)
-            pd.setRange(0, 0)                 # indeterminate spinner
+            pd.setRange(0, 0)
             pd.show()
             QApplication.processEvents()
 
             try:
-                # Optional status line in your log/status area
-                self.update_status("✂️ (MF) Auto Crop Bounding Box Calculating…")
+                self.update_status("✂️ (MF) Auto Crop: using transform footprints…")
                 QApplication.processEvents()
 
-                # Do the heavy work (still on UI thread, but with a visible busy UI)
-                _mf_global_rect = self._compute_common_autocrop_rect(
-                    aligned_light_files,
-                    autocrop_pct_ui,
-                    status_cb=self.update_status
-                )
+                # Prefer model-aware (drizzle) transforms, else affine fallback
+                xforms = (dict(getattr(self, "drizzle_xforms", {}))
+                        if getattr(self, "drizzle_xforms", None)
+                        else dict(getattr(self, "valid_matrices", {})))
+                ref_hw = tuple(getattr(self, "ref_shape_for_drizzle", ()))  # (H,W)
 
-                self.update_status("✂️ (MF) Auto Crop Bounding Box Calculated")
+                if xforms and len(ref_hw) == 2:
+                    _mf_global_rect = _rect_from_transforms_fast(
+                        xforms,
+                        src_hw=ref_hw,
+                        coverage_pct=float(autocrop_pct_ui),
+                        allow_homography=True,
+                        min_side=16
+                    )
+                    if _mf_global_rect:
+                        x0,y0,x1,y1 = _mf_global_rect
+                        self.update_status(
+                            f"✂️ (MF) Transform crop → [{x0}:{x1}]×[{y0}:{y1}] "
+                            f"({x1-x0}×{y1-y0})"
+                        )
+                    else:
+                        self.update_status("✂️ (MF) Transform crop yielded no valid rect; falling back to mask-based method…")
+                else:
+                    self.update_status("✂️ (MF) No transforms/geometry available; falling back to mask-based method…")
+
+                # Fallback to existing (mask-based) method if needed
+                if _mf_global_rect is None:
+                    _mf_global_rect = self._compute_common_autocrop_rect(
+                        aligned_light_files,
+                        autocrop_pct_ui,
+                        status_cb=self.update_status
+                    )
+                    if _mf_global_rect:
+                        x0,y0,x1,y1 = _mf_global_rect
+                        self.update_status(
+                            f"✂️ (MF) Mask-based crop → [{x0}:{x1}]×[{y0}:{y1}] "
+                            f"({x1-x0}×{y1-y0})"
+                        )
+                    else:
+                        self.update_status("✂️ (MF) Auto-crop disabled (no common region).")
+
                 QApplication.processEvents()
             except Exception as e:
                 self.update_status(f"⚠️ (MF) Global crop failed: {e}")
@@ -11590,9 +12217,11 @@ class StackingSuiteDialog(QDialog):
                     pd.deleteLater()
                 except Exception:
                     pass
-        self._mf_autocrop_rect = _mf_global_rect
+
+        self._mf_autocrop_rect   = _mf_global_rect
         self._mf_autocrop_enabled = bool(autocrop_enabled_ui)
-        self._mf_autocrop_pct = float(autocrop_pct_ui)
+        self._mf_autocrop_pct     = float(autocrop_pct_ui)
+
 
         mf_enabled = self.settings.value("stacking/mfdeconv/enabled", False, type=bool)
 
@@ -12034,15 +12663,49 @@ class StackingSuiteDialog(QDialog):
         global_rect = None
         if autocrop_enabled:
             log("✂️ Auto Crop Enabled. Calculating bounding box…")
+
+            # --- FAST PATH: use transforms (no image I/O) ---------------------------
             try:
-                global_rect = self._compute_common_autocrop_rect(grouped_files, autocrop_pct, status_cb=log)
+                # Prefer model-aware (drizzle) xforms if present; else affine fallback
+                xforms = dict(getattr(self, "drizzle_xforms", {}) or {})
+                if not xforms:
+                    xforms = dict(getattr(self, "valid_matrices", {}) or {})
+
+                # Geometry of the reference (H, W) captured at alignment time
+                ref_hw = tuple(getattr(self, "ref_shape_for_drizzle", ()))
+                if xforms and len(ref_hw) == 2:
+                    global_rect = _rect_from_transforms_fast(
+                        xforms,
+                        src_hw=ref_hw,
+                        coverage_pct=float(autocrop_pct),
+                        allow_homography=True,   # supports 3x3 too
+                        min_side=16
+                    )
+                    if global_rect:
+                        x0, y0, x1, y1 = map(int, global_rect)
+                        log(f"✂️ Transform crop (global) → [{x0}:{x1}]×[{y0}:{y1}] ({x1-x0}×{y1-y0})")
+                    else:
+                        log("✂️ Transform crop produced no stable global rect; falling back to mask-based.")
+                else:
+                    log("✂️ No transforms/geometry available for fast global crop; falling back to mask-based.")
             except Exception as e:
+                log(f"⚠️ Transform-based global crop failed ({e}); falling back to mask-based.")
                 global_rect = None
-                log(f"⚠️ Global crop failed: {e}")
+
+            # --- SLOW FALLBACK: your existing mask-based method ---------------------
             if global_rect is None:
-                log("✂️ Global crop disabled; will fall back to per-group.")
-            else:
-                log("✂️ Auto Crop Bounding Box Calculated")
+                try:
+                    global_rect = self._compute_common_autocrop_rect(
+                        grouped_files, autocrop_pct, status_cb=log
+                    )
+                    if global_rect:
+                        x0, y0, x1, y1 = map(int, global_rect)
+                        log(f"✂️ Mask-based crop (global) → [{x0}:{x1}]×[{y0}:{y1}] ({x1-x0}×{y1-y0})")
+                    else:
+                        log("✂️ Global crop disabled; will fall back to per-group.")
+                except Exception as e:
+                    global_rect = None
+                    log(f"⚠️ Global crop (mask-based) failed: {e}")
         QApplication.processEvents()
 
         group_integration_data = {}
@@ -12140,16 +12803,47 @@ class StackingSuiteDialog(QDialog):
                 if global_rect is not None:
                     group_rect = tuple(global_rect)
                 else:
-                    # derive a per-group rect once from this group's aligned images
+                    # FAST per-group rect from transforms (no image I/O)
                     try:
-                        group_rect = self._compute_common_autocrop_rect(
-                            {group_key: file_list},  # single-group dict
-                            autocrop_pct,
-                            status_cb=log
-                        )
+                        # Build subset of transforms for just this group's aligned paths
+                        xforms_g = {}
+                        # orig_by_aligned maps registered path -> original/normalized path
+                        oba = getattr(self, "orig_by_aligned", {}) or {}
+                        has_model_xforms = bool(getattr(self, "drizzle_xforms", None))
+
+                        for ap in file_list:
+                            apn = os.path.normpath(ap)
+                            M = None
+                            # Prefer model-aware transform keyed by original path
+                            if has_model_xforms:
+                                op = oba.get(apn)
+                                if op:
+                                    M = getattr(self, "drizzle_xforms", {}).get(os.path.normpath(op))
+                            # Fallback: affine keyed by aligned path
+                            if M is None:
+                                M = getattr(self, "matrix_by_aligned", {}).get(apn)
+                            if M is not None:
+                                xforms_g[apn] = np.asarray(M)
+
+                        ref_hw = tuple(getattr(self, "ref_shape_for_drizzle", ()))
+                        if xforms_g and len(ref_hw) == 2:
+                            group_rect = _rect_from_transforms_fast(
+                                xforms_g,
+                                src_hw=ref_hw,
+                                coverage_pct=float(autocrop_pct),
+                                allow_homography=True,
+                                min_side=16
+                            )
+
+                        if group_rect is None:
+                            # Fallback to existing mask-based per-group method
+                            group_rect = self._compute_common_autocrop_rect(
+                                {group_key: file_list}, autocrop_pct, status_cb=log
+                            )
                     except Exception as e:
+                        log(f"⚠️ Per-group transform crop failed for '{group_key}': {e}")
                         group_rect = None
-                        log(f"⚠️ Per-group crop failed for '{group_key}': {e}")
+
                 if group_rect:
                     x1, y1, x2, y2 = map(int, group_rect)
                     log(f"✂️ Using fixed crop rect for '{group_key}': ({x1},{y1})–({x2},{y2})")

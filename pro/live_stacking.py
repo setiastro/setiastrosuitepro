@@ -1226,7 +1226,7 @@ class LiveStackWindow(QDialog):
         exts = (
             "*.fit", "*.fits", "*.tif", "*.tiff",
             "*.cr2", "*.cr3", "*.nef", "*.arw",
-            "*.dng", "*.orf", "*.rw2", "*.pef", "*.xisf", "*.png", "*.jpg", "*.jpeg"
+            "*.dng", "*.raf", "*.orf", "*.rw2", "*.pef", "*.xisf", "*.png", "*.jpg", "*.jpeg"
         )
         all_paths = []
         for ext in exts:
@@ -1377,7 +1377,7 @@ class LiveStackWindow(QDialog):
         exts = (
             "*.fit", "*.fits", "*.tif", "*.tiff",
             "*.cr2", "*.cr3", "*.nef", "*.arw",
-            "*.dng", "*.orf", "*.rw2", "*.pef", "*.xisf",
+            "*.dng", "*.raf", "*.orf", "*.rw2", "*.pef", "*.xisf",
             "*.png", "*.jpg", "*.jpeg"
         )
         all_paths = []
@@ -1440,7 +1440,7 @@ class LiveStackWindow(QDialog):
         # 1) Load
         # ─── 1) RAW‐file check ────────────────────────────────────────────
         lower = path.lower()
-        raw_exts = ('.cr2', '.cr3', '.nef', '.arw', '.dng', '.orf', '.rw2', '.pef')
+        raw_exts = ('.cr2', '.cr3', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2', '.pef')
         if lower.endswith(raw_exts):
             # Attempt to decode using rawpy
             try:
@@ -1819,7 +1819,7 @@ class LiveStackWindow(QDialog):
         """
         # ─── 1) Load (RAW vs FITS) ─────────────────────────────
         lower = path.lower()
-        raw_exts = ('.cr2', '.cr3', '.nef', '.arw', '.dng',
+        raw_exts = ('.cr2', '.cr3', '.nef', '.arw', '.dng', '.raf',
                     '.orf', '.rw2', '.pef')
         if lower.endswith(raw_exts):
             try:

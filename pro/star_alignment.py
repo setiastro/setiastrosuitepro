@@ -1387,15 +1387,10 @@ class StarRegistrationWorker(QRunnable):
             #    T_prev[0, 2] /= f
             #    T_prev[1, 2] /= f
 
-            h, w = gray_small.shape[:2]
-            preview_warp = cv2.warpAffine(
-                gray_small, T_prev, (w, h),
-                flags=cv2.INTER_LINEAR,
-                borderMode=cv2.BORDER_CONSTANT, borderValue=0
-            )
+            Href, Wref = self.reference_image.shape[:2]
 
             # ---- astroalign (serialize to avoid SEP multi-thread crash) ----
-            transform = self.compute_affine_transform_astroalign(preview_warp, ref_small)
+            transform = self.compute_affine_transform_astroalign(gray_small, ref_small)
 
             if transform is None:
                 self.signals.error.emit(
@@ -1425,15 +1420,47 @@ class StarRegistrationWorker(QRunnable):
 
 
     @staticmethod
-    def compute_affine_transform_astroalign(source_img, reference_img):
-        # Serialize native SEP/astroalign to avoid instability on Windows
+    def compute_affine_transform_astroalign(source_img, reference_img, scale=1.20):
+        """
+        Fast local match: crop the reference to ~1.2× source size (centered),
+        solve on the crop, then lift the transform back to full reference coords.
+        Returns a 2x3 affine in full-reference coordinates, or None.
+        """
         global _AA_LOCK
         try:
+            Hs, Ws = source_img.shape[:2]
+            Hr, Wr = reference_img.shape[:2]
+
+            # 1) center crop box in reference sized ≈ source*scale (clamped to reference)
+            h = min(int(round(Hs * scale)), Hr)
+            w = min(int(round(Ws * scale)), Wr)
+            y0 = max(0, (Hr - h) // 2)
+            x0 = max(0, (Wr - w) // 2)
+            ref_crop = reference_img[y0:y0+h, x0:x0+w]
+
+            # 2) solve on the small pair
             with _AA_LOCK:
-                transform_obj, _ = astroalign.find_transform(source_img, reference_img)
-            return transform_obj.params[0:2, :]
+                tform, _ = astroalign.find_transform(
+                    np.ascontiguousarray(source_img.astype(np.float32)),
+                    np.ascontiguousarray(ref_crop.astype(np.float32))
+                )
+
+            # 3) compose crop translation back to full ref coords
+            P = np.asarray(tform.params, dtype=np.float64)
+            if P.shape == (3, 3):
+                # homography-like (SimilarityTransform also reports 3x3 with [0,0,1] last row)
+                T = np.array([[1,0,x0],[0,1,y0],[0,0,1]], dtype=np.float64)
+                H_full = T @ P
+                return H_full[0:2, :]   # 2×3 affine slice is valid since bottom row is [0,0,1]
+            elif P.shape == (2, 3):
+                A3 = np.vstack([P, [0,0,1]])
+                T  = np.array([[1,0,x0],[0,1,y0],[0,0,1]], dtype=np.float64)
+                A_full = (T @ A3)[0:2, :]
+                return A_full
+            else:
+                return None
         except Exception as e:
-            print(f"[StarRegistrationWorker] astroalign failed: {e}")
+            print(f"[StarRegistrationWorker] astroalign (cropped) failed: {e}")
             return None
 
 
@@ -1471,141 +1498,142 @@ class StarRegistrationThread(QThread):
 
     def _estimate_model_transform(self, src_gray_full: np.ndarray) -> tuple[str, object]:
         """
-        Recompute a final, full-res transform from src_gray_full → reference (self.reference_image_2d)
-        using the chosen model. Returns (kind, X) where:
-        kind="affine"     and X is 2x3 float32
-        kind="homography" and X is 3x3 float32
+        Fast, robust final transform: crop reference to ~1.2× source size (centered),
+        solve on the crop, lift correspondences to FULL reference coords, then
+        re-estimate the requested model (affine/homography or poly3/4). Returns (kind, X).
         """
-        # Downsample for the match stage (like your dialog code), then scale CPs back up
-        #f = max(1, int(self.downsample))
-        ref_small = self.ref_small
-        #if f > 1:
-        #    new_hw = (max(1, src_gray_full.shape[1] // f), max(1, src_gray_full.shape[0] // f))  # (W, H)
-        #    src_small = cv2.resize(src_gray_full, new_hw, interpolation=cv2.INTER_AREA)
-        #else:
-        #    src_small = src_gray_full
-        src_small = src_gray_full
-        # Lock astroalign; get matches (src_pts in src_small, tgt_pts in ref_small)
+        ref2d = self.reference_image_2d
+        src = np.ascontiguousarray(src_gray_full.astype(np.float32))
+        ref = np.ascontiguousarray(ref2d.astype(np.float32))
+        Hs, Ws = src.shape[:2]
+        Hr, Wr = ref.shape[:2]
+
+        # ---- 1) center crop the reference to ~1.2× source ----
+        scale = 1.20
+        h = min(int(round(Hs * scale)), Hr)
+        w = min(int(round(Ws * scale)), Wr)
+        y0 = max(0, (Hr - h) // 2)
+        x0 = max(0, (Wr - w) // 2)
+        ref_crop = ref[y0:y0+h, x0:x0+w]
+
+        # ---- 2) find_transform on the small pair; lift matches to full coords ----
         with _AA_LOCK:
-            transform_obj, (src_pts_s, tgt_pts_s) = astroalign.find_transform(
-                np.ascontiguousarray(src_small.astype(np.float32)),
-                np.ascontiguousarray(ref_small.astype(np.float32))
-            )
+            tform, (src_pts_s, tgt_pts_s) = astroalign.find_transform(src, ref_crop)
 
-        src_xy = np.asarray(src_pts_s, np.float32)
-        tgt_xy = np.asarray(tgt_pts_s, np.float32)
-        #if f > 1:
-        #    src_xy *= f
-        #    tgt_xy *= f
+        src_xy = np.asarray(src_pts_s, dtype=np.float32)
+        tgt_xy = np.asarray(tgt_pts_s, dtype=np.float32)
+        tgt_xy[:, 0] += x0   # lift crop -> full
+        tgt_xy[:, 1] += y0
 
-        # Re-estimate with the requested model (affine/homography/TPS)
-        model = (self.align_model or "affine").lower()
-
-        # 1) Base model: affine or homography (use homography if requested; else affine)
-        if model == "homography":
-            H, _ = cv2.findHomography(src_xy, tgt_xy, method=cv2.RANSAC,
-                                      ransacReprojThreshold=float(self.h_reproj))
-            if H is None:
-                raise RuntimeError("Homography estimation failed.")
-            base_kind, base_X = "homography", np.array(H, dtype=np.float64)
+        # Build a base full-ref transform from tform.params + crop translation
+        P = np.asarray(tform.params, dtype=np.float64)
+        if P.shape == (3,3):
+            base_kind0 = "homography"
+            T  = np.array([[1,0,x0],[0,1,y0],[0,0,1]], dtype=np.float64)
+            base_X0 = T @ P
         else:
-            A, _ = cv2.estimateAffine2D(src_xy, tgt_xy, method=cv2.RANSAC,
-                                        ransacReprojThreshold=float(self.h_reproj))
-            if A is None:
-                raise RuntimeError("Affine estimation failed.")
-            base_kind, base_X = "affine", np.array(A, dtype=np.float64)
+            base_kind0 = "affine"
+            A3 = np.vstack([P[0:2,:], [0,0,1]])
+            T  = np.array([[1,0,x0],[0,1,y0],[0,0,1]], dtype=np.float64)
+            base_X0 = (T @ A3)[0:2, :]
 
-        # Quick exit if we're not doing a polynomial residual
+        # ---- 3) re-estimate requested model using full-coord pairs ----
+        model = (self.align_model or "affine").lower()
+        h_reproj = float(self.h_reproj)
+
+        if model == "homography":
+            H, _ = cv2.findHomography(src_xy, tgt_xy, method=cv2.RANSAC, ransacReprojThreshold=h_reproj)
+            if H is None:
+                base_kind, base_X = base_kind0, base_X0
+            else:
+                base_kind, base_X = "homography", np.array(H, dtype=np.float64)
+        elif model == "affine":
+            A, _ = cv2.estimateAffine2D(src_xy, tgt_xy, method=cv2.RANSAC, ransacReprojThreshold=h_reproj)
+            if A is None:
+                base_kind, base_X = base_kind0, base_X0
+            else:
+                base_kind, base_X = "affine", np.array(A, dtype=np.float64)
+        else:
+            base_kind, base_X = base_kind0, base_X0  # for poly we refine from base
+
+        # ---- 4) if not poly, we’re done ----
         if model not in ("poly3", "poly4"):
             return base_kind, base_X
 
-        # 2) Compute residuals in reference space
+        # ---- 5) poly residual refinement (unchanged logic, but with our pairs) ----
         if base_kind == "affine":
-            pred_on_ref = _apply_affine_to_pts(base_X, src_xy)        # src -> ref (pred)
+            pred_on_ref = _apply_affine_to_pts(base_X, src_xy)
         else:
-            # homography: warp points
             ones = np.ones((src_xy.shape[0], 1), dtype=np.float32)
-            P = np.hstack([src_xy.astype(np.float32), ones]).T        # (3,N)
-            Q = (base_X.astype(np.float32) @ P)                        # (3,N)
-            Q = (Q[:2, :] / Q[2:3, :]).T                               # (N,2)
-            pred_on_ref = Q
+            P3 = np.hstack([src_xy.astype(np.float32), ones]).T
+            Q  = (np.asarray(base_X, np.float32) @ P3)
+            pred_on_ref = (Q[:2, :] / Q[2:3, :]).T
 
         resid = np.linalg.norm(pred_on_ref - tgt_xy, axis=1)
-
-        # 3) Inlier selection (keep robust subset for stable poly fit)
-        r_thresh = max(2.0, self.h_reproj * 1.5)
+        r_thresh = max(2.0, h_reproj * 1.5)
         inliers = resid < r_thresh
         if inliers.sum() < 20:
-            # not enough for a stable poly fit; fall back to base only
             return base_kind, base_X
 
-        P_ref   = tgt_xy[inliers].astype(np.float32)        # reference coords
-        P_pred  = pred_on_ref[inliers].astype(np.float32)   # base-warped coords
+        P_ref   = tgt_xy[inliers].astype(np.float32)
+        P_pred  = pred_on_ref[inliers].astype(np.float32)
 
-        # 4) (Optional but helpful) normalize coordinates to improve conditioning
-        Href, Wref = self.reference_image_2d.shape[:2]
-        scale = np.array([Wref, Href], dtype=np.float32)
-        P_ref_n  = P_ref / scale
-        P_pred_n = P_pred / scale
+        Href, Wref = ref2d.shape[:2]
+        scale_vec = np.array([Wref, Href], dtype=np.float32)
+        P_ref_n  = P_ref  / scale_vec
+        P_pred_n = P_pred / scale_vec
 
         order = 3 if model == "poly3" else 4
         t_poly = PolynomialTransform()
-        ok = t_poly.estimate(P_ref_n, P_pred_n, order=order)  # maps ref_n -> basewarped_n
+        ok = t_poly.estimate(P_ref_n, P_pred_n, order=order)  # ref_n -> basewarped_n
         if not ok:
-            # if polynomial fit fails, return base
             return base_kind, base_X
 
         def _warp_poly_residual(img: np.ndarray, out_hw: tuple[int,int]) -> np.ndarray:
             Hh, Ww = out_hw
-
-            # Pass A: base warp to reference grid
+            # Pass A: base warp
             if base_kind == "affine":
-                img_base = (cv2.warpAffine(img if img.ndim==2 else img[...,0], base_X, (Ww, Hh),
-                                           flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
-                            if img.ndim == 2 else
-                            np.stack([cv2.warpAffine(img[..., c], base_X, (Ww, Hh),
-                                                     flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
-                                      for c in range(img.shape[2])], axis=2))
+                if img.ndim == 2:
+                    img_base = cv2.warpAffine(img, base_X, (Ww, Hh),
+                                            flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+                else:
+                    img_base = np.stack([cv2.warpAffine(img[..., c], base_X, (Ww, Hh),
+                                                        flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+                                        for c in range(img.shape[2])], axis=2)
             else:
                 if img.ndim == 2:
                     img_base = cv2.warpPerspective(img, base_X, (Ww, Hh),
-                                                   flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+                                                flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
                 else:
                     img_base = np.stack([cv2.warpPerspective(img[..., c], base_X, (Ww, Hh),
-                                                             flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
-                                         for c in range(img.shape[2])], axis=2)
+                                                            flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+                                        for c in range(img.shape[2])], axis=2)
 
-            # Pass B: polynomial residual (inverse map needs ref->basewarped)
-            # We fitted on normalized coords, so supply a wrapper that normalizes query coords
             class _InvMap:
                 def __call__(self, coords):
-                    # coords: (N, 2) in reference pixel units
-                    coords_n = coords.astype(np.float32) / scale
-                    mapped_n = t_poly(coords_n)             # ref_n -> basewarped_n
-                    return mapped_n * scale
+                    coords_n = coords.astype(np.float32) / scale_vec
+                    mapped_n = t_poly(coords_n)
+                    return mapped_n * scale_vec
 
-            inv = _InvMap()
             try:
                 out = warp(img_base.astype(np.float32, copy=False),
-                           inverse_map=inv,
-                           output_shape=(Hh, Ww),
-                           preserve_range=True,
-                           channel_axis=(-1 if img_base.ndim == 3 else None))
+                        inverse_map=_InvMap(),
+                        output_shape=(Hh, Ww),
+                        preserve_range=True,
+                        channel_axis=(-1 if img_base.ndim == 3 else None))
             except TypeError:
-                # older skimage (no channel_axis): per-channel
                 if img_base.ndim == 2:
-                    out = warp(img_base.astype(np.float32), inverse_map=inv,
-                               output_shape=(Hh, Ww), preserve_range=True)
+                    out = warp(img_base.astype(np.float32), inverse_map=_InvMap(),
+                            output_shape=(Hh, Ww), preserve_range=True)
                 else:
-                    chs = [warp(img_base[..., c].astype(np.float32), inverse_map=inv,
+                    chs = [warp(img_base[..., c].astype(np.float32), inverse_map=_InvMap(),
                                 output_shape=(Hh, Ww), preserve_range=True)
-                           for c in range(img_base.shape[2])]
+                        for c in range(img_base.shape[2])]
                     out = np.stack(chs, axis=2)
-
             return out.astype(np.float32, copy=False)
 
-        # Return a composed model: ('poly3'/'poly4', callable)
         return f"poly{order}", _warp_poly_residual
+
 
 
     def _warp_with_kind(self, img: np.ndarray, kind: str, X: object, out_hw: tuple[int,int]) -> np.ndarray:
@@ -1927,18 +1955,37 @@ class StarRegistrationThread(QThread):
                 if img is None:
                     return f"⚠️ Failed to read {os.path.basename(orig_path)}", False
 
+
                 # Full-res, model-aware warp
                 src_gray_full = np.mean(img, axis=2) if img.ndim == 3 else img
                 src_gray_full = np.nan_to_num(src_gray_full, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
                 Href, Wref = self.reference_image_2d.shape[:2]
 
+                if img.ndim == 3:
+                    Hs, Ws = img.shape[:2]
+                else:
+                    Hs, Ws = img.shape
+                if abs(Hs - Href) > 0.05*Href or abs(Ws - Wref) > 0.05*Wref:
+                    self.progress_update.emit(
+                        f"ℹ️ {os.path.basename(orig_path)} shape {Ws}×{Hs} differs from ref {Wref}×{Href}; warping to match."
+                    )
+
                 try:
-                    kind, X = self._estimate_model_transform(src_gray_full)
+                    if self.align_model == "affine":
+                        # reuse the accumulated 2x3 (no second astroalign)
+                        kind = "affine"
+                        X = np.asarray(self.alignment_matrices.get(k, IDENTITY_2x3), dtype=np.float64)
+                    else:
+                        # need a fresh full-res solve for homography/poly
+                        kind, X = self._estimate_model_transform(src_gray_full)
                 except Exception as e:
-                    self.progress_update.emit(f"⚠️ {os.path.basename(orig_path)} model solve failed ({self.align_model}): {e}. Falling back to affine.")
+                    self.progress_update.emit(
+                        f"⚠️ {os.path.basename(orig_path)} model solve failed ({self.align_model}): {e}. Falling back to affine."
+                    )
+                    kind, X = "affine", np.asarray(self.alignment_matrices.get(k, IDENTITY_2x3), dtype=np.float64)
 
                     kind, X = "affine", np.array(self.alignment_matrices.get(k, IDENTITY_2x3), np.float64)
-                self.progress_update.emit(f"🌀 {os.path.basename(orig_path)}: warp={kind}")
+                self.progress_update.emit(f"🌀 Distortion Correction on {os.path.basename(orig_path)}: warp={kind}")
                 # Record drizzle transform (don’t np.asarray() a callable)
 
                 aligned = self._warp_with_kind(img, kind, X, (Href, Wref))
@@ -2075,6 +2122,28 @@ class StarRegistrationThread(QThread):
                 else:
                     f.write("MATRIX: \nUNSUPPORTED\n\n")
 
+def _center_crop_params(Href, Wref, Hsrc, Wsrc, scale=1.10):
+    # crop box centered in reference, sized ~ source*scale, but clamped to ref
+    h = min(int(round(Hsrc * scale)), Href)
+    w = min(int(round(Wsrc * scale)), Wref)
+    y0 = max(0, (Href - h) // 2)
+    x0 = max(0, (Wref - w) // 2)
+    return y0, x0, h, w
+
+def _crop(img, y0, x0, h, w):
+    return img[y0:y0+h, x0:x0+w]
+
+def _compose_with_ref_translation_affine(A_2x3, x0, y0):
+    # A_full = T @ A  (homog), then take 2x3 back
+    A = np.asarray(A_2x3, dtype=np.float64).reshape(2,3)
+    A3 = np.vstack([A, [0,0,1]])
+    T  = np.array([[1,0,x0],[0,1,y0],[0,0,1]], dtype=np.float64)
+    return (T @ A3)[0:2,:]
+
+def _compose_with_ref_translation_homography(H_3x3, x0, y0):
+    H = np.asarray(H_3x3, dtype=np.float64).reshape(3,3)
+    T = np.array([[1,0,x0],[0,1,y0],[0,0,1]], dtype=np.float64)
+    return T @ H
 
 
 # ---------------------------------------------------------------------
@@ -3462,7 +3531,7 @@ class MosaicMasterDialog(QDialog):
             self,
             "Add Image(s)",
             "",
-            "Images (*.png *.jpg *.jpeg *.tif *.tiff *.fits *.fit *.fz *.fz *.xisf *.cr2 *.nef *.arw *.dng *.orf *.rw2 *.pef)"
+            "Images (*.png *.jpg *.jpeg *.tif *.tiff *.fits *.fit *.fz *.fz *.xisf *.cr2 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef)"
         )
         if paths:
             for path in paths:
@@ -3898,7 +3967,7 @@ class MosaicMasterDialog(QDialog):
       
 
     def debayer_image(self, image, file_path, header):
-        if file_path.lower().endswith(('.cr2', '.cr3', '.nef', '.arw', '.dng', '.orf', '.rw2', '.pef')):
+        if file_path.lower().endswith(('.cr2', '.cr3', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2', '.pef')):
             print(f"Debayering RAW image: {file_path}")
             return debayer_raw_fast(image)
         elif file_path.lower().endswith(('.fits', '.fit', '.fz', '.fz')):

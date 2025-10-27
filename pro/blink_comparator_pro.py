@@ -1126,7 +1126,7 @@ class BlinkTab(QWidget):
             self,
             "Add Additional Images",
             "",
-            "Images (*.png *.tif *.tiff *.fits *.fit *.xisf *.cr2 *.nef *.arw *.dng *.orf *.rw2 *.pef);;All Files (*)"
+            "Images (*.png *.tif *.tiff *.fits *.fit *.xisf *.cr2 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef);;All Files (*)"
         )
         # filter out duplicates
         new_paths = [p for p in file_paths if p not in self.image_paths]
@@ -1384,7 +1384,7 @@ class BlinkTab(QWidget):
             # Supported image extensions
             supported_extensions = (
                 '.png', '.tif', '.tiff', '.fits', '.fit',
-                '.xisf', '.cr2', '.nef', '.arw', '.dng',
+                '.xisf', '.cr2', '.nef', '.arw', '.dng', '.raf',
                 '.orf', '.rw2', '.pef'
             )
 
@@ -1494,7 +1494,7 @@ class BlinkTab(QWidget):
             bayer_pattern = header.get('BAYERPAT', None)
             if bayer_pattern:
                 image = debayer_fits_fast(image, bayer_pattern)
-        elif file_path.lower().endswith(('.cr2', '.nef', '.arw', '.dng', '.orf', '.rw2', '.pef')):
+        elif file_path.lower().endswith(('.cr2', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2', '.pef')):
             image = debayer_raw_fast(image, bayer_pattern="RGGB")
         return image
 
@@ -1777,7 +1777,7 @@ class BlinkTab(QWidget):
             self,
             "Open Images",
             "",
-            "Images (*.png *.tif *.tiff *.fits *.fit *.xisf *.cr2 *.cr3 *.nef *.arw *.dng *.orf *.rw2 *.pef);;All Files (*)"
+            "Images (*.png *.tif *.tiff *.fits *.fit *.xisf *.cr2 *.cr3 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef);;All Files (*)"
         )
         
         # Filter out already loaded images to prevent duplicates

@@ -34,7 +34,7 @@ OPENABLE_ENDINGS = (
     ".fits", ".fit",
     ".fits.gz", ".fit.gz", ".fz",
     ".xisf",
-    ".cr2", ".cr3", ".nef", ".arw", ".dng", ".orf", ".rw2", ".pef",
+    ".cr2", ".cr3", ".nef", ".arw", ".dng", ".raf", ".orf", ".rw2", ".pef",
 )
 
 
