@@ -8730,27 +8730,50 @@ class StackingSuiteDialog(QDialog):
             pd.close()
 
             
-    def add_master_dark_to_tree(self, exposure_time, master_dark_path):
-        """ Adds the newly created Master Dark to the Master Dark TreeBox and updates the dropdown. """
+    def add_master_dark_to_tree(self, exposure_label: str, master_dark_path: str):
+        """
+        Adds the newly created Master Dark to the Master Dark TreeBox and updates the dropdown.
+
+        Parameters
+        ----------
+        exposure_label : str
+            A human-friendly label like "30s (4128x2806)". This is used as the
+            tree's top-level item text and as the dictionary key.
+        master_dark_path : str
+            Full path to the master dark FITS.
+        """
+        # Build/confirm size string from the file (for master_sizes)
         try:
             with fits.open(master_dark_path, memmap=False) as hdul:
-                h, w = hdul[0].data.shape[:2]
-                size = f"{w}x{h}"
+                data = hdul[0].data
+                if data is None:
+                    size = "Unknown"
+                else:
+                    if data.ndim == 2:
+                        h, w = data.shape
+                    elif data.ndim == 3:
+                        h, w = data.shape[:2]
+                    else:
+                        h = w = 0
+                    size = f"{w}x{h}" if (h and w) else "Unknown"
         except Exception:
             size = "Unknown"
 
-        # record for all tabs
+        exposure_key = str(exposure_label).strip()  # e.g. "30s (4128x2806)"
+
+        # ✅ Record paths/sizes
+        if not hasattr(self, "master_files"):
+            self.master_files = {}
+        if not hasattr(self, "master_sizes"):
+            self.master_sizes = {}
+
         self.master_files[exposure_key] = master_dark_path
         self.master_sizes[master_dark_path] = size
-        exposure_key = f"{exposure_time}s"
-
-        # ✅ Store in the dictionary
-        self.master_files[exposure_key] = master_dark_path  # Store master dark
-        print(f"📝 DEBUG: Stored Master Dark -> {exposure_key}: {master_dark_path}")
 
         # ✅ Update UI Tree
-        existing_items = self.master_dark_tree.findItems(exposure_key, Qt.MatchFlag.MatchExactly, 0)
-
+        existing_items = self.master_dark_tree.findItems(
+            exposure_key, Qt.MatchFlag.MatchExactly, 0
+        )
         if existing_items:
             exposure_item = existing_items[0]
         else:
@@ -8760,11 +8783,12 @@ class StackingSuiteDialog(QDialog):
         master_item = QTreeWidgetItem([os.path.basename(master_dark_path)])
         exposure_item.addChild(master_item)
 
-        # ✅ Refresh the override dropdown
+        # ✅ Refresh UI bits that depend on master darks
         self.update_override_dark_combo()
-        self.assign_best_master_dark()  # 🔥 Ensure auto-selection works
-
+        self.assign_best_master_dark()  # auto-select
         self.update_status(f"✅ Master Dark saved and added to UI: {master_dark_path}")
+        print(f"📝 DEBUG: Stored Master Dark -> {exposure_key}: {master_dark_path}")
+
 
 
 
