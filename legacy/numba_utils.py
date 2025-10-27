@@ -1751,6 +1751,32 @@ def normalize_images(stack, ref_median):
     else:
         raise ValueError(f"normalize_images: stack must be 3D or 4D, got shape {stack.shape}")
 
+@njit(parallel=True, fastmath=True)
+def _bilinear_interpolate_numba(out):
+    H, W, C = out.shape
+    for c in range(C):
+        for y in prange(H):
+            for x in range(W):
+                if out[y, x, c] == 0:
+                    sumv = 0.0
+                    cnt = 0
+                    # 3x3 neighborhood average of non-zero samples (simple & fast)
+                    for dy in (-1, 0, 1):
+                        yy = y + dy
+                        if yy < 0 or yy >= H: 
+                            continue
+                        for dx in (-1, 0, 1):
+                            xx = x + dx
+                            if xx < 0 or xx >= W:
+                                continue
+                            v = out[yy, xx, c]
+                            if v != 0:
+                                sumv += v
+                                cnt += 1
+                    if cnt > 0:
+                        out[y, x, c] = sumv / cnt
+    return out
+
 
 @njit(parallel=True, fastmath=True)
 def _edge_aware_interpolate_numba(out):
@@ -1916,22 +1942,37 @@ def debayer_GBRG_fullres_fast(image, interpolate=True):
 # Since Numba cannot easily compare strings in nopython mode,
 # we do the if/elif check here in Python and then call the appropriate njit function.
 
-def debayer_fits_fast(image_data, bayer_pattern, cfa_drizzle=False):
+def debayer_fits_fast(image_data, bayer_pattern, cfa_drizzle=False, method="edge"):
     bp = (bayer_pattern or "").upper()
     interpolate = not cfa_drizzle
+
+    # 1) lay down the known samples per CFA
     if bp == 'RGGB':
-        return debayer_RGGB_fullres_fast(image_data, interpolate)
+        out = debayer_RGGB_fullres_fast(image_data, interpolate=False)
     elif bp == 'BGGR':
-        return debayer_BGGR_fullres_fast(image_data, interpolate)
+        out = debayer_BGGR_fullres_fast(image_data, interpolate=False)
     elif bp == 'GRBG':
-        return debayer_GRBG_fullres_fast(image_data, interpolate)
+        out = debayer_GRBG_fullres_fast(image_data, interpolate=False)
     elif bp == 'GBRG':
-        return debayer_GBRG_fullres_fast(image_data, interpolate)
+        out = debayer_GBRG_fullres_fast(image_data, interpolate=False)
     else:
         raise ValueError(f"Unsupported Bayer pattern: {bayer_pattern}")
 
-def debayer_raw_fast(raw_image_data, bayer_pattern="RGGB", cfa_drizzle=False):
-    return debayer_fits_fast(raw_image_data, bayer_pattern, cfa_drizzle=cfa_drizzle)
+    # 2) perform interpolation unless doing CFA-drizzle
+    if interpolate:
+        m = (method or "edge").lower()
+        if m == "edge":
+            _edge_aware_interpolate_numba(out)
+        elif m == "bilinear":
+            _bilinear_interpolate_numba(out)
+        else:
+            # fallback to edge-aware if unknown
+            _edge_aware_interpolate_numba(out)
+
+    return out
+
+def debayer_raw_fast(raw_image_data, bayer_pattern="RGGB", cfa_drizzle=False, method="edge"):
+    return debayer_fits_fast(raw_image_data, bayer_pattern, cfa_drizzle=cfa_drizzle, method=method)
 
 @njit(parallel=True, fastmath=True)
 def applyPixelMath_numba(image_array, amount):

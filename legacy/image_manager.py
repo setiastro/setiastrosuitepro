@@ -927,7 +927,7 @@ def load_image(filename, max_retries=3, wait_seconds=3):
                 image = _finalize_loaded_image(image)
                 return image, original_header, bit_depth, is_mono
 
-            elif filename.lower().endswith(('.cr2', '.cr3', '.nef', '.arw', '.dng', '.orf', '.rw2', '.pef')):
+            elif filename.lower().endswith(('.cr2', '.cr3', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2', '.pef')):
                 print(f"Loading RAW file: {filename}")
                 with rawpy.imread(filename) as raw:
                     # 1) Read the raw Bayer data (no demosaic)
