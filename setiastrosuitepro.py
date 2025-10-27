@@ -269,7 +269,7 @@ from pro.status_log_dock import StatusLogDock
 from pro.log_bus import LogBus
 
 
-VERSION = "1.3.19"
+VERSION = "1.3.20"
 
 
 
@@ -6704,9 +6704,9 @@ class AstroSuiteProMainWindow(QMainWindow):
         filters = (
             "All Supported (*.png *.jpg *.jpeg *.tif *.tiff "
             "*.fits *.fit *.fits.gz *.fit.gz *.fz *.xisf "
-            "*.cr2 *.cr3 *.nef *.arw *.dng *.orf *.rw2 *.pef);;"
+            "*.cr2 *.cr3 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef);;"
             "Astro (FITS/XISF) (*.xisf *.fits *.fit *.fits.gz *.fit.gz *.fz);;"
-            "RAW Images (*.cr2 *.cr3 *.nef *.arw *.dng *.orf *.rw2 *.pef);;"
+            "RAW Images (*.cr2 *.cr3 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef);;"
             "Common Images (*.png *.jpg *.jpeg *.tif *.tiff);;"
             "All Files (*)"
         )
@@ -7892,16 +7892,66 @@ def install_crash_handlers(app):
 if __name__ == "__main__":
     # --- Logging (catch unhandled exceptions to a file) ---
     import logging, sys, os, multiprocessing
+    import tempfile
     from PyQt6.QtCore import Qt, QCoreApplication, QSettings
     from PyQt6.QtGui import QGuiApplication, QIcon, QPixmap, QColor
     from PyQt6.QtWidgets import QApplication, QSplashScreen, QMessageBox
 
 
-    logging.basicConfig(
-        filename="saspro.log",
-        level=logging.ERROR,
-        format="%(asctime)s - %(levelname)s - %(message)s"
-    )
+    from pathlib import Path
+ 
+    # Cross-platform log file location
+    def get_log_file_path():
+        """Get appropriate log file path for the current platform."""
+        
+        if hasattr(sys, '_MEIPASS'):
+            # Running in PyInstaller bundle - use platform-appropriate user directory
+            if sys.platform.startswith('win'):
+                # Windows: %APPDATA%\SetiAstroSuitePro\logs\
+                log_dir = Path(os.path.expandvars('%APPDATA%')) / 'SetiAstroSuitePro' / 'logs'
+            elif sys.platform.startswith('darwin'):
+                # macOS: ~/Library/Logs/SetiAstroSuitePro/
+                log_dir = Path.home() / 'Library' / 'Logs' / 'SetiAstroSuitePro'
+            else:
+                # Linux: ~/.local/share/SetiAstroSuitePro/logs/
+                log_dir = Path.home() / '.local' / 'share' / 'SetiAstroSuitePro' / 'logs'
+            
+            # Create directory if it doesn't exist
+            try:
+                log_dir.mkdir(parents=True, exist_ok=True)
+                log_file = log_dir / 'saspro.log'
+            except (OSError, PermissionError):
+                # Fallback to temp directory if user directory fails
+                log_file = Path(tempfile.gettempdir()) / 'saspro.log'
+        else:
+            # Development mode - use current directory
+            log_file = Path('saspro.log')
+        
+        return str(log_file)
+    
+    # Configure logging with cross-platform path
+    log_file_path = get_log_file_path()
+
+    try:
+        logging.basicConfig(
+            filename=log_file_path,
+            level=logging.INFO,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            filemode='a'  # Append mode
+        )
+        logging.info(f"Logging to: {log_file_path}")
+        logging.info(f"Platform: {sys.platform}")
+        logging.info(f"PyInstaller bundle: {hasattr(sys, '_MEIPASS')}")
+    except Exception as e:
+        # Ultimate fallback - console only logging
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            handlers=[logging.StreamHandler(sys.stdout)]
+        )
+        print(f"Warning: Could not write to log file {log_file_path}: {e}")
+        print("Using console-only logging")
+        
 
     # --- Qt app (make splash ASAP) ---
     try:
