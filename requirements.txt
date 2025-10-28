@@ -32,6 +32,9 @@ tzlocal
 # performance
 numba
 
+#neural net
+onnx
+
 # image formats & camera raw
 xisf
 rawpy
