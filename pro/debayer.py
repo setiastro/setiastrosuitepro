@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 from typing import Optional, Tuple
 import cv2
+import os
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -15,6 +16,29 @@ try:
     from legacy.numba_utils import debayer_fits_fast
 except Exception as e:  # very unlikely in your env
     debayer_fits_fast = None
+
+
+_RAW_EXTS = (".raf", ".raw", ".rw2", ".arw", ".nef", ".cr2", ".cr3", ".dng", ".orf", ".pef")
+
+def _find_raw_sibling(path: Optional[str]) -> Optional[str]:
+    """
+    If we only have a derived FITS/XISF path, try to locate a plausible RAW
+    with the same stem in the same folder.
+    """
+    if not path:
+        return None
+    base, _ = os.path.splitext(os.path.basename(path))
+    folder = os.path.dirname(path)
+    if not folder or not base:
+        return None
+    try:
+        for ext in _RAW_EXTS:
+            cand = os.path.join(folder, base + ext)
+            if os.path.exists(cand):
+                return cand
+    except Exception:
+        pass
+    return None
 
 # -------- helpers ------------------------------------------------------------
 _BAYER_METHODS = [
@@ -190,20 +214,45 @@ def _debayer_xtrans_via_rawpy(src_path: str,
         )
     return (rgb16.astype(np.float32) / (65535.0 if output_bps == 16 else 255.0))
 
-
+def _doc_is_managed(dm, doc) -> bool:
+    """Best-effort: is this document tracked by DocManager?"""
+    if dm is None or doc is None:
+        return False
+    # Explicit API if you have it
+    fn = getattr(dm, "is_managed_document", None)
+    if callable(fn):
+        try:
+            return bool(fn(doc))
+        except Exception:
+            pass
+    # Common internal collections
+    for attr in ("_docs", "documents", "open_documents", "all_docs"):
+        coll = getattr(dm, attr, None)
+        if isinstance(coll, (list, tuple)):
+            try:
+                return any(d is doc for d in coll)
+            except Exception:
+                continue
+    return False
 
 def _apply_result_to_doc(dm, doc, rgb: np.ndarray, step_name: str = "Debayer"):
     """
-    Robustly hand the new image back to your doc manager with an undo step.
-    Tries a few known helper names to stay compatible with your stack.
+    Safely apply an array result to a document.
+
+    Rules:
+      1) Prefer doc-targeted DocManager APIs if available.
+      2) If none exist, detect whether this doc is 'managed' by DocManager.
+         • Unmanaged (headless/file): write directly to doc.image (+metadata) and return.
+         • Managed: fall back to active-doc APIs if necessary.
     """
-    # Prefer explicit doc-targeting apply fns
+    # ---- 1) Prefer explicit doc-targeting functions (no need for 'active') ----
     for name in (
         "apply_numpy_result_to_document",
         "apply_numpy_result",
         "apply_array_to_document",
         "apply_numpy_image_to_document",
         "apply_edit_to_doc",
+        "update_document_image",            # some codebases use this name
     ):
         fn = getattr(dm, name, None)
         if callable(fn):
@@ -211,19 +260,67 @@ def _apply_result_to_doc(dm, doc, rgb: np.ndarray, step_name: str = "Debayer"):
                 fn(doc, rgb, step_name)
                 return
             except TypeError:
+                # maybe signature (doc, img) without step
+                try:
+                    fn(doc, rgb)  # type: ignore
+                    return
+                except Exception:
+                    pass
+            except Exception:
                 pass
 
-    # Older APIs: apply to active
-    fn = getattr(dm, "apply_edit_to_active", None)
-    if callable(fn):
-        fn(rgb, step_name)
+    # ---- 2) If we get here, we don't have doc-targeting helpers ----
+    managed = _doc_is_managed(dm, doc)
+
+    # Headless/file path → do not require an active view
+    if not managed:
+        # Minimal, safe write-back
+        try:
+            doc.image = rgb
+            # Patch metadata so subsequent writers behave
+            meta = getattr(doc, "metadata", None)
+            if isinstance(meta, dict):
+                meta["is_mono"] = False
+                # preserve existing bit depth label if present; otherwise mark float32
+                meta.setdefault("bit_depth", "32-bit floating point")
+                meta.setdefault("original_format", meta.get("original_format", "fits"))
+        except Exception:
+            # last resort in truly bare objects
+            try:
+                setattr(doc, "image", rgb)
+            except Exception:
+                pass
         return
 
-    # Fallback: direct swap (last resort)
-    if hasattr(doc, "replace_image") and callable(getattr(doc, "replace_image")):
-        doc.replace_image(rgb, step_name)
-    else:
-        doc.image = rgb  # no undo metadata, but at least it works
+    # ---- 3) Managed doc but only active-doc APIs exist → try them ----
+    # These require an active document in MDI; okay for view runs, not for headless.
+    fn = getattr(dm, "apply_edit_to_active", None)
+    if callable(fn):
+        try:
+            fn(rgb, step_name)
+            return
+        except Exception:
+            pass
+
+    fn = getattr(dm, "apply_numpy_result_active", None)
+    if callable(fn):
+        try:
+            fn(rgb, step_name)
+            return
+        except Exception:
+            pass
+
+    # ---- 4) Absolute fallback: mutate the doc directly ----
+    try:
+        doc.image = rgb
+        meta = getattr(doc, "metadata", None)
+        if isinstance(meta, dict):
+            meta["is_mono"] = False
+            meta.setdefault("bit_depth", "32-bit floating point")
+    except Exception:
+        pass
+
+
 
 
 # -------- worker -------------------------------------------------------------
@@ -243,7 +340,10 @@ class _DebayerWorker(QThread):
         try:
             if debayer_fits_fast is None:
                 raise RuntimeError("Numba debayer kernels not available.")
-            img = self.mono
+
+            # enforce kernel-friendly layout/dtype
+            img = _mono_as_float32_contig(self.mono)
+
             if img.ndim != 2:
                 raise ValueError("Debayer expects a single-channel (mosaic) image.")
             if self.pattern not in _VALID:
@@ -257,25 +357,58 @@ class _DebayerWorker(QThread):
             self.failed.emit(str(e))
 
 def _extract_doc_info(doc) -> tuple[dict | None, dict, Optional[str]]:
-    """
-    Returns (header_like, meta_dict, path_str)
-    - header_like: astropy Header or dict-like (may be None)
-    - meta_dict:   the document's metadata dict (never None)
-    - path_str:    original file path if known (may be None)
-    """
-    # Preferred: ImageDocument.metadata (your DocManager sets this)
     meta = getattr(doc, "metadata", {}) or {}
-    # Common places your loader/manager put header
     hdr = (meta.get("original_header")
            or meta.get("fits_header")
            or meta.get("header")
            or getattr(doc, "header", None))
 
-    # Path priority: metadata, then doc.path/file_path
-    path = (meta.get("file_path")
-            or getattr(doc, "path", None)
-            or getattr(doc, "file_path", None))
+    # try multiple fields for a source path
+    def _first_nonempty(*vals):
+        for v in vals:
+            if v:
+                return v
+        return None
+
+    # header cards that might store original RAW path
+    hdr_raw = None
+    try:
+        if hdr is not None:
+            for k in ("RAW_PATH","RAWFILE","ORIGFILE","ORIGINAL","ORIGPATH","RAWORIG","SOURCE","SRCFILE"):
+                v = hdr.get(k) if hasattr(hdr, "get") else hdr[k]  # may raise → caught
+                if v:
+                    hdr_raw = str(v)
+                    break
+    except Exception:
+        pass
+
+    path = _first_nonempty(
+        meta.get("raw_source_path"),
+        hdr_raw,
+        meta.get("file_path"),
+        getattr(doc, "path", None),
+        getattr(doc, "file_path", None),
+    )
     return hdr, meta, path
+
+def _mono_as_float32_contig(arr: np.ndarray) -> np.ndarray:
+    """
+    Ensure mono mosaic is 2D, C-contiguous, float32 in [0,1] for numba kernels.
+    Scales integer inputs by their max (8/16/32 bits).
+    """
+    a = np.asarray(arr)
+    if a.ndim != 2:
+        raise RuntimeError("Debayer expects a single-channel (mosaic) image.")
+    if np.issubdtype(a.dtype, np.integer):
+        # pick a sensible scale based on dtype
+        info = np.iinfo(a.dtype)
+        a = a.astype(np.float32, copy=False) / float(info.max if info.max > 0 else 1.0)
+    else:
+        a = a.astype(np.float32, copy=False)
+        # if it looks like 0..65535 in float, normalize too
+        if a.max() > 2.0:
+            a = a / 65535.0
+    return np.ascontiguousarray(a)
 
 
 # -------- dialog -------------------------------------------------------------
@@ -296,6 +429,8 @@ class DebayerDialog(QDialog):
         if img is None:
             raise RuntimeError("No image in active document.")
         arr = np.asarray(img)
+
+        # Reject non-mosaic early
         if arr.ndim == 3 and arr.shape[2] >= 3:
             QMessageBox.information(self, "Debayer", "Image already has 3 channels.")
             self.setEnabled(False)
@@ -307,18 +442,17 @@ class DebayerDialog(QDialog):
             self.close()
             return
 
-        self._src = arr
+        # ✅ normalize for numba kernels
+        self._src = _mono_as_float32_contig(arr)
 
-        self._cfa_family = _detect_cfa_family(active_doc)  # 'BAYER' | 'XTRANS' | None
-
+        # detect CFA family (BAYER/XTRANS/None)
+        self._cfa_family = _detect_cfa_family(active_doc)
 
         v = QVBoxLayout(self)
 
         # pattern selection
         detected = _detect_bayer_from_header(active_doc)
-
-        # ✅ store detection early so later code can use it safely
-        self._detected_pattern = detected
+        self._detected_pattern = detected  # store for later
 
         gb = QGroupBox("Bayer pattern", self)
         h = QHBoxLayout(gb)
@@ -337,7 +471,6 @@ class DebayerDialog(QDialog):
             self.combo_pattern.setEnabled(False)
             self.lbl_detect.setText("Detected: X-Trans (rawpy)")
         else:
-            # normalize the stored token for display
             norm = _normalize_bayer_token(self._detected_pattern or "")
             self.lbl_detect.setText(f"Detected: {norm or '(unknown)'}")
 
@@ -390,11 +523,16 @@ class DebayerDialog(QDialog):
         if pat == "XTRANS":
             src_path = (getattr(self.doc, "file_path", None) or getattr(self.doc, "path", None)
                         or (getattr(self.doc, "metadata", {}) or {}).get("file_path"))
-            if not src_path or not str(src_path).lower().endswith((".raf", ".raw", ".dng")):
-                QMessageBox.warning(self, "Debayer",
-                                    "X-Trans detected, but original RAW path not found.\n"
-                                    "Open the RAF directly or set doc.meta['file_path'].")
-                return
+            if not src_path or not str(src_path).lower().endswith(_RAW_EXTS):
+                # try sibling RAW next to this file
+                sib = _find_raw_sibling(getattr(self.doc, "file_path", None) or (getattr(self.doc, "metadata", {}) or {}).get("file_path"))
+                if sib:
+                    src_path = sib
+                else:
+                    QMessageBox.warning(self, "Debayer",
+                        "X-Trans detected, but original RAW path was not found.\n"
+                        "Open the RAF directly, or embed RAW_PATH in the header, or place the RAW next to the file.")
+                    return
             # map label → rawpy alg token
             alg = next((tok for (label, tok) in _XTRANS_METHODS if label == method_label), "AHD")
             try:
@@ -452,26 +590,35 @@ def apply_debayer_preset_to_doc(dm, doc, preset: dict) -> Tuple[str, np.ndarray]
     """
     if getattr(doc, "image", None) is None:
         raise RuntimeError("No image in document.")
-    mono = np.asarray(doc.image)
-    if mono.ndim != 2:
+
+    # ✅ normalize for numba kernels & ensure 2D
+    mono_in = np.asarray(doc.image)
+    if mono_in.ndim != 2:
         raise RuntimeError("Debayer expects a single-channel (mosaic) image.")
+    mono = _mono_as_float32_contig(mono_in)
 
     family = _detect_cfa_family(doc)
     want_method = str(preset.get("method", "auto"))
 
-    # X-Trans → rawpy
+    # X-Trans → rawpy path
     if family == "XTRANS":
         src_path = (getattr(doc, "file_path", None) or getattr(doc, "path", None)
                     or (getattr(doc, "metadata", {}) or {}).get("file_path"))
 
-        if not src_path:
-            raise RuntimeError("X-Trans detected, but original RAW path not found in doc.meta['file_path'].")
+        if not src_path or not str(src_path).lower().endswith(_RAW_EXTS):
+            hdr, meta, _ = _extract_doc_info(doc)
+            src_path = (meta.get("raw_source_path") or
+                        (hdr.get("RAW_PATH") if hasattr(hdr, "get") else None) or
+                        _find_raw_sibling(meta.get("file_path") or getattr(doc, "file_path", None)))
+        if not src_path or not str(src_path).lower().endswith(_RAW_EXTS):
+            raise RuntimeError("X-Trans detected, but no RAW found. "
+                               "Embed RAW_PATH/raw_source_path or place the RAW next to the file.")
         alg = want_method if want_method in ("AHD", "DHT") else "AHD"
         rgb = _debayer_xtrans_via_rawpy(src_path, use_cam_wb=True, output_bps=16, alg=alg)
         _apply_result_to_doc(dm, doc, rgb, step_name=f"Debayer (X-Trans/{alg})")
         return "XTRANS", rgb
 
-    # Bayer → Numba
+    # Bayer → Numba path
     want = str(preset.get("pattern", "auto")).upper()
     if want == "AUTO":
         pat = _normalize_bayer_token(_detect_bayer_from_header(doc) or "")
@@ -490,4 +637,5 @@ def apply_debayer_preset_to_doc(dm, doc, preset: dict) -> Tuple[str, np.ndarray]
     rgb = debayer_fits_fast(mono, pat, cfa_drizzle=False, method=method_tok)
     _apply_result_to_doc(dm, doc, rgb, step_name=f"Debayer ({pat}/{method_tok})")
     return pat, rgb
+
 

@@ -1080,33 +1080,30 @@ class ViewBundleDialog(QDialog):
         if not cmd:
             _QMB.information(self, "Apply", "Invalid shortcut payload.")
             return
+        if cmd == "bundle":
+            return  # ignore nested bundles
 
-        # --- get targets: views + files (NEW) ---
+        # --- gather targets ---
         if target_uuid:
             b = self._get_bundle(target_uuid)
             ptrs = [] if not b else list(b.get("doc_ptrs", []))
-            file_paths = [] if not b else list(b.get("file_paths", []))   # NEW
+            file_paths = [] if not b else list(b.get("file_paths", []))
         else:
             ptrs = self.current_bundle_doc_ptrs()
-            file_paths = self.current_bundle_file_paths()                  # NEW
+            file_paths = self.current_bundle_file_paths()
 
-        # Ignore nested view-bundle shortcuts
-        if cmd == "bundle":
-            return
-
-        total_applied = 0
+        # --- counters / errors ---
         view_applied = 0
-        total_applied = view_applied
-        errors: list[str] = []
+        file_ok = 0
+        view_errors: list[str] = []
+        file_errors: list[str] = []
 
-        # ---------- Apply to OPEN VIEWS (existing logic) ----------
+        # ---------- Apply to OPEN VIEWS ----------
         if cmd == "function_bundle":
-            # 1) normalize to plain JSON-safe dicts (deep copy)
             try:
                 steps = json.loads(json.dumps((payload or {}).get("steps") or []))
             except Exception:
                 steps = list((payload or {}).get("steps") or [])
-            # 2) filter to valid steps
             norm_steps = [s for s in steps if isinstance(s, dict) and s.get("command_id")]
 
             if norm_steps:
@@ -1115,96 +1112,75 @@ class ViewBundleDialog(QDialog):
                     if sw is None:
                         continue
                     try:
-                        # make active
-                        try:
-                            if hasattr(mw, "mdi") and mw.mdi.activeSubWindow() is not sw:
-                                mw.mdi.setActiveSubWindow(sw)
-                            w = getattr(sw, "widget", lambda: None)()
-                            if w:
-                                w.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
-                            QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 50)
-                        except Exception:
-                            pass
-
-                        for st in norm_steps:
-                            mw._handle_command_drop(st, target_sw=sw)
-                            QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 0)
-                        view_applied += 1
-                    except Exception as e:
-                        errors.append(str(e))
-            else:
-                # no usable steps; we’ll still try files below (may be a file-only bundle run)
-                pass
-
-        else:
-            # single command to views
-            for ptr in ptrs:
-                _doc, sw = _resolve_doc_and_subwindow(mw, ptr)
-                if sw is None:
-                    continue
-                try:
-                    try:
                         if hasattr(mw, "mdi") and mw.mdi.activeSubWindow() is not sw:
                             mw.mdi.setActiveSubWindow(sw)
                         w = getattr(sw, "widget", lambda: None)()
                         if w:
                             w.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
                         QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 50)
-                    except Exception:
-                        pass
+
+                        for st in norm_steps:
+                            mw._handle_command_drop(st, target_sw=sw)
+                            QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 0)
+                        view_applied += 1
+                    except Exception as e:
+                        view_errors.append(str(e))
+            # else: no steps → we’ll still try files below
+        else:
+            for ptr in ptrs:
+                _doc, sw = _resolve_doc_and_subwindow(mw, ptr)
+                if sw is None:
+                    continue
+                try:
+                    if hasattr(mw, "mdi") and mw.mdi.activeSubWindow() is not sw:
+                        mw.mdi.setActiveSubWindow(sw)
+                    w = getattr(sw, "widget", lambda: None)()
+                    if w:
+                        w.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
+                    QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 50)
 
                     mw._handle_command_drop(payload, target_sw=sw)
                     QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 0)
                     view_applied += 1
                 except Exception as e:
-                    errors.append(str(e))
+                    view_errors.append(str(e))
 
-        # ---------- Apply to FILE PATHS (NEW) ----------
-        # Use the headless open→apply→save→close helper you already wrote.
+        # start total with views
+        total_applied = view_applied
+
+        # ---------- Apply to FILE PATHS ----------
         if file_paths:
-            paths = (self._get_bundle(target_uuid).get("file_paths", []) if target_uuid
-                    else self.current_bundle_file_paths())
-            file_ok = 0
-            file_errs: list[str] = []
-
             for p in file_paths:
                 try:
                     self._apply_payload_to_single_file(payload, p, overwrite=True, out_dir=None)
                     file_ok += 1
                 except Exception as e:
                     tb = traceback.format_exc(limit=6)
-                    file_errs.append(
-                        f"{os.path.basename(p)}: {e.__class__.__name__}: {e}\n{tb}"
-                    )
+                    file_errors.append(f"{os.path.basename(p)}: {e.__class__.__name__}: {e}\n{tb}")
 
-            total_applied = view_applied + file_ok   # <— FIX: no 'applied' symbol
+            total_applied += file_ok
 
-            if total_applied == 0 and not (errors or file_errs):
-                _QMB.information(self, "Apply", "No valid targets in the bundle.")
-            elif errors or file_errs:
-                msg = []
-                if view_applied:
-                    msg.append(f"Applied to {view_applied} open view(s).")
-                if file_ok:
-                    msg.append(f"Applied to {file_ok} file(s).")
-                if errors:
-                    msg.append("View errors:\n  " + "\n  ".join(errors))
-                if file_errs:
-                    msg.append("File errors:\n  " + "\n  ".join(file_errs))
-                _QMB.warning(self, "Apply", "\n\n".join(msg))
-                return  # avoid double-dialog below
-
-        # ---------- Result dialogs ----------
-        if total_applied == 0 and not errors:
+        # ---------- Final summary ----------
+        if total_applied == 0 and not (view_errors or file_errors):
             _QMB.information(self, "Apply", "No valid targets in the bundle.")
-        elif errors:
-            _QMB.warning(
-                self,
-                "Apply",
-                f"Applied to {total_applied} target(s), but some failed:\n\n" + "\n".join(errors)
-            )
-        else:
-            _QMB.information(self, "Apply", f"Finished. Applied to {total_applied} target(s).")            
+            return
+
+        # If there were any errors, show a detailed mixed summary
+        if view_errors or file_errors:
+            msg = []
+            if view_applied:
+                msg.append(f"Applied to {view_applied} open view(s).")
+            if file_ok:
+                msg.append(f"Applied to {file_ok} file(s).")
+            if view_errors:
+                msg.append("View errors:\n  " + "\n  ".join(view_errors))
+            if file_errors:
+                msg.append("File errors:\n  " + "\n  ".join(file_errors))
+            _QMB.warning(self, "Apply", "\n\n".join(msg))
+            return
+
+        _QMB.information(self, "Apply", f"Finished. Applied to {total_applied} target(s).")
+            
 
 
 
