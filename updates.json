@@ -1,9 +1,9 @@
 {
-  "version": "1.3.20",
+  "version": "1.3.21",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.20/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.20/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.20/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.21/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.21/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.21/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.3.20 FujiFilm XTrans sensor and file format support added. Stacking Suite now will take and align images from different focal lengths, cameras, etc to register them all to a single reference frame."
+  "notes": "Seti Astro Suite Pro V1.3.21 Signature/Insert Adder: Now add arbitrary text to your image.  View Bundle Bug fixes"
 }
