@@ -187,7 +187,7 @@ ICON_FILES = [
     'spcc.png','SASP_data.fits','exoicon.png','gridicon.png',
     'dse.png','astrobin_filters.csv','isophote.png',
     'statstretch.png','starstretch.png','curves.png','disk.png',
-    'uhs.png','blink.png','ppp.png','nbtorgb.png','freqsep.png',
+    'uhs.png','blink.png','ppp.png','nbtorgb.png','freqsep.png', 'selectivecolor.png',
     'contsub.png','halo.png','cosmic.png','cosmicsat.png',
     'imagecombine.png','wrench_icon.png','eye.png','nuke.png',
     'hubble.png','collage.png','annotated.png','colorwheel.png',
@@ -318,4 +318,5 @@ app = BUNDLE(
         'NSCameraUsageDescription': 'This app may access camera for astronomical imaging.',
         'NSMicrophoneUsageDescription': 'This app does not use the microphone.',
     },
+
 )
