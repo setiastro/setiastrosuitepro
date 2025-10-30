@@ -269,7 +269,7 @@ from pro.status_log_dock import StatusLogDock
 from pro.log_bus import LogBus
 
 
-VERSION = "1.3.21"
+VERSION = "1.4.0"
 
 
 
@@ -373,6 +373,7 @@ if hasattr(sys, '_MEIPASS'):
     aberration_path = os.path.join(sys._MEIPASS, 'aberration.png')
     functionbundles_path = os.path.join(sys._MEIPASS, 'functionbundle.png')
     viewbundles_path = os.path.join(sys._MEIPASS, 'viewbundle.png')
+    selectivecolor_path = os.path.join(sys._MEIPASS, 'selectivecolor.png')
 else:
     # Development path
     icon_path = 'astrosuitepro.png'
@@ -473,6 +474,7 @@ else:
     aberration_path = 'aberration.png'
     functionbundles_path = 'functionbundle.png'
     viewbundles_path = 'viewbundle.png'
+    selectivecolor_path = 'selectivecolor.png'
 
 import faulthandler
 
@@ -1402,6 +1404,7 @@ class AstroSuiteProMainWindow(QMainWindow):
         tb_tl.addAction(self.act_blink) # Tools start here; Blink shows with QIcon(blink_path)
         tb_tl.addAction(self.act_ppp)   # Perfect Palette Picker
         tb_tl.addAction(self.act_nbtorgb)
+        tb_tl.addAction(self.act_selective_color)
         tb_tl.addAction(self.act_freqsep)
         tb_tl.addAction(self.act_contsub)
         tb_tl.addAction(self.act_image_combine)
@@ -1794,6 +1797,10 @@ class AstroSuiteProMainWindow(QMainWindow):
         self.act_nbtorgb.setIconVisibleInMenu(True)
         self.act_nbtorgb.triggered.connect(self._open_nbtorgb_tool)
 
+        self.act_selective_color = QAction(QIcon(selectivecolor_path), "Selective Color Correction…", self)
+        self.act_selective_color.setStatusTip("Adjust specific hue ranges with CMY/RGB controls")
+        self.act_selective_color.triggered.connect(self._open_selective_color_tool)
+
         # NEW: Frequency Separation
         self.act_freqsep = QAction(QIcon(freqsep_path), "Frequency Separation…", self)
         self.act_freqsep.setStatusTip("Split into LF/HF and enhance HF (scale, wavelet, denoise)")
@@ -1967,6 +1974,7 @@ class AstroSuiteProMainWindow(QMainWindow):
         reg("ppp",            self.act_ppp)
         reg("nbtorgb",       self.act_nbtorgb)
         reg("freqsep",       self.act_freqsep)
+        reg("selective_color", self.act_selective_color)
         reg("contsub",      self.act_contsub)
         reg("abe",          self.act_abe)
         reg("create_mask", self.act_create_mask)
@@ -2086,6 +2094,7 @@ class AstroSuiteProMainWindow(QMainWindow):
         m_tools.addAction(self.act_blink)
         m_tools.addAction(self.act_ppp)
         m_tools.addAction(self.act_nbtorgb)
+        m_tools.addAction(self.act_selective_color)
         m_tools.addAction(self.act_freqsep)
         m_tools.addAction(self.act_contsub)
         m_tools.addAction(self.act_image_combine)
@@ -4736,6 +4745,23 @@ class AstroSuiteProMainWindow(QMainWindow):
             w.setWindowIcon(QIcon(nbtorgb_path))
         except Exception:
             pass
+        w.show()
+
+    def _open_selective_color_tool(self):
+        # get active document, same pattern you use elsewhere
+        doc = None
+        if hasattr(self, "mdi") and self.mdi.activeSubWindow():
+            sw = self.mdi.activeSubWindow().widget()
+            doc = getattr(sw, "document", None)
+        if doc is None and getattr(self, "docman", None) and self.docman._docs:
+            doc = self.docman._docs[-1]
+        if doc is None or getattr(doc, "image", None) is None:
+            QMessageBox.information(self, "No image", "Open an image first."); return
+
+        from pro.selective_color import SelectiveColorCorrection
+        w = SelectiveColorCorrection(doc_manager=self.docman, document=doc, parent=self,
+                                    window_icon=QIcon(selectivecolor_path))
+        w.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         w.show()
 
     def _open_freqsep_tool(self):
