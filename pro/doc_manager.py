@@ -1,6 +1,7 @@
 # pro/doc_manager.py
 from __future__ import annotations
-from PyQt6.QtCore import QObject, pyqtSignal
+from PyQt6.QtCore import QObject, pyqtSignal, Qt, QTimer
+from PyQt6.QtWidgets import QApplication, QMessageBox
 import os
 import numpy as np
 from legacy.xisf import XISF as XISFReader
@@ -322,6 +323,36 @@ def _fits_table_to_rows_headers(hdu, max_rows: int = 500000) -> tuple[list[list]
     return rows, [str(n) for n in names]
 
 
+_shown_raw_preview_paths: set[str] = set()
+_raw_preview_boxes: list[QMessageBox] = []  # prevent GC while shown
+
+def _show_raw_preview_warning_nonmodal(path: str):
+    parent = QApplication.activeWindow()
+    box = QMessageBox(parent)
+    box.setIcon(QMessageBox.Icon.Warning)
+    box.setWindowTitle("RAW preview loaded")
+    box.setText(
+        "Linear RAW decoding failed for:\n"
+        f"{path}\n\n"
+        "Showing the camera’s embedded JPEG preview instead "
+        "(8-bit, non-linear). Some processing tools may be limited."
+    )
+    box.setStandardButtons(QMessageBox.StandardButton.Ok)
+    box.setWindowModality(Qt.WindowModality.NonModal)  # ← fix here
+    box.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+
+    _raw_preview_boxes.append(box)
+    box.finished.connect(lambda _=None, b=box: _raw_preview_boxes.remove(b))
+    box.show()
+
+def maybe_warn_raw_preview(path: str, header):
+    if not header or not bool(header.get("RAW_PREV", False)):
+        return
+    if path in _shown_raw_preview_paths:
+        return
+    _shown_raw_preview_paths.add(path)
+    QTimer.singleShot(0, lambda p=path: _show_raw_preview_warning_nonmodal(p))
+
 class DocManager(QObject):
     documentAdded = pyqtSignal(object)   # ImageDocument
     documentRemoved = pyqtSignal(object) # ImageDocument
@@ -350,7 +381,7 @@ class DocManager(QObject):
             img, header, bit_depth, is_mono = legacy_load_image(path)
         except Exception as e:
             print(f"[DocManager] legacy_load_image failed (non-fatal if FITS/XISF): {e}")
-
+        maybe_warn_raw_preview(path, header)
         if img is not None:
             meta = {
                 "file_path": path,
@@ -364,19 +395,19 @@ class DocManager(QObject):
             self._docs.append(primary_doc)
             self.documentAdded.emit(primary_doc)
             created_any = True
-            print(f"[DocManager] Primary ImageDocument created by legacy loader: '{primary_doc.display_name()}'")
+
 
         # ---------- 2) FITS: enumerate HDUs (tables + extra images + ICC) ----------
         if is_fits:
             try:
                 with fits.open(path, memmap=True) as hdul:
                     base = os.path.basename(path)
-                    print(f"[DocManager] Enumerating FITS HDUs in {base}: count={len(hdul)}")
+
 
                     for i, hdu in enumerate(hdul):
                         name_up = (getattr(hdu, "name", "PRIMARY") or "PRIMARY").upper()
                         if primary_doc is not None and (i == 0 or name_up == "PRIMARY"):
-                            print(f"[DocManager] HDU {i}: {type(hdu).__name__} (PRIMARY) — skipped (already opened)")
+
                             continue
 
                         ext_hdr = hdu.header
@@ -472,7 +503,7 @@ class DocManager(QObject):
                             try: aux_doc.changed.emit()
                             except Exception: pass
                             created_any = True
-                            print(f"[DocManager] Added ImageDocument from FITS HDU {i}: '{disp}'  shape={a.shape}")
+
                         except Exception as e_img:
                             print(f"[DocManager] FITS HDU {i} image build failed: {e_img}")
             except Exception as _e:
@@ -529,7 +560,7 @@ class DocManager(QObject):
                         try: primary_doc.changed.emit()
                         except Exception: pass
                         created_any = True
-                        print(f"[DocManager] Primary ImageDocument created from XISF: '{primary_doc.display_name()}'  shape={arr0_f32.shape}")
+
                     except Exception as e0:
                         print(f"[DocManager] XISF primary (index 0) open failed: {e0}")
 
@@ -574,7 +605,7 @@ class DocManager(QObject):
                         try: sib.changed.emit()
                         except Exception: pass
                         created_any = True
-                        print(f"[DocManager] Added ImageDocument from XISF image {i}: '{sib.display_name()}'  shape={arr_f32.shape}")
+
                     except Exception as _e:
                         print(f"[DocManager] XISF image {i} skipped: {_e}")
             except Exception as _e:

@@ -252,6 +252,17 @@ class LiveStackSettingsDialog(QDialog):
             step=1
         )
         self.star_spin.valueChanged.connect(lambda v: None)
+        
+        # Acquisition Dely (int)
+        self.delay_spin = CustomDoubleSpinBox(
+            minimum=0.0,
+            maximum=60.0,
+            initial=parent.FILE_STABLE_SECS,
+            step=0.5,
+            suffix="s"
+        )
+
+
 
         # Build form layout
         form = QFormLayout()
@@ -261,6 +272,7 @@ class LiveStackSettingsDialog(QDialog):
         form.addRow("Max FWHM (px):", self.fwhm_spin)
         form.addRow("Max Eccentricity:", self.ecc_spin)
         form.addRow("Min Star Count:", self.star_spin)
+        form.addRow("Acquisition Delay:", self.delay_spin)
 
         self.mapping_combo = QComboBox()
         opts = ["Natural", "SHO", "HSO", "OSH", "SOH", "HOS", "OHS"]
@@ -288,7 +300,7 @@ class LiveStackSettingsDialog(QDialog):
         """
         Returns a tuple of five values in order:
           (bootstrap_frames, clip_threshold,
-           max_fwhm, max_ecc, min_star_count)
+           max_fwhm, max_ecc, min_star_count, delay)
         """
         bs      = self.bs_spin.value
         sigma   = self.sigma_spin.value()
@@ -296,7 +308,8 @@ class LiveStackSettingsDialog(QDialog):
         ecc     = self.ecc_spin.value()
         stars   = self.star_spin.value
         mapping = self.mapping_combo.currentText()
-        return bs, sigma, fwhm, ecc, stars, mapping
+        delay = self.delay_spin.value()
+        return bs, sigma, fwhm, ecc, stars, mapping, delay
 
 
 
@@ -783,7 +796,7 @@ class LiveStackWindow(QDialog):
     def open_settings(self):
         dlg = LiveStackSettingsDialog(self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            bs, sigma, fwhm, ecc, stars, mapping = dlg.getValues()
+            bs, sigma, fwhm, ecc, stars, mapping, delay = dlg.getValues()
 
             # 1) Persist into QSettings
             s = QSettings()
@@ -793,6 +806,7 @@ class LiveStackWindow(QDialog):
             s.setValue("LiveStack/max_ecc",            ecc)
             s.setValue("LiveStack/min_star_count",     stars)
             s.setValue("LiveStack/narrowband_mapping", mapping)
+            s.setValue("LiveStack/file_stable_secs", delay)
 
             # 2) Apply to this live‐stack session
             self.bootstrap_frames   = bs
@@ -801,6 +815,7 @@ class LiveStackWindow(QDialog):
             self.max_ecc            = ecc
             self.min_star_count     = stars
             self.narrowband_mapping = mapping
+            self.FILE_STABLE_SECS = delay
 
             self.status_label.setText(
                 f"↺ Settings saved: BS={bs}, σ={sigma:.1f}, "
@@ -1230,7 +1245,7 @@ class LiveStackWindow(QDialog):
         )
         all_paths = []
         for ext in exts:
-            all_paths += glob.glob(os.path.join(self.watch_folder, ext))
+            all_paths += glob.glob(os.path.join(self.watch_folder, "**", ext), recursive=True)
         self.processed_files = set(all_paths)
 
         # Start monitoring
@@ -1382,7 +1397,7 @@ class LiveStackWindow(QDialog):
         )
         all_paths = []
         for ext in exts:
-            all_paths += glob.glob(os.path.join(self.watch_folder, ext))
+            all_paths += glob.glob(os.path.join(self.watch_folder, '**', ext), recursive=True)
 
         # Only consider paths not yet processed
         candidates = [p for p in sorted(all_paths) if p not in self.processed_files]
@@ -1970,3 +1985,4 @@ class LiveStackWindow(QDialog):
         if not self._did_initial_fit:
             self.view.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
             self._did_initial_fit = True
+

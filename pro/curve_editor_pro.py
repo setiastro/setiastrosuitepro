@@ -664,6 +664,56 @@ class CurveEditor(QGraphicsView):
                 wx = max(0.0, min(1.0, x / 360.0))
         return bx, wx
 
+    # --- Overlay management (other channels) -----------------
+    def setOverlayCurves(self, overlays: dict[str, list[tuple[float,float]]], active_key: str):
+        # clear old
+        if hasattr(self, "_overlay_items") and self._overlay_items:
+            for it in self._overlay_items:
+                try: self.scene.removeItem(it)
+                except Exception: pass
+        self._overlay_items = []
+
+        colors = {
+            "K":"#FFFFFF", "R":"#FF4A4A", "G":"#5CC45C", "B":"#4AA0FF",
+            "L*":"#FFFFFF", "a*":"#FF8AB2", "b*":"#A6C8FF", "Chroma":"#FFD866", "Saturation":"#66FFD8"
+        }
+        faint = 120
+
+        for key, pts in overlays.items():
+            if key == active_key or not pts or len(pts) < 2:
+                continue
+
+            xs = np.array([p[0] for p in pts], dtype=np.float64)
+            ys = np.array([p[1] for p in pts], dtype=np.float64)
+
+            # strict increase on X
+            if np.any(np.diff(xs) <= 0):
+                xs = xs + np.linspace(0, 1e-3, len(xs), dtype=np.float64)
+
+            # build smooth samples across the whole domain
+            sample_x = np.linspace(0.0, 360.0, 361, dtype=np.float64)
+            try:
+                from scipy.interpolate import PchipInterpolator
+                f = PchipInterpolator(xs, ys, extrapolate=True)
+                sample_y = f(sample_x)
+            except Exception:
+                # straight fallback
+                sample_y = np.interp(sample_x, xs, ys)
+
+            pen = QPen(QColor(colors.get(key, "#BBBBBB"))); pen.setWidth(2)
+            c = pen.color(); c.setAlpha(faint); pen.setColor(c)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+
+            path = QPainterPath(QPointF(float(sample_x[0]), float(sample_y[0])))
+            for x, y in zip(sample_x[1:], sample_y[1:]):
+                path.lineTo(QPointF(float(x), float(y)))
+
+            it = self.scene.addPath(path, pen)
+            it.setZValue(-5)
+            self._overlay_items.append(it)
+
+
 
 
 class CommaToDotLineEdit(QLineEdit):
@@ -839,27 +889,15 @@ def _np_hsv_to_rgb(hsv: np.ndarray) -> np.ndarray:
 # ---------- worker (full-res) ----------
 
 class _CurvesWorker(QThread):
-    done = pyqtSignal(object)  # np.ndarray float32 0..1
-
-    def __init__(self, image01: np.ndarray, curve_mode: str, lut01: np.ndarray):
+    done = pyqtSignal(object)
+    def __init__(self, image01, luts, invoker):
         super().__init__()
-        # ensure contiguous float32
         self.image01 = np.ascontiguousarray(image01.astype(np.float32, copy=False))
-        self.curve_mode = curve_mode
-        self.lut01 = np.ascontiguousarray(lut01.astype(np.float32, copy=False))
+        self.luts = {k: np.ascontiguousarray(v.astype(np.float32, copy=False)) for k,v in luts.items()}
+        self._invoker = invoker  # CurvesDialogPro, so we can call its method
 
     def run(self):
-        img = np.ascontiguousarray(self.image01.astype(np.float32, copy=False))
-        lut = np.ascontiguousarray(self.lut01.astype(np.float32, copy=False))
-        try:
-            out = _apply_mode_any(img, self.curve_mode, lut)
-        except Exception:
-            # ultra-safe fallback to brightness if anything goes sideways
-            if img.ndim == 2 or (img.ndim == 3 and img.shape[2] == 1):
-                ch = img if img.ndim == 2 else img[...,0]
-                out = _np_apply_lut_channel(ch, lut)
-            else:
-                out = _np_apply_lut_rgb(img, lut)
+        out = self._invoker._apply_all_curves_once(self.image01, self.luts)
         self.done.emit(out)
 
 # ---------- dialog ----------
@@ -924,6 +962,23 @@ class CurvesDialogPro(QDialog):
 
         left.addLayout(row1)
         left.addLayout(row2)
+
+        # Map UI label → internal key
+        self._mode_key_map = {
+            "K (Brightness)":"K", "R":"R", "G":"G", "B":"B",
+            "L*":"L*", "a*":"a*", "b*":"b*", "Chroma":"Chroma", "Saturation":"Saturation"
+        }
+
+        # each entry holds points in *normalized* space [(x,y) in 0..1 up, endpoints included]
+        self._curves_store = { k: [(0.0,0.0),(1.0,1.0)] for k in self._mode_key_map.values() }
+
+        # remember current mode key
+        self._current_mode_key = "K"
+
+        # when user changes the radio, stash current points and load new
+        for b in self.mode_group.buttons():
+            b.toggled.connect(self._on_mode_toggled)
+
 
         rowp = QHBoxLayout()
         self.btn_presets = QToolButton(self)
@@ -1012,7 +1067,7 @@ class CurvesDialogPro(QDialog):
 
         # When curve changes, do a quick preview (non-blocking: downsampled in-UI)
         # You can switch to threaded small preview if images are huge.
-        self.editor.setPreviewCallback(lambda _lut8: self._quick_preview())
+        self.editor.setPreviewCallback(self._on_editor_curve_changed)
 
         # seed images
         self._load_from_doc()
@@ -1021,6 +1076,175 @@ class CurvesDialogPro(QDialog):
         self.btn_preview.setChecked(True) 
 
         self._rebuild_presets_menu()
+
+    def _on_editor_curve_changed(self, _lut8=None):
+        """
+        Called on every editor redraw/drag. Persist the currently edited curve
+        into the store, refresh overlays, and do a realtime preview.
+        """
+        try:
+            self._curves_store[self._current_mode_key] = self._editor_points_norm()
+        except Exception:
+            pass
+        # show the true shapes of other channels too
+        self._refresh_overlays()
+        # now build from *all* current curves (including the just-edited one)
+        self._quick_preview()
+
+
+    def _active_mode_key(self) -> str:
+        for b in self.mode_group.buttons():
+            if b.isChecked():
+                return self._mode_key_map.get(b.text(), "K")
+        return "K"
+
+    def _editor_points_norm(self) -> list[tuple[float,float]]:
+        # uses your existing _collect_points_norm_from_editor()
+        return self._collect_points_norm_from_editor()
+
+    def _editor_set_from_norm(self, ptsN: list[tuple[float,float]]):
+        # convert to scene and strip endpoints
+        pts_scene = _points_norm_to_scene(ptsN)
+        filt = [(x,y) for (x,y) in pts_scene if x > 1e-6 and x < 360-1e-6]
+        self.editor.setControlHandles(filt)
+        self.editor.updateCurve()
+
+    def _on_mode_toggled(self, checked: bool):
+        if not checked:
+            return
+        # 1) save the curve we were editing
+        prev = self._current_mode_key
+        try:
+            self._curves_store[prev] = self._editor_points_norm()
+        except Exception:
+            pass
+
+        # 2) load the newly selected curve
+        key = self._active_mode_key()
+        self._current_mode_key = key
+        self._editor_set_from_norm(self._curves_store.get(key, [(0.0,0.0),(1.0,1.0)]))
+
+        # 3) draw overlays for reference
+        self._refresh_overlays()
+        # 4) refresh preview immediately
+        self._quick_preview()
+
+    def _refresh_overlays(self):
+        # Build overlay polylines in scene coords for all modes except the active one
+        overlays = {}
+        for key, ptsN in self._curves_store.items():
+            if not ptsN: 
+                continue
+            pts_scene = _points_norm_to_scene(ptsN)
+            # keep full polyline (including endpoints) to show exact shape
+            overlays[key] = pts_scene
+        self.editor.setOverlayCurves(overlays, self._current_mode_key)
+
+    def _lut01_from_points_norm(self, ptsN: list[tuple[float,float]], size: int = 65536) -> np.ndarray:
+        # ptsN are (x,y) in 0..1 (up). Convert to scene space and build a smooth monotone interpolator.
+        pts_scene = _points_norm_to_scene(ptsN)  # [(x:[0..360], y:[0..360 down])]
+        if len(pts_scene) < 2:
+            return np.linspace(0.0, 1.0, size, dtype=np.float32)
+
+        xs = np.array([p[0] for p in pts_scene], dtype=np.float64)
+        ys = np.array([p[1] for p in pts_scene], dtype=np.float64)
+
+        # Ensure strictly increasing X (protect against accidental ties)
+        m = np.diff(xs) <= 0
+        if np.any(m):
+            xs = xs + np.linspace(0, 1e-3, len(xs), dtype=np.float64)
+
+        ys = 360.0 - ys  # flip to “up”
+
+        inp = np.linspace(0.0, 360.0, size, dtype=np.float64)
+        try:
+            from scipy.interpolate import PchipInterpolator
+            f = PchipInterpolator(xs, ys, extrapolate=True)
+            out = f(inp)
+        except Exception:
+            # Fallback to linear if SciPy missing or bad control set
+            out = np.interp(inp, xs, ys)
+
+        out = np.clip(out / 360.0, 0.0, 1.0).astype(np.float32)
+        return out
+
+
+    def _build_all_active_luts(self) -> dict[str, np.ndarray]:
+        luts = {}
+        for key, pts in self._curves_store.items():
+            # skip exact-linear to save work
+            if isinstance(pts, (list, tuple)) and len(pts) == 2 and pts[0] == (0.0,0.0) and pts[1] == (1.0,1.0):
+                continue
+            luts[key] = self._lut01_from_points_norm(pts, size=65536)
+        return luts
+
+    def _apply_all_curves_once(self, img01: np.ndarray, luts: dict[str, np.ndarray]) -> np.ndarray:
+        # 1) RGB domain — K then per-channel compose
+        out = img01
+        if out.ndim == 2:  # mono → treat as K only
+            lutK = luts.get("K")
+            if lutK is not None:
+                out = _np_apply_lut_channel(out, lutK)
+            # nothing else applies meaningfully to mono
+            return np.clip(out, 0.0, 1.0).astype(np.float32)
+
+        # RGB image
+        # compose helper: lut2(lut1(x))
+        def _compose_lut(a: np.ndarray | None, b: np.ndarray | None):
+            if a is None: return b
+            if b is None: return a
+            # fast index compose on [0..1] sampled arrays
+            N = len(a)
+            idx = np.clip((a * (N - 1)).astype(np.int32), 0, N - 1)
+            return b[idx]
+
+        lutK = luts.get("K")
+        lutR = _compose_lut(lutK, luts.get("R"))
+        lutG = _compose_lut(lutK, luts.get("G"))
+        lutB = _compose_lut(lutK, luts.get("B"))
+
+        # If no per-channel, still apply K uniformly
+        if lutR is None and lutG is None and lutB is None and lutK is not None:
+            out = _np_apply_lut_rgb(out, lutK)
+        else:
+            out = out.copy()
+            if lutR is not None: out[...,0] = _np_apply_lut_channel(out[...,0], lutR)
+            elif lutK is not None: out[...,0] = _np_apply_lut_channel(out[...,0], lutK)
+            if lutG is not None: out[...,1] = _np_apply_lut_channel(out[...,1], lutG)
+            elif lutK is not None: out[...,1] = _np_apply_lut_channel(out[...,1], lutK)
+            if lutB is not None: out[...,2] = _np_apply_lut_channel(out[...,2], lutB)
+            elif lutK is not None: out[...,2] = _np_apply_lut_channel(out[...,2], lutK)
+
+        # 2) Lab family
+        need_lab = any(k in luts for k in ("L*","a*","b*","Chroma"))
+        if need_lab:
+            xyz = _np_rgb_to_xyz(out); lab = _np_xyz_to_lab(xyz)
+            if "L*" in luts:
+                L = np.clip(lab[...,0]/100.0, 0.0, 1.0)
+                L = _np_apply_lut_channel(L, luts["L*"]); lab[...,0] = L*100.0
+            if "a*" in luts:
+                a = lab[...,1]; an = np.clip((a+128.0)/255.0, 0.0, 1.0)
+                an = _np_apply_lut_channel(an, luts["a*"]); lab[...,1] = an*255.0 - 128.0
+            if "b*" in luts:
+                b = lab[...,2]; bn = np.clip((b+128.0)/255.0, 0.0, 1.0)
+                bn = _np_apply_lut_channel(bn, luts["b*"]); lab[...,2] = bn*255.0 - 128.0
+            if "Chroma" in luts:
+                a = lab[...,1]; b = lab[...,2]
+                C = np.sqrt(a*a + b*b); Cn = np.clip(C/200.0, 0.0, 1.0)
+                Cn = _np_apply_lut_channel(Cn, luts["Chroma"]); Cnew = Cn*200.0
+                ratio = np.divide(Cnew, C, out=np.ones_like(Cnew), where=(C>0))
+                lab[...,1] = a*ratio; lab[...,2] = b*ratio
+            out = _np_xyz_to_rgb(_np_lab_to_xyz(lab))
+
+        # 3) Saturation (HSV)
+        if "Saturation" in luts:
+            hsv = _np_rgb_to_hsv(out)
+            S = np.clip(hsv[...,1], 0.0, 1.0)
+            hsv[...,1] = _np_apply_lut_channel(S, luts["Saturation"])
+            out = _np_hsv_to_rgb(hsv)
+
+        return np.clip(out, 0.0, 1.0).astype(np.float32)
+
 
     def _fit_after_load(self, tries: int = 0):
         """
@@ -1395,14 +1619,10 @@ class CurvesDialogPro(QDialog):
     def _quick_preview(self):
         if self._preview_img is None:
             return
-        lut = self._build_lut01()
-        if lut is None:
-            return
-        mode = self._current_mode()
-        proc = _apply_mode_any(self._preview_img, mode, lut)
-        proc = self._blend_with_mask(proc)          # same-size DS blend
-        self._preview_proc = proc                   # ⬅️ cache processed DS
-        # Update view ONLY if user is showing preview
+        luts = self._build_all_active_luts()
+        proc = self._apply_all_curves_once(self._preview_img, luts)
+        proc = self._blend_with_mask(proc)
+        self._preview_proc = proc
         if self._show_proc:
             self._update_preview_pix(self._preview_proc)
         try:
@@ -1429,13 +1649,11 @@ class CurvesDialogPro(QDialog):
 
     # ----- threaded full-res preview (also used for Apply path if needed) -----
     def _run_preview(self):
-        # (optional) keep if you want to precompute full-res in background,
-        # but do not update UI from it.
-        lut = self._build_lut01()
-        if lut is None or self._full_img is None:
+        if self._full_img is None:
             return
+        luts = self._build_all_active_luts()
         self.btn_apply.setEnabled(False)
-        self._thr = _CurvesWorker(self._full_img, self._current_mode(), lut)
+        self._thr = _CurvesWorker(self._full_img, luts, self)
         self._thr.done.connect(self._on_preview_ready)
         self._thr.finished.connect(lambda: self.btn_apply.setEnabled(True))
         self._thr.start()
@@ -1543,15 +1761,11 @@ class CurvesDialogPro(QDialog):
 
     # ----- apply to document -----
     def _apply(self):
-        # Ensure we have a full-res result; compute now if needed.
         if not hasattr(self, "_last_preview"):
-            lut = self._build_lut01()
-            if lut is None or self._full_img is None:
-                return
-            out01 = _apply_mode_any(self._full_img, self._current_mode(), lut)
+            luts = self._build_all_active_luts()
+            out01 = self._apply_all_curves_once(self._full_img, luts)
             out01 = self._blend_with_mask(out01)
             self._last_preview = out01
-        # Commit (this reloads downsampled original from doc afterwards)
         self._commit(self._last_preview)
 
     def _commit(self, out01: np.ndarray):
@@ -1577,18 +1791,20 @@ class CurvesDialogPro(QDialog):
             self._load_from_doc()          # refresh preview from updated doc
 
             # 3) Reset the curve drawing so user can keep tweaking from scratch
+            # --- after reloading the image from the document ---
             if hasattr(self.editor, "clearSymmetryLine"):
                 self.editor.clearSymmetryLine()
-            self.editor.initCurve()         # back to endpoints (linear)
-            self._quick_preview()           # refresh small preview
+            self.editor.initCurve()
 
-            # 4) UX: keep focus, tell the user
-            self.raise_()
-            self.activateWindow()
-            self._set_status("Applied. Image reloaded. Curve reset — keep tweaking.")
+            # Clear ALL curves, not just current
+            for k in list(self._curves_store.keys()):
+                self._curves_store[k] = [(0.0, 0.0), (1.0, 1.0)]
 
-            # NOTE: do NOT close the dialog
-            # self.accept()   <-- removed
+            self._refresh_overlays()
+            self._quick_preview()
+            self._set_status("Applied. Image reloaded. All curves reset — keep tweaking.")
+
+
 
         except Exception as e:
             QMessageBox.critical(self, "Apply failed", str(e))
@@ -1816,10 +2032,15 @@ class CurvesDialogPro(QDialog):
 
 
     def _reset_curve(self):
-        # re-init the editor to endpoints (linear)
+        # 1) reset editor drawing to linear
         self.editor.initCurve()
+        # 2) mark *every* stored curve linear
+        for k in list(self._curves_store.keys()):
+            self._curves_store[k] = [(0.0, 0.0), (1.0, 1.0)]
+        # 3) refresh overlays & preview
+        self._refresh_overlays()
         self._quick_preview()
-        self._set_status("Curve reset.")
+        self._set_status("All curves reset.")
 
     def _find_main_window(self):
         p = self.parent()
@@ -1856,6 +2077,8 @@ class CurvesDialogPro(QDialog):
 
         self.editor.setControlHandles(filt)
         self.editor.updateCurve()   # ensure redraw
+        self._curves_store[self._current_mode_key] = self._editor_points_norm()
+        self._refresh_overlays()
         self._quick_preview()
         self._set_status(f"Preset: {preset.get('name', '(built-in)')}  [{shape}]")
 

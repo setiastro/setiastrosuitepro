@@ -5847,76 +5847,130 @@ class StackingSuiteDialog(QDialog):
 
 
     def _rect_from_transforms_fast(
-        transforms: dict[str, np.ndarray],
+        self,
+        transforms: dict[str, object],
         src_hw: tuple[int, int],
         coverage_pct: float = 95.0,
         *,
         allow_homography: bool = True,
-        min_side: int = 16
-    ) -> tuple[int,int,int,int] | None:
+        min_side: int = 16,
+    ) -> tuple[int, int, int, int] | None:
         """
-        transforms: {path -> 2x3 affine or 3x3 homography} mapping *source frame* -> *reference space*
-        src_hw: (H, W) of the frames before warp (the alignment reference geometry)
-        coverage_pct: require the rectangle be covered by at least this % of frames
-        Returns (x0, y0, x1, y1) in *reference* pixel coords, or None if empty.
+        Robust fast autocrop from a bunch of transforms.
+
+        Accepts:
+        - plain 2x3 affine np.array / list-of-lists
+        - plain 3x3 homography
+        - tuples like (M, meta) or (M, bbox, ...)
+        - dicts like {"M": M} or {"matrix": M} or {"H": M}
+
+        Returns (x0, y0, x1, y1) in reference coords, or None.
         """
         H, W = map(int, src_hw)
         if not transforms:
             return None
 
-        # corners in source image coords
-        corners = np.array([[0,0,1],
-                            [W,0,1],
-                            [W,H,1],
-                            [0,H,1]], dtype=np.float64)
+        # corners in source-image coords
+        corners = np.array(
+            [
+                [0, 0, 1],
+                [W, 0, 1],
+                [W, H, 1],
+                [0, H, 1],
+            ],
+            dtype=np.float64,
+        )
+
+        def _extract_matrix(raw):
+            """
+            Try hard to get a 2x3 or 3x3 ndarray out of whatever `raw` is.
+            Returns np.ndarray or None.
+            """
+            if raw is None:
+                return None
+
+            # common case: (M, extra...) → pick the first thing that looks like a matrix
+            if isinstance(raw, (tuple, list)):
+                for item in raw:
+                    m = _extract_matrix(item)
+                    if m is not None:
+                        return m
+                return None
+
+            # dict style: {"M": ..., "bbox": ...} or {"matrix": ...}
+            if isinstance(raw, dict):
+                for key in ("M", "matrix", "affine", "H", "homography"):
+                    if key in raw:
+                        return _extract_matrix(raw[key])
+                return None
+
+            # already ndarray-ish
+            try:
+                arr = np.asarray(raw, dtype=np.float64)
+            except Exception:
+                return None
+
+            if arr.shape == (2, 3) or arr.shape == (3, 3):
+                return arr
+
+            # anything else (like 1D or wrong shape) → ignore
+            return None
 
         lefts, rights, tops, bottoms = [], [], [], []
 
-        for M in transforms.values():
-            M = np.asarray(M)
-            if M.shape == (2,3):
-                # affine: augment to 3x3
-                A = np.eye(3, dtype=np.float64); A[:2,:3] = M
+        for path, raw_M in transforms.items():
+            M = _extract_matrix(raw_M)
+            if M is None:
+                # e.g. this was (M, bbox) but we couldn't unwrap → skip
+                continue
+
+            # normalize to 3x3
+            if M.shape == (2, 3):
+                A = np.eye(3, dtype=np.float64)
+                A[:2, :3] = M
                 M = A
-            elif M.shape == (3,3):
+            elif M.shape == (3, 3):
                 if not allow_homography:
                     continue
             else:
-                # unknown transform type; skip
+                # should not happen due to _extract_matrix, but be safe
                 continue
 
-            pts = (M @ corners.T)  # 3x4
-            # homography divide
+            pts = M @ corners.T  # 3x4
             w = pts[2, :]
+            # avoid div0
             w = np.where(np.abs(w) < 1e-12, 1.0, w)
-            xs = (pts[0, :] / w)
-            ys = (pts[1, :] / w)
+            xs = pts[0, :] / w
+            ys = pts[1, :] / w
 
-            lefts.append(xs.min()); rights.append(xs.max())
-            tops.append(ys.min());  bottoms.append(ys.max())
+            lefts.append(xs.min())
+            rights.append(xs.max())
+            tops.append(ys.min())
+            bottoms.append(ys.max())
 
         if not lefts:
+            # all entries were weird / non-matrix
             return None
 
-        lefts   = np.asarray(lefts,   dtype=np.float64)
-        rights  = np.asarray(rights,  dtype=np.float64)
-        tops    = np.asarray(tops,    dtype=np.float64)
+        lefts = np.asarray(lefts, dtype=np.float64)
+        rights = np.asarray(rights, dtype=np.float64)
+        tops = np.asarray(tops, dtype=np.float64)
         bottoms = np.asarray(bottoms, dtype=np.float64)
 
         p = float(np.clip(coverage_pct, 0.0, 100.0)) / 100.0
-        # Require coverage by ≥ p of frames → take p-quantile of left/top, (1-p)-quantile of right/bottom
-        x0 = float(np.quantile(lefts,  p))
-        y0 = float(np.quantile(tops,   p))
-        x1 = float(np.quantile(rights, 1.0 - p))
-        y1 = float(np.quantile(bottoms,1.0 - p))
 
-        # enforce valid rectangle
-        if not np.isfinite([x0,y0,x1,y1]).all():
+        # quantile logic: keep the region covered by ≥ p of frames
+        x0 = float(np.quantile(lefts, p))
+        y0 = float(np.quantile(tops, p))
+        x1 = float(np.quantile(rights, 1.0 - p))
+        y1 = float(np.quantile(bottoms, 1.0 - p))
+
+        if not np.isfinite((x0, y0, x1, y1)).all():
             return None
 
-        # round *inwards* to be safe
-        xi0 = int(np.ceil (x0))
-        yi0 = int(np.ceil (y0))
+        # round inwards
+        xi0 = int(np.ceil(x0))
+        yi0 = int(np.ceil(y0))
         xi1 = int(np.floor(x1))
         yi1 = int(np.floor(y1))
 
@@ -5924,6 +5978,7 @@ class StackingSuiteDialog(QDialog):
             return None
 
         return (xi0, yi0, xi1, yi1)
+
 
     def _compute_common_autocrop_rect(self, grouped_files: dict, coverage_pct: float, status_cb=None):
         log = status_cb or self.update_status
@@ -12197,7 +12252,7 @@ class StackingSuiteDialog(QDialog):
                 ref_hw = tuple(getattr(self, "ref_shape_for_drizzle", ()))  # (H,W)
 
                 if xforms and len(ref_hw) == 2:
-                    _mf_global_rect = _rect_from_transforms_fast(
+                    _mf_global_rect = self._rect_from_transforms_fast(
                         xforms,
                         src_hw=ref_hw,
                         coverage_pct=float(autocrop_pct_ui),
@@ -12698,7 +12753,7 @@ class StackingSuiteDialog(QDialog):
                 # Geometry of the reference (H, W) captured at alignment time
                 ref_hw = tuple(getattr(self, "ref_shape_for_drizzle", ()))
                 if xforms and len(ref_hw) == 2:
-                    global_rect = _rect_from_transforms_fast(
+                    global_rect = self._rect_from_transforms_fast(
                         xforms,
                         src_hw=ref_hw,
                         coverage_pct=float(autocrop_pct),
@@ -12851,7 +12906,7 @@ class StackingSuiteDialog(QDialog):
 
                         ref_hw = tuple(getattr(self, "ref_shape_for_drizzle", ()))
                         if xforms_g and len(ref_hw) == 2:
-                            group_rect = _rect_from_transforms_fast(
+                            group_rect = self._rect_from_transforms_fast(
                                 xforms_g,
                                 src_hw=ref_hw,
                                 coverage_pct=float(autocrop_pct),
