@@ -1,9 +1,9 @@
 {
-  "version": "1.3.21",
+  "version": "1.4.0",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.21/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.21/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.3.21/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.0/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.0/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.0/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.3.21 Signature/Insert Adder: Now add arbitrary text to your image.  View Bundle Bug fixes"
+  "notes": "Seti Astro Suite Pro V1.4.0 New Tool: Selective Color Correction. Isolate various hues easily and adjust the hues on the spot. Export masks for future use.  Live Stacking updated tweaks.  Stacking Suite autocrop bug in MFDeconv path.  Other bug fixes."
 }
