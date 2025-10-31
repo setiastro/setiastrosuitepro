@@ -35,6 +35,7 @@ numba
 #neural net
 onnx
 onnxruntime
+onnxruntime-gpu
 
 # image formats & camera raw
 xisf
