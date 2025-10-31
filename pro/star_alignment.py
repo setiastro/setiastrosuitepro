@@ -1337,15 +1337,15 @@ class StarRegistrationWorker(QRunnable):
 
     def run(self):
         """
-        Lightweight, crash-safe preview alignment:
-        • Make a small, independent float32 copy (no live memmap after with-block)
-        • Apply current transform to preview only
-        • Serialize astroalign (SEP) with a lock to avoid native crashes
-        • Emit delta keyed by ORIGINAL path
+        Incremental stellar registration:
+        - load ORIGINAL frame
+        - build preview
+        - APPLY current accumulated transform to that preview
+        - astroalign the already-aligned preview to the reference preview
+        - emit *incremental* delta, keyed by ORIGINAL path
         """
         try:
             _cap_native_threads_once()
-            # Set SEP pixstack once; don't mutate it later in worker threads
             try:
                 curr = sep.get_extract_pixstack()
                 if curr < 1_500_000:
@@ -1353,7 +1353,7 @@ class StarRegistrationWorker(QRunnable):
             except Exception:
                 pass
 
-            # ---- build a small independent preview (no memmap aliasing) ----
+            # 1) load the ORIGINAL frame (we still read from original_file)
             with fits.open(self.original_file, memmap=True) as hdul:
                 arr = hdul[0].data
                 if arr is None:
@@ -1362,61 +1362,78 @@ class StarRegistrationWorker(QRunnable):
                 if arr.ndim == 2:
                     gray = arr
                 else:
-                    # compute while file is still open, then copy
                     gray = np.mean(arr, axis=2)
                 gray = np.nan_to_num(gray, nan=0.0, posinf=0.0, neginf=0.0)
 
-            #f = max(1, int(getattr(self, "downsample_factor", 2)))
-            #if f > 1:
-            #    new_hw = (max(1, gray.shape[1] // f), max(1, gray.shape[0] // f))  # (W, H)
-            #    gray_small = cv2.resize(gray, new_hw, interpolation=cv2.INTER_AREA)
-            #else:
-            #    gray_small = gray
-            #gray_small = np.ascontiguousarray(gray_small.astype(np.float32, copy=False))
             gray_small = np.ascontiguousarray(gray.astype(np.float32, copy=False))
 
             ref_small = self.reference_image
             if ref_small is None:
                 self.signals.error.emit("Worker missing reference preview.")
                 return
+            Href, Wref = ref_small.shape[:2]
 
-            # ---- apply current transform to PREVIEW only ----
-            T_curr = np.array(self.current_transform, dtype=np.float32).reshape(2, 3)
-            T_prev = T_curr.copy()
-            #if f > 1:
-            #    T_prev[0, 2] /= f
-            #    T_prev[1, 2] /= f
+            # 2) apply CURRENT transform to the preview so we align "from last pass" not "from raw"
+            T_prev = np.array(self.current_transform, dtype=np.float32).reshape(2, 3)
+            use_warp = not np.allclose(
+                T_prev,
+                np.array([[1, 0, 0], [0, 1, 0]], dtype=np.float32),
+                rtol=1e-5,
+                atol=1e-5,
+            )
 
-            Href, Wref = self.reference_image.shape[:2]
+            if use_warp and cv2 is not None:
+                # warp to REF size so astroalign compares apples to apples
+                src_for_match = cv2.warpAffine(
+                    gray_small,
+                    T_prev,
+                    (Wref, Href),
+                    flags=cv2.INTER_LINEAR,
+                    borderMode=cv2.BORDER_REFLECT_101,
+                )
+            else:
+                # no warp or no cv2: at least make the size match
+                if gray_small.shape != ref_small.shape and cv2 is not None:
+                    src_for_match = cv2.resize(gray_small, (Wref, Href), interpolation=cv2.INTER_LINEAR)
+                else:
+                    src_for_match = gray_small
 
-            # ---- astroalign (serialize to avoid SEP multi-thread crash) ----
-            transform = self.compute_affine_transform_astroalign(gray_small, ref_small)
+            # 3) NOW do astroalign on the already-aligned frame → this gives us the *incremental* delta
+            try:
+                transform = self.compute_affine_transform_astroalign(src_for_match, ref_small)
+            except Exception as e:
+                msg = str(e)
+                base = os.path.basename(self.original_file)
+                if "of matching triangles exhausted" in msg.lower():
+                    self.signals.error.emit(
+                        f"Astroalign failed for {base}: List of matching triangles exhausted"
+                    )
+                else:
+                    self.signals.error.emit(
+                        f"Astroalign failed for {base}: {msg}"
+                    )
+                return
 
             if transform is None:
+                # this is the other path where AA didn't throw, just couldn't solve
+                base = os.path.basename(self.original_file)
                 self.signals.error.emit(
-                    f"Astroalign failed for {os.path.basename(self.original_file)} – skipping"
+                    f"Astroalign failed for {base} – skipping (no transform returned)"
                 )
                 return
 
             transform = np.array(transform, dtype=np.float64).reshape(2, 3)
 
-            # rescale translations back to full-res units
-            #if f > 1:
-            #    transform[0, 2] *= f
-            #    transform[1, 2] *= f
-
-            key = os.path.normpath(self.original_file)  # ORIGINAL key
+            key = os.path.normpath(self.original_file)
             self.signals.result_transform.emit(key, transform)
             self.signals.progress.emit(
                 f"Astroalign delta for {os.path.basename(self.original_file)} "
-                f"(model={self.model_name}): dx={transform[0,2]:.2f}, dy={transform[1,2]:.2f}"
+                f"(model={self.model_name}): dx={transform[0, 2]:.2f}, dy={transform[1, 2]:.2f}"
             )
             self.signals.result.emit(self.original_file)
 
         except Exception as e:
-            # If a native segfault occurs, we won't reach here, but Python-side errors will
             self.signals.error.emit(f"Error processing {self.original_file}: {e}")
-
 
 
     @staticmethod

@@ -20,20 +20,29 @@ try:
 except Exception:
     ort = None
 
+import importlib
+
+try:
+    from importlib import metadata as _importlib_metadata
+except Exception:
+    _importlib_metadata = None
+
+# will be filled by _probe_onnxruntime()
+_ORT_FLAVOR: str | None = None         # e.g. "onnxruntime", "onnxruntime-directml"
+_ORT_IMPORT_ERR: str | None = None     # last import error string
+_ORT_FOUND_DISTS: list[str] = []       # names we found via importlib.metadata
 
 # ---------- GitHub model fetching ----------
 GITHUB_REPO = "riccardoalberghi/abberation_models"
 LATEST_API  = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
 def _model_required_patch(model_path: str) -> int | None:
-    """
-    Returns the fixed spatial size the model expects (e.g. 512), or None if dynamic.
-    """
-    if ort is None or not os.path.isfile(model_path):
+    rt = _probe_onnxruntime()
+    if rt is None or not os.path.isfile(model_path):
         return None
     try:
-        sess = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
-        shp = sess.get_inputs()[0].shape  # e.g. [1, 1, 512, 512] or ['N','C',512,512]
+        sess = rt.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+        shp = sess.get_inputs()[0].shape
         h = shp[-2]; w = shp[-1]
         if isinstance(h, int) and isinstance(w, int) and h == w:
             return int(h)
@@ -191,10 +200,11 @@ def pick_providers(auto_gpu=True) -> list[str]:
     mac(Intel): CPU → CoreML (optional)
     mac(Apple Silicon): **CPU only** (avoid CoreML artifact path)
     """
-    if ort is None:
+    rt = _probe_onnxruntime()
+    if rt is None:
         return []
 
-    avail = set(ort.get_available_providers())
+    avail = set(rt.get_available_providers())
 
     # Apple Silicon: always CPU ( CoreML has 16,384-dim constraint and can artifact )
     if IS_APPLE_ARM:
@@ -245,6 +255,57 @@ def _preserve_border(dst: np.ndarray, src: np.ndarray, px: int = 10) -> np.ndarr
 
     return dst
 
+# ---------- hardened ONNXRuntime loader ----------
+def _probe_onnxruntime():
+    """
+    Try very hard to get an onnxruntime module.
+    Returns the module or None.
+    Also populates _ORT_FLAVOR, _ORT_IMPORT_ERR, _ORT_FOUND_DISTS for UI.
+    """
+    global ort, _ORT_FLAVOR, _ORT_IMPORT_ERR, _ORT_FOUND_DISTS
+
+    # already loaded?
+    if "ort" in globals() and ort is not None:
+        return ort
+
+    # 1) the normal one
+    try:
+        import onnxruntime as _ort
+        ort = _ort
+        _ORT_FLAVOR = "onnxruntime"
+        _ORT_IMPORT_ERR = None
+        return ort
+    except Exception as e1:
+        ort = None
+        _ORT_IMPORT_ERR = f"import onnxruntime failed: {e1!r}"
+
+    # 2) check if any *package* is installed even if import failed (wrong env / broken DLL)
+    _ORT_FOUND_DISTS = []
+    if _importlib_metadata:
+        for dist_name in ("onnxruntime", "onnxruntime-directml", "onnxruntime-gpu", "onnx"):
+            try:
+                ver = _importlib_metadata.version(dist_name)
+                _ORT_FOUND_DISTS.append(f"{dist_name}=={ver}")
+            except Exception:
+                pass
+
+    # 3) some people try to import the package name directly; try once
+    # (note: most of these *still* expose `onnxruntime` as the module name,
+    # but this at least lets us catch weird installs)
+    for alt_mod in ("onnxruntime_directml", "onnxruntime_gpu"):
+        try:
+            _alt = importlib.import_module(alt_mod)
+            # some alt packages actually re-export the real module
+            ort = getattr(_alt, "onnxruntime", _alt)
+            _ORT_FLAVOR = alt_mod
+            _ORT_IMPORT_ERR = None
+            return ort
+        except Exception:
+            pass
+
+    return None
+
+
 # ---------- worker ----------
 class _ONNXWorker(QThread):
     progressed = pyqtSignal(int)         # 0..100
@@ -261,17 +322,31 @@ class _ONNXWorker(QThread):
         self.used_provider = None
 
     def run(self):
-        if ort is None:
-            self.failed.emit("onnxruntime is not installed.")
+        rt = _probe_onnxruntime()
+        if rt is None:
+            # include detail so we can tell if it's a "wrong env" case
+            extra = ""
+            if _ORT_FOUND_DISTS:
+                extra = (
+                    "\n\nI can see these ONNX/ONNXRuntime packages installed, but not in *this* Python:\n  - "
+                    + "\n  - ".join(_ORT_FOUND_DISTS)
+                    + f"\n\nThis SASpro is running under: {sys.executable}"
+                    + "\nInstall into *this* Python* with:\n"
+                    f'  "{sys.executable}" -m pip install onnxruntime'
+                )
+            elif _ORT_IMPORT_ERR:
+                extra = f"\n\nImport error was:\n{_ORT_IMPORT_ERR}"
+
+            self.failed.emit("onnxruntime is not installed or could not be imported." + extra)
             return
         try:
-            sess = ort.InferenceSession(self.model_path, providers=self.providers)
+            sess = rt.InferenceSession(self.model_path, providers=self.providers)
             self.used_provider = (sess.get_providers()[0] if sess.get_providers() else None)
         except Exception:
             # fallback CPU if GPU fails
             try:
-                sess = ort.InferenceSession(self.model_path, providers=["CPUExecutionProvider"])
-                self.used_provider = "CPUExecutionProvider"  # NEW
+                sess = rt.InferenceSession(self.model_path, providers=["CPUExecutionProvider"])
+                self.used_provider = "CPUExecutionProvider"
             except Exception as e2:
                 self.failed.emit(f"Failed to init ONNX session:\n{e2}")
                 return
@@ -423,13 +498,26 @@ class AberrationAIDialog(QDialog):
             pass
 
     def _refresh_providers(self):
-        if ort is None:
+        rt = _probe_onnxruntime()
+        if rt is None:
             self.cmb_provider.clear()
-            self.cmb_provider.addItem("onnxruntime not installed")
+            # friendlier message
+            if _ORT_FOUND_DISTS:
+                self.cmb_provider.addItem("onnxruntime in another env")
+                self.cmb_provider.setToolTip(
+                    "I detected: " + ", ".join(_ORT_FOUND_DISTS)
+                    + f"\nBut this Python ({sys.executable}) cannot import it.\n"
+                    f'Run: "{sys.executable}" -m pip install onnxruntime'
+                )
+            else:
+                msg = "onnxruntime not installed"
+                if _ORT_IMPORT_ERR:
+                    msg += f" ({_ORT_IMPORT_ERR.splitlines()[-1]})"
+                self.cmb_provider.addItem(msg)
             self.cmb_provider.setEnabled(False)
             return
 
-        avail = ort.get_available_providers()
+        avail = rt.get_available_providers()
         self.cmb_provider.clear()
 
         if IS_APPLE_ARM:
@@ -479,17 +567,28 @@ class AberrationAIDialog(QDialog):
 
     # ----- run -----
     def _run(self):
-        if ort is None:
+        rt = _probe_onnxruntime()
+        if rt is None:
+            extra = ""
+            if _ORT_FOUND_DISTS:
+                extra = (
+                    "\n\nI found these packages installed:\n  - "
+                    + "\n  - ".join(_ORT_FOUND_DISTS)
+                    + f"\n…but they are not importable from this Python: {sys.executable}\n"
+                    f'Try: "{sys.executable}" -m pip install onnxruntime'
+                )
+            elif _ORT_IMPORT_ERR:
+                extra = f"\n\nImport error was:\n{_ORT_IMPORT_ERR}"
+
             QMessageBox.critical(
                 self, "Missing dependency",
-                "onnxruntime is not installed.\n\nInstall one of:\n"
+                "onnxruntime is not installed or could not be imported."
+                "\n\nInstall one of:\n"
                 "  pip install onnxruntime  (CPU)\n"
                 "  pip install onnxruntime-directml  (Windows)\n"
                 "  pip install onnxruntime-gpu  (CUDA)"
+                + extra
             )
-            return
-        if not self._model_path or not os.path.isfile(self._model_path):
-            QMessageBox.warning(self, "Model", "Please select or download a valid .onnx model first.")
             return
 
         doc = self.get_active_doc()
