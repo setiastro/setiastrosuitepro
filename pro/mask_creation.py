@@ -495,7 +495,7 @@ class MaskPreviewDialog(QDialog):
 
 class MaskCreationDialog(QDialog):
     """Mask creation UI for SASpro documents (returns a np mask on OK)."""
-    def __init__(self, image01: np.ndarray, parent=None):
+    def __init__(self, image01: np.ndarray, parent=None, auto_push_on_ok: bool = True):
         super().__init__(parent)
         self.setWindowTitle("Mask Creation")
         self.image = np.asarray(image01, dtype=np.float32).copy()
@@ -504,6 +504,9 @@ class MaskCreationDialog(QDialog):
 
         self.mask_type = "Binary"
         self.blur_amount = 0
+
+        # <- this was missing
+        self.auto_push_on_ok = auto_push_on_ok
 
         self._build_ui()
 
@@ -611,6 +614,8 @@ class MaskCreationDialog(QDialog):
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self)
         btns.accepted.connect(self._accept_apply); btns.rejected.connect(self.reject)
         layout.addWidget(btns)
+
+        self.canvas.installEventFilter(self)
 
         self.resize(980, 640)
 
@@ -757,8 +762,17 @@ class MaskCreationDialog(QDialog):
 
     def _accept_apply(self):
         m = self.generate_mask()
-        if m is None: return
-        self.mask = m; self.accept()
+        if m is None:
+            return
+
+        # always store it on the dialog for callers
+        self.mask = m
+
+        # if this dialog was opened in "tool" mode, push it as a new doc
+        if self.auto_push_on_ok:
+            _push_numpy_as_new_document(self, m, default_name="Mask")
+
+        self.accept()
 
     def closeEvent(self, ev):
         if self.live_preview and self.live_preview.isVisible():
@@ -821,20 +835,23 @@ class MaskCreationDialog(QDialog):
 
 def create_mask_and_attach(parent, document) -> bool:
     if document is None or getattr(document, "image", None) is None:
-        QMessageBox.information(parent, "No image", "Open an image first."); return False
-    dlg = MaskCreationDialog(document.image, parent=parent)
-    if dlg.exec() != QDialog.DialogCode.Accepted: return False
+        QMessageBox.information(parent, "No image", "Open an image first.")
+        return False
+
+    # NOW we let the dialog auto-push when user hits OK
+    dlg = MaskCreationDialog(document.image, parent=parent, auto_push_on_ok=True)
+    if dlg.exec() != QDialog.DialogCode.Accepted:
+        return False
 
     mask = getattr(dlg, "mask", None)
     if mask is None:
-        QMessageBox.information(parent, "No mask", "No mask was generated."); return False
+        QMessageBox.information(parent, "No mask", "No mask was generated.")
+        return False
 
-    name, ok = QInputDialog.getText(parent, "Mask Name", "Name:", text="Mask 1")
-    if not ok: return False
-
+    # since we already pushed a mask doc, just attach it quietly
     layer = MaskLayer(
         id=uuid.uuid4().hex,
-        name=(name or "Mask").strip(),
+        name="Mask",                     # keep it simple; matches preview default
         data=np.clip(mask.astype(np.float32, copy=False), 0.0, 1.0),
         invert=False,
         opacity=1.0,
@@ -842,8 +859,13 @@ def create_mask_and_attach(parent, document) -> bool:
         visible=True,
     )
     document.add_mask(layer, make_active=True)
+
     try:
-        if hasattr(parent, "_log"): parent._log(f"Added mask '{layer.name}' and set active.")
+        if hasattr(parent, "_log"):
+            parent._log(f"Added mask '{layer.name}' and set active (and pushed as document).")
     except Exception:
         pass
+
     return True
+
+

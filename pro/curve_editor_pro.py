@@ -888,17 +888,132 @@ def _np_hsv_to_rgb(hsv: np.ndarray) -> np.ndarray:
 
 # ---------- worker (full-res) ----------
 
+# ---------- worker (full-res) ----------
+
 class _CurvesWorker(QThread):
     done = pyqtSignal(object)
-    def __init__(self, image01, luts, invoker):
+
+    def __init__(self, image01, luts, invoker=None):
+        """
+        Backward-compatible worker.
+
+        Accepted call styles:
+
+        1) NEW (multi-curve) style  ← what CurvesDialogPro now uses
+           _CurvesWorker(img01, {"K": lutK, "R": lutR, ...}, invoker=self)
+
+        2) OLD (single-curve) style  ← what GHS was doing
+           _CurvesWorker(img01, "K (Brightness)", lut01)
+           _CurvesWorker(img01, "R", lut01)
+           _CurvesWorker(img01, "G", lut01)
+           _CurvesWorker(img01, "B", lut01)
+
+        3) Very old / emergency:
+           _CurvesWorker(img01, lut01)   → assumes K
+        """
         super().__init__()
+
+        # always keep the image contiguous float32
         self.image01 = np.ascontiguousarray(image01.astype(np.float32, copy=False))
-        self.luts = {k: np.ascontiguousarray(v.astype(np.float32, copy=False)) for k,v in luts.items()}
-        self._invoker = invoker  # CurvesDialogPro, so we can call its method
+
+        # flags / placeholders
+        self._legacy_single = False
+        self._invoker = None   # only needed for the new multi-curve path
+
+        # ─────────────────────────────────────────
+        # CASE A: GHS / old-style call
+        # ─────────────────────────────────────────
+        # GHS called: _CurvesWorker(full_img, "K (Brightness)", lut01)
+        if isinstance(luts, str):
+            mode_str = luts
+            lut01 = np.ascontiguousarray(invoker.astype(np.float32, copy=False))
+            # map UI text to internal key
+            mode_map = {
+                "K (Brightness)": "K",
+                "K": "K",
+                "R": "R",
+                "G": "G",
+                "B": "B",
+            }
+            key = mode_map.get(mode_str, "K")
+            self.luts = {key: lut01}
+            self._legacy_single = True
+            return
+
+        # ─────────────────────────────────────────
+        # CASE B: weird 2-arg legacy: (img, lut01)
+        # ─────────────────────────────────────────
+        # someone might have done _CurvesWorker(img, lut01)
+        if isinstance(luts, np.ndarray):
+            lut01 = np.ascontiguousarray(luts.astype(np.float32, copy=False))
+            self.luts = {"K": lut01}
+            self._legacy_single = True
+            return
+
+        # ─────────────────────────────────────────
+        # CASE C: new style (what CurvesDialogPro uses now)
+        # ─────────────────────────────────────────
+        # here luts should be a dict: {"K": lutK, "R": lutR, ...}
+        self.luts = {
+            k: np.ascontiguousarray(v.astype(np.float32, copy=False))
+            for k, v in luts.items()
+        }
+        # in the new path we expect an invoker that has _apply_all_curves_once()
+        self._invoker = invoker
+        self._legacy_single = False
 
     def run(self):
+        # ─────────────────────────────────────────
+        # LEGACY path: single channel / single LUT
+        # ─────────────────────────────────────────
+        if self._legacy_single:
+            out = self.image01
+            # mono / 2D
+            if out.ndim == 2 or (out.ndim == 3 and out.shape[2] == 1):
+                lut = (
+                    self.luts.get("K")
+                    or self.luts.get("R")
+                    or self.luts.get("G")
+                    or self.luts.get("B")
+                )
+                if lut is not None:
+                    idx = np.clip((out * (len(lut) - 1)).astype(np.int32), 0, len(lut) - 1)
+                    out = lut[idx]
+                self.done.emit(out.astype(np.float32, copy=False))
+                return
+
+            # RGB
+            out = out.copy()
+            # prefer per-channel, fall back to K
+            lutK = self.luts.get("K")
+            lutR = self.luts.get("R", lutK)
+            lutG = self.luts.get("G", lutK)
+            lutB = self.luts.get("B", lutK)
+
+            if lutR is not None:
+                idx = np.clip((out[..., 0] * (len(lutR) - 1)).astype(np.int32), 0, len(lutR) - 1)
+                out[..., 0] = lutR[idx]
+            if lutG is not None:
+                idx = np.clip((out[..., 1] * (len(lutG) - 1)).astype(np.int32), 0, len(lutG) - 1)
+                out[..., 1] = lutG[idx]
+            if lutB is not None:
+                idx = np.clip((out[..., 2] * (len(lutB) - 1)).astype(np.int32), 0, len(lutB) - 1)
+                out[..., 2] = lutB[idx]
+
+            self.done.emit(out.astype(np.float32, copy=False))
+            return
+
+        # ─────────────────────────────────────────
+        # NEW path: multi-curve, use dialog’s helper
+        # ─────────────────────────────────────────
+        if self._invoker is None:
+            # extreme safety fallback
+            self.done.emit(self.image01)
+            return
+
         out = self._invoker._apply_all_curves_once(self.image01, self.luts)
         self.done.emit(out)
+
 
 # ---------- dialog ----------
 

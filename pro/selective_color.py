@@ -448,6 +448,10 @@ class SelectiveColorCorrection(QDialog):
         self.img = np.clip(self.document.image.astype(np.float32), 0.0, 1.0)
         self.preview_img = self.img.copy()
 
+        self._imported_mask_full = None     # full-res mask (H x W) float32 0..1
+        self._imported_mask_name = None     # nice label to show in UI
+        self._use_imported_mask = False     # checkbox state mirror
+
         self._build_ui()
         self._mask_delay_ms = 200  # 0.2s idle before recomputing mask
         self._mask_timer = QTimer(self)
@@ -624,6 +628,18 @@ class SelectiveColorCorrection(QDialog):
         self.cb_show_mask.toggled.connect(self._update_preview_pixmap)
         gl.addWidget(self.cb_show_mask, 6, 4, 1, 2)
 
+        # Row 7: imported mask controls
+        self.cb_use_imported = QCheckBox("Use imported mask")
+        self.cb_use_imported.setChecked(False)
+        self.cb_use_imported.toggled.connect(self._on_use_imported_mask_toggled)
+        gl.addWidget(self.cb_use_imported, 7, 2, 1, 2)
+
+        self.btn_import_mask = QPushButton("Pick mask from view…")
+        self.btn_import_mask.clicked.connect(self._import_mask_from_view)
+        gl.addWidget(self.btn_import_mask, 7, 4, 1, 2)
+
+        self.lbl_imported_mask = QLabel("No imported mask")
+        gl.addWidget(self.lbl_imported_mask, 7, 6, 1, 2)
 
         # Column sizing: wheel column fixed, right side stretchy
         gl.setColumnStretch(0, 0)
@@ -987,42 +1003,147 @@ class SelectiveColorCorrection(QDialog):
         if self.img is None:
             return
 
-        # base (optionally small)
         base = self._downsample(self.img, 1200) if self.cb_small_preview.isChecked() else self.img
         self._last_base = base
 
-        # mask from preset/custom range
-        preset = self.dd_preset.currentText()
-        if preset == "Custom":
-            ranges = [(float(self.sp_h1.value()), float(self.sp_h2.value()))]
+        # if user wants imported mask and we have one → use it
+        if self._use_imported_mask and self._imported_mask_full is not None:
+            imp = self._imported_mask_full
+            bh, bw = base.shape[:2]
+            mh, mw = imp.shape[:2]
+            if (mh, mw) != (bh, bw):
+                if cv2 is not None:
+                    mask = cv2.resize(imp, (bw, bh), interpolation=cv2.INTER_LINEAR)
+                else:
+                    yy = (np.linspace(0, mh - 1, bh)).astype(int)
+                    xx = (np.linspace(0, mw - 1, bw)).astype(int)
+                    mask = imp[yy[:, None], xx[None, :]]
+            else:
+                mask = imp
+            mask = np.clip(mask.astype(np.float32), 0.0, 1.0)
         else:
-            ranges = _PRESETS[preset]
+            # your original hue-based build
+            preset = self.dd_preset.currentText()
+            if preset == "Custom":
+                ranges = [(float(self.sp_h1.value()), float(self.sp_h2.value()))]
+            else:
+                ranges = _PRESETS[preset]
 
-        mask = _hue_mask(
-            base,
-            ranges_deg=ranges,
-            min_chroma=float(self.ds_minC.value()),
-            min_light=float(self.ds_minL.value()),
-            max_light=float(self.ds_maxL.value()),
-            smooth_deg=float(self.ds_smooth.value()),
-            invert_range=self.cb_invert.isChecked(),
-        )
+            mask = _hue_mask(
+                base,
+                ranges_deg=ranges,
+                min_chroma=float(self.ds_minC.value()),
+                min_light=float(self.ds_minL.value()),
+                max_light=float(self.ds_maxL.value()),
+                smooth_deg=float(self.ds_smooth.value()),
+                invert_range=self.cb_invert.isChecked(),
+            )
 
-        # shadows/highlights weighting
-        mask = _weight_shadows_highlights(
-            mask, base,
-            shadows=float(self.ds_sh.value()),
-            highlights=float(self.ds_hi.value()),
-            balance=float(self.ds_bal.value()),
-        )
+            mask = _weight_shadows_highlights(
+                mask, base,
+                shadows=float(self.ds_sh.value()),
+                highlights=float(self.ds_hi.value()),
+                balance=float(self.ds_bal.value()),
+            )
 
-        # blur mask edges if requested
-        k = int(self.sb_blur.value())
-        if k > 0 and cv2 is not None:
-            mask = cv2.GaussianBlur(mask.astype(np.float32), (0,0), float(k))
+            k = int(self.sb_blur.value())
+            if k > 0 and cv2 is not None:
+                mask = cv2.GaussianBlur(mask.astype(np.float32), (0, 0), float(k))
 
         self._mask = np.clip(mask, 0.0, 1.0)
         self._update_preview_pixmap()
+
+    def _on_use_imported_mask_toggled(self, on: bool):
+        self._use_imported_mask = bool(on)
+        # if we don't have an imported mask yet, turn it off again
+        if self._use_imported_mask and self._imported_mask_full is None:
+            self._use_imported_mask = False
+            self.cb_use_imported.setChecked(False)
+            QMessageBox.information(self, "No imported mask", "Pick a mask view first.")
+            return
+
+        # just rebuild preview with the external mask
+        self._recompute_mask_and_preview()
+
+    def _import_mask_from_view(self):
+        if self.docman is None:
+            QMessageBox.information(self, "No document manager", "Cannot import without a document manager.")
+            return
+
+        # get ALL docs user currently has open (renamed, FITS layers, XISF layers, duplicates, etc.)
+        docs = self.docman.all_documents() or []
+        # only image docs
+        img_docs = [d for d in docs if hasattr(d, "image") and d.image is not None]
+
+        if not img_docs:
+            QMessageBox.information(self, "No views", "There are no image views to import a mask from.")
+            return
+
+        # build names as the user sees them
+        items = []
+        for d in img_docs:
+            try:
+                nm = d.display_name()
+            except Exception:
+                nm = "Untitled"
+            items.append(nm)
+
+        from PyQt6.QtWidgets import QInputDialog
+        choice, ok = QInputDialog.getItem(
+            self,
+            "Pick mask view",
+            "Open image views:",
+            items,
+            0,
+            False
+        )
+        if not ok:
+            return
+
+        # find selected document
+        sel_doc = None
+        for d, nm in zip(img_docs, items):
+            if nm == choice:
+                sel_doc = d
+                break
+
+        if sel_doc is None or getattr(sel_doc, "image", None) is None:
+            QMessageBox.warning(self, "Import failed", "Selected view has no image.")
+            return
+
+        mask_img = np.clip(sel_doc.image.astype(np.float32), 0.0, 1.0)
+
+        # if it's RGB, take channel 0 — that’s how your exported mask would look (3 equal channels)
+        if mask_img.ndim == 3:
+            mask_img = mask_img[..., 0]
+
+        # resize to current image size if needed
+        dst_h, dst_w = self.img.shape[:2]
+        src_h, src_w = mask_img.shape[:2]
+        if (src_h, src_w) != (dst_h, dst_w):
+            if cv2 is not None:
+                mask_full = cv2.resize(mask_img, (dst_w, dst_h), interpolation=cv2.INTER_LINEAR)
+            else:
+                yy = (np.linspace(0, src_h - 1, dst_h)).astype(int)
+                xx = (np.linspace(0, src_w - 1, dst_w)).astype(int)
+                mask_full = mask_img[yy[:, None], xx[None, :]]
+        else:
+            mask_full = mask_img
+
+        mask_full = np.clip(mask_full.astype(np.float32), 0.0, 1.0)
+
+        # store
+        self._imported_mask_full = mask_full
+        self._imported_mask_name = choice
+        self.lbl_imported_mask.setText(f"Imported: {choice}")
+
+        # auto-enable
+        self.cb_use_imported.setChecked(True)
+        self._use_imported_mask = True
+
+        # refresh preview
+        self._recompute_mask_and_preview()
+
 
     def _overlay_mask(self, base: np.ndarray, mask: np.ndarray) -> np.ndarray:
         base = _ensure_rgb01(base)
@@ -1083,7 +1204,12 @@ class SelectiveColorCorrection(QDialog):
     # ------------- Apply -------------
     def _apply_fullres(self) -> np.ndarray:
         base = self.img
-        mask = self._build_mask(base)
+
+        if self._use_imported_mask and self._imported_mask_full is not None:
+            mask = np.clip(self._imported_mask_full.astype(np.float32), 0.0, 1.0)
+        else:
+            mask = self._build_mask(base)
+
         out = _apply_selective_adjustments(
             base, mask,
             cyan=float(self.ds_c.value()),
@@ -1098,7 +1224,6 @@ class SelectiveColorCorrection(QDialog):
             intensity=float(self.ds_int.value()),
         )
         return out
-
 
     def _export_mask_doc(self):
         if self.docman is None:
