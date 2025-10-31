@@ -8,8 +8,12 @@ import numpy as np
 from PIL import Image
 import tifffile as tiff
 from astropy.io import fits
+# add this near your other optional imports
+
+
 try:
     import rawpy
+
 except Exception:
     rawpy = None  # optional; RAW loading will raise if it's None
 
@@ -582,6 +586,132 @@ def load_fits_extension(path: str, key: str | int):
         img = _finalize_loaded_image(img)
         return img, hdu.header, bit_depth, is_mono
 
+
+def _normalize_to_float(image_u16: np.ndarray) -> tuple[np.ndarray, str, bool]:
+    """Normalize uint16/uint8 arrays to float32 [0,1] and detect mono."""
+    if image_u16.dtype == np.uint16:
+        bit_depth = "16-bit"
+        img = image_u16.astype(np.float32) / 65535.0
+    elif image_u16.dtype == np.uint8:
+        bit_depth = "8-bit"
+        img = image_u16.astype(np.float32) / 255.0
+    else:
+        bit_depth = str(image_u16.dtype)
+        img = image_u16.astype(np.float32)
+        mx = float(img.max()) if img.size else 1.0
+        if mx > 0:
+            img /= mx
+    is_mono = (img.ndim == 2) or (img.ndim == 3 and img.shape[2] == 1)
+    if img.ndim == 3 and img.shape[2] == 1:
+        img = img[:, :, 0]
+    return img, bit_depth, is_mono
+
+
+def _try_load_raw_with_rawpy(filename: str, allow_thumb_preview: bool = True, debug_thumb: bool = True):
+    """
+    Open RAW with rawpy/LibRaw and return a normalized [0,1] Bayer mosaic (mono=True).
+    Fallbacks:
+      1) raw.raw_image_visible
+      2) raw.raw_image
+      3) raw.postprocess(...) → linear 16-bit RGB (no auto-bright), normalized to [0,1]
+      4) Embedded JPEG preview (8-bit)
+    Returns: (image, header, bit_depth, is_mono)
+    """
+    if rawpy is None:
+        raise RuntimeError("rawpy not installed")
+
+    def _normalize_bayer(arr: np.ndarray, raw) -> tuple[np.ndarray, fits.Header, str, bool]:
+        arr = arr.astype(np.float32, copy=False)
+        blk = float(np.mean(getattr(raw, "black_level_per_channel", [0, 0, 0, 0])))
+        wht = float(getattr(raw, "white_level", max(1.0, float(arr.max()))))
+        arr = np.clip(arr - blk, 0, None)
+        scale = max(1.0, wht - blk)
+        arr /= scale
+
+        hdr = fits.Header()
+        try:
+            if getattr(raw, "camera_whitebalance", None) is not None:
+                hdr["CAMWB0"] = float(raw.camera_whitebalance[0])
+        except Exception:
+            pass
+        for key, attr in (("EXPTIME", "shutter"),
+                          ("ISO", "iso_speed"),
+                          ("FOCAL", "focal_len"),
+                          ("TIMESTAMP", "timestamp")):
+            if hasattr(raw, attr):
+                hdr[key] = getattr(raw, attr)
+        try:
+            cfa = getattr(raw, "raw_colors_visible", None)
+            if cfa is not None:
+                mapping = {0: "R", 1: "G", 2: "B"}
+                desc = "".join(mapping.get(int(v), "?") for v in cfa.flatten()[:4])
+                hdr["CFA"] = desc
+        except Exception:
+            pass
+        return arr, hdr, "16-bit", True  # Bayer mosaic → mono=True
+
+    # Attempt 1: visible mosaic
+    try:
+        with rawpy.imread(filename) as raw:
+            bayer = raw.raw_image_visible
+            if bayer is None:
+                raise RuntimeError("raw_image_visible is None")
+            return _normalize_bayer(bayer, raw)
+    except Exception as e1:
+        print(f"[rawpy] full decode (visible) failed: {e1}")
+
+    # Attempt 2: full raw mosaic (no explicit unpack)
+    try:
+        with rawpy.imread(filename) as raw:
+            bayer = getattr(raw, "raw_image", None)
+            if bayer is None:
+                raise RuntimeError("raw_image is None")
+            return _normalize_bayer(bayer, raw)
+    except Exception as e2:
+        print(f"[rawpy] second pass (raw_image) failed: {e2}")
+
+    # Attempt 3: safe demosaic (linear, no auto-bright) → RGB float32 [0,1]
+    try:
+        with rawpy.imread(filename) as raw:
+            rgb16 = raw.postprocess(
+                output_bps=16,
+                gamma=(1, 1),              # keep linear
+                no_auto_bright=True,       # avoid LibRaw “lift”
+                use_camera_wb=False,       # neutral; you can set True if desired
+                output_color=rawpy.ColorSpace.raw,  # raw color space (no matrix)
+                user_flip=0,               # no rotation
+            )
+            img = rgb16.astype(np.float32) / 65535.0  # HxWx3
+            hdr = fits.Header()
+            hdr["RAW_DEM"] = (True, "LibRaw postprocess; linear, no auto-bright, RAW color")
+            return img, hdr, "16-bit demosaiced", False
+    except Exception as e3:
+        print(f"[rawpy] postprocess fallback failed: {e3}")
+
+    # Attempt 4: embedded JPEG preview
+    if allow_thumb_preview:
+        try:
+            with rawpy.imread(filename) as raw2:
+                th = raw2.extract_thumb()
+                if debug_thumb:
+                    kind = getattr(th.format, "name", str(th.format))
+                    print(f"[rawpy] extract_thumb: kind={kind}, bytes={len(th.data)}")
+                from io import BytesIO as _BytesIO
+                pil = Image.open(_BytesIO(th.data))
+                if pil.mode not in ("RGB", "L"):
+                    pil = pil.convert("RGB")
+                img = np.array(pil, dtype=np.float32) / 255.0
+                is_mono = (img.ndim == 2)
+                hdr = fits.Header()
+                hdr["RAW_PREV"] = (True, "Embedded JPEG preview (no linear RAW data)")
+                return img, hdr, "8-bit preview (JPEG from RAW)", is_mono
+        except Exception as e4:
+            print(f"[rawpy] extract_thumb failed: {e4}")
+
+    raise RuntimeError("RAW decode failed (rawpy).")
+
+
+
 def load_image(filename, max_retries=3, wait_seconds=3):
     """
     Loads an image from the specified filename with support for various formats.
@@ -929,70 +1059,33 @@ def load_image(filename, max_retries=3, wait_seconds=3):
 
             elif filename.lower().endswith(('.cr2', '.cr3', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2', '.pef')):
                 print(f"Loading RAW file: {filename}")
-                with rawpy.imread(filename) as raw:
-                    # 1) Read the raw Bayer data (no demosaic)
-                    bayer_image = raw.raw_image_visible.astype(np.float32)
-                    print(f"Raw Bayer image dtype: {bayer_image.dtype}, "
-                        f"min: {bayer_image.min():.2f}, max: {bayer_image.max():.2f}")
 
-                    # 2) Get camera black/white levels
-                    black_levels = raw.black_level_per_channel  # e.g. [512, 512, 512, 512]
-                    white_level  = raw.white_level              # e.g. 16383 for 14-bit
-                    avg_black = float(np.mean(black_levels))    # Simple average
-
-                    # 3) Subtract black level, clip negatives to 0
-                    bayer_image -= avg_black
-                    bayer_image = np.clip(bayer_image, 0, None)
-
-                    # 4) Divide by (white_level - black_level) to normalize to [0..1]
-                    scale = float(white_level - avg_black)
-                    if scale <= 0:
-                        # Safety check if black >= white
-                        scale = 1.0
-                    bayer_image /= scale
-
-                    # Now dark frames should hover near 0.0 instead of ~0.7
-
-                    # 5) Check shape to decide if mono vs. color mosaic
-                    #    Usually it's 2D for a raw Bayer pattern
-                    if bayer_image.ndim == 2:
-                        image = bayer_image
-                        is_mono = True
-                    elif bayer_image.ndim == 3 and bayer_image.shape[2] == 3:
-                        # Rare case if raw.raw_image_visible is already color
-                        image = bayer_image
-                        is_mono = False
-                    else:
-                        raise ValueError(f"Unexpected RAW Bayer image shape: {bayer_image.shape}")
-
-                    # 6) Assume 16-bit raw data (typical for DSLRs)
-                    bit_depth = "16-bit"
-
-                    # 7) Build a minimal header from raw metadata
-                    original_header_dict = {
-                        'CAMERA': raw.camera_whitebalance[0] if raw.camera_whitebalance else 'Unknown',
-                        'EXPTIME': raw.shutter if hasattr(raw, 'shutter') else 0.0,
-                        'ISO': raw.iso_speed if hasattr(raw, 'iso_speed') else 0,
-                        'FOCAL': raw.focal_len if hasattr(raw, 'focal_len') else 0.0,
-                        'DATE': raw.timestamp if hasattr(raw, 'timestamp') else 'Unknown',
-                    }
-
-                    # 8) Extract the CFA pattern
-                    cfa_pattern = raw.raw_colors_visible  # 2D array of 0/1/2
-                    cfa_mapping = {0: 'R', 1: 'G', 2: 'B'}
-                    cfa_description = ''.join([cfa_mapping.get(color, '?')
-                                            for color in cfa_pattern.flatten()[:4]])
-                    original_header_dict['CFA'] = (cfa_description, 'Color Filter Array pattern')
-
-                    # 9) Convert dict → FITS Header
-                    original_header = fits.Header()
-                    for key, value in original_header_dict.items():
-                        original_header[key] = value
-
-                    print(f"RAW file loaded with CFA pattern: {cfa_description}, "
-                        f"dark frames ~0, bright frames ~1 now.")
+                try:
+                    image, original_header, bit_depth, is_mono = _try_load_raw_with_rawpy(
+                        filename,
+                        allow_thumb_preview=True,   # set False if you *never* want JPEG preview
+                        debug_thumb=True
+                    )
                     image = _finalize_loaded_image(image)
+
+                    if original_header is None:
+                        original_header = fits.Header()
+                    # If preview path returned a minimal header, that's fine—upstream UI will message it
+
+                    # Message what happened
+                    if "preview" in str(bit_depth).lower():
+                        print("RAW decode failed; using embedded JPEG preview (non-linear, 8-bit).")
+                    else:
+                        pass
+
                     return image, original_header, bit_depth, is_mono
+
+                except Exception as e_raw:
+                    print(f"rawpy failed: {e_raw}")
+                    # No other in-process fallback; bail out
+                    raise
+
+
 
             elif filename.lower().endswith('.png'):
                 print(f"Loading PNG file: {filename}")
