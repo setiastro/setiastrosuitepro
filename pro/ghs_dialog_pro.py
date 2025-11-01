@@ -246,14 +246,75 @@ class GhsDialogPro(QDialog):
         self._update_preview_pix(out)
 
     def _apply(self):
-        lut01 = self._build_lut01()
-        if lut01 is None or self._full_img is None:
+        if self._full_img is None:
             return
+
+        luts = self._build_all_active_luts()
+
         self.btn_apply.setEnabled(False)
-        self._thr = _CurvesWorker(self._full_img, self.cmb_ch.currentText(), lut01)
+        self._thr = _CurvesWorker(self._full_img, luts, self)
+        # ⬇️ use the handler you ALREADY have, which commits + metadata + reset
         self._thr.done.connect(self._on_apply_ready)
         self._thr.finished.connect(lambda: self.btn_apply.setEnabled(True))
         self._thr.start()
+
+    def _build_all_active_luts(self) -> dict[str, np.ndarray]:
+        """
+        For GHS we really only have ONE curve at a time – the one in self.editor –
+        and we apply it to the currently selected channel.
+        The worker wants a dict like {"K": lut} or {"R": lut}.
+        """
+        lut = self._build_lut01()
+        if lut is None:
+            return {}
+
+        ch = self.cmb_ch.currentText()
+        # map UI text → worker key
+        ui2key = {
+            "K (Brightness)": "K",
+            "R": "R",
+            "G": "G",
+            "B": "B",
+        }
+        key = ui2key.get(ch, "K")
+        return {key: lut}
+
+    def _apply_all_curves_once(self, img: np.ndarray, luts: dict[str, np.ndarray]) -> np.ndarray:
+        """
+        This is what _CurvesWorker will call.
+        We only ever expect 0 or 1 LUT here.
+        """
+        if not luts:
+            return img
+
+        # pull the single entry
+        (key, lut), = luts.items()
+
+        # map worker key → mode string used by _apply_mode_any
+        key2mode = {
+            "K": "K (Brightness)",
+            "R": "R",
+            "G": "G",
+            "B": "B",
+        }
+        mode = key2mode.get(key, "K (Brightness)")
+
+        out = _apply_mode_any(img, mode, lut)
+        return out.astype(np.float32, copy=False)
+
+    def _on_apply_commit_ready(self, out01: np.ndarray):
+        # honor mask, same as preview
+        out01 = self._blend_with_mask(out01)
+
+        # 🔴 safety: if the document currently holds RGB but we got mono back,
+        # make it 3-channel so apply_edit doesn’t silently ignore it
+        doc_img = np.asarray(self.doc.image)
+        if doc_img.ndim == 3 and out01.ndim == 2:
+            out01 = np.repeat(out01[..., None], 3, axis=2)
+
+        # now do the normal commit (history, reload, reset curves, etc.)
+        self._commit(out01)
+
 
     def _on_apply_ready(self, out01: np.ndarray):
         try:
