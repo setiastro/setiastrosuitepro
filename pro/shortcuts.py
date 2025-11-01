@@ -853,8 +853,8 @@ class ShortcutCanvas(QWidget):
                             doc = dm.open_path(p)
                             if doc is not None:
                                 self._mgr.mw._spawn_subwindow_for(doc)
-            self.lower()                    
             e.acceptProposedAction()
+            self.lower() 
             return
         self.lower()
         e.ignore()  
