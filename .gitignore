@@ -1,0 +1,21 @@
+# Fichiers bytecode Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environnements virtuels
+venv/
+env/
+.env/
+.venv/
+
+# IDE
+.vscode/
+
+# Fichiers système macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Logs
+*.log
