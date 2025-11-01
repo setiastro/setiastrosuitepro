@@ -269,7 +269,7 @@ from pro.status_log_dock import StatusLogDock
 from pro.log_bus import LogBus
 
 
-VERSION = "1.4.1"
+VERSION = "1.4.2"
 
 
 
@@ -374,6 +374,7 @@ if hasattr(sys, '_MEIPASS'):
     functionbundles_path = os.path.join(sys._MEIPASS, 'functionbundle.png')
     viewbundles_path = os.path.join(sys._MEIPASS, 'viewbundle.png')
     selectivecolor_path = os.path.join(sys._MEIPASS, 'selectivecolor.png')
+    rgbalign_path = os.path.join(sys._MEIPASS, 'rgbalign.png')
 else:
     # Development path
     icon_path = 'astrosuitepro.png'
@@ -475,6 +476,7 @@ else:
     functionbundles_path = 'functionbundle.png'
     viewbundles_path = 'viewbundle.png'
     selectivecolor_path = 'selectivecolor.png'
+    rgbalign_path = 'rgbalign.png'
 
 import faulthandler
 
@@ -1432,6 +1434,7 @@ class AstroSuiteProMainWindow(QMainWindow):
         tb_star.addAction(self.act_plate_solve)
         tb_star.addAction(self.act_star_align)
         tb_star.addAction(self.act_star_register)
+        tb_star.addAction(self.act_rgb_align)
         tb_star.addAction(self.act_mosaic_master)
         tb_star.addAction(self.act_supernova_hunter)
         tb_star.addAction(self.act_star_spikes)
@@ -1879,6 +1882,11 @@ class AstroSuiteProMainWindow(QMainWindow):
         self.act_isophote.setStatusTip("Fit galaxy isophotes and reveal residuals")
         self.act_isophote.triggered.connect(self._open_isophote)
 
+        self.act_rgb_align = QAction(QIcon(rgbalign_path), "RGB Align…", self)
+        self.act_rgb_align.setIconVisibleInMenu(True)
+        self.act_rgb_align.setStatusTip("Align R and B channels to G using astroalign (affine/homography/poly)")
+        self.act_rgb_align.triggered.connect(self._open_rgb_align)
+
         self.act_whats_in_my_sky = QAction(QIcon(wims_path), "What's In My Sky...", self)
         self.act_whats_in_my_sky.setIconVisibleInMenu(True)
         self.act_whats_in_my_sky.setStatusTip("Plan targets by altitude, transit time, and lunar separation")
@@ -2021,6 +2029,7 @@ class AstroSuiteProMainWindow(QMainWindow):
         reg("star_spikes", self.act_star_spikes)
         reg("exo_detector", self.act_exo_detector)
         reg("isophote", self.act_isophote) 
+        reg("rgb_align", self.act_rgb_align) 
         reg("whats_in_my_sky", self.act_whats_in_my_sky)
         reg("whats_in_my_image", self.act_wimi)
         reg("linear_fit", self.act_linear_fit)
@@ -2123,6 +2132,7 @@ class AstroSuiteProMainWindow(QMainWindow):
         m_star.addAction(self.act_plate_solve)         
         m_star.addAction(self.act_star_align)
         m_star.addAction(self.act_star_register)
+        m_star.addAction(self.act_rgb_align)
         m_star.addAction(self.act_mosaic_master)
         m_star.addAction(self.act_supernova_hunter)
         m_star.addAction(self.act_star_spikes)
@@ -3887,17 +3897,36 @@ class AstroSuiteProMainWindow(QMainWindow):
         if not sw:
             QMessageBox.information(self, "Histogram", "No active image window.")
             return
+
         doc = sw.widget().document
+
+        # make sure we have a place to hold dialogs
+        if not hasattr(self, "_open_histograms"):
+            self._open_histograms = []
+
         dlg = HistogramDialog(self, doc)
-        # Title includes the subwindow name so multiple dialogs are clear
         dlg.setWindowTitle(f"Histogram — {sw.windowTitle()}")
         try:
             dlg.setWindowIcon(QIcon(histogram_path))
         except Exception:
             pass
+
+        # 👇 this is the key: stay on top
+        dlg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+
         dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+
+        # keep it alive
+        self._open_histograms.append(dlg)
+
+        # optional: prune on close
+        dlg.finished.connect(lambda _: self._open_histograms.remove(dlg))
+
         if hasattr(self, "_log"):
             self._log(f"Opened Histogram for {doc.display_name()}")
+
 
     def _open_crop_dialog(self):
         sw = self.mdi.activeSubWindow()
@@ -4717,13 +4746,20 @@ class AstroSuiteProMainWindow(QMainWindow):
 
     #------------Tools-----------------
     def _open_blink_tool(self):
+        from pro.blink_comparator_pro import BlinkComparatorPro
         dlg = BlinkComparatorPro(doc_manager=self.docman)
         dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         dlg.setWindowTitle("Blink Comparator")
         try:
             dlg.setWindowIcon(QIcon(blink_path))
         except Exception:
-            pass        
+            pass
+
+        # pass blink dialog back so we can bring it to front afterward
+        dlg.sendToStacking.connect(
+            lambda paths, target, d=dlg: self._on_blink_send_to_stacking(paths, target, d)
+        )
+
         dlg.show()
 
     def _open_ppp_tool(self):
@@ -5005,6 +5041,18 @@ class AstroSuiteProMainWindow(QMainWindow):
         self._starreg_win.setWindowIcon(QIcon(starregistration_path))
         self._starreg_win.show()
 
+    def _open_rgb_align(self):
+        sw = self.mdi.activeSubWindow()
+        if not sw:
+            QMessageBox.information(self, "RGB Align", "No active image window.")
+            return
+
+        view = sw.widget()
+        from pro.rgbalign import RGBAlignDialog
+        dlg = RGBAlignDialog(parent=self, document=view)
+        dlg.setWindowIcon(QIcon(rgbalign_path))
+        dlg.show()
+
     def _open_mosaic_master(self):
         dlg = MosaicMasterDialog(
             settings=self.settings,
@@ -5035,33 +5083,43 @@ class AstroSuiteProMainWindow(QMainWindow):
         dlg = getattr(self, "_stacking_suite", None)
         if dlg is not None:
             try:
-                # If it still exists, make sure it's visible
                 if not dlg.isVisible():
                     dlg.show()
                 dlg.raise_()
                 dlg.activateWindow()
-                return
+                return dlg     # 👈 return existing
             except RuntimeError:
-                # Wrapped C++ object was deleted; clear the stale ref and fall through to recreate
-                self._stacking_suite = None
+                self._stacking_suite = None  # C++ deleted, recreate
 
-        # Create a new one
+        from pro.stacking_suite import StackingSuiteDialog
         dlg = StackingSuiteDialog(
             parent=self,
             wrench_path=wrench_path,
             spinner_path=spinner_path,
         )
-        # Ensure proper lifecycle: clear our ref when it closes
         dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         dlg.destroyed.connect(lambda _=None: setattr(self, "_stacking_suite", None))
-        # (Optional and also fine)
-        # dlg.finished.connect(lambda _code: setattr(self, "_stacking_suite", None))
 
         dlg.setWindowFlag(Qt.WindowType.Window, True)
         dlg.setWindowIcon(QIcon(stacking_path))
         dlg.show()
 
         self._stacking_suite = dlg
+        return dlg 
+
+    def _on_blink_send_to_stacking(self, paths: list[str], target: str, blink_dlg=None):
+        # 1) open / focus stacking first
+        dlg = self._open_stacking_suite()
+        # 2) push the files in
+        dlg.ingest_paths_from_blink(paths, target)
+        # 3) then re-raise blink so it doesn't get lost
+        if blink_dlg is not None:
+            try:
+                blink_dlg.show()
+                blink_dlg.raise_()
+                blink_dlg.activateWindow()
+            except Exception:
+                pass
 
     def _on_stackingsuite_relaunch(self, old_dir: str, new_dir: str):
         # Optional: respond to dialog’s relaunch request
@@ -5734,6 +5792,48 @@ class AstroSuiteProMainWindow(QMainWindow):
                 
                 QMessageBox.warning(self, "Star Alignment", f"Apply failed:\n{e}")
             return
+
+        if cid == "rgb_align":
+            # 1) find the document
+            doc = None
+            view = None
+            if target_sw is not None:
+                view = target_sw.widget()
+                doc = getattr(view, "document", None)
+            if doc is None and hasattr(self, "_active_doc"):
+                # your existing helper
+                doc = self._active_doc()
+
+            if not doc or getattr(doc, "image", None) is None:
+                QMessageBox.information(self, "RGB Align", "No image in the dropped/active view.")
+                return
+
+            # 2) if we were called WITH a preset → headless
+            #    (this is what shortcuts / Alt-drag will supply)
+            if preset:
+                self._log(f"Running RGB Align headlessly on '{target_sw.windowTitle()}'")
+                QApplication.processEvents()
+                try:
+                    from pro.rgbalign import run_rgb_align_headless
+                    
+                    run_rgb_align_headless(self, doc, preset)
+                except Exception as e:
+                    QMessageBox.critical(self, "RGB Align", f"Headless failed:\n{e}")
+                return
+
+            # 3) otherwise → open the dialog like before
+            try:
+                from pro.rgbalign import RGBAlignDialog
+                dlg = RGBAlignDialog(parent=self, document=view or doc)
+                try:
+                    dlg.setWindowIcon(QIcon(rgbalign_path))
+                except Exception:
+                    pass
+                dlg.show()
+            except Exception as e:
+                QMessageBox.critical(self, "RGB Align", f"Open failed:\n{e}")
+            return
+
 
         if cid == "background_neutral":
             try:
@@ -7660,16 +7760,28 @@ class AstroSuiteProMainWindow(QMainWindow):
         edited = [d for d in docs if self._document_has_edits(d)]
         msg = "Exit Seti Astro Suite Pro?"
         detail = []
-        if docs:   detail.append(f"Open images: {len(docs)}")
-        if edited: detail.append(f"Edited since open: {len(edited)}")
+        if docs:
+            detail.append(f"Open images: {len(docs)}")
+        if edited:
+            detail.append(f"Edited since open: {len(edited)}")
         if detail:
             msg += "\n\n" + "\n".join(detail)
 
-        btn = QMessageBox.question(
-            self, "Confirm Exit", msg,
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No
+        # --- stay-on-top message box ---
+        mbox = QMessageBox(self)
+        mbox.setIcon(QMessageBox.Icon.Question)
+        mbox.setWindowTitle("Confirm Exit")
+        mbox.setText(msg)
+        mbox.setStandardButtons(
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
+        mbox.setDefaultButton(QMessageBox.StandardButton.No)
+        # 👇 key line
+        mbox.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        mbox.raise_()
+        mbox.activateWindow()
+        btn = mbox.exec()
+
         if btn != QMessageBox.StandardButton.Yes:
             e.ignore()
             return
@@ -7682,7 +7794,6 @@ class AstroSuiteProMainWindow(QMainWindow):
         self._ensure_persistent_names()
         try:
             if self.isMaximized():
-                # Remember we were maximized, and also remember the normal geometry
                 self.settings.setValue("ui/main/maximized", True)
                 self.showNormal()
                 self.settings.setValue("ui/main/geometry", self.saveGeometry())
@@ -7695,7 +7806,7 @@ class AstroSuiteProMainWindow(QMainWindow):
         except Exception:
             pass
 
-        # NEW: only save shortcuts if enabled in settings (default True)
+        # save shortcuts
         try:
             save_on_exit = self.settings.value("shortcuts/save_on_exit", True, type=bool)
         except Exception:
@@ -7706,10 +7817,11 @@ class AstroSuiteProMainWindow(QMainWindow):
             except Exception:
                 pass
 
+        # wait on bg threads
         try:
             for t in list(getattr(self, "_bg_threads", [])):
                 try:
-                    t.wait(3000)  # don't block forever
+                    t.wait(3000)
                 except Exception:
                     pass
         except Exception:
