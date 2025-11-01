@@ -498,6 +498,14 @@ class SFCCDialog(QDialog):
         self.grad_method_combo = QComboBox(); self.grad_method_combo.addItems(["poly2","poly3","rbf"]); self.grad_method_combo.setCurrentText("poly3")
         row4.addWidget(self.grad_method_combo)
 
+        row4.addSpacing(15)
+        row4.addWidget(QLabel("Star detect σ:"))
+        self.sep_thr_spin = QSpinBox()
+        self.sep_thr_spin.setRange(2, 50)        # should be enough
+        self.sep_thr_spin.setValue(5)            # our current hardcoded value
+        self.sep_thr_spin.valueChanged.connect(self.save_sep_threshold_setting)
+        row4.addWidget(self.sep_thr_spin)
+
         row4.addStretch()
         self.add_curve_btn = QPushButton("Add Custom Filter/Sensor Curve…")
         self.add_curve_btn.clicked.connect(self.add_custom_curve); row4.addWidget(self.add_curve_btn)
@@ -540,18 +548,29 @@ class SFCCDialog(QDialog):
             val = s.value(key, "")
             if val:
                 idx = cb.findText(val)
-                if idx != -1: cb.setCurrentIndex(idx)
-        # White ref (star_combo uses displayed text)
+                if idx != -1:
+                    cb.setCurrentIndex(idx)
+
+        # existing stuff...
         saved_star = QSettings().value("SFCC/WhiteReference", "")
         if saved_star:
             idx = self.star_combo.findText(saved_star)
-            if idx != -1: self.star_combo.setCurrentIndex(idx)
+            if idx != -1:
+                self.star_combo.setCurrentIndex(idx)
+
         apply(self.r_filter_combo, "SFCC/RFilter")
         apply(self.g_filter_combo, "SFCC/GFilter")
         apply(self.b_filter_combo, "SFCC/BFilter")
         apply(self.sens_combo,     "SFCC/Sensor")
         apply(self.lp_filter_combo,  "SFCC/LPFilter")
         apply(self.lp_filter_combo2, "SFCC/LPFilter2")
+
+        # 👇 NEW: load SEP/star-detect threshold
+        sep_thr = int(s.value("SFCC/SEPThreshold", 5))
+        if hasattr(self, "sep_thr_spin"):
+            self.sep_thr_spin.setValue(sep_thr)
+    def save_sep_threshold_setting(self, v: int):
+        QSettings().setValue("SFCC/SEPThreshold", int(v))
 
     def save_lp_setting(self, _):  QSettings().setValue("SFCC/LPFilter", self.lp_filter_combo.currentText())
     def save_lp2_setting(self, _): QSettings().setValue("SFCC/LPFilter2", self.lp_filter_combo2.currentText())
@@ -1029,9 +1048,29 @@ class SFCCDialog(QDialog):
 
         # SEP on grayscale
         gray = np.mean(base, axis=2)
-        self.count_label.setText("Detecting stars (SEP)…"); QApplication.processEvents()
-        bkg = sep.Background(gray); data_sub = gray - bkg.back(); err = bkg.globalrms
-        sources = sep.extract(data_sub, 5.0, err=err)
+        
+        bkg = sep.Background(gray)
+        data_sub = gray - bkg.back()
+        err = bkg.globalrms
+
+        # 👇 get user threshold (default 5.0)
+        if hasattr(self, "sep_thr_spin"):
+            sep_sigma = float(self.sep_thr_spin.value())
+        else:
+            sep_sigma = 5.0
+        self.count_label.setText(f"Detecting stars (SEP σ={sep_sigma:.1f})…"); QApplication.processEvents()
+        sources = sep.extract(data_sub, sep_sigma, err=err)
+
+        MAX_SOURCES = 300_000
+        if sources.size > MAX_SOURCES:
+            QMessageBox.warning(
+                self,
+                "Too many detections",
+                f"SEP found {sources.size:,} sources with σ={sep_sigma:.1f}.\n"
+                f"Increase the threshold and rerun SFCC."
+            )
+            return
+
         if sources.size == 0:
             QMessageBox.critical(self, "SEP Error", "SEP found no sources."); return
         r_fluxrad, _ = sep.flux_radius(gray, sources["x"], sources["y"], 2.0*sources["a"], 0.5, normflux=sources["flux"], subpix=5)

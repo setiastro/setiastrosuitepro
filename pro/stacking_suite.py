@@ -3161,8 +3161,7 @@ class StackingSuiteDialog(QDialog):
         self._spinner_path = spinner_path
         self._post_progress_label = None
 
-        self.wrench_button = QPushButton()
-        self.wrench_button.setIcon(QIcon(self._wrench_path))
+
         self.setWindowTitle("Stacking Suite")
         self.setGeometry(300, 200, 800, 600)
 
@@ -3353,6 +3352,39 @@ class StackingSuiteDialog(QDialog):
 
         self.use_gpu_integration = self.settings.value("stacking/use_hardware_accel", True, type=bool)
         self._migrate_drizzle_keys_once()
+
+    def ingest_paths_from_blink(self, paths: list[str], target: str):
+        """
+        Called by the main window when Blink wants to send files over.
+        target = "lights"       → Light tab
+        target = "integration"  → Image Registration / Integration tab
+        """
+        if not paths:
+            return
+
+        if target == "lights":
+            self._ingest_paths_with_progress(
+                paths=paths,
+                tree=self.light_tree,
+                expected_type="LIGHT",
+                title="Adding Blink files to Light tab…"
+            )
+            # same behavior as normal add
+            self.assign_best_master_files()
+            self.tabs.setCurrentWidget(self.light_tab)
+            return
+
+        if target == "integration":
+            # treat them as calibrated lights you want to integrate
+            self._ingest_paths_with_progress(
+                paths=paths,
+                tree=self.reg_tree,
+                expected_type="LIGHT",
+                title="Adding Blink files to Image Integration…"
+            )
+            self._refresh_reg_tree_summaries()
+            self.tabs.setCurrentWidget(self.image_integration_tab)
+            return
 
 
     def _migrate_drizzle_keys_once(self):
@@ -11027,6 +11059,7 @@ class StackingSuiteDialog(QDialog):
                     chunk_images = [_center_crop_2d(im, min_h, min_w) for im in chunk_images]
 
                 self.update_status("🌍 Measuring global means in parallel...")
+                QApplication.processEvents()
                 means = np.array([float(np.mean(ci)) for ci in chunk_images], dtype=np.float32)
                 mean_values.update({fp: float(means[i]) for i, fp in enumerate(chunk_valid_files)})
 
@@ -11052,93 +11085,68 @@ class StackingSuiteDialog(QDialog):
                 return
 
             self.update_status(f"✅ All chunks complete! Measured {len(measured_frames)} frames total.")
-
             # ─────────────────────────────────────────────────────────────────────
-            # Pick reference optimized for ASTROALIGN robustness
+            # FAST reference selection: score = starcount / (median * ecc)
+            # uses stats we ALREADY measured → good for 100s of frames
             # ─────────────────────────────────────────────────────────────────────
-            self.update_status("🧠 Selecting reference optimized for AstroAlign…")
+            self.update_status("🧠 Selecting reference optimized for AstroAlign (starcount/(median*ecc))…")
+            QApplication.processEvents()
 
             def _dominant_pa_cluster_simple(fps, get_pa, tol=12.0):
-                # Cluster PAs in [0,180); return list of inlier fps from largest cluster
+                """
+                Cluster PAs in [0,180) and return the biggest cluster.
+                This keeps us from picking a frame that's on the other side
+                of a meridian flip when most frames agree.
+                """
                 vals = []
                 for fp in fps:
                     pa = get_pa(fp)
                     if pa is None:
                         continue
+                    # normalize PA to [0,180)
                     v = ((pa % 180.0) + 180.0) % 180.0
                     vals.append((fp, v))
+
+                # if we couldn't read any PA, just return everything
                 if not vals:
                     return fps
+
                 vals.sort(key=lambda t: t[1])
-                best, best_span = [], -1
+                best_group = []
+                best_size = -1
+
                 for i in range(len(vals)):
                     center = vals[i][1]
                     inliers = []
                     for fp, v in vals:
-                        d = abs(v - center); d = min(d, 180.0 - d)
-                        if d <= tol: inliers.append(fp)
-                    if len(inliers) > best_span:
-                        best, best_span = inliers, len(inliers)
-                return best if best else fps
+                        d = abs(v - center)
+                        d = min(d, 180.0 - d)  # wrap
+                        if d <= tol:
+                            inliers.append(fp)
+                    if len(inliers) > best_size:
+                        best_group, best_size = inliers, len(inliers)
 
-            def _grid_coverage(star_xy, hw, bins=4):
-                # fraction of grid cells that contain ≥1 star (encourages wide spread)
-                if not star_xy: return 0.0
-                h, w = hw
-                gx = np.clip((np.array([x for x, y in star_xy]) / max(1, w)) * bins, 0, bins-1).astype(int)
-                gy = np.clip((np.array([y for x, y in star_xy]) / max(1, h)) * bins, 0, bins-1).astype(int)
-                cells = set(zip(gx.tolist(), gy.tolist()))
-                return len(cells) / float(bins*bins)
+                return best_group if best_group else fps
 
-            def _extract_keypoints(preview):
-                # Return list of (x,y) star-like points in preview image (2D float32)
-                pts = []
-                try:
-                    if sep is not None:
-                        bg = sep.Background(preview, bw=64, bh=64, fw=3, fh=3)
-                        data_sub = preview - bg
-                        objs = sep.extract(data_sub, thresh=3.0, minarea=5)
-                        # take up to 200 brightest by flux
-                        if objs is not None and len(objs) > 0:
-                            order = np.argsort(objs['flux'])[::-1][:200]
-                            for i in order:
-                                pts.append((float(objs['x'][i]), float(objs['y'][i])))
-                    else:
-                        import cv2
-                        p8 = cv2.normalize(preview, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-                        corners = cv2.goodFeaturesToTrack(p8, maxCorners=250, qualityLevel=0.01, minDistance=8, blockSize=7)
-                        if corners is not None:
-                            for c in corners:
-                                x, y = c.ravel().tolist()
-                                pts.append((float(x), float(y)))
-                except Exception:
-                    pass
-                return pts
+            def _fast_ref_score(fp: str) -> float:
+                """
+                score = star_count / (median * ecc)
 
-            def _edge_penalty(preview):
-                h, w = preview.shape
-                m = max(8, min(h, w)//16)
-                edges = np.r_[preview[:m,:].ravel(), preview[-m:,:].ravel(),
-                            preview[:, :m].ravel(), preview[:, -m:].ravel()]
-                center = preview[m:-m, m:-m] if (h>2*m and w>2*m) else preview
-                e_med = float(np.median(edges)) if edges.size else float(np.median(preview))
-                c_med = float(np.median(center))
-                ratio = e_med / max(1e-6, c_med)  # <1 if strong vignetting/edge darkness
-                return max(0.3, min(1.2, ratio))  # clamp
+                - star_count: more is better
+                - median: darker backgrounds (lower median) get rewarded
+                - ecc: rounder stars (ecc ~ 1) get rewarded; we clamp ecc
+                  so tiny values don't explode the score
+                """
+                info = star_counts.get(fp, {"count": 0, "eccentricity": 1.0})
+                star_count = float(info.get("count", 0.0))
+                ecc = float(info.get("eccentricity", 1.0))
+                med = float(preview_medians.get(fp, 0.0))
 
-            def _astroalign_ref_score(fp, preview_2d):
-                """Higher = better ref for astroalign."""
-                info = star_counts.get(fp, {"count": 0, "eccentricity": 0.0})
-                c = max(1, int(info["count"]))
-                ecc = float(info["eccentricity"])
-                kps = _extract_keypoints(preview_2d)
-                cov = _grid_coverage(kps, preview_2d.shape, bins=4)  # 0..1
-                edge = _edge_penalty(preview_2d)                      # ~0.3..1.2
-                # more stars, wide coverage, round stars, healthy edges
-                base = np.log1p(c) * cov * (1.0 - min(1.0, max(0.0, ecc))) * edge
-                # slight nudge by your previous weight to break ties
-                base *= (0.90 + 0.10 * float(self.frame_weights.get(fp, 0.0)))
-                return float(base)
+                # guards / clamps
+                med = max(med, 1e-3)          # avoid divide-by-zero on very dark frames
+                ecc = max(0.25, min(ecc, 3.0))  # keep in sane range
+
+                return star_count / (med * ecc)
 
             # 1) Respect manual reference if provided
             user_ref = getattr(self, "reference_frame", None)
@@ -11146,51 +11154,56 @@ class StackingSuiteDialog(QDialog):
                 self.update_status(f"📌 Using user-specified reference: {user_ref}")
                 self.reference_frame = user_ref
             else:
-                # 2) Restrict candidates to dominant PA cluster
+                # 2) Optionally restrict to dominant PA cluster (helps big sets)
                 def _pa_of(fp):
                     try:
                         hdr0 = fits.getheader(fp, ext=0)
                         return self._extract_pa_deg(hdr0)
                     except Exception:
                         return None
-                candidates = _dominant_pa_cluster_simple(measured_frames, _pa_of, tol=12.0)
-                if not candidates:
+
+                # if we have a lot of frames, PA-cluster first
+                if len(measured_frames) > 60:
+                    candidates = _dominant_pa_cluster_simple(measured_frames, _pa_of, tol=12.0)
+                    if not candidates:
+                        candidates = measured_frames[:]
+                else:
                     candidates = measured_frames[:]
 
-                # 3) Build/align previews for fair scoring
-                preview_cache = {}
-                min_h = None; min_w = None
+                # 3) Pick the best by the fast score
+                best_fp = None
+                best_score = -1.0
                 for fp in candidates:
-                    p = self._quick_preview_any(fp, target_xbin, target_ybin)
-                    if p is None:      # skip if no data
-                        continue
-                    p = np.ascontiguousarray(p.astype(np.float32, copy=False))
-                    preview_cache[fp] = p
-                    h, w = p.shape
-                    min_h = h if min_h is None else min(min_h, h)
-                    min_w = w if min_w is None else min(min_w, w)
-                for fp, p in list(preview_cache.items()):
-                    if p.shape != (min_h, min_w):
-                        preview_cache[fp] = _center_crop_2d(p, min_h, min_w)
+                    s = _fast_ref_score(fp)
+                    if s > best_score:
+                        best_fp = fp
+                        best_score = s
 
-                # 4) Score for astroalign and pick the best
-                best_fp, best_s = None, -1.0
-                for fp, p in preview_cache.items():
-                    s = _astroalign_ref_score(fp, p)
-                    if s > best_s:
-                        best_fp, best_s = fp, s
-
-                # 5) Fallback if needed
+                # 4) Fallback if something went sideways
                 if best_fp is None and measured_frames:
+                    # fall back to previous weighting you computed
                     best_fp = max(measured_frames, key=lambda f: self.frame_weights.get(f, 0.0))
+                    best_score = float(self.frame_weights.get(best_fp, 0.0))
 
                 self.reference_frame = best_fp
-                self.update_status(f"📌 Auto-selected reference: {os.path.basename(self.reference_frame)}")
-                if best_s <= 0.15:
-                    self.update_status("⚠️ Low astroalign score; results may be fragile. Consider manual reference pick.")
-                ref_stats_meas = star_counts.get(self.reference_frame, {"count": 0, "eccentricity": 0.0})
-                ref_count = ref_stats_meas["count"]
-                ref_ecc   = ref_stats_meas["eccentricity"]
+                if self.reference_frame:
+                    self.update_status(
+                        f"📌 Auto-selected reference: {os.path.basename(self.reference_frame)} "
+                        f"(score={best_score:.4f})"
+                    )
+                else:
+                    # last resort — this should basically never happen
+                    self.reference_frame = measured_frames[0]
+                    self.update_status(
+                        f"📌 Auto-selected reference (fallback): {os.path.basename(self.reference_frame)}"
+                    )
+                QApplication.processEvents()
+
+            # expose these so the later code can show them / log them
+            ref_stats_meas = star_counts.get(self.reference_frame, {"count": 0, "eccentricity": 0.0})
+            ref_count = ref_stats_meas["count"]
+            ref_ecc   = ref_stats_meas["eccentricity"]
+
             # ─────────────────────────────────────────────────────────────────────
             # Debayer the reference ONCE and compute ref_median from debayered ref
             # ─────────────────────────────────────────────────────────────────────
@@ -11218,6 +11231,7 @@ class StackingSuiteDialog(QDialog):
                 ref_median = float(np.median(ref_img))
 
             self.update_status(f"📊 Reference (debayered) median: {ref_median:.4f}")
+            QApplication.processEvents()
             ref_stats_meas = star_counts.get(self.reference_frame, {"count": 0, "eccentricity": 0.0})
             ref_count = ref_stats_meas["count"]
             ref_ecc   = ref_stats_meas["eccentricity"]    
@@ -11268,6 +11282,7 @@ class StackingSuiteDialog(QDialog):
             ref_min = float(np.nanmin(ref_L))
             ref_target_median = float(np.nanmedian(ref_L - ref_min))
             self.update_status(f"📊 Reference min={ref_min:.6f}, normalized-median={ref_target_median:.6f}")
+            QApplication.processEvents()
 
             # Initial per-file scale factors from preview medians
             eps = 1e-6
@@ -11287,6 +11302,7 @@ class StackingSuiteDialog(QDialog):
             # ─────────────────────────────────────────────────────────────────────
             ref_pa = self._extract_pa_deg(ref_hdr)
             self.update_status(f"🧭 Reference PA: {ref_pa:.2f}°" if ref_pa is not None else "🧭 Reference PA: (unknown)")
+            QApplication.processEvents()
 
             # ─────────────────────────────────────────────────────────────────────
             # NEW: build arcsec/px map & choose target = reference scale
@@ -11376,6 +11392,7 @@ class StackingSuiteDialog(QDialog):
             target_sx, target_sy = _scale_from_header_raw(ref_hdr)
             if target_sx and target_sy:
                 self.update_status(f"🎯 Target pixel scale = reference: {target_sx:.3f}\"/px × {target_sy:.3f}\"/px")
+                QApplication.processEvents()
             else:
                 self.update_status("🎯 Target pixel scale unknown (no WCS/pixel size). Will skip scale normalization.")
                 target_sx = target_sy = None
@@ -11491,20 +11508,21 @@ class StackingSuiteDialog(QDialog):
                                         f"{_fmt2(eff_psx)}\"/{_fmt2(eff_psy)}\" → {_fmt2(eff_ref_psx)}\"/{_fmt2(eff_ref_psy)}\" "
                                         f"| size {before_hw[1]}×{before_hw[0]} → {after_hw[1]}×{after_hw[0]}"
                                     )
+
+                                    try:
+                                        self.update_status(
+                                            "⚖️ Scales (arcsec/px): "
+                                            f"raw(frame)=({_fmt2(raw_psx)},{_fmt2(raw_psy)}), "
+                                            f"raw(ref)=({_fmt2(raw_ref_psx)},{_fmt2(raw_ref_psy)}) → "
+                                            f"eff(frame→tbin)=({_fmt2(eff_psx)},{_fmt2(eff_psy)}), "
+                                            f"eff(ref→tbin)=({_fmt2(eff_ref_psx)},{_fmt2(eff_ref_psy)}) ; "
+                                            f"resize=(rx={_fmt2(rx)}, ry={_fmt2(ry)})"
+                                        )
+                                    except Exception:
+                                        pass
+
                             else:
                                 self.update_status("⚠️ Pixel-scale normalize skipped (insufficient header scale info).")
-
-                            try:
-                                self.update_status(
-                                    "⚖️ Scales (arcsec/px): "
-                                    f"raw(frame)=({_fmt2(raw_psx)},{_fmt2(raw_psy)}), "
-                                    f"raw(ref)=({_fmt2(raw_ref_psx)},{_fmt2(raw_ref_psy)}) → "
-                                    f"eff(frame→tbin)=({_fmt2(eff_psx)},{_fmt2(eff_psy)}), "
-                                    f"eff(ref→tbin)=({_fmt2(eff_ref_psx)},{_fmt2(eff_ref_psy)}) ; "
-                                    f"resize=(rx={_fmt2(rx)}, ry={_fmt2(ry)})"
-                                )
-                            except Exception:
-                                pass
 
                             # normalization scale (unchanged)
                             pm = float(preview_medians.get(fp, 0.0))

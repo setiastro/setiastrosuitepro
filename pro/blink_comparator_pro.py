@@ -517,10 +517,27 @@ class MetricsWindow(QWidget):
             # re-plot the current group with the new ordering
             self._on_group_change(self.group_combo.currentText())
 
+class BlinkComparatorPro(QDialog):
+    sendToStacking = pyqtSignal(list, str)
+
+    def __init__(self, doc_manager=None, parent=None):
+        super().__init__(parent)
+        self.doc_manager = doc_manager
+        self.setWindowTitle("Blink Comparator")
+        self.resize(1200, 700)
+
+        self.tab = BlinkTab(doc_manager=self.doc_manager, parent=self)
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.tab)
+        self.setLayout(layout)
+
+        # bridge tab → dialog
+        self.tab.sendToStacking.connect(self.sendToStacking)
 
 
 class BlinkTab(QWidget):
     imagesChanged = pyqtSignal(int)
+    sendToStacking = pyqtSignal(list, str)
     def __init__(self, image_manager=None, doc_manager=None, parent=None):
         super().__init__(parent)  
 
@@ -600,7 +617,18 @@ class BlinkTab(QWidget):
         self.metrics_button.clicked.connect(self.show_metrics)
         left_layout.addWidget(self.metrics_button)
 
+        push_row = QHBoxLayout()
+        self.send_lights_btn = QPushButton("→ Stacking: Lights", self)
+        self.send_lights_btn.setToolTip("Send selected (or all) blink files to the Stacking Suite → Light tab")
+        self.send_lights_btn.clicked.connect(self._send_to_stacking_lights)
+        push_row.addWidget(self.send_lights_btn)
 
+        self.send_integ_btn = QPushButton("→ Stacking: Integration", self)
+        self.send_integ_btn.setToolTip("Send selected (or all) blink files to the Stacking Suite → Image Integration tab")
+        self.send_integ_btn.clicked.connect(self._send_to_stacking_integration)
+        push_row.addWidget(self.send_integ_btn)
+
+        left_layout.addLayout(push_row)
 
         # Playback controls (left arrow, play, pause, right arrow)
         playback_controls_layout = QHBoxLayout()
@@ -780,6 +808,57 @@ class BlinkTab(QWidget):
         self.scroll_area.horizontalScrollBar().valueChanged.connect(lambda _: self._capture_view_center_norm())
         self.scroll_area.verticalScrollBar().valueChanged.connect(lambda _: self._capture_view_center_norm())
         self.imagesChanged.connect(self._update_loaded_count_label)
+
+
+    # --------------------------------------------
+    # NEW: collect paths & emit to stacking
+    # --------------------------------------------
+    def _collect_paths_for_stacking(self) -> list[str]:
+        """
+        Priority:
+        1) if user has rows selected in the tree → use those
+        2) else → use all loaded image_paths
+        """
+        paths: list[str] = []
+
+        selected_items = self.fileTree.selectedItems()
+        if selected_items:
+            for it in selected_items:
+                p = it.data(0, Qt.ItemDataRole.UserRole)
+                if not p:
+                    # some code uses text as path, fall back
+                    p = it.text(0)
+                if p:
+                    paths.append(p)
+        else:
+            # no selection → send all
+            for p in self.image_paths:
+                if p:
+                    paths.append(p)
+
+        # de-dup, keep order
+        seen = set()
+        unique_paths = []
+        for p in paths:
+            if p not in seen:
+                seen.add(p)
+                unique_paths.append(p)
+        return unique_paths
+
+    def _send_to_stacking_lights(self):
+        paths = self._collect_paths_for_stacking()
+        if not paths:
+            QMessageBox.information(self, "No images", "There are no images to send.")
+            return
+        self.sendToStacking.emit(paths, "lights")
+
+    def _send_to_stacking_integration(self):
+        paths = self._collect_paths_for_stacking()
+        if not paths:
+            QMessageBox.information(self, "No images", "There are no images to send.")
+            return
+        self.sendToStacking.emit(paths, "integration")
+
 
     def export_blink_video(self):
         """Export the blink sequence to a video. Defaults to all frames in current tree order."""
@@ -2134,6 +2213,14 @@ class BlinkTab(QWidget):
         batch_move_action = QAction("Move All Flagged Images", self)
         batch_move_action.triggered.connect(self.batch_move_flagged_images)
         menu.addAction(batch_move_action)
+
+        send_lights_act = QAction("Send to Stacking → Lights", self)
+        send_lights_act.triggered.connect(self._send_to_stacking_lights)
+        menu.addAction(send_lights_act)
+
+        send_integ_act = QAction("Send to Stacking → Integration", self)
+        send_integ_act.triggered.connect(self._send_to_stacking_integration)
+        menu.addAction(send_integ_act)
 
         menu.exec(self.fileTree.mapToGlobal(pos))
 

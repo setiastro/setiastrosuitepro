@@ -330,32 +330,23 @@ class CurveEditor(QGraphicsView):
         self.preview_callback = callback
 
     def get8bitLUT(self):
-        # 8-bit LUT size
         lut_size = 256
 
         curve_pts = self.getCurvePoints()
         if len(curve_pts) == 0:
-            # No curve points, return a linear LUT
-            lut = np.linspace(0, 255, lut_size, dtype=np.uint8)
-            return lut
+            return np.linspace(0, 255, lut_size, dtype=np.uint8)
 
         curve_array = np.array(curve_pts, dtype=np.float64)
-        xs = curve_array[:, 0]   # X from 0 to 360
-        ys = curve_array[:, 1]   # Y from 0 to 360
+        xs = curve_array[:, 0]   # 0..360 (scene)
+        ys = curve_array[:, 1]   # 0..360 (scene, down)
 
         ys_for_lut = 360.0 - ys
 
-        # Input positions for interpolation (0..255 mapped to 0..360)
         input_positions = np.linspace(0, 360, lut_size, dtype=np.float64)
-
-        # Interpolate using the inverted Y
         output_values = np.interp(input_positions, xs, ys_for_lut)
 
-        # Map 0..360 to 0..255
         output_values = (output_values / 360.0) * 255.0
-        output_values = np.clip(output_values, 0, 255).astype(np.uint8)
-
-        return output_values
+        return np.clip(output_values, 0, 255).astype(np.uint8)
 
     def updateCurve(self):
         """Update the curve by redrawing based on endpoints and control points."""
@@ -460,33 +451,24 @@ class CurveEditor(QGraphicsView):
         return [(pt.x(), pt.y()) for pt in self.curve_points]
 
     def getLUT(self):
-        # 16-bit LUT size
         lut_size = 65536
 
         curve_pts = self.getCurvePoints()
         if len(curve_pts) == 0:
-            # No curve points, return a linear LUT
-            lut = np.linspace(0, 65535, lut_size, dtype=np.uint16)
-            return lut
+            return np.linspace(0, 65535, lut_size, dtype=np.uint16)
 
         curve_array = np.array(curve_pts, dtype=np.float64)
-        xs = curve_array[:,0]   # X from 0 to 360
-        ys = curve_array[:,1]   # Y from 0 to 360
+        xs = curve_array[:, 0]   # 0..360
+        ys = curve_array[:, 1]   # 0..360
 
         ys_for_lut = 360.0 - ys
 
-
-        # Input positions for interpolation (0..65535 mapped to 0..360)
         input_positions = np.linspace(0, 360, lut_size, dtype=np.float64)
-
-        # Interpolate using the inverted Y
         output_values = np.interp(input_positions, xs, ys_for_lut)
 
-        # Map 0..360 to 0..65535
         output_values = (output_values / 360.0) * 65535.0
-        output_values = np.clip(output_values, 0, 65535).astype(np.uint16)
+        return np.clip(output_values, 0, 65535).astype(np.uint16)
 
-        return output_values
     
     def mousePressEvent(self, event):
         # ctrl+left click on the grid → pick inflection point
@@ -1285,12 +1267,34 @@ class CurvesDialogPro(QDialog):
 
 
     def _build_all_active_luts(self) -> dict[str, np.ndarray]:
-        luts = {}
+        """
+        Build LUTs for every curve.
+
+        IMPORTANT:
+        - The *active* curve (the one shown in the editor right now) must be built
+          from the editor's actual spline so we DO NOT re-insert (0,0)/(1,1).
+        - All *other* curves (stored in _curves_store) can still be built from
+          their normalized points (those are allowed to have endpoints).
+        """
+        luts: dict[str, np.ndarray] = {}
+        active_key = self._current_mode_key
+
+        # 1) ACTIVE curve → from editor spline (no normalization, no auto endpoints)
+        fn = getattr(self.editor, "getCurveFunction", None)
+        if callable(fn):
+            f = fn()
+            if f is not None:
+                luts[active_key] = build_curve_lut(f, size=65536)
+
+        # 2) OTHER curves → from stored normalized points (old behavior)
         for key, pts in self._curves_store.items():
-            # skip exact-linear to save work
-            if isinstance(pts, (list, tuple)) and len(pts) == 2 and pts[0] == (0.0,0.0) and pts[1] == (1.0,1.0):
+            if key == active_key:
+                continue  # already done above
+            # skip exact linear
+            if isinstance(pts, (list, tuple)) and len(pts) == 2 and pts[0] == (0.0, 0.0) and pts[1] == (1.0, 1.0):
                 continue
             luts[key] = self._lut01_from_points_norm(pts, size=65536)
+
         return luts
 
     def _apply_all_curves_once(self, img01: np.ndarray, luts: dict[str, np.ndarray]) -> np.ndarray:
@@ -1590,12 +1594,28 @@ class CurvesDialogPro(QDialog):
         return [(float(np.clip(x,0,1)), float(np.clip(y,0,1))) for (x,y) in out]
 
     def _collect_points_norm_from_editor(self) -> list[tuple[float,float]]:
-        """Take endpoints+handles from editor => normalized points."""
-        pts_scene = []
+        """
+        Take endpoints+handles from editor => normalized points.
+        NOTE: we do NOT force-add (0,0) and (1,1) here, because that breaks
+        manual black/white endpoints. Presets can still add them later.
+        """
+        pts_scene: list[tuple[float, float]] = []
         for p in (self.editor.end_points + self.editor.control_points):
             pos = p.scenePos()
             pts_scene.append((float(pos.x()), float(pos.y())))
-        return self._scene_to_norm_points(pts_scene)
+
+        # convert WITHOUT forced endpoints
+        out: list[tuple[float,float]] = []
+        lastx = -1e9
+        for (x, y) in sorted(pts_scene, key=lambda t: t[0]):
+            x = float(np.clip(x, 0.0, 360.0))
+            y = float(np.clip(y, 0.0, 360.0))
+            if x <= lastx:
+                x = lastx + 1e-3
+            lastx = x
+            out.append((x / 360.0, 1.0 - (y / 360.0)))
+        # no auto (0,0)/(1,1) here
+        return [(float(np.clip(x, 0, 1)), float(np.clip(y, 0, 1))) for (x, y) in out]
 
     def _apply_preset_dict(self, preset: dict):
         # set mode
@@ -1710,14 +1730,12 @@ class CurvesDialogPro(QDialog):
         get_fn = getattr(self.editor, "getCurveFunction", None)
         if not get_fn:
             return None
-        curve_func = get_fn()  # ← call the method to obtain the interpolator
+        curve_func = get_fn()
         if curve_func is None:
             return None
-        try:
-            return build_curve_lut(curve_func, size=65536)
-        except Exception as e:
-            self._set_status(f"LUT build failed: {type(e).__name__}: {e}")
-            return None
+        # this is your old good helper from the file you pasted
+        return build_curve_lut(curve_func, size=65536)
+
 
     def _toggle_preview(self, on: bool):
         self._show_proc = bool(on)

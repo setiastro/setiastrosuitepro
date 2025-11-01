@@ -539,7 +539,14 @@ class ShortcutButton(QToolButton):
             if dlg.exec() == QDialog.DialogCode.Accepted:
                 self._save_preset(dlg.result_dict())
                 QMessageBox.information(self, "Preset saved", "Preset stored on shortcut.")
-            return       
+            return  
+        if cid == "rgb_align":
+            cur = self._load_preset() or {"model": "homography", "new_doc": True}
+            dlg = _RGBAlignPresetDialog(self, initial=cur)
+            if dlg.exec() == QDialog.DialogCode.Accepted:
+                self._save_preset(dlg.result_dict())
+                QMessageBox.information(self, "Preset saved", "RGB Align preset stored on shortcut.")
+            return             
         if cid in ("signature_insert", "signature_adder", "signature"):
             dlg = _SignatureInsertPresetDialog(self, initial=cur)
             if dlg.exec() == QDialog.DialogCode.Accepted:
@@ -2377,4 +2384,40 @@ class _CropPresetDialog(QDialog):
             },
             "create_new_view": bool(self.cb_new.isChecked()),
             "title": self.le_title.text().strip() or "Crop",
+        }
+
+class _RGBAlignPresetDialog(QDialog):
+    def __init__(self, parent=None, initial: dict | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("RGB Align — Preset")
+        init = dict(initial or {})
+        v = QVBoxLayout(self)
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Alignment model:"))
+        self.cb_model = QComboBox()
+        self.cb_model.addItems(["homography", "affine", "poly3", "poly4"])
+        want = init.get("model", "homography").lower()
+        idx = max(0, self.cb_model.findText(want, Qt.MatchFlag.MatchFixedString))
+        self.cb_model.setCurrentIndex(idx)
+        row.addWidget(self.cb_model, 1)
+        v.addLayout(row)
+
+        self.chk_new = QCheckBox("Create new document")
+        self.chk_new.setChecked(bool(init.get("new_doc", True)))
+        v.addWidget(self.chk_new)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok |
+            QDialogButtonBox.StandardButton.Cancel,
+            parent=self
+        )
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        v.addWidget(btns)
+
+    def result_dict(self) -> dict:
+        return {
+            "model": self.cb_model.currentText().lower(),
+            "new_doc": bool(self.chk_new.isChecked()),
         }
