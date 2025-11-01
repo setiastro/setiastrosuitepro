@@ -1,9 +1,9 @@
 {
-  "version": "1.4.1",
+  "version": "1.4.3",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.1/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.1/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.1/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.3/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.3/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.3/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.4.1 New Tool: Selective Color Correction. GHS bug fix. Selective Color import mask addition. Crop bug fix. Mask Creation OK button immediately creates the mask now."
+  "notes": "Seti Astro Suite Pro V1.4.3 New Tool: RGB Align.  Blink Tool now allows you to push the file list directly to Stacking Suite.  Accurate 3 pass bug fix for Stacking Suite, Star Detection threshold variable not user changeable in SFCC, GHS mono bug fix, other fixes"
 }
