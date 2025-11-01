@@ -186,7 +186,7 @@ ICON_FILES = [
     'pen.png','livestacking.png','HRDiagram.png','convo.png', 'aberration.png',
     'spcc.png','SASP_data.fits','exoicon.png','gridicon.png',
     'dse.png','astrobin_filters.csv','isophote.png',
-    'statstretch.png','starstretch.png','curves.png','disk.png',
+    'statstretch.png','starstretch.png','curves.png','disk.png', 'rgbalign.png',
     'uhs.png','blink.png','ppp.png','nbtorgb.png','freqsep.png', 'selectivecolor.png',
     'contsub.png','halo.png','cosmic.png','cosmicsat.png',
     'imagecombine.png','wrench_icon.png','eye.png','nuke.png',
@@ -320,3 +320,4 @@ app = BUNDLE(
     },
 
 )
+
