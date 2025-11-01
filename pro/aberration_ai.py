@@ -5,6 +5,7 @@ import numpy as np
 import sys, platform  # add
 import time
 import importlib
+import traceback
 
 IS_APPLE_ARM = (sys.platform == "darwin" and platform.machine() == "arm64")
 
@@ -28,6 +29,47 @@ try:
 except Exception:
     _importlib_metadata = None
 
+def _win_try_add_ort_dirs():
+    """
+    Windows-only: try to add the onnxruntime / onnxruntime-directml DLL folders
+    to the DLL search path, then the import might succeed.
+    """
+    if os.name != "nt":
+        return
+
+    candidates = []
+
+    # 1) venv-style path: <venv>\Lib\site-packages\onnxruntime\capi
+    base = sys.prefix  # venv root
+    candidates.append(os.path.join(base, "Lib", "site-packages", "onnxruntime", "capi"))
+    candidates.append(os.path.join(base, "Lib", "site-packages", "onnxruntime_directml", "capi"))
+
+    # 2) if importlib.metadata is available, try to find dists
+    if _importlib_metadata:
+        for dist_name in ("onnxruntime", "onnxruntime-directml"):
+            try:
+                files = _importlib_metadata.files(dist_name) or []
+            except Exception:
+                files = []
+            for f in files:
+                # look for .../onnxruntime/capi
+                p = os.path.join(sys.prefix, "Lib", "site-packages", str(f))
+                if p.lower().endswith(os.path.join("onnxruntime", "capi").lower()):
+                    candidates.append(p)
+
+    # dedupe
+    seen = set()
+    for p in candidates:
+        p = os.path.abspath(p)
+        if p in seen:
+            continue
+        seen.add(p)
+        if os.path.isdir(p):
+            try:
+                os.add_dll_directory(p)
+            except Exception:
+                # pre-3.8 or already added
+                pass
 # will be filled by _probe_onnxruntime()
 _ORT_FLAVOR: str | None = None         # e.g. "onnxruntime", "onnxruntime-directml"
 _ORT_IMPORT_ERR: str | None = None     # last import error string
@@ -263,11 +305,10 @@ def _probe_onnxruntime():
     """
     global ort, _ORT_FLAVOR, _ORT_IMPORT_ERR, _ORT_FOUND_DISTS
 
-    # already good?
     if ort is not None:
         return ort
 
-    # 1) check what's installed (for the dialog)
+    # what do we SEE installed? (for dialog)
     _ORT_FOUND_DISTS = []
     if _importlib_metadata:
         for dist_name in ("onnxruntime", "onnxruntime-directml", "onnxruntime-gpu"):
@@ -277,7 +318,7 @@ def _probe_onnxruntime():
             except Exception:
                 pass
 
-    # 2) first: the normal CPU module
+    # 1) normal import first
     try:
         import onnxruntime as _ort
         ort = _ort
@@ -285,28 +326,49 @@ def _probe_onnxruntime():
         _ORT_IMPORT_ERR = None
         return ort
     except Exception as e1:
-        _ORT_IMPORT_ERR = f"import onnxruntime failed: {e1!r}"
+        # keep full traceback so we can show it
+        _ORT_IMPORT_ERR = (
+            f"import onnxruntime failed: {e1!r}\n"
+            f"{traceback.format_exc()}"
+        )
         ort = None
 
-    # 3) if the user installed the DirectML wheel, it *still* exposes the module name
-    #    `onnxruntime`, but on some machines it fails to import. We try an alt name first,
-    #    and if that fails, we tell them to install plain CPU.
+    # 2) Windows rescue: add DLL dirs and try again
+    _win_try_add_ort_dirs()
+    try:
+        import onnxruntime as _ort  # try again after adding DLL dirs
+        ort = _ort
+        _ORT_FLAVOR = "onnxruntime (after DLL rescue)"
+        _ORT_IMPORT_ERR = None
+        return ort
+    except Exception as e2:
+        # still failed — keep the latest
+        _ORT_IMPORT_ERR = (
+            f"import onnxruntime (after DLL rescue) failed: {e2!r}\n"
+            f"{traceback.format_exc()}"
+        )
+        ort = None
+
+    # 3) try alt modules (directml / gpu)
     for alt_mod in ("onnxruntime_directml", "onnxruntime_gpu"):
         try:
             _alt = importlib.import_module(alt_mod)
-            # if we got here, stash it under the canonical name so the rest of the code is happy
+            # make future `import onnxruntime` happy
             sys.modules.setdefault("onnxruntime", _alt)
             ort = _alt
             _ORT_FLAVOR = alt_mod
             _ORT_IMPORT_ERR = None
             return ort
-        except Exception:
-            # some wheels don't actually have these module names – that's fine
-            continue
+        except Exception as e_alt:
+            # record only if we had nothing better
+            if not _ORT_IMPORT_ERR:
+                _ORT_IMPORT_ERR = (
+                    f"import {alt_mod} failed: {e_alt!r}\n"
+                    f"{traceback.format_exc()}"
+                )
 
-    # special case: user has *only* onnxruntime-directml installed (we saw the dist above)
-    # but importing `onnxruntime` failed → tell them to install CPU one too
     return None
+
 
 
 # ---------- worker ----------
