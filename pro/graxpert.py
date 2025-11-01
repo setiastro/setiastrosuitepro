@@ -206,7 +206,7 @@ def _resolve_graxpert_exec(main_window) -> str | None:
     path = None
     if hasattr(main_window, "settings"):
         try:
-            path = main_window.settings.value("graxpert/path", type=str)
+            path = main_window.settings.value("paths/graxpert", type=str)
         except Exception:
             path = None
     if path and os.path.exists(path):
@@ -222,7 +222,7 @@ def _resolve_graxpert_exec(main_window) -> str | None:
         if os.path.exists(default):
             _ensure_exec_bit(default)
             if hasattr(main_window, "settings"):
-                main_window.settings.setValue("graxpert/path", default)
+                main_window.settings.setValue("paths/graxpert", default)
             return default
         return _pick_graxpert_path_and_store(main_window)
     if sysname == "Linux":
@@ -244,7 +244,7 @@ def _pick_graxpert_path_and_store(parent) -> str | None:
         QMessageBox.critical(parent, "GraXpert", f"Failed to set execute permissions:\n{e}")
         return None
     if hasattr(parent, "settings"):
-        parent.settings.setValue("graxpert/path", path)
+        parent.settings.setValue("paths/graxpert", path)
     return path
 
 
