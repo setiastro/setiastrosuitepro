@@ -85,21 +85,19 @@ def _win_try_add_ort_dirs():
 def _subproc_can_import_ort() -> tuple[bool, str]:
     """
     Run a tiny Python in a separate process to see if `import onnxruntime` works
-    on THIS machine, in THIS venv.
-
-    Returns (ok, output-or-error).
-    We do this because some users crash the main process on import.
+    in THIS venv. Returns (ok, output).
     """
-    code = (
-        "import sys; "
-        "try:\n"
-        "    import onnxruntime as ort\n"
-        "    print('OK', ort.__version__, ort.get_available_providers())\n"
-        "    sys.exit(0)\n"
-        "except Exception as e:\n"
-        "    print('ERR', repr(e))\n"
-        "    sys.exit(1)\n"
-    )
+    code = r"""
+import sys
+try:
+    import onnxruntime as ort
+except Exception as e:
+    print("ERR", repr(e))
+    sys.exit(1)
+else:
+    print("OK", ort.__version__, ort.get_available_providers())
+    sys.exit(0)
+"""
     try:
         cp = subprocess.run(
             [sys.executable, "-c", code],
@@ -107,12 +105,11 @@ def _subproc_can_import_ort() -> tuple[bool, str]:
             capture_output=True,
         )
     except Exception as e:
+        # couldn't even run python
         return False, f"subprocess failed to run: {e!r}"
 
     out = (cp.stdout or "") + (cp.stderr or "")
-    if cp.returncode == 0:
-        return True, out.strip()
-    return False, out.strip()
+    return (cp.returncode == 0, out.strip())
 
 
 def _probe_onnxruntime():
