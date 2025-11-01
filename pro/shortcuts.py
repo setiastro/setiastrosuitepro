@@ -855,7 +855,7 @@ class ShortcutCanvas(QWidget):
                                 self._mgr.mw._spawn_subwindow_for(doc)
             e.acceptProposedAction()
             return
-
+        self.lower()
         e.ignore()  
 
     def contextMenuEvent(self, e):
