@@ -7,8 +7,7 @@ import time
 import importlib
 import subprocess
 import traceback
-
-IS_APPLE_ARM = (sys.platform == "darwin" and platform.machine() == "arm64")
+import contextlib
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QStandardPaths, QSettings
 from PyQt6.QtWidgets import (
@@ -17,8 +16,17 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QIcon
 
-# IMPORTANT: do NOT import onnxruntime here – it can crash the process on some Windows setups
-ort = None  # will be filled lazily
+__all__ = [
+    "AberrationAIDialog",
+    "_probe_onnxruntime",
+    "pick_providers",
+]
+
+# IMPORTANT: do NOT import onnxruntime at module load time – it can crash
+# the process on some Windows setups with “bad” PATHs.
+ort = None  # filled lazily
+
+IS_APPLE_ARM = (sys.platform == "darwin" and platform.machine() == "arm64")
 
 try:
     from importlib import metadata as _importlib_metadata
@@ -33,6 +41,31 @@ _ORT_FOUND_DISTS: list[str] = []       # names we found via importlib.metadata
 # ---------- GitHub model fetching ----------
 GITHUB_REPO = "riccardoalberghi/abberation_models"
 LATEST_API  = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+
+
+# ------------------------------------------------------------
+# PATH sanitizer – so we only import from *this* venv on Windows
+# ------------------------------------------------------------
+@contextlib.contextmanager
+def _minimal_windows_path_for_ort():
+    if os.name != "nt":
+        # non-Windows: do nothing
+        yield
+        return
+
+    old_path = os.environ.get("PATH", "")
+    py_dir   = os.path.dirname(sys.executable)
+    winroot  = os.environ.get("SystemRoot", r"C:\Windows")
+    new_parts = [
+        py_dir,
+        os.path.join(winroot, "System32"),
+        winroot,
+    ]
+    os.environ["PATH"] = os.pathsep.join(p for p in new_parts if p)
+    try:
+        yield
+    finally:
+        os.environ["PATH"] = old_path
 
 
 def _app_model_dir() -> str:
@@ -86,6 +119,8 @@ def _subproc_can_import_ort() -> tuple[bool, str]:
     """
     Run a tiny Python in a separate process to see if `import onnxruntime` works
     in THIS venv. Returns (ok, output).
+    On Windows we also give the subprocess the *sanitized* PATH so the check
+    matches the in-process import conditions.
     """
     code = r"""
 import sys
@@ -98,11 +133,24 @@ else:
     print("OK", ort.__version__, ort.get_available_providers())
     sys.exit(0)
 """
+    env = None
+    if os.name == "nt":
+        # give subprocess the same short PATH we will use in-process
+        py_dir   = os.path.dirname(sys.executable)
+        winroot  = os.environ.get("SystemRoot", r"C:\Windows")
+        env = os.environ.copy()
+        env["PATH"] = os.pathsep.join([
+            py_dir,
+            os.path.join(winroot, "System32"),
+            winroot,
+        ])
+
     try:
         cp = subprocess.run(
             [sys.executable, "-c", code],
             text=True,
             capture_output=True,
+            env=env,
         )
     except Exception as e:
         # couldn't even run python
@@ -117,7 +165,7 @@ def _probe_onnxruntime():
     Try VERY HARD to get an onnxruntime module without crashing the process.
     1. Collect which dists are installed (for UI)
     2. On Windows: try in a subprocess FIRST (safe)
-    3. If safe: try to import in-process
+    3. On Windows: if subprocess OK → do an in-process import but with a SHRUNK PATH
     4. Add DLL dirs on Windows and try again
     5. Try alt module names
     """
@@ -127,51 +175,81 @@ def _probe_onnxruntime():
         return ort
 
     # 1) collect installed dists (for the dialog)
+    installed = {}
     _ORT_FOUND_DISTS = []
     if _importlib_metadata:
         for dist_name in ("onnxruntime", "onnxruntime-directml", "onnxruntime-gpu"):
             try:
                 ver = _importlib_metadata.version(dist_name)
-                _ORT_FOUND_DISTS.append(f"{dist_name}=={ver}")
+                installed[dist_name] = ver
             except Exception:
                 pass
+    _ORT_FOUND_DISTS = [f"{k}=={v}" for k, v in installed.items()]
 
-    # 2) Windows: first, do NOT import in-process – some users crash here.
+    # if BOTH cpu + dml are in the same venv → tell the user explicitly
+    if "onnxruntime" in installed and "onnxruntime-directml" in installed:
+        _ORT_IMPORT_ERR = (
+            "Both 'onnxruntime' (CPU) and 'onnxruntime-directml' (Windows GPU) are "
+            "installed in this venv. They provide the same Python package and the "
+            "native DLL can refuse to initialize on Windows.\n\n"
+            f'Uninstall ONE of them, for example:\n  "{sys.executable}" -m pip uninstall -y onnxruntime-directml\n'
+            "Then re-open this tool."
+        )
+        return None
+
+    # 2) Windows: run the SAFE subprocess check first
     if os.name == "nt":
         ok, out = _subproc_can_import_ort()
         if not ok:
-            # subprocess couldn’t import → don’t try in-process
+            # subprocess couldn’t import → don’t try in-process, just report it
             _ORT_IMPORT_ERR = f"Subprocess import check failed:\n{out}"
             return None
 
-    # 3) now try to import in-process (safe or non-Windows)
-    try:
-        import onnxruntime as _ort
-        ort = _ort
-        _ORT_FLAVOR = "onnxruntime"
-        _ORT_IMPORT_ERR = None
-        return ort
-    except Exception as e1:
-        _ORT_IMPORT_ERR = (
-            f"in-process import onnxruntime failed: {e1!r}\n"
-            f"{traceback.format_exc()}"
-        )
-        ort = None
+        # 3) subprocess worked → try in-process, but with a CLEAN PATH
+        try:
+            with _minimal_windows_path_for_ort():
+                import onnxruntime as _ort
+            ort = _ort
+            _ORT_FLAVOR = "onnxruntime"
+            _ORT_IMPORT_ERR = None
+            return ort
+        except Exception as e1:
+            _ORT_IMPORT_ERR = (
+                "in-process import onnxruntime (with sanitized PATH) failed: "
+                f"{e1!r}\n{traceback.format_exc()}"
+            )
+            ort = None
+    else:
+        # non-Windows: normal import
+        try:
+            import onnxruntime as _ort
+            ort = _ort
+            _ORT_FLAVOR = "onnxruntime"
+            _ORT_IMPORT_ERR = None
+            return ort
+        except Exception as e1:
+            _ORT_IMPORT_ERR = (
+                f"in-process import onnxruntime failed: {e1!r}\n"
+                f"{traceback.format_exc()}"
+            )
+            ort = None
 
-    # 4) try adding DLL dirs and import again (Windows)
-    _win_try_add_ort_dirs()
-    try:
-        import onnxruntime as _ort  # retry after DLL add
-        ort = _ort
-        _ORT_FLAVOR = "onnxruntime (after DLL add)"
-        _ORT_IMPORT_ERR = None
-        return ort
-    except Exception as e2:
-        _ORT_IMPORT_ERR = (
-            f"in-process import onnxruntime (after DLL add) failed: {e2!r}\n"
-            f"{traceback.format_exc()}"
-        )
-        ort = None
+    # 4) Windows: try adding DLL dirs and import again
+    if os.name == "nt":
+        _win_try_add_ort_dirs()
+        try:
+            with _minimal_windows_path_for_ort():
+                import onnxruntime as _ort  # retry after DLL add
+            ort = _ort
+            _ORT_FLAVOR = "onnxruntime (after DLL add)"
+            _ORT_IMPORT_ERR = None
+            return ort
+        except Exception as e2:
+            _ORT_IMPORT_ERR = (
+                "in-process import onnxruntime (after DLL add) failed: "
+                f"{e2!r}\n{traceback.format_exc()}"
+            )
+            ort = None
 
     # 5) try alternate module names people install
     for alt_mod in ("onnxruntime_directml", "onnxruntime_gpu"):
@@ -182,12 +260,8 @@ def _probe_onnxruntime():
             _ORT_FLAVOR = alt_mod
             _ORT_IMPORT_ERR = None
             return ort
-        except Exception as e_alt:
-            if not _ORT_IMPORT_ERR:
-                _ORT_IMPORT_ERR = (
-                    f"in-process import {alt_mod} failed: {e_alt!r}\n"
-                    f"{traceback.format_exc()}"
-                )
+        except Exception:
+            pass
 
     return None
 
@@ -253,6 +327,7 @@ def _hann2d(n: int) -> np.ndarray:
     w = np.hanning(n).astype(np.float32)
     return (w[:, None] * w[None, :])
 
+
 def _tile_indices(n: int, patch: int, overlap: int) -> list[int]:
     stride = patch - overlap
     if patch >= n:
@@ -265,6 +340,7 @@ def _tile_indices(n: int, patch: int, overlap: int) -> list[int]:
         idx.append(pos); pos += stride
     return sorted(set(idx))
 
+
 def _pad_C_HW(arr: np.ndarray, patch: int) -> tuple[np.ndarray, int, int]:
     C, H, W = arr.shape
     pad_h = max(0, patch - H)
@@ -272,6 +348,7 @@ def _pad_C_HW(arr: np.ndarray, patch: int) -> tuple[np.ndarray, int, int]:
     if pad_h or pad_w:
         arr = np.pad(arr, ((0,0),(0,pad_h),(0,pad_w)), mode="edge")
     return arr, H, W
+
 
 def _prepare_input(img: np.ndarray) -> tuple[np.ndarray, bool, bool]:
     channels_last = (img.ndim == 3)
@@ -286,6 +363,7 @@ def _prepare_input(img: np.ndarray) -> tuple[np.ndarray, bool, bool]:
         arr = arr.astype(np.float32)
     return arr, channels_last, was_uint16
 
+
 def _restore_output(arr: np.ndarray, channels_last: bool, was_uint16: bool, H: int, W: int) -> np.ndarray:
     arr = arr[:, :H, :W]
     arr = np.clip(np.nan_to_num(arr), 0.0, 1.0)
@@ -296,6 +374,7 @@ def _restore_output(arr: np.ndarray, channels_last: bool, was_uint16: bool, H: i
     else:
         arr = arr[0]
     return arr
+
 
 def run_onnx_tiled(session, img: np.ndarray, patch_size=512, overlap=64, progress_cb=None) -> np.ndarray:
     arr, channels_last, was_uint16 = _prepare_input(img)
@@ -413,6 +492,7 @@ class _ONNXWorker(QThread):
             sess = rt.InferenceSession(self.model_path, providers=self.providers)
             self.used_provider = (sess.get_providers()[0] if sess.get_providers() else None)
         except Exception:
+            # try fallback CPU
             try:
                 sess = rt.InferenceSession(self.model_path, providers=["CPUExecutionProvider"])
                 self.used_provider = "CPUExecutionProvider"
@@ -446,6 +526,7 @@ class AberrationAIDialog(QDialog):
 
         v = QVBoxLayout(self)
 
+        # model row
         row = QHBoxLayout()
         row.addWidget(QLabel("Model:"))
         self.model_label = QLabel("—")
@@ -455,6 +536,7 @@ class AberrationAIDialog(QDialog):
         row.addWidget(btn_browse)
         v.addLayout(row)
 
+        # provider row
         row2 = QHBoxLayout()
         self.chk_auto = QCheckBox("Auto GPU (if available)")
         self.chk_auto.setChecked(True)
@@ -464,6 +546,7 @@ class AberrationAIDialog(QDialog):
         row2.addWidget(self.cmb_provider, 1)
         v.addLayout(row2)
 
+        # params
         row3 = QHBoxLayout()
         row3.addWidget(QLabel("Patch"))
         self.spin_patch = QSpinBox(minimum=128, maximum=2048); self.spin_patch.setValue(512)
@@ -473,6 +556,7 @@ class AberrationAIDialog(QDialog):
         row3.addWidget(self.spin_overlap)
         v.addLayout(row3)
 
+        # download / open
         row4 = QHBoxLayout()
         btn_latest = QPushButton("Download latest model…")
         btn_latest.clicked.connect(self._download_latest_model)
@@ -483,6 +567,7 @@ class AberrationAIDialog(QDialog):
         row4.addStretch(1)
         v.addLayout(row4)
 
+        # progress + run
         self.progress = QProgressBar(); self.progress.setRange(0, 100); v.addWidget(self.progress)
         row5 = QHBoxLayout()
         self.btn_run = QPushButton("Run"); self.btn_run.clicked.connect(self._run)
