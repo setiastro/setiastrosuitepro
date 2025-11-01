@@ -269,7 +269,7 @@ from pro.status_log_dock import StatusLogDock
 from pro.log_bus import LogBus
 
 
-VERSION = "1.4.2"
+VERSION = "1.4.3"
 
 
 
@@ -8204,5 +8204,6 @@ if __name__ == "__main__":
         msg.setStandardButtons(QMessageBox.StandardButton.Ok)
         msg.exec()
         sys.exit(1)
+
 
 
