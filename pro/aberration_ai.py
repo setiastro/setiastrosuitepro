@@ -2,12 +2,10 @@
 from __future__ import annotations
 import os, webbrowser, requests
 import numpy as np
-import sys, platform
+import sys, platform  # add
 import time
-import importlib
-import subprocess
-import traceback
-import contextlib
+
+IS_APPLE_ARM = (sys.platform == "darwin" and platform.machine() == "arm64")
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QStandardPaths, QSettings
 from PyQt6.QtWidgets import (
@@ -16,56 +14,32 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QIcon
 
-__all__ = [
-    "AberrationAIDialog",
-    "_probe_onnxruntime",
-    "pick_providers",
-]
-
-# IMPORTANT: do NOT import onnxruntime at module load time – it can crash
-# the process on some Windows setups with “bad” PATHs.
-ort = None  # filled lazily
-
-IS_APPLE_ARM = (sys.platform == "darwin" and platform.machine() == "arm64")
-
+# Optional import (soft dep)
 try:
-    from importlib import metadata as _importlib_metadata
+    import onnxruntime as ort
 except Exception:
-    _importlib_metadata = None
+    ort = None
 
-# will be filled by _probe_onnxruntime()
-_ORT_FLAVOR: str | None = None         # e.g. "onnxruntime", "onnxruntime-directml"
-_ORT_IMPORT_ERR: str | None = None     # last import error string (full traceback)
-_ORT_FOUND_DISTS: list[str] = []       # names we found via importlib.metadata
 
 # ---------- GitHub model fetching ----------
 GITHUB_REPO = "riccardoalberghi/abberation_models"
 LATEST_API  = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
-
-# ------------------------------------------------------------
-# PATH sanitizer – so we only import from *this* venv on Windows
-# ------------------------------------------------------------
-@contextlib.contextmanager
-def _minimal_windows_path_for_ort():
-    if os.name != "nt":
-        # non-Windows: do nothing
-        yield
-        return
-
-    old_path = os.environ.get("PATH", "")
-    py_dir   = os.path.dirname(sys.executable)
-    winroot  = os.environ.get("SystemRoot", r"C:\Windows")
-    new_parts = [
-        py_dir,
-        os.path.join(winroot, "System32"),
-        winroot,
-    ]
-    os.environ["PATH"] = os.pathsep.join(p for p in new_parts if p)
+def _model_required_patch(model_path: str) -> int | None:
+    """
+    Returns the fixed spatial size the model expects (e.g. 512), or None if dynamic.
+    """
+    if ort is None or not os.path.isfile(model_path):
+        return None
     try:
-        yield
-    finally:
-        os.environ["PATH"] = old_path
+        sess = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+        shp = sess.get_inputs()[0].shape  # e.g. [1, 1, 512, 512] or ['N','C',512,512]
+        h = shp[-2]; w = shp[-1]
+        if isinstance(h, int) and isinstance(w, int) and h == w:
+            return int(h)
+    except Exception:
+        pass
+    return None
 
 
 def _app_model_dir() -> str:
@@ -77,214 +51,10 @@ def _app_model_dir() -> str:
     return d
 
 
-def _win_try_add_ort_dirs():
-    """
-    Windows-only: add likely onnxruntime DLL dirs to the search path.
-    This does nothing on non-Windows.
-    """
-    if os.name != "nt":
-        return
-
-    candidates: list[str] = []
-    # common venv location
-    candidates.append(os.path.join(sys.prefix, "Lib", "site-packages", "onnxruntime", "capi"))
-    candidates.append(os.path.join(sys.prefix, "Lib", "site-packages", "onnxruntime_directml", "capi"))
-
-    # try to find via metadata
-    if _importlib_metadata:
-        for dist_name in ("onnxruntime", "onnxruntime-directml"):
-            try:
-                files = _importlib_metadata.files(dist_name) or []
-            except Exception:
-                files = []
-            for f in files:
-                p = os.path.join(sys.prefix, "Lib", "site-packages", str(f))
-                if p.lower().endswith(os.path.join("onnxruntime", "capi").lower()):
-                    candidates.append(p)
-
-    seen = set()
-    for p in candidates:
-        p = os.path.abspath(p)
-        if p in seen:
-            continue
-        seen.add(p)
-        if os.path.isdir(p):
-            try:
-                os.add_dll_directory(p)
-            except Exception:
-                pass
-
-
-def _subproc_can_import_ort() -> tuple[bool, str]:
-    """
-    Run a tiny Python in a separate process to see if `import onnxruntime` works
-    in THIS venv. Returns (ok, output).
-    On Windows we also give the subprocess the *sanitized* PATH so the check
-    matches the in-process import conditions.
-    """
-    code = r"""
-import sys
-try:
-    import onnxruntime as ort
-except Exception as e:
-    print("ERR", repr(e))
-    sys.exit(1)
-else:
-    print("OK", ort.__version__, ort.get_available_providers())
-    sys.exit(0)
-"""
-    env = None
-    if os.name == "nt":
-        # give subprocess the same short PATH we will use in-process
-        py_dir   = os.path.dirname(sys.executable)
-        winroot  = os.environ.get("SystemRoot", r"C:\Windows")
-        env = os.environ.copy()
-        env["PATH"] = os.pathsep.join([
-            py_dir,
-            os.path.join(winroot, "System32"),
-            winroot,
-        ])
-
-    try:
-        cp = subprocess.run(
-            [sys.executable, "-c", code],
-            text=True,
-            capture_output=True,
-            env=env,
-        )
-    except Exception as e:
-        # couldn't even run python
-        return False, f"subprocess failed to run: {e!r}"
-
-    out = (cp.stdout or "") + (cp.stderr or "")
-    return (cp.returncode == 0, out.strip())
-
-
-def _probe_onnxruntime():
-    """
-    Try VERY HARD to get an onnxruntime module without crashing the process.
-    1. Collect which dists are installed (for UI)
-    2. On Windows: try in a subprocess FIRST (safe)
-    3. On Windows: if subprocess OK → do an in-process import but with a SHRUNK PATH
-    4. Add DLL dirs on Windows and try again
-    5. Try alt module names
-    """
-    global ort, _ORT_FLAVOR, _ORT_IMPORT_ERR, _ORT_FOUND_DISTS
-
-    if ort is not None:
-        return ort
-
-    # 1) collect installed dists (for the dialog)
-    installed = {}
-    _ORT_FOUND_DISTS = []
-    if _importlib_metadata:
-        for dist_name in ("onnxruntime", "onnxruntime-directml", "onnxruntime-gpu"):
-            try:
-                ver = _importlib_metadata.version(dist_name)
-                installed[dist_name] = ver
-            except Exception:
-                pass
-    _ORT_FOUND_DISTS = [f"{k}=={v}" for k, v in installed.items()]
-
-    # if BOTH cpu + dml are in the same venv → tell the user explicitly
-    if "onnxruntime" in installed and "onnxruntime-directml" in installed:
-        _ORT_IMPORT_ERR = (
-            "Both 'onnxruntime' (CPU) and 'onnxruntime-directml' (Windows GPU) are "
-            "installed in this venv. They provide the same Python package and the "
-            "native DLL can refuse to initialize on Windows.\n\n"
-            f'Uninstall ONE of them, for example:\n  "{sys.executable}" -m pip uninstall -y onnxruntime-directml\n'
-            "Then re-open this tool."
-        )
-        return None
-
-    # 2) Windows: run the SAFE subprocess check first
-    if os.name == "nt":
-        ok, out = _subproc_can_import_ort()
-        if not ok:
-            # subprocess couldn’t import → don’t try in-process, just report it
-            _ORT_IMPORT_ERR = f"Subprocess import check failed:\n{out}"
-            return None
-
-        # 3) subprocess worked → try in-process, but with a CLEAN PATH
-        try:
-            with _minimal_windows_path_for_ort():
-                import onnxruntime as _ort
-            ort = _ort
-            _ORT_FLAVOR = "onnxruntime"
-            _ORT_IMPORT_ERR = None
-            return ort
-        except Exception as e1:
-            _ORT_IMPORT_ERR = (
-                "in-process import onnxruntime (with sanitized PATH) failed: "
-                f"{e1!r}\n{traceback.format_exc()}"
-            )
-            ort = None
-    else:
-        # non-Windows: normal import
-        try:
-            import onnxruntime as _ort
-            ort = _ort
-            _ORT_FLAVOR = "onnxruntime"
-            _ORT_IMPORT_ERR = None
-            return ort
-        except Exception as e1:
-            _ORT_IMPORT_ERR = (
-                f"in-process import onnxruntime failed: {e1!r}\n"
-                f"{traceback.format_exc()}"
-            )
-            ort = None
-
-    # 4) Windows: try adding DLL dirs and import again
-    if os.name == "nt":
-        _win_try_add_ort_dirs()
-        try:
-            with _minimal_windows_path_for_ort():
-                import onnxruntime as _ort  # retry after DLL add
-            ort = _ort
-            _ORT_FLAVOR = "onnxruntime (after DLL add)"
-            _ORT_IMPORT_ERR = None
-            return ort
-        except Exception as e2:
-            _ORT_IMPORT_ERR = (
-                "in-process import onnxruntime (after DLL add) failed: "
-                f"{e2!r}\n{traceback.format_exc()}"
-            )
-            ort = None
-
-    # 5) try alternate module names people install
-    for alt_mod in ("onnxruntime_directml", "onnxruntime_gpu"):
-        try:
-            _alt = importlib.import_module(alt_mod)
-            sys.modules.setdefault("onnxruntime", _alt)
-            ort = _alt
-            _ORT_FLAVOR = alt_mod
-            _ORT_IMPORT_ERR = None
-            return ort
-        except Exception:
-            pass
-
-    return None
-
-
-def _model_required_patch(model_path: str) -> int | None:
-    rt = _probe_onnxruntime()
-    if rt is None or not os.path.isfile(model_path):
-        return None
-    try:
-        sess = rt.InferenceSession(model_path, providers=["CPUExecutionProvider"])
-        shp = sess.get_inputs()[0].shape
-        h = shp[-2]; w = shp[-1]
-        if isinstance(h, int) and isinstance(w, int) and h == w:
-            return int(h)
-    except Exception:
-        pass
-    return None
-
-
 class _DownloadWorker(QThread):
-    progressed = pyqtSignal(int)
+    progressed = pyqtSignal(int)      # 0..100 (downloaded)
     failed     = pyqtSignal(str)
-    finished_ok= pyqtSignal(str)
+    finished_ok= pyqtSignal(str)      # path
 
     def __init__(self, dst_dir: str):
         super().__init__()
@@ -327,7 +97,6 @@ def _hann2d(n: int) -> np.ndarray:
     w = np.hanning(n).astype(np.float32)
     return (w[:, None] * w[None, :])
 
-
 def _tile_indices(n: int, patch: int, overlap: int) -> list[int]:
     stride = patch - overlap
     if patch >= n:
@@ -340,7 +109,6 @@ def _tile_indices(n: int, patch: int, overlap: int) -> list[int]:
         idx.append(pos); pos += stride
     return sorted(set(idx))
 
-
 def _pad_C_HW(arr: np.ndarray, patch: int) -> tuple[np.ndarray, int, int]:
     C, H, W = arr.shape
     pad_h = max(0, patch - H)
@@ -349,13 +117,15 @@ def _pad_C_HW(arr: np.ndarray, patch: int) -> tuple[np.ndarray, int, int]:
         arr = np.pad(arr, ((0,0),(0,pad_h),(0,pad_w)), mode="edge")
     return arr, H, W
 
-
 def _prepare_input(img: np.ndarray) -> tuple[np.ndarray, bool, bool]:
+    """
+    Returns (C,H,W) float32 in [0..1]; also returns (channels_last, was_uint16)
+    """
     channels_last = (img.ndim == 3)
     if channels_last:
-        arr = img.transpose(2,0,1)
+        arr = img.transpose(2,0,1)  # (C,H,W)
     else:
-        arr = img[np.newaxis, ...]
+        arr = img[np.newaxis, ...]   # (1,H,W)
     was_uint16 = (arr.dtype == np.uint16)
     if was_uint16:
         arr = arr.astype(np.float32) / 65535.0
@@ -363,21 +133,23 @@ def _prepare_input(img: np.ndarray) -> tuple[np.ndarray, bool, bool]:
         arr = arr.astype(np.float32)
     return arr, channels_last, was_uint16
 
-
 def _restore_output(arr: np.ndarray, channels_last: bool, was_uint16: bool, H: int, W: int) -> np.ndarray:
     arr = arr[:, :H, :W]
     arr = np.clip(np.nan_to_num(arr), 0.0, 1.0)
     if was_uint16:
         arr = (arr * 65535.0).astype(np.uint16)
     if channels_last:
-        arr = arr.transpose(1,2,0)
+        arr = arr.transpose(1,2,0)   # (H,W,C)
     else:
-        arr = arr[0]
+        arr = arr[0]                 # (H,W)
     return arr
 
-
 def run_onnx_tiled(session, img: np.ndarray, patch_size=512, overlap=64, progress_cb=None) -> np.ndarray:
-    arr, channels_last, was_uint16 = _prepare_input(img)
+    """
+    session: onnxruntime.InferenceSession
+    img: mono (H,W) or RGB (H,W,3) numpy array
+    """
+    arr, channels_last, was_uint16 = _prepare_input(img)      # (C,H,W)
     arr, H0, W0 = _pad_C_HW(arr, patch_size)
     C, H, W = arr.shape
 
@@ -395,10 +167,11 @@ def run_onnx_tiled(session, img: np.ndarray, patch_size=512, overlap=64, progres
     for c in range(C):
         for i in hs:
             for j in ws:
-                patch = arr[c:c+1, i:i+patch_size, j:j+patch_size]
-                inp = np.ascontiguousarray(patch[np.newaxis, ...], dtype=np.float32)
-                out_patch = session.run(None, {inp_name: inp})[0]
-                out_patch = np.squeeze(out_patch, axis=0)
+                patch = arr[c:c+1, i:i+patch_size, j:j+patch_size]  # (1, P, P)
+                inp = np.ascontiguousarray(patch[np.newaxis, ...], dtype=np.float32)  # (1,1,P,P)
+
+                out_patch = session.run(None, {inp_name: inp})[0]   # (1,1,P,P)
+                out_patch = np.squeeze(out_patch, axis=0)           # (1,P,P)
                 out[c:c+1, i:i+patch_size, j:j+patch_size] += out_patch * win
                 wgt[c:c+1, i:i+patch_size, j:j+patch_size] += win
 
@@ -413,15 +186,21 @@ def run_onnx_tiled(session, img: np.ndarray, patch_size=512, overlap=64, progres
 
 # ---------- providers ----------
 def pick_providers(auto_gpu=True) -> list[str]:
-    rt = _probe_onnxruntime()
-    if rt is None:
+    """
+    Windows: DirectML → CUDA → CPU
+    mac(Intel): CPU → CoreML (optional)
+    mac(Apple Silicon): **CPU only** (avoid CoreML artifact path)
+    """
+    if ort is None:
         return []
 
-    avail = set(rt.get_available_providers())
+    avail = set(ort.get_available_providers())
 
+    # Apple Silicon: always CPU ( CoreML has 16,384-dim constraint and can artifact )
     if IS_APPLE_ARM:
         return ["CPUExecutionProvider"] if "CPUExecutionProvider" in avail else []
 
+    # Non-Apple ARM
     if not auto_gpu:
         return ["CPUExecutionProvider"] if "CPUExecutionProvider" in avail else []
 
@@ -430,18 +209,25 @@ def pick_providers(auto_gpu=True) -> list[str]:
         order.append("DmlExecutionProvider")
     if "CUDAExecutionProvider" in avail:
         order.append("CUDAExecutionProvider")
+
+    # mac(Intel) can still use CoreML if someone insists, but we won't put it first.
     if "CPUExecutionProvider" in avail:
         order.append("CPUExecutionProvider")
     if "CoreMLExecutionProvider" in avail:
         order.append("CoreMLExecutionProvider")
+
     return order
 
 
 def _preserve_border(dst: np.ndarray, src: np.ndarray, px: int = 10) -> np.ndarray:
+    """
+    Copy a px-wide ring from src → dst, in-place. Handles mono/RGB.
+    Expects same shape for src and dst. Clamps px to image size.
+    """
     if px <= 0 or dst is None or src is None:
         return dst
     if dst.shape != src.shape:
-        return dst
+        return dst  # shapes differ; skip quietly
 
     h, w = dst.shape[:2]
     px = int(max(0, min(px, h // 2, w // 2)))
@@ -449,16 +235,19 @@ def _preserve_border(dst: np.ndarray, src: np.ndarray, px: int = 10) -> np.ndarr
         return dst
 
     s = src.astype(dst.dtype, copy=False)
+
+    # top & bottom
     dst[:px, ...]  = s[:px, ...]
     dst[-px:, ...] = s[-px:, ...]
+    # left & right
     dst[:, :px, ...]  = s[:, :px, ...]
     dst[:, -px:, ...] = s[:, -px:, ...]
-    return dst
 
+    return dst
 
 # ---------- worker ----------
 class _ONNXWorker(QThread):
-    progressed = pyqtSignal(int)
+    progressed = pyqtSignal(int)         # 0..100
     failed     = pyqtSignal(str)
     finished_ok= pyqtSignal(np.ndarray)
 
@@ -472,30 +261,17 @@ class _ONNXWorker(QThread):
         self.used_provider = None
 
     def run(self):
-        rt = _probe_onnxruntime()
-        if rt is None:
-            extra = ""
-            if _ORT_FOUND_DISTS:
-                extra = (
-                    "\n\nI can see these ONNX/ONNXRuntime packages installed, but not in *this* Python:\n  - "
-                    + "\n  - ".join(_ORT_FOUND_DISTS)
-                    + f"\n\nThis SASpro is running under: {sys.executable}"
-                    + "\nIf you only installed the DirectML wheel, also install the CPU one with:\n"
-                    f'  "{sys.executable}" -m pip install onnxruntime'
-                )
-            if _ORT_IMPORT_ERR:
-                extra += "\n\nActual import error was:\n" + _ORT_IMPORT_ERR
-            self.failed.emit("onnxruntime is not installed or could not be imported." + extra)
+        if ort is None:
+            self.failed.emit("onnxruntime is not installed.")
             return
-
         try:
-            sess = rt.InferenceSession(self.model_path, providers=self.providers)
+            sess = ort.InferenceSession(self.model_path, providers=self.providers)
             self.used_provider = (sess.get_providers()[0] if sess.get_providers() else None)
         except Exception:
-            # try fallback CPU
+            # fallback CPU if GPU fails
             try:
-                sess = rt.InferenceSession(self.model_path, providers=["CPUExecutionProvider"])
-                self.used_provider = "CPUExecutionProvider"
+                sess = ort.InferenceSession(self.model_path, providers=["CPUExecutionProvider"])
+                self.used_provider = "CPUExecutionProvider"  # NEW
             except Exception as e2:
                 self.failed.emit(f"Failed to init ONNX session:\n{e2}")
                 return
@@ -506,27 +282,33 @@ class _ONNXWorker(QThread):
         try:
             out = run_onnx_tiled(sess, self.image, self.patch, self.overlap, cb)
         except Exception as e:
-            self.failed.emit(str(e))
-            return
+            self.failed.emit(str(e)); return
 
         self.finished_ok.emit(out)
 
 
 # ---------- dialog ----------
 class AberrationAIDialog(QDialog):
+    """
+    UI:
+      - Download latest model (from GitHub) OR browse existing .onnx
+      - Auto GPU & provider
+      - Patch/Overlap
+      - Run → opens corrected result in new view
+    """
     def __init__(self, parent, docman, get_active_doc_callable, icon: QIcon | None = None):
         super().__init__(parent)
         self.setWindowTitle("R.A.'s Aberration Correction (AI)")
         if icon is not None:
-            self.setWindowIcon(icon)
+            self.setWindowIcon(icon)  # <-- here
         self.docman = docman
         self.get_active_doc = get_active_doc_callable
-        self._t_start = None
-        self._last_used_provider = None
+        self._t_start = None              # NEW: timing
+        self._last_used_provider = None   # NEW: what ORT actually used
 
         v = QVBoxLayout(self)
 
-        # model row
+        # Model row
         row = QHBoxLayout()
         row.addWidget(QLabel("Model:"))
         self.model_label = QLabel("—")
@@ -536,7 +318,7 @@ class AberrationAIDialog(QDialog):
         row.addWidget(btn_browse)
         v.addLayout(row)
 
-        # provider row
+        # Providers row
         row2 = QHBoxLayout()
         self.chk_auto = QCheckBox("Auto GPU (if available)")
         self.chk_auto.setChecked(True)
@@ -546,7 +328,7 @@ class AberrationAIDialog(QDialog):
         row2.addWidget(self.cmb_provider, 1)
         v.addLayout(row2)
 
-        # params
+        # Params row
         row3 = QHBoxLayout()
         row3.addWidget(QLabel("Patch"))
         self.spin_patch = QSpinBox(minimum=128, maximum=2048); self.spin_patch.setValue(512)
@@ -556,7 +338,7 @@ class AberrationAIDialog(QDialog):
         row3.addWidget(self.spin_overlap)
         v.addLayout(row3)
 
-        # download / open
+        # Download / Open folder
         row4 = QHBoxLayout()
         btn_latest = QPushButton("Download latest model…")
         btn_latest.clicked.connect(self._download_latest_model)
@@ -567,7 +349,7 @@ class AberrationAIDialog(QDialog):
         row4.addStretch(1)
         v.addLayout(row4)
 
-        # progress + run
+        # Progress + actions
         self.progress = QProgressBar(); self.progress.setRange(0, 100); v.addWidget(self.progress)
         row5 = QHBoxLayout()
         self.btn_run = QPushButton("Run"); self.btn_run.clicked.connect(self._run)
@@ -593,16 +375,6 @@ class AberrationAIDialog(QDialog):
         if IS_APPLE_ARM:
             self.chk_auto.setChecked(False)
             self.chk_auto.setEnabled(False)
-
-    def _log(self, msg: str):
-        mw = self.parent()
-        try:
-            if hasattr(mw, "_log"):
-                mw._log(msg)
-            elif hasattr(mw, "update_status"):
-                mw.update_status(msg)
-        except Exception:
-            pass
 
     # ----- model helpers -----
     def _set_model_path(self, p: str | None):
@@ -640,36 +412,37 @@ class AberrationAIDialog(QDialog):
             webbrowser.open(f"file://{d}")
 
     # ----- provider UI -----
+    def _log(self, msg: str):  # NEW
+        mw = self.parent()
+        try:
+            if hasattr(mw, "_log"):
+                mw._log(msg)
+            elif hasattr(mw, "update_status"):
+                mw.update_status(msg)
+        except Exception:
+            pass
+
     def _refresh_providers(self):
-        rt = _probe_onnxruntime()
-        if rt is None:
+        if ort is None:
             self.cmb_provider.clear()
-            if _ORT_FOUND_DISTS:
-                self.cmb_provider.addItem("onnxruntime is in another env / broken")
-                self.cmb_provider.setToolTip(
-                    "I detected: " + ", ".join(_ORT_FOUND_DISTS)
-                    + f"\nBut this Python ({sys.executable}) cannot import it.\n"
-                    f'Run: "{sys.executable}" -m pip install onnxruntime'
-                )
-            else:
-                msg = "onnxruntime not installed"
-                if _ORT_IMPORT_ERR:
-                    msg += f" ({_ORT_IMPORT_ERR.splitlines()[-1]})"
-                self.cmb_provider.addItem(msg)
+            self.cmb_provider.addItem("onnxruntime not installed")
             self.cmb_provider.setEnabled(False)
             return
 
-        avail = rt.get_available_providers()
+        avail = ort.get_available_providers()
         self.cmb_provider.clear()
 
         if IS_APPLE_ARM:
+            # Hard lock to CPU on M-series
             self.cmb_provider.addItem("CPUExecutionProvider")
             self.cmb_provider.setCurrentText("CPUExecutionProvider")
             self.cmb_provider.setEnabled(False)
+            # also turn off Auto GPU and disable that checkbox
             self.chk_auto.setChecked(False)
             self.chk_auto.setEnabled(False)
             return
 
+        # Other platforms: show all, sane default
         for name in avail:
             self.cmb_provider.addItem(name)
 
@@ -685,10 +458,9 @@ class AberrationAIDialog(QDialog):
     # ----- download -----
     def _download_latest_model(self):
         if requests is None:
-            QMessageBox.warning(self, "Network", "The 'requests' package is required.")
-            return
+            QMessageBox.warning(self, "Network", "The 'requests' package is required."); return
         dst = _app_model_dir()
-        self.progress.setRange(0, 0)
+        self.progress.setRange(0, 0)  # busy
         self.btn_run.setEnabled(False)
         self._dl = _DownloadWorker(dst)
         self._dl.progressed.connect(self.progress.setValue)
@@ -707,31 +479,16 @@ class AberrationAIDialog(QDialog):
 
     # ----- run -----
     def _run(self):
-        rt = _probe_onnxruntime()
-        if rt is None:
-            parts = [
-                "onnxruntime is not installed or could not be imported.",
-                "",
-                "Install one of:",
-                "  pip install onnxruntime           (CPU)",
-                "  pip install onnxruntime-directml   (Windows GPU - DirectML)",
-                "  pip install onnxruntime-gpu        (CUDA)",
-                "",
-            ]
-            if _ORT_FOUND_DISTS:
-                parts.append("I found these packages installed:")
-                for d in _ORT_FOUND_DISTS:
-                    parts.append(f"  - {d}")
-                parts.append(f"...but they are not importable from this Python:\n  {sys.executable}")
-            if _ORT_IMPORT_ERR:
-                parts.append("")
-                parts.append("Actual import error was:")
-                parts.append(_ORT_IMPORT_ERR)
-            parts.append("")
-            parts.append("Try this in a terminal:")
-            parts.append(f'  "{sys.executable}" -c "import onnxruntime; print(onnxruntime.__version__)"')
-
-            QMessageBox.critical(self, "Missing dependency", "\n".join(parts))
+        if ort is None:
+            QMessageBox.critical(
+                self,
+                "Unsupported ONNX Runtime",
+                "The currently installed onnxruntime is not supported on this machine.\n"
+                "Please try installing an earlier version (for example 1.19.x) and try again."
+            )
+            return
+        if not self._model_path or not os.path.isfile(self._model_path):
+            QMessageBox.warning(self, "Model", "Please select or download a valid .onnx model first.")
             return
 
         doc = self.get_active_doc()
@@ -745,6 +502,7 @@ class AberrationAIDialog(QDialog):
         patch   = int(self.spin_patch.value())
         overlap = int(self.spin_overlap.value())
 
+        # -------- providers (always choose, then always run) --------
         if IS_APPLE_ARM:
             providers = ["CPUExecutionProvider"]
             self.chk_auto.setChecked(False)
@@ -755,6 +513,7 @@ class AberrationAIDialog(QDialog):
                 sel = self.cmb_provider.currentText()
                 providers = [sel] if sel else ["CPUExecutionProvider"]
 
+        # --- make patch match the model's requirement (if fixed) ---
         req = _model_required_patch(self._model_path)
         if req and req > 0:
             patch = req
@@ -764,6 +523,7 @@ class AberrationAIDialog(QDialog):
             finally:
                 self.spin_patch.blockSignals(False)
 
+        # --- CoreML guard on Intel: if model needs >128, run on CPU instead ---
         if ("CoreMLExecutionProvider" in providers) and (req and req > 128):
             self._log(f"CoreML limited to small tiles; model requires {req}px → using CPU.")
             providers = ["CPUExecutionProvider"]
@@ -778,6 +538,7 @@ class AberrationAIDialog(QDialog):
         self._log(f"🚀 Aberration AI: model={os.path.basename(self._model_path)}, "
                   f"provider={prov_txt}, patch={patch}, overlap={overlap}")
 
+        # -------- run worker --------
         self.progress.setValue(0)
         self.btn_run.setEnabled(False)
 
@@ -788,8 +549,9 @@ class AberrationAIDialog(QDialog):
         self._worker.finished.connect(lambda: self.btn_run.setEnabled(True))
         self._worker.start()
 
+
     def _on_failed(self, msg: str):
-        self._log(f"❌ Aberration AI failed: {msg}")
+        self._log(f"❌ Aberration AI failed: {msg}")   # NEW
         QMessageBox.critical(self, "ONNX Error", msg)
 
     def _on_ok(self, out: np.ndarray):
@@ -798,6 +560,7 @@ class AberrationAIDialog(QDialog):
             QMessageBox.warning(self, "Image", "No active image.")
             return
 
+        # 1) Preserve a thin border from the original image (prevents “eaten” edges)
         BORDER_PX = 10
         src = getattr(self, "_orig_for_border", None)
         if src is None or src.shape != out.shape:
@@ -807,6 +570,7 @@ class AberrationAIDialog(QDialog):
                 src = None
         out = _preserve_border(out, src, BORDER_PX)
 
+        # 2) Metadata for this step (stored on the document)
         meta = {
             "is_mono": (out.ndim == 2),
             "processing_parameters": {
@@ -821,12 +585,16 @@ class AberrationAIDialog(QDialog):
             }
         }
 
+        # 3) Apply through history-aware API (either path is fine)
         try:
+            # Preferred: directly on the document
             if hasattr(doc, "apply_edit"):
                 doc.apply_edit(out, meta, step_name="Aberration AI")
+            # Or via DocManager (same effect)
             elif hasattr(self.docman, "update_active_document"):
                 self.docman.update_active_document(out, metadata=meta, step_name="Aberration AI")
             else:
+                # Last-resort fallback (no undo): avoid if possible
                 doc.image = out
                 try:
                     doc.metadata.update(meta)
@@ -838,6 +606,7 @@ class AberrationAIDialog(QDialog):
             QMessageBox.critical(self, "Apply Error", f"Failed to apply result:\n{e}")
             return
 
+        # 4) Refresh the active view
         mw = self.parent()
         sw = getattr(getattr(mw, "mdi", None), "activeSubWindow", lambda: None)()
         if sw and hasattr(sw, "widget"):
@@ -859,13 +628,14 @@ class AberrationAIDialog(QDialog):
             pass
         used = getattr(self._worker, "used_provider", None) or \
                (self.cmb_provider.currentText() if not self.chk_auto.isChecked() else "auto")
-
+        BORDER_PX = 10  # same value used above
         self._log(
-            f"✅ Aberration AI applied (model={os.path.basename(self._model_path)}, "
-            f"provider={used}, patch={int(self.spin_patch.value())}, "
-            f"overlap={int(self.spin_overlap.value())}, border={BORDER_PX}px, "
-            f"time={dt:.2f}s)"
+            f"✅ Aberration AI applied "
+            f"(model={os.path.basename(self._model_path)}, provider={used}, "
+            f"patch={int(self.spin_patch.value())}, overlap={int(self.spin_overlap.value())}, "
+            f"border={BORDER_PX}px, time={dt:.2f}s)"
         )
+
 
         self.progress.setValue(100)
         self.accept()
