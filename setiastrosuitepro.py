@@ -269,7 +269,7 @@ from pro.status_log_dock import StatusLogDock
 from pro.log_bus import LogBus
 
 
-VERSION = "1.4.3"
+VERSION = "1.4.4"
 
 
 
@@ -2533,6 +2533,10 @@ class AstroSuiteProMainWindow(QMainWindow):
 
     def _on_update_reply(self, reply: QNetworkReply):
         interactive = bool(reply.property("interactive"))
+        # 1) was this the *second* request (the actual installer)?
+        if bool(reply.property("is_update_download")):
+            self._on_windows_update_download_finished(reply)
+            return        
         try:
             if reply.error() != QNetworkReply.NetworkError.NoError:
                 err = reply.errorString()
@@ -2592,6 +2596,7 @@ class AstroSuiteProMainWindow(QMainWindow):
                     details = "\n".join([f"{k}: {v}" for k, v in downloads.items()])
                     msg_box.setDetailedText(details)
 
+
                 if msg_box.exec() == QMessageBox.StandardButton.Yes:
                     plat = sys.platform
                     link = downloads.get(
@@ -2599,10 +2604,16 @@ class AstroSuiteProMainWindow(QMainWindow):
                         "macOS" if plat.startswith("darwin") else
                         "Linux" if plat.startswith("linux") else "", ""
                     )
-                    if link:
-                        webbrowser.open(link)
-                    else:
+                    if not link:
                         QMessageBox.warning(self, "Download", "No download link available for this platform.")
+                        return
+
+                    if plat.startswith("win"):
+                        # our new in-app updater for your .zip
+                        self._start_windows_update_download(link)
+                    else:
+                        # keep old behavior
+                        webbrowser.open(link)
             else:
                 if self.statusBar():
                     self.statusBar().showMessage("You’re up to date.", 3000)
@@ -2611,6 +2622,118 @@ class AstroSuiteProMainWindow(QMainWindow):
                                             "You’re already running the latest version.")
         finally:
             reply.deleteLater()
+
+    def _is_windows(self) -> bool:
+        import sys
+        return sys.platform.startswith("win")
+
+    def _start_windows_update_download(self, url: str):
+        """
+        Download the given URL (your GitHub .zip) and hand it to
+        _on_windows_update_download_finished when done.
+        """
+        from PyQt6.QtCore import QStandardPaths
+        from pathlib import Path
+        import os
+
+        self._ensure_network_manager()
+
+        downloads_dir = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DownloadLocation)
+        if not downloads_dir:
+            import tempfile
+            downloads_dir = tempfile.gettempdir()
+
+        os.makedirs(downloads_dir, exist_ok=True)
+
+        # filename from URL – for your case this will be setiastrosuitepro_windows.zip
+        fname = url.split("/")[-1] or "setiastrosuitepro_windows.zip"
+        target_path = Path(downloads_dir) / fname
+
+        req = QNetworkRequest(QUrl(url))
+        req.setRawHeader(b"User-Agent", f"SASPro/{globals().get('VERSION','0.0.0')}".encode("utf-8"))
+
+        reply = self._nam.get(req)
+        # mark this reply as "this is the actual installer file, not updates.json"
+        reply.setProperty("is_update_download", True)
+        reply.setProperty("target_path", str(target_path))
+
+        reply.downloadProgress.connect(
+            lambda rec, tot: self.statusBar().showMessage(
+                f"Downloading update… {rec/1024:.1f} KB / {tot/1024:.1f} KB" if tot > 0 else "Downloading update…"
+            )
+        )
+
+    def _on_windows_update_download_finished(self, reply: QNetworkReply):
+        from pathlib import Path
+        import os, zipfile, subprocess, sys, tempfile
+
+        target_path = Path(reply.property("target_path"))
+
+        if reply.error() != QNetworkReply.NetworkError.NoError:
+            QMessageBox.warning(self, "Update Failed",
+                                f"Could not download update:\n{reply.errorString()}")
+            return
+
+        # write the .zip
+        data = bytes(reply.readAll())
+        try:
+            with open(target_path, "wb") as f:
+                f.write(data)
+        except Exception as e:
+            QMessageBox.warning(self, "Update Failed",
+                                f"Could not save update to disk:\n{e}")
+            return
+
+        self.statusBar().showMessage(f"Update downloaded to {target_path}", 5000)
+
+        # your JSON → .zip → extract
+        if target_path.suffix.lower() == ".zip":
+            extract_dir = Path(tempfile.mkdtemp(prefix="saspro-update-"))
+            try:
+                with zipfile.ZipFile(target_path, "r") as zf:
+                    zf.extractall(extract_dir)
+            except Exception as e:
+                QMessageBox.warning(self, "Update Failed",
+                                    f"Could not extract update zip:\n{e}")
+                return
+
+            # IMPORTANT: your zip from GitHub can have a folder level
+            # so look *recursively* for an .exe
+            exe_cands = list(extract_dir.rglob("*.exe"))
+            if not exe_cands:
+                QMessageBox.warning(
+                    self,
+                    "Update Failed",
+                    f"Downloaded ZIP did not contain an .exe installer.\nFolder: {extract_dir}"
+                )
+                return
+
+            installer_path = exe_cands[0]
+        else:
+            # in case one day Windows points straight to .exe
+            installer_path = target_path
+
+        # ask to run
+        ok = QMessageBox.question(
+            self,
+            "Run Installer",
+            "The update has been downloaded.\n\nRun the installer now? (SAS will close.)",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if ok != QMessageBox.StandardButton.Yes:
+            return
+
+        # launch installer
+        try:
+            subprocess.Popen([str(installer_path)], shell=False)
+        except Exception as e:
+            QMessageBox.warning(self, "Update Failed",
+                                f"Could not start installer:\n{e}")
+            return
+
+        # close SAS so the installer can overwrite files
+        QApplication.instance().quit()
 
 
     def _doc_by_ptr(self, ptr: int):
