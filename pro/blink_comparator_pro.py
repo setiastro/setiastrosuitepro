@@ -377,14 +377,30 @@ class MetricsWindow(QWidget):
 
 
     def _update_status(self, *args):
-        """Recompute and show: Flagged Items X / Y (Z%)."""
-        flags = getattr(self.metrics_panel, 'flags', []) or []
-        # which subset are we in?
-        idxs = self._current_indices if self._current_indices is not None else range(len(flags))
-        total = len(idxs)
-        flagged = sum(flags[i] for i in idxs)
-        pct = (flagged/total*100) if total else 0.0
-        self.status_label.setText(f"Flagged Items {flagged}/{total}  ({pct:.1f}%)")
+        """Recompute and show: Flagged Items X / Y (Z%).  Robust to stale indices."""
+        flags = getattr(self.metrics_panel, "flags", []) or []
+        nflags = len(flags)
+
+        # what subset are we currently looking at?
+        idxs = self._current_indices if self._current_indices is not None else range(nflags)
+
+        total = 0
+        flagged_cnt = 0
+
+        for i in idxs:
+            # i can be np.int64 or a stale index from before a move/delete
+            j = int(i)
+            if 0 <= j < nflags:
+                total += 1
+                if flags[j]:
+                    flagged_cnt += 1
+            else:
+                # stale index → just skip it
+                continue
+
+        pct = (flagged_cnt / total * 100.0) if total else 0.0
+        self.status_label.setText(f"Flagged Items {flagged_cnt}/{total}  ({pct:.1f}%)")
+
 
     def set_images(self, loaded_images, order=None):
         self._all_images = loaded_images
@@ -1191,11 +1207,11 @@ class BlinkTab(QWidget):
 
     # inside BlinkTab
     def _sync_metrics_flags(self):
-        """Push current flagged states into the Metrics panel and refresh colors."""
         if self.metrics_window:
             panel = self.metrics_window.metrics_panel
             panel.flags = [entry['flagged'] for entry in self.loaded_images]
             panel._refresh_scatter_colors()
+            # after a move/delete, current_indices might be stale → refresh text safely
             self.metrics_window._update_status()
 
 

@@ -3820,8 +3820,7 @@ class StackingSuiteDialog(QDialog):
             name, _ = os.path.splitext(base)
             output_filename = os.path.join(self.conversion_output_directory, f"{name}.fit")
             maxv = float(np.max(image))
-            if maxv > 0:
-                image = image / maxv
+
 
             try:
                 save_image(
