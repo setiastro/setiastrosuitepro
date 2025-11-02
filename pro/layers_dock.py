@@ -4,7 +4,7 @@ from typing import Optional
 import json
 import numpy as np
 
-from PyQt6.QtCore import Qt, pyqtSignal, QByteArray
+from PyQt6.QtCore import Qt, pyqtSignal, QByteArray, QTimer
 from PyQt6.QtWidgets import (
     QDockWidget, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
     QListWidget, QListWidgetItem, QAbstractItemView, QSlider, QCheckBox,
@@ -106,6 +106,11 @@ class LayersDock(QDockWidget):
         self.mw = main_window
         self.docman = main_window.docman
         self._wired_title_sources = set()
+
+        self._apply_timer = QTimer(self)
+        self._apply_timer.setSingleShot(True)
+        self._apply_timer.timeout.connect(self._apply_list_to_view)
+        self._apply_debounce_ms = 100  # tweak 60–150ms as you like
 
         # UI
         w = QWidget()
@@ -329,10 +334,16 @@ class LayersDock(QDockWidget):
     def _bind_row(self, roww: _LayerRow):
         if getattr(roww, "_is_base", False):
             return
-        roww.changed.connect(self._apply_list_to_view)
+        roww.changed.connect(self._apply_list_to_view_debounced)
+
         roww.requestDelete.connect(lambda: self._delete_row(roww))
         roww.moveUp.connect(lambda: self._move_row(roww, -1))
         roww.moveDown.connect(lambda: self._move_row(roww, +1))
+
+    def _apply_list_to_view_debounced(self):
+        # restart the timer on every slider tick
+        self._apply_timer.start(self._apply_debounce_ms)
+
 
     def _find_row_index(self, roww: _LayerRow) -> int:
         for i in range(self.list.count()):

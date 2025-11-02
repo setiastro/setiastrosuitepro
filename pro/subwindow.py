@@ -1,6 +1,6 @@
 # pro/subwindow.py
 from __future__ import annotations
-from PyQt6.QtCore import Qt, QPoint, pyqtSignal, QSize, QEvent, QByteArray, QMimeData, QSettings
+from PyQt6.QtCore import Qt, QPoint, pyqtSignal, QSize, QEvent, QByteArray, QMimeData, QSettings, QTimer
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QScrollArea, QLabel, QToolButton, QHBoxLayout, QMessageBox, QMdiSubWindow, QMenu, QInputDialog, QApplication
 from PyQt6.QtGui import QPixmap, QImage, QWheelEvent, QShortcut, QKeySequence, QCursor, QDrag
 from PyQt6 import sip
@@ -140,12 +140,18 @@ class ImageSubWindow(QWidget):
         self._layers: list[ImageLayer] = []   # per-view layer stack
         self.layers_changed.connect(lambda: None)  # placeholder to avoid "unused" warnings        
         self._display_override: np.ndarray | None = None
+        self._readout_hint_shown = False
         # keep mask visuals in sync when the doc changes (mask attach/remove etc.)
         self.document.changed.connect(self._on_doc_mask_changed)
         # context menu + shortcuts
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_ctx_menu)
         QShortcut(QKeySequence("F2"), self, activated=self._rename_view)  # quick rename for this view
+
+        self._space_down = False        # ← NEW
+        self._readout_dragging = False  # ← NEW: when we’re in “probe while drag” mode
+        self._last_readout = None
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)  # so we get key events
 
         # keep the host MDI subwindow title in sync with doc/view name
         self._view_title_override = None  # if set, only this window shows the override
@@ -185,11 +191,31 @@ class ImageSubWindow(QWidget):
         # re-render when the document changes
         self.document.changed.connect(lambda: self._render(rebuild=True))
         self._render(rebuild=True)
+        QTimer.singleShot(0, self._maybe_announce_readout_help)
+
+
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)  # so key press/release reach us
 
         self._mask_dot_enabled = self._active_mask_array() is not None
         self._active_title_prefix = False
         self._rebuild_title()
         self._watched_docs = set()
+
+    def _maybe_announce_readout_help(self):
+        """Show the readout hint only once automatically."""
+        if self._readout_hint_shown:
+            return
+        self._announce_readout_help()
+        self._readout_hint_shown = True        
+
+    def _announce_readout_help(self):
+        mw = self._find_main_window()
+        if mw and hasattr(mw, "statusBar"):
+            sb = mw.statusBar()
+            if sb:
+                sb.showMessage("Press Space + Click/Drag to probe pixels (WCS shown if available)", 8000)
+
+
       
     def apply_layer_stack(self, layers):
         """
@@ -219,6 +245,88 @@ class ImageSubWindow(QWidget):
             if md is not None:
                 docs.add(md)
         return docs
+
+    def keyPressEvent(self, ev):
+        if ev.key() == Qt.Key.Key_Space:
+            # only the first time we enter probe mode
+            if not self._space_down and not self._readout_hint_shown:
+                self._announce_readout_help()
+                self._readout_hint_shown = True
+            self._space_down = True
+            ev.accept()
+            return
+        super().keyPressEvent(ev)
+
+
+
+    def keyReleaseEvent(self, ev):
+        if ev.key() == Qt.Key.Key_Space:
+            self._space_down = False
+            # DO NOT stop _readout_dragging here – mouse release will do that
+            ev.accept()
+            return
+        super().keyReleaseEvent(ev)
+
+
+
+    def _sample_image_at_viewport_pos(self, vp_pos: QPoint):
+        """
+        vp_pos: position in viewport coords (the visible part of the scroll area).
+        Returns (x_img_int, y_img_int, sample_dict) or None if OOB.
+        sample_dict is always raw float(s), never normalized.
+        """
+        if self.document is None or self.document.image is None:
+            return None
+
+        arr = np.asarray(self.document.image)
+
+        # detect shape
+        if arr.ndim == 2:
+            h, w = arr.shape
+            channels = 1
+        elif arr.ndim == 3:
+            h, w, channels = arr.shape[:3]
+        else:
+            return None  # unsupported shape
+
+        # current scroll offsets
+        hbar = self.scroll.horizontalScrollBar()
+        vbar = self.scroll.verticalScrollBar()
+        x_label = hbar.value() + vp_pos.x()
+        y_label = vbar.value() + vp_pos.y()
+
+        scale = max(self.scale, 1e-12)
+        x_img = x_label / scale
+        y_img = y_label / scale
+
+        xi = int(round(x_img))
+        yi = int(round(y_img))
+
+        if xi < 0 or yi < 0 or xi >= w or yi >= h:
+            return None
+
+        # ---- mono cases ----
+        if arr.ndim == 2 or channels == 1:
+            # pure mono or (H, W, 1)
+            if arr.ndim == 2:
+                val = float(arr[yi, xi])
+            else:
+                val = float(arr[yi, xi, 0])
+            sample = {"mono": val}
+            return (xi, yi, sample)
+
+        # ---- color / 3+ channels ----
+        pix = arr[yi, xi]
+
+        # make robust if pix is 1-D
+        # expect at least 3 numbers, fallback to repeating R
+        r = float(pix[0])
+        g = float(pix[1]) if channels > 1 else r
+        b = float(pix[2]) if channels > 2 else r
+
+        sample = {"r": r, "g": g, "b": b}
+        return (xi, yi, sample)
+
 
 
     def sizeHint(self) -> QSize:
@@ -450,8 +558,10 @@ class ImageSubWindow(QWidget):
         a_view = menu.addAction("Rename View… (F2)")
         a_doc  = menu.addAction("Rename Document…")
         menu.addSeparator()
-        a_min  = menu.addAction("Send to Shelf")   # <— new
+        a_min  = menu.addAction("Send to Shelf")
         a_clear = menu.addAction("Clear View Name (use doc name)")
+        menu.addSeparator()
+        a_help = menu.addAction("Show pixel/WCS readout hint")  # ← NEW
         act = menu.exec(self.mapToGlobal(pos))
         if act == a_view:
             self._rename_view()
@@ -462,6 +572,8 @@ class ImageSubWindow(QWidget):
         elif act == a_clear:
             self._view_title_override = None
             self._sync_host_title()
+        elif act == a_help:               # ← NEW
+            self._announce_readout_help()
 
     def _send_to_shelf(self):
         sub = self._mdi_subwindow()
@@ -958,31 +1070,305 @@ class ImageSubWindow(QWidget):
         return p
 
     def eventFilter(self, obj, ev):
+        # 1) Ctrl + wheel → zoom
         if ev.type() == QEvent.Type.Wheel:
-            # Ctrl + wheel → anchored zoom. Otherwise, let QScrollArea scroll.
             if ev.modifiers() & Qt.KeyboardModifier.ControlModifier:
                 factor = 1.25 if ev.angleDelta().y() > 0 else 1/1.25
-                # Use robust, cursor-anchored zoom
                 self._zoom_at_anchor(factor)
                 return True
             return False
+
+        # 2) Space+click on label / viewport → start readout
+        if ev.type() == QEvent.Type.MouseButtonPress:
+            if self._space_down and ev.button() == Qt.MouseButton.LeftButton:
+                vp_pos = obj.mapTo(self.scroll.viewport(), ev.pos())
+                res = self._sample_image_at_viewport_pos(vp_pos)
+                if res is not None:
+                    xi, yi, sample = res
+                    self._show_readout(xi, yi, sample)
+                # go into live-probe mode
+                self._readout_dragging = True
+                self.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
+                return True   # eat event so the label doesn't start selection/pan
+            return False
+
+        # 3) While dragging with space held → continuous readout
+        if ev.type() == QEvent.Type.MouseMove:
+            if self._readout_dragging:
+                vp_pos = obj.mapTo(self.scroll.viewport(), ev.pos())
+                res = self._sample_image_at_viewport_pos(vp_pos)
+                if res is not None:
+                    xi, yi, sample = res
+                    self._show_readout(xi, yi, sample)
+                return True
+            return False
+
+        # 4) Mouse release → stop live-probe
+        if ev.type() == QEvent.Type.MouseButtonRelease:
+            if self._readout_dragging:
+                self._readout_dragging = False
+                return True
+            return False
+
         return super().eventFilter(obj, ev)
+
 
     def mousePressEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton:
+            # --- live readout mode ---
+            if self._space_down:
+                vp = self.scroll.viewport()
+                vp_pos = vp.mapFrom(self, e.pos())
+                res = self._sample_image_at_viewport_pos(vp_pos)
+                if res is not None:
+                    xi, yi, sample = res
+                    self._show_readout(xi, yi, sample)
+                # mark that we’re *not* panning, but we *are* reading out on move
+                self._readout_dragging = True
+                return
+
+            # --- normal pan mode ---
             self._dragging = True
             self._drag_start = e.pos()
+            return
+
+        super().mousePressEvent(e)
+
+    def _show_readout(self, xi, yi, sample):
+        mw = self._find_main_window()
+        if mw is None:
+            return
+
+        # We want raw float prints, never 16-bit normalized
+        r = g = b = None
+        k = None
+
+        if isinstance(sample, dict):
+            # 1) the clean mono path
+            if "mono" in sample:
+                try:
+                    k = float(sample["mono"])
+                except Exception:
+                    k = sample["mono"]
+            # 2) the clean RGB path
+            elif all(ch in sample for ch in ("r", "g", "b")):
+                try:
+                    r = float(sample["r"])
+                    g = float(sample["g"])
+                    b = float(sample["b"])
+                except Exception:
+                    r = sample["r"]; g = sample["g"]; b = sample["b"]
+            else:
+                # 3) weird dict → just take the first numeric-looking value
+                for v in sample.values():
+                    try:
+                        k = float(v)
+                        break
+                    except Exception:
+                        continue
+
+        elif isinstance(sample, (list, tuple)):
+            if len(sample) == 1:
+                try:
+                    k = float(sample[0])
+                except Exception:
+                    k = sample[0]
+            elif len(sample) >= 3:
+                try:
+                    r = float(sample[0]); g = float(sample[1]); b = float(sample[2])
+                except Exception:
+                    r, g, b = sample[0], sample[1], sample[2]
+
+        else:
+            # numpy scalar / plain number
+            try:
+                k = float(sample)
+            except Exception:
+                k = sample
+
+        msg = f"x={xi}  y={yi}"
+
+        if r is not None and g is not None and b is not None:
+            msg += f"   R={r:.6f}  G={g:.6f}  B={b:.6f}"
+        elif k is not None:
+            msg += f"   K={k:.6f}"
+        else:
+            # final fallback if everything was weird
+            msg += "   K=?"
+
+        # ---- WCS ----
+        wcs = self._extract_wcs_from_doc()
+        if wcs is not None:
+            try:
+                world = wcs.pixel_to_world_values(float(xi), float(yi))
+                ra_deg, dec_deg = float(world[0]), float(world[1])
+
+                # RA
+                ra_h = ra_deg / 15.0
+                ra_hh = int(ra_h)
+                ra_mm = int((ra_h - ra_hh) * 60.0)
+                ra_ss = ((ra_h - ra_hh) * 60.0 - ra_mm) * 60.0
+
+                # Dec
+                sign = "+" if dec_deg >= 0 else "-"
+                d = abs(dec_deg)
+                dec_dd = int(d)
+                dec_mm = int((d - dec_dd) * 60.0)
+                dec_ss = ((d - dec_dd) * 60.0 - dec_mm) * 60.0
+
+                msg += (
+                    f"   RA={ra_hh:02d}:{ra_mm:02d}:{ra_ss:05.2f}"
+                    f"  Dec={sign}{dec_dd:02d}:{dec_mm:02d}:{dec_ss:05.2f}"
+                )
+            except Exception:
+                pass
+
+        mw.statusBar().showMessage(msg)
+
+
+
+    def _deg_to_hms(self, ra_deg: float) -> str:
+        """
+        RA in degrees → 'HH:MM:SS.s'
+        """
+        # RA: 0..360 deg → 0..24 h
+        total_seconds = (ra_deg / 15.0) * 3600.0
+        h = int(total_seconds // 3600)
+        m = int((total_seconds % 3600) // 60)
+        s = total_seconds % 60.0
+        return f"{h:02d}:{m:02d}:{s:05.2f}"
+
+    def _deg_to_dms(self, dec_deg: float) -> str:
+        """
+        Dec in degrees → '+DD:MM:SS.s'
+        """
+        sign = "+" if dec_deg >= 0 else "-"
+        d = abs(dec_deg)
+        total_seconds = d * 3600.0
+        deg = int(total_seconds // 3600)
+        arcmin = int((total_seconds % 3600) // 60)
+        arcsec = total_seconds % 60.0
+        return f"{sign}{deg:02d}:{arcmin:02d}:{arcsec:05.2f}"
+
+    def _extract_wcs_from_doc(self):
+        """
+        Try to get an astropy WCS object from the current document.
+        Priority:
+        1) cached on metadata["_astropy_wcs"]
+        2) explicit metadata["wcs"] (already a WCS)
+        3) metadata["original_header"] / ["fits_header"] / ["header"]
+           - FITS Header → WCS(...)
+           - XISF-style dict with FITSKeywords → rebuild Header → WCS(...)
+        Returns WCS or None.
+        """
+        doc = getattr(self, "document", None)
+        if doc is None:
+            return None
+
+        meta = getattr(doc, "metadata", {}) or {}
+
+        # 0) cached
+        cached = meta.get("_astropy_wcs")
+        if cached is not None:
+            return cached
+
+        # 1) explicit WCS stored there
+        explicit = meta.get("wcs")
+        if explicit is not None:
+            # cache for faster reuse
+            meta["_astropy_wcs"] = explicit
+            return explicit
+
+        # We'll need astropy here
+        try:
+            from astropy.io.fits import Header
+            from astropy.wcs import WCS
+        except Exception:
+            return None
+
+        # 2) try to find *any* header-like thing
+        hdr = (
+            meta.get("original_header")
+            or meta.get("fits_header")
+            or meta.get("header")
+        )
+
+        # 2a) it is already an astropy Header
+        if isinstance(hdr, Header):
+            try:
+                w = WCS(hdr, relax=True)
+                meta["_astropy_wcs"] = w
+                return w
+            except Exception:
+                return None
+
+        # 2b) XISF-style dict: look for "FITSKeywords"
+        if isinstance(hdr, dict):
+            fk = hdr.get("FITSKeywords")
+            if fk:
+                # build a temporary FITS header
+                tmp = Header()
+                # XISF often stores like: {"CTYPE1": [{"value": "RA---TAN"}], ...}
+                # so we need to be defensive
+                for key, val in fk.items():
+                    # val can be list[dict] or scalar
+                    if isinstance(val, list) and val:
+                        first = val[0]
+                        v = first.get("value")
+                        c = first.get("comment", "")
+                    else:
+                        v = val
+                        c = ""
+                    if v is None:
+                        continue
+                    try:
+                        tmp[str(key)] = (v, c)
+                    except Exception:
+                        # fallback: at least set the value
+                        tmp[str(key)] = v
+                try:
+                    w = WCS(tmp, relax=True)
+                    meta["_astropy_wcs"] = w
+                    return w
+                except Exception:
+                    return None
+
+        return None
+
 
     def mouseMoveEvent(self, e):
+        # --- live readout while dragging with space held ---
+        if self._readout_dragging:
+            vp = self.scroll.viewport()
+            vp_pos = vp.mapFrom(self, e.pos())
+            res = self._sample_image_at_viewport_pos(vp_pos)
+            if res is not None:
+                xi, yi, sample = res
+                self._show_readout(xi, yi, sample)
+            return
+
+        # --- normal pan ---
         if self._dragging:
             delta = e.pos() - self._drag_start
-            self.scroll.horizontalScrollBar().setValue(self.scroll.horizontalScrollBar().value() - delta.x())
-            self.scroll.verticalScrollBar().setValue(self.scroll.verticalScrollBar().value() - delta.y())
+            self.scroll.horizontalScrollBar().setValue(
+                self.scroll.horizontalScrollBar().value() - delta.x()
+            )
+            self.scroll.verticalScrollBar().setValue(
+                self.scroll.verticalScrollBar().value() - delta.y()
+            )
             self._drag_start = e.pos()
+            return
+
+        super().mouseMoveEvent(e)
 
     def mouseReleaseEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton:
+            # end whichever mode we were in
             self._dragging = False
+            self._readout_dragging = False
+            return
+        super().mouseReleaseEvent(e)
+
 
     def closeEvent(self, e):
         mw = self._find_main_window()

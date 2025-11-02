@@ -2394,20 +2394,35 @@ class _RGBAlignPresetDialog(QDialog):
         init = dict(initial or {})
         v = QVBoxLayout(self)
 
+        # ── model row ───────────────────────────────────────
         row = QHBoxLayout()
         row.addWidget(QLabel("Alignment model:"))
         self.cb_model = QComboBox()
-        self.cb_model.addItems(["homography", "affine", "poly3", "poly4"])
-        want = init.get("model", "homography").lower()
+        # include EDGE first
+        self.cb_model.addItems(["edge", "homography", "affine", "poly3", "poly4"])
+        want = init.get("model", "edge").lower()
         idx = max(0, self.cb_model.findText(want, Qt.MatchFlag.MatchFixedString))
         self.cb_model.setCurrentIndex(idx)
         row.addWidget(self.cb_model, 1)
         v.addLayout(row)
 
+        # ── SEP sigma ───────────────────────────────────────
+        sep_row = QHBoxLayout()
+        sep_row.addWidget(QLabel("SEP sigma:"))
+        self.sb_sigma = QSpinBox()
+        self.sb_sigma.setRange(1, 10)
+        self.sb_sigma.setValue(int(init.get("sep_sigma", 3)))
+        self.sb_sigma.setToolTip("Detection threshold (σ) for EDGE mode.\n"
+                                 "Higher = fewer stars. Only used when model = EDGE.")
+        sep_row.addWidget(self.sb_sigma)
+        v.addLayout(sep_row)
+
+        # ── create new ──────────────────────────────────────
         self.chk_new = QCheckBox("Create new document")
         self.chk_new.setChecked(bool(init.get("new_doc", True)))
         v.addWidget(self.chk_new)
 
+        # ── buttons ─────────────────────────────────────────
         btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok |
             QDialogButtonBox.StandardButton.Cancel,
@@ -2419,6 +2434,8 @@ class _RGBAlignPresetDialog(QDialog):
 
     def result_dict(self) -> dict:
         return {
-            "model": self.cb_model.currentText().lower(),
+            "model": self.cb_model.currentText().lower(),   # "edge" / "homography" / ...
+            "sep_sigma": int(self.sb_sigma.value()),        # <-- new
             "new_doc": bool(self.chk_new.isChecked()),
         }
+
