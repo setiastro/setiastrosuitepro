@@ -6783,10 +6783,7 @@ class AstroSuiteProMainWindow(QMainWindow):
                     self.splitDockWidget(layers_dock, header_dock, Qt.Orientation.Vertical)
             except Exception:
                 pass
-        try:
-            self._populate_view_panels_menu()
-        except Exception:
-            pass
+
 
 
     def _build_command_model(self):
@@ -8204,6 +8201,5 @@ if __name__ == "__main__":
         msg.setStandardButtons(QMessageBox.StandardButton.Ok)
         msg.exec()
         sys.exit(1)
-
 
 
