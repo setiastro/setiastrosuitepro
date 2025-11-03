@@ -35,7 +35,7 @@ numba
 #neural net
 onnx
 onnxruntime
-onnxruntime-directml
+onnxruntime-directml; sys_platform != "darwin"
 
 # image formats & camera raw
 xisf
