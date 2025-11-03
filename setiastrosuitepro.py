@@ -5,7 +5,44 @@ _ban_shadow_torch_paths(status_cb=lambda *_: None)
 _purge_bad_torch_from_sysmodules(status_cb=lambda *_: None)
 
 
+# ─────────────────────────────────────────────────────────────
+# Matplotlib bootstrap (for frozen + for prewarmed cache)
+# ─────────────────────────────────────────────────────────────
+import os
 import sys
+
+def _ensure_mpl_config_dir() -> str:
+    """
+    Make matplotlib use a known, writable folder.
+
+    Frozen (PyInstaller): <folder-with-exe>/mpl_config
+    Dev / IDE:            <repo-folder>/mpl_config
+
+    This matches the pre-warm script that will build the font cache there.
+    """
+    if getattr(sys, "frozen", False):
+        base = os.path.dirname(sys.executable)
+    else:
+        base = os.path.dirname(os.path.abspath(__file__))
+
+    mpl_cfg = os.path.join(base, "mpl_config")
+    try:
+        os.makedirs(mpl_cfg, exist_ok=True)
+    except OSError:
+        # worst case: let matplotlib pick its default
+        return mpl_cfg
+
+    # only set if user / env didn't force something else
+    os.environ.setdefault("MPLCONFIGDIR", mpl_cfg)
+    return mpl_cfg
+
+_MPL_CFG_DIR = _ensure_mpl_config_dir()
+# (optional) print once in dev:
+# print("MPLCONFIGDIR →", _MPL_CFG_DIR)
+# ─────────────────────────────────────────────────────────────
+
+
+
 import importlib
 
 if getattr(sys, 'frozen', False):
@@ -79,7 +116,7 @@ from tifffile import imwrite
 
 from math import isnan
 import re, threading, webbrowser
-import os
+
 os.environ['LIGHTKURVE_STYLE'] = 'default'
 
 import json

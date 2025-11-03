@@ -805,24 +805,24 @@ class MarkerLayer(QGraphicsItem):
                     base_pen.setColor(col)
                     p.setPen(base_pen)
 
+
                     if style == "Crosshair":
-                        p.drawLine(x - r, y, x + r, y)
-                        p.drawLine(x, y - r, x, y + r)
+                        # use QLineF to avoid int casting everywhere
+                        p.drawLine(QLineF(x - r, y,     x + r, y))
+                        p.drawLine(QLineF(x,     y - r, x,     y + r))
                     else:
                         p.drawEllipse(QPointF(x, y), r, r)
 
                     if show_names and pt.get("name"):
-                        # draw text in a high-contrast color so it can't disappear
                         text_pen = QPen(QColor(255, 255, 255))
-                        print("name to draw:", pt["name"])
                         text_pen.setCosmetic(True)
                         p.setPen(text_pen)
-                        # optional: ensure readable font
-                        # p.setFont(QFont("Arial", 10))
-                        p.drawText(x + r + 2, y - r - 2, pt["name"])
-                        # restore the marker pen for subsequent shapes
+                        name_str = str(pt["name"])  # make sure it’s a plain str
+                        # either cast to ints...
+                        p.drawText(int(x + r + 2), int(y - r - 2), name_str)
+                        # ...or equivalently:
+                        # p.drawText(QPointF(x + r + 2, y - r - 2), name_str)
                         p.setPen(base_pen)
-
 
 def _qt_is_alive(obj) -> bool:
     if obj is None:
