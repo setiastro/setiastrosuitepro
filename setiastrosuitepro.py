@@ -916,6 +916,34 @@ def _doc_looks_like_table(doc) -> bool:
 
     return False
 
+
+def _is_alive(obj) -> bool:
+    """True if obj is a live Qt wrapper (not deleted)."""
+    if obj is None:
+        return False
+    if sip is not None:
+        try:
+            return not sip.isdeleted(obj)
+        except Exception:
+            # fall through to touch test
+            pass
+    # Touch-test: some cheap attribute access; if wrapper is dead this raises RuntimeError
+    try:
+        getattr(obj, "objectName", None)
+        return True
+    except RuntimeError:
+        return False
+
+def _safe_widget(sw):
+    """Returns sw.widget() if both subwindow and its widget are alive; else None."""
+    try:
+        if not _is_alive(sw):
+            return None
+        w = sw.widget()
+        return w if _is_alive(w) else None
+    except Exception:
+        return None
+
 class AstroSuiteProMainWindow(QMainWindow):
     currentDocumentChanged = pyqtSignal(object)  # ImageDocument | None
 
@@ -7521,56 +7549,112 @@ class AstroSuiteProMainWindow(QMainWindow):
 
         self._log(f"Display-Stretch mode → {'LINKED' if checked else 'UNLINKED'}")
 
+
+
     def _on_subwindow_activated(self, sw):
-        # Clear previous active marker
+        # ── Clear previous active marker (guard dead wrappers)
         prev = getattr(self, "_last_active_view", None)
-        if prev and hasattr(prev, "set_active_highlight"):
+        if _is_alive(prev):
             try:
-                prev.set_active_highlight(False)
+                # hasattr on dead wrappers can raise; gate with _is_alive first
+                if hasattr(prev, "set_active_highlight"):
+                    prev.set_active_highlight(False)
+            except RuntimeError:
+                pass
             except Exception:
                 pass
 
-        # Mark new active view
-        new_view = sw.widget() if sw else None
-        if new_view and hasattr(new_view, "set_active_highlight"):
+        # ── Resolve the newly activated view safely
+        new_view = _safe_widget(sw)
+        if _is_alive(new_view):
             try:
-                new_view.set_active_highlight(True)
+                if hasattr(new_view, "set_active_highlight"):
+                    new_view.set_active_highlight(True)
+            except RuntimeError:
+                pass
             except Exception:
                 pass
 
-        # Remember for next time
-        self._last_active_view = new_view
+        # Remember for next time (store None if dead/missing)
+        self._last_active_view = new_view if _is_alive(new_view) else None
 
-        # ... keep your existing logic below ...
-        doc = sw.widget().document if sw else None
-        self.currentDocumentChanged.emit(doc)
-        self._sync_docman_active(doc)
-        if hasattr(self, "act_zoom_1_1"):
-            self.act_zoom_1_1.setEnabled(bool(sw))
+        # ── Safely pull the document and emit signal
+        doc = None
+        try:
+            w = _safe_widget(sw)
+            doc = w.document if _is_alive(w) and hasattr(w, "document") else None
+        except RuntimeError:
+            doc = None
+        except Exception:
+            doc = None
 
-        if hasattr(self, "act_autostretch"):
+        try:
+            self.currentDocumentChanged.emit(doc)
+        except Exception:
+            pass
+
+        # Sync DocManager active, guarded
+        try:
+            self._sync_docman_active(doc)
+        except Exception:
+            pass
+
+        # Toolbar/menu states
+        try:
+            if hasattr(self, "act_zoom_1_1"):
+                self.act_zoom_1_1.setEnabled(bool(new_view))
+        except Exception:
+            pass
+
+        # Autostretch checkbox reflect active view
+        try:
             from PyQt6.QtCore import QSignalBlocker
-            block = QSignalBlocker(self.act_autostretch)
-            if sw and hasattr(sw.widget(), "autostretch_enabled"):
-                self.act_autostretch.setChecked(bool(sw.widget().autostretch_enabled))
-            else:
-                self.act_autostretch.setChecked(False)
+            if hasattr(self, "act_autostretch"):
+                block = QSignalBlocker(self.act_autostretch)
+                if _is_alive(new_view) and hasattr(new_view, "autostretch_enabled"):
+                    self.act_autostretch.setChecked(bool(getattr(new_view, "autostretch_enabled")))
+                else:
+                    self.act_autostretch.setChecked(False)
+        except Exception:
+            pass
 
-        view = sw.widget() if sw else None
-        # sync the Linked action with the active view (and enable/disable for mono)
-        if hasattr(self, "act_stretch_linked"):
-            if not view:
-                self.act_stretch_linked.setEnabled(False)
-                return
-            is_mono = getattr(view, "is_mono", lambda: False)()
-            self.act_stretch_linked.setEnabled(not is_mono)
-            if hasattr(view, "is_autostretch_linked"):
-                with QSignalBlocker(self.act_stretch_linked):
-                    self.act_stretch_linked.setChecked(bool(view.is_autostretch_linked()))
+        # Linked stretch action
+        try:
+            if hasattr(self, "act_stretch_linked"):
+                if not _is_alive(new_view):
+                    self.act_stretch_linked.setEnabled(False)
+                else:
+                    is_mono = False
+                    try:
+                        if hasattr(new_view, "is_mono"):
+                            is_mono = bool(new_view.is_mono())
+                    except Exception:
+                        is_mono = False
+                    self.act_stretch_linked.setEnabled(not is_mono)
+                    if hasattr(new_view, "is_autostretch_linked"):
+                        from PyQt6.QtCore import QSignalBlocker
+                        with QSignalBlocker(self.act_stretch_linked):
+                            try:
+                                self.act_stretch_linked.setChecked(bool(new_view.is_autostretch_linked()))
+                            except Exception:
+                                self.act_stretch_linked.setChecked(False)
+        except Exception:
+            pass
 
-        self.update_undo_redo_action_labels()
-        self._hdr_refresh_timer.start(0)
-        self._refresh_mask_action_states()     
+        # Misc UI refreshes (guarded)
+        try:
+            self.update_undo_redo_action_labels()
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "_hdr_refresh_timer") and self._hdr_refresh_timer is not None:
+                self._hdr_refresh_timer.start(0)
+        except Exception:
+            pass
+        try:
+            self._refresh_mask_action_states()
+        except Exception:
+            pass
 
     def _sync_docman_active(self, doc):
         dm = self.doc_manager
