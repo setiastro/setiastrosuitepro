@@ -21,9 +21,18 @@ except Exception:
 # PixelImage wrapper (vector ops, indexing, ^ as exponent, ~ as invert)
 # =============================================================================
 class PixelImage:
-    def __init__(self, array: np.ndarray):
-        self.array = array
+    """
+    Lightweight wrapper to enable intuitive pixel math:
+      • Supports per-channel indexing: img[0], img[1], img[2] → (H,W) planes
+      • Broadcasts (H,W) ⇄ (H,W,3) for +,-,*,/, power, and comparisons
+      • ~img means (1 - img)
+    """
+    __array_priority__ = 10_000  # ensure numpy uses our dunder ops
 
+    def __init__(self, array: np.ndarray):
+        self.array = np.asarray(array, dtype=np.float32)
+
+    # ---- channel indexing ----
     def __getitem__(self, ch):
         a = self.array
         if a.ndim < 3:
@@ -32,28 +41,80 @@ class PixelImage:
             raise IndexError(f"Channel index {ch} out of range for shape {a.shape}")
         return PixelImage(a[..., ch])
 
-    def _bin(self, other, op):
-        return PixelImage(op(self.array, other.array if isinstance(other, PixelImage) else other))
-    __add__ = lambda self, o: self._bin(o, np.add)
-    __radd__ = __add__
-    __sub__ = lambda self, o: self._bin(o, np.subtract)
-    __rsub__ = lambda self, o: PixelImage((o.array if isinstance(o, PixelImage) else o) - self.array)
-    __mul__ = lambda self, o: self._bin(o, np.multiply)
-    __rmul__ = __mul__
-    __truediv__ = lambda self, o: self._bin(o, np.divide)
+    # ---- shape coercion (H,W) ⇄ (H,W,3) ----
+    @staticmethod
+    def _coerce(a, b):
+        a = np.asarray(a, dtype=np.float32)
+        b = np.asarray(b, dtype=np.float32)
+        if a.ndim == 3 and b.ndim == 2:
+            b = np.repeat(b[..., None], a.shape[2], axis=2)
+        elif a.ndim == 2 and b.ndim == 3:
+            a = np.repeat(a[..., None], b.shape[2], axis=2)
+        return a, b
 
+    # ---- binary arithmetic helpers ----
+    def _bin(self, other, op):
+        a = self.array
+        b = other.array if isinstance(other, PixelImage) else other
+        a, b = self._coerce(a, b)
+        return PixelImage(op(a, b))
+
+    # ---- comparisons with coercion (return ndarray masks) ----
+    def _cmp(self, other, op):
+        a = self.array
+        b = other.array if isinstance(other, PixelImage) else other
+        a, b = self._coerce(a, b)
+        return op(a, b)
+
+    # ---- arithmetic ----
+    __add__      = lambda self, o: self._bin(o, np.add)
+    __radd__     = __add__
+    __sub__      = lambda self, o: self._bin(o, np.subtract)
+    __mul__      = lambda self, o: self._bin(o, np.multiply)
+    __rmul__     = __mul__
+    __truediv__  = lambda self, o: self._bin(o, np.divide)
+
+    def __rsub__(self, o):
+        a, b = self._coerce(o.array if isinstance(o, PixelImage) else o, self.array)
+        return PixelImage(np.subtract(a, b))
+
+    def __rtruediv__(self, o):
+        a, b = self._coerce(o.array if isinstance(o, PixelImage) else o, self.array)
+        return PixelImage(np.divide(a, b))
+
+    # power ** and ^
+    def __pow__(self, o):
+        a = self.array; b = o.array if isinstance(o, PixelImage) else o
+        a, b = self._coerce(a, b)
+        return PixelImage(np.power(a, b))
+
+    def __rpow__(self, o):
+        a = o.array if isinstance(o, PixelImage) else o; b = self.array
+        a, b = self._coerce(a, b)
+        return PixelImage(np.power(a, b))
+
+    # keep ^ as alias for power for convenience
+    def __xor__(self, o):
+        return self.__pow__(o)
+
+    def __rxor__(self, o):
+        return self.__rpow__(o)
+
+    # invert (~img) → 1 - img
     def __invert__(self):
         return PixelImage(1.0 - self.array)
 
-    def __xor__(self, other):
-        return PixelImage(np.power(self.array, other.array if isinstance(other, PixelImage) else other))
-    def __rxor__(self, other):
-        return PixelImage(np.power(other.array if isinstance(other, PixelImage) else other, self.array))
+    # ---- comparisons (return boolean ndarray) ----
+    __lt__ = lambda self, o: self._cmp(o, np.less)
+    __le__ = lambda self, o: self._cmp(o, np.less_equal)
+    __eq__ = lambda self, o: self._cmp(o, np.equal)
+    __ne__ = lambda self, o: self._cmp(o, np.not_equal)
+    __gt__ = lambda self, o: self._cmp(o, np.greater)
+    __ge__ = lambda self, o: self._cmp(o, np.greater_equal)
 
-    def __lt__(self, other):  return self.array < (other.array if isinstance(other, PixelImage) else other)
-    def __eq__(self, other):  return self.array == (other.array if isinstance(other, PixelImage) else other)
+    def __repr__(self):
+        return f"PixelImage(shape={self.array.shape}, dtype={self.array.dtype})"
 
-    def __repr__(self): return f"PixelImage(shape={self.array.shape}, dtype={self.array.dtype})"
 
 
 # =============================================================================
@@ -261,7 +322,7 @@ class _Evaluator:
             arr = getattr(d, "image", None)
             if arr is None:
                 continue
-            self.ns[ident] = PixelImage(_as_rgb(arr))
+            self.ns[ident] = PixelImage(np.asarray(arr, dtype=np.float32))  # keep native 2D/3D
             self.title_map.append((str(raw_title), ident))
 
     # -------- expression rewriting: allow raw window titles in user code
@@ -599,8 +660,18 @@ class _Evaluator:
                 v = v.array
             if np.isscalar(v):
                 return np.full((H, W), float(v), dtype=np.float32)
+
+            # NEW: accept 3-D if it is effectively mono
             if v.ndim == 3:
-                raise ValueError("Per-channel mode expects 2D results (use viewName[0/1/2]).")
+                if v.shape[2] == 1:
+                    v = v[..., 0]
+                else:
+                    # squeeze if channels are (nearly) identical
+                    if np.allclose(v[..., 0], v[..., 1]) and np.allclose(v[..., 0], v[..., 2]):
+                        v = v[..., 0]
+                    else:
+                        raise ValueError("Per-channel mode expects 2D results (use view[0/1/2] or luma()).")
+
             return v.astype(np.float32, copy=False)
 
         R = one(er); G = one(eg); B = one(eb)

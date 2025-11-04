@@ -9699,69 +9699,62 @@ class StackingSuiteDialog(QDialog):
         return (self.manual_dark_overrides.get(key_full)
                 or self.manual_dark_overrides.get(key_short))
 
+    # --- key helpers (scoped to filter+exposure) ---------------------------------
+    def _light_key(self, filter_name: str, exposure_text: str) -> str:
+        # Keep this EXACT format if other code relies on it
+        return f"{filter_name} - {exposure_text}"
+
+    def _item_scope(self, item):
+        """
+        Returns (filter_name, exposure_item) for any selected tree item:
+        - leaf  -> (filter_name, its exposure parent)
+        - exposure row -> (filter_name, exposure row)
+        - filter row   -> (filter_name, None)    # caller can iterate children
+        """
+        if item.parent() and item.parent().parent():      # leaf
+            exp_item = item.parent()
+            return exp_item.parent().text(0), exp_item
+        elif item.parent() and item.childCount() > 0:     # exposure row
+            return item.parent().text(0), item
+        elif item.parent() is None and item.childCount()>0:  # filter row
+            return item.text(0), None
+        return None, None
+
+    def _iter_selected_light_leaves(self):
+        """
+        Yield only selected leaf rows (filename rows) from the Light tree.
+        Leaf = has a parent (exposure) and grandparent (filter) and childCount()==0.
+        """
+        for it in self.light_tree.selectedItems():
+            if it and it.childCount() == 0 and it.parent() and it.parent().parent():
+                yield it
 
 
     def override_selected_master_flat(self):
         """
-        Override Master Flat for selected Light items.
-        - Accepts selection at filter row, exposure row, or leaf row.
-        - Updates the leaf's column 3 with the chosen master flat's basename.
-        - Stores overrides under BOTH keys:
-            * "Filter - <exposure_text>"
-            * "<exposure_text>"
-        so calibrate_lights() can resolve it reliably.
+        Override Master Flat for ONLY the selected leaf (file) rows.
+        Does not touch siblings, exposure groups, or filters unless those leaves are selected.
         """
-        selected_items = self.light_tree.selectedItems()
-        if not selected_items:
-            print("⚠️ No Light items selected for flat override.")
+        leaves = list(self._iter_selected_light_leaves())
+        if not leaves:
+            print("⚠️ Select individual Light files (leaf rows) to override their flat.")
             return
 
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Select Master Flat", "", "FITS Files (*.fits *.fit)"
         )
         if not file_path:
-            return  # user cancelled
+            return
 
         base = os.path.basename(file_path)
-        overrides_set = []
+        for leaf in leaves:
+            # Column 3 = "Master Flat" per your header
+            leaf.setText(3, base)
+            # stash the full path so calibration can use it directly
+            leaf.setData(3, Qt.ItemDataRole.UserRole, file_path)
 
-        def _apply_to_exposure_row(exp_item, filter_name):
-            exposure_text = exp_item.text(0)  # e.g. "300.0s (4144x2822)"
-            # Store override under both key shapes
-            self.manual_flat_overrides[f"{filter_name} - {exposure_text}"] = file_path
-            self.manual_flat_overrides[exposure_text] = file_path
-            overrides_set.append(f"{filter_name} - {exposure_text}")
-            overrides_set.append(exposure_text)
-            # Push to all leaves
-            for i in range(exp_item.childCount()):
-                leaf = exp_item.child(i)
-                leaf.setText(3, base)
+        print(f"✅ Flat override applied to {len(leaves)} selected file(s).")
 
-        for item in selected_items:
-            # Case A: leaf row (filename row)
-            if item.parent() and item.parent().parent():
-                exposure_item = item.parent()
-                filter_item = exposure_item.parent()
-                filter_name = filter_item.text(0)
-                _apply_to_exposure_row(exposure_item, filter_name)
-                item.setText(3, base)
-
-            # Case B: exposure row (under a filter, has children)
-            elif item.parent() and item.childCount() > 0:
-                filter_name = item.parent().text(0)
-                _apply_to_exposure_row(item, filter_name)
-
-            # Case C: top-level filter row (apply to all its exposure groups)
-            elif item.parent() is None and item.childCount() > 0:
-                filter_name = item.text(0)
-                for j in range(item.childCount()):
-                    exposure_item = item.child(j)
-                    _apply_to_exposure_row(exposure_item, filter_name)
-
-        if overrides_set:
-            print(f"✅ DEBUG: Overrode Master Flat with {base} for keys: {sorted(set(overrides_set))}")
-        else:
-            print("ℹ️ No applicable rows found to apply flat override.")
 
 
 
@@ -9852,6 +9845,22 @@ class StackingSuiteDialog(QDialog):
         )
         return bool(apply_cosmetic), bool(apply_pedestal)
 
+    def _leaf_assigned_dark_path(self, leaf):
+        # Column 2 = Master Dark (full path stashed in UserRole when overridden)
+        try:
+            p = leaf.data(2, Qt.ItemDataRole.UserRole)
+            return str(p) if p else None
+        except Exception:
+            return None
+
+    def _leaf_assigned_flat_path(self, leaf):
+        # Column 3 = Master Flat (full path stashed in UserRole when overridden)
+        try:
+            p = leaf.data(3, Qt.ItemDataRole.UserRole)
+            return str(p) if p else None
+        except Exception:
+            return None
+
 
     def calibrate_lights(self):
         """Performs calibration on selected light frames using Master Darks and Flats, considering overrides."""
@@ -9927,44 +9936,59 @@ class StackingSuiteDialog(QDialog):
                     image_size = f"{width}x{height}"
 
                     # ---------- RESOLVE MASTER DARK ----------
-                    manual_dark_key_full  = f"{filter_name} - {exposure_text}"
-                    manual_dark_key_short = exposure_text
-                    master_dark_path = (
-                        self.manual_dark_overrides.get(manual_dark_key_full)
-                        or self.manual_dark_overrides.get(manual_dark_key_short)
-                    )
+                    # 0) Per-leaf override takes precedence
+                    master_dark_path = self._leaf_assigned_dark_path(leaf)
+
                     if master_dark_path is None:
-                        # If the leaf shows a basename, map it back to a stored path
+                        # 1) Your existing manual map (full + short)
+                        manual_dark_key_full  = f"{filter_name} - {exposure_text}"
+                        manual_dark_key_short = exposure_text
+                        master_dark_path = (
+                            self.manual_dark_overrides.get(manual_dark_key_full)
+                            or self.manual_dark_overrides.get(manual_dark_key_short)
+                        )
+
+                    if master_dark_path is None:
+                        # 2) If the leaf shows a basename, map back to a stored path
                         name_in_leaf = (leaf.text(2) or "").strip()
                         if name_in_leaf:
                             for _, path in self.master_files.items():
                                 if os.path.basename(path) == name_in_leaf:
                                     master_dark_path = path
                                     break
+
                     if master_dark_path is None:
-                        # Last resort: auto-pick by size+exposure
+                        # 3) Last resort: auto-pick by size+exposure
                         mm = re.match(r"([\d.]+)s", exposure_text or "")
                         exp_time = float(mm.group(1)) if mm else 0.0
                         master_dark_path = self._auto_pick_master_dark(image_size, exp_time)
+
                     print(f"master_dark_path is {master_dark_path}")
 
                     # ---------- RESOLVE MASTER FLAT ----------
-                    manual_flat_key_full = f"{filter_name} - {exposure_text}"
-                    master_flat_path = self.manual_flat_overrides.get(manual_flat_key_full)
+                    # 0) Per-leaf override takes precedence
+                    master_flat_path = self._leaf_assigned_flat_path(leaf)
+
                     if master_flat_path is None:
+                        # 1) Your existing manual map (scoped to filter+exposure)
+                        manual_flat_key_full = f"{filter_name} - {exposure_text}"
+                        master_flat_path = self.manual_flat_overrides.get(manual_flat_key_full)
+
+                    if master_flat_path is None:
+                        # 2) If the leaf shows a basename, map back to a stored path
                         name_in_leaf = (leaf.text(3) or "").strip()
                         if name_in_leaf:
                             for _, path in self.master_files.items():
                                 if os.path.basename(path) == name_in_leaf:
                                     master_flat_path = path
                                     break
+
                     if master_flat_path is None:
-                        # Prefer session-matched flat, else fall back to any size+filter flat
+                        # 3) Prefer session-matched flat, else size+filter fallback
                         master_flat_path = self._auto_pick_master_flat(filter_name, image_size, session_name)
+
                     print(f"master_flat_path is {master_flat_path}")
 
-                    self.update_status(f"Processing: {os.path.basename(light_file)}")
-                    QApplication.processEvents()
 
                     # ---------- LOAD LIGHT ----------
                     light_data, hdr, bit_depth, is_mono = load_image(light_file)
@@ -10141,40 +10165,6 @@ class StackingSuiteDialog(QDialog):
                         self.update_status("ℹ️ Registration already in progress; auto-run skipped.")
         except Exception as e:
             self.update_status(f"⚠️ Auto register/integrate failed: {e}")
-
-    def extract_light_files_from_tree(self):
-        """
-        Walks self.reg_tree and rebuilds self.light_files as
-        { group_key: [abs_path1, abs_path2, ...], ... }
-        """
-        new = {}
-        for i in range(self.reg_tree.topLevelItemCount()):
-            group = self.reg_tree.topLevelItem(i)
-            key   = group.text(0)
-            files = []
-
-            # dive into exposure → leaf or direct leaf
-            for j in range(group.childCount()):
-                sub = group.child(j)
-                leaves = []
-                if sub.childCount()>0:
-                    for k in range(sub.childCount()):
-                        leaves.append(sub.child(k))
-                else:
-                    leaves.append(sub)
-
-                for leaf in leaves:
-                    fp = leaf.data(0, Qt.ItemDataRole.UserRole)
-                    if fp and os.path.exists(fp):
-                        files.append(fp)
-                    else:
-                        self.update_status(f"⚠️ WARNING: File not found: {fp}")
-            if files:
-                new[key] = files
-
-        self.light_files = new
-        total = sum(len(v) for v in new.values())
-        self.update_status(f"✅ Extracted Light Files: {total} total")
 
 
     def select_reference_frame_robust(self, frame_weights, sigma_threshold=1.0):
