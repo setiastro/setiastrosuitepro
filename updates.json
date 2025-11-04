@@ -1,9 +1,9 @@
 {
-  "version": "1.4.4",
+  "version": "1.4.5",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.4/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.4/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.4/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.5/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.5/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.5/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.4.4 Spacebar+Click/Drag for Image Value and Coordinate Readout.  RGB Align improved robustness and options.  Layers Opacity debounce for smoother operation."
+  "notes": "Seti Astro Suite Pro V1.4.5 Matplotlib font cache pre loaded for faster startup.  PixelMath updates.  Stacking Suite override flat bug fix"
 }
