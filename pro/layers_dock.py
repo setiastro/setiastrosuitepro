@@ -430,10 +430,8 @@ class LayersDock(QDockWidget):
         try:
             if md.hasFormat(MIME_VIEWSTATE):
                 st = json.loads(bytes(md.data(MIME_VIEWSTATE)).decode("utf-8"))
-                doc_ptr = st.get("doc_ptr")
-                if doc_ptr is None:
-                    raise RuntimeError("Missing doc_ptr in MIME_VIEWSTATE payload")
-                src_doc = self._resolve_doc_ptr(doc_ptr)
+                # Try robust resolution (UIDs/file_path/ptr)
+                src_doc = self._resolve_doc_from_state(st)
                 if src_doc is None:
                     raise RuntimeError("Source doc gone")
                 layer_name = "Layer"
@@ -441,17 +439,14 @@ class LayersDock(QDockWidget):
                 for sw in self._all_subwindows():
                     if getattr(sw, "document", None) is src_doc:
                         t = getattr(sw, "_effective_title", None)
-                        if callable(t):
-                            t = t()
-                        src_title = t or None
+                        src_title = t() if callable(t) else t
                         break
-
                 if src_title:
                     layer_name = src_title
                 else:
-                    # fallback to document display name
                     dn = getattr(src_doc, "display_name", None)
                     layer_name = dn() if callable(dn) else (dn or "Layer")
+
                 new_layer = ImageLayer(
                     name=layer_name,
                     src_doc=src_doc,
@@ -470,10 +465,8 @@ class LayersDock(QDockWidget):
 
             if md.hasFormat(MIME_MASK):
                 payload = json.loads(bytes(md.data(MIME_MASK)).decode("utf-8"))
-                doc_ptr = payload.get("mask_doc_ptr")
-                if doc_ptr is None:
-                    raise RuntimeError("Missing mask_doc_ptr in MIME_MASK payload")
-                mask_doc = self._resolve_doc_ptr(doc_ptr)
+                # payload may include doc_uid/base_doc_uid/file_path/mask_doc_ptr
+                mask_doc = self._resolve_doc_from_state(payload)
                 if mask_doc is None:
                     raise RuntimeError("Mask doc gone")
                 if not getattr(vw, "_layers", None):
@@ -495,15 +488,67 @@ class LayersDock(QDockWidget):
                 vw.apply_layer_stack(vw._layers)
                 e.acceptProposedAction()
                 return
+
         except Exception as ex:
             print("[LayersDock] drop error:", ex)
         e.ignore()
 
     def _resolve_doc_ptr(self, ptr: int):
-        for d in self.docman.all_documents():
-            if id(d) == ptr:
-                return d
+        """Legacy path: resolve by Python id() pointer."""
+        try:
+            for d in self.docman.all_documents():
+                if id(d) == ptr:
+                    return d
+        except Exception:
+            pass
         return None
+
+    def _resolve_doc_from_state(self, st):
+        """
+        Accepts either:
+        - dict payload (preferred): may include doc_uid, base_doc_uid, file_path, doc_ptr/mask_doc_ptr
+        - int legacy pointer
+        Tries, in order: doc_uid → base_doc_uid → legacy ptr → file_path.
+        """
+        # If called with an int, treat it as a raw pointer
+        if isinstance(st, int):
+            return self._resolve_doc_ptr(st)
+
+        if not isinstance(st, dict):
+            return None
+
+        # 1) Prefer UIDs
+        doc_uid = st.get("doc_uid")
+        base_uid = st.get("base_doc_uid")
+        if doc_uid and hasattr(self.docman, "get_document_by_uid"):
+            d = self.docman.get_document_by_uid(doc_uid)
+            if d is not None:
+                return d
+        if base_uid and hasattr(self.docman, "get_document_by_uid"):
+            d = self.docman.get_document_by_uid(base_uid)
+            if d is not None:
+                return d
+
+        # 2) Legacy pointer
+        ptr = st.get("doc_ptr") or st.get("mask_doc_ptr")  # mask payloads may use mask_doc_ptr
+        if isinstance(ptr, int):
+            d = self._resolve_doc_ptr(ptr)
+            if d is not None:
+                return d
+
+        # 3) Last-ditch: file path match
+        fp = (st.get("file_path") or "").strip()
+        if fp:
+            try:
+                for d in self.docman.all_documents():
+                    meta = getattr(d, "metadata", {}) or {}
+                    if meta.get("file_path") == fp:
+                        return d
+            except Exception:
+                pass
+
+        return None
+
 
     def _merge_and_push(self):
         vw = self.current_view()

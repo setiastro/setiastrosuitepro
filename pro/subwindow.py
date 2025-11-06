@@ -293,6 +293,34 @@ class ImageSubWindow(QWidget):
         # make the buttons correct right now
         self._refresh_local_undo_buttons()
 
+    def _drag_identity_fields(self):
+        """
+        Returns a dict with identity hints for DnD:
+        doc_uid (preferred), base_doc_uid (parent/full), and file_path.
+        Falls back gracefully if fields are missing.
+        """
+        doc = getattr(self, "document", None)
+        base = getattr(self, "base_document", None) or doc
+
+        # If DocManager maps preview/ROI views, prefer the true backing doc as base
+        dm = getattr(self, "_docman", None)
+        try:
+            if dm and hasattr(dm, "get_document_for_view"):
+                back = dm.get_document_for_view(self)
+                if back is not None:
+                    base = back
+        except Exception:
+            pass
+
+        meta = (getattr(doc, "metadata", None) or {})
+        base_meta = (getattr(base, "metadata", None) or {})
+
+        return {
+            "doc_uid": getattr(doc, "uid", None),
+            "base_doc_uid": getattr(base, "uid", None),
+            "file_path": meta.get("file_path") or base_meta.get("file_path") or "",
+        }
+
 
     def _on_local_undo(self):
         doc = self._resolve_history_doc()
@@ -983,17 +1011,20 @@ class ImageSubWindow(QWidget):
     #    }
 
     def _start_viewstate_drag(self):
-        """Package view state + doc pointer into a drag."""
+        """Package view state + robust doc identity into a drag."""
         hbar = self.scroll.horizontalScrollBar()
         vbar = self.scroll.verticalScrollBar()
+
         state = {
-            "doc_ptr": id(self.document),
+            "doc_ptr": id(self.document),                      # legacy
             "scale": float(self.scale),
             "hval": int(hbar.value()),
             "vval": int(vbar.value()),
             "autostretch": bool(self.autostretch_enabled),
             "autostretch_target": float(self.autostretch_target),
         }
+        state.update(self._drag_identity_fields())             # ← NEW: uid + base_uid + file_path
+
         md = QMimeData()
         md.setData(MIME_VIEWSTATE, QByteArray(json.dumps(state).encode("utf-8")))
 
@@ -1004,6 +1035,7 @@ class ImageSubWindow(QWidget):
                 64, 64, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
             drag.setHotSpot(QPoint(16, 16))
         drag.exec(Qt.DropAction.CopyAction)
+
 
     def _start_mask_drag(self):
         """
@@ -1016,6 +1048,8 @@ class ImageSubWindow(QWidget):
             "feather": 0.0,          # px
             "name": self.document.display_name(),
         }
+        payload.update(self._drag_identity_fields())           # ← add uid/base_uid/file_path
+
         md = QMimeData()
         md.setData(MIME_MASK, QByteArray(json.dumps(payload).encode("utf-8")))
 
@@ -1036,6 +1070,7 @@ class ImageSubWindow(QWidget):
             "wcs_from_doc_ptr": id(self.document),
             "name": self.document.display_name(),
         }
+        payload.update(self._drag_identity_fields()) 
         md = QMimeData()
         md.setData(MIME_ASTROMETRY, QByteArray(json.dumps(payload).encode("utf-8")))
 
@@ -1114,6 +1149,7 @@ class ImageSubWindow(QWidget):
             "autostretch": bool(self.autostretch_enabled),
             "autostretch_target": float(self.autostretch_target),
         }
+        state.update(self._drag_identity_fields())
 
         mime = QMimeData()
         mime.setData(MIME_VIEWSTATE, QByteArray(json.dumps(state).encode("utf-8")))

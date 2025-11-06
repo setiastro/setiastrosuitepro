@@ -8,6 +8,7 @@ from legacy.xisf import XISF as XISFReader
 from astropy.io import fits  # local import; optional dep
 from legacy.image_manager import load_image as legacy_load_image, save_image as legacy_save_image
 from legacy.image_manager import list_fits_extensions, load_fits_extension
+import uuid
 
 def _normalize_ext(ext: str) -> str:
     e = ext.lower().lstrip(".")
@@ -62,6 +63,7 @@ class ImageDocument(QObject):
         self._redo: list[tuple[np.ndarray, dict, str]] = []        
         self.masks: dict[str, MaskLayer] = {}
         self.active_mask_id: str | None = None
+        self.uid = uuid.uuid4().hex  # stable identity for DnD, layers, masks, etc.
 
     # --- history helpers (NEW) ---
     def can_undo(self) -> bool:
@@ -685,6 +687,7 @@ class DocManager(QObject):
         self._active_doc: ImageDocument | None = None
         self._mdi: "QMdiArea | None" = None  # type: ignore
         self.imageRegionUpdated.connect(self._invalidate_roi_cache)
+        self._by_uid = {}
 
         def _do_preview_repaint(doc, roi):
             vw = self._active_view_widget()
@@ -777,6 +780,9 @@ class DocManager(QObject):
         for k in dead:
             self._roi_doc_cache.pop(k, None)
 
+    def get_document_by_uid(self, uid: str):
+        return self._by_uid.get(uid)
+
 
     def _register_doc(self, doc):
         import weakref
@@ -786,8 +792,10 @@ class DocManager(QObject):
                 doc._doc_manager = weakref.proxy(self)   # avoid cycles
             except Exception:
                 doc._doc_manager = self                  # fallback
-        self._docs.append(doc)
-        self.documentAdded.emit(doc)
+            self._docs.append(doc)
+            if hasattr(doc, "uid"):
+                self._by_uid[doc.uid] = doc
+            self.documentAdded.emit(doc)
 
     def _build_roi_document(self, base_doc, roi):
         #print("[DocManager] Building ROI view document")
@@ -1277,8 +1285,13 @@ class DocManager(QObject):
     def close_document(self, doc):
         if doc in self._docs:
             self._docs.remove(doc)
+            try:
+                if hasattr(doc, "uid"):
+                    self._by_uid.pop(doc.uid, None)
+            except Exception:
+                pass
             self.documentRemoved.emit(doc)
-
+            
     # --- Active-document helpers (NEW) ---------------------------------
     def all_documents(self):
         return list(self._docs)

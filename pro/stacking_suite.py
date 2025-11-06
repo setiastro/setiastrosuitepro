@@ -593,6 +593,75 @@ def normalize_images(stack: np.ndarray,
 
 # ----- small helpers -----
 
+def _force_shape_hw(img: np.ndarray, target_h: int, target_w: int) -> np.ndarray:
+    """
+    Return img with exactly (target_h, target_w) spatial shape.
+    If bigger → center-crop; if smaller → reflect-pad. Preserves channels/layout.
+    """
+    import numpy as np, cv2
+    a = np.asarray(img)
+    if a.ndim < 2:
+        return a
+
+    if a.ndim == 2:
+        H, W = a.shape
+        Caxis = None
+    elif a.ndim == 3:
+        # supports HWC and CHW; detect which one by comparing small channel count
+        if a.shape[-1] in (1, 3):      # HWC
+            H, W = a.shape[:2]; Caxis = -1
+        elif a.shape[0] in (1, 3):     # CHW
+            H, W = a.shape[1:]; Caxis = 0
+        else:
+            # assume HWC
+            H, W = a.shape[:2]; Caxis = -1
+    else:
+        return a
+
+    th, tw = int(target_h), int(target_w)
+    if (H, W) == (th, tw): 
+        return a
+
+    # --- center-crop if larger ---
+    y0 = max(0, (H - th) // 2)
+    x0 = max(0, (W - tw) // 2)
+    y1 = min(H, y0 + th)
+    x1 = min(W, x0 + tw)
+
+    if a.ndim == 2:
+        cropped = a[y0:y1, x0:x1]
+    elif Caxis == -1:  # HWC
+        cropped = a[y0:y1, x0:x1, ...]
+    else:               # CHW
+        cropped = a[:, y0:y1, x0:x1]
+
+    ch, cw = (cropped.shape[:2] if (cropped.ndim == 2 or Caxis == -1) else cropped.shape[1:3])
+
+    # --- reflect-pad if smaller ---
+    pad_t = max(0, (th - ch) // 2)
+    pad_b = max(0, th - ch - pad_t)
+    pad_l = max(0, (tw - cw) // 2)
+    pad_r = max(0, tw - cw - pad_l)
+
+    if pad_t or pad_b or pad_l or pad_r:
+        if cropped.ndim == 2:
+            cropped = cv2.copyMakeBorder(cropped, pad_t, pad_b, pad_l, pad_r,
+                                         borderType=cv2.BORDER_REFLECT_101)
+        elif Caxis == -1:
+            # HWC: pad spatial, keep channels intact
+            cropped = cv2.copyMakeBorder(cropped, pad_t, pad_b, pad_l, pad_r,
+                                         borderType=cv2.BORDER_REFLECT_101)
+        else:
+            # CHW: pad each channel slice
+            chans = []
+            for c in range(cropped.shape[0]):
+                chans.append(cv2.copyMakeBorder(cropped[c], pad_t, pad_b, pad_l, pad_r,
+                                                borderType=cv2.BORDER_REFLECT_101))
+            cropped = np.stack(chans, axis=0)
+
+    return cropped
+
+
 def _downsample_area(img: np.ndarray, scale: int) -> np.ndarray:
     """
     Robust area downsample by an integer scale (>=1).
@@ -913,7 +982,7 @@ def remove_poly2_gradient_abe(
     if log_fn:
         log_fn(f"ABE poly2: samples={num_samples}, ds={downsample}, patch={patch_size} | "
                f"bg_med={bg_med:.6f}, rel_amp={rel_amp*100:.2f}%")
-
+    QApplication.processEvents()    
     if rel_amp < float(min_strength):
         # Return original image in original layout
         return img
@@ -997,16 +1066,77 @@ def _ensure_like(x: np.ndarray, like: np.ndarray) -> np.ndarray:
 
     return x
 
-def remove_gradient_stack_abe(stack, **kw):
+def remove_gradient_stack_abe(stack, target_hw: tuple[int,int] | None = None, **kw):
     """
     stack: (N,H,W) or (N,H,W,C) or (N,C,H,W)
-    Returns the same shape/layout as 'stack'.
+    Returns the same layout as 'stack'. If target_hw=(H,W) is provided,
+    every output is forced to exactly (H,W) via center-crop / reflect-pad.
     """
+
+    # ---- local helper: force exact (H,W) via center-crop or reflect-pad ----
+    def _force_shape_hw(img: np.ndarray, target_h: int, target_w: int) -> np.ndarray:
+        import numpy as np, cv2
+        a = np.asarray(img)
+        if a.ndim < 2:
+            return a
+
+        # detect layout
+        if a.ndim == 2:
+            H, W = a.shape; Caxis = None
+        elif a.ndim == 3:
+            if a.shape[-1] in (1, 3):      # HWC
+                H, W = a.shape[:2]; Caxis = -1
+            elif a.shape[0] in (1, 3):     # CHW
+                H, W = a.shape[1:]; Caxis = 0
+            else:
+                H, W = a.shape[:2]; Caxis = -1
+        else:
+            return a
+
+        th, tw = int(target_h), int(target_w)
+        if (H, W) == (th, tw):
+            return a
+
+        # center-crop if larger
+        y0 = max(0, (H - th) // 2); x0 = max(0, (W - tw) // 2)
+        y1 = min(H, y0 + th);       x1 = min(W, x0 + tw)
+
+        if a.ndim == 2:
+            cropped = a[y0:y1, x0:x1]
+        elif Caxis == -1:
+            cropped = a[y0:y1, x0:x1, ...]
+        else:
+            cropped = a[:, y0:y1, x0:x1]
+
+        ch, cw = (cropped.shape[:2] if (cropped.ndim == 2 or Caxis == -1) else cropped.shape[1:3])
+
+        # reflect-pad if smaller
+        pad_t = max(0, (th - ch) // 2)
+        pad_b = max(0, th - ch - pad_t)
+        pad_l = max(0, (tw - cw) // 2)
+        pad_r = max(0, tw - cw - pad_l)
+
+        if pad_t or pad_b or pad_l or pad_r:
+            if cropped.ndim == 2:
+                cropped = cv2.copyMakeBorder(cropped, pad_t, pad_b, pad_l, pad_r,
+                                             borderType=cv2.BORDER_REFLECT_101)
+            elif Caxis == -1:
+                cropped = cv2.copyMakeBorder(cropped, pad_t, pad_b, pad_l, pad_r,
+                                             borderType=cv2.BORDER_REFLECT_101)
+            else:
+                chans = []
+                for c in range(cropped.shape[0]):
+                    chans.append(cv2.copyMakeBorder(cropped[c], pad_t, pad_b, pad_l, pad_r,
+                                                    borderType=cv2.BORDER_REFLECT_101))
+                cropped = np.stack(chans, axis=0)
+
+        return cropped
+
     arr = np.asarray(stack, dtype=np.float32, copy=False)
     N = arr.shape[0]
     out = np.empty_like(arr)
 
-    # Use first frame as layout reference
+    # Use first frame as layout reference (channels/order), not necessarily size
     ref = arr[0]
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -1019,33 +1149,24 @@ def remove_gradient_stack_abe(stack, **kw):
         for fut in as_completed(futs):
             i_ = futs[fut]
             res = fut.result()
-            res = _ensure_like(res, ref)   # <<< normalize layout
-            # Also guard size mismatch by center-cropping if necessary
-            if res.shape != ref.shape:
-                def _cc(a, tgt):
-                    if a.ndim == 2:
-                        h,w = a.shape; ht,wt = tgt.shape
-                        y0 = max(0,(h-ht)//2); x0 = max(0,(w-wt)//2)
-                        return a[y0:y0+ht, x0:x0+wt]
-                    if a.ndim == 3:
-                        if tgt.shape[-1] in (1,3) and a.shape[-1] in (1,3):  # HWC
-                            h,w,c = a.shape; ht,wt,ct = tgt.shape
-                            y0 = max(0,(h-ht)//2); x0 = max(0,(w-wt)//2)
-                            a2 = a[y0:y0+ht, x0:x0+wt, :]
-                            if c != ct:
-                                if ct == 1: a2 = a2[..., :1]
-                                else:       a2 = np.repeat(a2[..., :1], ct, axis=-1)
-                            return a2
-                        if tgt.shape[0] in (1,3) and a.shape[0] in (1,3):   # CHW
-                            c,h,w = a.shape; ct,ht,wt = tgt.shape
-                            y0 = max(0,(h-ht)//2); x0 = max(0,(w-wt)//2)
-                            a2 = a[:, y0:y0+ht, x0:x0+wt]
-                            if c != ct:
-                                if ct == 1: a2 = a2[:1]
-                                else:       a2 = np.repeat(a2[:1], ct, axis=0)
-                            return a2
-                    return a
-                res = _cc(res, ref)
+            res = _ensure_like(res, ref)   # normalize layout (2D/HWC/CHW)
+
+            # 🔒 size lock: prefer caller-provided canonical size
+            if target_hw is not None:
+                th, tw = int(target_hw[0]), int(target_hw[1])
+                res = _force_shape_hw(res, th, tw)
+            else:
+                # legacy behavior: conform to ref's current size
+                if res.shape != ref.shape:
+                    if ref.ndim == 2:
+                        res = _force_shape_hw(res, ref.shape[0], ref.shape[1])
+                    elif ref.ndim == 3 and ref.shape[-1] in (1, 3):   # HWC
+                        res_h, res_w = res.shape[:2]
+                        res = _force_shape_hw(res, ref.shape[0], ref.shape[1])
+                    elif ref.ndim == 3 and ref.shape[0] in (1, 3):     # CHW
+                        res_h, res_w = res.shape[1:3]
+                        res = _force_shape_hw(res, ref.shape[1], ref.shape[2])
+                    # else: leave as-is (best effort)
 
             out[i_] = res.astype(out.dtype, copy=False)
 
@@ -10901,6 +11022,65 @@ class StackingSuiteDialog(QDialog):
 
     def register_images(self):
 
+        # ---- local helper: force exact (H,W) via center-crop or reflect-pad ----
+        def _force_shape_hw(img: np.ndarray, target_h: int, target_w: int) -> np.ndarray:
+            import numpy as np, cv2
+            a = np.asarray(img)
+            if a.ndim < 2:
+                return a
+
+            # detect layout
+            if a.ndim == 2:
+                H, W = a.shape; Caxis = None
+            elif a.ndim == 3:
+                if a.shape[-1] in (1, 3):      # HWC
+                    H, W = a.shape[:2]; Caxis = -1
+                elif a.shape[0] in (1, 3):     # CHW
+                    H, W = a.shape[1:]; Caxis = 0
+                else:
+                    H, W = a.shape[:2]; Caxis = -1
+            else:
+                return a
+
+            th, tw = int(target_h), int(target_w)
+            if (H, W) == (th, tw):
+                return a
+
+            # center-crop if larger
+            y0 = max(0, (H - th) // 2); x0 = max(0, (W - tw) // 2)
+            y1 = min(H, y0 + th);       x1 = min(W, x0 + tw)
+
+            if a.ndim == 2:
+                cropped = a[y0:y1, x0:x1]
+            elif Caxis == -1:
+                cropped = a[y0:y1, x0:x1, ...]
+            else:
+                cropped = a[:, y0:y1, x0:x1]
+
+            ch, cw = (cropped.shape[:2] if (cropped.ndim == 2 or Caxis == -1) else cropped.shape[1:3])
+
+            # reflect-pad if smaller
+            pad_t = max(0, (th - ch) // 2)
+            pad_b = max(0, th - ch - pad_t)
+            pad_l = max(0, (tw - cw) // 2)
+            pad_r = max(0, tw - cw - pad_l)
+
+            if pad_t or pad_b or pad_l or pad_r:
+                if cropped.ndim == 2:
+                    cropped = cv2.copyMakeBorder(cropped, pad_t, pad_b, pad_l, pad_r,
+                                                borderType=cv2.BORDER_REFLECT_101)
+                elif Caxis == -1:
+                    cropped = cv2.copyMakeBorder(cropped, pad_t, pad_b, pad_l, pad_r,
+                                                borderType=cv2.BORDER_REFLECT_101)
+                else:
+                    chans = []
+                    for c in range(cropped.shape[0]):
+                        chans.append(cv2.copyMakeBorder(cropped[c], pad_t, pad_b, pad_l, pad_r,
+                                                        borderType=cv2.BORDER_REFLECT_101))
+                    cropped = np.stack(chans, axis=0)
+
+            return cropped
+
         if getattr(self, "_registration_busy", False):
             self.update_status("⏸ Registration already running; ignoring extra click.")
             return
@@ -11103,68 +11283,42 @@ class StackingSuiteDialog(QDialog):
             QApplication.processEvents()
 
             def _dominant_pa_cluster_simple(fps, get_pa, tol=12.0):
-                """
-                Cluster PAs in [0,180) and return the biggest cluster.
-                This keeps us from picking a frame that's on the other side
-                of a meridian flip when most frames agree.
-                """
                 vals = []
                 for fp in fps:
                     pa = get_pa(fp)
                     if pa is None:
                         continue
-                    # normalize PA to [0,180)
-                    v = ((pa % 180.0) + 180.0) % 180.0
+                    v = ((pa % 180.0) + 180.0) % 180.0  # normalize [0,180)
                     vals.append((fp, v))
-
-                # if we couldn't read any PA, just return everything
                 if not vals:
                     return fps
-
                 vals.sort(key=lambda t: t[1])
-                best_group = []
-                best_size = -1
-
+                best_group = []; best_size = -1
                 for i in range(len(vals)):
                     center = vals[i][1]
                     inliers = []
                     for fp, v in vals:
-                        d = abs(v - center)
-                        d = min(d, 180.0 - d)  # wrap
+                        d = abs(v - center); d = min(d, 180.0 - d)
                         if d <= tol:
                             inliers.append(fp)
                     if len(inliers) > best_size:
                         best_group, best_size = inliers, len(inliers)
-
                 return best_group if best_group else fps
 
             def _fast_ref_score(fp: str) -> float:
-                """
-                score = star_count / (median * ecc)
-
-                - star_count: more is better
-                - median: darker backgrounds (lower median) get rewarded
-                - ecc: rounder stars (ecc ~ 1) get rewarded; we clamp ecc
-                  so tiny values don't explode the score
-                """
                 info = star_counts.get(fp, {"count": 0, "eccentricity": 1.0})
                 star_count = float(info.get("count", 0.0))
                 ecc = float(info.get("eccentricity", 1.0))
                 med = float(preview_medians.get(fp, 0.0))
-
-                # guards / clamps
-                med = max(med, 1e-3)          # avoid divide-by-zero on very dark frames
-                ecc = max(0.25, min(ecc, 3.0))  # keep in sane range
-
+                med = max(med, 1e-3)
+                ecc = max(0.25, min(ecc, 3.0))
                 return star_count / (med * ecc)
 
-            # 1) Respect manual reference if provided
             user_ref = getattr(self, "reference_frame", None)
             if user_ref:
                 self.update_status(f"📌 Using user-specified reference: {user_ref}")
                 self.reference_frame = user_ref
             else:
-                # 2) Optionally restrict to dominant PA cluster (helps big sets)
                 def _pa_of(fp):
                     try:
                         hdr0 = fits.getheader(fp, ext=0)
@@ -11172,44 +11326,28 @@ class StackingSuiteDialog(QDialog):
                     except Exception:
                         return None
 
-                # if we have a lot of frames, PA-cluster first
                 if len(measured_frames) > 60:
-                    candidates = _dominant_pa_cluster_simple(measured_frames, _pa_of, tol=12.0)
-                    if not candidates:
-                        candidates = measured_frames[:]
+                    candidates = _dominant_pa_cluster_simple(measured_frames, _pa_of, tol=12.0) or measured_frames[:]
                 else:
                     candidates = measured_frames[:]
 
-                # 3) Pick the best by the fast score
-                best_fp = None
-                best_score = -1.0
+                best_fp = None; best_score = -1.0
                 for fp in candidates:
                     s = _fast_ref_score(fp)
                     if s > best_score:
-                        best_fp = fp
-                        best_score = s
+                        best_fp, best_score = fp, s
 
-                # 4) Fallback if something went sideways
                 if best_fp is None and measured_frames:
-                    # fall back to previous weighting you computed
                     best_fp = max(measured_frames, key=lambda f: self.frame_weights.get(f, 0.0))
                     best_score = float(self.frame_weights.get(best_fp, 0.0))
 
-                self.reference_frame = best_fp
-                if self.reference_frame:
-                    self.update_status(
-                        f"📌 Auto-selected reference: {os.path.basename(self.reference_frame)} "
-                        f"(score={best_score:.4f})"
-                    )
-                else:
-                    # last resort — this should basically never happen
-                    self.reference_frame = measured_frames[0]
-                    self.update_status(
-                        f"📌 Auto-selected reference (fallback): {os.path.basename(self.reference_frame)}"
-                    )
+                self.reference_frame = best_fp or measured_frames[0]
+                self.update_status(
+                    f"📌 Auto-selected reference: {os.path.basename(self.reference_frame)} "
+                    + (f"(score={best_score:.4f})" if best_fp else "(fallback)")
+                )
                 QApplication.processEvents()
 
-            # expose these so the later code can show them / log them
             ref_stats_meas = star_counts.get(self.reference_frame, {"count": 0, "eccentricity": 0.0})
             ref_count = ref_stats_meas["count"]
             ref_ecc   = ref_stats_meas["eccentricity"]
@@ -11242,9 +11380,7 @@ class StackingSuiteDialog(QDialog):
 
             self.update_status(f"📊 Reference (debayered) median: {ref_median:.4f}")
             QApplication.processEvents()
-            ref_stats_meas = star_counts.get(self.reference_frame, {"count": 0, "eccentricity": 0.0})
-            ref_count = ref_stats_meas["count"]
-            ref_ecc   = ref_stats_meas["eccentricity"]    
+
             # Modeless ref review (unchanged)
             stats_payload = {"star_count": ref_count, "eccentricity": ref_ecc, "mean": ref_median}
 
@@ -11284,7 +11420,6 @@ class StackingSuiteDialog(QDialog):
                         else:
                             ref_median = float(np.median(ref_img))
                         self.update_status(f"📊 (New) reference median: {ref_median:.4f}")
-                    
                     else:
                         self.update_status("No new reference selected; using previous reference.")
 
@@ -11319,23 +11454,14 @@ class StackingSuiteDialog(QDialog):
             # ─────────────────────────────────────────────────────────────────────
             self.arcsec_per_px = {}  # fp -> (sx, sy)
 
-            # --- helpers placed just above the normalize loop (once) --------------------
             def _scale_from_header_raw(hdr):
-                """
-                Return (sx, sy) in arcsec/px as the file is stored on disk (no bin correction).
-                Priority: CD matrix -> CDELT(+PC) -> pixel size + focal length.
-                Pixel-size fallback avoids double-counting bin: PIXSIZE* are unbinned; XPIXSZ/YPIXSZ are typically effective.
-                """
                 try:
-                    # 1) CD matrix (deg/pix)
                     if all(k in hdr for k in ("CD1_1","CD1_2","CD2_1","CD2_2")):
                         cd11 = float(hdr["CD1_1"]); cd12 = float(hdr["CD1_2"])
                         cd21 = float(hdr["CD2_1"]); cd22 = float(hdr["CD2_2"])
                         sx_deg = (cd11**2 + cd12**2) ** 0.5
                         sy_deg = (cd21**2 + cd22**2) ** 0.5
                         return abs(sx_deg) * 3600.0, abs(sy_deg) * 3600.0
-
-                    # 2) CDELT (+ optional PC)
                     if ("CDELT1" in hdr) and ("CDELT2" in hdr):
                         cdelt1 = float(hdr["CDELT1"]); cdelt2 = float(hdr["CDELT2"])
                         pc11 = float(hdr.get("PC1_1", 1.0)); pc12 = float(hdr.get("PC1_2", 0.0))
@@ -11345,42 +11471,30 @@ class StackingSuiteDialog(QDialog):
                         sx_deg = (m11**2 + m12**2) ** 0.5
                         sy_deg = (m21**2 + m22**2) ** 0.5
                         return abs(sx_deg) * 3600.0, abs(sy_deg) * 3600.0
-
-                    # 3) Pixel-size + focal length (arcsec/px)
                     fl_mm = float(hdr.get("FOCALLEN", 0.0) or 0.0)
                     if fl_mm <= 0:
                         return (None, None)
-
-                    # Prefer unbinned physical sizes (PIXSIZE*), else use effective (XPIXSZ/YPIXSZ)
                     pxsize1 = hdr.get("PIXSIZE1"); pxsize2 = hdr.get("PIXSIZE2")
                     if (pxsize1 is not None) or (pxsize2 is not None):
-                        px_um = float(pxsize1 or pxsize2 or 0.0)        # unbinned
+                        px_um = float(pxsize1 or pxsize2 or 0.0)
                         py_um = float(pxsize2 or pxsize1 or px_um)
                         xb = int(hdr.get("XBINNING", hdr.get("BINX", 1)) or 1)
                         yb = int(hdr.get("YBINNING", hdr.get("BINY", 1)) or 1)
-                        sx = 206.265 * (px_um * xb) / fl_mm            # include bin here
+                        sx = 206.265 * (px_um * xb) / fl_mm
                         sy = 206.265 * (py_um * yb) / fl_mm
                         return sx, sy
-
                     xpixsz = hdr.get("XPIXSZ"); ypixsz = hdr.get("YPIXSZ")
                     if (xpixsz is not None) or (ypixsz is not None):
-                        # Typically already effective (post-binning) pitch
                         px_um = float(xpixsz or ypixsz or 0.0)
                         py_um = float(ypixsz or xpixsz or px_um)
-                        sx = 206.265 * px_um / fl_mm                   # do NOT multiply by bin again
+                        sx = 206.265 * px_um / fl_mm
                         sy = 206.265 * py_um / fl_mm
                         return sx, sy
                 except Exception:
                     pass
                 return (None, None)
 
-
             def _effective_scale_for_target_bin(raw_sx, raw_sy, xb, yb, target_xbin, target_ybin):
-                """
-                Given the scale as stored (raw_sx, raw_sy) and the fact that we then resampled
-                geometry by (xb/target_xbin, yb/target_ybin) to bin-normalize, return the
-                new (effective) scales after that step. Resampling by k makes arcsec/px divide by k.
-                """
                 if (raw_sx is None) or (raw_sy is None):
                     return (None, None)
                 kx = float(xb) / float(target_xbin)
@@ -11389,8 +11503,6 @@ class StackingSuiteDialog(QDialog):
                 eff_sy = float(raw_sy) / max(1e-12, ky)
                 return eff_sx, eff_sy
 
-
-            # Fill map for all measured frames (cheap header read)
             for fp in measured_frames:
                 try:
                     hdr0 = fits.getheader(fp, ext=0)
@@ -11398,7 +11510,6 @@ class StackingSuiteDialog(QDialog):
                     hdr0 = {}
                 self.arcsec_per_px[fp] = _scale_from_header_raw(hdr0)
 
-            # Reference (true) pixel scale is our target
             target_sx, target_sy = _scale_from_header_raw(ref_hdr)
             if target_sx and target_sy:
                 self.update_status(f"🎯 Target pixel scale = reference: {target_sx:.3f}\"/px × {target_sy:.3f}\"/px")
@@ -11426,6 +11537,9 @@ class StackingSuiteDialog(QDialog):
 
             ncpu = os.cpu_count() or 8
             io_workers = min(8, max(2, ncpu // 2))
+
+            ref_H, ref_W = ref_img.shape[:2] if ref_img.ndim == 2 else ref_img.shape[:2]
+            self._norm_target_hw = (int(ref_H), int(ref_W))
 
             for idx, chunk in enumerate(chunks, 1):
                 self.update_status(f"🌀 Normalizing chunk {idx}/{total_chunks} ({len(chunk)} frames)…")
@@ -11455,7 +11569,6 @@ class StackingSuiteDialog(QDialog):
                                 self.update_status(f"⚠️ No data for {fp}")
                                 continue
 
-                            # make writable float32
                             img = _to_writable_f32(img)
 
                             bayer = self._hdr_get(hdr, 'BAYERPAT')
@@ -11492,12 +11605,9 @@ class StackingSuiteDialog(QDialog):
                                 )
 
                             # 2) Pixel-scale normalize (arcsec/px), corrected for binning already applied
-                            # 2) Pixel-scale normalize (arcsec/px), corrected for the bin step we just did
-                            # Read raw scales (as on disk)
                             raw_psx, raw_psy = _scale_from_header_raw(hdr)
                             raw_ref_psx, raw_ref_psy = _scale_from_header_raw(ref_hdr)
 
-                            # Compute effective scales after step (1) bin-normalization resample
                             xb, yb = bin_map.get(fp, (1, 1))
                             ref_xb, ref_yb = bin_map.get(self.reference_frame, (1, 1))
                             eff_psx,     eff_psy     = _effective_scale_for_target_bin(raw_psx,     raw_psy,     xb,     yb,     target_xbin, target_ybin)
@@ -11508,7 +11618,6 @@ class StackingSuiteDialog(QDialog):
                                 rx = float(eff_psx) / float(eff_ref_psx)
                                 ry = float(eff_psy) / float(eff_ref_psy)
 
-                                # Only warp if materially different
                                 if (abs(rx - 1.0) > 1e-3) or (abs(ry - 1.0) > 1e-3):
                                     before_hw = img.shape[:2]
                                     img = _resize_to_scale(img, rx, ry)
@@ -11518,7 +11627,6 @@ class StackingSuiteDialog(QDialog):
                                         f"{_fmt2(eff_psx)}\"/{_fmt2(eff_psy)}\" → {_fmt2(eff_ref_psx)}\"/{_fmt2(eff_ref_psy)}\" "
                                         f"| size {before_hw[1]}×{before_hw[0]} → {after_hw[1]}×{after_hw[0]}"
                                     )
-
                                     try:
                                         self.update_status(
                                             "⚖️ Scales (arcsec/px): "
@@ -11530,15 +11638,18 @@ class StackingSuiteDialog(QDialog):
                                         )
                                     except Exception:
                                         pass
-
                             else:
                                 self.update_status("⚠️ Pixel-scale normalize skipped (insufficient header scale info).")
 
-                            # normalization scale (unchanged)
+                            # 3) Brightness normalization / scale refine
                             pm = float(preview_medians.get(fp, 0.0))
                             s = _compute_scale(ref_target_median, pm if pm > 0 else 1.0,
                                             img, refine_stride=8, refine_if_rel_err=0.10)
                             img = _apply_scale_inplace(img, s)
+
+                            # 🔒 4) Enforce canonical geometry BEFORE ABE / writing
+                            if hasattr(self, "_norm_target_hw") and self._norm_target_hw:
+                                img = _force_shape_hw(img, *self._norm_target_hw)
 
                             if abe_enabled:
                                 scaled_images.append(img.astype(np.float32, copy=False))
@@ -11579,7 +11690,7 @@ class StackingSuiteDialog(QDialog):
                         finally:
                             QApplication.processEvents()
 
-                # 2) ABE (unchanged)
+                # 2) ABE with canonical size lock
                 if abe_enabled and scaled_images:
                     self.update_status(
                         f"Gradient removal (ABE Poly²): mode={mode}, samples={samples}, "
@@ -11591,6 +11702,7 @@ class StackingSuiteDialog(QDialog):
                     abe_stack = np.ascontiguousarray(np.stack(scaled_images, axis=0, dtype=np.float32))
                     abe_stack = remove_gradient_stack_abe(
                         abe_stack,
+                        target_hw=getattr(self, "_norm_target_hw", None),  # 🔒 enforce (H,W) for every frame
                         mode=mode,
                         num_samples=samples,
                         downsample=downsample,
@@ -11599,6 +11711,7 @@ class StackingSuiteDialog(QDialog):
                         gain_clip=(gain_lo, gain_hi),
                         log_fn=(self._ui_log if hasattr(self, "_ui_log") else self.update_status),
                     )
+                    QApplication.processEvents()
 
                     for i, fp in enumerate(scaled_paths):
                         img_out = abe_stack[i]; hdr = scaled_hdrs[i]
@@ -11652,6 +11765,7 @@ class StackingSuiteDialog(QDialog):
                 self.light_files[group] = new_list
 
             self.update_status("✅ Updated self.light_files to use debayered, normalized *_n.fit frames.")
+
 
             # Pick normalized reference path to align against
             ref_base = os.path.basename(self.reference_frame)

@@ -1891,6 +1891,40 @@ class CurvesDialogPro(QDialog):
             )
         return out
 
+    def export_preview_ops(self) -> dict:
+        """
+        Produce a deterministic, tool-agnostic op dict for Curves
+        that can be replayed on the full image later.
+        """
+        # Make sure the store has the latest edit from the active editor
+        try:
+            self._curves_store[self._current_mode_key] = self._editor_points_norm()
+        except Exception:
+            pass
+
+        # Only include modes that differ from linear
+        def _is_linear(pts):
+            return isinstance(pts, (list,tuple)) and len(pts)==2 and pts[0]==(0.0,0.0) and pts[1]==(1.0,1.0)
+
+        modes = {}
+        for k, pts in self._curves_store.items():
+            if not pts or _is_linear(pts):
+                continue
+            modes[k] = [(float(x), float(y)) for (x,y) in pts]
+
+        op = {
+            "version": 1,
+            "tool": "curves",
+            "modes": modes,
+            "active": self._current_mode_key,
+            "lut_size": 65536,
+            "mask": {
+                "id": getattr(self.doc, "active_mask_id", None),
+                "blend": "m*out+(1-m)*src",
+            },
+        }
+        return op
+
 
     # ----- apply to document -----
     def _apply(self):
@@ -2214,6 +2248,78 @@ class CurvesDialogPro(QDialog):
         self._refresh_overlays()
         self._quick_preview()
         self._set_status(f"Preset: {preset.get('name', '(built-in)')}  [{shape}]")
+
+def apply_curves_ops(doc, op: dict):
+    """
+    Rebuild LUTs from normalized points and apply to doc.image (full-res).
+    Uses the same math as the dialog path, but headless.
+    """
+    try:
+        if op.get("tool") != "curves":
+            return False
+
+        # safety defaults
+        lut_size = int(op.get("lut_size", 65536))
+        modes = dict(op.get("modes", {}))
+        if not modes:
+            return True  # nothing to do (all linear)
+
+        # Build LUTs exactly like the dialog does (_lut01_from_points_norm)
+        def _lut01_from_ptsN(ptsN, size=65536):
+            # local import: reuse your existing helper if you prefer
+            pts_scene = _points_norm_to_scene(ptsN)
+            if len(pts_scene) < 2:
+                return np.linspace(0.0, 1.0, size, dtype=np.float32)
+            xs = np.array([p[0] for p in pts_scene], dtype=np.float64)
+            ys = np.array([p[1] for p in pts_scene], dtype=np.float64)
+            if np.any(np.diff(xs) <= 0):
+                xs = xs + np.linspace(0, 1e-3, len(xs), dtype=np.float64)
+            ys = 360.0 - ys
+            inp = np.linspace(0.0, 360.0, size, dtype=np.float64)
+            try:
+                from scipy.interpolate import PchipInterpolator
+                f = PchipInterpolator(xs, ys, extrapolate=True)
+                out = f(inp)
+            except Exception:
+                out = np.interp(inp, xs, ys)
+            out = np.clip(out / 360.0, 0.0, 1.0).astype(np.float32)
+            return out
+
+        luts = {k: _lut01_from_ptsN(pts, lut_size) for k, pts in modes.items()}
+
+        # Pull full-res, normalize to float01 (same as dialog)
+        img = np.asarray(doc.image)
+        if img.dtype.kind in "ui":
+            img01 = img.astype(np.float32) / np.iinfo(img.dtype).max
+        elif img.dtype.kind == "f":
+            mx = float(img.max()) if img.size else 1.0
+            img01 = (img / (mx if mx > 1.0 else 1.0)).astype(np.float32)
+        else:
+            img01 = img.astype(np.float32)
+
+        # Apply using the same engine as the dialog
+        # (reuse CurvesDialogPro._apply_all_curves_once logic via a tiny local copy)
+        out01 = CurvesDialogPro._apply_all_curves_once(None, img01, luts)  # call as unbound
+
+        # Blend with active mask if any
+        # Reuse the dialog helper via a tiny shim:
+        dlg_like = CurvesDialogPro.__new__(CurvesDialogPro)  # no init
+        dlg_like.doc = doc
+        dlg_like._full_img = img01
+        out01 = CurvesDialogPro._blend_with_mask(dlg_like, out01)
+
+        # Commit to doc history
+        meta = {
+            "step_name": "Curves (Replay)",
+            "curves": {"modes": list(modes.keys()), "lut_size": lut_size},
+            "masked": bool(op.get("mask", {}).get("id")),
+            "mask_id": op.get("mask", {}).get("id"),
+        }
+        doc.apply_edit(out01.copy(), metadata=meta, step_name="Curves (Replay)")
+        return True
+    except Exception as e:
+        print("apply_curves_ops failed:", e)
+        return False
 
 
 def _apply_mode_any(img01: np.ndarray, mode: str, lut01: np.ndarray) -> np.ndarray:
