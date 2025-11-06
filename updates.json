@@ -1,9 +1,9 @@
 {
-  "version": "1.4.5",
+  "version": "1.4.6",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.5/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.5/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.5/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.6/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.6/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.6/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.4.5 Matplotlib font cache pre loaded for faster startup.  PixelMath updates.  Stacking Suite override flat bug fix"
+  "notes": "Seti Astro Suite Pro V1.4.6 Views now have an ROI preview button as well as undo redo in the view itself. Use the ROI to carve out a small piece of your image to test functions and tools on, drag a duplicate of it off for quick image extracts to highlight different portions of your images, etc.Extract and Recombine Luminance now has various options, Rec709, Rec601, Rec2020, Max (useful for narrowband images), and unequal noise. Also fixed a bug in recombine Luma where it was normalizing the Y prior to recombination. Selective Color Correction now lets you choose Chroma (L-preserving) or Saturation sliders instead of just Saturation. Bug fixes in WIMI. Other bug fixes."
 }
