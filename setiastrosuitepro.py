@@ -199,13 +199,13 @@ from collections import defaultdict
 from PyQt6 import sip
 
 # ----- QtWidgets -----
-from PyQt6.QtWidgets import (QDialog, QApplication, QMainWindow, QWidget, QHBoxLayout, QFileDialog, QMessageBox, QSizePolicy, QToolBar, QPushButton,
+from PyQt6.QtWidgets import (QDialog, QApplication, QMainWindow, QWidget, QHBoxLayout, QFileDialog, QMessageBox, QSizePolicy, QToolBar, QPushButton, 
     QLineEdit, QMenu, QListWidget, QListWidgetItem, QSplashScreen, QDockWidget, QListView, QCompleter, QMdiArea, QMdiArea, QMdiSubWindow, 
     QInputDialog, QVBoxLayout, QLabel, QCheckBox, QProgressBar, QProgressDialog, QGraphicsItem, QTabWidget, QTableWidget, QHeaderView, QTableWidgetItem, QToolButton
 )
 
 # ----- QtGui -----
-from PyQt6.QtGui import (QPixmap, QColor, QIcon, QKeySequence, QShortcut, QGuiApplication, QStandardItemModel, QStandardItem, QAction, QPalette, QBrush
+from PyQt6.QtGui import (QPixmap, QColor, QIcon, QKeySequence, QShortcut, QGuiApplication, QStandardItemModel, QStandardItem, QAction, QPalette, QBrush, QActionGroup
 )
 
 # ----- QtCore -----
@@ -252,7 +252,7 @@ from pro.window_shelf import WindowShelf, MinimizeInterceptor
 from pro.pedestal import remove_pedestal
 from pro.remove_green import open_remove_green_dialog, apply_remove_green_preset_to_doc
 from pro.backgroundneutral import BackgroundNeutralizationDialog, apply_background_neutral_to_doc
-from pro.luminancerecombine import apply_recombine_to_doc, compute_luminance, _to_float01
+from pro.luminancerecombine import apply_recombine_to_doc, compute_luminance, _to_float01_strict, _estimate_noise_sigma_per_channel, _LUMA_REC709, _LUMA_REC601, _LUMA_REC2020
 from pro.sfcc import SFCCDialog
 from pro.rgb_extract import extract_rgb_channels 
 from pro.rgb_combination import RGBCombinationDialogPro
@@ -306,7 +306,7 @@ from pro.status_log_dock import StatusLogDock
 from pro.log_bus import LogBus
 
 
-VERSION = "1.4.5"
+VERSION = "1.4.6"
 
 
 
@@ -554,6 +554,7 @@ class MdiArea(QMdiArea):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.setAcceptDrops(True)
+        
 
     def dragEnterEvent(self, e):
         if (e.mimeData().hasFormat("application/x-sas-viewstate")
@@ -944,6 +945,48 @@ def _safe_widget(sw):
     except Exception:
         return None
 
+import weakref
+
+class _DocProxy:
+    """
+    Lightweight proxy that always resolves to the current document
+    for a view (ROI when a Preview/ROI tab is active, else base doc).
+    All attribute gets/sets forward to the currently-active target.
+    """
+    __slots__ = ("_dm", "_view_ref", "_base_doc")
+
+    def __init__(self, doc_manager, view, base_doc):
+        self._dm = doc_manager
+        self._view_ref = weakref.ref(view)
+        self._base_doc = base_doc
+
+    def _target(self):
+        view = self._view_ref()
+        if view is None:
+            return self._base_doc
+        doc = self._dm.get_document_for_view(view)
+        return doc or self._base_doc
+
+    # Forward unknown attributes to the active target
+    def __getattr__(self, name):
+        return getattr(self._target(), name)
+
+    # Allow writes like proxy.image = ... to hit the active target
+    def __setattr__(self, name, value):
+        if name in _DocProxy.__slots__:
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self._target(), name, value)
+
+    # Nice repr for debugging/logs
+    def __repr__(self):
+        tgt = self._target()
+        try:
+            dn = tgt.display_name() if hasattr(tgt, "display_name") else "<doc>"
+        except Exception:
+            dn = "<doc>"
+        return f"<DocProxy → {dn}>"
+
 class AstroSuiteProMainWindow(QMainWindow):
     currentDocumentChanged = pyqtSignal(object)  # ImageDocument | None
 
@@ -970,11 +1013,12 @@ class AstroSuiteProMainWindow(QMainWindow):
         # Core
         self.doc_manager = DocManager(image_manager=image_manager, parent=self)
         self.docman = self.doc_manager  # legacy alias for older code
+        self.docman.imageRegionUpdated.connect(self._on_doc_region_updated)
 
         # MDI workspace
         self.mdi = MdiArea()
         self.mdi.setViewMode(QMdiArea.ViewMode.SubWindowView)
-        self.mdi.subWindowActivated.connect(self._on_subwindow_activated)
+
         self.mdi.subWindowActivated.connect(self._remember_active_pair)
         self.mdi.backgroundDoubleClicked.connect(self.open_files)   # ← new
         QShortcut(QKeySequence("Ctrl+PgDown"), self, activated=self._toggle_last_active_view)
@@ -1019,8 +1063,21 @@ class AstroSuiteProMainWindow(QMainWindow):
         self.docman.documentAdded.connect(lambda _d: self._refresh_mask_action_states())
         self.docman.documentRemoved.connect(lambda _d: self._refresh_mask_action_states())
         self.docman.documentAdded.connect(self._on_document_added)
+        self.mdi.viewStateDropped.connect(self._on_mdi_viewstate_drop)
 
         self.doc_manager.set_mdi_area(self.mdi)
+
+        # Keep the toolbar in sync whenever anything relevant changes
+        self.doc_manager.documentAdded.connect(lambda *_: self.update_undo_redo_action_labels())
+        self.doc_manager.documentRemoved.connect(lambda *_: self.update_undo_redo_action_labels())
+        self.doc_manager.imageRegionUpdated.connect(lambda *_: self.update_undo_redo_action_labels())
+        self.doc_manager.previewRepaintRequested.connect(lambda *_: self.update_undo_redo_action_labels())
+
+        # Also refresh when the active subwindow changes
+        try:
+            self.mdi.subWindowActivated.connect(lambda *_: self.update_undo_redo_action_labels())
+        except Exception:
+            pass
 
         self.shortcuts.load_shortcuts()
         self._ensure_persistent_names() 
@@ -1069,11 +1126,119 @@ class AstroSuiteProMainWindow(QMainWindow):
         self._hdr_refresh_timer.timeout.connect(lambda: self._refresh_header_viewer(self._active_doc()))
 
         try:
+            self.docman.imageRegionUpdated.connect(self._on_image_region_updated_global)
+        except Exception:
+            pass
+
+        try:
             self._last_good_state = self.saveState()
         except Exception:
             pass
 
         self.status_log_dock.hide()
+
+    def _on_document_opened(self, doc):
+        try:
+            doc.changed.connect(self.update_undo_redo_action_labels)
+        except Exception:
+            pass
+        self.update_undo_redo_action_labels()
+
+
+    def _on_mdi_viewstate_drop(self, st: dict, target_sw: object | None):
+        # resolve the document
+        doc = None
+        doc_ptr = st.get("doc_ptr")
+        # prefer your own helpers; fallbacks shown:
+        if hasattr(self.doc_manager, "get_document_by_ptr"):
+            doc = self.doc_manager.get_document_by_ptr(doc_ptr)
+        elif hasattr(self.doc_manager, "lookup_by_python_id"):
+            doc = self.doc_manager.lookup_by_python_id(doc_ptr)
+
+        if doc is None:
+            return
+
+        # If dropped on empty background ⇒ spawn a NEW view
+        force_new = (target_sw is None)
+        sw = self._spawn_subwindow_for(doc, force_new=force_new)
+
+        # apply the dropped viewstate
+        try:
+            w = sw.widget()
+            if hasattr(w, "apply_view_state"):
+                w.apply_view_state(st)
+            if st.get("autostretch", False) and hasattr(w, "set_autostretch"):
+                w.set_autostretch(True)
+                if hasattr(w, "set_autostretch_target"):
+                    w.set_autostretch_target(st.get("autostretch_target", 0.25))
+        except Exception:
+            pass
+
+    def _open_from_explorer(self, doc):
+        sw = self._find_subwindow_for_doc(doc)
+        if sw:
+            # robust raise path (covers minimized/hidden)
+            try:
+                sw.show(); sw.widget().show()
+                st = sw.windowState()
+                if st & Qt.WindowState.WindowMinimized:
+                    sw.setWindowState(st & ~Qt.WindowState.WindowMinimized)
+                self.mdi.setActiveSubWindow(sw)
+                sw.raise_()
+            except Exception:
+                pass
+            return
+        self._spawn_subwindow_for(doc, force_new=False)
+
+
+    def _on_doc_region_updated(self, doc, roi):
+        """
+        Called after DocManager applies an edit to a doc (full image or ROI).
+        Refresh the visible view for that doc; if a Preview tab is active, rebuild it.
+        """
+        sw = self._find_subwindow_for_doc(doc)
+        if not sw:
+            return
+        vw = sw.widget()
+
+        # If your ImageSubWindow exposes targeted preview refresh:
+        if roi is not None:
+            # Prefer a region-aware hook if present
+            if hasattr(vw, "refresh_preview_region"):
+                try:
+                    vw.refresh_preview_region(roi)  # expects (x,y,w,h)
+                    return
+                except Exception:
+                    pass
+
+        # If a preview tab is active, ask it to rebuild from the document
+        if hasattr(vw, "has_active_preview") and callable(vw.has_active_preview):
+            try:
+                if vw.has_active_preview():
+                    # common helper names; use whichever you have
+                    for m in ("rebuild_active_preview", "refresh_from_document", "update_pixmap_from_doc"):
+                        if hasattr(vw, m):
+                            getattr(vw, m)()
+                            return
+            except Exception:
+                pass
+
+        # Fallback: refresh the main image view
+        for m in ("refresh_from_document", "update_pixmap_from_doc"):
+            if hasattr(vw, m):
+                try:
+                    getattr(vw, m)()
+                    return
+                except Exception:
+                    pass
+
+        # Last resort: repaint
+        try:
+            vw.update()
+            sw.update()
+        except Exception:
+            pass
+
 
     def _alive(self, obj) -> bool:
         if obj is None:
@@ -1083,6 +1248,56 @@ class AstroSuiteProMainWindow(QMainWindow):
             return True
         except RuntimeError:
             return False
+
+    def _on_image_region_updated_global(self, doc, roi_tuple):
+        """
+        doc: ImageDocument that changed
+        roi_tuple: (x,y,w,h) if an ROI was updated, else None for full image
+        """
+        try:
+            for sw in self.mdi.subWindowList():
+                vw = sw.widget()
+                # What document is this view showing?
+                view_doc = getattr(vw, "base_document", None) or getattr(vw, "document", None)
+                if view_doc is not doc:
+                    continue
+
+                # If an ROI was updated, refresh only if the view is on that ROI
+                if roi_tuple:
+                    # Ask the view if it's currently displaying this ROI tab
+                    same_roi = False
+                    try:
+                        if hasattr(vw, "has_active_preview") and vw.has_active_preview():
+                            cur = vw.current_preview_roi()
+                            same_roi = bool(cur and tuple(map(int, cur)) == tuple(map(int, roi_tuple)))
+                    except Exception:
+                        same_roi = False
+
+                    if same_roi:
+                        # Prefer a precise “refresh ROI” API if present
+                        if hasattr(vw, "refresh_preview_roi") and callable(vw.refresh_preview_roi):
+                            vw.refresh_preview_roi(roi_tuple)
+                        elif hasattr(vw, "rebuild_preview_pixmap") and callable(vw.rebuild_preview_pixmap):
+                            vw.rebuild_preview_pixmap()
+                        elif hasattr(vw, "refresh_preview") and callable(vw.refresh_preview):
+                            vw.refresh_preview()
+                        else:
+                            # Last resort: force an update
+                            vw.update()
+                            sw.update()
+                    # If this view isn't on that ROI, ignore (its cached ROI pixmap isn’t visible).
+                    continue
+
+                # Full-image update → refresh the whole thing
+                if hasattr(vw, "refresh_full") and callable(vw.refresh_full):
+                    vw.refresh_full()
+                elif hasattr(vw, "rebuild_full_pixmap") and callable(vw.rebuild_full_pixmap):
+                    vw.rebuild_full_pixmap()
+                else:
+                    vw.update(); sw.update()
+        except Exception:
+            pass
+
 
     # ---------- THEME API ----------
     def _apply_workspace_theme(self):
@@ -1309,7 +1524,10 @@ class AstroSuiteProMainWindow(QMainWindow):
     # --- UI scaffolding ---
     def _init_explorer_dock(self):
         self.explorer = QListWidget()
-        self.explorer.itemActivated.connect(self._activate_from_explorer)
+        # Enter/Return or single-activation: focus if open, else open
+        self.explorer.itemActivated.connect(self._activate_or_open_from_explorer)
+        # Double-click: same behavior
+        self.explorer.itemDoubleClicked.connect(self._activate_or_open_from_explorer)
 
         dock = QDockWidget("Explorer", self)
         dock.setWidget(self.explorer)
@@ -1447,6 +1665,16 @@ class AstroSuiteProMainWindow(QMainWindow):
         tb_fn.addAction(self.act_remove_green)
         tb_fn.addAction(self.act_convo)
         tb_fn.addAction(self.act_extract_luma)
+        btn_luma = tb_fn.widgetForAction(self.act_extract_luma)
+        if isinstance(btn_luma, QToolButton):
+            luma_menu = QMenu(btn_luma)
+            luma_menu.addActions(self._luma_group.actions())
+            btn_luma.setMenu(luma_menu)
+            btn_luma.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+            btn_luma.setStyleSheet("""
+                QToolButton { color: #dcdcdc; }
+                QToolButton:pressed, QToolButton:checked { color: #DAA520; font-weight: 600; }
+            """)        
         tb_fn.addAction(self.act_recombine_luma)
         tb_fn.addAction(self.act_rgb_extract)
         tb_fn.addAction(self.act_rgb_combine)
@@ -1714,10 +1942,43 @@ class AstroSuiteProMainWindow(QMainWindow):
         self.act_convo.setToolTip("Open Convolution / Deconvolution")
         self.act_convo.triggered.connect(self.show_convo_deconvo)
 
+        # --- Extract Luminance main action ---
         self.act_extract_luma = QAction(QIcon(LExtract_path), "Extract Luminance", self)
-        self.act_extract_luma.setStatusTip("Create a new mono document from Rec.709 luminance of the active image")
+        self.act_extract_luma.setStatusTip("Create a new mono document using the selected luminance method")
         self.act_extract_luma.setIconVisibleInMenu(True)
         self.act_extract_luma.triggered.connect(lambda: self._extract_luminance(doc=None))
+
+        # --- Luminance method actions (checkable group) ---
+        self.luma_method = getattr(self, "luma_method", "rec709")  # default
+        self._luma_group = QActionGroup(self)
+        self._luma_group.setExclusive(True)
+
+        def _mk(method_key, text):
+            act = QAction(text, self, checkable=True)
+            act.setData(method_key)
+            self._luma_group.addAction(act)
+            return act
+
+        self.act_luma_rec709  = _mk("rec709",  "Broadband RGB (Rec.709)")
+        self.act_luma_max     = _mk("max",     "Narrowband mappings (Max)")
+        self.act_luma_snr     = _mk("snr",     "Unequal Noise (SNR)")
+        self.act_luma_rec601  = _mk("rec601",  "Rec.601")
+        self.act_luma_rec2020 = _mk("rec2020", "Rec.2020")
+
+        # restore selection
+        for a in self._luma_group.actions():
+            a.setChecked(a.data() == self.luma_method)
+
+        # update method when user picks from the menu
+        def _on_luma_pick(act):
+            self.luma_method = act.data()
+            # (optional) persist
+            try:
+                self.settings.setValue("ui/luminance_method", self.luma_method)
+            except Exception:
+                pass
+
+        self._luma_group.triggered.connect(_on_luma_pick)
 
         self.act_recombine_luma = QAction(QIcon(LInsert_path), "Recombine Luminance…", self)
         self.act_recombine_luma.setStatusTip("Replace the active image's luminance from another view")
@@ -3418,58 +3679,56 @@ class AstroSuiteProMainWindow(QMainWindow):
     def starnet_path(self) -> str:
         return self.settings.value("paths/starnet", "", type=str)
 
+    def _active_history_doc(self):
+        dm = getattr(self, "doc_manager", None) or getattr(self, "docman", None)
+        if not dm:
+            return None
+        d = dm.get_active_document()
+        parent = getattr(d, "_parent_doc", None)  # ROI wrapper exposes this
+        return parent if parent is not None else d
+
+
     def _undo_active(self):
-        doc = self._active_doc()
-        if doc and doc.can_undo():
+        doc = self._active_history_doc()
+        if doc and getattr(doc, "can_undo", lambda: False)():
             name = doc.undo()
             if name:
                 self._log(f"Undo: {name}")
         self.update_undo_redo_action_labels()
 
     def _redo_active(self):
-        doc = self._active_doc()
-        if doc and doc.can_redo():
+        doc = self._active_history_doc()
+        if doc and getattr(doc, "can_redo", lambda: False)():
             name = doc.redo()
             if name:
                 self._log(f"Redo: {name}")
         self.update_undo_redo_action_labels()
 
     def update_undo_redo_action_labels(self):
-        doc = self._active_doc()
-        if not hasattr(self, "act_undo"):
+        if not hasattr(self, "act_undo"):  # not built yet
             return
-
+        doc = self._active_history_doc()
         if doc:
-            undo_name = doc.last_undo_name()
-            redo_name = doc.last_redo_name()
+            can_u = doc.can_undo() if hasattr(doc, "can_undo") else False
+            can_r = doc.can_redo() if hasattr(doc, "can_redo") else False
+            undo_name = doc.last_undo_name() if hasattr(doc, "last_undo_name") else None
+            redo_name = doc.last_redo_name() if hasattr(doc, "last_redo_name") else None
 
-            # Button text
-            self.act_undo.setText(f"Undo {undo_name}" if undo_name else "Undo")
-            self.act_redo.setText(f"Redo {redo_name}" if redo_name else "Redo")
+            self.act_undo.setText(f"Undo {undo_name}" if (can_u and undo_name) else "Undo")
+            self.act_redo.setText(f"Redo {redo_name}" if (can_r and redo_name) else "Redo")
 
-            # Tooltips / Status tips
-            undo_tip = ("Nothing to undo" if not doc.can_undo()
-                        else (f"Undo: {undo_name}" if undo_name else "Undo last action"))
-            redo_tip = ("Nothing to redo" if not doc.can_redo()
-                        else (f"Redo: {redo_name}" if redo_name else "Redo last action"))
-
-            self.act_undo.setToolTip(undo_tip)
-            self.act_redo.setToolTip(redo_tip)
-            self.act_undo.setStatusTip(undo_tip)
-            self.act_redo.setStatusTip(redo_tip)
-
-            # Enabled state
-            self.act_undo.setEnabled(doc.can_undo())
-            self.act_redo.setEnabled(doc.can_redo())
+            self.act_undo.setToolTip("Nothing to undo" if not can_u else (f"Undo: {undo_name}" if undo_name else "Undo last action"))
+            self.act_redo.setToolTip("Nothing to redo" if not can_r else (f"Redo: {redo_name}" if redo_name else "Redo last action"))
+            self.act_undo.setStatusTip(self.act_undo.toolTip())
+            self.act_redo.setStatusTip(self.act_redo.toolTip())
+            self.act_undo.setEnabled(bool(can_u))
+            self.act_redo.setEnabled(bool(can_r))
         else:
-            self.act_undo.setText("Undo")
-            self.act_redo.setText("Redo")
-            self.act_undo.setToolTip("Nothing to undo")
-            self.act_redo.setToolTip("Nothing to redo")
-            self.act_undo.setStatusTip("Nothing to undo")
-            self.act_redo.setStatusTip("Nothing to redo")
-            self.act_undo.setEnabled(False)
-            self.act_redo.setEnabled(False)
+            # No active doc
+            for a, tip in ((self.act_undo, "Nothing to undo"),
+                        (self.act_redo, "Nothing to redo")):
+                a.setText(a.text().split(" ")[0])  # "Undo"/"Redo"
+                a.setToolTip(tip); a.setStatusTip(tip); a.setEnabled(False)
 
 
     def _current_document(self):
@@ -3480,45 +3739,95 @@ class AstroSuiteProMainWindow(QMainWindow):
         return getattr(vw, "document", None)
 
     def _find_subwindow_for_doc(self, doc):
-        """Find the QMdiSubWindow that hosts this exact doc object.
-        Falls back to a tagged id() property if present."""
-        want_ptr = id(doc)
-        for sw in self.mdi.subWindowList():
-            vw = sw.widget()
-            # primary: exact object identity
-            if getattr(vw, "document", None) is doc:
-                return sw
-            # fallback: compare a tagged pointer if the widget exposes it
-            try:
-                if int(vw.property("doc_ptr") or 0) == want_ptr:
+        """
+        Return the QMdiSubWindow showing `doc`, if any.
+
+        Matching rules (in order):
+        1) view.base_document is `doc` (identity)
+        2) view.document resolves (via _target if proxy) to `doc` (identity)
+        We do NOT match by display_name or file_path to avoid aliasing duplicates.
+        """
+        try:
+            for sw in self.mdi.subWindowList():
+                # Be defensive about deleted wrappers
+                try:
+                    w = sw.widget()
+                except RuntimeError:
+                    continue
+                if w is None:
+                    continue
+
+                # 1) Prefer explicit base handle installed by _spawn_subwindow_for
+                base = getattr(w, "base_document", None)
+                if base is doc:
                     return sw
-            except Exception:
-                pass
-        return None
+
+                # 2) Fall back to the view's document (unwrap proxy if present)
+                vdoc = getattr(w, "document", None)
+                # If this is our _DocProxy, resolve to its current target
+                try:
+                    if hasattr(vdoc, "_target") and callable(vdoc._target):
+                        vdoc = vdoc._target()
+                except Exception:
+                    pass
+
+                if vdoc is doc:
+                    return sw
+
+            # No identity match
+            return None
+        except Exception:
+            return None
+
+
+    def _normalize_base_doc(self, doc):
+        """If doc is an ROI/proxy, return its base/parent; else return doc."""
+        return getattr(doc, "_parent_doc", None) or doc
 
     def _open_subwindow_for_added_doc(self, doc):
-        # Avoid duplicate views if something else already created one
-        if self._find_subwindow_for_doc(doc):
+        """
+        Called when DocManager emits documentAdded(doc).
+        Avoid dupes, create a subwindow, connect close hook, and activate it.
+        """
+        base = self._normalize_base_doc(doc)
+
+        # Avoid duplicate views if one already exists for this *base* doc
+        sw_existing = self._find_subwindow_for_doc(base)
+        if sw_existing:
+            # still ensure the explorer row text is fresh
+            try:
+                self._update_explorer_item_for_doc(base)
+            except Exception:
+                pass
+            QTimer.singleShot(0, lambda: self.mdi.setActiveSubWindow(sw_existing))
             return
+
         try:
-            # Create it and use the returned subwindow directly
-            sw = self._spawn_subwindow_for(doc)
+            sw = self._spawn_subwindow_for(base)  # ensure you pass base
             if sw:
-                # Activate on the next loop tick so Qt has applied flags/layout
-                from PyQt6.QtCore import QTimer
+                w = sw.widget()
+                # Wire the close hook once
+                if hasattr(w, "aboutToClose"):
+                    try:
+                        # Avoid multiple connections if re-spawned somehow
+                        w.aboutToClose.disconnect(self._on_view_about_to_close)
+                    except Exception:
+                        pass
+                    w.aboutToClose.connect(self._on_view_about_to_close)
+
+                # Activate on next tick
                 QTimer.singleShot(0, lambda: self.mdi.setActiveSubWindow(sw))
         except Exception as e:
-            # Safe fallback: show *something* and log why
+            # Safe fallback: show a very simple subwindow so user sees *something*
             try:
                 if hasattr(self, "_log"):
-                    self._log(f"Failed to open subwindow for {doc.display_name()}: {e}")
+                    self._log(f"Failed to open subwindow for {base.display_name()}: {e}")
             except Exception:
                 pass
             from PyQt6.QtWidgets import QLabel, QMdiSubWindow
-            w = QLabel(doc.display_name()); setattr(w, "document", doc)
+            w = QLabel(base.display_name()); setattr(w, "document", base)
             wrapper = QMdiSubWindow(self); wrapper.setWidget(w)
             self.mdi.addSubWindow(wrapper); wrapper.show()
-
 
 
     def _action_create_mask(self):
@@ -4139,14 +4448,18 @@ class AstroSuiteProMainWindow(QMainWindow):
         if not sw:
             QMessageBox.information(self, "No image", "Open an image first.")
             return
-        doc = sw.widget().document
+        view = sw.widget()
+        # ROI-aware: always resolve via DocManager for THIS view
+        doc = self.doc_manager.get_document_for_view(view)
+
         dlg = StatisticalStretchDialog(self, doc)
         try:
             dlg.setWindowIcon(QIcon(statstretch_path))
         except Exception:
             pass
-        dlg.resize(900, 600)  # comfy preview area
+        dlg.resize(900, 600)
         dlg.show()
+
 
     def _open_star_stretch(self):
         sw = self.mdi.activeSubWindow()
@@ -4324,10 +4637,25 @@ class AstroSuiteProMainWindow(QMainWindow):
                 a = a / m
         a = np.clip(a, 0.0, 1.0)
 
-        # 3) Rec.709 linear luma
-        # Y' = 0.2126 R + 0.7152 G + 0.0722 B
-        y = (a[..., 0] * 0.2126 + a[..., 1] * 0.7152 + a[..., 2] * 0.0722).astype(np.float32, copy=False)
-        y = np.clip(y, 0.0, 1.0)
+        # 3) compute luminance per selected method
+        method = getattr(self, "luma_method", "rec709")
+
+        if method == "rec601":
+            y = np.tensordot(a, _LUMA_REC601, axes=([2],[0]))
+        elif method == "rec2020":
+            y = np.tensordot(a, _LUMA_REC2020, axes=([2],[0]))
+        elif method == "max":
+            y = a.max(axis=2)
+        elif method == "snr":
+            sigma = _estimate_noise_sigma_per_channel(a)
+            # if image is RGB, use first 3; normalize weights
+            w = 1.0 / (sigma[:3]**2 + 1e-12)
+            w = w / w.sum()
+            y = np.tensordot(a[..., :3], w.astype(np.float32), axes=([2],[0]))
+        else:  # "rec709" (default)
+            y = np.tensordot(a, _LUMA_REC709, axes=([2],[0]))
+
+        y = np.clip(y.astype(np.float32, copy=False), 0.0, 1.0)
 
         # 4) metadata & title
         base_meta = {}
@@ -4436,14 +4764,46 @@ class AstroSuiteProMainWindow(QMainWindow):
             sel_title, src_doc = candidates[idx]
 
         try:
-            src_img = _to_float01(np.asarray(src_doc.image))
-            # compute L from src (works for mono or RGB)
-            L = compute_luminance(src_img)
-            apply_recombine_to_doc(target_doc, L)
+            src_img = _to_float01_strict(np.asarray(src_doc.image))
+
+            # Prefer the source doc’s stored method/weights (for perfect round-trip),
+            # otherwise fall back to current menu selection.
+            meta = dict(getattr(src_doc, "metadata", {}) or {})
+            method = meta.get("luma_method", getattr(self, "luma_method", "rec709"))
+            weights = None
+            noise_sigma = None
+
+            if "luma_weights" in meta:
+                lw = np.asarray(meta["luma_weights"], dtype=np.float32)
+                if lw.size == 3:
+                    weights = lw
+            else:
+                if method == "rec601":
+                    weights = _LUMA_REC601
+                elif method == "rec2020":
+                    weights = _LUMA_REC2020
+                elif method == "snr":
+                    noise_sigma = None  # will estimate inside apply if src_img is RGB
+
+            # Optional knobs: you can expose these in a small dialog later
+            blend = 1.0       # exact replace
+            soft_knee = 0.0   # no highlight protection by default
+
+            apply_recombine_to_doc(
+                target_doc,
+                luminance_source_img=src_img,
+                method=method,
+                weights=weights,
+                noise_sigma=noise_sigma,
+                blend=blend,
+                soft_knee=soft_knee
+            )
+
             try:
-                self._log(f"Recombine Luminance: '{sel_title}' → '{target_doc.display_name()}'")
+                self._log(f"Recombine Luminance: '{sel_title}' → '{target_doc.display_name()}' [{method}]")
             except Exception:
                 pass
+
         except Exception as e:
             QMessageBox.critical(self, "Recombine Luminance", f"Failed: {e}")
 
@@ -5553,13 +5913,36 @@ class AstroSuiteProMainWindow(QMainWindow):
     #######-------COMMAND DROPS-------#################
 
     # --- Command drop handling ------------------------------------------------
-    # --- Command drop handling ------------------------------------------------
     def _handle_command_drop(self, payload: dict, target_sw):
-        cid = (payload or {}).get("command_id") or ""
-        preset = (payload or {}).get("preset") or {}
+        payload = payload or {}
 
-        # ---------- helpers ----------
+        def _extract_cid(p):
+            # accept several shapes: "command_id": str | dict | list, or "command": {...}
+            c = p.get("command_id")
+            if isinstance(c, dict):
+                c = c.get("id") or c.get("name") or c.get("command_id")
+            elif isinstance(c, (list, tuple)):
+                c = c[0] if c else None
+
+            if not c:
+                cmd = p.get("command")
+                if isinstance(cmd, dict):
+                    c = cmd.get("id") or cmd.get("name") or cmd.get("command_id")
+
+            # last-ditch: stringify non-strings
+            if c is None:
+                c = ""
+            if not isinstance(c, str):
+                c = str(c)
+            return c
+
+        cid_raw = _extract_cid(payload)
+        preset = payload.get("preset")
+        if not isinstance(preset, dict):
+            preset = {}
+
         def _cid_norm(c: str) -> str:
+            c = (c or "").strip().lower()
             aliases = {
                 # geometry short ↔ long ids
                 "flip_horizontal": "geom_flip_horizontal",
@@ -5568,11 +5951,9 @@ class AstroSuiteProMainWindow(QMainWindow):
 
                 "flip_vertical": "geom_flip_vertical",
                 "geom_flip_v": "geom_flip_vertical",
-                "geom_flip_vertical": "geom_flip_vertical",
-
+                "geom_rotate_clockwise": "geom_rotate_clockwise",
                 "rotate_clockwise": "geom_rotate_clockwise",
                 "geom_rot_cw": "geom_rotate_clockwise",
-                "geom_rotate_clockwise": "geom_rotate_clockwise",
 
                 "rotate_counterclockwise": "geom_rotate_counterclockwise",
                 "geom_rot_ccw": "geom_rotate_counterclockwise",
@@ -5586,35 +5967,34 @@ class AstroSuiteProMainWindow(QMainWindow):
 
                 "ghs": "ghs",
                 "hyperbolic_stretch": "ghs",
-                "universal_hyperbolic_stretch": "ghs",    
+                "universal_hyperbolic_stretch": "ghs",
 
                 "abe": "abe",
-                "automatic_background_extraction": "abe",   
+                "automatic_background_extraction": "abe",
 
                 "graxpert": "graxpert",
                 "grax": "graxpert",
-                "remove_gradient_graxpert": "graxpert",    
+                "remove_gradient_graxpert": "graxpert",
 
                 "remove_stars": "remove_stars",
                 "star_removal": "remove_stars",
                 "starnet": "remove_stars",
-                "darkstar": "remove_stars",      
+                "darkstar": "remove_stars",
 
                 "aberrationai": "aberrationai",
                 "aberration": "aberrationai",
-                "ai_aberration": "aberrationai", 
+                "ai_aberration": "aberrationai",
 
                 "cosmic": "cosmic_clarity",
                 "cosmicclarity": "cosmic_clarity",
-                "cosmic_clarity": "cosmic_clarity",  
+                "cosmic_clarity": "cosmic_clarity",
 
                 "crop": "crop",
                 "geom_crop": "crop",
 
-
                 "wavescale_hdr": "wavescale_hdr",
                 "wavescalehdr": "wavescale_hdr",
-                "wavescale": "wavescale_hdr",   
+                "wavescale": "wavescale_hdr",
 
                 "wavescale_dark_enhance": "wavescale_dark_enhance",
                 "wavescale_dark_enhancer": "wavescale_dark_enhance",
@@ -5629,9 +6009,10 @@ class AstroSuiteProMainWindow(QMainWindow):
                 "convolution": "convo",
                 "deconvolution": "convo",
                 "convo_deconvo": "convo",
-
             }
             return aliases.get(c, c)
+
+        cid = _cid_norm(cid_raw)
 
         def _call_any(method_names: list[str], *args, **kwargs) -> bool:
             for name in method_names:
@@ -5640,8 +6021,6 @@ class AstroSuiteProMainWindow(QMainWindow):
                     m(*args, **kwargs)
                     return True
             return False
-
-        cid = _cid_norm(cid)
 
         # ----- Function bundle: run a sequence of steps on the target view(s) -----
         if cid in ("function_bundle", "bundle_functions"):
@@ -7171,13 +7550,144 @@ class AstroSuiteProMainWindow(QMainWindow):
             return  # nothing to bounce to
         self.mdi.setActiveSubWindow(last)
 
-    def _spawn_subwindow_for(self, doc):
-        existing = self._find_subwindow_for_doc(doc)
-        if existing:
-            self.mdi.setActiveSubWindow(existing)
-            return existing
+    # In AstroSuiteProMainWindow
+    def _on_image_region_updated_global(self, doc, roi_tuple_or_none):
+        """
+        Fan-out: when DocManager pastes an edit (full or ROI),
+        refresh every view that shows `doc`. If the view is on a Preview tab,
+        refresh only if its ROI intersects the changed region.
+        """
+        def _roi_intersects(a, b):
+            ax, ay, aw, ah = map(int, a)
+            bx, by, bw, bh = map(int, b)
+            if aw <= 0 or ah <= 0 or bw <= 0 or bh <= 0:
+                return False
+            return not (ax + aw <= bx or bx + bw <= ax or ay + ah <= by or by + bh <= ay)
 
-        # --- choose the right view type (keep your detection) ---
+        for sw in self.mdi.subWindowList():
+            view = getattr(sw, "widget", lambda: None)()
+            if view is None:
+                continue
+
+            base = getattr(view, "base_document", None) or getattr(view, "document", None)
+            if base is not doc:
+                # Some views replace .document with a proxy; compare by identity if possible
+                # If your proxy holds a ._base or ._doc, you can also try to unwrap here.
+                continue
+
+            # If not on a Preview tab, just force a repaint.
+            if not (hasattr(view, "has_active_preview") and view.has_active_preview()):
+                if hasattr(view, "refresh_from_docman"):
+                    view.refresh_from_docman()
+                elif hasattr(view, "_render"):
+                    view._render(rebuild=True)
+                continue
+
+            # Preview tab active → refresh only if the changed region overlaps our ROI
+            try:
+                my_roi = view.current_preview_roi()  # (x,y,w,h)
+            except Exception:
+                my_roi = None
+
+            if my_roi is None or roi_tuple_or_none is None or _roi_intersects(my_roi, roi_tuple_or_none):
+                if hasattr(view, "refresh_from_docman"):
+                    view.refresh_from_docman()
+                elif hasattr(view, "_render"):
+                    view._render(rebuild=True)
+
+    def _hook_preview_awareness(self, view):
+        """
+        Make the main window react when the user switches to/from the Preview tab
+        or changes the selected ROI, so toolbars/undo/etc. reflect the ROI doc.
+        """
+        from PyQt6.QtCore import QObject
+
+        def _on_any_preview_change(*_):
+            # Re-resolve active doc using DocManager's ROI logic and refresh UI
+            try:
+                dm = getattr(self, "doc_manager", None) or getattr(self, "docman", None)
+                if dm and hasattr(dm, "get_document_for_view"):
+                    resolved = dm.get_document_for_view(view)  # ROI-aware
+                    # mark that resolved doc as active so _active_doc() reflects it
+                    if hasattr(dm, "set_active_document"):
+                        dm.set_active_document(resolved)
+            except Exception:
+                pass
+
+            try: self.update_undo_redo_action_labels()
+            except Exception: pass
+            try: self._refresh_mask_action_states()
+            except Exception: pass
+            try:
+                # any other UI you keep in sync (histogram, header viewer, etc.)
+                if hasattr(self, "_hdr_refresh_timer") and self._hdr_refresh_timer is not None:
+                    self._hdr_refresh_timer.start(0)
+            except Exception:
+                pass
+
+        # Prefer explicit signals if your ImageSubWindow exposes them
+        hooked = False
+        for sig_name in ("previewActivated", "previewDeactivated", "previewROIChanged", "previewTabChanged"):
+            if hasattr(view, sig_name):
+                try:
+                    getattr(view, sig_name).connect(_on_any_preview_change)
+                    hooked = True
+                except Exception:
+                    pass
+
+        # Generic fallback: watch the tab widget if present
+        try:
+            tabs = getattr(view, "tabs", None)
+            if tabs and hasattr(tabs, "currentChanged"):
+                tabs.currentChanged.connect(_on_any_preview_change)
+                hooked = True
+        except Exception:
+            pass
+
+        # Ultra-fallback: install an event filter on the view to catch tab changes
+        if not hooked:
+            class _PreviewEventFilter(QObject):
+                def eventFilter(self, _obj, ev):
+                    et = getattr(ev, "type", lambda: None)()
+                    #  CurrentChanged on QTabBar/QTabWidget routes through various event types;
+                    #  repaint + layout + focus-in when user clicks is a good cheap proxy.
+                    if et in (12, 14, 24):  # Paint, LayoutRequest, FocusIn
+                        _on_any_preview_change()
+                    return False
+            try:
+                ef = _PreviewEventFilter(view)
+                view.installEventFilter(ef)
+                # keep a ref so it doesn't get GC'd
+                if not hasattr(view, "_preview_event_filters"):
+                    view._preview_event_filters = []
+                view._preview_event_filters.append(ef)
+            except Exception:
+                pass
+
+
+    def _spawn_subwindow_for(self, doc, *, force_new: bool = False):
+        """
+        Open a subwindow for `doc`. If one already exists and force_new=False,
+        simply raise/show the existing one. If force_new=True, always spawn a
+        brand-new view (useful for 'duplicate view' drops on the MDI background).
+        """
+        # ── 0) Reuse existing unless caller explicitly wants a new one
+        if not force_new:
+            existing = self._find_subwindow_for_doc(doc)
+            if existing:
+                try:
+                    # ensure really visible and focused
+                    existing.show()
+                    wst = existing.windowState()
+                    if wst & Qt.WindowState.WindowMinimized:
+                        existing.setWindowState(wst & ~Qt.WindowState.WindowMinimized)
+                    self.mdi.setActiveSubWindow(existing)
+                    existing.raise_()
+                except Exception:
+                    pass
+                return existing
+
+        # ── 1) Import view classes
         try:
             from pro.subwindow import ImageSubWindow, TableSubWindow
         except Exception as e:
@@ -7185,78 +7695,121 @@ class AstroSuiteProMainWindow(QMainWindow):
             tb = traceback.format_exc()
             QMessageBox.critical(self, "View Import Error",
                                 f"Failed to import view classes from pro.subwindow:\n{e}\n\n{tb}")
-            # limp to a label so *something* shows:
-            from PyQt6.QtWidgets import QLabel, QMdiSubWindow
+            from PyQt6.QtWidgets import QLabel
             w = QLabel(doc.display_name()); setattr(w, "document", doc)
-            wrapper = self.mdi.addSubWindow(w); wrapper.show()
+            wrapper = self.mdi.addSubWindow(w)
+            wrapper.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+            wrapper.show()
             return wrapper
 
-        # your table detector
-        is_table = (
-            (getattr(doc, "metadata", {}) or {}).get("doc_type") == "table" or
-            hasattr(doc, "rows") and hasattr(doc, "headers")
-        )
+        # ── 2) Table vs Image detection (unchanged)
+        md = (getattr(doc, "metadata", {}) or {})
+        is_table = (md.get("doc_type") == "table") or (hasattr(doc, "rows") and hasattr(doc, "headers"))
 
-        # ---- construct the view; LOG ALL ERRORS ----
+        # ── 3) Construct the view (log all errors, fall back to label)
         try:
             view = TableSubWindow(doc) if is_table else ImageSubWindow(doc)
         except Exception as e:
             import traceback
             tb = traceback.format_exc()
-            self._log(f"[spawn] View construction failed: {e}\n{tb}")
-            QMessageBox.critical(self, "View Construction Error",
-                                f"Could not create {'Table' if is_table else 'Image'} view:\n{e}\n\n{tb}")
-            # safe fallback:
+            try:
+                self._log(f"[spawn] View construction failed: {e}\n{tb}")
+            except Exception:
+                pass
             from PyQt6.QtWidgets import QLabel
             view = QLabel(doc.display_name()); setattr(view, "document", doc)
 
+        # ── 4) DocManager wiring (prefer self.doc_manager, fall back to self.docman)
+        dm = getattr(self, "doc_manager", None) or getattr(self, "docman", None)
+        if hasattr(view, "set_doc_manager") and dm is not None:
+            try:
+                view.set_doc_manager(dm)
+            except Exception:
+                pass
+
+        # ── 5) ROI-aware proxy: keep base handle, expose live proxy at view.document
+        try:
+
+            setattr(view, "base_document", doc)  # explicit base (non-ROI) doc
+            if dm is not None:
+                view.document = _DocProxy(dm, view, doc)
+            else:
+                # safe fallback
+                setattr(view, "document", doc)
+        except Exception as e:
+            print(f"Failed to install DocProxy: {e}")
+            try:
+                self._log(f"[spawn] Failed to install DocProxy: {e}")
+            except Exception:
+                pass
+            try:
+                setattr(view, "document", doc)
+            except Exception:
+                pass
+
+        self._hook_preview_awareness(view)
+
+        # ── 6) Add subwindow and set chrome
         sw = self.mdi.addSubWindow(view)
         sw.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         sw.setWindowTitle(doc.display_name())
         sw.setWindowIcon(self.app_icon)
-        sw.show()
 
-        # Window flags (apply then show)
+
+        # Apply standard window flags then show/raise
         flags = sw.windowFlags()
         flags |= Qt.WindowType.WindowCloseButtonHint
         flags |= Qt.WindowType.WindowMinimizeButtonHint
         flags |= Qt.WindowType.WindowMaximizeButtonHint
         sw.setWindowFlags(flags)
         sw.show()
+        sw.raise_()
+        self.mdi.setActiveSubWindow(sw)
 
-        # Intercept minimize → Shelf (if you have one)
+
+        # Optional minimize/restore interceptor
         if hasattr(self, "_minimize_interceptor"):
-            sw.installEventFilter(self._minimize_interceptor)
+            try:
+                sw.installEventFilter(self._minimize_interceptor)
+            except Exception:
+                pass
+
+        # Shelf cleanup on destroy
         try:
             sw.destroyed.connect(lambda _=None, s=sw:
                 hasattr(self, "window_shelf") and self.window_shelf.remove_for_subwindow(s))
         except Exception:
             pass
 
-        # Close bookkeeping
+        # Close handling hooks
         if hasattr(view, "aboutToClose"):
             try:
-                view.aboutToClose.connect(lambda d=doc: self._safe_close_doc(d))
-                view.aboutToClose.connect(lambda d=doc: self._log(f"Closed: {d.display_name()}"))
+                # avoid accidental double connections if respawned
+                try:
+                    view.aboutToClose.disconnect()
+                except Exception:
+                    pass
+                # forward the *base* doc to the slot
+                view.aboutToClose.connect(lambda _=None, d=doc: self._on_view_about_to_close(d))
             except Exception:
                 pass
         else:
+            # Worst-case fallback: if the view doesn't expose aboutToClose, use destroyed
             try:
-                sw.destroyed.connect(lambda _=None, d=doc: self._safe_close_doc(d))
+                sw.destroyed.connect(lambda _=None, d=doc: self._on_view_about_to_close(d))
             except Exception:
                 pass
 
-        # Doc change → undo/redo labels
+        # Keep undo/redo labels in sync
         try:
             doc.changed.connect(self.update_undo_redo_action_labels)
         except Exception:
             pass
 
-        # Size/scale
+        # ── 7) Initial sizing + scale
         if is_table:
             sw.resize(1000, 700)
         else:
-            # try to size to content
             w = h = None
             try:
                 img = getattr(doc, "image", None)
@@ -7264,36 +7817,53 @@ class AstroSuiteProMainWindow(QMainWindow):
                     h, w = img.shape[:2]
             except Exception:
                 pass
+
             if w and h and w <= 900 and h <= 700 and hasattr(view, "set_scale"):
-                view.set_scale(1.0)
+                try:
+                    view.set_scale(1.0)
+                except Exception:
+                    pass
                 from PyQt6.QtCore import QTimer
                 QTimer.singleShot(0, sw.adjustSize)
             else:
                 sw.resize(900, 700)
                 if w and h and hasattr(view, "set_scale"):
-                    view.set_scale(min(900 / float(w), 700 / float(h)))
+                    try:
+                        view.set_scale(min(900 / float(w), 700 / float(h)))
+                    except Exception:
+                        pass
 
-        # Keep toolbar toggle in sync if this is an image view
+        # ── 8) Sync autostretch UI state
         if hasattr(view, "autostretch_enabled"):
             try:
                 self._sync_autostretch_action(view.autostretch_enabled)
             except Exception:
                 pass
 
+        # ── 9) View-level duplicate signal → route to handler
         if hasattr(view, "requestDuplicate"):
+
             try:
                 view.requestDuplicate.connect(self._duplicate_view_from_signal)
             except Exception:
                 pass
 
+        # ── 10) Log if image missing (non-table)
         if not is_table and getattr(doc, "image", None) is None:
             try:
                 self._log(f"[spawn] No image and not recognized as table; metadata keys: {list((getattr(doc,'metadata',{}) or {}).keys())}")
             except Exception:
                 pass
 
-        self._on_subwindow_activated(sw)
+        # activate hook
+        try:
+
+            self._on_subwindow_activated(sw)
+        except Exception:
+            pass
+
         return sw
+
 
 
     def _connect_view_signals(self, view):
@@ -7303,22 +7873,31 @@ class AstroSuiteProMainWindow(QMainWindow):
 
     def _on_view_about_to_close(self, doc):
         """
-        Called by ImageSubWindow.closeEvent() before teardown.
-        Only remove the document from DocManager if NO OTHER subwindow
-        is still showing the same doc.
+        Invoked by ImageSubWindow.closeEvent() before teardown.
+        Remove the *base* document from DocManager only if no other subwindow
+        is still showing it.
         """
         sender_view = self.sender()
-        # Are there any other subwindows still showing this doc?
+        base = self._normalize_base_doc(doc)
+
+        # IMPORTANT: compare by each view's base_document (not .document which is a proxy)
         still_open = [
             sw for sw in self.mdi.subWindowList()
-            if getattr(sw.widget(), "document", None) is doc and sw.widget() is not sender_view
+            if getattr(sw.widget(), "base_document", None) is base
+            and (sender_view is None or sw.widget() is not sender_view)
         ]
+
         if not still_open:
-            # This will emit documentRemoved → Explorer auto-updates
-            self.docman.close_document(doc)
-            if hasattr(self, "_log"):
-                self._log(f"Closed: {doc.display_name()}")
-        QTimer.singleShot(0, self._maybe_clear_ui_after_close)        
+            try:
+                self.docman.close_document(base)   # emits documentRemoved(base)
+                if hasattr(self, "_log"):
+                    self._log(f"Closed: {base.display_name()}")
+            except Exception:
+                pass
+
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(0, self._maybe_clear_ui_after_close)
+
 
     def _maybe_clear_ui_after_close(self):
         # If no subwindows remain, clear all “active doc” UI bits, including header
@@ -7334,49 +7913,72 @@ class AstroSuiteProMainWindow(QMainWindow):
                 except Exception:
                     pass
 
-
     def _duplicate_view_from_signal(self, source_view):
+        print("Duplicating view from signal...")
+        from PyQt6.QtCore import QTimer  # safe even if unused on some code paths
+
+        # 0) Resolve the *base* document (avoid DocProxy/ROI targets)
         doc = getattr(source_view, "document", None)
-        if not doc or doc.image is None:
+        if doc is None:
             return
 
-        # capture source view state
+        base_doc = getattr(source_view, "base_document", None)
+        if base_doc is None:
+            # If doc is a _DocProxy, try to resolve; otherwise fall back to doc
+            try:
+                base_doc = doc._target()  # may exist on our proxy
+            except Exception:
+                base_doc = doc
+
+        if getattr(base_doc, "image", None) is None:
+            return
+
+        # 1) Capture source view state
         hbar = source_view.scroll.horizontalScrollBar()
         vbar = source_view.scroll.verticalScrollBar()
         state = {
             "scale": float(getattr(source_view, "scale", 1.0)),
-            "hval": int(hbar.value()), "vval": int(vbar.value()),
+            "hval": int(hbar.value()),
+            "vval": int(vbar.value()),
             "autostretch": bool(getattr(source_view, "autostretch_enabled", False)),
             "autostretch_target": float(getattr(source_view, "autostretch_target", 0.25)),
         }
 
-        base = doc.display_name() or "Untitled"
-        # strip any UI decorations that might have leaked into a name string
-        while len(base) >= 2 and base[1] == " " and base[0] in "■●◆▲▪▫•◼◻◾◽":
-            base = base[2:]
-        if base.startswith("Active View: "):
-            base = base[len("Active View: "):]
+        # 2) New name (strip UI decorations if any)
+        base_name = ""
+        try:
+            base_name = base_doc.display_name() or "Untitled"
+        except Exception:
+            base_name = "Untitled"
 
-        # 1) duplicate the document
-        new_doc = self.docman.duplicate_document(doc, new_name=f"{base}_duplicate")
+        try:
+            base_name = _strip_ui_decorations(base_name)
+        except Exception:
+            # minimal fallback: remove our known prefix/glyphs
+            while len(base_name) >= 2 and base_name[1] == " " and base_name[0] in "■●◆▲▪▫•◼◻◾◽":
+                base_name = base_name[2:]
+            if base_name.startswith("Active View: "):
+                base_name = base_name[len("Active View: "):]
 
-        # --- IMPORTANT: ensure the duplicate doc starts mask-free ---
+        # 3) Duplicate the *base* document (not the ROI proxy)
+        #    NOTE: your project uses `self.docman` elsewhere for duplication.
+        new_doc = self.docman.duplicate_document(base_doc, new_name=f"{base_name}_duplicate")
+        print(f"  Duplicated document ID {id(base_doc)} → {id(new_doc)}")
+
+        # 4) Ensure the duplicate starts mask-free (so we don’t inherit mask UI state)
         try:
             mid = getattr(new_doc, "active_mask_id", None)
             if mid and hasattr(new_doc, "remove_mask"):
                 new_doc.remove_mask(mid)
-            # if duplicate carried other masks, nuke them
             if hasattr(new_doc, "masks") and getattr(new_doc, "masks", None):
                 try:
                     new_doc.masks.clear()
                 except Exception:
                     new_doc.masks = {}
             new_doc.active_mask_id = None
-            # announce the clean state
             if hasattr(new_doc, "changed"):
                 new_doc.changed.emit()
         except Exception:
-            # best-effort fallback
             try:
                 new_doc.active_mask_id = None
                 if hasattr(new_doc, "masks"):
@@ -7385,37 +7987,43 @@ class AstroSuiteProMainWindow(QMainWindow):
                     new_doc.changed.emit()
             except Exception:
                 pass
-        # ------------------------------------------------------------------
 
-        # 2) after the subwindow is created by our documentAdded handler, apply view state
-        def _apply_when_ready():
-            sw = self._find_subwindow_for_doc(new_doc)
-            if not sw:
-                QTimer.singleShot(0, _apply_when_ready)
-                return
-            view = sw.widget()
+        # 5) Spawn the subwindow *now* (don’t rely on an external documentAdded handler)
+        sw = self._spawn_subwindow_for(new_doc, force_new=True)
+        print(f"  Spawned subwindow for duplicated document ID {id(new_doc)}")
+        if not sw:
+            # Extremely defensive: try once more on the next tick, then give up
+            def _retry_spawn():
+                sw2 = self._spawn_subwindow_for(new_doc, force_new=True)
+                if not sw2 and hasattr(self, "_log"):
+                    self._log("[duplicate] failed to spawn subwindow for duplicated document")
+            QTimer.singleShot(0, _retry_spawn)
+            return
 
-            # If the view was constructed before we cleared the doc, forcibly reset the dot.
-            if hasattr(view, "_mask_dot_enabled") and view._mask_dot_enabled:
-                view._mask_dot_enabled = False
-                # rebuild the title from flags + base (no dot)
-                try:
-                    view._rebuild_title()
-                except Exception:
-                    # last resort: hard set clean title
-                    sub = sw
-                    t = getattr(view, "base_doc_title", lambda: new_doc.display_name())()
-                    sub.setWindowTitle(t)
-                    sub.setToolTip(t)
+        view = sw.widget()
 
-            # now restore zoom/pan/etc
+        # If the view was constructed before we cleared the doc masks, force-clear the UI dot.
+        if hasattr(view, "_mask_dot_enabled") and view._mask_dot_enabled:
+            view._mask_dot_enabled = False
+            try:
+                view._rebuild_title()
+            except Exception:
+                # last resort: set a clean title
+                t = getattr(view, "base_doc_title", lambda: new_doc.display_name())()
+                sw.setWindowTitle(t)
+                sw.setToolTip(t)
+
+        # 6) Apply the saved view state (zoom/pan/autostretch)
+        try:
             self._apply_view_state_to_view(view, state)
+        except Exception:
+            pass
 
-            self.mdi.setActiveSubWindow(sw)
-            if hasattr(self, "_log"):
-                self._log(f"View duplicated as independent doc '{new_doc.display_name()}'")
-
-        QTimer.singleShot(0, _apply_when_ready)
+        # 7) Focus the new window and log
+        self.mdi.setActiveSubWindow(sw)
+        print(f"  Activated subwindow for duplicated document ID {id(new_doc)}")
+        if hasattr(self, "_log"):
+            self._log(f"Duplicated as independent document → '{new_doc.display_name()}'")
 
 
 
@@ -7517,19 +8125,66 @@ class AstroSuiteProMainWindow(QMainWindow):
             pass
 
     def _remove_doc_from_explorer(self, doc):
+        """
+        Remove either the exact doc or its base (handles ROI proxies).
+        """
+        base = self._normalize_base_doc(doc)
         for i in range(self.explorer.count()):
             it = self.explorer.item(i)
-            if it.data(Qt.ItemDataRole.UserRole) is doc:
+            d = it.data(Qt.ItemDataRole.UserRole)
+            if d is doc or d is base:
                 self.explorer.takeItem(i)
                 break
 
-    def _activate_from_explorer(self, item):
+    def _activate_or_open_from_explorer(self, item):
         doc = item.data(Qt.ItemDataRole.UserRole)
+        base = self._normalize_base_doc(doc)
+
+        # 1) Try to focus an existing view for this base
         for sw in self.mdi.subWindowList():
             w = sw.widget()
-            if getattr(w, "document", None) is doc:
-                self.mdi.setActiveSubWindow(sw)
+            if getattr(w, "base_document", None) is base:
+                try:
+                    sw.show(); w.show()
+                    st = sw.windowState()
+                    if st & Qt.WindowState.WindowMinimized:
+                        sw.setWindowState(st & ~Qt.WindowState.WindowMinimized)
+                    self.mdi.setActiveSubWindow(sw)
+                    sw.raise_()
+                except Exception:
+                    pass
                 return
+
+        # 2) None exists → open one
+        self._open_subwindow_for_added_doc(base)
+
+
+        # 2) If none exists, open one (this also wires the close hook)
+        self._open_subwindow_for_added_doc(base)
+
+    def _add_doc_to_explorer(self, doc):
+        base = self._normalize_base_doc(doc)
+
+        # de-dupe by identity on base
+        for i in range(self.explorer.count()):
+            it = self.explorer.item(i)
+            if it.data(Qt.ItemDataRole.UserRole) is base:
+                # refresh text in case dims/name changed
+                it.setText(self._format_explorer_title(base))
+                return
+
+        item = QListWidgetItem(self._format_explorer_title(base))
+        item.setData(Qt.ItemDataRole.UserRole, base)
+        fp = (base.metadata or {}).get("file_path")
+        if fp:
+            item.setToolTip(fp)
+        self.explorer.addItem(item)
+
+        # keep row label in sync with edits/resizes/renames
+        try:
+            base.changed.connect(lambda *_: self._update_explorer_item_for_doc(base))
+        except Exception:
+            pass
 
     def _set_linked_stretch_from_action(self, checked: bool):
         # persist as the default for *new* views
@@ -7858,8 +8513,10 @@ class AstroSuiteProMainWindow(QMainWindow):
             self._log(f"View: paste failed: {e}")
 
     def _active_doc(self):
-        sw = self.mdi.activeSubWindow()
-        return sw.widget().document if sw else None
+        dm = getattr(self, "doc_manager", None) or getattr(self, "docman", None)
+        if not dm:
+            return None
+        return dm.get_active_document()
 
     def _document_has_edits(self, doc) -> bool:
         # Prefer a dedicated 'dirty' indicator if your ImageDocument exposes one
