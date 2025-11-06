@@ -24,7 +24,7 @@ case "$ARCH" in
 esac
 
 DMG_NAME="${PROJECT_NAME}_${ARCH_SUFFIX}"
-echo "🚀 Creating DMG for ${PROJECT_NAME}"
+echo "🚀 Creating DMG for ${PROJECT_NAME} (${ARCH_DISPLAY})"
 
 echo "🔧 Generating build info..."
 python3 -c "
@@ -45,6 +45,42 @@ content = f'BUILD_TIMESTAMP = \"{timestamp}\"\\n'
 print(f'Build timestamp: {timestamp}')
 "
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Matplotlib pre-warm (font cache + backend import) BEFORE build
+# This avoids first-run stalls on user machines.
+# Also optionally call your helper if present (e.g., scripts/matplotlib.py).
+# ──────────────────────────────────────────────────────────────────────────────
+echo "🎨 Pre-warming Matplotlib cache (headless)…"
+python3 - <<'PY'
+import os, sys
+# Force non-GUI backend to avoid any Qt issues during cache build
+import matplotlib
+matplotlib.use("Agg", force=True)
+
+# Trigger font manager cache build
+from matplotlib import font_manager
+# Newer MPL uses this; for older, this still refreshes the cache files.
+font_manager.get_font_names()  # touches cache
+try:
+    # Force rebuild path if needed
+    font_manager._load_fontmanager(try_read_cache=False)
+except Exception:
+    pass
+
+# Touch pyplot once to ensure everything is importable
+from matplotlib import pyplot as plt
+plt.figure(); plt.plot([0,1],[0,1]); plt.close()
+
+print("Matplotlib cache pre-warmed ✅")
+PY
+
+# If you keep a helper to bundle/patch MPL at build-time, call it here:
+# e.g. scripts/matplotlib.py (optional)
+if [ -f "scripts/matplotlib.py" ]; then
+  echo "🧩 Running project Matplotlib helper…"
+  python3 scripts/matplotlib.py || echo "ℹ️ matplotlib.py helper returned non-zero; continuing."
+fi
+
 # Clean previous builds
 echo "🧹 Cleaning previous builds..."
 rm -rf build/ dist/
@@ -62,6 +98,21 @@ fi
 
 echo "✅ Build successful!"
 
+# (Optional) sanity: ensure mpl-data exists in bundle (PyInstaller usually includes it)
+# If you want to be extra safe, uncomment this block to copy mpl-data explicitly.
+#: <<'MPL_COPY'
+#echo "🔎 Ensuring mpl-data is present in app bundle…"
+#MPL_DATA=$(python3 -c "import matplotlib, sys; print(matplotlib.get_data_path())" 2>/dev/null || true)
+#if [ -n "$MPL_DATA" ] && [ -d "$MPL_DATA" ]; then
+#  APP_RESOURCES="dist/${APP_NAME}/Contents/Resources"
+#  mkdir -p "${APP_RESOURCES}/mpl-data"
+#  rsync -a --delete "${MPL_DATA}/" "${APP_RESOURCES}/mpl-data/"
+#  echo "📦 mpl-data copied into app Resources."
+#else
+#  echo "ℹ️ Could not resolve matplotlib data path; skipping explicit copy."
+#fi
+#MPL_COPY
+
 # Create DMG staging directory
 STAGING_DIR="dmg_staging"
 rm -rf "${STAGING_DIR}"
@@ -69,20 +120,14 @@ mkdir -p "${STAGING_DIR}"
 
 # Copy the app to staging
 echo "📦 Preparing DMG contents..."
-cp -R "dist/${APP_NAME}" "${STAGING_DIR}/"  # -R for recursive copy
-#cp "dist/${APP_NAME}" "${STAGING_DIR}/"
+cp -R "dist/${APP_NAME}" "${STAGING_DIR}/"
 
 # Create an alias to Applications folder
 ln -s /Applications "${STAGING_DIR}/Applications"
 
 # Copy additional files if they exist
-if [ -f "README.md" ]; then
-    cp "README.md" "${STAGING_DIR}/"
-fi
-
-if [ -f "LICENSE" ]; then
-    cp "LICENSE" "${STAGING_DIR}/"
-fi
+[ -f "README.md" ] && cp "README.md" "${STAGING_DIR}/"
+[ -f "LICENSE" ]  && cp "LICENSE"  "${STAGING_DIR}/"
 
 # Create DMG using hdiutil
 echo "💿 Creating DMG..."
