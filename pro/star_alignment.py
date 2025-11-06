@@ -3,13 +3,27 @@ from __future__ import annotations
 
 import os, math, random, sys
 import os as _os, threading as _threading, ctypes as _ctypes
+import multiprocessing
+N = str(max(1, min( (os.cpu_count() or 8), 32 )))
+os.environ.setdefault("OMP_NUM_THREADS", N)
+os.environ.setdefault("OPENBLAS_NUM_THREADS", N)
+os.environ.setdefault("MKL_NUM_THREADS", N)
+os.environ.setdefault("NUMEXPR_NUM_THREADS", N)
+os.environ.setdefault("VECLIB_MAXIMUM_THREADS", N)  # macOS Accelerate
+try:
+    import cv2
+    cv2.setNumThreads(int(N))   # let OpenCV parallelize internally
+except Exception:
+    pass
+
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from itertools import combinations
 from typing import Callable, Iterable, Tuple
 import tempfile
 import traceback
 import requests
 import numpy as np
-import cv2
+
 import astroalign
 import sep
 import re, warnings
@@ -66,18 +80,50 @@ def _apply_affine_to_pts(A_2x3: np.ndarray, pts_xy: np.ndarray) -> np.ndarray:
     return (A_2x3.astype(np.float32) @ P.T).T  # (N,2)
 
 
-def _align_prefs(settings: QSettings) -> dict:
-    m = (settings.value("stacking/align/model", "affine") or "affine").lower()
-    # Back-compat: old TPS -> poly3
-    if m == "tps":
-        m = "poly3"
-        settings.setValue("stacking/align/model", m)
-    return {
-        "model": m,  # "affine" | "homography" | "poly3" | "poly4"
-        "max_cp": int(settings.value("stacking/align/max_cp", 250, type=int)),
-        "downsample": int(settings.value("stacking/align/downsample", 2, type=int)),
-        "h_reproj": float(settings.value("stacking/align/h_reproj", 3.0, type=float)),
+def _align_prefs(settings: QSettings | None = None) -> dict:
+    """
+    Read alignment prefs with sane defaults, supporting:
+      • primary keys:  stacking/align/*
+      • legacy keys:   align/*          (back-compat)
+    Also migrates 'tps' → 'poly3'.
+    """
+    if settings is None:
+        settings = QSettings()
+
+    def _get(name: str, default, cast):
+        # Prefer new path, fall back to legacy
+        val = settings.value(f"stacking/align/{name}", None)
+        if val is None:
+            val = settings.value(f"align/{name}", None)
+        if val is None:
+            return default
+        try:
+            if cast is bool:
+                s = str(val).strip().lower()
+                return s in ("1", "true", "yes", "on")
+            return cast(val)
+        except Exception:
+            return default
+
+    # Model with back-compat for 'tps'
+    model = (_get("model", "affine", str) or "affine").lower()
+    if model == "tps":
+        model = "poly3"
+        settings.setValue("stacking/align/model", model)  # migrate to new key
+
+    prefs = {
+        "model":       model,                 # "affine" | "homography" | "poly3" | "poly4"
+        "max_cp":      _get("max_cp", 250, int),
+        "downsample":  _get("downsample", 2, int),
+        "h_reproj":    _get("h_reproj", 3.0, float),
+
+        # New knobs (also read legacy align/* if present)
+        "det_sigma":   _get("det_sigma", 10.0, float),   # try 8–12 in dense fields
+        "limit_stars": _get("limit_stars", 800, int),    # 500–1500 typical
+        "minarea":     _get("minarea", 5, int),
     }
+
+    return prefs
 
 # ---------- Shortcut / Headless integration ----------
 
@@ -1314,6 +1360,96 @@ class RegistrationWorkerSignals(QObject):
 # Identity transform (2x3)
 IDENTITY_2x3 = np.array([[1, 0, 0], [0, 1, 0]], dtype=np.float64)
 
+def compute_affine_transform_astroalign_cropped(source_img, reference_img,
+                                                scale: float = 1.20,
+                                                limit_stars: int | None = None):
+    """
+    Center-crop the reference to ~scale×source, solve with astroalign on the crop,
+    then lift the transform back to full reference coordinates.
+    Returns 2x3 affine in full-reference coords, or None.
+    """
+    import numpy as np
+    import astroalign
+    Hs, Ws = source_img.shape[:2]
+    Hr, Wr = reference_img.shape[:2]
+
+    # crop box
+    h = min(int(round(Hs * scale)), Hr)
+    w = min(int(round(Ws * scale)), Wr)
+    y0 = max(0, (Hr - h) // 2)
+    x0 = max(0, (Wr - w) // 2)
+    ref_crop = reference_img[y0:y0+h, x0:x0+w]
+
+    # AA solve (pass cap if this AA version supports it)
+    try:
+        if limit_stars is not None:
+            tform, _ = astroalign.find_transform(
+                np.ascontiguousarray(source_img.astype(np.float32)),
+                np.ascontiguousarray(ref_crop.astype(np.float32)),
+                max_control_points=int(limit_stars)
+            )
+        else:
+            tform, _ = astroalign.find_transform(
+                np.ascontiguousarray(source_img.astype(np.float32)),
+                np.ascontiguousarray(ref_crop.astype(np.float32))
+            )
+    except TypeError:
+        # older astroalign with no max_control_points kwarg
+        tform, _ = astroalign.find_transform(
+            np.ascontiguousarray(source_img.astype(np.float32)),
+            np.ascontiguousarray(ref_crop.astype(np.float32))
+        )
+
+    P = np.asarray(tform.params, dtype=np.float64)
+    if P.shape == (3, 3):
+        T = np.array([[1,0,x0],[0,1,y0],[0,0,1]], dtype=np.float64)
+        H_full = T @ P
+        return H_full[0:2, :]
+    elif P.shape == (2, 3):
+        A3 = np.vstack([P, [0,0,1]])
+        T  = np.array([[1,0,x0],[0,1,y0],[0,0,1]], dtype=np.float64)
+        A_full = (T @ A3)[0:2, :]
+        return A_full
+    return None
+
+
+def _solve_delta_job(args):
+    try:
+        (orig_path, current_transform_2x3, ref_small, Wref, Href,
+         resample_flag, det_sigma, limit_stars, minarea) = args
+
+        try:
+            cv2.setNumThreads(1)
+        except Exception:
+            pass
+
+        # 1) read → gray
+        with fits.open(orig_path, memmap=True) as hdul:
+            arr = hdul[0].data
+            if arr is None:
+                return (orig_path, None, f"Could not load {os.path.basename(orig_path)}")
+            gray = arr if arr.ndim == 2 else np.mean(arr, axis=2)
+            gray = np.nan_to_num(gray, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
+
+        # 2) pre-warp to ref size
+        T_prev = np.asarray(current_transform_2x3, np.float32).reshape(2, 3)
+        src_for_match = cv2.warpAffine(gray, T_prev, (Wref, Href),
+                                       flags=resample_flag, borderMode=cv2.BORDER_REFLECT_101)
+
+        # 3) delta solve (NO import — call the top-level helper)
+        tform = compute_affine_transform_astroalign_cropped(
+            src_for_match, ref_small, limit_stars=limit_stars
+        )
+        if tform is None:
+            return (orig_path, None,
+                    f"Astroalign failed for {os.path.basename(orig_path)} – skipping (no transform returned)")
+
+        T_new = np.asarray(tform, np.float64).reshape(2, 3)
+        return (orig_path, T_new, None)
+
+    except Exception as e:
+        return (orig_path, None, f"Astroalign failed for {os.path.basename(orig_path)}: {e}")
+
 
 class StarRegistrationWorker(QRunnable):
     def __init__(self, file_path, original_file, current_transform,
@@ -1400,7 +1536,9 @@ class StarRegistrationWorker(QRunnable):
 
             # 3) NOW do astroalign on the already-aligned frame → this gives us the *incremental* delta
             try:
-                transform = self.compute_affine_transform_astroalign(src_for_match, ref_small)
+                transform = self.compute_affine_transform_astroalign(
+                    src_for_match, ref_small, limit_stars=getattr(self, "limit_stars", None)
+                )
             except Exception as e:
                 msg = str(e)
                 base = os.path.basename(self.original_file)
@@ -1437,48 +1575,61 @@ class StarRegistrationWorker(QRunnable):
 
 
     @staticmethod
-    def compute_affine_transform_astroalign(source_img, reference_img, scale=1.20):
+    def compute_affine_transform_astroalign(source_img, reference_img, scale=1.20, limit_stars: int | None = None):
         """
-        Fast local match: crop the reference to ~1.2× source size (centered),
-        solve on the crop, then lift the transform back to full reference coords.
-        Returns a 2x3 affine in full-reference coordinates, or None.
+        Fast local match with center-crop, then AA on the crop.
+        limit_stars caps the number of control points AA will use (if supported).
         """
         global _AA_LOCK
         try:
             Hs, Ws = source_img.shape[:2]
             Hr, Wr = reference_img.shape[:2]
 
-            # 1) center crop box in reference sized ≈ source*scale (clamped to reference)
+            # 1) center-crop reference ≈ source*scale
             h = min(int(round(Hs * scale)), Hr)
             w = min(int(round(Ws * scale)), Wr)
             y0 = max(0, (Hr - h) // 2)
             x0 = max(0, (Wr - w) // 2)
             ref_crop = reference_img[y0:y0+h, x0:x0+w]
 
-            # 2) solve on the small pair
+            # 2) find transform on the small pair
             with _AA_LOCK:
-                tform, _ = astroalign.find_transform(
-                    np.ascontiguousarray(source_img.astype(np.float32)),
-                    np.ascontiguousarray(ref_crop.astype(np.float32))
-                )
+                # NEW: pass limit_stars when available
+                try:
+                    if limit_stars is not None:
+                        tform, _ = astroalign.find_transform(
+                            np.ascontiguousarray(source_img.astype(np.float32)),
+                            np.ascontiguousarray(ref_crop.astype(np.float32)),
+                            max_control_points=int(limit_stars)
+                        )
+                    else:
+                        tform, _ = astroalign.find_transform(
+                            np.ascontiguousarray(source_img.astype(np.float32)),
+                            np.ascontiguousarray(ref_crop.astype(np.float32))
+                        )
+                except TypeError:
+                    # Older astroalign without max_control_points kwarg
+                    tform, _ = astroalign.find_transform(
+                        np.ascontiguousarray(source_img.astype(np.float32)),
+                        np.ascontiguousarray(ref_crop.astype(np.float32))
+                    )
 
-            # 3) compose crop translation back to full ref coords
+            # 3) lift crop→full coords (unchanged)
             P = np.asarray(tform.params, dtype=np.float64)
             if P.shape == (3, 3):
-                # homography-like (SimilarityTransform also reports 3x3 with [0,0,1] last row)
                 T = np.array([[1,0,x0],[0,1,y0],[0,0,1]], dtype=np.float64)
                 H_full = T @ P
-                return H_full[0:2, :]   # 2×3 affine slice is valid since bottom row is [0,0,1]
+                return H_full[0:2, :]
             elif P.shape == (2, 3):
                 A3 = np.vstack([P, [0,0,1]])
                 T  = np.array([[1,0,x0],[0,1,y0],[0,0,1]], dtype=np.float64)
                 A_full = (T @ A3)[0:2, :]
                 return A_full
-            else:
-                return None
+            return None
         except Exception as e:
             print(f"[StarRegistrationWorker] astroalign (cropped) failed: {e}")
             return None
+
 
 
 class StarRegistrationThread(QThread):
@@ -1509,7 +1660,9 @@ class StarRegistrationThread(QThread):
         self.align_prefs = align_prefs or _align_prefs(QSettings())
         self.align_model = str(self.align_prefs.get("model", "affine")).lower()
         self.h_reproj   = float(self.align_prefs.get("h_reproj", 3.0))
-
+        self.det_sigma   = float(self.align_prefs.get("det_sigma", 10.0))
+        self.limit_stars = int(self.align_prefs.get("limit_stars", 800))
+        self.minarea     = int(self.align_prefs.get("minarea", 5))
         self.downsample = int(self.align_prefs.get("downsample", 2))
         self.drizzle_xforms = {}  # {orig_norm_path: (kind, matrix)}
 
@@ -1758,16 +1911,14 @@ class StarRegistrationThread(QThread):
         self._done += 1
         self.progress_step.emit(self._done, self._total)
 
+    # ─────────────────────────────────────────────────────────────
+    # Drop-in replacement for: StarRegistrationThread.run_one_registration_pass
+    # ─────────────────────────────────────────────────────────────
     def run_one_registration_pass(self, _ref_stars_unused, _ref_triangles_unused, pass_index):
         _cap_native_threads_once()
 
-        #ds = max(1, int(self.align_prefs.get("downsample", 2)))
-
-        pool = QThreadPool.globalInstance()
-        hw = os.cpu_count() or 4
-        safe_threads = max(2, min(48, hw // 2))
-        pool.setMaxThreadCount(safe_threads)
-        self.progress_update.emit(f"Using {safe_threads} worker threads for stellar alignment (HW={hw}).")
+        # Decide a light resampler for iterative solves (keep LANCZOS for final write)
+        resample_flag = cv2.INTER_AREA if pass_index == 0 else cv2.INTER_LINEAR
 
         # Build the worklist: only frames that still need refinement
         if pass_index == 0:
@@ -1782,43 +1933,75 @@ class StarRegistrationThread(QThread):
 
         skipped = len(self.original_files) - len(work_list)
         if skipped > 0:
-            self.progress_update.emit(f"Skipping {skipped} frame(s) already within {self.shift_tolerance:.2f}px.")
-
-            # Advance the progress bar for skipped items so it doesn't appear stalled
+            self.progress_update.emit(
+                f"Skipping {skipped} frame(s) already within {self.shift_tolerance:.2f}px."
+            )
+            # Advance progress for skipped items so the bar moves
             for _ in range(skipped):
                 self._increment_progress()
 
         # If nothing to do in this pass, we’re already converged
         if not work_list:
-            self.transform_deltas.append([self.delta_transforms.get(os.path.normpath(f), 0.0) for f in self.original_files])
+            self.transform_deltas.append([
+                self.delta_transforms.get(os.path.normpath(f), 0.0)
+                for f in self.original_files
+            ])
             return True, "Pass complete (nothing to refine)."
 
-        # Submit workers only for remaining items
+        # Prepare shared ref preview & geometry for processes
+        ref_small = np.ascontiguousarray(self.ref_small.astype(np.float32, copy=False))
+        Href, Wref = ref_small.shape[:2]
+
+        # Max processes; be generous but avoid thrashing
+        procs = max(2, min((os.cpu_count() or 8), 32))
+        self.progress_update.emit(f"Using {procs} processes for stellar alignment (HW={os.cpu_count() or 8}).")
+
+        # Build jobs (orig path, current 2x3, ref_small, Wref, Href, resample_flag)
+        jobs = []
         for original_file in work_list:
-            current_file = self.file_key_to_current_path[original_file]
             orig_key = os.path.normpath(original_file)
             current_transform = self.alignment_matrices.get(orig_key, IDENTITY_2x3)
+            jobs.append((
+                original_file, current_transform, ref_small, Wref, Href,
+                resample_flag,
+                float(self.det_sigma), int(self.limit_stars), int(self.minarea)
+            ))
 
-            worker = StarRegistrationWorker(
-                file_path=current_file,
-                original_file=original_file,
-                current_transform=current_transform,
-                ref_stars=None,
-                ref_triangles=None,
-                output_directory=self.output_directory,
-                use_triangle=False,
-                use_astroalign=True,
-                reference_image=self.ref_small,
-                downsample_factor=1,
-                model_name=self.align_model  # ← add this
-            )
-            worker.signals.progress.connect(self.on_worker_progress)
-            worker.signals.error.connect(self.on_worker_error)
-            worker.signals.result.connect(self._increment_progress)
-            worker.signals.result_transform.connect(self.on_worker_result_transform)
-            pool.start(worker)
+        # Run the delta solves out-of-process (true multi-core)
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+        with ProcessPoolExecutor(max_workers=procs) as ex:
+            futs = [ex.submit(_solve_delta_job, j) for j in jobs]
+            for fut in as_completed(futs):
+                try:
+                    orig_path, T_new, err = fut.result()
+                except Exception as e:
+                    orig_path, T_new, err = ("<unknown>", None, f"Worker crashed: {e}")
 
-        pool.waitForDone()
+                if err:
+                    self.on_worker_error(err)
+                    self._increment_progress()
+                    continue
+
+                # Collate the *delta* and accumulate into the running 2x3,
+                # mirroring your on_worker_result_transform logic:
+                k = os.path.normpath(orig_path)
+                T_new = np.array(T_new, dtype=np.float64).reshape(2, 3)
+
+                # delta magnitude for convergence reporting
+                self.delta_transforms[k] = float(np.hypot(T_new[0, 2], T_new[1, 2]))
+
+                T_prev = np.array(self.alignment_matrices.get(k, IDENTITY_2x3), dtype=np.float64).reshape(2, 3)
+                prev_3 = np.vstack([T_prev, [0, 0, 1]])
+                new_3  = np.vstack([T_new,  [0, 0, 1]])
+                combined = new_3 @ prev_3
+                self.alignment_matrices[k] = combined[0:2, :]
+
+                # progress line like the original worker
+                self.on_worker_progress(
+                    f"Astroalign delta for {os.path.basename(orig_path)} "
+                    f"(model={self.align_model}): dx={T_new[0, 2]:.2f}, dy={T_new[1, 2]:.2f}"
+                )
+                self._increment_progress()
 
         # Collate deltas deterministically in original order
         pass_deltas = []
@@ -1840,7 +2023,6 @@ class StarRegistrationThread(QThread):
             self.progress_update.emit(f"Skipped (delta < {self.shift_tolerance:.2f}px): {aligned_count} frame(s)")
 
         return True, "Pass complete."
-
 
 
 
@@ -2001,7 +2183,7 @@ class StarRegistrationThread(QThread):
                     )
                     kind, X = "affine", np.asarray(self.alignment_matrices.get(k, IDENTITY_2x3), dtype=np.float64)
 
-                    kind, X = "affine", np.array(self.alignment_matrices.get(k, IDENTITY_2x3), np.float64)
+
                 self.progress_update.emit(f"🌀 Distortion Correction on {os.path.basename(orig_path)}: warp={kind}")
                 # Record drizzle transform (don’t np.asarray() a callable)
 
