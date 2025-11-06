@@ -118,9 +118,9 @@ def _align_prefs(settings: QSettings | None = None) -> dict:
         "h_reproj":    _get("h_reproj", 3.0, float),
 
         # New knobs (also read legacy align/* if present)
-        "det_sigma":   _get("det_sigma", 10.0, float),   # try 8–12 in dense fields
-        "limit_stars": _get("limit_stars", 800, int),    # 500–1500 typical
-        "minarea":     _get("minarea", 5, int),
+        "det_sigma":   _get("det_sigma", 12.0, float),   # try 8–12 in dense fields
+        "limit_stars": _get("limit_stars", 500, int),    # 500–1500 typical
+        "minarea":     _get("minarea", 10, int),
     }
 
     return prefs
@@ -6075,3 +6075,4 @@ class MosaicMasterDialog(QDialog):
         if was_single_channel and image.ndim == 3:
             image = np.mean(image, axis=2, keepdims=True)
         return image
+
