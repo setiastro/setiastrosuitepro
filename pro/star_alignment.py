@@ -118,7 +118,7 @@ def _align_prefs(settings: QSettings | None = None) -> dict:
         "h_reproj":    _get("h_reproj", 3.0, float),
 
         # New knobs (also read legacy align/* if present)
-        "det_sigma":   _get("det_sigma", 12.0, float),   # try 8–12 in dense fields
+        "det_sigma":   _get("det_sigma", 10.0, float),   # try 8–12 in dense fields
         "limit_stars": _get("limit_stars", 500, int),    # 500–1500 typical
         "minarea":     _get("minarea", 10, int),
     }
@@ -1437,6 +1437,8 @@ def _solve_delta_job(args):
                                        flags=resample_flag, borderMode=cv2.BORDER_REFLECT_101)
 
         # 3) delta solve (NO import — call the top-level helper)
+        src_for_match = _suppress_tiny_islands(src_for_match, det_sigma=det_sigma, minarea=minarea)
+        ref_small     = _suppress_tiny_islands(ref_small,     det_sigma=det_sigma, minarea=minarea)        
         tform = compute_affine_transform_astroalign_cropped(
             src_for_match, ref_small, limit_stars=limit_stars
         )
@@ -1449,6 +1451,46 @@ def _solve_delta_job(args):
 
     except Exception as e:
         return (orig_path, None, f"Astroalign failed for {os.path.basename(orig_path)}: {e}")
+
+def _suppress_tiny_islands(img32: np.ndarray, det_sigma: float, minarea: int) -> np.ndarray:
+    """
+    Zero out connected components smaller than `minarea`, using
+    threshold = det_sigma * global RMS from SEP background.
+    Returns float32 image, same shape as input.
+    """
+    import numpy as np
+    import sep, cv2
+
+    img32 = np.asarray(img32, np.float32, order="C")
+
+    # Tame single-pixel spikes so they don't form components
+    try:
+        img32 = cv2.medianBlur(img32, 3)
+    except Exception:
+        pass
+
+    # Background + threshold
+    bkg = sep.Background(img32, bw=64, bh=64)
+    back_img = bkg.back().astype(np.float32, copy=False)   # 2-D local background
+    thresh   = float(det_sigma) * float(bkg.globalrms)
+
+    # Candidates above background + thresh
+    mask = (img32 > (back_img + thresh)).astype(np.uint8)
+
+    # Label and prune tiny components
+    num, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    if num <= 1:
+        return img32
+
+    keep = np.zeros(num, dtype=np.uint8)
+    keep[stats[:, cv2.CC_STAT_AREA] >= int(minarea)] = 1
+    keep[0] = 0  # background
+    pruned = keep[labels]  # 2-D map of components to keep (1) / drop (0)
+
+    # ✅ Replace tiny components with local background using element-wise where
+    out = np.where(((mask == 1) & (pruned == 0)), back_img, img32)
+    return out.astype(np.float32, copy=False)
+
 
 
 class StarRegistrationWorker(QRunnable):
@@ -1660,9 +1702,9 @@ class StarRegistrationThread(QThread):
         self.align_prefs = align_prefs or _align_prefs(QSettings())
         self.align_model = str(self.align_prefs.get("model", "affine")).lower()
         self.h_reproj   = float(self.align_prefs.get("h_reproj", 3.0))
-        self.det_sigma   = float(self.align_prefs.get("det_sigma", 10.0))
-        self.limit_stars = int(self.align_prefs.get("limit_stars", 800))
-        self.minarea     = int(self.align_prefs.get("minarea", 5))
+        self.det_sigma   = float(self.align_prefs.get("det_sigma", 12.0))
+        self.limit_stars = int(self.align_prefs.get("limit_stars", 500))
+        self.minarea     = int(self.align_prefs.get("minarea", 10))
         self.downsample = int(self.align_prefs.get("downsample", 2))
         self.drizzle_xforms = {}  # {orig_norm_path: (kind, matrix)}
 
