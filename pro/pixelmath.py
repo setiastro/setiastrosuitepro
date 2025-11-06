@@ -3,12 +3,12 @@ from __future__ import annotations
 import os, re, json
 import numpy as np
 
-from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QIcon, QCursor
+from PyQt6.QtCore import Qt, QTimer, QPointF
+from PyQt6.QtGui import QIcon, QCursor, QImage, QPixmap, QTransform
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGroupBox, QGridLayout, QLabel,
     QPushButton, QPlainTextEdit, QComboBox, QDialogButtonBox, QRadioButton, QApplication,
-    QTabWidget, QWidget, QMessageBox, QMenu, QScrollArea, QButtonGroup, QListWidget, QListWidgetItem
+    QTabWidget, QWidget, QMessageBox, QMenu, QScrollArea, QButtonGroup, QListWidget, QListWidgetItem, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QToolButton
 )
 
 # ---- Optional accelerators from legacy.numba_utils -------------------------
@@ -16,6 +16,22 @@ try:
     from legacy.numba_utils import fast_mad as _fast_mad
 except Exception:
     _fast_mad = None
+
+def _float_to_qimage_rgb8(arr: np.ndarray) -> QImage:
+    """Accepts HxW (mono) or HxWx3 float32 [0..1]. Returns 8-bit QImage (RGB888)."""
+    a = np.asarray(arr, dtype=np.float32)
+    if a.ndim == 2:
+        a = np.repeat(a[..., None], 3, axis=2)
+    a = np.clip(a, 0.0, 1.0)
+    b = (a * 255.0 + 0.5).astype(np.uint8)
+    # Ensure contiguous, RGB888
+    h, w, _ = b.shape
+    b = np.ascontiguousarray(b)
+    img = QImage(b.data, w, h, 3 * w, QImage.Format.Format_RGB888)
+    # keep a reference so bytes stay alive
+    img._buf = b
+    return img
+
 
 # =============================================================================
 # PixelImage wrapper (vector ops, indexing, ^ as exponent, ~ as invert)
@@ -211,10 +227,19 @@ def _mask_for_ref(doc, ref_like: np.ndarray) -> np.ndarray | None:
     return m2d
 
 def _blend_masked(base: np.ndarray, out: np.ndarray, m: np.ndarray) -> np.ndarray:
-    base = np.asarray(base, dtype=np.float32)
-    out  = np.asarray(out,  dtype=np.float32)
-    m    = np.clip(np.asarray(m, dtype=np.float32), 0.0, 1.0)
+    base = _as_rgb(base)  # (H,W,3)
+    out  = _as_rgb(out)   # (H,W,3)
+    m    = np.asarray(m, dtype=np.float32)
+    m    = np.clip(m, 0.0, 1.0)
+
+    # Allow 2-D or 3-D masks
+    if m.ndim == 2:
+        m = m[..., None]              # (H,W,1)
+    elif m.ndim == 3 and m.shape[2] not in (1, 3):
+        raise ValueError("Mask must be 2-D or have 1 or 3 channels.")
+
     return np.clip(base * (1.0 - m) + out * m, 0.0, 1.0)
+
 
 # =============================================================================
 # Headless apply
@@ -265,6 +290,7 @@ class _Evaluator:
             "absf": self._absf,
             "expf": self._expf,
             "sqrtf": self._sqrtf,
+            "arcsin": self._arcsin,
             "sigmoid": self._sigmoid,
             "smoothstep": self._smoothstep,
             "lerp": self._lerp, "mix": self._lerp,
@@ -462,6 +488,12 @@ class _Evaluator:
         y = np.sqrt(np.clip(a, 0.0, None))
         return PixelImage(y) if isinstance(x, PixelImage) else y
 
+    def _arcsin(self, x):
+        a = x.array if isinstance(x, PixelImage) else np.asarray(x, dtype=np.float32)
+        y = np.arcsin(np.clip(a, -1.0, 1.0))
+        return PixelImage(y) if isinstance(x, PixelImage) else y
+
+
     def _sigmoid(self, x, k=10.0, mid=0.5):
         a = x.array if isinstance(x, PixelImage) else np.asarray(x, dtype=np.float32)
         y = 1.0 / (1.0 + np.exp(-float(k) * (a - float(mid))))
@@ -553,9 +585,10 @@ class _Evaluator:
 
     def _apply_mask_fn(self, base, out, m):
         basev = base.array if isinstance(base, PixelImage) else np.asarray(base, dtype=np.float32)
-        outv  = out.array  if isinstance(out, PixelImage)  else np.asarray(out,  dtype=np.float32)
-        mv    = m.array    if isinstance(m, PixelImage)    else np.asarray(m,    dtype=np.float32)
-        return _blend_masked(_as_rgb(basev), _as_rgb(outv), mv)
+        outv  = out.array  if isinstance(out,  PixelImage)  else np.asarray(out,  dtype=np.float32)
+        mv    = m.array    if isinstance(m,    PixelImage)  else np.asarray(m,    dtype=np.float32)
+        return _blend_masked(basev, outv, mv)  # _blend_masked now handles 2-D or 3-D
+
 
     # ---- tiny filters (cv2 optional) ----
     def _apply_per_channel(self, a, fn):
@@ -682,6 +715,42 @@ class _Evaluator:
             out = _blend_masked(ref, out, m)
         return out
 
+class _PreviewView(QGraphicsView):
+    """QGraphicsView with left-drag panning and Ctrl+wheel zoom."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)  # click & drag to pan
+        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        self._zoom = 1.0
+        self._min_zoom = 0.05
+        self._max_zoom = 20.0
+
+    def wheelEvent(self, ev):
+        # Ctrl + wheel → zoom; otherwise, default scroll behavior
+        if ev.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            angle = ev.angleDelta().y()
+            step = 1.25 if angle > 0 else 1/1.25
+            new_zoom = max(self._min_zoom, min(self._zoom * step, self._max_zoom))
+            step = new_zoom / self._zoom  # clamp-aware step
+            self._zoom = new_zoom
+            self.scale(step, step)
+            ev.accept()
+        else:
+            super().wheelEvent(ev)
+
+    # helpers to keep external controls in sync
+    def zoom_reset(self):
+        self.resetTransform()
+        self._zoom = 1.0
+
+    def zoom_by(self, factor: float):
+        new_zoom = max(self._min_zoom, min(self._zoom * float(factor), self._max_zoom))
+        factor = new_zoom / self._zoom
+        self._zoom = new_zoom
+        self.scale(factor, factor)
+
+
 # =============================================================================
 # Dialog
 # =============================================================================
@@ -696,15 +765,42 @@ class PixelMathDialogPro(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Pixel Math")
         if icon:
-            try: self.setWindowIcon(icon)
-            except Exception: pass
+            try:
+                self.setWindowIcon(icon)
+            except Exception:
+                pass
 
         self.doc = doc
         self.ev = _Evaluator(parent, doc)
 
-        v = QVBoxLayout(self)
+        # ──────────────────────────────────────────────────────────────────────────
+        # Root split layout: controls (left, scrollable) | preview (right, flexible)
+        # ──────────────────────────────────────────────────────────────────────────
+        root = QHBoxLayout(self)
 
-        # Variables mapping (raw title → identifier) in a scrollable list
+        # Left column (controls)
+        left_scroll = QScrollArea()
+        left_scroll.setWidgetResizable(True)
+        left_panel = QWidget()
+        left_col = QVBoxLayout(left_panel)
+        left_col.setContentsMargins(0, 0, 0, 0)
+        left_col.setSpacing(8)
+        left_scroll.setWidget(left_panel)
+
+        # Right column (preview)
+        right_panel = QWidget()
+        right_col = QVBoxLayout(right_panel)
+        right_col.setContentsMargins(0, 0, 0, 0)
+        right_col.setSpacing(8)
+
+        root.addWidget(left_scroll, 0)   # controls
+        root.addWidget(right_panel, 1)   # preview expands
+        root.setStretch(0, 0)
+        root.setStretch(1, 1)
+
+        # ──────────────────────────────────────────────────────────────────────────
+        # Variables mapping (raw title → identifier)
+        # ──────────────────────────────────────────────────────────────────────────
         vars_grp = QGroupBox("Variables")
         vars_layout = QVBoxLayout(vars_grp)
 
@@ -717,30 +813,28 @@ class PixelMathDialogPro(QDialog):
         for raw, ident in self.ev.title_map:
             self.vars_list.addItem(QListWidgetItem(f"{raw} → {ident}"))
 
-        # Make it comfortably tall but not body-stretching; vertical scroll will appear as needed
+        # Comfortable height; scroll appears as needed
         self.vars_list.setMinimumHeight(120)
         self.vars_list.setMaximumHeight(180)
 
-        # Little hint label
         hint = QLabel("Tip: double-click to copy the identifier")
         hint.setStyleSheet("color: gray; font-size: 11px;")
 
         vars_layout.addWidget(self.vars_list)
         vars_layout.addWidget(hint)
 
-        # Copy ident on double-click
         def _copy_ident(item: QListWidgetItem):
             text = item.text()
-            # pick the thing after '→ ' if present; else keep as-is
             ident = text.split("→", 1)[-1].strip() if "→" in text else text.strip()
             QApplication.clipboard().setText(ident)
 
         self.vars_list.itemDoubleClicked.connect(_copy_ident)
 
-        v.addWidget(vars_grp)
+        left_col.addWidget(vars_grp)
 
-
-        # ----- Output group (very visible) ------------------------------------
+        # ──────────────────────────────────────────────────────────────────────────
+        # Output group
+        # ──────────────────────────────────────────────────────────────────────────
         out_grp = QGroupBox("Output")
         out_row = QHBoxLayout(out_grp)
         self.rb_out_overwrite = QRadioButton("Overwrite active"); self.rb_out_overwrite.setChecked(True)
@@ -748,14 +842,18 @@ class PixelMathDialogPro(QDialog):
         out_row.addWidget(self.rb_out_overwrite)
         out_row.addWidget(self.rb_out_new)
         out_row.addStretch(1)
-        v.addWidget(out_grp)
+        left_col.addWidget(out_grp)
 
-        # ----- Mode group ------------------------------------------------------
+        # ──────────────────────────────────────────────────────────────────────────
+        # Mode (single expression vs per-channel)
+        # ──────────────────────────────────────────────────────────────────────────
         mode_row = QHBoxLayout()
         self.rb_single = QRadioButton("Single Expression"); self.rb_single.setChecked(True)
         self.rb_sep    = QRadioButton("Separate (R / G / B)")
-        mode_row.addWidget(self.rb_single); mode_row.addWidget(self.rb_sep); mode_row.addStretch(1)
-        v.addLayout(mode_row)
+        mode_row.addWidget(self.rb_single)
+        mode_row.addWidget(self.rb_sep)
+        mode_row.addStretch(1)
+        left_col.addLayout(mode_row)
 
         self.mode_group = QButtonGroup(self)
         self.mode_group.setExclusive(True)
@@ -765,33 +863,74 @@ class PixelMathDialogPro(QDialog):
         # Editors
         self.ed_single = QPlainTextEdit()
         self.ed_single.setPlaceholderText("e.g. (img + otherView) / 2")
-        v.addWidget(self.ed_single)
+        left_col.addWidget(self.ed_single)
 
         self.tabs = QTabWidget(); self.tabs.setVisible(False)
         self.ed_r, self.ed_g, self.ed_b = QPlainTextEdit(), QPlainTextEdit(), QPlainTextEdit()
-        for ed, name in ((self.ed_r,"Red"), (self.ed_g,"Green"), (self.ed_b,"Blue")):
+        for ed, name in ((self.ed_r, "Red"), (self.ed_g, "Green"), (self.ed_b, "Blue")):
             w = QWidget(); lay = QVBoxLayout(w); lay.addWidget(ed); self.tabs.addTab(w, name)
-        v.addWidget(self.tabs)
+        left_col.addWidget(self.tabs)
 
         self.rb_single.toggled.connect(lambda on: self._mode(on))
 
         glossary_btn = QPushButton("Glossary…")
         glossary_btn.clicked.connect(self._open_glossary)
-        v.addWidget(glossary_btn)
+        left_col.addWidget(glossary_btn)
 
-        # ----- Examples (SAS-style list you can drop down and insert) ----------
+        # ──────────────────────────────────────────────────────────────────────────
+        # Preview (right side)
+        # ──────────────────────────────────────────────────────────────────────────
+        preview_grp = QGroupBox("Preview")
+        pv_lay = QVBoxLayout(preview_grp)
+
+        # Toolbar
+        tb = QHBoxLayout()
+        self.btn_preview  = QPushButton("Preview")
+        self.btn_preview.setToolTip("Compute Pixel Math and show the result here without committing.")
+        self.btn_zoom_in  = QToolButton(); self.btn_zoom_in.setText("Zoom +")
+        self.btn_zoom_out = QToolButton(); self.btn_zoom_out.setText("Zoom −")
+        self.btn_zoom_1_1 = QToolButton(); self.btn_zoom_1_1.setText("1:1")
+        self.btn_fit      = QToolButton(); self.btn_fit.setText("Fit")
+        tb.addWidget(self.btn_preview); tb.addSpacing(12)
+        tb.addWidget(self.btn_zoom_in); tb.addWidget(self.btn_zoom_out)
+        tb.addWidget(self.btn_zoom_1_1); tb.addWidget(self.btn_fit)
+        tb.addStretch(1)
+        pv_lay.addLayout(tb)
+
+        # Graphics view
+        self.preview_view = _PreviewView()  # <-- was QGraphicsView()
+        self.preview_view.setRenderHints(self.preview_view.renderHints())
+        self.preview_scene = QGraphicsScene(self.preview_view)
+        self.preview_view.setScene(self.preview_scene)
+        self._preview_item: QGraphicsPixmapItem | None = None
+        self._preview_zoom = 1.0  # keep if you like; the view tracks its own zoom too
+        pv_lay.addWidget(self.preview_view, 1)
+
+        right_col.addWidget(preview_grp, 1)
+
+        # Wire up preview actions
+        self.btn_preview.clicked.connect(self._do_preview)
+        self.btn_zoom_in.clicked.connect(lambda: self._zoom_by(1.25))
+        self.btn_zoom_out.clicked.connect(lambda: self._zoom_by(1/1.25))
+        self.btn_zoom_1_1.clicked.connect(self._zoom_reset_1_1)
+        self.btn_fit.clicked.connect(self._fit_to_view)
+
+        # ──────────────────────────────────────────────────────────────────────────
+        # Examples (insertable templates)
+        # ──────────────────────────────────────────────────────────────────────────
         ex_row = QHBoxLayout()
         ex_row.addWidget(QLabel("Examples:"))
         self.cb_examples = QComboBox()
         self.cb_examples.addItem("Insert example…")
         for title, kind, payload in self._examples_list():
-            # store (kind, payload) as userData for easy retrieval
             self.cb_examples.addItem(title, (kind, payload))
         self.cb_examples.currentIndexChanged.connect(self._apply_example_from_combo)
         ex_row.addWidget(self.cb_examples, 1)
-        v.addLayout(ex_row)
+        left_col.addLayout(ex_row)
 
+        # ──────────────────────────────────────────────────────────────────────────
         # Favorites
+        # ──────────────────────────────────────────────────────────────────────────
         fav_row = QHBoxLayout()
         self.cb_fav = QComboBox(); self.cb_fav.addItem("Select a favorite expression")
         self._load_favorites()
@@ -806,7 +945,7 @@ class PixelMathDialogPro(QDialog):
         fav_row.addWidget(self.cb_fav, 1)
         fav_row.addWidget(b_save)
         fav_row.addWidget(b_del)
-        v.addLayout(fav_row)
+        left_col.addLayout(fav_row)
 
         def _fav_context_menu(point):
             if self.cb_fav.currentIndex() <= 0:
@@ -820,20 +959,110 @@ class PixelMathDialogPro(QDialog):
         self.cb_fav.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.cb_fav.customContextMenuRequested.connect(_fav_context_menu)
 
-        # Buttons + Help
+        # ──────────────────────────────────────────────────────────────────────────
+        # Buttons + Help (left)
+        # ──────────────────────────────────────────────────────────────────────────
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self)
-        btns.accepted.connect(self._apply); btns.rejected.connect(self.reject)
-        b_help = btns.addButton("Help", QDialogButtonBox.ButtonRole.HelpRole); b_help.clicked.connect(self._help)
-        v.addWidget(btns)
+        btns.accepted.connect(self._apply)
+        btns.rejected.connect(self.reject)
+        b_help = btns.addButton("Help", QDialogButtonBox.ButtonRole.HelpRole)
+        b_help.clicked.connect(self._help)
+        left_col.addWidget(btns)
 
+        # Output group selection model
         self.out_group = QButtonGroup(self)
         self.out_group.setExclusive(True)
         self.out_group.addButton(self.rb_out_overwrite)
         self.out_group.addButton(self.rb_out_new)
 
+        # Initialize editor visibility
         QTimer.singleShot(0, lambda: self._mode(self.rb_single.isChecked()))
 
-        self.resize(860, 580)
+        # A little wider to favor the preview
+        self.resize(940, 700)
+
+
+    # ---------- Preview helpers ------------------------------------------------
+    def _do_preview(self):
+        """Evaluate current expressions and show in the preview pane (no commit)."""
+        QApplication.setOverrideCursor(QCursor(Qt.CursorShape.WaitCursor))
+        try:
+            if self.rb_single.isChecked():
+                out = self.ev.eval_single(self.ed_single.toPlainText().strip())
+            else:
+                out = self.ev.eval_rgb(
+                    self.ed_r.toPlainText().strip(),
+                    self.ed_g.toPlainText().strip(),
+                    self.ed_b.toPlainText().strip()
+                )
+            out = np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
+            self._set_preview_image(out)
+            # On first preview, auto-fit
+            if self._preview_item is not None and abs(self._preview_zoom - 1.0) < 1e-6:
+                self._fit_to_view()
+        except Exception as e:
+            msg = str(e)
+            if "name '" in msg and "' is not defined" in msg:
+                msg += "\n\nTip: use the identifier listed in Variables (or the raw title; it’s auto-mapped)."
+            QMessageBox.critical(self, "Pixel Math Preview", f"Failed:\n{msg}")
+        finally:
+            QApplication.restoreOverrideCursor()
+
+    def _set_preview_image(self, img: np.ndarray):
+        """Render numpy float image into the preview scene, preserving zoom/pan."""
+        qim = _float_to_qimage_rgb8(img)
+        pm  = QPixmap.fromImage(qim)
+
+        # --- capture current view state (before we clear/replace) ---
+        view = self.preview_view
+        old_transform = QTransform(view.transform())
+        old_zoom = getattr(view, "_zoom", 1.0)
+
+        old_center_norm = None
+        if self._preview_item is not None:
+            # current center in scene coords → normalize to old image size
+            center_scene = view.mapToScene(view.viewport().rect().center())
+            old_pix = self._preview_item.pixmap()
+            ow, oh = float(old_pix.width()), float(old_pix.height())
+            if ow > 0 and oh > 0:
+                old_center_norm = QPointF(center_scene.x() / ow, center_scene.y() / oh)
+
+        # --- replace scene content ---
+        self.preview_scene.clear()
+        self._preview_item = self.preview_scene.addPixmap(pm)
+        self.preview_scene.setSceneRect(self._preview_item.boundingRect())
+
+        # --- restore transform and center ---
+        # (don’t call zoom_reset / fit here—respect user’s current view)
+        view.setTransform(old_transform)
+        view._zoom = float(old_zoom)
+        self._preview_zoom = float(old_zoom)
+
+        if old_center_norm is not None:
+            nw, nh = float(pm.width()), float(pm.height())
+            new_center = QPointF(old_center_norm.x() * nw, old_center_norm.y() * nh)
+            view.centerOn(new_center)
+
+    def _zoom_by(self, factor: float):
+        if self._preview_item is None:
+            return
+        self.preview_view.zoom_by(float(factor))
+        # mirror into our logical tracker (optional)
+        self._preview_zoom = self.preview_view._zoom
+
+    def _zoom_reset_1_1(self):
+        if self._preview_item is None:
+            return
+        self.preview_view.zoom_reset()
+        self._preview_zoom = 1.0
+
+    def _fit_to_view(self):
+        if self._preview_item is None:
+            return
+        # Fit the item, then record logical zoom as 1.0 (we treat "fit" as baseline)
+        self.preview_view.fitInView(self._preview_item, Qt.AspectRatioMode.KeepAspectRatio)
+        self.preview_view._zoom = 1.0
+        self._preview_zoom = 1.0
 
     # ---------- examples -------------------------------------------------------
     def _examples_list(self):
@@ -897,6 +1126,7 @@ class PixelMathDialogPro(QDialog):
             "absf": ("absf(x)", "Absolute value."),
             "expf": ("expf(x)", "Exponential."),
             "sqrtf": ("sqrtf(x)", "Square root (clamped to ≥0)."),
+            "arcsin": ("arcsin(x)", "Inverse sine (radians), input clipped to [-1,1]."),
             "sigmoid": ("sigmoid(x, k=10, mid=0.5)", "S-shaped tone curve."),
             "smoothstep": ("smoothstep(e0, e1, x)", "Cubic smooth ramp."),
             "lerp/mix": ("lerp(a, b, t)", "Linear blend."),

@@ -199,8 +199,10 @@ def _apply_selective_adjustments(img01: np.ndarray,
                                  mask01: np.ndarray,
                                  cyan: float, magenta: float, yellow: float,
                                  r: float, g: float, b: float,
-                                 lum: float, sat: float, con: float,
-                                 intensity: float) -> np.ndarray:
+                                 lum: float, chroma: float, sat: float, con: float,
+                                 intensity: float,
+                                 use_chroma_mode: bool) -> np.ndarray:
+
     """
     CMY/RGB sliders in [-1..+1] range (we’ll clamp).
     L/S/C also in [-1..+1].
@@ -227,30 +229,46 @@ def _apply_selective_adjustments(img01: np.ndarray,
 
     out = np.stack([R,G,B], axis=-1)
 
-    # L / S / C (contrast about 0.5, sat via HSV)
-    if any(abs(x) > 1e-6 for x in (lum, sat, con)):
-        L0 = _luminance01(out)
+    # L / Chroma-or-Sat / Contrast
+    if any(abs(x) > 1e-6 for x in (lum, chroma, sat, con)):
         if abs(lum) > 0:
-            out = np.clip(out + lum * m[...,None], 0.0, 1.0)
-        if abs(con) > 0:
-            out = np.clip((out - 0.5) * (1.0 + con*m[...,None]) + 0.5, 0.0, 1.0)
-        if abs(sat) > 0:
-            hsv = _rgb_to_hsv01(out)
-            hsv[...,1] = np.clip(hsv[...,1] * (1.0 + sat*m), 0.0, 1.0)
-            u8 = (_to_uint8_rgb(hsv) if False else None)  # avoid unused var in lint
-            # convert back HSV->RGB (use cv2)
-            hv = (hsv[...,0]*180.0).astype(np.uint8)
-            sv = (hsv[...,1]*255.0).astype(np.uint8)
-            vv = (hsv[...,2]*255.0).astype(np.uint8)
-            hsv8 = np.stack([hv, sv, vv], axis=-1)
-            rgb8 = cv2.cvtColor(hsv8, cv2.COLOR_HSV2RGB)
-            out = rgb8.astype(np.float32) / 255.0
+            out = np.clip(out + lum * m[..., None], 0.0, 1.0)
 
-        # preserve small luminance drift if desired (mild)
-        if np.isfinite(L0).all():
-            pass
+        if abs(con) > 0:
+            out = np.clip((out - 0.5) * (1.0 + con * m[..., None]) + 0.5, 0.0, 1.0)
+
+        if use_chroma_mode:
+            if abs(chroma) > 0:
+                out = _apply_chroma_boost(out, m, chroma)
+        else:
+            if abs(sat) > 0:
+                hsv = _rgb_to_hsv01(out)
+                hsv[..., 1] = np.clip(hsv[..., 1] * (1.0 + sat * m), 0.0, 1.0)
+                # HSV->RGB using cv2 (expects 8-bit)
+                hv = (hsv[..., 0] * 180.0).astype(np.uint8)
+                sv = (hsv[..., 1] * 255.0).astype(np.uint8)
+                vv = (hsv[..., 2] * 255.0).astype(np.uint8)
+                hsv8 = np.stack([hv, sv, vv], axis=-1)
+                rgb8 = cv2.cvtColor(hsv8, cv2.COLOR_HSV2RGB)
+                out = rgb8.astype(np.float32) / 255.0
 
     return np.clip(out, 0.0, 1.0)
+
+def _apply_chroma_boost(rgb01: np.ndarray, m01: np.ndarray, chroma: float) -> np.ndarray:
+    """
+    L-preserving chroma change:
+      rgb' = Y + (rgb - Y) * (1 + chroma * m)
+    where Y is luminance and m is the 0..1 mask (with intensity applied upstream).
+    Positive chroma -> more colorfulness; negative -> less.
+    """
+    rgb = _ensure_rgb01(rgb01).astype(np.float32)
+    m   = np.clip(m01.astype(np.float32), 0.0, 1.0)[..., None]
+    Y   = _luminance01(rgb)[..., None]                 # HxWx1
+    d   = rgb - Y                                      # chroma direction
+    k   = (1.0 + float(chroma) * m)                    # scale per-pixel with mask
+    out = Y + d * k
+    return np.clip(out, 0.0, 1.0)
+
 
 def _ensure_rgb01(img: np.ndarray) -> np.ndarray:
     """Return an RGB float image in [0,1]."""
@@ -451,7 +469,8 @@ class SelectiveColorCorrection(QDialog):
         self._imported_mask_full = None     # full-res mask (H x W) float32 0..1
         self._imported_mask_name = None     # nice label to show in UI
         self._use_imported_mask = False     # checkbox state mirror
-
+        self._mask_delay_ms = 200
+        self._adj_delay_ms  = 200
         self._build_ui()
         self._mask_delay_ms = 200  # 0.2s idle before recomputing mask
         self._mask_timer = QTimer(self)
@@ -667,12 +686,32 @@ class SelectiveColorCorrection(QDialog):
         left.addWidget(gb_rgb)
 
         # LSC group
-        gb_lsc = QGroupBox("Luminance, Saturation, Contrast")
+        # LSC group
+        gb_lsc = QGroupBox("Luminance, Chroma/Saturation, Contrast")
         gll = QGridLayout(gb_lsc)
+
+        # Row 0: Luminance
         self.sl_l, self.ds_l  = self._slider_pair(gll, "Luminance:",  0)
-        self.sl_s, self.ds_s  = self._slider_pair(gll, "Saturation:", 1)
-        self.sl_c2, self.ds_c2 = self._slider_pair(gll, "Contrast:",  2)
+
+        # Row 1: Chroma (L-preserving)
+        self.sl_chroma, self.ds_chroma = self._slider_pair(gll, "Chroma (L-preserving):", 1)
+
+        # Row 2: Saturation (HSV S)
+        self.sl_s, self.ds_s  = self._slider_pair(gll, "Saturation (HSV S):", 2)
+
+        # Row 3: Contrast
+        self.sl_c2, self.ds_c2 = self._slider_pair(gll, "Contrast:",  3)
+
+        # Row 4: Mode selector (which one to apply)
+        gll.addWidget(QLabel("Color boost mode:"), 4, 0)
+        self.dd_color_mode = QComboBox()
+        self.dd_color_mode.addItems(["Chroma (L-preserving)", "Saturation (HSV S)"])
+        self.dd_color_mode.setCurrentIndex(0)  # default to Chroma for astro
+        self.dd_color_mode.currentIndexChanged.connect(self._update_color_mode_enabled)
+        gll.addWidget(self.dd_color_mode, 4, 1, 1, 2)
+
         left.addWidget(gb_lsc)
+
 
         # Preview + actions
         self.cb_live = QCheckBox("Preview changed image")
@@ -764,9 +803,20 @@ class SelectiveColorCorrection(QDialog):
         # tweak
         self.resize(1080, 680)
 
+        self._update_color_mode_enabled()
+
         # any slider change should refresh preview
         for w in (self.ds_c, self.ds_m, self.ds_y, self.ds_r, self.ds_g, self.ds_b, self.ds_l, self.ds_s, self.ds_c2, self.ds_int):
             w.valueChanged.connect(self._schedule_adjustments)
+
+    def _update_color_mode_enabled(self):
+        use_chroma = (self.dd_color_mode.currentIndex() == 0)
+        # enable Chroma controls when chroma mode; disable Sat controls, and vice versa
+        self.ds_chroma.setEnabled(use_chroma); self.sl_chroma.setEnabled(use_chroma)
+        self.ds_s.setEnabled(not use_chroma);  self.sl_s.setEnabled(not use_chroma)
+        # refresh preview
+        self._schedule_adjustments()
+
 
     def _set_pair(self, sld: QSlider, box: QDoubleSpinBox, value: float):
         # block both sides to avoid ping-pong and callbacks
@@ -836,6 +886,13 @@ class SelectiveColorCorrection(QDialog):
         self._set_pair(self.sl_s,  self.ds_s,  0.0)
         self._set_pair(self.sl_c2, self.ds_c2, 0.0)
 
+        self._set_pair(self.sl_chroma, self.ds_chroma, 0.0)
+        # default to Chroma mode
+        self.dd_color_mode.blockSignals(True)
+        self.dd_color_mode.setCurrentIndex(0)
+        self.dd_color_mode.blockSignals(False)
+        self._update_color_mode_enabled()
+
         self.ds_int.blockSignals(True)
         self.ds_int.setValue(1.0)
         self.ds_int.blockSignals(False)
@@ -849,9 +906,13 @@ class SelectiveColorCorrection(QDialog):
 
     def _schedule_adjustments(self, delay_ms: int | None = None):
         if delay_ms is None:
-            delay_ms = self._adj_delay_ms
+            delay_ms = getattr(self, "_adj_delay_ms", 200)
+        # if called very early, just no-op safely
+        if not hasattr(self, "_adj_timer"):
+            return
         self._adj_timer.stop()
         self._adj_timer.start(int(delay_ms))
+
 
     def _schedule_mask(self, delay_ms: int | None = None):
         """Debounce mask recomputation for hue changes."""
@@ -1173,10 +1234,13 @@ class SelectiveColorCorrection(QDialog):
                 g=float(self.ds_g.value()),
                 b=float(self.ds_b.value()),
                 lum=float(self.ds_l.value()),
+                chroma=float(self.ds_chroma.value()),
                 sat=float(self.ds_s.value()),
                 con=float(self.ds_c2.value()),
                 intensity=float(self.ds_int.value()),
+                use_chroma_mode=(self.dd_color_mode.currentIndex() == 0),
             )
+
             out = _ensure_rgb01(out)
         else:
             out = _ensure_rgb01(base)
@@ -1219,10 +1283,13 @@ class SelectiveColorCorrection(QDialog):
             g=float(self.ds_g.value()),
             b=float(self.ds_b.value()),
             lum=float(self.ds_l.value()),
+            chroma=float(self.ds_chroma.value()),
             sat=float(self.ds_s.value()),
             con=float(self.ds_c2.value()),
             intensity=float(self.ds_int.value()),
+            use_chroma_mode=(self.dd_color_mode.currentIndex() == 0),
         )
+
         return out
 
     def _export_mask_doc(self):

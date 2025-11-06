@@ -1,13 +1,14 @@
 # pro/subwindow.py
 from __future__ import annotations
-from PyQt6.QtCore import Qt, QPoint, pyqtSignal, QSize, QEvent, QByteArray, QMimeData, QSettings, QTimer
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QScrollArea, QLabel, QToolButton, QHBoxLayout, QMessageBox, QMdiSubWindow, QMenu, QInputDialog, QApplication
-from PyQt6.QtGui import QPixmap, QImage, QWheelEvent, QShortcut, QKeySequence, QCursor, QDrag
+from PyQt6.QtCore import Qt, QPoint, pyqtSignal, QSize, QEvent, QByteArray, QMimeData, QSettings, QTimer, QRect, QPoint, QMargins
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QScrollArea, QLabel, QToolButton, QHBoxLayout, QMessageBox, QMdiSubWindow, QMenu, QInputDialog, QApplication, QTabWidget, QRubberBand
+from PyQt6.QtGui import QPixmap, QImage, QWheelEvent, QShortcut, QKeySequence, QCursor, QDrag, QGuiApplication
 from PyQt6 import sip
 import numpy as np
 import json
 import math
 import os
+
 
 from .autostretch import autostretch   # ← uses pro/imageops/stretch.py
 
@@ -115,91 +116,420 @@ class ImageSubWindow(QWidget):
     layers_changed = pyqtSignal() 
     autostretchProfileChanged = pyqtSignal(str)
     viewTitleChanged = pyqtSignal(object, str)
+    activeSourceChanged = pyqtSignal(object)  # None for full, or (x,y,w,h) for ROI
 
 
     def __init__(self, document, parent=None):
         super().__init__(parent)
+        self._base_document = None
         self.document = document
         self._last_title_for_emit = None
 
-
-        # view state
+        # ─────────────────────────────────────────────────────────
+        # View / render state
+        # ─────────────────────────────────────────────────────────
         self._min_scale = 0.02
-        self._max_scale = 3.00     # 300%        
+        self._max_scale = 3.00  # 300%
         self.scale = 0.25
         self._dragging = False
         self._drag_start = QPoint()
         self._autostretch_linked = QSettings().value("display/stretch_linked", False, type=bool)
         self.autostretch_enabled = False
-        self.autostretch_target = 0.25    # tweakable, e.g. 0.2–0.35 typical
-        self.autostretch_sigma   = 3.0    # normal profile
-        self.autostretch_profile = "normal"        
+        self.autostretch_target = 0.25
+        self.autostretch_sigma = 3.0
+        self.autostretch_profile = "normal"
         self.show_mask_overlay = False
-        self._mask_overlay_alpha = 0.5  # 0..1
-        self._mask_overlay_invert = True 
-        self._layers: list[ImageLayer] = []   # per-view layer stack
-        self.layers_changed.connect(lambda: None)  # placeholder to avoid "unused" warnings        
+        self._mask_overlay_alpha = 0.5   # 0..1
+        self._mask_overlay_invert = True
+        self._layers: list[ImageLayer] = []
+        self.layers_changed.connect(lambda: None)
         self._display_override: np.ndarray | None = None
         self._readout_hint_shown = False
-        # keep mask visuals in sync when the doc changes (mask attach/remove etc.)
-        self.document.changed.connect(self._on_doc_mask_changed)
-        # context menu + shortcuts
-        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.customContextMenuRequested.connect(self._show_ctx_menu)
-        QShortcut(QKeySequence("F2"), self, activated=self._rename_view)  # quick rename for this view
 
-        self._space_down = False        # ← NEW
-        self._readout_dragging = False  # ← NEW: when we’re in “probe while drag” mode
+        # pixel readout live-probe state
+        self._space_down = False
+        self._readout_dragging = False
         self._last_readout = None
-        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)  # so we get key events
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
-        # keep the host MDI subwindow title in sync with doc/view name
-        self._view_title_override = None  # if set, only this window shows the override
+        # Title (doc/view) sync
+        self._view_title_override = None
         self.document.changed.connect(self._sync_host_title)
         self._sync_host_title()
+        self.document.changed.connect(self._refresh_local_undo_buttons)
 
-        # cached display sources (reused on zoom/pan)
-        self._buf8 = None          # np.uint8 [H,W,3] backing memory
-        self._qimg_src = None      # QImage built from _buf8
+        # Cached display buffer
+        self._buf8 = None         # backing np.uint8 [H,W,3]
+        self._qimg_src = None     # QImage wrapping _buf8
 
-        # ui
+        # Keep mask visuals in sync when doc changes
+        self.document.changed.connect(self._on_doc_mask_changed)
+
+        # ─────────────────────────────────────────────────────────
+        # Preview tabs state
+        # ─────────────────────────────────────────────────────────
+        self._tabs: QTabWidget | None = None
+        self._previews: list[dict] = []  # {"id": int, "name": str, "roi": (x,y,w,h), "arr": np.ndarray}
+        self._active_source_kind = "full"  # "full" | "preview"
+        self._active_preview_id: int | None = None
+        self._next_preview_id = 1
+
+        # Rubber-band / selection for previews
+        self._preview_select_mode = False
+        self._rubber: QRubberBand | None = None
+        self._rubber_origin: QPoint | None = None
+
+        # ─────────────────────────────────────────────────────────
+        # UI construction
+        # ─────────────────────────────────────────────────────────
         lyt = QVBoxLayout(self)
+
+        # Top row: drag-tab + Preview button
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
         self._drag_tab = _DragTab(self)
         row.addWidget(self._drag_tab, 0, Qt.AlignmentFlag.AlignLeft)
+
+        self._preview_btn = QToolButton(self)
+        self._preview_btn.setText("⟂")  # crosshair glyph
+        self._preview_btn.setToolTip("Create Preview: click, then drag on the image to define a preview rectangle.")
+        self._preview_btn.setCheckable(True)
+        self._preview_btn.clicked.connect(self._toggle_preview_select_mode)
+        row.addWidget(self._preview_btn, 0, Qt.AlignmentFlag.AlignLeft)
+        # — Undo / Redo just for this subwindow —
+        self._btn_undo = QToolButton(self)
+        self._btn_undo.setText("↶")  # or use an icon
+        self._btn_undo.setToolTip("Undo (this view)")
+        self._btn_undo.setEnabled(False)
+        self._btn_undo.clicked.connect(self._on_local_undo)
+        row.addWidget(self._btn_undo, 0, Qt.AlignmentFlag.AlignLeft)
+
+        self._btn_redo = QToolButton(self)
+        self._btn_redo.setText("↷")
+        self._btn_redo.setToolTip("Redo (this view)")
+        self._btn_redo.setEnabled(False)
+        self._btn_redo.clicked.connect(self._on_local_redo)
+        row.addWidget(self._btn_redo, 0, Qt.AlignmentFlag.AlignLeft)
         row.addStretch(1)
-        lyt.addLayout(row)       
-        self.scroll = QScrollArea(self)
+        lyt.addLayout(row)
+
+        # QTabWidget that hosts "Full" (real viewer) + any Preview tabs (placeholder widgets)
+        self._tabs = QTabWidget(self)
+        self._tabs.setTabsClosable(True)
+        self._tabs.setDocumentMode(True)
+        self._tabs.setMovable(True)
+
+        # Build the default "Full" tab, which contains the ONE real viewer (scroll+label)
+        full_host = QWidget(self)
+        full_v = QVBoxLayout(full_host)
+        full_v.setContentsMargins(0, 0, 0, 0)
+
+        self.scroll = QScrollArea(full_host)
         self.scroll.setWidgetResizable(False)
         self.label = QLabel(alignment=Qt.AlignmentFlag.AlignCenter)
         self.scroll.setWidget(self.label)
-        lyt.addWidget(self.scroll)
+        self.scroll.viewport().setMouseTracking(True)
+        self.label.setMouseTracking(True)        
+        full_v.addWidget(self.scroll)
 
-        self.setAcceptDrops(True)  # accept other windows’ view states
-        #self._install_view_tab()
+        # IMPORTANT: add the tab BEFORE connecting signals so currentChanged can't fire early
+        self._full_tab_idx = self._tabs.addTab(full_host, "Full")
+        self._full_host = full_host
+        self._tabs.tabBar().setVisible(False)  # hidden until a preview exists
+        lyt.addWidget(self._tabs)
 
+        # Now it’s safe to connect
+        self._tabs.tabCloseRequested.connect(self._on_tab_close_requested)
+        self._tabs.currentChanged.connect(self._on_tab_changed)
+        self._tabs.currentChanged.connect(lambda _=None: self._refresh_local_undo_buttons())
+
+        # DnD + event filters for the single viewer
+        self.setAcceptDrops(True)
         self.scroll.viewport().installEventFilter(self)
         self.label.installEventFilter(self)
 
-        # shortcuts (A = toggle autostretch)
+        # Context menu + shortcuts
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_ctx_menu)
+        QShortcut(QKeySequence("F2"), self, activated=self._rename_view)
         QShortcut(QKeySequence("A"), self, activated=self.toggle_autostretch)
         QShortcut(QKeySequence("Ctrl+Space"), self, activated=self.toggle_autostretch)
         QShortcut(QKeySequence("Alt+Shift+A"), self, activated=self.toggle_autostretch)
         QShortcut(QKeySequence("Ctrl+K"), self, activated=self.toggle_mask_overlay)
 
-        # re-render when the document changes
+        # Re-render when the document changes
         self.document.changed.connect(lambda: self._render(rebuild=True))
         self._render(rebuild=True)
         QTimer.singleShot(0, self._maybe_announce_readout_help)
+        self._refresh_local_undo_buttons()
 
 
-        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)  # so key press/release reach us
-
+        # Mask/title adornments
         self._mask_dot_enabled = self._active_mask_array() is not None
         self._active_title_prefix = False
         self._rebuild_title()
+
+        # Track docs used by layer stack (if any)
         self._watched_docs = set()
+        self._history_doc = None
+        self._install_history_watchers()
+
+    def _install_history_watchers(self):
+        # disconnect old
+        hd = getattr(self, "_history_doc", None)
+        if hd is not None and hasattr(hd, "changed"):
+            try: hd.changed.disconnect(self._refresh_local_undo_buttons)
+            except Exception: pass
+
+        # resolve new history doc (ROI when on Preview tab, else base)
+        new_hd = self._resolve_history_doc()
+        self._history_doc = new_hd
+
+        # connect new
+        if new_hd is not None and hasattr(new_hd, "changed"):
+            try: new_hd.changed.connect(self._refresh_local_undo_buttons)
+            except Exception: pass
+
+        # make the buttons correct right now
+        self._refresh_local_undo_buttons()
+
+
+    def _on_local_undo(self):
+        doc = self._resolve_history_doc()
+        if not doc or not hasattr(doc, "undo"):
+            return
+        try:
+            doc.undo()
+            # most ImageDocument implementations emit changed; belt-and-suspenders:
+            if hasattr(doc, "changed"): doc.changed.emit()
+        except Exception:
+            pass
+        # repaint and refresh our buttons
+        self._render(rebuild=True)
+        self._refresh_local_undo_buttons()
+
+    def _on_local_redo(self):
+        doc = self._resolve_history_doc()
+        if not doc or not hasattr(doc, "redo"):
+            return
+        try:
+            doc.redo()
+            if hasattr(doc, "changed"): doc.changed.emit()
+        except Exception:
+            pass
+        self._render(rebuild=True)
+        self._refresh_local_undo_buttons()
+
+
+    def refresh_preview_roi(self, roi_tuple=None):
+        """
+        Rebuild the active preview pixmap from the parent document’s data.
+        If roi_tuple is provided, it's the updated region (x,y,w,h).
+        """
+        try:
+            if not (hasattr(self, "has_active_preview") and self.has_active_preview()):
+                return
+
+            # Optional: sanity check that roi matches the current preview
+            if roi_tuple is not None:
+                cur = self.current_preview_roi()
+                if not (cur and tuple(map(int, cur)) == tuple(map(int, roi_tuple))):
+                    return  # different preview; no refresh needed
+
+            # Your own method that (re)generates the preview pixmap from the doc
+            if hasattr(self, "rebuild_preview_pixmap") and callable(self.rebuild_preview_pixmap):
+                self.rebuild_preview_pixmap()
+            elif hasattr(self, "_update_preview_layer") and callable(self._update_preview_layer):
+                self._update_preview_layer()
+            else:
+                # Fallback: repaint
+                self.update()
+        except Exception:
+            pass
+
+    def refresh_full(self):
+        """Full-image redraw hook for non-ROI updates."""
+        try:
+            if hasattr(self, "rebuild_image_pixmap") and callable(self.rebuild_image_pixmap):
+                self.rebuild_image_pixmap()
+            else:
+                self.update()
+        except Exception:
+            pass
+
+    def refresh_preview_region(self, roi):
+        """
+        roi: (x,y,w,h) in FULL image coords. Rebuild the active Preview tab’s pixmap
+        from self.document.image[y:y+h, x:x+w].
+        """
+        if not (hasattr(self, "has_active_preview") and self.has_active_preview()):
+            # No preview active → fall back to full refresh
+            if hasattr(self, "refresh_from_document"):
+                self.refresh_from_document()
+            else:
+                self.update()
+            return
+
+        try:
+            x, y, w, h = map(int, roi)
+            arr = self.document.image[y:y+h, x:x+w]
+            # Whatever your existing path is to update the preview tab from an ndarray:
+            # e.g., self._set_preview_from_array(arr) or self._update_preview_pixmap(arr)
+            if hasattr(self, "_set_preview_from_array"):
+                self._set_preview_from_array(arr)
+            elif hasattr(self, "update_preview_from_array"):
+                self.update_preview_from_array(arr)
+            else:
+                # Fallback: full refresh if you don’t expose a thin setter
+                if hasattr(self, "rebuild_active_preview"):
+                    self.rebuild_active_preview()
+                elif hasattr(self, "refresh_from_document"):
+                    self.refresh_from_document()
+            self.update()
+        except Exception:
+            # Safe fallback
+            if hasattr(self, "rebuild_active_preview"):
+                self.rebuild_active_preview()
+            elif hasattr(self, "refresh_from_document"):
+                self.refresh_from_document()
+            else:
+                self.update()
+
+
+    def _ensure_tabs(self):
+        if self._tabs:
+            return
+        self._tabs = QTabWidget(self)
+        self._tabs.setTabsClosable(True)
+        self._tabs.tabCloseRequested.connect(self._on_tab_close_requested)
+        self._tabs.currentChanged.connect(self._on_tab_changed)
+        self._tabs.setDocumentMode(True)
+        self._tabs.setMovable(True)
+
+        # Build the default "Full" tab: it contains your scroll+label
+        full_host = QWidget(self)
+        v = QVBoxLayout(full_host)
+        v.setContentsMargins(QMargins(0,0,0,0))
+        # Reuse your existing scroll/label as the content of the "Full" tab
+        self.scroll = QScrollArea(full_host)
+        self.scroll.setWidgetResizable(False)
+        self.label = QLabel(alignment=Qt.AlignmentFlag.AlignCenter)
+        self.scroll.setWidget(self.label)
+        v.addWidget(self.scroll)
+        self._full_tab_idx = self._tabs.addTab(full_host, "Full")
+        self._full_host = full_host    
+        self._tabs.tabBar().setVisible(False)  # hidden until a first preview exists
+
+    def _on_tab_close_requested(self, idx: int):
+        # Prevent closing "Full"
+        if idx == self._full_tab_idx:
+            return
+        wid = self._tabs.widget(idx)
+        prev_id = getattr(wid, "_preview_id", None)
+
+        # Remove model entry
+        self._previews = [p for p in self._previews if p["id"] != prev_id]
+        # If you closed the active one, fall back to full
+        if self._active_preview_id == prev_id:
+            self._active_source_kind = "full"
+            self._active_preview_id = None
+            self._render(True)
+
+        self._tabs.removeTab(idx)
+        wid.deleteLater()
+
+        # Hide tabs if no more previews
+        if not self._previews:
+            self._tabs.tabBar().setVisible(False)
+
+    def _on_tab_changed(self, idx: int):
+        if not hasattr(self, "_full_tab_idx"):
+            return
+        if idx == self._full_tab_idx:
+            self._active_source_kind = "full"
+            self._active_preview_id = None
+            host = getattr(self, "_full_host", None) or self._tabs.widget(idx)  # ← safe
+        else:
+            wid = self._tabs.widget(idx)
+            self._active_source_kind = "preview"
+            self._active_preview_id = getattr(wid, "_preview_id", None)
+            host = wid
+
+        if host is not None:
+            self._move_view_into(host)
+        self._install_history_watchers()
+        self._render(True)
+        self._refresh_local_undo_buttons()
+
+
+    def _toggle_preview_select_mode(self, on: bool):
+        self._preview_select_mode = bool(on)
+        self._set_preview_cursor(self._preview_select_mode)
+        if self._preview_select_mode:
+            mw = self._find_main_window()
+            if mw and hasattr(mw, "statusBar"):
+                mw.statusBar().showMessage("Preview mode: drag a rectangle on the image to create a preview.", 6000)
+        else:
+            self._cancel_rubber()
+
+    def _cancel_rubber(self):
+        if self._rubber is not None:
+            self._rubber.hide()
+            self._rubber.deleteLater()
+            self._rubber = None
+        self._rubber_origin = None
+        self._preview_select_mode = False
+        self._set_preview_cursor(False)
+        if self._preview_btn.isChecked():
+            self._preview_btn.setChecked(False)
+
+    def _current_tab_host(self):
+        # returns the QWidget inside the current tab
+        return self._tabs.widget(self._tabs.currentIndex())
+
+    def _move_view_into(self, host_widget: QWidget):
+        """Reparent the single viewer (scroll+label) into host_widget's layout."""
+        if self.scroll.parent() is host_widget:
+            return
+        # take it out of the old parent layout
+        try:
+            old_layout = self.scroll.parentWidget().layout()
+            if old_layout:
+                old_layout.removeWidget(self.scroll)
+        except Exception:
+            pass
+
+        # ensure host has a VBox layout
+        lay = host_widget.layout()
+        if lay is None:
+            from PyQt6.QtWidgets import QVBoxLayout
+            lay = QVBoxLayout(host_widget)
+            lay.setContentsMargins(0, 0, 0, 0)
+
+        # insert viewer; kill any placeholder child labels if present
+        try:
+            kids = host_widget.findChildren(QLabel, options=Qt.FindChildOption.FindDirectChildrenOnly)
+        except Exception:
+            kids = host_widget.findChildren(QLabel)  # recursive fallback
+        for ch in list(kids):
+            if ch is not self.label:
+                ch.deleteLater()
+
+        self.scroll.setParent(host_widget)
+        lay.addWidget(self.scroll)
+        self.scroll.show()
+
+    def _set_preview_cursor(self, active: bool):
+        cur = Qt.CursorShape.CrossCursor if active else Qt.CursorShape.ArrowCursor
+        for w in (self, getattr(self, "scroll", None) and self.scroll.viewport(), getattr(self, "label", None)):
+            if not w:
+                continue
+            try:
+                w.unsetCursor()          # clear any prior override
+                w.setCursor(cur)         # then set desired cursor
+            except Exception:
+                pass
+
 
     def _maybe_announce_readout_help(self):
         """Show the readout hint only once automatically."""
@@ -504,11 +834,16 @@ class ImageSubWindow(QWidget):
     # ---------- public API ----------
     def set_autostretch(self, on: bool):
         on = bool(on)
-        if on == self.autostretch_enabled:
-            return
+        if on == getattr(self, "autostretch_enabled", False):
+            # still rebuild so linked profile changes can reflect immediately if desired
+            pass
         self.autostretch_enabled = on
-        self.autostretchChanged.emit(on)
-        self._render(rebuild=True)
+        try:
+            self.autostretchChanged.emit(on)
+        except Exception:
+            pass
+        # keep your newer fast-path behavior
+        self._recompute_autostretch_and_update()
 
     def toggle_autostretch(self):
         self.set_autostretch(not self.autostretch_enabled)
@@ -561,8 +896,12 @@ class ImageSubWindow(QWidget):
         a_min  = menu.addAction("Send to Shelf")
         a_clear = menu.addAction("Clear View Name (use doc name)")
         menu.addSeparator()
-        a_help = menu.addAction("Show pixel/WCS readout hint")  # ← NEW
+        a_help = menu.addAction("Show pixel/WCS readout hint")
+        menu.addSeparator()
+        a_prev = menu.addAction("Create Preview (drag rectangle)")   # ← move BEFORE exec
+
         act = menu.exec(self.mapToGlobal(pos))
+
         if act == a_view:
             self._rename_view()
         elif act == a_doc:
@@ -572,8 +911,13 @@ class ImageSubWindow(QWidget):
         elif act == a_clear:
             self._view_title_override = None
             self._sync_host_title()
-        elif act == a_help:               # ← NEW
+        elif act == a_help:
             self._announce_readout_help()
+        elif act == a_prev:
+            self._preview_btn.setChecked(True)
+            self._toggle_preview_select_mode(True)
+
+
 
     def _send_to_shelf(self):
         sub = self._mdi_subwindow()
@@ -889,118 +1233,246 @@ class ImageSubWindow(QWidget):
         if self.autostretch_enabled:
             self._recompute_autostretch_and_update()
 
-    def set_autostretch(self, on: bool):
-        self.autostretch_enabled = bool(on)
-        self._recompute_autostretch_and_update()
+    def _on_docman_nudge(self, *args):
+        # Guard against late signals hitting after destruction/minimize
+        try:
+            from PyQt6 import sip as _sip
+            if _sip.isdeleted(self):
+                return
+        except Exception:
+            pass
+        try:
+            self._refresh_local_undo_buttons()
+        except RuntimeError:
+            # Buttons already gone; safe to ignore
+            pass
+        except Exception:
+            pass
+
 
     def _recompute_autostretch_and_update(self):
         self._qimg_src = None   # force source rebuild
         self._render(True)
 
-    # ---------- rendering ----------
-    def _render(self, rebuild: bool = False):
-        if rebuild or self._qimg_src is None:
-            img = self._display_override if (self._display_override is not None) else self.document.image
-            if img is None:
-                return
-            arr = np.asarray(img)
+    def set_doc_manager(self, docman):
+        self._docman = docman
+        try:
+            docman.imageRegionUpdated.connect(self._on_doc_region_updated)
+            docman.imageRegionUpdated.connect(self._on_docman_nudge)
+            if hasattr(docman, "previewRepaintRequested"):
+                docman.previewRepaintRequested.connect(self._on_docman_nudge)
+        except Exception:
+            pass
 
-            # --- Coerce non-image arrays (0-D/1-D) to 2-D so we can display them ---
-            # e.g. vector HDU → show as a 1×N strip; scalar → 1×1 pixel
-            if arr.ndim == 0:
-                arr = arr.reshape(1, 1)
-            elif arr.ndim == 1:
-                arr = arr[np.newaxis, :]  # 1×N
-
-            # detect mono now so we can ignore "linked" for mono images
-            is_mono = (arr.ndim == 2) or (arr.ndim == 3 and arr.shape[2] == 1)
-
-            if self.autostretch_enabled:
-                # normalize common integer inputs to [0..1]
-                if np.issubdtype(arr.dtype, np.integer):
-                    info = np.iinfo(arr.dtype)
-                    denom = float(max(1, info.max))
-                    arr_f = (arr.astype(np.float32) / denom)
-                else:
-                    arr_f = arr.astype(np.float32, copy=False)
-                    mx = float(arr_f.max()) if arr_f.size else 1.0
-                    if mx > 5.0:  # wildly large floats → compress to [0..1]
-                        arr_f = arr_f / mx
-
-                vis = autostretch(
-                    arr_f,
-                    target_median=self.autostretch_target,
-                    sigma=self.autostretch_sigma,
-                    linked=(not is_mono and self._autostretch_linked),
-                    use_16bit=None,
-                )
-            else:
-                # true linear view → ensure we have 3 channels for display
-                if arr.ndim == 2:
-                    vis = np.stack([arr] * 3, axis=-1)
-                elif arr.ndim == 3 and arr.shape[2] == 1:
-                    vis = np.repeat(arr, 3, axis=2)
-                else:
-                    vis = arr
-
-            # convert to 8-bit RGB for QImage
-            if vis.dtype == np.uint8:
-                buf8 = vis
-            elif vis.dtype == np.uint16:
-                buf8 = (vis.astype(np.float32) / 65535.0 * 255.0).clip(0, 255).astype(np.uint8)
-            else:
-                buf8 = (np.clip(vis, 0.0, 1.0) * 255.0).astype(np.uint8)
-
-            # --- Final safety: force H×W×3 no matter what came in ---
-            if buf8.ndim == 2:
-                buf8 = np.stack([buf8] * 3, axis=-1)
-            elif buf8.ndim == 3 and buf8.shape[2] == 1:
-                buf8 = np.repeat(buf8, 3, axis=2)
-            elif buf8.ndim != 3 or buf8.shape[2] < 3:
-                # rare/odd cases: pad/truncate to 3 channels
-                if buf8.ndim == 3 and buf8.shape[2] > 3:
-                    buf8 = buf8[..., :3]
-                else:
-                    buf8 = np.stack([buf8.squeeze()] * 3, axis=-1)
-
-            # --- MASK OVERLAY (unchanged logic) ---
-            if self.show_mask_overlay:
-                m = self._active_mask_array()
-                if m is not None:
-                    if getattr(self, "_mask_overlay_invert", True):
-                        m = 1.0 - m
-                    th, tw = buf8.shape[:2]
-                    sh, sw = m.shape
-                    if (sh, sw) != (th, tw):
-                        yi = (np.linspace(0, sh - 1, th)).astype(np.int32)
-                        xi = (np.linspace(0, sw - 1, tw)).astype(np.int32)
-                        m = m[yi][:, xi]
-                    a = m * float(getattr(self, "_mask_overlay_alpha", 0.35))
-                    bf = buf8.astype(np.float32, copy=False)
-                    bf[..., 0] = np.clip(bf[..., 0] + (255.0 - bf[..., 0]) * a, 0.0, 255.0)
-                    buf8 = bf.astype(np.uint8, copy=False)
-            # --- /MASK OVERLAY ---
-
-            buf8 = np.ascontiguousarray(buf8)
-            h, w, _ = buf8.shape
-            bytes_per_line = buf8.strides[0]
-
-            self._buf8 = buf8  # keep backing memory alive
-            ptr = sip.voidptr(self._buf8.ctypes.data)
+        base = getattr(self, "base_document", None) or getattr(self, "document", None)
+        if base is not None:
             try:
-                self._qimg_src = QImage(ptr, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+                base.changed.connect(self._on_base_doc_changed)
             except Exception:
-                # absolute last-resort guard: build from a copy if direct wrap fails
-                buf8c = np.array(self._buf8, copy=True, order="C")
-                self._buf8 = buf8c
-                ptr = sip.voidptr(self._buf8.ctypes.data)
-                self._qimg_src = QImage(ptr, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+                pass
+        self._install_history_watchers()
 
-        # scale and show
-        qimg = self._qimg_src
-        if qimg is None:
+    def _on_base_doc_changed(self):
+        # Full-image changes (or unknown) → rebuild our pixmap
+        QTimer.singleShot(0, lambda: (self._render(rebuild=True), self._refresh_local_undo_buttons()))
+
+    def _on_doc_region_updated(self, doc, roi_tuple_or_none):
+        # Only react if it’s our base doc
+        base = getattr(self, "base_document", None) or getattr(self, "document", None)
+        if doc is None or base is None or doc is not base:
             return
 
+        # If not on a Preview tab, just refresh.
+        if not (getattr(self, "_active_source_kind", None) == "preview"
+                and getattr(self, "_active_preview_id", None) is not None):
+            QTimer.singleShot(0, lambda: self._render(rebuild=True))
+            return
+
+        # We’re on a Preview tab: refresh only if the changed region overlaps our ROI.
+        try:
+            my_roi = self.current_preview_roi()  # (x,y,w,h) in full-image coords
+        except Exception:
+            my_roi = None
+
+        if my_roi is None or roi_tuple_or_none is None:
+            QTimer.singleShot(0, lambda: self._render(rebuild=True))
+            return
+
+        if self._roi_intersects(my_roi, roi_tuple_or_none):
+            QTimer.singleShot(0, lambda: self._render(rebuild=True))
+
+    @staticmethod
+    def _roi_intersects(a, b):
+        ax, ay, aw, ah = map(int, a)
+        bx, by, bw, bh = map(int, b)
+        if aw <= 0 or ah <= 0 or bw <= 0 or bh <= 0:
+            return False
+        return not (ax+aw <= bx or bx+bw <= ax or ay+ah <= by or by+bh <= ay)
+
+    def refresh_from_docman(self):
+        #print("[ImageSubWindow] refresh_from_docman called")
+        """
+        Called by MainWindow when DocManager says the image changed.
+        We nuke the cached QImage and rebuild from the current doc proxy
+        (which resolves ROI vs full), so the Preview tab repaints correctly.
+        """
+        try:
+            # Invalidate any cached source so _render() fully rebuilds
+            if hasattr(self, "_qimg_src"):
+                self._qimg_src = None
+        except Exception:
+            pass
+        self._render(rebuild=True)
+
+    # ---------- rendering ----------
+    def _render(self, rebuild: bool = False):
+        """
+        Render the current view.
+
+        Rules:
+        - If a Preview is active, FIRST sync that preview's stored arr from the
+        DocManager's ROI document (the thing tools actually modify), then render.
+        - Never reslice from the parent/full image here.
+        - Keep a strong reference to the numpy buffer that backs the QImage.
+        """
+        # ---------------------------
+        # 1) Choose & sync source arr
+        # ---------------------------
+        base_img = None
+        if self._active_source_kind == "preview" and self._active_preview_id is not None:
+            src = next((p for p in self._previews if p["id"] == self._active_preview_id), None)
+            #print("[ImageSubWindow] _render: preview mode, id =", self._active_preview_id, "src =", src is not None)
+            if src is not None:
+                # Pull the *edited* ROI image from DocManager, if available
+                if hasattr(self, "_docman") and self._docman is not None:
+                    #print("[ImageSubWindow] _render: pulling edited ROI from DocManager")
+                    try:
+                        roi_doc = self._docman.get_document_for_view(self)
+                        roi_img = getattr(roi_doc, "image", None)
+                        if roi_img is not None:
+                            # Replace the preview’s static copy with the edited ROI buffer
+                            src["arr"] = np.asarray(roi_img).copy()
+                    except Exception:
+                        print("[ImageSubWindow] _render: failed to pull edited ROI from DocManager")
+                        pass
+                base_img = src.get("arr", None)
+        else:
+            #print("[ImageSubWindow] _render: full image mode")
+            base_img = self._display_override if (self._display_override is not None) else (
+                getattr(self.document, "image", None)
+            )
+
+        if base_img is None:
+            self._qimg_src = None
+            self.label.clear()
+            return
+
+        arr = np.asarray(base_img)
+
+        # ---------------------------------------
+        # 2) Normalize dimensionality and dtype
+        # ---------------------------------------
+        # Scalar → 1x1; 1D → 1xN; (H,W,1) → mono (H,W)
+        if arr.ndim == 0:
+            arr = arr.reshape(1, 1)
+        elif arr.ndim == 1:
+            arr = arr[np.newaxis, :]
+        elif arr.ndim == 3 and arr.shape[2] == 1:
+            arr = arr[..., 0]
+
+        is_mono = (arr.ndim == 2)
+
+        # ---------------------------------------
+        # 3) Visualization buffer (float32)
+        # ---------------------------------------
+        if self.autostretch_enabled:
+            if np.issubdtype(arr.dtype, np.integer):
+                info = np.iinfo(arr.dtype)
+                denom = float(max(1, info.max))
+                arr_f = (arr.astype(np.float32) / denom)
+            else:
+                arr_f = arr.astype(np.float32, copy=False)
+                mx = float(arr_f.max()) if arr_f.size else 1.0
+                if mx > 5.0:  # compress absurdly large ranges
+                    arr_f = arr_f / mx
+
+            vis = autostretch(
+                arr_f,
+                target_median=self.autostretch_target,
+                sigma=self.autostretch_sigma,
+                linked=(not is_mono and self._autostretch_linked),
+                use_16bit=None,
+            )
+        else:
+            vis = arr
+
+        # ---------------------------------------
+        # 4) Convert to 8-bit RGB for QImage
+        # ---------------------------------------
+        if vis.dtype == np.uint8:
+            buf8 = vis
+        elif vis.dtype == np.uint16:
+            buf8 = (vis.astype(np.float32) / 65535.0 * 255.0).clip(0, 255).astype(np.uint8)
+        else:
+            buf8 = (np.clip(vis.astype(np.float32, copy=False), 0.0, 1.0) * 255.0).astype(np.uint8)
+
+        # Force H×W×3
+        if buf8.ndim == 2:
+            buf8 = np.stack([buf8] * 3, axis=-1)
+        elif buf8.ndim == 3:
+            c = buf8.shape[2]
+            if c == 1:
+                buf8 = np.repeat(buf8, 3, axis=2)
+            elif c > 3:
+                buf8 = buf8[..., :3]
+        else:
+            buf8 = np.stack([buf8.squeeze()] * 3, axis=-1)
+
+        # ---------------------------------------
+        # 5) Optional mask overlay
+        # ---------------------------------------
+        if getattr(self, "show_mask_overlay", False):
+            m = self._active_mask_array()
+            if m is not None:
+                if getattr(self, "_mask_overlay_invert", True):
+                    m = 1.0 - m
+                th, tw = buf8.shape[:2]
+                sh, sw = m.shape[:2]
+                if (sh, sw) != (th, tw):
+                    yi = (np.linspace(0, sh - 1, th)).astype(np.int32)
+                    xi = (np.linspace(0, sw - 1, tw)).astype(np.int32)
+                    m = m[yi][:, xi]
+                a = m.astype(np.float32, copy=False) * float(getattr(self, "_mask_overlay_alpha", 0.35))
+                bf = buf8.astype(np.float32, copy=False)
+                bf[..., 0] = np.clip(bf[..., 0] + (255.0 - bf[..., 0]) * a, 0.0, 255.0)
+                buf8 = bf.astype(np.uint8, copy=False)
+
+        # ---------------------------------------
+        # 6) Wrap into QImage (keep buffer alive)
+        # ---------------------------------------
+        buf8 = np.ascontiguousarray(buf8)
+        h, w, _ = buf8.shape
+        bytes_per_line = buf8.strides[0]
+
+        self._buf8 = buf8  # keep alive
+        try:
+
+            ptr = sip.voidptr(self._buf8.ctypes.data)
+            qimg = QImage(ptr, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+        except Exception:
+            buf8c = np.array(self._buf8, copy=True, order="C")
+            self._buf8 = buf8c
+            ptr = sip.voidptr(self._buf8.ctypes.data)
+            qimg = QImage(ptr, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+
+        self._qimg_src = qimg
+        if qimg is None or qimg.isNull():
+            self.label.clear()
+            return
+
+        # ---------------------------------------
+        # 7) Scale & present
+        # ---------------------------------------
         sw = max(1, int(qimg.width() * self.scale))
         sh = max(1, int(qimg.height() * self.scale))
         scaled = qimg.scaled(
@@ -1010,6 +1482,25 @@ class ImageSubWindow(QWidget):
         )
         self.label.setPixmap(QPixmap.fromImage(scaled))
         self.label.resize(scaled.size())
+
+
+    def has_active_preview(self) -> bool:
+        return self._active_source_kind == "preview" and self._active_preview_id is not None
+
+    def current_preview_roi(self) -> tuple[int,int,int,int] | None:
+        """
+        Returns (x, y, w, h) in FULL image coordinates if a preview tab is active, else None.
+        """
+        if not self.has_active_preview():
+            return None
+        src = next((p for p in self._previews if p["id"] == self._active_preview_id), None)
+        return None if src is None else tuple(src["roi"])
+
+    def current_preview_name(self) -> str | None:
+        if not self.has_active_preview():
+            return None
+        src = next((p for p in self._previews if p["id"] == self._active_preview_id), None)
+        return None if src is None else src["name"]
 
 
     # ---------- interaction ----------
@@ -1070,6 +1561,33 @@ class ImageSubWindow(QWidget):
         return p
 
     def eventFilter(self, obj, ev):
+        is_on_view = (obj is self.label) or (obj is self.scroll.viewport())
+
+        # 0) PREVIEW-SELECT MODE: consume mouse events first so earlier branches don't steal them
+        if self._preview_select_mode and is_on_view:
+            if ev.type() == QEvent.Type.MouseButtonPress and ev.button() == Qt.MouseButton.LeftButton:
+                vp_pos = obj.mapTo(self.scroll.viewport(), ev.pos())
+                self._rubber_origin = vp_pos
+                if self._rubber is None:
+                    self._rubber = QRubberBand(QRubberBand.Shape.Rectangle, self.scroll.viewport())
+                self._rubber.setGeometry(QRect(self._rubber_origin, QSize(1, 1)))
+                self._rubber.show()
+                ev.accept(); return True
+
+            if ev.type() == QEvent.Type.MouseMove and self._rubber and self._rubber_origin is not None:
+                vp_pos = obj.mapTo(self.scroll.viewport(), ev.pos())
+                rect = QRect(self._rubber_origin, vp_pos).normalized()
+                self._rubber.setGeometry(rect)
+                ev.accept(); return True
+
+            if ev.type() == QEvent.Type.MouseButtonRelease and self._rubber and self._rubber_origin is not None:
+                vp_pos = obj.mapTo(self.scroll.viewport(), ev.pos())
+                rect = QRect(self._rubber_origin, vp_pos).normalized()
+                self._finish_preview_rect(rect)
+                ev.accept(); return True
+            # If in preview mode but not one of the handled events, let others pass through
+            # (no return here)
+
         # 1) Ctrl + wheel → zoom
         if ev.type() == QEvent.Type.Wheel:
             if ev.modifiers() & Qt.KeyboardModifier.ControlModifier:
@@ -1078,7 +1596,7 @@ class ImageSubWindow(QWidget):
                 return True
             return False
 
-        # 2) Space+click on label / viewport → start readout
+        # 2) Space+click → start readout
         if ev.type() == QEvent.Type.MouseButtonPress:
             if self._space_down and ev.button() == Qt.MouseButton.LeftButton:
                 vp_pos = obj.mapTo(self.scroll.viewport(), ev.pos())
@@ -1086,13 +1604,11 @@ class ImageSubWindow(QWidget):
                 if res is not None:
                     xi, yi, sample = res
                     self._show_readout(xi, yi, sample)
-                # go into live-probe mode
                 self._readout_dragging = True
-                self.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
-                return True   # eat event so the label doesn't start selection/pan
+                return True
             return False
 
-        # 3) While dragging with space held → continuous readout
+        # 3) Space+drag → live readout
         if ev.type() == QEvent.Type.MouseMove:
             if self._readout_dragging:
                 vp_pos = obj.mapTo(self.scroll.viewport(), ev.pos())
@@ -1103,7 +1619,7 @@ class ImageSubWindow(QWidget):
                 return True
             return False
 
-        # 4) Mouse release → stop live-probe
+        # 4) Release → stop live readout
         if ev.type() == QEvent.Type.MouseButtonRelease:
             if self._readout_dragging:
                 self._readout_dragging = False
@@ -1113,9 +1629,83 @@ class ImageSubWindow(QWidget):
         return super().eventFilter(obj, ev)
 
 
+    def _finish_preview_rect(self, vp_rect: QRect):
+        # Map viewport rectangle into image coordinates
+        if vp_rect.width() < 4 or vp_rect.height() < 4:
+            self._cancel_rubber()
+            return
+
+        hbar = self.scroll.horizontalScrollBar()
+        vbar = self.scroll.verticalScrollBar()
+
+        # Upper-left in label coords
+        x_label0 = hbar.value() + vp_rect.left()
+        y_label0 = vbar.value() + vp_rect.top()
+        x_label1 = hbar.value() + vp_rect.right()
+        y_label1 = vbar.value() + vp_rect.bottom()
+
+        s = max(self.scale, 1e-12)
+
+        x0 = int(round(x_label0 / s))
+        y0 = int(round(y_label0 / s))
+        x1 = int(round(x_label1 / s))
+        y1 = int(round(y_label1 / s))
+
+        if x1 <= x0 or y1 <= y0:
+            self._cancel_rubber()
+            return
+
+        roi = (x0, y0, x1 - x0, y1 - y0)
+        self._create_preview_from_roi(roi)
+        self._cancel_rubber()
+
+    def _create_preview_from_roi(self, roi: tuple[int,int,int,int]):
+        """
+        roi: (x, y, w, h) in FULL IMAGE coordinates
+        """
+        arr = np.asarray(self.document.image)
+        H, W = (arr.shape[0], arr.shape[1]) if arr.ndim >= 2 else (0, 0)
+        x, y, w, h = roi
+        # clamp to image bounds
+        x = max(0, min(x, max(0, W-1)))
+        y = max(0, min(y, max(0, H-1)))
+        w = max(1, min(w, W - x))
+        h = max(1, min(h, H - y))
+
+        crop = arr[y:y+h, x:x+w].copy()  # isolate for preview
+
+        pid = self._next_preview_id
+        self._next_preview_id += 1
+        name = f"Preview {pid} ({w}×{h})"
+
+        self._previews.append({"id": pid, "name": name, "roi": (x, y, w, h), "arr": crop})
+
+        # Build a tab with a simple QLabel viewer (reuses global rendering through _render)
+        host = QWidget(self)
+        l = QVBoxLayout(host); l.setContentsMargins(0,0,0,0)
+        # For simplicity, we reuse the SAME scroll/label pipeline; the source image is switched in _render
+        # but we still want a local label so the tab displays something. Make a tiny label holder:
+        holder = QLabel(" ")  # placeholder; we still render into self.label (single view)
+        holder.setMinimumHeight(1)
+        l.addWidget(holder)
+
+        host._preview_id = pid  # attach id for lookups
+        idx = self._tabs.addTab(host, name)
+        self._tabs.setCurrentIndex(idx)
+        self._tabs.tabBar().setVisible(True)  # show tabs when first preview appears
+
+        # Switch active source and redraw
+        self._active_source_kind = "preview"
+        self._active_preview_id = pid
+        self._render(True)
+
     def mousePressEvent(self, e):
+        # If we're defining a preview ROI, don't start panning here
+        if self._preview_select_mode:
+            e.ignore()             # let the eventFilter (label/viewport) handle it
+            return
+
         if e.button() == Qt.MouseButton.LeftButton:
-            # --- live readout mode ---
             if self._space_down:
                 vp = self.scroll.viewport()
                 vp_pos = vp.mapFrom(self, e.pos())
@@ -1123,16 +1713,16 @@ class ImageSubWindow(QWidget):
                 if res is not None:
                     xi, yi, sample = res
                     self._show_readout(xi, yi, sample)
-                # mark that we’re *not* panning, but we *are* reading out on move
                 self._readout_dragging = True
                 return
 
-            # --- normal pan mode ---
+            # normal pan mode
             self._dragging = True
             self._drag_start = e.pos()
             return
 
         super().mousePressEvent(e)
+
 
     def _show_readout(self, xi, yi, sample):
         mw = self._find_main_window()
@@ -1334,10 +1924,13 @@ class ImageSubWindow(QWidget):
                     return None
 
         return None
-
-
+  
     def mouseMoveEvent(self, e):
-        # --- live readout while dragging with space held ---
+        # While defining preview ROI, let the eventFilter drive the QRubberBand
+        if self._preview_select_mode:
+            e.ignore()
+            return
+
         if self._readout_dragging:
             vp = self.scroll.viewport()
             vp_pos = vp.mapFrom(self, e.pos())
@@ -1347,7 +1940,6 @@ class ImageSubWindow(QWidget):
                 self._show_readout(xi, yi, sample)
             return
 
-        # --- normal pan ---
         if self._dragging:
             delta = e.pos() - self._drag_start
             self.scroll.horizontalScrollBar().setValue(
@@ -1361,9 +1953,13 @@ class ImageSubWindow(QWidget):
 
         super().mouseMoveEvent(e)
 
+
     def mouseReleaseEvent(self, e):
+        if self._preview_select_mode:
+            e.ignore()   # eventFilter will consume the release to finish the ROI
+            return
+
         if e.button() == Qt.MouseButton.LeftButton:
-            # end whichever mode we were in
             self._dragging = False
             self._readout_dragging = False
             return
@@ -1400,6 +1996,28 @@ class ImageSubWindow(QWidget):
                     e.ignore()
                     return
 
+        try:
+            if hasattr(self, "_docman") and self._docman is not None:
+                self._docman.imageRegionUpdated.disconnect(self._on_doc_region_updated)
+                # NEW: also drop the nudge hook(s)
+                try:
+                    self._docman.imageRegionUpdated.disconnect(self._on_docman_nudge)
+                except Exception:
+                    pass
+                if hasattr(self._docman, "previewRepaintRequested"):
+                    try:
+                        self._docman.previewRepaintRequested.disconnect(self._on_docman_nudge)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        try:
+            base = getattr(self, "base_document", None) or getattr(self, "document", None)
+            if base is not None:
+                base.changed.disconnect(self._on_base_doc_changed)
+        except Exception:
+            pass
+
         # proceed with your current teardown
         try:
             # emit your existing signal if you have it
@@ -1408,6 +2026,55 @@ class ImageSubWindow(QWidget):
         except Exception:
             pass
         super().closeEvent(e)
+
+    def _resolve_history_doc(self):
+        """
+        Return the doc whose history we should mutate:
+        - If a Preview tab is active → the ROI/proxy doc from DocManager
+        - Otherwise → the base/full document
+        """
+        # Prefer DocManager's ROI-aware mapping if present
+        dm = getattr(self, "_docman", None)
+        if (self._active_source_kind == "preview"
+                and self._active_preview_id is not None
+                and dm is not None
+                and hasattr(dm, "get_document_for_view")):
+            try:
+                d = dm.get_document_for_view(self)
+                if d is not None:
+                    return d
+            except Exception:
+                pass
+        # Fallback to the main doc
+        return getattr(self, "document", None)
+
+
+    def _refresh_local_undo_buttons(self):
+        """Enable/disable the local Undo/Redo toolbuttons based on can_undo/can_redo."""
+        try:
+            doc = self._resolve_history_doc()
+            can_u = bool(doc and hasattr(doc, "can_undo") and doc.can_undo())
+            can_r = bool(doc and hasattr(doc, "can_redo") and doc.can_redo())
+        except Exception:
+            can_u = can_r = False
+
+        b_u = getattr(self, "_btn_undo", None)
+        b_r = getattr(self, "_btn_redo", None)
+
+        try:
+            if b_u: b_u.setEnabled(can_u)
+        except RuntimeError:
+            return
+        except Exception:
+            pass
+        try:
+            if b_r: b_r.setEnabled(can_r)
+        except RuntimeError:
+            return
+        except Exception:
+            pass
+
+
 
 # --- NEW: TableSubWindow -------------------------------------------------
 from PyQt6.QtWidgets import QTableView, QPushButton, QFileDialog
@@ -1450,7 +2117,7 @@ class TableSubWindow(QWidget):
         self.table.resizeColumnsToContents()
 
         self._sync_host_title()
-        print(f"[TableSubWindow] init rows={self._model.rowCount()} cols={self._model.columnCount()} title='{self.document.display_name()}'")
+        #print(f"[TableSubWindow] init rows={self._model.rowCount()} cols={self._model.columnCount()} title='{self.document.display_name()}'")
         # react to doc rename if you add such behavior later
         try:
             self.document.changed.connect(self._on_doc_changed)

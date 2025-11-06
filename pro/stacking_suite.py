@@ -4173,22 +4173,6 @@ class StackingSuiteDialog(QDialog):
         self.shift_tol_spin.setValue(self.settings.value("stacking/shift_tolerance", 0.2, type=float))
         fl_align.addRow("Accept tolerance (px):", self.shift_tol_spin)
 
-        # Sigma high/low
-        self.sigma_high_spinbox = QDoubleSpinBox()
-        self.sigma_high_spinbox.setRange(0.1, 10.0)
-        self.sigma_high_spinbox.setDecimals(2)
-        self.sigma_high_spinbox.setValue(self.sigma_high)
-        self.sigma_low_spinbox = QDoubleSpinBox()
-        self.sigma_low_spinbox.setRange(0.1, 10.0)
-        self.sigma_low_spinbox.setDecimals(2)
-        self.sigma_low_spinbox.setValue(self.sigma_low)
-        hs_row = QHBoxLayout()
-        hs_row.addWidget(QLabel("High:")); hs_row.addWidget(self.sigma_high_spinbox)
-        hs_row.addSpacing(8)
-        hs_row.addWidget(QLabel("Low:")); hs_row.addWidget(self.sigma_low_spinbox)
-        w_hs = QWidget(); w_hs.setLayout(hs_row)
-        fl_align.addRow("Sigma Clipping:", w_hs)
-
         left_col.addWidget(gb_align)
         
 
@@ -4501,7 +4485,6 @@ class StackingSuiteDialog(QDialog):
 
         left_col.addWidget(gb_csr)
 
-
         # --- Rejection ---
         gb_rej = QGroupBox("Rejection")
         rej_layout = QVBoxLayout(gb_rej)
@@ -4540,10 +4523,36 @@ class StackingSuiteDialog(QDialog):
                 h.addWidget(btn)
             return row
 
+        # ── NEW: Sigma thresholds (moved here)
+        self.sigma_high_spinbox = QDoubleSpinBox()
+        self.sigma_high_spinbox.setRange(0.1, 10.0)
+        self.sigma_high_spinbox.setDecimals(2)
+        self.sigma_high_spinbox.setSingleStep(0.1)
+        self.sigma_high_spinbox.setValue(
+            getattr(self, "sigma_high", self.settings.value("stacking/sigma_high", 3.0, type=float))
+        )
+
+        self.sigma_low_spinbox = QDoubleSpinBox()
+        self.sigma_low_spinbox.setRange(0.1, 10.0)
+        self.sigma_low_spinbox.setDecimals(2)
+        self.sigma_low_spinbox.setSingleStep(0.1)
+        self.sigma_low_spinbox.setValue(
+            getattr(self, "sigma_low", self.settings.value("stacking/sigma_low", 2.0, type=float))
+        )
+
+        _sigma_pair = QWidget()
+        _sigma_h = QHBoxLayout(_sigma_pair); _sigma_h.setContentsMargins(0,0,0,0)
+        _sigma_h.addWidget(QLabel("High:")); _sigma_h.addWidget(self.sigma_high_spinbox)
+        _sigma_h.addSpacing(8)
+        _sigma_h.addWidget(QLabel("Low:"));  _sigma_h.addWidget(self.sigma_low_spinbox)
+        row_sigma = _mini_row("Sigma thresholds:", _sigma_pair,
+            "High/Low σ used by sigma-based rejection.")
+
+        # Existing param rows
         self.kappa_spinbox = QDoubleSpinBox()
         self.kappa_spinbox.setRange(0.1, 10.0); self.kappa_spinbox.setDecimals(2)
         self.kappa_spinbox.setValue(self.settings.value("stacking/kappa", 2.5, type=float))
-        row_kappa = _mini_row("Kappa:", self.kappa_spinbox, "Std-devs from median to reject; higher = more lenient.")
+        row_kappa = _mini_row("Kappa:", self.kappa_spinbox, "Std-devs from median; higher = more lenient.")
 
         self.iterations_spinbox = QSpinBox()
         self.iterations_spinbox.setRange(1, 10)
@@ -4570,22 +4579,34 @@ class StackingSuiteDialog(QDialog):
         self.modz_spinbox.setValue(self.settings.value("stacking/modz_threshold", 3.5, type=float))
         row_modz = _mini_row("Modified Z threshold:", self.modz_spinbox, "Lower = more aggressive (MAD-based).")
 
-        # add all; visibility managed below
-        for w in (row_kappa, row_iters, row_esd, row_bi, row_trim, row_modz):
+        # Add all; visibility managed below
+        for w in (row_sigma, row_kappa, row_iters, row_esd, row_bi, row_trim, row_modz):
             rej_layout.addWidget(w)
 
         # show/hide param rows based on algorithm
         def _update_algo_params():
             algo = self.rejection_algo_combo.currentText()
-            # default all hidden
             rows = {
-                "kappa": row_kappa, "iters": row_iters, "esd": row_esd,
-                "bi": row_bi, "trim": row_trim, "modz": row_modz
+                "sigma": row_sigma,
+                "kappa": row_kappa,
+                "iters": row_iters,
+                "esd": row_esd,
+                "bi": row_bi,
+                "trim": row_trim,
+                "modz": row_modz
             }
-            for w in rows.values(): w.hide()
+            for w in rows.values():
+                w.hide()
 
+            # Sigma-based algos
             if "Kappa-Sigma" in algo:
-                row_kappa.show(); row_iters.show()
+                row_sigma.show()
+                row_kappa.show()
+                row_iters.show()
+            elif "Windsorized" in algo or "Winsorized" in algo:  # Weighted Winsorized Sigma Clipping
+                row_sigma.show()
+
+            # Others
             elif "ESD" in algo:
                 row_esd.show()
             elif "Biweight" in algo:
@@ -4594,7 +4615,7 @@ class StackingSuiteDialog(QDialog):
                 row_trim.show()
             elif "Modified Z-Score" in algo:
                 row_modz.show()
-            # others (simple average/median, weighted winsorized, max value) need no extra params
+            # Simple Average/Median/Max Value → no params
 
         self.rejection_algo_combo.currentTextChanged.connect(_update_algo_params)
         _update_algo_params()

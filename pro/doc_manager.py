@@ -89,19 +89,85 @@ class ImageDocument(QObject):
     def get_active_mask(self):
         return self.masks.get(self.active_mask_id) if self.active_mask_id else None
 
+    # in class ImageDocument
     def apply_edit(self, new_image: np.ndarray, metadata: dict | None = None, step_name: str = "Edit"):
         """
-        Push current state to undo (with step_name), clear redo, set new image/metadata, emit changed.
+        Smart edit:
+        - If this is an ROI view (has _roi_info), paste back into parent and emit region update.
+        - Else: push history on self and emit full-image update.
         """
+        import numpy as np
+        #print(f"[ImageDocument] apply_edit called: step_name={step_name}")
+
+        # ------ ROI-aware branch (auto-pasteback) ------
+        roi_info = getattr(self, "_roi_info", None)
+        if roi_info:
+            parent = roi_info.get("parent_doc")
+            roi    = roi_info.get("roi")
+            if isinstance(parent, ImageDocument) and (getattr(parent, "image", None) is not None) and roi:
+                x, y, w, h = map(int, roi)
+
+                img = np.asarray(new_image)
+                if img.dtype != np.float32:
+                    img = img.astype(np.float32, copy=False)
+
+                base = np.asarray(parent.image)
+                if img.shape[:2] != (h, w):
+                    raise ValueError(f"Edited preview shape {img.shape[:2]} does not match ROI {(h, w)}")
+
+                # shape reconciliation
+                if base.ndim == 2 and img.ndim == 3 and img.shape[2] == 1:
+                    img = img[..., 0]
+                if base.ndim == 3 and img.ndim == 2:
+                    img = np.repeat(img[..., None], base.shape[2], axis=2)
+
+                new_full = base.copy()
+                new_full[y:y+h, x:x+w] = img
+
+                # push onto the PARENT’s history
+                if metadata:
+                    parent.metadata.update(metadata)
+                parent.metadata.setdefault("step_name", step_name)
+                parent._undo.append((parent.image.copy(), parent.metadata.copy(), step_name))
+                parent._redo.clear()
+                parent.image = new_full
+                parent.changed.emit()
+
+                # notify views about the region that changed
+                dm = getattr(self, "_doc_manager", None) or getattr(parent, "_doc_manager", None)
+                try:
+                    if dm is not None and hasattr(dm, "imageRegionUpdated"):
+                        dm.imageRegionUpdated.emit(parent, (x, y, w, h))
+                        #print(f"[DocManager] Emitted imageRegionUpdated for ROI: {(x, y, w, h)}")
+                      
+                except Exception:
+                    print(f"[DocManager] Failed to emit imageRegionUpdated for ROI.")
+                    pass
+                return  # done
+
+        # ------ Normal (full-image) branch ------
         if self.image is not None:
             self._undo.append((self.image.copy(), self.metadata.copy(), step_name))
             self._redo.clear()
         if metadata:
             self.metadata.update(metadata)
-        # also carry the step name onto the new “current” state for reference
         self.metadata.setdefault("step_name", step_name)
-        self.image = new_image
+
+        img = np.asarray(new_image)
+        if img.dtype != np.float32:
+            img = img.astype(np.float32, copy=False)
+
+        self.image = img
         self.changed.emit()
+
+        # full-image repaint hint to views
+        dm = getattr(self, "_doc_manager", None)
+        try:
+            if dm is not None and hasattr(dm, "imageRegionUpdated"):
+                dm.imageRegionUpdated.emit(self, None)
+        except Exception:
+            pass
+
 
     def undo(self) -> str | None:
         if not self._undo:
@@ -132,9 +198,6 @@ class ImageDocument(QObject):
         """
         self.apply_edit(img, metadata or {}, step_name=step_name)
 
-    def display_name(self) -> str:
-        p = self.metadata.get("file_path")
-        return os.path.basename(p) if p else "Untitled"
     
     # --- Add to ImageDocument (public history helpers) -------------------
 
@@ -353,23 +416,428 @@ def maybe_warn_raw_preview(path: str, header):
     _shown_raw_preview_paths.add(path)
     QTimer.singleShot(0, lambda p=path: _show_raw_preview_warning_nonmodal(p))
 
+_np = np
+
+class _RoiViewDocument(ImageDocument):
+    def __init__(self, parent_doc: ImageDocument, roi: tuple[int,int,int,int], name_suffix: str = " (Preview)"):
+        x, y, w, h = roi
+        meta = dict(parent_doc.metadata or {})
+        base = parent_doc.display_name()
+        meta["display_name"] = f"{base}{name_suffix}"
+        meta.setdefault("image_meta", {})
+        meta["image_meta"] = dict(meta["image_meta"], readonly=True, view_kind="roi-preview")
+
+        super().__init__(_np.zeros((max(1,h), max(1,w), 3), dtype=_np.float32), meta, parent=parent_doc.parent())
+
+        self._parent_doc = parent_doc
+        self._roi = ( x, y, w, h )
+        
+
+        # NEW: transient preview overlay for this ROI (None means "show parent slice")
+        self._preview_override: _np.ndarray | None = None
+
+        self._pundo: list[tuple[_np.ndarray, dict, str]] = []  # (img, meta, name)
+        self._predo: list[tuple[_np.ndarray, dict, str]] = []  # (img, meta, name)
+
+    @property
+    def image(self):
+        p = self._parent_doc
+        if p is None or getattr(p, "image", None) is None:
+            return None
+        x, y, w, h = self._roi
+        # If a preview override exists, show it; else show the live parent slice
+        return self._preview_override if self._preview_override is not None else p.image[y:y+h, x:x+w]
+
+    @image.setter
+    def image(self, _val):
+        # ignore: writes should use DocManager(update/commit) paths
+        pass
+
+    # --- helper to snapshot what's currently visible in the Preview
+    def _current_preview_copy(self) -> _np.ndarray:
+        img = self.image  # property: returns override or parent slice
+        if img is None:
+            return _np.zeros((1,1), dtype=_np.float32)
+        return _np.asarray(img, dtype=_np.float32).copy()
+
+    # === KEEP YOUR WORKING BODY; only 3 added lines are marked "NEW" ===
+    def apply_edit(self, new_image, metadata=None, step_name="Edit"):
+
+        x, y, w, h = self._roi
+        img = np.asarray(new_image, dtype=np.float32, copy=False)
+        base = self._parent_doc.image
+        if base is not None:
+            if base.ndim == 2 and img.ndim == 3 and img.shape[2] == 1:
+                img = img[..., 0]
+            if base.ndim == 3 and img.ndim == 2:
+                img = np.repeat(img[..., None], base.shape[2], axis=2)
+        if img.shape[:2] != (h, w):
+            raise ValueError(f"Preview edit shape {img.shape[:2]} != ROI {(h, w)}")
+
+        # NEW: push current visible preview to local undo before overriding
+        self._pundo.append((self._current_preview_copy(), dict(self.metadata), step_name))
+        self._predo.clear()
+
+        self._preview_override = img
+        if metadata:
+            self.metadata.update(metadata)
+        self.metadata.setdefault("step_name", step_name)
+
+        self.changed.emit()  # let listeners know the ROI doc changed
+
+        # repaint-only nudge (unchanged)
+        dm = getattr(self, "_doc_manager", None)
+        if dm is not None and hasattr(dm, "previewRepaintRequested"):
+            try:
+                dm.previewRepaintRequested.emit(self._parent_doc, self._roi)
+            except Exception:
+                pass
+
+        dm = getattr(self, "_doc_manager", None)
+        if dm is not None:
+            vw = dm._active_view_widget()
+            if vw is not None:
+                try:
+                    if hasattr(vw, "refresh_from_docman") and callable(vw.refresh_from_docman):
+                        vw.refresh_from_docman()
+                    else:
+                        vw._render()
+                except Exception:
+                    pass
+
+
+    def _parent(self):
+        return getattr(self, "_parent_doc", None)
+
+    def can_undo(self) -> bool:
+        return bool(self._pundo)
+
+    def can_redo(self) -> bool:
+        return bool(self._predo)
+
+    def last_undo_name(self) -> str | None:
+        return self._pundo[-1][2] if self._pundo else None
+
+    def last_redo_name(self) -> str | None:
+        return self._predo[-1][2] if self._predo else None
+
+    def undo(self) -> str | None:
+        if not self._pundo:
+            return None
+        # move current → redo; pop undo → current
+        curr = self._current_preview_copy()
+        self._predo.append((curr, dict(self.metadata), self._pundo[-1][2]))
+
+        prev_img, prev_meta, name = self._pundo.pop()
+        self._preview_override = prev_img
+        self.metadata = dict(prev_meta)
+
+        try: self.changed.emit()
+        except Exception: pass
+
+        dm = getattr(self, "_doc_manager", None)
+        if dm is not None and hasattr(dm, "previewRepaintRequested"):
+            try: dm.previewRepaintRequested.emit(self._parent_doc, self._roi)
+            except Exception: pass
+        return name
+
+    def redo(self) -> str | None:
+        if not self._predo:
+            return None
+        # move current → undo; pop redo → current
+        curr = self._current_preview_copy()
+        self._pundo.append((curr, dict(self.metadata), self._predo[-1][2]))
+
+        nxt_img, nxt_meta, name = self._predo.pop()
+        self._preview_override = nxt_img
+        self.metadata = dict(nxt_meta)
+
+        try: self.changed.emit()
+        except Exception: pass
+
+        dm = getattr(self, "_doc_manager", None)
+        if dm is not None and hasattr(dm, "previewRepaintRequested"):
+            try: dm.previewRepaintRequested.emit(self._parent_doc, self._roi)
+            except Exception: pass
+        return name
+
+
+
+class LiveViewDocument(QObject):
+    """
+    Drop-in proxy that mirrors an ImageDocument API but always resolves
+    via DocManager + view to the ROI-aware document (if a Preview tab is active).
+    Reads: delegate to current resolved doc.
+    Writes: use DocManager.update_active_document(...) so ROI is pasted back.
+    """
+    changed = pyqtSignal()
+
+    def __init__(self, doc_manager: "DocManager", view, base_doc: "ImageDocument"):
+        super().__init__(parent=base_doc.parent())
+        self._dm = doc_manager
+        self._view = view              # ImageSubWindow widget
+        self._base = base_doc          # true ImageDocument
+
+        # Bridge base document change signals (ROI wrappers rarely emit)
+        try:
+            base_doc.changed.connect(self.changed.emit)
+        except Exception:
+            pass
+
+    # ---- core resolver ----
+    def _current(self):
+        try:
+            d = self._dm.get_document_for_view(self._view)
+            return d or self._base
+        except Exception:
+            return self._base
+
+    # ---- common API surface (reads) ----
+    @property
+    def image(self):
+        d = self._current()
+        return getattr(d, "image", None)
+
+    @property
+    def metadata(self):
+        d = self._current()
+        return getattr(d, "metadata", {}) or {}
+
+    def display_name(self):
+        d = self._current()
+        if hasattr(d, "display_name"):
+            try:
+                return d.display_name()
+            except Exception:
+                pass
+        return self._base.display_name() if hasattr(self._base, "display_name") else "Untitled"
+
+    # Mask access stays consistent with whichever doc is current
+    def get_active_mask(self):
+        d = self._current()
+        if hasattr(d, "get_active_mask"):
+            try:
+                return d.get_active_mask()
+            except Exception:
+                return None
+        return None
+
+    @property
+    def masks(self):
+        d = self._current()
+        return getattr(d, "masks", {})
+
+    @property
+    def active_mask_id(self):
+        d = self._current()
+        return getattr(d, "active_mask_id", None)
+
+    # ---- writes route through DocManager so ROI is honored ----
+    def apply_edit(self, new_image, metadata=None, step_name="Edit"):
+        #print("[LiveViewDocument] apply_edit called, routing via DocManager")
+        self._dm.update_active_document(new_image, dict(metadata or {}), step_name)
+
+    # ---- history helpers (optional pass-throughs) ----
+    def can_undo(self):
+        d = self._current()
+        return bool(getattr(d, "can_undo", lambda: False)())
+
+    def can_redo(self):
+        d = self._current()
+        return bool(getattr(d, "can_redo", lambda: False)())
+
+    def last_undo_name(self):
+        d = self._current()
+        return getattr(d, "last_undo_name", lambda: None)()
+
+    def last_redo_name(self):
+        d = self._current()
+        return getattr(d, "last_redo_name", lambda: None)()
+
+    def undo(self):
+        d = self._current()
+        return getattr(d, "undo", lambda: None)()
+
+    def redo(self):
+        d = self._current()
+        return getattr(d, "redo", lambda: None)()
+
+    # ---- generic fallback so existing attributes keep working ----
+    def __getattr__(self, name):
+        # Prefer the current resolved doc, then base_doc
+        d = object.__getattribute__(self, "_current")()
+        if hasattr(d, name):
+            return getattr(d, name)
+        return getattr(self._base, name)
+
+
 class DocManager(QObject):
     documentAdded = pyqtSignal(object)   # ImageDocument
     documentRemoved = pyqtSignal(object) # ImageDocument
+    imageRegionUpdated = pyqtSignal(object, object)  # (doc, roi_tuple_or_None)
+    previewRepaintRequested = pyqtSignal(object, object)
 
     def __init__(self, image_manager=None, parent=None):
         super().__init__(parent)
         self.image_manager = image_manager
+        self._roi_doc_cache = {} 
         self._docs: list[ImageDocument] = []
         self._active_doc: ImageDocument | None = None
         self._mdi: "QMdiArea | None" = None  # type: ignore
+        self.imageRegionUpdated.connect(self._invalidate_roi_cache)
+
+        def _do_preview_repaint(doc, roi):
+            vw = self._active_view_widget()
+            if vw is not None:
+                try:
+                    if hasattr(vw, "refresh_from_docman") and callable(vw.refresh_from_docman):
+                        vw.refresh_from_docman(doc=doc, roi=roi)
+                    else:
+                        vw._render()
+                except Exception:
+                    pass
+        self.previewRepaintRequested.connect(_do_preview_repaint)
+
+    def get_document_for_view(self, view):
+        """
+        Given an ImageSubWindow widget, return either:
+        - the full base ImageDocument
+        - or a cached ROI-wrapper doc if a Preview/ROI tab is active
+        Works with both old (has_active_preview/current_preview_roi) and
+        new (_active_roi_tuple) view APIs. Falls back to view.document.
+        """
+        # 1) Resolve a base document from the view
+        base = (
+            getattr(view, "base_document", None)
+            or getattr(view, "_base_document", None)
+            or getattr(view, "document", None)
+        )
+        if base is None:
+            return None
+
+        # 2) Try to discover an ROI (support both APIs)
+        roi = None
+        try:
+            if hasattr(view, "has_active_preview") and callable(view.has_active_preview):
+                if view.has_active_preview():
+                    # preferred old API
+                    try:
+                        roi = view.current_preview_roi()  # (x,y,w,h)
+                    except Exception:
+                        roi = None
+        except Exception:
+            pass
+
+        if roi is None:
+            # new API candidate
+            for attr in ("_active_roi_tuple", "current_roi_tuple", "selected_roi", "roi"):
+                try:
+                    fn = getattr(view, attr, None)
+                    if callable(fn):
+                        r = fn()
+                        if r and len(r) == 4:
+                            roi = r
+                            break
+                except Exception:
+                    pass
+
+        # 3) If no ROI, return the base doc
+        if not roi:
+            return base
+
+        # 4) Cache and return a lightweight ROI view doc
+        try:
+            x, y, w, h = map(int, roi)
+            key = (id(base), id(view), (x, y, w, h))
+            roi_doc = self._roi_doc_cache.get(key)
+            if roi_doc is None:
+                roi_doc = self._build_roi_document(base, (x, y, w, h))
+                self._roi_doc_cache[key] = roi_doc
+            return roi_doc
+        except Exception:
+            # If anything about ROI construction fails, fall back
+            return base
+
+    def _invalidate_roi_cache(self, parent_doc, roi_tuple):
+        """Drop cached ROI docs that overlap an updated region of parent_doc."""
+        if not roi_tuple:
+            # full-image change -> drop all for this parent
+            dead = [k for k in self._roi_doc_cache.keys() if k[0] == id(parent_doc)]
+        else:
+            px, py, pw, ph = roi_tuple
+            def _overlaps(a, b):
+                ax, ay, aw, ah = a; bx, by, bw, bh = b
+                return not (ax+aw <= bx or bx+bw <= ax or ay+ah <= by or by+bh <= ay)
+            dead = []
+            for (parent_id, _view_id, aroi), _doc in list(self._roi_doc_cache.items()):
+                if parent_id != id(parent_doc):
+                    continue
+                if _overlaps(aroi, (px, py, pw, ph)):
+                    dead.append((parent_id, _view_id, aroi))
+        for k in dead:
+            self._roi_doc_cache.pop(k, None)
 
 
-        # --- File -> Document ---
+    def _register_doc(self, doc):
+        import weakref
+        # Only ImageDocument needs the backref; tables can ignore it.
+        if hasattr(doc, "image") or hasattr(doc, "apply_edit"):
+            try:
+                doc._doc_manager = weakref.proxy(self)   # avoid cycles
+            except Exception:
+                doc._doc_manager = self                  # fallback
+        self._docs.append(doc)
+        self.documentAdded.emit(doc)
+
+    def _build_roi_document(self, base_doc, roi):
+        #print("[DocManager] Building ROI view document")
+        doc = _RoiViewDocument(base_doc, roi, name_suffix=" (Preview)")
+        try:
+            import weakref
+            doc._doc_manager = weakref.proxy(self)
+        except Exception:
+            doc._doc_manager = self
+
+        # Repaint the active view on ROI preview changes, but DO NOT invalidate cache.
+        try:
+            #print("[DocManager] Connecting ROI view document change signal")
+            import weakref
+            dm_ref = weakref.ref(self)
+            roi_tuple = tuple(map(int, roi))
+
+            def _on_roi_changed():
+                dm = dm_ref()
+                if dm is None:
+                    return
+                vw = dm._active_view_widget()
+                if vw is not None:
+                    try:
+                        if hasattr(vw, "refresh_from_docman") and callable(vw.refresh_from_docman):
+                            vw.refresh_from_docman(doc=doc, roi=roi_tuple)
+                        else:
+                            vw._render()
+                    except Exception:
+                        pass
+
+            doc.changed.connect(_on_roi_changed)
+            #print("[DocManager] ROI view document change signal connected")
+        except Exception:
+            print("[DocManager] Failed to connect ROI view document change signal")
+            pass
+
+        return doc
+
+
+    def wrap_document_for_view(self, view, base_doc: ImageDocument) -> LiveViewDocument:
+        """Return a live, ROI-aware proxy for this view."""
+        return LiveViewDocument(self, view, base_doc)
+
     def open_path(self, path: str):
         ext = os.path.splitext(path)[1].lower().lstrip('.')
         norm_ext = _normalize_ext(ext)
-        is_fits = ext in ("fits", "fit", "fits.gz", "fit.gz", "fz")
+
+        lower_path = path.lower()
+        is_fits = lower_path.endswith((".fit", ".fits", ".fit.gz", ".fits.gz", ".fz"))
         is_xisf = (norm_ext == "xisf")
 
         primary_doc = None
@@ -392,8 +860,7 @@ class DocManager(QObject):
             }
             _snapshot_header_for_metadata(meta)
             primary_doc = ImageDocument(img, meta)
-            self._docs.append(primary_doc)
-            self.documentAdded.emit(primary_doc)
+            self._register_doc(primary_doc)
             created_any = True
 
 
@@ -422,7 +889,7 @@ class DocManager(QObject):
                         if isinstance(hdu, (fits.BinTableHDU, fits.TableHDU)):
                             key_str = extname or f"HDU{i}"
                             nice = key_str
-                            print(f"[DocManager] HDU {i}: {type(hdu).__name__} '{nice}' → Table")
+                            #print(f"[DocManager] HDU {i}: {type(hdu).__name__} '{nice}' → Table")
 
                             # Optional CSV export
                             csv_name = f"{os.path.splitext(path)[0]}_{key_str}.csv".replace(" ", "_")
@@ -445,19 +912,18 @@ class DocManager(QObject):
                                 }
                                 _snapshot_header_for_metadata(tmeta)
                                 tdoc = TableDocument(rows, headers, tmeta, parent=self.parent())
-                                self._docs.append(tdoc)
-                                self.documentAdded.emit(tdoc)
+                                self._register_doc(tdoc)
                                 try: tdoc.changed.emit()
                                 except Exception: pass
                                 created_any = True
-                                print(f"[DocManager] Added TableDocument: rows={len(rows)} cols={len(headers)} title='{tdoc.display_name()}'")
+                                #print(f"[DocManager] Added TableDocument: rows={len(rows)} cols={len(headers)} title='{tdoc.display_name()}'")
                             except Exception as e_tab:
                                 print(f"[DocManager] Table HDU {nice} → in-app view failed: {e_tab}")
                             continue  # IMPORTANT: don’t treat a table as an image
 
                         # --- Not a table: ICC or image ---
                         if hdu.data is None:
-                            print(f"[DocManager] HDU {i} '{extname or f'HDU{i}'}' has no data — noted as aux")
+                            #print(f"[DocManager] HDU {i} '{extname or f'HDU{i}'}' has no data — noted as aux")
                             continue
 
                         arr = np.asanyarray(hdu.data)
@@ -470,7 +936,7 @@ class DocManager(QObject):
                                 icc_path = f"{os.path.splitext(path)[0]}_{extname or f'HDU{i}'}_.icc".replace(" ", "_")
                                 with open(icc_path, "wb") as f:
                                     f.write(arr.tobytes())
-                                print(f"[DocManager] Extracted ICC profile → {icc_path}")
+                                #print(f"[DocManager] Extracted ICC profile → {icc_path}")
                                 created_any = True
                                 continue
                             except Exception as e_icc:
@@ -498,8 +964,7 @@ class DocManager(QObject):
                             }
                             _snapshot_header_for_metadata(aux_meta)
                             aux_doc = ImageDocument(a, aux_meta)
-                            self._docs.append(aux_doc)
-                            self.documentAdded.emit(aux_doc)
+                            self._register_doc(aux_doc)
                             try: aux_doc.changed.emit()
                             except Exception: pass
                             created_any = True
@@ -555,8 +1020,7 @@ class DocManager(QObject):
                         }
                         _snapshot_header_for_metadata(md0)
                         primary_doc = ImageDocument(arr0_f32, md0)
-                        self._docs.append(primary_doc)
-                        self.documentAdded.emit(primary_doc)
+                        self._register_doc(primary_doc)
                         try: primary_doc.changed.emit()
                         except Exception: pass
                         created_any = True
@@ -600,8 +1064,7 @@ class DocManager(QObject):
                         _snapshot_header_for_metadata(md)
 
                         sib = ImageDocument(arr_f32, md)
-                        self._docs.append(sib)
-                        self.documentAdded.emit(sib)
+                        self._register_doc(sib)
                         try: sib.changed.emit()
                         except Exception: pass
                         created_any = True
@@ -618,8 +1081,57 @@ class DocManager(QObject):
             return self._docs[-1]  # e.g., a table-only FITS or extra XISF image
 
         raise IOError(f"Could not load: {path}")
-
     
+    # --- Subwindow / ROI awareness -------------------------------------
+    def _active_subwindow(self):
+        """Return the active QMdiSubWindow (if any)."""
+        if self._mdi is None:
+            return None
+        try:
+            return self._mdi.activeSubWindow()
+        except Exception:
+            return None
+
+    def _active_view_widget(self):
+        """Return the active view widget (ImageSubWindow or TableSubWindow)."""
+        sw = self._active_subwindow()
+        if not sw:
+            return None
+        try:
+            return sw.widget()
+        except Exception:
+            return None
+
+    def _active_preview_roi(self):
+        """
+        Returns (x,y,w,h) if the active view is an ImageSubWindow with a selected Preview tab.
+        Else returns None.
+        """
+        #print("[DocManager] Checking for active preview ROI")
+        vw = self._active_view_widget()
+        if vw and hasattr(vw, "has_active_preview") and vw.has_active_preview():
+            try:
+                return vw.current_preview_roi()
+            except Exception:
+                return None
+        return None
+
+    def get_active_image(self, prefer_preview: bool = True):
+        """
+        Unified read: returns the ndarray a tool should operate on.
+        If a Preview tab is active and prefer_preview=True, return that crop.
+        Otherwise return the full document image.
+        """
+        doc = self.get_active_document()
+        if doc is None or doc.image is None:
+            return None
+        roi = self._active_preview_roi() if prefer_preview else None
+        if roi is None:
+            return doc.image
+        x, y, w, h = roi
+        return doc.image[y:y+h, x:x+w]
+
+
     # --- Slot -> Document ---
     def open_from_slot(self, slot_idx: int | None = None) -> "ImageDocument | None":
         if not self.image_manager:
@@ -647,8 +1159,7 @@ class DocManager(QObject):
         _snapshot_header_for_metadata(meta)
 
         doc = ImageDocument(img, meta)
-        self._docs.append(doc)
-        self.documentAdded.emit(doc)
+        self._register_doc(doc)
         return doc
     
     # --- Save ---
@@ -713,8 +1224,7 @@ class DocManager(QObject):
 
         # Fresh document (empty undo/redo)
         dup = ImageDocument(img_copy, meta, parent=self.parent())
-        self._docs.append(dup)
-        self.documentAdded.emit(dup)
+        self._register_doc(dup)
         return dup
 
     #def open_array(self, arr, metadata: dict | None = None, title: str | None = None) -> ImageDocument:
@@ -754,13 +1264,12 @@ class DocManager(QObject):
         _snapshot_header_for_metadata(meta)
 
         doc = ImageDocument(img, meta, parent=self.parent())
-        self._docs.append(doc)
-        self.documentAdded.emit(doc)
+        self._register_doc(doc)
         return doc
 
     # (optional alias for old code)
     open_numpy = open_array
-    create_document = open_array
+
 
     def create_document(self, image, metadata: dict | None = None, name: str | None = None) -> ImageDocument:
         return self.open_array(image, metadata=metadata, title=name)
@@ -787,9 +1296,15 @@ class DocManager(QObject):
         return None
 
     def set_active_document(self, doc: ImageDocument | None):
-        # only track docs we know about
         if doc is not None and doc not in self._docs:
             return
+        # ensure backref for legacy docs
+        if doc is not None and not hasattr(doc, "_doc_manager"):
+            try:
+                import weakref
+                doc._doc_manager = weakref.proxy(self)
+            except Exception:
+                doc._doc_manager = self
         self._active_doc = doc
 
     def set_mdi_area(self, mdi):
@@ -814,42 +1329,101 @@ class DocManager(QObject):
 
     def get_active_document(self):
         """
-        Return the currently active document if known. Fallbacks:
-        - Ask MDI directly if available
-        - Last opened doc
+        Return the active document-like object.
+        If a Preview tab is selected on the active ImageSubWindow, return a lightweight
+        _RoiViewDocument so tools that READ get the crop transparently.
+        Otherwise return the real ImageDocument.
         """
-        # 1) If we already know it, use it.
-        if self._active_doc is not None:
-            return self._active_doc if (self._active_doc in self._docs) else None
+        # Prefer cached (if set and still valid)
+        if self._active_doc is not None and self._active_doc in self._docs:
+            base_doc = self._active_doc
+        else:
+            # Ask MDI
+            base_doc = None
+            try:
+                if self._mdi is not None:
+                    sw = self._mdi.activeSubWindow()
+                    if sw is not None:
+                        w = sw.widget()
+                        base_doc = getattr(w, "document", None) or getattr(sw, "document", None)
+                        if base_doc is not None:
+                            self._active_doc = base_doc
+            except Exception:
+                pass
+            if base_doc is None:
+                base_doc = self._docs[-1] if self._docs else None
 
-        # 2) Try asking MDI directly
-        try:
-            if self._mdi is not None:
-                sw = self._mdi.activeSubWindow()
-                if sw is not None:
-                    w = sw.widget()
-                    doc = getattr(w, "document", None) or getattr(sw, "document", None)
-                    if doc is not None:
-                        self._active_doc = doc
-                        return doc
-        except Exception:
-            pass
+        # If no doc or doc doesn’t have an image (e.g., a TableDocument), just return it.
+        if base_doc is None or not isinstance(base_doc, ImageDocument) or base_doc.image is None:
+            return base_doc
 
-        # 3) Fallback: last doc
-        return self._docs[-1] if self._docs else None
+        # Check whether the active view is on a Preview tab
+        vw = self._active_view_widget()  # uses _mdi
+        if vw and hasattr(vw, "has_active_preview") and vw.has_active_preview():
+            try:
+                roi = vw.current_preview_roi()  # (x,y,w,h) in FULL coords
+            except Exception:
+                roi = None
+            if roi:
+                try:
+                    name_suffix = f" (Preview {vw.current_preview_name() or ''})"
+                    doc = self._build_roi_document(base_doc, roi)
+                    # optional: update display name suffix if you want it
+                    try:
+                        doc.metadata["display_name"] = f"{base_doc.display_name()}{name_suffix}"
+                    except Exception:
+                        pass
+                    return doc
+                except Exception:
+                    # If anything fails, fall back to full doc
+                    return base_doc
+
+        # No preview selected → return the real document
+        return base_doc
+
 
     def update_active_document(self, updated_image, metadata=None, step_name: str = "Edit"):
-        """
-        Apply an edit to the active document (records undo/redo).
-        """
-        import numpy as np
-        doc = self.get_active_document()
-        if doc is None:
+
+        view_doc = self.get_active_document()
+        if view_doc is None:
             raise RuntimeError("No active document")
+
         img = np.asarray(updated_image)
         if img.dtype != np.float32:
             img = img.astype(np.float32, copy=False)
-        doc.apply_edit(img, dict(metadata or {}), step_name)
+
+        if isinstance(view_doc, _RoiViewDocument):
+            #print("[DocManager] update_active_document: updating ROI doc")
+            # Update ONLY the preview
+            view_doc.apply_edit(img, dict(metadata or {}), step_name)
+
+            # 🔔 Force the active ImageSubWindow to repaint the Preview tab
+            vw = self._active_view_widget()
+            if vw is not None:
+                try:
+                    #print("[DocManager] update_active_document: refreshing active view for ROI doc")
+                    # Prefer a public slot if you have one; fall back to _render().
+                    if hasattr(vw, "refresh_from_docman") and callable(vw.refresh_from_docman):
+                        vw.refresh_from_docman(doc=view_doc, roi=getattr(view_doc, "_roi", None))
+                        #print("[DocManager] refresh_from_docman called")
+                    else:
+                        vw._render()  # fires immediately
+                        #print("[DocManager] _render() called")
+                except Exception:
+                    #print("[DocManager] Error occurred while refreshing active view")
+                    pass
+            return
+
+        # Full image path (unchanged)
+        if isinstance(view_doc, ImageDocument):
+            view_doc.apply_edit(img, dict(metadata or {}), step_name)
+            try:
+                self.imageRegionUpdated.emit(view_doc, None)
+            except Exception:
+                pass
+        else:
+            raise RuntimeError("Active document is not an image")
+
 
     # Back-compat/aliases so tools can call any of these:
     def update_image(self, updated_image, metadata=None, step_name: str = "Edit"):
