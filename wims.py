@@ -179,6 +179,106 @@ class SortableTreeWidgetItem(QTreeWidgetItem):
                 return self.text(col) < other.text(col)
         return self.text(col) < other.text(col)
 
+# ---------- coordinate parsing / formatting ----------
+def _parse_deg_with_suffix(txt: str, kind: str) -> float:
+    """
+    Parse latitude/longitude accepting:
+      30.1, -111, "30.1N", "111W", " -30.0 s ", etc.
+    kind: "lat" or "lon" (for range checks and suffix semantics)
+    Returns signed decimal degrees (E+, W-, N+, S-).
+    Raises ValueError on bad input.
+    """
+    if txt is None:
+        raise ValueError("empty")
+    t = str(txt).strip().replace("°", "")
+    if not t:
+        raise ValueError("empty")
+
+    # extract trailing letter (N/S/E/W), case-insensitive
+    suffix = ""
+    if t and t[-1].upper() in ("N", "S", "E", "W"):
+        suffix = t[-1].upper()
+        t = t[:-1].strip()
+
+    val = float(t)  # may be signed already
+
+    # apply suffix to sign if present
+    if suffix:
+        if kind == "lat":
+            if suffix == "N":
+                val = abs(val)
+            elif suffix == "S":
+                val = -abs(val)
+            else:
+                raise ValueError("Latitude suffix must be N or S")
+        elif kind == "lon":
+            if suffix == "E":
+                val = abs(val)   # E is positive
+            elif suffix == "W":
+                val = -abs(val)  # W is negative
+            else:
+                raise ValueError("Longitude suffix must be E or W")
+
+    # clamp / validate ranges
+    if kind == "lat":
+        if not (-90.0 <= val <= 90.0):
+            raise ValueError("Latitude must be in [-90, 90]")
+    else:
+        if not (-180.0 <= val <= 180.0):
+            raise ValueError("Longitude must be in [-180, 180]")
+
+    return val
+
+
+def _format_with_suffix(val: float, kind: str) -> str:
+    """
+    Render signed degrees with hemisphere suffix.
+    e.g. lat  -33.5 -> '33.5S'
+         lon  -111  -> '111W'
+    """
+    v = float(val)
+    if kind == "lat":
+        hemi = "N" if v >= 0 else "S"
+    else:
+        hemi = "E" if v >= 0 else "W"
+    return f"{abs(v):g}{hemi}"
+
+def _tz_vs_longitude_hint(tz_name: str, date_str: str, time_str: str, lon_deg: float):
+    """
+    Compare timezone UTC offset to longitude.
+    Heuristic:
+      • sign check: West longitudes (~W) usually have negative UTC offsets; East longitudes (~E) positive
+      • central meridian check: |lon| should be near |offset_hours*15|; flag if > 45°
+    Returns (should_warn: bool, human_msg: str, utc_str: str, central_meridian: float)
+    """
+    try:
+        local_tz = pytz.timezone(tz_name)
+        naive = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
+        local_dt = local_tz.localize(naive)
+        off_hours = (local_dt.utcoffset() or pd.Timedelta(0)).total_seconds() / 3600.0
+    except Exception:
+        return (False, "", "", 0.0)
+
+    # UTC string like UTC−7 or UTC+5:30
+    hours = int(off_hours)
+    mins  = int(round(abs(off_hours - hours) * 60))
+    sign  = "−" if off_hours < 0 else "+"
+    if mins:
+        utc_str = f"UTC{sign}{abs(hours)}:{mins:02d}"
+    else:
+        utc_str = f"UTC{sign}{abs(hours)}"
+
+    central = off_hours * 15.0  # “central meridian” for that offset
+    sign_ok = (abs(off_hours) < 1e-9) or (lon_deg == 0) or ((lon_deg > 0) == (off_hours > 0))
+    far     = abs(abs(lon_deg) - abs(central)) > 45.0
+
+    if (not sign_ok) or far:
+        msg = (f"Timezone {tz_name} ({utc_str}) looks inconsistent with longitude "
+               f"{abs(lon_deg):g}{'E' if lon_deg>0 else 'W'} "
+               f"(central meridian ≈ {abs(central):.0f}°{'E' if central>0 else 'W'}).")
+        return (True, msg, utc_str, central)
+    return (False, "", utc_str, central)
+
 
 class WhatsInMySkyDialog(QDialog):
     def __init__(self, parent=None, wims_path: Optional[str] = None, wrench_path: Optional[str] = None):
@@ -211,7 +311,7 @@ class WhatsInMySkyDialog(QDialog):
 
         r = 0
         layout.addWidget(QLabel("Latitude:"), r, 0); layout.addWidget(self.latitude_entry, r, 1); r += 1
-        layout.addWidget(QLabel("Longitude:"), r, 0); layout.addWidget(self.longitude_entry, r, 1); r += 1
+        layout.addWidget(QLabel("Longitude (E+, W−):"), r, 0); layout.addWidget(self.longitude_entry, r, 1); r += 1
         layout.addWidget(QLabel("Date (YYYY-MM-DD):"), r, 0); layout.addWidget(self.date_entry, r, 1); r += 1
         layout.addWidget(QLabel("Time (HH:MM):"), r, 0); layout.addWidget(self.time_entry, r, 1); r += 1
         layout.addWidget(QLabel("Time Zone:"), r, 0); layout.addWidget(self.timezone_combo, r, 1); r += 1
@@ -313,16 +413,42 @@ class WhatsInMySkyDialog(QDialog):
     # ---------- actions ----------
     def start_calculation(self):
         try:
-            latitude  = float(self.latitude_entry.text())
-            longitude = float(self.longitude_entry.text())
+            orig_lat_txt = self.latitude_entry.text()
+            orig_lon_txt = self.longitude_entry.text()
+
+            latitude  = _parse_deg_with_suffix(orig_lat_txt,  "lat")
+            longitude = _parse_deg_with_suffix(orig_lon_txt, "lon")
+
+            # Pretty-print back with suffixes
+            self.latitude_entry.setText(_format_with_suffix(latitude,  "lat"))
+            self.longitude_entry.setText(_format_with_suffix(longitude, "lon"))
+
             date_str  = self.date_entry.text().strip()
             time_str  = self.time_entry.text().strip()
             tz_str    = self.timezone_combo.currentText()
             min_alt   = float(self.min_altitude_entry.text())
-        except ValueError:
-            self.update_status("Invalid input: Latitude, Longitude, and Min Altitude must be numeric.")
+        except ValueError as e:
+            self.update_status(f"Invalid input: {e}")
             return
 
+        # Heuristic warning (and gentle auto-fix if user probably forgot the suffix)
+        warn, msg, utc_str, central = _tz_vs_longitude_hint(tz_str, date_str, time_str, longitude)
+        if warn:
+            # If the user typed a bare number (no N/S/E/W) and sign mismatches TZ, suggest flip
+            bare_lon = (orig_lon_txt.strip() and orig_lon_txt.strip()[-1].upper() not in ("E","W"))
+            sign_mismatch = not ((longitude > 0) == (central > 0) or abs(central) < 1e-6 or longitude == 0)
+
+            if bare_lon and sign_mismatch:
+                # Flip once, write back, and tell the user.
+                longitude = -longitude
+                self.longitude_entry.setText(_format_with_suffix(longitude, "lon"))
+                self.update_status(f"{msg} → Assuming you meant {_format_with_suffix(longitude, 'lon')} (auto-corrected).")
+            else:
+                self.update_status(msg + " Please verify your longitude/timezone.")
+        else:
+            self.update_status("Inputs look consistent.")
+
+        # Persist settings (numeric)
         self._save_settings(latitude, longitude, date_str, time_str, tz_str, min_alt)
 
         catalogs = [name for name, cb in self.catalog_vars.items() if cb.isChecked()]

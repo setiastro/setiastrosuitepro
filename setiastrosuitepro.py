@@ -306,7 +306,7 @@ from pro.status_log_dock import StatusLogDock
 from pro.log_bus import LogBus
 
 
-VERSION = "1.4.6"
+VERSION = "1.4.7"
 
 
 
@@ -1079,6 +1079,13 @@ class AstroSuiteProMainWindow(QMainWindow):
         except Exception:
             pass
 
+        try:
+            QApplication.instance().focusChanged.connect(
+                lambda *_: QTimer.singleShot(0, self.update_undo_redo_action_labels)
+            )
+        except Exception:
+            pass
+
         self.shortcuts.load_shortcuts()
         self._ensure_persistent_names() 
         self._restore_window_placement()
@@ -1628,13 +1635,45 @@ class AstroSuiteProMainWindow(QMainWindow):
         tb.addAction(self.act_zoom_1_1)
         tb.addAction(self.act_zoom_fit)
 
-        # Style
+        # Style the autostretch button + add menu
         btn = tb.widgetForAction(self.act_autostretch)
         if isinstance(btn, QToolButton):
-            # split-button menu with Linked + Hard profile
             menu = QMenu(btn)
             menu.addAction(self.act_stretch_linked)
-            menu.addAction(self.act_hardstretch)   # keep your hard profile here too
+            menu.addAction(self.act_hardstretch)
+
+            # NEW: advanced controls + presets
+            menu.addSeparator()
+            menu.addAction(self.act_display_target)
+            menu.addAction(self.act_display_sigma)
+
+            presets = QMenu("Presets", menu)
+            a_norm = presets.addAction("Normal (target 0.30, σ 5)")
+            a_midy = presets.addAction("Mid (target 0.40, σ 3)")
+            a_hard = presets.addAction("Hard (target 0.50, σ 2)")
+            menu.addMenu(presets)
+
+            # push numbers to the active view and (optionally) turn on autostretch
+            def _apply_preset(t, s, also_enable=True):
+                self.settings.setValue("display/target", float(t))
+                self.settings.setValue("display/sigma", float(s))
+                sw = self.mdi.activeSubWindow()
+                if not sw:
+                    return
+                view = sw.widget()
+                if hasattr(view, "set_autostretch_target"):
+                    view.set_autostretch_target(float(t))
+                if hasattr(view, "set_autostretch_sigma"):
+                    view.set_autostretch_sigma(float(s))
+                if also_enable and not getattr(view, "autostretch_enabled", False):
+                    if hasattr(view, "set_autostretch"):
+                        view.set_autostretch(True)
+                    self._sync_autostretch_action(True)
+
+            a_norm.triggered.connect(lambda: _apply_preset(0.30, 5.0))
+            a_midy.triggered.connect(lambda: _apply_preset(0.40, 3.0))
+            a_hard.triggered.connect(lambda: _apply_preset(0.50, 2.0))
+
             btn.setMenu(menu)
             btn.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
 
@@ -1835,6 +1874,20 @@ class AstroSuiteProMainWindow(QMainWindow):
             self.settings.value("display/stretch_linked", False, type=bool)
         )
         self.act_stretch_linked.toggled.connect(self._set_linked_stretch_from_action)
+
+        self.act_display_target = QAction("Set Target Median…", self)
+        self.act_display_target.setStatusTip("Set the target median for Display-Stretch (e.g., 0.30)")
+        self.act_display_target.triggered.connect(self._edit_display_target)
+
+        self.act_display_sigma = QAction("Set Sigma…", self)
+        self.act_display_sigma.setStatusTip("Set the sigma for Display-Stretch (e.g., 5.0)")
+        self.act_display_sigma.triggered.connect(self._edit_display_sigma)
+
+        # Defaults if not already present
+        if self.settings.value("display/target", None) is None:
+            self.settings.setValue("display/target", 0.30)
+        if self.settings.value("display/sigma", None) is None:
+            self.settings.setValue("display/sigma", 5.0)
 
         self.act_zoom_1_1 = QAction("1:1", self)
         self.act_zoom_1_1.setStatusTip("Zoom to 100% (pixel-for-pixel)")
@@ -3679,56 +3732,165 @@ class AstroSuiteProMainWindow(QMainWindow):
     def starnet_path(self) -> str:
         return self.settings.value("paths/starnet", "", type=str)
 
+    def _unwrap_history_doc(self, d):
+        """
+        Return the *real* document that owns the history stack for `d`.
+        Unwraps proxies/ROI/preview wrappers when present.
+        """
+        seen = set()
+        while d is not None and id(d) not in seen:
+            seen.add(id(d))
+
+            # Common wrappers: ROI/proxy sets _parent_doc or base_document
+            for key in ("history_document", "get_history_document", "base_document", "_parent_doc"):
+                try:
+                    v = getattr(d, key, None)
+                    if callable(v):
+                        v = v()
+                    if v is not None:
+                        d = v
+                        break
+                except Exception:
+                    pass
+            else:
+                # _DocProxy pattern: _target() returns current doc
+                try:
+                    tgt = getattr(d, "_target", None)
+                    if callable(tgt):
+                        t = tgt()
+                        if t is not None and t is not d:
+                            d = t
+                            continue
+                except Exception:
+                    pass
+                # Nothing else to unwrap
+                break
+        return d
+
     def _active_history_doc(self):
         dm = getattr(self, "doc_manager", None) or getattr(self, "docman", None)
         if not dm:
             return None
-        d = dm.get_active_document()
-        parent = getattr(d, "_parent_doc", None)  # ROI wrapper exposes this
-        return parent if parent is not None else d
 
+        # Prefer the currently active subwindow doc, then fall back to doc_manager’s active doc.
+        d = None
+        try:
+            sw = self.mdi.activeSubWindow()
+            if sw is not None and sw.widget() is not None:
+                d = getattr(sw.widget(), "document", None)
+        except Exception:
+            d = None
+        if d is None:
+            d = dm.get_active_document()
 
+        return self._unwrap_history_doc(d)
+
+    def _subwindow_for_history_doc(self, hist_doc):
+        """
+        Return the QMdiSubWindow showing a view whose base/history doc resolves to `hist_doc`.
+        """
+        if hist_doc is None:
+            return None
+        try:
+            for sw in self.mdi.subWindowList():
+                try:
+                    vw = sw.widget()
+                except RuntimeError:
+                    continue
+                if vw is None:
+                    continue
+                # Try explicit base link first
+                base = getattr(vw, "base_document", None)
+                if base is hist_doc:
+                    return sw
+                # Then unwrap the view's document to its history root
+                vdoc = getattr(vw, "document", None)
+                if vdoc is not None and self._unwrap_history_doc(vdoc) is hist_doc:
+                    return sw
+        except Exception:
+            pass
+        return None
+
+    # ---------- actions ----------
     def _undo_active(self):
         doc = self._active_history_doc()
         if doc and getattr(doc, "can_undo", lambda: False)():
+            # Ensure the correct view is active so Qt routes shortcut focus correctly
+            sw = self._subwindow_for_history_doc(doc)
+            if sw is not None:
+                try:
+                    self.mdi.setActiveSubWindow(sw)
+                except Exception:
+                    pass
             name = doc.undo()
             if name:
                 self._log(f"Undo: {name}")
-        self.update_undo_redo_action_labels()
+        # Defer label refresh to end of event loop (lets views repaint first)
+        QTimer.singleShot(0, self.update_undo_redo_action_labels)
 
     def _redo_active(self):
         doc = self._active_history_doc()
         if doc and getattr(doc, "can_redo", lambda: False)():
+            sw = self._subwindow_for_history_doc(doc)
+            if sw is not None:
+                try:
+                    self.mdi.setActiveSubWindow(sw)
+                except Exception:
+                    pass
             name = doc.redo()
             if name:
                 self._log(f"Redo: {name}")
-        self.update_undo_redo_action_labels()
+        QTimer.singleShot(0, self.update_undo_redo_action_labels)
 
     def update_undo_redo_action_labels(self):
         if not hasattr(self, "act_undo"):  # not built yet
             return
+
+        # Always compute against the history root
         doc = self._active_history_doc()
+
         if doc:
-            can_u = doc.can_undo() if hasattr(doc, "can_undo") else False
-            can_r = doc.can_redo() if hasattr(doc, "can_redo") else False
-            undo_name = doc.last_undo_name() if hasattr(doc, "last_undo_name") else None
-            redo_name = doc.last_redo_name() if hasattr(doc, "last_redo_name") else None
+            try:
+                can_u = bool(doc.can_undo()) if hasattr(doc, "can_undo") else False
+            except Exception:
+                can_u = False
+            try:
+                can_r = bool(doc.can_redo()) if hasattr(doc, "can_redo") else False
+            except Exception:
+                can_r = False
+
+            undo_name = None
+            redo_name = None
+            try:
+                undo_name = doc.last_undo_name() if hasattr(doc, "last_undo_name") else None
+            except Exception:
+                pass
+            try:
+                redo_name = doc.last_redo_name() if hasattr(doc, "last_redo_name") else None
+            except Exception:
+                pass
 
             self.act_undo.setText(f"Undo {undo_name}" if (can_u and undo_name) else "Undo")
             self.act_redo.setText(f"Redo {redo_name}" if (can_r and redo_name) else "Redo")
 
             self.act_undo.setToolTip("Nothing to undo" if not can_u else (f"Undo: {undo_name}" if undo_name else "Undo last action"))
             self.act_redo.setToolTip("Nothing to redo" if not can_r else (f"Redo: {redo_name}" if redo_name else "Redo last action"))
+
             self.act_undo.setStatusTip(self.act_undo.toolTip())
             self.act_redo.setStatusTip(self.act_redo.toolTip())
-            self.act_undo.setEnabled(bool(can_u))
-            self.act_redo.setEnabled(bool(can_r))
+
+            self.act_undo.setEnabled(can_u)
+            self.act_redo.setEnabled(can_r)
         else:
             # No active doc
             for a, tip in ((self.act_undo, "Nothing to undo"),
-                        (self.act_redo, "Nothing to redo")):
-                a.setText(a.text().split(" ")[0])  # "Undo"/"Redo"
-                a.setToolTip(tip); a.setStatusTip(tip); a.setEnabled(False)
+                           (self.act_redo, "Nothing to redo")):
+                # Normalize label to plain "Undo"/"Redo"
+                base = "Undo" if "Undo" in a.text() else ("Redo" if "Redo" in a.text() else a.text())
+                a.setText(base)
+                a.setToolTip(tip)
+                a.setStatusTip(tip)
+                a.setEnabled(False)
 
 
     def _current_document(self):
@@ -5234,6 +5396,47 @@ class AstroSuiteProMainWindow(QMainWindow):
                 vbar.setValue(min(vbar.maximum(), cy))
         except Exception:
             pass
+
+    def _edit_display_target(self):
+        from PyQt6.QtWidgets import QInputDialog
+        cur = float(self.settings.value("display/target", 0.30, type=float))
+        val, ok = QInputDialog.getDouble(
+            self, "Target Median", "Target (0.01 – 0.90):", cur, 0.01, 0.90, 3
+        )
+        if not ok:
+            return
+        self.settings.setValue("display/target", float(val))
+        sw = self.mdi.activeSubWindow()
+        if not sw:
+            return
+        view = sw.widget()
+        if hasattr(view, "set_autostretch_target"):
+            view.set_autostretch_target(float(val))
+        if not getattr(view, "autostretch_enabled", False):
+            if hasattr(view, "set_autostretch"):
+                view.set_autostretch(True)
+            self._sync_autostretch_action(True)
+
+    def _edit_display_sigma(self):
+        from PyQt6.QtWidgets import QInputDialog
+        cur = float(self.settings.value("display/sigma", 5.0, type=float))
+        val, ok = QInputDialog.getDouble(
+            self, "Sigma", "Sigma (0.5 – 10.0):", cur, 0.5, 10.0, 2
+        )
+        if not ok:
+            return
+        self.settings.setValue("display/sigma", float(val))
+        sw = self.mdi.activeSubWindow()
+        if not sw:
+            return
+        view = sw.widget()
+        if hasattr(view, "set_autostretch_sigma"):
+            view.set_autostretch_sigma(float(val))
+        if not getattr(view, "autostretch_enabled", False):
+            if hasattr(view, "set_autostretch"):
+                view.set_autostretch(True)
+            self._sync_autostretch_action(True)
+
 
     def _toggle_autostretch(self, on: bool):
         sw = self.mdi.activeSubWindow()
