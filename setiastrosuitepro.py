@@ -7117,75 +7117,151 @@ class AstroSuiteProMainWindow(QMainWindow):
                 return a
         return None
 
-    def _on_astrometry_drop(self, payload: dict, target_sw):
-        # Resolve source doc from ptr
-        src_ptr = int(payload.get("wcs_from_doc_ptr", 0))
-        src = self._doc_by_ptr(src_ptr)
-        if src is None:
+    # in AstroSuiteProMainWindow (or wherever your drop handlers are)
+    def _resolve_doc_from_payload(self, payload: dict, *, prefer_base: bool = True):
+        """
+        Resolve an ImageDocument from a DnD payload. Prefer the backing/base doc
+        (full image) over a preview/proxy when requested.
+        """
+        dm = getattr(self, "docman", None) or getattr(self, "doc_manager", None)
+        if dm is None:
+            return None
+
+        # 1) Try by uid (prefer base)
+        base_uid = payload.get("base_doc_uid")
+        doc_uid  = payload.get("doc_uid")
+        if prefer_base and base_uid:
+            try:
+                d = dm.get_document_by_uid(base_uid)
+                if d is not None:
+                    return d
+            except Exception:
+                pass
+        if doc_uid:
+            try:
+                d = dm.get_document_by_uid(doc_uid)
+                if d is not None:
+                    return d
+            except Exception:
+                pass
+
+        # 2) Fallback: try file path match
+        fp = (payload.get("file_path") or "").strip()
+        if fp:
+            try:
+                for d in dm.all_documents():
+                    meta = getattr(d, "metadata", {}) or {}
+                    if (meta.get("file_path") or "").strip() == fp:
+                        return d
+            except Exception:
+                pass
+
+        # 3) Last resort: pointer from same-process drag (may be proxy)
+        ptr = payload.get("wcs_from_doc_ptr")
+        if ptr and hasattr(dm, "get_document_by_ptr"):
+            try:
+                d = dm.get_document_by_ptr(ptr)
+                if d is not None:
+                    # If this is a preview/proxy, map it back to the base if possible
+                    if hasattr(dm, "get_base_document_for"):
+                        b = dm.get_base_document_for(d) or d
+                        return b
+                    return d
+            except Exception:
+                pass
+
+        return None
+
+
+    def _target_doc_from_subwindow(self, subwin) -> object | None:
+        """Resolve the true target document for a QMdiSubWindow (map preview → base)."""
+        dm = getattr(self, "docman", None) or getattr(self, "doc_manager", None)
+        if subwin is None:
+            return None
+        w = subwin.widget()
+        # Prefer DocManager’s mapping (handles preview proxies)
+        if dm and hasattr(dm, "get_document_for_view"):
+            try:
+                d = dm.get_document_for_view(w)
+                if d is not None:
+                    return d
+            except Exception:
+                pass
+        # Fallbacks
+        if hasattr(w, "document"):
+            return w.document
+        if hasattr(self, "get_active_document"):
+            try:
+                return self.get_active_document()
+            except Exception:
+                pass
+        return None
+
+
+    def _on_astrometry_drop(self, payload: dict, target_subwindow):
+        """
+        Handle MIME_ASTROMETRY drops. Copies WCS/SIP from the *base* source doc
+        into the true target doc (base if a preview tab is active).
+        """
+        dm = getattr(self, "docman", None) or getattr(self, "doc_manager", None)
+        if dm is None:
+            QMessageBox.information(self, "Copy Astrometry", "No document manager.")
+            return
+
+        # 1) Resolve source (prefer base doc over preview/proxy)
+        src_doc = self._resolve_doc_from_payload(payload, prefer_base=True)
+        if src_doc is None:
             QMessageBox.information(self, "Copy Astrometry", "Source view not found.")
             return
 
-        # Resolve target doc from the QMdiSubWindow we got
-        if target_sw is None or not hasattr(target_sw, "widget"):
-            QMessageBox.information(self, "Copy Astrometry", "Drop onto a view to copy its solution.")
-            return
-        target_view = target_sw.widget()
-        tgt = getattr(target_view, "document", None)
-        if tgt is None:
-            QMessageBox.information(self, "Copy Astrometry", "Target view has no document.")
+        # 2) Resolve target (map preview tab → ROI doc → base doc as needed)
+        tgt_doc = self._target_doc_from_subwindow(target_subwindow)
+        if tgt_doc is None:
+            QMessageBox.information(self, "Copy Astrometry", "No target image.")
             return
 
-        # Extract + apply
-        wcs = self._extract_wcs_dict(src)
+        # 3) Extract WCS dict from source
+        if hasattr(self, "_extract_wcs_dict"):
+            try:
+                wcs = self._extract_wcs_dict(src_doc)
+            except Exception:
+                wcs = {}
+        else:
+            wcs = {}
+
         if not wcs:
-            QMessageBox.information(self, "Copy Astrometry", "No astrometric solution found in the source view.")
+            QMessageBox.information(self, "Copy Astrometry", "Source has no WCS/SIP solution.")
             return
 
-        ok = self._apply_wcs_dict_to_doc(tgt, wcs)
+        # 4) Apply to target
+        ok = False
+        if hasattr(self, "_apply_wcs_dict_to_doc"):
+            try:
+                ok = bool(self._apply_wcs_dict_to_doc(tgt_doc, dict(wcs)))
+            except Exception:
+                ok = False
+
         if not ok:
-            QMessageBox.warning(self, "Copy Astrometry", "Failed to apply astrometric solution to target.")
+            QMessageBox.warning(self, "Copy Astrometry", "Failed to apply astrometric solution.")
             return
 
-        # Make the drop target active so the header dock tracks it,
-        # and force-refresh the header viewer.
-        def _activate_and_refresh():
-            try:
-                self.mdi.setActiveSubWindow(target_sw)
-                target_sw.activateWindow()
-                target_sw.raise_()
-                target_sw.widget().setFocus(Qt.FocusReason.MouseFocusReason)
-            except Exception:
-                pass
-            try:
-                # If your header dock attaches to the active doc via signals,
-                # this explicit refresh guarantees the UI updates immediately.
-                self._hdr_refresh_timer.start(0)
-            except Exception:
-                pass
-            try:
-                # If other parts of the UI listen to this signal
-                self.currentDocumentChanged.emit(tgt)
-            except Exception:
-                pass
-
-        _activate_and_refresh()
-        QTimer.singleShot(0, _activate_and_refresh)  # run again next tick (post-drop)
-
-        # Optional: push undo step if your doc manager supports it
-        dm = getattr(self, "doc_manager", None) or getattr(self, "docman", None)
-        push = getattr(dm, "push_history", None) or getattr(dm, "add_history", None)
-        if callable(push):
-            try:
-                src_name = getattr(src, "display_name", lambda: None)() or "Source"
-                push(tgt, f"Copy Astrometric Solution (from {src_name})")
-            except Exception:
-                pass
-
-        # Log
+        # 5) Refresh UI bits immediately
         try:
-            self._log(f"Copied astrometric solution from '{src.display_name()}' to '{tgt.display_name()}'.")
+            if hasattr(self, "_refresh_header_viewer"):
+                self._refresh_header_viewer(tgt_doc)
+            if hasattr(self, "currentDocumentChanged"):
+                self.currentDocumentChanged.emit(tgt_doc)
         except Exception:
             pass
+
+        try:
+            sname = getattr(src_doc, "display_name", lambda: None)() or "Source"
+            tname = getattr(tgt_doc, "display_name", lambda: None)() or "Target"
+            QMessageBox.information(self, "Copy Astrometry",
+                                    f"Copied solution from “{sname}” to “{tname}”.")
+        except Exception:
+            pass
+
 
     def _open_statistical_stretch_with_preset(self, preset: dict):
         """
