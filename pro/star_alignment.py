@@ -16,7 +16,7 @@ try:
 except Exception:
     pass
 
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed, wait, FIRST_COMPLETED
 from itertools import combinations
 from typing import Callable, Iterable, Tuple
 import tempfile
@@ -117,10 +117,13 @@ def _align_prefs(settings: QSettings | None = None) -> dict:
         "downsample":  _get("downsample", 2, int),
         "h_reproj":    _get("h_reproj", 3.0, float),
 
-        # New knobs (also read legacy align/* if present)
-        "det_sigma":   _get("det_sigma", 10.0, float),   # try 8–12 in dense fields
+        # Star detection / solve limits
+        "det_sigma":   _get("det_sigma", 12.0, float),   # try 8–12 in dense fields
         "limit_stars": _get("limit_stars", 500, int),    # 500–1500 typical
         "minarea":     _get("minarea", 10, int),
+
+        # NEW: per-job timeout (seconds)
+        "timeout_per_job_sec": _get("timeout_per_job_sec", 300, int),
     }
 
     return prefs
@@ -1978,11 +1981,9 @@ class StarRegistrationThread(QThread):
             self.progress_update.emit(
                 f"Skipping {skipped} frame(s) already within {self.shift_tolerance:.2f}px."
             )
-            # Advance progress for skipped items so the bar moves
             for _ in range(skipped):
                 self._increment_progress()
 
-        # If nothing to do in this pass, we’re already converged
         if not work_list:
             self.transform_deltas.append([
                 self.delta_transforms.get(os.path.normpath(f), 0.0)
@@ -1998,7 +1999,9 @@ class StarRegistrationThread(QThread):
         procs = max(2, min((os.cpu_count() or 8), 32))
         self.progress_update.emit(f"Using {procs} processes for stellar alignment (HW={os.cpu_count() or 8}).")
 
-        # Build jobs (orig path, current 2x3, ref_small, Wref, Href, resample_flag)
+        # Jobs now include timeout seconds (from prefs)
+        timeout_sec = int(self.align_prefs.get("timeout_per_job_sec", 300))
+
         jobs = []
         for original_file in work_list:
             orig_key = os.path.normpath(original_file)
@@ -2009,63 +2012,96 @@ class StarRegistrationThread(QThread):
                 float(self.det_sigma), int(self.limit_stars), int(self.minarea)
             ))
 
-        # Run the delta solves out-of-process (true multi-core)
-        from concurrent.futures import ProcessPoolExecutor, as_completed
-        with ProcessPoolExecutor(max_workers=procs) as ex:
-            futs = [ex.submit(_solve_delta_job, j) for j in jobs]
-            for fut in as_completed(futs):
-                try:
-                    orig_path, T_new, err = fut.result()
-                except Exception as e:
-                    orig_path, T_new, err = ("<unknown>", None, f"Worker crashed: {e}")
+        # Submit all jobs and track start times for per-job timeout
+        executor = ProcessPoolExecutor(max_workers=procs)
+        try:
+            fut_info = {}  # future -> (start_monotonic, orig_path)
+            pending = set()
+            for j in jobs:
+                f = executor.submit(_solve_delta_job, j)
+                fut_info[f] = (time.monotonic(), j[0])
+                pending.add(f)
 
-                if err:
-                    self.on_worker_error(err)
+            # Process futures as they complete; time out stragglers individually
+            while pending:
+                done, pending = wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
+
+                # Handle completions
+                for fut in done:
+                    start_t, orig_path = fut_info.pop(fut, (None, "<unknown>"))
+                    try:
+                        orig_path_r, T_new, err = fut.result()
+                    except Exception as e:
+                        orig_path_r, T_new, err = (orig_path or "<unknown>", None, f"Worker crashed: {e}")
+
+                    if err:
+                        self.on_worker_error(err)
+                        self._increment_progress()
+                        continue
+
+                    # Collate delta + accumulate transform
+                    k = os.path.normpath(orig_path_r)
+                    T_new = np.array(T_new, dtype=np.float64).reshape(2, 3)
+                    self.delta_transforms[k] = float(np.hypot(T_new[0, 2], T_new[1, 2]))
+
+                    T_prev = np.array(self.alignment_matrices.get(k, IDENTITY_2x3), dtype=np.float64).reshape(2, 3)
+                    prev_3 = np.vstack([T_prev, [0, 0, 1]])
+                    new_3  = np.vstack([T_new,  [0, 0, 1]])
+                    self.alignment_matrices[k] = (new_3 @ prev_3)[0:2, :]
+
+                    self.on_worker_progress(
+                        f"Astroalign delta for {os.path.basename(orig_path_r)} "
+                        f"(model={self.align_model}): dx={T_new[0, 2]:.2f}, dy={T_new[1, 2]:.2f}"
+                    )
                     self._increment_progress()
-                    continue
 
-                # Collate the *delta* and accumulate into the running 2x3,
-                # mirroring your on_worker_result_transform logic:
-                k = os.path.normpath(orig_path)
-                T_new = np.array(T_new, dtype=np.float64).reshape(2, 3)
+                # Check timeouts on the still-pending set (do not block)
+                now = time.monotonic()
+                to_forget = []
+                for fut in pending:
+                    start_t, orig_path = fut_info.get(fut, (None, "<unknown>"))
+                    if start_t is None:
+                        continue
+                    if (now - start_t) > timeout_sec:
+                        # Mark as timed out and drop from our wait set
+                        base = os.path.basename(orig_path or "<unknown>")
+                        self.on_worker_error(f"Astroalign timeout for {base} (>{timeout_sec}s) – skipping")
+                        # We can't kill a running process here, but we stop waiting on it:
+                        to_forget.append(fut)
+                        self._increment_progress()
+                # Remove timed-out futures from our tracking/pending sets
+                for fut in to_forget:
+                    fut_info.pop(fut, None)
+                    if fut in pending:
+                        pending.remove(fut)
 
-                # delta magnitude for convergence reporting
-                self.delta_transforms[k] = float(np.hypot(T_new[0, 2], T_new[1, 2]))
+            # Collate this pass’ deltas deterministically in original order
+            pass_deltas = []
+            aligned_count = 0
+            for orig in self.original_files:
+                k = os.path.normpath(orig)
+                d = self.delta_transforms.get(k, 0.0)
+                pass_deltas.append(d)
+                if d <= self.shift_tolerance:
+                    aligned_count += 1
 
-                T_prev = np.array(self.alignment_matrices.get(k, IDENTITY_2x3), dtype=np.float64).reshape(2, 3)
-                prev_3 = np.vstack([T_prev, [0, 0, 1]])
-                new_3  = np.vstack([T_new,  [0, 0, 1]])
-                combined = new_3 @ prev_3
-                self.alignment_matrices[k] = combined[0:2, :]
+            self.transform_deltas.append(pass_deltas)
 
-                # progress line like the original worker
-                self.on_worker_progress(
-                    f"Astroalign delta for {os.path.basename(orig_path)} "
-                    f"(model={self.align_model}): dx={T_new[0, 2]:.2f}, dy={T_new[1, 2]:.2f}"
-                )
-                self._increment_progress()
+            preview = ", ".join([f"{d:.2f}" for d in pass_deltas[:10]])
+            if len(pass_deltas) > 10:
+                preview += f" … ({len(pass_deltas)} total)"
+            self.progress_update.emit(f"Pass {pass_index + 1} delta shifts: [{preview}]")
+            if aligned_count:
+                self.progress_update.emit(f"Skipped (delta < {self.shift_tolerance:.2f}px): {aligned_count} frame(s)")
 
-        # Collate deltas deterministically in original order
-        pass_deltas = []
-        aligned_count = 0
-        for orig in self.original_files:
-            k = os.path.normpath(orig)
-            d = self.delta_transforms.get(k, 0.0)
-            pass_deltas.append(d)
-            if d <= self.shift_tolerance:
-                aligned_count += 1
+            return True, "Pass complete."
 
-        self.transform_deltas.append(pass_deltas)
-
-        preview = ", ".join([f"{d:.2f}" for d in pass_deltas[:10]])
-        if len(pass_deltas) > 10:
-            preview += f" … ({len(pass_deltas)} total)"
-        self.progress_update.emit(f"Pass {pass_index + 1} delta shifts: [{preview}]")
-        if aligned_count:
-            self.progress_update.emit(f"Skipped (delta < {self.shift_tolerance:.2f}px): {aligned_count} frame(s)")
-
-        return True, "Pass complete."
-
+        finally:
+            # Don’t wait on stragglers we’ve already timed-out
+            try:
+                executor.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
 
 
     def on_worker_result_transform(self, persistent_key, new_transform):
