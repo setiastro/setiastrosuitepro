@@ -1506,6 +1506,22 @@ def _suppress_tiny_islands(img32: np.ndarray, det_sigma: float, minarea: int) ->
     out = np.where(((mask == 1) & (pruned == 0)), back_img, img32)
     return out.astype(np.float32, copy=False)
 
+# --- module-level worker wrapper for Windows spawn ---
+def _mp_proc_target(result_queue, args):
+    """
+    Small wrapper so the child process can call the real solver and
+    push the (orig_path, T_new, err) tuple back via a queue.
+    """
+    try:
+        res = _solve_delta_job(args)  # (orig_path, T_new, err)
+    except Exception as e:
+        # keep tuple shape predictable
+        try:
+            orig_path = args[0]
+        except Exception:
+            orig_path = "<unknown>"
+        res = (orig_path, None, f"worker exception: {e}")
+    result_queue.put(res)
 
 
 class StarRegistrationWorker(QRunnable):
@@ -2026,9 +2042,6 @@ class StarRegistrationThread(QThread):
         import multiprocessing as mp, time
         ctx = mp.get_context("spawn")
 
-        def _proc_target(q, args):
-            q.put(_solve_delta_job(args))
-
         # Orchestrate up to `procs` concurrent workers with per-job timeout+kill
         pending = {}  # proc -> (queue, job_tuple, start_time)
         jobs_iter = iter(jobs)
@@ -2036,7 +2049,7 @@ class StarRegistrationThread(QThread):
         # Pre-fill up to procs
         def _start_one(j):
             q = ctx.Queue()
-            p = ctx.Process(target=_proc_target, args=(q, j), daemon=True)
+            p = ctx.Process(target=_mp_proc_target, args=(q, j), daemon=True)
             p.start()
             pending[p] = (q, j, time.time())
 
@@ -2064,7 +2077,10 @@ class StarRegistrationThread(QThread):
 
                     if got:
                         # Clean up proc
-                        p.join(timeout=0.1)
+                        try:
+                            p.join(timeout=0.1)
+                        except Exception:
+                            pass
                         pending.pop(p, None)
 
                         if err:
