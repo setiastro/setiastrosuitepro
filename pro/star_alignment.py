@@ -4,7 +4,6 @@ from __future__ import annotations
 import os, math, random, sys
 import os as _os, threading as _threading, ctypes as _ctypes
 import multiprocessing
-import multiprocessing as mp
 N = str(max(1, min( (os.cpu_count() or 8), 32 )))
 os.environ.setdefault("OMP_NUM_THREADS", N)
 os.environ.setdefault("OPENBLAS_NUM_THREADS", N)
@@ -17,7 +16,7 @@ try:
 except Exception:
     pass
 
-from concurrent.futures import ProcessPoolExecutor, as_completed, wait, FIRST_COMPLETED
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from itertools import combinations
 from typing import Callable, Iterable, Tuple
 import tempfile
@@ -118,13 +117,10 @@ def _align_prefs(settings: QSettings | None = None) -> dict:
         "downsample":  _get("downsample", 2, int),
         "h_reproj":    _get("h_reproj", 3.0, float),
 
-        # Star detection / solve limits
-        "det_sigma":   _get("det_sigma", 12.0, float),   # try 8–12 in dense fields
+        # New knobs (also read legacy align/* if present)
+        "det_sigma":   _get("det_sigma", 10.0, float),   # try 8–12 in dense fields
         "limit_stars": _get("limit_stars", 500, int),    # 500–1500 typical
         "minarea":     _get("minarea", 10, int),
-
-        # NEW: per-job timeout (seconds)
-        "timeout_per_job_sec": _get("timeout_per_job_sec", 300, int),
     }
 
     return prefs
@@ -1427,15 +1423,6 @@ def _solve_delta_job(args):
         except Exception:
             pass
 
-        try:
-            import os
-            os.environ.setdefault("OMP_NUM_THREADS", "1")
-            os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
-            os.environ.setdefault("MKL_NUM_THREADS", "1")
-            os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
-        except Exception:
-            pass
-
         # 1) read → gray
         with fits.open(orig_path, memmap=True) as hdul:
             arr = hdul[0].data
@@ -1451,8 +1438,6 @@ def _solve_delta_job(args):
 
         # 3) delta solve (NO import — call the top-level helper)
         src_for_match = _suppress_tiny_islands(src_for_match, det_sigma=det_sigma, minarea=minarea)
-        if np.count_nonzero(src_for_match > 0) < 50:   # essentially nothing to match
-            return (orig_path, None, f"Too few bright pixels for {os.path.basename(orig_path)}")        
         ref_small     = _suppress_tiny_islands(ref_small,     det_sigma=det_sigma, minarea=minarea)        
         tform = compute_affine_transform_astroalign_cropped(
             src_for_match, ref_small, limit_stars=limit_stars
@@ -1506,22 +1491,6 @@ def _suppress_tiny_islands(img32: np.ndarray, det_sigma: float, minarea: int) ->
     out = np.where(((mask == 1) & (pruned == 0)), back_img, img32)
     return out.astype(np.float32, copy=False)
 
-# --- module-level worker wrapper for Windows spawn ---
-def _mp_proc_target(result_queue, args):
-    """
-    Small wrapper so the child process can call the real solver and
-    push the (orig_path, T_new, err) tuple back via a queue.
-    """
-    try:
-        res = _solve_delta_job(args)  # (orig_path, T_new, err)
-    except Exception as e:
-        # keep tuple shape predictable
-        try:
-            orig_path = args[0]
-        except Exception:
-            orig_path = "<unknown>"
-        res = (orig_path, None, f"worker exception: {e}")
-    result_queue.put(res)
 
 
 class StarRegistrationWorker(QRunnable):
@@ -2009,6 +1978,7 @@ class StarRegistrationThread(QThread):
             self.progress_update.emit(
                 f"Skipping {skipped} frame(s) already within {self.shift_tolerance:.2f}px."
             )
+            # Advance progress for skipped items so the bar moves
             for _ in range(skipped):
                 self._increment_progress()
 
@@ -2024,11 +1994,11 @@ class StarRegistrationThread(QThread):
         ref_small = np.ascontiguousarray(self.ref_small.astype(np.float32, copy=False))
         Href, Wref = ref_small.shape[:2]
 
-        # Concurrency + timeout (5 minutes default)
+        # Max processes; be generous but avoid thrashing
         procs = max(2, min((os.cpu_count() or 8), 32))
-        timeout_sec = int(self.align_prefs.get("timeout_per_job_sec", 300))
+        self.progress_update.emit(f"Using {procs} processes for stellar alignment (HW={os.cpu_count() or 8}).")
 
-        # Build jobs (orig path, current 2x3, ref_small, Wref, Href, resample_flag, det_sigma, limit_stars, minarea)
+        # Build jobs (orig path, current 2x3, ref_small, Wref, Href, resample_flag)
         jobs = []
         for original_file in work_list:
             orig_key = os.path.normpath(original_file)
@@ -2039,112 +2009,41 @@ class StarRegistrationThread(QThread):
                 float(self.det_sigma), int(self.limit_stars), int(self.minarea)
             ))
 
-        import multiprocessing as mp, time
-        ctx = mp.get_context("spawn")
-
-        # Orchestrate up to `procs` concurrent workers with per-job timeout+kill
-        pending = {}  # proc -> (queue, job_tuple, start_time)
-        jobs_iter = iter(jobs)
-
-        # Pre-fill up to procs
-        def _start_one(j):
-            q = ctx.Queue()
-            p = ctx.Process(target=_mp_proc_target, args=(q, j), daemon=True)
-            p.start()
-            pending[p] = (q, j, time.time())
-
-        try:
-            # Start initial batch
-            for _ in range(min(procs, len(jobs))):
+        # Run the delta solves out-of-process (true multi-core)
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+        with ProcessPoolExecutor(max_workers=procs) as ex:
+            futs = [ex.submit(_solve_delta_job, j) for j in jobs]
+            for fut in as_completed(futs):
                 try:
-                    _start_one(next(jobs_iter))
-                except StopIteration:
-                    break
+                    orig_path, T_new, err = fut.result()
+                except Exception as e:
+                    orig_path, T_new, err = ("<unknown>", None, f"Worker crashed: {e}")
 
-            # Main loop
-            while pending:
-                # Check each running proc
-                for p in list(pending.keys()):
-                    q, j, t0 = pending[p]
+                if err:
+                    self.on_worker_error(err)
+                    self._increment_progress()
+                    continue
 
-                    # 1) Result ready?
-                    got = False
-                    try:
-                        orig_path, T_new, err = q.get_nowait()
-                        got = True
-                    except Exception:
-                        pass
+                # Collate the *delta* and accumulate into the running 2x3,
+                # mirroring your on_worker_result_transform logic:
+                k = os.path.normpath(orig_path)
+                T_new = np.array(T_new, dtype=np.float64).reshape(2, 3)
 
-                    if got:
-                        # Clean up proc
-                        try:
-                            p.join(timeout=0.1)
-                        except Exception:
-                            pass
-                        pending.pop(p, None)
+                # delta magnitude for convergence reporting
+                self.delta_transforms[k] = float(np.hypot(T_new[0, 2], T_new[1, 2]))
 
-                        if err:
-                            self.on_worker_error(err)
-                            self._increment_progress()
-                        else:
-                            # Accumulate delta into running 2x3
-                            k = os.path.normpath(orig_path)
-                            T_new = np.array(T_new, dtype=np.float64).reshape(2, 3)
-                            self.delta_transforms[k] = float(np.hypot(T_new[0, 2], T_new[1, 2]))
+                T_prev = np.array(self.alignment_matrices.get(k, IDENTITY_2x3), dtype=np.float64).reshape(2, 3)
+                prev_3 = np.vstack([T_prev, [0, 0, 1]])
+                new_3  = np.vstack([T_new,  [0, 0, 1]])
+                combined = new_3 @ prev_3
+                self.alignment_matrices[k] = combined[0:2, :]
 
-                            T_prev = np.array(self.alignment_matrices.get(k, IDENTITY_2x3), dtype=np.float64).reshape(2, 3)
-                            prev_3 = np.vstack([T_prev, [0, 0, 1]])
-                            new_3  = np.vstack([T_new,  [0, 0, 1]])
-                            combined = new_3 @ prev_3
-                            self.alignment_matrices[k] = combined[0:2, :]
-
-                            self.on_worker_progress(
-                                f"Astroalign delta for {os.path.basename(orig_path)} "
-                                f"(model={self.align_model}): dx={T_new[0, 2]:.2f}, dy={T_new[1, 2]:.2f}"
-                            )
-                            self._increment_progress()
-
-                        # Backfill a new job if any remain
-                        try:
-                            _start_one(next(jobs_iter))
-                        except StopIteration:
-                            pass
-                        continue
-
-                    # 2) Timeout?
-                    if (time.time() - t0) >= timeout_sec:
-                        # Kill it and mark as failed
-                        try:
-                            p.terminate()
-                            p.join(timeout=1.0)
-                        except Exception:
-                            pass
-                        pending.pop(p, None)
-
-                        (orig_path, *_rest) = j
-                        self.on_worker_error(
-                            f"Astroalign timed out (≥{timeout_sec}s) for {os.path.basename(orig_path)} – skipping"
-                        )
-                        self._increment_progress()
-
-                        # Backfill
-                        try:
-                            _start_one(next(jobs_iter))
-                        except StopIteration:
-                            pass
-
-                # Small nap to avoid busy-wait, no heartbeat spam
-                time.sleep(0.05)
-
-        finally:
-            # Ensure no stragglers
-            for p in list(pending.keys()):
-                try:
-                    p.terminate()
-                    p.join(timeout=1.0)
-                except Exception:
-                    pass
-            pending.clear()
+                # progress line like the original worker
+                self.on_worker_progress(
+                    f"Astroalign delta for {os.path.basename(orig_path)} "
+                    f"(model={self.align_model}): dx={T_new[0, 2]:.2f}, dy={T_new[1, 2]:.2f}"
+                )
+                self._increment_progress()
 
         # Collate deltas deterministically in original order
         pass_deltas = []
@@ -2166,7 +2065,6 @@ class StarRegistrationThread(QThread):
             self.progress_update.emit(f"Skipped (delta < {self.shift_tolerance:.2f}px): {aligned_count} frame(s)")
 
         return True, "Pass complete."
-
 
 
 
