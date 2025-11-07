@@ -4,12 +4,14 @@ import os, re, json
 import numpy as np
 
 from PyQt6.QtCore import Qt, QTimer, QPointF
-from PyQt6.QtGui import QIcon, QCursor, QImage, QPixmap, QTransform
+from PyQt6.QtGui import QIcon, QCursor, QImage, QPixmap, QTransform, QActionGroup
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGroupBox, QGridLayout, QLabel,
     QPushButton, QPlainTextEdit, QComboBox, QDialogButtonBox, QRadioButton, QApplication,
     QTabWidget, QWidget, QMessageBox, QMenu, QScrollArea, QButtonGroup, QListWidget, QListWidgetItem, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QToolButton
 )
+
+from pro.autostretch import autostretch
 
 # ---- Optional accelerators from legacy.numba_utils -------------------------
 try:
@@ -773,6 +775,8 @@ class PixelMathDialogPro(QDialog):
         self.doc = doc
         self.ev = _Evaluator(parent, doc)
 
+        self._load_autostretch_prefs()
+
         # ──────────────────────────────────────────────────────────────────────────
         # Root split layout: controls (left, scrollable) | preview (right, flexible)
         # ──────────────────────────────────────────────────────────────────────────
@@ -887,11 +891,110 @@ class PixelMathDialogPro(QDialog):
         tb = QHBoxLayout()
         self.btn_preview  = QPushButton("Preview")
         self.btn_preview.setToolTip("Compute Pixel Math and show the result here without committing.")
+
+        # NEW: Auto-stretch toggle with a dropdown menu
+        self.btn_autostretch = QToolButton()
+        self.btn_autostretch.setText("Auto-stretch")
+        self.btn_autostretch.setCheckable(True)
+        self.btn_autostretch.setChecked(self._as_enabled)
+        self.btn_autostretch.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+
+        as_menu = QMenu(self)
+        act_toggle = as_menu.addAction("Enable Auto-stretch")
+        act_toggle.setCheckable(True); act_toggle.setChecked(self._as_enabled)
+        as_menu.addSeparator()
+
+        # Target presets
+        tgt_menu = as_menu.addMenu("Target median")
+        self._tgt_group = QActionGroup(self); self._tgt_group.setExclusive(True)
+        for label, val in (("0.18 (soft)", 0.18), ("0.25 (default)", 0.25), ("0.35 (brighter)", 0.35)):
+            a = tgt_menu.addAction(label)
+            a.setCheckable(True)
+            a.setChecked(abs(self._as_target - val) < 1e-6)
+            self._tgt_group.addAction(a)
+            a.triggered.connect(lambda _=False, v=val: self._set_as_target(v))
+
+        # Sigma presets
+        sig_menu = as_menu.addMenu("Black-point sigma")
+        self._sig_group = QActionGroup(self); self._sig_group.setExclusive(True)
+        for label, val in (("σ=2.5", 2.5), ("σ=3 (default)", 3.0), ("σ=4 (deeper black)", 4.0)):
+            a = sig_menu.addAction(label)
+            a.setCheckable(True)
+            a.setChecked(abs(self._as_sigma - val) < 1e-6)
+            self._sig_group.addAction(a)
+            a.triggered.connect(lambda _=False, v=val: self._set_as_sigma(v))
+
+        # Linked channels
+        act_linked = as_menu.addAction("Linked channels (use luminance)")
+        act_linked.setCheckable(True); act_linked.setChecked(self._as_linked)
+        as_menu.addSeparator()
+
+        # Output precision
+        act_16 = as_menu.addAction("Use 16-bit stats")
+        act_16.setCheckable(True); act_16.setChecked(self._as_16bit)
+
+        self.btn_autostretch.setMenu(as_menu)
+
+        # Keep toggle and menu in sync
+        def _apply_menu_state():
+            self._as_enabled = self.btn_autostretch.isChecked()
+            act_toggle.setChecked(self._as_enabled)
+            self._save_autostretch_prefs()
+            self._rerun_preview_if_any()
+
+        self.btn_autostretch.toggled.connect(_apply_menu_state)
+
+        act_toggle.toggled.connect(lambda on: (self.btn_autostretch.setChecked(on),
+                                            self._save_autostretch_prefs(),
+                                            self._rerun_preview_if_any()))
+
+        act_linked.toggled.connect(lambda on: (setattr(self, "_as_linked", on),
+                                            self._save_autostretch_prefs(),
+                                            self._rerun_preview_if_any()))
+
+        act_16.toggled.connect(   lambda on: (setattr(self, "_as_16bit",  on),
+                                            self._save_autostretch_prefs(),
+                                            self._rerun_preview_if_any()))
+
+        # tiny helpers for radio menus
+        def _refresh_target_checks():
+            for a in self._tgt_group.actions():
+                txt = a.text()  # "0.18 (soft)" / "0.25 (default)" / "0.35 (brighter)"
+                v = 0.18 if txt.startswith("0.18") else 0.25 if txt.startswith("0.25") else 0.35
+                a.setChecked(abs(self._as_target - v) < 1e-6)
+
+        def _refresh_sigma_checks():
+            for a in self._sig_group.actions():
+                # texts are "σ=2.5", "σ=3 (default)", "σ=4 (deeper black)"
+                tail = a.text().split("=", 1)[-1].strip().split()[0]  # "2.5" / "3" / "4"
+                v = float(tail)
+                a.setChecked(abs(self._as_sigma - v) < 1e-6)
+
+        # API used by the actions above
+        def _set_target(v: float):
+            self._as_target = float(v)
+            self._save_autostretch_prefs()
+            _refresh_target_checks()
+            self._rerun_preview_if_any()
+
+        def _set_sigma(v: float):
+            self._as_sigma = float(v)
+            self._save_autostretch_prefs()
+            _refresh_sigma_checks()
+            self._rerun_preview_if_any()
+
+        self._set_as_target = _set_target
+        self._set_as_sigma  = _set_sigma
+
+        # existing zoom buttons
         self.btn_zoom_in  = QToolButton(); self.btn_zoom_in.setText("Zoom +")
         self.btn_zoom_out = QToolButton(); self.btn_zoom_out.setText("Zoom −")
         self.btn_zoom_1_1 = QToolButton(); self.btn_zoom_1_1.setText("1:1")
         self.btn_fit      = QToolButton(); self.btn_fit.setText("Fit")
-        tb.addWidget(self.btn_preview); tb.addSpacing(12)
+
+        tb.addWidget(self.btn_preview)
+        tb.addWidget(self.btn_autostretch)          # ← NEW
+        tb.addSpacing(12)
         tb.addWidget(self.btn_zoom_in); tb.addWidget(self.btn_zoom_out)
         tb.addWidget(self.btn_zoom_1_1); tb.addWidget(self.btn_fit)
         tb.addStretch(1)
@@ -981,10 +1084,42 @@ class PixelMathDialogPro(QDialog):
         # A little wider to favor the preview
         self.resize(940, 700)
 
+    # ─────────────── Auto-stretch prefs ───────────────
+    def _as_settings(self):
+        p = self.parent()
+        return getattr(p, "settings", None)
+
+    def _load_autostretch_prefs(self):
+        s = self._as_settings()
+        self._as_enabled = False
+        self._as_linked  = True
+        self._as_target  = 0.25
+        self._as_sigma   = 3.0
+        self._as_16bit   = True
+        if s:
+            self._as_enabled = s.value("pixelmath/preview_autostretch", False, type=bool)
+            self._as_linked  = s.value("pixelmath/preview_as_linked",  True,  type=bool)
+            self._as_target  = s.value("pixelmath/preview_as_target",  0.25,  type=float)
+            self._as_sigma   = s.value("pixelmath/preview_as_sigma",   3.0,   type=float)
+            self._as_16bit   = s.value("pixelmath/preview_as_16bit",   True,  type=bool)
+
+    def _save_autostretch_prefs(self):
+        s = self._as_settings()
+        if not s: return
+        s.setValue("pixelmath/preview_autostretch", self._as_enabled)
+        s.setValue("pixelmath/preview_as_linked",   self._as_linked)
+        s.setValue("pixelmath/preview_as_target",   float(self._as_target))
+        s.setValue("pixelmath/preview_as_sigma",    float(self._as_sigma))
+        s.setValue("pixelmath/preview_as_16bit",    self._as_16bit)
+
+    def _rerun_preview_if_any(self):
+        # If we already showed something, recompute so user sees the change immediately
+        if self._preview_item is not None:
+            QTimer.singleShot(0, self._do_preview)
+
 
     # ---------- Preview helpers ------------------------------------------------
     def _do_preview(self):
-        """Evaluate current expressions and show in the preview pane (no commit)."""
         QApplication.setOverrideCursor(QCursor(Qt.CursorShape.WaitCursor))
         try:
             if self.rb_single.isChecked():
@@ -996,8 +1131,18 @@ class PixelMathDialogPro(QDialog):
                     self.ed_b.toPlainText().strip()
                 )
             out = np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
+
+            # NEW: optional auto-stretch (preview only)
+            if getattr(self, "_as_enabled", False):
+                out = autostretch(
+                    out,
+                    target_median=float(getattr(self, "_as_target", 0.25)),
+                    linked=bool(getattr(self, "_as_linked", True)),
+                    sigma=float(getattr(self, "_as_sigma", 3.0)),
+                    use_16bit=bool(getattr(self, "_as_16bit", True)),
+                )
+
             self._set_preview_image(out)
-            # On first preview, auto-fit
             if self._preview_item is not None and abs(self._preview_zoom - 1.0) < 1e-6:
                 self._fit_to_view()
         except Exception as e:
@@ -1042,6 +1187,8 @@ class PixelMathDialogPro(QDialog):
             nw, nh = float(pm.width()), float(pm.height())
             new_center = QPointF(old_center_norm.x() * nw, old_center_norm.y() * nh)
             view.centerOn(new_center)
+
+        self.preview_view.viewport().update()    
 
     def _zoom_by(self, factor: float):
         if self._preview_item is None:

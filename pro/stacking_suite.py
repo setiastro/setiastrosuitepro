@@ -4294,12 +4294,38 @@ class StackingSuiteDialog(QDialog):
         self.shift_tol_spin.setValue(self.settings.value("stacking/shift_tolerance", 0.2, type=float))
         fl_align.addRow("Accept tolerance (px):", self.shift_tol_spin)
 
+        # Star detection sigma (used by astroalign / your detector)
+        self.align_det_sigma = QDoubleSpinBox()
+        self.align_det_sigma.setRange(0.5, 50.0)
+        self.align_det_sigma.setDecimals(1)
+        self.align_det_sigma.setSingleStep(0.5)
+        self.align_det_sigma.setValue(
+            self.settings.value("stacking/align/det_sigma", 20.0, type=float)
+        )
+        self.align_det_sigma.setToolTip(
+            "Star detection threshold in σ above background. "
+            "Lower = more stars (faster saturation, more false positives); higher = fewer stars."
+        )
+        fl_align.addRow("Star detect σ:", self.align_det_sigma)
+
+        # (Optional) Minimum star area in pixels
+        self.align_minarea = QSpinBox()
+        self.align_minarea.setRange(1, 200)
+        self.align_minarea.setSingleStep(1)
+        self.align_minarea.setValue(
+            self.settings.value("stacking/align/minarea", 10, type=int)
+        )
+        self.align_minarea.setToolTip(
+            "Minimum connected-pixel area to keep a detection as a star (px). Helps reject hot pixels/noise."
+        )
+        fl_align.addRow("Min star area (px):", self.align_minarea)
+
         # NEW: Max stars (Astroalign control points cap)
         self.align_limit_stars_spin = QSpinBox()
         self.align_limit_stars_spin.setRange(50, 5000)
         self.align_limit_stars_spin.setSingleStep(50)
         self.align_limit_stars_spin.setValue(
-            self.settings.value("stacking/align/limit_stars", 500, type=int)
+            self.settings.value("stacking/align/limit_stars", 100, type=int)
         )
         self.align_limit_stars_spin.setToolTip(
             "Caps Astroalign max_control_points (typical 500–1500). Lower = faster, higher = more robust."
@@ -4882,79 +4908,6 @@ class StackingSuiteDialog(QDialog):
         except Exception:
             pass        
 
-    # --- Drizzle config: single source of truth ---
-    def _get_drizzle_pixfrac(self) -> float:
-        s = self.settings
-        # new canonical -> old aliases -> default
-        v = s.value("stacking/drizzle_pixfrac", None, type=float)
-        if v is None:
-            v = s.value("stacking/drizzle_drop", None, type=float)
-        if v is None:
-            v = s.value("stacking/drop_shrink", 0.65, type=float)
-        # clamp to [0, 1]
-        return float(max(0.0, min(1.0, v)))
-
-    def _set_drizzle_pixfrac(self, v: float) -> None:
-        v = float(max(0.0, min(1.0, v)))
-        s = self.settings
-        # write to canonical + legacy keys (back-compat)
-        s.setValue("stacking/drizzle_pixfrac", v)
-        s.setValue("stacking/drizzle_drop", v)
-        s.setValue("stacking/drop_shrink", v)
-
-        # reflect in any live widgets without feedback loops
-        for wname in ("drizzle_drop_shrink_spin", "drop_shrink_spin"):
-            w = getattr(self, wname, None)
-            if w is not None and abs(float(w.value()) - v) > 1e-9:
-                w.blockSignals(True); w.setValue(v); w.blockSignals(False)
-
-    def _get_drizzle_scale(self) -> float:
-        # Accepts "1x/2x/3x" or numeric
-        val = self.settings.value("stacking/drizzle_scale", "2x", type=str)
-        if isinstance(val, str) and val.endswith("x"):
-            try: return float(val[:-1])
-            except: return 2.0
-        return float(val)
-
-    def _set_drizzle_scale(self, r: float | str) -> None:
-        if isinstance(r, str):
-            try: r = float(r.rstrip("xX"))
-            except: r = 2.0
-        r = float(max(1.0, min(3.0, r)))
-        # store as “Nx” so the combo’s string stays in sync
-        self.settings.setValue("stacking/drizzle_scale", f"{int(r)}x")
-        if hasattr(self, "drizzle_scale_combo"):
-            txt = f"{int(r)}x"
-            if self.drizzle_scale_combo.currentText() != txt:
-                self.drizzle_scale_combo.blockSignals(True)
-                self.drizzle_scale_combo.setCurrentText(txt)
-                self.drizzle_scale_combo.blockSignals(False)
-
-
-    def closeEvent(self, e):
-        # Graceful shutdown for any running workers
-        try:
-            if hasattr(self, "alignment_thread") and self.alignment_thread and self.alignment_thread.isRunning():
-                self.alignment_thread.requestInterruption()
-                self.alignment_thread.wait(1500)
-        except Exception:
-            pass
-        super().closeEvent(e)
-
-    def _mf_worker_class_from_settings(self):
-        """Return (WorkerClass, engine_name) from settings."""
-        # local import avoids import-time cost if user never runs MFDeconv
-        from pro.mfdeconv import MultiFrameDeconvWorker
-        from pro.mfdeconvcudnn import MultiFrameDeconvWorkercuDNN
-        from pro.mfdeconvsport import MultiFrameDeconvWorkerSport
-
-        eng = str(self.settings.value("stacking/mfdeconv/engine", "normal", type=str) or "normal").lower()
-        if eng == "cudnn":
-            return (MultiFrameDeconvWorkercuDNN, "Normal (cuDNN-free)")
-        if eng == "sport":
-            return (MultiFrameDeconvWorkerSport, "High-Octane")
-        return (MultiFrameDeconvWorker, "Normal")
-
 
     def save_stacking_settings(self, dialog):
         """
@@ -5069,6 +5022,8 @@ class StackingSuiteDialog(QDialog):
         passes = 1 if self.align_passes_combo.currentIndex() == 0 else 3
         self.settings.setValue("stacking/refinement_passes", passes)
         self.settings.setValue("stacking/shift_tolerance", self.shift_tol_spin.value())
+        self.settings.setValue("stacking/align/det_sigma",   float(self.align_det_sigma.value()))
+        self.settings.setValue("stacking/align/minarea",     int(self.align_minarea.value()))
 
         self.settings.setValue("stacking/align/limit_stars", int(self.align_limit_stars_spin.value()))
         self.settings.setValue("stacking/align/timeout_per_job_sec", int(self.align_timeout_spin.value()))
@@ -5113,6 +5068,81 @@ class StackingSuiteDialog(QDialog):
             return
 
         dialog.accept()
+
+
+
+    # --- Drizzle config: single source of truth ---
+    def _get_drizzle_pixfrac(self) -> float:
+        s = self.settings
+        # new canonical -> old aliases -> default
+        v = s.value("stacking/drizzle_pixfrac", None, type=float)
+        if v is None:
+            v = s.value("stacking/drizzle_drop", None, type=float)
+        if v is None:
+            v = s.value("stacking/drop_shrink", 0.65, type=float)
+        # clamp to [0, 1]
+        return float(max(0.0, min(1.0, v)))
+
+    def _set_drizzle_pixfrac(self, v: float) -> None:
+        v = float(max(0.0, min(1.0, v)))
+        s = self.settings
+        # write to canonical + legacy keys (back-compat)
+        s.setValue("stacking/drizzle_pixfrac", v)
+        s.setValue("stacking/drizzle_drop", v)
+        s.setValue("stacking/drop_shrink", v)
+
+        # reflect in any live widgets without feedback loops
+        for wname in ("drizzle_drop_shrink_spin", "drop_shrink_spin"):
+            w = getattr(self, wname, None)
+            if w is not None and abs(float(w.value()) - v) > 1e-9:
+                w.blockSignals(True); w.setValue(v); w.blockSignals(False)
+
+    def _get_drizzle_scale(self) -> float:
+        # Accepts "1x/2x/3x" or numeric
+        val = self.settings.value("stacking/drizzle_scale", "2x", type=str)
+        if isinstance(val, str) and val.endswith("x"):
+            try: return float(val[:-1])
+            except: return 2.0
+        return float(val)
+
+    def _set_drizzle_scale(self, r: float | str) -> None:
+        if isinstance(r, str):
+            try: r = float(r.rstrip("xX"))
+            except: r = 2.0
+        r = float(max(1.0, min(3.0, r)))
+        # store as “Nx” so the combo’s string stays in sync
+        self.settings.setValue("stacking/drizzle_scale", f"{int(r)}x")
+        if hasattr(self, "drizzle_scale_combo"):
+            txt = f"{int(r)}x"
+            if self.drizzle_scale_combo.currentText() != txt:
+                self.drizzle_scale_combo.blockSignals(True)
+                self.drizzle_scale_combo.setCurrentText(txt)
+                self.drizzle_scale_combo.blockSignals(False)
+
+
+    def closeEvent(self, e):
+        # Graceful shutdown for any running workers
+        try:
+            if hasattr(self, "alignment_thread") and self.alignment_thread and self.alignment_thread.isRunning():
+                self.alignment_thread.requestInterruption()
+                self.alignment_thread.wait(1500)
+        except Exception:
+            pass
+        super().closeEvent(e)
+
+    def _mf_worker_class_from_settings(self):
+        """Return (WorkerClass, engine_name) from settings."""
+        # local import avoids import-time cost if user never runs MFDeconv
+        from pro.mfdeconv import MultiFrameDeconvWorker
+        from pro.mfdeconvcudnn import MultiFrameDeconvWorkercuDNN
+        from pro.mfdeconvsport import MultiFrameDeconvWorkerSport
+
+        eng = str(self.settings.value("stacking/mfdeconv/engine", "normal", type=str) or "normal").lower()
+        if eng == "cudnn":
+            return (MultiFrameDeconvWorkercuDNN, "Normal (cuDNN-free)")
+        if eng == "sport":
+            return (MultiFrameDeconvWorkerSport, "High-Octane")
+        return (MultiFrameDeconvWorker, "Normal")
 
 
     def _restart_self(self):
@@ -11045,6 +11075,44 @@ class StackingSuiteDialog(QDialog):
         except Exception:
             return None, {}
 
+    def _zap_reg_caches(self):
+        """Clear all registration-related caches so a run always starts fresh."""
+        # Dict/array caches on self (clear if present)
+        for name in (
+            "_preview_cache", "_quick_preview_cache", "_load_cache",
+            "_debayer_cache", "_abe_cache", "_poly_fit_cache",
+            "_affine_cache", "_star_features_cache", "_orig2norm",
+            "frame_weights", "arcsec_per_px", "_reg_debug",
+        ):
+            obj = getattr(self, name, None)
+            try:
+                if isinstance(obj, dict): obj.clear()
+                elif isinstance(obj, (list, set)): obj.clear()
+            except Exception:
+                pass
+
+        # Reset shapes/targets computed in previous runs
+        for name in ("_norm_target_hw", "reference_frame", "_comet_ref_xy"):
+            if hasattr(self, name):
+                setattr(self, name, None)
+
+        # Proactively clear any lru_cache’d helpers if available
+        def _cc(f):
+            try:
+                if hasattr(f, "cache_clear"): f.cache_clear()
+            except Exception:
+                pass
+
+        for f in (
+            getattr(self, "_bin_from_header_fast_any", None),
+            getattr(self, "_quick_preview_any", None),
+            getattr(self, "debayer_image", None),
+            getattr(self, "_extract_pa_deg", None),
+            getattr(self, "_hdr_get", None),
+        ):
+            if callable(f): _cc(f)
+
+
 
     def register_images(self):
 
@@ -11110,6 +11178,24 @@ class StackingSuiteDialog(QDialog):
         if getattr(self, "_registration_busy", False):
             self.update_status("⏸ Registration already running; ignoring extra click.")
             return
+        self.update_status("🧹 Doing a little tidying up...")
+        # 🔥 Force a fresh reference each run
+        self.reference_frame = None           # <-- clear ref
+        self._norm_target_hw = None           # any geometry derived from old ref
+        self._orig2norm = {}                  # old ref→norm map is invalid now
+
+        # UI hint if present
+        try:
+            if hasattr(self, "ref_frame_path") and self.ref_frame_path:
+                self.ref_frame_path.setText("Auto (not set)")
+        except Exception:
+            pass
+
+        # If you previously persisted a user-chosen ref, clear it too
+        try:
+            self.settings.remove("stacking/user_reference_frame")
+        except Exception:
+            pass
 
         self._set_registration_busy(True)
 
@@ -12168,6 +12254,7 @@ class StackingSuiteDialog(QDialog):
             iy = min(int(fy * bins), bins - 1)
             hist[iy, ix] += 1
         return float(np.count_nonzero(hist)) / float(hist.size)
+
 
     def on_registration_complete(self, success, msg):
        
@@ -15241,6 +15328,7 @@ class StackingSuiteDialog(QDialog):
                     f"mode={'GPU' if use_gpu else 'CPU'}…")
 
                 if use_gpu:
+                    print(f"Using GPU for tile {tile_idx} with algo {algo}")
                     tile_result, tile_rej_map = _torch_reduce_tile(
                         ts,                         # NumPy view, C-contiguous
                         weights_array,              # (N,)

@@ -1365,42 +1365,41 @@ IDENTITY_2x3 = np.array([[1, 0, 0], [0, 1, 0]], dtype=np.float64)
 
 def compute_affine_transform_astroalign_cropped(source_img, reference_img,
                                                 scale: float = 1.20,
-                                                limit_stars: int | None = None):
-    """
-    Center-crop the reference to ~scale×source, solve with astroalign on the crop,
-    then lift the transform back to full reference coordinates.
-    Returns 2x3 affine in full-reference coords, or None.
-    """
+                                                limit_stars: int | None = None,
+                                                det_sigma: float = 12.0,
+                                                minarea: int = 10):
     import numpy as np
     import astroalign
     Hs, Ws = source_img.shape[:2]
     Hr, Wr = reference_img.shape[:2]
 
-    # crop box
     h = min(int(round(Hs * scale)), Hr)
     w = min(int(round(Ws * scale)), Wr)
     y0 = max(0, (Hr - h) // 2)
     x0 = max(0, (Wr - w) // 2)
     ref_crop = reference_img[y0:y0+h, x0:x0+w]
 
-    # AA solve (pass cap if this AA version supports it)
+    # --- NEW: build kwargs with σ + minarea (+ optional cap)
+    kwargs = {"detection_sigma": float(det_sigma), "min_area": int(minarea)}
+    if limit_stars is not None:
+        kwargs["max_control_points"] = int(limit_stars)
+
+    # AA solve with graceful fallback for older AA
     try:
-        if limit_stars is not None:
-            tform, _ = astroalign.find_transform(
-                np.ascontiguousarray(source_img.astype(np.float32)),
-                np.ascontiguousarray(ref_crop.astype(np.float32)),
-                max_control_points=int(limit_stars)
-            )
-        else:
-            tform, _ = astroalign.find_transform(
-                np.ascontiguousarray(source_img.astype(np.float32)),
-                np.ascontiguousarray(ref_crop.astype(np.float32))
-            )
-    except TypeError:
-        # older astroalign with no max_control_points kwarg
         tform, _ = astroalign.find_transform(
             np.ascontiguousarray(source_img.astype(np.float32)),
-            np.ascontiguousarray(ref_crop.astype(np.float32))
+            np.ascontiguousarray(ref_crop.astype(np.float32)),
+            **kwargs
+        )
+    except TypeError:
+        # Older astroalign (no kwargs support)
+        legacy_kwargs = {}
+        if "max_control_points" in kwargs:
+            legacy_kwargs["max_control_points"] = kwargs["max_control_points"]
+        tform, _ = astroalign.find_transform(
+            np.ascontiguousarray(source_img.astype(np.float32)),
+            np.ascontiguousarray(ref_crop.astype(np.float32)),
+            **legacy_kwargs
         )
 
     P = np.asarray(tform.params, dtype=np.float64)
@@ -1414,6 +1413,7 @@ def compute_affine_transform_astroalign_cropped(source_img, reference_img,
         A_full = (T @ A3)[0:2, :]
         return A_full
     return None
+
 
 
 def _solve_delta_job(args):
@@ -1494,6 +1494,181 @@ def _suppress_tiny_islands(img32: np.ndarray, det_sigma: float, minarea: int) ->
     out = np.where(((mask == 1) & (pruned == 0)), back_img, img32)
     return out.astype(np.float32, copy=False)
 
+# ─────────────────────────────────────────────────────────────
+# Final warp+save worker (process-safe)
+# ─────────────────────────────────────────────────────────────
+def _finalize_write_job(args):
+    """
+    Process-safe worker: read full-res, compute/choose model, warp, save.
+    Returns (orig_path, out_path or "", msg, success, drizzle_tuple or None)
+    drizzle_tuple = (kind, matrix_or_None)
+    """
+    (orig_path, align_model, ref_shape, ref_npy_path,
+     affine_2x3, h_reproj, output_directory) = args
+
+    import os
+    # Cap native threads **before** importing numpy/cv2 (Windows spawn)
+    os.environ.setdefault("OMP_NUM_THREADS", "1")
+    os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+    os.environ.setdefault("MKL_NUM_THREADS", "1")
+    os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+
+    import numpy as np
+    from astropy.io import fits
+    import cv2
+
+    try:
+        cv2.setNumThreads(1)
+        try: cv2.ocl.setUseOpenCL(False)
+        except Exception: pass
+    except Exception:
+        pass
+
+    try:
+        # 1) load source (full-res)
+        with fits.open(orig_path, memmap=True) as hdul:
+            img = hdul[0].data
+            hdr = hdul[0].header
+        if img is None:
+            return (orig_path, "", f"⚠️ Failed to read {os.path.basename(orig_path)}", False, None)
+
+        is_mono = (img.ndim == 2)
+        src_gray_full = img if is_mono else np.mean(img, axis=2)
+        src_gray_full = np.nan_to_num(src_gray_full, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
+        img = np.nan_to_num(img, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
+        img = np.ascontiguousarray(img)
+
+        Href, Wref = ref_shape
+
+        # 2) load reference via memmap
+        ref2d = np.load(ref_npy_path, mmap_mode="r")
+        ref2d = np.asarray(ref2d, dtype=np.float32)
+        if ref2d.shape[:2] != (Href, Wref):
+            return (orig_path, "", f"⚠️ Ref shape mismatch for {os.path.basename(orig_path)}", False, None)
+
+        # 3) choose transform
+        kind = "affine"
+        X = np.asarray(affine_2x3, np.float64).reshape(2, 3)
+
+        # We’ll log this up front so you get the “Distortion Correction…” line again
+        base = os.path.basename(orig_path)
+
+        if align_model != "affine":
+            import astroalign
+            Hs, Ws = src_gray_full.shape[:2]
+            scale = 1.20
+            h = min(int(round(Hs * scale)), Href)
+            w = min(int(round(Ws * scale)), Wref)
+            y0 = max(0, (Href - h) // 2)
+            x0 = max(0, (Wref - w) // 2)
+            ref_crop = ref2d[y0:y0+h, x0:x0+w]
+
+            # AA on full-res (cropped)
+            tform, (src_pts_s, tgt_pts_s) = astroalign.find_transform(
+                np.ascontiguousarray(src_gray_full),
+                np.ascontiguousarray(ref_crop)
+            )
+            src_xy = np.asarray(src_pts_s, dtype=np.float32)
+            tgt_xy = np.asarray(tgt_pts_s, dtype=np.float32)
+            tgt_xy[:, 0] += x0
+            tgt_xy[:, 1] += y0
+
+            P = np.asarray(tform.params, dtype=np.float64)
+            if P.shape == (3, 3):
+                base_kind0 = "homography"
+                T  = np.array([[1,0,x0],[0,1,y0],[0,0,1]], dtype=np.float64)
+                base_X0 = T @ P
+            else:
+                base_kind0 = "affine"
+                A3 = np.vstack([P[0:2,:], [0,0,1]])
+                T  = np.array([[1,0,x0],[0,1,y0],[0,0,1]], dtype=np.float64)
+                base_X0 = (T @ A3)[0:2, :]
+
+            # Refine to requested model
+            if align_model == "homography":
+                H, _ = cv2.findHomography(src_xy, tgt_xy, method=cv2.RANSAC,
+                                          ransacReprojThreshold=float(h_reproj))
+                if H is not None:
+                    kind, X = "homography", np.asarray(H, np.float64)
+                else:
+                    kind, X = base_kind0, base_X0
+            elif align_model == "affine":
+                kind, X = "affine", np.asarray(affine_2x3, np.float64)
+            else:
+                # poly3/poly4 → for now use base; caller will record kind
+                kind, X = base_kind0, base_X0
+
+        # 4) warp (model-aware) — and **define aligned in every branch**
+        Hh, Ww = Href, Wref
+        if kind == "affine":
+            A = np.asarray(X, np.float64).reshape(2, 3)
+            if is_mono:
+                aligned = cv2.warpAffine(img, A, (Ww, Hh), flags=cv2.INTER_LANCZOS4,
+                                         borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+            else:
+                aligned = np.stack([cv2.warpAffine(img[..., c], A, (Ww, Hh),
+                                                   flags=cv2.INTER_LANCZOS4,
+                                                   borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+                                    for c in range(img.shape[2])], axis=2)
+            drizzle_tuple = ("affine", A.astype(np.float64))
+            warp_label = "affine"
+        elif kind == "homography":
+            Hm = np.asarray(X, np.float64).reshape(3, 3)
+            if is_mono:
+                aligned = cv2.warpPerspective(img, Hm, (Ww, Hh), flags=cv2.INTER_LANCZOS4,
+                                              borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+            else:
+                aligned = np.stack([cv2.warpPerspective(img[..., c], Hm, (Ww, Hh),
+                                                        flags=cv2.INTER_LANCZOS4,
+                                                        borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+                                    for c in range(img.shape[2])], axis=2)
+            drizzle_tuple = ("homography", Hm.astype(np.float64))
+            warp_label = "homography"
+        else:
+            # poly*: without residual callable ported here, fall back to base (already in X)
+            # (Optionally return ("poly3"/"poly4", None) to mark drizzle model)
+            if is_mono:
+                aligned = cv2.warpPerspective(img, np.asarray(X, np.float64).reshape(3,3),
+                                              (Ww, Hh), flags=cv2.INTER_LANCZOS4,
+                                              borderMode=cv2.BORDER_CONSTANT, borderValue=0) \
+                          if X.shape == (3,3) else \
+                          cv2.warpAffine(img, np.asarray(X, np.float64).reshape(2,3),
+                                         (Ww, Hh), flags=cv2.INTER_LANCZOS4,
+                                         borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+            else:
+                if X.shape == (3,3):
+                    aligned = np.stack([cv2.warpPerspective(img[..., c], np.asarray(X, np.float64).reshape(3,3),
+                                                            (Ww, Hh), flags=cv2.INTER_LANCZOS4,
+                                                            borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+                                        for c in range(img.shape[2])], axis=2)
+                else:
+                    aligned = np.stack([cv2.warpAffine(img[..., c], np.asarray(X, np.float64).reshape(2,3),
+                                                       (Ww, Hh), flags=cv2.INTER_LANCZOS4,
+                                                       borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+                                        for c in range(img.shape[2])], axis=2)
+            drizzle_tuple = (align_model, None)   # mark as poly*
+            warp_label = align_model
+
+        if np.isnan(aligned).any() or np.isinf(aligned).any():
+            aligned = np.nan_to_num(aligned, nan=0.0, posinf=0.0, neginf=0.0)
+
+        # 5) save
+        name, _ = os.path.splitext(base)
+        if name.endswith("_n"): name = name[:-2]
+        if not name.endswith("_n_r"): name += "_n_r"
+        out_path = os.path.join(output_directory, f"{name}.fit")
+
+        from legacy.image_manager import save_image as _legacy_save
+        _legacy_save(img_array=aligned, filename=out_path, original_format="fit",
+                     bit_depth=None, original_header=hdr, is_mono=is_mono)
+
+        # Emit the status text you were missing:
+        msg = f"🌀 Distortion Correction on {base}: warp={warp_label}\n" \
+              f"💾 Wrote {os.path.basename(out_path)} [{warp_label}]"
+        return (orig_path, out_path, msg, True, drizzle_tuple)
+
+    except Exception as e:
+        return (orig_path, "", f"⚠️ Finalize error {os.path.basename(orig_path)}: {e}", False, None)
 
 
 class StarRegistrationWorker(QRunnable):
@@ -1620,62 +1795,53 @@ class StarRegistrationWorker(QRunnable):
 
 
     @staticmethod
-    def compute_affine_transform_astroalign(source_img, reference_img, scale=1.20, limit_stars: int | None = None):
-        """
-        Fast local match with center-crop, then AA on the crop.
-        limit_stars caps the number of control points AA will use (if supported).
-        """
+    def compute_affine_transform_astroalign(source_img, reference_img,
+                                            scale=1.20,
+                                            limit_stars: int | None = None,
+                                            det_sigma: float = 12.0,
+                                            minarea: int = 10):
         global _AA_LOCK
+        import astroalign, numpy as np
+        Hs, Ws = source_img.shape[:2]
+        Hr, Wr = reference_img.shape[:2]
+
+        h = min(int(round(Hs * scale)), Hr)
+        w = min(int(round(Ws * scale)), Wr)
+        y0 = max(0, (Hr - h) // 2)
+        x0 = max(0, (Wr - w) // 2)
+        ref_crop = reference_img[y0:y0+h, x0:x0+w]
+
+        kwargs = {"detection_sigma": float(det_sigma), "min_area": int(minarea)}
+        if limit_stars is not None:
+            kwargs["max_control_points"] = int(limit_stars)
+
         try:
-            Hs, Ws = source_img.shape[:2]
-            Hr, Wr = reference_img.shape[:2]
-
-            # 1) center-crop reference ≈ source*scale
-            h = min(int(round(Hs * scale)), Hr)
-            w = min(int(round(Ws * scale)), Wr)
-            y0 = max(0, (Hr - h) // 2)
-            x0 = max(0, (Wr - w) // 2)
-            ref_crop = reference_img[y0:y0+h, x0:x0+w]
-
-            # 2) find transform on the small pair
             with _AA_LOCK:
-                # NEW: pass limit_stars when available
-                try:
-                    if limit_stars is not None:
-                        tform, _ = astroalign.find_transform(
-                            np.ascontiguousarray(source_img.astype(np.float32)),
-                            np.ascontiguousarray(ref_crop.astype(np.float32)),
-                            max_control_points=int(limit_stars)
-                        )
-                    else:
-                        tform, _ = astroalign.find_transform(
-                            np.ascontiguousarray(source_img.astype(np.float32)),
-                            np.ascontiguousarray(ref_crop.astype(np.float32))
-                        )
-                except TypeError:
-                    # Older astroalign without max_control_points kwarg
-                    tform, _ = astroalign.find_transform(
-                        np.ascontiguousarray(source_img.astype(np.float32)),
-                        np.ascontiguousarray(ref_crop.astype(np.float32))
-                    )
+                tform, _ = astroalign.find_transform(
+                    np.ascontiguousarray(source_img.astype(np.float32)),
+                    np.ascontiguousarray(ref_crop.astype(np.float32)),
+                    **kwargs
+                )
+        except TypeError:
+            with _AA_LOCK:
+                legacy_kwargs = {}
+                if "max_control_points" in kwargs:
+                    legacy_kwargs["max_control_points"] = kwargs["max_control_points"]
+                tform, _ = astroalign.find_transform(
+                    np.ascontiguousarray(source_img.astype(np.float32)),
+                    np.ascontiguousarray(ref_crop.astype(np.float32)),
+                    **legacy_kwargs
+                )
 
-            # 3) lift crop→full coords (unchanged)
-            P = np.asarray(tform.params, dtype=np.float64)
-            if P.shape == (3, 3):
-                T = np.array([[1,0,x0],[0,1,y0],[0,0,1]], dtype=np.float64)
-                H_full = T @ P
-                return H_full[0:2, :]
-            elif P.shape == (2, 3):
-                A3 = np.vstack([P, [0,0,1]])
-                T  = np.array([[1,0,x0],[0,1,y0],[0,0,1]], dtype=np.float64)
-                A_full = (T @ A3)[0:2, :]
-                return A_full
-            return None
-        except Exception as e:
-            print(f"[StarRegistrationWorker] astroalign (cropped) failed: {e}")
-            return None
-
-
+        P = np.asarray(tform.params, dtype=np.float64)
+        if P.shape == (3,3):
+            T = np.array([[1,0,x0],[0,1,y0],[0,0,1]], dtype=np.float64)
+            return (T @ P)[0:2, :]
+        elif P.shape == (2,3):
+            A3 = np.vstack([P, [0,0,1]])
+            T  = np.array([[1,0,x0],[0,1,y0],[0,0,1]], dtype=np.float64)
+            return (T @ A3)[0:2, :]
+        return None
 
 class StarRegistrationThread(QThread):
     progress_update = pyqtSignal(str)
@@ -2213,122 +2379,103 @@ class StarRegistrationThread(QThread):
     # ─────────────────────────────────────────────────────────────
     def _finalize_writes(self):
         """
-        The only heavy IO:
-        • full-res read ONCE
-        • apply final 2×3 transform
-        • write *_n_r.fit ONCE
+        Parallel final warp+save (process-safe):
+        • persist ref2d once to a temp .npy (memmapped by workers)
+        • each process: read → solve(if needed) → warp → save
+        • we stream progress lines returned by the worker, including the
+        “🌀 Distortion Correction … warp=…” status you asked for
         """
-        
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-        self.drizzle_xforms = {}  # { orig_norm_path : (kind, matrix_or_None_for_TPS) }
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+        import tempfile, shutil, os, numpy as np
 
-        io_workers = max(1, min(4, (os.cpu_count() or 8) // 4))  # be gentle to disk
+        # Where we store per-file transforms for drizzle / SASD
+        self.drizzle_xforms = {}
 
-        def _final_write(orig_path):
-            try:
-                k = os.path.normpath(orig_path)
-                T_final = np.array(self.alignment_matrices.get(k, IDENTITY_2x3), dtype=np.float32)
-                img, hdr, fmt, bit_depth = load_image(orig_path)
-                if img is None:
-                    return f"⚠️ Failed to read {os.path.basename(orig_path)}", False
+        # Persist the reference (avoid pickling large arrays to each worker)
+        try:
+            Href, Wref = self.reference_image_2d.shape[:2]
+        except Exception:
+            self.progress_update.emit("⚠️ No reference image available; aborting finalize.")
+            return
+        self._ref_shape_for_sasd = (Href, Wref)
 
+        tmpdir = tempfile.mkdtemp(prefix="sas_align_")
+        ref_npy = os.path.join(tmpdir, "ref2d.npy")
+        try:
+            np.save(ref_npy, np.asarray(self.reference_image_2d, dtype=np.float32))
+        except Exception as e:
+            self.progress_update.emit(f"⚠️ Failed to persist reference for workers: {e}")
+            try: shutil.rmtree(tmpdir, ignore_errors=True)
+            except Exception: pass
+            return
 
-                # Full-res, model-aware warp
-                src_gray_full = np.mean(img, axis=2) if img.ndim == 3 else img
-                src_gray_full = np.nan_to_num(src_gray_full, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
-                Href, Wref = self.reference_image_2d.shape[:2]
+        # Concurrency (tunable)
+        finalize_workers = int(self.align_prefs.get("finalize_workers", min(os.cpu_count() or 8, 8)))
+        finalize_workers = max(2, finalize_workers)
 
-                if img.ndim == 3:
-                    Hs, Ws = img.shape[:2]
-                else:
-                    Hs, Ws = img.shape
-                if abs(Hs - Href) > 0.05*Href or abs(Ws - Wref) > 0.05*Wref:
-                    self.progress_update.emit(
-                        f"ℹ️ {os.path.basename(orig_path)} shape {Ws}×{Hs} differs from ref {Wref}×{Href}; warping to match."
-                    )
+        # Build job args for every original frame
+        jobs = []
+        for orig_path in self.original_files:
+            k = os.path.normpath(orig_path)
+            A = np.asarray(self.alignment_matrices.get(k, IDENTITY_2x3), dtype=np.float64)
+            jobs.append((
+                orig_path,                 # orig_path
+                self.align_model,          # "affine" | "homography" | "poly3"/"poly4"
+                (Href, Wref),              # ref_shape
+                ref_npy,                   # ref_npy_path
+                A,                         # affine_2x3 (accumulated)
+                float(self.h_reproj),      # h_reproj
+                self.output_directory      # output_directory
+            ))
 
-                try:
-                    if self.align_model == "affine":
-                        # reuse the accumulated 2x3 (no second astroalign)
-                        kind = "affine"
-                        X = np.asarray(self.alignment_matrices.get(k, IDENTITY_2x3), dtype=np.float64)
-                    else:
-                        # need a fresh full-res solve for homography/poly
-                        kind, X = self._estimate_model_transform(src_gray_full)
-                except Exception as e:
-                    self.progress_update.emit(
-                        f"⚠️ {os.path.basename(orig_path)} model solve failed ({self.align_model}): {e}. Falling back to affine."
-                    )
-                    kind, X = "affine", np.asarray(self.alignment_matrices.get(k, IDENTITY_2x3), dtype=np.float64)
+        self.progress_update.emit(f"📝 Finalizing aligned outputs with {finalize_workers} processes…")
 
-
-                self.progress_update.emit(f"🌀 Distortion Correction on {os.path.basename(orig_path)}: warp={kind}")
-                # Record drizzle transform (don’t np.asarray() a callable)
-
-                aligned = self._warp_with_kind(img, kind, X, (Href, Wref))
-                if aligned is None:
-                    return f"⚠️ Warp failed {os.path.basename(orig_path)}", False
-
-                # ✅ keep the exact model-aware transform for drizzle (per ORIGINAL key)
-                try:
-                    k_norm = os.path.normpath(orig_path)
-                    if kind == "affine":
-                        A = np.asarray(X, np.float64).reshape(2, 3)
-                        self.drizzle_xforms[k_norm] = ("affine", A)
-                    elif kind == "homography":
-                        H = np.asarray(X, np.float64).reshape(3, 3)
-                        self.drizzle_xforms[k_norm] = ("homography", H)
-                    elif kind.startswith("poly"):
-                        self.drizzle_xforms[k_norm] = (kind, None)
-                    else:
-                        # fall back to affine
-                        A = np.asarray(X, np.float64).reshape(2, 3)
-                        self.drizzle_xforms[k_norm] = ("affine", A)
-                except Exception:
-                    pass
-
-
-                if np.isnan(aligned).any() or np.isinf(aligned).any():
-                    aligned = np.nan_to_num(aligned, nan=0.0, posinf=0.0, neginf=0.0)
-
-                base = os.path.basename(orig_path)
-                name, _ = os.path.splitext(base)
-                if name.endswith("_n"):
-                    name = name[:-2]
-                if not name.endswith("_n_r"):
-                    name += "_n_r"
-                out_path = os.path.join(self.output_directory, f"{name}.fit")
-
-                save_image(
-                    img_array=aligned,
-                    filename=out_path,
-                    original_format="fit",
-                    bit_depth=bit_depth,
-                    original_header=hdr,
-                    is_mono=(aligned.ndim == 2)
-                )
-                # update downstream mapping to the NEW path
-                self.file_key_to_current_path[k] = out_path
-                return f"💾 Wrote {os.path.basename(out_path)} [{kind}]", True
-            except Exception as e:
-                return f"⚠️ Finalize error {os.path.basename(orig_path)}: {e}", False
-
-        self.progress_update.emit("📝 Finalizing aligned outputs (single write per frame)…")
         ok = 0
-        Href, Wref = self.reference_image_2d.shape[:2]
-        self._ref_shape_for_sasd = (Href, Wref)        
-        with ThreadPoolExecutor(max_workers=io_workers) as ex:
-            futs = {ex.submit(_final_write, f): f for f in self.original_files}
-            for fut in as_completed(futs):
-                msg, success = fut.result()
-                if success:
-                    ok += 1
-                self.progress_update.emit(msg)
+        try:
+            with ProcessPoolExecutor(max_workers=finalize_workers) as ex:
+                futs = [ex.submit(_finalize_write_job, j) for j in jobs]
+                for fut in as_completed(futs):
+                    try:
+                        orig_path, out_path, msg, success, drizzle = fut.result()
+                    except Exception as e:
+                        # Worker crashed before returning a tuple
+                        self.progress_update.emit(f"⚠️ Finalize worker crashed: {e}")
+                        continue
 
+                    # Stream the worker’s detailed status (includes the “Distortion Correction…” line)
+                    if msg:
+                        for line in (msg.splitlines() or [msg]):
+                            self.progress_update.emit(line)
+
+                    if success:
+                        ok += 1
+                        k = os.path.normpath(orig_path)
+                        # map ORIGINAL → new output path
+                        self.file_key_to_current_path[k] = out_path
+                        # record drizzle model
+                        if isinstance(drizzle, tuple) and len(drizzle) == 2:
+                            kind, M = drizzle
+                            try:
+                                if kind == "affine":
+                                    self.drizzle_xforms[k] = ("affine", np.asarray(M, np.float64).reshape(2, 3))
+                                elif kind == "homography":
+                                    self.drizzle_xforms[k] = ("homography", np.asarray(M, np.float64).reshape(3, 3))
+                                else:
+                                    # poly3/poly4 or other residual models
+                                    self.drizzle_xforms[k] = (str(kind), None)
+                            except Exception:
+                                # Best-effort; SASD will fall back to affine stack if missing
+                                pass
+        finally:
+            # Cleanup temp ref
+            try: shutil.rmtree(tmpdir, ignore_errors=True)
+            except Exception: pass
+
+        # Save SASD with whatever transforms we have
         try:
             sasd_path = os.path.join(self.output_directory, "alignment_transforms.sasd")
             self._save_alignment_transforms_sasd(sasd_path)
-            self.progress_update.emit(f"✅ Transform file saved as alignment_transforms.sasd")
+            self.progress_update.emit("✅ Transform file saved as alignment_transforms.sasd")
         except Exception as e:
             self.progress_update.emit(f"⚠️ Failed to save alignment_transforms.sasd: {e}")
 
