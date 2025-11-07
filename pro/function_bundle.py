@@ -5,7 +5,7 @@ from typing import Iterable, List
 import sys
 from PyQt6.QtCore import Qt, QSettings, QByteArray, QMimeData, QSize, QPoint, QEventLoop
 from PyQt6.QtWidgets import (
-    QDialog, QWidget, QHBoxLayout, QVBoxLayout, QListWidget, QListWidgetItem, 
+    QDialog, QWidget, QHBoxLayout, QVBoxLayout, QListWidget, QListWidgetItem, QProgressBar,
     QPushButton, QSplitter, QMessageBox, QLabel, QAbstractItemView, QDialogButtonBox,
     QApplication, QMenu, QInputDialog, QPlainTextEdit
 )
@@ -287,6 +287,9 @@ class FunctionBundleDialog(QDialog):
         self.add_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.add_hint.setStyleSheet("color:#aaa; padding:6px; border:1px dashed #666; border-radius:6px;")
 
+        self.btn_edit_preset = QPushButton("Edit Preset…")
+        self.btn_edit_preset.setEnabled(False)  # enabled when exactly one step is selected
+
         self.btn_remove = QPushButton("Remove Selected")
         self.btn_clear  = QPushButton("Clear Steps")
         self.btn_up     = QPushButton("▲ Move Up")
@@ -309,12 +312,37 @@ class FunctionBundleDialog(QDialog):
         right.addWidget(QLabel("Steps"))
         right.addWidget(self.steps, 1)
         right.addWidget(self.add_hint)
+
+        # controls row under the Steps list
         rrow = QHBoxLayout()
-        rrow.addWidget(self.btn_up); rrow.addWidget(self.btn_down)
+        rrow.addWidget(self.btn_up)
+        rrow.addWidget(self.btn_down)
+
+        # center Edit Preset between Move Down and Remove Selected
         rrow.addStretch(1)
-        rrow.addWidget(self.btn_remove); rrow.addWidget(self.btn_clear)
+        rrow.addWidget(self.btn_edit_preset)
+        rrow.addStretch(1)
+
+        # then Remove/Clear on the right
+        rrow.addWidget(self.btn_remove)
+        rrow.addWidget(self.btn_clear)
+
         right.addLayout(rrow)
-        #right.addWidget(self.btn_drag_bundle)
+
+        self.run_status = QLabel("Ready.")
+        self.run_status.setStyleSheet("color:#aaa; padding:2px 0;")
+        self.run_progress = QProgressBar()
+        self.run_progress.setMinimum(0)
+        self.run_progress.setMaximum(100)
+        self.run_progress.setValue(0)
+        self.run_progress.setTextVisible(True)
+
+        prow = QHBoxLayout()
+        prow.addWidget(self.run_status, 1)
+        prow.addWidget(self.run_progress, 2)
+        right.addLayout(prow)
+
+        # right.addWidget(self.btn_drag_bundle)
         right.addWidget(self.btn_run_active)
         right.addWidget(self.btn_apply_to_vbundle)
         right.addWidget(self.btn_chip)
@@ -329,6 +357,7 @@ class FunctionBundleDialog(QDialog):
         root = QHBoxLayout(self)
         root.addWidget(split)
 
+
         # wire
         self.list.currentRowChanged.connect(lambda _i: self._refresh_steps_list())
         self.list.customContextMenuRequested.connect(self._bundles_context_menu)
@@ -341,6 +370,11 @@ class FunctionBundleDialog(QDialog):
 
         # step context menu
         self.steps.customContextMenuRequested.connect(self._steps_context_menu)
+
+        self.steps.itemSelectionChanged.connect(self._sync_edit_button_enabled)
+        self.btn_edit_preset.clicked.connect(self._edit_selected_step_preset)
+        QShortcut(QKeySequence("Return"), self.steps, activated=self._edit_selected_step_preset)   # handy
+        QShortcut(QKeySequence("Enter"),  self.steps, activated=self._edit_selected_step_preset)
 
         self.btn_remove.clicked.connect(self._remove_selected_steps)
         self.btn_clear.clicked.connect(self._clear_steps)
@@ -363,6 +397,65 @@ class FunctionBundleDialog(QDialog):
 
         # chips per bundle index
         self._chips: dict[int, FunctionBundleChip] = {}
+
+    def _progress_reset(self):
+        try:
+            self.run_status.setText("Ready.")
+            self.run_progress.setRange(0, 100)
+            self.run_progress.setValue(0)
+            QApplication.processEvents()
+        except Exception:
+            pass
+
+    def _progress_set_step(self, idx: int, total: int, label: str):
+        """Determinate update for normal steps."""
+        try:
+            idx = max(0, idx)
+            total = max(1, total)
+            pct = int(100 * idx / total)
+            self.run_status.setText(f"Running step {idx}/{total}: {label}")
+            self.run_progress.setRange(0, 100)
+            self.run_progress.setValue(pct)
+            QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 50)
+        except Exception:
+            pass
+
+    def _progress_busy(self, label: str):
+        """Indeterminate mode for long-running sub-steps (e.g., Cosmic Clarity)."""
+        try:
+            self.run_status.setText(label)
+            self.run_progress.setRange(0, 0)  # indeterminate
+            QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 50)
+        except Exception:
+            pass
+
+    def _step_label(self, st: dict) -> str:
+        cid = (st or {}).get("command_id", "<cmd>")
+        # If preset has a friendly name/label, include it
+        preset = (st or {}).get("preset")
+        if isinstance(preset, dict):
+            name = preset.get("name") or preset.get("label")
+            if isinstance(name, str) and name.strip():
+                return f"{cid} — {name.strip()}"
+        return str(cid)
+
+
+    def _sync_edit_button_enabled(self):
+        self.btn_edit_preset.setEnabled(len(self.steps.selectedItems()) == 1)
+
+    def _edit_selected_step_preset(self):
+        items = self.steps.selectedItems()
+        if len(items) != 1:
+            return
+        it = items[0]
+        step = it.data(Qt.ItemDataRole.UserRole) or {}
+        new_preset, ok = self._edit_preset_dialog(step.get("preset", None), step)
+        if ok:
+            step["preset"] = new_preset
+            it.setData(Qt.ItemDataRole.UserRole, step)
+            it.setText(f"{step.get('command_id','<cmd>')}{self._preset_label(new_preset)}")
+            self._commit_steps_from_ui()
+
 
     # ---------- small UI pump ----------
     def _pump_events(self, ms: int = 0):
@@ -602,7 +695,7 @@ class FunctionBundleDialog(QDialog):
         row = self.steps.row(item)
         step = item.data(Qt.ItemDataRole.UserRole) or {}
         if act is a_edit:
-            new_preset, ok = self._edit_preset_dialog(step.get("preset", None))
+            new_preset, ok = self._edit_preset_dialog(step.get("preset", None), step)
             if ok:
                 step["preset"] = new_preset
                 item.setData(Qt.ItemDataRole.UserRole, step)
@@ -621,11 +714,32 @@ class FunctionBundleDialog(QDialog):
             self.steps.takeItem(row)
             self._commit_steps_from_ui()
 
-    def _edit_preset_dialog(self, current) -> tuple[object, bool]:
+    def _edit_preset_dialog(self, current, step: dict | None = None) -> tuple[object, bool]:
         """
-        Simple JSON editor for the 'preset' field.
-        Accepts dict, string, number, etc. Returns (value, ok).
+        Prefer the same rich UI editors used by desktop shortcuts.
+        - If a bespoke editor exists and user cancels => do NOT open JSON.
+        - If no bespoke editor exists => fall back to JSON editor.
+        Returns (value, ok).
         """
+        # Try to open a command-specific UI if we know the command_id for the selected step
+        cmd = None
+        if isinstance(step, dict):
+            cmd = step.get("command_id")
+
+        try:
+            from pro.shortcuts import _open_preset_editor_for_command, _has_preset_editor_for_command
+        except Exception:
+            _open_preset_editor_for_command = None
+            _has_preset_editor_for_command = lambda _c: False  # type: ignore
+
+        # If we have a bespoke UI for this command, use it; cancel means "do nothing"
+        if cmd and _has_preset_editor_for_command(cmd) and _open_preset_editor_for_command:
+            result = _open_preset_editor_for_command(self, cmd, current if isinstance(current, dict) else {})
+            if result is None:
+                return current, False   # user cancelled rich UI → don't open JSON
+            return result, True         # accepted via rich UI
+
+        # ---- Fallback: JSON editor (only when no bespoke editor exists) ----
         dlg = QDialog(self)
         dlg.setWindowTitle("Edit Preset")
         v = QVBoxLayout(dlg)
@@ -651,6 +765,8 @@ class FunctionBundleDialog(QDialog):
             QMessageBox.warning(self, "Invalid JSON", f"Could not parse JSON:\n{e}")
             return current, False
         return val, True
+
+
 
     # ---------- DnD into the PANEL (add steps) ----------
     def dragEnterEvent(self, e):
@@ -780,33 +896,53 @@ class FunctionBundleDialog(QDialog):
 
     def _apply_steps_to_target_sw(self, mw, sw, steps: list[dict]):
         errors = []
+        total = len(steps)
+
         # busy cursor while running this set
         try: QApplication.setOverrideCursor(Qt.CursorShape.BusyCursor)
         except Exception: pass
 
-        for st in steps:
+        # start fresh
+        self._progress_reset()
+
+        for i, st in enumerate(steps, start=1):
             _activate_target_sw(mw, sw)
 
-            # Small settle when the next step is CC
-            is_cc = isinstance(st, dict) and st.get("command_id") == "cosmic_clarity"
-            if is_cc:
-                QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 100)
-                QThread.msleep(120)  # tiny debounce; avoids racing previous step’s writes
+            label = self._step_label(st)
+            self._progress_set_step(i - 1, total, label)  # show we've advanced to the next step
+
+            # If next step is CC, switch to indeterminate while it’s working
+            is_cc = isinstance(st, dict) and st.get("command_id") in ("cosmic_clarity", "cosmic", "cosmicclarity")
 
             try:
+                if is_cc:
+                    # brief settle, then show busy
+                    QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 100)
+                    self._progress_busy(f"{label} — running…")
+
                 mw._handle_command_drop(st, target_sw=sw)
+
             except Exception as e:
                 errors.append(str(e))
 
-            # Wait if CC was launched; you already have this:
+            # Wait if CC was launched; keep indeterminate during the wait
             self._wait_for_cosmicclarity(mw)
+
+            # return to determinate and advance the bar after the step finishes
+            self._progress_set_step(i, total, label)
             self._pump_events(0)
 
         try: QApplication.restoreOverrideCursor()
         except Exception: pass
 
+        # finish bar
+        self.run_status.setText("Done.")
+        self.run_progress.setRange(0, 100)
+        self.run_progress.setValue(100)
+
         if errors:
             QMessageBox.warning(self, "Apply", "Some steps failed:\n\n" + "\n".join(errors))
+
 
 
     def _compress_to_chip(self):

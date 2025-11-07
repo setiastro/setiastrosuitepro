@@ -244,6 +244,168 @@ class DraggableToolBar(QToolBar):
         m.addAction("Tip: Alt+Drag to create", lambda: None).setEnabled(False)
         m.exec(gpos)
 
+_PRESET_UI_IDS = {
+    "stat_stretch","star_stretch","crop","curves","ghs","abe","graxpert",
+    "remove_stars","cosmic_clarity","cosmic","cosmicclarity",
+    "convo","convolution","deconvolution","convo_deconvo",
+    "linear_fit","wavescale_hdr","wavescale_dark_enhance","wavescale_dark_enhancer",
+    "remove_green","star_align","background_neutral","white_balance","clahe",
+    "morphology","pixel_math","rgb_align","signature_insert","signature_adder",
+    "signature","halo_b_gon","geom_rescale","rescale","debayer","image_combine",
+    "star_spikes","diffraction_spikes",
+}
+
+def _has_preset_editor_for_command(command_id: str) -> bool:
+    """Return True if we have a bespoke UI for this command_id."""
+    return command_id in _PRESET_UI_IDS
+
+# ---- Shared preset editor helper for other modules (e.g. Function Bundles) ----
+def _open_preset_editor_for_command(parent, command_id: str, initial: dict | None):
+    """
+    Open the same command-specific preset editor UIs used by ShortcutButton.
+    Returns a dict on success (OK), or None if cancelled / no editor available.
+    """
+    cur = initial or {}
+
+    # Keep each branch self-contained with local imports to avoid heavy module churn.
+    if command_id == "stat_stretch":
+        dlg = _StatStretchPresetDialog(parent, initial=cur)
+        return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
+
+    if command_id == "star_stretch":
+        dlg = _StarStretchPresetDialog(parent, initial=cur)
+        return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
+
+    if command_id == "crop":
+        from pro.shortcuts import _CropPresetDialog
+        dlg = _CropPresetDialog(parent, initial=cur or {
+            "mode": "margins",
+            "margins": {"top": 0, "right": 0, "bottom": 0, "left": 0},
+            "create_new_view": False
+        })
+        return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
+
+    if command_id == "curves":
+        dlg = _CurvesPresetDialog(parent, initial=cur or {"shape":"linear","amount":0.5,"mode":"K (Brightness)"})
+        return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
+
+    if command_id == "ghs":
+        dlg = _GHSPresetDialog(parent, initial=cur or {
+            "alpha":1.0,"beta":1.0,"gamma":1.0,"pivot":0.5,"lp":0.0,"hp":0.0,"channel":"K (Brightness)"
+        })
+        return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
+
+    if command_id == "abe":
+        dlg = _ABEPresetDialog(parent, initial=cur or {
+            "degree":2, "samples":120, "downsample":6, "patch":15, "rbf":True, "rbf_smooth":1.0, "make_background_doc":False
+        })
+        return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
+
+    if command_id == "graxpert":
+        from pro.graxpert_preset import GraXpertPresetDialog
+        dlg = GraXpertPresetDialog(parent, initial=cur or {"smoothing":0.10,"gpu":True})
+        return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
+
+    if command_id == "remove_stars":
+        from pro.remove_stars_preset import RemoveStarsPresetDialog
+        dlg = RemoveStarsPresetDialog(parent, initial=cur or {"tool":"starnet","linear":True})
+        return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
+
+    if command_id in ("cosmic_clarity","cosmic","cosmicclarity"):
+        from pro.cosmicclarity_preset import _CosmicClarityPresetDialog
+        dlg = _CosmicClarityPresetDialog(parent, initial=cur or {
+            "mode":"sharpen","gpu":True,"create_new_view":False,"sharpening_mode":"Both",
+            "auto_psf":True,"nonstellar_psf":3.0,"stellar_amount":0.50,"nonstellar_amount":0.50,
+            "denoise_luma":0.50,"denoise_color":0.50,"denoise_mode":"full","separate_channels":False,"scale":2
+        })
+        return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
+
+    if command_id in ("convo","convolution","deconvolution","convo_deconvo"):
+        from pro.convo_preset import ConvoPresetDialog
+        dlg = ConvoPresetDialog(parent, initial=cur or {
+            "op":"convolution","radius":5.0,"kurtosis":2.0,"aspect":1.0,"rotation":0.0,"strength":1.0
+        })
+        return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
+
+    if command_id == "linear_fit":
+        from pro.linear_fit import _LinearFitPresetDialog
+        dlg = _LinearFitPresetDialog(parent, initial=cur)
+        return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
+
+    if command_id == "wavescale_hdr":
+        from pro.wavescale_hdr_preset import WaveScaleHDRPresetDialog
+        dlg = WaveScaleHDRPresetDialog(parent, initial=cur or {"n_scales":5,"compression_factor":1.5,"mask_gamma":5.0})
+        return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
+
+    if command_id in ("wavescale_dark_enhance","wavescale_dark_enhancer"):
+        from pro.wavescalede_preset import WaveScaleDSEPresetDialog
+        dlg = WaveScaleDSEPresetDialog(parent, initial=cur or {
+            "n_scales":6,"boost_factor":5.0,"mask_gamma":1.0,"iterations":2
+        })
+        return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
+
+    if command_id == "remove_green":
+        dlg = _RemoveGreenPresetDialog(parent, initial=cur)
+        return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
+
+    if command_id == "star_align":
+        from pro.star_alignment_preset import StarAlignmentPresetDialog
+        dlg = StarAlignmentPresetDialog(parent, initial=cur or {"ref_mode":"active","overwrite":False,"downsample":2})
+        return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
+
+    if command_id == "background_neutral":
+        dlg = _BackgroundNeutralPresetDialog(parent, initial=cur)
+        return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
+
+    if command_id == "white_balance":
+        dlg = _WhiteBalancePresetDialog(parent, initial=cur)
+        return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
+
+    if command_id == "clahe":
+        dlg = _CLAHEPresetDialog(parent, initial=cur)
+        return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
+
+    if command_id == "morphology":
+        dlg = _MorphologyPresetDialog(parent, initial=cur)
+        return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
+
+    if command_id == "pixel_math":
+        dlg = _PixelMathPresetDialog(parent, initial=cur)
+        return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
+
+    if command_id == "rgb_align":
+        dlg = _RGBAlignPresetDialog(parent, initial=cur or {"model":"homography","new_doc":True})
+        return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
+
+    if command_id in ("signature_insert","signature_adder","signature"):
+        dlg = _SignatureInsertPresetDialog(parent, initial=cur)
+        return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
+
+    if command_id == "halo_b_gon":
+        dlg = _HaloBGonPresetDialog(parent, initial=cur)
+        return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
+
+    if command_id in ("geom_rescale","rescale"):
+        dlg = _RescalePresetDialog(parent, initial=cur or {"factor":1.0})
+        return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
+
+    if command_id == "debayer":
+        dlg = _DebayerPresetDialog(parent, initial=cur or {"pattern":"auto"})
+        return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
+
+    if command_id == "image_combine":
+        dlg = _ImageCombinePresetDialog(parent, initial=cur or {
+            "mode":"Blend","opacity":1.0,"luma_only":False,"output":"replace","docB_title":""
+        })
+        return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
+
+    if command_id in ("star_spikes","diffraction_spikes"):
+        dlg = _StarSpikesPresetDialog(parent, initial=cur)
+        return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
+
+    # Unknown / no bespoke UI
+    return None
+
 
 # ---------- the button that sits on the MDI desktop ----------
 class ShortcutButton(QToolButton):
@@ -324,269 +486,15 @@ class ShortcutButton(QToolButton):
         self._mgr.update_label(self.sid, new_name.strip())   # ← was self.shortcut_id
 
     def _edit_preset_ui(self):
-        """
-        Small inline editors per command. Grows as we add more commands.
-        Falls back to a simple JSON editor if command unhandled.
-        """
         cid = self.command_id
         cur = self._load_preset() or {}
-
-        if cid == "stat_stretch":
-            # load current values
-            cur = self._load_preset() or {}
-
-            # launch the proper dialog
-            dlg = _StatStretchPresetDialog(self, initial=cur)
-            if dlg.exec() == QDialog.DialogCode.Accepted:
-                preset = dlg.result_dict()
-                self._save_preset(preset)
-                QMessageBox.information(self, "Preset saved", "Preset stored on shortcut.")
+        result = _open_preset_editor_for_command(self, cid, cur)
+        if result is not None:
+            self._save_preset(result)
+            QMessageBox.information(self, "Preset saved", "Preset stored on shortcut.")
             return
 
-        if cid == "star_stretch":
-            dlg = _StarStretchPresetDialog(self, initial=cur)
-            if dlg.exec() == QDialog.DialogCode.Accepted:
-                self._save_preset(dlg.result_dict())
-                QMessageBox.information(self, "Preset saved", "Preset stored on shortcut.")
-            return
-
-        if cid == "crop":
-            dlg = _CropPresetDialog(self, initial=cur or {
-                "mode": "margins",
-                "margins": {"top": 0, "right": 0, "bottom": 0, "left": 0},
-                "create_new_view": False
-            })
-            if dlg.exec() == QDialog.DialogCode.Accepted:
-                self._save_preset(dlg.result_dict())
-                QMessageBox.information(self, "Preset saved", "Crop preset stored on shortcut.")
-            return
-
-        if cid == "curves":
-            cur = self._load_preset() or {"shape": "linear", "amount": 0.5, "mode": "K (Brightness)"}
-            dlg = _CurvesPresetDialog(self, initial=cur)
-            if dlg.exec() == QDialog.DialogCode.Accepted:
-                self._save_preset(dlg.result_dict())
-                QMessageBox.information(self, "Preset saved", "Curves preset stored on shortcut.")
-            return
-
-        if cid == "ghs":
-            cur = self._load_preset() or {"alpha":1.0, "beta":1.0, "gamma":1.0,
-                                          "pivot":0.5, "lp":0.0, "hp":0.0,
-                                          "channel":"K (Brightness)"}
-            dlg = _GHSPresetDialog(self, initial=cur)
-            if dlg.exec() == QDialog.DialogCode.Accepted:
-                self._save_preset(dlg.result_dict())
-                QMessageBox.information(self, "Preset saved", "GHS preset stored on shortcut.")
-            return
-
-        if cid == "abe":
-            cur = self._load_preset() or {"degree":2, "samples":120, "downsample":6, "patch":15, "rbf":True, "rbf_smooth":1.0, "make_background_doc":False}
-            dlg = _ABEPresetDialog(self, initial=cur)
-            if dlg.exec() == QDialog.DialogCode.Accepted:
-                self._save_preset(dlg.result_dict())
-                QMessageBox.information(self, "Preset saved", "ABE preset stored on shortcut.")
-            return
-
-        if cid == "graxpert":
-            from pro.graxpert_preset import GraXpertPresetDialog
-            cur = self._load_preset() or {"smoothing": 0.10, "gpu": True}
-            dlg = GraXpertPresetDialog(self, initial=cur)
-            if dlg.exec() == QDialog.DialogCode.Accepted:
-                self._save_preset(dlg.result_dict())
-                QMessageBox.information(self, "Preset saved", "GraXpert preset stored on shortcut.")
-            return
-
-        if cid == "remove_stars":
-            from pro.remove_stars_preset import RemoveStarsPresetDialog
-            cur = self._load_preset() or {"tool":"starnet", "linear": True}
-            dlg = RemoveStarsPresetDialog(self, initial=cur)
-            if dlg.exec() == QDialog.DialogCode.Accepted:
-                self._save_preset(dlg.result_dict())
-                QMessageBox.information(self, "Preset saved", "Remove Stars preset stored on shortcut.")
-            return
-
-        if cid == "aberration_ai":
-            from pro.aberration_ai_preset import AberrationAIPresetDialog
-            cur = self._load_preset() or {"patch":512, "overlap":64, "border_px":10, "auto_gpu":True}
-            dlg = AberrationAIPresetDialog(self, initial=cur)
-            if dlg.exec() == QDialog.DialogCode.Accepted:
-                self._save_preset(dlg.result_dict())
-                QMessageBox.information(self, "Preset saved", "Aberration AI preset stored on shortcut.")
-            return
-
-        if cid in ("cosmic_clarity", "cosmic", "cosmicclarity"):
-            from pro.cosmicclarity_preset import _CosmicClarityPresetDialog
-            cur = self._load_preset() or {
-                "mode": "sharpen",
-                "gpu": True,
-                "create_new_view": False,
-                "sharpening_mode": "Both",
-                "auto_psf": True,
-                "nonstellar_psf": 3.0,
-                "stellar_amount": 0.50,
-                "nonstellar_amount": 0.50,
-                "denoise_luma": 0.50,
-                "denoise_color": 0.50,
-                "denoise_mode": "full",
-                "separate_channels": False,
-                "scale": 2,
-            }
-            dlg = _CosmicClarityPresetDialog(self, initial=cur)
-            if dlg.exec() == QDialog.DialogCode.Accepted:
-                self._save_preset(dlg.result_dict())
-                QMessageBox.information(self, "Preset saved", "Cosmic Clarity preset stored on shortcut.")
-            return
-
-        if cid in ("convo", "convolution", "deconvolution", "convo_deconvo"):
-            from pro.convo_preset import ConvoPresetDialog
-            cur = self._load_preset() or {"op":"convolution", "radius":5.0, "kurtosis":2.0, "aspect":1.0, "rotation":0.0, "strength":1.0}
-            dlg = ConvoPresetDialog(self, initial=cur)
-            if dlg.exec() == QDialog.DialogCode.Accepted:
-                self._save_preset(dlg.result_dict())
-                QMessageBox.information(self, "Preset saved", "Convo/Deconvo preset stored on shortcut.")
-            return
-
-        if cid == "linear_fit":
-            cur = self._load_preset() or {}
-            dlg = _LinearFitPresetDialog(self, initial=cur)
-            if dlg.exec() == QDialog.DialogCode.Accepted:
-                self._save_preset(dlg.result_dict())
-                QMessageBox.information(self, "Preset saved", "Linear Fit preset stored on shortcut.")
-            return
-
-        if cid == "wavescale_hdr":
-            from pro.wavescale_hdr_preset import WaveScaleHDRPresetDialog
-            cur = self._load_preset() or {"n_scales": 5, "compression_factor": 1.5, "mask_gamma": 5.0}
-            dlg = WaveScaleHDRPresetDialog(self, initial=cur)
-            if dlg.exec() == QDialog.DialogCode.Accepted:
-                self._save_preset(dlg.result_dict())
-                QMessageBox.information(self, "Preset saved", "WaveScale HDR preset stored on shortcut.")
-            return
-
-        if cid in ("wavescale_dark_enhance", "wavescale_dark_enhancer"):
-            from pro.wavescalede_preset import WaveScaleDSEPresetDialog
-            cur = self._load_preset() or {
-                "n_scales": 6,
-                "boost_factor": 5.0,
-                "mask_gamma": 1.0,
-                "iterations": 2,
-            }
-            dlg = WaveScaleDSEPresetDialog(self, initial=cur)
-            if dlg.exec() == QDialog.DialogCode.Accepted:
-                self._save_preset(dlg.result_dict())
-                QMessageBox.information(self, "Preset saved", "WaveScale Dark Enhancer preset stored on shortcut.")
-            return
-
-        if cid == "remove_green":
-            dlg = _RemoveGreenPresetDialog(self, initial=cur)
-            if dlg.exec() == QDialog.DialogCode.Accepted:
-                self._save_preset(dlg.result_dict())
-                QMessageBox.information(self, "Preset saved", "Preset stored on shortcut.")
-            return
-
-        if cid == "star_align":
-            from pro.star_alignment_preset import StarAlignmentPresetDialog
-            cur = self._load_preset() or {
-                "ref_mode": "active",
-                "overwrite": False,
-                "downsample": 2
-            }
-            dlg = StarAlignmentPresetDialog(self, initial=cur)
-            if dlg.exec() == QDialog.DialogCode.Accepted:
-                self._save_preset(dlg.result_dict())
-                QMessageBox.information(self, "Preset saved", "Star Alignment preset stored on shortcut.")
-            return
-
-        if cid == "background_neutral":
-            dlg = _BackgroundNeutralPresetDialog(self, initial=cur)
-            if dlg.exec() == QDialog.DialogCode.Accepted:
-                self._save_preset(dlg.result_dict())
-                QMessageBox.information(self, "Preset saved", "Preset stored on shortcut.")
-            return
-        if cid == "white_balance":
-            dlg = _WhiteBalancePresetDialog(self, initial=cur)
-            if dlg.exec() == QDialog.DialogCode.Accepted:
-                self._save_preset(dlg.result_dict())
-                QMessageBox.information(self, "Preset saved", "Preset stored on shortcut.")
-            return
-        if cid == "wavescale_hdr":
-            dlg = _WaveScaleHDRPresetDialog(self, initial=cur)
-            if dlg.exec() == QDialog.DialogCode.Accepted:
-                self._save_preset(dlg.result_dict())
-                QMessageBox.information(self, "Preset saved", "Preset stored on shortcut.")
-            return   
-        # accept either id for Dark Enhancer
-        if cid in ("wavescale_dark_enhance", "wavescale_dark_enhancer"):
-            dlg = _WaveScaleDarkEnhancerPresetDialog(self, initial=cur)
-            if dlg.exec() == QDialog.DialogCode.Accepted:
-                self._save_preset(dlg.result_dict())
-                QMessageBox.information(self, "Preset saved", "Preset stored on shortcut.")
-            return  
-        if cid == "clahe":
-            dlg = _CLAHEPresetDialog(self, initial=cur)
-            if dlg.exec() == QDialog.DialogCode.Accepted:
-                self._save_preset(dlg.result_dict())
-                QMessageBox.information(self, "Preset saved", "Preset stored on shortcut.")
-            return   
-        if cid == "morphology":
-            dlg = _MorphologyPresetDialog(self, initial=cur)
-            if dlg.exec() == QDialog.DialogCode.Accepted:
-                self._save_preset(dlg.result_dict())
-                QMessageBox.information(self, "Preset saved", "Preset stored on shortcut.")
-            return   
-        if cid == "pixel_math":
-            dlg = _PixelMathPresetDialog(self, initial=cur)
-            if dlg.exec() == QDialog.DialogCode.Accepted:
-                self._save_preset(dlg.result_dict())
-                QMessageBox.information(self, "Preset saved", "Preset stored on shortcut.")
-            return  
-        if cid == "rgb_align":
-            cur = self._load_preset() or {"model": "homography", "new_doc": True}
-            dlg = _RGBAlignPresetDialog(self, initial=cur)
-            if dlg.exec() == QDialog.DialogCode.Accepted:
-                self._save_preset(dlg.result_dict())
-                QMessageBox.information(self, "Preset saved", "RGB Align preset stored on shortcut.")
-            return             
-        if cid in ("signature_insert", "signature_adder", "signature"):
-            dlg = _SignatureInsertPresetDialog(self, initial=cur)
-            if dlg.exec() == QDialog.DialogCode.Accepted:
-                self._save_preset(dlg.result_dict())
-                QMessageBox.information(self, "Preset saved", "Preset stored on shortcut.")
-            return   
-        if cid == "halo_b_gon":
-            dlg = _HaloBGonPresetDialog(self, initial=cur)
-            if dlg.exec() == QDialog.DialogCode.Accepted:
-                self._save_preset(dlg.result_dict())
-                QMessageBox.information(self, "Preset saved", "Preset stored on shortcut.")
-            return   
-        if cid in ("geom_rescale", "rescale"):
-            dlg = _RescalePresetDialog(self, initial=cur or {"factor": 1.0})
-            if dlg.exec() == QDialog.DialogCode.Accepted:
-                self._save_preset(dlg.result_dict())
-                QMessageBox.information(self, "Preset saved", "Preset stored on shortcut.")
-            return   
-        if cid == "debayer":
-            cur = self._load_preset() or {"pattern": "auto"}
-            dlg = _DebayerPresetDialog(self, initial=cur)
-            if dlg.exec() == QDialog.DialogCode.Accepted:
-                self._save_preset(dlg.result_dict())
-                QMessageBox.information(self, "Preset saved", "Debayer preset stored on shortcut.")
-            return        
-        if cid == "image_combine":
-            dlg = _ImageCombinePresetDialog(self, initial=cur or {
-                "mode": "Blend", "opacity": 1.0, "luma_only": False, "output": "replace", "docB_title": ""
-            })
-            if dlg.exec() == QDialog.DialogCode.Accepted:
-                self._save_preset(dlg.result_dict())
-                QMessageBox.information(self, "Preset saved", "Preset stored on shortcut.")
-            return       
-        if cid in ("star_spikes", "diffraction_spikes"):
-            dlg = _StarSpikesPresetDialog(self, initial=cur)
-            if dlg.exec() == QDialog.DialogCode.Accepted:
-                self._save_preset(dlg.result_dict())
-                QMessageBox.information(self, "Preset saved", "Preset stored on shortcut.")
-            return                                             
-        # --- Fallback: JSON text prompt (simple & pragmatic) -------------
+        # Fallback: JSON editor
         raw = json.dumps(cur or {}, indent=2)
         text, ok = QInputDialog.getMultiLineText(self, "Edit Preset (JSON)", "Preset:", raw)
         if ok:

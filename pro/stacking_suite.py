@@ -4294,8 +4294,31 @@ class StackingSuiteDialog(QDialog):
         self.shift_tol_spin.setValue(self.settings.value("stacking/shift_tolerance", 0.2, type=float))
         fl_align.addRow("Accept tolerance (px):", self.shift_tol_spin)
 
+        # NEW: Max stars (Astroalign control points cap)
+        self.align_limit_stars_spin = QSpinBox()
+        self.align_limit_stars_spin.setRange(50, 5000)
+        self.align_limit_stars_spin.setSingleStep(50)
+        self.align_limit_stars_spin.setValue(
+            self.settings.value("stacking/align/limit_stars", 500, type=int)
+        )
+        self.align_limit_stars_spin.setToolTip(
+            "Caps Astroalign max_control_points (typical 500–1500). Lower = faster, higher = more robust."
+        )
+        fl_align.addRow("Max stars:", self.align_limit_stars_spin)
+
+        # NEW: Timeout per frame (seconds)
+        self.align_timeout_spin = QSpinBox()
+        self.align_timeout_spin.setRange(10, 3600)
+        self.align_timeout_spin.setSingleStep(10)
+        self.align_timeout_spin.setValue(
+            self.settings.value("stacking/align/timeout_per_job_sec", 300, type=int)
+        )
+        self.align_timeout_spin.setToolTip(
+            "Per-frame alignment timeout for the parallel workers. Default 300s."
+        )
+        fl_align.addRow("Timeout per frame (s):", self.align_timeout_spin)
+
         left_col.addWidget(gb_align)
-        
 
         # --- Performance ---
         gb_perf = QGroupBox("Performance")
@@ -5046,6 +5069,9 @@ class StackingSuiteDialog(QDialog):
         passes = 1 if self.align_passes_combo.currentIndex() == 0 else 3
         self.settings.setValue("stacking/refinement_passes", passes)
         self.settings.setValue("stacking/shift_tolerance", self.shift_tol_spin.value())
+
+        self.settings.setValue("stacking/align/limit_stars", int(self.align_limit_stars_spin.value()))
+        self.settings.setValue("stacking/align/timeout_per_job_sec", int(self.align_timeout_spin.value()))
 
         self.settings.setValue("stacking/drop_shrink", float(self.drop_shrink_spin.value()))
 
