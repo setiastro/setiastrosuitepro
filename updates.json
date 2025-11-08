@@ -1,9 +1,9 @@
 {
-  "version": "1.4.7",
+  "version": "1.4.8",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.7/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.7/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.7/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.8/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.8/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.8/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.4.7 Stacking Suite: Much faster alignment, use the wrench icon to set the max control points and star detection threshold: 100 points and threshold of 20 will be very fast but potentially less accurate distortion warps. PixelMath preview and autostretch options. Display-Stretch more options. WIMS updates. FunctionBundle Niceties. Other bug fixes."
+  "notes": "Seti Astro Suite Pro V1.4.8 Mosaic Master, new options and greatly increased speed. Selective Color Correction UI niceties. Other bug fixes."
 }
