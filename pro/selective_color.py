@@ -7,11 +7,11 @@ except Exception:
     cv2 = None
 
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QImage, QPixmap, QIcon
+from PyQt6.QtGui import QImage, QPixmap, QIcon, QGuiApplication
 from PyQt6.QtWidgets import (
     QDialog, QWidget, QLabel, QPushButton, QComboBox, QCheckBox, QSlider, QGroupBox,
     QVBoxLayout, QHBoxLayout, QGridLayout, QMessageBox, QSpinBox, QDoubleSpinBox,
-    QFileDialog
+    QFileDialog, QScrollArea, QFrame, QTabWidget, QSplitter
 )
 from PyQt6.QtWidgets import QSizePolicy
 # ---------------------------------------------------------------------
@@ -486,104 +486,84 @@ class SelectiveColorCorrection(QDialog):
 
     # ------------- UI -------------
     def _build_ui(self):
+        # --- Root layout -------------------------------------------------------
         root = QHBoxLayout(self)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(10)
 
-        # LEFT: controls
-        left = QVBoxLayout()
-        root.addLayout(left, 0)
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setChildrenCollapsible(False)
+        splitter.setHandleWidth(6)
+        root.addWidget(splitter)
 
-        # Target view
-        lbl_t = QLabel(f"Target View:  <b>{getattr(self.document, 'display_name', lambda: 'Image')()}</b>")
-        left.addWidget(lbl_t)
+        # ======================================================================
+        # LEFT PANE  (header → "small preview" toggle → scroller → live toggle → buttons)
+        # ======================================================================
+        left_widget = QWidget()
+        left_widget.setMinimumWidth(360)
+        left_widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        splitter.addWidget(left_widget)
 
-        # Preview mode (downsample switch)
+        left_outer = QVBoxLayout(left_widget)
+        left_outer.setContentsMargins(0, 0, 0, 0)
+        left_outer.setSpacing(8)
+
+        # Header (target view label)
+        try:
+            disp = getattr(self.document, "display_name", lambda: "Image")()
+        except Exception:
+            disp = "Image"
+        self.lbl_target = QLabel(f"Target View:  <b>{disp}</b>")
+        left_outer.addWidget(self.lbl_target)
+
+        # Small/fast preview toggle
         self.cb_small_preview = QCheckBox("Small-sized Preview (fast)")
         self.cb_small_preview.setChecked(True)
         self.cb_small_preview.toggled.connect(self._recompute_mask_and_preview)
-        left.addWidget(self.cb_small_preview)
+        left_outer.addWidget(self.cb_small_preview)
 
-        # --- Mask block
+        # ---------- SCROLLABLE CONTROLS (placed inside a QScrollArea) ----------
+        controls_container = QWidget()
+        left = QVBoxLayout(controls_container)
+        left.setContentsMargins(0, 0, 0, 0)
+        left.setSpacing(8)
+
+        # ===== Mask group
         gb_mask = QGroupBox("Mask")
         gl = QGridLayout(gb_mask)
         gl.setContentsMargins(8, 8, 8, 8)
         gl.setHorizontalSpacing(10)
         gl.setVerticalSpacing(8)
 
-        # Row 0: preset
+        # Row 0: Preset
         gl.addWidget(QLabel("Preset:"), 0, 0)
         self.dd_preset = QComboBox()
         self.dd_preset.addItems(["Custom"] + list(_PRESETS.keys()))
         self.dd_preset.currentTextChanged.connect(self._on_preset_change)
-        gl.addWidget(self.dd_preset, 0, 1, 1, 4)  # span across right side too
+        gl.addWidget(self.dd_preset, 0, 1, 1, 4)
 
-        # Left column: hue wheel (own vertical band, no overlap)
+        # Hue wheel
         self.hue_wheel = HueWheel(start_deg=65, end_deg=158)
-        self.hue_wheel.setMinimumSize(170, 170)
-
-        self.hue_wheel.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.hue_wheel.setMinimumSize(130, 130)
+        self.hue_wheel.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Minimum)
         gl.addWidget(self.hue_wheel, 1, 0, 7, 2)
 
-        # remember defaults here (on the instance actually in the UI)
-        self._default_h_start, self._default_h_end = self.hue_wheel.range()
-        # Give it fixed-ish behavior so it stays square and doesn't get crushed
+        # Helper: integer slider + spin (0..360)
+        def _deg_pair(grid: QGridLayout, label: str, row: int):
+            grid.addWidget(QLabel(label), row, 2)
+            sld = QSlider(Qt.Orientation.Horizontal)
+            sld.setRange(0, 360); sld.setSingleStep(1); sld.setPageStep(10)
+            spn = QSpinBox(); spn.setRange(0, 360)
+            sld.valueChanged.connect(spn.setValue)
+            spn.valueChanged.connect(sld.setValue)
+            grid.addWidget(sld, row, 3, 1, 3)
+            grid.addWidget(spn, row, 6, 1, 1)
+            return sld, spn
 
-
-        # Right side controls (start at col=2, never col 0/1)
-
-        # Row 1: start/end sliders
-        def make_deg_slider_row(caption, row):
-            gl.addWidget(QLabel(caption), row, 2)
-            s = QSlider(Qt.Orientation.Horizontal)
-            s.setRange(0, 360); s.setSingleStep(1); s.setPageStep(10)
-            s.setValue(65 if "Start" in caption else 158)
-            sp = QSpinBox(); sp.setRange(0, 360); sp.setValue(s.value())
-            s.valueChanged.connect(sp.setValue); sp.valueChanged.connect(s.setValue)
-            s.valueChanged.connect(self._recompute_mask_and_preview)
-            sp.valueChanged.connect(self._recompute_mask_and_preview)
-            gl.addWidget(s,  row, 3, 1, 2)
-            gl.addWidget(sp, row, 5)
-            return s, sp
-
-        self.sl_h1, self.sp_h1 = make_deg_slider_row("Start hue", 1)
-        self.sl_h2, self.sp_h2 = make_deg_slider_row("End hue",   2)
-
-        # Keep wheel and sliders in sync
-        def _wheel_to_sliders(s: int, e: int):
-            # user moved the wheel → flip to Custom unless we're applying a preset
-            if not self._setting_preset and self.dd_preset.currentText() != "Custom":
-                self.dd_preset.setCurrentText("Custom")
-
-            # update sliders/spinboxes without triggering recursion
-            self.sl_h1.blockSignals(True); self.sp_h1.blockSignals(True)
-            self.sl_h2.blockSignals(True); self.sp_h2.blockSignals(True)
-            self.sl_h1.setValue(int(s));   self.sp_h1.setValue(int(s))
-            self.sl_h2.setValue(int(e));   self.sp_h2.setValue(int(e))
-            self.sl_h1.blockSignals(False); self.sp_h1.blockSignals(False)
-            self.sl_h2.blockSignals(False); self.sp_h2.blockSignals(False)
-
-            # debounce the mask recompute
-            self._schedule_mask()
-
-        self.hue_wheel.rangeChanged.connect(_wheel_to_sliders)
-
-        def _sliders_to_wheel(_=None):
-            # user moved sliders/spinboxes → flip to Custom unless preset-driving
-            if not self._setting_preset and self.dd_preset.currentText() != "Custom":
-                self.dd_preset.setCurrentText("Custom")
-
-            s = int(self.sp_h1.value())
-            e = int(self.sp_h2.value())
-
-            # update wheel but don't re-emit rangeChanged (prevents ping-pong)
-            self.hue_wheel.setRange(s, e, notify=False)
-
-            # debounce the mask recompute
-            self._schedule_mask()
-
-        self.sp_h1.valueChanged.connect(_sliders_to_wheel)
-        self.sp_h2.valueChanged.connect(_sliders_to_wheel)
-        self.sl_h1.valueChanged.connect(_sliders_to_wheel)
-        self.sl_h2.valueChanged.connect(_sliders_to_wheel)
+        # Rows 1–2: Hue Start/End
+        self.sl_h1, self.sp_h1 = _deg_pair(gl, "Hue start (°):", 1)
+        self.sl_h2, self.sp_h2 = _deg_pair(gl, "Hue end (°):",   2)
+        self.sp_h1.setValue(65); self.sp_h2.setValue(158)
 
         # Row 3: chroma + lightness
         gl.addWidget(QLabel("Min chroma:"), 3, 2)
@@ -600,7 +580,7 @@ class SelectiveColorCorrection(QDialog):
         gl.addWidget(QLabel("to"), 3, 6)
         gl.addWidget(self.ds_maxL, 3, 7)
 
-        # Row 4: smoothness
+        # Row 4: smoothness + invert
         gl.addWidget(QLabel("Smoothness (deg):"), 4, 2)
         self.ds_smooth = QDoubleSpinBox(); self.ds_smooth.setRange(0,60); self.ds_smooth.setSingleStep(1.0); self.ds_smooth.setValue(10.0)
         self.ds_smooth.valueChanged.connect(self._recompute_mask_and_preview)
@@ -609,10 +589,10 @@ class SelectiveColorCorrection(QDialog):
         self.cb_invert = QCheckBox("Invert hue range")
         self.cb_invert.setChecked(False)
         self.cb_invert.toggled.connect(self._recompute_mask_and_preview)
-        gl.addWidget(self.cb_invert, 4, 4, 1, 3)  # place to the right of Smoothness
+        gl.addWidget(self.cb_invert, 4, 4, 1, 3)
 
-        # Row 5: shadows/highlights  (Balance is hidden; Intensity moved here)
-        gl.addWidget(QLabel("Shadows:"),   5, 2)
+        # Row 5: shadows/highlights + intensity
+        gl.addWidget(QLabel("Shadows:"), 5, 2)
         self.ds_sh = QDoubleSpinBox(); self.ds_sh.setRange(0,1); self.ds_sh.setSingleStep(0.05); self.ds_sh.setValue(0.0)
         self.ds_sh.valueChanged.connect(self._recompute_mask_and_preview)
         gl.addWidget(self.ds_sh, 5, 3)
@@ -622,15 +602,10 @@ class SelectiveColorCorrection(QDialog):
         self.ds_hi.valueChanged.connect(self._recompute_mask_and_preview)
         gl.addWidget(self.ds_hi, 5, 5)
 
-        # --- hidden balance control (still used in math) ---
-        self.ds_bal = QDoubleSpinBox()
-        self.ds_bal.setRange(0,1)
-        self.ds_bal.setSingleStep(0.05)
-        self.ds_bal.setValue(0.5)
+        self.ds_bal = QDoubleSpinBox(); self.ds_bal.setRange(0,1); self.ds_bal.setSingleStep(0.05); self.ds_bal.setValue(0.5)
         self.ds_bal.valueChanged.connect(self._recompute_mask_and_preview)
-        self.ds_bal.setVisible(False)  # not added to layout, or you can add+hide
+        self.ds_bal.setVisible(False)  # used in math, hidden in UI
 
-        # put Intensity where Balance was
         gl.addWidget(QLabel("Intensity:"), 5, 6)
         self.ds_int = QDoubleSpinBox(); self.ds_int.setRange(0, 2.0); self.ds_int.setSingleStep(0.05); self.ds_int.setValue(1.0)
         self.ds_int.valueChanged.connect(self._recompute_mask_and_preview)
@@ -647,7 +622,7 @@ class SelectiveColorCorrection(QDialog):
         self.cb_show_mask.toggled.connect(self._update_preview_pixmap)
         gl.addWidget(self.cb_show_mask, 6, 4, 1, 2)
 
-        # Row 7: imported mask controls
+        # Row 7: imported mask
         self.cb_use_imported = QCheckBox("Use imported mask")
         self.cb_use_imported.setChecked(False)
         self.cb_use_imported.toggled.connect(self._on_use_imported_mask_toggled)
@@ -660,7 +635,7 @@ class SelectiveColorCorrection(QDialog):
         self.lbl_imported_mask = QLabel("No imported mask")
         gl.addWidget(self.lbl_imported_mask, 7, 6, 1, 2)
 
-        # Column sizing: wheel column fixed, right side stretchy
+        # Column sizing
         gl.setColumnStretch(0, 0)
         gl.setColumnStretch(1, 0)
         for c in (2,3,4,5,6,7):
@@ -668,8 +643,8 @@ class SelectiveColorCorrection(QDialog):
 
         left.addWidget(gb_mask)
 
-        # --- Adjustments
-        # CMY group
+        # ===== Adjustments
+        # CMY
         gb_cmy = QGroupBox("Complementary colors (CMY)")
         glc = QGridLayout(gb_cmy)
         self.sl_c, self.ds_c = self._slider_pair(glc, "Cyan:",    0)
@@ -677,7 +652,7 @@ class SelectiveColorCorrection(QDialog):
         self.sl_y, self.ds_y = self._slider_pair(glc, "Yellow:",  2)
         left.addWidget(gb_cmy)
 
-        # RGB group
+        # RGB
         gb_rgb = QGroupBox("RGB Colors")
         glr = QGridLayout(gb_rgb)
         self.sl_r, self.ds_r = self._slider_pair(glr, "Red:",   0)
@@ -685,69 +660,65 @@ class SelectiveColorCorrection(QDialog):
         self.sl_b, self.ds_b = self._slider_pair(glr, "Blue:",  2)
         left.addWidget(gb_rgb)
 
-        # LSC group
-        # LSC group
+        # LSC
         gb_lsc = QGroupBox("Luminance, Chroma/Saturation, Contrast")
         gll = QGridLayout(gb_lsc)
-
-        # Row 0: Luminance
-        self.sl_l, self.ds_l  = self._slider_pair(gll, "Luminance:",  0)
-
-        # Row 1: Chroma (L-preserving)
+        self.sl_l, self.ds_l           = self._slider_pair(gll, "Luminance:",  0)
         self.sl_chroma, self.ds_chroma = self._slider_pair(gll, "Chroma (L-preserving):", 1)
-
-        # Row 2: Saturation (HSV S)
-        self.sl_s, self.ds_s  = self._slider_pair(gll, "Saturation (HSV S):", 2)
-
-        # Row 3: Contrast
-        self.sl_c2, self.ds_c2 = self._slider_pair(gll, "Contrast:",  3)
-
-        # Row 4: Mode selector (which one to apply)
+        self.sl_s, self.ds_s           = self._slider_pair(gll, "Saturation (HSV S):", 2)
+        self.sl_c2, self.ds_c2         = self._slider_pair(gll, "Contrast:",  3)
         gll.addWidget(QLabel("Color boost mode:"), 4, 0)
         self.dd_color_mode = QComboBox()
         self.dd_color_mode.addItems(["Chroma (L-preserving)", "Saturation (HSV S)"])
-        self.dd_color_mode.setCurrentIndex(0)  # default to Chroma for astro
+        self.dd_color_mode.setCurrentIndex(0)
         self.dd_color_mode.currentIndexChanged.connect(self._update_color_mode_enabled)
         gll.addWidget(self.dd_color_mode, 4, 1, 1, 2)
-
         left.addWidget(gb_lsc)
 
+        # Wrap controls in a scroller (horizontal scroll allowed if needed)
+        left_scroll = QScrollArea()
+        left_scroll.setWidget(controls_container)
+        left_scroll.setWidgetResizable(False)
+        left_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        left_scroll.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        left_outer.addWidget(left_scroll, 1)
 
-        # Preview + actions
+        # Live toggle (non-scroll)
         self.cb_live = QCheckBox("Preview changed image")
         self.cb_live.setChecked(True)
         self.cb_live.toggled.connect(self._update_preview_pixmap)
-        left.addWidget(self.cb_live)
+        left_outer.addWidget(self.cb_live)
 
+        # Buttons row (non-scroll)
         row = QHBoxLayout()
         self.btn_apply = QPushButton("Apply")
         self.btn_apply.clicked.connect(self._apply_to_document)
-
         self.btn_push = QPushButton("Apply as New Document")
         self.btn_push.clicked.connect(self._apply_as_new_doc)
-
         self.btn_export_mask = QPushButton("Export Mask")
         self.btn_export_mask.clicked.connect(self._export_mask_doc)
-
-        # NEW: Reset
         self.btn_reset = QPushButton("↺ Reset")
         self.btn_reset.clicked.connect(self._reset_controls)
-
         row.addWidget(self.btn_apply)
         row.addWidget(self.btn_push)
         row.addWidget(self.btn_export_mask)
         row.addWidget(self.btn_reset)
-        left.addLayout(row)
+        left_outer.addLayout(row)
 
-        self.lbl_target = QLabel(f"Target View:  <b>{getattr(self.document, 'display_name', lambda: 'Image')()}</b>")
-        left.addWidget(self.lbl_target)
+        # ======================================================================
+        # RIGHT PANE  (zoom toolbar + preview scroller + picked hue readout)
+        # ======================================================================
+        right_widget = QWidget()
+        right_widget.setMinimumWidth(420)
+        right_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        splitter.addWidget(right_widget)
 
-        # RIGHT: image preview
-        # RIGHT: image preview + zoom bar
-        right = QVBoxLayout()
-        root.addLayout(right, 1)
+        right = QVBoxLayout(right_widget)
+        right.setContentsMargins(0, 0, 0, 0)
+        right.setSpacing(8)
 
-        # zoom toolbar
+        # Zoom toolbar
         zoom_row = QHBoxLayout()
         self.btn_zoom_in  = QPushButton("Zoom +")
         self.btn_zoom_out = QPushButton("Zoom –")
@@ -758,8 +729,7 @@ class SelectiveColorCorrection(QDialog):
         zoom_row.addStretch(1)
         right.addLayout(zoom_row)
 
-        # scrollable image
-        from PyQt6.QtWidgets import QScrollArea
+        # Preview scroller
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(False)
         self.lbl_preview = QLabel()
@@ -768,21 +738,51 @@ class SelectiveColorCorrection(QDialog):
         self.scroll.setWidget(self.lbl_preview)
         right.addWidget(self.scroll, 1)
 
-        # sampled hue readout
+        # Hue readout
         self.lbl_hue_readout = QLabel("Picked hue: —")
         right.addWidget(self.lbl_hue_readout)
 
-        # zoom state
+        # Splitter stretch: make preview greedy
+        splitter.setStretchFactor(0, 0)  # left
+        splitter.setStretchFactor(1, 1)  # right
+        splitter.setSizes([420, 900])
+
+        # Clamp dialog height and add size grip
+        self.setSizeGripEnabled(True)
+        try:
+            g = QGuiApplication.primaryScreen().availableGeometry()
+            max_h = int(g.height() * 0.9)
+            self.resize(1080, min(680, max_h))
+            self.setMaximumHeight(max_h)
+        except Exception:
+            self.resize(1080, 680)
+
+        # ---- Wiring that depends on built widgets ----------------------------
+        self._update_color_mode_enabled()
+        for w in (self.ds_c, self.ds_m, self.ds_y, self.ds_r, self.ds_g, self.ds_b, self.ds_l, self.ds_s, self.ds_c2, self.ds_int):
+            w.valueChanged.connect(self._schedule_adjustments)
+
+        def _sliders_to_wheel(_=None):
+            if not self._setting_preset and self.dd_preset.currentText() != "Custom":
+                self.dd_preset.setCurrentText("Custom")
+            s = int(self.sp_h1.value()); e = int(self.sp_h2.value())
+            self.hue_wheel.setRange(s, e, notify=False)
+            self._schedule_mask()
+
+        self.sp_h1.valueChanged.connect(_sliders_to_wheel)
+        self.sp_h2.valueChanged.connect(_sliders_to_wheel)
+        self.sl_h1.valueChanged.connect(_sliders_to_wheel)
+        self.sl_h2.valueChanged.connect(_sliders_to_wheel)
+
+        # Zoom behavior
         self._zoom = 1.0
         def _apply_zoom(z):
             self._zoom = max(0.05, min(16.0, float(z)))
             self._update_preview_pixmap()
-
         self.btn_zoom_in.clicked.connect(lambda: _apply_zoom(self._zoom * 1.25))
         self.btn_zoom_out.clicked.connect(lambda: _apply_zoom(self._zoom / 1.25))
         self.btn_zoom_1.clicked.connect(lambda: _apply_zoom(1.0))
 
-        # optional: ctrl+wheel zoom over the label
         def _wheel(ev):
             if ev.modifiers() & Qt.KeyboardModifier.ControlModifier:
                 _apply_zoom(self._zoom * (1.25 if ev.angleDelta().y() > 0 else 1/1.25))
@@ -791,23 +791,13 @@ class SelectiveColorCorrection(QDialog):
             return False
         self.lbl_preview.wheelEvent = lambda ev: (_wheel(ev) or QLabel.wheelEvent(self.lbl_preview, ev))
 
-        # enable hue sampling on the label itself
+        # Preview interactions
         self.lbl_preview.setMouseTracking(True)
         self.lbl_preview.installEventFilter(self)
 
-        # allow clicking on the preview to sample hue
-        self.lbl_preview.setMouseTracking(True)
-        self.lbl_preview.installEventFilter(self)
+        # First paint
         self._update_preview_pixmap()
 
-        # tweak
-        self.resize(1080, 680)
-
-        self._update_color_mode_enabled()
-
-        # any slider change should refresh preview
-        for w in (self.ds_c, self.ds_m, self.ds_y, self.ds_r, self.ds_g, self.ds_b, self.ds_l, self.ds_s, self.ds_c2, self.ds_int):
-            w.valueChanged.connect(self._schedule_adjustments)
 
     def _update_color_mode_enabled(self):
         use_chroma = (self.dd_color_mode.currentIndex() == 0)

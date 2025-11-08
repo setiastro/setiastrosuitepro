@@ -50,16 +50,18 @@ class _LayerRow(QWidget):
         r2 = QHBoxLayout(); v.addLayout(r2)
         self.mask_combo = QComboBox(); self.mask_combo.setMinimumWidth(140)
         self.mask_combo.setPlaceholderText("Mask: (none)")
-        self.mask_src = QComboBox(); self.mask_src.addItems(["Active Mask", "Luminance"])
+        #self.mask_src = QComboBox(); self.mask_src.addItems(["Luminance", "Active Mask"])
         self.mask_invert = QCheckBox("Invert")
-        self.btn_clear_mask = QPushButton("Clear"); self.btn_clear_mask.setFixedWidth(52)
+        self.btn_clear_mask = QPushButton("Clear")
+        self.btn_clear_mask.setFixedWidth(52)        
         r2.addWidget(QLabel("Mask")); r2.addWidget(self.mask_combo, 1)
-        r2.addWidget(self.mask_src); r2.addWidget(self.mask_invert); r2.addWidget(self.btn_clear_mask)
+
+        r2.addWidget(self.mask_invert); r2.addWidget(self.btn_clear_mask)
 
         if self._is_base:
             # Base row is informational only
             for w in (self.chk, self.mode, self.sld, self.btn_up, self.btn_dn, self.btn_x,
-                      self.mask_combo, self.mask_src, self.mask_invert, self.btn_clear_mask):
+                      self.mask_combo, self.mask_invert, self.btn_clear_mask):
                 w.setEnabled(False)
             self.lbl.setStyleSheet("color: palette(mid);")
         else:
@@ -67,7 +69,7 @@ class _LayerRow(QWidget):
             self.mode.currentIndexChanged.connect(self._emit)
             self.sld.valueChanged.connect(self._emit)
             self.mask_combo.currentIndexChanged.connect(self._emit)
-            self.mask_src.currentIndexChanged.connect(self._emit)
+
             self.mask_invert.stateChanged.connect(self._emit)
             self.btn_clear_mask.clicked.connect(self._on_clear_mask)
             self.btn_x.clicked.connect(self.requestDelete.emit)
@@ -90,7 +92,7 @@ class _LayerRow(QWidget):
             "name": self._name,
             # mask UI state
             "mask_index": self.mask_combo.currentIndex(),
-            "mask_src": self.mask_src.currentText(),
+            "mask_src": "Luminance",  
             "mask_invert": self.mask_invert.isChecked(),
         }
 
@@ -306,7 +308,7 @@ class LayersDock(QDockWidget):
                 roww.mask_combo.setCurrentIndex(1 + docs.index(lyr.mask_doc))
             else:
                 roww.mask_combo.setCurrentIndex(0)
-            roww.mask_src.setCurrentIndex(1 if getattr(lyr, "mask_use_luma", False) else 0)
+            
             roww.mask_invert.setChecked(bool(getattr(lyr, "mask_invert", False)))
             roww.mask_combo.blockSignals(False)
             self._bind_row(roww)
@@ -388,18 +390,22 @@ class LayersDock(QDockWidget):
             it = self.list.item(i)
             rows.append(self.list.itemWidget(it))
 
+
         for lyr, roww in zip(vw._layers, rows):
             p = roww.params()
             lyr.visible = p["visible"]
             lyr.mode = p["mode"]
             lyr.opacity = float(p["opacity"])
+
             mi = p["mask_index"]
             if mi is not None and mi > 0:
                 doc = roww.mask_combo.itemData(mi)
                 lyr.mask_doc = doc
             else:
                 lyr.mask_doc = None
-            lyr.mask_use_luma = (p["mask_src"] == "Luminance")
+
+            # Force luminance masks only
+            lyr.mask_use_luma = True
             lyr.mask_invert = bool(p["mask_invert"])
         vw._reinstall_layer_watchers()
         vw.apply_layer_stack(vw._layers)

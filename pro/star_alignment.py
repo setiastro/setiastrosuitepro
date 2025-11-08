@@ -3739,6 +3739,47 @@ class MosaicMasterDialog(QDialog):
         checkbox_layout.addWidget(self.seestarCheckBox)
         layout.addLayout(checkbox_layout)
 
+        self.normalizeCheckBox = QCheckBox("Normalize images (median match)")
+        self.normalizeCheckBox.setChecked(True)
+        layout.addWidget(self.normalizeCheckBox)
+
+        self.autostretchPreviewCheck = QCheckBox("Autostretch previews only")
+        self.autostretchPreviewCheck.setToolTip("Only stretch display previews; keep data linear for processing.")
+        self.autostretchPreviewCheck.setChecked(True)
+        layout.addWidget(self.autostretchPreviewCheck)
+
+        # Reprojection mode (persisted)
+        self.reprojectModeLabel = QLabel("Reprojection mode:")
+        self.reprojectModeCombo = QComboBox()
+        self.reprojectModeCombo.addItems([
+            "Fast — SIP-aware (Exact Remap)",    # default
+            "Fast — Homography (Global H)",
+            "Precise — Full WCS (astropy.reproject)"
+        ])
+        self.reprojectModeCombo.setToolTip(
+            "Fast — SIP-aware: Dense inverse WCS remap (tiled), honors SIP; removes double stars.\n"
+            "Fast — Homography: One global H; very fast, can double stars near edges.\n"
+            "Precise — Full WCS: astropy.reproject per channel; slowest, most exact."
+        )
+
+        # Persist user choice
+        _settings = QSettings("SetiAstro", "SASpro")
+        _default_mode = _settings.value("mosaic/reproject_mode",
+                                        "Fast — SIP-aware (Exact Remap)")
+        if _default_mode not in [self.reprojectModeCombo.itemText(i) for i in range(self.reprojectModeCombo.count())]:
+            _default_mode = "Fast — SIP-aware (Exact Remap)"
+        self.reprojectModeCombo.setCurrentText(_default_mode)
+        self.reprojectModeCombo.currentTextChanged.connect(
+            lambda t: QSettings("SetiAstro", "SASpro").setValue("mosaic/reproject_mode", t)
+        )
+
+        # Add to layout where the old checkbox lived
+        row = QHBoxLayout()
+        row.addWidget(self.reprojectModeLabel)
+        row.addWidget(self.reprojectModeCombo, 1)
+        layout.addLayout(row)
+
+
         self.transform_combo = QComboBox()
         self.transform_combo.addItems([
             "Partial Affine Transform",
@@ -3767,6 +3808,139 @@ class MosaicMasterDialog(QDialog):
 
         self.setLayout(layout)
 
+    def _target_median_from_first(self, items):
+        # Pick a stable target (median of first image after safe clipping)
+        if not items:
+            return 0.1
+        a0 = items[0]["image"].astype(np.float32)
+        if a0.ndim == 3:
+            a0 = np.mean(a0, axis=2)
+        m = np.median(np.clip(a0, np.percentile(a0, 1), np.percentile(a0, 99)))
+        return float(max(m, 1e-6))
+
+    def _normalize_linear(self, arr, target_med):
+        """Linear median match only (no stretch/curves). Returns float32 array."""
+        img = arr.astype(np.float32, copy=False)
+        mono = img if img.ndim == 2 else np.mean(img, axis=2)
+        med = np.median(mono)
+        if med <= 0:
+            return img
+        gain = target_med / med
+        return img * gain
+
+    def _autostretch_if_requested(self, arr):
+        """Used only for preview windows based on the checkbox."""
+        if not self.autostretchPreviewCheck.isChecked():
+            # Convert linear [0..1-ish] to 8-bit safely for preview
+            a = arr.astype(np.float32)
+            a = a / max(1e-6, np.percentile(a, 99.9))
+            return (np.clip(a, 0, 1) * 255).astype(np.uint8)
+
+        # Your existing stretch_for_display logic:
+        return self.stretch_for_display(arr)
+
+    def _sample_grid_pts(self, w, h):
+        """9 control points: corners, edge midpoints, center."""
+        xs = [0, w/2, w-1]
+        ys = [0, h/2, h-1]
+        pts = np.array([[x, y] for y in ys for x in xs], dtype=np.float32)  # shape (9,2)
+        return pts
+
+    def _compute_wcs_homography(self, src_wcs, dst_wcs, src_shape, dst_shape):
+        """
+        Build a single 3x3 homography H that maps src pixel coords -> dst pixel coords
+        by sampling a small grid of tie-points via WCS.
+        """
+        h, w = src_shape[:2]
+        pts_src = self._sample_grid_pts(w, h)                           # (N,2)
+        # src pixels -> world (RA,DEC)
+        ra, dec = src_wcs.pixel_to_world_values(pts_src[:,0], pts_src[:,1])
+        # world -> dst pixels
+        x_dst, y_dst = dst_wcs.world_to_pixel_values(ra, dec)
+
+        pts_dst = np.column_stack([x_dst, y_dst]).astype(np.float32)    # (N,2)
+
+        # Robust H (covers rotation/scale/shear and mild curvature over small fields)
+        H, mask = cv2.findHomography(pts_src, pts_dst, method=cv2.RANSAC, ransacReprojThreshold=2.5)
+        return H
+
+    def _warp_via_wcs_homography(self, img, src_wcs, dst_wcs, out_shape, H_cache=None):
+        """
+        Fast path: single homography warp per image (per mosaic WCS).
+        If H_cache is provided as a dict, we reuse computed H.
+        """
+        H, W = out_shape
+        key = id(src_wcs)
+        if H_cache is not None and key in H_cache:
+            H33 = H_cache[key]
+        else:
+            H33 = self._compute_wcs_homography(src_wcs, dst_wcs, img.shape, (H, W))
+            if H_cache is not None:
+                H_cache[key] = H33
+
+        if img.ndim == 2:
+            return cv2.warpPerspective(img, H33, (W, H), flags=cv2.INTER_LANCZOS4)
+        else:
+            # Warp each channel
+            out = np.empty((H, W, img.shape[2]), dtype=np.float32)
+            for c in range(img.shape[2]):
+                out[..., c] = cv2.warpPerspective(img[..., c], H33, (W, H), flags=cv2.INTER_LANCZOS4)
+            return out
+
+    def _warp_via_wcs_remap_exact(self, src_img, src_wcs, dst_wcs, out_shape, tile=512):
+        """
+        Inverse mapping: for each mosaic pixel (x_d,y_d), find (x_s,y_s) via
+        world = dst_wcs.pixel_to_world(x_d, y_d)
+        x_s,y_s = src_wcs.world_to_pixel(world)
+        and cv2.remap() from src -> dst. Handles SIP & distortions accurately.
+        Tiled to reduce RAM and reuses the same map for all 3 channels if color.
+        """
+        H, W = out_shape
+        is_color = (src_img.ndim == 3)
+        dst = np.zeros((H, W, 3), np.float32) if is_color else np.zeros((H, W), np.float32)
+
+        # process in tiles to keep memory bounded
+        for y0 in range(0, H, tile):
+            y1 = min(y0 + tile, H)
+            h = y1 - y0
+            ys = np.arange(y0, y1, dtype=np.float64)[:, None]  # (h,1)
+            for x0 in range(0, W, tile):
+                x1 = min(x0 + tile, W)
+                w = x1 - x0
+                xs = np.arange(x0, x1, dtype=np.float64)[None, :]  # (1,w)
+
+                # meshgrid of dst pixels in this tile
+                Xd, Yd = np.broadcast_to(xs, (h, w)), np.broadcast_to(ys, (h, w))
+
+                # dst->world->src (vectorized)
+                # NOTE: astropy wants x, y order
+                world = dst_wcs.pixel_to_world(Xd, Yd)
+                Xs, Ys = src_wcs.world_to_pixel(world)  # float32/64
+
+                # OpenCV remap expects float32 maps (mapx = x, mapy = y in source image coords)
+                mapx = Xs.astype(np.float32)
+                mapy = Ys.astype(np.float32)
+
+                if is_color:
+                    # remap each channel with same map
+                    patch = np.empty((h, w, 3), np.float32)
+                    for c in range(3):
+                        patch[..., c] = cv2.remap(
+                            src_img[..., c], mapx, mapy,
+                            interpolation=cv2.INTER_LANCZOS4,
+                            borderMode=cv2.BORDER_CONSTANT, borderValue=0.0
+                        )
+                else:
+                    patch = cv2.remap(
+                        src_img, mapx, mapy,
+                        interpolation=cv2.INTER_LANCZOS4,
+                        borderMode=cv2.BORDER_CONSTANT, borderValue=0.0
+                    )
+
+                dst[y0:y1, x0:x1] = patch
+
+        return dst
+
 
     def _get_astrometry_api_key(self) -> str:
         # Prefer QSettings; fall back to your legacy loader if present.
@@ -3786,8 +3960,8 @@ class MosaicMasterDialog(QDialog):
             QMessageBox.information(self, "Mosaic Master", "No mosaic available to push.")
             return
         img = self.final_mosaic.astype(np.float32, copy=False)
-        if img.ndim == 2:
-            img = np.stack([img, img, img], axis=-1)
+
+        # ⚠️ KEEP DIMENSIONALITY — don't force 3ch here
         meta = dict(self.wcs_metadata or {})
 
         dm = self._docman
@@ -3796,11 +3970,10 @@ class MosaicMasterDialog(QDialog):
             if hasattr(self.parent(), "_spawn_subwindow_for"):
                 self.parent()._spawn_subwindow_for(newdoc)
             QMessageBox.information(self, "Mosaic Master", "Pushed to new view.")
-        else:
-            # last-resort fallback if only legacy image_manager exists
-            if self.image_manager and hasattr(self.image_manager, "create_document"):
-                self.image_manager.create_document(image=img, metadata=meta)
-                QMessageBox.information(self, "Mosaic Master", "Pushed via image manager.")
+        elif self.image_manager and hasattr(self.image_manager, "create_document"):
+            self.image_manager.create_document(image=img, metadata=meta)
+            QMessageBox.information(self, "Mosaic Master", "Pushed via image manager.")
+
 
     # ---- view helpers (same spirit as StellarAlignmentDialog) ----
     def _safe_call(self, maybe_callable):
@@ -4078,7 +4251,7 @@ class MosaicMasterDialog(QDialog):
         for d in self.loaded_images:
             if d["path"] == path:
                 preview_image = d["image"]
-                disp = self.stretch_for_display(preview_image)
+                disp = self._autostretch_if_requested(preview_image)
                 MosaicPreviewWindow(disp, title="Preview Selected", parent=self,
                                     push_cb=self._push_mosaic_to_new_doc).show()
                 break
@@ -4244,6 +4417,7 @@ class MosaicMasterDialog(QDialog):
             self.spinnerLabel.hide()
             return
 
+
         # Use the first image's WCS as reference and compute the mosaic bounding box.
         # (Rebuild with relax=True just in case, then deepcopy.)
         reference_wcs = self._build_wcs(wcs_items[0]["wcs"].to_header(relax=True), wcs_items[0]["image"].shape).deepcopy()
@@ -4266,6 +4440,12 @@ class MosaicMasterDialog(QDialog):
 
         # Set up accumulators.
         is_color = any(not item["is_mono"] for item in wcs_items)
+
+        # stats for optional "unstretch"
+        self.stretch_original_mins = []
+        self.stretch_original_medians = []
+        self.was_single_channel = (not is_color)
+
         if is_color:
             self.final_mosaic = np.zeros((mosaic_height, mosaic_width, 3), dtype=np.float32)
         else:
@@ -4275,33 +4455,61 @@ class MosaicMasterDialog(QDialog):
         first_image = True
         for idx, itm in enumerate(wcs_items):
             arr = itm["image"]
-            self.status_label.setText(f"Projecting {itm['path']} onto the celestial sphere...")
+            self.status_label.setText(f"Mapping {itm['path']} into mosaic frame...")
             QApplication.processEvents()
 
-            # Pre-stretch the image.
-            stretched_arr = self.stretch_image(arr)
-            # Use the first channel for alignment.
-            if not itm["is_mono"]:
-                red_stretched = stretched_arr[..., 0]
-            else:
-                red_stretched = stretched_arr[..., 0] if stretched_arr.ndim == 3 else stretched_arr
+            img_lin = arr.astype(np.float32, copy=False)
 
-            # Reproject the image.
-            if not itm["is_mono"]:
-                channels = []
-                for c in range(3):
-                    channel = stretched_arr[..., c]
-                    reproj, _ = reproject_interp((channel, itm["wcs"]), mosaic_wcs, shape_out=(mosaic_height, mosaic_width))
-                    reproj = np.nan_to_num(reproj, nan=0.0).astype(np.float32)
-                    channels.append(reproj)
-                reprojected = np.stack(channels, axis=-1)
-                reproj_red = reprojected[..., 0]
-            else:
-                reproj_red, _ = reproject_interp((red_stretched, itm["wcs"]), mosaic_wcs, shape_out=(mosaic_height, mosaic_width))
-                reproj_red = np.nan_to_num(reproj_red, nan=0.0).astype(np.float32)
-                reprojected = np.stack([reproj_red, reproj_red, reproj_red], axis=-1)
+            # --- record original stats for optional "unstretch" ---
+            mono_for_stats = img_lin if img_lin.ndim == 2 else np.mean(img_lin, axis=2)
+            self.stretch_original_mins.append(float(np.min(mono_for_stats)))
+            self.stretch_original_medians.append(float(np.median(mono_for_stats)))
 
-            self.status_label.setText(f"WCS Reproject: {itm['path']} processed.")
+            # 1) optional median normalization only
+            if self.normalizeCheckBox.isChecked():
+                target_med = getattr(self, "_mosaic_target_median", None)
+                if target_med is None:
+                    self._mosaic_target_median = self._target_median_from_first(wcs_items)
+                    target_med = self._mosaic_target_median
+                img_lin = self._normalize_linear(img_lin, target_med)
+
+            # 2) Reprojection (3 modes)
+            if not hasattr(self, "_H_cache"):
+                self._H_cache = {}
+
+            mode = self.reprojectModeCombo.currentText()
+
+            if mode.startswith("Fast — SIP"):
+                # Exact dense remap (SIP-aware), tiled; keep mono as 2D
+                reprojected = self._warp_via_wcs_remap_exact(
+                    img_lin, itm["wcs"], mosaic_wcs, (mosaic_height, mosaic_width), tile=512
+                ).astype(np.float32)
+                reproj_red = reprojected[..., 0] if reprojected.ndim == 3 else reprojected
+
+            elif mode.startswith("Fast — Homography"):
+                # Single global homography; keep mono as 2D
+                reprojected = self._warp_via_wcs_homography(
+                    img_lin, itm["wcs"], mosaic_wcs, (mosaic_height, mosaic_width), H_cache=self._H_cache
+                ).astype(np.float32)
+                reproj_red = reprojected[..., 0] if reprojected.ndim == 3 else reprojected
+
+            else:
+                # Precise — Full WCS (astropy.reproject); mono stays 2D
+                if img_lin.ndim == 3:
+                    channels = []
+                    for c in range(3):
+                        rpj, _ = reproject_interp((img_lin[..., c], itm["wcs"]), mosaic_wcs,
+                                                shape_out=(mosaic_height, mosaic_width))
+                        channels.append(np.nan_to_num(rpj, nan=0.0).astype(np.float32))
+                    reprojected = np.stack(channels, axis=-1)
+                    reproj_red = reprojected[..., 0]
+                else:
+                    reproj_red, _ = reproject_interp((img_lin, itm["wcs"]), mosaic_wcs,
+                                                    shape_out=(mosaic_height, mosaic_width))
+                    reprojected = np.nan_to_num(reproj_red, nan=0.0).astype(np.float32)  # 2D mono
+                    # no fake stacking here
+
+            self.status_label.setText(f"WCS map: {itm['path']} processed.")
             QApplication.processEvents()
 
             # --- Stellar Alignment ---
@@ -4312,7 +4520,6 @@ class MosaicMasterDialog(QDialog):
                 try:
                     self.status_label.setText("Computing affine transform with astroalign...")
                     QApplication.processEvents()
-                    # Use the backoff wrapper to avoid SEP buffer overflows
                     transform_obj, (src_pts, dst_pts) = self._aa_find_transform_with_backoff(reproj_red, mosaic_gray)
                     transform_matrix = transform_obj.params[0:2, :].astype(np.float32)
                     self.status_label.setText("Astroalign computed transform successfully.")
@@ -4344,22 +4551,23 @@ class MosaicMasterDialog(QDialog):
                 aligned = reprojected
                 first_image = False
 
+            # If mosaic is color but aligned is mono, expand for accumulation only
+            if is_color and aligned.ndim == 2:
+                aligned = np.repeat(aligned[..., None], 3, axis=2)
+
             gray_aligned = aligned[..., 0] if aligned.ndim == 3 else aligned
 
             # Compute weight mask
             binary_mask = (gray_aligned > 0).astype(np.uint8)
             smooth_mask = cv2.distanceTransform(binary_mask, cv2.DIST_L2, 5)
-            if np.max(smooth_mask) > 0:
-                smooth_mask = smooth_mask / np.max(smooth_mask)
-            else:
-                smooth_mask = binary_mask.astype(np.float32)
+            smooth_mask = (smooth_mask / np.max(smooth_mask)) if np.max(smooth_mask) > 0 else binary_mask.astype(np.float32)
             smooth_mask = cv2.GaussianBlur(smooth_mask, (15, 15), 0)
 
             # Accumulate
             if is_color:
                 self.final_mosaic += aligned * smooth_mask[..., np.newaxis]
             else:
-                self.final_mosaic += aligned[..., 0] * smooth_mask
+                self.final_mosaic += gray_aligned * smooth_mask
             self.weight_mosaic += smooth_mask
 
             self.status_label.setText(f"Processed: {itm['path']}")
@@ -4376,12 +4584,21 @@ class MosaicMasterDialog(QDialog):
 
         print("WCS + Star Alignment Complete.")
         self.status_label.setText("WCS + Star Alignment Complete. De-Normalizing Mosaic...")
-        self.final_mosaic = self.unstretch_image(self.final_mosaic)
+
+        # Call-guard: only unstretch if we normalized AND we actually recorded stats
+        did_normalize = self.normalizeCheckBox.isChecked()
+        if (did_normalize and
+            hasattr(self, "_mosaic_target_median") and self._mosaic_target_median > 0 and
+            getattr(self, "stretch_original_medians", None) and len(self.stretch_original_medians) > 0 and
+            getattr(self, "stretch_original_mins", None) and len(self.stretch_original_mins) > 0):
+            self.final_mosaic = self.unstretch_image(self.final_mosaic)
+
         self.status_label.setText("Final Mosaic Ready.")
         QApplication.processEvents()
 
         display_image = (np.stack([self.final_mosaic]*3, axis=-1)
-                        if self.final_mosaic.ndim == 2 else self.stretch_for_display(self.final_mosaic))
+                        if self.final_mosaic.ndim == 2 else self.final_mosaic)
+        display_image = self._autostretch_if_requested(display_image)
         MosaicPreviewWindow(display_image, title="Final Mosaic", parent=self,
                             push_cb=self._push_mosaic_to_new_doc).show()
 
@@ -5625,137 +5842,59 @@ class MosaicMasterDialog(QDialog):
         # Keep the array as-is (2D mono or 3-channel)
         return self.final_mosaic, meta
 
-    def stretch_image(self, image):
+    def unstretch_image(self, image: np.ndarray) -> np.ndarray:
         """
-        Perform an unlinked linear stretch on the image.
-        Each channel is stretched independently by subtracting its own minimum,
-        recording its own median, and applying the stretch formula.
-        Returns the stretched image.
+        Best-effort inverse of the earlier median normalization.
+        If mono, scale so median(image) -> original_median[0].
+        If color, scale each channel so median(channel) -> original_median[c].
+        Requires that self.stretch_original_medians / mins were populated per input.
+        If stats are unavailable or inconsistent, returns image unchanged.
         """
-        was_single_channel = False  # Flag to check if image was single-channel
+        try:
+            img = image.astype(np.float32, copy=True)
 
-        # Check if the image is single-channel
-        if image.ndim == 2 or (image.ndim == 3 and image.shape[2] == 1):
-            was_single_channel = True
-            image = np.stack([image] * 3, axis=-1)  # Convert to 3-channel by duplicating
+            orig_meds = getattr(self, "stretch_original_medians", None)
+            orig_mins = getattr(self, "stretch_original_mins", None)
+            if not orig_meds or not orig_mins:
+                return img  # nothing to do
 
-        # Ensure the image is a float32 array for precise calculations and writable
-        image = image.astype(np.float32).copy()
+            # Use the FIRST frame’s recorded stats as the anchor for de-normalization.
+            # (This is a heuristic; a true per-frame inverse is impossible after blending.)
+            anchor_med = float(orig_meds[0])
+            anchor_min = float(orig_mins[0])
 
-        # Initialize lists to store per-channel minima and medians
-        self.stretch_original_mins = []
-        self.stretch_original_medians = []
+            if anchor_med <= 0:
+                return img
 
-        # Initialize stretched_image as a copy of the input image
-        stretched_image = image.copy()
+            if img.ndim == 2:
+                cur_med = float(np.median(img))
+                if cur_med > 0:
+                    gain = anchor_med / cur_med
+                    img = img * gain
+                # keep dynamic range plausible
+                img = np.clip(img, 0.0, 1.0)
+                return img
 
-        # Define the target median for stretching
-        target_median = 0.08
+            # color: per-channel median scaling (unlinked)
+            for c in range(min(3, img.shape[2])):
+                cur_med = float(np.median(img[..., c]))
+                # choose a per-channel original median if available; fallback to anchor
+                src_med = float(orig_meds[c]) if len(orig_meds) >= 3 else anchor_med
+                if cur_med > 0 and src_med > 0:
+                    gain = src_med / cur_med
+                    img[..., c] *= gain
 
-        # Apply the stretch for each channel independently
-        for c in range(3):
-            # Record the minimum of the current channel
-            channel_min = np.min(stretched_image[..., c])
-            self.stretch_original_mins.append(channel_min)
+            img = np.clip(img, 0.0, 1.0)
 
-            # Subtract the channel's minimum to shift the image
-            stretched_image[..., c] -= channel_min
+            # If the mosaic was originally single-channel, keep it mono.
+            if getattr(self, "was_single_channel", False) and img.ndim == 3:
+                img = np.mean(img, axis=2).astype(np.float32)
 
-            # Record the median of the shifted channel
-            channel_median = np.median(stretched_image[..., c])
-            self.stretch_original_medians.append(channel_median)
+            return img
 
-            if channel_median != 0:
-                numerator = (channel_median - 1) * target_median * stretched_image[..., c]
-                denominator = (
-                    channel_median * (target_median + stretched_image[..., c] - 1)
-                    - target_median * stretched_image[..., c]
-                )
-                # To avoid division by zero
-                denominator = np.where(denominator == 0, 1e-6, denominator)
-                stretched_image[..., c] = numerator / denominator
-            else:
-                print(f"Channel {c} - Median is zero. Skipping stretch.")
-
-        # Clip stretched image to [0, 1] range
-        stretched_image = np.clip(stretched_image, 0.0, 1.0)
-
-        # Store stretch parameters
-        self.was_single_channel = was_single_channel
-
-        return stretched_image
-
-
-    def unstretch_image(self, image):
-        """
-        Undo the unlinked linear stretch to return the image to its original state.
-        Each channel is unstretched independently by reverting the stretch formula
-        using the stored medians and adding back the individual channel minima.
-        Returns the unstretched image.
-        """
-        original_mins = self.stretch_original_mins
-        original_medians = self.stretch_original_medians
-        was_single_channel = self.was_single_channel
-
-        # Ensure the image is a float32 array for precise calculations and writable
-        image = image.astype(np.float32).copy()
-
-        # If the image is 2D, treat it as a single channel.
-        if image.ndim == 2:
-            # Process as a single channel:
-            channel_median = np.median(image)
-            original_median = original_medians[0]
-            original_min = original_mins[0]
-
-            if channel_median != 0 and original_median != 0:
-                numerator = (channel_median - 1) * original_median * image
-                denominator = channel_median * (original_median + image - 1) - original_median * image
-                # To avoid division by zero
-                denominator = np.where(denominator == 0, 1e-6, denominator)
-                image = numerator / denominator
-            else:
-                print("Channel median or original median is zero. Skipping unstretch.")
-
-            # Add back the original minimum
-            image += original_min
-
-            # Clip to [0, 1]
-            image = np.clip(image, 0, 1)
-            # Optionally, if you want to keep it 2D (since it was originally mono), just return image.
-            # If you want to convert to a 3-channel image for display later, you can do that later.
+        except Exception as e:
+            print(f"[unstretch_image] fallback (no-op) due to: {e}")
             return image
-
-        # Otherwise, if the image is 3D, process each channel
-        for c in range(3):
-            channel_median = np.median(image[..., c])
-            original_median = original_medians[c]
-            original_min = original_mins[c]
-
-            if channel_median != 0 and original_median != 0:
-                numerator = (channel_median - 1) * original_median * image[..., c]
-                denominator = (
-                    channel_median * (original_median + image[..., c] - 1)
-                    - original_median * image[..., c]
-                )
-                # To avoid division by zero
-                denominator = np.where(denominator == 0, 1e-6, denominator)
-                image[..., c] = numerator / denominator
-            else:
-                print(f"Channel {c} - Median or original median is zero. Skipping unstretch.")
-
-            # Add back the channel's original minimum
-            image[..., c] += original_min
-
-        # Clip to [0, 1] range
-        image = np.clip(image, 0, 1)
-
-        # If the image was originally single-channel but has 3 dimensions now, convert it back.
-        if was_single_channel and image.ndim == 3:
-            image = np.mean(image, axis=2, keepdims=True)
-
-        return image
-
-
 
     def _save_astap_exe_to_settings(self, path: str) -> None:
         path = os.path.normpath(os.path.expanduser(os.path.expandvars(path)))
@@ -6254,7 +6393,6 @@ class MosaicMasterDialog(QDialog):
         self.was_single_channel = was_single_channel
         return stretched_image
 
-    def unstretch_image(self, image):
         """
         Undo the unlinked linear stretch using stored parameters.
         Returns the unstretched image.
