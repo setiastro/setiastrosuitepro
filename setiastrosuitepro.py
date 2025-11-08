@@ -306,7 +306,7 @@ from pro.status_log_dock import StatusLogDock
 from pro.log_bus import LogBus
 
 
-VERSION = "1.4.7"
+VERSION = "1.4.8"
 
 
 
