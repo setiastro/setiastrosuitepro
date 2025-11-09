@@ -1368,7 +1368,7 @@ def compute_affine_transform_astroalign_cropped(source_img, reference_img,
                                                 limit_stars: int | None = None,
                                                 det_sigma: float = 12.0,
                                                 minarea: int = 10):
-    import numpy as np
+
     import astroalign
     Hs, Ws = source_img.shape[:2]
     Hr, Wr = reference_img.shape[:2]
@@ -1455,13 +1455,48 @@ def _solve_delta_job(args):
     except Exception as e:
         return (orig_path, None, f"Astroalign failed for {os.path.basename(orig_path)}: {e}")
 
+def _residual_job_worker(args):
+    """
+    Process-safe worker for non-affine residual measurement.
+    args = (path, ref_npy, model, h_reproj, det_sigma, minarea, limit_stars)
+    Returns: (path, rms_px, err_or_None)
+    """
+    (path, ref_npy, model, h_reproj, det_sigma, minarea, limit_stars) = args
+    try:
+        import numpy as np  # re-imports are OK in spawned workers
+        from astropy.io import fits
+
+        # Load source (gray, float32, finite)
+        with fits.open(path, memmap=True) as hdul:
+            arr = hdul[0].data
+            if arr is None:
+                return (path, float("inf"), "Could not load")
+            g = arr if arr.ndim == 2 else np.mean(arr, axis=2)
+            g = np.nan_to_num(g, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
+
+        # Memmap the shared reference
+        ref_small = np.load(ref_npy, mmap_mode="r").astype(np.float32, copy=False)
+
+        # Use the staticmethod that’s importable by workers
+        _, _, rms, _ = StarRegistrationThread._aa_model_and_residual(
+            g, ref_small, str(model).lower(),
+            float(h_reproj), float(det_sigma), int(minarea),
+            int(limit_stars) if limit_stars is not None else None
+        )
+        return (path, float(rms), None)
+
+    except Exception as e:
+        return (path, float("inf"), str(e))
+
+
+
 def _suppress_tiny_islands(img32: np.ndarray, det_sigma: float, minarea: int) -> np.ndarray:
     """
     Zero out connected components smaller than `minarea`, using
     threshold = det_sigma * global RMS from SEP background.
     Returns float32 image, same shape as input.
     """
-    import numpy as np
+
     import sep, cv2
 
     img32 = np.asarray(img32, np.float32, order="C")
@@ -1513,7 +1548,7 @@ def _finalize_write_job(args):
     os.environ.setdefault("MKL_NUM_THREADS", "1")
     os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 
-    import numpy as np
+
     from astropy.io import fits
     import cv2
 
@@ -1693,12 +1728,16 @@ class StarRegistrationWorker(QRunnable):
 
     def run(self):
         """
-        Incremental stellar registration:
-        - load ORIGINAL frame
-        - build preview
-        - APPLY current accumulated transform to that preview
-        - astroalign the already-aligned preview to the reference preview
-        - emit *incremental* delta, keyed by ORIGINAL path
+        Affine:
+        - Same as before: apply current accumulated transform to preview
+        - Solve incremental delta against the reference preview
+        - Emit the incremental delta (2x3) keyed by ORIGINAL path
+
+        Homography / Poly (poly3 / poly4):
+        - No incremental delta accumulation (not meaningful under distortion)
+        - Measure residual RMS (px) against the reference (using AA+RANSAC)
+        - Emit identity transform so callers don't try to accumulate
+        - Progress line reports residual RMS so Stacking Suite can reject movers
         """
         try:
             _cap_native_threads_once()
@@ -1709,19 +1748,14 @@ class StarRegistrationWorker(QRunnable):
             except Exception:
                 pass
 
-            # 1) load the ORIGINAL frame (we still read from original_file)
+            # --- Load ORIGINAL frame → grayscale float32 ---
             with fits.open(self.original_file, memmap=True) as hdul:
                 arr = hdul[0].data
                 if arr is None:
                     self.signals.error.emit(f"Could not load {self.original_file}")
                     return
-                if arr.ndim == 2:
-                    gray = arr
-                else:
-                    gray = np.mean(arr, axis=2)
-                gray = np.nan_to_num(gray, nan=0.0, posinf=0.0, neginf=0.0)
-
-            gray_small = np.ascontiguousarray(gray.astype(np.float32, copy=False))
+                gray = arr if arr.ndim == 2 else np.mean(arr, axis=2)
+                gray_small = np.nan_to_num(gray, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
 
             ref_small = self.reference_image
             if ref_small is None:
@@ -1729,32 +1763,89 @@ class StarRegistrationWorker(QRunnable):
                 return
             Href, Wref = ref_small.shape[:2]
 
-            # 2) apply CURRENT transform to the preview so we align "from last pass" not "from raw"
+            model = (self.model_name or "affine").lower()
+
+            # ------------------------------------------------------------------
+            #  PATH A: NON-AFFINE (homography / poly3 / poly4) → residual-only
+            # ------------------------------------------------------------------
+            if model in ("homography", "poly3", "poly4"):
+                work_list = list(self.original_files)
+
+                from concurrent.futures import ProcessPoolExecutor, as_completed
+                import tempfile, os, shutil, numpy as np
+
+                procs = max(2, min((os.cpu_count() or 8), 32))
+                self.progress_update.emit(f"Using {procs} processes to measure residuals (model={model}).")
+
+                # Persist the reference preview once so workers can memmap it (no closures)
+                tmpdir = tempfile.mkdtemp(prefix="sas_resid_")
+                ref_npy = os.path.join(tmpdir, "ref_small.npy")
+                try:
+                    np.save(ref_npy, np.asarray(ref_small, dtype=np.float32))
+                except Exception as e:
+                    try: shutil.rmtree(tmpdir, ignore_errors=True)
+                    except Exception: pass
+                    self.on_worker_error(f"Failed to persist residual reference: {e}")
+                    return False, "Residual pass aborted."
+
+                pass_deltas = []
+                try:
+                    jobs = [
+                        (p, ref_npy, model, self.h_reproj, self.det_sigma, self.minarea, self.limit_stars)
+                        for p in work_list
+                    ]
+                    with ProcessPoolExecutor(max_workers=procs) as ex:
+                        futs = [ex.submit(_residual_job_worker, j) for j in jobs]
+                        for fut in as_completed(futs):
+                            try:
+                                pth, rms, err = fut.result()
+                            except Exception as e:
+                                pth, rms, err = ("<unknown>", float("inf"), f"Worker crashed: {e}")
+
+                            k = os.path.normpath(pth)
+                            if err:
+                                self.on_worker_error(f"Residual measure failed for {os.path.basename(pth)}: {err}")
+                                self.delta_transforms[k] = float("inf")
+                            else:
+                                self.delta_transforms[k] = float(rms)
+
+                    for orig in self.original_files:
+                        pass_deltas.append(self.delta_transforms.get(os.path.normpath(orig), float("inf")))
+                    self.transform_deltas.append(pass_deltas)
+
+                    preview = ", ".join([f"{d:.2f}" if np.isfinite(d) else "∞" for d in pass_deltas[:10]])
+                    if len(pass_deltas) > 10:
+                        preview += f" … ({len(pass_deltas)} total)"
+                    self.progress_update.emit(f"Pass {pass_index + 1}: residual RMS px [{preview}]")
+
+                    aligned_count = sum(1 for d in pass_deltas if np.isfinite(d) and d <= self.shift_tolerance)
+                    if aligned_count:
+                        self.progress_update.emit(f"Within tolerance (≤ {self.shift_tolerance:.2f}px): {aligned_count} frame(s)")
+                    return True, "Residual pass complete."
+                finally:
+                    try: shutil.rmtree(tmpdir, ignore_errors=True)
+                    except Exception: pass
+
+            # ------------------------------------------------------------------
+            #  PATH B: AFFINE (original incremental-delta logic)
+            # ------------------------------------------------------------------
             T_prev = np.array(self.current_transform, dtype=np.float32).reshape(2, 3)
             use_warp = not np.allclose(
-                T_prev,
-                np.array([[1, 0, 0], [0, 1, 0]], dtype=np.float32),
-                rtol=1e-5,
-                atol=1e-5,
+                T_prev, np.array([[1, 0, 0], [0, 1, 0]], dtype=np.float32), rtol=1e-5, atol=1e-5
             )
 
             if use_warp and cv2 is not None:
                 # warp to REF size so astroalign compares apples to apples
                 src_for_match = cv2.warpAffine(
-                    gray_small,
-                    T_prev,
-                    (Wref, Href),
-                    flags=cv2.INTER_LINEAR,
-                    borderMode=cv2.BORDER_REFLECT_101,
+                    gray_small, T_prev, (Wref, Href),
+                    flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT_101,
                 )
             else:
-                # no warp or no cv2: at least make the size match
                 if gray_small.shape != ref_small.shape and cv2 is not None:
                     src_for_match = cv2.resize(gray_small, (Wref, Href), interpolation=cv2.INTER_LINEAR)
                 else:
                     src_for_match = gray_small
 
-            # 3) NOW do astroalign on the already-aligned frame → this gives us the *incremental* delta
             try:
                 transform = self.compute_affine_transform_astroalign(
                     src_for_match, ref_small, limit_stars=getattr(self, "limit_stars", None)
@@ -1767,13 +1858,10 @@ class StarRegistrationWorker(QRunnable):
                         f"Astroalign failed for {base}: List of matching triangles exhausted"
                     )
                 else:
-                    self.signals.error.emit(
-                        f"Astroalign failed for {base}: {msg}"
-                    )
+                    self.signals.error.emit(f"Astroalign failed for {base}: {msg}")
                 return
 
             if transform is None:
-                # this is the other path where AA didn't throw, just couldn't solve
                 base = os.path.basename(self.original_file)
                 self.signals.error.emit(
                     f"Astroalign failed for {base} – skipping (no transform returned)"
@@ -1801,7 +1889,7 @@ class StarRegistrationWorker(QRunnable):
                                             det_sigma: float = 12.0,
                                             minarea: int = 10):
         global _AA_LOCK
-        import astroalign, numpy as np
+        import astroalign
         Hs, Ws = source_img.shape[:2]
         Hr, Wr = reference_img.shape[:2]
 
@@ -1876,6 +1964,100 @@ class StarRegistrationThread(QThread):
         self.minarea     = int(self.align_prefs.get("minarea", 10))
         self.downsample = int(self.align_prefs.get("downsample", 2))
         self.drizzle_xforms = {}  # {orig_norm_path: (kind, matrix)}
+
+    @staticmethod
+    def _aa_model_and_residual(src_gray: np.ndarray,
+                            ref2d: np.ndarray,
+                            model: str,
+                            h_reproj: float,
+                            det_sigma: float,
+                            minarea: int,
+                            max_control_points: int | None = None):
+        """
+        AA on a ~1.2× center crop; lift matches to full coords; re-estimate requested model.
+        Returns: (kind, X, residual_rms_px, n_inliers)
+        kind in {"affine","homography"} or "affine"/"homography" base if poly fails upstream.
+        For poly3/4 we still return the base model here; finalize does the true residual warp.
+        """
+        import astroalign, cv2
+
+        src = np.ascontiguousarray(src_gray.astype(np.float32))
+        ref = np.ascontiguousarray(ref2d.astype(np.float32))
+        Hs, Ws = src.shape[:2]
+        Hr, Wr = ref.shape[:2]
+
+        scale = 1.20
+        h = min(int(round(Hs * scale)), Hr)
+        w = min(int(round(Ws * scale)), Wr)
+        y0 = max(0, (Hr - h) // 2)
+        x0 = max(0, (Wr - w) // 2)
+        ref_crop = ref[y0:y0+h, x0:x0+w]
+
+        kwargs = {"detection_sigma": float(det_sigma), "min_area": int(minarea)}
+        if max_control_points is not None:
+            kwargs["max_control_points"] = int(max_control_points)
+
+        tform, (src_pts_s, tgt_pts_s) = astroalign.find_transform(src, ref_crop, **kwargs)
+
+        src_xy = np.asarray(src_pts_s, dtype=np.float32)
+        tgt_xy = np.asarray(tgt_pts_s, dtype=np.float32)
+        tgt_xy[:, 0] += x0   # lift crop -> full ref coords
+        tgt_xy[:, 1] += y0
+
+        P = np.asarray(tform.params, dtype=np.float64)
+        if P.shape == (3, 3):
+            T  = np.array([[1,0,x0],[0,1,y0],[0,0,1]], dtype=np.float64)
+            base_kind = "homography"
+            base_X    = T @ P
+        else:
+            A3 = np.vstack([P[0:2,:], [0,0,1]])
+            T  = np.array([[1,0,x0],[0,1,y0],[0,0,1]], dtype=np.float64)
+            base_kind = "affine"
+            base_X    = (T @ A3)[0:2, :]
+
+        # Re-estimate requested model (RANSAC) with lifted pairs
+        hth = float(h_reproj)
+        if model == "homography":
+            H, inl = cv2.findHomography(src_xy, tgt_xy, cv2.RANSAC, ransacReprojThreshold=hth)
+            if H is None:
+                kind, X = base_kind, base_X
+                inl_mask = None
+            else:
+                kind, X = "homography", np.asarray(H, np.float64)
+                inl_mask = inl.ravel().astype(bool)
+        elif model == "affine":
+            A, inl = cv2.estimateAffine2D(src_xy, tgt_xy, method=cv2.RANSAC, ransacReprojThreshold=hth)
+            if A is None:
+                kind, X = base_kind, base_X
+                inl_mask = None
+            else:
+                kind, X = "affine", np.asarray(A, np.float64)
+                inl_mask = inl.ravel().astype(bool)
+        else:
+            # poly3/4: we report residual versus the base model here; finalize will apply poly residual warp.
+            kind, X  = base_kind, base_X
+            inl_mask = None
+
+        # Compute residual RMS (px) using whichever model we returned
+        if kind == "homography":
+            ones = np.ones((src_xy.shape[0], 1), dtype=np.float32)
+            P3   = np.hstack([src_xy.astype(np.float32), ones]).T
+            Q    = (np.asarray(X, np.float32) @ P3)
+            pred = (Q[:2, :] / Q[2:3, :]).T
+        else:  # affine
+            A = np.asarray(X, np.float32).reshape(2, 3)
+            pred = (src_xy @ A[:, :2].T) + A[:, 2]
+
+        if inl_mask is not None and inl_mask.sum() >= 10:
+            res = np.linalg.norm(pred[inl_mask] - tgt_xy[inl_mask], axis=1)
+            nin = int(inl_mask.sum())
+        else:
+            res = np.linalg.norm(pred - tgt_xy, axis=1)
+            nin = int(res.shape[0])
+
+        residual_rms = float(np.sqrt(np.mean(res**2))) if res.size else float("inf")
+        return kind, X, residual_rms, nin
+
 
     def _estimate_model_transform(self, src_gray_full: np.ndarray) -> tuple[str, object]:
         """
@@ -2128,10 +2310,76 @@ class StarRegistrationThread(QThread):
     def run_one_registration_pass(self, _ref_stars_unused, _ref_triangles_unused, pass_index):
         _cap_native_threads_once()
 
-        # Decide a light resampler for iterative solves (keep LANCZOS for final write)
+        import os, shutil, tempfile
+
+        import cv2
+
+        model = (self.align_model or "affine").lower()
+        ref_small = np.ascontiguousarray(self.ref_small.astype(np.float32, copy=False))
+        Href, Wref = ref_small.shape[:2]
+
+        # ---------- NON-AFFINE PATH: measure residuals only (no nested functions!) ----------
+        if model in ("homography", "poly3", "poly4"):
+            work_list = list(self.original_files)
+
+            from concurrent.futures import ProcessPoolExecutor, as_completed
+
+            procs = max(2, min((os.cpu_count() or 8), 32))
+            self.progress_update.emit(f"Using {procs} processes to measure residuals (model={model}).")
+
+            # Persist the reference once, so workers memmap it
+            tmpdir = tempfile.mkdtemp(prefix="sas_resid_")
+            ref_npy = os.path.join(tmpdir, "ref_small.npy")
+            try:
+                np.save(ref_npy, ref_small)
+            except Exception as e:
+                try: shutil.rmtree(tmpdir, ignore_errors=True)
+                except Exception: pass
+                self.on_worker_error(f"Failed to persist residual reference: {e}")
+                return False, "Residual pass aborted."
+
+            pass_deltas = []
+            try:
+                jobs = [
+                    (p, ref_npy, model, self.h_reproj, self.det_sigma, self.minarea, self.limit_stars)
+                    for p in work_list
+                ]
+                with ProcessPoolExecutor(max_workers=procs) as ex:
+                    futs = [ex.submit(_residual_job_worker, j) for j in jobs]
+                    for fut in as_completed(futs):
+                        try:
+                            pth, rms, err = fut.result()
+                        except Exception as e:
+                            pth, rms, err = ("<unknown>", float("inf"), f"Worker crashed: {e}")
+
+                        k = os.path.normpath(pth)
+                        if err:
+                            self.on_worker_error(f"Residual measure failed for {os.path.basename(pth)}: {err}")
+                            self.delta_transforms[k] = float("inf")
+                        else:
+                            self.delta_transforms[k] = float(rms)
+
+                # Collate, summarize, report
+                for orig in self.original_files:
+                    pass_deltas.append(self.delta_transforms.get(os.path.normpath(orig), float("inf")))
+                self.transform_deltas.append(pass_deltas)
+
+                preview = ", ".join([f"{d:.2f}" if np.isfinite(d) else "∞" for d in pass_deltas[:10]])
+                if len(pass_deltas) > 10:
+                    preview += f" … ({len(pass_deltas)} total)"
+                self.progress_update.emit(f"Pass {pass_index + 1}: residual RMS px [{preview}]")
+
+                aligned_count = sum(1 for d in pass_deltas if np.isfinite(d) and d <= self.shift_tolerance)
+                if aligned_count:
+                    self.progress_update.emit(f"Within tolerance (≤ {self.shift_tolerance:.2f}px): {aligned_count} frame(s)")
+                return True, "Residual pass complete."
+            finally:
+                try: shutil.rmtree(tmpdir, ignore_errors=True)
+                except Exception: pass
+
+        # ---------- AFFINE PATH (original incremental-delta logic) ----------
         resample_flag = cv2.INTER_AREA if pass_index == 0 else cv2.INTER_LINEAR
 
-        # Build the worklist: only frames that still need refinement
         if pass_index == 0:
             work_list = list(self.original_files)
         else:
@@ -2157,42 +2405,32 @@ class StarRegistrationThread(QThread):
             ])
             return True, "Pass complete (nothing to refine)."
 
-        # Prepare shared ref preview & geometry for processes
-        ref_small = np.ascontiguousarray(self.ref_small.astype(np.float32, copy=False))
-        Href, Wref = ref_small.shape[:2]
-
-        # Max processes; be generous but avoid thrashing
         procs = max(2, min((os.cpu_count() or 8), 32))
         self.progress_update.emit(f"Using {procs} processes for stellar alignment (HW={os.cpu_count() or 8}).")
 
-        # Jobs now include timeout seconds (from prefs)
         timeout_sec = int(self.align_prefs.get("timeout_per_job_sec", 300))
-
         jobs = []
         for original_file in work_list:
             orig_key = os.path.normpath(original_file)
             current_transform = self.alignment_matrices.get(orig_key, IDENTITY_2x3)
             jobs.append((
                 original_file, current_transform, ref_small, Wref, Href,
-                resample_flag,
-                float(self.det_sigma), int(self.limit_stars), int(self.minarea)
+                resample_flag, float(self.det_sigma), int(self.limit_stars), int(self.minarea)
             ))
 
-        # Submit all jobs and track start times for per-job timeout
+        from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
+        import time
+
         executor = ProcessPoolExecutor(max_workers=procs)
         try:
-            fut_info = {}  # future -> (start_monotonic, orig_path)
-            pending = set()
+            fut_info, pending = {}, set()
             for j in jobs:
                 f = executor.submit(_solve_delta_job, j)
                 fut_info[f] = (time.monotonic(), j[0])
                 pending.add(f)
 
-            # Process futures as they complete; time out stragglers individually
             while pending:
                 done, pending = wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
-
-                # Handle completions
                 for fut in done:
                     start_t, orig_path = fut_info.pop(fut, (None, "<unknown>"))
                     try:
@@ -2205,7 +2443,6 @@ class StarRegistrationThread(QThread):
                         self._increment_progress()
                         continue
 
-                    # Collate delta + accumulate transform
                     k = os.path.normpath(orig_path_r)
                     T_new = np.array(T_new, dtype=np.float64).reshape(2, 3)
                     self.delta_transforms[k] = float(np.hypot(T_new[0, 2], T_new[1, 2]))
@@ -2221,54 +2458,44 @@ class StarRegistrationThread(QThread):
                     )
                     self._increment_progress()
 
-                # Check timeouts on the still-pending set (do not block)
+                # timeouts
                 now = time.monotonic()
-                to_forget = []
+                forget = []
                 for fut in pending:
                     start_t, orig_path = fut_info.get(fut, (None, "<unknown>"))
-                    if start_t is None:
+                    if start_t is None: 
                         continue
                     if (now - start_t) > timeout_sec:
-                        # Mark as timed out and drop from our wait set
                         base = os.path.basename(orig_path or "<unknown>")
                         self.on_worker_error(f"Astroalign timeout for {base} (>{timeout_sec}s) – skipping")
-                        # We can't kill a running process here, but we stop waiting on it:
-                        to_forget.append(fut)
+                        forget.append(fut)
                         self._increment_progress()
-                # Remove timed-out futures from our tracking/pending sets
-                for fut in to_forget:
+                for fut in forget:
                     fut_info.pop(fut, None)
                     if fut in pending:
                         pending.remove(fut)
 
-            # Collate this pass’ deltas deterministically in original order
-            pass_deltas = []
-            aligned_count = 0
+            pass_deltas, aligned_count = [], 0
             for orig in self.original_files:
                 k = os.path.normpath(orig)
                 d = self.delta_transforms.get(k, 0.0)
                 pass_deltas.append(d)
-                if d <= self.shift_tolerance:
+                if d <= self.shift_tolerance: 
                     aligned_count += 1
 
             self.transform_deltas.append(pass_deltas)
-
             preview = ", ".join([f"{d:.2f}" for d in pass_deltas[:10]])
             if len(pass_deltas) > 10:
                 preview += f" … ({len(pass_deltas)} total)"
             self.progress_update.emit(f"Pass {pass_index + 1} delta shifts: [{preview}]")
             if aligned_count:
                 self.progress_update.emit(f"Skipped (delta < {self.shift_tolerance:.2f}px): {aligned_count} frame(s)")
-
             return True, "Pass complete."
-
         finally:
-            # Don’t wait on stragglers we’ve already timed-out
             try:
                 executor.shutdown(wait=False, cancel_futures=True)
             except Exception:
                 pass
-
 
     def on_worker_result_transform(self, persistent_key, new_transform):
         k = os.path.normpath(persistent_key)
@@ -2378,20 +2605,11 @@ class StarRegistrationThread(QThread):
     # NEW METHOD: StarRegistrationThread._finalize_writes
     # ─────────────────────────────────────────────────────────────
     def _finalize_writes(self):
-        """
-        Parallel final warp+save (process-safe):
-        • persist ref2d once to a temp .npy (memmapped by workers)
-        • each process: read → solve(if needed) → warp → save
-        • we stream progress lines returned by the worker, including the
-        “🌀 Distortion Correction … warp=…” status you asked for
-        """
         from concurrent.futures import ProcessPoolExecutor, as_completed
-        import tempfile, shutil, os, numpy as np
+        import tempfile, shutil, os
 
-        # Where we store per-file transforms for drizzle / SASD
         self.drizzle_xforms = {}
 
-        # Persist the reference (avoid pickling large arrays to each worker)
         try:
             Href, Wref = self.reference_image_2d.shape[:2]
         except Exception:
@@ -2409,23 +2627,26 @@ class StarRegistrationThread(QThread):
             except Exception: pass
             return
 
-        # Concurrency (tunable)
         finalize_workers = int(self.align_prefs.get("finalize_workers", min(os.cpu_count() or 8, 8)))
         finalize_workers = max(2, finalize_workers)
 
-        # Build job args for every original frame
         jobs = []
         for orig_path in self.original_files:
             k = os.path.normpath(orig_path)
             A = np.asarray(self.alignment_matrices.get(k, IDENTITY_2x3), dtype=np.float64)
+
+            # 👉 If non-affine, we pass identity to make workers solve from scratch
+            if self.align_model.lower() in ("homography", "poly3", "poly4"):
+                A = IDENTITY_2x3.copy()
+
             jobs.append((
-                orig_path,                 # orig_path
-                self.align_model,          # "affine" | "homography" | "poly3"/"poly4"
-                (Href, Wref),              # ref_shape
-                ref_npy,                   # ref_npy_path
-                A,                         # affine_2x3 (accumulated)
-                float(self.h_reproj),      # h_reproj
-                self.output_directory      # output_directory
+                orig_path,
+                self.align_model,
+                (Href, Wref),
+                ref_npy,
+                A,
+                float(self.h_reproj),
+                self.output_directory
             ))
 
         self.progress_update.emit(f"📝 Finalizing aligned outputs with {finalize_workers} processes…")
@@ -2438,11 +2659,9 @@ class StarRegistrationThread(QThread):
                     try:
                         orig_path, out_path, msg, success, drizzle = fut.result()
                     except Exception as e:
-                        # Worker crashed before returning a tuple
                         self.progress_update.emit(f"⚠️ Finalize worker crashed: {e}")
                         continue
 
-                    # Stream the worker’s detailed status (includes the “Distortion Correction…” line)
                     if msg:
                         for line in (msg.splitlines() or [msg]):
                             self.progress_update.emit(line)
@@ -2450,9 +2669,8 @@ class StarRegistrationThread(QThread):
                     if success:
                         ok += 1
                         k = os.path.normpath(orig_path)
-                        # map ORIGINAL → new output path
                         self.file_key_to_current_path[k] = out_path
-                        # record drizzle model
+
                         if isinstance(drizzle, tuple) and len(drizzle) == 2:
                             kind, M = drizzle
                             try:
@@ -2461,23 +2679,20 @@ class StarRegistrationThread(QThread):
                                 elif kind == "homography":
                                     self.drizzle_xforms[k] = ("homography", np.asarray(M, np.float64).reshape(3, 3))
                                 else:
-                                    # poly3/poly4 or other residual models
-                                    self.drizzle_xforms[k] = (str(kind), None)
+                                    self.drizzle_xforms[k] = (str(kind), None)  # poly3/4
                             except Exception:
-                                # Best-effort; SASD will fall back to affine stack if missing
                                 pass
         finally:
-            # Cleanup temp ref
             try: shutil.rmtree(tmpdir, ignore_errors=True)
             except Exception: pass
 
-        # Save SASD with whatever transforms we have
         try:
             sasd_path = os.path.join(self.output_directory, "alignment_transforms.sasd")
             self._save_alignment_transforms_sasd(sasd_path)
             self.progress_update.emit("✅ Transform file saved as alignment_transforms.sasd")
         except Exception as e:
             self.progress_update.emit(f"⚠️ Failed to save alignment_transforms.sasd: {e}")
+
 
     def _save_alignment_transforms_sasd(self, out_path: str):
         """

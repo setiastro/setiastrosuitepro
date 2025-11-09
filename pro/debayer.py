@@ -237,80 +237,24 @@ def _doc_is_managed(dm, doc) -> bool:
 
 def _apply_result_to_doc(dm, doc, rgb: np.ndarray, step_name: str = "Debayer"):
     """
-    Safely apply an array result to a document.
-
-    Rules:
-      1) Prefer doc-targeted DocManager APIs if available.
-      2) If none exist, detect whether this doc is 'managed' by DocManager.
-         • Unmanaged (headless/file): write directly to doc.image (+metadata) and return.
-         • Managed: fall back to active-doc APIs if necessary.
+    Always apply to the specific 'doc' (never assume 'active' view).
     """
-    # ---- 1) Prefer explicit doc-targeting functions (no need for 'active') ----
-    for name in (
-        "apply_numpy_result_to_document",
-        "apply_numpy_result",
-        "apply_array_to_document",
-        "apply_numpy_image_to_document",
-        "apply_edit_to_doc",
-        "update_document_image",            # some codebases use this name
-    ):
-        fn = getattr(dm, name, None)
-        if callable(fn):
-            try:
-                fn(doc, rgb, step_name)
-                return
-            except TypeError:
-                # maybe signature (doc, img) without step
-                try:
-                    fn(doc, rgb)  # type: ignore
-                    return
-                except Exception:
-                    pass
-            except Exception:
-                pass
 
-    # ---- 2) If we get here, we don't have doc-targeting helpers ----
-    managed = _doc_is_managed(dm, doc)
-
-    # Headless/file path → do not require an active view
-    if not managed:
-        # Minimal, safe write-back
+    # --- A) Best: the document can commit its own undoable edit ---
+    if hasattr(doc, "apply_edit") and callable(doc.apply_edit):
+        meta = dict(getattr(doc, "metadata", {}) or {})
+        meta["is_mono"] = False
+        meta.setdefault("bit_depth", "32-bit floating point")
         try:
-            doc.image = rgb
-            # Patch metadata so subsequent writers behave
-            meta = getattr(doc, "metadata", None)
-            if isinstance(meta, dict):
-                meta["is_mono"] = False
-                # preserve existing bit depth label if present; otherwise mark float32
-                meta.setdefault("bit_depth", "32-bit floating point")
-                meta.setdefault("original_format", meta.get("original_format", "fits"))
-        except Exception:
-            # last resort in truly bare objects
-            try:
-                setattr(doc, "image", rgb)
-            except Exception:
-                pass
+            doc.apply_edit(rgb.copy(), metadata=meta, step_name=step_name)
+        except TypeError:
+            # older signature: (image, metadata) or (image,)
+            try: doc.apply_edit(rgb.copy(), metadata=meta)
+            except Exception: doc.apply_edit(rgb.copy())
+        _refresh_view_for_doc(dm, doc)
         return
 
-    # ---- 3) Managed doc but only active-doc APIs exist → try them ----
-    # These require an active document in MDI; okay for view runs, not for headless.
-    fn = getattr(dm, "apply_edit_to_active", None)
-    if callable(fn):
-        try:
-            fn(rgb, step_name)
-            return
-        except Exception:
-            pass
-
-    fn = getattr(dm, "apply_numpy_result_active", None)
-    if callable(fn):
-        try:
-            fn(rgb, step_name)
-            return
-        except Exception:
-            pass
-
-    # ---- 4) Absolute fallback: mutate the doc directly ----
+    # --- B) Next best: mutate the doc directly, then refresh its view ---
     try:
         doc.image = rgb
         meta = getattr(doc, "metadata", None)
@@ -319,8 +263,45 @@ def _apply_result_to_doc(dm, doc, rgb: np.ndarray, step_name: str = "Debayer"):
             meta.setdefault("bit_depth", "32-bit floating point")
     except Exception:
         pass
+    _refresh_view_for_doc(dm, doc)
+    return
 
+def _refresh_view_for_doc(dm, doc):
+    """
+    Find the subwindow that displays 'doc' and ask it to repaint,
+    without switching the active view.
+    """
+    try:
+        # Try a dedicated API if your app exposes it
+        fn = getattr(dm, "refresh_subwindow_for_document", None)
+        if callable(fn):
+            fn(doc); return
+    except Exception:
+        pass
 
+    # Generic fallback: walk MDI subwindows and update the one bound to 'doc'
+    try:
+        mw = getattr(dm, "main_window", None) or getattr(dm, "mw", None)
+        if mw is None: return
+        mdi = getattr(mw, "mdi", None)
+        if mdi is None: return
+        for sw in mdi.subWindowList():
+            w = getattr(sw, "widget", lambda: None)()
+            if getattr(w, "document", None) is doc:
+                # Common update hooks
+                upd = getattr(w, "refresh_pixmap_from_document", None) \
+                      or getattr(w, "refresh_view", None) \
+                      or getattr(w, "update_from_doc", None)
+                if callable(upd):
+                    upd(); return
+                # Absolute fallback: force a repaint
+                try:
+                    w.update(); sw.update()
+                except Exception:
+                    pass
+                return
+    except Exception:
+        pass
 
 
 # -------- worker -------------------------------------------------------------

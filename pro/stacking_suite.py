@@ -4294,6 +4294,16 @@ class StackingSuiteDialog(QDialog):
         self.shift_tol_spin.setValue(self.settings.value("stacking/shift_tolerance", 0.2, type=float))
         fl_align.addRow("Accept tolerance (px):", self.shift_tol_spin)
 
+        self.accept_shift_spin = QDoubleSpinBox()
+        self.accept_shift_spin.setRange(0.0, 50.0)
+        self.accept_shift_spin.setDecimals(2)
+        self.accept_shift_spin.setSingleStep(0.1)
+        self.accept_shift_spin.setToolTip("Reject a frame if its residual shift exceeds this many pixels after alignment.")
+        self.accept_shift_spin.setValue(
+            self.settings.value("stacking/accept_shift_px", 2.0, type=float)
+        )
+        fl_align.addRow("Accept max shift (px):", self.accept_shift_spin)
+
         # Star detection sigma (used by astroalign / your detector)
         self.align_det_sigma = QDoubleSpinBox()
         self.align_det_sigma.setRange(0.5, 50.0)
@@ -4624,36 +4634,7 @@ class StackingSuiteDialog(QDialog):
 
         right_col.addWidget(gb_mf)
 
-        # --- Comet Star Removal (Optional) ---
-        gb_csr = QGroupBox("Comet Star Removal (Optional)")
-        fl_csr = QFormLayout(gb_csr)
 
-        self.csr_enable = QCheckBox("Remove stars on comet-aligned frames")
-        self.csr_enable.setChecked(self.settings.value("stacking/comet_starrem/enabled", False, type=bool))
-        fl_csr.addRow(self.csr_enable)
-        self.csr_enable.toggled.connect(lambda v: self.settings.setValue("stacking/comet_starrem/enabled", bool(v)))
-
-        self.csr_tool = QComboBox()
-        self.csr_tool.addItems(["StarNet", "CosmicClarityDarkStar"])
-        curr_tool = self.settings.value("stacking/comet_starrem/tool", "StarNet", type=str)
-        self.csr_tool.setCurrentText(curr_tool if curr_tool in ("StarNet","CosmicClarityDarkStar") else "StarNet")
-        fl_csr.addRow("Tool:", self.csr_tool)
-
-        self.csr_core_r = QDoubleSpinBox(); self.csr_core_r.setRange(2.0, 200.0); self.csr_core_r.setDecimals(1)
-        self.csr_core_r.setValue(self.settings.value("stacking/comet_starrem/core_r", 22.0, type=float))
-        fl_csr.addRow("Protect core radius (px):", self.csr_core_r)
-
-        self.csr_core_soft = QDoubleSpinBox(); self.csr_core_soft.setRange(0.0, 100.0); self.csr_core_soft.setDecimals(1)
-        self.csr_core_soft.setValue(self.settings.value("stacking/comet_starrem/core_soft", 6.0, type=float))
-        fl_csr.addRow("Core mask feather (px):", self.csr_core_soft)
-
-        def _toggle_csr(on: bool):
-            for w in (self.csr_tool, self.csr_core_r, self.csr_core_soft):
-                w.setEnabled(on)
-        _toggle_csr(self.csr_enable.isChecked())
-        self.csr_enable.toggled.connect(_toggle_csr)
-
-        left_col.addWidget(gb_csr)
 
         # --- Rejection ---
         gb_rej = QGroupBox("Rejection")
@@ -4892,6 +4873,38 @@ class StackingSuiteDialog(QDialog):
 
         fl_comet.addRow(row_hclip)
         right_col.addWidget(gb_comet)
+
+        # --- Comet Star Removal (Optional) ---
+        gb_csr = QGroupBox("Comet Star Removal (Optional)")
+        fl_csr = QFormLayout(gb_csr)
+
+        self.csr_enable = QCheckBox("Remove stars on comet-aligned frames")
+        self.csr_enable.setChecked(self.settings.value("stacking/comet_starrem/enabled", False, type=bool))
+        fl_csr.addRow(self.csr_enable)
+        self.csr_enable.toggled.connect(lambda v: self.settings.setValue("stacking/comet_starrem/enabled", bool(v)))
+
+        self.csr_tool = QComboBox()
+        self.csr_tool.addItems(["StarNet", "CosmicClarityDarkStar"])
+        curr_tool = self.settings.value("stacking/comet_starrem/tool", "StarNet", type=str)
+        self.csr_tool.setCurrentText(curr_tool if curr_tool in ("StarNet","CosmicClarityDarkStar") else "StarNet")
+        fl_csr.addRow("Tool:", self.csr_tool)
+
+        self.csr_core_r = QDoubleSpinBox(); self.csr_core_r.setRange(2.0, 200.0); self.csr_core_r.setDecimals(1)
+        self.csr_core_r.setValue(self.settings.value("stacking/comet_starrem/core_r", 22.0, type=float))
+        fl_csr.addRow("Protect core radius (px):", self.csr_core_r)
+
+        self.csr_core_soft = QDoubleSpinBox(); self.csr_core_soft.setRange(0.0, 100.0); self.csr_core_soft.setDecimals(1)
+        self.csr_core_soft.setValue(self.settings.value("stacking/comet_starrem/core_soft", 6.0, type=float))
+        fl_csr.addRow("Core mask feather (px):", self.csr_core_soft)
+
+        def _toggle_csr(on: bool):
+            for w in (self.csr_tool, self.csr_core_r, self.csr_core_soft):
+                w.setEnabled(on)
+        _toggle_csr(self.csr_enable.isChecked())
+        self.csr_enable.toggled.connect(_toggle_csr)
+
+        right_col.addWidget(gb_csr)
+
         right_col.addStretch(1)
 
         # --- Buttons ---
@@ -5022,6 +5035,8 @@ class StackingSuiteDialog(QDialog):
         passes = 1 if self.align_passes_combo.currentIndex() == 0 else 3
         self.settings.setValue("stacking/refinement_passes", passes)
         self.settings.setValue("stacking/shift_tolerance", self.shift_tol_spin.value())
+        self.settings.setValue("stacking/accept_shift_px", float(self.accept_shift_spin.value()))
+        self.accept_thresh = float(self.accept_shift_spin.value())  # keep runtime attribute in sync        
         self.settings.setValue("stacking/align/det_sigma",   float(self.align_det_sigma.value()))
         self.settings.setValue("stacking/align/minarea",     int(self.align_minarea.value()))
 
@@ -11313,6 +11328,57 @@ class StackingSuiteDialog(QDialog):
                 for i in range(0, len(lst), size):
                     yield lst[i:i+size]
 
+            def _robust_scale_from_header(hdr):
+                """Return (sx, sy) in arcsec/px or (None, None). Prefers CD/PC if present."""
+                try:
+                    # WCS CD matrix (preferred)
+                    if all(k in hdr for k in ("CD1_1","CD1_2","CD2_1","CD2_2")):
+                        cd11 = float(hdr["CD1_1"]); cd12 = float(hdr["CD1_2"])
+                        cd21 = float(hdr["CD2_1"]); cd22 = float(hdr["CD2_2"])
+                        sx_deg = (cd11**2 + cd12**2) ** 0.5
+                        sy_deg = (cd21**2 + cd22**2) ** 0.5
+                        return abs(sx_deg) * 3600.0, abs(sy_deg) * 3600.0
+                    # CDELT + PC
+                    if ("CDELT1" in hdr) and ("CDELT2" in hdr):
+                        cdelt1 = float(hdr["CDELT1"]); cdelt2 = float(hdr["CDELT2"])
+                        pc11 = float(hdr.get("PC1_1", 1.0)); pc12 = float(hdr.get("PC1_2", 0.0))
+                        pc21 = float(hdr.get("PC2_1", 0.0)); pc22 = float(hdr.get("PC2_2", 1.0))
+                        m11 = cdelt1 * pc11; m12 = cdelt1 * pc12
+                        m21 = cdelt2 * pc21; m22 = cdelt2 * pc22
+                        sx_deg = (m11**2 + m12**2) ** 0.5
+                        sy_deg = (m21**2 + m22**2) ** 0.5
+                        return abs(sx_deg) * 3600.0, abs(sy_deg) * 3600.0
+                    # Derived from FOCALLEN + pixel size (+ bin)
+                    fl_mm = float(hdr.get("FOCALLEN", 0.0) or 0.0)
+                    if fl_mm > 0:
+                        pxsize1 = hdr.get("PIXSIZE1"); pxsize2 = hdr.get("PIXSIZE2")
+                        xpixsz  = hdr.get("XPIXSZ");   ypixsz  = hdr.get("YPIXSZ")
+                        if pxsize1 is not None or pxsize2 is not None or xpixsz is not None or ypixsz is not None:
+                            px_um = float(pxsize1 or xpixsz or 0.0)
+                            py_um = float(pxsize2 or ypixsz or px_um)
+                            xb = int(hdr.get("XBINNING", hdr.get("BINX", 1)) or 1)
+                            yb = int(hdr.get("YBINNING", hdr.get("BINY", 1)) or 1)
+                            sx = 206.265 * (px_um * xb) / fl_mm
+                            sy = 206.265 * (py_um * yb) / fl_mm
+                            return sx, sy
+                except Exception:
+                    pass
+                return (None, None)
+
+            def _eff_scale_for_target_bin(raw_sx, raw_sy, xb, yb, target_xbin, target_ybin):
+                if (raw_sx is None) or (raw_sy is None):
+                    return (None, None)
+                kx = float(xb) / float(target_xbin)
+                ky = float(yb) / float(target_ybin)
+                return float(raw_sx) / max(1e-12, kx), float(raw_sy) / max(1e-12, ky)
+
+            def _rel_delta(a, b):
+                a = float(a); b = float(b)
+                if a == 0 or b == 0:
+                    return abs(a - b)
+                return abs(a - b) / max(abs(a), abs(b))
+
+
             # ─────────────────────────────────────────────────────────────────────
             # PHASE 1: measure (NO demosaic here)
             # ─────────────────────────────────────────────────────────────────────
@@ -11606,15 +11672,6 @@ class StackingSuiteDialog(QDialog):
                     pass
                 return (None, None)
 
-            def _effective_scale_for_target_bin(raw_sx, raw_sy, xb, yb, target_xbin, target_ybin):
-                if (raw_sx is None) or (raw_sy is None):
-                    return (None, None)
-                kx = float(xb) / float(target_xbin)
-                ky = float(yb) / float(target_ybin)
-                eff_sx = float(raw_sx) / max(1e-12, kx)
-                eff_sy = float(raw_sy) / max(1e-12, ky)
-                return eff_sx, eff_sy
-
             for fp in measured_frames:
                 try:
                     hdr0 = fits.getheader(fp, ext=0)
@@ -11622,13 +11679,70 @@ class StackingSuiteDialog(QDialog):
                     hdr0 = {}
                 self.arcsec_per_px[fp] = _scale_from_header_raw(hdr0)
 
-            target_sx, target_sy = _scale_from_header_raw(ref_hdr)
-            if target_sx and target_sy:
-                self.update_status(f"🎯 Target pixel scale = reference: {target_sx:.3f}\"/px × {target_sy:.3f}\"/px")
-                QApplication.processEvents()
-            else:
-                self.update_status("🎯 Target pixel scale unknown (no WCS/pixel size). Will skip scale normalization.")
+            # --- Build per-frame raw header scale (arcsec/px) ---
+            raw_scale = {}  # fp -> (sx, sy)
+            for fp in all_files:
+                try:
+                    hdr0 = fits.getheader(fp, ext=0)
+                except Exception:
+                    hdr0 = {}
+                raw_scale[fp] = _robust_scale_from_header(hdr0)
+
+            # ---- Scale normalization policy ----
+            groups_count = len(self.light_files or {})
+            skip_single = bool(self.settings.value("stacking/skip_scale_if_single_group", True, type=bool))
+            tol_pct = float(self.settings.value("stacking/scale_tol_pct", 5.0, type=float))  # you said 5%
+            tol = tol_pct / 100.0
+
+            # If only one group and policy says skip, we don't even *compute* scales.
+            if groups_count == 1 and skip_single:
                 target_sx = target_sy = None
+                skip_scale_norm = True
+                self.update_status("⏭️ Pixel-scale normalize skipped: single-group policy (no header reads).")
+            else:
+                # --- multi-group (or policy off): compute target from medians ---
+                # Build per-file raw header scale (arcsec/px)
+                raw_scale = {}
+                for fp in all_files:
+                    try:
+                        hdr0 = fits.getheader(fp, ext=0)
+                    except Exception:
+                        hdr0 = {}
+                    raw_scale[fp] = _robust_scale_from_header(hdr0)
+
+                # Effective scales at the chosen target bin
+                eff_sx_list, eff_sy_list = [], []
+                for fp in all_files:
+                    sx, sy = raw_scale.get(fp, (None, None))
+                    xb, yb = bin_map.get(fp, (1, 1))
+                    ex, ey = _eff_scale_for_target_bin(sx, sy, xb, yb, target_xbin, target_ybin)
+                    if ex and ey:
+                        eff_sx_list.append(ex); eff_sy_list.append(ey)
+
+                if eff_sx_list and eff_sy_list:
+                    target_sx = float(np.median(eff_sx_list))
+                    target_sy = float(np.median(eff_sy_list))
+                    self.update_status(f"🎯 Target pixel scale (median): {target_sx:.3f}\"/px × {target_sy:.3f}\"/px")
+                else:
+                    target_sx = target_sy = None
+                    self.update_status("🎯 Target pixel scale unknown (no WCS/pixel size). Will skip scale normalization.")
+
+                # Decide skip for single-group+uniform bin case (only reached if policy didn't auto-skip)
+                uniform_binning = (min(b[0] for b in bin_map.values()) == max(b[0] for b in bin_map.values())
+                                and min(b[1] for b in bin_map.values()) == max(b[1] for b in bin_map.values()))
+                skip_scale_norm = False
+                if groups_count == 1 and uniform_binning and eff_sx_list and eff_sy_list:
+                    med_sx = float(np.median(eff_sx_list))
+                    med_sy = float(np.median(eff_sy_list))
+                    max_dev = max(max(_rel_delta(x, med_sx) for x in eff_sx_list),
+                                max(_rel_delta(y, med_sy) for y in eff_sy_list))
+                    if max_dev <= tol:
+                        skip_scale_norm = True
+                        self.update_status(f"⏭️ Pixel-scale normalize skipped: spread ≤ {tol_pct:.2f}% (single group).")
+                    else:
+                        self.update_status(f"ℹ️ Single group spread {max_dev*100:.3f}% > tol {tol_pct:.2f}% → will normalize.")
+                        
+            do_scale_norm = (not skip_scale_norm) and (target_sx is not None) and (target_sy is not None)
 
             # ─────────────────────────────────────────────────────────────────────
             # PHASE 2: normalize (DEBAYER everything once here)
@@ -11717,41 +11831,31 @@ class StackingSuiteDialog(QDialog):
                                 )
 
                             # 2) Pixel-scale normalize (arcsec/px), corrected for binning already applied
-                            raw_psx, raw_psy = _scale_from_header_raw(hdr)
-                            raw_ref_psx, raw_ref_psy = _scale_from_header_raw(ref_hdr)
+                            if do_scale_norm:
+                                # Only compute if we’re actually going to use it
+                                raw_psx, raw_psy = _robust_scale_from_header(hdr)   # uses in-memory hdr, no I/O
+                                xb, yb = bin_map.get(fp, (1, 1))
+                                eff_psx, eff_psy = _eff_scale_for_target_bin(raw_psx, raw_psy, xb, yb, target_xbin, target_ybin)
 
-                            xb, yb = bin_map.get(fp, (1, 1))
-                            ref_xb, ref_yb = bin_map.get(self.reference_frame, (1, 1))
-                            eff_psx,     eff_psy     = _effective_scale_for_target_bin(raw_psx,     raw_psy,     xb,     yb,     target_xbin, target_ybin)
-                            eff_ref_psx, eff_ref_psy = _effective_scale_for_target_bin(raw_ref_psx, raw_ref_psy, ref_xb, ref_yb, target_xbin, target_ybin)
+                                if eff_psx and eff_psy:
+                                    rx = float(eff_psx) / float(target_sx)
+                                    ry = float(eff_psy) / float(target_sy)
 
-                            rx = ry = 1.0
-                            if (eff_psx and eff_psy and eff_ref_psx and eff_ref_psy):
-                                rx = float(eff_psx) / float(eff_ref_psx)
-                                ry = float(eff_psy) / float(eff_ref_psy)
+                                    # Clamp tiny jitter to 1.0 using tol
+                                    if _rel_delta(rx, 1.0) <= tol: rx = 1.0
+                                    if _rel_delta(ry, 1.0) <= tol: ry = 1.0
 
-                                if (abs(rx - 1.0) > 1e-3) or (abs(ry - 1.0) > 1e-3):
-                                    before_hw = img.shape[:2]
-                                    img = _resize_to_scale(img, rx, ry)
-                                    after_hw = img.shape[:2]
-                                    self.update_status(
-                                        f"📏 Pixel-scale normalize "
-                                        f"{_fmt2(eff_psx)}\"/{_fmt2(eff_psy)}\" → {_fmt2(eff_ref_psx)}\"/{_fmt2(eff_ref_psy)}\" "
-                                        f"| size {before_hw[1]}×{before_hw[0]} → {after_hw[1]}×{after_hw[0]}"
-                                    )
-                                    try:
+                                    if (rx != 1.0) or (ry != 1.0):
+                                        before_hw = img.shape[:2]
+                                        img = _resize_to_scale(img, rx, ry)
+                                        after_hw = img.shape[:2]
                                         self.update_status(
-                                            "⚖️ Scales (arcsec/px): "
-                                            f"raw(frame)=({_fmt2(raw_psx)},{_fmt2(raw_psy)}), "
-                                            f"raw(ref)=({_fmt2(raw_ref_psx)},{_fmt2(raw_ref_psy)}) → "
-                                            f"eff(frame→tbin)=({_fmt2(eff_psx)},{_fmt2(eff_psy)}), "
-                                            f"eff(ref→tbin)=({_fmt2(eff_ref_psx)},{_fmt2(eff_ref_psy)}) ; "
-                                            f"resize=(rx={_fmt2(rx)}, ry={_fmt2(ry)})"
+                                            f"📏 Pixel-scale normalize "
+                                            f"{eff_psx:.3f}\"/{eff_psy:.3f}\" → {target_sx:.3f}\"/{target_sy:.3f}\" "
+                                            f"| size {before_hw[1]}×{before_hw[0]} → {after_hw[1]}×{after_hw[0]}"
                                         )
-                                    except Exception:
-                                        pass
-                            else:
-                                self.update_status("⚠️ Pixel-scale normalize skipped (insufficient header scale info).")
+                            # else: fully silent, and we do absolutely nothing
+
 
                             # 3) Brightness normalization / scale refine
                             pm = float(preview_medians.get(fp, 0.0))
