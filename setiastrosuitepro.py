@@ -306,7 +306,7 @@ from pro.status_log_dock import StatusLogDock
 from pro.log_bus import LogBus
 
 
-VERSION = "1.4.9"
+VERSION = "1.4.10"
 
 
 
@@ -2550,9 +2550,16 @@ class AstroSuiteProMainWindow(QMainWindow):
         act_cheats.triggered.connect(self._show_cheat_sheet)
         m_short.addAction(act_cheats)
 
-        act_save_sc = QAction("Save Shortcuts Now", self, triggered=self.shortcuts.save_shortcuts)
-        act_clear_sc = QAction("Clear All Shortcuts", self, triggered=self.shortcuts.clear)
-        m_short.addAction(act_save_sc)
+        # act_save_sc = QAction("Save Shortcuts Now", self, triggered=self.shortcuts.save_shortcuts)
+        # Keep it if you like, but add explicit export/import:
+        act_export_sc = QAction("Export Shortcuts…", self, triggered=self._export_shortcuts_dialog)
+        act_import_sc = QAction("Import Shortcuts…", self, triggered=self._import_shortcuts_dialog)
+        act_clear_sc  = QAction("Clear All Shortcuts", self, triggered=self.shortcuts.clear)
+
+        m_short.addAction(act_export_sc)
+        m_short.addAction(act_import_sc)
+        m_short.addSeparator()
+        # m_short.addAction(act_save_sc)   # optional: keep
         m_short.addAction(act_clear_sc)
 
         m_view = mb.addMenu("&View")
@@ -2706,6 +2713,44 @@ class AstroSuiteProMainWindow(QMainWindow):
 
         act.setChecked(dock.isVisible())
         self._dock_vis_intended[name] = dock.isVisible()
+
+    # --- File pickers ---
+    def _export_shortcuts_dialog(self):
+        from PyQt6.QtWidgets import QFileDialog
+        fn, _ = QFileDialog.getSaveFileName(
+            self, "Export Shortcuts",
+            "shortcuts.sass",
+            "SAS Shortcuts (*.sass);;JSON (*.json);;All Files (*)"
+        )
+        if not fn:
+            return
+        ok, msg = self.shortcuts.export_to_file(fn)
+        if not ok:
+            try: self._log(f"Export failed: {msg}")
+            except Exception: pass
+
+    def _import_shortcuts_dialog(self):
+        from PyQt6.QtWidgets import QFileDialog, QMessageBox
+        fn, _ = QFileDialog.getOpenFileName(
+            self, "Import Shortcuts",
+            "", "SAS Shortcuts (*.sass *.json);;All Files (*)"
+        )
+        if not fn:
+            return
+
+        # Ask merge vs replace
+        btn = QMessageBox.question(
+            self, "Import Shortcuts",
+            "Replace existing shortcuts? (Choose No to merge.)",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        replace = (btn == QMessageBox.StandardButton.Yes)
+
+        ok, msg = self.shortcuts.import_from_file(fn, replace_existing=replace)
+        if not ok:
+            try: self._log(f"Import failed: {msg}")
+            except Exception: pass
 
     def changeEvent(self, ev):
         super().changeEvent(ev)

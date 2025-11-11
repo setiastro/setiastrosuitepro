@@ -2807,7 +2807,7 @@ class WIMIDialog(QDialog):
         right_panel.addLayout(label_layout)
 
         self.results_tree = QTreeWidget()
-        self.results_tree.setHeaderLabels(["RA", "Dec", "Name", "Diameter", "Type", "Long Type", "Redshift", "Comoving Radial Distance (GLy)"])
+        self.results_tree.setHeaderLabels(["RA", "Dec", "Name", "Diameter", "Type", "Long Type", "Redshift/Parallax (z/mas)", "Comoving Radial Distance (GLy)"])
         self.results_tree.setFixedHeight(150)
         self.results_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.results_tree.customContextMenuRequested.connect(self.open_context_menu)
