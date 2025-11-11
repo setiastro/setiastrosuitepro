@@ -205,7 +205,7 @@ from PyQt6.QtWidgets import (QDialog, QApplication, QMainWindow, QWidget, QHBoxL
 )
 
 # ----- QtGui -----
-from PyQt6.QtGui import (QPixmap, QColor, QIcon, QKeySequence, QShortcut, QGuiApplication, QStandardItemModel, QStandardItem, QAction, QPalette, QBrush, QActionGroup
+from PyQt6.QtGui import (QPixmap, QColor, QIcon, QKeySequence, QShortcut, QGuiApplication, QStandardItemModel, QStandardItem, QAction, QPalette, QBrush, QActionGroup, QDesktopServices
 )
 
 # ----- QtCore -----
@@ -304,9 +304,10 @@ from pro.curves_preset import open_curves_with_preset
 from pro.save_options import _normalize_ext
 from pro.status_log_dock import StatusLogDock
 from pro.log_bus import LogBus
+from imageops.mdi_snap import MdiSnapController
 
 
-VERSION = "1.4.10"
+VERSION = "1.4.11"
 
 
 
@@ -1024,6 +1025,7 @@ class AstroSuiteProMainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+PgDown"), self, activated=self._toggle_last_active_view)
         QShortcut(QKeySequence("Ctrl+PgUp"), self, activated=self._toggle_last_active_view)
         self.setCentralWidget(self.mdi)
+        self._snap = MdiSnapController(self.mdi, threshold_px=8)
 
         self.window_shelf = WindowShelf(self)
         self.window_shelf.setObjectName("WindowShelfDock") 
@@ -1856,6 +1858,7 @@ class AstroSuiteProMainWindow(QMainWindow):
         # View-ish action (toolbar toggle)
         self.act_autostretch = QAction("Display-Stretch", self, checkable=True)
         self.act_autostretch.setStatusTip("Toggle display auto-stretch for the active window")
+        self.act_autostretch.setShortcut(QKeySequence("A"))  # optional: mirror the view shortcut
         self.act_autostretch.toggled.connect(self._toggle_autostretch)
 
         self.act_hardstretch = QAction("Hard-Display-Stretch", self, checkable=True)
@@ -2325,6 +2328,20 @@ class AstroSuiteProMainWindow(QMainWindow):
         self.act_check_updates = QAction("Check for Updates…", self)
         self.act_check_updates.triggered.connect(self.check_for_updates_now)
 
+        self.act_docs = QAction("Documentation…", self)
+        self.act_docs.setStatusTip("Open the Seti Astro Suite Pro online documentation")
+        self.act_docs.triggered.connect(
+            lambda: QDesktopServices.openUrl(QUrl("https://github.com/setiastro/setiastrosuitepro/wiki"))
+        )
+
+        # Qt6-safe shortcut for Help/Docs (F1)
+        try:
+            # Qt6 enum lives under StandardKey
+            self.act_docs.setShortcut(QKeySequence(QKeySequence.StandardKey.HelpContents))
+        except Exception:
+            # Fallback works everywhere
+            self.act_docs.setShortcut(QKeySequence("F1"))
+
         self.act_view_bundles = QAction(QIcon(viewbundles_path), "View Bundles…", self)
         self.act_view_bundles.setStatusTip("Create bundles of views; drop shortcuts to apply to all")
         self.act_view_bundles.triggered.connect(self._open_view_bundles)
@@ -2573,8 +2590,11 @@ class AstroSuiteProMainWindow(QMainWindow):
         m_settings.addAction("Preferences…", self._open_settings)
 
         m_about = mb.addMenu("&About")
+        m_about.addAction(self.act_docs)  
+        m_about.addSeparator()
         m_about.addAction("About...", self._about)
         m_about.addAction(self.act_check_updates)
+
 
         # initialize enabled state + names
         self.update_undo_redo_action_labels()
@@ -7840,10 +7860,25 @@ class AstroSuiteProMainWindow(QMainWindow):
 
     def _init_header_viewer_dock(self):
         self.header_viewer = HeaderViewerDock(self)
-        # right side feels natural for metadata
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.header_viewer)
-        # keep it in sync with selection
-        self.currentDocumentChanged.connect(self.header_viewer.set_document)
+
+        # Bind the dock to DocManager so it tracks the ACTIVE subwindow only.
+        # Make sure self.doc_manager.set_mdi_area(mdi) was already called.
+        self.header_viewer.attach_doc_manager(self.doc_manager)
+
+        # Optional: keep it strictly active-only (default). Flip to True to restore hover-follow behavior.
+        # self.header_viewer.set_follow_hover(False)
+
+        # Seed once with whatever is currently active.
+        try:
+            self.header_viewer.set_document(self.doc_manager.get_active_document())
+        except Exception:
+            pass
+
+        # ❌ Remove this old line; it let random mouse-over updates hijack the dock:
+        # self.currentDocumentChanged.disconnect(self.header_viewer.set_document)  # if previously connected
+        # (If you prefer to keep the signal for explicit tab switches, it’s fine to leave
+        #  it connected—the dock’s new guard will ignore non-active/hover docs.)
 
     def set_document(self, doc):
         self._doc = doc
