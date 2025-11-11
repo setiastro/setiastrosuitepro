@@ -1,9 +1,9 @@
 {
-  "version": "1.4.9",
+  "version": "1.4.10",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.9/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.9/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.9/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.10/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.10/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.10/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.4.9 Star alignment (and registration within Stacking Suite) distortion correction vastly improved. Recommend using Homography distortion correction. This fixes an old bug where highly distorted images were failing affine transforms and now with distortion correction it skips an initial affine transform and directly goes into homography warping. Other minor updates and bug fixes."
+  "notes": "Seti Astro Suite Pro V1.4.10 Added Exporting and Importing Shortcuts. Bug fix in star aligning images of different Bins in Stacking Suite. Other minor bug fixes."
 }
