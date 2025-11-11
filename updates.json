@@ -1,9 +1,9 @@
 {
-  "version": "1.4.10",
+  "version": "1.4.11",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.10/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.10/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.10/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.11/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.11/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.11/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.4.10 Added Exporting and Importing Shortcuts. Bug fix in star aligning images of different Bins in Stacking Suite. Other minor bug fixes."
+  "notes": "Seti Astro Suite Pro V1.4.11 PixelMath niceties.  Link to Wiki under About. Views snap to each other or easy resizing to match. ABE bug fix for macos"
 }
