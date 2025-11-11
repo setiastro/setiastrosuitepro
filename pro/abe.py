@@ -19,7 +19,7 @@ try:
 except Exception:  # pragma: no cover
     cv2 = None
 
-from PyQt6.QtCore import Qt, QSize, QEvent, QPointF
+from PyQt6.QtCore import Qt, QSize, QEvent, QPointF, QTimer
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QSpinBox,
     QCheckBox, QPushButton, QScrollArea, QWidget, QMessageBox, QComboBox,
@@ -458,6 +458,10 @@ def siril_style_autostretch(image: np.ndarray, sigma: float = 3.0) -> np.ndarray
 #                                   UI Dialog
 # =============================================================================
 
+def _asfloat32(x: np.ndarray) -> np.ndarray:
+    a = np.asarray(x)                  # zero-copy view when possible
+    return a if a.dtype == np.float32 else a.astype(np.float32, copy=False)
+
 class ABEDialog(QDialog):
     """
     Non-destructive preview with polygon exclusions and optional RBF stage.
@@ -557,6 +561,18 @@ class ABEDialog(QDialog):
         self._install_zoom_filters()
         self._populate_initial_preview()
         self.sp_degree.valueChanged.connect(self._degree_changed) 
+
+        QTimer.singleShot(0, self._post_init_fit_and_stretch)
+
+    def _post_init_fit_and_stretch(self) -> None:
+        # Only run if we have an image preview
+        if self._preview_qimg is None:
+            return
+        # Fit to the viewport
+        self.fit_to_preview()
+        # Turn autostretch ON if it's not already
+        if not getattr(self, "_autostretch_on", False):
+            self.autostretch_preview()
 
     def _set_status(self, text: str) -> None:
         self.status_label.setText(text)
@@ -780,7 +796,7 @@ class ABEDialog(QDialog):
             return
 
         # keep the float source for autostretch toggling (no re-normalization)
-        a = np.asarray(arr, dtype=np.float32, copy=False)
+        a = _asfloat32(arr)
         self._preview_source_f01 = a  # ← no np.clip here
 
         # show autostretched or raw; siril_style_autostretch() already clips its result
@@ -1059,7 +1075,7 @@ class ABEDialog(QDialog):
     def _set_preview_from_float(self, arr: np.ndarray):
         if arr is None or arr.size == 0:
             return
-        a = np.asarray(arr, dtype=np.float32, copy=False)
+        a = _asfloat32(arr)
         self._preview_source_f01 = a  # ← no np.clip
 
         src_to_show = (hard_autostretch(self._preview_source_f01, target_median=0.5, sigma=2,

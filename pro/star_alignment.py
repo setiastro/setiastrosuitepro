@@ -2299,24 +2299,51 @@ class StarRegistrationThread(QThread):
 
             pass_deltas = []
             try:
+                from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
+                import time
+
                 jobs = [
                     (p, ref_npy, model, self.h_reproj, self.det_sigma, self.minarea, self.limit_stars)
                     for p in work_list
                 ]
-                with ProcessPoolExecutor(max_workers=procs) as ex:
-                    futs = [ex.submit(_residual_job_worker, j) for j in jobs]
-                    for fut in as_completed(futs):
-                        try:
-                            pth, rms, err = fut.result()
-                        except Exception as e:
-                            pth, rms, err = ("<unknown>", float("inf"), f"Worker crashed: {e}")
+                total = len(jobs)
+                done = 0
 
-                        k_orig = os.path.normpath(pth)  # residual job receives ORIGINAL paths
-                        if err:
-                            self.on_worker_error(f"Residual measure failed for {os.path.basename(pth)}: {err}")
-                            self.delta_transforms[k_orig] = float("inf")
-                        else:
-                            self.delta_transforms[k_orig] = float(rms)
+                self.progress_update.emit(f"Using {procs} processes to measure residuals (model={model}).")
+                self.progress_step.emit(0, total)
+
+                with ProcessPoolExecutor(max_workers=procs) as ex:
+                    pending = {ex.submit(_residual_job_worker, j): j[0] for j in jobs}  # future -> ORIGINAL path
+                    last_heartbeat = time.monotonic()
+
+                    while pending:
+                        done_set, pending = wait(pending, timeout=0.6, return_when=FIRST_COMPLETED)
+                        # heartbeat if nothing finished for a bit
+                        now = time.monotonic()
+                        if not done_set and (now - last_heartbeat) > 2.0:
+                            self.progress_update.emit(f"… measuring residuals ({done}/{total} done)")
+                            last_heartbeat = now
+
+                        for fut in done_set:
+                            orig_pth = os.path.normpath(pending.pop(fut, "<unknown>")) if fut in pending else "<unknown>"
+                            try:
+                                pth, rms, err = fut.result()
+                            except Exception as e:
+                                pth, rms, err = (orig_pth, float("inf"), f"Worker crashed: {e}")
+
+                            k_orig = os.path.normpath(pth or orig_pth)
+                            if err:
+                                self.on_worker_error(f"Residual measure failed for {os.path.basename(k_orig)}: {err}")
+                                self.delta_transforms[k_orig] = float("inf")
+                            else:
+                                self.delta_transforms[k_orig] = float(rms)
+                                self.progress_update.emit(
+                                    f"[residuals] {os.path.basename(k_orig)} → RMS={rms:.2f}px"
+                                )
+
+                            done += 1
+                            self.progress_step.emit(done, total)
+                            last_heartbeat = now
 
                 for orig in self.original_files:
                     pass_deltas.append(self.delta_transforms.get(os.path.normpath(orig), float("inf")))

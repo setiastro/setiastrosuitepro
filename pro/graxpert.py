@@ -197,7 +197,22 @@ def remove_gradient_with_graxpert(main_window):
 
     # 6) run and wait with a small log dialog
     output_basename = f"{input_basename}_GraXpert"
-    _run_graxpert_command(main_window, command, output_basename, workdir, target_doc=doc)
+    op_label = "GraXpert Denoise" if operation == "denoise" else "GraXpert Gradient Removal"
+    meta_extras = {
+        "graxpert_operation": operation,                  # "denoise" | "background"
+        "graxpert_param": float(param),                   # strength or smoothing (0..1)
+        "graxpert_ai_version": (ai_version or "latest") if operation == "denoise" else None,
+        "graxpert_gpu": bool(use_gpu),
+    }    
+    _run_graxpert_command(
+        main_window,
+        command,
+        output_basename,
+        workdir,
+        target_doc=doc,
+        op_label=op_label,
+        meta_extras=meta_extras
+    )
 
 
 # ---------- helpers ----------
@@ -358,7 +373,8 @@ class _GraXpertThread(QThread):
         self.finished_signal.emit(rc)
 
 
-def _run_graxpert_command(parent, command: list[str], output_basename: str, working_dir: str, target_doc):
+def _run_graxpert_command(parent, command: list[str], output_basename: str, working_dir: str,
+                          target_doc, op_label: str = "GraXpert", meta_extras: dict | None = None):
     dlg = QDialog(parent)
     dlg.setWindowTitle("GraXpert Progress")
     dlg.setMinimumSize(600, 420)
@@ -370,7 +386,10 @@ def _run_graxpert_command(parent, command: list[str], output_basename: str, work
 
     thr = _GraXpertThread(command, cwd=working_dir)
     thr.stdout_signal.connect(lambda s: log.append(s))
-    thr.finished_signal.connect(lambda code: _on_graxpert_finished(parent, code, output_basename, working_dir, target_doc, dlg))
+    thr.finished_signal.connect(
+        lambda code: _on_graxpert_finished(parent, code, output_basename, working_dir,
+                                           target_doc, dlg, op_label, meta_extras or {})
+    )
     btn_cancel.clicked.connect(thr.terminate)
 
     thr.start()
@@ -399,7 +418,8 @@ def _persist_output_file(src_path: str) -> str | None:
         return None
 
 
-def _on_graxpert_finished(parent, return_code: int, output_basename: str, working_dir: str, target_doc, dlg):
+def _on_graxpert_finished(parent, return_code: int, output_basename: str, working_dir: str,
+                          target_doc, dlg, op_label: str = "GraXpert", meta_extras: dict | None = None):
     try:
         dlg.close()
     except Exception:
@@ -440,22 +460,23 @@ def _on_graxpert_finished(parent, return_code: int, output_basename: str, workin
     persisted_path = _persist_output_file(output_file) if PERSIST_GX_OUTPUT else None
 
     meta = {
-        "step_name": "GraXpert Gradient Removal",
+        "step_name": op_label,                        # <-- now correct per operation
         "bit_depth": "32-bit floating point",
         "is_mono": (arr.ndim == 2) or (arr.ndim == 3 and arr.shape[2] == 1),
-        "description": "GraXpert Gradient Removed",
-        # Don't tempt any later metadata probes with an invalid path:
-        # only include a path if we really persisted a copy.
+        "description": op_label,                      # keep description aligned too
     }
     if header is not None:
         meta["original_header"] = header
     if persisted_path:
-        meta["file_path"] = persisted_path  # safe: this path will remain
+        meta["file_path"] = persisted_path
+    if meta_extras:
+        # add strength/smoothing, ai_version, gpu flag, etc.
+        meta.update({k: v for k, v in meta_extras.items() if v is not None})
 
-    # 4) apply to the target doc
+    # Apply with the proper step name
     try:
-        target_doc.apply_edit(arr.astype(np.float32, copy=False), metadata=meta,
-                              step_name="GraXpert Gradient Removal")
+        target_doc.apply_edit(arr.astype(np.float32, copy=False),
+                              metadata=meta, step_name=op_label)
     except Exception as e:
         QMessageBox.critical(parent, "GraXpert", f"Failed to apply result:\n{e}")
     finally:

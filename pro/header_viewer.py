@@ -33,7 +33,8 @@ class HeaderViewerDock(QDockWidget):
 
         self._save_btn = QPushButton("Save Metadata…")
         self._save_btn.clicked.connect(self._save_metadata)
-
+        self._dm = None              # <-- NEW: DocManager to query "active"
+        self._follow_hover = False   # <-- optional toggle if you ever want hover-follow
         w = QWidget(self)
         lay = QVBoxLayout(w)
         lay.setContentsMargins(6, 6, 6, 6)
@@ -41,16 +42,106 @@ class HeaderViewerDock(QDockWidget):
         lay.addWidget(self._save_btn)
         self.setWidget(w)
 
+    def _same_base(self, a, b) -> bool:
+        return self._unwrap_base_doc(a) is self._unwrap_base_doc(b)
+
+    def attach_doc_manager(self, dm):
+        self._dm = dm
+        try:
+            # When docs are added/removed, re-evaluate the focused base
+            dm.documentAdded.connect(lambda _doc: self._maybe_refresh_for_active())
+            dm.documentRemoved.connect(lambda _doc: self._maybe_refresh_for_active())
+
+            # DO NOT use imageRegionUpdated to retarget; it can fire from hover-driven previews.
+            # If you want to repaint the same doc on region changes, _on_doc_changed handles that.
+
+            mdi = getattr(dm, "_mdi", None)
+            if mdi and hasattr(mdi, "subWindowActivated"):
+                mdi.subWindowActivated.connect(lambda _sw: self._maybe_refresh_for_active())
+
+            # NEW: snap to truly active base (sticky, click-activated only)
+            if hasattr(dm, "activeBaseChanged"):
+                dm.activeBaseChanged.connect(lambda _doc: self._maybe_refresh_for_active())
+        except Exception:
+            pass
+
+        self._maybe_refresh_for_active()
+
+
+    def set_follow_hover(self, enabled: bool):
+        self._follow_hover = bool(enabled)
+
+    # Prefer base (true) doc over transient wrappers/proxies
+    def _unwrap_base_doc(self, d):
+        if d is None:
+            return None
+        # ROI preview wrapper → parent
+        p = getattr(d, "_parent_doc", None)
+        if isinstance(p, ImageDocument):
+            return p
+        # LiveViewDocument proxy → base
+        b = getattr(d, "_base", None)
+        if isinstance(b, ImageDocument):
+            return b
+        return d
+
+    def _active_base_doc(self):
+        if not self._dm:
+            return None
+        # Prefer DocManager’s sticky focused base if available
+        if hasattr(self._dm, "get_focused_base_document"):
+            try:
+                return self._dm.get_focused_base_document()
+            except Exception:
+                pass
+        # Fallback: unwrap whatever get_active_document returns
+        try:
+            cur = self._dm.get_active_document()
+            return self._unwrap_base_doc(cur)
+        except Exception:
+            return None
+
+
+    def _maybe_refresh_for_active(self):
+        """Rebuild only if our bound document == current active base document."""
+        active_base = self._active_base_doc()
+        if active_base is None:
+            return
+        # If we already show the same base doc, just ignore
+        if self._unwrap_base_doc(self._doc) is active_base:
+            return
+        # Else bind to the active base doc
+        self.set_document(active_base)
+
     # ---- public API ----
     def set_document(self, doc: Optional[ImageDocument]):
-        # disconnect old
+        """
+        Hard-lock behavior:
+        - If attached to a DocManager AND hover-follow is OFF, ignore the caller's 'doc'
+            and always bind to the DocManager's *active base* doc.
+        - Otherwise, behave like a normal setter.
+        """
+        if self._dm and not self._follow_hover:
+            # Caller cannot hijack focus: resolve from DM every time
+            doc = self._active_base_doc()
+
+        # Always resolve to base (true) document for internal storage
+        base_doc = self._unwrap_base_doc(doc)
+
+        # No-op if unchanged
+        if self._same_base(self._doc, base_doc):
+            return
+
+        # Disconnect old
         if self._doc and hasattr(self._doc, "changed"):
             try:
                 self._doc.changed.disconnect(self._on_doc_changed)
             except Exception:
                 pass
 
-        self._doc = doc
+        self._doc = base_doc
+
+        # Listen for internal changes on the *bound* doc
         if self._doc and hasattr(self._doc, "changed"):
             try:
                 self._doc.changed.connect(self._on_doc_changed)
@@ -59,8 +150,18 @@ class HeaderViewerDock(QDockWidget):
 
         self._rebuild()
 
+
     def _on_doc_changed(self):
-        # metadata changed → rebuild view
+        """
+        Only rebuild if our bound doc is STILL the active base doc.
+        Prevents spurious rebuilds when focus changed between signal emit and slot run.
+        """
+        if self._dm and not self._follow_hover:
+            active_base = self._active_base_doc()
+            if not self._same_base(self._doc, active_base):
+                # We got a change from an old/hover doc — ignore and snap to active.
+                self._maybe_refresh_for_active()
+                return
         self._rebuild()
 
 
@@ -151,9 +252,11 @@ class HeaderViewerDock(QDockWidget):
     # --- main ------------------------------------------------------------
     def _rebuild(self):
         self._tree.clear()
-        if not self._doc:
+        base_doc = self._unwrap_base_doc(self._doc)
+        if not base_doc:
             self.setWindowTitle("Header Viewer")
             return
+        self._doc = base_doc
 
         meta = self._doc.metadata or {}
         path = (meta.get("file_path") or "") if isinstance(meta.get("file_path"), str) else ""

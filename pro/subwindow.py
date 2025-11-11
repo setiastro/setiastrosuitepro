@@ -252,7 +252,7 @@ class ImageSubWindow(QWidget):
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_ctx_menu)
         QShortcut(QKeySequence("F2"), self, activated=self._rename_view)
-        QShortcut(QKeySequence("A"), self, activated=self.toggle_autostretch)
+        #QShortcut(QKeySequence("A"), self, activated=self.toggle_autostretch)
         QShortcut(QKeySequence("Ctrl+Space"), self, activated=self.toggle_autostretch)
         QShortcut(QKeySequence("Alt+Shift+A"), self, activated=self.toggle_autostretch)
         QShortcut(QKeySequence("Ctrl+K"), self, activated=self.toggle_mask_overlay)

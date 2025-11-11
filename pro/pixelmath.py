@@ -259,7 +259,7 @@ def apply_pixel_math_to_doc(parent, doc, preset: dict | None):
         b = (preset or {}).get("expr_b", "").strip()
         if not (r or g or b):
             raise RuntimeError("Pixel Math preset empty.")
-        out = ev.eval_rgb(r, g, b)
+        out = ev.eval_rgb(r, g, b, default_channels=(0, 1, 2))
 
     out = np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
     if hasattr(doc, "set_image"):
@@ -682,34 +682,40 @@ class _Evaluator:
             r = _blend_masked(ref, r, m)
         return r
 
-    def eval_rgb(self, er: str, eg: str, eb: str) -> np.ndarray:
+    def eval_rgb(self, er: str, eg: str, eb: str, default_channels=(0, 1, 2)) -> np.ndarray:
         er, eg, eb = self._rewrite_names(er), self._rewrite_names(eg), self._rewrite_names(eb)
         ref = _as_rgb(np.asarray(self.doc.image, dtype=np.float32))
         H, W, _ = ref.shape
 
-        def one(e):
+        def one(e, ci: int):
             if not e:
                 return 0
             v = self._eval_multiline(e)
             if isinstance(v, PixelImage):
                 v = v.array
+
+            # Scalars become (H,W) plane later, so handle that below
             if np.isscalar(v):
                 return np.full((H, W), float(v), dtype=np.float32)
 
-            # NEW: accept 3-D if it is effectively mono
+            v = np.asarray(v, dtype=np.float32)
+
+            # NEW: if user returned a color (HxWx3) in per-channel slot, assume the tab's channel
             if v.ndim == 3:
                 if v.shape[2] == 1:
                     v = v[..., 0]
                 else:
-                    # squeeze if channels are (nearly) identical
-                    if np.allclose(v[..., 0], v[..., 1]) and np.allclose(v[..., 0], v[..., 2]):
-                        v = v[..., 0]
-                    else:
-                        raise ValueError("Per-channel mode expects 2D results (use view[0/1/2] or luma()).")
+                    # auto-pick requested channel
+                    v = v[..., int(ci)]
 
-            return v.astype(np.float32, copy=False)
+            # At this point expect 2-D plane
+            if v.ndim != 2:
+                raise ValueError("Per-channel mode expects a 2-D result (or an RGB where the tab's channel can be taken).")
+            return v
 
-        R = one(er); G = one(eg); B = one(eb)
+        R = one(er, default_channels[0])
+        G = one(eg, default_channels[1])
+        B = one(eb, default_channels[2])
         out = np.stack([R, G, B], axis=2)
 
         m = _mask_for_ref(self.doc, ref)
@@ -812,27 +818,41 @@ class PixelMathDialogPro(QDialog):
         self.vars_list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
         self.vars_list.setAlternatingRowColors(True)
 
-        # First item is the active view (img)
-        self.vars_list.addItem(QListWidgetItem("img (active)"))
+        # First item = active view
+        item = QListWidgetItem("img (active)")
+        item.setData(Qt.ItemDataRole.UserRole, "img")   # ← stash the real name
+        self.vars_list.addItem(item)
+
+        # Other open views
         for raw, ident in self.ev.title_map:
-            self.vars_list.addItem(QListWidgetItem(f"{raw} → {ident}"))
+            it = QListWidgetItem(f"{raw} → {ident}")
+            it.setData(Qt.ItemDataRole.UserRole, ident)  # ← stash the ident
+            self.vars_list.addItem(it)
 
         # Comfortable height; scroll appears as needed
         self.vars_list.setMinimumHeight(120)
         self.vars_list.setMaximumHeight(180)
 
-        hint = QLabel("Tip: double-click to copy the identifier")
+        hint = QLabel("Tip: double-click to insert the identifier at the cursor")
         hint.setStyleSheet("color: gray; font-size: 11px;")
 
         vars_layout.addWidget(self.vars_list)
         vars_layout.addWidget(hint)
 
-        def _copy_ident(item: QListWidgetItem):
-            text = item.text()
-            ident = text.split("→", 1)[-1].strip() if "→" in text else text.strip()
-            QApplication.clipboard().setText(ident)
+        def _insert_ident_into_current_editor(item: QListWidgetItem):
+            ident = item.data(Qt.ItemDataRole.UserRole) or item.text().split("→", 1)[-1].strip()
+            ed = self.ed_single if self.rb_single.isChecked() else (
+                self.ed_r if self.tabs.currentIndex()==0 else self.ed_g if self.tabs.currentIndex()==1 else self.ed_b
+            )
+            ed.setFocus()
+            ed.insertPlainText(str(ident))
 
-        self.vars_list.itemDoubleClicked.connect(_copy_ident)
+        self._on_var_dblclick = _insert_ident_into_current_editor
+        try:
+            self.vars_list.itemDoubleClicked.connect(self._on_var_dblclick, Qt.ConnectionType.UniqueConnection)
+        except TypeError:
+            # Already connected; ignore
+            pass
 
         left_col.addWidget(vars_grp)
 
@@ -1128,7 +1148,8 @@ class PixelMathDialogPro(QDialog):
                 out = self.ev.eval_rgb(
                     self.ed_r.toPlainText().strip(),
                     self.ed_g.toPlainText().strip(),
-                    self.ed_b.toPlainText().strip()
+                    self.ed_b.toPlainText().strip(),
+                    default_channels=(0, 1, 2)
                 )
             out = np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
 
@@ -1491,9 +1512,12 @@ class PixelMathDialogPro(QDialog):
             if self.rb_single.isChecked():
                 out = self.ev.eval_single(self.ed_single.toPlainText().strip())
             else:
-                out = self.ev.eval_rgb(self.ed_r.toPlainText().strip(),
-                                       self.ed_g.toPlainText().strip(),
-                                       self.ed_b.toPlainText().strip())
+                out = self.ev.eval_rgb(
+                    self.ed_r.toPlainText().strip(),
+                    self.ed_g.toPlainText().strip(),
+                    self.ed_b.toPlainText().strip(),
+                    default_channels=(0, 1, 2)
+                )
             out = np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
 
             # Output route

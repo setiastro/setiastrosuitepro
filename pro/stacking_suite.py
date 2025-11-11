@@ -1984,14 +1984,14 @@ def _save_master_with_rejection_layers(
         h["COMMENT"] = "Combined rejection mask (any algorithm / any frame)"
         hdul.append(fits.ImageHDU(data=rej_any_2d.astype(np.uint8, copy=False), header=h))
 
-    if rej_frac is not None:
-        rej_frac_2d = np.asarray(rej_frac, dtype=np.float32)
-        if rej_frac_2d.ndim != 2:
-            raise ValueError(f"REJ_FRAC must be 2D, got {rej_frac_2d.shape}")
-        h = fits.Header()
-        h["EXTNAME"] = "REJ_FRAC"
-        h["COMMENT"] = "Per-pixel fraction of frames rejected [0..1]"
-        hdul.append(fits.ImageHDU(data=rej_frac_2d, header=h))
+    #if rej_frac is not None:
+    #    rej_frac_2d = np.asarray(rej_frac, dtype=np.float32)
+    #    if rej_frac_2d.ndim != 2:
+    #        raise ValueError(f"REJ_FRAC must be 2D, got {rej_frac_2d.shape}")
+    #    h = fits.Header()
+    #    h["EXTNAME"] = "REJ_FRAC"
+    #    h["COMMENT"] = "Per-pixel fraction of frames rejected [0..1]"
+    #    hdul.append(fits.ImageHDU(data=rej_frac_2d, header=h))
 
     fits.HDUList(hdul).writeto(out_path, overwrite=True)
 
@@ -10074,6 +10074,34 @@ class StackingSuiteDialog(QDialog):
         except Exception:
             return None
 
+    def _collect_leaf_paths_from_tree(self):
+        """Return the exact set of light file paths represented by the current tree."""
+        paths = []
+        for i in range(self.light_tree.topLevelItemCount()):
+            filter_item = self.light_tree.topLevelItem(i)
+            filter_name = filter_item.text(0)
+
+            for j in range(filter_item.childCount()):
+                exposure_item = filter_item.child(j)
+                exposure_text = exposure_item.text(0)
+
+                for k in range(exposure_item.childCount()):
+                    leaf = exposure_item.child(k)
+                    filename = leaf.text(0)
+                    meta = leaf.text(1) or ""
+
+                    # Session from metadata (matches how you look it up later)
+                    m = re.search(r"Session: ([^|]+)", meta)
+                    session_name = m.group(1).strip() if m else "Default"
+
+                    composite_key = (f"{filter_name} - {exposure_text}", session_name)
+                    file_list = self.light_files.get(composite_key, [])
+                    light_path = next((p for p in file_list if os.path.basename(p) == filename), None)
+                    if light_path:
+                        paths.append(light_path)
+        # unique, preserves order
+        return list(dict.fromkeys(paths))
+
 
     def calibrate_lights(self):
         """Performs calibration on selected light frames using Master Darks and Flats, considering overrides."""
@@ -10087,7 +10115,15 @@ class StackingSuiteDialog(QDialog):
         calibrated_dir = os.path.join(self.stacking_directory, "Calibrated")
         os.makedirs(calibrated_dir, exist_ok=True)
 
-        total_files = sum(len(files) for files in self.light_files.values())
+        leaf_paths = self._collect_leaf_paths_from_tree()
+        total_files = len(leaf_paths)
+        processed_files = 0
+
+        # (optional) GC stale entries so future counts stay sane
+        for key in list(self.light_files.keys()):
+            self.light_files[key] = [p for p in self.light_files[key] if p in leaf_paths]
+            if not self.light_files[key]:
+                del self.light_files[key]
         processed_files = 0
 
         # ---------- LOAD MASTER BIAS ONCE (optional) ----------
@@ -10141,7 +10177,8 @@ class StackingSuiteDialog(QDialog):
                     light_file = next((f for f in light_file_list if os.path.basename(f) == filename), None)
                     if not light_file:
                         continue
-
+                    if light_file not in leaf_paths:
+                        continue
                     # Determine size from header
                     header, _ = get_valid_header(light_file)
                     width = int(header.get("NAXIS1", 0))

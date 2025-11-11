@@ -678,6 +678,8 @@ class DocManager(QObject):
     documentRemoved = pyqtSignal(object) # ImageDocument
     imageRegionUpdated = pyqtSignal(object, object)  # (doc, roi_tuple_or_None)
     previewRepaintRequested = pyqtSignal(object, object)
+    
+    activeBaseChanged = pyqtSignal(object)  # emits ImageDocument | None
 
     def __init__(self, image_manager=None, parent=None):
         super().__init__(parent)
@@ -688,6 +690,7 @@ class DocManager(QObject):
         self._mdi: "QMdiArea | None" = None  # type: ignore
         self.imageRegionUpdated.connect(self._invalidate_roi_cache)
         self._by_uid = {}
+        self._focused_base_doc: ImageDocument | None = None  # <— NEW
 
         def _do_preview_repaint(doc, roi):
             vw = self._active_view_widget()
@@ -1328,17 +1331,47 @@ class DocManager(QObject):
         except Exception:
             pass
 
+    def _base_from_subwindow(self, sw):
+        """Best-effort: unwrap to the base ImageDocument bound to a subwindow."""
+        if sw is None:
+            return None
+        try:
+            w = sw.widget()
+            base = (getattr(w, "base_document", None)
+                    or getattr(w, "_base_document", None)
+                    or getattr(w, "document", None))
+            # unwrap ROI wrappers if any
+            p = getattr(base, "_parent_doc", None)
+            return p if isinstance(p, ImageDocument) else base
+        except Exception:
+            return None
+
     def _on_subwindow_activated(self, sw):
-        # Map active subwindow -> its ImageDocument
+        # existing logic (keep it)
         doc = None
         try:
             if sw is not None:
-                # most code keeps the document on the widget
                 w = sw.widget()
                 doc = getattr(w, "document", None) or getattr(sw, "document", None)
         except Exception:
             doc = None
         self.set_active_document(doc)
+
+        # NEW: compute focused *base* doc and emit change only when different
+        new_base = self._base_from_subwindow(sw)
+        if new_base is not self._focused_base_doc:
+            self._focused_base_doc = new_base
+            try:
+                self.activeBaseChanged.emit(new_base)
+            except Exception:
+                pass
+
+    def get_focused_base_document(self):
+        """
+        Returns the last *activated* subwindow's base ImageDocument (sticky),
+        ignoring hover/preview wrappers.
+        """
+        return self._focused_base_doc
 
     def get_active_document(self):
         """
