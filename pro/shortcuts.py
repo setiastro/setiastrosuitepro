@@ -1,6 +1,6 @@
 # pro/shortcuts.py
 from __future__ import annotations
-import json
+import json, time
 from dataclasses import dataclass
 from typing import Dict, Optional
 import uuid
@@ -26,6 +26,9 @@ from pro.dnd_mime import MIME_VIEWSTATE, MIME_CMD, MIME_MASK, MIME_ACTION
 
 from pathlib import Path
 import os  # ← NEW
+
+SASS_KIND   = "sas.shortcuts"
+SASS_VER    = 1
 
 # Accept these endings (case-insensitive)
 OPENABLE_ENDINGS = (
@@ -859,6 +862,87 @@ class ShortcutManager:
         self.widgets.pop(sid, None)
         self.selected.discard(sid)
 
+    def _collect_live_items(self) -> list[dict]:
+        """Collect visible shortcut widgets into a serializable list."""
+        data = []
+        for sid, w in list(self.widgets.items()):
+            if _is_dead(w):
+                self.widgets.pop(sid, None)
+                self.selected.discard(sid)
+                continue
+            try:
+                if not w.isVisible():
+                    continue
+                p = w.pos()
+                data.append({
+                    "id": sid,
+                    "command_id": getattr(w, "command_id", None),
+                    "label": w.text(),
+                    "x": int(p.x()),
+                    "y": int(p.y()),
+                })
+            except RuntimeError:
+                self.widgets.pop(sid, None)
+                self.selected.discard(sid)
+        return data
+
+    # ---------- New: export/import ----------
+    def export_to_file(self, file_path: str) -> tuple[bool, str]:
+        try:
+            fp = self._ensure_ext(file_path, ".sass")
+            payload = {
+                "kind": SASS_KIND,
+                "version": SASS_VER,
+                "exported_at": int(time.time()),
+                "items": self._collect_live_items(),
+            }
+            Path(fp).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            return True, fp
+        except Exception as e:
+            return False, str(e)
+
+    def import_from_file(self, file_path: str, *, replace_existing: bool = False) -> tuple[bool, str]:
+        try:
+            txt = Path(file_path).read_text(encoding="utf-8")
+            obj = json.loads(txt)
+
+            # Basic validation (accepts legacy raw arrays too)
+            if isinstance(obj, dict) and obj.get("kind") == SASS_KIND:
+                items = obj.get("items", [])
+            elif isinstance(obj, list):
+                # legacy: straight array of items
+                items = obj
+            else:
+                return False, "File is not a SAS shortcuts file."
+
+            if replace_existing:
+                self.clear()  # clears both UI + settings keys, keeps manager ready
+
+            # Build widgets
+            for it in items:
+                cid = it.get("command_id")
+                if not cid:
+                    # skip invalid
+                    continue
+                sid   = it.get("id") or uuid.uuid4().hex
+                x     = int(it.get("x", 10))
+                y     = int(it.get("y", 10))
+                label = it.get("label") or self._default_label_for(cid)
+                self.add_shortcut(cid, QPoint(x, y), label=label, shortcut_id=sid)
+
+            # Persist to QSettings so they survive restarts
+            self.save_shortcuts()
+            return True, "OK"
+        except Exception as e:
+            return False, str(e)
+
+    # ---------- utils ----------
+    def _ensure_ext(self, path: str, ext: str) -> str:
+        p = Path(path)
+        if p.suffix.lower() != ext.lower():
+            p = p.with_suffix(ext)
+        return str(p)
+
     # ---- CRUD for shortcuts --------------------------------------------
     def _default_label_for(self, command_id: str) -> str:
         act = self.registry.get(command_id)
@@ -1051,6 +1135,7 @@ class ShortcutManager:
         self.settings.setValue(SET_KEY_V2, "[]")
         self.settings.remove(SET_KEY_V1)
         self.settings.sync()
+
     # ---------- selection ----------
     def _apply_sel_visual(self, sid: str, on: bool):
         w = self.widgets.get(sid)

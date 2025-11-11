@@ -11329,16 +11329,22 @@ class StackingSuiteDialog(QDialog):
                     yield lst[i:i+size]
 
             def _robust_scale_from_header(hdr):
-                """Return (sx, sy) in arcsec/px or (None, None). Prefers CD/PC if present."""
+                """
+                Return (sx, sy) arcsec/px or (None, None).
+                Priority:
+                1) WCS CD / (CDELT + PC)
+                2) XPIXSZ/YPIXSZ treated as *effective* (already includes binning!) if present
+                3) PIXSIZE1/PIXSIZE2 treated as *base* pixel size → multiply by XBINNING/YBINNING
+                """
                 try:
-                    # WCS CD matrix (preferred)
+                    # 1) WCS (preferred)
                     if all(k in hdr for k in ("CD1_1","CD1_2","CD2_1","CD2_2")):
                         cd11 = float(hdr["CD1_1"]); cd12 = float(hdr["CD1_2"])
                         cd21 = float(hdr["CD2_1"]); cd22 = float(hdr["CD2_2"])
                         sx_deg = (cd11**2 + cd12**2) ** 0.5
                         sy_deg = (cd21**2 + cd22**2) ** 0.5
                         return abs(sx_deg) * 3600.0, abs(sy_deg) * 3600.0
-                    # CDELT + PC
+
                     if ("CDELT1" in hdr) and ("CDELT2" in hdr):
                         cdelt1 = float(hdr["CDELT1"]); cdelt2 = float(hdr["CDELT2"])
                         pc11 = float(hdr.get("PC1_1", 1.0)); pc12 = float(hdr.get("PC1_2", 0.0))
@@ -11348,14 +11354,25 @@ class StackingSuiteDialog(QDialog):
                         sx_deg = (m11**2 + m12**2) ** 0.5
                         sy_deg = (m21**2 + m22**2) ** 0.5
                         return abs(sx_deg) * 3600.0, abs(sy_deg) * 3600.0
-                    # Derived from FOCALLEN + pixel size (+ bin)
+
+                    # 2) Instrumental: prefer XPIXSZ/YPIXSZ as *effective* pixel size (already includes binning)
                     fl_mm = float(hdr.get("FOCALLEN", 0.0) or 0.0)
                     if fl_mm > 0:
+                        xpixsz  = hdr.get("XPIXSZ")
+                        ypixsz  = hdr.get("YPIXSZ")
+                        if (xpixsz is not None) or (ypixsz is not None):
+                            px_um = float(xpixsz or ypixsz or 0.0)
+                            py_um = float(ypixsz or xpixsz or px_um)
+                            # 🚫 DO NOT multiply by XBINNING/YBINNING here (effective size already includes it)
+                            sx = 206.265 * (px_um) / fl_mm
+                            sy = 206.265 * (py_um) / fl_mm
+                            return sx, sy
+
+                        # 3) Otherwise, PIXSIZE1/PIXSIZE2 are *base* pixel sizes → multiply by bin
                         pxsize1 = hdr.get("PIXSIZE1"); pxsize2 = hdr.get("PIXSIZE2")
-                        xpixsz  = hdr.get("XPIXSZ");   ypixsz  = hdr.get("YPIXSZ")
-                        if pxsize1 is not None or pxsize2 is not None or xpixsz is not None or ypixsz is not None:
-                            px_um = float(pxsize1 or xpixsz or 0.0)
-                            py_um = float(pxsize2 or ypixsz or px_um)
+                        if (pxsize1 is not None) or (pxsize2 is not None):
+                            px_um = float(pxsize1 or pxsize2 or 0.0)
+                            py_um = float(pxsize2 or pxsize1 or px_um)
                             xb = int(hdr.get("XBINNING", hdr.get("BINX", 1)) or 1)
                             yb = int(hdr.get("YBINNING", hdr.get("BINY", 1)) or 1)
                             sx = 206.265 * (px_um * xb) / fl_mm
@@ -11711,21 +11728,27 @@ class StackingSuiteDialog(QDialog):
                     raw_scale[fp] = _robust_scale_from_header(hdr0)
 
                 # Effective scales at the chosen target bin
+                # --- Compute target pixel scale = highest resolution across frames (min arcsec/px) ---
                 eff_sx_list, eff_sy_list = [], []
                 for fp in all_files:
-                    sx, sy = raw_scale.get(fp, (None, None))
-                    xb, yb = bin_map.get(fp, (1, 1))
-                    ex, ey = _eff_scale_for_target_bin(sx, sy, xb, yb, target_xbin, target_ybin)
-                    if ex and ey:
-                        eff_sx_list.append(ex); eff_sy_list.append(ey)
+                    try:
+                        hdr0 = fits.getheader(fp, ext=0)
+                    except Exception:
+                        hdr0 = {}
+                    sx, sy = _robust_scale_from_header(hdr0)
+                    if sx and sy:
+                        eff_sx_list.append(float(sx))
+                        eff_sy_list.append(float(sy))
 
                 if eff_sx_list and eff_sy_list:
-                    target_sx = float(np.median(eff_sx_list))
-                    target_sy = float(np.median(eff_sy_list))
-                    self.update_status(f"🎯 Target pixel scale (median): {target_sx:.3f}\"/px × {target_sy:.3f}\"/px")
+                    # pick the *smallest* arcsec/px (best resolution) so we never downsample the hi-res set
+                    target_sx = float(min(eff_sx_list))
+                    target_sy = float(min(eff_sy_list))
+                    self.update_status(f"🎯 Target pixel scale (hi-res): {target_sx:.3f}\"/px × {target_sy:.3f}\"/px")
                 else:
                     target_sx = target_sy = None
                     self.update_status("🎯 Target pixel scale unknown (no WCS/pixel size). Will skip scale normalization.")
+
 
                 # Decide skip for single-group+uniform bin case (only reached if policy didn't auto-skip)
                 uniform_binning = (min(b[0] for b in bin_map.values()) == max(b[0] for b in bin_map.values())
@@ -11741,7 +11764,7 @@ class StackingSuiteDialog(QDialog):
                         self.update_status(f"⏭️ Pixel-scale normalize skipped: spread ≤ {tol_pct:.2f}% (single group).")
                     else:
                         self.update_status(f"ℹ️ Single group spread {max_dev*100:.3f}% > tol {tol_pct:.2f}% → will normalize.")
-                        
+
             do_scale_norm = (not skip_scale_norm) and (target_sx is not None) and (target_sy is not None)
 
             # ─────────────────────────────────────────────────────────────────────
@@ -11817,44 +11840,45 @@ class StackingSuiteDialog(QDialog):
                                     except Exception:
                                         pass
 
-                            # 1) resample to target bin
-                            xb, yb = bin_map.get(fp, (1, 1))
-                            sx = float(xb) / float(target_xbin)
-                            sy = float(yb) / float(target_ybin)
-                            if (abs(sx - 1.0) > 1e-6) or (abs(sy - 1.0) > 1e-6):
-                                before = img.shape[:2]
-                                img = _resize_to_scale(img, sx, sy)
-                                after = img.shape[:2]
-                                self.update_status(
-                                    f"🔧 Resampled for binning {xb}×{yb} → {target_xbin}×{target_ybin} "
-                                    f"size {before[1]}×{before[0]} → {after[1]}×{after[0]}"
-                                )
-
-                            # 2) Pixel-scale normalize (arcsec/px), corrected for binning already applied
+                            # --- ONE geometry normalization path ---
                             if do_scale_norm:
-                                # Only compute if we’re actually going to use it
-                                raw_psx, raw_psy = _robust_scale_from_header(hdr)   # uses in-memory hdr, no I/O
-                                xb, yb = bin_map.get(fp, (1, 1))
-                                eff_psx, eff_psy = _eff_scale_for_target_bin(raw_psx, raw_psy, xb, yb, target_xbin, target_ybin)
+                                # We normalize to physical pixel scale (arcsec/px) → this ALSO compensates binning,
+                                # so we must NOT pre-resample to target bin.
+                                raw_psx, raw_psy = _robust_scale_from_header(hdr)  # arcsec/px as shot
+                                if raw_psx and raw_psy and target_sx and target_sy:
+                                    gx = float(raw_psx) / float(target_sx)
+                                    gy = float(raw_psy) / float(target_sy)
 
-                                if eff_psx and eff_psy:
-                                    rx = float(eff_psx) / float(target_sx)
-                                    ry = float(eff_psy) / float(target_sy)
+                                    # clamp tiny jitter
+                                    if _rel_delta(gx, 1.0) <= tol:
+                                        gx = 1.0
+                                    if _rel_delta(gy, 1.0) <= tol:
+                                        gy = 1.0
 
-                                    # Clamp tiny jitter to 1.0 using tol
-                                    if _rel_delta(rx, 1.0) <= tol: rx = 1.0
-                                    if _rel_delta(ry, 1.0) <= tol: ry = 1.0
-
-                                    if (rx != 1.0) or (ry != 1.0):
+                                    if (gx != 1.0) or (gy != 1.0):
                                         before_hw = img.shape[:2]
-                                        img = _resize_to_scale(img, rx, ry)
+                                        img = _resize_to_scale(img, gx, gy)
                                         after_hw = img.shape[:2]
                                         self.update_status(
-                                            f"📏 Pixel-scale normalize "
-                                            f"{eff_psx:.3f}\"/{eff_psy:.3f}\" → {target_sx:.3f}\"/{target_sy:.3f}\" "
-                                            f"| size {before_hw[1]}×{before_hw[0]} → {after_hw[1]}×{after_hw[0]}"
+                                            f"📏 Pixel-scale normalize {raw_psx:.3f}\"/{raw_psy:.3f}\" → "
+                                            f"{target_sx:.3f}\"/{target_sy:.3f}\" | "
+                                            f"size {before_hw[1]}×{before_hw[0]} → {after_hw[1]}×{after_hw[0]}"
                                         )
-                            # else: fully silent, and we do absolutely nothing
+                            else:
+                                # We are NOT doing physical/pixel-scale normalization (single group, within tol).
+                                # In that case we ONLY need to unify binning → simple pixel resample.
+                                xb, yb = bin_map.get(fp, (1, 1))
+                                sx = float(xb) / float(target_xbin)
+                                sy = float(yb) / float(target_ybin)
+                                if (abs(sx - 1.0) > 1e-6) or (abs(sy - 1.0) > 1e-6):
+                                    before = img.shape[:2]
+                                    img = _resize_to_scale(img, sx, sy)
+                                    after = img.shape[:2]
+                                    self.update_status(
+                                        f"🔧 Resampled for binning {xb}×{yb} → {target_xbin}×{target_ybin} "
+                                        f"size {before[1]}×{before[0]} → {after[1]}×{after[0]}"
+                                    )
+
 
 
                             # 3) Brightness normalization / scale refine

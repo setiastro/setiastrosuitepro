@@ -4,7 +4,7 @@ from __future__ import annotations
 import math, numpy as np, cv2
 from typing import Optional
 
-from PyQt6.QtCore import Qt, QEvent, QPointF, QRectF, pyqtSignal, QPoint
+from PyQt6.QtCore import Qt, QEvent, QPointF, QRectF, pyqtSignal, QPoint, QTimer
 from PyQt6.QtGui import QPixmap, QImage, QPen, QBrush, QColor
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox, QToolButton,
@@ -273,7 +273,7 @@ class CropDialogPro(QDialog):
         self._pix_item: Optional[QGraphicsPixmapItem] = None
         self._drawing = False
         self._origin = QPointF()
-        self._autostretch_on = False
+        self._autostretch_on = True
 
         # ---------- layout ----------
         main = QVBoxLayout(self)
@@ -389,7 +389,15 @@ class CropDialogPro(QDialog):
         self._load_from_doc()
         self._update_margin_spin_ranges()
         self.resize(1000, 720)
-        self._fit_view()
+        self._deferred_fit()
+
+    def _deferred_fit(self):
+        if self._fit_mode:
+            QTimer.singleShot(0, self._fit_view)
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        self._deferred_fit()  # ensure fit after the first real layout
 
     # ---------- image plumbing ----------
     def _quad_is_axis_aligned(self, pts: np.ndarray, tol: float = 1e-2) -> bool:
@@ -454,6 +462,7 @@ class CropDialogPro(QDialog):
         self._pix_item.setZValue(-1)
         self.scene.addItem(self._pix_item)
         self._apply_zoom_transform()
+        self._deferred_fit() 
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
@@ -537,14 +546,13 @@ class CropDialogPro(QDialog):
         return super().eventFilter(src, e)
     
     def _apply_zoom_transform(self):
-        """Apply current zoom or fit mode to the view."""
         if not self._pix_item:
             return
         if self._fit_mode:
-            # Fit pixmap + rect overlay
             rect = self._pix_item.mapRectToScene(self._pix_item.boundingRect())
             self.view.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
-            self.view.fitInView(rect, Qt.AspectRatioMode.KeepAspectRatio)
+            r = rect.adjusted(-1, -1, 1, 1)  # 1px breathing room
+            self.view.fitInView(r, Qt.AspectRatioMode.KeepAspectRatio)
             self.view.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         else:
             self.view.resetTransform()
@@ -646,6 +654,7 @@ class CropDialogPro(QDialog):
         saved = self._snapshot_rect_state()
         self._load_from_doc()
         self._restore_rect_state(saved)
+        self._deferred_fit()
 
     def _snapshot_rect_state(self):
         if not self._rect_item: return None

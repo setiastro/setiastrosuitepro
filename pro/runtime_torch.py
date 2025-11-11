@@ -191,6 +191,50 @@ def _torch_sanity_check(status_cb=print):
 # OS / permissions helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _pip_run(venv_python: Path, args: list[str], status_cb=print) -> subprocess.CompletedProcess:
+    env = os.environ.copy()
+    env.pop("PYTHONPATH", None)
+    env.pop("PYTHONHOME", None)
+    return subprocess.run([str(venv_python), "-m", "pip", *args],
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
+
+def _pip_ok(venv_python: Path, args: list[str], status_cb=print) -> bool:
+    r = _pip_run(venv_python, args, status_cb=status_cb)
+    if r.returncode != 0:
+        tail = (r.stdout or "").strip()
+        try: status_cb(tail[-4000:])
+        except Exception: pass
+    return r.returncode == 0
+
+def _ensure_numpy(venv_python: Path, status_cb=print) -> None:
+    """
+    Torch wheels may not pull NumPy; ensure NumPy is present in the SAME venv.
+    Safe to call repeatedly.
+    """
+    def _numpy_present() -> bool:
+        code = "import importlib.util; print('OK' if importlib.util.find_spec('numpy') else 'MISS')"
+        try:
+            out = subprocess.check_output([str(venv_python), "-c", code], text=True).strip()
+            return (out == "OK")
+        except Exception:
+            return False
+
+    if _numpy_present():
+        return
+
+    # Keep tools fresh, then install a compatible NumPy (Torch 2.x is fine with NumPy 1.26–2.x)
+    _pip_ok(venv_python, ["install", "--upgrade", "pip", "setuptools", "wheel"], status_cb=status_cb)
+
+    # Prefer latest available in [1.26, 3.0)
+    if not _pip_ok(venv_python, ["install", "--prefer-binary", "--no-cache-dir", "numpy>=1.26,<3"], status_cb=status_cb):
+        # Final fallback to a broadly available pin
+        _pip_ok(venv_python, ["install", "--prefer-binary", "--no-cache-dir", "numpy==1.26.*"], status_cb=status_cb)
+
+    # Post-install verification
+    if not _numpy_present():
+        raise RuntimeError("Failed to install NumPy into the SASpro runtime venv.")
+
+
 def _is_access_denied(exc: BaseException) -> bool:
     if not isinstance(exc, OSError):
         return False
@@ -501,6 +545,12 @@ def import_torch(prefer_cuda: bool = True, prefer_xpu: bool = False, status_cb=p
     site = _site_packages(vp)
     marker = rt / "torch_installed.json"
 
+    try:
+        _ensure_numpy(vp, status_cb=status_cb)
+    except Exception:
+        # Non-fatal; we'll try again if torch complains at runtime
+        pass
+
     # If no marker, perform install under a lock
     if not marker.exists():
         try:
@@ -530,6 +580,11 @@ def import_torch(prefer_cuda: bool = True, prefer_xpu: bool = False, status_cb=p
             _install_torch(vp, prefer_cuda=prefer_cuda, prefer_xpu=prefer_xpu, status_cb=status_cb)
         importlib.invalidate_caches()
         _demote_shadow_torch_paths(status_cb=status_cb)
+
+    try:
+        _ensure_numpy(vp, status_cb=status_cb)
+    except Exception:
+        pass
 
     try:
         import torch  # noqa
