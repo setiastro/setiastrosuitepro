@@ -1,9 +1,9 @@
 {
-  "version": "1.4.11",
+  "version": "1.4.12",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.11/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.11/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.11/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.12/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.12/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.12/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.4.11 PixelMath niceties.  Link to Wiki under About. Views snap to each other or easy resizing to match. ABE bug fix for macos"
+  "notes": "Seti Astro Suite Pro V1.4.12 Link Views! Alt+click drag and drop the view icon ⧉ to link multiple Windows. You can also link them into different groups under Menu: View. Reference frame bug fix that wasnt accepting your reference frame if you chose it ahead of time. Further improvements to distortion correction and alignment. Other fixes."
 }
