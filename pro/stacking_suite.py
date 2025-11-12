@@ -3282,6 +3282,14 @@ def _rawpy_is_xtrans_or_bayer(rp) -> str:
 def _fmt2(x):
     return "NA" if x is None else f"{float(x):.2f}"
 
+def _norm(p: str | Path) -> str:
+    # normalize + collapse .. + native separators + case-insensitive key on Windows
+    s = os.path.normpath(os.path.abspath(os.fspath(p)))
+    return os.path.normcase(s) if os.name == "nt" else s
+
+def _native(p: str | Path) -> str:
+    # for UI display only (pretty backslashes on Windows)
+    return os.path.normpath(os.fspath(p))
 
 class StackingSuiteDialog(QDialog):
     requestRelaunch = pyqtSignal(str, str)  # old_dir, new_dir
@@ -3989,7 +3997,7 @@ class StackingSuiteDialog(QDialog):
             cfa = bool(getattr(self, "cfa_drizzle_cb", None) and self.cfa_drizzle_cb.isChecked())
         else:
             cfa = bool(self._cfa_for_this_run)
-        print(f"[DEBUG] Debayering with CFA drizzle = {cfa}")
+        #print(f"[DEBUG] Debayering with CFA drizzle = {cfa}")
 
         ext = file_path.lower()
         is_raw = ext.endswith(('.cr2','.cr3','.nef','.arw','.dng','.raf','.orf','.rw2','.pef'))
@@ -6640,9 +6648,11 @@ class StackingSuiteDialog(QDialog):
         self.auto_accept_ref_cb = QCheckBox("Auto-accept measured reference")
         self.auto_accept_ref_cb.setChecked(self.settings.value("stacking/auto_accept_ref", False, type=bool))
         self.auto_accept_ref_cb.setToolTip("If checked, the best measured frame is accepted automatically.")
-        self.auto_accept_ref_cb.toggled.connect(
-            lambda v: self.settings.setValue("stacking/auto_accept_ref", bool(v))
-        )
+        self.auto_accept_ref_cb.toggled.connect(self._on_auto_accept_toggled)
+
+        # If the setting is already on at startup but a user ref is locked, unlock it now.
+        if self.auto_accept_ref_cb.isChecked() and getattr(self, "_user_ref_locked", False):
+            self.reset_reference_to_auto()
 
         ref_layout = QHBoxLayout()
         ref_layout.addWidget(self.ref_frame_label)
@@ -11176,15 +11186,17 @@ class StackingSuiteDialog(QDialog):
             if callable(f): _cc(f)
 
     def _set_user_reference(self, path: str):
-        self.reference_frame = path
+        import os
+        norm = os.path.normpath(path)            # ← unify separators like the auto flow
+        self.reference_frame = norm
         self._user_ref_locked = True
         try:
-            self.settings.setValue("stacking/user_reference_frame", path)
+            self.settings.setValue("stacking/user_reference_frame", norm)  # store same format
         except Exception:
             pass
         try:
             if hasattr(self, "ref_frame_path") and self.ref_frame_path:
-                self.ref_frame_path.setText(path)
+                self.ref_frame_path.setText(os.path.basename(norm))        # UI shows basename (like auto)
         except Exception:
             pass
 
@@ -11202,6 +11214,17 @@ class StackingSuiteDialog(QDialog):
             pass
         self.update_status("🔓 Reference unlocked. Next run will auto-select the best reference.")
 
+    def _on_auto_accept_toggled(self, v: bool):
+        # Persist the checkbox state
+        try:
+            self.settings.setValue("stacking/auto_accept_ref", bool(v))
+        except Exception:
+            pass
+
+        # When turning ON auto-accept, immediately revert to auto reference selection
+        if v and getattr(self, "_user_ref_locked", False):
+            self.reset_reference_to_auto()
+        # When turning OFF, do nothing special—user can pick a ref again if they want.
 
     def register_images(self):
 
@@ -11593,6 +11616,7 @@ class StackingSuiteDialog(QDialog):
             if user_ref_locked and user_ref:
                 self.update_status(f"📌 Using user-specified reference (locked): {user_ref}")
                 self.reference_frame = user_ref
+                self.reference_frame = os.path.normpath(self.reference_frame)
             else:
                 def _pa_of(fp):
                     try:
@@ -11910,6 +11934,7 @@ class StackingSuiteDialog(QDialog):
                             bayer = self._hdr_get(hdr, 'BAYERPAT')
                             splitdb = bool(self._hdr_get(hdr, 'SPLITDB', False))
                             if bayer and not splitdb and (img.ndim == 2 or (img.ndim == 3 and img.shape[-1] == 1)):
+                                self.update_status(f"📦 Debayering {os.path.basename(fp)}…")
                                 img = self.debayer_image(img, fp, hdr)  # HxWx3
                             else:
                                 if img.ndim == 3 and img.shape[-1] == 1:
@@ -12008,7 +12033,10 @@ class StackingSuiteDialog(QDialog):
                                 else:
                                     orig_header["DEBAYERED"] = (False, "Mono normalized")
 
-                                self._orig2norm[os.path.normpath(fp)] = os.path.normpath(out_path)
+                                from os import path
+                                _key = path.normcase(path.normpath(fp))
+                                _val = path.normpath(out_path)
+                                self._orig2norm[_key] = _val
                                 fits.PrimaryHDU(data=img.astype(np.float32), header=orig_header).writeto(out_path, overwrite=True)
                                 normalized_files.append(out_path)
 
@@ -12063,7 +12091,10 @@ class StackingSuiteDialog(QDialog):
                         else:
                             orig_header["DEBAYERED"] = (False, "Mono normalized")
 
-                        self._orig2norm[os.path.normpath(fp)] = os.path.normpath(out_path)
+                        from os import path
+                        _key = path.normcase(path.normpath(fp))
+                        _val = path.normpath(out_path)
+                        self._orig2norm[_key] = _val
                         fits.PrimaryHDU(data=img_out.astype(np.float32), header=orig_header).writeto(out_path, overwrite=True)
                         normalized_files.append(out_path)
 
@@ -12093,21 +12124,12 @@ class StackingSuiteDialog(QDialog):
 
             self.update_status("✅ Updated self.light_files to use debayered, normalized *_n.fit frames.")
 
-
-            # Pick normalized reference path to align against
-            norm_ref_path = self._orig2norm.get(os.path.normpath(self.reference_frame))
-            if not norm_ref_path:
-                ref_base = os.path.basename(self.reference_frame)
-                if ref_base.endswith("_n.fit"):
-                    norm_ref_path = os.path.join(norm_dir, ref_base)
-                else:
-                    if ref_base.lower().endswith(".fits"):
-                        norm_ref_base = ref_base[:-5] + "_n.fit"
-                    elif ref_base.lower().endswith(".fit"):
-                        norm_ref_base = ref_base[:-4] + "_n.fit"
-                    else:
-                        norm_ref_base = ref_base + "_n.fit"
-                    norm_ref_path = os.path.join(norm_dir, norm_ref_base)
+            from os import path
+            ref_path = path.normpath(self.reference_frame)
+            self.update_status(f"📌 Reference for alignment (verbatim): {ref_path}")
+            if not path.exists(ref_path):
+                self.update_status(f"🚨 Reference file does not exist: {ref_path}")
+                return
 
             # ─────────────────────────────────────────────────────────────────────
             # Start alignment on the normalized files
@@ -12118,8 +12140,10 @@ class StackingSuiteDialog(QDialog):
             passes = self.settings.value("stacking/refinement_passes", 3, type=int)
             shift_tol = self.settings.value("stacking/shift_tolerance", 0.2, type=float)
 
+            normalized_files = [path.normpath(p) for p in normalized_files]
+
             self.alignment_thread = StarRegistrationThread(
-                norm_ref_path,
+                ref_path,  
                 normalized_files,
                 align_dir,
                 max_refinement_passes=passes,
