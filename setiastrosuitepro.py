@@ -200,7 +200,7 @@ from PyQt6 import sip
 
 # ----- QtWidgets -----
 from PyQt6.QtWidgets import (QDialog, QApplication, QMainWindow, QWidget, QHBoxLayout, QFileDialog, QMessageBox, QSizePolicy, QToolBar, QPushButton, 
-    QLineEdit, QMenu, QListWidget, QListWidgetItem, QSplashScreen, QDockWidget, QListView, QCompleter, QMdiArea, QMdiArea, QMdiSubWindow, 
+    QLineEdit, QMenu, QListWidget, QListWidgetItem, QSplashScreen, QDockWidget, QListView, QCompleter, QMdiArea, QMdiArea, QMdiSubWindow, QWidgetAction,
     QInputDialog, QVBoxLayout, QLabel, QCheckBox, QProgressBar, QProgressDialog, QGraphicsItem, QTabWidget, QTableWidget, QHeaderView, QTableWidgetItem, QToolButton
 )
 
@@ -209,7 +209,7 @@ from PyQt6.QtGui import (QPixmap, QColor, QIcon, QKeySequence, QShortcut, QGuiAp
 )
 
 # ----- QtCore -----
-from PyQt6.QtCore import (Qt, pyqtSignal, QCoreApplication, QTimer, QSize, QSignalBlocker,  QModelIndex, QThread, QUrl, QSettings, QEvent, QByteArray
+from PyQt6.QtCore import (Qt, pyqtSignal, QCoreApplication, QTimer, QSize, QSignalBlocker,  QModelIndex, QThread, QUrl, QSettings, QEvent, QByteArray, QObject
 )
 
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
@@ -244,7 +244,7 @@ from pro.continuum_subtract import ContinuumSubtractTab
 from pro.abe import ABEDialog
 from ops.settings import SettingsDialog
 from pro.mask_creation import create_mask_and_attach
-from pro.dnd_mime import MIME_VIEWSTATE, MIME_CMD, MIME_MASK, MIME_ASTROMETRY
+from pro.dnd_mime import MIME_VIEWSTATE, MIME_CMD, MIME_MASK, MIME_ASTROMETRY, MIME_LINKVIEW
 from pro.graxpert import remove_gradient_with_graxpert
 from pro.remove_stars import remove_stars
 from pro.add_stars import add_stars 
@@ -307,7 +307,7 @@ from pro.log_bus import LogBus
 from imageops.mdi_snap import MdiSnapController
 
 
-VERSION = "1.4.11"
+VERSION = "1.4.12"
 
 
 
@@ -551,6 +551,7 @@ class MdiArea(QMdiArea):
     commandDropped   = pyqtSignal(dict, object)   # ({"command_id","preset"}, target_subwindow or None)
     maskDropped = pyqtSignal(dict, object)  # (payload, target_subwindow or None)
     astrometryDropped = pyqtSignal(dict, object)
+    linkViewDropped  = pyqtSignal(dict, object)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -561,7 +562,8 @@ class MdiArea(QMdiArea):
         if (e.mimeData().hasFormat("application/x-sas-viewstate")
                 or e.mimeData().hasFormat(MIME_CMD)
                 or e.mimeData().hasFormat(MIME_MASK)
-                or e.mimeData().hasFormat(MIME_ASTROMETRY)):
+                or e.mimeData().hasFormat(MIME_ASTROMETRY)
+                or e.mimeData().hasFormat(MIME_LINKVIEW)):   # ← NEW
             e.acceptProposedAction()
         else:
             super().dragEnterEvent(e)
@@ -628,7 +630,16 @@ class MdiArea(QMdiArea):
             self.astrometryDropped.emit(payload, target)
             e.acceptProposedAction()
             return
-
+        # (5) link view payload
+        if e.mimeData().hasFormat(MIME_LINKVIEW):
+            try:
+                raw = bytes(e.mimeData().data(MIME_LINKVIEW))
+                payload = json.loads(raw.decode("utf-8"))
+            except Exception:
+                e.ignore(); return
+            self.linkViewDropped.emit(payload, target)
+            e.acceptProposedAction()
+            return
         # fallback
         super().dropEvent(e)
 
@@ -988,6 +999,77 @@ class _DocProxy:
             dn = "<doc>"
         return f"<DocProxy → {dn}>"
 
+class ViewLinkController:
+    def __init__(self, mdi):
+        self.mdi = mdi
+        self.groups = {}     # name -> set(views)
+        self.by_view = {}    # view -> name
+        self._slots = {}     # view -> callable
+        self._broadcasting = False
+
+    def attach_view(self, view):
+        if view in self._slots:
+            return
+        slot = lambda scale, h, v, vref=view: self._on_view_transform_from(vref, scale, h, v)
+        view.viewTransformChanged.connect(slot)
+        self._slots[view] = slot
+
+    def detach_view(self, view):
+        slot = self._slots.pop(view, None)
+        if slot:
+            try: view.viewTransformChanged.disconnect(slot)
+            except Exception: pass
+        g = self.by_view.pop(view, None)
+        if g and g in self.groups:
+            self.groups[g].discard(view)
+            if not self.groups[g]:
+                self.groups.pop(g, None)
+
+    def set_view_group(self, view, name_or_none):
+        old = self.by_view.pop(view, None)
+        if old and old in self.groups:
+            self.groups[old].discard(view)
+            if not self.groups[old]:
+                self.groups.pop(old, None)
+        if name_or_none:
+            self.groups.setdefault(name_or_none, set()).add(view)
+            self.by_view[view] = name_or_none
+
+    def group_of(self, view):
+        return self.by_view.get(view)
+
+    def _on_view_transform_from(self, src_view, scale, hval, vval):
+        if self._broadcasting:
+            return
+        g = self.by_view.get(src_view)
+        if not g:
+            return
+
+        self._broadcasting = True
+        try:
+            for tgt in tuple(self.groups.get(g, ())):
+                if tgt is src_view:
+                    continue
+                try:
+                    # skip deleted / half-torn-down views
+                    from PyQt6 import sip as _sip
+                    if _sip.isdeleted(tgt):
+                        continue
+                except Exception:
+                    pass
+
+                hb = tgt.scroll.horizontalScrollBar().value()
+                vb = tgt.scroll.verticalScrollBar().value()
+                if abs(scale - tgt.scale) < 1e-9 and int(hval) == hb and int(vval) == vb:
+                    continue
+
+                try:
+                    tgt.set_view_transform(scale, hval, vval, from_link=True)
+                except Exception as ex:
+                    print("[link] apply failed:", ex)
+        finally:
+            self._broadcasting = False
+
 class AstroSuiteProMainWindow(QMainWindow):
     currentDocumentChanged = pyqtSignal(object)  # ImageDocument | None
 
@@ -1009,7 +1091,6 @@ class AstroSuiteProMainWindow(QMainWindow):
         self._pre_minimize_state = None
         self._dock_vis_intended: dict[str, bool] = {}   # last known intended visibility per dock
         self._last_good_state: QByteArray | None = None
-        
 
         # Core
         self.doc_manager = DocManager(image_manager=image_manager, parent=self)
@@ -1066,6 +1147,7 @@ class AstroSuiteProMainWindow(QMainWindow):
         self.docman.documentRemoved.connect(lambda _d: self._refresh_mask_action_states())
         self.docman.documentAdded.connect(self._on_document_added)
         self.mdi.viewStateDropped.connect(self._on_mdi_viewstate_drop)
+        self.mdi.linkViewDropped.connect(self._on_linkview_drop)
 
         self.doc_manager.set_mdi_area(self.mdi)
 
@@ -1144,7 +1226,29 @@ class AstroSuiteProMainWindow(QMainWindow):
         except Exception:
             pass
 
+        self.linker = ViewLinkController(self.mdi)
+
+        # attach any already-open subwindows
+        for sw in self.mdi.subWindowList():
+            try:
+                self.linker.attach_view(sw.widget())
+            except Exception:
+                pass
+
+        self.mdi.subWindowActivated.connect(self._on_sw_activated)
+        self.mdi.subWindowActivated.connect(lambda _=None: self._sync_link_action_state())  
+        self._link_views_enabled = QSettings().value("view/link_scroll_zoom", True, type=bool)
+
         self.status_log_dock.hide()
+
+    def _on_sw_activated(self, sw):
+        if not sw:
+            return
+        view = sw.widget()
+        try:
+            self.linker.attach_view(view)
+        except Exception:
+            pass
 
     def _on_document_opened(self, doc):
         try:
@@ -1824,6 +1928,12 @@ class AstroSuiteProMainWindow(QMainWindow):
         self.act_save.setStatusTip("Save the active image")
         self.act_save.triggered.connect(self.save_active)
 
+        self.act_exit = QAction("&Exit", self)
+        self.act_exit.setShortcut(QKeySequence.StandardKey.Quit)  # Cmd+Q / Ctrl+Q
+        # Make it appear under the app menu on macOS automatically:
+        self.act_exit.setMenuRole(QAction.MenuRole.QuitRole)
+        self.act_exit.triggered.connect(self._on_exit)
+
         self.act_cascade = QAction("Cascade Views", self)
         self.act_cascade.setStatusTip("Cascade all subwindows")
         self.act_cascade.setShortcut(QKeySequence("Ctrl+Shift+C"))
@@ -1845,6 +1955,10 @@ class AstroSuiteProMainWindow(QMainWindow):
         self.act_tile_grid = QAction("Smart Grid", self)
         self.act_tile_grid.setStatusTip("Arrange subwindows in a near-square grid")
         self.act_tile_grid.triggered.connect(self._tile_views_grid)
+
+        self.act_link_group = QAction("Link Pan/Zoom", self)
+        self.act_link_group.setCheckable(True)  # checked when in any group
+        self.act_link_group.triggered.connect(self._cycle_group_for_active)  # << add
 
         self.act_undo = QAction(QIcon(undoicon_path), "Undo", self)
         self.act_redo = QAction(QIcon(redoicon_path), "Redo", self)
@@ -2450,6 +2564,8 @@ class AstroSuiteProMainWindow(QMainWindow):
         m_file.addAction(self.act_project_new)
         m_file.addAction(self.act_project_save)
         m_file.addAction(self.act_project_load)
+        m_file.addSeparator()
+        m_file.addAction(self.act_exit)
 
         # Edit (with icons)
         m_edit = mb.addMenu("&Edit")
@@ -2584,7 +2700,53 @@ class AstroSuiteProMainWindow(QMainWindow):
         m_view.addAction(self.act_tile)
         m_view.addAction(self.act_tile_vert)
         m_view.addAction(self.act_tile_horiz)
-        m_view.addAction(self.act_tile_grid)  
+        m_view.addAction(self.act_tile_grid)        
+        m_view.addSeparator()
+
+
+        # a button that shows current group & opens a drop-down
+        self._link_btn = QToolButton(self)
+        self._link_btn.setDefaultAction(self.act_link_group)  # text/checked state mirrors the action
+        self._link_btn.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+
+        link_menu = QMenu(self._link_btn)
+        a_none = link_menu.addAction("None")
+        a_A = link_menu.addAction("Group A")
+        a_B = link_menu.addAction("Group B")
+        a_C = link_menu.addAction("Group C")
+        a_D = link_menu.addAction("Group D")
+        self._link_btn.setMenu(link_menu)
+
+        a_none.setCheckable(True)
+        a_A.setCheckable(True)
+        a_B.setCheckable(True)
+        a_C.setCheckable(True)
+        a_D.setCheckable(True)
+
+        def _sync_menu_checks():
+            g = self._current_group_of_active()
+            a_none.setChecked(g is None)
+            a_A.setChecked(g == "A")
+            a_B.setChecked(g == "B")
+            a_C.setChecked(g == "C")
+            a_D.setChecked(g == "D")
+
+        link_menu.aboutToShow.connect(_sync_menu_checks)
+
+        # hook the menu choices to your helpers
+        a_none.triggered.connect(lambda: self._set_group_for_active(None))
+        a_A.triggered.connect(lambda: self._set_group_for_active("A"))
+        a_B.triggered.connect(lambda: self._set_group_for_active("B"))
+        a_C.triggered.connect(lambda: self._set_group_for_active("C"))
+        a_D.triggered.connect(lambda: self._set_group_for_active("D"))
+
+        # wrap it so it can live inside the menu
+        wa = QWidgetAction(self)
+        wa.setDefaultWidget(self._link_btn)
+        m_view.addAction(wa)
+
+        # first-time sync of label/checked state
+        self._sync_link_action_state()
 
         m_settings = mb.addMenu("&Settings")
         m_settings.addAction("Preferences…", self._open_settings)
@@ -2598,6 +2760,142 @@ class AstroSuiteProMainWindow(QMainWindow):
 
         # initialize enabled state + names
         self.update_undo_redo_action_labels()
+
+    def _on_exit(self):
+        # Funnel through closeEvent so your confirmation + state saves run
+        self.close()
+
+    # --- Link UI helpers (methods on AstroSuiteProMainWindow) ---
+    def _cycle_group_for_active(self):
+        g = self._current_group_of_active()
+        order = [None, "A", "B", "C", "D"]  # how we cycle
+        try:
+            i = order.index(g)
+        except ValueError:
+            i = 0
+        nxt = order[(i + 1) % len(order)]
+        self._set_group_for_active(nxt)
+
+    def _refresh_group_badges(self):
+        # Update all window titles to include [A]/[B]/...
+        for sw in self.mdi.subWindowList():
+            v = sw.widget()
+            try:
+                g = self.linker.group_of(v)
+            except Exception:
+                g = None
+            # Have each view rebuild its title with group suffix
+            try:
+                base = v.base_doc_title()
+            except Exception:
+                base = sw.windowTitle()
+            suffix = f"  [Group {g}]" if g else ""
+            try:
+                v._rebuild_title(base=base + suffix)
+            except Exception:
+                # fallback: set directly
+                sw.setWindowTitle((base or "Untitled") + suffix)
+                sw.setToolTip(sw.windowTitle())
+
+
+    def _set_group_for_active(self, name_or_none):
+        sw = self.mdi.activeSubWindow()
+        if not sw:
+            return
+        view = sw.widget()
+        if hasattr(self, "linker"):
+            self.linker.set_view_group(view, name_or_none)
+        self._sync_link_action_state()
+        self._refresh_group_badges()
+        # Status bar toast
+        sb = self.statusBar() if hasattr(self, "statusBar") else None
+        if sb:
+            msg = "Link: None" if not name_or_none else f"Link: Group {name_or_none}"
+            sb.showMessage(msg, 2500)
+
+    def _current_group_of_active(self):
+        sw = self.mdi.activeSubWindow()
+        if not sw:
+            return None
+        return self.linker.group_of(sw.widget()) if hasattr(self, "linker") else None
+
+    def _sync_link_action_state(self):
+        g = self._current_group_of_active()
+        self.act_link_group.blockSignals(True)
+        try:
+            self.act_link_group.setChecked(bool(g))
+            self.act_link_group.setText(f"Link Pan/Zoom{'' if not g else f' ({g})'}")
+            try:
+                if getattr(self, "_link_btn", None):
+                    self._link_btn.setText(self.act_link_group.text())
+            except Exception:
+                pass
+        finally:
+            self.act_link_group.blockSignals(False)
+
+
+    def _on_linkview_drop(self, payload: dict, target_sw: QMdiSubWindow | None):
+        if not target_sw:
+            return
+        target_view = target_sw.widget()
+        if not hasattr(target_view, "set_view_transform"):
+            return
+
+        src_id = payload.get("source_view_id")
+        if src_id is None:
+            return
+
+        # find the source by id(self) that was serialized
+        src_view = None
+        for sw in self.mdi.subWindowList():
+            w = sw.widget()
+            if id(w) == src_id:
+                src_view = w
+                break
+        if src_view is None or src_view is target_view:
+            return
+
+        self._link_views_bidirectional(src_view, target_view, payload.get("modes", {}))
+
+    def _link_views_bidirectional(self, a, b, modes):
+        # Create a small registry to avoid duplicate connections
+        if not hasattr(self, "_view_links"):
+            self._view_links = set()
+        key = tuple(sorted((id(a), id(b))))
+        if key in self._view_links:
+            return
+        self._view_links.add(key)
+
+        # Copy autostretch state once (optional)
+        if modes.get("autostretch_once", True):
+            try:
+                b.set_autostretch(a.autostretch_enabled)
+                b.set_autostretch_profile(a.autostretch_profile)
+                b.set_autostretch_target(a.autostretch_target)
+                b.set_autostretch_sigma(a.autostretch_sigma)
+            except Exception:
+                pass
+
+        # Live pan/zoom both ways
+        def apply_to(dst):
+            return lambda scale, h, v: dst.set_view_transform(scale, h, v, from_link=True)
+
+        a.viewTransformChanged.connect(apply_to(b))
+        b.viewTransformChanged.connect(apply_to(a))
+
+        # Immediately snap B to A so they look linked right away
+        try:
+            s, h, v = a._current_transform()
+            b.set_view_transform(s, h, v, from_link=True)
+        except Exception:
+            pass
+
+        # Optional: toast/status to confirm
+        try:
+            self.statusBar().showMessage(f"Linked views: {a.base_doc_title()} ↔ {b.base_doc_title()}", 4000)
+        except Exception:
+            pass
+
 
     # --- Shortcuts -> View Panels (dynamic) --------------------------------------
     def _visible_subwindows(self):
@@ -8023,6 +8321,12 @@ class AstroSuiteProMainWindow(QMainWindow):
             except Exception:
                 pass
 
+    def _pretty_title(self, doc, *, linked: bool|None=None) -> str:
+        name = getattr(doc, "display_name", lambda: "Untitled")()
+        name = name.replace("🔗","").strip()
+        if linked is None:
+            linked = hasattr(doc, "_parent_doc")  # ROI proxy → linked
+        return f"🔗 {name}" if linked else name
 
     def _spawn_subwindow_for(self, doc, *, force_new: bool = False):
         """
@@ -8124,7 +8428,7 @@ class AstroSuiteProMainWindow(QMainWindow):
         sw.show()
         sw.raise_()
         self.mdi.setActiveSubWindow(sw)
-
+        sw.setWindowTitle(self._pretty_title(doc, linked=False))
 
         # Optional minimize/restore interceptor
         if hasattr(self, "_minimize_interceptor"):
