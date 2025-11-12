@@ -63,6 +63,18 @@ from pro.torch_rejection import (
     torch_reduce_tile as _torch_reduce_tile,
 )
 
+import inspect
+try:
+    _ASARRAY_HAS_COPY = 'copy' in inspect.signature(np.asarray).parameters
+except Exception:
+    _ASARRAY_HAS_COPY = False
+
+def _asarray(x, dtype=None, copy=False):
+    if _ASARRAY_HAS_COPY:
+        return np.asarray(x, dtype=dtype, copy=copy)
+    a = np.asarray(x, dtype=dtype)
+    return a.copy() if copy else a
+
 try:
     # 3.9+: stdlib time zones
     from zoneinfo import ZoneInfo
@@ -705,7 +717,7 @@ def _downsample_area(img: np.ndarray, scale: int) -> np.ndarray:
         import cv2
         a_c = np.ascontiguousarray(a)  # OpenCV likes contiguous
         out = cv2.resize(a_c, (int(tw), int(th)), interpolation=cv2.INTER_AREA)
-        return np.asarray(out, dtype=np.float32, copy=False)
+        return out.astype(np.float32, copy=False)
     except Exception:
         # Last resort: stride slicing (nearest-ish), always returns something
         if a.ndim == 2:
@@ -939,7 +951,7 @@ def remove_poly2_gradient_abe(
     if image is None:
         return image
 
-    img = np.asarray(image, dtype=np.float32, copy=False)
+    img = _asarray(image, dtype=np.float32)
 
     # ---- Detect original layout
     is_2d  = (img.ndim == 2)
@@ -963,7 +975,7 @@ def remove_poly2_gradient_abe(
     img_small = _downsample_area(work, max(1, int(downsample)))
     mask_small = None
     if exclusion_mask is not None:
-        em = np.asarray(exclusion_mask, dtype=np.float32, copy=False)
+        em  = _asarray(exclusion_mask, dtype=np.float32)
         mask_small = _downsample_area(em, max(1, int(downsample))) >= 0.5
 
     # --- Sample & fit
@@ -1132,7 +1144,7 @@ def remove_gradient_stack_abe(stack, target_hw: tuple[int,int] | None = None, **
 
         return cropped
 
-    arr = np.asarray(stack, dtype=np.float32, copy=False)
+    arr = _asarray(stack, dtype=np.float32)
     N = arr.shape[0]
     out = np.empty_like(arr)
 
@@ -7204,8 +7216,7 @@ class StackingSuiteDialog(QDialog):
         file_path, _ = QFileDialog.getOpenFileName(self, "Select Reference Frame", "", 
                                                 "FITS Images (*.fits *.fit);;All Files (*)")
         if file_path:
-            self.reference_frame = file_path
-            self.ref_frame_path.setText(os.path.basename(file_path))
+            self._set_user_reference(file_path)
 
     def save_master_paths_to_settings(self):
         """Save current master dark and flat paths to QSettings using their actual trees."""
@@ -11164,6 +11175,32 @@ class StackingSuiteDialog(QDialog):
         ):
             if callable(f): _cc(f)
 
+    def _set_user_reference(self, path: str):
+        self.reference_frame = path
+        self._user_ref_locked = True
+        try:
+            self.settings.setValue("stacking/user_reference_frame", path)
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "ref_frame_path") and self.ref_frame_path:
+                self.ref_frame_path.setText(path)
+        except Exception:
+            pass
+
+    def reset_reference_to_auto(self):
+        self._user_ref_locked = False
+        # Keep self.reference_frame as-is; it will be ignored next run if not locked
+        try:
+            self.settings.remove("stacking/user_reference_frame")
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "ref_frame_path") and self.ref_frame_path:
+                self.ref_frame_path.setText("Auto (not set)")
+        except Exception:
+            pass
+        self.update_status("🔓 Reference unlocked. Next run will auto-select the best reference.")
 
 
     def register_images(self):
@@ -11231,23 +11268,27 @@ class StackingSuiteDialog(QDialog):
             self.update_status("⏸ Registration already running; ignoring extra click.")
             return
         self.update_status("🧹 Doing a little tidying up...")
-        # 🔥 Force a fresh reference each run
-        self.reference_frame = None           # <-- clear ref
-        self._norm_target_hw = None           # any geometry derived from old ref
-        self._orig2norm = {}                  # old ref→norm map is invalid now
+        user_ref_locked = bool(getattr(self, "_user_ref_locked", False))
 
-        # UI hint if present
-        try:
-            if hasattr(self, "ref_frame_path") and self.ref_frame_path:
-                self.ref_frame_path.setText("Auto (not set)")
-        except Exception:
-            pass
+        # Only clear derived geometry/maps when NOT locked
+        if not user_ref_locked:
+            self._norm_target_hw = None
+            self._orig2norm = {}
+            try:
+                if hasattr(self, "ref_frame_path") and self.ref_frame_path:
+                    self.ref_frame_path.setText("Auto (not set)")
+            except Exception:
+                pass
+        else:
+            # Keep the UI showing the user’s chosen ref (basename for display)
+            try:
+                if hasattr(self, "ref_frame_path") and self.ref_frame_path and self.reference_frame:
+                    self.ref_frame_path.setText(os.path.basename(self.reference_frame))
+            except Exception:
+                pass
 
-        # If you previously persisted a user-chosen ref, clear it too
-        try:
-            self.settings.remove("stacking/user_reference_frame")
-        except Exception:
-            pass
+        # 🚫 Do NOT remove persisted user ref here; that defeats locking.
+        # (No settings.remove() and no reference_frame = None if locked)
 
         self._set_registration_busy(True)
 
@@ -11546,9 +11587,11 @@ class StackingSuiteDialog(QDialog):
                 ecc = max(0.25, min(ecc, 3.0))
                 return star_count / (med * ecc)
 
+            user_ref_locked = bool(getattr(self, "_user_ref_locked", False))
             user_ref = getattr(self, "reference_frame", None)
-            if user_ref:
-                self.update_status(f"📌 Using user-specified reference: {user_ref}")
+
+            if user_ref_locked and user_ref:
+                self.update_status(f"📌 Using user-specified reference (locked): {user_ref}")
                 self.reference_frame = user_ref
             else:
                 def _pa_of(fp):
@@ -11579,6 +11622,7 @@ class StackingSuiteDialog(QDialog):
                     + (f"(score={best_score:.4f})" if best_fp else "(fallback)")
                 )
                 QApplication.processEvents()
+
 
             ref_stats_meas = star_counts.get(self.reference_frame, {"count": 0, "eccentricity": 0.0})
             ref_count = ref_stats_meas["count"]
@@ -11616,10 +11660,16 @@ class StackingSuiteDialog(QDialog):
             # Modeless ref review (unchanged)
             stats_payload = {"star_count": ref_count, "eccentricity": ref_ecc, "mean": ref_median}
 
-            if self.auto_accept_ref_cb.isChecked():
+            if user_ref_locked:
+                self.update_status("✅ User reference is locked; skipping reference review dialog.")
+                try:
+                    self.ref_frame_path.setText(os.path.basename(self.reference_frame or "") or "No file selected")
+                except Exception:
+                    pass
+            elif self.auto_accept_ref_cb.isChecked():
                 self.update_status("✅ Auto-accept measured reference is enabled; using the measured best frame.")
                 try:
-                    self.ref_frame_path.setText(self.reference_frame or "No file selected")
+                    self.ref_frame_path.setText(os.path.basename(self.reference_frame or "") or "No file selected")
                 except Exception:
                     pass
             else:
@@ -11632,9 +11682,9 @@ class StackingSuiteDialog(QDialog):
                 if result != QDialog.DialogCode.Accepted and user_choice == "select_other":
                     new_ref = self.prompt_for_reference_frame()
                     if new_ref:
-                        self.reference_frame = new_ref
+                        self._set_user_reference(new_ref)  # sets lock + updates UI/settings
                         self.update_status(f"User selected a new reference frame: {new_ref}")
-                        ref_img_raw, ref_hdr, _, _ = load_image(self.reference_frame)
+                        ref_img_raw, ref_hdr = self._load_image_any(self.reference_frame)
                         if ref_img_raw is None:
                             self.update_status(f"🚨 Could not load reference {self.reference_frame}. Aborting.")
                             return
@@ -12045,17 +12095,19 @@ class StackingSuiteDialog(QDialog):
 
 
             # Pick normalized reference path to align against
-            ref_base = os.path.basename(self.reference_frame)
-            if ref_base.endswith("_n.fit"):
-                norm_ref_path = os.path.join(norm_dir, ref_base)
-            else:
-                if ref_base.lower().endswith(".fits"):
-                    norm_ref_base = ref_base[:-5] + "_n.fit"
-                elif ref_base.lower().endswith(".fit"):
-                    norm_ref_base = ref_base[:-4] + "_n.fit"
+            norm_ref_path = self._orig2norm.get(os.path.normpath(self.reference_frame))
+            if not norm_ref_path:
+                ref_base = os.path.basename(self.reference_frame)
+                if ref_base.endswith("_n.fit"):
+                    norm_ref_path = os.path.join(norm_dir, ref_base)
                 else:
-                    norm_ref_base = ref_base + "_n.fit"
-                norm_ref_path = os.path.join(norm_dir, norm_ref_base)
+                    if ref_base.lower().endswith(".fits"):
+                        norm_ref_base = ref_base[:-5] + "_n.fit"
+                    elif ref_base.lower().endswith(".fit"):
+                        norm_ref_base = ref_base[:-4] + "_n.fit"
+                    else:
+                        norm_ref_base = ref_base + "_n.fit"
+                    norm_ref_path = os.path.join(norm_dir, norm_ref_base)
 
             # ─────────────────────────────────────────────────────────────────────
             # Start alignment on the normalized files

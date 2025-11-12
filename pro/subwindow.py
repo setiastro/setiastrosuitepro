@@ -7,12 +7,23 @@ from PyQt6 import sip
 import numpy as np
 import json
 import math
+import weakref
 import os
-
+try:
+    from PyQt6.QtCore import QSignalBlocker
+except Exception:
+    class QSignalBlocker:
+        def __init__(self, obj): self.obj = obj
+        def __enter__(self):
+            try: self.obj.blockSignals(True)
+            except Exception: pass
+        def __exit__(self, *exc):
+            try: self.obj.blockSignals(False)
+            except Exception: pass
 
 from .autostretch import autostretch   # ← uses pro/imageops/stretch.py
 
-from pro.dnd_mime import MIME_VIEWSTATE, MIME_MASK, MIME_ASTROMETRY, MIME_CMD 
+from pro.dnd_mime import MIME_VIEWSTATE, MIME_MASK, MIME_ASTROMETRY, MIME_CMD, MIME_LINKVIEW 
 from pro.shortcuts import _unpack_cmd_payload
 
 from .layers import composite_stack, ImageLayer, BLEND_MODES
@@ -69,6 +80,7 @@ class _DragTab(QLabel):
         self.setText("⧉")
         self.setToolTip(
             "Drag to duplicate/copy view.\n"
+            "Hold Alt while dragging to LINK this view with another (live pan/zoom sync).\n"
             "Hold Shift while dragging to drop this image as a mask onto another view.\n"
             "Hold Ctrl while dragging to copy the astrometric solution (WCS) to another view."
         )
@@ -93,10 +105,15 @@ class _DragTab(QLabel):
         if (ev.position() - self._press_pos).manhattanLength() > 6:
             self.setCursor(Qt.CursorShape.OpenHandCursor)
             self._press_pos = None
-            if (QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier):
+            mods = QApplication.keyboardModifiers()
+            if (mods & Qt.KeyboardModifier.AltModifier):
+                self.owner._start_link_drag()
+            elif (mods & Qt.KeyboardModifier.ShiftModifier):
                 self.owner._start_mask_drag()
-            elif (QApplication.keyboardModifiers() & Qt.KeyboardModifier.ControlModifier):
-                self.owner._start_astrometry_drag()   # ← NEW
+            elif (mods & Qt.KeyboardModifier.ControlModifier):
+                self.owner._start_astrometry_drag()
+            elif (QApplication.keyboardModifiers() & Qt.KeyboardModifier.AltModifier):   # ← NEW
+                self.owner._start_link_drag()                
             else:
                 self.owner._start_viewstate_drag()
 
@@ -107,7 +124,13 @@ class _DragTab(QLabel):
 MASK_GLYPH = "■"
 #ACTIVE_PREFIX = "Active View: "
 ACTIVE_PREFIX = ""
-GLYPHS = "■●◆▲▪▫•◼◻◾◽"
+GLYPHS = "■●◆▲▪▫•◼◻◾◽🔗"
+LINK_PREFIX = "🔗 "
+DECORATION_PREFIXES = (
+    LINK_PREFIX,                # "🔗 "
+    f"{MASK_GLYPH} ",           # "■ "
+    "Active View: ",            # legacy
+)
 
 class ImageSubWindow(QWidget):
     aboutToClose = pyqtSignal(object)
@@ -117,6 +140,8 @@ class ImageSubWindow(QWidget):
     autostretchProfileChanged = pyqtSignal(str)
     viewTitleChanged = pyqtSignal(object, str)
     activeSourceChanged = pyqtSignal(object)  # None for full, or (x,y,w,h) for ROI
+    viewTransformChanged = pyqtSignal(float, int, int)
+    _registry = weakref.WeakValueDictionary()
 
 
     def __init__(self, document, parent=None):
@@ -145,7 +170,18 @@ class ImageSubWindow(QWidget):
         self.layers_changed.connect(lambda: None)
         self._display_override: np.ndarray | None = None
         self._readout_hint_shown = False
-
+        self._link_emit_timer = QTimer(self)
+        self._link_emit_timer.setSingleShot(True)
+        self._link_emit_timer.setInterval(100)  # tweak 120–250ms to taste
+        self._link_emit_timer.timeout.connect(self._emit_view_transform_now)
+        self._suppress_link_emit = False  # guard while applying remote updates        
+        self._link_squelch = False  # prevents feedback on linked apply
+        self._pan_live = False
+        self._linked_views = weakref.WeakSet()
+        ImageSubWindow._registry[id(self)] = self
+        self._link_badge_on = False
+        # whenever we move/zoom, relay to linked peers
+        self.viewTransformChanged.connect(self._relay_to_linked)
         # pixel readout live-probe state
         self._space_down = False
         self._readout_dragging = False
@@ -232,6 +268,13 @@ class ImageSubWindow(QWidget):
         self.label.setMouseTracking(True)        
         full_v.addWidget(self.scroll)
 
+        hbar = self.scroll.horizontalScrollBar()
+        vbar = self.scroll.verticalScrollBar()
+        for bar in (hbar, vbar):
+            bar.valueChanged.connect(self._on_scroll_changed)
+            bar.sliderMoved.connect(self._on_scroll_changed)
+            bar.actionTriggered.connect(self._on_scroll_changed)
+
         # IMPORTANT: add the tab BEFORE connecting signals so currentChanged can't fire early
         self._full_tab_idx = self._tabs.addTab(full_host, "Full")
         self._full_host = full_host
@@ -263,6 +306,13 @@ class ImageSubWindow(QWidget):
         QTimer.singleShot(0, self._maybe_announce_readout_help)
         self._refresh_local_undo_buttons()
 
+        hbar = self.scroll.horizontalScrollBar()
+        vbar = self.scroll.verticalScrollBar()
+
+        for bar in (hbar, vbar):
+            bar.valueChanged.connect(self._schedule_emit_view_transform)
+            bar.sliderMoved.connect(lambda _=None: self._schedule_emit_view_transform())
+            bar.actionTriggered.connect(lambda _=None: self._schedule_emit_view_transform())
 
         # Mask/title adornments
         self._mask_dot_enabled = self._active_mask_array() is not None
@@ -273,6 +323,167 @@ class ImageSubWindow(QWidget):
         self._watched_docs = set()
         self._history_doc = None
         self._install_history_watchers()
+
+    # ----- link drag payload -----
+    def _start_link_drag(self):
+        """
+        Alt + drag from ⧉: start a 'link these two views' drag.
+        """
+        payload = {
+            "source_view_id": id(self),
+        }
+        # identity hints (not strictly required, but nice to have)
+        try:
+            payload.update(self._drag_identity_fields())
+        except Exception:
+            pass
+
+        md = QMimeData()
+        md.setData(MIME_LINKVIEW, QByteArray(json.dumps(payload).encode("utf-8")))
+        drag = QDrag(self)
+        drag.setMimeData(md)
+        if self.label.pixmap():
+            drag.setPixmap(self.label.pixmap().scaled(
+                64, 64, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+            drag.setHotSpot(QPoint(16, 16))
+        drag.exec(Qt.DropAction.CopyAction)
+
+    # ----- link management -----
+    def link_to(self, other: "ImageSubWindow"):
+        if other is self or other in self._linked_views:
+            return
+
+        # Gather the full sets (including each endpoint)
+        a_group = set(self._linked_views) | {self}
+        b_group = set(other._linked_views) | {other}
+        merged = a_group | b_group
+
+        # Clear old badges so we can reapply cleanly
+        for v in merged:
+            try:
+                v._linked_views.discard(v)  # no-op safety
+            except Exception:
+                pass
+
+        # Fully connect everyone to everyone
+        for v in merged:
+            v._linked_views.update(merged - {v})
+            try:
+                v._set_link_badge(True)
+            except Exception:
+                pass
+
+        # Snap everyone to the initiator’s transform immediately
+        try:
+            s, h, v = self._current_transform()
+            for peer in merged - {self}:
+                peer.set_view_transform(s, h, v, from_link=True)
+        except Exception:
+            pass
+
+
+    def unlink_from(self, other: "ImageSubWindow"):
+        if other in self._linked_views:
+            self._linked_views.discard(other)
+            other._linked_views.discard(self)
+        # clear badge if both are now free
+        if not self._linked_views:
+            self._set_link_badge(False)
+        if not other._linked_views:
+            other._set_link_badge(False)
+
+    def unlink_all(self):
+        peers = list(self._linked_views)
+        for p in peers:
+            self.unlink_from(p)
+
+    def _relay_to_linked(self, scale: float, h: int, v: int):
+        """
+        When this view pans/zooms, nudge all linked peers. Guarded to avoid loops.
+        """
+        for peer in list(self._linked_views):
+            try:
+                peer.set_view_transform(scale, h, v, from_link=True)
+            except Exception:
+                pass
+
+    def _set_link_badge(self, on: bool):
+        self._link_badge_on = bool(on)
+        self._rebuild_title()
+
+    def _on_scroll_changed(self, *_):
+        if self._suppress_link_emit:
+            return
+        # If we’re actively dragging, emit immediately for realtime follow
+        if self._dragging or self._pan_live:
+            self._emit_view_transform_now()
+        else:
+            self._schedule_emit_view_transform()
+
+    def _current_transform(self):
+        hbar = self.scroll.horizontalScrollBar()
+        vbar = self.scroll.verticalScrollBar()
+        return float(self.scale), int(hbar.value()), int(vbar.value())
+
+    def _emit_view_transform(self):
+        try:
+            h = int(self.scroll.horizontalScrollBar().value())
+            v = int(self.scroll.verticalScrollBar().value())
+        except Exception:
+            h = v = 0
+        try:
+            self.viewTransformChanged.emit(float(self.scale), h, v)
+        except Exception:
+            pass
+
+    def _schedule_emit_view_transform(self):
+        if self._suppress_link_emit:
+            return
+        # If we’re in a live pan, don’t debounce—emit now.
+        if self._dragging or self._pan_live:
+            self._emit_view_transform_now()
+        else:
+            self._link_emit_timer.start()
+
+    def _emit_view_transform_now(self):
+        if self._suppress_link_emit:
+            return
+        h = self.scroll.horizontalScrollBar().value()
+        v = self.scroll.verticalScrollBar().value()
+        try:
+            self.viewTransformChanged.emit(float(self.scale), int(h), int(v))
+        except Exception:
+            pass
+
+    def _on_pan_or_zoom_changed(self, *_):
+        # Debounce lightly if you want; for now, just emit
+        self._emit_view_transform()
+
+    def set_view_transform(self, scale, hval, vval, from_link=False):
+        # Avoid storms while we mutate scrollbars/scale
+        self._suppress_link_emit = True
+        try:
+            scale = float(max(self._min_scale, min(scale, self._max_scale)))
+            if abs(scale - self.scale) > 1e-9:
+                self.scale = scale
+                self._render(rebuild=False)
+
+            hbar = self.scroll.horizontalScrollBar()
+            vbar = self.scroll.verticalScrollBar()
+            hv = int(hval); vv = int(vval)
+            if hv != hbar.value():
+                hbar.setValue(hv)
+            if vv != vbar.value():
+                vbar.setValue(vv)
+        finally:
+            self._suppress_link_emit = False
+
+        # IMPORTANT: if this came from a linked peer, do NOT broadcast again.
+        if not from_link:
+            self._schedule_emit_view_transform()
+
+
+
 
     def _install_history_watchers(self):
         # disconnect old
@@ -488,6 +699,7 @@ class ImageSubWindow(QWidget):
         self._install_history_watchers()
         self._render(True)
         self._refresh_local_undo_buttons()
+        self._emit_view_transform() 
 
 
     def _toggle_preview_select_mode(self, on: bool):
@@ -748,38 +960,50 @@ class ImageSubWindow(QWidget):
 
     def _rebuild_title(self, *, base: str | None = None):
         sub = self._mdi_subwindow()
-        if not sub:
-            return
+        if not sub: return
         if base is None:
             base = self._effective_title() or "Untitled"
 
-        title = base
-        if self._active_title_prefix:
-            title = f"{ACTIVE_PREFIX}{title}"
+        # ✅ strip any carried-over glyphs (🔗, ■, “Active View: ”) from overrides/doc names
+        core, _ = self._strip_decorations(base)
+
+        title = core
+        if getattr(self, "_link_badge_on", False):
+            title = f"{LINK_PREFIX}{title}"
         if self._mask_dot_enabled:
             title = f"{MASK_GLYPH} {title}"
 
-        # only emit when it actually changes
         if title != sub.windowTitle():
             sub.setWindowTitle(title)
             sub.setToolTip(title)
             if title != self._last_title_for_emit:
                 self._last_title_for_emit = title
-                # notify listeners (Layers dock etc.)
-                try:
-                    self.viewTitleChanged.emit(self, title)
-                except Exception:
-                    pass
+                try: self.viewTitleChanged.emit(self, title)
+                except Exception: pass
 
 
     def _strip_decorations(self, title: str) -> tuple[str, bool]:
-        had_glyph = False
-        while len(title) >= 2 and title[1] == " " and title[0] in GLYPHS:
-            title = title[2:]
-            had_glyph = True
-        if title.startswith("Active View: "):
-            title = title[len("Active View: "):]
-        return title, had_glyph
+        had = False
+        # loop to remove multiple stacked badges, in any order
+        while True:
+            changed = False
+
+            # A) explicit multi-char prefixes
+            for pref in DECORATION_PREFIXES:
+                if title.startswith(pref):
+                    title = title[len(pref):]
+                    had = changed = True
+
+            # B) generic 1-glyph + space (covers any stray glyph in GLYPHS)
+            if len(title) >= 2 and title[1] == " " and title[0] in GLYPHS:
+                title = title[2:]
+                had = changed = True
+
+            if not changed:
+                break
+
+        return title, had
+
 
     def set_active_highlight(self, on: bool):
         self._is_active_flag = bool(on)
@@ -924,9 +1148,11 @@ class ImageSubWindow(QWidget):
         a_min  = menu.addAction("Send to Shelf")
         a_clear = menu.addAction("Clear View Name (use doc name)")
         menu.addSeparator()
+        a_unlink = menu.addAction("Unlink from Linked Views")   # ← NEW
+        menu.addSeparator()
         a_help = menu.addAction("Show pixel/WCS readout hint")
         menu.addSeparator()
-        a_prev = menu.addAction("Create Preview (drag rectangle)")   # ← move BEFORE exec
+        a_prev = menu.addAction("Create Preview (drag rectangle)")
 
         act = menu.exec(self.mapToGlobal(pos))
 
@@ -939,6 +1165,8 @@ class ImageSubWindow(QWidget):
         elif act == a_clear:
             self._view_title_override = None
             self._sync_host_title()
+        elif act == a_unlink:
+            self.unlink_all()
         elif act == a_help:
             self._announce_readout_help()
         elif act == a_prev:
@@ -989,8 +1217,12 @@ class ImageSubWindow(QWidget):
                     pass
 
     def set_scale(self, s: float):
-        self.scale = float(max(self._min_scale, min(s, self._max_scale)))
-        self._render()
+        s = float(max(self._min_scale, min(s, self._max_scale)))
+        if abs(s - self.scale) < 1e-9:
+            return
+        self.scale = s
+        self._render()                 # only scale needs a redraw
+        self._schedule_emit_view_transform()
 
 
 
@@ -1116,6 +1348,7 @@ class ImageSubWindow(QWidget):
         cy_label = cy_img * self.scale
         hbar.setValue(int(cx_label - vp.width()  / 2.0))
         vbar.setValue(int(cy_label - vp.height() / 2.0))
+        self._emit_view_transform() 
 
 
     # ---- DnD 'view tab' -------------------------------------------------
@@ -1176,7 +1409,8 @@ class ImageSubWindow(QWidget):
         if (md.hasFormat(MIME_VIEWSTATE)
                 or md.hasFormat(MIME_ASTROMETRY)
                 or md.hasFormat(MIME_MASK)
-                or md.hasFormat(MIME_CMD)):
+                or md.hasFormat(MIME_CMD)
+                or md.hasFormat(MIME_LINKVIEW)):
             ev.acceptProposedAction()
         else:
             ev.ignore()
@@ -1187,7 +1421,8 @@ class ImageSubWindow(QWidget):
         if (md.hasFormat(MIME_VIEWSTATE)
                 or md.hasFormat(MIME_ASTROMETRY)
                 or md.hasFormat(MIME_MASK)
-                or md.hasFormat(MIME_CMD)):
+                or md.hasFormat(MIME_CMD)
+                or md.hasFormat(MIME_LINKVIEW)):
             ev.acceptProposedAction()
         else:
             ev.ignore()
@@ -1245,6 +1480,20 @@ class ImageSubWindow(QWidget):
             sw = self._mdi_subwindow()
             if mw and hasattr(mw, "_on_astrometry_drop") and sw is not None:
                 mw._on_astrometry_drop(payload, sw)
+                ev.acceptProposedAction()
+            else:
+                ev.ignore()
+            return
+
+        if md.hasFormat(MIME_LINKVIEW):
+            try:
+                payload = json.loads(bytes(md.data(MIME_LINKVIEW)).decode("utf-8"))
+                sid = int(payload.get("source_view_id"))
+            except Exception:
+                ev.ignore(); return
+            src = ImageSubWindow._registry.get(sid)
+            if src is not None and src is not self:
+                src.link_to(self)
                 ev.acceptProposedAction()
             else:
                 ev.ignore()
@@ -1589,6 +1838,7 @@ class ImageSubWindow(QWidget):
         # Apply
         hbar.setValue(new_h)
         vbar.setValue(new_v)
+        self._schedule_emit_view_transform()
 
     def _find_main_window(self):
         p = self.parent()
@@ -1754,10 +2004,15 @@ class ImageSubWindow(QWidget):
 
             # normal pan mode
             self._dragging = True
+            self._pan_live = True   
             self._drag_start = e.pos()
+
+            # NEW: emit once at drag start so linked views sync instantly
+            self._emit_view_transform()
             return
 
         super().mousePressEvent(e)
+
 
 
     def _show_readout(self, xi, yi, sample):
@@ -1978,26 +2233,25 @@ class ImageSubWindow(QWidget):
 
         if self._dragging:
             delta = e.pos() - self._drag_start
-            self.scroll.horizontalScrollBar().setValue(
-                self.scroll.horizontalScrollBar().value() - delta.x()
-            )
-            self.scroll.verticalScrollBar().setValue(
-                self.scroll.verticalScrollBar().value() - delta.y()
-            )
+            self.scroll.horizontalScrollBar().setValue(self.scroll.horizontalScrollBar().value() - delta.x())
+            self.scroll.verticalScrollBar().setValue(self.scroll.verticalScrollBar().value() - delta.y())
             self._drag_start = e.pos()
+            # live emit happens via _on_scroll_changed(), but this is a nice extra nudge:
+            self._emit_view_transform_now()
             return
 
         super().mouseMoveEvent(e)
 
 
+
     def mouseReleaseEvent(self, e):
         if self._preview_select_mode:
-            e.ignore()   # eventFilter will consume the release to finish the ROI
-            return
-
+            e.ignore(); return
         if e.button() == Qt.MouseButton.LeftButton:
             self._dragging = False
+            self._pan_live = False        # ← back to debounced mode
             self._readout_dragging = False
+            self._emit_view_transform()
             return
         super().mouseReleaseEvent(e)
 
@@ -2053,7 +2307,15 @@ class ImageSubWindow(QWidget):
                 base.changed.disconnect(self._on_base_doc_changed)
         except Exception:
             pass
-
+        try:
+            self.unlink_all()
+        except Exception:
+            pass
+        try:
+            if id(self) in ImageSubWindow._registry:
+                ImageSubWindow._registry.pop(id(self), None)
+        except Exception:
+            pass
         # proceed with your current teardown
         try:
             # emit your existing signal if you have it

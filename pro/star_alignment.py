@@ -1042,14 +1042,22 @@ class StellarAlignmentDialog(QDialog):
 
             # Base model first (affine or homography)
             if model == "homography":
-                H, _ = cv2.findHomography(src_xy, tgt_xy, method=cv2.RANSAC,
-                                        ransacReprojThreshold=float(h_reproj))
+                H, _ = _cv_findHomography_ransac(
+                    src_xy, tgt_xy,
+                    rth=float(h_reproj),
+                    maxIters=3000,
+                    confidence=0.999
+                )
                 if H is None:
                     raise RuntimeError("Homography estimation failed.")
                 base_kind, base_X = "homography", np.array(H, dtype=np.float64)
             else:
-                A, _ = cv2.estimateAffine2D(src_xy, tgt_xy, method=cv2.RANSAC,
-                                            ransacReprojThreshold=float(h_reproj))
+                A, _ = _cv_estimateAffine2D_ransac(
+                    src_xy, tgt_xy,
+                    rth=float(h_reproj),
+                    maxIters=3000,
+                    confidence=0.999
+                )
                 if A is None:
                     raise RuntimeError("Affine estimation failed.")
                 base_kind, base_X = "affine", np.array(A, dtype=np.float64)
@@ -1367,61 +1375,172 @@ def compute_affine_transform_astroalign_cropped(source_img, reference_img,
                                                 scale: float = 1.20,
                                                 limit_stars: int | None = None,
                                                 det_sigma: float = 12.0,
-                                                minarea: int = 10):
+                                                minarea: int = 10,
+                                                grid_hint=(6,6), per_cell=8,
+                                                min_sep_px=18, gate_radius_px=6):
     """
-    Solve affine on a ~1.2x center crop of reference and lift into full-ref coords.
-    Returns a 2x3 affine matrix in float64, or None.
+    Affine by AA on a center crop, with adaptive fallbacks to avoid '<3 stars' failures.
+    Returns 2x3 float64 or None.
     """
-    import numpy as np
-    import astroalign
+    import numpy as np, astroalign
 
-    # Optional global AA lock (if present in your module)
+    # Fallback lock in case _AA_LOCK isn't defined
     try:
-        _lock = _AA_LOCK
+        lock = _AA_LOCK
     except NameError:
-        from contextlib import nullcontext
-        _lock = nullcontext()
+        import threading
+        lock = threading.Lock()
 
-    Hs, Ws = source_img.shape[:2]
-    Hr, Wr = reference_img.shape[:2]
+    src32 = np.asarray(source_img,   dtype=np.float32, order="C")
+    ref32 = np.asarray(reference_img, dtype=np.float32, order="C")
+    Hs, Ws = src32.shape[:2]
+    Hr, Wr = ref32.shape[:2]
 
-    h = min(int(round(Hs * scale)), Hr)
-    w = min(int(round(Ws * scale)), Wr)
-    y0 = max(0, (Hr - h) // 2)
-    x0 = max(0, (Wr - w) // 2)
-    ref_crop = reference_img[y0:y0+h, x0:x0+w]
+    def _center_crop(scale_val):
+        h = min(int(round(Hs * scale_val)), Hr)
+        w = min(int(round(Ws * scale_val)), Wr)
+        y0 = max(0, (Hr - h) // 2)
+        x0 = max(0, (Wr - w) // 2)
+        return (x0, y0, w, h, ref32[y0:y0+h, x0:x0+w])
 
+    def _aa_try(src_img, ref_img, kwargs):
+        with lock:
+            return astroalign.find_transform(
+                np.ascontiguousarray(src_img.astype(np.float32)),
+                np.ascontiguousarray(ref_img.astype(np.float32)),
+                **kwargs
+            )
+
+    # Build kwargs once
     kwargs = {"detection_sigma": float(det_sigma), "min_area": int(minarea)}
     if limit_stars is not None:
         kwargs["max_control_points"] = int(limit_stars)
 
-    try:
-        with _lock:
-            tform, _ = astroalign.find_transform(
-                np.ascontiguousarray(source_img.astype(np.float32)),
-                np.ascontiguousarray(ref_crop.astype(np.float32)),
-                **kwargs
-            )
-    except TypeError:
-        legacy_kwargs = {}
-        if "max_control_points" in kwargs:
-            legacy_kwargs["max_control_points"] = kwargs["max_control_points"]
-        with _lock:
-            tform, _ = astroalign.find_transform(
-                np.ascontiguousarray(source_img.astype(np.float32)),
-                np.ascontiguousarray(ref_crop.astype(np.float32)),
-                **legacy_kwargs
-            )
+    # Ladder of attempts (crop scales and relaxations)
+    attempts = [
+        (scale, True, True, det_sigma, minarea),
+        (1.05, True, False, det_sigma, minarea),
+        (1.35, False, False, det_sigma, minarea),
+        (scale, False, False, max(3.5, det_sigma*0.6), max(3, minarea//2 if minarea>3 else 3)),
+        (1.0,  False, False, 3.0, 3),           # crop ~source size, relaxed detect
+        ("FULL", False, False, 3.0, 3),         # full frame, relaxed detect
+    ]
 
-    P = np.asarray(tform.params, dtype=np.float64)
-    T = np.array([[1, 0, x0], [0, 1, y0], [0, 0, 1]], dtype=np.float64)
+    for sc, do_spread, do_gate, ds, ma in attempts:
+        # update detection knobs
+        k = dict(kwargs)
+        k["detection_sigma"] = float(ds)
+        k["min_area"] = int(ma)
 
-    if P.shape == (3, 3):
-        return (T @ P)[0:2, :]
-    elif P.shape == (2, 3):
-        A3 = np.vstack([P, [0, 0, 1]])
-        return (T @ A3)[0:2, :]
+        if sc == "FULL":
+            x0 = y0 = 0
+            ref_use = ref32
+        else:
+            x0, y0, w, h, ref_use = _center_crop(float(sc))
+
+        # detect
+        xy_ref, s_ref = _detect_star_peaks_sep(ref_use, ds, ma)
+        xy_src, s_src = _detect_star_peaks_sep(src32,  ds, ma)
+
+        # early stop if source or ref too empty
+        if xy_ref.shape[0] < 3 or xy_src.shape[0] < 3:
+            # try next relaxed attempt
+            continue
+
+        # spread/thin (only if we have enough)
+        if do_spread and xy_ref.shape[0] > 20:
+            idx = _select_grid_spread(
+                xy_ref, s_ref, hw=ref_use.shape[:2],
+                grid=grid_hint, per_cell=per_cell, max_keep=limit_stars,
+                ensure_grid=(3,3), ensure_per=1
+            )
+            pts_ref = xy_ref[idx] if idx.size else xy_ref
+            if min_sep_px and pts_ref.shape[0] > 20:
+                idx2 = _select_blue_noise(pts_ref, s_ref[idx] if idx.size else s_ref,
+                                          min_sep_px=min_sep_px, max_keep=limit_stars)
+                pts_ref = pts_ref[idx2] if idx2.size else pts_ref
+        else:
+            pts_ref = xy_ref
+
+        # gate (only if we still have enough)
+        if do_gate and pts_ref.shape[0] >= 6:
+            ref_g = _gate_image_to_points(ref_use, pts_ref, radius_px=gate_radius_px)
+            src_g = _gate_image_to_points(src32,  xy_src,  radius_px=gate_radius_px) if xy_src.shape[0] >= 6 else src32
+        else:
+            ref_g, src_g = ref_use, src32
+
+        try:
+            tform, _ = _aa_try(src_g, ref_g, k)
+        except TypeError:
+            # legacy AA without some kwargs
+            legacy = {}
+            if "max_control_points" in k:
+                legacy["max_control_points"] = k["max_control_points"]
+            with lock:
+                tform, _ = astroalign.find_transform(
+                    np.ascontiguousarray(src_g.astype(np.float32)),
+                    np.ascontiguousarray(ref_g.astype(np.float32)),
+                    **legacy
+                )
+        except Exception:
+            # move to next attempt
+            continue
+
+        P = np.asarray(tform.params, dtype=np.float64)
+        if sc == "FULL":
+            if P.shape == (3,3):
+                return P[0:2, :]
+            elif P.shape == (2,3):
+                return P
+            continue
+
+        if P.shape == (3, 3):
+            T = np.array([[1, 0, x0], [0, 1, y0], [0, 0, 1]], dtype=np.float64)
+            return (T @ P)[0:2, :]
+        elif P.shape == (2, 3):
+            A3 = np.vstack([P, [0, 0, 1]])
+            T  = np.array([[1, 0, x0], [0, 1, y0], [0, 0, 1]], dtype=np.float64)
+            return (T @ A3)[0:2, :]
+
+    # If we got here, all attempts failed
     return None
+
+
+
+def _cv_findHomography_ransac(src_xy, tgt_xy, rth, maxIters=3000, confidence=0.999):
+    import cv2
+    try:
+        return cv2.findHomography(
+            src_xy, tgt_xy,
+            method=cv2.RANSAC,
+            ransacReprojThreshold=float(rth),
+            maxIters=int(maxIters),
+            confidence=float(confidence)
+        )
+    except TypeError:
+        # Older OpenCV didn't expose maxIters/confidence: fall back gracefully
+        return cv2.findHomography(
+            src_xy, tgt_xy,
+            method=cv2.RANSAC,
+            ransacReprojThreshold=float(rth)
+        )
+
+def _cv_estimateAffine2D_ransac(src_xy, tgt_xy, rth, maxIters=3000, confidence=0.999):
+    import cv2
+    try:
+        return cv2.estimateAffine2D(
+            src_xy, tgt_xy,
+            method=cv2.RANSAC,
+            ransacReprojThreshold=float(rth),
+            maxIters=int(maxIters),
+            confidence=float(confidence)
+        )
+    except TypeError:
+        return cv2.estimateAffine2D(
+            src_xy, tgt_xy,
+            method=cv2.RANSAC,
+            ransacReprojThreshold=float(rth)
+        )
 
 
 
@@ -1724,6 +1843,152 @@ def _finalize_write_job(args):
     except Exception as e:
         return (orig_path, "", f"⚠️ Finalize error {os.path.basename(orig_path)}: {e}", False, None)
 
+def _detect_star_peaks_sep(img32: np.ndarray, det_sigma: float, minarea: int):
+    """
+    Robust SEP detection with an adaptive relax step. Returns (N,2) xy and (N,) score.
+    Keeps thresholds sane for very faint or slightly blurred frames.
+    """
+    import sep, numpy as np
+
+    img32 = np.ascontiguousarray(np.nan_to_num(img32, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32))
+    def _run(sigma, area):
+        bkg = sep.Background(img32, bw=64, bh=64)
+        thresh = float(sigma) * float(bkg.globalrms)
+        objs = sep.extract(img32 - bkg.back(), thresh=thresh, minarea=int(area))
+        if objs is None or len(objs) == 0:
+            return np.empty((0,2), np.float32), np.empty((0,), np.float32)
+        xy  = np.vstack([objs['x'], objs['y']]).T.astype(np.float32)
+        # Use peak height as a cheap saliency/score
+        score = np.asarray(objs['peak'], dtype=np.float32, order="C")
+        return xy, score
+
+    xy, s = _run(det_sigma, minarea)
+    if xy.shape[0] >= 3:
+        return xy, s
+
+    # Relax once: lower sigma and minarea
+    sigma2 = max(3.5, float(det_sigma) * 0.6)
+    area2  = max(3, int(minarea // 2) if minarea > 3 else 3)
+    xy2, s2 = _run(sigma2, area2)
+    if xy2.shape[0] >= 3:
+        return xy2, s2
+
+    # Final relax: very permissive but still avoids pure noise
+    sigma3 = 3.0
+    area3  = 3
+    xy3, s3 = _run(sigma3, area3)
+    return xy3, s3
+
+
+def _select_grid_spread(xy: np.ndarray, score: np.ndarray, hw: tuple[int,int],
+                        grid=(6,6), per_cell=8, max_keep=None,
+                        ensure_grid=(3,3), ensure_per=1):
+    """
+    Brightness-first spread with guaranteed coverage over a coarse ensure_grid
+    (e.g. 3x3 to force corners/edges/center), then fill with a finer grid.
+
+    Returns indices into the original xy/score arrays.
+    """
+    H, W = hw
+    gx, gy = max(1, int(grid[0])),  max(1, int(grid[1]))
+    ex, ey = max(1, int(ensure_grid[0])), max(1, int(ensure_grid[1]))
+
+    # Order bright -> dim once
+    order = np.argsort(-score)
+    xy     = xy[order]
+    score  = score[order]
+
+    selected = []
+    selected_set = set()
+
+    # ---------- Pass A: ensure coverage on coarse 3x3 (or whatever ensure_grid is) ----------
+    ecw = W / ex
+    ech = H / ey
+    ensure_counts = [[0 for _ in range(ex)] for _ in range(ey)]
+
+    for i, (x, y) in enumerate(xy):
+        if max_keep is not None and len(selected) >= max_keep:
+            break
+        cx = min(ex-1, max(0, int(x // ecw)))
+        cy = min(ey-1, max(0, int(y // ech)))
+        if ensure_counts[cy][cx] < ensure_per:
+            orig_idx = int(order[i])
+            ensure_counts[cy][cx] += 1
+            if orig_idx not in selected_set:
+                selected.append(orig_idx)
+                selected_set.add(orig_idx)
+
+        # Early exit if every coarse cell satisfied
+        if all(ensure_counts[r][c] >= ensure_per for r in range(ey) for c in range(ex)):
+            break
+
+    # ---------- Pass B: finer grid buckets to fill remaining slots ----------
+    if max_keep is None or len(selected) < max_keep:
+        # Pre-create gx×gy buckets with per-cell cap
+        cell_w = W / gx
+        cell_h = H / gy
+        buckets = [[[] for _ in range(gx)] for _ in range(gy)]
+
+        for i, (x, y) in enumerate(xy):
+            if max_keep is not None and len(selected) >= max_keep:
+                break
+            orig_idx = int(order[i])
+            if orig_idx in selected_set:
+                continue  # skip already chosen by coarse pass
+            cx = min(gx-1, max(0, int(x // cell_w)))
+            cy = min(gy-1, max(0, int(y // cell_h)))
+            if len(buckets[cy][cx]) < per_cell:
+                buckets[cy][cx].append(orig_idx)
+
+        for row in buckets:
+            for cell in row:
+                for idx in cell:
+                    if max_keep is not None and len(selected) >= max_keep:
+                        break
+                    if idx not in selected_set:
+                        selected.append(idx)
+                        selected_set.add(idx)
+                if max_keep is not None and len(selected) >= max_keep:
+                    break
+
+    return np.array(selected, dtype=np.int64)
+
+
+def _select_blue_noise(xy: np.ndarray, score: np.ndarray, min_sep_px=20, max_keep=None):
+    # Greedy: walk in brightness order, keep if far from all kept.
+    keep = []
+    order = np.argsort(-score)
+    min_sep2 = float(min_sep_px)**2
+    for idx in order:
+        p = xy[idx]
+        ok = True
+        for j in keep:
+            d = p - xy[j]
+            if (d[0]*d[0] + d[1]*d[1]) < min_sep2:
+                ok = False; break
+        if ok:
+            keep.append(idx)
+            if max_keep is not None and len(keep) >= max_keep:
+                break
+    return np.array(keep, dtype=np.int64)
+
+def _gate_image_to_points(img32: np.ndarray, pts_xy: np.ndarray, radius_px=6):
+    """Keep small disks around pts; zero elsewhere, so AA detects only there."""
+    import cv2, numpy as np
+    H, W = img32.shape[:2]
+    mask = np.zeros((H, W), np.uint8)
+    r = max(2, int(radius_px))
+    for (x, y) in pts_xy.astype(int):
+        if 0 <= x < W and 0 <= y < H:
+            cv2.circle(mask, (int(x), int(y)), r, 255, thickness=-1, lineType=cv2.LINE_8)
+    # feather a bit to avoid harsh edges
+    try:
+        mask = cv2.GaussianBlur(mask, (0,0), sigmaX=r/2, sigmaY=r/2, borderType=cv2.BORDER_DEFAULT)
+        mask = (mask.astype(np.float32)/255.0)
+    except Exception:
+        mask = (mask.astype(np.float32)/255.0)
+    out = (img32 * mask).astype(np.float32, copy=False)
+    return out
 
 
 class StarRegistrationWorker(QRunnable):
@@ -1932,78 +2197,152 @@ class StarRegistrationThread(QThread):
                             minarea: int,
                             max_control_points: int | None = None):
         """
-        AA on a ~1.2× center crop; lift matches to full coords; re-estimate requested model.
-        Returns: (kind, X, residual_rms_px, n_inliers)
-        kind in {"affine","homography"} or "affine"/"homography" base if poly fails upstream.
-        For poly3/4 we still return the base model here; finalize does the true residual warp.
+        Residual measurement with the same adaptive ladder as the delta solver.
+        Returns (kind, X, residual_rms_px, n_inliers).
         """
-        import astroalign, cv2
+        import numpy as np, astroalign, cv2
 
-        src = np.ascontiguousarray(src_gray.astype(np.float32))
-        ref = np.ascontiguousarray(ref2d.astype(np.float32))
+        src = np.ascontiguousarray(np.nan_to_num(src_gray, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32))
+        ref = np.ascontiguousarray(np.nan_to_num(ref2d,   nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32))
         Hs, Ws = src.shape[:2]
         Hr, Wr = ref.shape[:2]
 
-        scale = 1.20
-        h = min(int(round(Hs * scale)), Hr)
-        w = min(int(round(Ws * scale)), Wr)
-        y0 = max(0, (Hr - h) // 2)
-        x0 = max(0, (Wr - w) // 2)
-        ref_crop = ref[y0:y0+h, x0:x0+w]
+        # local helper
+        def _center_crop(scale_val):
+            h = min(int(round(Hs * scale_val)), Hr)
+            w = min(int(round(Ws * scale_val)), Wr)
+            y0 = max(0, (Hr - h) // 2)
+            x0 = max(0, (Wr - w) // 2)
+            return (x0, y0, w, h, ref[y0:y0+h, x0:x0+w])
 
-        kwargs = {"detection_sigma": float(det_sigma), "min_area": int(minarea)}
+        # kwargs (may mutate per attempt)
+        base_kwargs = {"detection_sigma": float(det_sigma), "min_area": int(minarea)}
         if max_control_points is not None:
-            kwargs["max_control_points"] = int(max_control_points)
+            base_kwargs["max_control_points"] = int(max_control_points)
 
-        tform, (src_pts_s, tgt_pts_s) = astroalign.find_transform(src, ref_crop, **kwargs)
+        attempts = [
+            (1.20, True, True, det_sigma, minarea),
+            (1.05, True, False, det_sigma, minarea),
+            (1.35, False, False, det_sigma, minarea),
+            (1.20, False, False, max(3.5, det_sigma*0.6), max(3, minarea//2 if minarea>3 else 3)),
+            (1.00, False, False, 3.0, 3),
+            ("FULL", False, False, 3.0, 3),
+        ]
 
-        src_xy = np.asarray(src_pts_s, dtype=np.float32)
-        tgt_xy = np.asarray(tgt_pts_s, dtype=np.float32)
-        tgt_xy[:, 0] += x0   # lift crop -> full ref coords
-        tgt_xy[:, 1] += y0
+        src_xy = tgt_xy = None
+        base_kind = None
+        base_X = None
+        x0 = y0 = 0
 
-        P = np.asarray(tform.params, dtype=np.float64)
-        if P.shape == (3, 3):
-            T  = np.array([[1,0,x0],[0,1,y0],[0,0,1]], dtype=np.float64)
-            base_kind = "homography"
-            base_X    = T @ P
-        else:
-            A3 = np.vstack([P[0:2,:], [0,0,1]])
-            T  = np.array([[1,0,x0],[0,1,y0],[0,0,1]], dtype=np.float64)
-            base_kind = "affine"
-            base_X    = (T @ A3)[0:2, :]
+        for sc, do_spread, do_gate, ds, ma in attempts:
+            kwargs = dict(base_kwargs)
+            kwargs["detection_sigma"] = float(ds)
+            kwargs["min_area"] = int(ma)
 
-        # Re-estimate requested model (RANSAC) with lifted pairs
+            if sc == "FULL":
+                x0 = y0 = 0
+                ref_use = ref
+            else:
+                x0, y0, w, h, ref_use = _center_crop(float(sc))
+
+            # detect
+            xy_ref, s_ref = _detect_star_peaks_sep(ref_use, ds, ma)
+            xy_src, s_src = _detect_star_peaks_sep(src,     ds, ma)
+            if xy_ref.shape[0] < 3 or xy_src.shape[0] < 3:
+                continue
+
+            # simple spread only if large sets
+            if do_spread and xy_ref.shape[0] > 20:
+                idx = _select_grid_spread(
+                    xy_ref, s_ref, hw=ref_use.shape[:2],
+                    grid=(6,6), per_cell=8, max_keep=max_control_points,
+                    ensure_grid=(3,3), ensure_per=1
+                )
+                pts_ref = xy_ref[idx] if idx.size else xy_ref
+                if pts_ref.shape[0] > 20:
+                    idx2 = _select_blue_noise(pts_ref, s_ref[idx] if idx.size else s_ref,
+                                            min_sep_px=18, max_keep=max_control_points)
+                    pts_ref = pts_ref[idx2] if idx2.size else pts_ref
+            else:
+                pts_ref = xy_ref
+
+            if do_gate and pts_ref.shape[0] >= 6:
+                ref_g = _gate_image_to_points(ref_use, pts_ref, radius_px=6)
+                src_g = _gate_image_to_points(src,     xy_src,  radius_px=6) if xy_src.shape[0] >= 6 else src
+            else:
+                ref_g, src_g = ref_use, src
+
+            try:
+                tform, (src_pts_s, tgt_pts_s) = astroalign.find_transform(src_g, ref_g, **kwargs)
+            except TypeError:
+                legacy = {}
+                if "max_control_points" in kwargs:
+                    legacy["max_control_points"] = kwargs["max_control_points"]
+                tform, (src_pts_s, tgt_pts_s) = astroalign.find_transform(src_g, ref_g, **legacy)
+            except Exception:
+                continue
+
+            src_xy = np.asarray(src_pts_s, dtype=np.float32)
+            tgt_xy = np.asarray(tgt_pts_s, dtype=np.float32)
+            tgt_xy[:, 0] += x0
+            tgt_xy[:, 1] += y0
+
+            P = np.asarray(tform.params, dtype=np.float64)
+            if sc == "FULL":
+                if P.shape == (3,3):
+                    base_kind = "homography"
+                    base_X = P
+                else:
+                    base_kind = "affine"
+                    base_X = P[0:2, :]
+            else:
+                if P.shape == (3, 3):
+                    base_kind = "homography"
+                    T  = np.array([[1,0,x0],[0,1,y0],[0,0,1]], dtype=np.float64)
+                    base_X = T @ P
+                else:
+                    base_kind = "affine"
+                    A3 = np.vstack([P[0:2,:], [0,0,1]])
+                    T  = np.array([[1,0,x0],[0,1,y0],[0,0,1]], dtype=np.float64)
+                    base_X = (T @ A3)[0:2, :]
+            break
+
+        if base_X is None or src_xy is None or tgt_xy is None or src_xy.shape[0] < 3:
+            # total failure; report infinite residual so caller can handle
+            return "affine", np.array([[1,0,0],[0,1,0]], np.float64), float("inf"), 0
+
+        # RANSAC refine to requested model
+        model = (str(model) or "affine").lower()
         hth = float(h_reproj)
         if model == "homography":
-            H, inl = cv2.findHomography(src_xy, tgt_xy, cv2.RANSAC, ransacReprojThreshold=hth)
-            if H is None:
-                kind, X = base_kind, base_X
-                inl_mask = None
-            else:
+            H, inl = _cv_findHomography_ransac(src_xy, tgt_xy, rth=hth, maxIters=3000, confidence=0.999)
+            if H is not None:
                 kind, X = "homography", np.asarray(H, np.float64)
-                inl_mask = inl.ravel().astype(bool)
-        elif model == "affine":
-            A, inl = cv2.estimateAffine2D(src_xy, tgt_xy, method=cv2.RANSAC, ransacReprojThreshold=hth)
-            if A is None:
+                inl_mask = inl.ravel().astype(bool) if inl is not None else None
+            else:
                 kind, X = base_kind, base_X
                 inl_mask = None
-            else:
+        elif model == "affine":
+            A, inl = _cv_estimateAffine2D_ransac(src_xy, tgt_xy, rth=hth, maxIters=3000, confidence=0.999)
+            if A is not None:
                 kind, X = "affine", np.asarray(A, np.float64)
-                inl_mask = inl.ravel().astype(bool)
+                inl_mask = inl.ravel().astype(bool) if inl is not None else None
+            else:
+                kind, X = base_kind, base_X
+                inl_mask = None
         else:
-            # poly3/4: we report residual versus the base model here; finalize will apply poly residual warp.
-            kind, X  = base_kind, base_X
+            # poly3/4: caller applies residual warp later; we just return base + residual stats
+            kind, X = base_kind, base_X
             inl_mask = None
 
-        # Compute residual RMS (px) using whichever model we returned
+        # residuals
         if kind == "homography":
             ones = np.ones((src_xy.shape[0], 1), dtype=np.float32)
             P3   = np.hstack([src_xy.astype(np.float32), ones]).T
             Q    = (np.asarray(X, np.float32) @ P3)
             pred = (Q[:2, :] / Q[2:3, :]).T
-        else:  # affine
-            A = np.asarray(X, np.float32).reshape(2, 3)
+        else:
+            A = np.asarray(X, np.float32).reshape(2,3)
             pred = (src_xy @ A[:, :2].T) + A[:, 2]
 
         if inl_mask is not None and inl_mask.sum() >= 10:
@@ -2017,36 +2356,70 @@ class StarRegistrationThread(QThread):
         return kind, X, residual_rms, nin
 
 
+
+
     def _estimate_model_transform(self, src_gray_full: np.ndarray) -> tuple[str, object]:
         """
-        Fast, robust final transform: crop reference to ~1.2× source size (centered),
-        solve on the crop, lift correspondences to FULL reference coords, then
-        re-estimate the requested model (affine/homography or poly3/4). Returns (kind, X).
+        Fast, robust final transform: crop reference to ~1.2× source (centered),
+        AA on gated/selected control points, lift to FULL coords, then re-estimate requested model.
+        Returns (kind, X) where X is 2x3 (affine) or 3x3 (H).
         """
-        ref2d = self.reference_image_2d
-        src = np.ascontiguousarray(src_gray_full.astype(np.float32))
-        ref = np.ascontiguousarray(ref2d.astype(np.float32))
-        Hs, Ws = src.shape[:2]
-        Hr, Wr = ref.shape[:2]
+        import astroalign, cv2, numpy as np
 
-        # ---- 1) center crop the reference to ~1.2× source ----
-        scale = 1.20
-        h = min(int(round(Hs * scale)), Hr)
-        w = min(int(round(Ws * scale)), Wr)
+        # Tunable (local, avoids signature changes elsewhere)
+        GRID = (6, 6)
+        PER_CELL = 8
+        MIN_SEP = 18
+        GATE_R = 6
+        SCALE = 1.20
+
+        ref2d = np.ascontiguousarray(self.reference_image_2d.astype(np.float32))
+        src   = np.ascontiguousarray(src_gray_full.astype(np.float32))
+        Hs, Ws = src.shape[:2]
+        Hr, Wr = ref2d.shape[:2]
+
+        # 1) center crop the reference
+        h = min(int(round(Hs * SCALE)), Hr)
+        w = min(int(round(Ws * SCALE)), Wr)
         y0 = max(0, (Hr - h) // 2)
         x0 = max(0, (Wr - w) // 2)
-        ref_crop = ref[y0:y0+h, x0:x0+w]
+        ref_crop = ref2d[y0:y0+h, x0:x0+w]
 
-        # ---- 2) find_transform on the small pair; lift matches to full coords ----
+        # 2) detect + spread + gate
+        xy_ref, s_ref = _detect_star_peaks_sep(ref_crop, self.det_sigma, self.minarea)
+        xy_src, s_src = _detect_star_peaks_sep(src,      self.det_sigma, self.minarea)
+
+        if xy_ref.shape[0] > 0:
+            idx = _select_grid_spread(
+                xy_ref, s_ref, hw=ref_crop.shape[:2],
+                grid=GRID, per_cell=PER_CELL, max_keep=self.limit_stars,
+                ensure_grid=(3,3), ensure_per=1
+            )
+            pts_ref = xy_ref[idx]
+            if pts_ref.shape[0] > 0 and MIN_SEP > 0:
+                idx2 = _select_blue_noise(pts_ref, s_ref[idx], min_sep_px=MIN_SEP,
+                                        max_keep=self.limit_stars)
+                pts_ref = pts_ref[idx2]
+        else:
+            pts_ref = xy_ref
+
+        if xy_src.shape[0] > 0 and MIN_SEP > 0:
+            idxs = _select_blue_noise(xy_src, s_src, min_sep_px=MIN_SEP, max_keep=None)
+            xy_src = xy_src[idxs]
+
+        ref_crop_g = _gate_image_to_points(ref_crop, pts_ref, radius_px=GATE_R) if pts_ref.shape[0] >= 6 else ref_crop
+        src_g      = _gate_image_to_points(src,      xy_src,  radius_px=GATE_R) if xy_src.shape[0]  >= 6 else src
+
+        # 3) AA on gated images
         with _AA_LOCK:
-            tform, (src_pts_s, tgt_pts_s) = astroalign.find_transform(src, ref_crop)
+            tform, (src_pts_s, tgt_pts_s) = astroalign.find_transform(src_g, ref_crop_g)
 
         src_xy = np.asarray(src_pts_s, dtype=np.float32)
         tgt_xy = np.asarray(tgt_pts_s, dtype=np.float32)
-        tgt_xy[:, 0] += x0   # lift crop -> full
+        tgt_xy[:, 0] += x0
         tgt_xy[:, 1] += y0
 
-        # Build a base full-ref transform from tform.params + crop translation
+        # Base lifted transform
         P = np.asarray(tform.params, dtype=np.float64)
         if P.shape == (3,3):
             base_kind0 = "homography"
@@ -2058,30 +2431,29 @@ class StarRegistrationThread(QThread):
             T  = np.array([[1,0,x0],[0,1,y0],[0,0,1]], dtype=np.float64)
             base_X0 = (T @ A3)[0:2, :]
 
-        # ---- 3) re-estimate requested model using full-coord pairs ----
+        # 4) RANSAC re-estimate requested model on lifted pairs
         model = (self.align_model or "affine").lower()
         h_reproj = float(self.h_reproj)
 
         if model == "homography":
-            H, _ = cv2.findHomography(src_xy, tgt_xy, method=cv2.RANSAC, ransacReprojThreshold=h_reproj)
+            H, _ = _cv_findHomography_ransac(src_xy, tgt_xy, rth=h_reproj, maxIters=3000, confidence=0.999)
             if H is None:
                 base_kind, base_X = base_kind0, base_X0
             else:
                 base_kind, base_X = "homography", np.array(H, dtype=np.float64)
         elif model == "affine":
-            A, _ = cv2.estimateAffine2D(src_xy, tgt_xy, method=cv2.RANSAC, ransacReprojThreshold=h_reproj)
+            A, _ = _cv_estimateAffine2D_ransac(src_xy, tgt_xy, rth=h_reproj, maxIters=3000, confidence=0.999)
             if A is None:
                 base_kind, base_X = base_kind0, base_X0
             else:
                 base_kind, base_X = "affine", np.array(A, dtype=np.float64)
         else:
-            base_kind, base_X = base_kind0, base_X0  # for poly we refine from base
+            base_kind, base_X = base_kind0, base_X0  # poly handled later
 
-        # ---- 4) if not poly, we’re done ----
         if model not in ("poly3", "poly4"):
             return base_kind, base_X
 
-        # ---- 5) poly residual refinement (unchanged logic, but with our pairs) ----
+        # 5) poly residual refinement (unchanged)
         if base_kind == "affine":
             pred_on_ref = _apply_affine_to_pts(base_X, src_xy)
         else:
@@ -2106,7 +2478,7 @@ class StarRegistrationThread(QThread):
 
         order = 3 if model == "poly3" else 4
         t_poly = PolynomialTransform()
-        ok = t_poly.estimate(P_ref_n, P_pred_n, order=order)  # ref_n -> basewarped_n
+        ok = t_poly.estimate(P_ref_n, P_pred_n, order=order)
         if not ok:
             return base_kind, base_X
 
@@ -2154,6 +2526,7 @@ class StarRegistrationThread(QThread):
             return out.astype(np.float32, copy=False)
 
         return f"poly{order}", _warp_poly_residual
+
 
 
 
@@ -2285,7 +2658,6 @@ class StarRegistrationThread(QThread):
 
             from concurrent.futures import ProcessPoolExecutor, as_completed
             procs = max(2, min((os.cpu_count() or 8), 32))
-            self.progress_update.emit(f"Using {procs} processes to measure residuals (model={model}).")
 
             tmpdir = tempfile.mkdtemp(prefix="sas_resid_")
             ref_npy = os.path.join(tmpdir, "ref_small.npy")
@@ -2299,64 +2671,42 @@ class StarRegistrationThread(QThread):
 
             pass_deltas = []
             try:
-                from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
-                import time
-
+                # Build jobs
                 jobs = [
                     (p, ref_npy, model, self.h_reproj, self.det_sigma, self.minarea, self.limit_stars)
                     for p in work_list
                 ]
                 total = len(jobs)
                 done = 0
+                self.progress_step.emit(0, total)  # keep progress bar only
 
-                self.progress_update.emit(f"Using {procs} processes to measure residuals (model={model}).")
-                self.progress_step.emit(0, total)
-
+                # Run without heartbeat chatter
                 with ProcessPoolExecutor(max_workers=procs) as ex:
-                    pending = {ex.submit(_residual_job_worker, j): j[0] for j in jobs}  # future -> ORIGINAL path
-                    last_heartbeat = time.monotonic()
+                    futures = {ex.submit(_residual_job_worker, j): j[0] for j in jobs}  # future -> ORIGINAL path
+                    for fut in as_completed(futures):
+                        orig_pth = os.path.normpath(futures[fut])
+                        try:
+                            pth, rms, err = fut.result()
+                        except Exception as e:
+                            pth, rms, err = (orig_pth, float("inf"), f"Worker crashed: {e}")
 
-                    while pending:
-                        done_set, pending = wait(pending, timeout=0.6, return_when=FIRST_COMPLETED)
-                        # heartbeat if nothing finished for a bit
-                        now = time.monotonic()
-                        if not done_set and (now - last_heartbeat) > 2.0:
-                            self.progress_update.emit(f"… measuring residuals ({done}/{total} done)")
-                            last_heartbeat = now
+                        k_orig = os.path.normpath(pth or orig_pth)
+                        if err:
+                            self.on_worker_error(f"Residual measure failed for {os.path.basename(k_orig)}: {err}")
+                            self.delta_transforms[k_orig] = float("inf")
+                        else:
+                            self.delta_transforms[k_orig] = float(rms)
+                            # 🔊 The ONLY user-facing line we emit during this pass:
+                            self.progress_update.emit(f"[residuals] {os.path.basename(k_orig)} → RMS={rms:.2f}px")
 
-                        for fut in done_set:
-                            orig_pth = os.path.normpath(pending.pop(fut, "<unknown>")) if fut in pending else "<unknown>"
-                            try:
-                                pth, rms, err = fut.result()
-                            except Exception as e:
-                                pth, rms, err = (orig_pth, float("inf"), f"Worker crashed: {e}")
+                        done += 1
+                        self.progress_step.emit(done, total)
 
-                            k_orig = os.path.normpath(pth or orig_pth)
-                            if err:
-                                self.on_worker_error(f"Residual measure failed for {os.path.basename(k_orig)}: {err}")
-                                self.delta_transforms[k_orig] = float("inf")
-                            else:
-                                self.delta_transforms[k_orig] = float(rms)
-                                self.progress_update.emit(
-                                    f"[residuals] {os.path.basename(k_orig)} → RMS={rms:.2f}px"
-                                )
-
-                            done += 1
-                            self.progress_step.emit(done, total)
-                            last_heartbeat = now
-
+                # Persist deltas internally (no extra logging)
                 for orig in self.original_files:
                     pass_deltas.append(self.delta_transforms.get(os.path.normpath(orig), float("inf")))
                 self.transform_deltas.append(pass_deltas)
 
-                preview = ", ".join([f"{d:.2f}" if np.isfinite(d) else "∞" for d in pass_deltas[:10]])
-                if len(pass_deltas) > 10:
-                    preview += f" … ({len(pass_deltas)} total)"
-                self.progress_update.emit(f"Pass {pass_index + 1}: residual RMS px [{preview}]")
-
-                aligned_count = sum(1 for d in pass_deltas if np.isfinite(d) and d <= self.shift_tolerance)
-                if aligned_count:
-                    self.progress_update.emit(f"Within tolerance (≤ {self.shift_tolerance:.2f}px): {aligned_count} frame(s)")
                 return True, "Residual pass complete."
             finally:
                 try: shutil.rmtree(tmpdir, ignore_errors=True)

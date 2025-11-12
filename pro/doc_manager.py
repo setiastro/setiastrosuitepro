@@ -1226,18 +1226,33 @@ class DocManager(QObject):
 
     def duplicate_document(self, source_doc: ImageDocument, new_name: str | None = None) -> ImageDocument:
         img_copy = source_doc.image.copy() if source_doc.image is not None else None
-        meta = dict(source_doc.metadata or {})
 
-        # Give it a nice display name
+        meta = dict(source_doc.metadata or {})
         base = source_doc.display_name()
-        dup_title = new_name or f"{base}_duplicate"
+        dup_title = (new_name or f"{base}_duplicate")
+        # 🚫 strip any lingering emojis / link markers
+        dup_title = dup_title.replace("🔗", "").strip()
         meta["display_name"] = dup_title
 
-        # Fresh document (empty undo/redo)
+        # Remove anything that makes the view look “linked/preview”
+        imi = dict(meta.get("image_meta") or {})
+        for k in ("readonly", "view_kind", "derived_from", "layer", "layer_index", "linked"):
+            imi.pop(k, None)
+        meta["image_meta"] = imi
+        for k in list(meta.keys()):
+            if k.startswith("_roi_") or k.endswith("_roi") or k == "roi":
+                meta.pop(k, None)
+
+        # Safe bit depth / mono flags
+        meta.setdefault("original_format", meta.get("original_format", "fits"))
+        if isinstance(img_copy, np.ndarray):
+            meta["is_mono"] = (img_copy.ndim == 2 or (img_copy.ndim == 3 and img_copy.shape[2] == 1))
+
+        _snapshot_header_for_metadata(meta)
+
         dup = ImageDocument(img_copy, meta, parent=self.parent())
         self._register_doc(dup)
         return dup
-
     #def open_array(self, arr, metadata: dict | None = None, title: str | None = None) -> ImageDocument:
     #    import numpy as np
     ##    if arr is None:
