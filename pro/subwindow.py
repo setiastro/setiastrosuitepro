@@ -112,8 +112,6 @@ class _DragTab(QLabel):
                 self.owner._start_mask_drag()
             elif (mods & Qt.KeyboardModifier.ControlModifier):
                 self.owner._start_astrometry_drag()
-            elif (QApplication.keyboardModifiers() & Qt.KeyboardModifier.AltModifier):   # ← NEW
-                self.owner._start_link_drag()                
             else:
                 self.owner._start_viewstate_drag()
 
@@ -131,6 +129,96 @@ DECORATION_PREFIXES = (
     f"{MASK_GLYPH} ",           # "■ "
     "Active View: ",            # legacy
 )
+
+
+from astropy.wcs import WCS as _AstroWCS
+from astropy.io.fits import Header as _FitsHeader
+
+def build_celestial_wcs(header) -> _AstroWCS | None:
+    """
+    Given a FITS-like header or a dict with FITS keywords, return a *2-D celestial*
+    astropy.wcs.WCS. Returns None if a sane celestial WCS cannot be recovered.
+    Resilient to 3rd axes (RGB/STOKES) and SIP distortions.
+
+    Accepted `header`:
+      * astropy.io.fits.Header
+      * dict of FITS cards (string->value)
+      * dict containing {"FITSKeywords": {NAME: [{value: ..., comment: ...}], ...}}
+    """
+    if header is None:
+        return None
+
+    # (A) If we already got a WCS, try to coerce to celestial
+    if isinstance(header, _AstroWCS):
+        try:
+            wc = getattr(header, "celestial", None)
+            return wc if (wc is not None and getattr(wc, "naxis", 2) == 2) else header
+        except Exception:
+            return header
+
+    # (B) Ensure we have a bona-fide FITS Header
+    hdr_obj = None
+    if isinstance(header, _FitsHeader):
+        hdr_obj = header
+    elif isinstance(header, dict):
+        # XISF-style: {"FITSKeywords": {"CTYPE1":[{"value":"RA---TAN"}], ...}}
+        if "FITSKeywords" in header and isinstance(header["FITSKeywords"], dict):
+            from astropy.io.fits import Header
+            hdr_obj = Header()
+            for k, v in header["FITSKeywords"].items():
+                if isinstance(v, list) and v:
+                    val = v[0].get("value")
+                    com = v[0].get("comment", "")
+                    if val is not None:
+                        try: hdr_obj[str(k)] = (val, com)
+                        except Exception: hdr_obj[str(k)] = val
+                elif v is not None:
+                    try: hdr_obj[str(k)] = v
+                    except Exception: pass
+        else:
+            # Flat dict of FITS-like cards
+            from astropy.io.fits import Header
+            hdr_obj = Header()
+            for k, v in header.items():
+                try: hdr_obj[str(k)] = v
+                except Exception: pass
+
+    if hdr_obj is None:
+        return None
+
+    # (C) Try full WCS first
+    try:
+        w = _AstroWCS(hdr_obj, relax=True)
+        wc = getattr(w, "celestial", None)
+        if wc is not None and getattr(wc, "naxis", 2) == 2:
+            return wc
+        if getattr(w, "has_celestial", False):
+            return w.celestial
+    except Exception:
+        w = None
+
+    # (D) Force a 2-axis interpretation (drop e.g. RGB axis)
+    try:
+        w2 = _AstroWCS(hdr_obj, relax=True, naxis=2)
+        if getattr(w2, "has_celestial", False):
+            return w2.celestial
+    except Exception:
+        pass
+
+    # (E) As a last resort, scrub obvious axis-3 cards and retry
+    try:
+        hdr2 = hdr_obj.copy()
+        for k in ("CTYPE3","CUNIT3","CRVAL3","CRPIX3",
+                  "CD3_1","CD3_2","CD3_3","PC3_1","PC3_2","PC3_3"):
+            if k in hdr2:
+                del hdr2[k]
+        w3 = _AstroWCS(hdr2, relax=True, naxis=2)
+        if getattr(w3, "has_celestial", False):
+            return w3.celestial
+    except Exception:
+        pass
+
+    return None
 
 class ImageSubWindow(QWidget):
     aboutToClose = pyqtSignal(object)
@@ -246,6 +334,21 @@ class ImageSubWindow(QWidget):
         self._btn_redo.setEnabled(False)
         self._btn_redo.clicked.connect(self._on_local_redo)
         row.addWidget(self._btn_redo, 0, Qt.AlignmentFlag.AlignLeft)
+
+        # ── NEW: WCS grid toggle ─────────────────────────────────────────
+        self._btn_wcs = QToolButton(self)
+        self._btn_wcs.setText("⌗")
+        self._btn_wcs.setToolTip("Toggle WCS grid overlay (if WCS exists)")
+        self._btn_wcs.setCheckable(True)
+
+        # Start OFF on every new view, regardless of WCS presence or past sessions
+        self._show_wcs_grid = False
+        self._btn_wcs.setChecked(False)
+
+        self._btn_wcs.toggled.connect(self._on_toggle_wcs_grid)
+        row.addWidget(self._btn_wcs, 0, Qt.AlignmentFlag.AlignLeft)
+        # ─────────────────────────────────────────────────────────────────
+
         row.addStretch(1)
         lyt.addLayout(row)
 
@@ -482,6 +585,10 @@ class ImageSubWindow(QWidget):
         if not from_link:
             self._schedule_emit_view_transform()
 
+    def _on_toggle_wcs_grid(self, on: bool):
+        self._show_wcs_grid = bool(on)
+        QSettings().setValue("display/show_wcs_grid", self._show_wcs_grid)
+        self._render(rebuild=False)  # repaint current frame
 
 
 
@@ -1609,6 +1716,34 @@ class ImageSubWindow(QWidget):
             pass
         self._render(rebuild=True)
 
+    def _deg_to_hms(self, ra_deg: float) -> str:
+        """RA in degrees → 'HH:MM:SS' (rounded secs, with carry)."""
+        ra_h = ra_deg / 15.0
+        hh = int(ra_h) % 24
+        mmf = (ra_h - hh) * 60.0
+        mm = int(mmf)
+        ss = int(round((mmf - mm) * 60.0))
+        if ss == 60:
+            ss = 0; mm += 1
+        if mm == 60:
+            mm = 0; hh = (hh + 1) % 24
+        return f"{hh:02d}:{mm:02d}:{ss:02d}"
+
+    def _deg_to_dms(self, dec_deg: float) -> str:
+        """Dec in degrees → '±DD:MM:SS' (rounded secs, with carry)."""
+        sign = "+" if dec_deg >= 0 else "-"
+        d = abs(dec_deg)
+        dd = int(d)
+        mf = (d - dd) * 60.0
+        mm = int(mf)
+        ss = int(round((mf - mm) * 60.0))
+        if ss == 60:
+            ss = 0; mm += 1
+        if mm == 60:
+            mm = 0; dd += 1
+        return f"{sign}{dd:02d}:{mm:02d}:{ss:02d}"
+
+
     # ---------- rendering ----------
     def _render(self, rebuild: bool = False):
         """
@@ -1735,19 +1870,26 @@ class ImageSubWindow(QWidget):
         # ---------------------------------------
         # 6) Wrap into QImage (keep buffer alive)
         # ---------------------------------------
-        buf8 = np.ascontiguousarray(buf8)
-        h, w, _ = buf8.shape
-        bytes_per_line = buf8.strides[0]
+        buf8 = np.ascontiguousarray(buf8, dtype=np.uint8)
+        h, w, c = buf8.shape
+        # Be explicit. RGB888 means 3 bytes per pixel, full stop.
+        bytes_per_line = int(w * 3)
 
         self._buf8 = buf8  # keep alive
-        try:
 
-            ptr = sip.voidptr(self._buf8.ctypes.data)
+        try:
+            addr = int(self._buf8.ctypes.data)
+            ptr  = sip.voidptr(addr)
             qimg = QImage(ptr, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+            # Defensive: if Qt ever decides the buffer looks wrong, force-copy once
+            if qimg is None or qimg.isNull():
+                raise RuntimeError("QImage null")
         except Exception:
+            # One safe fall-back copy (still fast, avoids crashes)
             buf8c = np.array(self._buf8, copy=True, order="C")
             self._buf8 = buf8c
-            ptr = sip.voidptr(self._buf8.ctypes.data)
+            addr = int(self._buf8.ctypes.data)
+            ptr  = sip.voidptr(addr)
             qimg = QImage(ptr, w, h, bytes_per_line, QImage.Format.Format_RGB888)
 
         self._qimg_src = qimg
@@ -1765,8 +1907,178 @@ class ImageSubWindow(QWidget):
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation
         )
+
+        # ── NEW: WCS grid overlay (draw on the scaled pixmap so lines stay 1px) ──
+        if getattr(self, "_show_wcs_grid", False):
+            wcs2 = self._get_celestial_wcs()
+            if wcs2 is not None:
+                from PyQt6.QtGui import QPainter, QPen, QColor, QFont, QBrush
+                from PyQt6.QtCore import QSettings
+                from astropy.wcs.utils import proj_plane_pixel_scales
+                import numpy as _np
+
+                pm = QPixmap.fromImage(scaled)
+
+                # Read user prefs (fallback to defaults if not set)
+                _settings = getattr(self, "_settings", None) or QSettings()
+                pref_enabled   = _settings.value("wcs_grid/enabled", True, type=bool)
+                pref_mode      = _settings.value("wcs_grid/mode", "auto", type=str)      # "auto" | "fixed"
+                pref_step_unit = _settings.value("wcs_grid/step_unit", "deg", type=str)  # "deg" | "arcmin"
+                pref_step_val  = _settings.value("wcs_grid/step_value", 1.0, type=float)
+
+                if not pref_enabled:
+                    # User disabled the grid in Preferences — skip overlay
+                    self.label.setPixmap(QPixmap.fromImage(scaled))
+                    self.label.resize(scaled.size())
+                    return
+
+                # Pixel scales and FOV using celestial WCS
+                px_scales_deg = proj_plane_pixel_scales(wcs2)  # deg/pix for the two celestial axes
+                px_deg = float(max(px_scales_deg[0], px_scales_deg[1]))
+
+                H_full, W_full = self.document.image.shape[:2]
+                fov_deg = px_deg * float(max(W_full, H_full))
+
+                # Choose grid spacing from prefs (or auto heuristic)
+                if pref_mode == "fixed":
+                    step_deg = float(pref_step_val if pref_step_unit == "deg" else (pref_step_val / 60.0))
+                    step_deg = max(1e-6, min(step_deg, 90.0))  # clamp to sane range
+                else:
+                    # Auto spacing (your previous logic)
+                    nice = [0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30]
+                    target_lines = 8
+                    desired = max(fov_deg / target_lines, px_deg * 100)
+                    step_deg = min((n for n in nice if n >= desired), default=30)
+
+                # World rect from image corners using celestial WCS
+                corners = _np.array([[0, 0], [W_full-1, 0], [0, H_full-1], [W_full-1, H_full-1]], dtype=float)
+                try:
+                    ra_c, dec_c = wcs2.pixel_to_world_values(corners[:,0], corners[:,1])
+                    ra_min = float(_np.nanmin(ra_c));  ra_max = float(_np.nanmax(ra_c))
+                    dec_min = float(_np.nanmin(dec_c)); dec_max = float(_np.nanmax(dec_c))
+                    if ra_max - ra_min > 300:
+                        ra_c_wrapped = _np.mod(ra_c + 180.0, 360.0)
+                        ra_min = float(_np.nanmin(ra_c_wrapped)); ra_max = float(_np.nanmax(ra_c_wrapped))
+                        ra_shift = 180.0
+                    else:
+                        ra_shift = 0.0
+                except Exception:
+                    ra_min, ra_max, dec_min, dec_max, ra_shift = 0.0, 360.0, -90.0, 90.0, 0.0
+
+                p = QPainter(pm)
+                pen = QPen(); pen.setWidth(1); pen.setColor(QColor(255, 255, 255, 140))
+                p.setPen(pen)
+                s = float(self.scale)
+                img_w = int(W_full * s)
+                img_h = int(H_full * s)
+                def draw_world_poly(xs_world, ys_world):
+                    try:
+                        px, py = wcs2.world_to_pixel_values(xs_world, ys_world)
+                    except Exception:
+                        return
+                    for i in range(1, len(px)):
+                        x0 = float(px[i-1]) * s; y0 = float(py[i-1]) * s
+                        x1 = float(px[i])   * s; y1 = float(py[i])   * s
+                        if _np.isfinite([x0,y0,x1,y1]).all():
+                            p.drawLine(int(x0), int(y0), int(x1), int(y1))
+
+                ra_samples = _np.linspace(ra_min, ra_max, 512, dtype=float)
+                ra_samples_wrapped = _np.mod(ra_samples + ra_shift, 360.0) if ra_shift else ra_samples
+                dec_samples = _np.linspace(dec_min, dec_max, 512, dtype=float)
+
+                # DEC lines (horiz-ish)
+                def _frange(a,b,s):
+                    out=[]; x=a
+                    while x <= b + 1e-9:
+                        out.append(x); x += s
+                    return out
+                def _round_to(x,s): return s * round(x/s)
+
+                ra_start  = _round_to(ra_min, step_deg)
+                dec_start = _round_to(dec_min, step_deg)
+                for dec in _frange(dec_start, dec_max, step_deg):
+                    dec_arr = _np.full_like(ra_samples_wrapped, dec)
+                    draw_world_poly(ra_samples_wrapped, dec_arr)
+
+                # RA lines (vert-ish)
+                for ra in _frange(ra_start, ra_max, step_deg):
+                    ra_arr = _np.full_like(dec_samples, (ra + ra_shift) % 360.0)
+                    draw_world_poly(ra_arr, dec_samples)
+
+                # ── LABELS for RA/Dec lines ─────────────────────────────────
+                # Font & box style
+                font = QFont(); font.setPixelSize(11)  # screen-consistent
+                p.setFont(font)
+                text_pen  = QPen(QColor(255, 255, 255, 230))
+                box_brush = QBrush(QColor(0, 0, 0, 140))
+                p.setPen(text_pen)
+
+                def _draw_label(x, y, txt, anchor="lt"):
+                    if not _np.isfinite([x, y]).all():
+                        return
+                    fm = p.fontMetrics()
+                    wtxt = fm.horizontalAdvance(txt) + 6
+                    htxt = fm.height() + 4
+
+                    # initial placement with a little padding
+                    if anchor == "lt":      # left-top
+                        rx, ry = int(x) + 4, int(y) + 3
+                    elif anchor == "rt":    # right-top
+                        rx, ry = int(x) - wtxt - 4, int(y) + 3
+                    elif anchor == "lb":    # left-bottom
+                        rx, ry = int(x) + 4, int(y) - htxt - 3
+                    else:                   # center-top
+                        rx, ry = int(x) - wtxt // 2, int(y) + 3
+
+                    # clamp entirely inside the image
+                    rx = max(0, min(rx, img_w - wtxt - 1))
+                    ry = max(0, min(ry, img_h - htxt - 1))
+
+                    rect = QRect(rx, ry, wtxt, htxt)
+                    p.save()
+                    p.setBrush(box_brush)
+                    p.setPen(Qt.PenStyle.NoPen)
+                    p.drawRoundedRect(rect, 4, 4)
+                    p.restore()
+                    p.drawText(rect.adjusted(3, 2, -3, -2),
+                            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, txt)
+
+                Wf, Hf = float(W_full), float(H_full)
+
+                # DEC labels on left edge
+                for dec in _frange(dec_start, dec_max, step_deg):
+                    try:
+                        x_pix, y_pix = wcs2.world_to_pixel_values((ra_min + ra_shift) % 360.0, dec)
+                        if not _np.isfinite([x_pix, y_pix]).all():
+                            continue
+                        # clamp to image bounds before scaling
+                        x_pix = min(max(x_pix, 0.0), Wf - 1.0)
+                        y_pix = min(max(y_pix, 0.0), Hf - 1.0)
+                        _draw_label(x_pix * s, y_pix * s, self._deg_to_dms(dec), anchor="lt")
+                    except Exception:
+                        pass
+
+                # RA labels on top edge
+                for ra in _frange(ra_start, ra_max, step_deg):
+                    ra_wrapped = (ra + ra_shift) % 360.0
+                    try:
+                        x_pix, y_pix = wcs2.world_to_pixel_values(ra_wrapped, dec_min)
+                        if not _np.isfinite([x_pix, y_pix]).all():
+                            continue
+                        x_pix = min(max(x_pix, 0.0), Wf - 1.0)
+                        y_pix = min(max(y_pix, 0.0), Hf - 1.0)
+                        _draw_label(x_pix * s, y_pix * s, self._deg_to_hms(ra_wrapped), anchor="ct")
+                    except Exception:
+                        pass
+
+                p.end()
+                scaled = pm.toImage()
+
+        # ── end WCS grid overlay ────────────────────────────────────────────────
+
         self.label.setPixmap(QPixmap.fromImage(scaled))
         self.label.resize(scaled.size())
+
 
 
     def has_active_preview(self) -> bool:
@@ -1851,28 +2163,28 @@ class ImageSubWindow(QWidget):
 
         # 0) PREVIEW-SELECT MODE: consume mouse events first so earlier branches don't steal them
         if self._preview_select_mode and is_on_view:
+            vp = self.scroll.viewport()
             if ev.type() == QEvent.Type.MouseButtonPress and ev.button() == Qt.MouseButton.LeftButton:
-                vp_pos = obj.mapTo(self.scroll.viewport(), ev.pos())
+                vp_pos = obj.mapTo(vp, ev.pos())
                 self._rubber_origin = vp_pos
                 if self._rubber is None:
-                    self._rubber = QRubberBand(QRubberBand.Shape.Rectangle, self.scroll.viewport())
+                    self._rubber = QRubberBand(QRubberBand.Shape.Rectangle, vp)
                 self._rubber.setGeometry(QRect(self._rubber_origin, QSize(1, 1)))
                 self._rubber.show()
                 ev.accept(); return True
 
-            if ev.type() == QEvent.Type.MouseMove and self._rubber and self._rubber_origin is not None:
-                vp_pos = obj.mapTo(self.scroll.viewport(), ev.pos())
+            if ev.type() == QEvent.Type.MouseMove and self._rubber is not None and self._rubber_origin is not None:
+                vp_pos = obj.mapTo(vp, ev.pos())
                 rect = QRect(self._rubber_origin, vp_pos).normalized()
                 self._rubber.setGeometry(rect)
                 ev.accept(); return True
 
-            if ev.type() == QEvent.Type.MouseButtonRelease and self._rubber and self._rubber_origin is not None:
-                vp_pos = obj.mapTo(self.scroll.viewport(), ev.pos())
+            if ev.type() == QEvent.Type.MouseButtonRelease and self._rubber is not None and self._rubber_origin is not None:
+                vp_pos = obj.mapTo(vp, ev.pos())
                 rect = QRect(self._rubber_origin, vp_pos).normalized()
                 self._finish_preview_rect(rect)
                 ev.accept(); return True
-            # If in preview mode but not one of the handled events, let others pass through
-            # (no return here)
+            # don’t swallow unrelated events
 
         # 1) Ctrl + wheel → zoom
         if ev.type() == QEvent.Type.Wheel:
@@ -2078,11 +2390,10 @@ class ImageSubWindow(QWidget):
             msg += "   K=?"
 
         # ---- WCS ----
-        wcs = self._extract_wcs_from_doc()
-        if wcs is not None:
+        wcs2 = self._get_celestial_wcs()
+        if wcs2 is not None:
             try:
-                world = wcs.pixel_to_world_values(float(xi), float(yi))
-                ra_deg, dec_deg = float(world[0]), float(world[1])
+                ra_deg, dec_deg = map(float, wcs2.pixel_to_world_values(float(xi), float(yi)))
 
                 # RA
                 ra_h = ra_deg / 15.0
@@ -2131,90 +2442,89 @@ class ImageSubWindow(QWidget):
         arcsec = total_seconds % 60.0
         return f"{sign}{deg:02d}:{arcmin:02d}:{arcsec:05.2f}"
 
+    def _get_celestial_wcs(self):
+        """
+        Return a 2-D celestial WCS to support readouts/overlays.
+        """
+        w = self._extract_wcs_from_doc()
+        if w is None:
+            return None
+        try:
+            wc = getattr(w, "celestial", None)
+            if wc is not None and getattr(wc, "naxis", 2) == 2:
+                return wc
+        except Exception:
+            pass
+        return w
+
     def _extract_wcs_from_doc(self):
         """
-        Try to get an astropy WCS object from the current document.
-        Priority:
-        1) cached on metadata["_astropy_wcs"]
-        2) explicit metadata["wcs"] (already a WCS)
-        3) metadata["original_header"] / ["fits_header"] / ["header"]
-           - FITS Header → WCS(...)
-           - XISF-style dict with FITSKeywords → rebuild Header → WCS(...)
-        Returns WCS or None.
+        Try to get an astropy WCS from the current document or a sensible parent.
+        Caches the resolved WCS on whichever doc we pulled it from.
         """
         doc = getattr(self, "document", None)
         if doc is None:
             return None
 
+        def _try_on_meta(meta: dict):
+            # (1) literal WCS object stored?
+            w = meta.get("wcs")
+            if isinstance(w, _AstroWCS):
+                return w
+            # (2) any header-like thing present?
+            hdr = meta.get("original_header") or meta.get("fits_header") or meta.get("header")
+            return build_celestial_wcs(hdr)
+
+        # 1) current doc (+ cache)
         meta = getattr(doc, "metadata", {}) or {}
+        if "_astropy_wcs" in meta:
+            return meta["_astropy_wcs"]
+        w = _try_on_meta(meta)
+        if w is not None:
+            meta["_astropy_wcs"] = w
+            return w
 
-        # 0) cached
-        cached = meta.get("_astropy_wcs")
-        if cached is not None:
-            return cached
+        # 2) likely parents/sources
+        candidates = []
 
-        # 1) explicit WCS stored there
-        explicit = meta.get("wcs")
-        if explicit is not None:
-            # cache for faster reuse
-            meta["_astropy_wcs"] = explicit
-            return explicit
+        base = getattr(self, "base_document", None)
+        if base is not None and base is not doc:
+            candidates.append(base)
 
-        # We'll need astropy here
-        try:
-            from astropy.io.fits import Header
-            from astropy.wcs import WCS
-        except Exception:
-            return None
-
-        # 2) try to find *any* header-like thing
-        hdr = (
-            meta.get("original_header")
-            or meta.get("fits_header")
-            or meta.get("header")
-        )
-
-        # 2a) it is already an astropy Header
-        if isinstance(hdr, Header):
+        dm = getattr(self, "_docman", None)
+        if dm is not None and hasattr(dm, "get_document_for_view"):
             try:
-                w = WCS(hdr, relax=True)
+                src = dm.get_document_for_view(self)
+                if src is not None and src is not doc and src is not base:
+                    candidates.append(src)
+            except Exception:
+                pass
+
+        src_uid = meta.get("wcs_source_doc_uid") or meta.get("base_doc_uid")
+        if src_uid is not None:
+            try:
+                from pro.doc_manager import DocManager
+                reg = getattr(DocManager, "_global_registry", {})
+                by_uid = reg.get(src_uid)
+                if by_uid and by_uid not in candidates and by_uid is not doc and by_uid is not base:
+                    candidates.append(by_uid)
+            except Exception:
+                pass
+
+        for cand in candidates:
+            m = getattr(cand, "metadata", {}) or {}
+            if "_astropy_wcs" in m:
+                meta["_astropy_wcs"] = m["_astropy_wcs"]
+                return m["_astropy_wcs"]
+            w = _try_on_meta(m)
+            if w is not None:
+                m["_astropy_wcs"] = w
                 meta["_astropy_wcs"] = w
                 return w
-            except Exception:
-                return None
-
-        # 2b) XISF-style dict: look for "FITSKeywords"
-        if isinstance(hdr, dict):
-            fk = hdr.get("FITSKeywords")
-            if fk:
-                # build a temporary FITS header
-                tmp = Header()
-                # XISF often stores like: {"CTYPE1": [{"value": "RA---TAN"}], ...}
-                # so we need to be defensive
-                for key, val in fk.items():
-                    # val can be list[dict] or scalar
-                    if isinstance(val, list) and val:
-                        first = val[0]
-                        v = first.get("value")
-                        c = first.get("comment", "")
-                    else:
-                        v = val
-                        c = ""
-                    if v is None:
-                        continue
-                    try:
-                        tmp[str(key)] = (v, c)
-                    except Exception:
-                        # fallback: at least set the value
-                        tmp[str(key)] = v
-                try:
-                    w = WCS(tmp, relax=True)
-                    meta["_astropy_wcs"] = w
-                    return w
-                except Exception:
-                    return None
 
         return None
+
+
   
     def mouseMoveEvent(self, e):
         # While defining preview ROI, let the eventFilter drive the QRubberBand

@@ -183,12 +183,16 @@ class GhsDialogPro(QDialog):
         # LP/HP protection: blend toward identity (vp == up)
         LP = self.sLP.value()/360.0
         HP = self.sHP.value()/360.0
+
         if LP > 0:
             m = up <= SP
             vp[m] = (1.0 - LP)*vp[m] + LP*up[m]
         if HP > 0:
             m = up >= SP
             vp[m] = (1.0 - HP)*vp[m] + HP*up[m]
+
+        self.labLP.setText(f"{LP:.2f}")
+        self.labHP.setText(f"{HP:.2f}")
 
         # gamma lift
         if abs(g - 1.0) > 1e-6:

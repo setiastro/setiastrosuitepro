@@ -1617,23 +1617,6 @@ class CurvesDialogPro(QDialog):
         # no auto (0,0)/(1,1) here
         return [(float(np.clip(x, 0, 1)), float(np.clip(y, 0, 1))) for (x, y) in out]
 
-    def _apply_preset_dict(self, preset: dict):
-        # set mode
-        want = _norm_mode(preset.get("mode"))
-        for b in self.mode_group.buttons():
-            if b.text().lower() == want.lower():
-                b.setChecked(True); break
-
-        # set handles from points_norm (strip endpoints)
-        ptsN = preset.get("points_norm")
-        if isinstance(ptsN, (list, tuple)) and len(ptsN) >= 2:
-            # convert to scene coordinates and remove endpoints
-            pts_scene = _points_norm_to_scene(ptsN)
-            filt = [(x,y) for (x,y) in pts_scene if x > 1e-6 and x < 360.0 - 1e-6]
-            self.editor.setControlHandles(filt)
-            self._quick_preview()
-            self._set_status(f"Preset: {preset.get('name','(custom)')}")
-
     def _save_current_as_preset(self):
         # get name
         name, ok = QInputDialog.getText(self, "Save Curves Preset", "Preset name:")
@@ -2216,38 +2199,46 @@ class CurvesDialogPro(QDialog):
         return p
 
     def _apply_preset_dict(self, preset: dict):
-        # set mode radio
-        want = _norm_mode((preset or {}).get("mode"))
+        preset = preset or {}
+
+        # 1) set mode radio
+        want = _norm_mode(preset.get("mode"))
         for b in self.mode_group.buttons():
             if b.text().lower() == want.lower():
                 b.setChecked(True)
                 break
 
-        # get points_norm — if absent, build from shape/amount
-        ptsN = (preset or {}).get("points_norm")
+        # 2) get points_norm — if absent, build from shape/amount (built-ins)
+        ptsN = preset.get("points_norm")
+        shape = preset.get("shape")  # may be None for custom presets
+        amount = float(preset.get("amount", 1.0))
+
         if not (isinstance(ptsN, (list, tuple)) and len(ptsN) >= 2):
-            shape  = (preset or {}).get("shape", "linear")
-            amount = float((preset or {}).get("amount", 1.0))
             try:
-                # already imported at top from pro.curves_preset
-                ptsN = _shape_points_norm(str(shape), amount)
+                # build from a named shape (built-ins); default to linear
+                ptsN = _shape_points_norm(str(shape or "linear"), amount)
             except Exception:
                 ptsN = [(0.0, 0.0), (1.0, 1.0)]  # safe fallback
 
-        # apply handles to the editor (strip exact endpoints)
+        # 3) apply handles to the editor (strip exact endpoints)
         pts_scene = _points_norm_to_scene(ptsN)
-        filt = [(x, y) for (x, y) in pts_scene if x > 1e-6 and x < 360.0 - 1e-6]
+        filt = [(x, y) for (x, y) in pts_scene if 1e-6 < x < 360.0 - 1e-6]
 
-        # optional: clear symmetry helper when switching presets
         if hasattr(self.editor, "clearSymmetryLine"):
             self.editor.clearSymmetryLine()
 
         self.editor.setControlHandles(filt)
         self.editor.updateCurve()   # ensure redraw
+
+        # persist into store & refresh
         self._curves_store[self._current_mode_key] = self._editor_points_norm()
         self._refresh_overlays()
         self._quick_preview()
-        self._set_status(f"Preset: {preset.get('name', '(built-in)')}  [{shape}]")
+
+        # 4) status: don’t assume shape exists
+        shape_tag = f"[{shape}]" if shape else "[custom]"
+        self._set_status(f"Preset: {preset.get('name', '(built-in)')}  {shape_tag}")
+
 
 def apply_curves_ops(doc, op: dict):
     """
