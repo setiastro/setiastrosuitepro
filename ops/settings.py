@@ -22,7 +22,6 @@ class SettingsDialog(QDialog):
         self.le_starnet  = QLineEdit()
         self.le_astap    = QLineEdit()
 
-        # ---- Updates (SASpro) ----
         self.chk_updates_startup = QCheckBox("Check for updates on startup")
         self.chk_updates_startup.setChecked(
             self.settings.value("updates/check_on_startup", True, type=bool)
@@ -46,13 +45,13 @@ class SettingsDialog(QDialog):
             )
         )
 
-        # Optional: “Check Now…” button (only shown if the parent has the method)
+        # Optional: “Check Now…” button
         self.btn_check_now = QPushButton("Check Now…")
         self.btn_check_now.setToolTip("Run an update check immediately")
         self.btn_check_now.setVisible(hasattr(parent, "_check_for_updates_async"))
         self.btn_check_now.clicked.connect(self._check_updates_now_clicked)
 
-        # Build the updates URL row (used later in the right column)
+        # Build the updates URL row ONCE (we'll insert it later on the right column)
         row_updates_url = QHBoxLayout()
         row_updates_url.addWidget(self.le_updates_url, 1)
         row_updates_url.addWidget(btn_reset_updates_url)
@@ -64,7 +63,6 @@ class SettingsDialog(QDialog):
         )
 
         self.cb_theme = QComboBox()
-        self.cb_theme.clear()
         self.cb_theme.addItems(["Dark", "Light", "System"])
         theme_val = (self.settings.value("ui/theme", "system", type=str) or "system").lower()
         self.cb_theme.setCurrentIndex({"dark": 0, "light": 1, "system": 2}.get(theme_val, 2))
@@ -88,7 +86,7 @@ class SettingsDialog(QDialog):
         self.le_astrometry.setEchoMode(QLineEdit.EchoMode.Password)
         self.le_astrometry.setText(self.settings.value("api/astrometry_key", "", type=str))
 
-        # ---- NEW: What's In My Sky (WIMS) defaults ----
+        # ---- WIMS defaults ----
         self.sp_lat = QDoubleSpinBox();  self.sp_lat.setRange(-90.0, 90.0);       self.sp_lat.setDecimals(6)
         self.sp_lon = QDoubleSpinBox();  self.sp_lon.setRange(-180.0, 180.0);     self.sp_lon.setDecimals(6)
         self.le_date = QLineEdit()   # YYYY-MM-DD
@@ -97,35 +95,29 @@ class SettingsDialog(QDialog):
         self.sp_min_alt = QDoubleSpinBox(); self.sp_min_alt.setRange(0.0, 90.0);  self.sp_min_alt.setDecimals(1)
         self.sp_obj_limit = QSpinBox(); self.sp_obj_limit.setRange(1, 1000)
 
-        # Load existing values (defaults match your WIMS load_settings)
         self.sp_lat.setValue(self.settings.value("latitude", 0.0, type=float))
         self.sp_lon.setValue(self.settings.value("longitude", 0.0, type=float))
         self.le_date.setText(self.settings.value("date", "", type=str) or "")
         self.le_time.setText(self.settings.value("time", "", type=str) or "")
         tz_val = self.settings.value("timezone", "UTC", type=str) or "UTC"
-        idx = max(0, self.cb_tz.findText(tz_val))
-        self.cb_tz.setCurrentIndex(idx)
+        idx = max(0, self.cb_tz.findText(tz_val)); self.cb_tz.setCurrentIndex(idx)
         self.sp_min_alt.setValue(self.settings.value("min_altitude", 0.0, type=float))
         self.sp_obj_limit.setValue(self.settings.value("object_limit", 100, type=int))
 
         self.chk_autostretch_16bit = QCheckBox("High-quality autostretch (16-bit; better gradients)")
-        self.chk_autostretch_16bit.setToolTip(
-            "When enabled, autostretch computes on a 16-bit histogram for smooth tones (slightly slower)."
-        )
+        self.chk_autostretch_16bit.setToolTip("Compute autostretch on a 16-bit histogram (smoother gradients).")
         self.chk_autostretch_16bit.setChecked(
             self.settings.value("display/autostretch_16bit", True, type=bool)
         )
 
-        # ---- Layout (two columns, no scroll) ----
+        # ─────────────────────────────────────────────────────────────────────
+        # LAYOUT MUST EXIST BEFORE ANY addRow(...) — build it here
+        # ─────────────────────────────────────────────────────────────────────
         root = QVBoxLayout(self)
-
-        cols = QHBoxLayout()
-        root.addLayout(cols)
+        cols = QHBoxLayout(); root.addLayout(cols)
 
         left_col  = QFormLayout()
         right_col = QFormLayout()
-
-        # keep forms tidy and top-aligned
         for f in (left_col, right_col):
             f.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
             f.setRowWrapPolicy(QFormLayout.RowWrapPolicy.DontWrapRows)
@@ -137,24 +129,15 @@ class SettingsDialog(QDialog):
 
         # ---- Left column: Paths & Integrations ----
         left_col.addRow(QLabel("<b>Paths & Integrations</b>"))
-
-        w = QWidget(); w.setLayout(row_grax)
-        left_col.addRow("GraXpert executable:", w)
-
-        w = QWidget(); w.setLayout(row_ccl)
-        left_col.addRow("Cosmic Clarity folder:", w)
-
-        w = QWidget(); w.setLayout(row_star)
-        left_col.addRow("StarNet executable:", w)
-
-        w = QWidget(); w.setLayout(row_astap)
-        left_col.addRow("ASTAP executable:", w)
-
+        w = QWidget(); w.setLayout(row_grax);  left_col.addRow("GraXpert executable:", w)
+        w = QWidget(); w.setLayout(row_ccl);   left_col.addRow("Cosmic Clarity folder:", w)
+        w = QWidget(); w.setLayout(row_star);  left_col.addRow("StarNet executable:", w)
+        w = QWidget(); w.setLayout(row_astap); left_col.addRow("ASTAP executable:", w)
         left_col.addRow("Astrometry.net API key:", self.le_astrometry)
         left_col.addRow(self.chk_save_shortcuts)
         left_col.addRow("Theme:", self.cb_theme)
 
-        # ---- Right column: WIMS + Updates + Display ----
+        # ---- Right column: WIMS + RA/Dec + Updates + Display ----
         right_col.addRow(QLabel("<b>What's In My Sky — Defaults</b>"))
         right_col.addRow("Latitude (°):", self.sp_lat)
         right_col.addRow("Longitude (°):", self.sp_lon)
@@ -164,16 +147,47 @@ class SettingsDialog(QDialog):
         right_col.addRow("Min Altitude (°):", self.sp_min_alt)
         right_col.addRow("Object Limit:", self.sp_obj_limit)
 
+        # ---- RA/Dec Overlay ----
+        right_col.addRow(QLabel("<b>RA/Dec Overlay</b>"))
+        self.chk_wcs_enabled = QCheckBox("Show RA/Dec grid")
+        self.chk_wcs_enabled.setChecked(self.settings.value("wcs_grid/enabled", True, type=bool))
+        right_col.addRow(self.chk_wcs_enabled)
+
+        self.cb_wcs_mode = QComboBox(); self.cb_wcs_mode.addItems(["Auto", "Fixed spacing"])
+        self.cb_wcs_mode.setCurrentIndex(
+            0 if (self.settings.value("wcs_grid/mode", "auto", type=str) == "auto") else 1
+        )
+
+        self.cb_wcs_unit = QComboBox(); self.cb_wcs_unit.addItems(["deg", "arcmin"])
+        self.cb_wcs_unit.setCurrentIndex(
+            0 if (self.settings.value("wcs_grid/step_unit", "deg", type=str) == "deg") else 1
+        )
+
+        self.sp_wcs_step = QDoubleSpinBox()
+        self.sp_wcs_step.setDecimals(3); self.sp_wcs_step.setRange(0.001, 90.0)
+        self.sp_wcs_step.setValue(self.settings.value("wcs_grid/step_value", 1.0, type=float))
+        self.sp_wcs_step.setEnabled(self.cb_wcs_mode.currentIndex() == 1)
+
+        def _sync_suffix():
+            self.sp_wcs_step.setSuffix(" °" if self.cb_wcs_unit.currentIndex() == 0 else " arcmin")
+        _sync_suffix()
+        self.cb_wcs_unit.currentIndexChanged.connect(_sync_suffix)
+        self.cb_wcs_mode.currentIndexChanged.connect(lambda i: self.sp_wcs_step.setEnabled(i == 1))
+
+        row_wcs = QHBoxLayout()
+        row_wcs.addWidget(QLabel("Mode:")); row_wcs.addWidget(self.cb_wcs_mode)
+        row_wcs.addSpacing(8)
+        row_wcs.addWidget(QLabel("Step:")); row_wcs.addWidget(self.sp_wcs_step, 1); row_wcs.addWidget(self.cb_wcs_unit)
+        _w = QWidget(); _w.setLayout(row_wcs)
+        right_col.addRow(_w)
+
+        # ---- Updates ----
         right_col.addRow(QLabel("<b>Updates</b>"))
         right_col.addRow(self.chk_updates_startup)
-
-        row_updates_url = QHBoxLayout()
-        row_updates_url.addWidget(self.le_updates_url, 1)
-        row_updates_url.addWidget(btn_reset_updates_url)
-        row_updates_url.addWidget(self.btn_check_now)
         w = QWidget(); w.setLayout(row_updates_url)
         right_col.addRow("Updates JSON URL:", w)
 
+        # ---- Display ----
         right_col.addRow(QLabel("<b>Display</b>"))
         right_col.addRow(self.chk_autostretch_16bit)
 
@@ -184,6 +198,7 @@ class SettingsDialog(QDialog):
         btns.accepted.connect(self._save_and_accept)
         btns.rejected.connect(self.reject)
         root.addWidget(btns)
+
 
     # ----------------- helpers -----------------
     def _browse_into(self, lineedit: QLineEdit):
@@ -226,6 +241,13 @@ class SettingsDialog(QDialog):
         self.settings.setValue("timezone", self.cb_tz.currentText())
         self.settings.setValue("min_altitude", float(self.sp_min_alt.value()))
         self.settings.setValue("object_limit", int(self.sp_obj_limit.value()))
+
+        # RA/Dec Overlay
+        self.settings.setValue("wcs_grid/enabled", self.chk_wcs_enabled.isChecked())
+        self.settings.setValue("wcs_grid/mode", "auto" if self.cb_wcs_mode.currentIndex() == 0 else "fixed")
+        self.settings.setValue("wcs_grid/step_unit", "deg" if self.cb_wcs_unit.currentIndex() == 0 else "arcmin")
+        self.settings.setValue("wcs_grid/step_value", float(self.sp_wcs_step.value()))
+
 
         # Updates + Display
         self.settings.setValue("updates/check_on_startup", self.chk_updates_startup.isChecked())
