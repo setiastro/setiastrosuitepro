@@ -307,7 +307,7 @@ from pro.log_bus import LogBus
 from imageops.mdi_snap import MdiSnapController
 
 
-VERSION = "1.4.12"
+VERSION = "1.4.13"
 
 
 
