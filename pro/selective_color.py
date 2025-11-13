@@ -483,6 +483,11 @@ class SelectiveColorCorrection(QDialog):
         self.dd_preset.setCurrentText("Red")
         self._setting_preset = False
         self._recompute_mask_and_preview()
+        self._panning = False
+        self._pan_start_pos = None       # QPointF in label coords
+        self._pan_start_scroll = (0, 0)  # (hval, vval)    
+        self._pan_deadzone = 1   
+        self._pan_start_pos_vp = None 
 
     # ------------- UI -------------
     def _build_ui(self):
@@ -729,6 +734,16 @@ class SelectiveColorCorrection(QDialog):
         zoom_row.addStretch(1)
         right.addLayout(zoom_row)
 
+        self.lbl_help = QLabel(
+            "🖱️ <b>Click</b>: pick hue  &nbsp;•&nbsp; "
+            "<b>Ctrl + Click & Drag</b>: pan  &nbsp;•&nbsp; "
+            "<b>Ctrl + Wheel</b>: zoom"
+        )
+        self.lbl_help.setWordWrap(True)
+        self.lbl_help.setTextFormat(Qt.TextFormat.RichText)
+        self.lbl_help.setStyleSheet("color: #888; font-size: 11px;")
+        right.addWidget(self.lbl_help)
+
         # Preview scroller
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(False)
@@ -737,6 +752,19 @@ class SelectiveColorCorrection(QDialog):
         self.lbl_preview.setMinimumSize(10, 10)
         self.scroll.setWidget(self.lbl_preview)
         right.addWidget(self.scroll, 1)
+
+        vp = self.scroll.viewport()
+        vp.setMouseTracking(True)
+        vp.installEventFilter(self)
+
+        self.lbl_preview.setToolTip(
+            "Click to sample hue.\n"
+            "Ctrl + Click & Drag to pan.\n"
+            "Ctrl + Mouse Wheel to zoom."
+        )
+        self.btn_zoom_in.setToolTip("Zoom in (centers view)")
+        self.btn_zoom_out.setToolTip("Zoom out (centers view)")
+        self.btn_zoom_1.setToolTip("Reset zoom to 1:1")
 
         # Hue readout
         self.lbl_hue_readout = QLabel("Picked hue: —")
@@ -776,20 +804,22 @@ class SelectiveColorCorrection(QDialog):
 
         # Zoom behavior
         self._zoom = 1.0
-        def _apply_zoom(z):
-            self._zoom = max(0.05, min(16.0, float(z)))
-            self._update_preview_pixmap()
-        self.btn_zoom_in.clicked.connect(lambda: _apply_zoom(self._zoom * 1.25))
-        self.btn_zoom_out.clicked.connect(lambda: _apply_zoom(self._zoom / 1.25))
-        self.btn_zoom_1.clicked.connect(lambda: _apply_zoom(1.0))
 
-        def _wheel(ev):
+
+        self.btn_zoom_in.clicked.connect(lambda: self._apply_zoom(self._zoom * 1.25, None))
+        self.btn_zoom_out.clicked.connect(lambda: self._apply_zoom(self._zoom / 1.25, None))
+        self.btn_zoom_1.clicked.connect(lambda: self._apply_zoom(1.0, None))
+
+        # Ctrl+wheel: zoom around mouse position (label coords)
+        def _wheel_event(ev):
             if ev.modifiers() & Qt.KeyboardModifier.ControlModifier:
-                _apply_zoom(self._zoom * (1.25 if ev.angleDelta().y() > 0 else 1/1.25))
+                factor = 1.25 if ev.angleDelta().y() > 0 else 1/1.25
+                self._apply_zoom(self._zoom * factor, anchor_label_pos=ev.position())
                 ev.accept()
-                return True
-            return False
-        self.lbl_preview.wheelEvent = lambda ev: (_wheel(ev) or QLabel.wheelEvent(self.lbl_preview, ev))
+                return
+            QLabel.wheelEvent(self.lbl_preview, ev)
+
+        self.lbl_preview.wheelEvent = _wheel_event
 
         # Preview interactions
         self.lbl_preview.setMouseTracking(True)
@@ -797,6 +827,84 @@ class SelectiveColorCorrection(QDialog):
 
         # First paint
         self._update_preview_pixmap()
+
+    # --- Zoom helpers ----------------------------------------------------
+    def _current_scroll(self):
+        hbar = self.scroll.horizontalScrollBar()
+        vbar = self.scroll.verticalScrollBar()
+        return hbar.value(), vbar.value(), hbar.maximum(), vbar.maximum()
+
+    def _set_scroll(self, x, y):
+        hbar = self.scroll.horizontalScrollBar()
+        vbar = self.scroll.verticalScrollBar()
+        hbar.setValue(int(max(0, min(x, hbar.maximum()))))
+        vbar.setValue(int(max(0, min(y, vbar.maximum()))))
+
+    def _apply_zoom(self, new_zoom: float, anchor_label_pos=None):
+        """
+        new_zoom: float
+        anchor_label_pos: QPointF in *label (content)* coords to keep fixed on screen.
+                        If None, use viewport center.
+        """
+        old_zoom = getattr(self, "_zoom", 1.0)
+        new_zoom = max(0.05, min(16.0, float(new_zoom)))
+        if abs(new_zoom - old_zoom) < 1e-6:
+            return
+
+        # Figure out the anchor (content coords)
+        if anchor_label_pos is None:
+            # viewport center → content coords
+            sx, sy, _, _ = self._current_scroll()
+            vp = self.scroll.viewport().rect()
+            cx = (sx + vp.width()  / 2.0) / max(old_zoom, 1e-9)
+            cy = (sy + vp.height() / 2.0) / max(old_zoom, 1e-9)
+        else:
+            cx = float(anchor_label_pos.x()) / max(1.0, 1.0)  # label coords already in content space
+            cy = float(anchor_label_pos.y()) / max(1.0, 1.0)
+
+        # Where is that content point on the viewport *before* zoom?
+        sx, sy, _, _ = self._current_scroll()
+        vp = self.scroll.viewport().rect()
+        pvx = cx * old_zoom - sx   # pixel pos in viewport
+        pvy = cy * old_zoom - sy
+
+        # Apply zoom and repaint
+        self._zoom = new_zoom
+        self._update_preview_pixmap()
+
+        # Set scroll so that the same content point stays at the same viewport pixel
+        nx = cx * new_zoom - pvx
+        ny = cy * new_zoom - pvy
+        self._set_scroll(nx, ny)
+
+    # --- Pan helpers -----------------------------------------------------
+    def _begin_pan(self, pos_label):
+        self._panning = True
+        self._pan_start_pos = pos_label
+        hbar = self.scroll.horizontalScrollBar()
+        vbar = self.scroll.verticalScrollBar()
+        self._pan_start_scroll = (hbar.value(), vbar.value())
+        try:
+            self.lbl_preview.setCursor(Qt.CursorShape.ClosedHandCursor)
+        except Exception:
+            pass
+
+    def _update_pan(self, pos_label):
+        if not self._panning or self._pan_start_pos is None:
+            return
+        dx = pos_label.x() - self._pan_start_pos.x()  # label pixels
+        dy = pos_label.y() - self._pan_start_pos.y()
+        sx0, sy0 = self._pan_start_scroll
+        # invert to move content with the mouse
+        self._set_scroll(sx0 - dx, sy0 - dy)
+
+    def _end_pan(self):
+        self._panning = False
+        self._pan_start_pos = None
+        try:
+            self.lbl_preview.setCursor(Qt.CursorShape.ArrowCursor)
+        except Exception:
+            pass
 
 
     def _update_color_mode_enabled(self):
@@ -941,26 +1049,61 @@ class SelectiveColorCorrection(QDialog):
 
     def eventFilter(self, obj, ev):
         from PyQt6.QtCore import QEvent, Qt
+
+        # Helper: get event position in *viewport* coords regardless of target
+        def _pos_in_viewport(o, e):
+            if o is self.scroll.viewport():
+                return e.position()  # already viewport coords (QPointF)
+            # map label-local → viewport
+            return self.lbl_preview.mapTo(self.scroll.viewport(), e.position().toPoint())
+
+        # --- PANNING (Ctrl + LMB) on viewport *or* label ---
+        if obj in (self.scroll.viewport(), self.lbl_preview):
+            if ev.type() == QEvent.Type.MouseButtonPress:
+                if (ev.button() == Qt.MouseButton.LeftButton and
+                    ev.modifiers() & Qt.KeyboardModifier.ControlModifier):
+                    self._panning = True
+                    self._pan_start_pos_vp = _pos_in_viewport(obj, ev)
+                    hbar = self.scroll.horizontalScrollBar()
+                    vbar = self.scroll.verticalScrollBar()
+                    self._pan_start_scroll = (hbar.value(), vbar.value())
+                    self.scroll.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
+                    return True
+
+            elif ev.type() == QEvent.Type.MouseMove and self._panning:
+                cur = _pos_in_viewport(obj, ev)
+                dx = cur.x() - self._pan_start_pos_vp.x()
+                dy = cur.y() - self._pan_start_pos_vp.y()
+                if abs(dx) > self._pan_deadzone or abs(dy) > self._pan_deadzone:
+                    hbar = self.scroll.horizontalScrollBar()
+                    vbar = self.scroll.verticalScrollBar()
+                    hbar.setValue(int(self._pan_start_scroll[0] - dx))
+                    vbar.setValue(int(self._pan_start_scroll[1] - dy))
+                return True
+
+            elif ev.type() in (QEvent.Type.MouseButtonRelease, QEvent.Type.Leave):
+                if self._panning:
+                    self._panning = False
+                    self.scroll.viewport().setCursor(Qt.CursorShape.ArrowCursor)
+                    return True
+
+        # --- Hue pick (plain click) on the label only ---
         if obj is self.lbl_preview and ev.type() == QEvent.Type.MouseButtonPress:
+            if ev.modifiers() & Qt.KeyboardModifier.ControlModifier:
+                return True  # Ctrl is for panning; let pan branch handle it
             pt = self._map_label_point_to_image_xy(ev.position())
             if pt is not None:
                 x, y = pt
                 hue = self._sample_hue_deg_from_base(x, y)
                 if hue is not None:
-                    # show marker on wheel and text readout
                     self.hue_wheel.setPickedHue(hue)
                     self.lbl_hue_readout.setText(f"Picked hue: {hue:.1f}°")
-
-                    # Optional: Shift-click to set range centered on the hue (±15°)
                     if ev.modifiers() & Qt.KeyboardModifier.ShiftModifier:
                         half = 15
-                        start = int((hue - half) % 360)
-                        end   = int((hue + half) % 360)
-                        # this updates sliders & preview via our sync wiring
-                        self.hue_wheel.setRange(start, end)
+                        self.hue_wheel.setRange(int((hue-half) % 360), int((hue+half) % 360))
             return True
-        return super().eventFilter(obj, ev)
 
+        return super().eventFilter(obj, ev)
 
     def _slider_row(self, grid: QGridLayout, name: str, row: int) -> QDoubleSpinBox:
         grid.addWidget(QLabel(name), row, 0)
