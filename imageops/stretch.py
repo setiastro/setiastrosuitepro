@@ -40,22 +40,67 @@ except Exception:
 
 
 # ---- Optional curves boost (gentle S-curve) ----
-def apply_curves_adjustment(img: np.ndarray, target_median: float, strength: float) -> np.ndarray:
+def apply_curves_adjustment(image: np.ndarray,
+                            target_median: float,
+                            curves_boost: float) -> np.ndarray:
     """
-    strength ∈ [0,1]. 0=no change, 1=strong S-curve centered ~ target_median.
+    curves_boost ∈ [0,1]. 0 = no change, 1 = strong S-curve.
+
+    This reproduces the original Statistical Stretch curves behavior:
+    we build a 1D curve from 6 control points and apply it as a
+    piecewise-linear LUT over [0,1].
     """
-    if strength <= 0:
-        return img
+    # No curve? Just return as-is (but float32 / clipped)
+    if curves_boost <= 0.0:
+        return np.clip(image, 0.0, 1.0).astype(np.float32, copy=False)
 
-    x = np.clip(img, 0.0, 1.0).astype(np.float32, copy=False)
-    m = float(target_median)
-    k = 8.0 * float(strength)  # steepness
+    img = np.clip(image.astype(np.float32, copy=False), 0.0, 1.0)
 
-    # smoothstep-ish curve centered at m
-    s = 1.0 / (1.0 + np.exp(-k * (x - m)))  # 0..1
-    # Normalize so s(m) ~ 0.5 and blend with identity
-    out = (1.0 - strength) * x + strength * s
-    return out.astype(np.float32, copy=False)
+    tm = float(target_median)
+    cb = float(curves_boost)
+
+    # These match your original formula
+    p3x = 0.25 * (1.0 - tm) + tm
+    p4x = 0.75 * (1.0 - tm) + tm
+    p3y = p3x ** (1.0 - cb)
+    p4y = (p4x ** (1.0 - cb)) ** (1.0 - cb)
+
+    # Original 6-point curve
+    xvals = np.array([
+        0.0,
+        0.5 * tm,
+        tm,
+        p3x,
+        p4x,
+        1.0
+    ], dtype=np.float32)
+
+    yvals = np.array([
+        0.0,
+        0.5 * tm,
+        tm,
+        p3y,
+        p4y,
+        1.0
+    ], dtype=np.float32)
+
+    # Apply the 1D LUT per channel using np.interp (piecewise linear)
+    if img.ndim == 2:
+        flat = img.ravel()
+        out = np.interp(flat, xvals, yvals).reshape(img.shape).astype(np.float32)
+    elif img.ndim == 3 and img.shape[2] in (3, 4):
+        h, w, c = img.shape
+        out = np.empty_like(img, dtype=np.float32)
+        # Apply same curve to each color channel
+        for ch in range(c):
+            flat = img[..., ch].ravel()
+            out[..., ch] = np.interp(flat, xvals, yvals).reshape(h, w)
+    else:
+        # Fallback: just return clamped image
+        out = img
+
+    return np.clip(out, 0.0, 1.0)
+
 
 
 # ---- Public API used by Pro ----
