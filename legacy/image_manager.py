@@ -7,9 +7,15 @@ from typing import Optional, Dict
 import numpy as np
 from PIL import Image
 import tifffile as tiff
-from astropy.io import fits
-# add this near your other optional imports
 
+# add this near your other optional imports
+from astropy.io import fits
+try:
+    from astropy.io.fits.verify import VerifyError
+except Exception:
+    # Fallback for older Astropy – we'll just treat it as a generic Exception
+    class VerifyError(Exception):
+        pass
 
 try:
     import rawpy
@@ -1423,7 +1429,41 @@ def save_image(img_array,
                     del fits_header["NAXIS3"]
 
             hdu = fits.PrimaryHDU(data_to_write, header=fits_header)
-            hdu.writeto(filename, overwrite=True)
+
+            # Try to write; if Astropy complains about an invalid card (e.g. TELESCOP),
+            # try to auto-fix the header and retry once.
+            try:
+                hdu.writeto(filename, overwrite=True)
+            except VerifyError as ve:
+                print(f"FITS header verify error while saving {filename}: {ve}")
+                print("Attempting header auto-fix via hdu.verify('fix')...")
+
+                try:
+                    # Let Astropy attempt to repair bad cards in-place
+                    hdu.verify('fix')
+                except Exception as ve2:
+                    print(f"hdu.verify('fix') failed: {ve2}. "
+                          "Attempting to drop invalid cards manually.")
+
+                    # Brutal but safe: remove any cards that still can't be stringified
+                    bad_keys = []
+                    for card in list(hdu.header.cards):
+                        try:
+                            # This will trigger any parsing/verification for the card
+                            _ = str(card)
+                        except Exception:
+                            bad_keys.append(card.keyword)
+
+                    for key in bad_keys:
+                        try:
+                            del hdu.header[key]
+                            print(f"Dropped invalid FITS header card {key!r}")
+                        except Exception:
+                            pass
+
+                # Retry save once after fixes
+                hdu.writeto(filename, overwrite=True)
+
             print(f"Saved FITS image to: {filename}")
             return
 
