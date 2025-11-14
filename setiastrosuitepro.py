@@ -286,6 +286,7 @@ from pro.isophote import IsophoteModelerDialog
 from wims import WhatsInMySkyDialog
 from wimi import WIMIDialog 
 from pro.fitsmodifier import FITSModifier
+from pro.fitsmodifier import BatchFITSHeaderDialog
 from pro.batch_renamer import BatchRenamerDialog
 from pro.astrobin_exporter import AstrobinExporterDialog
 from pro.linear_fit import LinearFitDialog
@@ -2397,8 +2398,15 @@ class AstroSuiteProMainWindow(QMainWindow):
         self.act_fits_modifier = QAction("FITS Header Modifier…", self)
         # self.act_fits_modifier.setIcon(QIcon(path_to_icon))  # (optional) icon goes here later
         self.act_fits_modifier.setIconVisibleInMenu(True)
-        self.act_fits_modifier.setStatusTip("View/Edit FITS headers; save or batch modify")
+        self.act_fits_modifier.setStatusTip("View/Edit FITS headers")
         self.act_fits_modifier.triggered.connect(self._open_fits_modifier)
+
+        self.act_fits_batch_modifier = QAction("FITS Header Batch Modifier…", self)
+        # self.act_fits_modifier.setIcon(QIcon(path_to_icon))  # (optional) icon goes here later
+        self.act_fits_batch_modifier.setIconVisibleInMenu(True)
+        self.act_fits_batch_modifier.setStatusTip("Batch Modify FITS Headers")
+        self.act_fits_batch_modifier.triggered.connect(self._open_fits_batch_modifier)
+
 
         self.act_batch_renamer = QAction("Batch Rename from FITS…", self)
         # self.act_batch_renamer.setIcon(QIcon(batch_renamer_icon_path))  # (optional icon)
@@ -2669,6 +2677,7 @@ class AstroSuiteProMainWindow(QMainWindow):
 
         m_header = mb.addMenu("&Header Mods && Misc")
         m_header.addAction(self.act_fits_modifier)
+        m_header.addAction(self.act_fits_batch_modifier)
         m_header.addAction(self.act_batch_renamer)
         m_header.addAction(self.act_astrobin_exporter)
         m_header.addAction(self.act_batch_convert)
@@ -6396,6 +6405,24 @@ class AstroSuiteProMainWindow(QMainWindow):
         # dlg.setWindowIcon(QIcon("..."))  # optional
         dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         dlg.show()
+
+    def _open_fits_batch_modifier(self):
+        """
+        doc = self.doc_manager.get_active_document()
+        if not doc:
+            QMessageBox.information(self, "FITS Header Editor", "No active image window.")
+            return
+
+        file_path = doc.metadata.get("file_path")
+        header    = doc.metadata.get("original_header") or {}
+        """
+        dlg = BatchFITSHeaderDialog(
+            parent=self,
+        )
+        # dlg.setWindowIcon(QIcon("..."))  # optional
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        dlg.show()
+
 
     def _open_batch_renamer(self):
         dlg = BatchRenamerDialog(parent=self)
