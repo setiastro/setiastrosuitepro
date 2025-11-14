@@ -205,7 +205,7 @@ from PyQt6.QtWidgets import (QDialog, QApplication, QMainWindow, QWidget, QHBoxL
 )
 
 # ----- QtGui -----
-from PyQt6.QtGui import (QPixmap, QColor, QIcon, QKeySequence, QShortcut, QGuiApplication, QStandardItemModel, QStandardItem, QAction, QPalette, QBrush, QActionGroup, QDesktopServices
+from PyQt6.QtGui import (QPixmap, QColor, QIcon, QKeySequence, QShortcut, QGuiApplication, QStandardItemModel, QStandardItem, QAction, QPalette, QBrush, QActionGroup, QDesktopServices, QFont
 )
 
 # ----- QtCore -----
@@ -286,7 +286,6 @@ from pro.isophote import IsophoteModelerDialog
 from wims import WhatsInMySkyDialog
 from wimi import WIMIDialog 
 from pro.fitsmodifier import FITSModifier
-from pro.fitsmodifier import BatchFITSHeaderDialog
 from pro.batch_renamer import BatchRenamerDialog
 from pro.astrobin_exporter import AstrobinExporterDialog
 from pro.linear_fit import LinearFitDialog
@@ -306,9 +305,10 @@ from pro.save_options import _normalize_ext
 from pro.status_log_dock import StatusLogDock
 from pro.log_bus import LogBus
 from imageops.mdi_snap import MdiSnapController
+from pro.fitsmodifier import BatchFITSHeaderDialog
 
 
-VERSION = "1.4.13"
+VERSION = "1.4.14"
 
 
 
@@ -560,6 +560,8 @@ class MdiArea(QMdiArea):
         
 
     def dragEnterEvent(self, e):
+        md = e.mimeData()
+    
         if (e.mimeData().hasFormat("application/x-sas-viewstate")
                 or e.mimeData().hasFormat(MIME_CMD)
                 or e.mimeData().hasFormat(MIME_MASK)
@@ -570,6 +572,7 @@ class MdiArea(QMdiArea):
             super().dragEnterEvent(e)
 
     def dropEvent(self, e):
+
         pos = e.position().toPoint()
 
         # Map the event position from the MdiArea into the viewport's coords.
@@ -1135,7 +1138,7 @@ class AstroSuiteProMainWindow(QMainWindow):
         # Keep explorer in sync
         self.docman.documentAdded.connect(self._add_doc_to_explorer)
         self.docman.documentRemoved.connect(self._remove_doc_from_explorer)
-        self.mdi.viewStateDropped.connect(self._handle_viewstate_drop)
+        #self.mdi.viewStateDropped.connect(self._handle_viewstate_drop)
         self.docman.documentAdded.connect(self._on_doc_added_for_header_sync)
         self.docman.documentRemoved.connect(self._on_doc_removed_for_header_sync)
         self.mdi.subWindowActivated.connect(lambda _sw: self._hdr_refresh_timer.start(0))
@@ -1258,35 +1261,269 @@ class AstroSuiteProMainWindow(QMainWindow):
             pass
         self.update_undo_redo_action_labels()
 
+    def _promote_roi_preview_to_real_doc(self, st: dict, preview_doc) -> None:
+        """
+        Turn a ROI preview doc into a real ImageDocument with correct WCS,
+        using the preview's already-cropped pixels and roi_header.
 
-    def _on_mdi_viewstate_drop(self, st: dict, target_sw: object | None):
-        # resolve the document
-        doc = None
-        doc_ptr = st.get("doc_ptr")
-        # prefer your own helpers; fallbacks shown:
-        if hasattr(self.doc_manager, "get_document_by_ptr"):
-            doc = self.doc_manager.get_document_by_ptr(doc_ptr)
-        elif hasattr(self.doc_manager, "lookup_by_python_id"):
-            doc = self.doc_manager.lookup_by_python_id(doc_ptr)
+        preview_doc: the RoiViewDocument we dragged from.
+        """
+        dm = self.doc_manager
 
-        if doc is None:
+        # ---- 1) Get pixels from the preview doc ----
+        arr = getattr(preview_doc, "image", None)
+        if arr is None:
+
             return
 
-        # If dropped on empty background ⇒ spawn a NEW view
-        force_new = (target_sw is None)
-        sw = self._spawn_subwindow_for(doc, force_new=force_new)
+        H, W = arr.shape[:2]
 
-        # apply the dropped viewstate
+        roi = st.get("roi") or [0, 0, W, H]
+        if len(roi) != 4:
+
+            x = y = 0
+            w, h = W, H
+        else:
+            x, y, w, h = map(int, roi)
+
+        # NOTE: roi in the drag state is in *full-frame* coords; the preview is
+        # already cropped. Cropping again with (x, y) would be wrong and often OOB,
+        # so we just use the entire preview image as the final crop.
+        crop = arr.copy()
+
+
+
+        # ---- 2) Build metadata from the preview, stripping preview/ROI flags ----
+        pmeta = getattr(preview_doc, "metadata", {}) or {}
+        meta = {
+            k: v
+            for k, v in pmeta.items()
+            if k not in (
+                "is_preview", "roi", "preview_name",
+                "roi_wcs", "roi_header",
+                "base_doc_uid",
+                "wcs", "original_wcs", "sip_wcs",
+                "__header_snapshot__",
+            )
+        }
+
+        # Mono / bit-depth flags
+        meta["is_mono"] = bool(
+            crop.ndim == 2 or (crop.ndim == 3 and crop.shape[2] == 1)
+        )
+        meta["bit_depth"] = meta.get("bit_depth", "32-bit floating point")
+
+        # ---- 3) Build a nice display name without "(Preview)" chained on ----
+        # e.g. "andromedasolved.fit (Preview) [ROI 1793,1067,1132×954]"
+        disp = preview_doc.display_name() if hasattr(preview_doc, "display_name") else ""
+        # Strip any existing "[ROI ...]" suffix
+        if "[ROI" in disp:
+            disp = disp.split("[ROI", 1)[0].rstrip()
+        # Strip " (Preview)" if present
+        if " (Preview)" in disp:
+            disp = disp.split(" (Preview)", 1)[0].rstrip()
+        if not disp:
+            disp = pmeta.get("display_name") or "Untitled"
+
+        meta["display_name"] = f"{disp} [ROI {x},{y},{w}×{h}]"
+
+        # ---- 4) Use the preview's ROI header as the *primary* header ----
+        from astropy.wcs import WCS
+
+        roi_hdr = (
+            pmeta.get("roi_header")
+            or pmeta.get("original_header")
+            or pmeta.get("fits_header")
+            or pmeta.get("header")
+        )
+
+        if roi_hdr is not None:
+            # Make sure NAXIS1/2 match the actual crop size
+            roi_hdr["NAXIS1"] = int(W)
+            roi_hdr["NAXIS2"] = int(H)
+
+            meta["original_header"] = roi_hdr
+            meta["fits_header"] = roi_hdr
+            meta["header"] = roi_hdr  # HeaderViewer sees this
+
+            # Build WCS directly from this already-cropped header
+            try:
+                meta["wcs"] = WCS(roi_hdr)
+            except Exception as e:
+                print("[Main] ROI promotion: WCS(roi_hdr) failed:", e)
+
+            # Optional: snapshot for project I/O / header viewer
+            try:
+                from pro.doc_manager import _dm_json_sanitize
+                meta["__header_snapshot__"] = {
+                    "format": "dict",
+                    "items": {str(k): _dm_json_sanitize(v) for k, v in roi_hdr.items()},
+                }
+            except Exception as e:
+                print("[Main] ROI promotion: header snapshot failed:", e)
+                meta.pop("__header_snapshot__", None)
+
+        # ---- 5) Create a real ImageDocument so Explorer sees it as a normal doc ----
+        new_doc = dm.open_array(crop, metadata=meta, title=meta.get("display_name"))
+        # IMPORTANT: do NOT call any "rebuild cropped WCS" helpers here.
+        # We already have a correct, final ROI header.
+
+        # ---- 6) Find the subwindow that doc_manager already spawned ----
+        sw = None
         try:
-            w = sw.widget()
-            if hasattr(w, "apply_view_state"):
-                w.apply_view_state(st)
-            if st.get("autostretch", False) and hasattr(w, "set_autostretch"):
-                w.set_autostretch(True)
-                if hasattr(w, "set_autostretch_target"):
-                    w.set_autostretch_target(st.get("autostretch_target", 0.25))
-        except Exception:
-            pass
+            for sub in self.mdi.subWindowList():
+                w = sub.widget() if hasattr(sub, "widget") else None
+                d = getattr(w, "document", None)
+                if d is new_doc:
+                    sw = sub
+                    break
+        except Exception as e:
+            print("[Main] ROI promotion: error searching for subwindow:", e)
+
+        # If for some reason doc_manager did NOT spawn a subwindow, fall back.
+        #if sw is None:
+        #    sw = self._spawn_subwindow_for(new_doc, force_new=True)
+
+        # ---- 7) Apply viewstate to that subwindow ----
+        if sw and hasattr(sw, "widget"):
+            wv = sw.widget()
+            if st.get("autostretch") and hasattr(wv, "set_autostretch"):
+                wv.set_autostretch(True)
+                if hasattr(wv, "set_autostretch_target"):
+                    wv.set_autostretch_target(float(st.get("autostretch_target", 0.25)))
+            if hasattr(wv, "set_view_transform"):
+                wv.set_view_transform(
+                    float(st.get("scale", 1.0)),
+                    int(st.get("hval", 0)),
+                    int(st.get("vval", 0)),
+                    from_link=False,
+                )
+
+
+    def _on_mdi_viewstate_drop(self, st: dict, target_sw: object | None):
+        dm = self.doc_manager
+        doc = None
+
+        # ─────────────────────────────────────────────
+        # 1) Strongest signal: doc_ptr from the source
+        #    subwindow. We want the *exact* document
+        #    backing that view (ROI, preview, or full).
+        # ─────────────────────────────────────────────
+        doc_ptr = st.get("doc_ptr")
+        uid     = st.get("doc_uid")
+        fpath   = st.get("file_path") or ""
+
+        try:
+            for sw in self.mdi.subWindowList():
+                w = sw.widget() if hasattr(sw, "widget") else None
+                d = getattr(w, "document", None)
+                if d is None:
+                    continue
+
+                # 1a) Exact Python object match (highest priority)
+                if doc_ptr is not None and id(d) == doc_ptr:
+                    doc = d
+                    break
+
+                # 1b) Next: uid match
+                if uid and getattr(d, "uid", None) == uid:
+                    doc = d
+                    break
+
+                # 1c) Last resort in this pass: file_path match
+                meta = getattr(d, "metadata", {}) or {}
+                if fpath and meta.get("file_path") == fpath:
+                    doc = d
+                    break
+        except Exception as e:
+            print("[Main] viewstate_drop: subwindow scan failed:", e)
+
+        # ─────────────────────────────────────────────
+        # 2) If we *still* don’t have a doc, fall back
+        #    to doc_manager helpers (uid / ptr).
+        #    This is rare but keeps older paths working.
+        # ─────────────────────────────────────────────
+        if doc is None:
+            try:
+                if doc_ptr is not None and hasattr(dm, "get_document_by_ptr"):
+                    doc = dm.get_document_by_ptr(doc_ptr)
+            except Exception as e:
+                print("[Main] viewstate_drop: get_document_by_ptr failed:", e)
+
+        if doc is None and doc_ptr is not None:
+            try:
+                if hasattr(dm, "lookup_by_python_id"):
+                    doc = dm.lookup_by_python_id(doc_ptr)
+            except Exception as e:
+                print("[Main] viewstate_drop: lookup_by_python_id failed:", e)
+
+        if doc is None and uid:
+            try:
+                if hasattr(dm, "lookup_by_uid"):
+                    doc = dm.lookup_by_uid(uid)
+            except Exception as e:
+                print("[Main] viewstate_drop: lookup_by_uid(doc_uid) failed:", e)
+
+        if doc is None:
+            print("[Main] viewstate_drop: could NOT resolve document; aborting.")
+            return
+
+        # ─────────────────────────────────────────────
+        # 3) Decide behavior: new view vs copy transform
+        # (KEEP YOUR EXISTING CODE BELOW THIS POINT)
+        # ─────────────────────────────────────────────
+        force_new = (target_sw is None)
+        source_kind = st.get("source_kind")
+        roi = st.get("roi")
+        is_preview = (source_kind in ("preview", "roi-preview")) or bool(roi)
+
+        # 4) ROI promotion block
+        if force_new and is_preview and roi and len(roi) == 4:
+            try:
+                x, y, w, h = map(int, roi)
+                self._promote_roi_preview_to_real_doc(st, doc)
+                return
+            except Exception as e:
+                try:
+                    self._log(f"[viewstate-drop ROI] failed: {e}")
+                except Exception:
+                    print("[Main] viewstate_drop: ROI promotion failed:", e)
+                # fall through to default behavior
+
+        # 5) Default behavior (full view / non-ROI preview)
+        if force_new and not is_preview:
+            sw = self._spawn_subwindow_for(doc, force_new=True)
+            if sw and hasattr(sw, "widget"):
+                wv = sw.widget()
+                if st.get("autostretch") and hasattr(wv, "set_autostretch"):
+                    wv.set_autostretch(True)
+                    if hasattr(wv, "set_autostretch_target"):
+                        wv.set_autostretch_target(
+                            float(st.get("autostretch_target", 0.25))
+                        )
+                if hasattr(wv, "set_view_transform"):
+                    wv.set_view_transform(
+                        float(st.get("scale", 1.0)),
+                        int(st.get("hval", 0)),
+                        int(st.get("vval", 0)),
+                        from_link=False,
+                    )
+        else:
+            tgt = target_sw.widget() if hasattr(target_sw, "widget") else None
+            if tgt and hasattr(tgt, "set_view_transform"):
+                tgt.set_view_transform(
+                    float(st.get("scale", 1.0)),
+                    int(st.get("hval", 0)),
+                    int(st.get("vval", 0)),
+                    from_link=False,
+                )
+            if tgt and st.get("autostretch") and hasattr(tgt, "set_autostretch"):
+                tgt.set_autostretch(True)
+                if hasattr(tgt, "set_autostretch_target"):
+                    tgt.set_autostretch_target(
+                        float(st.get("autostretch_target", 0.25))
+                    )
+
 
     def _open_from_explorer(self, doc):
         sw = self._find_subwindow_for_doc(doc)
@@ -1465,6 +1702,7 @@ class AstroSuiteProMainWindow(QMainWindow):
         app = QApplication.instance()
         color_scheme = app.styleHints().colorScheme()
 
+        # Resolve "system" to dark/light
         if mode == "system":
             if color_scheme == Qt.ColorScheme.Dark:
                 print("System is in Dark Mode")
@@ -1472,37 +1710,65 @@ class AstroSuiteProMainWindow(QMainWindow):
             else:
                 print("System is in Light Mode")
                 mode = "light"
+
+        # Base style
+        if mode in ("dark", "gray", "light", "custom"):
+            app.setStyle("Fusion")
+        else:
+            app.setStyle(None)
+
+        # Palettes
         if mode == "dark":
-            app.setStyle("Fusion")
             app.setPalette(self._dark_palette())
-            app.setStyleSheet("QToolTip { color: #ffffff; background-color: #2a2a2a; border: 1px solid #5a5a5a; }")
+            app.setStyleSheet(
+                "QToolTip { color: #ffffff; background-color: #2a2a2a; border: 1px solid #5a5a5a; }"
+            )
+        elif mode == "gray":
+            app.setPalette(self._gray_palette())
+            app.setStyleSheet(
+                "QToolTip { color: #f0f0f0; background-color: #3a3a3a; border: 1px solid #5a5a5a; }"
+            )
         elif mode == "light":
-            app.setStyle("Fusion")
             app.setPalette(self._light_palette())
-            # Tooltips readable in light mode
             app.setStyleSheet(
                 "QToolTip { color: #141414; background-color: #ffffee; border: 1px solid #c8c8c8; }"
             )
-        else:  # system
-            app.setStyle(None)
+        elif mode == "custom":
+            app.setPalette(self._custom_palette())
+            # Tooltips roughly matching the custom dark-ish style
+            app.setStyleSheet(
+                "QToolTip { color: #f0f0f0; background-color: #303030; border: 1px solid #5a5a5a; }"
+            )
+        else:  # system/native fallback
             app.setPalette(QApplication.style().standardPalette())
             app.setStyleSheet("")
+
+        # Optional: apply custom font
+        if mode == "custom":
+            font_str = self.settings.value("ui/custom/font", "", type=str) or ""
+            if font_str:
+                try:
+                    f = QFont()
+                    if f.fromString(font_str):
+                        app.setFont(f)
+                except Exception:
+                    pass
 
         # Nudge widgets to pick up role changes
         self._repolish_top_levels()
         self._apply_workspace_theme()
         self._style_mdi_titlebars()
         self._menu_view_panels = None
-        self._populate_view_panels_menu()
+        #self._populate_view_panels_menu()
 
         try:
             vp = self.mdi.viewport()
             vp.setAutoFillBackground(True)
             vp.setPalette(QApplication.palette())
             vp.update()
-            #self.mdi.setStyleSheet(f"QMdiArea {{ background: {col.name()}; }}")
         except Exception:
             pass
+
 
     def _repolish_top_levels(self):
         app = QApplication.instance()
@@ -1513,17 +1779,24 @@ class AstroSuiteProMainWindow(QMainWindow):
             w.setUpdatesEnabled(True)
 
     def _style_mdi_titlebars(self):
-        if self._theme_mode() == "dark":
-            base = "#1b1b1b"     # inactive titlebar
-            active = "#242424"   # active titlebar
-            fg = "#dcdcdc"       # text color
-            self.mdi.setStyleSheet(f"""
-                QMdiSubWindow::titlebar        {{ background: {base};  color: {fg}; }}
-                QMdiSubWindow::titlebar:active {{ background: {active}; color: {fg}; }}
-            """)
+        mode = self._theme_mode()
+        if mode == "dark":
+            base   = "#1b1b1b"  # inactive titlebar
+            active = "#242424"  # active titlebar
+            fg     = "#dcdcdc"
+        elif mode in ("gray", "custom"):
+            base   = "#3a3a3a"
+            active = "#454545"
+            fg     = "#f0f0f0"
         else:
-            # No override in light mode
+            # No override in light / system modes
             self.mdi.setStyleSheet("")
+            return
+
+        self.mdi.setStyleSheet(f"""
+            QMdiSubWindow::titlebar        {{ background: {base};  color: {fg}; }}
+            QMdiSubWindow::titlebar:active {{ background: {active}; color: {fg}; }}
+        """)
 
     def _dark_palette(self) -> QPalette:
         p = QPalette()
@@ -1565,6 +1838,108 @@ class AstroSuiteProMainWindow(QMainWindow):
         p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.HighlightedText, QColor(210, 210, 210))
 
         return p
+
+    def _custom_palette(self) -> QPalette:
+        """
+        Build a QPalette from user-defined colors in QSettings.
+        Falls back to a gray-ish baseline if any key is missing.
+        """
+        s = self.settings
+
+        def col(key: str, default: QColor) -> QColor:
+            val = s.value(key, default.name(), type=str) or default.name()
+            return QColor(val)
+
+        window  = col("ui/custom/window",        QColor(54, 54, 54))
+        base    = col("ui/custom/base",          QColor(40, 40, 40))
+        altbase = col("ui/custom/altbase",       QColor(64, 64, 64))
+        text    = col("ui/custom/text",          QColor(230, 230, 230))
+        button  = col("ui/custom/button",        window)
+        hi      = col("ui/custom/highlight",     QColor(95, 145, 230))
+        link    = col("ui/custom/link",          QColor(120, 170, 255))
+        linkv   = col("ui/custom/link_visited",  QColor(180, 150, 255))
+
+        p = QPalette()
+
+        # Core roles
+        p.setColor(QPalette.ColorRole.Window,          window)
+        p.setColor(QPalette.ColorRole.WindowText,      text)
+        p.setColor(QPalette.ColorRole.Base,            base)
+        p.setColor(QPalette.ColorRole.AlternateBase,   altbase)
+        p.setColor(QPalette.ColorRole.ToolTipBase,     window)
+        p.setColor(QPalette.ColorRole.ToolTipText,     text)
+        p.setColor(QPalette.ColorRole.Text,            text)
+        p.setColor(QPalette.ColorRole.Button,          button)
+        p.setColor(QPalette.ColorRole.ButtonText,      text)
+        p.setColor(QPalette.ColorRole.BrightText,      QColor(255, 0, 0))
+        p.setColor(QPalette.ColorRole.Highlight,       hi)
+        p.setColor(QPalette.ColorRole.HighlightedText, QColor(255, 255, 255))
+        p.setColor(QPalette.ColorRole.Link,            link)
+        p.setColor(QPalette.ColorRole.LinkVisited,     linkv)
+
+        # Placeholder / disabled
+        try:
+            p.setColor(QPalette.ColorRole.PlaceholderText, QColor(170, 170, 170))
+        except Exception:
+            pass
+
+        dis = QColor(150, 150, 150)
+        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text,            dis)
+        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.ButtonText,      dis)
+        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.WindowText,      dis)
+        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Base,            base.darker(115))
+        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Highlight,       hi.darker(140))
+        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.HighlightedText, QColor(210, 210, 210))
+
+        return p
+
+    def _gray_palette(self) -> QPalette:
+        p = QPalette()
+
+        # Mid-gray neutrals
+        window  = QColor(54, 54, 54)   # panels/docks
+        base    = QColor(64, 64, 64)   # editors / text fields
+        altbase = QColor(72, 72, 72)   # alternating rows
+        text    = QColor(230, 230, 230)
+        btn     = window
+        dis     = QColor(150, 150, 150)
+        link    = QColor(120, 170, 255)
+        linkv   = QColor(180, 150, 255)
+        hi      = QColor(95, 145, 230)
+        hitxt   = QColor(255, 255, 255)
+
+        # Core roles
+        p.setColor(QPalette.ColorRole.Window,          window)
+        p.setColor(QPalette.ColorRole.WindowText,      text)
+        p.setColor(QPalette.ColorRole.Base,            base)
+        p.setColor(QPalette.ColorRole.AlternateBase,   altbase)
+        p.setColor(QPalette.ColorRole.ToolTipBase,     QColor(60, 60, 60))
+        p.setColor(QPalette.ColorRole.ToolTipText,     text)
+        p.setColor(QPalette.ColorRole.Text,            text)
+        p.setColor(QPalette.ColorRole.Button,          btn)
+        p.setColor(QPalette.ColorRole.ButtonText,      text)
+        p.setColor(QPalette.ColorRole.BrightText,      QColor(255, 0, 0))
+        p.setColor(QPalette.ColorRole.Highlight,       hi)
+        p.setColor(QPalette.ColorRole.HighlightedText, hitxt)
+        p.setColor(QPalette.ColorRole.Link,            link)
+        p.setColor(QPalette.ColorRole.LinkVisited,     linkv)
+
+        # Placeholder
+        try:
+            p.setColor(QPalette.ColorRole.PlaceholderText, QColor(170, 170, 170))
+        except Exception:
+            pass
+
+        # Disabled group
+        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text,            dis)
+        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.ButtonText,      dis)
+        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.WindowText,      dis)
+        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Base,            QColor(58, 58, 58))
+        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Highlight,       QColor(80, 80, 80))
+        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.HighlightedText, QColor(210, 210, 210))
+
+        return p
+
 
     def _light_palette(self) -> QPalette:
         p = QPalette()
@@ -2406,7 +2781,6 @@ class AstroSuiteProMainWindow(QMainWindow):
         self.act_fits_batch_modifier.setIconVisibleInMenu(True)
         self.act_fits_batch_modifier.setStatusTip("Batch Modify FITS Headers")
         self.act_fits_batch_modifier.triggered.connect(self._open_fits_batch_modifier)
-
 
         self.act_batch_renamer = QAction("Batch Rename from FITS…", self)
         # self.act_batch_renamer.setIcon(QIcon(batch_renamer_icon_path))  # (optional icon)
@@ -6412,7 +6786,6 @@ class AstroSuiteProMainWindow(QMainWindow):
         if not doc:
             QMessageBox.information(self, "FITS Header Editor", "No active image window.")
             return
-
         file_path = doc.metadata.get("file_path")
         header    = doc.metadata.get("original_header") or {}
         """
@@ -6422,6 +6795,7 @@ class AstroSuiteProMainWindow(QMainWindow):
         # dlg.setWindowIcon(QIcon("..."))  # optional
         dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         dlg.show()
+
 
 
     def _open_batch_renamer(self):
@@ -8355,6 +8729,38 @@ class AstroSuiteProMainWindow(QMainWindow):
             linked = hasattr(doc, "_parent_doc")  # ROI proxy → linked
         return f"🔗 {name}" if linked else name
 
+    def _build_subwindow_title_for_doc(self, doc) -> str:
+        """
+        Build a unique, human-friendly title for a QMdiSubWindow
+        that shows this document. If multiple views exist for the
+        same doc, append [View N].
+        """
+        # Base label (reuse pretty_title logic, but keep it unlinked
+        # like your old _spawn_subwindow_for did)
+        base = self._pretty_title(doc, linked=False)
+
+        # Count how many existing views show this *same* doc
+        count = 0
+        try:
+            for sw in self.mdi.subWindowList():
+                w = sw.widget() if hasattr(sw, "widget") else None
+                if w is None:
+                    continue
+                # For image views we have base_document; for others fall back
+                d = getattr(w, "base_document", None) or getattr(w, "document", None)
+                if d is doc:
+                    count += 1
+        except Exception:
+            pass
+
+        # First view → just the base title
+        if count == 0:
+            return base
+
+        # Subsequent views → base + [View N]
+        return f"{base} [View {count + 1}]"
+
+
     def _spawn_subwindow_for(self, doc, *, force_new: bool = False):
         """
         Open a subwindow for `doc`. If one already exists and force_new=False,
@@ -8442,9 +8848,10 @@ class AstroSuiteProMainWindow(QMainWindow):
         # ── 6) Add subwindow and set chrome
         sw = self.mdi.addSubWindow(view)
         sw.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-        sw.setWindowTitle(doc.display_name())
-        sw.setWindowIcon(self.app_icon)
 
+        # Use unique, per-view title (handles previews, ROI docs, etc.)
+        sw.setWindowTitle(self._build_subwindow_title_for_doc(doc))
+        sw.setWindowIcon(self.app_icon)
 
         # Apply standard window flags then show/raise
         flags = sw.windowFlags()
@@ -8455,7 +8862,7 @@ class AstroSuiteProMainWindow(QMainWindow):
         sw.show()
         sw.raise_()
         self.mdi.setActiveSubWindow(sw)
-        sw.setWindowTitle(self._pretty_title(doc, linked=False))
+        # (no second setWindowTitle() here)
 
         # Optional minimize/restore interceptor
         if hasattr(self, "_minimize_interceptor"):
@@ -8729,10 +9136,20 @@ class AstroSuiteProMainWindow(QMainWindow):
         return None, None
 
     def _handle_viewstate_drop(self, state: dict, target_sw):
-        """Drop handler from MdiArea:
+        """
+        Legacy handler:
         - target_sw is None → duplicate view on background
         - target_sw is a QMdiSubWindow → copy zoom/pan/stretch to it
+
+        NOTE: If the payload came from a Preview/ROI, we let the ROI-aware
+        handler (_on_mdi_viewstate_drop) take over for background drops.
         """
+        is_preview = (state.get("source_kind") == "preview") or bool(state.get("roi"))
+
+        # Background drop of a preview → ROI logic lives in _on_mdi_viewstate_drop
+        if target_sw is None and is_preview:
+            return
+
         if target_sw is None:
             self._duplicate_view_from_state(state)
         else:
