@@ -430,19 +430,23 @@ class StarSpikesDialogPro(QDialog):
             spiked_lin = np.clip(lin + spikes_mono, 0, 1)
 
         # protect by active mask (document-level)
+        if spiked_lin.ndim == 3:
+            spiked_final = np.empty_like(spiked_lin)
+            for c in range(3):
+                spiked_final[..., c] = self._midtones_m(spiked_lin[..., c], 0.05)
+        else:
+            spiked_final = self._midtones_m(spiked_lin, 0.05)
+
+        # ---- apply mask AFTER full processing ----
         m = self._active_mask_array(self.doc)
         if m is not None:
-            if spiked_lin.ndim == 3 and m.ndim == 2:
+            if spiked_final.ndim == 3 and m.ndim == 2:
                 m = m[..., None]
-            spiked_lin = np.clip(spiked_lin * (m) + img * (1.0 - m), 0.0, 1.0)
 
-        # restretch via midtones(0.05)
-        if spiked_lin.ndim == 3:
-            final = np.empty_like(spiked_lin)
-            for c in range(3):
-                final[..., c] = self._midtones_m(spiked_lin[..., c], 0.05)
+            # white = apply effect, black = protect original
+            final = np.clip(spiked_final * m + img * (1.0 - m), 0.0, 1.0)
         else:
-            final = self._midtones_m(spiked_lin, 0.05)
+            final = spiked_final
 
         self.final_image = final
         self._update_preview(final)

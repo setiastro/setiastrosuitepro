@@ -4172,21 +4172,260 @@ class StackingSuiteDialog(QDialog):
         if d:
             line_edit.setText(d)
 
+    # --- Stacking profile helpers ---------------------------------------------
+
+    def _stacking_profile_names(self) -> list[str]:
+        """
+        Return list of saved stacking profile names.
+        Stored as a QStringList / Python list under 'stacking/profiles/names'.
+        """
+        val = self.settings.value("stacking/profiles/names", [], type=list)
+        if isinstance(val, (tuple, set)):
+            val = list(val)
+        if isinstance(val, str):
+            val = [val] if val else []
+        return [str(x) for x in val]
+
+    def _set_stacking_profile_names(self, names: list[str]) -> None:
+        names = [str(n) for n in names]
+        self.settings.setValue("stacking/profiles/names", names)
+        self.settings.sync()
+
+    def _stacking_snapshot_keys(self) -> list[str]:
+        """
+        All QSettings keys that define a stacking configuration.
+        We copy these into / out of profiles.
+
+        We explicitly ignore any existing profile storage to avoid recursion.
+        If you *don’t* want the directory to be per-profile, skip 'stacking/dir'.
+        """
+        keys = []
+        for k in self.settings.allKeys():
+            if not k.startswith("stacking/"):
+                continue
+            if k.startswith("stacking/profiles/"):
+                continue
+            # If you want the stacking directory to be global, uncomment this:
+            # if k == "stacking/dir":
+            #     continue
+            keys.append(k)
+        return keys
+
+    def _save_current_stacking_to_profile(self, profile_name: str) -> None:
+        """
+        Snapshot all current 'stacking/*' keys into:
+        'stacking/profiles/<profile_name>/*'
+        This assumes those keys already reflect the current config
+        (i.e. user has hit OK at least once).
+        """
+        profile_name = str(profile_name).strip()
+        if not profile_name:
+            return
+
+        base_prefix    = "stacking/"
+        profile_prefix = f"stacking/profiles/{profile_name}/"
+
+        for key in self._stacking_snapshot_keys():
+            subkey = key[len(base_prefix):]  # e.g. align/model
+            val    = self.settings.value(key)
+            self.settings.setValue(profile_prefix + subkey, val)
+
+        # Track profile list + active profile
+        names = self._stacking_profile_names()
+        if profile_name not in names:
+            names.append(profile_name)
+            self._set_stacking_profile_names(names)
+
+        self.settings.setValue("stacking/active_profile", profile_name)
+        self.settings.sync()
+
+    def _load_profile_into_settings(self, profile_name: str) -> None:
+        """
+        Copy keys from 'stacking/profiles/<profile_name>/*' back into 'stacking/*'.
+        Does NOT touch UI widgets directly; caller can restart / reopen dialog.
+        """
+        profile_name = str(profile_name).strip()
+        if not profile_name:
+            return
+
+        base_prefix    = "stacking/"
+        profile_prefix = f"stacking/profiles/{profile_name}/"
+
+        for key in self.settings.allKeys():
+            if not key.startswith(profile_prefix):
+                continue
+            subkey   = key[len(profile_prefix):]      # e.g. align/model
+            base_key = base_prefix + subkey          # 'stacking/align/model'
+            val      = self.settings.value(key)
+            self.settings.setValue(base_key, val)
+
+        self.settings.setValue("stacking/active_profile", profile_name)
+        self.settings.sync()
+
+    def _delete_stacking_profile(self, profile_name: str) -> None:
+        """
+        Remove a profile and its keys.
+        """
+        profile_name = str(profile_name).strip()
+        if not profile_name:
+            return
+
+        profile_prefix = f"stacking/profiles/{profile_name}/"
+
+        # Remove all keys under this prefix
+        to_delete = [k for k in self.settings.allKeys() if k.startswith(profile_prefix)]
+        for k in to_delete:
+            self.settings.remove(k)
+
+        # Update profile list
+        names = self._stacking_profile_names()
+        if profile_name in names:
+            names.remove(profile_name)
+            self._set_stacking_profile_names(names)
+
+        # Clear active profile if we just deleted it
+        active = self.settings.value("stacking/active_profile", "", type=str)
+        if active == profile_name:
+            self.settings.remove("stacking/active_profile")
+
+        self.settings.sync()
+
+
     def open_stacking_settings(self):
         """Opens a 2-column Stacking Settings dialog."""
         from PyQt6.QtWidgets import (
             QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox, QFormLayout,
             QLabel, QLineEdit, QPushButton, QComboBox, QSpinBox, QDoubleSpinBox,
-            QCheckBox, QDialogButtonBox, QScrollArea, QWidget
+            QCheckBox, QDialogButtonBox, QScrollArea, QWidget, QInputDialog
         )
         dialog = QDialog(self)
         dialog.setWindowTitle("Stacking Settings")
 
-        # Top-level layout with a scroll area (nice for small screens)
+        # Top-level layout
         root = QVBoxLayout(dialog)
+
+        # === Profiles row (at the very top) ===
+        gb_profiles = QGroupBox("Profiles")
+        prof_layout = QHBoxLayout(gb_profiles)
+
+        prof_label = QLabel("Profile:")
+        self.profile_combo = QComboBox()
+        self.profile_combo.setEditable(False)
+
+        # Populate combo from QSettings
+        profile_names = self._stacking_profile_names()
+        for name in profile_names:
+            self.profile_combo.addItem(name)
+
+        # Optional: select last active profile, if any
+        active_profile = self.settings.value("stacking/active_profile", "", type=str)
+        if active_profile:
+            idx = self.profile_combo.findText(active_profile)
+            if idx >= 0:
+                self.profile_combo.setCurrentIndex(idx)
+
+        btn_new    = QPushButton("New…")
+        btn_save   = QPushButton("Save")
+        btn_load   = QPushButton("Load")
+        btn_delete = QPushButton("Delete")
+
+        prof_layout.addWidget(prof_label)
+        prof_layout.addWidget(self.profile_combo, 1)
+        prof_layout.addWidget(btn_new)
+        prof_layout.addWidget(btn_save)
+        prof_layout.addWidget(btn_load)
+        prof_layout.addWidget(btn_delete)
+
+        root.addWidget(gb_profiles)
+
+        # Now your scroll area, as before
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         root.addWidget(scroll)
+
+        def _refresh_profile_combo():
+            self.profile_combo.blockSignals(True)
+            self.profile_combo.clear()
+            for name in self._stacking_profile_names():
+                self.profile_combo.addItem(name)
+            active = self.settings.value("stacking/active_profile", "", type=str)
+            if active:
+                i = self.profile_combo.findText(active)
+                if i >= 0:
+                    self.profile_combo.setCurrentIndex(i)
+            self.profile_combo.blockSignals(False)
+
+        def _ask_profile_name(title: str, default: str = "") -> str | None:
+            text, ok = QInputDialog.getText(dialog, title, "Profile name:", text=default)
+            if not ok:
+                return None
+            name = text.strip()
+            return name or None
+
+        def _on_new_profile():
+            name = _ask_profile_name("New stacking profile")
+            if not name:
+                return
+            # For now: profile = snapshot of current applied settings.
+            # (User can tweak, click OK to apply, reopen, then New to save.)
+            self._save_current_stacking_to_profile(name)
+            _refresh_profile_combo()
+
+        def _on_save_profile():
+            """Overwrite the selected profile with the CURRENT applied settings."""
+            name = self.profile_combo.currentText().strip()
+            if not name:
+                # If none exists yet, ask for one.
+                name = _ask_profile_name("Save profile as…")
+                if not name:
+                    return
+            self._save_current_stacking_to_profile(name)
+            _refresh_profile_combo()
+            QMessageBox.information(dialog, "Profile saved",
+                                    f"Current stacking settings saved to profile '{name}'.")
+
+        def _on_load_profile():
+            name = self.profile_combo.currentText().strip()
+            if not name:
+                QMessageBox.warning(dialog, "No profile selected",
+                                    "Please choose a profile to load.")
+                return
+
+            # Confirm, since this will overwrite current stacking settings.
+            msg = (f"Load profile '{name}'?\n\n"
+                "This will overwrite the current stacking configuration "
+                "and restart the Stacking Suite.")
+            if QMessageBox.question(dialog, "Load profile", msg,
+                                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                                    ) != QMessageBox.StandardButton.Yes:
+                return
+
+            # Copy profile → stacking/* and restart
+            self._load_profile_into_settings(name)
+            dialog.accept()
+            self.update_status(f"📂 Loaded stacking profile: {name}")
+            self._restart_self()
+
+        def _on_delete_profile():
+            name = self.profile_combo.currentText().strip()
+            if not name:
+                return
+            if QMessageBox.question(
+                dialog,
+                "Delete profile",
+                f"Delete stacking profile '{name}'?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            ) != QMessageBox.StandardButton.Yes:
+                return
+            self._delete_stacking_profile(name)
+            _refresh_profile_combo()
+
+        btn_new.clicked.connect(_on_new_profile)
+        btn_save.clicked.connect(_on_save_profile)
+        btn_load.clicked.connect(_on_load_profile)
+        btn_delete.clicked.connect(_on_delete_profile)
+
+
         body = QWidget()
         scroll.setWidget(body)
 

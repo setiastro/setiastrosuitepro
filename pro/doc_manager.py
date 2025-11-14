@@ -10,6 +10,81 @@ from legacy.image_manager import load_image as legacy_load_image, save_image as 
 from legacy.image_manager import list_fits_extensions, load_fits_extension
 import uuid
 
+# --- WCS DEBUGGING ------------------------------------------------------
+_DEBUG_WCS = False  # flip to False when you’re done debugging
+
+def _debug_log_wcs_context(context: str, meta_or_hdr):
+    """
+    Tiny helper to print key WCS bits:
+      - NAXIS1/2
+      - CRPIX1/2
+      - CRVAL1/2
+      - CDELT / CD if present
+    Works if you pass either a metadata dict or a FITS-like header dict.
+    """
+    if not _DEBUG_WCS:
+        return
+
+    # Try to resolve a header from a metadata dict
+    hdr = None
+    if isinstance(meta_or_hdr, dict):
+        # metadata dict with possible header keys
+        hdr = (meta_or_hdr.get("original_header")
+               or meta_or_hdr.get("fits_header")
+               or meta_or_hdr.get("header"))
+        if hdr is None:
+            # maybe you passed the header dict directly
+            hdr = meta_or_hdr
+    else:
+        hdr = meta_or_hdr
+
+    if hdr is None:
+        print(f"[WCS DEBUG] {context}: no header found")
+        return
+
+    # Normalize dict-like header
+    if hasattr(hdr, "keys"):  # astropy Header or dict
+        try:
+            keys = list(hdr.keys())
+        except Exception:
+            keys = []
+    else:
+        print(f"[WCS DEBUG] {context}: header is non-mapping type {type(hdr)}")
+        return
+
+    def _get(k, default=None):
+        try:
+            return hdr.get(k, default)
+        except Exception:
+            try:
+                return hdr[k]
+            except Exception:
+                return default
+
+    naxis1 = _get("NAXIS1")
+    naxis2 = _get("NAXIS2")
+    crpix1 = _get("CRPIX1")
+    crpix2 = _get("CRPIX2")
+    crval1 = _get("CRVAL1")
+    crval2 = _get("CRVAL2")
+
+    cd11   = _get("CD1_1")
+    cd12   = _get("CD1_2")
+    cd21   = _get("CD2_1")
+    cd22   = _get("CD2_2")
+    cdelt1 = _get("CDELT1")
+    cdelt2 = _get("CDELT2")
+
+    print(f"[WCS DEBUG] {context}:")
+    print(f"  NAXIS1={naxis1}  NAXIS2={naxis2}")
+    print(f"  CRPIX1={crpix1}  CRPIX2={crpix2}")
+    print(f"  CRVAL1={crval1}  CRVAL2={crval2}")
+    if any(v is not None for v in (cd11, cd12, cd21, cd22)):
+        print(f"  CD = [[{cd11}, {cd12}], [{cd21}, {cd22}]]")
+    if cdelt1 is not None or cdelt2 is not None:
+        print(f"  CDELT1={cdelt1}  CDELT2={cdelt2}")
+    print("")
+
 def _normalize_ext(ext: str) -> str:
     e = ext.lower().lstrip(".")
     if e == "jpeg": return "jpg"
@@ -245,6 +320,67 @@ def _dm_json_sanitize(obj):
     except Exception:
         return str(type(obj))
 
+def _compute_cropped_wcs(parent_hdr_like: dict | "fits.Header",
+                         x: int, y: int, w: int, h: int):
+    """
+    Returns a plain dict WCS header reflecting a pure pixel crop by (x,y,w,h).
+    Keeps CD/CDELT/PC/CRVAL as-is and shifts CRPIX by (+/-) the crop offset.
+    Also sets NAXIS1/2 to (w,h) and records custom CROPX/CROPY.
+    """
+    try:
+        from astropy.io.fits import Header  # type: ignore
+    except Exception:
+        Header = None  # type: ignore
+
+    # Normalize to a dict of key->value (no comments needed for the drag payload)
+    if Header is not None and isinstance(parent_hdr_like, Header):
+        base = {k: parent_hdr_like.get(k) for k in parent_hdr_like.keys()}
+    elif isinstance(parent_hdr_like, dict):
+        # If it’s an XISF-like dict, try to pull a FITSKeywords block first
+        fk = parent_hdr_like.get("FITSKeywords")
+        if isinstance(fk, dict) and fk:
+            base = {}
+            for k, arr in fk.items():
+                try:
+                    base[k] = (arr or [{}])[0].get("value", None)
+                except Exception:
+                    pass
+        else:
+            base = dict(parent_hdr_like)
+    else:
+        base = {}
+
+    # Shift CRPIX by the crop offset (ROI origin is (x,y) in full-image pixels)
+    crpix1 = base.get("CRPIX1")
+    crpix2 = base.get("CRPIX2")
+    if isinstance(crpix1, (int, float)) and isinstance(crpix2, (int, float)):
+        new_crpix1 = float(crpix1) - float(x)
+        new_crpix2 = float(crpix2) - float(y)
+        base["CRPIX1"] = new_crpix1
+        base["CRPIX2"] = new_crpix2
+    else:
+        new_crpix1 = crpix1
+        new_crpix2 = crpix2
+
+    # Update image size keys
+    base["NAXIS1"] = int(w)
+    base["NAXIS2"] = int(h)
+
+    # Optional helpful tags
+    base["CROPX"] = int(x)
+    base["CROPY"] = int(y)
+    base["SASKIND"] = "ROI-CROP"
+
+    # DEBUG: show how CRPIX changed for this crop
+    if _DEBUG_WCS:
+        print(f"[WCS DEBUG] _compute_cropped_wcs: roi=({x},{y},{w},{h})")
+        print(f"  CRPIX1: {crpix1} -> {new_crpix1}")
+        print(f"  CRPIX2: {crpix2} -> {new_crpix2}")
+        print("")
+
+    return base
+
+
 
 def _snapshot_header_for_metadata(meta: dict):
     """
@@ -433,8 +569,49 @@ class _RoiViewDocument(ImageDocument):
 
         self._parent_doc = parent_doc
         self._roi = ( x, y, w, h )
-        
+        self._roi_info = {"parent_doc": parent_doc, "roi": tuple(self._roi)}
+        self.metadata["_roi_bounds"] = tuple(self._roi)
+        imi = dict(self.metadata.get("image_meta") or {})
+        imi.update({"roi": tuple(self._roi), "view_kind": "roi-preview"})
+        self.metadata["image_meta"] = imi
 
+        # build and store an ROI-shifted WCS header snapshot to use if detached
+        try:
+            phdr = (parent_doc.metadata.get("original_header")
+                    or parent_doc.metadata.get("fits_header")
+                    or parent_doc.metadata.get("header"))
+            rx, ry, rw, rh = self._roi
+            roi_wcs = _compute_cropped_wcs(phdr, rx, ry, rw, rh)
+            self.metadata["roi_wcs_header"] = roi_wcs  # plain dict, drop-in safe
+
+            # 🔴 KEY FIX: for a standalone ROI doc, treat this cropped WCS
+            # as the "original_header" so view-drops / duplicates inherit it.
+            if phdr is not None:
+                # optional: preserve the full parent header
+                self.metadata.setdefault("parent_full_header", phdr)
+            self.metadata["original_header"] = roi_wcs
+            try:
+                from .doc_manager import _snapshot_header_for_metadata  # if you move it, adjust import
+            except Exception:
+                _snapshot_header_for_metadata = None
+
+            try:
+                if _snapshot_header_for_metadata is not None:
+                    _snapshot_header_for_metadata(self.metadata)
+            except Exception:
+                pass
+
+            # DEBUG: log parent vs ROI WCS
+            if _DEBUG_WCS:
+                base_name = parent_doc.display_name() if hasattr(parent_doc, "display_name") else "<parent>"
+                print(f"[WCS DEBUG] _RoiViewDocument.__init__: parent='{base_name}' roi={self._roi}")
+                _debug_log_wcs_context("  parent_header", phdr)
+                _debug_log_wcs_context("  roi_header", self.metadata)
+        except Exception as e:
+            if _DEBUG_WCS:
+                print(f"[WCS DEBUG] _RoiViewDocument.__init__ exception: {e}")
+            pass
+        self.metadata["image_meta"] = imi
         # NEW: transient preview overlay for this ROI (None means "show parent slice")
         self._preview_override: _np.ndarray | None = None
 
@@ -455,6 +632,53 @@ class _RoiViewDocument(ImageDocument):
         # ignore: writes should use DocManager(update/commit) paths
         pass
 
+
+    def commit_to_parent(self, new_image: _np.ndarray | None = None,
+                        metadata: dict | None = None, step_name: str = "Edit"):
+        """
+        Paste current preview (or provided new_image) back into the parent image
+        with proper undo and region repaint.
+        """
+        parent = getattr(self, "_parent_doc", None)
+        if parent is None or parent.image is None:
+            return
+
+        x, y, w, h = self._roi
+        # choose source
+        src = new_image
+        if src is None:
+            src = self._preview_override if self._preview_override is not None else parent.image[y:y+h, x:x+w]
+
+        img = _np.asarray(src, dtype=_np.float32, copy=False)
+        base = parent.image
+
+        # channel reconciliation
+        if base.ndim == 2 and img.ndim == 3 and img.shape[2] == 1:
+            img = img[..., 0]
+        if base.ndim == 3 and img.ndim == 2:
+            img = _np.repeat(img[..., None], base.shape[2], axis=2)
+        if img.shape[:2] != (h, w):
+            raise ValueError(f"Commit shape {img.shape[:2]} does not match ROI {(h, w)}")
+
+        # push undo on parent and paste
+        parent._undo.append((base.copy(), parent.metadata.copy(), step_name))
+        parent._redo.clear()
+        if metadata: parent.metadata.update(metadata)
+        parent.metadata.setdefault("step_name", step_name)
+
+        new_full = base.copy()
+        new_full[y:y+h, x:x+w] = img
+        parent.image = new_full
+        try: parent.changed.emit()
+        except Exception: pass
+
+        # notify region update + repaint
+        dm = getattr(self, "_doc_manager", None) or getattr(parent, "_doc_manager", None)
+        if dm is not None:
+            try: dm.imageRegionUpdated.emit(parent, (x, y, w, h))
+            except Exception: pass
+
+
     # --- helper to snapshot what's currently visible in the Preview
     def _current_preview_copy(self) -> _np.ndarray:
         img = self.image  # property: returns override or parent slice
@@ -464,7 +688,6 @@ class _RoiViewDocument(ImageDocument):
 
     # === KEEP YOUR WORKING BODY; only 3 added lines are marked "NEW" ===
     def apply_edit(self, new_image, metadata=None, step_name="Edit"):
-
         x, y, w, h = self._roi
         img = np.asarray(new_image, dtype=np.float32, copy=False)
         base = self._parent_doc.image
@@ -476,7 +699,7 @@ class _RoiViewDocument(ImageDocument):
         if img.shape[:2] != (h, w):
             raise ValueError(f"Preview edit shape {img.shape[:2]} != ROI {(h, w)}")
 
-        # NEW: push current visible preview to local undo before overriding
+        # snapshot current visible preview for local undo
         self._pundo.append((self._current_preview_copy(), dict(self.metadata), step_name))
         self._predo.clear()
 
@@ -485,9 +708,13 @@ class _RoiViewDocument(ImageDocument):
             self.metadata.update(metadata)
         self.metadata.setdefault("step_name", step_name)
 
-        self.changed.emit()  # let listeners know the ROI doc changed
+        # 1) notify ROI listeners (e.g. the main window via _on_roi_changed)
+        try:
+            self.changed.emit()
+        except Exception:
+            pass
 
-        # repaint-only nudge (unchanged)
+        # 2) optionally: tell DocManager "ROI preview changed" using base doc + ROI
         dm = getattr(self, "_doc_manager", None)
         if dm is not None and hasattr(dm, "previewRepaintRequested"):
             try:
@@ -495,17 +722,6 @@ class _RoiViewDocument(ImageDocument):
             except Exception:
                 pass
 
-        dm = getattr(self, "_doc_manager", None)
-        if dm is not None:
-            vw = dm._active_view_widget()
-            if vw is not None:
-                try:
-                    if hasattr(vw, "refresh_from_docman") and callable(vw.refresh_from_docman):
-                        vw.refresh_from_docman()
-                    else:
-                        vw._render()
-                except Exception:
-                    pass
 
 
     def _parent(self):
@@ -688,7 +904,18 @@ class DocManager(QObject):
         self._docs: list[ImageDocument] = []
         self._active_doc: ImageDocument | None = None
         self._mdi: "QMdiArea | None" = None  # type: ignore
-        self.imageRegionUpdated.connect(self._invalidate_roi_cache)
+        def _on_region_updated(doc, roi):
+            vw = self._active_view_widget()
+            if vw is not None:
+                try:
+                    if hasattr(vw, "refresh_from_docman") and callable(vw.refresh_from_docman):
+                        vw.refresh_from_docman(doc=doc, roi=roi)
+                    else:
+                        vw._render()
+                except Exception:
+                    pass
+
+        self.imageRegionUpdated.connect(_on_region_updated)
         self._by_uid = {}
         self._focused_base_doc: ImageDocument | None = None  # <— NEW
 
@@ -823,14 +1050,17 @@ class DocManager(QObject):
                 vw = dm._active_view_widget()
                 if vw is not None:
                     try:
+                        # IMPORTANT: use the *parent* doc here, not the ROI wrapper
+                        base = getattr(doc, "_parent_doc", None) or doc
                         if hasattr(vw, "refresh_from_docman") and callable(vw.refresh_from_docman):
-                            vw.refresh_from_docman(doc=doc, roi=roi_tuple)
+                            vw.refresh_from_docman(doc=base, roi=roi_tuple)
                         else:
                             vw._render()
                     except Exception:
                         pass
 
             doc.changed.connect(_on_roi_changed)
+
             #print("[DocManager] ROI view document change signal connected")
         except Exception:
             print("[DocManager] Failed to connect ROI view document change signal")
@@ -838,6 +1068,20 @@ class DocManager(QObject):
 
         return doc
 
+    def commit_active_preview_to_parent(self, metadata: dict | None = None, step_name: str = "Edit"):
+        doc = self.get_active_document()
+        if isinstance(doc, _RoiViewDocument):
+            doc.commit_to_parent(None, metadata=metadata or {}, step_name=step_name)
+            # after commit, force an immediate view repaint
+            vw = self._active_view_widget()
+            if vw is not None:
+                try:
+                    if hasattr(vw, "refresh_from_docman") and callable(vw.refresh_from_docman):
+                        vw.refresh_from_docman(doc=doc._parent_doc, roi=None)
+                    else:
+                        vw._render()
+                except Exception:
+                    pass
 
     def wrap_document_for_view(self, view, base_doc: ImageDocument) -> LiveViewDocument:
         """Return a live, ROI-aware proxy for this view."""
@@ -1225,6 +1469,15 @@ class DocManager(QObject):
         doc.changed.emit()
 
     def duplicate_document(self, source_doc: ImageDocument, new_name: str | None = None) -> ImageDocument:
+        # DEBUG: log the source doc WCS before we touch anything
+        if _DEBUG_WCS:
+            try:
+                name = source_doc.display_name() if hasattr(source_doc, "display_name") else "<src>"
+            except Exception:
+                name = "<src>"
+            
+            _debug_log_wcs_context("  source.metadata", getattr(source_doc, "metadata", {}))
+
         img_copy = source_doc.image.copy() if source_doc.image is not None else None
 
         meta = dict(source_doc.metadata or {})
@@ -1243,6 +1496,9 @@ class DocManager(QObject):
             if k.startswith("_roi_") or k.endswith("_roi") or k == "roi":
                 meta.pop(k, None)
 
+        # NOTE: we intentionally DO NOT remove "roi_wcs_header" or "original_header"
+        # so that a ROI doc keeps its cropped WCS in the duplicate.
+
         # Safe bit depth / mono flags
         meta.setdefault("original_format", meta.get("original_format", "fits"))
         if isinstance(img_copy, np.ndarray):
@@ -1252,7 +1508,18 @@ class DocManager(QObject):
 
         dup = ImageDocument(img_copy, meta, parent=self.parent())
         self._register_doc(dup)
+
+        # DEBUG: log the duplicate doc WCS
+        if _DEBUG_WCS:
+            try:
+                dname = dup.display_name()
+            except Exception:
+                dname = "<dup>"
+
+            _debug_log_wcs_context("  duplicate.metadata", dup.metadata)
+
         return dup
+
     #def open_array(self, arr, metadata: dict | None = None, title: str | None = None) -> ImageDocument:
     #    import numpy as np
     ##    if arr is None:
@@ -1454,25 +1721,8 @@ class DocManager(QObject):
             img = img.astype(np.float32, copy=False)
 
         if isinstance(view_doc, _RoiViewDocument):
-            #print("[DocManager] update_active_document: updating ROI doc")
-            # Update ONLY the preview
+            # Update ONLY the preview; view repaint is driven by signals
             view_doc.apply_edit(img, dict(metadata or {}), step_name)
-
-            # 🔔 Force the active ImageSubWindow to repaint the Preview tab
-            vw = self._active_view_widget()
-            if vw is not None:
-                try:
-                    #print("[DocManager] update_active_document: refreshing active view for ROI doc")
-                    # Prefer a public slot if you have one; fall back to _render().
-                    if hasattr(vw, "refresh_from_docman") and callable(vw.refresh_from_docman):
-                        vw.refresh_from_docman(doc=view_doc, roi=getattr(view_doc, "_roi", None))
-                        #print("[DocManager] refresh_from_docman called")
-                    else:
-                        vw._render()  # fires immediately
-                        #print("[DocManager] _render() called")
-                except Exception:
-                    #print("[DocManager] Error occurred while refreshing active view")
-                    pass
             return
 
         # Full image path (unchanged)

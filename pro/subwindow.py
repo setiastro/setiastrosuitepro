@@ -220,6 +220,89 @@ def build_celestial_wcs(header) -> _AstroWCS | None:
 
     return None
 
+def _compute_cropped_wcs(parent_hdr_like, x, y, w, h):
+    """
+    Build a cropped WCS header from parent_hdr_like and ROI (x,y,w,h).
+
+    IMPORTANT:
+    - If the parent header already describes a cropped ROI (NAXIS1/2 already
+      equal to w/h, or the ROI is obviously outside the parent NAXIS), we
+      *do not* shift CRPIX again. We just return a copy of the parent header,
+      marking it as ROI-CROP if needed.
+    """
+    # Normalize ROI values to ints
+    x = int(x)
+    y = int(y)
+    w = int(w)
+    h = int(h)
+
+    # Same helper as before; safe on dict/FITS Header
+    try:
+        from astropy.io.fits import Header
+    except Exception:
+        Header = None
+
+    if Header is not None and isinstance(parent_hdr_like, Header):
+        base = {k: parent_hdr_like.get(k) for k in parent_hdr_like.keys()}
+    elif isinstance(parent_hdr_like, dict):
+        fk = parent_hdr_like.get("FITSKeywords")
+        if isinstance(fk, dict) and fk:
+            base = {}
+            for k, arr in fk.items():
+                try:
+                    base[k] = (arr or [{}])[0].get("value", None)
+                except Exception:
+                    pass
+        else:
+            base = dict(parent_hdr_like)
+    else:
+        base = {}
+
+    # ------------------------------------------------------------------
+    # Detect "already cropped" headers to avoid double-shifting CRPIX.
+    # ------------------------------------------------------------------
+    nax1 = base.get("NAXIS1")
+    nax2 = base.get("NAXIS2")
+
+    if isinstance(nax1, (int, float)) and isinstance(nax2, (int, float)):
+        n1 = int(nax1)
+        n2 = int(nax2)
+
+        # Case A: parent already has same size as requested ROI,
+        # but x,y are non-zero → this smells like ROI-of-ROI.
+        if w == n1 and h == n2 and (x != 0 or y != 0):
+
+            base["NAXIS1"], base["NAXIS2"] = n1, n2
+            base.setdefault("CROPX", 0)
+            base.setdefault("CROPY", 0)
+            base.setdefault("SASKIND", "ROI-CROP")
+            return base
+
+        # Case B: ROI clearly outside parent dimensions → also treat as
+        # "already cropped, don't touch CRPIX".
+        if x >= n1 or y >= n2 or x + w > n1 or y + h > n2:
+
+            base["NAXIS1"], base["NAXIS2"] = n1, n2
+            base.setdefault("CROPX", 0)
+            base.setdefault("CROPY", 0)
+            base.setdefault("SASKIND", "ROI-CROP")
+            return base
+
+    # ------------------------------------------------------------------
+    # Normal behavior: real crop relative to full-frame parent.
+    # ------------------------------------------------------------------
+    c1, c2 = base.get("CRPIX1"), base.get("CRPIX2")
+    if isinstance(c1, (int, float)) and isinstance(c2, (int, float)):
+        base["CRPIX1"] = float(c1) - float(x)
+        base["CRPIX2"] = float(c2) - float(y)
+
+    base["NAXIS1"], base["NAXIS2"] = w, h
+    base["CROPX"], base["CROPY"] = x, y
+    base["SASKIND"] = "ROI-CROP"
+    return base
+
+
+
 class ImageSubWindow(QWidget):
     aboutToClose = pyqtSignal(object)
     autostretchChanged = pyqtSignal(bool)
@@ -1362,7 +1445,29 @@ class ImageSubWindow(QWidget):
             "autostretch": bool(self.autostretch_enabled),
             "autostretch_target": float(self.autostretch_target),
         }
-        state.update(self._drag_identity_fields())             # ← NEW: uid + base_uid + file_path
+        state.update(self._drag_identity_fields())             # uid + base_uid + file_path
+
+        # --- NEW: annotate ROI/source_kind so drop knows this came from a Preview tab
+        roi = None
+        try:
+            if hasattr(self, "has_active_preview") and self.has_active_preview():
+                r = self.current_preview_roi()  # (x,y,w,h) in full-image coords
+                if r and len(r) == 4:
+                    roi = tuple(map(int, r))
+        except Exception:
+            roi = None
+
+        if roi:
+            state["roi"] = roi
+            state["source_kind"] = "roi-preview"
+            try:
+                pname = self.current_preview_name()
+            except Exception:
+                pname = None
+            if pname:
+                state["preview_name"] = str(pname)
+        else:
+            state["source_kind"] = "full"
 
         md = QMimeData()
         md.setData(MIME_VIEWSTATE, QByteArray(json.dumps(state).encode("utf-8")))
@@ -1370,10 +1475,9 @@ class ImageSubWindow(QWidget):
         drag = QDrag(self)
         drag.setMimeData(md)
         if self.label.pixmap():
-            drag.setPixmap(self.label.pixmap().scaled(
-                64, 64, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
-            drag.setHotSpot(QPoint(16, 16))
-        drag.exec(Qt.DropAction.CopyAction)
+            drag.setPixmap(self.label.pixmap())
+        drag.exec()
+
 
 
     def _start_mask_drag(self):
@@ -1932,11 +2036,13 @@ class ImageSubWindow(QWidget):
                     self.label.resize(scaled.size())
                     return
 
+                display_h, display_w = base_img.shape[:2]
+
                 # Pixel scales and FOV using celestial WCS
                 px_scales_deg = proj_plane_pixel_scales(wcs2)  # deg/pix for the two celestial axes
                 px_deg = float(max(px_scales_deg[0], px_scales_deg[1]))
 
-                H_full, W_full = self.document.image.shape[:2]
+                H_full, W_full = display_h, display_w
                 fov_deg = px_deg * float(max(W_full, H_full))
 
                 # Choose grid spacing from prefs (or auto heuristic)
@@ -2442,20 +2548,143 @@ class ImageSubWindow(QWidget):
         arcsec = total_seconds % 60.0
         return f"{sign}{deg:02d}:{arcmin:02d}:{arcsec:05.2f}"
 
-    def _get_celestial_wcs(self):
-        """
-        Return a 2-D celestial WCS to support readouts/overlays.
-        """
-        w = self._extract_wcs_from_doc()
-        if w is None:
-            return None
+    # 1) helper to build ROI-adjusted WCS (keeps projection/rotation/CD/PC intact)
+    def _wcs_for_roi(self, base_wcs, roi, arr_shape=None):
+        # roi = (x, y, w, h) in FULL-image pixel coords
+        import numpy as np
+        if base_wcs is None or roi is None:
+            return base_wcs
+        x, y, w, h = map(int, roi)
+        wnew = base_wcs.deepcopy()
+        # shift reference pixel into the cropped frame
+        wnew.wcs.crpix = wnew.wcs.crpix - np.array([float(x), float(y)], dtype=float)
+        # tell astropy the new image size for grid/edge computations
         try:
-            wc = getattr(w, "celestial", None)
-            if wc is not None and getattr(wc, "naxis", 2) == 2:
-                return wc
+            wnew.array_shape = (h, w)
+            wnew.pixel_shape = (w, h)
         except Exception:
             pass
-        return w
+        # prefer 2-D celestial
+        try:
+            cel = getattr(wnew, "celestial", None)
+            if cel is not None and getattr(cel, "naxis", 2) == 2:
+                return cel
+        except Exception:
+            pass
+        return wnew
+
+
+    # 2) make _get_celestial_wcs ROI-aware
+    def _get_celestial_wcs(self):
+        """
+        Return the *correct* celestial WCS for whatever the user is actually
+        seeing in this view.
+
+        - On the Full tab: just use the document's WCS / header.
+        - On a Preview tab: prefer the ROI backing doc's WCS from DocManager.
+          If that's not available, synthesize a cropped header from the base
+          header + preview ROI via _compute_cropped_wcs().
+        """
+        doc = getattr(self, "document", None)
+        if doc is None:
+            return None
+
+        # -----------------------------
+        # FULL IMAGE (no preview active)
+        # -----------------------------
+        if not self.has_active_preview():
+            meta = getattr(doc, "metadata", {}) or {}
+            w = meta.get("wcs")
+            if isinstance(w, _AstroWCS):
+                try:
+                    wc = getattr(w, "celestial", None)
+                    return wc if (wc is not None and getattr(wc, "naxis", 2) == 2) else w
+                except Exception:
+                    return w
+
+            hdr = (
+                meta.get("original_header")
+                or meta.get("fits_header")
+                or meta.get("header")
+            )
+            if hdr is None:
+                return None
+
+            w = build_celestial_wcs(hdr)
+            if w is not None:
+                meta["wcs"] = w
+            return w
+
+        # -----------------------------
+        # PREVIEW TAB (ROI view)
+        # -----------------------------
+        roi = self.current_preview_roi()
+        if roi is None:
+            return None
+
+        # Base document is the full image doc; backing_doc may be the ROI doc
+        base_doc = getattr(self, "base_document", None) or doc
+        base_meta = getattr(base_doc, "metadata", {}) or {}
+
+        dm = getattr(self, "_docman", None)
+        backing_doc = None
+        if dm is not None:
+            try:
+                backing_doc = dm.get_document_for_view(self)
+            except Exception:
+                backing_doc = None
+
+        # 1) If DocManager has a separate ROI doc for this view, use ITS WCS
+        if backing_doc is not None and backing_doc is not base_doc:
+            bmeta = getattr(backing_doc, "metadata", {}) or {}
+            w = bmeta.get("wcs")
+            if isinstance(w, _AstroWCS):
+                try:
+                    wc = getattr(w, "celestial", None)
+                    return wc if (wc is not None and getattr(wc, "naxis", 2) == 2) else w
+                except Exception:
+                    return w
+
+            hdr = (
+                bmeta.get("original_header")
+                or bmeta.get("fits_header")
+                or bmeta.get("header")
+            )
+            if hdr is not None:
+                w = build_celestial_wcs(hdr)
+                if w is not None:
+                    bmeta["wcs"] = w
+                    return w
+
+        # 2) Fallback: synthesize cropped WCS from base header + ROI
+        hdr_full = (
+            base_meta.get("original_header")
+            or base_meta.get("fits_header")
+            or base_meta.get("header")
+        )
+        if hdr_full is None:
+            return None
+
+        cache_key = f"_preview_wcs_{self._active_preview_id}"
+        cached = base_meta.get(cache_key)
+        if isinstance(cached, _AstroWCS):
+            try:
+                wc = getattr(cached, "celestial", None)
+                return wc if (wc is not None and getattr(wc, "naxis", 2) == 2) else cached
+            except Exception:
+                pass
+
+        try:
+            x, y, w, h = map(int, roi)
+            cropped_hdr = _compute_cropped_wcs(hdr_full, x, y, w, h)
+            wcs = build_celestial_wcs(cropped_hdr)
+        except Exception:
+            wcs = None
+
+        if wcs is not None:
+            base_meta[cache_key] = wcs
+        return wcs
+
 
     def _extract_wcs_from_doc(self):
         """
