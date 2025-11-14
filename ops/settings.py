@@ -1,7 +1,7 @@
 # ops.settings.py
 from PyQt6.QtWidgets import (
-    QLineEdit, QDialogButtonBox, QFileDialog, QDialog, QPushButton, QFormLayout,
-    QHBoxLayout, QVBoxLayout, QWidget, QCheckBox, QComboBox, QSpinBox, QDoubleSpinBox, QLabel)
+    QLineEdit, QDialogButtonBox, QFileDialog, QDialog, QPushButton, QFormLayout,QApplication,
+    QHBoxLayout, QVBoxLayout, QWidget, QCheckBox, QComboBox, QSpinBox, QDoubleSpinBox, QLabel, QColorDialog, QFontDialog)
 from PyQt6.QtCore import QSettings, Qt
 import pytz  # for timezone list
 
@@ -63,9 +63,21 @@ class SettingsDialog(QDialog):
         )
 
         self.cb_theme = QComboBox()
-        self.cb_theme.addItems(["Dark", "Light", "System"])
+        # Order: Dark, Gray, Light, System, Custom
+        self.cb_theme.addItems(["Dark", "Gray", "Light", "System", "Custom"])
+
         theme_val = (self.settings.value("ui/theme", "system", type=str) or "system").lower()
-        self.cb_theme.setCurrentIndex({"dark": 0, "light": 1, "system": 2}.get(theme_val, 2))
+        index_map = {"dark": 0, "gray": 1, "light": 2, "system": 3, "custom": 4}
+        self.cb_theme.setCurrentIndex(index_map.get(theme_val, 2))
+
+        # "Customize…" button for custom theme
+        self.btn_theme_custom = QPushButton("Customize…")
+        self.btn_theme_custom.setToolTip("Edit custom colors and font")
+        self.btn_theme_custom.setEnabled(theme_val == "custom")
+        self.btn_theme_custom.clicked.connect(self._open_theme_editor)
+
+        # Keep button enabled state in sync with combo
+        self.cb_theme.currentIndexChanged.connect(self._on_theme_changed)
 
         self.le_graxpert.setText(self.settings.value("paths/graxpert", "", type=str))
         self.le_cosmic.setText(self.settings.value("paths/cosmic_clarity", "", type=str))
@@ -135,7 +147,12 @@ class SettingsDialog(QDialog):
         w = QWidget(); w.setLayout(row_astap); left_col.addRow("ASTAP executable:", w)
         left_col.addRow("Astrometry.net API key:", self.le_astrometry)
         left_col.addRow(self.chk_save_shortcuts)
-        left_col.addRow("Theme:", self.cb_theme)
+        row_theme = QHBoxLayout()
+        row_theme.addWidget(self.cb_theme, 1)
+        row_theme.addWidget(self.btn_theme_custom)
+        w_theme = QWidget()
+        w_theme.setLayout(row_theme)
+        left_col.addRow("Theme:", w_theme)
 
         # ---- Right column: WIMS + RA/Dec + Updates + Display ----
         right_col.addRow(QLabel("<b>What's In My Sky — Defaults</b>"))
@@ -224,6 +241,19 @@ class SettingsDialog(QDialog):
             except Exception:
                 pass
 
+    def _on_theme_changed(self, idx: int):
+        # Enable the "Customize…" button only when Custom is selected
+        text = self.cb_theme.currentText().lower()
+        self.btn_theme_custom.setEnabled(text == "custom")
+
+    def _open_theme_editor(self):
+        from PyQt6.QtWidgets import QDialog
+        dlg = ThemeEditorDialog(self, self.settings)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            # If user saved a custom theme, make sure "Custom" is selected
+            self.cb_theme.setCurrentIndex(4)  # Custom
+
+
     def _save_and_accept(self):
         # Paths / Integrations
         self.settings.setValue("paths/graxpert", self.le_graxpert.text().strip())
@@ -256,7 +286,16 @@ class SettingsDialog(QDialog):
 
         # Theme
         idx = max(0, self.cb_theme.currentIndex())
-        theme_val = "dark" if idx == 0 else ("light" if idx == 1 else "system")
+        if idx == 0:
+            theme_val = "dark"
+        elif idx == 1:
+            theme_val = "gray"
+        elif idx == 2:
+            theme_val = "light"
+        elif idx == 3:
+            theme_val = "system"
+        else:
+            theme_val = "custom"
         self.settings.setValue("ui/theme", theme_val)
 
         self.settings.sync()
@@ -269,4 +308,118 @@ class SettingsDialog(QDialog):
             except Exception:
                 pass
 
+        self.accept()
+
+from PyQt6.QtGui import QColor, QFont
+
+
+class ThemeEditorDialog(QDialog):
+    """
+    Simple "Custom Theme" editor: lets the user pick main colors and a UI font.
+    Colors are stored in QSettings as hex strings (e.g. '#404040').
+    """
+    def __init__(self, parent, settings: QSettings):
+        super().__init__(parent)
+        self.settings = settings
+        self.setWindowTitle("Custom Theme")
+        self.colors: dict[str, QColor] = {}
+        self.font_str: str = self.settings.value("ui/custom/font", "", type=str) or ""
+
+        form = QFormLayout(self)
+
+        # Helper: add color pickers for key roles
+        self._add_color_picker(form, "Window / Panels",   "ui/custom/window",   QColor(40, 40, 40))
+        self._add_color_picker(form, "Base (Editors)",    "ui/custom/base",     QColor(24, 24, 24))
+        self._add_color_picker(form, "Alternate Base",    "ui/custom/altbase",  QColor(32, 32, 32))
+        self._add_color_picker(form, "Text",              "ui/custom/text",     QColor(230, 230, 230))
+        self._add_color_picker(form, "Buttons",           "ui/custom/button",   QColor(40, 40, 40))
+        self._add_color_picker(form, "Highlight / Accent","ui/custom/highlight",QColor(30, 144, 255))
+        self._add_color_picker(form, "Link",              "ui/custom/link",     QColor(120, 170, 255))
+        self._add_color_picker(form, "Visited Link",      "ui/custom/link_visited", QColor(180, 150, 255))
+
+        # Font picker
+        self.btn_font = QPushButton("Choose…")
+        self.btn_font.clicked.connect(self._pick_font)
+        form.addRow("UI Font:", self.btn_font)
+
+        # Buttons
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            parent=self
+        )
+        btns.accepted.connect(self._save_and_accept)
+        btns.rejected.connect(self.reject)
+        form.addRow(btns)
+
+    # ---------- helpers ----------
+
+    def _add_color_picker(self, form: QFormLayout, label_text: str,
+                          key: str, default: QColor):
+        # Load from settings or default
+        stored = self.settings.value(key, default.name(), type=str)
+        color = QColor(stored) if stored else default
+        self.colors[key] = color
+
+        btn = QPushButton(color.name())
+        btn.setMinimumWidth(90)
+        btn.setStyleSheet(f"background-color: {color.name()}; color: #ffffff;")
+        btn.clicked.connect(lambda _=False, k=key, b=btn: self._pick_color(k, b))
+
+        form.addRow(label_text + ":", btn)
+
+    def _pick_color(self, key: str, button: QPushButton):
+        initial = self.colors.get(key, QColor("#404040"))
+        col = QColorDialog.getColor(initial, self, "Select Color")
+        if col.isValid():
+            self.colors[key] = col
+            button.setText(col.name())
+            button.setStyleSheet(f"background-color: {col.name()}; color: #ffffff;")
+
+    from PyQt6.QtGui import QFont
+    from PyQt6.QtWidgets import QFontDialog
+
+    def _pick_font(self):
+        # Load previous font if we have one
+        base_str = self.settings.value("ui/custom_font", "", type=str)
+        base_font = QFont()
+        if base_str:
+            try:
+                base_font.fromString(base_str)
+            except Exception:
+                pass
+
+        # ✅ NOTE: (font, ok) — NOT (ok, font)
+        font, ok = QFontDialog.getFont(base_font, self, "Select UI Font")
+        if not ok:
+            return  # user cancelled
+
+        # Store and update preview
+        self.font_str = font.toString()
+        self.settings.setValue("ui/custom_font", self.font_str)
+        self.settings.sync()
+
+        # If you have a label/button to show the chosen font:
+        try:
+            self.font_button.setText(f"{font.family()}, {font.pointSize()} pt")
+        except Exception:
+            pass
+
+        # Re-apply theme so the new font takes effect
+        parent = self.parent()
+        if parent and hasattr(parent, "apply_theme_from_settings"):
+            try:
+                parent.apply_theme_from_settings()
+            except Exception:
+                pass
+
+    def _save_and_accept(self):
+        # Persist colors
+        for key, col in self.colors.items():
+            self.settings.setValue(key, col.name())
+
+        # Persist font if chosen
+        if self.font_str:
+            self.settings.setValue("ui/custom/font", self.font_str)
+
+        self.settings.sync()
         self.accept()
