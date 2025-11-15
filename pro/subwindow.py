@@ -677,11 +677,18 @@ class ImageSubWindow(QWidget):
 
 
     def _install_history_watchers(self):
-        # disconnect old
+        # disconnect old history doc
         hd = getattr(self, "_history_doc", None)
         if hd is not None and hasattr(hd, "changed"):
-            try: hd.changed.disconnect(self._refresh_local_undo_buttons)
-            except Exception: pass
+            try:
+                hd.changed.disconnect(self._on_history_doc_changed)
+            except Exception:
+                pass
+            # in case older builds were wired directly:
+            try:
+                hd.changed.disconnect(self._refresh_local_undo_buttons)
+            except Exception:
+                pass
 
         # resolve new history doc (ROI when on Preview tab, else base)
         new_hd = self._resolve_history_doc()
@@ -689,8 +696,10 @@ class ImageSubWindow(QWidget):
 
         # connect new
         if new_hd is not None and hasattr(new_hd, "changed"):
-            try: new_hd.changed.connect(self._refresh_local_undo_buttons)
-            except Exception: pass
+            try:
+                new_hd.changed.connect(self._on_history_doc_changed)
+            except Exception:
+                pass
 
         # make the buttons correct right now
         self._refresh_local_undo_buttons()
@@ -1777,6 +1786,15 @@ class ImageSubWindow(QWidget):
         # Full-image changes (or unknown) → rebuild our pixmap
         QTimer.singleShot(0, lambda: (self._render(rebuild=True), self._refresh_local_undo_buttons()))
 
+    def _on_history_doc_changed(self):
+        """
+        Called when the current history document (full or ROI) changes.
+        Ensures the pixmap is rebuilt immediately, including when a
+        tool operates on a Preview/ROI doc.
+        """
+        QTimer.singleShot(0, lambda: (self._render(rebuild=True),
+                                      self._refresh_local_undo_buttons()))
+
     def _on_doc_region_updated(self, doc, roi_tuple_or_none):
         # Only react if it’s our base doc
         base = getattr(self, "base_document", None) or getattr(self, "document", None)
@@ -1864,6 +1882,20 @@ class ImageSubWindow(QWidget):
         - Never reslice from the parent/full image here.
         - Keep a strong reference to the numpy buffer that backs the QImage.
         """
+        # ---- GUARD: widget/label may be deleted but document.changed still fires ----
+        try:
+            from PyQt6 import sip as _sip
+            # If the whole widget or its label is gone, bail immediately
+            if _sip.isdeleted(self):
+                return
+            lbl = getattr(self, "label", None)
+            if lbl is None or _sip.isdeleted(lbl):
+                return
+        except Exception:
+            # If sip or label is missing for any reason, play it safe
+            if not hasattr(self, "label"):
+                return
+        # ---------------------------------------------------------------------------        
         # ---------------------------
         # 1) Choose & sync source arr
         # ---------------------------
