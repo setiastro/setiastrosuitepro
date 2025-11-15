@@ -1,9 +1,9 @@
 {
-  "version": "1.4.14",
+  "version": "1.4.15",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.14/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.14/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.14/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.15/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.15/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.15/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.4.14 Added modified astrometric solutions for any ROI/preview if the parent had an astrometric solution. Stacking setting profiles. Gray and Custom color Themes.  Reverted star alignment to be less resource intense while still doing robust distortion correction. For highly spatially non-flat images I still need better distortion.  Fixed Stat curves boost to be the original SASv2 curves boost logic. Fixed mask bug in Star Spike adder. Other bug fixes."
+  "notes": "Seti Astro Suite Pro V1.4.15 Image Resizing (snapping) bug fix. CC sharpen channels separately option exposed. Automatic Fit to Preview option under Fit on toolbar. Bug fixes around ROI duplication."
 }
