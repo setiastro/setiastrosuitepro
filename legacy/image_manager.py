@@ -17,6 +17,34 @@ except Exception:
     class VerifyError(Exception):
         pass
 
+def _drop_invalid_cards(header: fits.Header) -> fits.Header:
+    """
+    Return a copy of the FITS header with any cards that raise VerifyError removed.
+    This prevents 'Unparsable card (FOO)' from blowing up later on .value access.
+    """
+    if not isinstance(header, fits.Header):
+        return header
+
+    hdr = header.copy()
+    bad_keys = []
+    for card in list(hdr.cards):
+        try:
+            # Accessing .value is what triggers VerifyError for bad cards
+            _ = card.value
+        except VerifyError as e:
+            print(f"[ImageManager] Dropping invalid FITS card {card.keyword!r}: {e}")
+            bad_keys.append(card.keyword)
+
+    for key in bad_keys:
+        try:
+            del hdr[key]
+        except Exception:
+            pass
+
+    return hdr
+
+
+
 try:
     import rawpy
 
@@ -1185,6 +1213,8 @@ def get_valid_header(file_path):
 
         # Start with a copy of the image HDU header
         composite_header = image_hdu.header.copy()
+        # Drop any cards that will raise VerifyError later (e.g. broken TELESCOP)
+        composite_header = _drop_invalid_cards(composite_header)
 
 
         # Now search all HDUs for extra keywords (e.g. BAYERPAT)
@@ -1338,13 +1368,13 @@ def save_image(img_array,
                 hdr = fits.Header()
                 hdr["SIMPLE"] = True
                 hdr["BITPIX"] = -32
-                hdr["NAXIS"] = 3 if is_rgb else 2
+                hdr["NAXIS"]  = 3 if is_rgb else 2
                 hdr["NAXIS1"] = w
                 hdr["NAXIS2"] = h
                 if is_rgb:
                     hdr["NAXIS3"] = 3
                 hdr["BSCALE"] = 1.0
-                hdr["BZERO"] = 0.0
+                hdr["BZERO"]  = 0.0
                 hdr["CREATOR"] = "Seti Astro Suite Pro"
                 hdr.add_history("Written by Seti Astro Suite Pro")
                 return hdr
@@ -1352,10 +1382,9 @@ def save_image(img_array,
             h, w = img_array.shape[:2]
             is_rgb = (img_array.ndim == 3 and img_array.shape[2] == 3)
 
-            # Build header
+            # Build header (same as you already had)
             if is_xisf:
                 fits_header = fits.Header()
-                # read props from dict or list-of-dicts
                 props = None
                 if isinstance(image_meta, dict):
                     props = image_meta.get("XISFProperties")
@@ -1385,10 +1414,15 @@ def save_image(img_array,
                 fits_header.setdefault("CTYPE2", "DEC--TAN")
 
             elif _is_header_obj(original_header):
-                # Sanitize provided header (FITS.Header or dict)
-                src_items = (original_header.items()
-                             if isinstance(original_header, fits.Header)
-                             else original_header.items())
+                # Clean up any invalid cards first (e.g. TELESCOP with bad value)
+                if isinstance(original_header, fits.Header):
+                    safe_header = _drop_invalid_cards(original_header)
+                    src_items = safe_header.items()
+                else:
+                    # dict-like metadata – assumed already safe
+                    safe_header = original_header
+                    src_items = safe_header.items()
+
                 fits_header = fits.Header()
                 for key, value in src_items:
                     if isinstance(key, str) and key.startswith("XISF:"):
@@ -1400,7 +1434,7 @@ def save_image(img_array,
                     try:
                         fits_header[key] = value
                     except Exception:
-                        # skip keys astropy can't serialize
+                        # skip keys Astropy can't serialize
                         pass
             else:
                 fits_header = _minimal_fits_header(h, w, is_rgb)
@@ -1428,44 +1462,51 @@ def save_image(img_array,
                 if "NAXIS3" in fits_header:
                     del fits_header["NAXIS3"]
 
+            # --- NEW: robust write with cleanup + minimal-header fallback ---
             hdu = fits.PrimaryHDU(data_to_write, header=fits_header)
 
-            # Try to write; if Astropy complains about an invalid card (e.g. TELESCOP),
-            # try to auto-fix the header and retry once.
             try:
+                # First try: straight write
                 hdu.writeto(filename, overwrite=True)
+
             except VerifyError as ve:
                 print(f"FITS header verify error while saving {filename}: {ve}")
-                print("Attempting header auto-fix via hdu.verify('fix')...")
+                print("Attempting header auto-fix via hdu.verify('fix') and manual cleanup...")
 
+                # 1) Let Astropy try to fix in-place
                 try:
-                    # Let Astropy attempt to repair bad cards in-place
                     hdu.verify('fix')
                 except Exception as ve2:
-                    print(f"hdu.verify('fix') failed: {ve2}. "
-                          "Attempting to drop invalid cards manually.")
+                    print(f"hdu.verify('fix') raised: {ve2}")
 
-                    # Brutal but safe: remove any cards that still can't be stringified
-                    bad_keys = []
-                    for card in list(hdu.header.cards):
-                        try:
-                            # This will trigger any parsing/verification for the card
-                            _ = str(card)
-                        except Exception:
-                            bad_keys.append(card.keyword)
+                # 2) Brutal cleanup: drop any cards that still can't be stringified
+                bad_keys = []
+                for card in list(hdu.header.cards):
+                    try:
+                        _ = str(card)
+                    except Exception:
+                        bad_keys.append(card.keyword)
+                for key in bad_keys:
+                    try:
+                        del hdu.header[key]
+                        print(f"Dropped invalid FITS header card {key!r}")
+                    except Exception:
+                        pass
 
-                    for key in bad_keys:
-                        try:
-                            del hdu.header[key]
-                            print(f"Dropped invalid FITS header card {key!r}")
-                        except Exception:
-                            pass
+                # 3) Retry write; if it still fails, fall back to minimal header
+                try:
+                    hdu.writeto(filename, overwrite=True)
+                except VerifyError as ve3:
+                    print(f"Still failing after cleanup: {ve3}")
+                    print("Falling back to minimal FITS header (dropping all original cards).")
 
-                # Retry save once after fixes
-                hdu.writeto(filename, overwrite=True)
+                    clean_header = _minimal_fits_header(h, w, is_rgb)
+                    hdu2 = fits.PrimaryHDU(data_to_write, header=clean_header)
+                    hdu2.writeto(filename, overwrite=True)
 
             print(f"Saved FITS image to: {filename}")
             return
+
 
         # ---------------------------------------------------------------------
         # RAW inputs — not writable; convert to FITS (float32)
