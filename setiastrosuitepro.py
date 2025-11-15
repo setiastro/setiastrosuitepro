@@ -308,7 +308,7 @@ from imageops.mdi_snap import MdiSnapController
 from pro.fitsmodifier import BatchFITSHeaderDialog
 
 
-VERSION = "1.4.14"
+VERSION = "1.4.15"
 
 
 
@@ -1095,7 +1095,14 @@ class AstroSuiteProMainWindow(QMainWindow):
         self._pre_minimize_state = None
         self._dock_vis_intended: dict[str, bool] = {}   # last known intended visibility per dock
         self._last_good_state: QByteArray | None = None
+        auto_on = self.settings.value("view/auto_fit_on_resize", False, type=bool)
+        self._auto_fit_on_resize = bool(auto_on)
 
+        # Debounce timer for auto-fit on resize
+        self._auto_fit_timer = QTimer(self)
+        self._auto_fit_timer.setSingleShot(True)
+        self._auto_fit_timer.setInterval(200)  # ms: tweak if you want snappier/slower
+        self._auto_fit_timer.timeout.connect(self._apply_auto_fit_resize)
         # Core
         self.doc_manager = DocManager(image_manager=image_manager, parent=self)
         self.docman = self.doc_manager  # legacy alias for older code
@@ -1271,14 +1278,18 @@ class AstroSuiteProMainWindow(QMainWindow):
         dm = self.doc_manager
 
         # ---- 1) Get pixels from the preview doc ----
+
         arr = getattr(preview_doc, "image", None)
         if arr is None:
-
+            
             return
 
         H, W = arr.shape[:2]
 
+
         roi = st.get("roi") or [0, 0, W, H]
+
+
         if len(roi) != 4:
 
             x = y = 0
@@ -1286,15 +1297,17 @@ class AstroSuiteProMainWindow(QMainWindow):
         else:
             x, y, w, h = map(int, roi)
 
+
         # NOTE: roi in the drag state is in *full-frame* coords; the preview is
         # already cropped. Cropping again with (x, y) would be wrong and often OOB,
         # so we just use the entire preview image as the final crop.
         crop = arr.copy()
 
 
-
         # ---- 2) Build metadata from the preview, stripping preview/ROI flags ----
         pmeta = getattr(preview_doc, "metadata", {}) or {}
+
+
         meta = {
             k: v
             for k, v in pmeta.items()
@@ -1307,201 +1320,387 @@ class AstroSuiteProMainWindow(QMainWindow):
             )
         }
 
+
+        # Mark that this document is a *promoted ROI* doc so later DnD
+        # knows it's already a standalone image and should just duplicate it.
+        meta["is_roi_doc"] = True
+
+
         # Mono / bit-depth flags
         meta["is_mono"] = bool(
             crop.ndim == 2 or (crop.ndim == 3 and crop.shape[2] == 1)
         )
         meta["bit_depth"] = meta.get("bit_depth", "32-bit floating point")
 
+
         # ---- 3) Build a nice display name without "(Preview)" chained on ----
         # e.g. "andromedasolved.fit (Preview) [ROI 1793,1067,1132×954]"
         disp = preview_doc.display_name() if hasattr(preview_doc, "display_name") else ""
+
+
         # Strip any existing "[ROI ...]" suffix
         if "[ROI" in disp:
             disp = disp.split("[ROI", 1)[0].rstrip()
+
         # Strip " (Preview)" if present
         if " (Preview)" in disp:
             disp = disp.split(" (Preview)", 1)[0].rstrip()
+
         if not disp:
             disp = pmeta.get("display_name") or "Untitled"
 
+
         meta["display_name"] = f"{disp} [ROI {x},{y},{w}×{h}]"
+
 
         # ---- 4) Use the preview's ROI header as the *primary* header ----
         from astropy.wcs import WCS
 
-        roi_hdr = (
-            pmeta.get("roi_header")
-            or pmeta.get("original_header")
+        roi_hdr = pmeta.get("roi_header")
+        base_hdr = (
+            pmeta.get("original_header")
             or pmeta.get("fits_header")
             or pmeta.get("header")
         )
 
-        if roi_hdr is not None:
-            # Make sure NAXIS1/2 match the actual crop size
-            roi_hdr["NAXIS1"] = int(W)
-            roi_hdr["NAXIS2"] = int(H)
 
-            meta["original_header"] = roi_hdr
-            meta["fits_header"] = roi_hdr
-            meta["header"] = roi_hdr  # HeaderViewer sees this
+        if roi_hdr is not None:
+
+            # We have a true ROI header created by the preview machinery.
+            # Work on a copy so we don't mutate the original in-place.
+            hdr = roi_hdr.copy()
+            hdr["NAXIS1"] = int(W)
+            hdr["NAXIS2"] = int(H)
+
+            meta["original_header"] = hdr
+            meta["fits_header"] = hdr
+            meta["header"] = hdr  # HeaderViewer sees this
+
 
             # Build WCS directly from this already-cropped header
             try:
-                meta["wcs"] = WCS(roi_hdr)
+                meta["wcs"] = WCS(hdr)
+
             except Exception as e:
-                print("[Main] ROI promotion: WCS(roi_hdr) failed:", e)
+
+                # Fallback: reuse any existing WCS object if one was stored
+                w_existing = (
+                    pmeta.get("roi_wcs")
+                    or pmeta.get("wcs")
+                    or pmeta.get("original_wcs")
+                )
+
+                if w_existing is not None:
+                    meta["wcs"] = w_existing
+
 
             # Optional: snapshot for project I/O / header viewer
             try:
                 from pro.doc_manager import _dm_json_sanitize
                 meta["__header_snapshot__"] = {
                     "format": "dict",
-                    "items": {str(k): _dm_json_sanitize(v) for k, v in roi_hdr.items()},
+                    "items": {str(k): _dm_json_sanitize(v) for k, v in hdr.items()},
                 }
+
             except Exception as e:
-                print("[Main] ROI promotion: header snapshot failed:", e)
+
                 meta.pop("__header_snapshot__", None)
 
+        else:
+
+            # No dedicated roi_header: this is either a "plain" doc or a
+            # promoted ROI doc. Do NOT try to re-derive WCS from the header,
+            # since it may contain non-WCS strings like:
+            #   "Calibrated: bias/dark sub, flat division."
+            #
+            # Instead, just:
+            #   - propagate any existing WCS object
+            #   - copy whatever header we have and fix NAXIS1/2
+            w_existing = (
+                pmeta.get("roi_wcs")
+                or pmeta.get("wcs")
+                or pmeta.get("original_wcs")
+            )
+
+            if w_existing is not None:
+                meta["wcs"] = w_existing
+
+
+            if base_hdr is not None:
+                hdr = base_hdr.copy()
+                hdr["NAXIS1"] = int(W)
+                hdr["NAXIS2"] = int(H)
+
+                meta["original_header"] = hdr
+                meta["fits_header"] = hdr
+                meta["header"] = hdr
+
+
+                # Snapshot is optional here; no WCS rebuild
+                try:
+                    from pro.doc_manager import _dm_json_sanitize
+                    meta["__header_snapshot__"] = {
+                        "format": "dict",
+                        "items": {str(k): _dm_json_sanitize(v) for k, v in hdr.items()},
+                    }
+
+                except Exception as e:
+
+                    meta.pop("__header_snapshot__", None)
+
         # ---- 5) Create a real ImageDocument so Explorer sees it as a normal doc ----
+
         new_doc = dm.open_array(crop, metadata=meta, title=meta.get("display_name"))
+
+
         # IMPORTANT: do NOT call any "rebuild cropped WCS" helpers here.
         # We already have a correct, final ROI header.
 
         # ---- 6) Find the subwindow that doc_manager already spawned ----
         sw = None
         try:
+
             for sub in self.mdi.subWindowList():
                 w = sub.widget() if hasattr(sub, "widget") else None
                 d = getattr(w, "document", None)
+                # DEBUG: print each candidate
+
                 if d is new_doc:
                     sw = sub
+
                     break
+            if sw is None:
+                pass
         except Exception as e:
             print("[Main] ROI promotion: error searching for subwindow:", e)
 
-        # If for some reason doc_manager did NOT spawn a subwindow, fall back.
-        #if sw is None:
-        #    sw = self._spawn_subwindow_for(new_doc, force_new=True)
-
         # ---- 7) Apply viewstate to that subwindow ----
         if sw and hasattr(sw, "widget"):
+
             wv = sw.widget()
             if st.get("autostretch") and hasattr(wv, "set_autostretch"):
+
                 wv.set_autostretch(True)
                 if hasattr(wv, "set_autostretch_target"):
                     wv.set_autostretch_target(float(st.get("autostretch_target", 0.25)))
             if hasattr(wv, "set_view_transform"):
+
                 wv.set_view_transform(
                     float(st.get("scale", 1.0)),
                     int(st.get("hval", 0)),
                     int(st.get("vval", 0)),
                     from_link=False,
                 )
+        else:
+            pass
+
+
 
 
     def _on_mdi_viewstate_drop(self, st: dict, target_sw: object | None):
         dm = self.doc_manager
         doc = None
 
-        # ─────────────────────────────────────────────
-        # 1) Strongest signal: doc_ptr from the source
-        #    subwindow. We want the *exact* document
-        #    backing that view (ROI, preview, or full).
-        # ─────────────────────────────────────────────
-        doc_ptr = st.get("doc_ptr")
+
+
+        # Prefer *stable* identifiers over the proxy pointer
         uid     = st.get("doc_uid")
-        fpath   = st.get("file_path") or ""
+        doc_ptr = st.get("doc_ptr")
+        fpath   = (st.get("file_path") or "").strip()
 
-        try:
-            for sw in self.mdi.subWindowList():
-                w = sw.widget() if hasattr(sw, "widget") else None
-                d = getattr(w, "document", None)
-                if d is None:
-                    continue
-
-                # 1a) Exact Python object match (highest priority)
-                if doc_ptr is not None and id(d) == doc_ptr:
-                    doc = d
-                    break
-
-                # 1b) Next: uid match
-                if uid and getattr(d, "uid", None) == uid:
-                    doc = d
-                    break
-
-                # 1c) Last resort in this pass: file_path match
-                meta = getattr(d, "metadata", {}) or {}
-                if fpath and meta.get("file_path") == fpath:
-                    doc = d
-                    break
-        except Exception as e:
-            print("[Main] viewstate_drop: subwindow scan failed:", e)
 
         # ─────────────────────────────────────────────
-        # 2) If we *still* don’t have a doc, fall back
-        #    to doc_manager helpers (uid / ptr).
-        #    This is rare but keeps older paths working.
+        # 1) First try: look up by UID in DocManager.
+        #    This gives us the real ImageDocument,
+        #    not the dynamic _DocProxy tied to tabs.
         # ─────────────────────────────────────────────
-        if doc is None:
+        if uid and hasattr(dm, "lookup_by_uid"):
+
             try:
-                if doc_ptr is not None and hasattr(dm, "get_document_by_ptr"):
-                    doc = dm.get_document_by_ptr(doc_ptr)
+                doc = dm.lookup_by_uid(uid)
+
             except Exception as e:
-                print("[Main] viewstate_drop: get_document_by_ptr failed:", e)
+
+                doc = None
+        else:
+            if uid:
+                pass
+
+        # ─────────────────────────────────────────────
+        # 2) Fallback: DocManager pointer-based helpers
+        #    (still better than going through proxies).
+        # ─────────────────────────────────────────────
+        if doc is None and doc_ptr is not None:
+            if hasattr(dm, "get_document_by_ptr"):
+
+                try:
+                    doc = dm.get_document_by_ptr(doc_ptr)
+
+                except Exception as e:
+                    pass
+            else:
+                pass
 
         if doc is None and doc_ptr is not None:
-            try:
-                if hasattr(dm, "lookup_by_python_id"):
-                    doc = dm.lookup_by_python_id(doc_ptr)
-            except Exception as e:
-                print("[Main] viewstate_drop: lookup_by_python_id failed:", e)
+            if hasattr(dm, "lookup_by_python_id"):
 
-        if doc is None and uid:
+                try:
+                    doc = dm.lookup_by_python_id(doc_ptr)
+
+                except Exception as e:
+                    pass
+            else:
+                pass
+
+        # ─────────────────────────────────────────────
+        # 3) Last-ditch: scan subwindows. We *still*
+        #    try UID / file_path first here, and only
+        #    finally fall back to matching the proxy.
+        # ─────────────────────────────────────────────
+        if doc is None:
+            
             try:
-                if hasattr(dm, "lookup_by_uid"):
-                    doc = dm.lookup_by_uid(uid)
+                for sw in self.mdi.subWindowList():
+                    w = sw.widget() if hasattr(sw, "widget") else None
+                    d = getattr(w, "document", None)
+                    if d is None:
+                        continue
+
+                    meta = getattr(d, "metadata", {}) or {}
+                    d_uid = getattr(d, "uid", None)
+                    d_path = (meta.get("file_path") or "").strip()
+
+
+                    # 3a) UID match on the underlying doc (if present)
+                    if uid and d_uid == uid:
+
+                        doc = d
+                        break
+
+                    # 3b) file_path match
+                    meta = getattr(d, "metadata", {}) or {}
+                    d_path = (meta.get("file_path") or "").strip()
+
+                    # DEBUG print is already there in your version:
+                    # print("  [VIEWSTATE_DROP] candidate doc:", d, "uid:", d_uid, "file_path:", d_path)
+
+                    # Only use file_path when there is NO doc_uid in the drag state.
+                    # If uid is present, we want to keep scanning for the ROI doc whose uid matches.
+                    if fpath and d_path == fpath and not uid:
+
+                        doc = d
+                        break
+
+                    # 3c) absolute last resort → pointer to proxy
+                    if doc_ptr is not None and id(d) == doc_ptr:
+
+                        doc = d
+                        break
             except Exception as e:
-                print("[Main] viewstate_drop: lookup_by_uid(doc_uid) failed:", e)
+                pass
 
         if doc is None:
             print("[Main] viewstate_drop: could NOT resolve document; aborting.")
+            print("[VIEWSTATE_DROP] EXIT (no doc)")
             return
 
-        # ─────────────────────────────────────────────
-        # 3) Decide behavior: new view vs copy transform
-        # (KEEP YOUR EXISTING CODE BELOW THIS POINT)
-        # ─────────────────────────────────────────────
-        force_new = (target_sw is None)
-        source_kind = st.get("source_kind")
-        roi = st.get("roi")
-        is_preview = (source_kind in ("preview", "roi-preview")) or bool(roi)
 
-        # 4) ROI promotion block
-        if force_new and is_preview and roi and len(roi) == 4:
+
+        # ─────────────────────────────────────────────
+        # 4) Peek at metadata to see if this is a
+        #    preview-of-ROI situation.
+        #    NOTE: doc is now a *real* document, not
+        #    the _DocProxy, so this metadata is stable
+        #    and no longer depends on tabs.
+        # ─────────────────────────────────────────────
+        pmeta        = getattr(doc, "metadata", {}) or {}
+        base_uid     = pmeta.get("base_doc_uid")
+        roi_base_doc = None
+
+
+        if base_uid and hasattr(dm, "lookup_by_uid"):
+
             try:
-                x, y, w, h = map(int, roi)
-                self._promote_roi_preview_to_real_doc(st, doc)
-                return
-            except Exception as e:
-                try:
-                    self._log(f"[viewstate-drop ROI] failed: {e}")
-                except Exception:
-                    print("[Main] viewstate_drop: ROI promotion failed:", e)
-                # fall through to default behavior
+                roi_base_doc = dm.lookup_by_uid(base_uid)
 
-        # 5) Default behavior (full view / non-ROI preview)
-        if force_new and not is_preview:
+            except Exception as e:
+
+                roi_base_doc = None
+        elif base_uid:
+            pass
+
+        # ─────────────────────────────────────────────
+        # 5) Decide behavior: new view vs copy transform
+        # ─────────────────────────────────────────────
+        force_new   = (target_sw is None)
+        source_kind = st.get("source_kind")
+        roi         = st.get("roi")
+        is_preview  = (source_kind in ("preview", "roi-preview")) or bool(roi)
+
+
+
+        # If this looks like a *preview of an already-promoted ROI doc*,
+        # we don't want to re-promote. Instead, treat it as a normal
+        # ROI image: duplicate the ROI base doc and ignore ROI coords.
+        if is_preview and roi_base_doc is not None:
+            base_meta = getattr(roi_base_doc, "metadata", {}) or {}
+
+            if base_meta.get("is_roi_doc"):
+
+                # preview-of-ROI → behave like a plain ROI image doc
+                doc = roi_base_doc
+                is_preview = False
+                roi = None
+
+        # ─────────────────────────────────────────────
+        # 6) ROI promotion block (only for genuine
+        #    previews of the *full* base doc).
+        # ─────────────────────────────────────────────
+        if force_new and is_preview and roi and len(roi) == 4:
+
+            # If this doc is already a promoted ROI doc, do NOT re-promote it.
+            # (Catches the case where the preview doc itself carries the flag.)
+            pmeta = getattr(doc, "metadata", {}) or {}
+
+            if not pmeta.get("is_roi_doc"):
+                try:
+                    x, y, w, h = map(int, roi)  # sanity / logging
+
+                    self._promote_roi_preview_to_real_doc(st, doc)
+
+                    return
+                except Exception as e:
+                    try:
+                        self._log(f"[viewstate-drop ROI] failed: {e}")
+                    except Exception:
+                        print("[Main] viewstate_drop: ROI promotion failed:", e)
+                    # fall through to default behavior
+
+            else:
+                pass
+
+        # ─────────────────────────────────────────────
+        # 7) Default behavior:
+        #    - Background drop (force_new=True) → new
+        #      subwindow for *this* doc (full or ROI).
+        #    - Drop onto existing subwindow → just
+        #      copy the view transform.
+        # ─────────────────────────────────────────────
+        if force_new:
+
             sw = self._spawn_subwindow_for(doc, force_new=True)
+
             if sw and hasattr(sw, "widget"):
                 wv = sw.widget()
                 if st.get("autostretch") and hasattr(wv, "set_autostretch"):
+
                     wv.set_autostretch(True)
                     if hasattr(wv, "set_autostretch_target"):
                         wv.set_autostretch_target(
                             float(st.get("autostretch_target", 0.25))
                         )
                 if hasattr(wv, "set_view_transform"):
+
                     wv.set_view_transform(
                         float(st.get("scale", 1.0)),
                         int(st.get("hval", 0)),
@@ -1509,8 +1708,12 @@ class AstroSuiteProMainWindow(QMainWindow):
                         from_link=False,
                     )
         else:
+
+            # Dropped onto an existing subwindow → just copy view transform
             tgt = target_sw.widget() if hasattr(target_sw, "widget") else None
+
             if tgt and hasattr(tgt, "set_view_transform"):
+
                 tgt.set_view_transform(
                     float(st.get("scale", 1.0)),
                     int(st.get("hval", 0)),
@@ -1518,11 +1721,14 @@ class AstroSuiteProMainWindow(QMainWindow):
                     from_link=False,
                 )
             if tgt and st.get("autostretch") and hasattr(tgt, "set_autostretch"):
+
                 tgt.set_autostretch(True)
                 if hasattr(tgt, "set_autostretch_target"):
                     tgt.set_autostretch_target(
                         float(st.get("autostretch_target", 0.25))
                     )
+
+
 
 
     def _open_from_explorer(self, doc):
@@ -2165,6 +2371,27 @@ class AstroSuiteProMainWindow(QMainWindow):
             """)
 
 
+        btn_fit = tb.widgetForAction(self.act_zoom_fit)
+        if isinstance(btn_fit, QToolButton):
+            fit_menu = QMenu(btn_fit)
+
+            self.act_auto_fit = fit_menu.addAction("Auto-fit on Resize")
+            self.act_auto_fit.setCheckable(True)
+            self.act_auto_fit.setChecked(self._auto_fit_on_resize)
+            self.act_auto_fit.toggled.connect(self._toggle_auto_fit_on_resize)
+
+            btn_fit.setMenu(fit_menu)
+            btn_fit.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+
+            # Same style concept as Display-Stretch
+            btn_fit.setStyleSheet("""
+                QToolButton { color: #dcdcdc; }
+                QToolButton:checked { color: #DAA520; font-weight: 600; }
+            """)
+
+        # Make sure the visual state matches the flag at startup
+        self._sync_fit_auto_visual()
+
         # Functions toolbar
         tb_fn = DraggableToolBar("Functions", self)
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_fn)
@@ -2391,6 +2618,16 @@ class AstroSuiteProMainWindow(QMainWindow):
         self.act_zoom_fit.setStatusTip("Fit image to current window")
         self.act_zoom_fit.setShortcut(QKeySequence("Ctrl+0"))
         self.act_zoom_fit.triggered.connect(self._zoom_active_fit)
+        self.act_zoom_fit.setCheckable(True)
+
+        self.act_auto_fit_resize = QAction("Auto-fit on Resize", self)
+        self.act_auto_fit_resize.setCheckable(True)
+
+        auto_on = self.settings.value("view/auto_fit_on_resize", False, type=bool)
+        self._auto_fit_on_resize = bool(auto_on)
+        self.act_auto_fit_resize.setChecked(self._auto_fit_on_resize)
+
+        self.act_auto_fit_resize.toggled.connect(self._toggle_auto_fit_on_resize)
 
         # View state copy/paste (optional quick commands)
         self._copied_view_state = None
@@ -6089,6 +6326,39 @@ class AstroSuiteProMainWindow(QMainWindow):
         # Worst case: the view itself
         return view
 
+    def _sync_fit_auto_visual(self):
+        on = bool(getattr(self, "_auto_fit_on_resize", False))
+        if hasattr(self, "act_zoom_fit"):
+            self.act_zoom_fit.blockSignals(True)
+            try:
+                self.act_zoom_fit.setChecked(on)
+            finally:
+                self.act_zoom_fit.blockSignals(False)
+
+
+    def _toggle_auto_fit_on_resize(self, checked: bool):
+        self._auto_fit_on_resize = bool(checked)
+        self.settings.setValue("view/auto_fit_on_resize", self._auto_fit_on_resize)
+        self._sync_fit_auto_visual()
+        if checked:
+            self._zoom_active_fit()
+
+    def _on_view_resized(self):
+        """Called whenever an ImageSubWindow emits resized(). Debounced."""
+        if not getattr(self, "_auto_fit_on_resize", False):
+            return
+        if hasattr(self, "_auto_fit_timer") and self._auto_fit_timer is not None:
+            if self._auto_fit_timer.isActive():
+                self._auto_fit_timer.stop()
+            self._auto_fit_timer.start()
+
+    def _apply_auto_fit_resize(self):
+        """Run the actual Fit after the resize settles."""
+        if not getattr(self, "_auto_fit_on_resize", False):
+            return
+        self._zoom_active_fit()
+
+
     def _zoom_active_fit(self):
         sw = self.mdi.activeSubWindow()
         if not sw:
@@ -6107,7 +6377,7 @@ class AstroSuiteProMainWindow(QMainWindow):
         scale = min((vw - 2) / img_w, (vh - 2) / img_h)
         # Clamp to sane bounds
         scale = max(1e-4, min(32.0, scale))
-
+        self._sync_fit_auto_visual()
         # Apply using view API if available
         if hasattr(view, "set_scale") and callable(view.set_scale):
             try:
@@ -8722,9 +8992,9 @@ class AstroSuiteProMainWindow(QMainWindow):
             except Exception:
                 pass
 
-    def _pretty_title(self, doc, *, linked: bool|None=None) -> str:
+    def _pretty_title(self, doc, *, linked: bool | None = None) -> str:
         name = getattr(doc, "display_name", lambda: "Untitled")()
-        name = name.replace("🔗","").strip()
+        name = name.replace("🔗", "").strip()
         if linked is None:
             linked = hasattr(doc, "_parent_doc")  # ROI proxy → linked
         return f"🔗 {name}" if linked else name
@@ -8734,6 +9004,10 @@ class AstroSuiteProMainWindow(QMainWindow):
         Build a unique, human-friendly title for a QMdiSubWindow
         that shows this document. If multiple views exist for the
         same doc, append [View N].
+
+        IMPORTANT: This is called *after* the new subwindow has been
+        added to the QMdiArea, so the first view will already give
+        count == 1.
         """
         # Base label (reuse pretty_title logic, but keep it unlinked
         # like your old _spawn_subwindow_for did)
@@ -8753,12 +9027,44 @@ class AstroSuiteProMainWindow(QMainWindow):
         except Exception:
             pass
 
-        # First view → just the base title
-        if count == 0:
+        # If this is the only view (count == 1), or something weird (0),
+        # just show the base title with no [View N] suffix.
+        if count <= 1:
             return base
 
-        # Subsequent views → base + [View N]
-        return f"{base} [View {count + 1}]"
+        # Subsequent views → base + [View N], where N == count
+        return f"{base} [View {count}]"
+
+    def _unique_window_title(self, base: str) -> str:
+        """
+        Return a window title based on `base` that is not already used by
+        any QMdiSubWindow. If `base` is free, use it; otherwise append
+        ' [View N]' with the first free N.
+        """
+        base = (base or "Untitled").strip()
+
+        existing = set()
+        try:
+            for sw in self.mdi.subWindowList():
+                if sw is None:
+                    continue
+                t = sw.windowTitle() or ""
+                if t:
+                    existing.add(t)
+        except Exception:
+            pass
+
+        # First use: plain base
+        if base not in existing:
+            return base
+
+        # Subsequent uses: base [View 2], [View 3], ...
+        n = 2
+        while True:
+            cand = f"{base} [View {n}]"
+            if cand not in existing:
+                return cand
+            n += 1
 
 
     def _spawn_subwindow_for(self, doc, *, force_new: bool = False):
@@ -8844,14 +9150,17 @@ class AstroSuiteProMainWindow(QMainWindow):
                 pass
 
         self._hook_preview_awareness(view)
-
+        base_title = self._pretty_title(doc, linked=False)
+        final_title = self._unique_window_title(base_title)
         # ── 6) Add subwindow and set chrome
         sw = self.mdi.addSubWindow(view)
         sw.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-
+        if hasattr(view, "resized"):
+            view.resized.connect(self._on_view_resized)
         # Use unique, per-view title (handles previews, ROI docs, etc.)
-        sw.setWindowTitle(self._build_subwindow_title_for_doc(doc))
         sw.setWindowIcon(self.app_icon)
+        sw.setWindowTitle(final_title)
+        
 
         # Apply standard window flags then show/raise
         flags = sw.windowFlags()
