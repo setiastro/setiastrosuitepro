@@ -107,24 +107,30 @@ class MdiSnapController(QObject):
         for s in siblings:
             r = s.geometry()  # already in viewport coords
             rects.append(r)
-            xs.update([r.left(), r.right(), r.center().x()])
-            ys.update([r.top(), r.bottom(), r.center().y()])
+            xs.update([r.left(), r.right()])
+            ys.update([r.top(), r.bottom()])
 
-        # viewport edges and center
-        xs.update([vp.left(), vp.right(), vp.center().x()])
-        ys.update([vp.top(), vp.bottom(), vp.center().y()])
+        # viewport edges (no center)
+        xs.update([vp.left(), vp.right()])
+        ys.update([vp.top(), vp.bottom()])
         return sorted(xs), sorted(ys), rects, vp
 
     @staticmethod
     def _nearest(value: int, candidates: list[int], tol: int) -> tuple[bool, int]:
-        best = None
+        """
+        Return (True, snapped_value) if any candidate is within tol of value,
+        otherwise (False, value).
+        """
+        best_val = value
         best_d = tol + 1
         for c in candidates:
             d = abs(c - value)
             if d < best_d:
                 best_d = d
-                best = c
-        return (best is not None and best_d <= tol), (value if best is None else best)
+                best_val = c
+        if best_d <= tol:
+            return True, best_val
+        return False, value
 
     def _build_guides(self, snap_rect: QRect, vp: QRect) -> list[QRect]:
         """Horizontal and vertical guides along the snapped rect edges."""
@@ -138,26 +144,89 @@ class MdiSnapController(QObject):
         lines.append(QRect(snap_rect.right(), vp.top(), w, vp.height()))
         return lines
 
-    def _snap_geometry(self, g: QRect, xs: list[int], ys: list[int], tol: int, size_snap: bool) -> tuple[QRect, list[QRect]]:
-        L, T, R, B = g.left(), g.top(), g.right(), g.bottom()
+    def _snap_geometry(
+        self,
+        g: QRect,
+        xs: list[int],
+        ys: list[int],
+        tol: int,
+        size_snap: bool
+    ) -> tuple[QRect, list[QRect]]:
+        """
+        - If size_snap is False (Move): keep W/H fixed and move the rect so the
+          nearest edges line up with candidates.
+        - If size_snap is True (Resize): keep top/left fixed and adjust W/H so
+          right/bottom edges snap to nearby candidates.
+        """
+        L, T = g.left(), g.top()
+        W, H = g.width(), g.height()
+        R, B = L + W - 1, T + H - 1
+
+        vp = self.view.rect()
         snapped = False
 
-        ok, nx = self._nearest(L, xs, tol);  L = nx if ok else L; snapped = snapped or ok
-        ok, nx = self._nearest(R, xs, tol);  R = nx if ok else R; snapped = snapped or ok
-        ok, ny = self._nearest(T, ys, tol);  T = ny if ok else T; snapped = snapped or ok
-        ok, ny = self._nearest(B, ys, tol);  B = ny if ok else B; snapped = snapped or ok
+        if not size_snap:
+            # --- MOVE MODE: translate the rect, no size change ---
+            okL, snapL = self._nearest(L, xs, tol)
+            okR, snapR = self._nearest(R, xs, tol)
 
-        # QRect from left/top + size is least error-prone with setGeometry
-        new_pos = QPoint(min(L, R), min(T, B))
-        new_size = QSize(abs(R - L) + 1, abs(B - T) + 1)
-        g2 = QRect(new_pos, new_size)
+            dx = 0
+            if okL and okR:
+                dL = snapL - L
+                dR = snapR - R
+                dx = dL if abs(dL) <= abs(dR) else dR
+                snapped = True
+            elif okL:
+                dx = snapL - L
+                snapped = True
+            elif okR:
+                dx = snapR - R
+                snapped = True
 
-        # Optional: width/height match is implicitly achieved when edges line up
-        _ = size_snap  # reserved for future refinements
+            okT, snapT = self._nearest(T, ys, tol)
+            okB, snapB = self._nearest(B, ys, tol)
 
-        guides = (self._build_guides(g2, self.view.rect()) if (snapped and self._show_guides) else [])
+            dy = 0
+            if okT and okB:
+                dT = snapT - T
+                dB = snapB - B
+                dy = dT if abs(dT) <= abs(dB) else dB
+                snapped = True
+            elif okT:
+                dy = snapT - T
+                snapped = True
+            elif okB:
+                dy = snapB - B
+                snapped = True
+
+            new_L = L + dx
+            new_T = T + dy
+            g2 = QRect(QPoint(new_L, new_T), QSize(W, H))
+
+        else:
+            # --- RESIZE MODE: keep L/T fixed, snap R/B by changing W/H ---
+            okR, snapR = self._nearest(R, xs, tol)
+            okB, snapB = self._nearest(B, ys, tol)
+
+            new_W = W
+            new_H = H
+
+            if okR:
+                new_W = max(1, (snapR - L + 1))
+                snapped = True
+            if okB:
+                new_H = max(1, (snapB - T + 1))
+                snapped = True
+
+            g2 = QRect(QPoint(L, T), QSize(new_W, new_H))
+
+        guides = (
+            self._build_guides(g2, vp)
+            if (snapped and self._show_guides)
+            else []
+        )
         return g2, guides
-
+    
     # --- Event filter on each subwindow + viewport ---
     def eventFilter(self, obj: QObject, ev: QEvent) -> bool:
         t = ev.type()
@@ -189,7 +258,12 @@ class MdiSnapController(QObject):
             xs, ys, _rects, _vp = self._collect_edges(ignore=obj)
             tol = _dpi_scaled(self.view, self.threshold)
             cur = obj.geometry()
-            snapped_rect, guides = self._snap_geometry(cur, xs, ys, tol, size_snap=True)
+
+            # <<< key change: size_snap only during Resize >>>
+            size_snap = (t == QEvent.Type.Resize)
+            snapped_rect, guides = self._snap_geometry(
+                cur, xs, ys, tol, size_snap=size_snap
+            )
 
             if snapped_rect != cur:
                 # Minimize feedback loops
@@ -208,6 +282,7 @@ class MdiSnapController(QObject):
                 self.overlay.set_guides([])
 
         return super().eventFilter(obj, ev)
+
 
 # ---- Qt6-safe clear events set (no MoveAboutToBeAnimated) -------------------
 _CLEAR_EVENTS = set()
