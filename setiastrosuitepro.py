@@ -1686,34 +1686,75 @@ class AstroSuiteProMainWindow(QMainWindow):
         #    - Drop onto existing subwindow → just
         #      copy the view transform.
         # ─────────────────────────────────────────────
+        # ─────────────────────────────────────────────
+        # 7) Default behavior:
+        #    - Background drop (force_new=True) → new
+        #      *independent document* (full or ROI),
+        #      same as legacy _duplicate_view_from_state.
+        #    - Drop onto existing subwindow → just
+        #      copy the view transform.
+        # ─────────────────────────────────────────────
         if force_new:
+            # We’re here only if:
+            #  - it's NOT a preview (normal full or promoted ROI), or
+            #  - ROI promotion didn't apply and we fell through.
+            base_doc = doc
 
-            sw = self._spawn_subwindow_for(doc, force_new=True)
+            # 1) Duplicate the underlying document
+            try:
+                base_name = ""
+                try:
+                    base_name = base_doc.display_name() or "Untitled"
+                except Exception:
+                    base_name = "Untitled"
 
-            if sw and hasattr(sw, "widget"):
-                wv = sw.widget()
-                if st.get("autostretch") and hasattr(wv, "set_autostretch"):
+                try:
+                    base_name = _strip_ui_decorations(base_name)
+                except Exception:
+                    # minimal fallback: remove known glyph prefixes and "Active View: "
+                    while len(base_name) >= 2 and base_name[1] == " " and base_name[0] in "■●◆▲▪▫•◼◻◾◽":
+                        base_name = base_name[2:]
+                    if base_name.startswith("Active View: "):
+                        base_name = base_name[len("Active View: "):]
 
-                    wv.set_autostretch(True)
-                    if hasattr(wv, "set_autostretch_target"):
-                        wv.set_autostretch_target(
-                            float(st.get("autostretch_target", 0.25))
-                        )
-                if hasattr(wv, "set_view_transform"):
+                new_doc = self.docman.duplicate_document(
+                    base_doc, new_name=f"{base_name}_duplicate"
+                )
+            except Exception as e:
+                print("[Main] viewstate_drop: duplicate_document failed, falling back to original doc:", e)
+                new_doc = base_doc  # worst-case: still just reuse
 
-                    wv.set_view_transform(
-                        float(st.get("scale", 1.0)),
-                        int(st.get("hval", 0)),
-                        int(st.get("vval", 0)),
-                        from_link=False,
-                    )
+            # 2) Let doc_manager's documentAdded handler create the subwindow.
+            #    We just wait for it to show up and then apply the view state.
+            from PyQt6.QtCore import QTimer
+
+            def _apply_when_ready():
+                sw = self._find_subwindow_for_doc(new_doc)
+                if not sw:
+                    QTimer.singleShot(0, _apply_when_ready)
+                    return
+
+                view = sw.widget()
+                try:
+                    # Reuse the same helper the legacy code used
+                    self._apply_view_state_to_view(view, st)
+                except Exception:
+                    pass
+
+                self.mdi.setActiveSubWindow(sw)
+                if hasattr(self, "_log"):
+                    try:
+                        self._log(f"Duplicated as independent document → '{new_doc.display_name()}'")
+                    except Exception:
+                        pass
+
+            QTimer.singleShot(0, _apply_when_ready)
+
         else:
-
             # Dropped onto an existing subwindow → just copy view transform
             tgt = target_sw.widget() if hasattr(target_sw, "widget") else None
 
             if tgt and hasattr(tgt, "set_view_transform"):
-
                 tgt.set_view_transform(
                     float(st.get("scale", 1.0)),
                     int(st.get("hval", 0)),
@@ -1721,12 +1762,12 @@ class AstroSuiteProMainWindow(QMainWindow):
                     from_link=False,
                 )
             if tgt and st.get("autostretch") and hasattr(tgt, "set_autostretch"):
-
                 tgt.set_autostretch(True)
                 if hasattr(tgt, "set_autostretch_target"):
                     tgt.set_autostretch_target(
                         float(st.get("autostretch_target", 0.25))
                     )
+
 
 
 
