@@ -5,7 +5,12 @@ from typing import Optional, Tuple
 
 import numpy as np
 from astropy.io import fits
-
+try:
+    from astropy.io.fits.verify import VerifyError
+except Exception:
+    # Fallback for older Astropy – same pattern as in legacy.image_manager
+    class VerifyError(Exception):
+        pass
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog, QFileDialog, QHBoxLayout,
@@ -13,7 +18,11 @@ from PyQt6.QtWidgets import (
     QVBoxLayout
 )
 from PyQt6.QtCore import QSettings
-from legacy.image_manager import load_image as legacy_load_image, save_image as legacy_save_image
+from legacy.image_manager import (
+    load_image as legacy_load_image,
+    save_image as legacy_save_image,
+    _drop_invalid_cards,    # ← new
+)
 
 class FITSModifier(QDialog):
     def __init__(self, file_path: Optional[str], header,
@@ -174,7 +183,8 @@ class FITSModifier(QDialog):
     def _init_from_header(self, header):
         phdu = fits.PrimaryHDU()
         if isinstance(header, fits.Header):
-            phdu.header = header.copy()
+            clean = _drop_invalid_cards(header)
+            phdu.header = clean.copy()
         elif isinstance(header, dict):
             for k, v in header.items():
                 try:
@@ -188,13 +198,15 @@ class FITSModifier(QDialog):
     def _apply_to_slot_metadata(self):
         try:
             hdr = self.hdul[self.current_hdu_index].header.copy()
-            doc = self._get_active_doc()   # <— was self._active_doc
+            hdr = _drop_invalid_cards(hdr)
+            doc = self._get_active_doc()
             if doc is not None and hasattr(doc, "metadata"):
                 doc.metadata["original_header"] = hdr
                 if hasattr(doc, "changed"):
                     doc.changed.emit()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[FITSModifier] _apply_to_slot_metadata error: {e}")
+
 
     def _set_dirty(self, dirty=True):
         self._dirty = dirty
@@ -231,12 +243,24 @@ class FITSModifier(QDialog):
             self._update_multi_hdu_ui()
             return False
 
+        # Sanitize all HDU headers to drop invalid cards (e.g. bad TELESCOP)
+        for hdu in self.hdul:
+            try:
+                if isinstance(hdu.header, fits.Header):
+                    hdu.header = _drop_invalid_cards(hdu.header)
+            except Exception as e:
+                print(f"[FITSModifier] Header sanitize failed for HDU: {e}")
+
         self.file_path = path
         self.path_label.setText(path)
         self._save_last_dir(os.path.dirname(path))
         self._refresh_hdu_combo()
-        self._populate_tree_from_header(self.hdul[self.current_hdu_index].header)
+
+        # Use the sanitized header for the current HDU
+        hdr = self.hdul[self.current_hdu_index].header
+        self._populate_tree_from_header(hdr)
         return True
+
 
     def _reload(self):
         if not self.hdul and not self.file_path:
@@ -260,6 +284,7 @@ class FITSModifier(QDialog):
     def _on_hdu_changed(self, idx):
         self.current_hdu_index = int(idx)
         hdr = self.hdul[self.current_hdu_index].header
+        hdr = _drop_invalid_cards(hdr)
         self._populate_tree_from_header(hdr)
 
     def _populate_tree_from_header(self, header: fits.Header):
@@ -269,8 +294,16 @@ class FITSModifier(QDialog):
             self.tree.clear()
             for card in header.cards:
                 key = card.keyword
-                val = "" if key in ("HISTORY", "COMMENT") else self._val_to_str(card.value)
-                com = "" if key in ("HISTORY", "COMMENT") else (card.comment or "")
+                if key in ("HISTORY", "COMMENT"):
+                    val = ""
+                    com = ""
+                else:
+                    try:
+                        val = self._val_to_str(card.value)
+                        com = card.comment or ""
+                    except VerifyError as e:
+                        print(f"[FITSModifier] Skipping invalid card {key!r}: {e}")
+                        continue  # Don't add this card to the tree
                 it = QTreeWidgetItem([key, val, com])
                 it.setFlags(it.flags() | Qt.ItemFlag.ItemIsEditable)
                 self.tree.addTopLevelItem(it)
@@ -279,6 +312,8 @@ class FITSModifier(QDialog):
             self.tree.blockSignals(False)
             self._populating = False
             self._set_dirty(False)
+
+
 
     def _collect_tree_into_header(self, header: fits.Header):
         new_header = fits.Header()

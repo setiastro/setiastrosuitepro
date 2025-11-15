@@ -290,6 +290,13 @@ class CosmicClarityDialogPro(QDialog):
         self.cmb_sh_mode = QComboBox(); self.cmb_sh_mode.addItems(["Both", "Stellar Only", "Non-Stellar Only"])
         grid.addWidget(self.lbl_sh_mode, 2, 0); grid.addWidget(self.cmb_sh_mode, 2, 1)
 
+        self.chk_sh_sep = QCheckBox("Sharpen RGB channels separately")
+        self.chk_sh_sep.setToolTip(
+            "Run the mono sharpening model independently on R, G, and B instead of a shared color model.\n"
+            "Use for difficult color data where channels need slightly different sharpening."
+        )
+        grid.addWidget(self.chk_sh_sep, 3, 0)
+
         self.chk_auto_psf = QCheckBox("Auto Detect PSF"); self.chk_auto_psf.setChecked(True)
         grid.addWidget(self.chk_auto_psf, 3, 1)
 
@@ -406,7 +413,7 @@ class CosmicClarityDialogPro(QDialog):
         idx = self.cmb_mode.currentIndex()  # 0 Sharpen, 1 Denoise, 2 Both, 3 Super-Res
         # Sharpen controls visible if Sharpen or Both
         show_sh = idx in (0, 2)
-        for w in (self.lbl_sh_mode, self.cmb_sh_mode, self.chk_auto_psf, self.lbl_psf, self.sld_psf, self.lbl_st_amt, self.sld_st_amt, self.lbl_nst_amt, self.sld_nst_amt):
+        for w in (self.lbl_sh_mode, self.cmb_sh_mode, self.chk_sh_sep, self.chk_auto_psf, self.lbl_psf, self.sld_psf, self.lbl_st_amt, self.sld_st_amt, self.lbl_nst_amt, self.sld_nst_amt):
             w.setVisible(show_sh)
 
         # Denoise controls visible if Denoise or Both
@@ -502,10 +509,16 @@ class CosmicClarityDialogPro(QDialog):
         args = []
         if mode == "sharpen":
             psf = self.sld_psf.value()/10.0
-            args += ["--sharpening_mode", self.cmb_sh_mode.currentText(),
-                     "--stellar_amount", f"{self.sld_st_amt.value()/100:.2f}",
-                     "--nonstellar_strength", f"{psf:.1f}",
-                     "--nonstellar_amount", f"{self.sld_nst_amt.value()/100:.2f}"]
+            args += [
+                "--sharpening_mode", self.cmb_sh_mode.currentText(),
+                "--stellar_amount", f"{self.sld_st_amt.value()/100:.2f}",
+                "--nonstellar_strength", f"{psf:.1f}",
+                "--nonstellar_amount", f"{self.sld_nst_amt.value()/100:.2f}"
+            ]
+            # NEW: per-channel sharpen toggle
+            if self.chk_sh_sep.isChecked():
+                args.append("--sharpen_channels_separately")
+
             if self.chk_auto_psf.isChecked():
                 args.append("--auto_detect_psf")
         elif mode == "denoise":
@@ -777,7 +790,7 @@ class CosmicClarityDialogPro(QDialog):
         self.cmb_mode.setCurrentIndex({"sharpen":0,"denoise":1,"both":2,"superres":3}.get(mode,0))
         # GPU
         self.cmb_gpu.setCurrentIndex(0 if p.get("gpu", True) else 1)
-       # Target
+        # Target
         self.cmb_target.setCurrentIndex(1 if p.get("create_new_view", False) else 0)
         # Sharpen
         self.cmb_sh_mode.setCurrentText(p.get("sharpening_mode","Both"))
@@ -785,6 +798,9 @@ class CosmicClarityDialogPro(QDialog):
         self.sld_psf.setValue(int(max(10, min(80, round(float(p.get("nonstellar_psf",3.0))*10)))))
         self.sld_st_amt.setValue(int(max(0, min(100, round(float(p.get("stellar_amount",0.5))*100)))))
         self.sld_nst_amt.setValue(int(max(0, min(100, round(float(p.get("nonstellar_amount",0.5))*100)))))
+        # NEW: allow presets to opt into per-channel sharpen (still defaults off without a preset)
+        self.chk_sh_sep.setChecked(bool(p.get("sharpen_channels_separately", False)))
+
         # Denoise
         self.sld_dn_lum.setValue(int(max(0, min(100, round(float(p.get("denoise_luma",0.5))*100)))))
         self.sld_dn_col.setValue(int(max(0, min(100, round(float(p.get("denoise_color",0.5))*100)))))
@@ -792,6 +808,7 @@ class CosmicClarityDialogPro(QDialog):
         self.chk_dn_sep.setChecked(bool(p.get("separate_channels", False)))
         # Super-Res
         self.cmb_scale.setCurrentText(str(int(p.get("scale",2))))
+
 
 
     def _read_superres_output_main(self):

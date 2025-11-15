@@ -313,6 +313,7 @@ class ImageSubWindow(QWidget):
     activeSourceChanged = pyqtSignal(object)  # None for full, or (x,y,w,h) for ROI
     viewTransformChanged = pyqtSignal(float, int, int)
     _registry = weakref.WeakValueDictionary()
+    resized = pyqtSignal() 
 
 
     def __init__(self, document, parent=None):
@@ -1715,6 +1716,10 @@ class ImageSubWindow(QWidget):
     # keep the tab visible if the widget resizes
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
+        try:
+            self.resized.emit()
+        except Exception:
+            pass        
         if hasattr(self, "_view_tab"):
             self._view_tab.raise_()
 

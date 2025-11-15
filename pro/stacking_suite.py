@@ -4455,17 +4455,18 @@ class StackingSuiteDialog(QDialog):
         # Precision
         self.precision_combo = QComboBox()
         self.precision_combo.addItems(["32-bit float", "64-bit float"])
-        self.precision_combo.setCurrentIndex(1 if self.internal_dtype is np.float64 else 0)
+        # Default to 32-bit (index 0)
+        self.precision_combo.setCurrentIndex(0)
         self.precision_combo.setToolTip("64-bit uses ~2× RAM; 32-bit is faster/lighter.")
         fl_general.addRow("Internal Precision:", self.precision_combo)
 
         # Chunk sizes
         self.chunkHeightSpinBox = QSpinBox()
         self.chunkHeightSpinBox.setRange(128, 8192)
-        self.chunkHeightSpinBox.setValue(self.settings.value("stacking/chunk_height", 2048, type=int))
+        self.chunkHeightSpinBox.setValue(self.settings.value("stacking/chunk_height", 512, type=int))
         self.chunkWidthSpinBox = QSpinBox()
         self.chunkWidthSpinBox.setRange(128, 8192)
-        self.chunkWidthSpinBox.setValue(self.settings.value("stacking/chunk_width", 2048, type=int))
+        self.chunkWidthSpinBox.setValue(self.settings.value("stacking/chunk_width", 512, type=int))
         hw_row = QHBoxLayout()
         hw_row.addWidget(QLabel("H:")); hw_row.addWidget(self.chunkHeightSpinBox)
         hw_row.addSpacing(8)
@@ -4541,7 +4542,7 @@ class StackingSuiteDialog(QDialog):
 
         self.align_passes_combo = QComboBox()
         self.align_passes_combo.addItems(["Fast (1 pass)", "Accurate (3 passes)"])
-        curr_passes = self.settings.value("stacking/refinement_passes", 3, type=int)
+        curr_passes = self.settings.value("stacking/refinement_passes", 1, type=int)
         self.align_passes_combo.setCurrentIndex(0 if curr_passes <= 1 else 1)
         self.align_passes_combo.setToolTip("Fast = single pass; Accurate = 3-pass refinement.")
         fl_align.addRow("Refinement:", self.align_passes_combo)

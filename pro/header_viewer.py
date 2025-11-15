@@ -10,10 +10,16 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 
 from astropy.io import fits
+try:
+    from astropy.io.fits.verify import VerifyError
+except Exception:
+    class VerifyError(Exception):
+        pass
+
 from xisf import XISF
 
 # we’ll reuse your loader helper for FITS headers
-from legacy.image_manager import get_valid_header
+from legacy.image_manager import get_valid_header, _drop_invalid_cards
 from pro.doc_manager import ImageDocument
 
 
@@ -183,6 +189,10 @@ class HeaderViewerDock(QDockWidget):
                 except Exception:
                     # extremely defensive: skip bad card entries
                     pass
+            try:
+                hdr = _drop_invalid_cards(hdr)
+            except Exception:
+                pass
             self._populate_fits_header(hdr)
         elif fmt == "dict":
             self._populate_header_dict(snap.get("items") or {}, "Header (snapshot)")
@@ -193,11 +203,16 @@ class HeaderViewerDock(QDockWidget):
             self._tree.addTopLevelItem(node)
             node.addChild(QTreeWidgetItem(["repr", str(txt)]))
 
+
     def _try_populate_from_doc(self, meta: dict) -> bool:
         """Return True if we showed any header from the document metadata."""
         # 1) direct astropy header
         hdr = meta.get("original_header") or meta.get("fits_header") or meta.get("header")
         if isinstance(hdr, fits.Header):
+            try:
+                hdr = _drop_invalid_cards(hdr.copy())
+            except Exception:
+                pass
             self._populate_fits_header(hdr)
             return True
 
@@ -230,8 +245,14 @@ class HeaderViewerDock(QDockWidget):
         if p.endswith((".fits", ".fit", ".fz", ".fits.fz", ".fit.fz")):
             # prefer the on-disk header if not already in meta
             file_hdr = meta.get("original_header")
-            if not isinstance(file_hdr, fits.Header):
+            if isinstance(file_hdr, fits.Header):
+                try:
+                    file_hdr = _drop_invalid_cards(file_hdr.copy())
+                except Exception:
+                    pass
+            else:
                 file_hdr, _ = get_valid_header(path)
+
             if isinstance(file_hdr, fits.Header):
                 self._populate_fits_header(file_hdr)
                 return True
@@ -248,6 +269,7 @@ class HeaderViewerDock(QDockWidget):
                 pass
 
         return False
+
 
     # --- main ------------------------------------------------------------
     def _rebuild(self):
@@ -300,14 +322,34 @@ class HeaderViewerDock(QDockWidget):
         root = QTreeWidgetItem(["FITS Header"])
         self._tree.addTopLevelItem(root)
 
-        items = []
+        # FITS Header: sanitize and iterate cards defensively
         if isinstance(header, fits.Header):
-            items = header.items()
-        elif isinstance(header, dict):
-            items = header.items()
+            try:
+                header = _drop_invalid_cards(header)
+            except Exception:
+                pass
 
-        for k, v in items:
-            root.addChild(QTreeWidgetItem([str(k), str(v)]))
+            for card in header.cards:
+                try:
+                    k = str(card.keyword)
+                    v = str(card.value)
+                except VerifyError as e:
+                    # Skip invalid/unparsable card
+                    print(f"[HeaderViewer] Skipping invalid FITS card {getattr(card, 'keyword', '?')!r}: {e}")
+                    continue
+                except Exception as e:
+                    print(f"[HeaderViewer] Error reading FITS card: {e}")
+                    continue
+                root.addChild(QTreeWidgetItem([k, v]))
+
+        # Plain dict fallback (e.g., XISF-style dict)
+        elif isinstance(header, dict):
+            for k, v in header.items():
+                try:
+                    root.addChild(QTreeWidgetItem([str(k), str(v)]))
+                except Exception:
+                    continue
+
 
     def _populate_wcs(self, wcs_obj):
         """Show a real astropy.wcs.WCS as header-like key/values."""

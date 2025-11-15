@@ -121,14 +121,19 @@ class _CCHeadlessWorker(QThread):
                 # Build args
                 args = []
                 if mode == "sharpen":
-                    if not self.p.get("gpu", True): args.append("--disable_gpu")
-                    if self.p.get("auto_psf", True): args.append("--auto_detect_psf")
+                    if not self.p.get("gpu", True):
+                        args.append("--disable_gpu")
+                    if self.p.get("auto_psf", True):
+                        args.append("--auto_detect_psf")
                     args += [
                         "--sharpening_mode", self.p.get("sharpening_mode", "Both"),
                         "--stellar_amount", f"{float(self.p.get('stellar_amount', 0.50)):.2f}",
                         "--nonstellar_strength", f"{float(self.p.get('nonstellar_psf', 3.0)):.1f}",
                         "--nonstellar_amount", f"{float(self.p.get('nonstellar_amount', 0.50)):.2f}",
                     ]
+                    # NEW: per-channel sharpen flag from preset
+                    if self.p.get("sharpen_channels_separately", False):
+                        args.append("--sharpen_channels_separately")
                 elif mode == "denoise":
                     if not self.p.get("gpu", True): args.append("--disable_gpu")
                     if self.p.get("separate_channels", False): args.append("--separate_channels")
@@ -303,6 +308,10 @@ class _CosmicClarityPresetDialog(QDialog):
         f.addRow("Stellar Amount:", self.st_amt)
         f.addRow("Non-stellar Amount:", self.nst_amt)
 
+        # NEW: Sharpen RGB channels separately
+        self.sh_sep = QCheckBox("Sharpen RGB channels separately")
+        self.sh_sep.setChecked(bool(p.get("sharpen_channels_separately", False)))
+        f.addRow(self.sh_sep)
         # Denoise
         self.dn_lum = QDoubleSpinBox(); self.dn_lum.setRange(0.0, 1.0); self.dn_lum.setSingleStep(0.05); self.dn_lum.setValue(float(p.get("denoise_luma", 0.50)))
         self.dn_col = QDoubleSpinBox(); self.dn_col.setRange(0.0, 1.0); self.dn_col.setSingleStep(0.05); self.dn_col.setValue(float(p.get("denoise_color", 0.50)))
@@ -337,6 +346,8 @@ class _CosmicClarityPresetDialog(QDialog):
                 "nonstellar_psf": float(self.psf.value()),
                 "stellar_amount": float(self.st_amt.value()),
                 "nonstellar_amount": float(self.nst_amt.value()),
+                # NEW: propagate sharpen-separate into preset dict
+                "sharpen_channels_separately": bool(self.sh_sep.isChecked()),
             })
         if m in ("denoise","both"):
             out.update({
