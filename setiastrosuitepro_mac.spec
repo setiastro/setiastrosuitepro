@@ -179,7 +179,7 @@ ICON_FILES = [
     'invert.png','fliphorizontal.png','flipvertical.png',
     'rotateclockwise.png','rotatecounterclockwise.png',
     'maskcreate.png','maskapply.png','maskremove.png', 'viewbundle.png','functionbundle.png',
-    'pixelmath.png','histogram.png','mosaic.png','rescale.png',
+    'pixelmath.png','histogram.png','mosaic.png','rescale.png', 'rotate180.png',
     'staralign.png','platesolve.png','psf.png','supernova.png',
     'starregistration.png','stacking.png','pedestal.png', 'celestial_catalog.csv',
     'starspike.png','aperture.png','jwstpupil.png',
@@ -320,4 +320,5 @@ app = BUNDLE(
     },
 
 )
+
 
