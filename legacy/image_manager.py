@@ -3,7 +3,8 @@
 import os, time, gzip
 from io import BytesIO
 from typing import Optional, Dict
-
+import datetime
+from datetime import timezone
 import numpy as np
 from PIL import Image
 import tifffile as tiff
@@ -663,17 +664,23 @@ def _try_load_raw_with_rawpy(filename: str, allow_thumb_preview: bool = True, de
         arr /= scale
 
         hdr = fits.Header()
+        # Fill from raw.metadata first
+        hdr = _fill_hdr_from_raw_metadata(raw, hdr)
+
+        # Optional extra bits you already had:
         try:
             if getattr(raw, "camera_whitebalance", None) is not None:
                 hdr["CAMWB0"] = float(raw.camera_whitebalance[0])
         except Exception:
             pass
+
         for key, attr in (("EXPTIME", "shutter"),
                           ("ISO", "iso_speed"),
                           ("FOCAL", "focal_len"),
                           ("TIMESTAMP", "timestamp")):
-            if hasattr(raw, attr):
+            if hasattr(raw, attr) and key not in hdr:
                 hdr[key] = getattr(raw, attr)
+
         try:
             cfa = getattr(raw, "raw_colors_visible", None)
             if cfa is not None:
@@ -682,6 +689,7 @@ def _try_load_raw_with_rawpy(filename: str, allow_thumb_preview: bool = True, de
                 hdr["CFA"] = desc
         except Exception:
             pass
+
         return arr, hdr, "16-bit", True  # Bayer mosaic → mono=True
 
     # Attempt 1: visible mosaic
@@ -712,12 +720,15 @@ def _try_load_raw_with_rawpy(filename: str, allow_thumb_preview: bool = True, de
                 gamma=(1, 1),              # keep linear
                 no_auto_bright=True,       # avoid LibRaw “lift”
                 use_camera_wb=False,       # neutral; you can set True if desired
-                output_color=rawpy.ColorSpace.raw,  # raw color space (no matrix)
-                user_flip=0,               # no rotation
+                output_color=rawpy.ColorSpace.raw,
+                user_flip=0,
             )
             img = rgb16.astype(np.float32) / 65535.0  # HxWx3
+
             hdr = fits.Header()
+            hdr = _fill_hdr_from_raw_metadata(raw, hdr)
             hdr["RAW_DEM"] = (True, "LibRaw postprocess; linear, no auto-bright, RAW color")
+
             return img, hdr, "16-bit demosaiced", False
     except Exception as e3:
         print(f"[rawpy] postprocess fallback failed: {e3}")
@@ -736,14 +747,239 @@ def _try_load_raw_with_rawpy(filename: str, allow_thumb_preview: bool = True, de
                     pil = pil.convert("RGB")
                 img = np.array(pil, dtype=np.float32) / 255.0
                 is_mono = (img.ndim == 2)
+
                 hdr = fits.Header()
+                hdr = _fill_hdr_from_raw_metadata(raw2, hdr)
                 hdr["RAW_PREV"] = (True, "Embedded JPEG preview (no linear RAW data)")
+
                 return img, hdr, "8-bit preview (JPEG from RAW)", is_mono
         except Exception as e4:
             print(f"[rawpy] extract_thumb failed: {e4}")
 
+
     raise RuntimeError("RAW decode failed (rawpy).")
 
+import os, datetime
+from astropy.io import fits
+import exifread
+
+RAW_EXTS = ('.cr2', '.cr3', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2', '.pef')
+
+
+def _is_raw_file(path: str) -> bool:
+    return path.lower().endswith(RAW_EXTS)
+
+
+def _parse_fraction_or_float(val) -> float | None:
+    """
+    Accepts things like '1/125', '0.008', 8, or exifread Ratio objects.
+    Returns float seconds or None.
+    """
+    s = str(val).strip()
+    if not s:
+        return None
+    try:
+        # exifread often gives a single Ratio or list of one Ratio
+        if hasattr(val, "num") and hasattr(val, "den"):
+            return float(val.num) / float(val.den)
+        if isinstance(val, (list, tuple)) and val and hasattr(val[0], "num"):
+            r = val[0]
+            return float(r.num) / float(r.den)
+
+        if '/' in s:
+            num, den = s.split('/', 1)
+            return float(num) / float(den)
+        return float(s)
+    except Exception:
+        return None
+
+
+def _parse_exif_datetime(dt_str: str) -> str | None:
+    """
+    EXIF typically: 'YYYY:MM:DD HH:MM:SS'.
+    Returns ISO-like 'YYYY-MM-DDTHH:MM:SS' or None.
+    """
+    s = str(dt_str).strip()
+    if not s:
+        return None
+
+    # exifread sometimes formats as "YYYY:MM:DD HH:MM:SS"
+    try:
+        date_part, time_part = s.split(' ', 1)
+        y, m, d = date_part.split(':', 2)
+        return f"{int(y):04d}-{int(m):02d}-{int(d):02d}T{time_part}"
+    except Exception:
+        return None
+
+
+def _ensure_minimal_header(header, file_path: str) -> fits.Header:
+    """
+    Guarantee we have a FITS Header. For non-FITS sources (TIFF/PNG/JPG/etc),
+    synthesize a basic header and fill DATE-OBS from file mtime if missing.
+    """
+    if header is None:
+        header = fits.Header()
+        header["SIMPLE"]  = True
+        header["BITPIX"]  = 16
+        header["CREATOR"] = "SetiAstroSuite"
+
+    # Try to provide DATE-OBS if not present
+    if "DATE-OBS" not in header:
+        try:
+            ts = os.path.getmtime(file_path)
+            dt = datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc)
+            header["DATE-OBS"] = (
+                dt.isoformat(timespec="seconds"),
+                "File modification time (UTC) used as DATE-OBS"
+            )
+        except Exception:
+            pass
+
+    return header
+
+
+def _enrich_header_from_exif(header: fits.Header, file_path: str) -> fits.Header:
+    """
+    Merge EXIF metadata from a RAW file into an existing header without
+    blowing away other keys. Only fills keys that are missing.
+    """
+    header = header.copy() if header is not None else fits.Header()
+    header.setdefault("SIMPLE", True)
+    header.setdefault("BITPIX", 16)
+    header.setdefault("CREATOR", "SetiAstroSuite")
+
+    try:
+        with open(file_path, "rb") as f:
+            tags = exifread.process_file(f, details=False)
+    except Exception:
+        # Can't read EXIF → just return what we have
+        return header
+
+    def get_tag(*names):
+        for n in names:
+            t = tags.get(n)
+            if t is not None:
+                return t
+        return None
+
+    # Exposure time
+    exptime_tag = get_tag("EXIF ExposureTime", "EXIF ShutterSpeedValue")
+    if exptime_tag and "EXPTIME" not in header:
+        val = _parse_fraction_or_float(exptime_tag.values)
+        if val is not None:
+            header["EXPTIME"] = (float(val), "Exposure time (s) from EXIF")
+
+    # ISO
+    iso_tag = get_tag("EXIF ISOSpeedRatings", "EXIF PhotographicSensitivity")
+    if iso_tag and "ISO" not in header:
+        try:
+            header["ISO"] = (int(str(iso_tag.values)), "ISO from EXIF")
+        except Exception:
+            header["ISO"] = (str(iso_tag.values), "ISO from EXIF")
+
+    # Date/time
+    date_tag = get_tag(
+        "EXIF DateTimeOriginal",
+        "EXIF DateTimeDigitized",
+        "Image DateTime",
+    )
+    if date_tag and "DATE-OBS" not in header:
+        dt = _parse_exif_datetime(date_tag.values)
+        if dt:
+            header["DATE-OBS"] = (dt, "Start of exposure (camera local time)")
+
+    # Aperture
+    fnum_tag = get_tag("EXIF FNumber")
+    if fnum_tag and "FNUMBER" not in header:
+        val = _parse_fraction_or_float(fnum_tag.values)
+        if val is not None:
+            header["FNUMBER"] = (float(val), "F-number (aperture)")
+
+    # Focal length
+    fl_tag = get_tag("EXIF FocalLength")
+    if fl_tag and "FOCALLEN" not in header:
+        val = _parse_fraction_or_float(fl_tag.values)
+        if val is not None:
+            header["FOCALLEN"] = (float(val), "Focal length (mm)")
+
+    # Camera make/model
+    make_tag  = get_tag("Image Make")
+    model_tag = get_tag("Image Model")
+    cam_parts = []
+    if make_tag:
+        cam_parts.append(str(make_tag.values).strip())
+    if model_tag:
+        cam_parts.append(str(model_tag.values).strip())
+    camera_str = " ".join(p for p in cam_parts if p)
+    if camera_str:
+        header.setdefault("INSTRUME", camera_str)  # instrument / camera
+        header.setdefault("CAMERA", camera_str)    # custom keyword
+
+    return header
+
+def _fill_hdr_from_raw_metadata(raw, hdr: fits.Header | None = None) -> fits.Header:
+    """
+    Merge LibRaw/rawpy metadata into hdr (EXPTIME, ISO, FNUMBER, FOCALLEN, camera, DATE-OBS).
+    Does NOT overwrite existing keys.
+    """
+    if hdr is None:
+        hdr = fits.Header()
+
+    try:
+        m = raw.metadata
+    except Exception:
+        return hdr
+
+    # Exposure time (seconds)
+    if hasattr(m, "exposure") and m.exposure is not None and "EXPTIME" not in hdr:
+        try:
+            hdr["EXPTIME"] = (float(m.exposure), "Exposure time (s) from RAW metadata")
+        except Exception:
+            pass
+
+    # ISO
+    if hasattr(m, "iso") and m.iso is not None and "ISO" not in hdr:
+        try:
+            hdr["ISO"] = (int(m.iso), "ISO from RAW metadata")
+        except Exception:
+            hdr["ISO"] = (str(m.iso), "ISO from RAW metadata")
+
+    # Aperture
+    if hasattr(m, "aperture") and m.aperture is not None and "FNUMBER" not in hdr:
+        try:
+            hdr["FNUMBER"] = (float(m.aperture), "F-number (aperture) from RAW metadata")
+        except Exception:
+            pass
+
+    # Focal length (mm)
+    if hasattr(m, "focal_len") and m.focal_len is not None and "FOCALLEN" not in hdr:
+        try:
+            hdr["FOCALLEN"] = (float(m.focal_len), "Focal length (mm) from RAW metadata")
+        except Exception:
+            pass
+
+    # Camera make/model
+    make  = getattr(m, "make", None)
+    model = getattr(m, "model", None)
+    cam_parts = []
+    if make:
+        cam_parts.append(str(make).strip())
+    if model:
+        cam_parts.append(str(model).strip())
+    camera_str = " ".join(p for p in cam_parts if p)
+    if camera_str:
+        hdr.setdefault("INSTRUME", camera_str)
+        hdr.setdefault("CAMERA",   camera_str)
+
+    # Timestamp → DATE-OBS in UTC
+    if hasattr(m, "timestamp") and m.timestamp and "DATE-OBS" not in hdr:
+        try:
+            dt = datetime.datetime.fromtimestamp(m.timestamp, tz=datetime.timezone.utc)
+            hdr["DATE-OBS"] = (dt.isoformat(timespec="seconds"), "RAW timestamp (UTC)")
+        except Exception:
+            pass
+
+    return hdr
 
 
 def load_image(filename, max_retries=3, wait_seconds=3):
@@ -1097,26 +1333,25 @@ def load_image(filename, max_retries=3, wait_seconds=3):
                 try:
                     image, original_header, bit_depth, is_mono = _try_load_raw_with_rawpy(
                         filename,
-                        allow_thumb_preview=True,   # set False if you *never* want JPEG preview
+                        allow_thumb_preview=True,   # keep your current behavior
                         debug_thumb=True
                     )
-                    image = _finalize_loaded_image(image)
 
                     if original_header is None:
                         original_header = fits.Header()
-                    # If preview path returned a minimal header, that's fine—upstream UI will message it
 
-                    # Message what happened
+                    # 🔹 Fold in EXIF, but only for keys missing from raw metadata
+                    original_header = _enrich_header_from_exif(original_header, filename)
+
+                    # If preview path returned a minimal header, that's fine—upstream UI will message it
                     if "preview" in str(bit_depth).lower():
                         print("RAW decode failed; using embedded JPEG preview (non-linear, 8-bit).")
-                    else:
-                        pass
 
+                    image = _finalize_loaded_image(image)
                     return image, original_header, bit_depth, is_mono
 
                 except Exception as e_raw:
                     print(f"rawpy failed: {e_raw}")
-                    # No other in-process fallback; bail out
                     raise
 
 

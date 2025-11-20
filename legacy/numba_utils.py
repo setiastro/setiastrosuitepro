@@ -319,6 +319,27 @@ def invert_image_numba(image):
                     output[y, x, c] = 1.0 - image[y, x, c]
         return output
 
+@njit(parallel=True, fastmath=True)
+def rotate_180_numba(image):
+    """
+    Rotates the image 180 degrees.
+    Works with both mono (2D) and color (3D) images.
+    """
+    if image.ndim == 2:
+        height, width = image.shape
+        output = np.empty((height, width), dtype=image.dtype)
+        for y in prange(height):
+            for x in prange(width):
+                output[y, x] = image[height - 1 - y, width - 1 - x]
+        return output
+    else:
+        height, width, channels = image.shape
+        output = np.empty((height, width, channels), dtype=image.dtype)
+        for y in prange(height):
+            for x in prange(width):
+                for c in range(channels):
+                    output[y, x, c] = image[height - 1 - y, width - 1 - x, c]
+        return output
 
 
 @njit(parallel=True, fastmath=True)
