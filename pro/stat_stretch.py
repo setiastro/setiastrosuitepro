@@ -1,4 +1,4 @@
-# pro/stat_stretch.py
+cd ..abs(x)# pro/stat_stretch.py
 from __future__ import annotations
 from PyQt6.QtCore import Qt, QSize, QEvent
 from PyQt6.QtWidgets import (
@@ -59,7 +59,7 @@ class StatisticalStretchDialog(QDialog):
         self.sld_curves.valueChanged.connect(lambda v: self.lbl_curves_val.setText(f"{v/100:.2f}"))
         cr_lay.addWidget(self.sld_curves, 1)
         cr_lay.addWidget(self.lbl_curves_val)
-        self.curves_row.setEnabled(False)          # hidden until checkbox is ticked
+        self.curves_row.setEnabled(False)          # disabled until checkbox is ticked
         self.chk_curves.toggled.connect(self.curves_row.setEnabled)
 
         # Preview area
