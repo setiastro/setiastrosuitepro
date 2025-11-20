@@ -1,4 +1,4 @@
-cd ..abs(x)# pro/stat_stretch.py
+# pro/stat_stretch.py
 from __future__ import annotations
 from PyQt6.QtCore import Qt, QSize, QEvent
 from PyQt6.QtWidgets import (
@@ -490,4 +490,5 @@ class StatisticalStretchDialog(QDialog):
                 return True
 
         return super().eventFilter(obj, ev)
+
      
