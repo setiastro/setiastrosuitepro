@@ -634,6 +634,7 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
         self.lbl_step.setText("Preview ready"); self.bar.setValue(100)
 
     # --- apply back to doc ---
+    # --- apply back to doc ---
     def _apply_to_doc(self):
         out = self.preview
         if self._was_mono:
@@ -652,7 +653,46 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
         except Exception as e:
             QMessageBox.critical(self, "WaveScale Dark Enhancer", f"Failed to write to document:\n{e}")
             return
+
+        # ── Build preset from current sliders ─────────────────────────
+        try:
+            preset = {
+                "n_scales": int(self.s_scales.value()),
+                "boost_factor": float(self.s_boost.value()) / 100.0,
+                "mask_gamma": float(self.s_gamma.value()) / 100.0,
+                "iterations": int(self.s_iters.value()),
+            }
+        except Exception:
+            preset = {}
+
+        # ── Register as last_headless_command on the main window ─────
+        try:
+            main = self.parent()
+            if main is not None:
+                payload = {
+                    "command_id": "wavescale_dark_enhance",
+                    "preset": dict(preset),
+                }
+                setattr(main, "_last_headless_command", payload)
+
+                # Optional debug logging similar to other tools
+                try:
+                    if hasattr(main, "_log"):
+                        main._log(
+                            "[Replay] Registered WaveScale Dark Enhancer as "
+                            f"last action (n_scales={preset.get('n_scales')}, "
+                            f"boost={preset.get('boost_factor')}, "
+                            f"mask_gamma={preset.get('mask_gamma')}, "
+                            f"iterations={preset.get('iterations')})"
+                        )
+                except Exception:
+                    pass
+        except Exception:
+            # Never let replay wiring break the apply
+            pass
+
         self.accept()
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Installer helpers

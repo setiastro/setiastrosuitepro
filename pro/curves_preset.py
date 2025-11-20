@@ -128,21 +128,47 @@ def _interpolator_from_scene_points(points_scene: List[Tuple[float, float]]):
     return _lin
 
 def _lut_from_preset(preset: Dict) -> tuple[np.ndarray, str]:
-    shape  = (preset or {}).get("shape", "linear")
-    amount = float((preset or {}).get("amount", 0.5))
-    ptsN   = preset.get("points_norm")
-
-    # decide control points (normalized)
-    if isinstance(ptsN, (list, tuple)) and len(ptsN) >= 2:
-        pts_norm = [(float(x), float(y)) for (x, y) in ptsN]
-    else:
-        pts_norm = _shape_points_norm(str(shape), amount)
-
-    pts_scene = _points_norm_to_scene(pts_norm)
+    """
+    Build LUT from any compatible preset / last-action dict.
+    """
+    pts_scene = _scene_points_from_preset(preset or {})
     fn = _interpolator_from_scene_points(pts_scene)
     lut01 = build_curve_lut(fn, size=65536)
-    mode = _norm_mode(preset.get("mode"))
+    mode = _norm_mode((preset or {}).get("mode"))
     return lut01, mode
+
+def _unwrap_preset_dict(preset: Dict) -> Dict:
+    """
+    Accept a variety of containers and peel down to the actual curve data.
+
+    Examples we handle:
+      {"step_name":"Curves","mode":..., "preset":{...}}
+      {"curves": {...}}
+      {"state": {...}}   # if state contains curve points
+    """
+    p = dict(preset or {})
+
+    # Case 1: full metadata from doc.apply_edit: {"step_name":"Curves", "mode":..., "preset": {...}}
+    inner = p.get("preset")
+    if isinstance(inner, dict) and ("points_norm" in inner or "handles" in inner
+                                    or "points_scene" in inner or "scene_points" in inner):
+        return inner
+
+    # Case 2: payloads like {"curves": {...}}
+    inner = p.get("curves")
+    if isinstance(inner, dict) and ("points_norm" in inner or "handles" in inner
+                                    or "points_scene" in inner or "scene_points" in inner):
+        return inner
+
+    # Case 3: {"state": {...}} (if you stored the curve state under that key)
+    inner = p.get("state")
+    if isinstance(inner, dict) and ("points_norm" in inner or "handles" in inner
+                                    or "points_scene" in inner or "scene_points" in inner):
+        return inner
+
+    # Otherwise assume p already *is* the preset
+    return p
+
 
 _SETTINGS_KEY = "curves/custom_presets_v1"
 
@@ -202,13 +228,17 @@ def delete_custom_preset(name: str) -> bool:
 # ---------------------- headless apply ----------------------
 def apply_curves_via_preset(main_window, doc, preset: Dict):
     import numpy as _np
-    from pro.curves_preset import _lut_from_preset  # self
+    from pro.curves_preset import _lut_from_preset, _unwrap_preset_dict  # self
     # lazy import to avoid cycle
     from pro.curve_editor_pro import _apply_mode_any
 
     img = getattr(doc, "image", None)
     if img is None:
         return
+
+    # Accept full last-action dicts and unwrap down to the actual curve definition
+    core_preset = _unwrap_preset_dict(preset or {})
+
     arr = _np.asarray(img)
     if arr.dtype.kind in "ui":
         arr01 = arr.astype(_np.float32) / _np.iinfo(arr.dtype).max
@@ -218,12 +248,18 @@ def apply_curves_via_preset(main_window, doc, preset: Dict):
     else:
         arr01 = arr.astype(_np.float32)
 
-    lut01, mode = _lut_from_preset(preset or {})
+    lut01, mode = _lut_from_preset(core_preset)
     out01 = _apply_mode_any(arr01, mode, lut01)
 
-    meta = {"step_name": "Curves", "mode": mode, "preset": dict(preset or {})}
+    meta = {
+        "step_name": "Curves",
+        "mode": mode,
+        "preset": dict(core_preset),  # store the normalized core preset
+    }
     doc.apply_edit(out01, metadata=meta, step_name="Curves")
 
+
+# ---------------------- open UI with preset ----------------------
 # ---------------------- open UI with preset ----------------------
 def open_curves_with_preset(main_window, preset: Dict | None = None):
     # lazy import UI to avoid cycle
@@ -238,29 +274,102 @@ def open_curves_with_preset(main_window, preset: Dict | None = None):
 
     dlg = CurvesDialogPro(main_window, doc)
 
-    # set mode radio
-    want = _norm_mode((preset or {}).get("mode"))
+    # Peel down any wrapper (metadata / last-action container) to the actual curve definition
+    core_preset = _unwrap_preset_dict(preset or {})
+
+    # set mode radio from the *core* preset
+    want = _norm_mode(core_preset.get("mode"))
     for b in dlg.mode_group.buttons():
         if b.text().lower() == want.lower():
             b.setChecked(True)
             break
 
-    # seed control handles from preset
-    shape  = (preset or {}).get("shape", "linear")
-    amount = float((preset or {}).get("amount", 0.5))
-    ptsN   = (preset or {}).get("points_norm")
+    # Seed control handles from the same logic used by LUT building
+    pts_scene = _scene_points_from_preset(core_preset)
 
-    if isinstance(ptsN, (list, tuple)) and len(ptsN) >= 2:
-        pts_norm = [(float(x), float(y)) for (x, y) in ptsN]
-    else:
-        pts_norm = _shape_points_norm(str(shape), amount)
-
-    # convert to scene coords & strip endpoints (ShortcutButton.setControlHandles expects control handles only)
-    pts_scene = _points_norm_to_scene(pts_norm)
-    # remove exact endpoints if present
+    # remove exact endpoints if present; editor expects control handles only
     filt = [(x, y) for (x, y) in pts_scene if x > 0.0 + 1e-6 and x < 360.0 - 1e-6]
     dlg.editor.setControlHandles(filt)
 
     dlg.show()
     dlg.raise_()
     dlg.activateWindow()
+
+
+def _sanitize_scene_points(points_scene: List[Tuple[float, float]]) -> List[Tuple[float, float]]:
+    """
+    Take scene-space points (x,y in [0..360]) and:
+      - clamp to [0..360]
+      - ensure endpoints at x=0 and x=360 exist
+      - enforce strictly increasing x
+    """
+    pts = []
+    for x, y in points_scene:
+        xs = float(x)
+        ys = float(y)
+        xs = min(360.0, max(0.0, xs))
+        ys = min(360.0, max(0.0, ys))
+        pts.append((xs, ys))
+
+    # ensure endpoints exist
+    if not any(abs(px - 0.0) < 1e-6 for px, _ in pts):
+        pts.append((0.0, 360.0))
+    if not any(abs(px - 360.0) < 1e-6 for px, _ in pts):
+        pts.append((360.0, 0.0))
+
+    # x strictly increasing
+    pts = sorted(pts, key=lambda t: t[0])
+    out: List[Tuple[float, float]] = []
+    lastx = -1e9
+    for x, y in pts:
+        if x <= lastx:
+            x = lastx + 1e-3
+        out.append((min(360.0, max(0.0, x)), min(360.0, max(0.0, y))))
+        lastx = out[-1][0]
+    return out
+
+
+def _scene_points_from_preset(preset: Dict) -> List[Tuple[float, float]]:
+    """
+    Accepts any of:
+      - preset["points_scene"] / preset["scene_points"]
+         → list of [x,y] or {"x":..,"y":..} in scene coords
+      - preset["handles"] / preset["control_points"]
+         → same as above, in scene coords (what the editor stores)
+      - preset["points_norm"]
+         → normalized [0..1] points
+      - otherwise falls back to shape/amount library
+    Returns a sanitized list of scene-space points.
+    """
+    p = preset or {}
+
+    # 1) explicit scene coords from several possible keys
+    for key in ("points_scene", "scene_points", "handles", "control_points"):
+        raw = p.get(key)
+        if isinstance(raw, (list, tuple)) and len(raw) >= 2:
+            pts: List[Tuple[float, float]] = []
+            for entry in raw:
+                if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                    x, y = entry[0], entry[1]
+                elif isinstance(entry, dict):
+                    x, y = entry.get("x"), entry.get("y")
+                else:
+                    continue
+                if x is None or y is None:
+                    continue
+                pts.append((float(x), float(y)))
+            if pts:
+                return _sanitize_scene_points(pts)
+
+    # 2) normalized points (what we already support)
+    shape  = str(p.get("shape", "linear"))
+    amount = float(p.get("amount", 0.5))
+    ptsN   = p.get("points_norm")
+
+    if isinstance(ptsN, (list, tuple)) and len(ptsN) >= 2:
+        pts_norm = [(float(x), float(y)) for (x, y) in ptsN]
+    else:
+        pts_norm = _shape_points_norm(shape, amount)
+
+    return _points_norm_to_scene(pts_norm)
+

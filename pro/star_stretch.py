@@ -314,10 +314,29 @@ class StarStretchDialog(QDialog):
             mw = self._find_main_window()
             if mw and hasattr(mw, "_log"):
                 mw._log("Star Stretch: applied to document.")
+
+            # 🔁 Record as last headless-style command for Replay
+            try:
+                if mw and hasattr(mw, "_remember_last_headless_command"):
+                    preset = {
+                        "stretch_factor": self.sld_st.value()/100.0,
+                        "color_boost": self.sld_sat.value()/100.0,
+                        "scnr_green": self.chk_scnr.isChecked(),
+                    }
+                    mw._remember_last_headless_command(
+                        "star_stretch",
+                        preset,
+                        description="Star Stretch",
+                    )
+            except Exception:
+                # Don't let replay bookkeeping break the dialog
+                pass
+
         except Exception as e:
             QMessageBox.critical(self, "Apply failed", str(e))
             return
         self.accept()
+
 
     # --- preview rendering ---
     def _update_preview_pix(self, img: np.ndarray | None):

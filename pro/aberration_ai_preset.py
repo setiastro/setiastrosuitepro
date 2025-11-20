@@ -14,7 +14,7 @@ from .aberration_ai import (
 
 # ---------------------- Headless entry ----------------------
 
-def run_aberration_ai_via_preset(main, preset: dict | None = None):
+def run_aberration_ai_via_preset(main, preset: dict | None = None, doc=None):
     """
     Headless Aberration AI
 
@@ -32,8 +32,10 @@ def run_aberration_ai_via_preset(main, preset: dict | None = None):
         return
 
     # active doc
-    doc = getattr(main, "_active_doc", None)
-    if callable(doc): doc = doc()
+    if doc is None:
+        d = getattr(main, "_active_doc", None)
+        doc = d() if callable(d) else d
+
     if doc is None or getattr(doc, "image", None) is None:
         QMessageBox.warning(main, "Aberration AI", "Load an image first.")
         return
@@ -121,7 +123,33 @@ def run_aberration_ai_via_preset(main, preset: dict | None = None):
             used = getattr(worker, "used_provider", provider_label)
             dt = time.perf_counter() - t0
             if hasattr(main, "_log"):
-                main._log(f"✅ Aberration AI (headless) model={os.path.basename(model)}, provider={used}, patch={patch}, overlap={overlap}, border={border_px}px, time={dt:.2f}s")
+                main._log(
+                    f"✅ Aberration AI (headless) model={os.path.basename(model)}, "
+                    f"provider={used}, patch={patch}, overlap={overlap}, "
+                    f"border={border_px}px, time={dt:.2f}s"
+                )
+
+            # ---- Register as last_headless_command for Replay ----
+            try:
+                auto_flag = bool(auto_gpu)
+                replay_preset = {
+                    "model": model,
+                    "patch": int(patch),
+                    "overlap": int(overlap),
+                    "border_px": int(border_px),
+                    "auto_gpu": auto_flag,
+                }
+                if not auto_flag:
+                    replay_preset["provider"] = provider_label
+
+                payload = {
+                    "command_id": "aberrationai",
+                    "preset": replay_preset,
+                }
+                setattr(main, "_last_headless_command", payload)
+            except Exception:
+                pass
+            # -------------------------------------------------------
         except Exception as e:
             QMessageBox.critical(main, "Aberration AI", f"Failed to apply result:\n{e}")
         finally:

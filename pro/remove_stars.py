@@ -409,13 +409,13 @@ def darkstar_starless_from_array(arr_rgb01: np.ndarray, settings, *, tmp_prefix=
 # ------------------------------------------------------------
 # Public entry
 # ------------------------------------------------------------
-def remove_stars(main):
+def remove_stars(main, target_doc=None):
     # block interactive UI during/just-after a headless preset run
     if getattr(main, "_remove_stars_headless_running", False):
         return
     if getattr(main, "_remove_stars_guard", False):
         return    
-    """Choose StarNet or CosmicClarityDarkStar, process active doc, update starless in-place, open stars-only as new doc."""
+
     tool, ok = QInputDialog.getItem(
         main, "Select Star Removal Tool", "Choose a tool:",
         ["StarNet", "CosmicClarityDarkStar"], 0, False
@@ -423,10 +423,13 @@ def remove_stars(main):
     if not ok:
         return
 
-    # active doc
-    doc = getattr(main, "_active_doc", None)
-    if callable(doc):
-        doc = doc()
+    # explicit doc wins; otherwise fall back to _active_doc
+    doc = target_doc
+    if doc is None:
+        doc = getattr(main, "_active_doc", None)
+        if callable(doc):
+            doc = doc()
+
     if doc is None or getattr(doc, "image", None) is None:
         QMessageBox.warning(main, "No Image", "Please load an image before removing stars.")
         return
@@ -435,6 +438,8 @@ def remove_stars(main):
         _run_darkstar(main, doc)
     else:
         _run_starnet(main, doc)
+
+
 
 
 def _first_nonzero_bp_per_channel(img3: np.ndarray) -> np.ndarray:
@@ -556,7 +561,31 @@ def _run_starnet(main, doc):
     )
     is_linear = (reply == QMessageBox.StandardButton.Yes)
     did_stretch = is_linear 
-
+    try:
+        main._last_remove_stars_params = {
+            "engine": "StarNet",
+            "is_linear": bool(is_linear),
+            "did_stretch": bool(did_stretch),
+            "label": "Remove Stars (StarNet)",
+        }
+    except Exception:
+        pass
+    # 🔁 Record headless command for Replay Last
+    try:
+        main._last_headless_command = {
+            "command_id": "remove_stars",
+            "preset": {
+                "tool": "starnet",
+                "linear": bool(is_linear),
+            },
+        }
+        if hasattr(main, "_log"):
+            main._log(
+                f"[Replay] Recorded remove_stars (StarNet, linear="
+                f"{'yes' if is_linear else 'no'})"
+            )
+    except Exception:
+        pass    
     # --- Ensure RGB float32 in safe range
     src = np.asarray(doc.image)
     if src.ndim == 2:
@@ -771,7 +800,39 @@ def _on_starnet_finished(main, doc, return_code, dialog, input_path, output_path
             "bit_depth": "32-bit floating point",
             "is_mono": False,
         }
-        doc.apply_edit(final_starless.astype(np.float32, copy=False), metadata=meta, step_name="Stars Removed")
+
+        # 🔹 Attach replay-last metadata
+        rp = getattr(main, "_last_remove_stars_params", None)
+        if isinstance(rp, dict):
+            replay_params = dict(rp)  # shallow copy so we don't mutate the stored one
+        else:
+            replay_params = {
+                "engine": "StarNet",
+                "is_linear": bool(did_stretch),
+                "did_stretch": bool(did_stretch),
+                "label": "Remove Stars (StarNet)",
+            }
+
+        replay_params.setdefault("engine", "StarNet")
+        replay_params.setdefault("label", "Remove Stars (StarNet)")
+
+        meta["replay_last"] = {
+            "op": "remove_stars",
+            "params": replay_params,
+        }
+
+        # Clean up the stash so it can't leak to the next unrelated op
+        try:
+            if hasattr(main, "_last_remove_stars_params"):
+                delattr(main, "_last_remove_stars_params")
+        except Exception:
+            pass
+
+        doc.apply_edit(
+            final_starless.astype(np.float32, copy=False),
+            metadata=meta,
+            step_name="Stars Removed"
+        )
         if hasattr(main, "_log"):
             main._log("Stars Removed (StarNet)")
     except Exception as e:
@@ -819,7 +880,39 @@ def _run_darkstar(main, doc):
     mode = params["mode"]                         # "unscreen" or "additive"
     show_extracted_stars = params["show_extracted_stars"]
     stride = params["stride"]                     # 64..1024, default 512
-
+    # 🔹 Stash parameters for replay-last
+    try:
+        main._last_remove_stars_params = {
+            "engine": "CosmicClarityDarkStar",
+            "disable_gpu": bool(disable_gpu),
+            "mode": mode,
+            "show_extracted_stars": bool(show_extracted_stars),
+            "stride": int(stride),
+            "label": "Remove Stars (DarkStar)",
+        }
+    except Exception:
+        pass
+    # 🔁 Record headless command for Replay Last
+    try:
+        main._last_headless_command = {
+            "command_id": "remove_stars",
+            "preset": {
+                "tool": "darkstar",
+                "disable_gpu": bool(disable_gpu),
+                "mode": mode,
+                "show_extracted_stars": bool(show_extracted_stars),
+                "stride": int(stride),
+            },
+        }
+        if hasattr(main, "_log"):
+            main._log(
+                "[Replay] Recorded remove_stars (DarkStar, "
+                f"mode={mode}, stride={int(stride)}, "
+                f"gpu={'off' if disable_gpu else 'on'}, "
+                f"stars={'on' if show_extracted_stars else 'off'})"
+            )
+    except Exception:
+        pass    
     # Build CLI exactly like SASv2 (using --chunk_size, not chunk_size)
     args = []
     if disable_gpu:
@@ -948,6 +1041,7 @@ def _on_darkstar_finished(main, doc, return_code, dialog, in_path, output_dir, b
         dialog.append_text("No stars-only image generated.\n")
 
     # mask-blend starless → overwrite current doc
+    # mask-blend starless → overwrite current doc
     dialog.append_text("Mask-blending starless image before update...\n")
     final_starless = _mask_blend_with_doc_mask(doc, starless_rgb, original_rgb)
     try:
@@ -956,11 +1050,42 @@ def _on_darkstar_finished(main, doc, return_code, dialog, in_path, output_dir, b
             "bit_depth": "32-bit floating point",
             "is_mono": False,
         }
-        doc.apply_edit(final_starless.astype(np.float32, copy=False), metadata=meta, step_name="Stars Removed")
+
+        # 🔹 Attach replay-last metadata
+        rp = getattr(main, "_last_remove_stars_params", None)
+        if isinstance(rp, dict):
+            replay_params = dict(rp)
+        else:
+            replay_params = {
+                "engine": "CosmicClarityDarkStar",
+                "label": "Remove Stars (DarkStar)",
+            }
+
+        replay_params.setdefault("engine", "CosmicClarityDarkStar")
+        replay_params.setdefault("label", "Remove Stars (DarkStar)")
+
+        meta["replay_last"] = {
+            "op": "remove_stars",
+            "params": replay_params,
+        }
+
+        # Clean up stash
+        try:
+            if hasattr(main, "_last_remove_stars_params"):
+                delattr(main, "_last_remove_stars_params")
+        except Exception:
+            pass
+
+        doc.apply_edit(
+            final_starless.astype(np.float32, copy=False),
+            metadata=meta,
+            step_name="Stars Removed"
+        )
         if hasattr(main, "_log"):
             main._log("Stars Removed (DarkStar)")
     except Exception as e:
         QMessageBox.critical(main, "CosmicClarityDarkStar", f"Failed to apply result:\n{e}")
+
 
     # cleanup
     try:

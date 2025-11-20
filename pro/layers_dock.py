@@ -50,13 +50,42 @@ class _LayerRow(QWidget):
         r2 = QHBoxLayout(); v.addLayout(r2)
         self.mask_combo = QComboBox(); self.mask_combo.setMinimumWidth(140)
         self.mask_combo.setPlaceholderText("Mask: (none)")
-        #self.mask_src = QComboBox(); self.mask_src.addItems(["Luminance", "Active Mask"])
         self.mask_invert = QCheckBox("Invert")
         self.btn_clear_mask = QPushButton("Clear")
-        self.btn_clear_mask.setFixedWidth(52)        
+        self.btn_clear_mask.setFixedWidth(52)
         r2.addWidget(QLabel("Mask")); r2.addWidget(self.mask_combo, 1)
-
         r2.addWidget(self.mask_invert); r2.addWidget(self.btn_clear_mask)
+
+        # Extra controls for some blend modes (e.g. Sigmoid)
+        self.sig_center_label = None
+        self.sig_center = None
+        self.sig_strength_label = None
+        self.sig_strength = None
+
+        if not self._is_base:
+            # row 3: Sigmoid parameters
+            r3 = QHBoxLayout(); v.addLayout(r3)
+
+            self.sig_center_label = QLabel("Sigmoid center")
+            from PyQt6.QtWidgets import QDoubleSpinBox
+            self.sig_center = QDoubleSpinBox()
+            self.sig_center.setRange(0.0, 1.0)
+            self.sig_center.setSingleStep(0.01)
+            self.sig_center.setDecimals(3)
+            self.sig_center.setValue(0.5)
+
+            self.sig_strength_label = QLabel("Strength")
+            self.sig_strength = QDoubleSpinBox()
+            self.sig_strength.setRange(0.1, 50.0)
+            self.sig_strength.setSingleStep(0.5)
+            self.sig_strength.setDecimals(2)
+            self.sig_strength.setValue(10.0)
+
+            r3.addWidget(self.sig_center_label)
+            r3.addWidget(self.sig_center)
+            r3.addWidget(self.sig_strength_label)
+            r3.addWidget(self.sig_strength)
+            r3.addStretch(1)
 
         if self._is_base:
             # Base row is informational only
@@ -66,15 +95,71 @@ class _LayerRow(QWidget):
             self.lbl.setStyleSheet("color: palette(mid);")
         else:
             self.chk.stateChanged.connect(self._emit)
-            self.mode.currentIndexChanged.connect(self._emit)
+            self.mode.currentIndexChanged.connect(self._on_mode_changed)
             self.sld.valueChanged.connect(self._emit)
             self.mask_combo.currentIndexChanged.connect(self._emit)
-
             self.mask_invert.stateChanged.connect(self._emit)
             self.btn_clear_mask.clicked.connect(self._on_clear_mask)
             self.btn_x.clicked.connect(self.requestDelete.emit)
             self.btn_up.clicked.connect(self.moveUp.emit)
             self.btn_dn.clicked.connect(self.moveDown.emit)
+
+            # Sigmoid controls emit change + only show for Sigmoid mode
+            if self.sig_center is not None:
+                self.sig_center.valueChanged.connect(self._emit)
+            if self.sig_strength is not None:
+                self.sig_strength.valueChanged.connect(self._emit)
+
+            self.mode.currentIndexChanged.connect(
+                lambda _i: self._update_extra_controls(self.mode.currentText())
+            )
+            # Initial visibility
+            self._update_extra_controls(self.mode.currentText())
+
+    def _on_mode_changed(self, _idx: int):
+        # Update which extra controls are visible
+        self._update_extra_controls(self.mode.currentText())
+        # Make our layout recompute height
+        lay = self.layout()
+        if lay is not None:
+            lay.invalidate()
+            lay.activate()
+
+        self.adjustSize()
+        self.updateGeometry()
+        # Tell the dock “something changed”
+        self._emit()
+
+    def _update_extra_controls(self, mode_text: str):
+        is_sig = (mode_text == "Sigmoid")
+        for w in (self.sig_center_label, self.sig_center,
+                  self.sig_strength_label, self.sig_strength):
+            if w is not None:
+                w.setVisible(is_sig)
+
+
+    def _update_extra_controls(self, mode_text: str):
+        is_sig = (mode_text == "Sigmoid")
+        for w in (self.sig_center_label, self.sig_center,
+                  self.sig_strength_label, self.sig_strength):
+            if w is not None:
+                w.setVisible(is_sig)
+
+        # Let the layout recompute our preferred height
+        self.adjustSize()
+        self.updateGeometry()
+
+    def set_sigmoid_params(self, center: float, strength: float):
+        if self.sig_center is None or self.sig_strength is None:
+            return
+        self.sig_center.blockSignals(True)
+        self.sig_strength.blockSignals(True)
+        self.sig_center.setValue(float(center))
+        self.sig_strength.setValue(float(strength))
+        self.sig_center.blockSignals(False)
+        self.sig_strength.blockSignals(False)
+        self._update_extra_controls(self.mode.currentText())
+
 
     def _on_clear_mask(self):
         # select the explicit "(none)" entry
@@ -85,16 +170,20 @@ class _LayerRow(QWidget):
         self.changed.emit()
 
     def params(self):
-        return {
+        out = {
             "visible": self.chk.isChecked(),
             "mode": self.mode.currentText(),
             "opacity": self.sld.value() / 100.0,
             "name": self._name,
             # mask UI state
             "mask_index": self.mask_combo.currentIndex(),
-            "mask_src": "Luminance",  
+            "mask_src": "Luminance",
             "mask_invert": self.mask_invert.isChecked(),
         }
+        if self.sig_center is not None and self.sig_strength is not None:
+            out["sigmoid_center"] = self.sig_center.value()
+            out["sigmoid_strength"] = self.sig_strength.value()
+        return out
 
     def setName(self, name: str):
         self._name = name
@@ -311,6 +400,9 @@ class LayersDock(QDockWidget):
             
             roww.mask_invert.setChecked(bool(getattr(lyr, "mask_invert", False)))
             roww.mask_combo.blockSignals(False)
+            center = getattr(lyr, "sigmoid_center", 0.5)
+            strength = getattr(lyr, "sigmoid_strength", 10.0)
+            roww.set_sigmoid_params(center, strength)            
             self._bind_row(roww)
             it = QListWidgetItem(self.list)
             it.setSizeHint(roww.sizeHint())
@@ -328,6 +420,7 @@ class LayersDock(QDockWidget):
         has_layers = bool(getattr(vw, "_layers", []))
         self.btn_merge.setEnabled(has_layers)
         self.btn_clear.setEnabled(has_layers)
+        self._refresh_row_heights()
 
     def _layer_count(self) -> int:
         vw = self.current_view()
@@ -345,6 +438,22 @@ class LayersDock(QDockWidget):
     def _apply_list_to_view_debounced(self):
         # restart the timer on every slider tick
         self._apply_timer.start(self._apply_debounce_ms)
+        # Also refresh row heights so mode-dependent controls (like Sigmoid)
+        # can expand/collapse the row visually.
+        self._refresh_row_heights()
+
+    def _refresh_row_heights(self):
+        """Update QListWidgetItem size hints to match current row widgets."""
+        try:
+            for i in range(self.list.count()):
+                item = self.list.item(i)
+                roww = self.list.itemWidget(item)
+                if roww is not None:
+                    # Ask the row for an up-to-date size hint
+                    item.setSizeHint(roww.sizeHint())
+        except Exception as ex:
+            print("[LayersDock] _refresh_row_heights error:", ex)
+
 
 
     def _find_row_index(self, roww: _LayerRow) -> int:
@@ -396,7 +505,11 @@ class LayersDock(QDockWidget):
             lyr.visible = p["visible"]
             lyr.mode = p["mode"]
             lyr.opacity = float(p["opacity"])
-
+            # Sigmoid parameters (if present)
+            if "sigmoid_center" in p:
+                lyr.sigmoid_center = float(p["sigmoid_center"])
+            if "sigmoid_strength" in p:
+                lyr.sigmoid_strength = float(p["sigmoid_strength"])
             mi = p["mask_index"]
             if mi is not None and mi > 0:
                 doc = roww.mask_combo.itemData(mi)

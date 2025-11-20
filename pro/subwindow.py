@@ -314,6 +314,7 @@ class ImageSubWindow(QWidget):
     viewTransformChanged = pyqtSignal(float, int, int)
     _registry = weakref.WeakValueDictionary()
     resized = pyqtSignal() 
+    replayOnBaseRequested = pyqtSignal(object)
 
 
     def __init__(self, document, parent=None):
@@ -352,6 +353,9 @@ class ImageSubWindow(QWidget):
         self._linked_views = weakref.WeakSet()
         ImageSubWindow._registry[id(self)] = self
         self._link_badge_on = False
+
+
+
         # whenever we move/zoom, relay to linked peers
         self.viewTransformChanged.connect(self._relay_to_linked)
         # pixel readout live-probe state
@@ -418,6 +422,27 @@ class ImageSubWindow(QWidget):
         self._btn_redo.setEnabled(False)
         self._btn_redo.clicked.connect(self._on_local_redo)
         row.addWidget(self._btn_redo, 0, Qt.AlignmentFlag.AlignLeft)
+
+        self._btn_replay_main = QToolButton(self)
+        self._btn_replay_main.setText("⟳")  # pick any glyph you like
+        self._btn_replay_main.setToolTip(
+            "Click: replay the last action on the base image.\n"
+            "Arrow: pick a specific past action to replay on the base image."
+        )
+        self._btn_replay_main.setEnabled(False)  # enabled only when preview + history
+
+        # Left-click = your existing 'replay last on base'
+        self._btn_replay_main.clicked.connect(self._on_replay_last_clicked)
+
+        # NEW: dropdown menu listing all replayable actions
+        self._replay_menu = QMenu(self)
+        self._btn_replay_main.setMenu(self._replay_menu)
+        self._btn_replay_main.setPopupMode(
+            QToolButton.ToolButtonPopupMode.MenuButtonPopup
+        )
+
+        row.addWidget(self._btn_replay_main, 0, Qt.AlignmentFlag.AlignLeft)
+
 
         # ── NEW: WCS grid toggle ─────────────────────────────────────────
         self._btn_wcs = QToolButton(self)
@@ -492,6 +517,7 @@ class ImageSubWindow(QWidget):
         self._render(rebuild=True)
         QTimer.singleShot(0, self._maybe_announce_readout_help)
         self._refresh_local_undo_buttons()
+        self._update_replay_button()
 
         hbar = self.scroll.horizontalScrollBar()
         vbar = self.scroll.verticalScrollBar()
@@ -641,6 +667,144 @@ class ImageSubWindow(QWidget):
             self.viewTransformChanged.emit(float(self.scale), int(h), int(v))
         except Exception:
             pass
+
+    #------ Replay helpers------
+    #------ Replay helpers------
+    def _update_replay_button(self):
+        """
+        Update the 'Replay on main image' button:
+
+        - Enabled only when a Preview/ROI is active.
+        - Populates the dropdown menu with all headless-history entries
+          from the main window (newest first).
+        """
+        btn = getattr(self, "_btn_replay_main", None)
+        if not btn:
+            return
+
+        # Do we have an active preview in this view?
+        try:
+            has_preview = self.has_active_preview()
+        except Exception:
+            has_preview = False
+
+        mw = self._find_main_window()
+        menu = getattr(self, "_replay_menu", None)
+
+        history = []
+        has_history = False
+
+        # Pull history from main window if available
+        if mw is not None and hasattr(mw, "get_headless_history"):
+            try:
+                history = mw.get_headless_history() or []
+                has_history = bool(history)
+            except Exception:
+                history = []
+                has_history = False
+
+        # Rebuild the dropdown menu
+        if menu is not None:
+            menu.clear()
+            if has_history:
+                # We want newest actions at the *top* of the menu
+                for idx_from_end, entry in enumerate(reversed(history)):
+                    real_index = len(history) - 1 - idx_from_end  # index into original list
+
+                    cid  = entry.get("command_id", "") or ""
+                    desc = entry.get("description") or cid or f"#{real_index+1}"
+
+                    act = menu.addAction(desc)
+                    if cid and cid != desc:
+                        act.setToolTip(cid)
+
+                    # Capture the index in a default arg so each action gets its own index
+                    act.triggered.connect(
+                        lambda _chk=False, i=real_index: self._replay_history_index(i)
+                    )
+
+        # Also allow left-click "last action" when main window still has a last payload
+        has_last = bool(mw and getattr(mw, "_last_headless_command", None))
+
+        enabled = bool(has_preview and (has_history or has_last))
+        btn.setEnabled(enabled)
+
+        # DEBUG:
+        try:
+            print(
+                f"[Replay] _update_replay_button: view id={id(self)} "
+                f"enabled={enabled}, has_preview={has_preview}, "
+                f"history_len={len(history)}"
+            )
+        except Exception:
+            pass
+
+    def _replay_history_index(self, index: int):
+        """
+        Called when the user selects an entry from the replay dropdown.
+
+        We forward to MainWindow.replay_headless_history_entry_on_base(index, target_sw),
+        which reuses the big replay_last_action_on_base() switchboard.
+        """
+        mw = self._find_main_window()
+        if mw is None or not hasattr(mw, "replay_headless_history_entry_on_base"):
+            try:
+                print("[Replay] _replay_history_index: main window or handler missing")
+            except Exception:
+                pass
+            return
+
+        target_sw = self._mdi_subwindow()
+
+        try:
+            mw.replay_headless_history_entry_on_base(index, target_sw=target_sw)
+            try:
+                print(
+                    f"[Replay] _replay_history_index: index={index}, "
+                    f"view id={id(self)}, target_sw={id(target_sw) if target_sw else None}"
+                )
+            except Exception:
+                pass
+        except Exception as e:
+            try:
+                print(f"[Replay] _replay_history_index failed: {e}")
+            except Exception:
+                pass
+
+
+    def _on_replay_last_clicked(self):
+        """
+        User clicked the ⟳ button *main area* (not the arrow).
+
+        This still does the old behavior:
+        - Emit replayOnBaseRequested(view)
+        - Main window then replays the *last* action on the base doc
+          for this subwindow (via replay_last_action_on_base).
+        """
+        # DEBUG: log that the button actually fired
+        try:
+            roi = None
+            if hasattr(self, "has_active_preview") and self.has_active_preview():
+                try:
+                    roi = self.current_preview_roi()
+                except Exception:
+                    roi = None
+            print(
+                f"[Replay] Button clicked in view id={id(self)}, "
+                f"has_active_preview={self.has_active_preview() if hasattr(self, 'has_active_preview') else 'n/a'}, "
+                f"roi={roi}"
+            )
+        except Exception:
+            pass
+
+        # Emit self so the main window can locate our QMdiSubWindow wrapper.
+        try:
+            print(f"[Replay] Emitting replayOnBaseRequested from view id={id(self)}")
+        except Exception:
+            pass
+        self.replayOnBaseRequested.emit(self)
+
+
 
     def _on_pan_or_zoom_changed(self, *_):
         # Debounce lightly if you want; for now, just emit
@@ -881,6 +1045,8 @@ class ImageSubWindow(QWidget):
         if not self._previews:
             self._tabs.tabBar().setVisible(False)
 
+        self._update_replay_button()     
+
     def _on_tab_changed(self, idx: int):
         if not hasattr(self, "_full_tab_idx"):
             return
@@ -899,8 +1065,14 @@ class ImageSubWindow(QWidget):
         self._install_history_watchers()
         self._render(True)
         self._refresh_local_undo_buttons()
+        self._update_replay_button() 
         self._emit_view_transform() 
-
+        mw = self._find_main_window()
+        if mw is not None and getattr(mw, "_auto_fit_on_resize", False):
+            try:
+                mw._zoom_active_fit()
+            except Exception:
+                pass
 
     def _toggle_preview_select_mode(self, on: bool):
         self._preview_select_mode = bool(on)
@@ -2439,6 +2611,13 @@ class ImageSubWindow(QWidget):
         self._active_source_kind = "preview"
         self._active_preview_id = pid
         self._render(True)
+        self._update_replay_button()  
+        mw = self._find_main_window()
+        if mw is not None and getattr(mw, "_auto_fit_on_resize", False):
+            try:
+                mw._zoom_active_fit()
+            except Exception:
+                pass        
 
     def mousePressEvent(self, e):
         # If we're defining a preview ROI, don't start panning here
@@ -2561,29 +2740,6 @@ class ImageSubWindow(QWidget):
         mw.statusBar().showMessage(msg)
 
 
-
-    def _deg_to_hms(self, ra_deg: float) -> str:
-        """
-        RA in degrees → 'HH:MM:SS.s'
-        """
-        # RA: 0..360 deg → 0..24 h
-        total_seconds = (ra_deg / 15.0) * 3600.0
-        h = int(total_seconds // 3600)
-        m = int((total_seconds % 3600) // 60)
-        s = total_seconds % 60.0
-        return f"{h:02d}:{m:02d}:{s:05.2f}"
-
-    def _deg_to_dms(self, dec_deg: float) -> str:
-        """
-        Dec in degrees → '+DD:MM:SS.s'
-        """
-        sign = "+" if dec_deg >= 0 else "-"
-        d = abs(dec_deg)
-        total_seconds = d * 3600.0
-        deg = int(total_seconds // 3600)
-        arcmin = int((total_seconds % 3600) // 60)
-        arcsec = total_seconds % 60.0
-        return f"{sign}{deg:02d}:{arcmin:02d}:{arcsec:05.2f}"
 
     # 1) helper to build ROI-adjusted WCS (keeps projection/rotation/CD/PC intact)
     def _wcs_for_roi(self, base_wcs, roi, arr_shape=None):

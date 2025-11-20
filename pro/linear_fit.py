@@ -349,12 +349,49 @@ class LinearFitDialog(QDialog):
     def _on_done(self, out_img: np.ndarray, step_name: str):
         self.setEnabled(True)
         self.status.setText("Done.")
+
+        # 1) Apply result via DocManager (ROI/full handled there)
         try:
-            # push into undo/redo via doc manager
             self.dm.apply_edit_to_active(out_img, step_name=step_name)
         except Exception as e:
             QMessageBox.warning(self, "Linear Fit", f"Applied, but could not update document:\n{e}")
+
+        # 2) Remember this as the last headless-style command for Replay
+        try:
+            preset: dict = {
+                "rescale_mode_idx": int(self.combo_rescale.currentIndex()),
+                "mode": self.mode,
+            }
+            if self.mode == "rgb":
+                preset["rgb_mode_idx"] = int(self.combo_rgb.currentIndex())
+            else:
+                # Mono: stash reference info for future enhancements
+                if getattr(self, "_ref_docs", None):
+                    idx = int(self.combo_ref.currentIndex())
+                    if 0 <= idx < len(self._ref_docs):
+                        ref_doc = self._ref_docs[idx]
+                        ref_uid = getattr(ref_doc, "uid", None)
+                        if ref_uid:
+                            preset["ref_uid"] = ref_uid
+                        preset["ref_name"] = ref_doc.display_name()
+
+            # Walk up to a parent that knows how to remember headless commands
+            mw = self.parent()
+            while mw is not None and not hasattr(mw, "_remember_last_headless_command"):
+                mw = mw.parent() if hasattr(mw, "parent") else None
+
+            if mw is not None and hasattr(mw, "_remember_last_headless_command"):
+                mw._remember_last_headless_command(
+                    "linear_fit",
+                    preset,
+                    description=step_name or "Linear Fit",
+                )
+        except Exception:
+            # Replay tracking should never break the dialog
+            pass
+
         self.accept()
+
 
 # --------------------------------------------------------------------------------------
 # Public helpers for wiring into MainWindow
@@ -429,3 +466,50 @@ def apply_linear_fit_via_preset(parent, doc_manager, active_doc, preset: dict | 
     out, _, _ = linear_fit_mono_to_ref(img, ref, rescale_idx)
     step = f"Linear Fit (mono → {others[cb.currentIndex()].display_name()})"
     doc_manager.apply_edit_to_active(out, step_name=step)
+
+def apply_linear_fit_to_doc(parent, target_doc, preset: dict | None) -> None:
+    """
+    Replay helper: apply Linear Fit to a specific ImageDocument
+    (usually the *base* doc when 'Replay Last on Base' is used).
+
+    Currently supports RGB images; mono replay-on-base will just
+    show a friendly message so you don't get a silent no-op.
+    """
+    if target_doc is None or getattr(target_doc, "image", None) is None:
+        QMessageBox.information(parent, "Linear Fit", "No target image.")
+        return
+
+    preset = dict(preset or {})
+    rescale_idx = int(preset.get("rescale_mode_idx", 1))
+
+    img = np.asarray(target_doc.image)
+    if img.ndim == 3 and img.shape[2] >= 3:
+        rgb_idx = int(preset.get("rgb_mode_idx", 0))
+        out, ref_idx, _, _ = linear_fit_rgb(img, rgb_idx, rescale_idx)
+
+        names = ["R", "G", "B"]
+        target = {
+            0: "highest median",
+            1: "lowest median",
+            2: "Red",
+            3: "Green",
+            4: "Blue",
+        }.get(rgb_idx, "highest median")
+
+        step = f"Linear Fit (RGB → {names[ref_idx]} / {target})"
+        meta = {"step_name": step, "bit_depth": "32-bit floating point"}
+        try:
+            target_doc.apply_edit(out.astype(np.float32, copy=False),
+                                  metadata=meta,
+                                  step_name=step)
+        except Exception as e:
+            QMessageBox.warning(parent, "Linear Fit", f"Replay apply failed:\n{e}")
+        return
+
+    # Mono replay-on-base: we don't have the reference baked into the preset yet.
+    QMessageBox.information(
+        parent,
+        "Linear Fit",
+        "Replay-on-base for mono Linear Fit is not implemented yet.\n"
+        "Please re-run Linear Fit on this image via the dialog."
+    )

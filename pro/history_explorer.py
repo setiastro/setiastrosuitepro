@@ -1,17 +1,335 @@
-# pro/history_explorer.py
 from __future__ import annotations
-from PyQt6.QtCore import Qt, QSize, QPointF, QEvent
+from PyQt6.QtCore import Qt, QSize, QPointF, QEvent, QMimeData
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QListWidget, QPushButton, QLabel,
-    QScrollArea, QWidget, QMessageBox, QSlider
+    QScrollArea, QWidget, QMessageBox, QSlider, QListWidgetItem, QApplication
 )
-from PyQt6.QtGui import QImage, QPixmap, QPainter
+from PyQt6.QtGui import QImage, QPixmap, QPainter, QMouseEvent, QDrag
 from PyQt6 import sip
 import numpy as np
+import json
 
 from .autostretch import autostretch
+from .dnd_mime import MIME_CMD
+
 
 # ---------- helpers ----------
+def _pack_cmd_payload(command_id: str, preset: dict | None = None) -> bytes:
+    return json.dumps({"command_id": command_id, "preset": preset or {}}).encode("utf-8")
+
+# Map human step names → command_id used by replay_last_action_on_base
+_NAME_TO_COMMAND_ID = {
+    # Background neutralization / WB
+    "background neutralization": "background_neutral",
+    "background neutralisation": "background_neutral",
+    "background neutral": "background_neutral",
+    "white balance": "white_balance",
+
+    # Simple tools with no real preset
+    "pedestal removal": "pedestal",
+    "pedestal": "pedestal",
+    "linear fit": "linear_fit",
+
+    # Stretching / tone tools
+    "statistical stretch": "stat_stretch",
+    "stat stretch": "stat_stretch",
+    "star stretch": "star_stretch",
+    "curves": "curves",
+    "ghs": "ghs",
+    "generalized hyperbolic stretch": "ghs",
+
+    # Background/gradient
+    "abe": "abe",
+    "automatic background extraction": "abe",
+    "graxpert": "graxpert",
+
+    # Star / color tools
+    "remove stars": "remove_stars",
+    "remove green": "remove_green",
+
+    # Convolution / deconvolution
+    "convo / deconvo": "convo",
+    "convolution / deconvolution": "convo",
+    "convolution": "convo",
+    "deconvolution": "convo",
+
+    # Wavescale tools
+    "wavescale hdr": "wavescale_hdr",
+    "wave scale hdr": "wavescale_hdr",
+    "wavescale dark enhancer": "wavescale_dark_enhance",
+    "wave scale dark enhancer": "wavescale_dark_enhance",
+    "dark structure enhance": "wavescale_dark_enhance",
+
+    # Other image-processing tools
+    "clahe": "clahe",
+    "morphology": "morphology",
+    "pixel math": "pixel_math",
+    "pixelmath": "pixel_math",
+    "halo-b-gon": "halo_b_gon",
+    "halo b gon": "halo_b_gon",
+    "aberration ai": "aberrationai",
+    "cosmic clarity": "cosmic_clarity",
+}
+
+
+def _norm_preset(p) -> dict:
+    """Best effort: turn whatever we get into a dict."""
+    if not p:
+        return {}
+    if isinstance(p, dict):
+        return dict(p)
+    try:
+        return dict(p)
+    except Exception:
+        return {}
+
+
+def _extract_cmd_payload_from_meta(meta: dict | None) -> dict | None:
+    """
+    Best-effort: pull a (command_id, preset) payload out of a history meta dict.
+
+    We look in three places, in order:
+
+      1) Embedded payloads (headless_payload / replay_payload / cmd_payload)
+      2) Explicit command_id / cid + preset directly on metadata
+      3) Inference from step_name + preset or special tool keys
+    """
+    if not isinstance(meta, dict):
+        return None
+
+    # --- 1) Embedded payload dicts ----------------------------
+    for key in ("headless_payload", "replay_payload", "cmd_payload"):
+        p = meta.get(key)
+        if isinstance(p, dict):
+            cid = p.get("command_id") or p.get("cid")
+            if cid:
+                return {
+                    "command_id": str(cid),
+                    "preset": _norm_preset(p.get("preset")),
+                }
+
+    # --- 2) Direct command_id + preset on metadata ------------
+    cid = meta.get("command_id") or meta.get("cid")
+    if cid:
+        preset = meta.get("preset") or meta.get("preset_dict") or {}
+        return {
+            "command_id": str(cid),
+            "preset": _norm_preset(preset),
+        }
+
+    # --- 3) Heuristics for tools that only store preset + step_name ----
+    preset = _norm_preset(meta.get("preset"))
+    step_name_raw = meta.get("step_name") or meta.get("name")
+    step_name = str(step_name_raw or "").strip().lower()
+
+    inferred_cid = None
+
+    if step_name:
+        # Normalize a bit: underscores / hyphens → spaces
+        base = step_name.replace("_", " ").replace("-", " ")
+
+        # Exact match first
+        inferred_cid = _NAME_TO_COMMAND_ID.get(base)
+
+        # Fuzzy: allow things like "Remove Green (mask=ON)"
+        if inferred_cid is None:
+            for key, val in _NAME_TO_COMMAND_ID.items():
+                if key in base:
+                    inferred_cid = val
+                    break
+
+    # Fallback: look for tool-specific keys in metadata
+    if inferred_cid is None:
+        for k in meta.keys():
+            k_norm = str(k).lower()
+
+            if k_norm in ("remove_green", "remove green"):
+                inferred_cid = "remove_green"
+                break
+            if k_norm in ("stat_stretch", "statistical_stretch"):
+                inferred_cid = "stat_stretch"
+                break
+            if k_norm in ("ghs", "generalized hyperbolic stretch"):
+                inferred_cid = "ghs"
+                break
+            if k_norm in ("abe", "automatic background extraction"):
+                inferred_cid = "abe"
+                break
+            if k_norm in ("wavescale_hdr", "wave_scale_hdr"):
+                inferred_cid = "wavescale_hdr"
+                break
+            if k_norm in ("wavescale_dark_enhance", "dark_structure_enhance"):
+                inferred_cid = "wavescale_dark_enhance"
+                break
+            if k_norm in ("pixel_math", "pixelmath"):
+                inferred_cid = "pixel_math"
+                break
+            if k_norm in ("halo_b_gon", "halo b gon"):
+                inferred_cid = "halo_b_gon"
+                break
+            if k_norm in ("aberrationai", "aberration_ai"):
+                inferred_cid = "aberrationai"
+                break
+            if k_norm in ("cosmic_clarity",):
+                inferred_cid = "cosmic_clarity"
+                break
+            if k_norm in ("convo", "convolution", "deconvolution"):
+                inferred_cid = "convo"
+                break
+
+    if inferred_cid is None:
+        # Nothing we know how to replay
+        return None
+
+    return {
+        "command_id": str(inferred_cid),
+        "preset": preset,
+    }
+
+# Map human step names → command_id used by replay_last_action_on_base
+_NAME_TO_COMMAND_ID = {
+    "pedestal removal": "pedestal",
+    "pedestal": "pedestal",
+
+    "statistical stretch": "stat_stretch",
+    "stat stretch": "stat_stretch",
+
+    "curves": "curves",
+
+    "remove green": "remove_green",
+
+    "background neutralization": "background_neutral",
+    "background neutralisation": "background_neutral",
+    "background neutral": "background_neutral",
+    "bn": "background_neutral",
+
+    "white balance": "white_balance",
+
+    "convo/deconvo": "convo",
+    "convolution / deconvolution": "convo",
+    "convolution": "convo",
+    "deconvolution": "convo",
+
+    "ghs": "ghs",
+    "generalized hyperbolic stretch": "ghs",
+
+    "automatic background extraction": "abe",
+    "abe": "abe",
+
+    "graxpert": "graxpert",
+
+    "remove stars": "remove_stars",
+
+    "star stretch": "star_stretch",
+
+    "wavescale hdr": "wavescale_hdr",
+    "wave scale hdr": "wavescale_hdr",
+
+    "wavescale dark enhancer": "wavescale_dark_enhance",
+    "dark structure enhance": "wavescale_dark_enhance",
+
+    "clahe": "clahe",
+
+    "morphology": "morphology",
+
+    "pixel math": "pixel_math",
+    "pixelmath": "pixel_math",
+
+    "halo-b-gon": "halo_b_gon",
+    "halo b gon": "halo_b_gon",
+
+    "aberration ai": "aberrationai",
+
+    "cosmic clarity": "cosmic_clarity",
+
+    "linear fit": "linear_fit",
+}
+
+
+def _norm_step_label(label: str) -> str:
+    """Normalize a human label like 'Statistical Stretch (target=0.25, unlinked)'."""
+    s = str(label or "").strip().lower()
+    if not s:
+        return ""
+    # Drop decorations like '(...)' or ' - extra'
+    for sep in ("(", "[", " - "):
+        idx = s.find(sep)
+        if idx > 0:
+            s = s[:idx]
+    return " ".join(s.split())
+
+
+def _command_id_for_step_label(label: str) -> str | None:
+    """Map a history step label to a canonical command_id."""
+    base = _norm_step_label(label)
+    if not base:
+        return None
+
+    # Exact match
+    cid = _NAME_TO_COMMAND_ID.get(base)
+    if cid:
+        return cid
+
+    # Fuzzy: allow 'statistical stretch (target=...)'
+    for key, val in _NAME_TO_COMMAND_ID.items():
+        if key in base:
+            return val
+    return None
+
+
+def _payloads_from_headless_history(main_window, undo_entries):
+    """
+    Use the main window's headless history to get presets for each undo entry.
+
+    We walk FORWARD through _headless_history so that:
+      - repeated operations get the right preset in order
+      - commands on other documents are skipped automatically.
+    Returns a list[len(undo_entries)] of payload dicts or None.
+    """
+    n = len(undo_entries)
+    payloads = [None] * n
+
+    if main_window is None or not hasattr(main_window, "get_headless_history"):
+        return payloads
+
+    try:
+        hist = list(main_window.get_headless_history()) or []
+    except Exception:
+        return payloads
+
+    if not hist:
+        return payloads
+
+    H = len(hist)
+    h_idx = 0
+
+    for i, (_img, meta, name) in enumerate(undo_entries):
+        label = name or (meta or {}).get("step_name") or ""
+        cid = _command_id_for_step_label(label)
+        if not cid:
+            continue
+        cid = cid.strip().lower()
+
+        # Scan forward in global history until we find the next entry with this cid.
+        while h_idx < H:
+            entry = hist[h_idx]
+            h_idx += 1
+            entry_cid = str(entry.get("command_id", "")).strip().lower()
+            if entry_cid != cid:
+                continue
+
+            preset = entry.get("preset") or {}
+            if not isinstance(preset, dict):
+                try:
+                    preset = dict(preset)
+                except Exception:
+                    preset = {}
+            payloads[i] = {"command_id": cid, "preset": preset}
+            break
+
+    return payloads
+
+
 def _to_float01(img: np.ndarray) -> np.ndarray:
     if img is None:
         return None
@@ -24,11 +342,12 @@ def _to_float01(img: np.ndarray) -> np.ndarray:
         return (a.astype(np.float32) / (m if m > 0 else 1.0)).clip(0, 1)
     return a.astype(np.float32)
 
+
 def _mk_qimage_rgb8(float01: np.ndarray) -> tuple[QImage, np.ndarray]:
     """Make a QImage (RGB888) and return it along with the backing uint8 buffer to keep alive."""
     f = float01
     if f.ndim == 2:
-        f = np.stack([f]*3, axis=-1)
+        f = np.stack([f] * 3, axis=-1)
     elif f.ndim == 3 and f.shape[2] == 1:
         f = np.repeat(f, 3, axis=2)
     buf8 = (np.clip(f, 0.0, 1.0) * 255.0).astype(np.uint8, copy=False)
@@ -38,6 +357,7 @@ def _mk_qimage_rgb8(float01: np.ndarray) -> tuple[QImage, np.ndarray]:
     ptr = sip.voidptr(buf8.ctypes.data)
     qimg = QImage(ptr, w, h, bpl, QImage.Format.Format_RGB888)
     return qimg, buf8
+
 
 def _extract_undo_entries(doc):
     # Prefer the public getter we just added
@@ -66,6 +386,56 @@ def _extract_undo_entries(doc):
     return []
 
 
+class HistoryListWidget(QListWidget):
+    """
+    QListWidget that supports Alt+drag of replayable steps.
+    Alt+drag starts a MIME_CMD drag with (command_id, preset).
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._press_pos = None
+
+    def mousePressEvent(self, e: QMouseEvent):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self._press_pos = e.position().toPoint()
+        super().mousePressEvent(e)
+
+    def mouseMoveEvent(self, e: QMouseEvent):
+        if self._press_pos is not None and (e.buttons() & Qt.MouseButton.LeftButton):
+            delta = e.position().toPoint() - self._press_pos
+            if delta.manhattanLength() >= QApplication.startDragDistance():
+                mods = QApplication.keyboardModifiers()
+                if mods & Qt.KeyboardModifier.AltModifier:
+                    item = self.itemAt(self._press_pos)
+                    if item is not None:
+                        payload = item.data(Qt.ItemDataRole.UserRole)
+                        if isinstance(payload, dict) and payload.get("command_id"):
+                            self._start_drag(payload)
+                            self._press_pos = None
+                            return
+        super().mouseMoveEvent(e)
+
+    def mouseReleaseEvent(self, e: QMouseEvent):
+        self._press_pos = None
+        super().mouseReleaseEvent(e)
+
+    def _start_drag(self, payload: dict):
+        cid = payload.get("command_id")
+        preset = payload.get("preset") or {}
+        if not cid:
+            return
+
+        md = QMimeData()
+        md.setData(MIME_CMD, _pack_cmd_payload(cid, preset))
+
+        drag = QDrag(self)
+        drag.setMimeData(md)
+        pm = QPixmap(32, 32)
+        pm.fill(Qt.GlobalColor.darkGray)
+        drag.setPixmap(pm)
+        drag.setHotSpot(pm.rect().center())
+        drag.exec(Qt.DropAction.CopyAction)
+
 
 class HistoryExplorerDialog(QDialog):
     def __init__(self, document, parent=None):
@@ -77,24 +447,150 @@ class HistoryExplorerDialog(QDialog):
         self.setMinimumSize(700, 500)
         layout = QVBoxLayout(self)
 
-        self.history_list = QListWidget()
+        self.history_list = HistoryListWidget(self)
         layout.addWidget(self.history_list)
 
-        # Build a normalized list from the document
+        # ---- Fetch undo stack ----
         self.undo_entries = _extract_undo_entries(self.doc)  # list[(img, meta, name)]
         self.items: list[tuple[np.ndarray, dict, str]] = []
+        # Headless command presets aligned to each undo entry
+        mw = self._find_main_window()
+        self._history_payloads = _payloads_from_headless_history(mw, self.undo_entries)
 
-        # Fill list (1-based) → undo states then current image
-        for i, (img, meta, name) in enumerate(self.undo_entries):
-            label = "1. Original Image" if i == 0 else f"{i+1}. {name or 'Unnamed'}"
-            self.history_list.addItem(label)
-            self.items.append((img, meta, name or "Unnamed"))
 
-        # Append current image
+        # DEBUG: log what's in the undo stack
+        mw = self._find_main_window()
+        log = getattr(mw, "_log", None)
+        if log:
+            try:
+                log(
+                    f"[HistoryExplorer] doc id={id(self.doc)} has "
+                    f"{len(self.undo_entries)} undo entries"
+                )
+                for idx, (img, meta, name) in enumerate(self.undo_entries):
+                    mk = list((meta or {}).keys())
+                    payload_meta = _extract_cmd_payload_from_meta(meta or {})
+                    payload_hist = (
+                        self._history_payloads[idx]
+                        if 0 <= idx < len(self._history_payloads)
+                        else None
+                    )
+                    payload = payload_hist or payload_meta
+                    cid_dbg = None
+                    if payload:
+                        cid_dbg = payload.get("command_id") or payload.get("cid")
+                    src = "hist" if payload_hist else ("meta" if payload_meta else "-")
+                    log(
+                        f"[HistoryExplorer] undo[{idx}] name='{name}', "
+                        f"step_name='{(meta or {}).get('step_name')}', "
+                        f"meta_keys={mk}, replayable={bool(payload)}, "
+                        f"cid={cid_dbg}, src={src}"
+                    )
+
+                cm = getattr(self.doc, "metadata", {}) or {}
+                mk = list(cm.keys())
+                payload_meta = _extract_cmd_payload_from_meta(cm)
+                payload_hist_last = None
+                for p in reversed(self._history_payloads):
+                    if p:
+                        payload_hist_last = p
+                        break
+                payload = payload_hist_last or payload_meta
+                cid_dbg = None
+                if payload:
+                    cid_dbg = payload.get("command_id") or payload.get("cid")
+                src = "hist" if payload_hist_last else ("meta" if payload_meta else "-")
+                log(
+                    f"[HistoryExplorer] current image: "
+                    f"meta_keys={mk}, replayable={bool(payload)}, "
+                    f"cid={cid_dbg}, src={src}"
+                )
+            except Exception:
+                pass
+
+
+        # ---- Build rows ----
+        # We want:
+        #  1. Original Image (oldest snapshot)
+        #  2. State after 1st op  → label = undo[0].name
+        #  3. State after 2nd op  → label = undo[1].name
+        #  ...
+        #  N+1. State after Nth op (current image) → label = undo[N-1].name
+        #  N+2. Current Image
+
+        # 1) Original Image (if any undo entries exist)
+        row_index = 0
+        if self.undo_entries:
+            orig_img, orig_meta, _ = self.undo_entries[0]
+            item = QListWidgetItem("1. Original Image")
+            self.history_list.addItem(item)
+            self.items.append((orig_img, orig_meta, "Original Image"))
+            row_index += 1
+
+        # 2) Per-operation states
+        n = len(self.undo_entries)
+        for op_idx in range(n):
+            op_name = self.undo_entries[op_idx][2] or f"Step {op_idx + 1}"
+
+            if op_idx + 1 < n:
+                img, meta, _ = self.undo_entries[op_idx + 1]
+            else:
+                # Last operation → use current image + metadata
+                img = getattr(self.doc, "image", None)
+                meta = getattr(self.doc, "metadata", {}) or {}
+
+            # 1) Prefer preset from headless history
+            payload = None
+            if 0 <= op_idx < len(self._history_payloads):
+                payload = self._history_payloads[op_idx]
+
+            # 2) Fallback: infer from metadata for tools that don't yet
+            #    record into headless history (BN/WB, etc.)
+            if payload is None:
+                payload = _extract_cmd_payload_from_meta(meta)
+
+            is_replayable = payload is not None
+
+            label = f"{row_index + 1}. {op_name}"
+            if is_replayable:
+                label += "  ⟲"
+
+            item = QListWidgetItem(label)
+            if is_replayable:
+                item.setData(Qt.ItemDataRole.UserRole, payload)
+                item.setToolTip("Replayable step. Alt+Drag to drop onto a view or desktop.")
+            self.history_list.addItem(item)
+
+            self.items.append((img, meta, op_name))
+            row_index += 1
+
+
+        # 3) Final "Current Image" row
         cur_img = getattr(self.doc, "image", None)
         cur_meta = getattr(self.doc, "metadata", {}) or {}
-        self.history_list.addItem(f"{len(self.undo_entries)+1}. Current Image")
+
+        # Prefer the most recent headless history payload, if any
+        cur_payload = None
+        for p in reversed(self._history_payloads):
+            if p:
+                cur_payload = p
+                break
+
+        if cur_payload is None:
+            cur_payload = _extract_cmd_payload_from_meta(cur_meta)
+
+        cur_replay = cur_payload is not None
+
+        label = f"{row_index + 1}. Current Image"
+        if cur_replay:
+            label += "  ⟲"
+        cur_item = QListWidgetItem(label)
+        if cur_replay:
+            cur_item.setData(Qt.ItemDataRole.UserRole, cur_payload)
+            cur_item.setToolTip("Replayable step. Alt+Drag to drop onto a view or desktop.")
+        self.history_list.addItem(cur_item)
         self.items.append((cur_img, cur_meta, "Current Image"))
+
 
         self.history_list.itemDoubleClicked.connect(self._open_preview)
 
@@ -104,6 +600,29 @@ class HistoryExplorerDialog(QDialog):
         row.addStretch(1)
         row.addWidget(btn_close)
         layout.addLayout(row)
+
+    def _open_preview(self, item):
+        row = self.history_list.row(item)
+        if 0 <= row < len(self.items):
+            img, meta, name = self.items[row]
+            if img is None:
+                QMessageBox.warning(self, "Preview", "No image stored for this step.")
+                return
+            pv = HistoryImagePreview(img, meta, self.doc, parent=self)
+            pv.setWindowTitle(item.text())
+            pv.show()
+            mw = self._find_main_window()
+            if mw and hasattr(mw, "_log"):
+                mw._log(f"History: preview opened → {item.text()}")
+        else:
+            QMessageBox.warning(self, "Preview", "Invalid selection.")
+
+    def _find_main_window(self):
+        p = self.parent()
+        while p is not None and not hasattr(p, "docman"):
+            p = p.parent()
+        return p
+
 
     def _open_preview(self, item):
         row = self.history_list.row(item)

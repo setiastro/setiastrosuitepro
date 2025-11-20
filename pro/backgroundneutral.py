@@ -421,12 +421,62 @@ class BackgroundNeutralizationDialog(QDialog):
             base_for_blend = self._doc_image_normalized()
             out = base_for_blend * (1.0 - m3) + out * m3
 
+        # ---------- Build preset for Replay Last ----------
+        preset = None
+        try:
+            H, W = img.shape[:2]
+            x, y, w, h = rect
+            if W > 0 and H > 0:
+                rect_norm = [
+                    float(x) / float(W),
+                    float(y) / float(H),
+                    float(w) / float(W),
+                    float(h) / float(H),
+                ]
+            else:
+                rect_norm = [0.0, 0.0, 1.0, 1.0]
+
+            preset = {"mode": "rect", "rect_norm": rect_norm}
+
+            # Walk up parent chain until we find the main window that carries
+            # _last_headless_command
+            main = self.parent()
+            while main is not None and not hasattr(main, "_last_headless_command"):
+                main = main.parent()
+
+            if main is not None:
+                try:
+                    main._last_headless_command = {
+                        "command_id": "background_neutral",
+                        "preset": preset,
+                    }
+                    if hasattr(main, "_log"):
+                        main._log(
+                            "[Replay] Recorded background_neutral "
+                            f"(mode=rect, rect_norm={rect_norm})"
+                        )
+                except Exception:
+                    pass
+        except Exception:
+            # Fallback: at least record mode
+            if preset is None:
+                preset = {"mode": "rect"}
+
+        # ---------- Apply edit (include preset in metadata) ----------
+        meta = {
+            "step_name": "Background Neutralization",
+            "rect": rect,
+        }
+        if preset is not None:
+            meta["preset"] = preset
+
         self.doc.apply_edit(
             out.astype(np.float32, copy=False),
-            metadata={"step_name": "Background Neutralization", "rect": rect},
+            metadata=meta,
             step_name="Background Neutralization",
         )
         self.accept()
+
 
     def _zoom(self, factor: float):
         self._user_zoomed = True

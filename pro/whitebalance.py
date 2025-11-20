@@ -326,6 +326,45 @@ class WhiteBalanceDialog(QDialog):
     # ---- apply ----------------------------------------------------------
     def _on_apply(self):
         mode = self.type_combo.currentText()
+
+        # Find the main window that carries the replay machinery
+        main = self.parent()
+        while main is not None and not hasattr(main, "replay_last_action_on_base"):
+            main = main.parent()
+
+        def _record_preset_for_replay(preset: dict):
+            """Helper to stash the WB preset on the main window for Replay Last Action."""
+            if main is None:
+                return
+            try:
+                main._last_headless_command = {
+                    "command_id": "white_balance",
+                    "preset": preset,
+                }
+                if hasattr(main, "_log"):
+                    mode_str = str(preset.get("mode", "star")).lower()
+                    if mode_str == "manual":
+                        r = float(preset.get("r_gain", 1.0))
+                        g = float(preset.get("g_gain", 1.0))
+                        b = float(preset.get("b_gain", 1.0))
+                        main._log(
+                            f"[Replay] Recorded White Balance preset "
+                            f"(mode=manual, R={r:.3f}, G={g:.3f}, B={b:.3f})"
+                        )
+                    elif mode_str == "auto":
+                        main._log("[Replay] Recorded White Balance preset (mode=auto)")
+                    else:
+                        thr = float(preset.get("threshold", 50.0))
+                        reuse = bool(preset.get("reuse_cached_sources", True))
+                        main._log(
+                            f"[Replay] Recorded White Balance preset "
+                            f"(mode=star, threshold={thr:.1f}, "
+                            f"reuse={'yes' if reuse else 'no'})"
+                        )
+            except Exception:
+                # Logging/recording must never break the dialog
+                pass
+
         try:
             if mode == "Manual":
                 preset = {
@@ -334,11 +373,20 @@ class WhiteBalanceDialog(QDialog):
                     "g_gain": float(self.g_spin.value()),
                     "b_gain": float(self.b_spin.value()),
                 }
+
+                # Record for Replay Last Action
+                _record_preset_for_replay(preset)
+
+                # Use the headless helper so doc metadata is consistent
                 apply_white_balance_to_doc(self.doc, preset)
                 self.accept()
 
             elif mode == "Auto":
                 preset = {"mode": "auto"}
+
+                # Record for Replay Last Action
+                _record_preset_for_replay(preset)
+
                 apply_white_balance_to_doc(self.doc, preset)
                 self.accept()
 
@@ -346,7 +394,15 @@ class WhiteBalanceDialog(QDialog):
                 thr   = float(self.thr_slider.value())
                 reuse = bool(self.chk_reuse.isChecked())
 
-                base = _to_float01(np.asarray(self.doc.image).astype(np.float32, copy=False))
+                preset = {
+                    "mode": "star",
+                    "threshold": thr,
+                    "reuse_cached_sources": reuse,
+                }
+
+                base = _to_float01(
+                    np.asarray(self.doc.image).astype(np.float32, copy=False)
+                )
 
                 # Ask for star colors so we can plot
                 result = apply_star_based_white_balance(
@@ -354,13 +410,15 @@ class WhiteBalanceDialog(QDialog):
                     threshold=thr,
                     autostretch=False,
                     reuse_cached_sources=reuse,
-                    return_star_colors=True
+                    return_star_colors=True,
                 )
 
                 # Expected: (out, count, overlay, raw_colors, after_colors)
                 if len(result) < 5:
-                    raise RuntimeError("Star-based WB did not return star color arrays. "
-                                       "Ensure return_star_colors=True is supported.")
+                    raise RuntimeError(
+                        "Star-based WB did not return star color arrays. "
+                        "Ensure return_star_colors=True is supported."
+                    )
 
                 out, star_count, _overlay, raw_colors, after_colors = result
 
@@ -368,25 +426,37 @@ class WhiteBalanceDialog(QDialog):
                 m = _active_mask_array_from_doc(self.doc)
                 if m is not None:
                     m3 = np.repeat(m[..., None], 3, axis=2).astype(np.float32, copy=False)
-                    base_for_blend = _to_float01(np.asarray(self.doc.image).astype(np.float32, copy=False))
+                    base_for_blend = _to_float01(
+                        np.asarray(self.doc.image).astype(np.float32, copy=False)
+                    )
                     out = base_for_blend * (1.0 - m3) + out * m3
 
-                # Commit to the document
+                # Commit to the document, including the preset in metadata
                 self.doc.apply_edit(
                     out.astype(np.float32, copy=False),
-                    metadata={"step_name": "White Balance",
-                              "preset": {"mode": "star", "threshold": thr, "reuse_cached_sources": reuse}},
+                    metadata={"step_name": "White Balance", "preset": preset},
                     step_name="White Balance",
                 )
 
+                # Record for Replay Last Action (using the same preset we just stored in metadata)
+                _record_preset_for_replay(preset)
+
                 # 🔬 Show the same diagnostic plot SASv2 shows
-                if (raw_colors is not None and after_colors is not None
-                        and raw_colors.size and after_colors.size):
+                if (
+                    raw_colors is not None
+                    and after_colors is not None
+                    and raw_colors.size
+                    and after_colors.size
+                ):
                     plot_star_color_ratios_comparison(raw_colors, after_colors)
 
-                QMessageBox.information(self, "White Balance",
-                                        f"Star-Based WB applied.\nDetected {int(star_count)} stars.")
+                QMessageBox.information(
+                    self,
+                    "White Balance",
+                    f"Star-Based WB applied.\nDetected {int(star_count)} stars.",
+                )
                 self.accept()
 
         except Exception as e:
             QMessageBox.critical(self, "White Balance", f"Failed to apply White Balance:\n{e}")
+

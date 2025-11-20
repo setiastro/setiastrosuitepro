@@ -148,13 +148,16 @@ class ConvoDeconvoDialog(QDialog):
     """
     SASpro version: takes a DocManager, no ImageManager dependency.
     """
-    def __init__(self, doc_manager, parent=None):
+    def __init__(self, doc_manager, parent=None, doc=None):
         super().__init__(parent)
         self.doc_manager = doc_manager
         self._main = parent  # keep a ref to the main window (has _active_doc + signal)
+        self._doc_override = doc  # ← explicit doc (ROI or full) from the MDI
 
-        if hasattr(self._main, "currentDocumentChanged"):
-            self._main.currentDocumentChanged.connect(self._on_active_doc_changed)        
+        # Only follow global active-doc changes if we *weren't* given a doc
+        if hasattr(self._main, "currentDocumentChanged") and self._doc_override is None:
+            self._main.currentDocumentChanged.connect(self._on_active_doc_changed)
+
         self.setWindowTitle("Convolution / Deconvolution")
         self.resize(1000, 650)
         self._use_custom_psf = False
@@ -249,24 +252,36 @@ class ConvoDeconvoDialog(QDialog):
         self._update_psf_preview()
 
     def _active_doc(self):
-        # Prefer the MDI’s notion of active
+        # 1) If we were given a specific doc (ROI or full), always use that.
+        if getattr(self, "_doc_override", None) is not None:
+            return self._doc_override
+
+        # 2) Otherwise fall back to the MDI's notion of active
         if self._main is not None and hasattr(self._main, "_active_doc") and callable(self._main._active_doc):
             try:
                 return self._main._active_doc()
             except Exception:
                 pass
-        # Fallback to DocManager
+
+        # 3) Last resort: DocManager's active doc
         if hasattr(self.doc_manager, "get_active_document"):
             return self.doc_manager.get_active_document()
+
         return None
 
+
     def _on_active_doc_changed(self, doc):
+        # If this dialog is bound to a specific doc (ROI/full), ignore global changes
+        if getattr(self, "_doc_override", None) is not None:
+            return
+
         img = getattr(doc, "image", None)
         self._preview_result = None
         self._original_image = img.copy() if isinstance(img, np.ndarray) else None
         if self._original_image is not None:
             self._auto_fit = True
             self._display_in_view(self._original_image)
+
 
     # ---------------- DocManager IO helpers ----------------
     def _get_active_image_and_meta(self) -> tuple[Optional[np.ndarray], dict]:
@@ -764,25 +779,141 @@ class ConvoDeconvoDialog(QDialog):
         else:
             self._show_message("Nothing to undo.")
 
+    def _build_replay_preset(self) -> dict | None:
+        """
+        Capture the current UI state as a preset-style dict so Replay Last Action
+        can re-run the same Convo/Deconvo/TV operation on another document.
+        Matches the schema used by ConvoPresetDialog.result_dict().
+        """
+        current_tab_name = self.tabs.tabText(self.tabs.currentIndex())
+        strength = float(self.strength_slider.value())
+
+        # ── Convolution tab ─────────────────────────────────────────────
+        if current_tab_name == "Convolution":
+            return {
+                "op": "convolution",
+                "radius":   float(self.conv_radius_slider.value()),
+                "kurtosis": float(self.conv_shape_slider.value()),
+                "aspect":   float(self.conv_aspect_slider.value()),
+                "rotation": float(self.conv_rotation_slider.value()),
+                "strength": strength,
+            }
+
+        # ── Deconvolution tab ───────────────────────────────────────────
+        if current_tab_name == "Deconvolution":
+            algo = self.deconv_algo_combo.currentText()
+            p: dict[str, object] = {
+                "op": "deconvolution",
+                "algo": algo,
+                # RL/Wiener PSF params
+                "psf_radius":   float(self.rl_psf_radius_slider.value()),
+                "psf_kurtosis": float(self.rl_psf_shape_slider.value()),
+                "psf_aspect":   float(self.rl_psf_aspect_slider.value()),
+                "psf_rotation": float(self.rl_psf_rotation_slider.value()),
+                # RL options
+                "rl_iter":   float(self.rl_iterations_slider.value()),
+                "rl_reg":    self.rl_reg_combo.currentText(),
+                "rl_dering": bool(self.rl_clip_checkbox.isChecked()),
+                "luminance_only": bool(self.rl_luminance_only_checkbox.isChecked()),
+                # Wiener options
+                "wiener_nsr":    float(self.wiener_nsr_slider.value()),
+                "wiener_reg":    self.wiener_reg_combo.currentText(),
+                "wiener_dering": bool(self.wiener_dering_checkbox.isChecked()),
+                # Larson–Sekanina options
+                "ls_rstep":    float(self.ls_radial_slider.value()),
+                "ls_astep":    float(self.ls_angular_slider.value()),
+                "ls_operator": self.ls_operator_combo.currentText(),
+                "ls_blend":    self.ls_blend_combo.currentText(),
+                # Van Cittert options
+                "vc_iter":  float(self.vc_iterations_slider.value()),
+                "vc_relax": float(self.vc_relax_slider.value()),
+                # Global blend strength
+                "strength": strength,
+            }
+
+            # If user actually picked an LS center, preserve it for replay.
+            # Interactive view stores (x,y). apply_convo_via_preset expects [cx, cy].
+            if hasattr(self.view, "ls_center") and self.view.ls_center is not None:
+                cx, cy = self.view.ls_center  # (x, y)
+                p["center"] = [float(cx), float(cy)]
+
+            return p
+
+        # ── TV Denoise tab ──────────────────────────────────────────────
+        if current_tab_name == "TV Denoise":
+            return {
+                "op": "tv",
+                "tv_weight":       float(self.tv_weight_slider.value()),
+                "tv_iter":         int(round(float(self.tv_iter_slider.value()))),
+                "tv_multichannel": bool(self.tv_multichannel_checkbox.isChecked()),
+                "strength":        strength,
+            }
+
+        return None
+
+
     def _on_push_to_doc(self):
         doc = self._active_doc()
-        if hasattr(self.doc_manager, "set_active_document"):
-            self.doc_manager.set_active_document(doc)        
+        if doc is None:
+            QMessageBox.warning(self, "No Document", "No active document to push into.")
+            return
+
         if self._preview_result is None:
             QMessageBox.warning(self, "No Preview", "No preview to push. Click Preview first.")
             return
+
+        # Grab current metadata from this specific doc
         _, meta = self._get_active_image_and_meta()
         new_meta = dict(meta)
         new_meta["source"] = "ConvoDeconvo"
-        self.doc_manager.update_active_document(self._preview_result.copy(), metadata=new_meta, step_name="Convo/Deconvo")
 
-        # make the pushed image the new baseline so you can iterate
+        try:
+            if hasattr(doc, "apply_edit"):
+                # ⭐ Preferred: update this exact Document (ROI or full) so all views update
+                doc.apply_edit(
+                    self._preview_result.copy(),
+                    metadata=new_meta,
+                    step_name="Convo/Deconvo",
+                )
+            else:
+                # Fallback for older paths: go through DocManager active-doc API
+                if hasattr(self.doc_manager, "set_active_document"):
+                    self.doc_manager.set_active_document(doc)
+                self.doc_manager.update_active_document(
+                    self._preview_result.copy(),
+                    metadata=new_meta,
+                    step_name="Convo/Deconvo",
+                )
+        except Exception as e:
+            QMessageBox.critical(self, "Push failed", str(e))
+            return
+
+        # Make the pushed image the new baseline so you can iterate
         img_after, _ = self._get_active_image_and_meta()
         if img_after is not None:
             self._original_image = img_after.copy()
             self._preview_result = None
             self._display_in_view(self._original_image)
+
+        # 🔴 Replay wiring (unchanged, just moved under try/except)
+        try:
+            if self._main is not None:
+                preset = self._build_replay_preset()
+                if preset:
+                    self._main._last_headless_command = {
+                        "cid": "convo",
+                        "preset": preset,
+                    }
+                    if hasattr(self._main, "_log"):
+                        op = preset.get("op", "convolution")
+                        self._main._log(f"Replay: stored Convo/Deconvo ({op}) from dialog.")
+        except Exception:
+            # Replay wiring should never break the actual push
+            pass
+
         QMessageBox.information(self, "Pushed", "Result committed to the active document.")
+
+
 
     # ---------------- Utils ----------------
     def _show_message(self, text: str):
@@ -796,12 +927,49 @@ class ConvoDeconvoDialog(QDialog):
         self.view.fitInView(self.pixmap_item, Qt.AspectRatioMode.KeepAspectRatio)
 
     def _convolve_color(self, image: np.ndarray, psf_kernel: np.ndarray) -> np.ndarray:
-        if image.ndim == 2:
-            return fftconvolve(image, psf_kernel, mode="same")
-        elif image.ndim == 3 and image.shape[2] == 3:
-            return np.stack([fftconvolve(image[:, :, c], psf_kernel, mode="same") for c in range(3)], axis=2)
+        """
+        Convolve image with psf_kernel using reflect padding so we don't get
+        dark borders from zero–padding. Returns same H×W (and channels) as input.
+        """
+        if image is None or psf_kernel is None:
+            return image
+
+        img = image.astype(np.float32, copy=False)
+        kh, kw = psf_kernel.shape
+        pad_y = kh // 2
+        pad_x = kw // 2
+
+        def _conv_single_channel(im2d: np.ndarray) -> np.ndarray:
+            if pad_y or pad_x:
+                padded = np.pad(
+                    im2d,
+                    ((pad_y, pad_y), (pad_x, pad_x)),
+                    mode="reflect"
+                )
+            else:
+                padded = im2d
+
+            conv_full = fftconvolve(padded, psf_kernel, mode="same")
+
+            if pad_y or pad_x:
+                conv = conv_full[pad_y:-pad_y or None, pad_x:-pad_x or None]
+            else:
+                conv = conv_full
+
+            return conv.astype(np.float32)
+
+        if img.ndim == 2:
+            out = _conv_single_channel(img)
+        elif img.ndim == 3 and img.shape[2] == 3:
+            chans = [_conv_single_channel(img[:, :, c]) for c in range(3)]
+            out = np.stack(chans, axis=2)
         else:
-            return image.copy()
+            # Unknown layout; just return a copy to be safe
+            return img.copy()
+
+        # PSF is normalized, but clamp just in case of numeric noise
+        return np.clip(out, 0.0, 1.0)
+
 
     def _richardson_lucy_color(self, image: np.ndarray, psf_kernel: np.ndarray, iterations: int,
                                reg_type: str = "None (Plain R–L)", clip_flag: bool = True) -> np.ndarray:
@@ -1213,7 +1381,7 @@ def larson_sekanina(image: np.ndarray, center: Tuple[float, float], radial_step:
 
 
 # Optional helper to open like SFCC:
-def open_convo_deconvo(doc_manager, parent=None) -> ConvoDeconvoDialog:
-    dlg = ConvoDeconvoDialog(doc_manager=doc_manager, parent=parent)
+def open_convo_deconvo(doc_manager, parent=None, doc=None) -> ConvoDeconvoDialog:
+    dlg = ConvoDeconvoDialog(doc_manager=doc_manager, parent=parent, doc=doc)
     dlg.show()
     return dlg

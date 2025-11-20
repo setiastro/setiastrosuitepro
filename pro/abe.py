@@ -696,22 +696,59 @@ class ABEDialog(QDialog):
             out_masked = self._blend_with_mask_float(out, srcf)
 
             # Build step name for undo stack
+            # Build step name + params for undo stack + Replay
             deg   = int(self.sp_degree.value())
             npts  = int(self.sp_samples.value())
             dwn   = int(self.sp_down.value())
             patch = int(self.sp_patch.value())
             use_rbf = bool(self.chk_use_rbf.isChecked())
             rbf_smooth = float(self.sp_rbf.value()) * 0.01
-            step_name = f"ABE (deg={deg}, samples={npts}, ds={dwn}, patch={patch}, rbf={'on' if use_rbf else 'off'}, s={rbf_smooth:.3f})"
+            make_bg_doc = bool(self.chk_make_bg_doc.isChecked())
+
+            step_name = (
+                f"ABE (deg={deg}, samples={npts}, ds={dwn}, patch={patch}, "
+                f"rbf={'on' if use_rbf else 'off'}, s={rbf_smooth:.3f})"
+            )
+
+            # Normalized preset params (same schema as abe_preset.apply_abe_via_preset)
+            params = {
+                "degree": deg,
+                "samples": npts,
+                "downsample": dwn,
+                "patch": patch,
+                "rbf": use_rbf,
+                "rbf_smooth": rbf_smooth,
+                "make_background_doc": make_bg_doc,
+            }
+
+            # 🔁 Remember this as the last headless-style command for Replay
+            mw = self.parent()
+            try:
+                remember = getattr(mw, "remember_last_headless_command", None)
+                if remember is None:
+                    remember = getattr(mw, "_remember_last_headless_command", None)
+                if callable(remember):
+                    remember("abe", params, description="Automatic Background Extraction")
+                    try:
+                        if hasattr(mw, "_log"):
+                            mw._log(
+                                f"[Replay] ABE UI apply stored: "
+                                f"command_id='abe', preset_keys={list(params.keys())}"
+                            )
+                    except Exception:
+                        pass
+            except Exception:
+                # don’t block the actual ABE apply if remembering fails
+                pass
 
             # ✅ mask bookkeeping in metadata
             _marr, mid, mname = self._active_mask_layer()
+            abe_meta = dict(params)
+            abe_meta["exclusion"] = "polygons" if excl is not None else "none"
+
             meta = {
                 "step_name": "ABE",
-                "abe": {
-                    "degree": deg, "samples": npts, "downsample": dwn,
-                    "patch": patch, "rbf": use_rbf, "rbf_smooth": rbf_smooth
-                },
+                "abe": abe_meta,
                 "masked": bool(mid),
                 "mask_id": mid,
                 "mask_name": mname,
@@ -719,7 +756,12 @@ class ABEDialog(QDialog):
             }
 
             self._set_status("Committing edit…")
-            self.doc.apply_edit(out_masked.astype(np.float32, copy=False), step_name=step_name, metadata=meta)
+            self.doc.apply_edit(
+                out_masked.astype(np.float32, copy=False),
+                step_name=step_name,
+                metadata=meta,
+            )
+
 
             if self.chk_make_bg_doc.isChecked() and bg is not None:
                 self._set_status("Creating background document…")

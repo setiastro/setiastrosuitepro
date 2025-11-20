@@ -40,7 +40,7 @@ def _build_graxpert_cmd(
 
 # -------------------------- Headless runner --------------------------
 
-def run_graxpert_via_preset(main_window, preset: dict | None = None):
+def run_graxpert_via_preset(main_window, preset: dict | None = None, target_doc=None):
     """
     Headless GraXpert call:
       - No smoothing prompt (uses preset).
@@ -49,9 +49,11 @@ def run_graxpert_via_preset(main_window, preset: dict | None = None):
       - Writes input_image.tif and runs same CLI as v2.
     """
     # 1) active doc (match your v2 access pattern)
-    doc = getattr(main_window, "_active_doc", None)
-    if callable(doc):
-        doc = doc()
+    doc = target_doc
+    if doc is None:
+        doc = getattr(main_window, "_active_doc", None)
+        if callable(doc):
+            doc = doc()
     if doc is None or getattr(doc, "image", None) is None:
         QMessageBox.warning(main_window, "GraXpert", "Load an image first.")
         return
@@ -114,13 +116,57 @@ def run_graxpert_via_preset(main_window, preset: dict | None = None):
     except Exception:
         pass
 
-    # 5) run (unchanged)
+    # 5) store normalized preset for Replay
+    try:
+        preset_for_replay = {"op": op, "gpu": bool(gpu)}
+        if op == "background":
+            preset_for_replay["smoothing"] = float(smoothing)
+        else:
+            preset_for_replay["strength"] = float(strength)
+            if ai_version:
+                preset_for_replay["ai_version"] = ai_version
+        if batch_size is not None:
+            preset_for_replay["batch_size"] = int(batch_size)
+
+        op_label = "GraXpert Denoise" if op == "denoise" else "GraXpert Gradient Removal"
+
+        remember = getattr(main_window, "remember_last_headless_command", None)
+        if remember is None:
+            remember = getattr(main_window, "_remember_last_headless_command", None)
+        if callable(remember):
+            remember("graxpert", preset_for_replay, description=op_label)
+            try:
+                if hasattr(main_window, "_log"):
+                    main_window._log(
+                        f"[Replay] GraXpert preset stored: op={op}, "
+                        f"keys={list(preset_for_replay.keys())}"
+                    )
+            except Exception:
+                pass
+    except Exception:
+        op_label = "GraXpert Denoise" if op == "denoise" else "GraXpert Gradient Removal"
+
+    # 6) run
     output_basename = f"{input_basename}_GraXpert"
+
+    meta_extras = {
+        "graxpert_operation": op,                             # "denoise" | "background"
+        "graxpert_param": float(strength if op == "denoise" else smoothing),
+        "graxpert_ai_version": (ai_version or "latest") if op == "denoise" else None,
+        "graxpert_gpu": bool(gpu),
+    }
+
     setattr(main_window, "_graxpert_headless_running", True)
     setattr(main_window, "_graxpert_silent", True)
     setattr(main_window, "_graxpert_guard", True)
     try:
-        _run_graxpert_command(main_window, command, output_basename, workdir, target_doc=doc)
+        _run_graxpert_command(
+            main_window,
+            command,
+            output_basename,
+            workdir,
+            target_doc=doc,
+        )
     finally:
         def _clear_flags():
             for name in ("_graxpert_headless_running", "_graxpert_silent", "_graxpert_guard"):
@@ -129,6 +175,7 @@ def run_graxpert_via_preset(main_window, preset: dict | None = None):
                 except Exception:
                     setattr(main_window, name, False)
         QTimer.singleShot(1200, _clear_flags)
+
 
 # -------------------------- Preset editor (optional) --------------------------
 

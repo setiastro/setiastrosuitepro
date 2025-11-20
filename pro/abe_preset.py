@@ -66,51 +66,96 @@ def apply_abe_via_preset(main_window, doc, preset: dict | None = None):
     Blends with the active mask layer (m*out + (1-m)*src) before committing.
     """
     p = dict(preset or {})
-    degree      = int(np.clip(p.get("degree",      2), 1, 6))
+    # NOTE: allow degree 0 (RBF-only) to match ABEDialog
+    degree      = int(np.clip(p.get("degree",      2), 0, 6))
     num_samples = int(np.clip(p.get("samples",   120), 20, 100000))
     downsample  = int(np.clip(p.get("downsample",  6), 1, 64))
     patch_size  = int(np.clip(p.get("patch",     15), 5, 151))
     use_rbf     = bool(p.get("rbf", True))
-    rbf_smooth  = float(p.get("rbf_smooth", 1.0))  # dialog default = 100 × 0.01 = 1.0
+    rbf_smooth  = float(p.get("rbf_smooth", 1.0))       # dialog default = 100 × 0.01 = 1.0
     make_bg_doc = bool(p.get("make_background_doc", False))
 
     src01 = _doc_image_float01(doc)
     if src01 is None:
         return
 
+    # Sanitize params we actually used (this is what we’ll store for Replay)
+    params = {
+        "degree": degree,
+        "samples": num_samples,
+        "downsample": downsample,
+        "patch": patch_size,
+        "rbf": use_rbf,
+        "rbf_smooth": rbf_smooth,
+        "make_background_doc": make_bg_doc,
+    }
+
+    # 🔁 Remember this as the last headless command for Replay
+    try:
+        remember = getattr(main_window, "remember_last_headless_command", None)
+        if remember is None:
+            remember = getattr(main_window, "_remember_last_headless_command", None)
+        if callable(remember):
+            remember("abe", params, description="Automatic Background Extraction")
+            try:
+                if hasattr(main_window, "_log"):
+                    main_window._log(
+                        f"[Replay] ABE headless stored: command_id='abe', "
+                        f"preset_keys={list(params.keys())}"
+                    )
+            except Exception:
+                pass
+    except Exception:
+        # Do not block ABE if remembering fails
+        pass
+
     # 🚫 No exclusion polygons in headless mode
     corrected, bg = abe_run(
         src01,
         degree=degree, num_samples=num_samples, downsample=downsample, patch_size=patch_size,
         use_rbf=use_rbf, rbf_smooth=rbf_smooth,
-        exclusion_mask=None,                   # ←← force NO EXCLUSION AREA
+        exclusion_mask=None,                   # ← force NO EXCLUSION AREA
         return_background=True,
         progress_cb=None
     )
 
     # Preserve mono vs color wrt original doc
     out = corrected
-    if out.ndim == 3 and out.shape[2] == 3 and (doc.image.ndim == 2 or (doc.image.ndim == 3 and doc.image.shape[2] == 1)):
+    if (
+        out.ndim == 3 and out.shape[2] == 3
+        and (doc.image.ndim == 2 or (doc.image.ndim == 3 and doc.image.shape[2] == 1))
+    ):
         out = out[..., 0]
 
     # mask-aware blend (like dialog)
     out_masked = _blend_with_mask_float(out, src01, doc)
 
+    # Clean mask metadata
+    _marr, mid, mname = _active_mask_layer(doc)
+
     meta = {
         "step_name": "ABE",
         "abe": {
-            "degree": degree, "samples": num_samples, "downsample": downsample,
-            "patch": patch_size, "rbf": use_rbf, "rbf_smooth": rbf_smooth,
-            "exclusion": "none"  # explicit marker for audit/history
+            "degree": degree,
+            "samples": num_samples,
+            "downsample": downsample,
+            "patch": patch_size,
+            "rbf": use_rbf,
+            "rbf_smooth": rbf_smooth,
+            "exclusion": "none",  # explicit marker for audit/history
         },
-        "masked": bool(getattr(doc, "active_mask_id", None)),
-        "mask_id": getattr(doc, "active_mask_id", None),
-        "mask_name": getattr(getattr(doc, "masks", {}), "get", lambda *_: None)(getattr(doc, "active_mask_id", None)),
+        "masked": bool(mid),
+        "mask_id": mid,
+        "mask_name": mname,
         "mask_blend": "m*out + (1-m)*src",
     }
 
-    step_name = f"ABE (deg={degree}, samples={num_samples}, ds={downsample}, patch={patch_size}, rbf={'on' if use_rbf else 'off'}, s={rbf_smooth:.3f})"
-    doc.apply_edit(out_masked.astype(np.float32, copy=False), step_name=step_name, metadata=meta)
+    step_name = (
+        f"ABE (deg={degree}, samples={num_samples}, ds={downsample}, "
+        f"patch={patch_size}, rbf={'on' if use_rbf else 'off'}, s={rbf_smooth:.3f})"
+    )
+    doc.apply_edit(out_masked.astype(np.float32, copy=False),
+                   step_name=step_name, metadata=meta)
 
     if make_bg_doc and bg is not None:
         dm = getattr(main_window, "docman", None)
@@ -122,9 +167,12 @@ def apply_abe_via_preset(main_window, doc, preset: dict | None = None):
                 "source": "ABE background (headless)",
                 "from_step": step_name,
             }
-            doc_bg = dm.open_array(bg.astype(np.float32, copy=False), metadata=meta_bg, title=f"{base}_ABE_BG")
+            doc_bg = dm.open_array(bg.astype(np.float32, copy=False),
+                                   metadata=meta_bg,
+                                   title=f"{base}_ABE_BG")
             if hasattr(main_window, "_spawn_subwindow_for"):
                 main_window._spawn_subwindow_for(doc_bg)
+
 
 # ---------- open dialog seeded from preset ----------
 def open_abe_with_preset(main_window, preset: dict | None = None):

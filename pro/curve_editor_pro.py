@@ -14,6 +14,7 @@ from pro.curves_preset import (
 )
 from PyQt6.QtWidgets import QFrame, QSizePolicy
 from scipy.interpolate import PchipInterpolator
+from pro.curves_preset import _sanitize_scene_points, _norm_mode
 
 try:
     from legacy.numba_utils import (
@@ -1172,6 +1173,21 @@ class CurvesDialogPro(QDialog):
         self.editor.setSymmetryCallback(self._on_symmetry_pick)
         self.btn_preview.setChecked(True) 
 
+        self.main_window = self._find_main_window()
+        self.source_view = None
+        try:
+            # Common cases: parent is a subwindow or has a doc_view
+            if hasattr(self.parent(), "view"):
+                self.source_view = self.parent().view
+            elif hasattr(self.parent(), "doc_view"):
+                self.source_view = self.parent().doc_view
+        except Exception:
+            pass
+
+        if self.main_window is not None:
+            print(f"[Replay] CurvesDialogPro bound to main_window={id(self.main_window)}, "
+                  f"source_view={getattr(self.source_view,'view_id',None)}")
+
         self._rebuild_presets_menu()
 
     def _on_editor_curve_changed(self, _lut8=None):
@@ -1296,6 +1312,88 @@ class CurvesDialogPro(QDialog):
             luts[key] = self._lut01_from_points_norm(pts, size=65536)
 
         return luts
+
+    def _remember_as_last_action(self):
+        """
+        Capture the current curve as a replayable headless command.
+
+        We store it exactly like other tools:
+
+            command_id = "curves"
+            preset     = {mode, shape, amount, points_scene, _ops?}
+
+        where `_ops` (if present) is a full, tool-agnostic op dict
+        from export_preview_ops(), used for replay-on-base.
+        """
+        mw = self._find_main_window()
+        if mw is None:
+            print("[Replay] Curves: no main_window; not storing last action.")
+            return
+
+        # 1) mode label
+        btn = self.mode_group.checkedButton() if hasattr(self, "mode_group") else None
+        mode_label = btn.text() if btn is not None else "K (Brightness)"
+        mode_label = _norm_mode(mode_label)
+
+        # 2) collect control handles → scene points
+        if hasattr(self.editor, "getControlHandles"):
+            handles = self.editor.getControlHandles()
+        elif hasattr(self.editor, "controlHandles"):
+            handles = self.editor.controlHandles()
+        else:
+            handles = []
+
+        pts_scene: list[tuple[float, float]] = []
+        for h in handles:
+            try:
+                x = float(h.x()); y = float(h.y())
+            except Exception:
+                try:
+                    x = float(h[0]); y = float(h[1])
+                except Exception:
+                    continue
+            pts_scene.append((x, y))
+
+        if not pts_scene:
+            pts_scene = [(0.0, 360.0), (360.0, 0.0)]
+
+        pts_scene = _sanitize_scene_points(pts_scene)
+
+        core_preset = {
+            "mode": mode_label,
+            "shape": "custom",
+            "amount": 1.0,
+            "points_scene": pts_scene,
+        }
+
+        # 3) Attach a full op dict for exact replay on base, if possible
+        op = None
+        try:
+            op = self.export_preview_ops()
+        except Exception:
+            op = None
+
+        if op:
+            core_preset["_ops"] = op
+
+        try:
+            # This is the same pattern used by Statistical Stretch etc.
+            mw._remember_last_headless_command("curves", core_preset, description="Curves")
+
+            # Enable/update the replay button for the originating view
+            source_view = getattr(self, "source_view", None)
+            if hasattr(mw, "_update_replay_button"):
+                mw._update_replay_button(source_view)
+
+            print(
+                f"[Replay] Curves: stored last action; "
+                f"has_ops={bool(op)} mode={mode_label}"
+            )
+        except Exception as e:
+            print("Curves: failed to remember last action:", e)
+
+
+
 
     def _apply_all_curves_once(self, img01: np.ndarray, luts: dict[str, np.ndarray]) -> np.ndarray:
         # 1) RGB domain — K then per-channel compose
@@ -1932,6 +2030,11 @@ class CurvesDialogPro(QDialog):
 
             # 1) Apply to the document (updates the active view)
             self.doc.apply_edit(out01.copy(), metadata=meta, step_name="Curves")
+
+            try:
+                self._remember_as_last_action()
+            except Exception:
+                pass
 
             # 2) Pull the NEW image back into the curves dialog
             #    (clear cached previews so we truly reload from the document)

@@ -48,12 +48,24 @@ def run_wavescale_hdr_via_preset(main, preset: dict | None = None, *, target_doc
     """
     p = dict(preset or {})
 
+    # Register as last action for replay (same schema as dialog)
+    try:
+        payload = {"command_id": "wavescale_hdr", "preset": dict(p)}
+        setattr(main, "_last_headless_command", payload)
+    except Exception:
+        pass
+
     # Guard flags like other headless tools
     setattr(main, "_wavescale_headless_running", True)
     setattr(main, "_wavescale_guard", True)
     s = QSettings()
-    try: s.setValue("wavescale/headless_in_progress", True); s.sync()
-    except Exception: pass
+    try:
+        import time
+        s.setValue("wavescale/headless_in_progress", True)
+        s.setValue("wavescale/headless_started_at", time.time())
+        s.sync()
+    except Exception:
+        pass
 
     # Resolve doc (prefer explicit target)
     doc = target_doc
@@ -79,6 +91,7 @@ def run_wavescale_hdr_via_preset(main, preset: dict | None = None, *, target_doc
     dlg.exec()
 
     _clear_wavescale_flags(main, s)
+
 
 def _clear_wavescale_flags(main, settings):
     try:

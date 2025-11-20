@@ -253,35 +253,82 @@ class RemoveGreenDialog(QDialog):
         if self.doc is None or getattr(self.doc, "image", None) is None:
             QMessageBox.warning(self, "Remove Green", "No image.")
             return
-        amount = self.slider.value() / 100.0
-        mode = self.mode_box.currentData() or "avg"
+
+        amount   = self.slider.value() / 100.0
+        mode     = self.mode_box.currentData() or "avg"
         preserve = self.cb_preserve.isChecked()
+
+        # Build a preset dict so headless + replay use the same schema
+        preset = {
+            "amount": float(amount),
+            "mode":   str(mode),
+            "preserve_lightness": bool(preserve),
+        }
+
+        # Apply to this doc
         remove_green_headless(self.doc, amount=amount, mode=mode, preserve_lightness=preserve)
+
+        # Log + record for Replay Last Action (if main supports it)
         if hasattr(self.main, "_log"):
             self.main._log(
-                f"Remove Green: amount={amount:.2f}, mode={mode}, preserve_lightness={preserve}"
+                f"Remove Green: amount={amount:.2f}, mode={mode}, "
+                f"preserve_lightness={preserve}"
             )
+
+        try:
+            # stash last headless-style command
+            self.main._last_headless_command = {
+                "command_id": "remove_green",
+                "preset": dict(preset),
+            }
+            if hasattr(self.main, "_log"):
+                self.main._log(
+                    f"[Replay] Recorded Remove Green preset "
+                    f"(amount={amount:.2f}, mode={mode}, "
+                    f"preserve_lightness={preserve})"
+                )
+        except Exception:
+            # Never let replay bookkeeping kill the dialog
+            pass
+
         self.accept()
 
+
+
 # ---------- entry points used by main ----------
-def open_remove_green_dialog(main, preset: dict | None = None):
-    doc = getattr(main, "_active_doc", None)
-    if callable(doc): doc = doc()
+def open_remove_green_dialog(main, doc=None, preset: dict | None = None):
+    """
+    Open the Remove Green dialog for a specific document.
+
+    If doc is None, we fall back to main._active_doc for legacy callers.
+    """
+    from PyQt6.QtWidgets import QMessageBox
+
+    if doc is None:
+        doc = getattr(main, "_active_doc", None)
+        if callable(doc):
+            doc = doc()
+
     if doc is None or getattr(doc, "image", None) is None:
-        from PyQt6.QtWidgets import QMessageBox
         QMessageBox.information(main, "Remove Green", "Open an image first.")
         return
+
     dlg = RemoveGreenDialog(main, doc, parent=main)
+
     if preset:
         amt = preset.get("amount", preset.get("strength", preset.get("value", None)))
         if amt is not None:
             dlg.set_amount(float(amt))
+
         mode = preset.get("mode", preset.get("neutral_mode"))
         if mode is not None:
             dlg.set_mode(str(mode))
+
         preserve = preset.get("preserve_lightness", preset.get("preserve", True))
         dlg.set_preserve_lightness(bool(preserve))
+
     dlg.show()
+
 
 def apply_remove_green_preset_to_doc(main, doc, preset: dict):
     amt = float(preset.get("amount", preset.get("strength", preset.get("value", 1.0))))

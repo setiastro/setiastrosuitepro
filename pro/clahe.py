@@ -321,15 +321,46 @@ class CLAHEDialogPro(QDialog):
 
                 out = blended.astype(np.float32, copy=False)
 
+            # Commit to document
             if hasattr(self.doc, "set_image"):
                 self.doc.set_image(out, step_name="CLAHE")
             elif hasattr(self.doc, "apply_numpy"):
                 self.doc.apply_numpy(out, step_name="CLAHE")
             else:
                 self.doc.image = out
+
+            # ── Register as last_headless_command for replay ─────────────
+            try:
+                main = self.parent()
+                if main is not None:
+                    preset = {
+                        "clip_limit": float(clip),
+                        "tile": int(tile),
+                    }
+                    payload = {
+                        "command_id": "clahe",
+                        "preset": dict(preset),
+                    }
+                    setattr(main, "_last_headless_command", payload)
+
+                    # optional debug log
+                    try:
+                        if hasattr(main, "_log"):
+                            main._log(
+                                f"[Replay] Registered CLAHE as last action "
+                                f"(clip_limit={preset['clip_limit']}, tile={preset['tile']})"
+                            )
+                    except Exception:
+                        pass
+            except Exception:
+                # never break apply if replay wiring fails
+                pass
+            # ─────────────────────────────────────────────────────────────
+
             self.accept()
         except Exception as e:
             QMessageBox.critical(self, "CLAHE", f"Failed to apply:\n{e}")
+
 
     def _reset(self):
         self.s_clip.setValue(20); self.s_tile.setValue(8)

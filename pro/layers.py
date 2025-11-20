@@ -4,7 +4,21 @@ from dataclasses import dataclass
 from typing import Optional, List
 import numpy as np
 
-BLEND_MODES = ["Normal", "Multiply", "Screen", "Overlay", "Add", "Lighten", "Darken"]
+BLEND_MODES = [
+    "Normal",
+    "Multiply",
+    "Screen",
+    "Overlay",
+    "Soft Light",
+    "Hard Light",
+    "Color Dodge",
+    "Color Burn",
+    "Pin Light",
+    "Add",
+    "Lighten",
+    "Darken",
+    "Sigmoid",
+]
 
 @dataclass
 class ImageLayer:
@@ -16,7 +30,11 @@ class ImageLayer:
     mask_doc: Optional[object] = None       # ImageDocument whose active mask we read
     mask_invert: bool = False
     mask_feather: float = 0.0               # (reserved)
-    mask_use_luma: bool = False   
+    mask_use_luma: bool = False
+
+    # Sigmoid blend parameters
+    sigmoid_center: float = 0.5             # where transition happens (0..1)
+    sigmoid_strength: float = 10.0          # steepness of the curve
 
 def _float01(arr: np.ndarray) -> np.ndarray:
     a = np.asarray(arr)
@@ -75,22 +93,82 @@ def _mask_from_doc(doc, *, use_luma: bool = False) -> Optional[np.ndarray]:
     return np.clip(m.astype(np.float32, copy=False), 0.0, 1.0)
 
 # ---- blend ops (src over base) ---------------------------------------
-def _apply_mode(base: np.ndarray, src: np.ndarray, mode: str) -> np.ndarray:
+def _apply_mode(base: np.ndarray, src: np.ndarray, layer: ImageLayer) -> np.ndarray:
+    """
+    base, src: float32, [0..1], same shape.
+    Uses layer.mode and optional extra params (e.g. sigmoid_center/strength).
+    """
+    mode = getattr(layer, "mode", "Normal") or "Normal"
+
     if mode == "Multiply":
         return base * src
+
     if mode == "Screen":
         return 1.0 - (1.0 - base) * (1.0 - src)
+
     if mode == "Overlay":
-        # classic overlay
-        return np.where(base <= 0.5, 2.0 * base * src, 1.0 - 2.0 * (1.0 - base) * (1.0 - src))
+        return np.where(
+            base <= 0.5,
+            2.0 * base * src,
+            1.0 - 2.0 * (1.0 - base) * (1.0 - src),
+        )
+
+    if mode == "Soft Light":
+        # SVG / W3C-style soft light
+        return (1.0 - 2.0 * src) * (base * base) + 2.0 * src * base
+
+    if mode == "Hard Light":
+        # Overlay, but conditioned on src
+        return np.where(
+            src <= 0.5,
+            2.0 * base * src,
+            1.0 - 2.0 * (1.0 - base) * (1.0 - src),
+        )
+
+    if mode == "Color Dodge":
+        eps = 1e-6
+        denom = np.maximum(1.0 - src, eps)
+        out = base / denom
+        return np.clip(out, 0.0, 1.0)
+
+    if mode == "Color Burn":
+        eps = 1e-6
+        denom = np.maximum(src, eps)
+        out = 1.0 - (1.0 - base) / denom
+        return np.clip(out, 0.0, 1.0)
+
+    if mode == "Pin Light":
+        hi = np.maximum(base, 2.0 * src - 1.0)
+        lo = np.minimum(base, 2.0 * src)
+        return np.where(src > 0.5, hi, lo)
+
     if mode == "Add":
         return np.clip(base + src, 0.0, 1.0)
+
     if mode == "Lighten":
         return np.maximum(base, src)
+
     if mode == "Darken":
         return np.minimum(base, src)
+
+    if mode == "Sigmoid":
+        # Per-layer sigmoid blend:
+        # dark base → stay closer to base
+        # bright base → move towards src
+        luma = _luminance01(base)  # (H, W)
+
+        center = float(getattr(layer, "sigmoid_center", 0.5) or 0.5)
+        strength = float(getattr(layer, "sigmoid_strength", 10.0) or 10.0)
+
+        # weight in [0..1]
+        w = 1.0 / (1.0 + np.exp(-strength * (luma - center)))
+        w = w[..., None]  # broadcast over channels
+
+        return base * (1.0 - w) + src * w
+
     # Normal
     return src
+
 
 def composite_stack(base_img: np.ndarray, layers: List[ImageLayer]) -> np.ndarray:
     if base_img is None:
@@ -110,7 +188,10 @@ def composite_stack(base_img: np.ndarray, layers: List[ImageLayer]) -> np.ndarra
         s = _ensure_3c(_float01(src))
         s = _resize_like(s, (H, W))
 
-        blended = _apply_mode(out, s, L.mode if L.mode in BLEND_MODES else "Normal")
+        if getattr(L, "mode", None) not in BLEND_MODES:
+            L.mode = "Normal"
+
+        blended = _apply_mode(out, s, L)
 
         alpha = float(L.opacity if 0.0 <= L.opacity <= 1.0 else 1.0)
         if L.mask_doc is not None:

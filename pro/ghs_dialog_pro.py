@@ -322,37 +322,88 @@ class GhsDialogPro(QDialog):
 
     def _on_apply_ready(self, out01: np.ndarray):
         try:
+            # honor mask, same as preview
             out_masked = self._blend_with_mask(out01)
+
+            # 🔹 build a single params dict used by:
+            #    - metadata["ghs"]
+            #    - replay_last_action preset
+            ghs_params = {
+                "alpha":  self.sA.value() / 50.0,
+                "beta":   self.sB.value() / 50.0,
+                "gamma":  self.sG.value() / 100.0,
+                "lp":     self.sLP.value() / 360.0,
+                "hp":     self.sHP.value() / 360.0,
+                "pivot":  float(self._sym_u),
+                "channel": self.cmb_ch.currentText(),
+            }
 
             _marr, mid, mname = self._active_mask_layer()
             meta = {
                 "step_name": "Hyperbolic Stretch",
-                "ghs": {
-                    "alpha": self.sA.value()/50.0, "beta": self.sB.value()/50.0,
-                    "gamma": self.sG.value()/100.0,
-                    "lp": self.sLP.value()/360.0, "hp": self.sHP.value()/360.0,
-                    "pivot": self._sym_u,
-                    "channel": self.cmb_ch.currentText()
-                },
+                "ghs": ghs_params,
                 "masked": bool(mid),
                 "mask_id": mid,
                 "mask_name": mname,
                 "mask_blend": "m*out + (1-m)*src",
             }
 
-            # Commit result to the document
-            self.doc.apply_edit(out_masked.copy(), metadata=meta, step_name="Hyperbolic Stretch")
+            # 🔁 Register this as "last action" for *both* dialog-replay and headless replay
+            mw = self.parent()
+            # Walk up to the main window
+            while mw is not None and not (
+                hasattr(mw, "_remember_last_action_from_dialog")
+                or hasattr(mw, "_remember_last_headless_command")
+            ):
+                mw = mw.parent()
 
-            # 🔁 Refresh buffers from the updated doc
+            if mw is not None:
+                # Dialog-style (keeps your existing mechanism, if used elsewhere)
+                if hasattr(mw, "_remember_last_action_from_dialog"):
+                    try:
+                        mw._remember_last_action_from_dialog("ghs", ghs_params)
+                    except Exception:
+                        pass
+
+                # Headless-style (this is what ROI replay uses)
+                if hasattr(mw, "_remember_last_headless_command"):
+                    try:
+                        mw._remember_last_headless_command(
+                            "ghs",
+                            ghs_params,
+                            description="Hyperbolic Stretch",
+                        )
+                        # DEBUG
+                        try:
+                            mw._log(
+                                f"[Replay] GHS stored as headless command: "
+                                f"preset_keys={list(ghs_params.keys())}"
+                            )
+                        except Exception:
+                            print(
+                                "[Replay] GHS stored as headless command, "
+                                "preset_keys=",
+                                list(ghs_params.keys()),
+                            )
+                    except Exception as e:
+                        print("[Replay] GHS remember_last_headless_command failed:", e)
+
+
+            # Commit result to the document
+            self.doc.apply_edit(out_masked.copy(),
+                                metadata=meta,
+                                step_name="Hyperbolic Stretch")
+
+            # 🔄 Refresh buffers from the updated doc
             self._load_from_doc()
 
             # 🔄 Reset pivot + curve drawing for the next pass
             self._sym_u = 0.5
             self.editor.clearSymmetryLine()
-            self.editor.initCurve()        # clear handles & redraw baseline
+            self.editor.initCurve()
             self.sA.setValue(50); self.sB.setValue(50); self.sG.setValue(100)
-            self.sLP.setValue(0); self.sHP.setValue(0)            
-            self._rebuild_from_params()    # repopulate curve from current sliders (now at default pivot)
+            self.sLP.setValue(0); self.sHP.setValue(0)
+            self._rebuild_from_params()
             QTimer.singleShot(0, self._fit)
 
         except Exception as e:

@@ -2,7 +2,7 @@
 from __future__ import annotations
 import numpy as np
 
-from PyQt6.QtCore import Qt, QObject, pyqtSignal, QThread, QTimer
+from PyQt6.QtCore import Qt, QObject, pyqtSignal, QThread, QTimer, QSettings
 from PyQt6.QtGui import QImage, QPixmap, QIcon
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGroupBox, QFormLayout, QLabel, QPushButton,
@@ -318,6 +318,8 @@ class ZoomableGraphicsView(QGraphicsView):
 
 
 class WaveScaleHDRDialogPro(QDialog):
+    applied_preset = pyqtSignal(object, dict)
+
     def __init__(self, parent, doc, icon_path: str | None = None, *, headless: bool=False, bypass_guard: bool=False):
         super().__init__(parent)
         self.setWindowTitle("WaveScale HDR")
@@ -695,7 +697,52 @@ class WaveScaleHDRDialogPro(QDialog):
         except Exception as e:
             QMessageBox.critical(self, "WaveScale HDR", f"Failed to write to document:\n{e}")
             return
+
+        # ── Build preset from current sliders ─────────────────────────
+        try:
+            preset = {
+                "n_scales": int(self.s_scales.value()),
+                "compression_factor": float(self.s_comp.value()) / 100.0,
+                "mask_gamma": float(self.s_gamma.value()) / 100.0,
+            }
+        except Exception:
+            preset = {}
+
+        # ── Register as last_headless_command on the main window ─────
+        try:
+            main = self.parent()
+            if main is not None:
+                payload = {
+                    "command_id": "wavescale_hdr",
+                    "preset": dict(preset),
+                }
+                setattr(main, "_last_headless_command", payload)
+
+                # Optional debug log (mirrors other tools)
+                try:
+                    if hasattr(main, "_log"):
+                        ns   = int(preset.get("n_scales", 5))
+                        comp = float(preset.get("compression_factor", 1.5))
+                        mg   = float(preset.get("mask_gamma", 5.0))
+                        main._log(
+                            f"[Replay] Registered WaveScale HDR as last action "
+                            f"(n_scales={ns}, compression={comp:.2f}, mask_gamma={mg:.2f})"
+                        )
+                except Exception:
+                    pass
+        except Exception:
+            # never let replay wiring break the apply
+            pass
+
+        # ── (optional) keep emitting signal if you want it elsewhere ──
+        try:
+            self.applied_preset.emit(self._doc, preset)
+        except Exception:
+            pass
+
         self.accept()
+
+
 
     def _schedule_mask_refresh(self, _value):
         # debounce to ~0.25s

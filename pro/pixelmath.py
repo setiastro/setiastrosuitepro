@@ -1507,26 +1507,74 @@ class PixelMathDialogPro(QDialog):
         QMessageBox.information(self, "Pixel Math Help", "\n".join(lines))
 
     # ---------- Apply ----------------------------------------------------------
+    # ---------- Apply ----------------------------------------------------------
     def _apply(self):
         try:
+            # Capture expressions first so we can store them for replay
             if self.rb_single.isChecked():
-                out = self.ev.eval_single(self.ed_single.toPlainText().strip())
+                mode   = "single"
+                expr   = self.ed_single.toPlainText().strip()
+                expr_r = ""
+                expr_g = ""
+                expr_b = ""
+                out = self.ev.eval_single(expr)
             else:
+                mode   = "rgb"
+                expr   = ""
+                expr_r = self.ed_r.toPlainText().strip()
+                expr_g = self.ed_g.toPlainText().strip()
+                expr_b = self.ed_b.toPlainText().strip()
                 out = self.ev.eval_rgb(
-                    self.ed_r.toPlainText().strip(),
-                    self.ed_g.toPlainText().strip(),
-                    self.ed_b.toPlainText().strip(),
+                    expr_r,
+                    expr_g,
+                    expr_b,
                     default_channels=(0, 1, 2)
                 )
+
             out = np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
 
             # Output route
             if self.rb_out_new.isChecked():
                 self._deliver_new_view(self.parent(), self.doc, out, "Pixel Math")
             else:
-                if hasattr(self.doc, "set_image"): self.doc.set_image(out, step_name="Pixel Math")
-                elif hasattr(self.doc, "apply_numpy"): self.doc.apply_numpy(out, step_name="Pixel Math")
-                else: self.doc.image = out
+                if hasattr(self.doc, "set_image"):
+                    self.doc.set_image(out, step_name="Pixel Math")
+                elif hasattr(self.doc, "apply_numpy"):
+                    self.doc.apply_numpy(out, step_name="Pixel Math")
+                else:
+                    self.doc.image = out
+
+            # ── Register as last_headless_command for replay ──────────
+            try:
+                main = self.parent()
+                if main is not None:
+                    preset = {
+                        "mode": mode,
+                        "expr": expr,
+                        "expr_r": expr_r,
+                        "expr_g": expr_g,
+                        "expr_b": expr_b,
+                    }
+                    payload = {
+                        "command_id": "pixel_math",
+                        "preset": dict(preset),
+                    }
+                    setattr(main, "_last_headless_command", payload)
+
+                    # optional log
+                    try:
+                        if hasattr(main, "_log"):
+                            if mode == "single" and expr:
+                                desc = expr
+                            else:
+                                desc = f"R:{expr_r} G:{expr_g} B:{expr_b}"
+                            main._log(f"[Replay] Registered Pixel Math as last action → {desc}")
+                    except Exception:
+                        pass
+            except Exception:
+                # don't break apply if replay wiring fails
+                pass
+            # ───────────────────────────────────────────────────────────
 
             self.accept()
         except Exception as e:

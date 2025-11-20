@@ -130,28 +130,44 @@ def _build_graxpert_cmd(
     return cmd
 
 # ---------- Public entry point (call this from your main window) ----------
-def remove_gradient_with_graxpert(main_window):
+def remove_gradient_with_graxpert(main_window, target_doc=None):
     """
     Exactly mirror SASv2 flow:
       - write input_image.tif
       - run GraXpert
       - read input_image_GraXpert.{fits|tif|tiff|png} using legacy loader
-      - apply to active document
+      - apply to target document
     """
     if getattr(main_window, "_graxpert_headless_running", False):
         return
-    if getattr(main_window, "_graxpert_guard", False):   # <-- new: cool-down guard
+    if getattr(main_window, "_graxpert_guard", False):   # cool-down guard
         return
-    
-    # ⛑️ don’t open the smoothing dialog if a headless preset is running
-    if getattr(main_window, "_graxpert_headless_running", False):
-        return    
-    # 1) active doc & image
-    doc = getattr(main_window, "_active_doc", None)
-    if callable(doc):
-        doc = doc()
+
+    # 1) pick the document: explicit > fallback
+    doc = target_doc
+
+    if doc is None:
+        # Backwards compatibility: fall back to _active_doc
+        doc = getattr(main_window, "_active_doc", None)
+        if callable(doc):
+            doc = doc()
+
+    if doc is None and hasattr(main_window, "mdi"):
+        # Extra fallback: resolve from active subwindow if possible
+        try:
+            sw = main_window.mdi.activeSubWindow()
+            if sw is not None:
+                view = sw.widget()
+                doc = getattr(view, "document", None)
+        except Exception:
+            pass
+
     if doc is None or getattr(doc, "image", None) is None:
-        QMessageBox.warning(main_window, "No Image", "Please load an image before removing the gradient.")
+        QMessageBox.warning(
+            main_window,
+            "No Image",
+            "Please load an image before removing the gradient."
+        )
         return
 
     # 2) smoothing/denoise prompt
@@ -170,6 +186,41 @@ def remove_gradient_with_graxpert(main_window):
         if hasattr(main_window, "settings"):
             main_window.settings.setValue("graxpert/use_gpu", bool(use_gpu))
     except Exception:
+        pass
+
+    # 🔁 NEW: record this as a replayable headless-style command
+    try:
+        remember = getattr(main_window, "remember_last_headless_command", None)
+        if remember is None:
+            remember = getattr(main_window, "_remember_last_headless_command", None)
+
+        if callable(remember):
+            preset = {
+                "op": operation,           # "background" or "denoise"
+                "gpu": bool(use_gpu),
+            }
+            if operation == "background":
+                preset["smoothing"] = float(param)
+                desc = "GraXpert Gradient Removal"
+            else:
+                preset["strength"] = float(param)
+                if ai_version:
+                    preset["ai_version"] = ai_version
+                desc = "GraXpert Denoise"
+
+            remember("graxpert", preset, description=desc)
+
+            # Optional log entry, if you want:
+            if hasattr(main_window, "_log"):
+                try:
+                    main_window._log(
+                        f"[Replay] GraXpert preset stored from dialog: "
+                        f"op={operation}, keys={list(preset.keys())}"
+                    )
+                except Exception:
+                    pass
+    except Exception:
+        # Don't let replay bookkeeping break GraXpert itself
         pass
 
     # 4) write input to a temp working dir but KEEP THE SAME BASENAMES as v2
@@ -195,15 +246,17 @@ def remove_gradient_with_graxpert(main_window):
         batch_size=(4 if use_gpu else 1)
     )
 
-    # 6) run and wait with a small log dialog
-    output_basename = f"{input_basename}_GraXpert"
+    # Label + metadata for history/undo
     op_label = "GraXpert Denoise" if operation == "denoise" else "GraXpert Gradient Removal"
     meta_extras = {
-        "graxpert_operation": operation,                  # "denoise" | "background"
-        "graxpert_param": float(param),                   # strength or smoothing (0..1)
+        "graxpert_operation": operation,  # "denoise" | "background"
+        "graxpert_param": float(param),
         "graxpert_ai_version": (ai_version or "latest") if operation == "denoise" else None,
         "graxpert_gpu": bool(use_gpu),
-    }    
+    }
+
+    # 6) run and wait with a small log dialog
+    output_basename = f"{input_basename}_GraXpert"
     _run_graxpert_command(
         main_window,
         command,
@@ -211,7 +264,7 @@ def remove_gradient_with_graxpert(main_window):
         workdir,
         target_doc=doc,
         op_label=op_label,
-        meta_extras=meta_extras
+        meta_extras=meta_extras,
     )
 
 
@@ -373,8 +426,10 @@ class _GraXpertThread(QThread):
         self.finished_signal.emit(rc)
 
 
-def _run_graxpert_command(parent, command: list[str], output_basename: str, working_dir: str,
-                          target_doc, op_label: str = "GraXpert", meta_extras: dict | None = None):
+def _run_graxpert_command(parent, command: list[str], output_basename: str,
+                          working_dir: str, target_doc,
+                          op_label: str | None = None,
+                          meta_extras: dict | None = None):
     dlg = QDialog(parent)
     dlg.setWindowTitle("GraXpert Progress")
     dlg.setMinimumSize(600, 420)
@@ -387,13 +442,22 @@ def _run_graxpert_command(parent, command: list[str], output_basename: str, work
     thr = _GraXpertThread(command, cwd=working_dir)
     thr.stdout_signal.connect(lambda s: log.append(s))
     thr.finished_signal.connect(
-        lambda code: _on_graxpert_finished(parent, code, output_basename, working_dir,
-                                           target_doc, dlg, op_label, meta_extras or {})
+        lambda code: _on_graxpert_finished(
+            parent,
+            code,
+            output_basename,
+            working_dir,
+            target_doc,
+            dlg,
+            op_label,
+            meta_extras,
+        )
     )
     btn_cancel.clicked.connect(thr.terminate)
 
     thr.start()
     dlg.exec()
+
 
 
 # ---------- finish: import EXACT base like v2, via legacy loader ----------
@@ -418,8 +482,14 @@ def _persist_output_file(src_path: str) -> str | None:
         return None
 
 
-def _on_graxpert_finished(parent, return_code: int, output_basename: str, working_dir: str,
-                          target_doc, dlg, op_label: str = "GraXpert", meta_extras: dict | None = None):
+def _on_graxpert_finished(parent,
+                          return_code: int,
+                          output_basename: str,
+                          working_dir: str,
+                          target_doc,
+                          dlg,
+                          op_label: str | None = None,
+                          meta_extras: dict | None = None):
     try:
         dlg.close()
     except Exception:
@@ -454,34 +524,33 @@ def _on_graxpert_finished(parent, return_code: int, output_basename: str, workin
         shutil.rmtree(working_dir, ignore_errors=True)
         return
 
-    # 3) (Option A: default) do NOT keep a file_path to a soon-to-be-deleted temp file
-    #    (Option B: set PERSIST_GX_OUTPUT=True to keep a copy in app cache and point file_path there)
-    PERSIST_GX_OUTPUT = False
-    persisted_path = _persist_output_file(output_file) if PERSIST_GX_OUTPUT else None
+    # Decide how it appears in history/undo
+    step_label = op_label or "GraXpert Gradient Removal"
 
+    # 3) base metadata
     meta = {
-        "step_name": op_label,                        # <-- now correct per operation
+        "step_name": step_label,
         "bit_depth": "32-bit floating point",
         "is_mono": (arr.ndim == 2) or (arr.ndim == 3 and arr.shape[2] == 1),
-        "description": op_label,                      # keep description aligned too
+        "description": step_label,
     }
     if header is not None:
         meta["original_header"] = header
-    if persisted_path:
-        meta["file_path"] = persisted_path
     if meta_extras:
-        # add strength/smoothing, ai_version, gpu flag, etc.
-        meta.update({k: v for k, v in meta_extras.items() if v is not None})
+        meta.update(meta_extras)
 
-    # Apply with the proper step name
+    # 4) apply to the target doc
     try:
-        target_doc.apply_edit(arr.astype(np.float32, copy=False),
-                              metadata=meta, step_name=op_label)
+        target_doc.apply_edit(
+            arr.astype(np.float32, copy=False),
+            metadata=meta,
+            step_name=step_label,
+        )
     except Exception as e:
         QMessageBox.critical(parent, "GraXpert", f"Failed to apply result:\n{e}")
     finally:
-        # If we persisted the file, it has already been moved out of working_dir.
         shutil.rmtree(working_dir, ignore_errors=True)
+
 
 
 def _pick_exact_output(folder: str, base: str) -> str | None:

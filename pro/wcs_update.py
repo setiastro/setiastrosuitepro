@@ -163,22 +163,25 @@ def update_wcs_after_crop(metadata: dict, M_src_to_dst: np.ndarray, out_w: int, 
     # 1) build the *old* WCS, but handle "3-D + SIP" first
     # ------------------------------------------------------------------
     hdr_for_wcs = hdr0
-    tried_coercion = False
-    if _needs_2d_coercion(hdr0) and _has_sip(hdr0):
-        # this is exactly the problematic case from your screenshot
+    coerced = False
+
+    # If NAXIS>2 or WCSAXES>2, always coerce to a 2-D celestial view
+    if _needs_2d_coercion(hdr0):
         hdr_for_wcs = _coerce_header_to_2d(hdr0)
-        tried_coercion = True
+        coerced = True
 
     try:
         w_old = WCS(hdr_for_wcs, relax=True)
     except Exception as e:
-        # if we didn't already coerce, try once more with 2-D
-        if not tried_coercion:
+        # If we *didn't* already coerce, try once more with a 2-D header
+        if not coerced:
             try:
                 hdr_for_wcs = _coerce_header_to_2d(hdr0)
                 w_old = WCS(hdr_for_wcs, relax=True)
+                coerced = True
                 if debug:
-                    print("[WCS-CROP] WCS() failed on 3-D header; succeeded after 2-D coercion.")
+                    print("[WCS-CROP] WCS() failed on original header; "
+                          "succeeded after 2-D coercion.")
             except Exception as e2:
                 if debug:
                     print(f"[WCS-CROP] WCS() failed even after 2-D coercion: {e2}; skipping.")
@@ -323,11 +326,11 @@ def update_wcs_after_crop(metadata: dict, M_src_to_dst: np.ndarray, out_w: int, 
     # Debug print
     # ------------------------------------------------------------------
     if debug:
-        print("[WCS-CROP] === BEFORE ===")
+        print("[WCS] === BEFORE ===")
         print(f"  CRVAL  (deg): {old_crval}")
         print(f"  CRPIX  (pix): {old_crpix}")
         print(f"  SCALE  (as/px): ({old_sx:.3f}, {old_sy:.3f})  ROT(deg): {old_rot:.3f}")
-        print("[WCS-CROP] === AFTER  ===")
+        print("[WCS] === AFTER  ===")
         print(f"  CRVAL  (deg): {new_crval}")
         print(f"  CRPIX  (pix): {new_crpix}   (image is {out_w}x{out_h})")
         print(f"  SCALE  (as/px): ({new_sx:.3f}, {new_sy:.3f})  ROT(deg): {new_rot:.3f}")
@@ -358,7 +361,7 @@ def update_wcs_after_crop(metadata: dict, M_src_to_dst: np.ndarray, out_w: int, 
             "p95_arcsec": p95,
             "grid": (int(nx), int(ny)),
         },
-        "coerced_to_2d": _needs_2d_coercion(hdr0),
+        "coerced_to_2d": bool(coerced),
     }
 
     out_meta = dict(metadata)

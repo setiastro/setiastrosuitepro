@@ -325,12 +325,47 @@ class MorphologyDialogPro(QDialog):
                     base = np.clip(base, 0.0, 1.0)
                 out = _blend_with_mask(base, out, m).astype(np.float32, copy=False)
 
-            if hasattr(self.doc, "set_image"): self.doc.set_image(out, step_name="Morphology")
-            elif hasattr(self.doc, "apply_numpy"): self.doc.apply_numpy(out, step_name="Morphology")
-            else: self.doc.image = out
+            # Commit to document
+            if hasattr(self.doc, "set_image"):
+                self.doc.set_image(out, step_name="Morphology")
+            elif hasattr(self.doc, "apply_numpy"):
+                self.doc.apply_numpy(out, step_name="Morphology")
+            else:
+                self.doc.image = out
+
+            # ── Register as last_headless_command for replay ───────────
+            try:
+                main = self.parent()
+                if main is not None:
+                    preset = {
+                        "operation": op,
+                        "kernel": int(k),
+                        "iterations": int(it),
+                    }
+                    payload = {
+                        "command_id": "morphology",
+                        "preset": dict(preset),
+                    }
+                    setattr(main, "_last_headless_command", payload)
+
+                    # optional log
+                    try:
+                        if hasattr(main, "_log"):
+                            main._log(
+                                f"[Replay] Registered Morphology as last action "
+                                f"(op={op}, kernel={k}, iter={it})"
+                            )
+                    except Exception:
+                        pass
+            except Exception:
+                # never break apply if replay wiring fails
+                pass
+            # ────────────────────────────────────────────────────────────
+
             self.accept()
         except Exception as e:
             QMessageBox.critical(self, "Morphology", f"Failed to apply:\n{e}")
+
 
 
     def _reset(self):

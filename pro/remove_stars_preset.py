@@ -16,7 +16,7 @@ from .remove_stars import (
 )
 
 # ---------- Headless public entry ----------
-def run_remove_stars_via_preset(main, preset: dict | None = None):
+def run_remove_stars_via_preset(main, preset: dict | None = None, target_doc=None):
     """
     Headless star removal from a shortcut preset.
       preset = {
@@ -31,13 +31,20 @@ def run_remove_stars_via_preset(main, preset: dict | None = None):
         "stride": 512,                       # 64..1024 power of two
         "exe": "/path/to/setiastrocosmicclarity_darkstar(.exe)"  # optional override
       }
+
+    If target_doc is provided, it is used (ROI, base, etc.); otherwise
+    we fall back to main._active_doc for backward-compat.
     """
     p = dict(preset or {})
     tool = str(p.get("tool", "starnet")).lower()
 
-    # active doc
-    doc = getattr(main, "_active_doc", None)
-    if callable(doc): doc = doc()
+    # explicit doc (ROI/base) wins; fall back to _active_doc
+    doc = target_doc
+    if doc is None:
+        doc = getattr(main, "_active_doc", None)
+        if callable(doc):
+            doc = doc()
+
     if doc is None or getattr(doc, "image", None) is None:
         QMessageBox.warning(main, "Remove Stars", "Load an image first.")
         return
@@ -48,8 +55,10 @@ def run_remove_stars_via_preset(main, preset: dict | None = None):
 
     def _clear_flags():
         for name in ("_remove_stars_headless_running", "_remove_stars_guard"):
-            try: delattr(main, name)
-            except Exception: setattr(main, name, False)
+            try:
+                delattr(main, name)
+            except Exception:
+                setattr(main, name, False)
 
     try:
         if tool in ("starnet", "star_net", "sn"):
@@ -59,8 +68,8 @@ def run_remove_stars_via_preset(main, preset: dict | None = None):
         else:
             QMessageBox.critical(main, "Remove Stars", f"Unknown tool '{tool}'.")
     finally:
-        # let event loop settle (image apply/logging) before allowing UI again
         QTimer.singleShot(1200, _clear_flags)
+
 
 
 # ---------- StarNet headless ----------

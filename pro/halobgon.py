@@ -357,6 +357,34 @@ class HaloBGonDialogPro(QDialog):
 
             out = np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
 
+            # ── Register as last_headless_command for replay ──────────
+            try:
+                main = self.parent()
+                if main is not None:
+                    preset = {
+                        "reduction": int(lvl),
+                        "linear": bool(lin),
+                    }
+                    payload = {
+                        "command_id": "halo_b_gon",
+                        "preset": dict(preset),
+                    }
+                    setattr(main, "_last_headless_command", payload)
+
+                    # optional log
+                    try:
+                        if hasattr(main, "_log"):
+                            main._log(
+                                f"[Replay] Registered Halo-B-Gon as last action "
+                                f"(level={int(lvl)}, linear={bool(lin)})"
+                            )
+                    except Exception:
+                        pass
+            except Exception:
+                # don't break apply if replay wiring fails
+                pass
+            # ───────────────────────────────────────────────────────────
+
             # If user chose "Create new view", go through DocManager so the UI spawns the window.
             create_new = (self.cmb_target.currentIndex() == 1)
 
@@ -409,6 +437,7 @@ class HaloBGonDialogPro(QDialog):
 
         except Exception as e:
             QMessageBox.critical(self, "Halo-B-Gon", f"Failed to apply:\n{e}")
+
 
 
     def _reset(self):

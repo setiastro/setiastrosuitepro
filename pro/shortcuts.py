@@ -735,15 +735,30 @@ class ShortcutCanvas(QWidget):
             self.lower()
             return
 
-        # 2) desktop shortcut creation (MIME_ACTION) → create a button
+        # 2) command-only drops (no MIME_ACTION) → create a shortcut with preset
+        #    This is used by History Explorer Alt+drag.
+        if md.hasFormat(MIME_CMD) and not md.hasFormat(MIME_ACTION):
+            try:
+                raw = bytes(md.data(MIME_CMD))
+                payload = _unpack_cmd_payload(raw)
+            except Exception:
+                payload = None
+
+            if isinstance(payload, dict) and payload.get("command_id"):
+                self._mgr.add_shortcut_from_payload(payload, e.position().toPoint())
+                e.acceptProposedAction()
+                self.lower()
+                return
+
+        # 3) desktop shortcut creation (MIME_ACTION) → create a button (no preset)
         if md.hasFormat(MIME_ACTION):
             act_id = bytes(md.data(MIME_ACTION)).decode("utf-8")
             self._mgr.add_shortcut(act_id, e.position().toPoint())
             e.acceptProposedAction()
             self.lower()
             return
-    
-        # File / folder open
+
+        # 4) File / folder open (unchanged)
         if self._md_has_openable_urls(md):
             paths = self._collect_openable_files_from_urls(md)
             if paths:
@@ -976,6 +991,42 @@ class ShortcutManager:
 
         self.widgets[sid] = w
         self.save_shortcuts()
+
+    def add_shortcut_from_payload(self, payload: dict, pos: QPoint):
+        """
+        Create a desktop shortcut from a full command payload
+        (e.g. drag from History Explorer with command_id + preset).
+        """
+        if not isinstance(payload, dict):
+            return
+
+        cid = payload.get("command_id") or payload.get("cid")
+        if not isinstance(cid, str) or not cid:
+            return
+
+        preset = payload.get("preset") or {}
+        if not isinstance(preset, dict):
+            try:
+                preset = dict(preset)
+            except Exception:
+                preset = {}
+
+        # Normal shortcut creation
+        sid = uuid.uuid4().hex
+        label = self._default_label_for(cid)
+        self.add_shortcut(cid, pos, label=label, shortcut_id=sid)
+
+        # Attach preset at instance-level (same mechanism as context menu)
+        w = self.widgets.get(sid)
+        if w and not _is_dead(w):
+            try:
+                w._save_preset(preset)
+            except Exception:
+                pass
+
+        # Persist layout + presets
+        self.save_shortcuts()
+
 
     def update_label(self, shortcut_id: str, new_label: str):
         w = self.widgets.get(shortcut_id)

@@ -191,7 +191,9 @@ def apply_ghs_via_preset(main_window, doc, preset: Dict):
     img = getattr(doc, "image", None)
     if img is None:
         return
+
     arr = np.asarray(img)
+
     # normalize to float01
     if arr.dtype.kind in "ui":
         src01 = arr.astype(np.float32) / np.iinfo(arr.dtype).max
@@ -201,12 +203,53 @@ def apply_ghs_via_preset(main_window, doc, preset: Dict):
     else:
         src01 = arr.astype(np.float32)
 
-    lut01, channel, params = _lut_from_ghs_preset(preset)
+    lut01, channel, params = _lut_from_ghs_preset(preset or {})
     out01 = _apply_mode_any(src01, channel, lut01)
-    out01 = _blend_with_mask(out01, src01, doc)
 
-    meta = {"step_name": "Hyperbolic Stretch", "ghs": params}
-    doc.apply_edit(out01, metadata=meta, step_name="Hyperbolic Stretch")
+    # 🔁 Remember this as the last headless command for Replay
+    try:
+        remember = getattr(main_window, "remember_last_headless_command", None)
+        if remember is None:
+            remember = getattr(main_window, "_remember_last_headless_command", None)
+
+        if callable(remember):
+            # store the sanitized params we just used
+            remember("ghs", params, description="Hyperbolic Stretch")
+
+            # optional debug
+            try:
+                if hasattr(main_window, "_log"):
+                    main_window._log(
+                        f"[Replay] GHS headless stored: command_id='ghs', "
+                        f"preset_keys={list(params.keys())}"
+                    )
+            except Exception:
+                pass
+    except Exception:
+        # don’t block the stretch if remembering fails
+        pass
+
+    # Mask-aware blend, same semantics as dialog
+    mask, mid, mname = _active_mask_layer(doc)
+    if mask is not None:
+        out01 = _blend_with_mask(out01, src01, doc)
+
+    meta = {
+        "step_name": "Hyperbolic Stretch",
+        "ghs": params,
+        "masked": bool(mid),
+        "mask_id": mid,
+        "mask_name": mname,
+        "mask_blend": "m*out + (1-m)*src",
+    }
+
+    doc.apply_edit(
+        out01.astype(np.float32, copy=False),
+        metadata=meta,
+        step_name="Hyperbolic Stretch",
+    )
+
+
 
 
 # ---------- open dialog seeded from preset ----------

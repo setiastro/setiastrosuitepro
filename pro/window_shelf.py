@@ -20,7 +20,7 @@ class WindowShelf(QDockWidget):
         super().__init__("Minimized Views", parent)
 
         # PyQt6 dock area enum
-        self.setAllowedAreas(Qt.DockWidgetArea.BottomDockWidgetArea)
+        self.setAllowedAreas(Qt.DockWidgetArea.AllDockWidgetAreas)
 
         self.list = QListWidget(self)
         self.list.setUniformItemSizes(False)

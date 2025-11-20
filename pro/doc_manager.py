@@ -85,6 +85,35 @@ def _debug_log_wcs_context(context: str, meta_or_hdr):
         print(f"  CDELT1={cdelt1}  CDELT2={cdelt2}")
     print("")
 
+_DEBUG_UNDO = False  # set True while chasing the GraXpert crash
+
+
+def _debug_log_undo(context: str, **info):
+    """
+    Lightweight logger for undo/redo/update activity.
+    Safe: never raises, even if repr() is weird.
+    """
+    if not _DEBUG_UNDO:
+        return
+    try:
+        bits = []
+        for k, v in info.items():
+            try:
+                s = str(v)
+            except Exception:
+                try:
+                    s = repr(v)
+                except Exception:
+                    s = f"<unrepr {type(v)}>"
+            bits.append(f"{k}={s}")
+        print(f"[UNDO DEBUG] {context}: " + ", ".join(bits))
+    except Exception as e:
+        # Last-resort safety – don't let logging itself kill us
+        try:
+            print(f"[UNDO DEBUG] {context}: <logging failed: {e}>")
+        except Exception:
+            pass
+
 def _normalize_ext(ext: str) -> str:
     e = ext.lower().lstrip(".")
     if e == "jpeg": return "jpg"
@@ -140,7 +169,51 @@ class ImageDocument(QObject):
         self.active_mask_id: str | None = None
         self.uid = uuid.uuid4().hex  # stable identity for DnD, layers, masks, etc.
 
+        # NEW: operation log — list of simple dicts
+        # Each entry: {
+        #   "id": str,
+        #   "step": str,
+        #   "params": dict,
+        #   "roi": (x,y,w,h) | None,
+        #   "source": "full" | "roi",
+        #   "ts": float
+        # }
+        self._op_log: list[dict] = []
     # --- history helpers (NEW) ---
+    # --- operation log helpers (NEW) -----------------------------------
+    def record_operation(
+        self,
+        step_name: str,
+        params: dict | None = None,
+        roi: tuple[int, int, int, int] | None = None,
+        source: str = "full",
+    ) -> str:
+        """
+        Append a param-record for this edit. This is *lightweight* metadata
+        used for replaying ROI recipes etc; it does NOT affect undo/redo.
+        """
+        import time as _time
+        op_id = uuid.uuid4().hex
+        entry = {
+            "id": op_id,
+            "step": step_name or "Edit",
+            "params": _dm_json_sanitize(params or {}),
+            "roi": tuple(roi) if roi else None,
+            "source": str(source or "full"),
+            "ts": float(_time.time()),
+        }
+        self._op_log.append(entry)
+        return op_id
+
+    def get_operation_log(self) -> list[dict]:
+        """Return a copy of the operation log (for UI / replay)."""
+        return list(self._op_log)
+
+    def clear_operation_log(self):
+        """Clear the operation log (does not touch pixel history)."""
+        self._op_log.clear()
+
+
     def can_undo(self) -> bool:
         return bool(self._undo)
 
@@ -224,15 +297,46 @@ class ImageDocument(QObject):
 
         # ------ Normal (full-image) branch ------
         if self.image is not None:
-            self._undo.append((self.image.copy(), self.metadata.copy(), step_name))
+            # snapshot current image + metadata for undo
+            try:
+                curr = np.asarray(self.image, dtype=np.float32)
+                curr = np.ascontiguousarray(curr)
+                _debug_log_undo(
+                    "ImageDocument.apply_edit.snapshot",
+                    doc_id=id(self),
+                    name=getattr(self, "display_name", lambda: "<no-name>")(),
+                    curr_shape=getattr(curr, "shape", None),
+                    undo_len_before=len(self._undo),
+                    redo_len_before=len(self._redo),
+                    step_name=step_name,
+                )
+                self._undo.append((curr, self.metadata.copy(), step_name))
+            except Exception as e:
+                print(f"[ImageDocument] apply_edit: failed to snapshot current image for undo: {e}")
             self._redo.clear()
+
+
         if metadata:
             self.metadata.update(metadata)
         self.metadata.setdefault("step_name", step_name)
 
-        img = np.asarray(new_image)
-        if img.dtype != np.float32:
-            img = img.astype(np.float32, copy=False)
+        # normalize new image
+        img = np.asarray(new_image, dtype=np.float32)
+        if img.size == 0:
+            raise ValueError("apply_edit: new image is empty")
+
+        # **critical**: ensure C-contiguous for Qt/QImage
+        img = np.ascontiguousarray(img)
+
+        _debug_log_undo(
+            "ImageDocument.apply_edit.apply",
+            doc_id=id(self),
+            name=getattr(self, "display_name", lambda: "<no-name>")(),
+            new_shape=getattr(img, "shape", None),
+            undo_len_after=len(self._undo),
+            redo_len_after=len(self._redo),
+            step_name=step_name,
+        )
 
         self.image = img
         self.changed.emit()
@@ -245,27 +349,184 @@ class ImageDocument(QObject):
         except Exception:
             pass
 
+        self.changed.emit()
+
+        # full-image repaint hint to views
+        dm = getattr(self, "_doc_manager", None)
+        try:
+            if dm is not None and hasattr(dm, "imageRegionUpdated"):
+                dm.imageRegionUpdated.emit(self, None)
+        except Exception:
+            pass
+
 
     def undo(self) -> str | None:
+        # Extra-safe: if stack is empty, bail early.
         if not self._undo:
+            _debug_log_undo(
+                "ImageDocument.undo.empty_stack",
+                doc_id=id(self),
+                name=getattr(self, "display_name", lambda: "<no-name>")(),
+            )
             return None
-        prev_img, prev_meta, name = self._undo.pop()
-        # push current to redo with same name
-        self._redo.append((self.image.copy(), self.metadata.copy(), name))
-        self.image = prev_img
-        self.metadata = prev_meta
-        self.changed.emit()
+
+        _debug_log_undo(
+            "ImageDocument.undo.entry",
+            doc_id=id(self),
+            name=getattr(self, "display_name", lambda: "<no-name>")(),
+            undo_len=len(self._undo),
+            redo_len=len(self._redo),
+            top_step=self._undo[-1][2] if self._undo else None,
+        )
+
+        # Pop with an extra guard in case something cleared _undo between
+        # the check above and this call (re-entrancy / threading).
+        try:
+            prev_img, prev_meta, name = self._undo.pop()
+        except IndexError:
+            _debug_log_undo(
+                "ImageDocument.undo.pop_index_error",
+                doc_id=id(self),
+                name=getattr(self, "display_name", lambda: "<no-name>")(),
+                undo_len=len(self._undo),
+                redo_len=len(self._redo),
+            )
+            return None
+
+        # Normalize previous image before using it
+        try:
+            prev_arr = np.asarray(prev_img, dtype=np.float32)
+            if prev_arr.size == 0:
+                raise ValueError("undo: previous image is empty")
+            prev_arr = np.ascontiguousarray(prev_arr)
+        except Exception as e:
+            print(f"[ImageDocument] undo: invalid prev_img in stack ({type(prev_img)}): {e}")
+            # Put it back so we don't corrupt history further
+            self._undo.append((prev_img, prev_meta, name))
+            return None
+
+        _debug_log_undo(
+            "ImageDocument.undo.normalized_prev",
+            doc_id=id(self),
+            name=getattr(self, "display_name", lambda: "<no-name>")(),
+            prev_shape=getattr(prev_arr, "shape", None),
+            prev_dtype=getattr(prev_arr, "dtype", None),
+            step_name=name,
+            meta_step=prev_meta.get("step_name", None) if isinstance(prev_meta, dict) else None,
+        )
+
+        # Snapshot current state for redo (best-effort)
+        curr_img = self.image
+        curr_meta = self.metadata
+        try:
+            if curr_img is not None:
+                curr_arr = np.asarray(curr_img, dtype=np.float32)
+                curr_arr = np.ascontiguousarray(curr_arr)
+                self._redo.append((curr_arr, dict(curr_meta), name))
+            else:
+                self._redo.append((curr_img, dict(curr_meta), name))
+        except Exception as e:
+            print(f"[ImageDocument] undo: failed to snapshot current image for redo: {e}")
+
+        _debug_log_undo(
+            "ImageDocument.undo.before_apply",
+            doc_id=id(self),
+            name=getattr(self, "display_name", lambda: "<no-name>")(),
+            curr_shape=getattr(curr_img, "shape", None) if curr_img is not None else None,
+            curr_dtype=getattr(curr_img, "dtype", None) if curr_img is not None else None,
+        )
+
+        self.image = prev_arr
+        self.metadata = dict(prev_meta or {})
+        try:
+            self.changed.emit()
+        except Exception:
+            pass
+
+        _debug_log_undo(
+            "ImageDocument.undo.after_apply",
+            doc_id=id(self),
+            name=getattr(self, "display_name", lambda: "<no-name>")(),
+            new_shape=getattr(self.image, "shape", None),
+            new_dtype=getattr(self.image, "dtype", None),
+            undo_len=len(self._undo),
+            redo_len=len(self._redo),
+        )
         return name
+
 
     def redo(self) -> str | None:
         if not self._redo:
             return None
+
+        _debug_log_undo(
+            "ImageDocument.redo.entry",
+            doc_id=id(self),
+            name=getattr(self, "display_name", lambda: "<no-name>")(),
+            redo_len=len(self._redo),
+            undo_len=len(self._undo),
+            top_step=self._redo[-1][2] if self._redo else None,
+        )
+
         nxt_img, nxt_meta, name = self._redo.pop()
-        self._undo.append((self.image.copy(), self.metadata.copy(), name))
-        self.image = nxt_img
-        self.metadata = nxt_meta
-        self.changed.emit()
+
+        # Normalize next image before using it
+        try:
+            nxt_arr = np.asarray(nxt_img, dtype=np.float32)
+            if nxt_arr.size == 0:
+                raise ValueError("redo: next image is empty")
+            nxt_arr = np.ascontiguousarray(nxt_arr)
+        except Exception as e:
+            print(f"[ImageDocument] redo: invalid nxt_img in stack ({type(nxt_img)}): {e}")
+            # Put it back so we don't corrupt history further
+            self._redo.append((nxt_img, nxt_meta, name))
+            return None
+        _debug_log_undo(
+            "ImageDocument.redo.normalized_next",
+            doc_id=id(self),
+            name=getattr(self, "display_name", lambda: "<no-name>")(),
+            nxt_shape=getattr(nxt_arr, "shape", None),
+            nxt_dtype=getattr(nxt_arr, "dtype", None),
+            step_name=name,
+            meta_step=nxt_meta.get("step_name", None) if isinstance(nxt_meta, dict) else None,
+        )
+        curr_img = self.image
+        curr_meta = self.metadata
+        try:
+            if curr_img is not None:
+                curr_arr = np.asarray(curr_img, dtype=np.float32)
+                curr_arr = np.ascontiguousarray(curr_arr)
+                self._undo.append((curr_arr, dict(curr_meta), name))
+            else:
+                self._undo.append((curr_img, dict(curr_meta), name))
+        except Exception as e:
+            print(f"[ImageDocument] redo: failed to snapshot current image for undo: {e}")
+        _debug_log_undo(
+            "ImageDocument.redo.before_apply",
+            doc_id=id(self),
+            name=getattr(self, "display_name", lambda: "<no-name>")(),
+            curr_shape=getattr(curr_img, "shape", None) if curr_img is not None else None,
+            curr_dtype=getattr(curr_img, "dtype", None) if curr_img is not None else None,
+        )
+        self.image = nxt_arr
+        self.metadata = dict(nxt_meta or {})
+        try:
+            self.changed.emit()
+        except Exception:
+            pass
+
+        _debug_log_undo(
+            "ImageDocument.redo.after_apply",
+            doc_id=id(self),
+            name=getattr(self, "display_name", lambda: "<no-name>")(),
+            new_shape=getattr(self.image, "shape", None),
+            new_dtype=getattr(self.image, "dtype", None),
+            undo_len=len(self._undo),
+            redo_len=len(self._redo),
+        )
+
         return name
+
 
     # existing methods unchanged below...
     def set_image(self, img: np.ndarray, metadata: dict | None = None, step_name: str = "Edit"):
@@ -683,14 +944,26 @@ class _RoiViewDocument(ImageDocument):
     def _current_preview_copy(self) -> _np.ndarray:
         img = self.image  # property: returns override or parent slice
         if img is None:
-            return _np.zeros((1,1), dtype=_np.float32)
-        return _np.asarray(img, dtype=_np.float32).copy()
+            return _np.zeros((1, 1), dtype=_np.float32)
+        arr = _np.asarray(img, dtype=_np.float32)
+        return _np.ascontiguousarray(arr)
 
     # === KEEP YOUR WORKING BODY; only 3 added lines are marked "NEW" ===
     def apply_edit(self, new_image, metadata=None, step_name="Edit"):
         x, y, w, h = self._roi
         img = np.asarray(new_image, dtype=np.float32, copy=False)
         base = self._parent_doc.image
+
+        _debug_log_undo(
+            "_RoiViewDocument.apply_edit.entry",
+            roi=(x, y, w, h),
+            parent_id=id(self._parent_doc) if self._parent_doc is not None else None,
+            roi_doc_id=id(self),
+            new_shape=getattr(img, "shape", None),
+            step_name=step_name,
+            pundo_len=len(self._pundo),
+            predo_len=len(self._predo),
+        )
         if base is not None:
             if base.ndim == 2 and img.ndim == 3 and img.shape[2] == 1:
                 img = img[..., 0]
@@ -698,12 +971,23 @@ class _RoiViewDocument(ImageDocument):
                 img = np.repeat(img[..., None], base.shape[2], axis=2)
         if img.shape[:2] != (h, w):
             raise ValueError(f"Preview edit shape {img.shape[:2]} != ROI {(h, w)}")
+        
+        img = np.ascontiguousarray(img) 
 
         # snapshot current visible preview for local undo
         self._pundo.append((self._current_preview_copy(), dict(self.metadata), step_name))
         self._predo.clear()
 
         self._preview_override = img
+        _debug_log_undo(
+            "_RoiViewDocument.apply_edit.after",
+            roi=(x, y, w, h),
+            preview_shape=getattr(self._preview_override, "shape", None),
+            pundo_len=len(self._pundo),
+            predo_len=len(self._predo),
+            step_name=step_name,
+        )
+
         if metadata:
             self.metadata.update(metadata)
         self.metadata.setdefault("step_name", step_name)
@@ -728,55 +1012,165 @@ class _RoiViewDocument(ImageDocument):
         return getattr(self, "_parent_doc", None)
 
     def can_undo(self) -> bool:
-        return bool(self._pundo)
+        # Prefer local preview history if present
+        if self._pundo:
+            return True
+        # Otherwise mirror parent’s history
+        p = getattr(self, "_parent_doc", None)
+        if p is not None and hasattr(p, "can_undo"):
+            try:
+                return bool(p.can_undo())
+            except Exception:
+                return False
+        return False
 
     def can_redo(self) -> bool:
-        return bool(self._predo)
+        if self._predo:
+            return True
+        p = getattr(self, "_parent_doc", None)
+        if p is not None and hasattr(p, "can_redo"):
+            try:
+                return bool(p.can_redo())
+            except Exception:
+                return False
+        return False
 
     def last_undo_name(self) -> str | None:
-        return self._pundo[-1][2] if self._pundo else None
+        if self._pundo:
+            return self._pundo[-1][2]
+        p = getattr(self, "_parent_doc", None)
+        if p is not None and hasattr(p, "last_undo_name"):
+            try:
+                return p.last_undo_name()
+            except Exception:
+                return None
+        return None
 
     def last_redo_name(self) -> str | None:
-        return self._predo[-1][2] if self._predo else None
+        if self._predo:
+            return self._predo[-1][2]
+        p = getattr(self, "_parent_doc", None)
+        if p is not None and hasattr(p, "last_redo_name"):
+            try:
+                return p.last_redo_name()
+            except Exception:
+                return None
+        return None
 
     def undo(self) -> str | None:
-        if not self._pundo:
+        # --- Case 1: ROI-local preview history ---
+        if self._pundo:
+            _debug_log_undo(
+                "_RoiViewDocument.undo.local.entry",
+                roi=self._roi,
+                roi_doc_id=id(self),
+                pundo_len=len(self._pundo),
+                predo_len=len(self._predo),
+            )
+            # move current → redo; pop undo → current
+            curr = self._current_preview_copy()
+            self._predo.append((curr, dict(self.metadata), self._pundo[-1][2]))
+
+            prev_img, prev_meta, name = self._pundo.pop()
+            self._preview_override = prev_img
+            self.metadata = dict(prev_meta)
+            _debug_log_undo(
+                "_RoiViewDocument.undo.local.apply",
+                roi=self._roi,
+                new_preview_shape=getattr(prev_img, "shape", None),
+                pundo_len=len(self._pundo),
+                predo_len=len(self._predo),
+                name=name,
+            )
+            try:
+                self.changed.emit()
+            except Exception:
+                pass
+
+            dm = getattr(self, "_doc_manager", None)
+            if dm is not None and hasattr(dm, "previewRepaintRequested"):
+                try:
+                    dm.previewRepaintRequested.emit(self._parent_doc, self._roi)
+                except Exception:
+                    pass
+            return name
+
+        # --- Case 2: no ROI-local history → delegate to parent ---
+        parent = getattr(self, "_parent_doc", None)
+        if parent is None or not hasattr(parent, "undo"):
             return None
-        # move current → redo; pop undo → current
-        curr = self._current_preview_copy()
-        self._predo.append((curr, dict(self.metadata), self._pundo[-1][2]))
+        _debug_log_undo(
+            "_RoiViewDocument.undo.parent.entry",
+            roi=self._roi,
+            roi_doc_id=id(self),
+            parent_id=id(parent),
+            parent_undo_len=len(getattr(parent, "_undo", [])),
+            parent_redo_len=len(getattr(parent, "_redo", [])),
+        )
 
-        prev_img, prev_meta, name = self._pundo.pop()
-        self._preview_override = prev_img
-        self.metadata = dict(prev_meta)
+        name = parent.undo()
 
-        try: self.changed.emit()
-        except Exception: pass
+        # After parent changes, clear override so we show the new parent slice
+        self._preview_override = None
 
-        dm = getattr(self, "_doc_manager", None)
+        try:
+            self.changed.emit()
+        except Exception:
+            pass
+
+        dm = getattr(self, "_doc_manager", None) or getattr(parent, "_doc_manager", None)
         if dm is not None and hasattr(dm, "previewRepaintRequested"):
-            try: dm.previewRepaintRequested.emit(self._parent_doc, self._roi)
-            except Exception: pass
+            try:
+                dm.previewRepaintRequested.emit(parent, self._roi)
+            except Exception:
+                pass
         return name
 
     def redo(self) -> str | None:
-        if not self._predo:
+        # --- Case 1: ROI-local preview history ---
+        if self._predo:
+            # move current → undo; pop redo → current
+            curr = self._current_preview_copy()
+            self._pundo.append((curr, dict(self.metadata), self._predo[-1][2]))
+
+            nxt_img, nxt_meta, name = self._predo.pop()
+            self._preview_override = nxt_img
+            self.metadata = dict(nxt_meta)
+
+            try:
+                self.changed.emit()
+            except Exception:
+                pass
+
+            dm = getattr(self, "_doc_manager", None)
+            if dm is not None and hasattr(dm, "previewRepaintRequested"):
+                try:
+                    dm.previewRepaintRequested.emit(self._parent_doc, self._roi)
+                except Exception:
+                    pass
+            return name
+
+        # --- Case 2: delegate to parent’s redo ---
+        parent = getattr(self, "_parent_doc", None)
+        if parent is None or not hasattr(parent, "redo"):
             return None
-        # move current → undo; pop redo → current
-        curr = self._current_preview_copy()
-        self._pundo.append((curr, dict(self.metadata), self._predo[-1][2]))
 
-        nxt_img, nxt_meta, name = self._predo.pop()
-        self._preview_override = nxt_img
-        self.metadata = dict(nxt_meta)
+        name = parent.redo()
 
-        try: self.changed.emit()
-        except Exception: pass
+        # Parent changed → reset override and repaint
+        self._preview_override = None
 
-        dm = getattr(self, "_doc_manager", None)
+        try:
+            self.changed.emit()
+        except Exception:
+            pass
+
+        dm = getattr(self, "_doc_manager", None) or getattr(parent, "_doc_manager", None)
         if dm is not None and hasattr(dm, "previewRepaintRequested"):
-            try: dm.previewRepaintRequested.emit(self._parent_doc, self._roi)
-            except Exception: pass
+            try:
+                dm.previewRepaintRequested.emit(parent, self._roi)
+            except Exception:
+                pass
         return name
 
 
@@ -874,11 +1268,28 @@ class LiveViewDocument(QObject):
 
     def undo(self):
         d = self._current()
+        _debug_log_undo(
+            "LiveViewDocument.undo.call",
+            live_id=id(self),
+            resolved_type=type(d).__name__ if d is not None else None,
+            resolved_id=id(d) if d is not None else None,
+            is_roi=isinstance(d, _RoiViewDocument),
+            has_undo=getattr(d, "can_undo", lambda: False)(),
+        )
         return getattr(d, "undo", lambda: None)()
 
     def redo(self):
         d = self._current()
+        _debug_log_undo(
+            "LiveViewDocument.redo.call",
+            live_id=id(self),
+            resolved_type=type(d).__name__ if d is not None else None,
+            resolved_id=id(d) if d is not None else None,
+            is_roi=isinstance(d, _RoiViewDocument),
+            has_redo=getattr(d, "can_redo", lambda: False)(),
+        )
         return getattr(d, "redo", lambda: None)()
+
 
     # ---- generic fallback so existing attributes keep working ----
     def __getattr__(self, name):
@@ -1716,24 +2127,107 @@ class DocManager(QObject):
         if view_doc is None:
             raise RuntimeError("No active document")
 
+        old_img = getattr(view_doc, "image", None)
+        old_shape = getattr(old_img, "shape", None)
+
         img = np.asarray(updated_image)
         if img.dtype != np.float32:
             img = img.astype(np.float32, copy=False)
 
+        _debug_log_undo(
+            "DocManager.update_active_document.entry",
+            step_name=step_name,
+            view_doc_type=type(view_doc).__name__,
+            view_doc_id=id(view_doc),
+            is_roi=isinstance(view_doc, _RoiViewDocument),
+            old_shape=old_shape,
+            new_shape=getattr(img, "shape", None),
+        )
+
+        # --- Extract operation parameters (if any) from metadata --------
+        md = dict(metadata or {})
+        op_params = md.pop("__op_params__", None)
+
+        # If this is an ROI view doc, keep track of where this happened
+        roi_tuple = None
+        source_kind = "full"
+        if isinstance(view_doc, _RoiViewDocument):
+            roi_tuple = getattr(view_doc, "_roi", None)
+            source_kind = "roi"
+
+        # --- ROI preview branch: only update preview, no parent paste ----
         if isinstance(view_doc, _RoiViewDocument):
             # Update ONLY the preview; view repaint is driven by signals
-            view_doc.apply_edit(img, dict(metadata or {}), step_name)
+            view_doc.apply_edit(img, md, step_name)
+
+            # Record operation on the ROI doc itself
+            if hasattr(view_doc, "record_operation"):
+                try:
+                    view_doc.record_operation(
+                        step_name=step_name,
+                        params=op_params,
+                        roi=roi_tuple,
+                        source=source_kind,
+                    )
+                except Exception:
+                    pass
+            _debug_log_undo(
+                "DocManager.update_active_document.roi_after",
+                step_name=step_name,
+                view_doc_id=id(view_doc),
+                roi=getattr(view_doc, "_roi", None),
+                pundo_len=len(getattr(view_doc, "_pundo", [])),
+                predo_len=len(getattr(view_doc, "_predo", [])),
+            )
             return
 
-        # Full image path (unchanged)
+        # --- Full image branch ------------------------------------------
         if isinstance(view_doc, ImageDocument):
-            view_doc.apply_edit(img, dict(metadata or {}), step_name)
+            view_doc.apply_edit(img, md, step_name)
             try:
                 self.imageRegionUpdated.emit(view_doc, None)
             except Exception:
                 pass
+
+            _debug_log_undo(
+                "DocManager.update_active_document.full_after",
+                step_name=step_name,
+                view_doc_id=id(view_doc),
+                undo_len=len(getattr(view_doc, "_undo", [])),
+                redo_len=len(getattr(view_doc, "_redo", [])),
+                final_shape=getattr(view_doc.image, "shape", None),
+            )
+            # Record operation on the full document
+            if hasattr(view_doc, "record_operation"):
+                try:
+                    view_doc.record_operation(
+                        step_name=step_name,
+                        params=op_params,
+                        roi=None,
+                        source=source_kind,
+                    )
+                    
+                except Exception:
+                    pass
         else:
             raise RuntimeError("Active document is not an image")
+
+    def get_active_operation_log(self) -> list[dict]:
+        """
+        Return the operation log for the *currently active* document-like
+        (full image or ROI-preview). Empty list if none.
+        """
+        doc = self.get_active_document()
+        if doc is None:
+            return []
+        get_log = getattr(doc, "get_operation_log", None)
+        if callable(get_log):
+            try:
+                return get_log()
+            except Exception:
+                return []
+        return []
+
 
 
     # Back-compat/aliases so tools can call any of these:

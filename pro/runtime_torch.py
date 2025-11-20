@@ -356,6 +356,93 @@ _TORCH_VERSION_LADDER: dict[tuple[int, int], list[str]] = {
 # Torch installation with robust fallbacks
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _check_cuda_in_venv(venv_python: Path, status_cb=print) -> tuple[bool, str | None, str | None]:
+    """
+    Run a small script *inside the runtime venv* to see if CUDA is usable.
+
+    Returns (ok, cuda_tag, error_msg)
+      • ok       – True if torch imports and torch.cuda.is_available() and a small
+                   matmul on device='cuda' succeeds.
+      • cuda_tag – value of torch.version.cuda (if available)
+      • error_msg – text from any exception or stderr, for logging.
+    """
+    code = r"""
+import json, sys
+try:
+    import torch
+    info = {
+        "cuda_tag": getattr(getattr(torch, "version", None), "cuda", None),
+        "has_cuda": bool(getattr(torch, "cuda", None) and torch.cuda.is_available()),
+        "err": None,
+    }
+    if info["has_cuda"]:
+        # force some real GPU work
+        x = torch.rand((256, 256), device="cuda", dtype=torch.float32)
+        y = torch.rand((256, 256), device="cuda", dtype=torch.float32)
+        _ = (x @ y).sum().item()
+    print(json.dumps(info))
+except Exception as e:
+    print(json.dumps({"cuda_tag": None, "has_cuda": False, "err": str(e)}))
+    sys.exit(1)
+"""
+    r = subprocess.run(
+        [str(venv_python), "-c", code],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+
+    out = (r.stdout or "").strip()
+    # take last line in case pip noise gets mixed in
+    last = out.splitlines()[-1] if out else ""
+    try:
+        data = json.loads(last) if last else {}
+    except Exception as e:
+        msg = f"Failed to parse CUDA check output: {e}\nRaw output:\n{out}"
+        try:
+            status_cb(msg)
+        except Exception:
+            pass
+        return False, None, msg
+
+    ok = bool(data.get("has_cuda"))
+    tag = data.get("cuda_tag")
+    err = data.get("err")
+    return ok, tag, err
+
+def _check_xpu_in_venv(venv_python: Path, status_cb=print) -> tuple[bool, str | None]:
+    code = r"""
+import json, sys
+try:
+    import torch
+    has_xpu = hasattr(torch, "xpu") and torch.xpu.is_available()
+    if has_xpu:
+        x = torch.rand((128, 128), device="xpu")
+        y = torch.rand((128, 128), device="xpu")
+        _ = (x @ y).sum().item()
+    print(json.dumps({"has_xpu": bool(has_xpu)}))
+except Exception as e:
+    print(json.dumps({"has_xpu": False, "err": str(e)}))
+    sys.exit(1)
+"""
+    r = subprocess.run(
+        [str(venv_python), "-c", code],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    out = (r.stdout or "").strip()
+    last = out.splitlines()[-1] if out else ""
+    try:
+        data = json.loads(last) if last else {}
+    except Exception as e:
+        msg = f"Failed to parse XPU check output: {e}\nRaw output:\n{out}"
+        try: status_cb(msg)
+        except Exception: pass
+        return False, msg
+    return bool(data.get("has_xpu")), data.get("err")
+
+
 def _install_torch(venv_python: Path, prefer_cuda: bool, prefer_xpu: bool, status_cb=print):
     """
     Install torch into the per-user venv with best-effort backend detection:
@@ -440,39 +527,19 @@ def _install_torch(venv_python: Path, prefer_cuda: bool, prefer_xpu: bool, statu
         for tag, url in cuda_indices:
             status_cb(f"Trying PyTorch CUDA wheels: {tag} …")
             if _try_series(url, ladder):
-                # Verify the wheel is actually CUDA-enabled; otherwise uninstall and try next.
-                try:
-                    import importlib
-                    importlib.invalidate_caches()
-                    torch = importlib.import_module("torch")
-
-                    # Must expose a CUDA runtime and report a CUDA version.
-                    cuda_tag = getattr(getattr(torch, "version", None), "cuda", None)
-                    if (not cuda_tag) or (not torch.cuda.is_available()):
-                        status_cb(
-                            f"Installed from {tag} but got CPU-only torch "
-                            f"(torch.version.cuda={cuda_tag}, cuda.is_available={torch.cuda.is_available()}). "
-                            "Uninstalling and trying next…"
-                        )
-                        _pip_ok(["uninstall", "-y", "torch", "torchvision", "torchaudio"])
-                        continue
-
-                    # Quick fp32 op to force GPU code path
-                    try:
-                        x = torch.rand((256, 256), device="cuda", dtype=torch.float32)
-                        y = torch.rand((256, 256), device="cuda", dtype=torch.float32)
-                        _ = (x @ y).sum().item()
-                    except Exception as e:
-                        status_cb(f"CUDA runtime test failed for {tag}: {e}. Uninstalling and trying next…")
-                        _pip_ok(["uninstall", "-y", "torch", "torchvision", "torchaudio"])
-                        continue
-
-                    status_cb(f"Installed PyTorch CUDA ({tag}; torch.version.cuda={cuda_tag}).")
-                    return
-                except Exception as e:
-                    status_cb(f"CUDA verification failed after {tag}: {e}. Uninstalling and trying next…")
+                # Verify the wheel just installed in the *runtime venv*, not the GUI env.
+                ok, cuda_tag, err = _check_cuda_in_venv(venv_python, status_cb=status_cb)
+                if not ok:
+                    status_cb(
+                        f"Installed from {tag} but CUDA is not available in the runtime venv "
+                        f"(torch.version.cuda={cuda_tag!r}, err={err!r}). "
+                        "Uninstalling and trying next…"
+                    )
                     _pip_ok(["uninstall", "-y", "torch", "torchvision", "torchaudio"])
                     continue
+
+                status_cb(f"Installed PyTorch CUDA ({tag}; torch.version.cuda={cuda_tag}).")
+                return
 
             status_cb(f"No matching CUDA {tag} wheel for this Python/OS. Trying next…")
 
@@ -481,34 +548,15 @@ def _install_torch(venv_python: Path, prefer_cuda: bool, prefer_xpu: bool, statu
     if try_xpu:
         status_cb("Trying PyTorch Intel XPU wheels…")
         if _try_series(INTEL_XPU_INDEX, ladder):
-            try:
-                import importlib
-                importlib.invalidate_caches()
-                torch = importlib.import_module("torch")
-
-                if not hasattr(torch, "xpu"):
-                    status_cb("Installed from Intel index but torch.xpu is missing. Uninstalling and falling back…")
-                    _pip_ok(["uninstall", "-y", "torch", "torchvision", "torchaudio"])
-                else:
-                    # Availability + quick on-device op
-                    if torch.xpu.is_available():
-                        try:
-                            x = torch.rand((128, 128), device="xpu")
-                            y = torch.rand((128, 128), device="xpu")
-                            _ = (x @ y).sum().item()
-                        except Exception as e:
-                            status_cb(f"XPU runtime test failed: {e}. Uninstalling and falling back…")
-                            _pip_ok(["uninstall", "-y", "torch", "torchvision", "torchaudio"])
-                        else:
-                            status_cb("Installed PyTorch Intel XPU (torch.xpu available).")
-                            return
-                    else:
-                        status_cb("torch.xpu not available on this system (driver/runtime?). Uninstalling and falling back…")
-                        _pip_ok(["uninstall", "-y", "torch", "torchvision", "torchaudio"])
-            except Exception as e:
-                status_cb(f"XPU verification failed: {e}.")
+            ok, err = _check_xpu_in_venv(venv_python, status_cb=status_cb)
+            if ok:
+                status_cb("Installed PyTorch Intel XPU (torch.xpu available).")
+                return
+            else:
+                status_cb(f"XPU runtime test failed in venv: {err!r}. Uninstalling and falling back…")
+                _pip_ok(["uninstall", "-y", "torch", "torchvision", "torchaudio"])
         else:
-            status_cb("No matching Intel XPU wheel for this Python/OS.")    
+            status_cb("No matching Intel XPU wheel for this Python/OS.")
     # CPU path
     status_cb("Installing PyTorch (CPU)…")
     if _try_series(None, ladder):

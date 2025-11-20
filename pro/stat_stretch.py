@@ -27,6 +27,7 @@ class StatisticalStretchDialog(QDialog):
         self._pan_last = None  # QPoint
         self._preview_scale = 1.0       # NEW: zoom factor for preview
         self._preview_qimg = None       # NEW: store unscaled QImage for clean scaling
+        self._suppress_replay_record = False
 
         # --- Controls ---
         self.spin_target = QDoubleSpinBox()
@@ -339,47 +340,88 @@ class StatisticalStretchDialog(QDialog):
                 QMessageBox.information(self, "No image", "No image is loaded in the active document.")
                 return
 
-            # Preserve mono vs color shape (same logic you had)
+            # Preserve mono vs color shape
             if out.ndim == 3 and out.shape[2] == 3 and (self.doc.image.ndim == 2 or self.doc.image.shape[-1] == 1):
                 out = out[..., 0]
 
-            # Build a nice step name
+            # --- Gather current UI state ------------------------------------
             target = float(self.spin_target.value())
             linked = bool(self.chk_linked.isChecked())
             normalize = bool(self.chk_normalize.isChecked())
-            apply_curves = getattr(self, "chk_curves", None) and self.chk_curves.isChecked()
-            curves_boost = getattr(self, "sld_curves", None) and (self.sld_curves.value() / 100.0)
+            apply_curves = bool(getattr(self, "chk_curves", None) and self.chk_curves.isChecked())
+            curves_boost = 0.0
+            if getattr(self, "sld_curves", None) is not None:
+                curves_boost = float(self.sld_curves.value()) / 100.0
+
+            # Build human-readable step name
             parts = [f"target={target:.2f}", "linked" if linked else "unlinked"]
-            if normalize: parts.append("norm")
-            if apply_curves: parts.append(f"curves={curves_boost:.2f}")
+            if normalize:
+                parts.append("norm")
+            if apply_curves:
+                parts.append(f"curves={curves_boost:.2f}")
             if self._active_mask_array() is not None:
                 parts.append("masked")
             step_name = f"Statistical Stretch ({', '.join(parts)})"
 
-            # ✅ Push to undo & apply
+            # Apply to document
             self.doc.apply_edit(out.astype(np.float32, copy=False), step_name=step_name)
 
-            # Turn off display stretch to avoid double-stretch
+            # Turn off display stretch on the active view, if any
             mw = self.parent()
             if hasattr(mw, "mdi") and mw.mdi.activeSubWindow():
                 view = mw.mdi.activeSubWindow().widget()
                 if getattr(view, "autostretch_enabled", False):
                     view.set_autostretch(False)
 
+            # Existing logging, now using the same values as above
             if hasattr(mw, "_log"):
-                tgt = float(self.spin_target.value())
-                linked = bool(self.chk_linked.isChecked())
-                norm = bool(self.chk_normalize.isChecked())
-                curves_on = getattr(self, "chk_curves", None) and self.chk_curves.isChecked()
-                boost = getattr(self, "slider_boost", None)
-                boost_val = (boost.value()/100.0) if boost else 0.0
-                mw._log(f"Applied Statistical Stretch (target={tgt:.3f}, linked={linked}, normalize={norm}, "
-                        f"curves={'ON' if curves_on else 'OFF'}{', boost='+str(round(boost_val,2)) if curves_on else ''}, "
-                        f"mask={'ON' if self._active_mask_array() is not None else 'OFF'})")
+                curves_on = apply_curves
+                boost_val = curves_boost if curves_on else 0.0
+                mw._log(
+                    "Applied Statistical Stretch "
+                    f"(target={target:.3f}, linked={linked}, normalize={normalize}, "
+                    f"curves={'ON' if curves_on else 'OFF'}"
+                    f"{', boost='+str(round(boost_val,2)) if curves_on else ''}, "
+                    f"mask={'ON' if self._active_mask_array() is not None else 'OFF'})"
+                )
 
+            # --- Build preset for headless replay ---------------------------
+            # --- Build preset for headless replay ---------------------------
+            preset = {
+                "target_median": target,
+                "linked": linked,
+                "normalize": normalize,
+                "apply_curves": apply_curves,
+                "curves_boost": curves_boost,
+            }
 
-            # Close the dialog after applying
+            # ✅ Remember this as the last headless-style command
+            #    (unless we are in a headless/suppressed call)
+            suppress = bool(getattr(self, "_suppress_replay_record", False))
+            if not suppress:
+                from PyQt6.QtWidgets import QMainWindow
+                try:
+                    mw2 = self.parent()
+                    while mw2 is not None and not isinstance(mw2, QMainWindow):
+                        mw2 = mw2.parent()
+
+                    if mw2 is not None and hasattr(mw2, "remember_last_headless_command"):
+                        mw2.remember_last_headless_command(
+                            command_id="stat_stretch",
+                            preset=preset,
+                            description="Statistical Stretch",
+                        )
+                        print(f"Remembered Statistical Stretch last headless command: {preset}")
+                    else:
+                        print("No main window with remember_last_headless_command; cannot store stat_stretch preset")
+                except Exception as e:
+                    print(f"Failed to remember Statistical Stretch last headless command: {e}")
+            else:
+                # optional debug
+                print("Statistical Stretch: replay recording suppressed for this apply()")
+
             self.accept()
+
 
         except Exception as e:
             QMessageBox.critical(self, "Apply failed", str(e))

@@ -55,6 +55,14 @@ class WaveScaleDSEPresetDialog(QDialog):
 # ─────────────────────────────────────────────────────────────────────────────
 def run_wavescalede_via_preset(main, preset: dict | None = None, *, target_doc=None):
     p = dict(preset or {})
+    try:
+        payload = {
+            "command_id": "wavescale_dark_enhance",
+            "preset": dict(p),
+        }
+        setattr(main, "_last_headless_command", payload)
+    except Exception:
+        pass    
     # resolve target doc
     doc = target_doc
     if doc is None:

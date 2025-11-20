@@ -205,6 +205,13 @@ def apply_convo_via_preset(main_window, doc, preset: dict):
     if dm is None or doc is None or getattr(doc, "image", None) is None:
         return
 
+    # ⚠️ You can keep or drop this; it no longer matters for the apply step.
+    try:
+        if hasattr(dm, "set_active_document"):
+            dm.set_active_document(doc)
+    except Exception:
+        pass
+
     img = np.asarray(doc.image).astype(np.float32, copy=False)
     p = dict(preset or {})
     op = p.get("op", "convolution")
@@ -319,4 +326,24 @@ def apply_convo_via_preset(main_window, doc, preset: dict):
 
     meta = dict(getattr(doc, "metadata", {}) or {})
     meta["source"] = "ConvoDeconvo"
-    dm.update_active_document(out, metadata=meta, step_name="Convo/Deconvo (preset)")
+
+    try:
+        if hasattr(doc, "apply_edit"):
+            # Let Document handle full vs ROI, history, etc.
+            doc.apply_edit(
+                out.astype(np.float32, copy=False),
+                metadata=meta,
+                step_name="Convo/Deconvo (preset)",
+            )
+        else:
+            # Fallback for legacy paths
+            if hasattr(dm, "set_active_document"):
+                dm.set_active_document(doc)
+            dm.update_active_document(
+                out.astype(np.float32, copy=False),
+                metadata=meta,
+                step_name="Convo/Deconvo (preset)",
+            )
+    except Exception:
+        # Re-raise so replay_last_action_on_base can show the warning
+        raise

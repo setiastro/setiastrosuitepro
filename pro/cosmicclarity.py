@@ -443,9 +443,36 @@ class CosmicClarityDialogPro(QDialog):
 
     # ----- Execution -----
     def _run_main(self):
-        if not self._validate_root(): return
+        if not self._validate_root():
+            return
+
+        # --- Register this run as "last action" for replay ---
+        try:
+            main = self.parent_ref or self.parent()
+            if main is not None:
+                preset = self.build_preset_from_ui()
+                payload = {
+                    "cid": "cosmic_clarity",
+                    "preset": preset,
+                    # optional label for your UI if you use it
+                    "label": f"Cosmic Clarity ({preset.get('mode', 'sharpen')})",
+                }
+
+                # Preferred: use the same helper you used for CLAHE / Morphology / PixelMath
+                if hasattr(main, "_set_last_headless_command"):
+                    main._set_last_headless_command(payload)
+                else:
+                    # Fallback: write directly if you're using a bare _last_headless_command dict
+                    setattr(main, "_last_headless_command", payload)
+                    if hasattr(main, "_update_replay_button"):
+                        main._update_replay_button()
+        except Exception:
+            # Never let replay bookkeeping kill the effect itself
+            pass
+
         _ensure_dirs(self.cosmic_root)
         _purge_cc_io(self.cosmic_root, clear_input=True, clear_output=False)
+
 
         # Determine queue of operations
         mode_idx = self.cmb_mode.currentIndex()
@@ -808,6 +835,49 @@ class CosmicClarityDialogPro(QDialog):
         self.chk_dn_sep.setChecked(bool(p.get("separate_channels", False)))
         # Super-Res
         self.cmb_scale.setCurrentText(str(int(p.get("scale",2))))
+
+    def build_preset_from_ui(self) -> dict:
+        """Snapshot current UI state into a preset dict usable by headless runner / replay."""
+        idx = self.cmb_mode.currentIndex()  # 0 Sharpen, 1 Denoise, 2 Both, 3 Super-Res
+        mode = {0: "sharpen", 1: "denoise", 2: "both", 3: "superres"}.get(idx, "sharpen")
+
+        preset: dict = {
+            "mode": mode,
+            "gpu": (self.cmb_gpu.currentIndex() == 0),
+            "create_new_view": (self.cmb_target.currentIndex() == 1),
+        }
+
+        # Sharpen / Both block
+        if mode in ("sharpen", "both"):
+            preset.update({
+                "sharpening_mode": self.cmb_sh_mode.currentText(),
+                "auto_psf": self.chk_auto_psf.isChecked(),
+                "nonstellar_psf": self.sld_psf.value() / 10.0,         # slider 10–80 → 1.0–8.0
+                "stellar_amount": self.sld_st_amt.value() / 100.0,     # 0–100 → 0–1
+                "nonstellar_amount": self.sld_nst_amt.value() / 100.0, # 0–100 → 0–1
+                "sharpen_channels_separately": self.chk_sh_sep.isChecked(),
+            })
+
+        # Denoise / Both block
+        if mode in ("denoise", "both"):
+            preset.update({
+                "denoise_luma": self.sld_dn_lum.value() / 100.0,
+                "denoise_color": self.sld_dn_col.value() / 100.0,
+                "denoise_mode": self.cmb_dn_mode.currentText(),
+                "separate_channels": self.chk_dn_sep.isChecked(),
+            })
+
+        # Super-res
+        if mode == "superres":
+            try:
+                scale_txt = self.cmb_scale.currentText()
+                # can be "2x" in the main dialog or just "2" in the preset dialog
+                scale_txt = scale_txt.replace("x", "")
+                preset["scale"] = int(scale_txt)
+            except Exception:
+                preset["scale"] = 2
+
+        return preset
 
 
 

@@ -581,6 +581,7 @@ class AberrationAIDialog(QDialog):
                     "overlap": int(self.spin_overlap.value()),
                     "provider": (self.cmb_provider.currentText()
                                 if not self.chk_auto.isChecked() else "auto"),
+                    "border_px": BORDER_PX,
                 }
             }
         }
@@ -605,6 +606,42 @@ class AberrationAIDialog(QDialog):
             self._log(f"❌ Aberration AI apply failed: {e}")
             QMessageBox.critical(self, "Apply Error", f"Failed to apply result:\n{e}")
             return
+
+        # 3.5) Register this as last_headless_command for Replay Last Action  ← NEW
+        try:
+            main = self.parent()
+            if main is not None:
+                auto_gpu = bool(self.chk_auto.isChecked())
+                preset = {
+                    "model": self._model_path,
+                    "patch": int(self.spin_patch.value()),
+                    "overlap": int(self.spin_overlap.value()),
+                    "border_px": int(BORDER_PX),
+                    "auto_gpu": auto_gpu,
+                }
+                if not auto_gpu:
+                    preset["provider"] = self.cmb_provider.currentText() or "CPUExecutionProvider"
+
+                payload = {
+                    "command_id": "aberrationai",
+                    "preset": preset,
+                }
+                setattr(main, "_last_headless_command", payload)
+
+                # optional log
+                try:
+                    if hasattr(main, "_log"):
+                        prov = preset.get("provider", "auto" if auto_gpu else "CPUExecutionProvider")
+                        main._log(
+                            f"[Replay] Registered Aberration AI as last action "
+                            f"(patch={preset['patch']}, overlap={preset['overlap']}, "
+                            f"border={preset['border_px']}px, provider={prov})"
+                        )
+                except Exception:
+                    pass
+        except Exception:
+            # never break the tool if replay wiring fails
+            pass
 
         # 4) Refresh the active view
         mw = self.parent()
@@ -635,7 +672,6 @@ class AberrationAIDialog(QDialog):
             f"patch={int(self.spin_patch.value())}, overlap={int(self.spin_overlap.value())}, "
             f"border={BORDER_PX}px, time={dt:.2f}s)"
         )
-
 
         self.progress.setValue(100)
         self.accept()

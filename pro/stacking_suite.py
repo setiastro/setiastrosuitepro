@@ -20,6 +20,12 @@ from PyQt6.QtWidgets import (QDialog, QWidget, QLabel, QPushButton, QVBoxLayout,
                              QFormLayout, QDialogButtonBox, QToolBar, QToolButton, QFileDialog, QTabWidget, QAbstractItemView, QSpinBox, QDoubleSpinBox, QGroupBox,QRadioButton,
                              QSizePolicy, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QApplication, QScrollArea, QTextEdit, QMenu, QPlainTextEdit, QGraphicsEllipseItem,
                              QMessageBox, QSlider, QCheckBox, QInputDialog, QComboBox)
+
+
+
+
+
+                            
 from datetime import datetime, time, timedelta, timezone
 # keep: import time
 from datetime import datetime as dt_datetime, time as dt_time, timedelta as dt_timedelta, timezone as dt_timezone
@@ -3291,6 +3297,197 @@ def _native(p: str | Path) -> str:
     # for UI display only (pretty backslashes on Windows)
     return os.path.normpath(os.fspath(p))
 
+
+
+RAW_EXTS = ('.cr2', '.cr3', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2', '.pef')
+
+
+def _is_raw_file(path: str) -> bool:
+    return path.lower().endswith(RAW_EXTS)
+
+
+def _parse_fraction_or_float(val) -> float | None:
+    """
+    Accepts things like '1/125', '0.008', 8, or exifread Ratio objects.
+    Returns float seconds or None.
+    """
+    s = str(val).strip()
+    if not s:
+        return None
+    try:
+        # exifread often gives a single Ratio or list of one Ratio
+        if hasattr(val, "num") and hasattr(val, "den"):
+            return float(val.num) / float(val.den)
+        if isinstance(val, (list, tuple)) and val and hasattr(val[0], "num"):
+            r = val[0]
+            return float(r.num) / float(r.den)
+
+        if '/' in s:
+            num, den = s.split('/', 1)
+            return float(num) / float(den)
+        return float(s)
+    except Exception:
+        return None
+
+
+def _parse_exif_datetime(dt_str: str) -> str | None:
+    """
+    EXIF typically: 'YYYY:MM:DD HH:MM:SS'.
+    Returns ISO-like 'YYYY-MM-DDTHH:MM:SS' or None.
+    """
+    s = str(dt_str).strip()
+    if not s:
+        return None
+
+    # exifread sometimes formats as "YYYY:MM:DD HH:MM:SS"
+    try:
+        date_part, time_part = s.split(' ', 1)
+        y, m, d = date_part.split(':', 2)
+        return f"{int(y):04d}-{int(m):02d}-{int(d):02d}T{time_part}"
+    except Exception:
+        return None
+
+
+def _ensure_minimal_header(header, file_path: str) -> fits.Header:
+    """
+    Guarantee we have a FITS Header. For non-FITS sources (TIFF/PNG/JPG/etc),
+    synthesize a basic header and fill DATE-OBS from file mtime if missing.
+    """
+    if header is None:
+        header = fits.Header()
+        header["SIMPLE"]  = True
+        header["BITPIX"]  = 16
+        header["CREATOR"] = "SetiAstroSuite"
+
+    # Try to provide DATE-OBS if not present
+    if "DATE-OBS" not in header:
+        try:
+            ts = os.path.getmtime(file_path)
+            dt = datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc)
+            header["DATE-OBS"] = (
+                dt.isoformat(timespec="seconds"),
+                "File modification time (UTC) used as DATE-OBS"
+            )
+        except Exception:
+            pass
+
+    return header
+
+def _try_load_raw_with_rawpy(filename, allow_thumb_preview=True, debug_thumb=False):
+    import rawpy
+    from astropy.io import fits
+
+    raw = rawpy.imread(filename)
+    img = raw.postprocess(output_bps=16, no_auto_bright=True, gamma=(1,1))
+
+    hdr = fits.Header()
+    m = raw.metadata
+
+    if m.exposure is not None:
+        hdr['EXPTIME'] = (float(m.exposure), "Exposure time (s) from RAW metadata")
+    if m.iso is not None:
+        hdr['ISO'] = (int(m.iso), "ISO from RAW metadata")
+    if m.aperture is not None:
+        hdr['FNUMBER'] = (float(m.aperture), "F-number from RAW metadata")
+    if m.focal_len is not None:
+        hdr['FOCALLEN'] = (float(m.focal_len), "Focal length (mm) from RAW metadata")
+    if m.make or m.model:
+        cam = f"{m.make or ''} {m.model or ''}".strip()
+        if cam:
+            hdr['INSTRUME'] = cam
+            hdr['CAMERA']   = cam
+
+    # timestamp is usually epoch seconds
+    if m.timestamp:
+        dt = datetime.datetime.fromtimestamp(m.timestamp, tz=datetime.timezone.utc)
+        hdr['DATE-OBS'] = (dt.isoformat(timespec='seconds'), "RAW timestamp (UTC)")
+
+    bit_depth = "16-bit"
+    is_mono = False
+
+    return img.astype(np.float32) / 65535.0, hdr, bit_depth, is_mono
+
+
+def _enrich_header_from_exif(header: fits.Header, file_path: str) -> fits.Header:
+    """
+    Merge EXIF metadata from a RAW file into an existing header without
+    blowing away other keys. Only fills keys that are missing.
+    """
+    header = header.copy() if header is not None else fits.Header()
+    header.setdefault("SIMPLE", True)
+    header.setdefault("BITPIX", 16)
+    header.setdefault("CREATOR", "SetiAstroSuite")
+
+    try:
+        with open(file_path, "rb") as f:
+            tags = exifread.process_file(f, details=False)
+    except Exception:
+        # Can't read EXIF → just return what we have
+        return header
+
+    def get_tag(*names):
+        for n in names:
+            t = tags.get(n)
+            if t is not None:
+                return t
+        return None
+
+    # Exposure time
+    exptime_tag = get_tag("EXIF ExposureTime", "EXIF ShutterSpeedValue")
+    if exptime_tag and "EXPTIME" not in header:
+        val = _parse_fraction_or_float(exptime_tag.values)
+        if val is not None:
+            header["EXPTIME"] = (float(val), "Exposure time (s) from EXIF")
+
+    # ISO
+    iso_tag = get_tag("EXIF ISOSpeedRatings", "EXIF PhotographicSensitivity")
+    if iso_tag and "ISO" not in header:
+        try:
+            header["ISO"] = (int(str(iso_tag.values)), "ISO from EXIF")
+        except Exception:
+            header["ISO"] = (str(iso_tag.values), "ISO from EXIF")
+
+    # Date/time
+    date_tag = get_tag(
+        "EXIF DateTimeOriginal",
+        "EXIF DateTimeDigitized",
+        "Image DateTime",
+    )
+    if date_tag and "DATE-OBS" not in header:
+        dt = _parse_exif_datetime(date_tag.values)
+        if dt:
+            header["DATE-OBS"] = (dt, "Start of exposure (camera local time)")
+
+    # Aperture
+    fnum_tag = get_tag("EXIF FNumber")
+    if fnum_tag and "FNUMBER" not in header:
+        val = _parse_fraction_or_float(fnum_tag.values)
+        if val is not None:
+            header["FNUMBER"] = (float(val), "F-number (aperture)")
+
+    # Focal length
+    fl_tag = get_tag("EXIF FocalLength")
+    if fl_tag and "FOCALLEN" not in header:
+        val = _parse_fraction_or_float(fl_tag.values)
+        if val is not None:
+            header["FOCALLEN"] = (float(val), "Focal length (mm)")
+
+    # Camera make/model
+    make_tag  = get_tag("Image Make")
+    model_tag = get_tag("Image Model")
+    cam_parts = []
+    if make_tag:
+        cam_parts.append(str(make_tag.values).strip())
+    if model_tag:
+        cam_parts.append(str(model_tag.values).strip())
+    camera_str = " ".join(p for p in cam_parts if p)
+    if camera_str:
+        header.setdefault("INSTRUME", camera_str)  # instrument / camera
+        header.setdefault("CAMERA", camera_str)    # custom keyword
+
+    return header
+
+
 class StackingSuiteDialog(QDialog):
     requestRelaunch = pyqtSignal(str, str)  # old_dir, new_dir
     status_signal = pyqtSignal(str)
@@ -3842,15 +4039,8 @@ class StackingSuiteDialog(QDialog):
                 self.update_status(f"Failed to load {os.path.basename(file_path)}")
                 continue
 
-            # 🔹 If the file has no header (TIFF, PNG, JPG, etc.), create a minimal one
-            if header is None:
-                header = fits.Header()
-                header["SIMPLE"]   = True
-                header["BITPIX"]   = 16  # Or 16, depending on your preference
-                header["CREATOR"]  = "SetiAstroSuite"
-                header["IMAGETYP"] = "UNKNOWN"  # We'll set it properly below
-                header["EXPTIME"]  = "Unknown"  # Just a placeholder
-                # You can add more default keywords as needed
+            # 🔹 Always ensure we have a basic FITS header for non-FITS sources
+            header = _ensure_minimal_header(header, file_path)
 
             # Debayer if needed:
             image = self.debayer_image(image, file_path, header)
@@ -3870,72 +4060,36 @@ class StackingSuiteDialog(QDialog):
                 header['NAXIS2'] = image.shape[0]
 
             # If it's a RAW format, definitely treat as color
-            if file_path.lower().endswith(('.cr2', '.cr3', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2', '.pef')):
+            if _is_raw_file(file_path):
                 is_mono = False
-
-                # Try extracting EXIF metadata
-                try:
-                    with open(file_path, 'rb') as f:
-                        tags = exifread.process_file(f, details=False)
-
-                    exptime_tag = tags.get("EXIF ExposureTime")  # e.g. "1/125"
-                    iso_tag = tags.get("EXIF ISOSpeedRatings")
-                    date_obs_tag = tags.get("EXIF DateTimeOriginal")
-
-                    # Create or replace with a fresh header, but keep some existing fields if desired
-                    new_header = fits.Header()
-                    new_header['SIMPLE'] = True
-                    new_header['BITPIX'] = 16
-                    new_header['IMAGETYP'] = header.get('IMAGETYP', "UNKNOWN")
-
-                    # Attempt to parse exptime. If fraction or numeric fails, store 'Unknown'.
-                    if exptime_tag:
-                        exptime_str = str(exptime_tag.values)  # or exptime_tag.printable
-                        # Attempt fraction or float
-                        try:
-                            if '/' in exptime_str:  
-                                # e.g. "1/125"
-                                top, bot = exptime_str.split('/', 1)
-                                fexp = float(top) / float(bot)
-                                new_header['EXPTIME'] = (fexp, "Exposure Time in seconds")
-                            else:
-                                # e.g. "0.008" or "8"
-                                fexp = float(exptime_str)
-                                new_header['EXPTIME'] = (fexp, "Exposure Time in seconds")
-                        except (ValueError, ZeroDivisionError):
-                            new_header['EXPTIME'] = 'Unknown'
-                    # If no exptime_tag, set Unknown
-                    else:
-                        new_header['EXPTIME'] = 'Unknown'
-
-                    if iso_tag:
-                        new_header['ISO'] = str(iso_tag.values)
-                    if date_obs_tag:
-                        new_header['DATE-OBS'] = str(date_obs_tag.values)
-
-                    # Replace old header with new
-                    header = new_header
-
-                except Exception as e:
-                    # If exif extraction fails for any reason, we just keep the existing header
-                    # but ensure we set EXPTIME if missing
-                    self.update_status(f"Warning: Failed to extract RAW header from {os.path.basename(file_path)}: {e}")
+                header = _enrich_header_from_exif(header, file_path)
 
             header['IMAGETYP'] = imagetyp_user
-            header['FILTER'] = filter_user
+            header['FILTER']   = filter_user
 
-            # For exptime_user, try to parse float or fraction
-            try:
-                if '/' in exptime_user:
-                    top, bot = exptime_user.split('/', 1)
-                    exptime_val = float(top) / float(bot)
-                    header['EXPTIME'] = (exptime_val, "User-specified exposure (s)")
-                else:
-                    exptime_val = float(exptime_user)
-                    header['EXPTIME'] = (exptime_val, "User-specified exposure (s)")
-            except (ValueError, ZeroDivisionError):
-                # If user typed "Unknown" or something non-numeric
-                header['EXPTIME'] = exptime_user
+            # Normalize the batch EXPTIME input once, outside the loop
+            user_exptime_str = (exptime_user or "").strip()
+
+            # Treat certain values as "do not override"
+            sentinel_values = {"", "unknown", "auto", "camera", "keep"}
+
+            if user_exptime_str.lower() not in sentinel_values:
+                # User is explicitly forcing an exposure value → override
+                try:
+                    if "/" in user_exptime_str:
+                        top, bot = user_exptime_str.split("/", 1)
+                        exptime_val = float(top) / float(bot)
+                    else:
+                        exptime_val = float(user_exptime_str)
+                    header["EXPTIME"] = (exptime_val, "User-specified exposure (s)")
+                except (ValueError, ZeroDivisionError):
+                    # If they type something weird but non-sentinel, store it verbatim
+                    header["EXPTIME"] = (user_exptime_str, "User-specified exposure")
+
+            # -- Ensure EXPTIME is defined at all --
+            if 'EXPTIME' not in header:
+                header['EXPTIME'] = ('Unknown', "No exposure info available")
+
 
             # Remove any existing NAXIS keywords
             for key in ["NAXIS", "NAXIS1", "NAXIS2", "NAXIS3"]:
@@ -4634,14 +4788,26 @@ class StackingSuiteDialog(QDialog):
 
         # restore from settings (default "normal")
         _saved_eng = (self.settings.value("stacking/mfdeconv/engine", "normal", type=str) or "normal").lower()
-        if   _saved_eng == "cudnn": self.mf_eng_cudnn_rb.setChecked(True)
-        elif _saved_eng == "sport":      self.mf_eng_sport_rb.setChecked(True)
-        else:                            self.mf_eng_normal_rb.setChecked(True)
+        if   _saved_eng == "cudnn":
+            self.mf_eng_cudnn_rb.setChecked(True)
+            # If user previously chose cuDNN-free, force HW accel off
+            self.hw_accel_cb.setChecked(False)
+        elif _saved_eng == "sport":
+            self.mf_eng_sport_rb.setChecked(True)
+        else:
+            self.mf_eng_normal_rb.setChecked(True)
 
         eng_row.addWidget(self.mf_eng_normal_rb)
         eng_row.addWidget(self.mf_eng_cudnn_rb)
         eng_row.addWidget(self.mf_eng_sport_rb)
         fl_perf.addRow(eng_box)
+
+        # When user selects "Normal (cuDNN-free)", automatically turn off HW accel
+        def _on_mfdeconv_engine_changed(checked: bool):
+            if checked and self.mf_eng_cudnn_rb.isChecked():
+                self.hw_accel_cb.setChecked(False)
+
+        self.mf_eng_cudnn_rb.toggled.connect(_on_mfdeconv_engine_changed)
 
         # (Optional) show detected backend for user feedback
         try:
@@ -4651,8 +4817,6 @@ class StackingSuiteDialog(QDialog):
         fl_perf.addRow("Detected backend:", QLabel(backend_str))
 
         left_col.addWidget(gb_perf)
-        left_col.addStretch(1)
-
 
 
         # ========== RIGHT COLUMN ==========
@@ -9065,6 +9229,7 @@ class StackingSuiteDialog(QDialog):
     def create_master_dark(self):
         """Creates master darks with minimal RAM usage by loading frames in small tiles (GPU-accelerated if available),
         with adaptive reducers."""
+        self.update_status(f"Starting Master Dark Creation...")
         if not self.stacking_directory:
             self.select_stacking_directory()
             if not self.stacking_directory:
@@ -9098,6 +9263,15 @@ class StackingSuiteDialog(QDialog):
         master_dir = os.path.join(self.stacking_directory, "Master_Calibration_Files")
         os.makedirs(master_dir, exist_ok=True)
 
+        # Informative status about discovery
+        try:
+            n_groups = sum(1 for k, v in dark_files_by_group.items() if len(v) >= 2)
+            total_files = sum(len(v) for v in dark_files_by_group.values())
+            self.update_status(f"🔎 Discovered {len(dark_files_by_group)} grouped exposures ({n_groups} eligible to stack) — {total_files} files total.")
+        except Exception:
+            pass
+        QApplication.processEvents()
+
         # Pre-count tiles
         chunk_height = self.chunk_height
         chunk_width  = self.chunk_width
@@ -9117,6 +9291,9 @@ class StackingSuiteDialog(QDialog):
         if total_tiles == 0:
             self.update_status("⚠️ No eligible dark groups found to stack.")
             return
+
+        self.update_status(f"🧭 Total tiles to process: {total_tiles} (chunk size {chunk_height}×{chunk_width})")
+        QApplication.processEvents()
 
         # ------- small helpers (local) -------------------------------------------
         def _select_reducer(kind: str, N: int):
@@ -9184,14 +9361,19 @@ class StackingSuiteDialog(QDialog):
                 N = len(file_list)
                 algo_name, params, cpu_label = _select_reducer("dark", N)
                 use_gpu = bool(self._hw_accel_enabled()) and _torch_ok() and _gpu_algo_supported(algo_name)
-                self.update_status(f"⚙️ {'GPU' if use_gpu else 'CPU'} reducer for darks — {algo_name} ({'k=%.1f' % params.get('kappa', 0) if cpu_label=='kappa1' else 'trim=%.0f%%' % (params.get('trim_fraction', 0)*100) if cpu_label=='trimmed' else 'median'})")
+                algo_brief = ('GPU' if use_gpu else 'CPU') + " " + algo_name
+                self.update_status(f"⚙️ {algo_brief} selected for {N} frames ({'channels='+str(channels)})")
                 QApplication.processEvents()
 
                 memmap_path = os.path.join(master_dir, f"temp_dark_{exposure_time}_{image_size}.dat")
+                self.update_status(f"🗂️ Creating temp memmap: {os.path.basename(memmap_path)} (shape={height}×{width}×{channels})")
+                QApplication.processEvents()
                 final_stacked = np.memmap(memmap_path, dtype=np.float32, mode='w+', shape=(height, width, channels))
 
                 tiles = _tile_grid(height, width, chunk_height, chunk_width)
                 total_tiles_group = len(tiles)
+                self.update_status(f"📦 {total_tiles_group} tiles to process for this group.")
+                QApplication.processEvents()
 
                 # double-buffer
                 buf0 = np.empty((N, min(chunk_height, height), min(chunk_width, width), channels),
@@ -9208,6 +9390,7 @@ class StackingSuiteDialog(QDialog):
 
                 for t_idx, (y0, y1, x0, x1) in enumerate(tiles, start=1):
                     if pd.cancelled:
+                        self.update_status("⛔ Master Dark creation cancelled during tile processing.")
                         break
 
                     th, tw = fut.result()
@@ -9254,6 +9437,7 @@ class StackingSuiteDialog(QDialog):
                 tp.shutdown(wait=True)
 
                 if pd.cancelled:
+                    self.update_status("⛔ Master Dark creation cancelled; cleaning up temporary files.")
                     try: del final_stacked
                     except Exception: pass
                     try: os.remove(memmap_path)
@@ -9277,6 +9461,7 @@ class StackingSuiteDialog(QDialog):
                 save_image(master_dark_data, master_dark_path, "fit", "32-bit floating point", master_header, is_mono=(channels==1))
                 self.add_master_dark_to_tree(f"{exposure_time}s ({image_size})", master_dark_path)
                 self.update_status(f"✅ Master Dark saved: {master_dark_path}")
+                QApplication.processEvents()
                 self.assign_best_master_files()
                 self.save_master_paths_to_settings()
 
@@ -9288,7 +9473,6 @@ class StackingSuiteDialog(QDialog):
             try: _free_torch_memory()
             except Exception: pass
             pd.close()
-
             
     def add_master_dark_to_tree(self, exposure_label: str, master_dark_path: str):
         """
@@ -9491,6 +9675,7 @@ class StackingSuiteDialog(QDialog):
     def create_master_flat(self):
         """Creates master flats using per-frame dark subtraction before stacking (GPU-accelerated if available),
         with adaptive reducers and fast per-frame normalization."""
+        self.update_status("Starting Master Flat Creation...")
         if not self.stacking_directory:
             QMessageBox.warning(self, "Error", "Please set the stacking directory first using the wrench button.")
             return
@@ -9533,6 +9718,15 @@ class StackingSuiteDialog(QDialog):
                 flat_files_by_group[matched_group] = []
             flat_files_by_group[matched_group].extend(file_list)
 
+        # Discovery summary
+        try:
+            n_groups = sum(1 for k, v in flat_files_by_group.items() if len(v) >= 2)
+            total_files = sum(len(v) for v in flat_files_by_group.values())
+            self.update_status(f"🔎 Discovered {len(flat_files_by_group)} flat groups ({n_groups} eligible to stack) — {total_files} files total.")
+        except Exception:
+            pass
+        QApplication.processEvents()
+
         # Output folder
         master_dir = os.path.join(self.stacking_directory, "Master_Calibration_Files")
         os.makedirs(master_dir, exist_ok=True)
@@ -9554,6 +9748,9 @@ class StackingSuiteDialog(QDialog):
         if total_tiles == 0:
             self.update_status("⚠️ No eligible flat groups found to stack.")
             return
+
+        self.update_status(f"🧭 Total tiles to process: {total_tiles} (chunk size {self.chunk_height}×{self.chunk_width})")
+        QApplication.processEvents()
 
         # ------- helpers (local to this function) --------------------------------
         def _select_reducer(kind: str, N: int):
@@ -9655,6 +9852,8 @@ class StackingSuiteDialog(QDialog):
             return scales
 
         pd = _Progress(self, "Create Master Flats", total_tiles)
+        self.update_status(f"Progress initialized: {total_tiles} tiles across groups.")
+        QApplication.processEvents()
         try:
             for (exposure_time, image_size, filter_name, session), file_list in flat_files_by_group.items():
                 if len(file_list) < 2:
@@ -9741,10 +9940,14 @@ class StackingSuiteDialog(QDialog):
                 QApplication.processEvents()
 
                 memmap_path = os.path.join(master_dir, f"temp_flat_{session}_{exposure_time}_{image_size}_{filter_name}.dat")
+                self.update_status(f"🗂️ Creating temp memmap: {os.path.basename(memmap_path)} (shape={height}×{width}×{channels})")
+                QApplication.processEvents()
                 final_stacked = np.memmap(memmap_path, dtype=np.float32, mode="w+", shape=(height, width, channels))
 
                 tiles = _tile_grid(height, width, self.chunk_height, self.chunk_width)
                 total_tiles_group = len(tiles)
+                self.update_status(f"📦 {total_tiles_group} tiles to process for this group.")
+                QApplication.processEvents()
 
                 # allocate max-chunk buffers (C-order, float32)
                 buf0 = np.empty((N, min(self.chunk_height, height), min(self.chunk_width, width), channels),
@@ -9758,6 +9961,9 @@ class StackingSuiteDialog(QDialog):
                 (y0, y1, x0, x1) = tiles[0]
                 fut = tp.submit(_read_tile_stack, file_list, y0, y1, x0, x1, channels, buf0)
                 use0 = True
+
+                self.update_status(f"▶️ Starting tile processing for group '{filter_name}' ({exposure_time}s, {image_size})")
+                QApplication.processEvents()
 
                 for t_idx, (y0, y1, x0, x1) in enumerate(tiles, start=1):
                     if pd.cancelled:
@@ -9825,6 +10031,7 @@ class StackingSuiteDialog(QDialog):
                     except Exception: pass
                     try: os.remove(memmap_path)
                     except Exception: pass
+                    self.update_status("⛔ Master Flat creation cancelled; cleaning up temporary files.")
                     break
 
                 master_flat_data = np.asarray(final_stacked, dtype=np.float32)
@@ -9848,6 +10055,7 @@ class StackingSuiteDialog(QDialog):
                 self.master_sizes[master_flat_path] = image_size
                 self.add_master_flat_to_tree(filter_name, master_flat_path)
                 self.update_status(f"✅ Master Flat saved: {master_flat_path}")
+                QApplication.processEvents()
                 self.save_master_paths_to_settings()
 
             self.assign_best_master_dark()
