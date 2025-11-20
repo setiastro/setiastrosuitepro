@@ -4,7 +4,7 @@ add_runtime_to_sys_path(status_cb=lambda *_: None)
 _ban_shadow_torch_paths(status_cb=lambda *_: None)
 _purge_bad_torch_from_sysmodules(status_cb=lambda *_: None)
 
-
+import time, traceback
 # ─────────────────────────────────────────────────────────────
 # Matplotlib bootstrap (for frozen + for prewarmed cache)
 # ─────────────────────────────────────────────────────────────
@@ -199,8 +199,8 @@ from collections import defaultdict
 from PyQt6 import sip
 
 # ----- QtWidgets -----
-from PyQt6.QtWidgets import (QDialog, QApplication, QMainWindow, QWidget, QHBoxLayout, QFileDialog, QMessageBox, QSizePolicy, QToolBar, QPushButton, 
-    QLineEdit, QMenu, QListWidget, QListWidgetItem, QSplashScreen, QDockWidget, QListView, QCompleter, QMdiArea, QMdiArea, QMdiSubWindow, QWidgetAction,
+from PyQt6.QtWidgets import (QDialog, QApplication, QMainWindow, QWidget, QHBoxLayout, QFileDialog, QMessageBox, QSizePolicy, QToolBar, QPushButton, QAbstractItemDelegate,
+    QLineEdit, QMenu, QListWidget, QListWidgetItem, QSplashScreen, QDockWidget, QListView, QCompleter, QMdiArea, QMdiArea, QMdiSubWindow, QWidgetAction, QAbstractItemView,
     QInputDialog, QVBoxLayout, QLabel, QCheckBox, QProgressBar, QProgressDialog, QGraphicsItem, QTabWidget, QTableWidget, QHeaderView, QTableWidgetItem, QToolButton
 )
 
@@ -264,14 +264,16 @@ from pro.morphology import MorphologyDialogPro
 from pro.pixelmath import PixelMathDialogPro
 from pro.signature_insert import SignatureInsertDialogPro
 from pro.cosmicclarity import CosmicClarityDialogPro, CosmicClaritySatelliteDialogPro
-from numba_utils import (
+from legacy.numba_utils import (
     rescale_image_numba,
     flip_horizontal_numba,
     flip_vertical_numba,
     rotate_90_clockwise_numba,
     rotate_90_counterclockwise_numba,
     invert_image_numba,
+    rotate_180_numba,
 )
+from pro.wcs_update import update_wcs_after_crop
 from pro.project_io import ProjectWriter, ProjectReader
 from pro.psf_viewer import PSFViewer
 from pro.plate_solver import plate_solve_doc_inplace, PlateSolverDialog
@@ -306,9 +308,10 @@ from pro.status_log_dock import StatusLogDock
 from pro.log_bus import LogBus
 from imageops.mdi_snap import MdiSnapController
 from pro.fitsmodifier import BatchFITSHeaderDialog
+from pro.autostretch import autostretch as _autostretch
 
 
-VERSION = "1.4.15"
+VERSION = "1.4.16"
 
 
 
@@ -346,6 +349,7 @@ if hasattr(sys, '_MEIPASS'):
     flipvertical_path = os.path.join(sys._MEIPASS, 'flipvertical.png')
     rotateclockwise_path = os.path.join(sys._MEIPASS, 'rotateclockwise.png')
     rotatecounterclockwise_path = os.path.join(sys._MEIPASS, 'rotatecounterclockwise.png')
+    rotate180_path = os.path.join(sys._MEIPASS, 'rotate180.png')
     maskcreate_path = os.path.join(sys._MEIPASS, 'maskcreate.png')
     maskapply_path = os.path.join(sys._MEIPASS, 'maskapply.png')
     maskremove_path = os.path.join(sys._MEIPASS, 'maskremove.png')
@@ -448,6 +452,7 @@ else:
     flipvertical_path = 'flipvertical.png'
     rotateclockwise_path = 'rotateclockwise.png'
     rotatecounterclockwise_path = 'rotatecounterclockwise.png'
+    rotate180_path = 'rotate180.png'
     maskcreate_path = 'maskcreate.png'
     maskapply_path = 'maskapply.png'
     maskremove_path = 'maskremove.png'
@@ -1074,6 +1079,59 @@ class ViewLinkController:
         finally:
             self._broadcasting = False
 
+class ConsoleListWidget(QListWidget):
+    """
+    QListWidget with a context menu:
+      - Select All
+      - Copy Selected
+      - Copy All
+      - Clear
+    No Ctrl+A shortcut so we don't conflict with global bindings.
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        # Use default context menu handling via contextMenuEvent
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.DefaultContextMenu)
+
+    # --- helpers ----------------------------------------------------
+    def _selected_lines(self) -> list[str]:
+        return [itm.text() for itm in self.selectedItems()]
+
+    def _all_lines(self) -> list[str]:
+        return [self.item(i).text() for i in range(self.count())]
+
+    def _copy_text(self, lines: list[str]):
+        if not lines:
+            return
+        text = "\n".join(lines)
+        cb = QApplication.clipboard()
+        cb.setText(text)
+
+    # --- context menu ----------------------------------------------
+    def contextMenuEvent(self, event):
+        menu = QMenu(self)
+
+        act_select_all   = menu.addAction("Select All")
+        act_copy_sel     = menu.addAction("Copy Selected")
+        act_copy_all     = menu.addAction("Copy All")
+        menu.addSeparator()
+        act_clear        = menu.addAction("Clear")
+
+        action = menu.exec(event.globalPos())
+        if action is None:
+            return
+
+        if action is act_select_all:
+            # no Ctrl+A: only via menu
+            self.selectAll()
+        elif action is act_copy_sel:
+            self._copy_text(self._selected_lines())
+        elif action is act_copy_all:
+            self._copy_text(self._all_lines())
+        elif action is act_clear:
+            self.clear()
+
+
 class AstroSuiteProMainWindow(QMainWindow):
     currentDocumentChanged = pyqtSignal(object)  # ImageDocument | None
 
@@ -1097,6 +1155,9 @@ class AstroSuiteProMainWindow(QMainWindow):
         self._last_good_state: QByteArray | None = None
         auto_on = self.settings.value("view/auto_fit_on_resize", False, type=bool)
         self._auto_fit_on_resize = bool(auto_on)
+        self._last_headless_command: dict | None = None
+        self._headless_history: list[dict] = []  # newest at the end
+        self._headless_history_max = 150
 
         # Debounce timer for auto-fit on resize
         self._auto_fit_timer = QTimer(self)
@@ -2272,10 +2333,57 @@ class AstroSuiteProMainWindow(QMainWindow):
 
     def _init_console_dock(self):
         self.console = QListWidget()
+
+        # Allow multi-row selection so Select All actually highlights everything
+        self.console.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+
+        # Right-click context menu
+        self.console.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.console.customContextMenuRequested.connect(self._on_console_context_menu)
+
         dock = QDockWidget("Console / Status", self)
         dock.setWidget(self.console)
         dock.setObjectName("ConsoleDock")
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, dock)
+
+    def _on_console_context_menu(self, pos):
+        lw = self.console
+        global_pos = lw.viewport().mapToGlobal(pos)
+
+        menu = QMenu(lw)
+        act_copy_selected = menu.addAction("Copy Selected")
+        act_copy_all      = menu.addAction("Copy All")
+        menu.addSeparator()
+        act_select_all    = menu.addAction("Select All Lines")
+        act_clear         = menu.addAction("Clear Console")
+
+        action = menu.exec(global_pos)
+        if action is None:
+            return
+
+        if action is act_select_all:
+            # thanks to ExtendedSelection this will highlight every row
+            lw.selectAll()
+
+        elif action is act_copy_selected:
+            items = lw.selectedItems()
+            # if nothing is selected, fall back to the row under the cursor
+            if not items:
+                item = lw.itemAt(pos)
+                if item is not None:
+                    items = [item]
+            if items:
+                text = "\n".join(i.text() for i in items)
+                QGuiApplication.clipboard().setText(text)
+
+        elif action is act_copy_all:
+            lines = [lw.item(i).text() for i in range(lw.count())]
+            if lines:
+                QGuiApplication.clipboard().setText("\n".join(lines))
+
+        elif action is act_clear:
+            lw.clear()
+
 
     def _init_status_log_dock(self):
         # Create the dock
@@ -2381,7 +2489,8 @@ class AstroSuiteProMainWindow(QMainWindow):
             a_midy = presets.addAction("Mid (target 0.40, σ 3)")
             a_hard = presets.addAction("Hard (target 0.50, σ 2)")
             menu.addMenu(presets)
-
+            menu.addSeparator()
+            menu.addAction(self.act_bake_display_stretch)
             # push numbers to the active view and (optionally) turn on autostretch
             def _apply_preset(t, s, also_enable=True):
                 self.settings.setValue("display/target", float(t))
@@ -2502,6 +2611,7 @@ class AstroSuiteProMainWindow(QMainWindow):
         tb_geom.addSeparator()
         tb_geom.addAction(self.act_geom_rot_cw)
         tb_geom.addAction(self.act_geom_rot_ccw)
+        tb_geom.addAction(self.act_geom_rot_180)  
         tb_geom.addSeparator()
         tb_geom.addAction(self.act_geom_rescale)
         tb_geom.addSeparator()
@@ -2650,6 +2760,14 @@ class AstroSuiteProMainWindow(QMainWindow):
         if self.settings.value("display/sigma", None) is None:
             self.settings.setValue("display/sigma", 5.0)
 
+        self.act_bake_display_stretch = QAction("Make Display-Stretch Permanent", self)
+        self.act_bake_display_stretch.setStatusTip(
+            "Apply the current Display-Stretch to the image and add an undo step"
+        )
+        # choose any shortcut you like; avoid Ctrl+A etc
+        self.act_bake_display_stretch.setShortcut(QKeySequence("Shift+A"))
+        self.act_bake_display_stretch.triggered.connect(self._bake_display_stretch)
+
         self.act_zoom_1_1 = QAction("1:1", self)
         self.act_zoom_1_1.setStatusTip("Zoom to 100% (pixel-for-pixel)")
         self.act_zoom_1_1.setShortcut(QKeySequence("Ctrl+1"))    
@@ -2718,12 +2836,12 @@ class AstroSuiteProMainWindow(QMainWindow):
         self.act_graxpert = QAction(QIcon(graxperticon_path), "Remove Gradient (GraXpert)…", self)
         self.act_graxpert.setIconVisibleInMenu(True)
         self.act_graxpert.setStatusTip("Run GraXpert background extraction on the active image")
-        self.act_graxpert.triggered.connect(lambda: remove_gradient_with_graxpert(self))
+        self.act_graxpert.triggered.connect(self._open_graxpert)
 
         self.act_remove_stars = QAction(QIcon(starnet_path), "Remove Stars…", self)
         self.act_remove_stars.setIconVisibleInMenu(True)
         self.act_remove_stars.setStatusTip("Run star removal on the active image")
-        self.act_remove_stars.triggered.connect(lambda: remove_stars(self))
+        self.act_remove_stars.triggered.connect(lambda: self._remove_stars())
 
         self.act_add_stars = QAction(QIcon(staradd_path), "Add Stars…", self)
         self.act_add_stars.setStatusTip("Blend a starless view with a stars-only view")
@@ -2733,7 +2851,7 @@ class AstroSuiteProMainWindow(QMainWindow):
         self.act_pedestal = QAction(QIcon(pedestal_icon_path), "Remove Pedestal", self)
         self.act_pedestal.setToolTip("Subtract per-channel minimum.\nClick: active view\nAlt+Drag: drop onto a view")
         self.act_pedestal.setShortcut("Ctrl+P")
-        self.act_pedestal.triggered.connect(lambda: remove_pedestal(self))
+        self.act_pedestal.triggered.connect(self._on_remove_pedestal)
 
         self.act_linear_fit = QAction(QIcon(linearfit_path),"Linear Fit…", self)
         self.act_linear_fit.setIconVisibleInMenu(True)
@@ -2745,7 +2863,7 @@ class AstroSuiteProMainWindow(QMainWindow):
         self.act_remove_green = QAction(QIcon(green_path), "Remove Green...", self)
         self.act_remove_green.setToolTip("SCNR-style green channel removal.")
         self.act_remove_green.setIconVisibleInMenu(True)
-        self.act_remove_green.triggered.connect(lambda: open_remove_green_dialog(self, preset=None))
+        self.act_remove_green.triggered.connect(self._open_remove_green)
 
         self.act_background_neutral = QAction(QIcon(neutral_path), "Background Neutralization…", self)
         self.act_background_neutral.setStatusTip("Neutralize background color balance using a sampled region")
@@ -2889,6 +3007,11 @@ class AstroSuiteProMainWindow(QMainWindow):
         self.act_geom_rot_ccw.setIconVisibleInMenu(True)
         self.act_geom_rot_ccw.setStatusTip("Rotate image 90° counterclockwise")
         self.act_geom_rot_ccw.triggered.connect(self._exec_geom_rot_ccw)
+
+        self.act_geom_rot_180 = QAction(QIcon(rotate180_path), "Rotate 180°", self)
+        self.act_geom_rot_180.setIconVisibleInMenu(True)
+        self.act_geom_rot_180.setStatusTip("Rotate image 180°")
+        self.act_geom_rot_180.triggered.connect(self._exec_geom_rot_180)
 
         self.act_geom_rescale = QAction(QIcon(rescale_path), "Rescale…", self)
         self.act_geom_rescale.setIconVisibleInMenu(True)
@@ -3182,6 +3305,7 @@ class AstroSuiteProMainWindow(QMainWindow):
         reg("geom_flip_vertical",          self.act_geom_flip_v)
         reg("geom_rotate_clockwise",       self.act_geom_rot_cw)
         reg("geom_rotate_counterclockwise",self.act_geom_rot_ccw)
+        reg("geom_rotate_180",             self.act_geom_rot_180) 
         reg("geom_rescale",                self.act_geom_rescale)        
         reg("project_new",  self.act_project_new)
         reg("project_save", self.act_project_save)
@@ -3291,6 +3415,7 @@ class AstroSuiteProMainWindow(QMainWindow):
         m_geom.addSeparator()
         m_geom.addAction(self.act_geom_rot_cw)
         m_geom.addAction(self.act_geom_rot_ccw)
+        m_geom.addAction(self.act_geom_rot_180)   
         m_geom.addSeparator()
         m_geom.addAction(self.act_geom_rescale)
         m_geom.addSeparator()
@@ -5359,6 +5484,132 @@ class AstroSuiteProMainWindow(QMainWindow):
                 return
     #-----------FUNCTIONS----------------
 
+    # --- WCS summary popup --------------------------------------------------
+    # --- WCS summary popup --------------------------------------------------
+    def _show_wcs_update_popup(self, debug_summary: dict, step_name: str):
+        """
+        Show a small WCS update summary dialog using the debug payload
+        from update_wcs_after_crop (stored under '__wcs_debug__').
+        """
+        import math
+
+        before = debug_summary.get("before", {}) or {}
+        after  = debug_summary.get("after", {}) or {}
+        fit    = debug_summary.get("fit", {}) or {}
+
+        def _fmt_pair(p, fmt="{:.6f}"):
+            if not isinstance(p, (list, tuple)) or len(p) != 2:
+                return "n/a"
+            a, b = p
+            def _one(x):
+                try:
+                    if x is None or not math.isfinite(float(x)):
+                        return "n/a"
+                    return fmt.format(float(x))
+                except Exception:
+                    return "n/a"
+            return f"({_one(a)}, {_one(b)})"
+
+        def _fmt_one(x, fmt="{:.3f}"):
+            try:
+                if x is None or not math.isfinite(float(x)):
+                    return "n/a"
+                return fmt.format(float(x))
+            except Exception:
+                return "n/a"
+
+        msg_lines = [
+            f"{step_name}: WCS updated.",
+            "",
+            "BEFORE:",
+            f"  CRVAL (deg):    { _fmt_pair(before.get('crval_deg')) }",
+            f"  CRPIX (pix):    { _fmt_pair(before.get('crpix_pix'), fmt='{:.2f}') }",
+            f"  Scale (as/px):  { _fmt_pair(before.get('scale_as_per_pix'), fmt='{:.3f}') }",
+            f"  Rotation (deg): { _fmt_one(before.get('rot_deg'), fmt='{:.3f}') }",
+            "",
+            "AFTER:",
+            f"  CRVAL (deg):    { _fmt_pair(after.get('crval_deg')) }",
+            f"  CRPIX (pix):    { _fmt_pair(after.get('crpix_pix'), fmt='{:.2f}') }",
+            f"  Scale (as/px):  { _fmt_pair(after.get('scale_as_per_pix'), fmt='{:.3f}') }",
+            f"  Rotation (deg): { _fmt_one(after.get('rot_deg'), fmt='{:.3f}') }",
+        ]
+
+        size = after.get("size")
+        if isinstance(size, (list, tuple)) and len(size) == 2:
+            msg_lines.append(f"  Image size:     {int(size[0])} × {int(size[1])}")
+
+        rms  = _fmt_one(fit.get("rms_arcsec"), fmt="{:.3f}")
+        p50  = _fmt_one(fit.get("p50_arcsec"), fmt="{:.3f}")
+        p95  = _fmt_one(fit.get("p95_arcsec"), fmt="{:.3f}")
+        msg_lines += [
+            "",
+            "Fit residuals (arcsec):",
+            f"  RMS: {rms}   median: {p50}   p95: {p95}",
+        ]
+
+        coerced = debug_summary.get("coerced_to_2d", None)
+        if coerced is True:
+            msg_lines.append("")
+            msg_lines.append("Note: WCS was coerced from 3-D to 2-D for refitting.")
+
+        text = "\n".join(msg_lines)
+        QMessageBox.information(self, "WCS Updated", text)
+
+
+    # --- Geometry + WCS helper ---------------------------------------------
+    def _apply_geom_with_wcs(self, doc, out_image: np.ndarray,
+                             M_src_to_dst: np.ndarray | None,
+                             step_name: str):
+        """
+        Apply a geometry transform to `doc` and update WCS (if present)
+        using the same machinery as crop (update_wcs_after_crop).
+        """
+        out_h, out_w = out_image.shape[:2]
+        meta = dict(getattr(doc, "metadata", {}) or {})
+
+        # Debug hook
+        # print(f"[WCS-GEOM] {step_name}: out size={out_w}x{out_h}, "
+        #       f"have_header_keys={list(meta.keys())}")
+
+        if update_wcs_after_crop is not None and M_src_to_dst is not None:
+            try:
+                meta = update_wcs_after_crop(
+                    meta,
+                    M_src_to_dst=M_src_to_dst,
+                    out_w=out_w,
+                    out_h=out_h,
+                )
+            except Exception as e:
+                print(f"[WCS-GEOM] WCS update failed for {step_name}: {e}")
+
+        # Push the image + updated metadata back into the document
+        if hasattr(doc, "apply_edit"):
+            doc.apply_edit(
+                out_image,
+                metadata={**meta, "step_name": step_name},
+                step_name=step_name,
+            )
+        else:
+            doc.image = out_image
+            try:
+                setattr(doc, "metadata", {**meta, "step_name": step_name})
+            except Exception:
+                pass
+            if hasattr(doc, "changed"):
+                try:
+                    doc.changed.emit()
+                except Exception:
+                    pass
+
+        # If WCS was successfully refit, update_wcs_after_crop
+        # will have stashed a '__wcs_debug__' payload in metadata.
+        dbg = meta.get("__wcs_debug__")
+        if isinstance(dbg, dict):
+            try:
+                self._show_wcs_update_popup(dbg, step_name=step_name)
+            except Exception as e:
+                print(f"[WCS-GEOM] Failed to show WCS popup for {step_name}: {e}")
+
 
     def _exec_geom_invert(self):
         sw = self.mdi.activeSubWindow() if hasattr(self, "mdi") else None
@@ -5425,6 +5676,19 @@ class AstroSuiteProMainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Rotate 90° CCW", str(e))
 
+    def _exec_geom_rot_180(self):
+        sw = self.mdi.activeSubWindow() if hasattr(self, "mdi") else None
+        view = sw.widget() if sw else None
+        doc = getattr(view, "document", None)
+        if doc is None or getattr(doc, "image", None) is None:
+            QMessageBox.information(self, "Rotate 180°", "Active view has no image.")
+            return
+        try:
+            self._apply_geom_rot_180_to_doc(doc)
+            self._log("Rotate 180° applied to active view")
+        except Exception as e:
+            QMessageBox.critical(self, "Rotate 180°", str(e))
+
     def _exec_geom_rescale(self):
         sw = self.mdi.activeSubWindow() if hasattr(self, "mdi") else None
         view = sw.widget() if sw else None
@@ -5482,44 +5746,86 @@ class AstroSuiteProMainWindow(QMainWindow):
 
     def _apply_geom_flip_h_to_doc(self, doc):
         arr = np.asarray(doc.image, dtype=np.float32)
+        h, w = arr.shape[:2]
         out = flip_horizontal_numba(arr)
-        if hasattr(doc, "set_image"):
-            doc.set_image(out, step_name="Flip Horizontal")
-        else:
-            doc.image = out
+
+        M = np.array([
+            [-1.0, 0.0, w - 1.0],
+            [ 0.0, 1.0, 0.0     ],
+            [ 0.0, 0.0, 1.0     ],
+        ], dtype=float)
+
+        self._apply_geom_with_wcs(doc, out, M_src_to_dst=M, step_name="Flip Horizontal")
 
     def _apply_geom_flip_v_to_doc(self, doc):
         arr = np.asarray(doc.image, dtype=np.float32)
+        h, w = arr.shape[:2]
         out = flip_vertical_numba(arr)
-        if hasattr(doc, "set_image"):
-            doc.set_image(out, step_name="Flip Vertical")
-        else:
-            doc.image = out
+
+        M = np.array([
+            [1.0,  0.0, 0.0     ],
+            [0.0, -1.0, h - 1.0 ],
+            [0.0,  0.0, 1.0     ],
+        ], dtype=float)
+
+        self._apply_geom_with_wcs(doc, out, M_src_to_dst=M, step_name="Flip Vertical")
 
     def _apply_geom_rot_cw_to_doc(self, doc):
         arr = np.asarray(doc.image, dtype=np.float32)
-        out = rotate_90_clockwise_numba(arr)
-        if hasattr(doc, "set_image"):
-            doc.set_image(out, step_name="Rotate 90° Clockwise")
-        else:
-            doc.image = out
+        h, w = arr.shape[:2]
+        out = rotate_90_clockwise_numba(arr)  # out shape: (w, h)
+
+        M = np.array([
+            [0.0, -1.0, h - 1.0],
+            [1.0,  0.0, 0.0    ],
+            [0.0,  0.0, 1.0    ],
+        ], dtype=float)
+
+        self._apply_geom_with_wcs(doc, out, M_src_to_dst=M, step_name="Rotate 90° Clockwise")
 
     def _apply_geom_rot_ccw_to_doc(self, doc):
         arr = np.asarray(doc.image, dtype=np.float32)
-        out = rotate_90_counterclockwise_numba(arr)
-        if hasattr(doc, "set_image"):
-            doc.set_image(out, step_name="Rotate 90° Counterclockwise")
-        else:
-            doc.image = out
+        h, w = arr.shape[:2]
+        out = rotate_90_counterclockwise_numba(arr)  # out shape: (w, h)
+
+        M = np.array([
+            [ 0.0, 1.0, 0.0    ],
+            [-1.0, 0.0, w - 1.0],
+            [ 0.0, 0.0, 1.0    ],
+        ], dtype=float)
+
+        self._apply_geom_with_wcs(doc, out, M_src_to_dst=M, step_name="Rotate 90° Counterclockwise")
+
+    def _apply_geom_rot_180_to_doc(self, doc):
+        arr = np.asarray(doc.image, dtype=np.float32)
+        h, w = arr.shape[:2]
+        out = rotate_180_numba(arr)  # out shape: (h, w)
+
+        # 180° rotation around the image center:
+        # (x, y) -> (w-1 - x, h-1 - y)
+        M = np.array([
+            [-1.0,  0.0, w - 1.0],
+            [ 0.0, -1.0, h - 1.0],
+            [ 0.0,  0.0, 1.0    ],
+        ], dtype=float)
+
+        self._apply_geom_with_wcs(doc, out, M_src_to_dst=M, step_name="Rotate 180°")
+
 
     def _apply_geom_rescale_to_doc(self, doc, *, factor: float):
         factor = float(max(0.1, min(10.0, factor)))
         arr = np.asarray(doc.image, dtype=np.float32)
+        h, w = arr.shape[:2]
         out = rescale_image_numba(arr, factor)
-        if hasattr(doc, "set_image"):
-            doc.set_image(out, step_name=f"Rescale ({factor:g}×)")
-        else:
-            doc.image = out
+
+        M = np.array([
+            [factor, 0.0,    0.0],
+            [0.0,    factor, 0.0],
+            [0.0,    0.0,    1.0],
+        ], dtype=float)
+
+        self._apply_geom_with_wcs(doc, out, M_src_to_dst=M,
+                                  step_name=f"Rescale ({factor:g}×)")
 
     def _apply_geom_rescale_preset_to_doc(self, doc, preset):
         """
@@ -5551,6 +5857,7 @@ class AstroSuiteProMainWindow(QMainWindow):
 
         self._apply_geom_rescale_to_doc(doc, factor=factor)
 
+
     def _apply_rescale_preset_to_doc(self, doc, preset: dict):
         """
         Headless rescale for drag-and-drop / shortcut preset application.
@@ -5574,6 +5881,106 @@ class AstroSuiteProMainWindow(QMainWindow):
             doc.apply_numpy(out, step_name=f"Rescale ×{factor:.2f}")
         else:
             doc.image = out
+
+    def _bake_display_stretch(self):
+        """Apply the current Display-Stretch to the image data (undoable, non-replayable)."""
+        sw = self.mdi.activeSubWindow()
+        if not sw:
+            QMessageBox.information(self, "Display-Stretch", "No active image window.")
+            return
+
+        view = sw.widget()
+        doc = getattr(view, "document", None)
+        if doc is None or getattr(doc, "image", None) is None:
+            QMessageBox.information(self, "Display-Stretch", "Active window has no image.")
+            return
+
+        img = getattr(doc, "image", None)
+        a = np.asarray(img)
+        if a.size == 0:
+            QMessageBox.information(self, "Display-Stretch", "Image is empty.")
+            return
+
+        # --- Get the *current* display-stretch parameters ---
+        # start from global defaults
+        target = float(self.settings.value("display/target", 0.30, type=float))
+        sigma  = float(self.settings.value("display/sigma", 5.0, type=float))
+        linked = bool(self.settings.value("display/stretch_linked", False, type=bool))
+        use_16 = self.settings.value("display/autostretch_16bit", True, type=bool)
+
+        # if your view exposes per-view overrides, prefer those
+        if hasattr(view, "autostretch_target"):
+            try:
+                target = float(view.autostretch_target)
+            except Exception:
+                pass
+        if hasattr(view, "autostretch_sigma"):
+            try:
+                sigma = float(view.autostretch_sigma)
+            except Exception:
+                pass
+        if hasattr(view, "stretch_linked"):
+            try:
+                linked = bool(view.stretch_linked)
+            except Exception:
+                pass
+
+        # --- Run the same autostretch math used for display ---
+        try:
+            stretched01 = _autostretch(
+                a,
+                target_median=target,
+                linked=linked,
+                sigma=sigma,
+                use_16bit=use_16,
+            )
+        except Exception as e:
+            QMessageBox.warning(self, "Display-Stretch", f"Failed to apply autostretch:\n{e}")
+            return
+
+        # --- Convert back to original dtype ---
+        if np.issubdtype(a.dtype, np.integer):
+            info = np.iinfo(a.dtype)
+            out = (np.clip(stretched01, 0.0, 1.0) * float(info.max)).astype(a.dtype, copy=False)
+        else:
+            # float images: bake 0–1 stretched data into same float dtype
+            out = np.clip(stretched01, 0.0, 1.0).astype(a.dtype, copy=False)
+
+        # --- Commit to document with undo metadata (no command_id → non-replayable) ---
+        meta = {
+            "step_name": "Display-Stretch (baked)",
+            "autostretch_target": float(target),
+            "autostretch_sigma": float(sigma),
+            "autostretch_linked": bool(linked),
+        }
+
+        try:
+            if hasattr(doc, "set_image"):
+                # your Document.set_image already manages undo/redo
+                doc.set_image(out, meta)
+            elif hasattr(doc, "update_image"):
+                doc.update_image(out, meta)
+            else:
+                # last-resort fallback (no undo)
+                doc.image = out
+        except Exception as e:
+            QMessageBox.critical(self, "Display-Stretch", f"Failed to update image:\n{e}")
+            return
+
+        # Turn OFF display-stretch so the baked image looks exactly like the preview did
+        if hasattr(view, "set_autostretch"):
+            view.set_autostretch(False)
+        self._sync_autostretch_action(False)
+
+        try:
+            self._log(
+                f"Display-Stretch baked into image (target={target:.3f}, "
+                f"sigma={sigma:.2f}, linked={'on' if linked else 'off'}) "
+                f"→ {sw.windowTitle()}"
+            )
+        except Exception:
+            pass
+
 
     def _open_histogram(self):
         sw = self.mdi.activeSubWindow()
@@ -5691,6 +6098,43 @@ class AstroSuiteProMainWindow(QMainWindow):
         dlg.resize(1000, 650)
         dlg.show()
 
+    def _remove_stars(self, doc=None):
+        """
+        Wrapper so both the menu and Replay Last Action can call star removal
+        on a specific document (ROI, base, etc.).
+        """
+        # If replay passed a specific doc, use it.
+        if doc is None:
+            sw = self.mdi.activeSubWindow()
+            if not sw:
+                QMessageBox.information(self, "No image", "Open an image first.")
+                return
+            doc = sw.widget().document
+
+        remove_stars(self, doc)
+
+
+    def _open_graxpert(self):
+        """Open GraXpert for the active document (same style as Star Stretch)."""
+        sw = self.mdi.activeSubWindow()
+        if not sw:
+            QMessageBox.information(self, "GraXpert", "Open an image first.")
+            return
+
+        view = sw.widget()
+        doc = getattr(view, "document", None)
+        if doc is None or getattr(doc, "image", None) is None:
+            QMessageBox.information(self, "GraXpert", "Active document has no image.")
+            return
+
+        # Let pro.graxpert handle the UI + progress and apply_edit back to this doc
+        remove_gradient_with_graxpert(self, target_doc=doc)
+
+        try:
+            self._log("Functions: ran GraXpert on active document.")
+        except Exception:
+            pass
+
     def _open_abe_tool(self):
         sw = self.mdi.activeSubWindow()
         if not sw:
@@ -5741,6 +6185,54 @@ class AstroSuiteProMainWindow(QMainWindow):
         from pro.whitebalance import apply_white_balance_to_doc
         apply_white_balance_to_doc(doc, preset or {"mode": "star", "threshold": 50.0})
 
+    def _apply_convo_preset_to_doc(self, doc, preset: dict):
+        """
+        Headless apply of Convo/Deconvo/TV to a specific document (ROI or base),
+        and record it as the last headless command for Replay Last Action.
+        """
+        from pro.convo_preset import apply_convo_via_preset
+
+        if doc is None or getattr(doc, "image", None) is None:
+            return
+
+        # Actually apply
+        apply_convo_via_preset(self, doc, preset or {})
+
+        # Record for replay-last-action
+        try:
+            op = (preset or {}).get("op", "convolution")
+            self._last_headless_command = {
+                "cid": "convo",
+                "preset": dict(preset or {}),
+            }
+            if hasattr(self, "_log"):
+                name = doc.display_name() if hasattr(doc, "display_name") else "Image"
+                self._log(f"Convo/Deconvo preset ({op}) applied to '{name}'")
+        except Exception:
+            pass
+
+
+    def _open_remove_green(self, doc=None):
+        """
+        Open Remove Green (SCNR) for the current view's document.
+        If doc is passed (e.g. from Replay), use that; otherwise use the
+        active subwindow's document (ROI or full).
+        """
+        from pro.remove_green import RemoveGreenDialog
+
+        sw = self.mdi.activeSubWindow()
+        if not sw:
+            QMessageBox.information(self, "No image", "Open an image first.")
+            return
+        doc = sw.widget().document
+
+        try:
+            dlg = RemoveGreenDialog(self, doc, parent=self)
+            dlg.show()
+        except Exception as e:
+            QMessageBox.warning(self, "Remove Green", f"Failed to open dialog:\n{e}")
+
+
     def SFCC_show(self):
         if getattr(self, "SFCC_window", None) and self.SFCC_window.isVisible():
             self.SFCC_window.raise_()
@@ -5767,27 +6259,31 @@ class AstroSuiteProMainWindow(QMainWindow):
             pass
         self.SFCC_window.show()
 
-    def show_convo_deconvo(self):
-        if getattr(self, "convo_window", None) and self.convo_window.isVisible():
-            self.convo_window.raise_()
-            self.convo_window.activateWindow()
+    def show_convo_deconvo(self, doc=None):
+        # Reuse existing dialog if it's already open
+        sw = self.mdi.activeSubWindow()
+        if not sw:
+            QMessageBox.information(self, "No image", "Open an image first.")
             return
-
-        # make sure we have a DocManager (same pattern as SFCC_show)
-        if not hasattr(self, "doc_manager") or self.doc_manager is None:
-            # if you keep an image_manager around, pass it through like SFCC_show does
-            self.doc_manager = DocManager(image_manager=getattr(self, "image_manager", None), parent=self)
+        doc = sw.widget().document
 
         from pro.convo import ConvoDeconvoDialog
-        self.convo_window = ConvoDeconvoDialog(doc_manager=self.doc_manager, parent=self)
+        self.convo_window = ConvoDeconvoDialog(
+            doc_manager=self.doc_manager,
+            parent=self,
+            doc=doc,  # ← KEY: bind dialog to this Document instance
+        )
         try:
             self.convo_window.setWindowIcon(QIcon(convoicon_path))
         except Exception:
             pass
         try:
-            self.convo_window.destroyed.connect(lambda _=None: setattr(self, "convo_window", None))
+            self.convo_window.destroyed.connect(
+                lambda _=None: setattr(self, "convo_window", None)
+            )
         except Exception:
             pass
+
         self.convo_window.show()
 
     def _extract_luminance(self, doc=None):
@@ -6105,9 +6601,32 @@ class AstroSuiteProMainWindow(QMainWindow):
         if doc is None or getattr(doc, "image", None) is None:
             QMessageBox.information(self, "WaveScale HDR", "Active document has no image.")
             return
+
         dlg = WaveScaleHDRDialogPro(self, doc, icon_path=hdr_path)
+
+        # ── NEW: capture preset for replay when user clicks Apply ──────
+        def _on_applied(doc_obj, preset: dict):
+            try:
+                # Whatever helper you used for Curves / GHS:
+                # cid is what command-drop & replay will call.
+                self._register_replay_action(
+                    cid="wavescale_hdr",
+                    label="WaveScale HDR",
+                    preset=dict(preset or {}),
+                    target_doc=doc_obj,
+                )
+            except Exception:
+                pass
+
+        try:
+            dlg.applied_preset.connect(_on_applied)
+        except Exception:
+            pass
+        # ───────────────────────────────────────────────────────────────
+
         dlg.resize(980, 700)
         dlg.show()
+
 
     def _open_wavescale_dark_enhance(self):
         sw = self.mdi.activeSubWindow()
@@ -6167,9 +6686,50 @@ class AstroSuiteProMainWindow(QMainWindow):
         """
         try:
             from pro.clahe import apply_clahe_to_doc
-            apply_clahe_to_doc(doc, preset or {"clip_limit": 2.0, "tile": 8})
+            p = dict(preset or {"clip_limit": 2.0, "tile": 8})
+            apply_clahe_to_doc(doc, p)
+
+            # ── also register as last_headless_command for replay ──────
+            try:
+                payload = {
+                    "command_id": "clahe",
+                    "preset": dict(p),
+                }
+                setattr(self, "_last_headless_command", payload)
+            except Exception:
+                pass
+            # ────────────────────────────────────────────────────────────
+
         except Exception as e:
             raise RuntimeError(f"CLAHE apply failed: {e}")
+
+    def _apply_morphology_preset_to_doc(self, doc, preset: dict | None):
+        """
+        Headless Morphology apply on a document using a preset dict.
+        Expected keys:
+          • operation: "erosion" | "dilation" | "opening" | "closing"
+          • kernel: odd int (3,5,7,...)
+          • iterations: int
+        """
+        try:
+            from pro.morphology import apply_morphology_to_doc
+            p = dict(preset or {})
+            apply_morphology_to_doc(doc, p)
+
+            # ── also register as last_headless_command for replay ──────
+            try:
+                payload = {
+                    "command_id": "morphology",
+                    "preset": dict(p),
+                }
+                setattr(self, "_last_headless_command", payload)
+            except Exception:
+                pass
+            # ────────────────────────────────────────────────────────────
+
+        except Exception as e:
+            raise RuntimeError(f"Morphology apply failed: {e}")
+
 
     def _open_morphology(self, preset: dict | None = None):
         sw = self.mdi.activeSubWindow()
@@ -6187,6 +6747,31 @@ class AstroSuiteProMainWindow(QMainWindow):
 
     def _open_morphology_with_preset(self, preset: dict | None):
         self._open_morphology(preset or {})
+
+    def _apply_pixelmath_preset_to_doc(self, doc, preset: dict | None):
+        """
+        Headless Pixel Math apply on a document using a preset dict.
+
+        Preset fields:
+          • mode: 'single' or 'rgb' (optional, informational)
+          • expr:   single-expression mode (string)
+          • expr_r / expr_g / expr_b: per-channel expressions (strings)
+        """
+        from pro.pixelmath import apply_pixel_math_to_doc
+
+        p = dict(preset or {})
+        apply_pixel_math_to_doc(self, doc, p)
+
+        # Also register as last_headless_command so replay uses this
+        try:
+            payload = {
+                "command_id": "pixel_math",
+                "preset": dict(p),
+            }
+            setattr(self, "_last_headless_command", payload)
+        except Exception:
+            pass
+
 
     def _open_pixel_math(self):
         sw = self.mdi.activeSubWindow()
@@ -6224,6 +6809,28 @@ class AstroSuiteProMainWindow(QMainWindow):
         dlg = HaloBGonDialogPro(self, doc, icon=QIcon(halo_path))
         dlg.show()
 
+    def _apply_halobgon_preset_to_doc(self, doc, preset: dict | None):
+        """
+        Headless Halo-B-Gon apply on a document using a preset dict.
+
+        Preset keys:
+          • reduction: int 0..3
+          • linear: bool
+        """
+        from pro.halobgon import apply_halo_b_gon_to_doc
+
+        p = dict(preset or {})
+        apply_halo_b_gon_to_doc(self, doc, p)
+
+        # Also register as last_headless_command so replay uses this
+        try:
+            payload = {
+                "command_id": "halo_b_gon",
+                "preset": dict(p),
+            }
+            setattr(self, "_last_headless_command", payload)
+        except Exception:
+            pass
 
 
     def _open_aberration_ai(self):
@@ -7138,28 +7745,45 @@ class AstroSuiteProMainWindow(QMainWindow):
         dlg.show()
 
     def _open_linear_fit(self):
-        sw = self.mdi.activeSubWindow()
-        if not sw:
-            QMessageBox.information(self, "No image", "Open an image first.")
-            return
-        try:
-            active_doc = sw.widget().document
-        except Exception:
-            QMessageBox.information(self, "Linear Fit", "No active image.")
-            return
-
         dm = getattr(self, "doc_manager", None) or getattr(self, "docman", None)
         if dm is None:
             QMessageBox.information(self, "Linear Fit", "No document manager available.")
             return
 
-        dlg = LinearFitDialog(self, dm, active_doc)  # <-- pass doc manager
+        sw = self.mdi.activeSubWindow()
+        if not sw:
+            QMessageBox.information(self, "No image", "Open an image first.")
+            return
+
+        view = sw.widget()
+        active_doc = None
+
+        # Prefer ROI-aware resolution from DocManager
+        try:
+            if hasattr(dm, "get_document_for_view"):
+                active_doc = dm.get_document_for_view(view)
+        except Exception:
+            active_doc = None
+
+        # Fallback to the view's base document
+        if active_doc is None:
+            try:
+                active_doc = getattr(view, "document", None)
+            except Exception:
+                active_doc = None
+
+        if active_doc is None or getattr(active_doc, "image", None) is None:
+            QMessageBox.information(self, "Linear Fit", "No active image.")
+            return
+
+        dlg = LinearFitDialog(self, dm, active_doc)  # <-- pass ROI-aware doc + DM
         try:
             dlg.setWindowIcon(QIcon(self._icon_path("linear_fit")))
         except Exception:
             pass
         dlg.resize(900, 600)
         dlg.show()
+
 
     def _open_debayer(self):
         sw = self.mdi.activeSubWindow()
@@ -7189,9 +7813,949 @@ class AstroSuiteProMainWindow(QMainWindow):
         dlg.show()
 
     #######-------COMMAND DROPS-------#################
+    def remember_last_headless_command(
+        self,
+        command_id: str,
+        preset: dict | None = None,
+        description: str = "",
+    ):
+        """
+        Store the last headless-style command so subwindows can ask to replay it.
+        Also appends it to a rolling history for the replay dropdown.
+        Shape matches what _handle_command_drop expects.
+        """
+        payload = {
+            "command_id": command_id,
+            "preset": dict(preset or {}),
+        }
+        # Keep old single-slot behavior for "Replay last"
+        self._last_headless_command = payload
+
+        # NEW: append to history with a human label
+        try:
+            desc = (description or command_id).strip()
+        except Exception:
+            desc = command_id
+
+        entry = {
+            "command_id": command_id,
+            "preset": dict(preset or {}),
+            "description": desc,
+        }
+
+        hist = getattr(self, "_headless_history", None)
+        if hist is None:
+            self._headless_history = hist = []
+
+        hist.append(entry)
+
+        # Cap the list
+        max_len = getattr(self, "_headless_history_max", 50) or 0
+        if max_len and len(hist) > max_len:
+            del hist[:-max_len]
+
+        # Logging as before
+        try:
+            self._log(f"[Replay] Last action stored: {desc} (command_id={command_id})")
+        except Exception:
+            print(f"[Replay] Last action stored: {desc} (command_id={command_id})")
+
+
+
+    def _remember_last_headless_command(self, command_id: str, preset: dict | None = None, description: str = ""):
+        """
+        Private alias so older/newer call sites can use the underscored name.
+        """
+        return self.remember_last_headless_command(command_id, preset, description)
+
+    def get_headless_history(self) -> list[dict]:
+        """
+        Return a *copy* of the headless history list.
+        Each entry: {"command_id", "preset", "description"}.
+        Newest is last.
+        """
+        return list(getattr(self, "_headless_history", []) or [])
+
+    def replay_headless_history_entry_on_base(self, index: int, target_sw=None):
+        """
+        Replay a specific history entry on the base doc of target_sw,
+        reusing replay_last_action_on_base for all the special cases.
+        """
+        hist = getattr(self, "_headless_history", [])
+        if not hist:
+            QMessageBox.information(self, "Replay Action", "There are no actions in history yet.")
+            return
+
+        try:
+            entry = hist[index]
+        except IndexError:
+            QMessageBox.warning(self, "Replay Action", "Selected history item is no longer available.")
+            return
+
+        # Build a payload in the same schema replay_last_action_on_base expects
+        payload = {
+            "command_id": entry.get("command_id"),
+            "preset": dict(entry.get("preset") or {}),
+        }
+
+        # Temporarily override _last_headless_command so we can reuse
+        # your big replay_last_action_on_base() switchboard unchanged.
+        old = getattr(self, "_last_headless_command", None)
+        try:
+            self._last_headless_command = payload
+            self.replay_last_action_on_base(target_sw=target_sw)
+        finally:
+            self._last_headless_command = old
+
+
+    def replay_last_action_on_subwindow(self, target_sw=None):
+        """
+        Called by subwindow(s) when the Replay button is clicked.
+        Uses the stored headless command and routes it through _handle_command_drop.
+        """
+        payload = getattr(self, "_last_headless_command", None)
+
+        # DEBUG
+        try:
+            self._log(
+                f"[Replay] replay_last_action_on_subwindow: payload={bool(payload)}, "
+                f"target_sw={id(target_sw) if target_sw else None}"
+            )
+        except Exception:
+            print(
+                f"[Replay] replay_last_action_on_subwindow: payload={bool(payload)}, "
+                f"target_sw={id(target_sw) if target_sw else None}"
+            )
+
+        if not payload:
+            QMessageBox.information(
+                self, "Replay Last Action",
+                "There is no previous action to replay yet."
+            )
+            return
+
+        # Resolve target subwindow
+        if target_sw is None and hasattr(self, "mdi"):
+            target_sw = self.mdi.activeSubWindow()
+
+        if target_sw is None:
+            QMessageBox.information(
+                self, "Replay Last Action",
+                "No active image view to apply the action to."
+            )
+            return
+
+        try:
+            self._handle_command_drop(dict(payload), target_sw=target_sw)
+        except Exception as e:
+            QMessageBox.critical(self, "Replay Last Action", f"Replay failed:\n{e}")
+
+    def replay_last_action_on_base(self, target_sw=None):
+        """
+        Replay last headless command, but target the *base* document behind the view.
+        Used by preview tabs that want “do this again on the full image”.
+        """
+        payload = getattr(self, "_last_headless_command", None) or {}
+
+        # DEBUG
+        try:
+            self._log(
+                f"[Replay] replay_last_action_on_base: payload={bool(payload)}, "
+                f"target_sw={id(target_sw) if target_sw else None}"
+            )
+        except Exception:
+            print(
+                f"[Replay] replay_last_action_on_base: payload={bool(payload)}, "
+                f"target_sw={id(target_sw) if target_sw else None}"
+            )
+
+        if not payload:
+            QMessageBox.information(
+                self, "Replay Last Action",
+                "There is no previous action to replay yet."
+            )
+            return
+
+        # Resolve target subwindow
+        if target_sw is None and hasattr(self, "mdi"):
+            target_sw = self.mdi.activeSubWindow()
+
+        if target_sw is None:
+            QMessageBox.information(
+                self, "Replay Last Action",
+                "No active image view to apply the action to."
+            )
+            return
+
+        # Resolve the *base* document for this subwindow
+        base_doc = self._target_doc_from_subwindow(target_sw) if hasattr(self, "_target_doc_from_subwindow") else None
+        if base_doc is None or getattr(base_doc, "image", None) is None:
+            QMessageBox.information(self, "Replay Last Action", "No base image to apply the action to.")
+            return
+
+        # Small debug about which doc we're hitting
+        try:
+            view = target_sw.widget()
+            cur_doc = getattr(view, "document", None)
+            self._log(
+                f"[Replay] base_doc id={id(base_doc)}, "
+                f"view.document id={id(cur_doc)}, "
+                f"same={base_doc is cur_doc}"
+            )
+        except Exception:
+            pass
+
+        # ---- Extract cid + preset from payload (support both old + new schemas) ----
+        cid_raw = payload.get("command_id")
+        if cid_raw is None:
+            cid_raw = payload.get("cid")
+        cid = str(cid_raw or "").strip().lower()
+
+        preset = payload.get("preset") or {}
+        if not isinstance(preset, dict):
+            try:
+                preset = dict(preset)
+            except Exception:
+                preset = {}
+
+        # ---- SPECIAL CASES: always run on base_doc ----
+        if cid == "stat_stretch":
+            try:
+                self._apply_stat_stretch_preset_to_doc(base_doc, preset)
+                try:
+                    self._log(f"[Replay] Applied Statistical Stretch preset to base of '{target_sw.windowTitle()}'")
+                except Exception:
+                    pass
+            except Exception as e:
+                QMessageBox.warning(self, "Preset apply failed", str(e))
+            return
+
+        if cid == "pedestal":
+            try:
+                from pro.pedestal import remove_pedestal
+                remove_pedestal(self, target_doc=base_doc)
+                try:
+                    self._log(f"[Replay] Applied Pedestal Removal to base of '{target_sw.windowTitle()}'")
+                except Exception:
+                    pass
+            except Exception as e:
+                QMessageBox.warning(self, "Pedestal Removal", str(e))
+            return
+
+        if cid == "linear_fit":
+            try:
+                from pro.linear_fit import apply_linear_fit_to_doc
+                apply_linear_fit_to_doc(self, base_doc, preset)
+                try:
+                    self._log(f"[Replay] Applied Linear Fit preset to base of '{target_sw.windowTitle()}'")
+                except Exception:
+                    pass
+            except Exception as e:
+                try:
+                    QMessageBox.warning(self, "Linear Fit", f"Replay-on-base failed:\n{e}")
+                except Exception:
+                    pass
+            return
+
+        if cid == "star_stretch":
+            try:
+                self._apply_star_stretch_preset_to_doc(base_doc, preset)
+                try:
+                    self._log(f"[Replay] Applied Star Stretch preset to base of '{target_sw.windowTitle()}'")
+                except Exception:
+                    pass
+            except Exception as e:
+                try:
+                    QMessageBox.warning(self, "Star Stretch", f"Replay-on-base failed:\n{e}")
+                except Exception:
+                    pass
+            return
+
+        if cid == "curves":
+            try:
+                # preset = payload.get("preset") from above
+                preset_dict = preset if isinstance(preset, dict) else {}
+                op = preset_dict.get("_ops")
+
+                if op:
+                    # New, exact replay: use the headless op engine strictly on base_doc
+                    from pro.curve_editor_pro import apply_curves_ops
+                    ok = apply_curves_ops(base_doc, op)
+                    if not ok:
+                        raise RuntimeError("apply_curves_ops() returned False")
+
+                    try:
+                        self._log(
+                            f"[Replay] Applied Curves (ops) to base of "
+                            f"'{target_sw.windowTitle()}'"
+                        )
+                    except Exception:
+                        pass
+                    return
+
+                # Fallback for older payloads without _ops: use preset-style helper
+                from pro.curves_preset import apply_curves_via_preset
+                apply_curves_via_preset(self, base_doc, preset_dict)
+
+                try:
+                    self._log(
+                        f"[Replay] Applied Curves (preset) to base of "
+                        f"'{target_sw.windowTitle()}'"
+                    )
+                except Exception:
+                    pass
+                return
+
+            except Exception as e:
+                try:
+                    QMessageBox.warning(
+                        self, "Curves", f"Replay-on-base failed:\n{e}"
+                    )
+                except Exception:
+                    print("Replay-on-base Curves failed:", e)
+            return
+
+        if cid == "ghs":
+            try:
+                from pro.ghs_preset import apply_ghs_via_preset
+
+                # Normalize payload → dict
+                preset_dict = preset if isinstance(preset, dict) else {}
+
+                # DEBUG: what did we actually get?
+                try:
+                    self._log(
+                        f"[Replay] GHS replay-on-base: "
+                        f"preset_keys={list(preset_dict.keys())}"
+                    )
+                except Exception:
+                    print(
+                        "[Replay] GHS replay-on-base: preset_keys=",
+                        list(preset_dict.keys()),
+                    )
+
+                apply_ghs_via_preset(self, base_doc, preset_dict or {})
+
+                try:
+                    self._log(
+                        f"[Replay] Applied GHS preset to base of "
+                        f"'{target_sw.windowTitle()}'"
+                    )
+                except Exception:
+                    pass
+
+            except Exception as e:
+                try:
+                    QMessageBox.warning(self, "GHS", f"Apply failed:\n{e}")
+                except Exception:
+                    print("GHS replay-on-base failed:", e)
+            return
+
+        if cid == "abe":
+            try:
+                from pro.abe_preset import apply_abe_via_preset
+
+                # Normalize payload → dict
+                preset_dict = preset if isinstance(preset, dict) else {}
+
+                # DEBUG
+                try:
+                    self._log(
+                        f"[Replay] ABE replay-on-base: "
+                        f"preset_keys={list(preset_dict.keys())}"
+                    )
+                except Exception:
+                    print(
+                        "[Replay] ABE replay-on-base: preset_keys=",
+                        list(preset_dict.keys()),
+                    )
+
+                apply_abe_via_preset(self, base_doc, preset_dict or {})
+
+                try:
+                    self._log(
+                        f"[Replay] Applied ABE preset to base of "
+                        f"'{target_sw.windowTitle()}' (no exclusions)"
+                    )
+                except Exception:
+                    pass
+
+            except Exception as e:
+                try:
+                    QMessageBox.warning(
+                        self, "ABE", f"Replay-on-base failed:\n{e}"
+                    )
+                except Exception:
+                    print("ABE replay-on-base failed:", e)
+            return
+        if cid == "graxpert":
+            try:
+                from pro.graxpert_preset import run_graxpert_via_preset
+
+                preset_dict = preset if isinstance(preset, dict) else {}
+                op = str(preset_dict.get("op", "background")).lower()
+                gpu_val = bool(preset_dict.get("gpu", True))
+
+                # Normalize for logging
+                if op == "denoise":
+                    strength_raw = preset_dict.get("strength", 0.50)
+                    try:
+                        strength_val = float(strength_raw)
+                    except Exception:
+                        strength_val = 0.50
+                    ai_ver = preset_dict.get("ai_version") or "latest"
+                    log_msg = (
+                        f"GraXpert Denoise "
+                        f"(strength={strength_val:.2f}, model={ai_ver}, "
+                        f"gpu={'on' if gpu_val else 'off'})"
+                    )
+                else:
+                    smooth_raw = preset_dict.get("smoothing", 0.10)
+                    try:
+                        smooth_val = float(smooth_raw)
+                    except Exception:
+                        smooth_val = 0.10
+                    log_msg = (
+                        f"GraXpert Gradient Removal "
+                        f"(smoothing={smooth_val:.2f}, gpu={'on' if gpu_val else 'off'})"
+                    )
+
+                # 🔁 Re-run GraXpert on the *base* document
+                run_graxpert_via_preset(self, preset_dict, target_doc=base_doc)
+
+                try:
+                    self._log(
+                        f"[Replay] Applied {log_msg} to base of "
+                        f"'{target_sw.windowTitle()}'"
+                    )
+                except Exception:
+                    pass
+
+            except Exception as e:
+                try:
+                    QMessageBox.warning(self, "GraXpert", f"Replay-on-base failed:\n{e}")
+                except Exception:
+                    print("GraXpert replay-on-base failed:", e)
+            return
+        if cid == "remove_stars":
+            try:
+                from pro.remove_stars_preset import run_remove_stars_via_preset
+
+                # Normalize payload → dict
+                preset_dict = preset if isinstance(preset, dict) else {}
+
+                # 🔁 Re-run Remove Stars on the *base* document
+                run_remove_stars_via_preset(self, preset_dict, target_doc=base_doc)
+
+                # Logging (mirror command-drop logging but with replay/base info)
+                tool = str(preset_dict.get("tool", "starnet")).lower()
+                try:
+                    if tool.startswith("star"):
+                        lin = bool(preset_dict.get("linear", True))
+                        self._log(
+                            f"[Replay] Ran Remove Stars on base "
+                            f"(tool=StarNet, linear={'yes' if lin else 'no'}) "
+                            f"for '{target_sw.windowTitle()}'"
+                        )
+                    else:
+                        mode   = preset_dict.get("mode", "unscreen")
+                        stride = int(preset_dict.get("stride", 512))
+                        gpu    = not bool(preset_dict.get("disable_gpu", False))
+                        show   = bool(preset_dict.get("show_extracted_stars", True))
+                        self._log(
+                            f"[Replay] Ran Remove Stars on base "
+                            f"(tool=DarkStar, mode={mode}, stride={stride}, "
+                            f"gpu={'on' if gpu else 'off'}, "
+                            f"stars={'on' if show else 'off'}) "
+                            f"for '{target_sw.windowTitle()}'"
+                        )
+                except Exception:
+                    # Logging should never break replay
+                    pass
+
+            except Exception as e:
+                try:
+                    QMessageBox.warning(
+                        self, "Remove Stars",
+                        f"Replay-on-base failed:\n{e}"
+                    )
+                except Exception:
+                    print("Remove Stars replay-on-base failed:", e)
+            return
+        if cid == "background_neutral":
+            try:
+                # Normalize payload → dict
+                preset_dict = preset if isinstance(preset, dict) else {}
+
+                # Re-run BN on the *base* document
+                self._apply_background_neutral_preset_to_doc(base_doc, preset_dict)
+
+                try:
+                    mode = str(preset_dict.get("mode", "auto")).lower()
+                    self._log(
+                        f"[Replay] Applied Background Neutralization "
+                        f"(mode={mode}) to base of '{target_sw.windowTitle()}'"
+                    )
+                except Exception:
+                    pass
+
+            except Exception as e:
+                try:
+                    QMessageBox.warning(
+                        self,
+                        "Background Neutralization",
+                        f"Replay-on-base failed:\n{e}",
+                    )
+                except Exception:
+                    print("Background Neutralization replay-on-base failed:", e)
+            return
+        if cid == "white_balance":
+            try:
+                # Normalize payload → dict
+                preset_dict = preset if isinstance(preset, dict) else {}
+
+                # Re-run WB on the *base* document via the existing helper
+                self._apply_white_balance_preset_to_doc(base_doc, preset_dict)
+
+                # Optional: nice logging describing the mode/params
+                try:
+                    mode = str(preset_dict.get("mode", "star")).lower()
+                    if mode == "manual":
+                        r = float(preset_dict.get("r_gain", 1.0))
+                        g = float(preset_dict.get("g_gain", 1.0))
+                        b = float(preset_dict.get("b_gain", 1.0))
+                        detail = f"manual (R={r:.3f}, G={g:.3f}, B={b:.3f})"
+                    elif mode == "auto":
+                        detail = "auto"
+                    else:
+                        thr = float(preset_dict.get("threshold", 50.0))
+                        reuse = bool(preset_dict.get("reuse_cached_sources", True))
+                        detail = (
+                            f"star-based (thr={thr:.1f}, "
+                            f"reuse={'yes' if reuse else 'no'})"
+                        )
+
+                    self._log(
+                        f"[Replay] Applied White Balance {detail} "
+                        f"to base of '{target_sw.windowTitle()}'"
+                    )
+                except Exception:
+                    # Logging should never break replay
+                    pass
+
+            except Exception as e:
+                try:
+                    QMessageBox.warning(
+                        self,
+                        "White Balance",
+                        f"Replay-on-base failed:\n{e}",
+                    )
+                except Exception:
+                    print("White Balance replay-on-base failed:", e)
+            return
+        if cid == "remove_green":
+            try:
+                from pro.remove_green import apply_remove_green_preset_to_doc
+
+                preset_dict = preset if isinstance(preset, dict) else {}
+
+                # Re-run Remove Green on the *base* document
+                apply_remove_green_preset_to_doc(self, base_doc, preset_dict)
+
+                try:
+                    amt = float(preset_dict.get(
+                        "amount",
+                        preset_dict.get("strength",
+                                        preset_dict.get("value", 1.0))
+                    ))
+                    mode = str(preset_dict.get(
+                        "mode",
+                        preset_dict.get("neutral_mode", "avg")
+                    )).lower()
+                    preserve = bool(preset_dict.get(
+                        "preserve_lightness",
+                        preset_dict.get("preserve", True)
+                    ))
+                    self._log(
+                        f"[Replay] Applied Remove Green to base of "
+                        f"'{target_sw.windowTitle()}' "
+                        f"(amount={amt:.2f}, mode={mode}, "
+                        f"preserve_lightness={'yes' if preserve else 'no'})"
+                    )
+                except Exception:
+                    pass
+
+            except Exception as e:
+                try:
+                    QMessageBox.warning(
+                        self,
+                        "Remove Green",
+                        f"Replay-on-base failed:\n{e}",
+                    )
+                except Exception:
+                    print("Remove Green replay-on-base failed:", e)
+            return
+        if cid == "convo":
+            try:
+                self._apply_convo_preset_to_doc(base_doc, preset)
+                try:
+                    op = str(preset.get("op", "convolution"))
+                    self._log(
+                        f"[Replay] Applied Convo/Deconvo ({op}) preset to base of "
+                        f"'{target_sw.windowTitle()}'"
+                    )
+                except Exception:
+                    pass
+            except Exception as e:
+                try:
+                    QMessageBox.warning(
+                        self,
+                        "Convo / Deconvo",
+                        f"Replay-on-base failed:\n{e}",
+                    )
+                except Exception:
+                    print("Convo replay-on-base failed:", e)
+            return  # <- IMPORTANT: don't fall through to _handle_command_drop
+        if cid == "wavescale_hdr":
+            try:
+                from pro.wavescale_hdr_preset import run_wavescale_hdr_via_preset
+
+                # Normalize payload → dict
+                preset_dict = preset if isinstance(preset, dict) else {}
+
+                # DEBUG (optional)
+                try:
+                    self._log(
+                        f"[Replay] WaveScale HDR replay-on-base: "
+                        f"preset_keys={list(preset_dict.keys())}"
+                    )
+                except Exception:
+                    print(
+                        "[Replay] WaveScale HDR replay-on-base: preset_keys=",
+                        list(preset_dict.keys()),
+                    )
+
+                # 🔁 Re-run WaveScale HDR on the *base* document
+                run_wavescale_hdr_via_preset(self, preset_dict, target_doc=base_doc)
+
+                # Logging similar to the command-drop handler
+                try:
+                    ns = int(preset_dict.get("n_scales", 5))
+                    try:
+                        comp = float(preset_dict.get("compression_factor", 1.5))
+                    except Exception:
+                        comp = 1.5
+                    try:
+                        mg = float(preset_dict.get("mask_gamma", 5.0))
+                    except Exception:
+                        mg = 5.0
+
+                    self._log(
+                        f"[Replay] Applied WaveScale HDR to base of "
+                        f"'{target_sw.windowTitle()}' "
+                        f"(n_scales={ns}, compression={comp:.2f}, mask_gamma={mg:.2f})"
+                    )
+                except Exception:
+                    pass
+
+            except Exception as e:
+                try:
+                    QMessageBox.warning(
+                        self,
+                        "WaveScale HDR",
+                        f"Replay-on-base failed:\n{e}",
+                    )
+                except Exception:
+                    print("WaveScale HDR replay-on-base failed:", e)
+            return
+        if cid == "wavescale_dark_enhance":
+            try:
+                # Normalize payload → dict
+                preset_dict = preset if isinstance(preset, dict) else {}
+
+                n_scales   = int(preset_dict.get("n_scales", 6))
+                boost      = float(preset_dict.get("boost_factor", 5.0))
+                mask_gamma = float(preset_dict.get("mask_gamma", 1.0))
+                iters      = int(preset_dict.get("iterations", 2))
+
+                # Prefer helper if it exists (handles masks / blending)
+                if hasattr(self, "_apply_wavescale_dark_enhance_preset_to_doc"):
+                    self._apply_wavescale_dark_enhance_preset_to_doc(base_doc, {
+                        "n_scales": n_scales,
+                        "boost_factor": boost,
+                        "mask_gamma": mask_gamma,
+                        "iterations": iters,
+                    })
+                else:
+                    # Fallback: direct compute, similar to _handle_command_drop
+                    from pro.wavescalede import compute_wavescale_dse
+                    import numpy as np
+
+                    img = np.asarray(getattr(base_doc, "image", None), dtype=np.float32)
+                    if img.size:
+                        mx = float(np.nanmax(img))
+                        if np.isfinite(mx) and mx > 1.0:
+                            img = img / mx
+                    img = np.clip(img, 0.0, 1.0).astype(np.float32, copy=False)
+
+                    out, _ = compute_wavescale_dse(
+                        img,
+                        n_scales=n_scales,
+                        boost_factor=boost,
+                        mask_gamma=mask_gamma,
+                        iterations=iters,
+                    )
+                    out = np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
+
+                    if hasattr(base_doc, "set_image"):
+                        base_doc.set_image(out, step_name="WaveScale Dark Enhancer")
+                    elif hasattr(base_doc, "apply_numpy"):
+                        base_doc.apply_numpy(out, step_name="WaveScale Dark Enhancer")
+                    else:
+                        base_doc.image = out
+
+                try:
+                    self._log(
+                        f"[Replay] WaveScale Dark Enhancer applied to base of "
+                        f"'{target_sw.windowTitle()}' "
+                        f"(n_scales={n_scales}, boost={boost}, "
+                        f"gamma={mask_gamma}, iter={iters})"
+                    )
+                except Exception:
+                    pass
+            except Exception as e:
+                try:
+                    QMessageBox.warning(
+                        self,
+                        "WaveScale Dark Enhancer",
+                        f"Replay-on-base failed:\n{e}",
+                    )
+                except Exception:
+                    print("WaveScale Dark Enhancer replay-on-base failed:", e)
+            return
+        if cid == "clahe":
+            try:
+                # normalize preset
+                p = preset if isinstance(preset, dict) else {}
+                # prefer your helper (respects masks & bit depth)
+                if hasattr(self, "_apply_clahe_preset_to_doc"):
+                    self._apply_clahe_preset_to_doc(base_doc, p)
+                else:
+                    from pro.clahe import apply_clahe_to_doc
+                    apply_clahe_to_doc(base_doc, p)
+
+                # optional logging
+                try:
+                    clip = p.get("clip_limit", 2.0)
+                    tile = p.get("tile", 8)
+                    if hasattr(self, "_log"):
+                        self._log(
+                            f"[Replay] CLAHE applied to base of "
+                            f"'{target_sw.windowTitle()}' "
+                            f"(clip_limit={clip}, tile={tile})"
+                        )
+                except Exception:
+                    pass
+            except Exception as e:
+                try:
+                    QMessageBox.warning(self, "CLAHE", f"Replay-on-base failed:\n{e}")
+                except Exception:
+                    print("CLAHE replay-on-base failed:", e)
+            return
+        if cid == "morphology":
+            try:
+                p = preset if isinstance(preset, dict) else {}
+
+                # Prefer our helper that also maintains replay state
+                if hasattr(self, "_apply_morphology_preset_to_doc"):
+                    self._apply_morphology_preset_to_doc(base_doc, p)
+                else:
+                    from pro.morphology import apply_morphology_to_doc
+                    apply_morphology_to_doc(base_doc, p)
+
+                # optional logging
+                try:
+                    op   = p.get("operation", "erosion")
+                    kern = p.get("kernel", 3)
+                    it   = p.get("iterations", 1)
+                    if hasattr(self, "_log"):
+                        self._log(
+                            f"[Replay] Morphology applied to base of "
+                            f"'{target_sw.windowTitle()}' "
+                            f"(op={op}, kernel={kern}, iter={it})"
+                        )
+                except Exception:
+                    pass
+            except Exception as e:
+                try:
+                    QMessageBox.warning(self, "Morphology", f"Replay-on-base failed:\n{e}")
+                except Exception:
+                    print("Morphology replay-on-base failed:", e)
+            return
+        if cid == "pixel_math":
+            try:
+                p = dict(preset or {})
+
+                # Prefer helper that keeps replay state in sync
+                if hasattr(self, "_apply_pixelmath_preset_to_doc"):
+                    self._apply_pixelmath_preset_to_doc(base_doc, p)
+                else:
+                    from pro.pixelmath import apply_pixel_math_to_doc
+                    apply_pixel_math_to_doc(self, base_doc, p)
+
+                expr = (p.get("expr") or "").strip()
+                if expr:
+                    desc = expr
+                else:
+                    desc = (
+                        f"R:{p.get('expr_r', '')} "
+                        f"G:{p.get('expr_g', '')} "
+                        f"B:{p.get('expr_b', '')}"
+                    )
+
+                try:
+                    if hasattr(self, "_log"):
+                        self._log(
+                            f"[Replay] Pixel Math applied to base of "
+                            f"'{target_sw.windowTitle()}' → {desc}"
+                        )
+                except Exception:
+                    pass
+            except Exception as e:
+                try:
+                    QMessageBox.warning(self, "Pixel Math", f"Replay-on-base failed:\n{e}")
+                except Exception:
+                    print("Pixel Math replay-on-base failed:", e)
+            return
+        if cid == "halo_b_gon":
+            try:
+                p = dict(preset or {})
+
+                if hasattr(self, "_apply_halobgon_preset_to_doc"):
+                    self._apply_halobgon_preset_to_doc(base_doc, p)
+                else:
+                    from pro.halobgon import apply_halo_b_gon_to_doc
+                    apply_halo_b_gon_to_doc(self, base_doc, p)
+
+                lvl = int(p.get("reduction", 0))
+                lin = bool(p.get("linear", False))
+                try:
+                    if hasattr(self, "_log"):
+                        self._log(
+                            f"[Replay] Halo-B-Gon applied to base of "
+                            f"'{target_sw.windowTitle()}' "
+                            f"(level={lvl}, linear={lin})"
+                        )
+                except Exception:
+                    pass
+            except Exception as e:
+                try:
+                    QMessageBox.warning(self, "Halo-B-Gon", f"Replay-on-base failed:\n{e}")
+                except Exception:
+                    print("Halo-B-Gon replay-on-base failed:", e)
+            return
+        if cid == "aberrationai":
+            try:
+                from pro.aberration_ai_preset import run_aberration_ai_via_preset
+                # Apply the same preset, but explicitly on the base_doc
+                run_aberration_ai_via_preset(self, preset or {}, doc=base_doc)
+
+                pp = preset or {}
+                auto = bool(pp.get("auto_gpu", True))
+                prov = pp.get("provider", "auto" if auto else "CPUExecutionProvider")
+                patch = int(pp.get("patch", 512))
+                overlap = int(pp.get("overlap", 64))
+                border = int(pp.get("border_px", 10))
+
+                if hasattr(self, "_log"):
+                    self._log(
+                        f"[Replay] Aberration AI applied to base of "
+                        f"'{target_sw.windowTitle()}' "
+                        f"(patch={patch}, overlap={overlap}, border={border}px, provider={prov})"
+                    )
+            except Exception as e:
+                try:
+                    QMessageBox.warning(self, "Aberration AI", f"Replay-on-base failed:\n{e}")
+                except Exception:
+                    print("Replay Aberration AI failed:", e)
+            return
+        if cid == "cosmic_clarity":
+            try:
+                from pro.cosmicclarity_preset import run_cosmicclarity_via_preset
+
+                # Normalize preset → dict
+                preset_dict = preset if isinstance(preset, dict) else {}
+                run_cosmicclarity_via_preset(self, preset_dict, doc=base_doc)
+
+                try:
+                    m = preset_dict.get("mode", "sharpen")
+                    self._log(
+                        f"[Replay] Replayed Cosmic Clarity (mode={m}) "
+                        f"on base of '{target_sw.windowTitle()}'"
+                    )
+                except Exception:
+                    pass
+            except Exception as e:
+                try:
+                    QMessageBox.warning(
+                        self, "Cosmic Clarity",
+                        f"Replay-on-base failed:\n{e}"
+                    )
+                except Exception:
+                    print("Cosmic Clarity replay-on-base failed:", e)
+            return
+
+        # ---- For everything else, fall back to the normal command-drop behavior ----
+        try:
+            self._handle_command_drop(dict(payload), target_sw=target_sw)
+        except Exception as e:
+            QMessageBox.critical(self, "Replay Last Action", f"Replay failed:\n{e}")
+
+
+
+    def _on_view_replay_last_requested(self, view):
+        """
+        Slot for ImageSubWindow.replayOnBaseRequested(view).
+        Find the QMdiSubWindow that wraps this view and forward
+        to replay_last_action_on_base().
+        """
+        target_sw = None
+        if hasattr(self, "mdi"):
+            for sw in self.mdi.subWindowList():
+                if sw.widget() is view:
+                    target_sw = sw
+                    break
+
+        # DEBUG
+        try:
+            self._log(
+                f"[Replay] _on_view_replay_last_requested: view id={id(view)}, "
+                f"found_subwindow={bool(target_sw)}"
+            )
+        except Exception:
+            print(
+                f"[Replay] _on_view_replay_last_requested: view id={id(view)}, "
+                f"found_subwindow={bool(target_sw)}"
+            )
+
+        # 🔁 For preview-tab replay → run on base doc
+        self.replay_last_action_on_base(target_sw=target_sw)
+
+
 
     # --- Command drop handling ------------------------------------------------
+
+
     def _handle_command_drop(self, payload: dict, target_sw):
+        # ─── Debug: track raw calls ───
+        cid_raw = (payload or {}).get("command_id")
+        ts = time.monotonic()
+        target_id = id(target_sw) if target_sw is not None else None
+
+        # ─── end debug header ───
+        cid = payload.get("command_id")
+        preset = payload.get("preset") or {}
+    
         payload = payload or {}
 
         def _extract_cid(p):
@@ -7236,6 +8800,9 @@ class AstroSuiteProMainWindow(QMainWindow):
                 "rotate_counterclockwise": "geom_rotate_counterclockwise",
                 "geom_rot_ccw": "geom_rotate_counterclockwise",
                 "geom_rotate_counterclockwise": "geom_rotate_counterclockwise",
+
+                "rotate_180": "geom_rotate_180",
+                "geom_rotate_180": "geom_rotate_180",
 
                 "invert": "geom_invert",
                 "geom_invert": "geom_invert",
@@ -7473,13 +9040,15 @@ class AstroSuiteProMainWindow(QMainWindow):
                 act.trigger()
             return
 
+
         # ------------------- Dropped on a specific subwindow → HEADLESS APPLY -------------------
         view = target_sw.widget()
         doc = getattr(view, "document", None)
 
-        # Early out if no doc
-        if doc is None:
-            return
+        # NEW: resolve the base document (for Preview tabs, this is the full-frame doc)
+        base_doc = getattr(view, "base_document", None)
+        if base_doc is None:
+            base_doc = doc
 
         # --- Existing image-processing blocks (unchanged) ---
         if cid == "stat_stretch":
@@ -7541,43 +9110,77 @@ class AstroSuiteProMainWindow(QMainWindow):
 
         if cid == "graxpert":
             from pro.graxpert_preset import run_graxpert_via_preset
-            run_graxpert_via_preset(self, preset or {})
-            s_raw = (preset or {}).get("smoothing", 0.10)
-            try:
-                s_val = float(s_raw)
-            except Exception:
-                s_val = 0.10
-            gpu_val = bool((preset or {}).get("gpu", True))
 
-            self._log(f"Ran GraXpert (smoothing={round(s_val, 2)}, gpu={'on' if gpu_val else 'off'})")
+            if doc is None or getattr(doc, "image", None) is None:
+                QMessageBox.warning(self, "GraXpert", "Target document has no image.")
+                return
+
+            p = preset or {}
+            op = str(p.get("op", "background")).lower()  # "background" or "denoise"
+
+            # Run headless on this specific document (ROI or full frame)
+            run_graxpert_via_preset(self, p, target_doc=doc)
+
+            # Logging
+            gpu_val = bool(p.get("gpu", True))
+            if op == "denoise":
+                s_raw = p.get("strength", 0.50)
+                try:
+                    s_val = float(s_raw)
+                except Exception:
+                    s_val = 0.50
+                ai_ver = p.get("ai_version") or "latest"
+                self._log(
+                    f"Ran GraXpert Denoise "
+                    f"(strength={s_val:.2f}, model={ai_ver}, gpu={'on' if gpu_val else 'off'})"
+                )
+            else:
+                s_raw = p.get("smoothing", 0.10)
+                try:
+                    s_val = float(s_raw)
+                except Exception:
+                    s_val = 0.10
+                self._log(
+                    f"Ran GraXpert Gradient Removal "
+                    f"(smoothing={round(s_val, 2)}, gpu={'on' if gpu_val else 'off'})"
+                )
             return
+
 
         if cid == "convo":
             try:
-                from pro.convo_preset import apply_convo_via_preset
-                apply_convo_via_preset(self, doc, preset or {})
-                op = (preset or {}).get("op", "convolution")
-                self._log(f"Applied Convo/Deconvo preset ({op}) to '{target_sw.windowTitle()}'")
+                self._apply_convo_preset_to_doc(doc, preset or {})
             except Exception as e:
-                
                 QMessageBox.warning(self, "Convo/Deconvo", f"Apply failed:\n{e}")
             return
 
         if cid == "remove_stars":
             from pro.remove_stars_preset import run_remove_stars_via_preset
-            run_remove_stars_via_preset(self, preset or {})
+
+            if doc is None or getattr(doc, "image", None) is None:
+                QMessageBox.warning(self, "Remove Stars", "Target document has no image.")
+                return
+
+            # Run headless on this specific document (ROI or full frame)
+            run_remove_stars_via_preset(self, preset or {}, target_doc=doc)
+
             # safe logging (no nested format specs)
-            tool = str((preset or {}).get("tool","starnet"))
+            tool = str((preset or {}).get("tool", "starnet"))
             if tool.lower().startswith("star"):
                 lin = bool((preset or {}).get("linear", True))
                 self._log(f"Ran Remove Stars (tool=StarNet, linear={'yes' if lin else 'no'})")
             else:
-                mode = (preset or {}).get("mode","unscreen")
+                mode = (preset or {}).get("mode", "unscreen")
                 stride = int((preset or {}).get("stride", 512))
                 gpu = not bool((preset or {}).get("disable_gpu", False))
                 show = bool((preset or {}).get("show_extracted_stars", True))
-                self._log(f"Ran Remove Stars (tool=DarkStar, mode={mode}, stride={stride}, gpu={'on' if gpu else 'off'}, stars={'on' if show else 'off'})")
+                self._log(
+                    f"Ran Remove Stars (tool=DarkStar, mode={mode}, "
+                    f"stride={stride}, gpu={'on' if gpu else 'off'}, "
+                    f"stars={'on' if show else 'off'})"
+                )
             return
+
 
         if cid == "aberrationai":
             from pro.aberration_ai_preset import run_aberration_ai_via_preset
@@ -7621,8 +9224,48 @@ class AstroSuiteProMainWindow(QMainWindow):
             return
 
         if cid == "remove_green":
-            apply_remove_green_preset_to_doc(self, doc, preset)
+            try:
+                from pro.remove_green import apply_remove_green_preset_to_doc
+
+                # Normalize any legacy keys into a canonical preset
+                raw = preset if isinstance(preset, dict) else {}
+                amt = float(raw.get("amount",
+                                    raw.get("strength",
+                                            raw.get("value", 1.0))))
+                mode = str(raw.get("mode",
+                                   raw.get("neutral_mode", "avg"))).lower()
+                preserve = bool(raw.get("preserve_lightness",
+                                        raw.get("preserve", True)))
+
+                preset_dict = {
+                    "amount": amt,
+                    "mode": mode,
+                    "preserve_lightness": preserve,
+                }
+
+                # Apply to the current doc (ROI or full view)
+                apply_remove_green_preset_to_doc(self, doc, preset_dict)
+
+                # Record for Replay Last Action so preview → base works
+                try:
+                    self._last_headless_command = {
+                        "command_id": "remove_green",
+                        "preset": dict(preset_dict),
+                    }
+                    if hasattr(self, "_log"):
+                        self._log(
+                            f"[Replay] Recorded Remove Green preset from command drop "
+                            f"(amount={amt:.2f}, mode={mode}, "
+                            f"preserve_lightness={'yes' if preserve else 'no'})"
+                        )
+                except Exception:
+                    # Don't let logging break the command
+                    pass
+
+            except Exception as e:
+                QMessageBox.warning(self, "Remove Green", str(e))
             return
+
 
         if cid == "star_align":
             try:
@@ -7690,11 +9333,58 @@ class AstroSuiteProMainWindow(QMainWindow):
 
         if cid == "white_balance":
             try:
-                self._apply_white_balance_preset_to_doc(doc, preset)
+                # Normalize preset → dict and supply sensible defaults
+                preset_dict = preset if isinstance(preset, dict) else {}
+                if not preset_dict:
+                    preset_dict = {
+                        "mode": "star",
+                        "threshold": 50.0,
+                        "reuse_cached_sources": True,
+                    }
+
+                # Apply to the *current* doc (ROI or full), just like before
+                self._apply_white_balance_preset_to_doc(doc, preset_dict)
+
+                # Record for Replay Last Action so preview → base replay works
+                try:
+                    self._last_headless_command = {
+                        "command_id": "white_balance",
+                        "preset": preset_dict,
+                    }
+
+                    # Optional: nice logging
+                    mode = str(preset_dict.get("mode", "star")).lower()
+                    if mode == "manual":
+                        r = float(preset_dict.get("r_gain", 1.0))
+                        g = float(preset_dict.get("g_gain", 1.0))
+                        b = float(preset_dict.get("b_gain", 1.0))
+                        self._log(
+                            f"[Replay] Recorded White Balance preset from command drop "
+                            f"(mode=manual, R={r:.3f}, G={g:.3f}, B={b:.3f})"
+                        )
+                    elif mode == "auto":
+                        self._log(
+                            "[Replay] Recorded White Balance preset from command drop (mode=auto)"
+                        )
+                    else:
+                        thr = float(preset_dict.get("threshold", 50.0))
+                        reuse = bool(preset_dict.get("reuse_cached_sources", True))
+                        self._log(
+                            f"[Replay] Recorded White Balance preset from command drop "
+                            f"(mode=star, threshold={thr:.1f}, "
+                            f"reuse={'yes' if reuse else 'no'})"
+                        )
+                except Exception:
+                    # Recording/logging must never break the command
+                    pass
+
+                # Existing log about the actual apply
                 self._log(f"White Balance applied to '{target_sw.windowTitle()}'")
+
             except Exception as e:
                 QMessageBox.warning(self, "White Balance", str(e))
             return
+
 
         if cid == "wavescale_hdr":
             from pro.wavescale_hdr_preset import run_wavescale_hdr_via_preset
@@ -7840,8 +9530,12 @@ class AstroSuiteProMainWindow(QMainWindow):
 
         if cid == "morphology":
             try:
-                from pro.morphology import apply_morphology_to_doc
-                apply_morphology_to_doc(doc, preset)
+                if hasattr(self, "_apply_morphology_preset_to_doc"):
+                    self._apply_morphology_preset_to_doc(doc, preset)
+                else:
+                    from pro.morphology import apply_morphology_to_doc
+                    apply_morphology_to_doc(doc, preset)
+
                 self._log(f"Morphology applied to '{target_sw.windowTitle()}'")
             except Exception as e:
                 QMessageBox.warning(self, "Morphology", str(e))
@@ -7849,13 +9543,29 @@ class AstroSuiteProMainWindow(QMainWindow):
 
         if cid == "pixel_math":
             try:
-                from pro.pixelmath import apply_pixel_math_to_doc
-                apply_pixel_math_to_doc(self, doc, preset)
-                desc = preset.get("expr", None) or f"R:{preset.get('expr_r','')} G:{preset.get('expr_g','')} B:{preset.get('expr_b','')}"
+                p = dict(preset or {})
+
+                if hasattr(self, "_apply_pixelmath_preset_to_doc"):
+                    self._apply_pixelmath_preset_to_doc(doc, p)
+                else:
+                    from pro.pixelmath import apply_pixel_math_to_doc
+                    apply_pixel_math_to_doc(self, doc, p)
+
+                expr = (p.get("expr") or "").strip()
+                if expr:
+                    desc = expr
+                else:
+                    desc = (
+                        f"R:{p.get('expr_r', '')} "
+                        f"G:{p.get('expr_g', '')} "
+                        f"B:{p.get('expr_b', '')}"
+                    )
+
                 self._log(f"Pixel Math applied to '{target_sw.windowTitle()}' → {desc}")
             except Exception as e:
                 QMessageBox.warning(self, "Pixel Math", f"Preset apply failed:\n{e}")
             return
+
 
         if cid == "signature_insert":
             try:
@@ -7872,14 +9582,24 @@ class AstroSuiteProMainWindow(QMainWindow):
 
         if cid == "halo_b_gon":
             try:
-                from pro.halobgon import apply_halo_b_gon_to_doc
-                apply_halo_b_gon_to_doc(self, doc, preset)
-                lvl = int((preset or {}).get("reduction", 0))
-                lin = bool((preset or {}).get("linear", False))
-                self._log(f"Halo-B-Gon applied to '{target_sw.windowTitle()}' (level={lvl}, linear={lin})")
+                p = dict(preset or {})
+
+                if hasattr(self, "_apply_halobgon_preset_to_doc"):
+                    self._apply_halobgon_preset_to_doc(doc, p)
+                else:
+                    from pro.halobgon import apply_halo_b_gon_to_doc
+                    apply_halo_b_gon_to_doc(self, doc, p)
+
+                lvl = int(p.get("reduction", 0))
+                lin = bool(p.get("linear", False))
+                self._log(
+                    f"Halo-B-Gon applied to '{target_sw.windowTitle()}' "
+                    f"(level={lvl}, linear={lin})"
+                )
             except Exception as e:
                 QMessageBox.warning(self, "Halo-B-Gon", f"Preset apply failed:\n{e}")
             return
+
 
         # ----- Geometry (headless; accept all old/new ids) -----
         if cid == "geom_invert":
@@ -7928,6 +9648,16 @@ class AstroSuiteProMainWindow(QMainWindow):
                 self._log(f"Rotate 90° CCW applied to '{target_sw.windowTitle()}'")
             except Exception as e:
                 QMessageBox.warning(self, "Rotate 90° CCW", str(e))
+            return
+
+        if cid == "geom_rotate_180":
+            try:
+                called = _call_any(["_apply_geom_rot_180_to_doc"], doc)
+                if not called:
+                    raise RuntimeError("No rotate-180 apply method found")
+                self._log(f"Rotate 180° applied to '{target_sw.windowTitle()}'")
+            except Exception as e:
+                QMessageBox.warning(self, "Rotate 180°", str(e))
             return
 
         if cid == "geom_rescale":
@@ -8249,12 +9979,24 @@ class AstroSuiteProMainWindow(QMainWindow):
 
 
     def _target_doc_from_subwindow(self, subwin) -> object | None:
-        """Resolve the true target document for a QMdiSubWindow (map preview → base)."""
-        dm = getattr(self, "docman", None) or getattr(self, "doc_manager", None)
+        """
+        Resolve the *base* target document for a QMdiSubWindow.
+
+        For ROI/preview-aware views, this prefers view.base_document so that
+        “apply to base” operations don’t accidentally hit the preview/proxy doc.
+        """
         if subwin is None:
             return None
+
         w = subwin.widget()
-        # Prefer DocManager’s mapping (handles preview proxies)
+        dm = getattr(self, "docman", None) or getattr(self, "doc_manager", None)
+
+        # 0) NEW: prefer explicit base_document on the view
+        base = getattr(w, "base_document", None)
+        if base is not None:
+            return base
+
+        # 1) OLD behavior: ask DocManager (may return a proxy/ROI doc on older views)
         if dm and hasattr(dm, "get_document_for_view"):
             try:
                 d = dm.get_document_for_view(w)
@@ -8262,15 +10004,19 @@ class AstroSuiteProMainWindow(QMainWindow):
                     return d
             except Exception:
                 pass
-        # Fallbacks
+
+        # 2) Fallbacks
         if hasattr(w, "document"):
             return w.document
+
         if hasattr(self, "get_active_document"):
             try:
                 return self.get_active_document()
             except Exception:
                 pass
+
         return None
+
 
 
     def _on_astrometry_drop(self, payload: dict, target_subwindow):
@@ -8337,6 +10083,18 @@ class AstroSuiteProMainWindow(QMainWindow):
         except Exception:
             pass
 
+    def _on_remove_pedestal(self):
+        from pro.pedestal import remove_pedestal
+
+        # Let remove_pedestal resolve the correct target via DocManager
+        remove_pedestal(self, target_doc=None)
+
+        # remember for replay – no preset payload needed, just the id
+        self._remember_last_headless_command(
+            "pedestal",
+            preset={},                          # no parameters for this one
+            description="Pedestal Removal"
+        )
 
     def _open_statistical_stretch_with_preset(self, preset: dict):
         """
@@ -8383,31 +10141,42 @@ class AstroSuiteProMainWindow(QMainWindow):
         Headless apply of Statistical Stretch using the dialog’s own apply path.
         We instantiate the dialog, set controls from the preset, and call its Apply.
         """
-        from pro.stat_stretch import StatisticalStretchDialog  # adjust import if needed
 
-        dlg = StatisticalStretchDialog(self, doc)
-
-        # fill controls
+        # ─── Re-entry guard: prevent double-apply per event ───
+        if getattr(self, "_stat_stretch_apply_in_progress", False):
+            print("[Replay] _apply_stat_stretch_preset_to_doc: re-entry suppressed")
+            return
+        self._stat_stretch_apply_in_progress = True
         try:
-            if "target_median" in preset:
-                dlg.spin_target.setValue(float(preset["target_median"]))
-            if "linked" in preset:
-                dlg.chk_linked.setChecked(bool(preset["linked"]))
-            if "normalize" in preset:
-                dlg.chk_normalize.setChecked(bool(preset["normalize"]))
-            if "apply_curves" in preset:
-                dlg.chk_curves.setChecked(bool(preset["apply_curves"]))
-            if "curves_boost" in preset:
-                dlg.sld_curves.setValue(int(round(float(preset["curves_boost"]) * 100)))
-        except Exception:
-            pass
+            from pro.stat_stretch import StatisticalStretchDialog  # adjust import if needed
 
-        # directly run the dialog's apply slot (reuses your edit/undo naming, etc.)
-        dlg._do_apply()
-        try:
-            dlg.close()
-        except Exception:
-            pass
+            dlg = StatisticalStretchDialog(self, doc)
+
+            # fill controls
+            try:
+                if "target_median" in preset:
+                    dlg.spin_target.setValue(float(preset["target_median"]))
+                if "linked" in preset:
+                    dlg.chk_linked.setChecked(bool(preset["linked"]))
+                if "normalize" in preset:
+                    dlg.chk_normalize.setChecked(bool(preset["normalize"]))
+                if "apply_curves" in preset and hasattr(dlg, "chk_curves"):
+                    dlg.chk_curves.setChecked(bool(preset["apply_curves"]))
+                if "curves_boost" in preset and hasattr(dlg, "sld_curves"):
+                    dlg.sld_curves.setValue(int(round(float(preset["curves_boost"]) * 100)))
+            except Exception:
+                pass
+
+            # directly run the dialog's apply slot (reuses your edit/undo naming, etc.)
+            dlg._do_apply()
+            try:
+                dlg.close()
+            except Exception:
+                pass
+        finally:
+            self._stat_stretch_apply_in_progress = False
+
+
 
     def _open_star_stretch_with_preset(self, preset: dict):
         """Background drop → open Star Stretch dialog with controls preloaded."""
@@ -9172,12 +10941,10 @@ class AstroSuiteProMainWindow(QMainWindow):
 
         # ── 5) ROI-aware proxy: keep base handle, expose live proxy at view.document
         try:
-
             setattr(view, "base_document", doc)  # explicit base (non-ROI) doc
             if dm is not None:
                 view.document = _DocProxy(dm, view, doc)
             else:
-                # safe fallback
                 setattr(view, "document", doc)
         except Exception as e:
             print(f"Failed to install DocProxy: {e}")
@@ -9190,9 +10957,36 @@ class AstroSuiteProMainWindow(QMainWindow):
             except Exception:
                 pass
 
+        # 🔗 REPLAY: connect ImageSubWindow → MainWindow (support old + new signal names)
+        replay_sig = None
+        sig_name_used = None
+        for name in ("replayOnBaseRequested", "replayLastRequested"):
+            s = getattr(view, name, None)
+            if s is not None:
+                replay_sig = s
+                sig_name_used = name
+                break
+
+        if replay_sig is not None:
+            try:
+                replay_sig.connect(self._on_view_replay_last_requested)
+                try:
+                    self._log(f"[Replay] Connected {sig_name_used} for view id={id(view)}")
+                except Exception:
+                    print(f"[Replay] Connected {sig_name_used} for view id={id(view)}")
+            except Exception as e:
+                try:
+                    self._log(f"[Replay] FAILED to connect {sig_name_used} for view id={id(view)}: {e}")
+                except Exception:
+                    print(f"[Replay] FAILED to connect {sig_name_used} for view id={id(view)}: {e}")
+
+
+
         self._hook_preview_awareness(view)
         base_title = self._pretty_title(doc, linked=False)
+
         final_title = self._unique_window_title(base_title)
+
         # ── 6) Add subwindow and set chrome
         sw = self.mdi.addSubWindow(view)
         sw.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
