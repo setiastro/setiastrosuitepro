@@ -59,8 +59,8 @@ class StatisticalStretchDialog(QDialog):
         self.sld_curves.valueChanged.connect(lambda v: self.lbl_curves_val.setText(f"{v/100:.2f}"))
         cr_lay.addWidget(self.sld_curves, 1)
         cr_lay.addWidget(self.lbl_curves_val)
-        self.curves_row.setVisible(False)          # hidden until checkbox is ticked
-        self.chk_curves.toggled.connect(self.curves_row.setVisible)
+        self.curves_row.setEnabled(False)          # hidden until checkbox is ticked
+        self.chk_curves.toggled.connect(self.curves_row.setEnabled)
 
         # Preview area
         self.preview_label = QLabel(alignment=Qt.AlignmentFlag.AlignCenter)
