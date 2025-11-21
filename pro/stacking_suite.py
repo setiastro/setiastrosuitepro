@@ -1179,7 +1179,6 @@ def remove_gradient_stack_abe(stack, target_hw: tuple[int,int] | None = None, **
 
     return out
 
-
 def load_fits_tile(filepath, y_start, y_end, x_start, x_end):
     """
     Loads a sub-region from a FITS file, including:
@@ -1197,7 +1196,7 @@ def load_fits_tile(filepath, y_start, y_end, x_start, x_end):
     from astropy.io import fits
     from io import BytesIO
 
-    # Find the correct HDU that actually contains image data
+    # Find the "intended" HDU index (may be wrong for this reopen; we re-check below)
     hdr, ext_index = get_valid_header(filepath)
 
     # Open appropriately for gzip-compressed files
@@ -1210,7 +1209,28 @@ def load_fits_tile(filepath, y_start, y_end, x_start, x_end):
         hdul = fits.open(filepath, memmap=False)
 
     with hdul as H:
-        data = H[ext_index].data
+        # ---- pick a safe HDU index in THIS open ----
+        ei = ext_index if isinstance(ext_index, int) else None
+        data = None
+
+        if ei is not None and 0 <= ei < len(H):
+            try:
+                data = H[ei].data
+            except Exception:
+                data = None
+
+        # Fallback: rescan this HDUList for first image HDU
+        if data is None:
+            ei = None
+            for i, hdu in enumerate(H):
+                try:
+                    if hdu.data is not None:
+                        data = hdu.data
+                        ei = i
+                        break
+                except Exception:
+                    continue
+
         if data is None:
             return None
 
@@ -1219,8 +1239,14 @@ def load_fits_tile(filepath, y_start, y_end, x_start, x_end):
             data = data.astype(data.dtype.newbyteorder("="), copy=False)
 
         orig_dtype = data.dtype
-        bzero  = float(hdr.get("BZERO", 0.0))
-        bscale = float(hdr.get("BSCALE", 1.0))
+
+        # Prefer scaling keywords from the actual image HDU, fall back to composite hdr
+        try:
+            img_hdr = H[ei].header if ei is not None else hdr
+        except Exception:
+            img_hdr = hdr
+        bzero  = float(img_hdr.get("BZERO", hdr.get("BZERO", 0.0)))
+        bscale = float(img_hdr.get("BSCALE", hdr.get("BSCALE", 1.0)))
 
         a = np.asarray(data)
         a = np.squeeze(a)  # match load_image behavior
@@ -1236,7 +1262,6 @@ def load_fits_tile(filepath, y_start, y_end, x_start, x_end):
             if (y_end <= dim0) and (x_end <= dim1):
                 tile_data = a[y_start:y_end, x_start:x_end]
             else:
-                # swapped spatial axes case
                 tile_data = a[x_start:x_end, y_start:y_end]
 
         elif ndim == 3:
@@ -1258,7 +1283,6 @@ def load_fits_tile(filepath, y_start, y_end, x_start, x_end):
                     spat_axes.append(idx)
 
             if color_axis is None or len(spat_axes) != 2:
-                # treat as mono cube; use first two dims
                 tile_data = a[y_start:y_end, x_start:x_end]
             else:
                 spat0, spat1 = spat_axes
@@ -1267,7 +1291,6 @@ def load_fits_tile(filepath, y_start, y_end, x_start, x_end):
                 if (y_end <= d0) and (x_end <= d1):
                     tile_data = do_slice_spatial(a, spat0, spat1)
                 else:
-                    # swapped spatial axes
                     tile_data = do_slice_spatial(a, spat1, spat0)
 
         else:
@@ -1278,23 +1301,19 @@ def load_fits_tile(filepath, y_start, y_end, x_start, x_end):
         # ---------------------------
         if orig_dtype == np.uint8:
             tile_data = tile_data.astype(np.float32) / 255.0
-
         elif orig_dtype == np.uint16:
             tile_data = tile_data.astype(np.float32) / 65535.0
-
         elif orig_dtype == np.int32:
             tile_data = tile_data.astype(np.float32) * bscale + bzero
-
         elif orig_dtype == np.uint32:
             tile_data = tile_data.astype(np.float32) * bscale + bzero
-
         elif orig_dtype == np.float32:
-            tile_data = np.array(tile_data, dtype=np.float32, copy=False, order="C")
-
+            tile_data = np.asarray(tile_data, dtype=np.float32, order="C")
         else:
             tile_data = tile_data.astype(np.float32)
 
         return tile_data
+
 
 
 def _get_log_dock():
