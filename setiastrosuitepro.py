@@ -311,7 +311,7 @@ from pro.fitsmodifier import BatchFITSHeaderDialog
 from pro.autostretch import autostretch as _autostretch
 
 
-VERSION = "1.4.16"
+VERSION = "1.4.17"
 
 
 
