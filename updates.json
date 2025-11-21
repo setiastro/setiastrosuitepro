@@ -1,9 +1,9 @@
 {
-  "version": "1.4.16",
+  "version": "1.4.17",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.16/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.16/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.16/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.17/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.17/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.17/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.4.16 Soooo many updates in this version. from baking your display stretch into a permanent stretch, replay ability of functions from the preview/ROI to the main image, pulling shortcuts off the history explorer (if the function is replayable, ie it is a normal function, not like glimr or something that needs human interface and can't run headlessly), panel docking updates, WCS updating with geometric functions, rotate 180 function added, the status console reading out a lot more, and more I have since forgotten."
+  "notes": "Seti Astro Suite Pro V1.4.17 Bug fixes and some niceties."
 }
