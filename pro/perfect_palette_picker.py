@@ -634,14 +634,19 @@ class PerfectPalettePicker(QWidget):
         mx = float(rgb.max()) or 1.0
         self.final = (rgb / mx).astype(np.float32)
 
-        self._set_preview_image(self._to_qimage(self.final))
+        self._set_preview_image(self._to_qimage(self.final), fit=True)
         self.status.setText(f"Preview generated: {pal}")
 
-    def _set_preview_image(self, qimg: QImage):
+    def _set_preview_image(self, qimg: QImage, *, fit: bool = False):
         self._base_pm = QPixmap.fromImage(qimg)
         self._zoom = 1.0
         self._update_preview_pixmap()
-        QTimer.singleShot(0, self._center_scrollbars)
+
+        if fit:
+            # wait one event loop so viewport sizes are correct
+            QTimer.singleShot(0, self._fit_to_preview)
+        else:
+            QTimer.singleShot(0, self._center_scrollbars)
 
     def _update_preview_pixmap(self):
         if self._base_pm is None:

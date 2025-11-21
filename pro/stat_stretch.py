@@ -490,5 +490,4 @@ class StatisticalStretchDialog(QDialog):
                 return True
 
         return super().eventFilter(obj, ev)
-
      

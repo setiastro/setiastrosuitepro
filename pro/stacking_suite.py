@@ -128,60 +128,50 @@ def _read_tile_stack(file_list, y0, y1, x0, x1, channels, out_buf):
     out_buf: (N, th, tw, C) float32, C-order (preallocated by caller).
     Returns (th, tw) = actual tile extents.
     """
+    import os, numpy as np
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     th = int(y1 - y0)
     tw = int(x1 - x0)
     N  = len(file_list)
 
-    # Slice to actual extents (edge tiles); zero-fill defensively
     ts = out_buf[:N, :th, :tw, :channels]
     ts[...] = 0.0
 
-    # Helper: coerce any incoming array to float32 HWC with requested channel count
     def _coerce_to_f32_hwc(a: np.ndarray, want_c: int) -> np.ndarray:
         if a is None:
             return None
 
-        # ---- layout normalize to HWC ----
         if a.ndim == 2:
-            a = a[:, :, None]  # (H,W) -> (H,W,1)
+            a = a[:, :, None]
         elif a.ndim == 3:
-            # Heuristics: treat (3,H,W) as CHW and transpose; keep (H,W,3) as is
+            # CHW -> HWC heuristic
             if a.shape[0] in (1, 3) and a.shape[1] >= 8 and a.shape[2] >= 8 and a.shape[-1] not in (1, 3):
-                # looks like CHW -> HWC
                 a = a.transpose(1, 2, 0)
         else:
-            # unknown layout; bail to None so caller zeros
             return None
 
-        # ---- crop/guard (should already match) ----
         if a.shape[0] != th or a.shape[1] != tw:
             a = a[:th, :tw, ...]
 
-        # ---- channel reconcile ----
         Csrc = a.shape[2]
         if Csrc == want_c:
             pass
         elif Csrc == 1 and want_c == 3:
             a = np.repeat(a, 3, axis=2)
         elif Csrc == 3 and want_c == 1:
-            # For calibration masters, deterministic luminance/mean is fine.
-            # (Mean avoids color bias if channels differ a bit.)
             a = a.mean(axis=2, keepdims=True)
         else:
-            # Fallback: slice/expand as best-effort
             if Csrc > want_c:
                 a = a[:, :, :want_c]
             else:
                 a = np.repeat(a, want_c, axis=2)
 
-        # ---- dtype/finite ----
         a = np.asarray(a, dtype=np.float32, order="C")
         if not np.isfinite(a).all():
             np.nan_to_num(a, copy=False, posinf=0.0, neginf=0.0)
-
         return a
 
-    # Load each frame's tile in parallel (avoid oversubscribing)
     max_workers = min(N, max(1, (os.cpu_count() or 4)))
     with ThreadPoolExecutor(max_workers=max_workers) as exe:
         fut2i = {
@@ -193,17 +183,16 @@ def _read_tile_stack(file_list, y0, y1, x0, x1, channels, out_buf):
             try:
                 sub = fut.result()
             except Exception:
-                # leave zeros for this frame/tile
                 continue
 
             sub = _coerce_to_f32_hwc(sub, channels)
             if sub is None:
                 continue
 
-            # Commit (shapes now match by construction)
             ts[i, :, :, :] = sub
 
     return th, tw
+
 
 
 def _tile_grid(height, width, chunk_h, chunk_w):
@@ -1191,96 +1180,122 @@ def remove_gradient_stack_abe(stack, target_hw: tuple[int,int] | None = None, **
     return out
 
 
-
-
 def load_fits_tile(filepath, y_start, y_end, x_start, x_end):
     """
-    Loads a sub-region from a FITS file, detecting which axes are spatial vs. color.
-    
-    * If the data is 2D, it might be (height, width) or (width, height).
-    * If the data is 3D, it might be:
-        - (height, width, 3)
-        - (3, height, width)
-        - (width, height, 3)
-        - (3, width, height)
-      We only slice the two spatial dimensions; the color axis remains intact.
-    
-    The returned tile will always have the shape:
-      - (tile_height, tile_width) for mono
-      - (tile_height, tile_width, 3) for color
-    (though the color dimension may still be first if it was first in the file).
-    It's up to the caller to reorder if needed.
+    Loads a sub-region from a FITS file, including:
+      - normal FITS
+      - .fits.gz / .fit.gz
+      - fpack / Rice tile-compressed FITS stored as plain .fits (CompImageHDU in ext 1)
+
+    Uses get_valid_header() to choose the correct HDU and copy any BAYERPAT, etc.
+
+    Returns:
+      - (th, tw) mono tile
+      - (th, tw, 3) color tile (or CHW if that’s how it lives on disk)
     """
-    with fits.open(filepath, memmap=False) as hdul:
-        data = hdul[0].data
+    import numpy as np, gzip
+    from astropy.io import fits
+    from io import BytesIO
+
+    # Find the correct HDU that actually contains image data
+    hdr, ext_index = get_valid_header(filepath)
+
+    # Open appropriately for gzip-compressed files
+    if filepath.lower().endswith((".fits.gz", ".fit.gz")):
+        with gzip.open(filepath, "rb") as f:
+            file_content = f.read()
+        hdul = fits.open(BytesIO(file_content), memmap=False)
+    else:
+        # memmap=False is IMPORTANT for CompImageHDU / tile-compressed
+        hdul = fits.open(filepath, memmap=False)
+
+    with hdul as H:
+        data = H[ext_index].data
         if data is None:
             return None
 
-        # Save the original data type for normalization later.
+        # Ensure native byte order
+        if data.dtype.byteorder not in ("=", "|"):
+            data = data.astype(data.dtype.newbyteorder("="), copy=False)
+
         orig_dtype = data.dtype
+        bzero  = float(hdr.get("BZERO", 0.0))
+        bscale = float(hdr.get("BSCALE", 1.0))
 
-        shape = data.shape
-        ndim = data.ndim
+        a = np.asarray(data)
+        a = np.squeeze(a)  # match load_image behavior
 
+        shape = a.shape
+        ndim  = a.ndim
+
+        # ---------------------------
+        # Slice spatial region
+        # ---------------------------
         if ndim == 2:
-            # Data is 2D; shape could be (height, width) or (width, height)
             dim0, dim1 = shape
             if (y_end <= dim0) and (x_end <= dim1):
-                tile_data = data[y_start:y_end, x_start:x_end]
+                tile_data = a[y_start:y_end, x_start:x_end]
             else:
-                tile_data = data[x_start:x_end, y_start:y_end]
+                # swapped spatial axes case
+                tile_data = a[x_start:x_end, y_start:y_end]
+
         elif ndim == 3:
-            # Data is 3D; could be (height, width, 3) or (3, height, width), etc.
             dim0, dim1, dim2 = shape
 
-            def do_slice_spatial(data3d, spat0, spat1, color_axis):
+            def do_slice_spatial(data3d, spat0, spat1):
                 slicer = [slice(None)] * 3
                 slicer[spat0] = slice(y_start, y_end)
                 slicer[spat1] = slice(x_start, x_end)
-                tile = data3d[tuple(slicer)]
-                return tile
+                return data3d[tuple(slicer)]
 
-            # Identify the color axis (assumed to have size 3)
+            # Identify color axis (size 3); others are spatial
             color_axis = None
             spat_axes = []
             for idx, d in enumerate((dim0, dim1, dim2)):
-                if d == 3:
+                if d == 3 and color_axis is None:
                     color_axis = idx
                 else:
                     spat_axes.append(idx)
 
-            if color_axis is None:
-                # No axis with size 3; assume the image is mono and use the first two dims.
-                tile_data = data[y_start:y_end, x_start:x_end]
+            if color_axis is None or len(spat_axes) != 2:
+                # treat as mono cube; use first two dims
+                tile_data = a[y_start:y_end, x_start:x_end]
             else:
-                # Ensure we have two spatial axes.
-                if len(spat_axes) != 2:
-                    spat_axes = [0, 1]
                 spat0, spat1 = spat_axes
                 d0 = shape[spat0]
                 d1 = shape[spat1]
                 if (y_end <= d0) and (x_end <= d1):
-                    tile_data = do_slice_spatial(data, spat0, spat1, color_axis)
+                    tile_data = do_slice_spatial(a, spat0, spat1)
                 else:
-                    tile_data = do_slice_spatial(data, spat1, spat0, color_axis)
+                    # swapped spatial axes
+                    tile_data = do_slice_spatial(a, spat1, spat0)
+
         else:
             return None
 
-        # Normalize based on the original data type.
+        # ---------------------------
+        # Scale/normalize like load_image
+        # ---------------------------
         if orig_dtype == np.uint8:
             tile_data = tile_data.astype(np.float32) / 255.0
+
         elif orig_dtype == np.uint16:
             tile_data = tile_data.astype(np.float32) / 65535.0
+
+        elif orig_dtype == np.int32:
+            tile_data = tile_data.astype(np.float32) * bscale + bzero
+
         elif orig_dtype == np.uint32:
-            # 32-bit data: convert to float32 but leave values as is.
-            tile_data = tile_data.astype(np.float32)
+            tile_data = tile_data.astype(np.float32) * bscale + bzero
+
         elif orig_dtype == np.float32:
-            # Already 32-bit float; assume it's in the desired range.
-            tile_data = tile_data
+            tile_data = np.array(tile_data, dtype=np.float32, copy=False, order="C")
+
         else:
             tile_data = tile_data.astype(np.float32)
 
-    return tile_data
+        return tile_data
+
 
 def _get_log_dock():
     app = QApplication.instance()
@@ -10600,9 +10615,12 @@ class StackingSuiteDialog(QDialog):
         bias_path = self.master_files.get("Bias")
         if bias_path:
             try:
-                with fits.open(bias_path) as bias_hdul:
-                    master_bias = bias_hdul[0].data.astype(np.float32)
-                self.update_status(f"Using Master Bias: {os.path.basename(bias_path)}")
+                master_bias, _, _, bias_is_mono = load_image(bias_path)
+                if master_bias is not None:
+                    # ensure H,W (mono) or CHW (color) to match your subtract
+                    if (not bias_is_mono) and master_bias.ndim == 3 and master_bias.shape[-1] == 3:
+                        master_bias = master_bias.transpose(2,0,1)  # HWC -> CHW
+                    self.update_status(f"Using Master Bias: {os.path.basename(bias_path)}")
             except Exception as e:
                 self.update_status(f"⚠️ Could not load Master Bias: {e}")
                 master_bias = None
@@ -10782,9 +10800,24 @@ class StackingSuiteDialog(QDialog):
                         star_max_ratio = self.settings.value("stacking/cosmetic/star_max_ratio", 0.55, type=float)
                         sat_quantile   = self.settings.value("stacking/cosmetic/sat_quantile", 0.9995, type=float)
 
-                        if hdr.get("BAYERPAT"):
-                            # Use the FITS header pattern if present
-                            pattern = str(hdr.get("BAYERPAT")).strip().upper()
+                        # --- Decide Bayer vs debayered from DATA, not header ---
+                        # After your HWC->CHW transpose, debayered color lights will be (3,H,W).
+                        array_is_color = (
+                            light_data.ndim == 3 and (
+                                light_data.shape[0] == 3 or light_data.shape[-1] == 3
+                            )
+                        )
+                        if array_is_color:
+                            is_mono = False
+                        bayerpat = hdr.get("BAYERPAT")
+                        use_bayer_cosmetic = (not array_is_color) and bool(bayerpat)
+
+                        if use_bayer_cosmetic:
+                            pattern = str(bayerpat).strip().upper()
+                            if pattern not in ("RGGB","BGGR","GRBG","GBRG"):
+                                pattern = "RGGB"
+
+                            # light_data is guaranteed 2D here
                             light_data = bulk_cosmetic_correction_bayer(
                                 light_data,
                                 hot_sigma=hot_sigma,
@@ -10792,9 +10825,9 @@ class StackingSuiteDialog(QDialog):
                                 star_mean_ratio=star_mean_ratio,
                                 star_max_ratio=star_max_ratio,
                                 sat_quantile=sat_quantile,
-                                pattern=pattern if pattern in ("RGGB","BGGR","GRBG","GBRG") else "RGGB"
+                                pattern=pattern
                             )
-                            self.update_status("Cosmetic Correction Applied for Bayer Pattern")
+                            self.update_status(f"Cosmetic Correction Applied for Bayer Pattern ({pattern})")
                         else:
                             light_data = bulk_cosmetic_correction_numba(
                                 light_data,
@@ -10804,7 +10837,8 @@ class StackingSuiteDialog(QDialog):
                                 star_max_ratio=star_max_ratio,
                                 sat_quantile=sat_quantile
                             )
-                            self.update_status("Cosmetic Correction Applied")
+                            self.update_status("Cosmetic Correction Applied (debayered/mono)")
+
                         QApplication.processEvents()
 
                     # Back to HWC for saving if color
@@ -10829,9 +10863,15 @@ class StackingSuiteDialog(QDialog):
                     except Exception:
                         pass
 
-                    calibrated_filename = os.path.join(
-                        calibrated_dir, os.path.basename(light_file).replace(".fit", "_c.fit")
-                    )
+                    base = os.path.basename(light_file)
+                    root, ext = os.path.splitext(base)
+
+                    # handle double extensions like .fits.gz
+                    if root.lower().endswith(".fits") or root.lower().endswith(".fit"):
+                        root2, ext2 = os.path.splitext(root)
+                        root, ext = root2, ext2 + ext
+
+                    calibrated_filename = os.path.join(calibrated_dir, f"{root}_c.fit")
 
                     # Force float32 FITS regardless of camera bit depth
                     save_image(

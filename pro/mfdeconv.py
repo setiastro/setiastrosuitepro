@@ -18,6 +18,7 @@ try:
 except Exception:
     sep = None
 from pro.free_torch_memory import _free_torch_memory
+from pro.mfdeconv_earlystop import EarlyStopper
 torch = None        # filled by runtime loader if available
 TORCH_OK = False
 NO_GRAD = contextlib.nullcontext  # fallback
@@ -3270,23 +3271,24 @@ def multiframe_deconv(
         _save_iter_image(x, hdr0, iter_dir, "seed", color_mode)
 
     # ---- iterative loop ----
-    tol_upd = 2e-4
-    tol_rel = 5e-4
-    patience = 2
-    ema_um = None   # EMA of |upd-1|
-    ema_rc = None   # EMA of relative x-change
-    base_um = None  # first-iter baselines
-    base_rc = None
-    ema_alpha = 0.5  # smoothing factor    
-    early_cnt = 0
-    used_iters = 0
-    early_stopped = False
-    early_frac = 0.40
+
+
 
     auto_delta_cache = None
     if use_torch and (huber_delta < 0) and (not rho_is_l2):
         auto_delta_cache = [None] * n_frames
+    early = EarlyStopper(
+        tol_upd_floor=2e-4,
+        tol_rel_floor=5e-4,
+        early_frac=0.40,
+        ema_alpha=0.5,
+        patience=2,
+        min_iters=min_iters,
+        status_cb=status_cb
+    )
 
+    used_iters = 0
+    early_stopped = False
     with cm():
         for it in range(1, max_iters + 1):
             # reset accumulators
@@ -3554,33 +3556,7 @@ def multiframe_deconv(
                 um = float(upd_med.detach().item())
                 rc = float(rel_change.detach().item())
 
-                # Initialize EMA + baselines on iter 1
-                if it == 1 or ema_um is None:
-                    ema_um = um
-                    ema_rc = rc
-                    base_um = um
-                    base_rc = rc
-                else:
-                    ema_um = ema_alpha * um + (1.0 - ema_alpha) * ema_um
-                    ema_rc = ema_alpha * rc + (1.0 - ema_alpha) * ema_rc
-
-                # Adaptive tolerances: at least the fixed floor, or 2% of first-iter magnitude
-                tol_upd_dyn = max(tol_upd, early_frac * (base_um if (base_um is not None and base_um > 0) else um))
-                tol_rel_dyn = max(tol_rel, early_frac * (base_rc if (base_rc is not None and base_rc > 0) else rc))
-                small = (ema_um < tol_upd_dyn) or (ema_rc < tol_rel_dyn)
-
-                # Optional: log once so you can see what it’s doing
-                if it == 1 or (it % 5 == 0):
-                    status_cb(f"EarlyStop dbg: it={it} um={um:.4g} rc={rc:.4g} | "
-                            f"ema_um={ema_um:.4g} ema_rc={ema_rc:.4g} | "
-                            f"tol_um={tol_upd_dyn:.4g} tol_rc={tol_rel_dyn:.4g}")
-
-                if small and it >= min_iters:
-                    early_cnt += 1
-                else:
-                    early_cnt = 0
-
-                if early_cnt >= patience:
+                if early.step(it, max_iters, um, rc):
                     x_t = x_next
                     used_iters = it
                     early_stopped = True
@@ -3599,32 +3575,7 @@ def multiframe_deconv(
                 um = float(np.median(np.abs(upd - 1.0)))
                 rc = float(np.median(np.abs(x_next - x_t)) / (np.median(np.abs(x_t)) + 1e-8))
 
-                # Initialize EMA + baselines on iter 1
-                if it == 1 or ema_um is None:
-                    ema_um = um
-                    ema_rc = rc
-                    base_um = um
-                    base_rc = rc
-                else:
-                    ema_um = ema_alpha * um + (1.0 - ema_alpha) * ema_um
-                    ema_rc = ema_alpha * rc + (1.0 - ema_alpha) * ema_rc
-
-                tol_upd_dyn = max(tol_upd, 0.02 * (base_um if (base_um is not None and base_um > 0) else um))
-                tol_rel_dyn = max(tol_rel, 0.02 * (base_rc if (base_rc is not None and base_rc > 0) else rc))
-
-                small = (ema_um < tol_upd_dyn) or (ema_rc < tol_rel_dyn)
-
-                if it == 1 or (it % 5 == 0):
-                    status_cb(f"EarlyStop dbg: it={it} um={um:.4g} rc={rc:.4g} | "
-                            f"ema_um={ema_um:.4g} ema_rc={ema_rc:.4g} | "
-                            f"tol_um={tol_upd_dyn:.4g} tol_rc={tol_rel_dyn:.4g}")
-
-                if small and it >= min_iters:
-                    early_cnt += 1
-                else:
-                    early_cnt = 0
-
-                if early_cnt >= patience:
+                if early.step(it, max_iters, um, rc):
                     x_t = x_next
                     used_iters = it
                     early_stopped = True

@@ -10,6 +10,18 @@ from PyQt6.QtWidgets import (
 )
 from imageops.stretch import stretch_color_image, stretch_mono_image 
 
+from dataclasses import dataclass
+
+@dataclass
+class BlemishOp:
+    x: int
+    y: int
+    radius: int
+    feather: float
+    opacity: float
+    channels: list[int]
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Worker
 # ──────────────────────────────────────────────────────────────────────────────
@@ -227,9 +239,21 @@ class BlemishBlasterDialogPro(QDialog):
 
         # buttons / layout (unchanged)
         bb = QHBoxLayout()
+
+        self.btn_undo  = QPushButton("Undo")
+        self.btn_redo  = QPushButton("Redo")
         self.btn_apply = QPushButton("Apply to Document")
         self.btn_close = QPushButton("Close")
-        bb.addStretch(); bb.addWidget(self.btn_apply); bb.addWidget(self.btn_close)
+
+        self.btn_undo.setEnabled(False)
+        self.btn_redo.setEnabled(False)
+
+        bb.addStretch()
+        bb.addWidget(self.btn_undo)
+        bb.addWidget(self.btn_redo)
+        bb.addSpacing(12)
+        bb.addWidget(self.btn_apply)
+        bb.addWidget(self.btn_close)
 
         main = QVBoxLayout(self)
         main.addWidget(self.scroll)
@@ -243,9 +267,11 @@ class BlemishBlasterDialogPro(QDialog):
 
         self.btn_apply.clicked.connect(self._commit_to_doc)
         self.btn_close.clicked.connect(self.reject)
-
+        self.btn_undo.clicked.connect(self._undo_step)
+        self.btn_redo.clicked.connect(self._redo_step)
         # undo/redo inside dialog (simple)
         self._undo, self._redo = [], []
+        self._update_undo_redo_buttons()
 
         # wheel zoom
         self._zoom = 1.0
@@ -256,6 +282,14 @@ class BlemishBlasterDialogPro(QDialog):
         a_undo = QAction(self); a_undo.setShortcut(QKeySequence.StandardKey.Undo); a_undo.triggered.connect(self._undo_step)
         a_redo = QAction(self); a_redo.setShortcut(QKeySequence.StandardKey.Redo); a_redo.triggered.connect(self._redo_step)
         self.addAction(a_undo); self.addAction(a_redo)
+
+    def _update_undo_redo_buttons(self):
+        try:
+            self.btn_undo.setEnabled(len(self._undo) > 0)
+            self.btn_redo.setEnabled(len(self._redo) > 0)
+        except Exception:
+            pass
+
 
     def _update_display_autostretch(self):
         """Rebuilds self._display from the current linear working image."""
@@ -316,8 +350,9 @@ class BlemishBlasterDialogPro(QDialog):
         self._undo.append(self._image.copy()); self._redo.clear()
         self._image = corrected.astype(np.float32, copy=False)
         self._display = self._image.copy()
-        self._update_display_autostretch()   
+        self._update_display_autostretch()
         self.setEnabled(True)
+        self._update_undo_redo_buttons()
 
     # ── Zoom
     def _wheel_zoom(self, ev: QWheelEvent):
@@ -331,18 +366,22 @@ class BlemishBlasterDialogPro(QDialog):
 
     # ── Undo/Redo
     def _undo_step(self):
-        if not self._undo: return
+        if not self._undo: 
+            return
         self._redo.append(self._image.copy())
         self._image = self._undo.pop()
         self._display = self._image.copy()
         self._update_display_autostretch()
+        self._update_undo_redo_buttons()
 
     def _redo_step(self):
-        if not self._redo: return
+        if not self._redo: 
+            return
         self._undo.append(self._image.copy())
         self._image = self._redo.pop()
         self._display = self._image.copy()
         self._update_display_autostretch()
+        self._update_undo_redo_buttons()
 
     # ── Commit back to the document
     def _commit_to_doc(self):

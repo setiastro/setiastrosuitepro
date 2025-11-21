@@ -10,6 +10,8 @@ from PyQt6.QtCore import QThread
 from threadpoolctl import threadpool_limits
 from concurrent.futures import ThreadPoolExecutor, as_completed, ProcessPoolExecutor
 _USE_PROCESS_POOL_FOR_ASSETS = True
+from pro.mfdeconv_earlystop import EarlyStopper
+
 import contextlib
 try:
     import sep
@@ -2046,11 +2048,15 @@ def multiframe_deconv(
     if use_torch and (huber_delta < 0) and (not rho_is_l2):
         auto_delta_cache = [None] * len(paths)
 
-    tol_upd = 1e-3
-    tol_rel = 5e-4
-    patience = 2
-    early_cnt = 0
-
+    early = EarlyStopper(
+        tol_upd_floor=2e-4,   # match new version
+        tol_rel_floor=5e-4,
+        early_frac=0.40,
+        ema_alpha=0.5,
+        patience=2,
+        min_iters=min_iters,
+        status_cb=status_cb
+    )
     x_ndim = 2 if (np.ndim(x) == 2) else 3
     fixed = 0
     for i, a in enumerate(data):
@@ -2141,18 +2147,22 @@ def multiframe_deconv(
                 upd_med = torch.median(torch.abs(upd - 1))
                 rel_change = (torch.median(torch.abs(x_next - x_t)) /
                               (torch.median(torch.abs(x_t)) + 1e-8))
-                small = (upd_med < tol_upd) | (rel_change < tol_rel)
 
-                if bool(small) and it >= min_iters:
-                    early_cnt += 1
-                else:
-                    early_cnt = 0
+                # candidates for convergence
+                try:
+                    um = float(upd_med.detach().cpu().item())
+                except Exception:
+                    um = float(upd_med)
 
-                if early_cnt >= patience:
+                try:
+                    rc = float(rel_change.detach().cpu().item())
+                except Exception:
+                    rc = float(rel_change)
+
+                if early.step(it, max_iters, um, rc):
                     x_t = x_next
                     used_iters = it
                     early_stopped = True
-                    status_cb(f"MFDeconv: Iteration {it}/{max_iters} (early stop)")
                     _process_gui_events_safely()
                     break
 
@@ -2190,20 +2200,16 @@ def multiframe_deconv(
                 upd_med = np.median(np.abs(upd - 1.0))
                 rel_change = (np.median(np.abs(x_next - x_t)) /
                               (np.median(np.abs(x_t)) + 1e-8))
-                small = (upd_med < tol_upd) or (rel_change < tol_rel)
+                um = float(upd_med)
+                rc = float(rel_change)
 
-                if small and it >= min_iters:
-                    early_cnt += 1
-                else:
-                    early_cnt = 0
-
-                if early_cnt >= patience:
+                if early.step(it, max_iters, um, rc):
                     x_t = x_next
                     used_iters = it
                     early_stopped = True
-                    status_cb(f"MFDeconv: Iteration {it}/{max_iters} (early stop)")
                     _process_gui_events_safely()
                     break
+
 
                 x_t = (1.0 - relax) * x_t + relax * x_next
 
@@ -2217,7 +2223,7 @@ def multiframe_deconv(
 
             frac = 0.25 + 0.70 * (it / float(max_iters))
             _emit_pct(frac, f"Iteration {it}/{max_iters}")
-            status_cb(f"Iter {it}/{max_iters}")
+
             _process_gui_events_safely()
 
     if not early_stopped:
