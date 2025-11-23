@@ -309,9 +309,10 @@ from pro.log_bus import LogBus
 from imageops.mdi_snap import MdiSnapController
 from pro.fitsmodifier import BatchFITSHeaderDialog
 from pro.autostretch import autostretch as _autostretch
+from ops.scripts import ScriptManager
 
 
-VERSION = "1.4.17"
+VERSION = "1.5.0"
 
 
 
@@ -1187,7 +1188,8 @@ class AstroSuiteProMainWindow(QMainWindow):
 
         self._minimize_interceptor = MinimizeInterceptor(self.window_shelf, self)
         self.currentDocumentChanged.connect(self._sync_docman_active)
-
+        self.scriptman = ScriptManager(self)
+        self.scriptman.load_registry()
         # Docks
         self._init_explorer_dock()
         self._init_console_dock()
@@ -3170,6 +3172,23 @@ class AstroSuiteProMainWindow(QMainWindow):
         self.act_wimi.setStatusTip("Identify objects in a plate-solved frame")
         self.act_wimi.triggered.connect(self._open_wimi)
 
+        # --- Scripts actions ---
+        self.act_open_scripts_folder = QAction("Open Scripts Folder…", self)
+        self.act_open_scripts_folder.setStatusTip("Open the SASpro user scripts folder")
+        self.act_open_scripts_folder.triggered.connect(self._open_scripts_folder)
+
+        self.act_reload_scripts = QAction("Reload Scripts", self)
+        self.act_reload_scripts.setStatusTip("Rescan the scripts folder and reload .py files")
+        self.act_reload_scripts.triggered.connect(self._reload_scripts)
+
+        self.act_create_sample_script = QAction("Create Sample Scripts…", self)
+        self.act_create_sample_script.setStatusTip("Write a ready-to-edit sample script into the scripts folder")
+        self.act_create_sample_script.triggered.connect(self._create_sample_script)
+
+        self.act_script_editor = QAction("Script Editor…", self)
+        self.act_script_editor.setStatusTip("Open the built-in script editor")
+        self.act_script_editor.triggered.connect(self._show_script_editor)
+
         # --- FITS Header Modifier action ---
         self.act_fits_modifier = QAction("FITS Header Modifier…", self)
         # self.act_fits_modifier.setIcon(QIcon(path_to_icon))  # (optional) icon goes here later
@@ -3451,6 +3470,11 @@ class AstroSuiteProMainWindow(QMainWindow):
         m_wim = mb.addMenu("&What's In My...")
         m_wim.addAction(self.act_whats_in_my_sky)
         m_wim.addAction(self.act_wimi)
+
+        m_scripts = mb.addMenu("&Scripts")
+        self.menu_scripts = m_scripts
+        self.scriptman.rebuild_menu(m_scripts)
+
 
         m_header = mb.addMenu("&Header Mods && Misc")
         m_header.addAction(self.act_fits_modifier)
@@ -3958,6 +3982,32 @@ class AstroSuiteProMainWindow(QMainWindow):
             show_function_bundles(self)
         except Exception as e:
             QMessageBox.warning(self, "Function Bundles", f"Open failed:\n{e}")
+
+    def _open_scripts_folder(self):
+        if hasattr(self, "scriptman"):
+            self.scriptman.open_scripts_folder()
+
+    def _reload_scripts(self):
+        if not hasattr(self, "scriptman"):
+            return
+        self.scriptman.load_registry()
+        if hasattr(self, "menu_scripts") and self.menu_scripts:
+            self.scriptman.rebuild_menu(self.menu_scripts)
+        self._log("[Scripts] Reload complete.")
+
+    def _create_sample_script(self):
+        if not hasattr(self, "scriptman"):
+            return
+        self.scriptman.create_sample_script()
+
+    def _show_script_editor(self):
+        if not hasattr(self, "script_editor_dock") or self.script_editor_dock is None:
+            from ops.script_editor import ScriptEditorDock
+            self.script_editor_dock = ScriptEditorDock(self, parent=self)
+            self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.script_editor_dock)
+        self.script_editor_dock.show()
+        self.script_editor_dock.raise_()
+        self.script_editor_dock.activateWindow()
 
     def _build_cheats_keyboard_rows(self):
         rows = []
@@ -6286,11 +6336,67 @@ class AstroSuiteProMainWindow(QMainWindow):
 
         self.convo_window.show()
 
-    def _extract_luminance(self, doc=None):
+    
+
+    def _apply_extract_luminance_preset_to_doc(self, doc, preset=None):
+
+        from PyQt6.QtWidgets import QMessageBox
+        from pro.luminancerecombine import compute_luminance, _LUMA_REC709, _LUMA_REC601, _LUMA_REC2020
+        from pro.headless_utils import normalize_headless_main, unwrap_docproxy
+
+        doc = unwrap_docproxy(doc)
+        p = dict(preset or {})
+        mode = (p.get("mode") or "rec709").lower()
+
+        if doc is None or getattr(doc, "image", None) is None:
+            QMessageBox.information(self, "Extract Luminance", "No target image.")
+            return
+
+        img = np.asarray(doc.image)
+
+        # pick weights
+        if mode == "rec601":
+            w = _LUMA_REC601
+        elif mode == "rec2020":
+            w = _LUMA_REC2020
+        elif mode == "max":
+            w = None
+        else:
+            w = _LUMA_REC709
+
+        L = compute_luminance(img, method=mode, weights=w)
+
+        dm = getattr(self, "doc_manager", None)
+        if dm is None:
+            # headless fallback: just overwrite active doc
+            doc.apply_edit(L.astype(np.float32), step_name="Extract Luminance")
+            return
+
+        # normal behavior: create a new mono document
+        try:
+            new_doc = dm.create_document_from_array(
+                L.astype(np.float32),
+                name=f"{doc.display_name()} — Luminance ({mode})",
+                is_mono=True,
+                metadata={"step_name":"Extract Luminance", "luma_method":mode}
+            )
+            dm.add_document(new_doc)
+        except Exception:
+            # safe fallback
+            doc.apply_edit(L.astype(np.float32), step_name="Extract Luminance")
+
+
+    def _extract_luminance(self, doc=None, preset: dict | None = None):
         """
         If doc is None, uses the active subwindow's document.
         Otherwise, run on the provided doc (for drag-and-drop to a specific view).
         Creates a new mono document (float32, [0..1]) and spawns a subwindow.
+
+        Preset schema:
+        {
+            "mode": "rec709" | "rec601" | "rec2020" | "max" | "snr" | "equal" | "median",
+            # aliases accepted: method, luma_method, nb_max -> "max", snr_unequal -> "snr"
+        }
         """
         # 1) resolve source document
         sw = None
@@ -6319,44 +6425,80 @@ class AstroSuiteProMainWindow(QMainWindow):
                 a = a / m
         a = np.clip(a, 0.0, 1.0)
 
-        # 3) compute luminance per selected method
-        method = getattr(self, "luma_method", "rec709")
+        # 3) choose luminance method
+        p = dict(preset or {})
+        method = str(
+            p.get("mode",
+            p.get("method",
+            p.get("luma_method",
+                getattr(self, "luma_method", "rec709"))))
+        ).strip().lower()
 
+        # aliases
+        alias = {
+            "rec.709": "rec709",
+            "rec-709": "rec709",
+            "rgb": "rec709",
+            "k": "rec709",
+            "rec.601": "rec601",
+            "rec-601": "rec601",
+            "rec.2020": "rec2020",
+            "rec-2020": "rec2020",
+            "nb_max": "max",
+            "narrowband": "max",
+            "snr_unequal": "snr",
+            "unequal_noise": "snr",
+        }
+        method = alias.get(method, method)
+
+        # 4) compute luminance per selected method
+        luma_weights = None
         if method == "rec601":
+            luma_weights = _LUMA_REC601
             y = np.tensordot(a, _LUMA_REC601, axes=([2],[0]))
         elif method == "rec2020":
+            luma_weights = _LUMA_REC2020
             y = np.tensordot(a, _LUMA_REC2020, axes=([2],[0]))
         elif method == "max":
             y = a.max(axis=2)
+        elif method == "median":
+            y = np.median(a, axis=2)
+        elif method == "equal":
+            luma_weights = np.array([1/3, 1/3, 1/3], dtype=np.float32)
+            y = a.mean(axis=2)
         elif method == "snr":
             sigma = _estimate_noise_sigma_per_channel(a)
-            # if image is RGB, use first 3; normalize weights
             w = 1.0 / (sigma[:3]**2 + 1e-12)
             w = w / w.sum()
-            y = np.tensordot(a[..., :3], w.astype(np.float32), axes=([2],[0]))
-        else:  # "rec709" (default)
+            luma_weights = w.astype(np.float32)
+            y = np.tensordot(a[..., :3], luma_weights, axes=([2],[0]))
+        else:  # "rec709" default
+            method = "rec709"
+            luma_weights = _LUMA_REC709
             y = np.tensordot(a, _LUMA_REC709, axes=([2],[0]))
 
         y = np.clip(y.astype(np.float32, copy=False), 0.0, 1.0)
 
-        # 4) metadata & title
+        # 5) metadata & title
         base_meta = {}
         try:
             base_meta = dict(getattr(doc, "metadata", {}) or {})
         except Exception:
             pass
+
         meta = {
             **base_meta,
             "source": "ExtractLuminance",
             "is_mono": True,
             "bit_depth": "32f",
+            "luma_method": method,
         }
+        if luma_weights is not None:
+            meta["luma_weights"] = np.asarray(luma_weights, dtype=np.float32).tolist()
 
-        # Try to use the existing subwindow title as base; otherwise fall back
         base_title = sw.windowTitle() if sw else (getattr(doc, "title", getattr(doc, "name", "")) or "Untitled")
         title = f"{base_title} — Luminance"
 
-        # 5) create a real document via DocManager
         dm = getattr(self, "docman", None)
         if dm is None:
             QMessageBox.critical(self, "Extract Luminance", "DocManager not available.")
@@ -6375,7 +6517,6 @@ class AstroSuiteProMainWindow(QMainWindow):
             QMessageBox.critical(self, "Extract Luminance", f"Failed to create document:\n{e}")
             return
 
-        # 6) show subwindow and set the luminance icon
         try:
             self._spawn_subwindow_for(new_doc)
             sub = self.mdi.activeSubWindow()
@@ -6384,8 +6525,16 @@ class AstroSuiteProMainWindow(QMainWindow):
         except Exception:
             pass
 
+        # 🔁 Remember for Replay (optional but consistent)
+        try:
+            remember = getattr(self, "remember_last_headless_command", None) or getattr(self, "_remember_last_headless_command", None)
+            if callable(remember):
+                remember("extract_luminance", {"mode": method}, description="Extract Luminance")
+        except Exception:
+            pass
+
         if hasattr(self, "_log"):
-            self._log("Functions: Extract Luminance → new mono document created.")
+            self._log(f"Extract Luminance ({method}) → new mono document created.")
 
         return new_doc
 
