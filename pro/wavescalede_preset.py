@@ -50,27 +50,58 @@ class WaveScaleDSEPresetDialog(QDialog):
             "iterations": int(self.iters.value()),
         }
 
+
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Headless runner (exactly like UI: compute → blend by active mask → apply)
 # ─────────────────────────────────────────────────────────────────────────────
-def run_wavescalede_via_preset(main, preset: dict | None = None, *, target_doc=None):
+def run_wavescalede_via_preset(main, preset: dict | None = None, target_doc=None):
+    import numpy as np
+    from PyQt6.QtWidgets import QMessageBox
+
     p = dict(preset or {})
+
+    # --- sanitize to UI limits so replay is clean ---
     try:
-        payload = {
-            "command_id": "wavescale_dark_enhance",
-            "preset": dict(p),
-        }
-        setattr(main, "_last_headless_command", payload)
+        n_scales = int(np.clip(p.get("n_scales", 6), 2, 10))
+        boost    = float(np.clip(p.get("boost_factor", 5.0), 0.10, 10.00))
+        mgamma   = float(np.clip(p.get("mask_gamma", 1.0), 0.10, 10.00))
+        iters    = int(np.clip(p.get("iterations", 2), 1, 10))
     except Exception:
-        pass    
+        n_scales = int(p.get("n_scales", 6))
+        boost    = float(p.get("boost_factor", 5.0))
+        mgamma   = float(p.get("mask_gamma", 1.0))
+        iters    = int(p.get("iterations", 2))
+
+    params = {
+        "n_scales": n_scales,
+        "boost_factor": boost,
+        "mask_gamma": mgamma,
+        "iterations": iters,
+    }
+
+    # --- store for Replay (prefer unified helper) ---
+    try:
+        remember = getattr(main, "remember_last_headless_command", None)
+        if remember is None:
+            remember = getattr(main, "_remember_last_headless_command", None)
+        if callable(remember):
+            remember("wavescale_dark_enhance", params, description="WaveScale Dark Enhance")
+        else:
+            setattr(main, "_last_headless_command", {
+                "command_id": "wavescale_dark_enhance",
+                "preset": dict(params),
+            })
+    except Exception:
+        pass
+
     # resolve target doc
-    doc = target_doc
-    if doc is None:
-        doc = getattr(main, "_active_doc", None)
-        if callable(doc):
-            doc = doc()
+    from pro.headless_utils import normalize_headless_main, unwrap_docproxy
+
+    main, doc, _dm = normalize_headless_main(main, target_doc)
     if doc is None or getattr(doc, "image", None) is None:
-        QMessageBox.warning(main, "WaveScale Dark Enhancer", "Load an image first.")
+        QMessageBox.warning(main or None, "...", "Load an image first.")
         return
 
     # pull & normalize image like the dialog
@@ -97,13 +128,12 @@ def run_wavescalede_via_preset(main, preset: dict | None = None, *, target_doc=N
     doc_mask = _get_doc_active_mask_2d(doc, target_hw=img.shape[:2])
 
     # compute (limit enhancement with external mask, same as UI preview)
-    n_scales = int(p.get("n_scales", 6))
-    boost    = float(p.get("boost_factor", 5.0))
-    mgamma   = float(p.get("mask_gamma", 1.0))
-    iters    = int(p.get("iterations", 2))
-
     out, _mask_used = compute_wavescale_dse(
-        img, n_scales=n_scales, boost_factor=boost, mask_gamma=mgamma, iterations=iters,
+        img,
+        n_scales=n_scales,
+        boost_factor=boost,
+        mask_gamma=mgamma,
+        iterations=iters,
         external_mask=doc_mask
     )
 
@@ -124,12 +154,23 @@ def run_wavescalede_via_preset(main, preset: dict | None = None, *, target_doc=N
 
     result = np.clip(result, 0.0, 1.0).astype(np.float32, copy=False)
 
-    # apply to document
+    # apply to document (undoable + metadata)
+    meta = {
+        "step_name": "WaveScale Dark Enhance",
+        "wavescale_dark_enhance": dict(params),
+        "masked": bool(doc_mask is not None),
+        "mask_blend": "m*out + (1-m)*src" if doc_mask is not None else "none",
+        "bit_depth": "32-bit floating point",
+        "is_mono": (result.ndim == 2 or (result.ndim == 3 and result.shape[2] == 1)),
+    }
+
     try:
-        if hasattr(doc, "set_image"):
-            doc.set_image(result, step_name="WaveScale Dark Enhancer")
+        if hasattr(doc, "apply_edit"):
+            doc.apply_edit(result, step_name="WaveScale Dark Enhance", metadata=meta)
+        elif hasattr(doc, "set_image"):
+            doc.set_image(result, step_name="WaveScale Dark Enhance")
         elif hasattr(doc, "apply_numpy"):
-            doc.apply_numpy(result, step_name="WaveScale Dark Enhancer")
+            doc.apply_numpy(result, step_name="WaveScale Dark Enhance")
         else:
             doc.image = result
     except Exception as e:

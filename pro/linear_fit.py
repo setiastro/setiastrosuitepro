@@ -513,3 +513,22 @@ def apply_linear_fit_to_doc(parent, target_doc, preset: dict | None) -> None:
         "Replay-on-base for mono Linear Fit is not implemented yet.\n"
         "Please re-run Linear Fit on this image via the dialog."
     )
+
+# -------- headless command runner (Scripts / Presets / Replay) ---------------
+from pro.headless_utils import normalize_headless_main, unwrap_docproxy
+
+def run_linear_fit_via_preset(main, preset=None, target_doc=None):
+    from PyQt6.QtWidgets import QMessageBox
+    from pro.linear_fit import apply_linear_fit_via_preset
+
+    p = dict(preset or {})
+    main, doc, dm = normalize_headless_main(main, target_doc)
+
+    if dm is None:
+        QMessageBox.warning(main or None, "Linear Fit", "DocManager not available.")
+        return
+    if doc is None or getattr(doc, "image", None) is None:
+        QMessageBox.warning(main or None, "Linear Fit", "Load an image first.")
+        return
+
+    apply_linear_fit_via_preset(main, dm, doc, p)

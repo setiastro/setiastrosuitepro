@@ -2069,15 +2069,14 @@ class DocManager(QObject):
     def get_active_document(self):
         """
         Return the active document-like object.
-        If a Preview tab is selected on the active ImageSubWindow, return a lightweight
-        _RoiViewDocument so tools that READ get the crop transparently.
+        If a Preview tab is selected on the active ImageSubWindow, return a cached
+        _RoiViewDocument so tools and the Preview tab share the same instance.
         Otherwise return the real ImageDocument.
         """
         # Prefer cached (if set and still valid)
         if self._active_doc is not None and self._active_doc in self._docs:
             base_doc = self._active_doc
         else:
-            # Ask MDI
             base_doc = None
             try:
                 if self._mdi is not None:
@@ -2092,33 +2091,27 @@ class DocManager(QObject):
             if base_doc is None:
                 base_doc = self._docs[-1] if self._docs else None
 
-        # If no doc or doc doesn’t have an image (e.g., a TableDocument), just return it.
+        # Non-image docs just pass through
         if base_doc is None or not isinstance(base_doc, ImageDocument) or base_doc.image is None:
             return base_doc
 
-        # Check whether the active view is on a Preview tab
-        vw = self._active_view_widget()  # uses _mdi
+        # ✅ ROI-aware, CACHED preview doc
+        vw = self._active_view_widget()
         if vw and hasattr(vw, "has_active_preview") and vw.has_active_preview():
             try:
-                roi = vw.current_preview_roi()  # (x,y,w,h) in FULL coords
-            except Exception:
-                roi = None
-            if roi:
-                try:
-                    name_suffix = f" (Preview {vw.current_preview_name() or ''})"
-                    doc = self._build_roi_document(base_doc, roi)
-                    # optional: update display name suffix if you want it
+                roi_doc = self.get_document_for_view(vw)  # <-- uses _roi_doc_cache
+                if isinstance(roi_doc, _RoiViewDocument):
                     try:
-                        doc.metadata["display_name"] = f"{base_doc.display_name()}{name_suffix}"
+                        name_suffix = f" (Preview {vw.current_preview_name() or ''})"
+                        roi_doc.metadata["display_name"] = f"{base_doc.display_name()}{name_suffix}"
                     except Exception:
                         pass
-                    return doc
-                except Exception:
-                    # If anything fails, fall back to full doc
-                    return base_doc
+                return roi_doc
+            except Exception:
+                return base_doc
 
-        # No preview selected → return the real document
         return base_doc
+
 
 
     def update_active_document(self, updated_image, metadata=None, step_name: str = "Edit"):

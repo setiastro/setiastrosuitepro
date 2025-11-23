@@ -4673,6 +4673,7 @@ class StackingSuiteDialog(QDialog):
         # Order matters for index mapping below
         self.align_model_combo.addItems([
             "Affine (fast)",
+            "No Distortion (rotate/translate/scale)",
             "Homography (projective)",
             "Polynomial 3rd-order",
             "Polynomial 4th-order",
@@ -4682,9 +4683,12 @@ class StackingSuiteDialog(QDialog):
         _saved_model = (self.settings.value("stacking/align/model", "affine") or "affine").lower()
         _model_to_idx = {
             "affine": 0,
-            "homography": 1,
-            "poly3": 2,
-            "poly4": 3,
+            "similarity": 1,
+            "no_distortion": 1,
+            "nodistortion": 1,
+            "homography": 2,
+            "poly3": 3,
+            "poly4": 4,
         }
         self.align_model_combo.setCurrentIndex(_model_to_idx.get(_saved_model, 0))
         disto_form.addRow("Model:", self.align_model_combo)
@@ -4700,23 +4704,23 @@ class StackingSuiteDialog(QDialog):
         self.align_downsample.setValue(self.settings.value("stacking/align/downsample", 2, type=int))
         disto_form.addRow("Solve downsample:", self.align_downsample)
 
-        # Homography-specific
+        # Homography / Similarity-specific RANSAC reprojection threshold
         self.h_ransac_reproj = QDoubleSpinBox()
         self.h_ransac_reproj.setRange(0.1, 10.0)
         self.h_ransac_reproj.setDecimals(2)
         self.h_ransac_reproj.setSingleStep(0.1)
         self.h_ransac_reproj.setValue(self.settings.value("stacking/align/h_reproj", 3.0, type=float))
-        self._h_label = QLabel("Homog. RANSAC reproj (px):")
+        self._h_label = QLabel("RANSAC reproj (px):")
         disto_form.addRow(self._h_label, self.h_ransac_reproj)
-
-        # (Removed TPS controls)
 
         def _toggle_disto_rows():
             m = self.align_model_combo.currentIndex()
-            is_h = (m == 1)             # homography
-            # enable only homography controls when selected
-            self._h_label.setEnabled(is_h)
-            self.h_ransac_reproj.setEnabled(is_h)
+            is_sim = (m == 1)   # similarity / no distortion
+            is_h   = (m == 2)   # homography
+            # enable RANSAC threshold for homography and similarity
+            enable_ransac = is_h or is_sim
+            self._h_label.setEnabled(enable_ransac)
+            self.h_ransac_reproj.setEnabled(enable_ransac)
 
         _toggle_disto_rows()
         self.align_model_combo.currentIndexChanged.connect(lambda _: _toggle_disto_rows())
@@ -5428,13 +5432,15 @@ class StackingSuiteDialog(QDialog):
         # ----- alignment model (affine | homography | poly3 | poly4) -----
         model_idx = self.align_model_combo.currentIndex()
         if   model_idx == 0: model_name = "affine"
-        elif model_idx == 1: model_name = "homography"
-        elif model_idx == 2: model_name = "poly3"
+        elif model_idx == 1: model_name = "similarity"   # No Distortion mode
+        elif model_idx == 2: model_name = "homography"
+        elif model_idx == 3: model_name = "poly3"
         else:                model_name = "poly4"
-        self.settings.setValue("stacking/align/model", model_name)
-        self.settings.setValue("stacking/align/max_cp",      int(self.align_max_cp.value()))
-        self.settings.setValue("stacking/align/downsample",  int(self.align_downsample.value()))
-        self.settings.setValue("stacking/align/h_reproj",    float(self.h_ransac_reproj.value()))
+
+        self.settings.setValue("stacking/align/model",      model_name)
+        self.settings.setValue("stacking/align/max_cp",     int(self.align_max_cp.value()))
+        self.settings.setValue("stacking/align/downsample", int(self.align_downsample.value()))
+        self.settings.setValue("stacking/align/h_reproj",   float(self.h_ransac_reproj.value()))
 
         # Seed mode (persist as stable tokens: 'robust' | 'median')
         seed_idx = int(self.mf_seed_combo.currentIndex())

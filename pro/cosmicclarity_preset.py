@@ -212,11 +212,51 @@ class _CCHeadlessWorker(QThread):
         except Exception as e:
             self.failed.emit(str(e))
 
+    def _wait_for_file(self, pattern: str, timeout: float = 1800.0, poll: float = 0.25):
+        """
+        Wait for a file matching glob `pattern`. Returns most recent match or "".
+        """
+        t0 = time.time()
+        last = ""
+        while time.time() - t0 < timeout:
+            matches = glob.glob(pattern)
+            if matches:
+                try:
+                    # pick newest file (mtime)
+                    matches.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+                except Exception:
+                    matches.sort()
+                last = matches[0]
+                # make sure it’s non-zero and stable-ish
+                try:
+                    if os.path.getsize(last) > 0:
+                        return last
+                except Exception:
+                    return last
+            time.sleep(poll)
+        return ""
+
 
 # ---------------- Public entry ----------------
 def run_cosmicclarity_via_preset(main, preset: dict | None = None, *, doc=None):
     """Run CC headlessly by driving the same pipeline as the Execute button."""
     p = dict(preset or {})
+
+    # ---- Record for Replay Last Action ----
+    try:
+        remember = getattr(main, "remember_last_headless_command", None)
+        if remember is None:
+            remember = getattr(main, "_remember_last_headless_command", None)
+        if callable(remember):
+            remember("cosmic_clarity", p, description="Cosmic Clarity")
+        else:
+            setattr(main, "_last_headless_command", {
+                "command_id": "cosmic_clarity",
+                "preset": dict(p),
+            })
+    except Exception:
+        pass
+    # --------------------------------------
 
     # Guard so users can’t open another CC panel while this runs
     setattr(main, "_cosmicclarity_headless_running", True)
@@ -238,12 +278,10 @@ def run_cosmicclarity_via_preset(main, preset: dict | None = None, *, doc=None):
             QMessageBox.warning(main, "Cosmic Clarity", "Load an image first.")
             return
 
-        # Build the dialog in headless mode, bypassing the guard (we're the owner)
         dlg = CosmicClarityDialogPro(main, doc, headless=True, bypass_guard=True)
         if getattr(dlg, "_headless", False) is not True:
             return
 
-        # Apply preset to the dialog widgets so behavior == user pressed Execute
         try:
             dlg.apply_preset(p)
         except Exception:
@@ -252,16 +290,13 @@ def run_cosmicclarity_via_preset(main, preset: dict | None = None, *, doc=None):
             dlg.cmb_gpu.setCurrentIndex(0 if p.get("gpu", True) else 1)
             dlg.cmb_target.setCurrentIndex(1 if p.get("create_new_view", False) else 0)
 
-        # Kick the exact same execution path
         dlg._run_main()
 
-        # Block here until the dialog finishes.
         loop = QEventLoop()
         dlg.finished.connect(loop.quit)
         loop.exec_() if hasattr(loop, "exec_") else loop.exec()
 
     finally:
-        # Clear guards even on exceptions
         try:
             s.setValue("cc/headless_in_progress", False); s.sync()
         except Exception:
@@ -271,6 +306,7 @@ def run_cosmicclarity_via_preset(main, preset: dict | None = None, *, doc=None):
                 delattr(main, name)
             except Exception:
                 setattr(main, name, False)
+
 
 
 # ---------------- Optional: tiny preset editor for the shortcut button ----------------

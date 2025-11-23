@@ -374,3 +374,113 @@ class MorphologyDialogPro(QDialog):
         self.sp_iter.setValue(1)
         self._set_pix(self._disp_base)
         self.view.fit_to_item(self.pix)
+
+
+# ---------------------- Preset editor (Shortcuts) ----------------------
+
+class _MorphologyPresetDialog(QDialog):
+    """
+    Preset editor for Morphology shortcuts.
+    Stores JSON-safe dict:
+        { "operation": "erosion|dilation|opening|closing",
+          "kernel": int odd,
+          "iterations": int }
+    """
+    OPS = ["erosion", "dilation", "opening", "closing"]
+
+    def __init__(self, parent=None, initial: dict | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Morphology — Preset")
+        p = dict(initial or {})
+        f = QFormLayout(self)
+
+        self.cb_op = QComboBox()
+        self.cb_op.addItems([op.title() for op in self.OPS])
+        op0 = str(p.get("operation", "erosion")).lower()
+        if op0 not in self.OPS:
+            op0 = "erosion"
+        self.cb_op.setCurrentText(op0.title())
+
+        self.sp_kernel = QSpinBox()
+        self.sp_kernel.setRange(1, 31)
+        self.sp_kernel.setSingleStep(2)
+        k = int(p.get("kernel", 3))
+        if k % 2 == 0:
+            k += 1
+        self.sp_kernel.setValue(k)
+
+        self.sp_iter = QSpinBox()
+        self.sp_iter.setRange(1, 10)
+        self.sp_iter.setValue(int(p.get("iterations", 1)))
+
+        f.addRow("Operation:", self.cb_op)
+        f.addRow("Kernel size:", self.sp_kernel)
+        f.addRow("Iterations:", self.sp_iter)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            parent=self
+        )
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        f.addRow(btns)
+
+    def result_dict(self) -> dict:
+        k = int(self.sp_kernel.value())
+        if k % 2 == 0:
+            k += 1
+        return {
+            "operation": self.cb_op.currentText().lower(),
+            "kernel": int(k),
+            "iterations": int(self.sp_iter.value()),
+        }
+
+
+# ---------------------- Headless runner (Scripts / Presets / Replay) ----------------------
+
+def run_morphology_via_preset(main, preset: dict | None = None, *, target_doc=None):
+    """
+    Headless Morphology runner.
+
+    preset keys:
+      - operation: "erosion" | "dilation" | "opening" | "closing"
+      - kernel: odd int (default 3)
+      - iterations: int >= 1 (default 1)
+    """
+    p = dict(preset or {})
+
+    # ---- Remember for Replay ----
+    try:
+        remember = getattr(main, "_remember_last_headless_command", None) \
+                   or getattr(main, "remember_last_headless_command", None)
+        if callable(remember):
+            remember("morphology", p, description="Morphology")
+        else:
+            setattr(main, "_last_headless_command", {
+                "command_id": "morphology",
+                "preset": dict(p),
+            })
+    except Exception:
+        pass
+    # ----------------------------
+
+    dm = getattr(main, "doc_manager", None) or getattr(main, "dm", None)
+
+    # Resolve doc
+    doc = target_doc
+    if doc is None:
+        d = getattr(main, "_active_doc", None)
+        doc = d() if callable(d) else d
+
+    if doc is None or getattr(doc, "image", None) is None:
+        QMessageBox.warning(main, "Morphology", "Load an image first.")
+        return
+
+    try:
+        apply_morphology_to_doc(doc, p)
+        if hasattr(main, "_log"):
+            main._log(f"✅ Morphology (headless) preset={p}")
+    except Exception as e:
+        QMessageBox.critical(main, "Morphology", str(e))
+        if hasattr(main, "_log"):
+            main._log(f"❌ Morphology failed: {e}")

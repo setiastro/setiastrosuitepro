@@ -620,3 +620,51 @@ def apply_debayer_preset_to_doc(dm, doc, preset: dict) -> Tuple[str, np.ndarray]
     return pat, rgb
 
 
+# -------- headless command runner (Scripts / Presets / Replay) ---------------
+
+def run_debayer_via_preset(main, preset: dict | None = None, *, doc=None):
+    """
+    Headless Debayer runner.
+
+    preset keys:
+      - pattern: "auto" | "RGGB" | "BGGR" | "GRBG" | "GBRG"
+      - method:  "auto" | "edge" | "bilinear" | "AHD" | "DHT"
+    """
+    p = dict(preset or {})
+
+    # ---- Register for Replay Last Action ----
+    try:
+        remember = getattr(main, "remember_last_headless_command", None) \
+                   or getattr(main, "_remember_last_headless_command", None)
+        if callable(remember):
+            remember("debayer", p, description="Debayer")
+        else:
+            setattr(main, "_last_headless_command", {
+                "command_id": "debayer",
+                "preset": dict(p),
+            })
+    except Exception:
+        pass
+    # ----------------------------------------
+
+    dm = getattr(main, "doc_manager", None) or getattr(main, "dm", None)
+    if dm is None:
+        QMessageBox.warning(main, "Debayer", "DocManager not available.")
+        return
+
+    if doc is None:
+        d = getattr(main, "_active_doc", None)
+        doc = d() if callable(d) else d
+
+    if doc is None or getattr(doc, "image", None) is None:
+        QMessageBox.warning(main, "Debayer", "Load an image first.")
+        return
+
+    try:
+        used_pat, _rgb = apply_debayer_preset_to_doc(dm, doc, p)
+        if hasattr(main, "_log"):
+            main._log(f"✅ Debayer (headless) pattern={used_pat}, preset={p}")
+    except Exception as e:
+        QMessageBox.critical(main, "Debayer", str(e))
+        if hasattr(main, "_log"):
+            main._log(f"❌ Debayer failed: {e}")

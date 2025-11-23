@@ -147,6 +147,15 @@ def recombine_luminance_linear_scale(
 
     return out.astype(np.float32, copy=False)
 
+def _resolve_active_doc_from(main, target_doc=None):
+    doc = target_doc
+    if doc is None:
+        d = getattr(main, "_active_doc", None)
+        doc = d() if callable(d) else d
+    doc = _unwrap_docproxy(doc)
+    return doc
+
+
 def apply_recombine_to_doc(
     target_doc,
     luminance_source_img: np.ndarray,
@@ -197,3 +206,119 @@ def apply_recombine_to_doc(
         metadata={"step_name": "Recombine Luminance", "luma_method": method, "luma_weights": w.tolist()},
         step_name="Recombine Luminance",
     )
+
+from pro.headless_utils import normalize_headless_main, unwrap_docproxy
+from ops.command_runner import CommandError
+import numpy as np
+
+def run_recombine_luminance_via_preset(main_or_ctx, preset=None, target_doc=None):
+    """
+    Headless entrypoint for recombine_luminance.
+
+    preset supports:
+      - source_doc_ptr: int (id(doc))  [highest priority]
+      - source_title:  str            [next priority]
+      - method, weights, blend, soft_knee (existing)
+    If neither source_* is given, first eligible non-target open doc is used.
+    """
+    from pro.luminancerecombine import apply_recombine_to_doc
+
+    p = dict(preset or {})
+    main, doc, dm = normalize_headless_main(main_or_ctx, target_doc)
+
+    # ---- Validate target ----
+    if doc is None or getattr(doc, "image", None) is None:
+        raise CommandError("recombine_luminance: no active RGB ImageDocument. Load an image first.")
+
+    # ---- Collect open docs (unwrapped) ----
+    open_docs = []
+    if dm is not None:
+        try:
+            if hasattr(dm, "all_documents") and callable(dm.all_documents):
+                open_docs = [unwrap_docproxy(d) for d in dm.all_documents()]
+            elif hasattr(dm, "_docs"):
+                open_docs = [unwrap_docproxy(d) for d in dm._docs]
+        except Exception:
+            open_docs = []
+
+    # Filter to docs that look like images
+    def _has_image(d):
+        return d is not None and getattr(d, "image", None) is not None
+
+    open_docs = [d for d in open_docs if _has_image(d)]
+
+    # ---- Resolve luminance source ----
+    src_doc = None
+
+    # 1) source_doc_ptr
+    src_ptr = p.get("source_doc_ptr", None)
+    if src_ptr is not None:
+        try:
+            src_ptr = int(src_ptr)
+            for d in open_docs:
+                if id(d) == src_ptr:
+                    src_doc = d
+                    break
+        except Exception:
+            src_doc = None
+
+    # 2) source_title
+    if src_doc is None:
+        st = p.get("source_title", None)
+        if st:
+            st_low = str(st).strip().lower()
+
+            def _title_of(d):
+                # prefer display_name() if available
+                try:
+                    if hasattr(d, "display_name") and callable(d.display_name):
+                        return str(d.display_name())
+                except Exception:
+                    pass
+                # fallback to metadata display_name or file basename
+                try:
+                    md = getattr(d, "metadata", {}) or {}
+                    if md.get("display_name"):
+                        return str(md["display_name"])
+                    fp = md.get("file_path")
+                    if fp:
+                        import os
+                        return os.path.basename(fp)
+                except Exception:
+                    pass
+                return ""
+
+            for d in open_docs:
+                if d is doc:
+                    continue
+                if _title_of(d).lower() == st_low:
+                    src_doc = d
+                    break
+
+    # 3) auto-pick first eligible non-target doc
+    if src_doc is None:
+        for d in open_docs:
+            if d is doc:
+                continue
+            src_doc = d
+            break
+
+    if src_doc is None:
+        raise CommandError(
+            "recombine_luminance: no luminance source found. "
+            "Open another image, or pass preset {'source_title': ...} "
+            "or {'source_doc_ptr': id(doc)}."
+        )
+
+    # ---- Execute recombine ----
+    src_img = np.asarray(src_doc.image)
+
+    apply_recombine_to_doc(
+        doc,
+        src_img,
+        method=p.get("method", "rec709"),
+        weights=p.get("weights", None),
+        blend=float(p.get("blend", 1.0)),
+        soft_knee=float(p.get("soft_knee", 0.0)),
+    )
+

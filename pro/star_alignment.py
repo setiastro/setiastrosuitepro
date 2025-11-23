@@ -1395,23 +1395,52 @@ def compute_affine_transform_astroalign_cropped(source_img, reference_img,
     if limit_stars is not None:
         kwargs["max_control_points"] = int(limit_stars)
 
-    try:
-        with _lock:
-            tform, _ = astroalign.find_transform(
-                np.ascontiguousarray(source_img.astype(np.float32)),
-                np.ascontiguousarray(ref_crop.astype(np.float32)),
-                **kwargs
-            )
-    except TypeError:
-        legacy_kwargs = {}
-        if "max_control_points" in kwargs:
-            legacy_kwargs["max_control_points"] = kwargs["max_control_points"]
-        with _lock:
-            tform, _ = astroalign.find_transform(
-                np.ascontiguousarray(source_img.astype(np.float32)),
-                np.ascontiguousarray(ref_crop.astype(np.float32)),
-                **legacy_kwargs
-            )
+    with _lock:
+        try:
+            # ---- NEW: uniform control points ----
+            src_pts = _detect_stars_uniform(source_img, det_sigma, minarea,
+                                            grid=(4,4), max_per_cell=25,
+                                            max_total=(limit_stars or 500))
+            ref_pts = _detect_stars_uniform(ref_crop, det_sigma, minarea,
+                                            grid=(4,4), max_per_cell=25,
+                                            max_total=(limit_stars or 500))
+
+            cov_src = _coverage_fraction(src_pts, Hs, Ws, grid=(4,4))
+            cov_ref = _coverage_fraction(ref_pts, h,  w,  grid=(4,4))
+            if cov_src < 0.5 or cov_ref < 0.5:
+                # only log; don't fail
+                # (use whatever logger/progress emitter you have)
+                # print is fine in worker context
+                print(f"[AA] low coverage src={cov_src:.2f}, ref={cov_ref:.2f} for crop solve")
+
+            if src_pts.shape[0] >= 8 and ref_pts.shape[0] >= 8:
+                # When passing points, some AA versions ignore detection kwargs;
+                # keep max_control_points only.
+                pt_kwargs = {}
+                if "max_control_points" in kwargs:
+                    pt_kwargs["max_control_points"] = kwargs["max_control_points"]
+
+                tform, _ = astroalign.find_transform(src_pts, ref_pts, **pt_kwargs)
+            else:
+                raise RuntimeError("Too few uniform points, falling back to images.")
+
+        except Exception:
+            # ---- fallback: original image-based AA ----
+            try:
+                tform, _ = astroalign.find_transform(
+                    np.ascontiguousarray(source_img.astype(np.float32)),
+                    np.ascontiguousarray(ref_crop.astype(np.float32)),
+                    **kwargs
+                )
+            except TypeError:
+                legacy_kwargs = {}
+                if "max_control_points" in kwargs:
+                    legacy_kwargs["max_control_points"] = kwargs["max_control_points"]
+                tform, _ = astroalign.find_transform(
+                    np.ascontiguousarray(source_img.astype(np.float32)),
+                    np.ascontiguousarray(ref_crop.astype(np.float32)),
+                    **legacy_kwargs
+                )
 
     P = np.asarray(tform.params, dtype=np.float64)
     T = np.array([[1, 0, x0], [0, 1, y0], [0, 0, 1]], dtype=np.float64)
@@ -1423,13 +1452,356 @@ def compute_affine_transform_astroalign_cropped(source_img, reference_img,
         return (T @ A3)[0:2, :]
     return None
 
+def _coverage_fraction(pts, H, W, grid=(4,4)):
+    gy, gx = grid
+    if len(pts) == 0:
+        return 0.0
+    cell_w = W / gx; cell_h = H / gy
+    occ = np.zeros((gy,gx), bool)
+    for x,y in pts:
+        cx = int(x / cell_w); cy = int(y / cell_h)
+        if 0 <= cx < gx and 0 <= cy < gy:
+            occ[cy,cx] = True
+    return occ.mean()
+
+def _points_spread_ok(tgt_xy: np.ndarray, Wref: int, Href: int,
+                      frac_span: float = 0.35,
+                      grid: int = 3,
+                      min_cells: int = 6,
+                      _dbg=None) -> bool:
+    if tgt_xy is None or len(tgt_xy) < 8:
+        if _dbg: _dbg("[spread] too few points")
+        return False
+
+    xy = np.asarray(tgt_xy, np.float32)
+    x = xy[:, 0]; y = xy[:, 1]
+
+    p05x, p95x = np.percentile(x, [5, 95])
+    p05y, p95y = np.percentile(y, [5, 95])
+    span_x = float(p95x - p05x)
+    span_y = float(p95y - p05y)
+
+    gx = np.clip((x / max(Wref,1) * grid).astype(int), 0, grid-1)
+    gy = np.clip((y / max(Href,1) * grid).astype(int), 0, grid-1)
+    cells = set(zip(gx.tolist(), gy.tolist()))
+
+    if _dbg:
+        _dbg(f"[spread] N={len(xy)} span_x={span_x:.1f} ({span_x/Wref:.2f}W) span_y={span_y:.1f} ({span_y/Href:.2f}H) cells={len(cells)}/{grid*grid}")
+
+    if span_x < frac_span * Wref or span_y < frac_span * Href:
+        if _dbg: _dbg("[spread] fail span")
+        return False
+    if len(cells) < min_cells:
+        if _dbg: _dbg("[spread] fail grid occupancy")
+        return False
+    return True
+
+def _fit_poly_xy(src_xy, tgt_xy, order=3):
+    import numpy as np
+    x, y = src_xy[:,0], src_xy[:,1]
+    xp, yp = tgt_xy[:,0], tgt_xy[:,1]
+
+    # build design matrix for 2D poly
+    terms = []
+    for i in range(order+1):
+        for j in range(order+1-i):
+            terms.append((x**i)*(y**j))
+    A = np.vstack(terms).T  # (N, M)
+
+    cx, *_ = np.linalg.lstsq(A, xp, rcond=None)
+    cy, *_ = np.linalg.lstsq(A, yp, rcond=None)
+    return cx, cy
+
+def _poly_eval_grid(cx, cy, W, H, order=3):
+    import numpy as np
+    yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
+    terms = []
+    for i in range(order+1):
+        for j in range(order+1-i):
+            terms.append((xx**i)*(yy**j))
+    A = np.stack(terms, axis=0)  # (M, H, W)
+
+    map_x = np.tensordot(cx, A, axes=(0,0)).astype(np.float32)
+    map_y = np.tensordot(cy, A, axes=(0,0)).astype(np.float32)
+    return map_x, map_y
+
+
+
+def _aa_find_pairs_multitile(src_gray: np.ndarray,
+                             ref2d: np.ndarray,
+                             scale: float = 1.20,
+                             tile_positions=None,
+                             tiles: int = 1,
+                             det_sigma: float = 12.0,
+                             minarea: int = 10,
+                             max_control_points: int | None = 40,
+                             *, _dbg=None):
+    """
+    Run astroalign on 1x1 (center), 5-tile (corners+center), or NxN tiles of the reference.
+    Return merged (src_xy, tgt_xy_full, best_tform_params, best_offsets).
+
+    tiles=1 => center crop only.
+    tiles=5 => corners + center.
+    tiles=3 => 3x3 grid (center+edges+corners).
+    tile_positions => explicit [(x0,y0), ...] overrides tiles.
+
+    max_control_points:
+      - passed to astroalign (limits detections per crop)
+      - ALSO used as a per-tile cap after detection to balance tiles
+        (if you want only AA limiting, set tiles=1).
+    """
+    import numpy as np, astroalign
+    try:
+        _lock = _AA_LOCK
+    except NameError:
+        from contextlib import nullcontext
+        _lock = nullcontext()
+
+    def dbg(msg):
+        if _dbg:
+            try: _dbg(msg)
+            except Exception: pass
+
+    src = np.ascontiguousarray(src_gray.astype(np.float32))
+    ref = np.ascontiguousarray(ref2d.astype(np.float32))
+    Hs, Ws = src.shape[:2]
+    Hr, Wr = ref.shape[:2]
+
+    # crop size same as today
+    h = min(int(round(Hs * scale)), Hr)
+    w = min(int(round(Ws * scale)), Wr)
+
+    # if crop almost full ref, no need to tile
+    if tiles <= 1 or h >= Hr * 0.95 or w >= Wr * 0.95:
+        tiles = 1
+
+    # sanitize max_control_points
+    mcp = None
+    try:
+        if max_control_points is not None and int(max_control_points) > 0:
+            mcp = int(max_control_points)
+    except Exception:
+        mcp = None
+
+    kwargs = {"detection_sigma": float(det_sigma), "min_area": int(minarea)}
+    if mcp is not None:
+        kwargs["max_control_points"] = mcp
+
+    # --- helper to clamp tile top-lefts ---
+    def _clamp_xy0(x0, y0):
+        x0 = int(np.clip(x0, 0, max(0, Wr - w)))
+        y0 = int(np.clip(y0, 0, max(0, Hr - h)))
+        return x0, y0
+
+    # --- pick tile positions (top-lefts in full ref coords) ---
+    positions = []
+
+    if tile_positions is not None:
+        # explicit override
+        for (x0, y0) in tile_positions:
+            positions.append(_clamp_xy0(x0, y0))
+
+    elif tiles == 1:
+        positions = [_clamp_xy0((Wr - w) // 2, (Hr - h) // 2)]
+
+    elif tiles == 5:
+        # corners + center
+        positions = [
+            _clamp_xy0((Wr - w) // 2, (Hr - h) // 2),  # center
+            _clamp_xy0(0, 0),                          # TL
+            _clamp_xy0(Wr - w, 0),                     # TR
+            _clamp_xy0(0, Hr - h),                     # BL
+            _clamp_xy0(Wr - w, Hr - h),                # BR
+        ]
+
+        # de-dupe in case w/h ~= Wr/Hr (clamp collapses positions)
+        positions = list(dict.fromkeys(positions))
+
+    else:
+        # NxN grid (tiles x tiles)
+        ys = np.linspace(0, max(0, Hr - h), tiles).astype(int).tolist()
+        xs = np.linspace(0, max(0, Wr - w), tiles).astype(int).tolist()
+        for y0 in ys:
+            for x0 in xs:
+                positions.append(_clamp_xy0(x0, y0))
+
+        positions = list(dict.fromkeys(positions))
+
+    all_src, all_tgt = [], []
+    best_n = -1
+    best_P, best_xy0 = None, (0, 0)
+
+    tile_idx = 0
+    for (x0, y0) in positions:
+        tile_idx += 1
+        ref_crop = ref[y0:y0+h, x0:x0+w]
+
+        try:
+            with _lock:
+                tform, (src_pts_s, tgt_pts_s) = astroalign.find_transform(src, ref_crop, **kwargs)
+        except TypeError:
+            # legacy AA without det_sigma/min_area
+            legacy = {}
+            if "max_control_points" in kwargs:
+                legacy["max_control_points"] = kwargs["max_control_points"]
+            with _lock:
+                tform, (src_pts_s, tgt_pts_s) = astroalign.find_transform(src, ref_crop, **legacy)
+        except Exception as e:
+            dbg(f"[AA tile {tile_idx}] fail x0={x0} y0={y0}: {e}")
+            continue
+
+        src_xy = np.asarray(src_pts_s, np.float32)
+        tgt_xy = np.asarray(tgt_pts_s, np.float32)
+
+        if len(src_xy) == 0:
+            dbg(f"[AA tile {tile_idx}] 0 matches x0={x0} y0={y0}")
+            continue
+
+        # lift crop coords to full ref coords
+        tgt_xy[:, 0] += x0
+        tgt_xy[:, 1] += y0
+
+        # ---- per-tile balancing cap ----
+        if len(positions) > 1 and mcp is not None and len(src_xy) > mcp:
+            idx = np.random.choice(len(src_xy), mcp, replace=False)
+            src_xy = src_xy[idx]
+            tgt_xy = tgt_xy[idx]
+
+        all_src.append(src_xy)
+        all_tgt.append(tgt_xy)
+
+        dbg(f"[AA tile {tile_idx}] matches={len(src_xy)} x0={x0} y0={y0}")
+
+        if len(src_xy) > best_n:
+            best_n = len(src_xy)
+            best_P = np.asarray(tform.params, np.float64)
+            best_xy0 = (x0, y0)
+
+    if not all_src:
+        return None, None, None, None
+
+    src_all = np.vstack(all_src)
+    tgt_all = np.vstack(all_tgt)
+
+    return src_all, tgt_all, best_P, best_xy0
+
+def compute_similarity_transform_astroalign_cropped(source_img, reference_img,
+                                                   scale: float = 1.20,
+                                                   limit_stars: int | None = None,
+                                                   det_sigma: float = 12.0,
+                                                   minarea: int = 10,
+                                                   h_reproj: float = 3.0):
+    """
+    Like compute_affine_transform_astroalign_cropped, but returns a
+    similarity (rigid+uniform scale) 2x3 matrix: no shear.
+    """
+    import numpy as np, astroalign, cv2
+
+    try:
+        _lock = _AA_LOCK
+    except NameError:
+        from contextlib import nullcontext
+        _lock = nullcontext()
+
+    Hs, Ws = source_img.shape[:2]
+    Hr, Wr = reference_img.shape[:2]
+
+    h = min(int(round(Hs * scale)), Hr)
+    w = min(int(round(Ws * scale)), Wr)
+    y0 = max(0, (Hr - h) // 2)
+    x0 = max(0, (Wr - w) // 2)
+    ref_crop = reference_img[y0:y0+h, x0:x0+w]
+
+    kwargs = {"detection_sigma": float(det_sigma), "min_area": int(minarea)}
+    if limit_stars is not None:
+        kwargs["max_control_points"] = int(limit_stars)
+
+    # AA gives us correspondences
+    with _lock:
+        try:
+            src_pts = _detect_stars_uniform(source_img, det_sigma, minarea,
+                                            grid=(4,4), max_per_cell=25,
+                                            max_total=(limit_stars or 500))
+            ref_pts = _detect_stars_uniform(ref_crop, det_sigma, minarea,
+                                            grid=(4,4), max_per_cell=25,
+                                            max_total=(limit_stars or 500))
+
+            # ✅ ADD COVERAGE LOGGING HERE
+            cov_src = _coverage_fraction(src_pts, Hs, Ws, grid=(4,4))
+            cov_ref = _coverage_fraction(ref_pts, h,  w,  grid=(4,4))
+            if cov_src < 0.5 or cov_ref < 0.5:
+                print(f"[AA] low coverage src={cov_src:.2f}, ref={cov_ref:.2f} for crop similarity")
+
+            if src_pts.shape[0] >= 8 and ref_pts.shape[0] >= 8:
+                pt_kwargs = {}
+                if limit_stars is not None:
+                    pt_kwargs["max_control_points"] = int(limit_stars)
+
+                tform, (src_pts_s, tgt_pts_s) = astroalign.find_transform(
+                    src_pts, ref_pts, **pt_kwargs
+                )
+            else:
+                raise RuntimeError("Too few uniform points, falling back to images.")
+
+        except Exception:
+            # fallback to your current image AA
+            tform, (src_pts_s, tgt_pts_s) = astroalign.find_transform(
+                np.ascontiguousarray(source_img.astype(np.float32)),
+                np.ascontiguousarray(ref_crop.astype(np.float32)),
+                **kwargs
+            )
+    src_xy = np.asarray(src_pts_s, dtype=np.float32)
+    tgt_xy = np.asarray(tgt_pts_s, dtype=np.float32)
+    tgt_xy[:, 0] += x0
+    tgt_xy[:, 1] += y0
+
+    # Similarity fit (rotation + translation + uniform scale), RANSAC
+    A, inl = cv2.estimateAffinePartial2D(
+        src_xy, tgt_xy, method=cv2.RANSAC,
+        ransacReprojThreshold=float(h_reproj)
+    )
+    if A is not None:
+        return np.asarray(A, np.float64).reshape(2, 3)
+
+    # Fallback: project AA base affine down to nearest similarity
+    P = np.asarray(tform.params, dtype=np.float64)
+    if P.shape == (3, 3):
+        base = (np.array([[1,0,x0],[0,1,y0],[0,0,1]]) @ P)[0:2, :]
+    else:
+        A3 = np.vstack([P[0:2, :], [0,0,1]])
+        base = (np.array([[1,0,x0],[0,1,y0],[0,0,1]]) @ A3)[0:2, :]
+
+    return project_affine_to_similarity(base)
+
+
+def project_affine_to_similarity(A2x3: np.ndarray) -> np.ndarray:
+    """
+    Take a 2x3 affine and remove shear by projecting to nearest similarity transform.
+    Keeps translation, preserves best rotation+uniform scale.
+    """
+    import numpy as np
+    A = np.asarray(A2x3, np.float64).reshape(2, 3)
+    M = A[:, :2]
+    t = A[:, 2]
+
+    # polar/SVD
+    U, S, Vt = np.linalg.svd(M)
+    R = U @ Vt
+    s = float(np.mean(S))  # uniform scale
+    M_sim = s * R
+
+    out = np.zeros((2,3), np.float64)
+    out[:, :2] = M_sim
+    out[:, 2] = t
+    return out
 
 
 def _solve_delta_job(args):
     """
-    Worker: compute incremental affine delta for one frame against the ref preview.
+    Worker: compute incremental affine/similarity delta for one frame against the ref preview.
     args = (orig_path, current_transform_2x3, ref_small, Wref, Href,
-            resample_flag, det_sigma, limit_stars, minarea)
+            resample_flag, det_sigma, limit_stars, minarea,
+            model, h_reproj)
     """
     try:
         import os
@@ -1439,7 +1811,8 @@ def _solve_delta_job(args):
         from astropy.io import fits
 
         (orig_path, current_transform_2x3, ref_small, Wref, Href,
-         resample_flag, det_sigma, limit_stars, minarea) = args
+         resample_flag, det_sigma, limit_stars, minarea,
+         model, h_reproj) = args
 
         try:
             cv2.setNumThreads(1)
@@ -1458,20 +1831,36 @@ def _solve_delta_job(args):
 
         # 2) pre-warp to REF size
         T_prev = np.asarray(current_transform_2x3, np.float32).reshape(2, 3)
-        src_for_match = cv2.warpAffine(gray, T_prev, (Wref, Href),
-                                       flags=resample_flag, borderMode=cv2.BORDER_REFLECT_101)
+        src_for_match = cv2.warpAffine(
+            gray, T_prev, (Wref, Href),
+            flags=resample_flag, borderMode=cv2.BORDER_REFLECT_101
+        )
 
         # 3) denoise sparse islands to stabilize AA
         src_for_match = _suppress_tiny_islands(src_for_match, det_sigma=det_sigma, minarea=minarea)
         ref_small     = _suppress_tiny_islands(ref_small,     det_sigma=det_sigma, minarea=minarea)
 
         # 4) AA incremental delta on cropped ref
-        tform = compute_affine_transform_astroalign_cropped(
-            src_for_match, ref_small,
-            limit_stars=int(limit_stars) if limit_stars is not None else None,
-            det_sigma=float(det_sigma),
-            minarea=int(minarea)
-        )
+        m = (model or "affine").lower()
+        if m in ("no_distortion", "nodistortion"):
+            m = "similarity"
+
+        if m == "similarity":
+            tform = compute_similarity_transform_astroalign_cropped(
+                src_for_match, ref_small,
+                limit_stars=int(limit_stars) if limit_stars is not None else None,
+                det_sigma=float(det_sigma),
+                minarea=int(minarea),
+                h_reproj=float(h_reproj)
+            )
+        else:
+            tform = compute_affine_transform_astroalign_cropped(
+                src_for_match, ref_small,
+                limit_stars=int(limit_stars) if limit_stars is not None else None,
+                det_sigma=float(det_sigma),
+                minarea=int(minarea)
+            )
+
         if tform is None:
             return (orig_path, None,
                     f"Astroalign failed for {os.path.basename(orig_path)} – skipping (no transform returned)")
@@ -1482,6 +1871,7 @@ def _solve_delta_job(args):
     except Exception as e:
         return (args[0] if args else "<unknown>", None,
                 f"Astroalign failed for {os.path.basename(args[0]) if args else '<unknown>'}: {e}")
+
 
 
 def _residual_job_worker(args):
@@ -1568,7 +1958,8 @@ def _finalize_write_job(args):
     drizzle_tuple = (kind, matrix_or_None)
     """
     (orig_path, align_model, ref_shape, ref_npy_path,
-     affine_2x3, h_reproj, output_directory) = args
+     affine_2x3, h_reproj, output_directory,
+     det_sigma, minarea, limit_stars) = args
 
     import os
     os.environ.setdefault("OMP_NUM_THREADS", "1")
@@ -1586,6 +1977,11 @@ def _finalize_write_job(args):
         except Exception: pass
     except Exception:
         pass
+
+    debug_lines = []
+    def dbg(s: str):
+        # keep it short-ish; UI emits each line
+        debug_lines.append(str(s))
 
     try:
         # 1) load source (full-res)
@@ -1608,100 +2004,234 @@ def _finalize_write_job(args):
         if ref2d.shape[:2] != (Href, Wref):
             return (orig_path, "", f"⚠️ Ref shape mismatch for {os.path.basename(orig_path)}", False, None)
 
-        # 3) choose transform
         base = os.path.basename(orig_path)
+
+        # helper: force affine to similarity (no shear)
+        def _affine_to_similarity(A2x3: np.ndarray) -> np.ndarray:
+            A2x3 = np.asarray(A2x3, np.float64).reshape(2, 3)
+            R = A2x3[:, :2]
+            t = A2x3[:, 2]
+            U, S, Vt = np.linalg.svd(R)
+            rot = U @ Vt
+            if np.linalg.det(rot) < 0:
+                U[:, -1] *= -1
+                rot = U @ Vt
+            s = float((S[0] + S[1]) * 0.5)
+            Rsim = rot * s
+            out = np.zeros((2, 3), dtype=np.float64)
+            out[:, :2] = Rsim
+            out[:, 2] = t
+            return out
+
+        # 3) choose transform
+        model = (align_model or "affine").lower()
+        if model in ("no_distortion", "nodistortion"):
+            model = "similarity"
+
         kind = "affine"
         X = np.asarray(affine_2x3, np.float64).reshape(2, 3)
 
-        if align_model != "affine":
-            import astroalign
-            Hs, Ws = src_gray_full.shape[:2]
-            scale = 1.20
-            h = min(int(round(Hs * scale)), Href)
-            w = min(int(round(Ws * scale)), Wref)
-            y0 = max(0, (Href - h) // 2)
-            x0 = max(0, (Wref - w) // 2)
-            ref_crop = ref2d[y0:y0+h, x0:x0+w]
+        if model != "affine":
+            # ---- AA pairs (adaptive tiling) ----
+            max_cp = None
+            try:
+                if limit_stars is not None and int(limit_stars) > 0:
+                    max_cp = int(limit_stars)
+            except Exception:
+                max_cp = None
 
-            tform, (src_pts_s, tgt_pts_s) = astroalign.find_transform(
-                np.ascontiguousarray(src_gray_full), np.ascontiguousarray(ref_crop)
+            dbg(f"[finalize] base={base} model={model} det_sigma={det_sigma} minarea={minarea} limit_stars={limit_stars}")
+
+            AA_SCALE = 0.80  # finalize-only
+
+            # ---- tiles=1 (center crop) ----
+            src_xy, tgt_xy, best_P, best_xy0 = _aa_find_pairs_multitile(
+                src_gray_full, ref2d,
+                scale=AA_SCALE,
+                tiles=1,
+                det_sigma=float(det_sigma),
+                minarea=int(minarea),
+                max_control_points=max_cp,
+                _dbg=dbg
             )
-            src_xy = np.asarray(src_pts_s, dtype=np.float32)
-            tgt_xy = np.asarray(tgt_pts_s, dtype=np.float32)
-            tgt_xy[:, 0] += x0
-            tgt_xy[:, 1] += y0
 
-            P = np.asarray(tform.params, dtype=np.float64)
+            if src_xy is None or len(src_xy) < 8:
+                dbg("[AA] tiles=1 too few matches")
+                raise RuntimeError("astroalign produced too few matches")
+
+            dbg(f"[AA] tiles=1 matches={len(src_xy)} best_tile_xy0={best_xy0}")
+
+            spread_ok1 = _points_spread_ok(tgt_xy, Wref, Href, _dbg=dbg)
+            dbg(f"[AA] spread_ok(tiles=1)={spread_ok1}")
+
+            # ---- fallback: tiles=5 (corners + center) ----
+            if not spread_ok1:
+                src_xy5, tgt_xy5, best_P5, best_xy0_5 = _aa_find_pairs_multitile(
+                    src_gray_full, ref2d,
+                    scale=AA_SCALE,
+                    tiles=5,  # <-- NEW primary fallback
+                    det_sigma=float(det_sigma),
+                    minarea=int(minarea),
+                    max_control_points=max_cp,
+                    _dbg=dbg
+                )
+
+                if src_xy5 is None or len(src_xy5) < 8:
+                    dbg("[AA] tiles=5 too few matches; keeping tiles=1")
+                else:
+                    dbg(f"[AA] tiles=5 matches={len(src_xy5)} best_tile_xy0={best_xy0_5}")
+                    spread_ok5 = _points_spread_ok(tgt_xy5, Wref, Href, _dbg=dbg)
+                    dbg(f"[AA] spread_ok(tiles=5)={spread_ok5}")
+
+                    # choose tiles=5 if it spreads better OR gives more matches
+                    if spread_ok5 or len(src_xy5) > len(src_xy):
+                        dbg("[AA] switching to tiles=5 result")
+                        src_xy, tgt_xy = src_xy5, tgt_xy5
+                        best_P, best_xy0 = best_P5, best_xy0_5
+                    else:
+                        dbg("[AA] keeping tiles=1 result (tiles=5 not better)")
+
+            # ---- tertiary fallback: tiles=3 grid ----
+            spread_ok_after = _points_spread_ok(tgt_xy, Wref, Href, _dbg=dbg)
+            dbg(f"[AA] spread_ok(after tiles=5 check)={spread_ok_after}")
+
+            if not spread_ok_after:
+                src_xy3, tgt_xy3, best_P3, best_xy0_3 = _aa_find_pairs_multitile(
+                    src_gray_full, ref2d,
+                    scale=AA_SCALE,
+                    tiles=3,
+                    det_sigma=float(det_sigma),
+                    minarea=int(minarea),
+                    max_control_points=max_cp,
+                    _dbg=dbg
+                )
+
+                if src_xy3 is None or len(src_xy3) < 8:
+                    dbg("[AA] tiles=3 too few matches; keeping current result")
+                else:
+                    dbg(f"[AA] tiles=3 matches={len(src_xy3)} best_tile_xy0={best_xy0_3}")
+                    spread_ok3 = _points_spread_ok(tgt_xy3, Wref, Href, _dbg=dbg)
+                    dbg(f"[AA] spread_ok(tiles=3)={spread_ok3}")
+
+                    if spread_ok3 or len(src_xy3) > len(src_xy):
+                        dbg("[AA] switching to tiles=3 result")
+                        src_xy, tgt_xy = src_xy3, tgt_xy3
+                        best_P, best_xy0 = best_P3, best_xy0_3
+                    else:
+                        dbg("[AA] keeping current result (tiles=3 not better)")
+
+            x0, y0 = best_xy0
+            P = np.asarray(best_P, np.float64)
+
+            # ---- base full-ref from best_P + best_xy0 ----
             if P.shape == (3, 3):
                 base_kind0 = "homography"
                 T  = np.array([[1,0,x0],[0,1,y0],[0,0,1]], dtype=np.float64)
                 base_X0 = T @ P
             else:
                 base_kind0 = "affine"
-                A3 = np.vstack([P[0:2,:], [0,0,1]])
+                A3 = np.vstack([P[0:2, :], [0,0,1]])
                 T  = np.array([[1,0,x0],[0,1,y0],[0,0,1]], dtype=np.float64)
                 base_X0 = (T @ A3)[0:2, :]
 
-            if align_model == "homography":
-                H, _ = cv2.findHomography(src_xy, tgt_xy, method=cv2.RANSAC,
-                                          ransacReprojThreshold=float(h_reproj))
+            hth = float(h_reproj)
+
+            if model == "homography":
+                H, inl = cv2.findHomography(src_xy, tgt_xy, cv2.RANSAC, ransacReprojThreshold=hth)
+                ninl = int(inl.sum()) if inl is not None else 0
+                dbg(f"[RANSAC] homography inliers={ninl}/{len(src_xy)} thr={hth}")
+
                 if H is not None:
                     kind, X = "homography", np.asarray(H, np.float64)
                 else:
                     kind, X = base_kind0, base_X0
-            elif align_model == "affine":
+
+            elif model == "similarity":
+                A, inl = cv2.estimateAffinePartial2D(src_xy, tgt_xy, cv2.RANSAC, ransacReprojThreshold=hth)
+                ninl = int(inl.sum()) if inl is not None else 0
+                dbg(f"[RANSAC] similarity inliers={ninl}/{len(src_xy)} thr={hth}")
+
+                if A is not None:
+                    kind, X = "similarity", np.asarray(A, np.float64)
+                else:
+                    if base_kind0 == "affine":
+                        kind, X = "similarity", _affine_to_similarity(base_X0)
+                    else:
+                        kind, X = base_kind0, base_X0
+
+            elif model == "affine":
                 kind, X = "affine", np.asarray(affine_2x3, np.float64)
+
+            elif model in ("poly3", "poly4"):
+                order = 3 if model == "poly3" else 4
+                cx, cy = _fit_poly_xy(src_xy, tgt_xy, order=order)
+                map_x, map_y = _poly_eval_grid(cx, cy, Wref, Href, order=order)
+                kind, X = model, (map_x, map_y)
+
             else:
-                # poly3/poly4: use base; caller records kind for drizzle metadata
+                dbg(f"[AA] unknown model '{model}', falling back to base {base_kind0}")
                 kind, X = base_kind0, base_X0
 
         # 4) warp
         Hh, Ww = Href, Wref
-        if kind == "affine":
+
+        if kind in ("affine", "similarity"):
             A = np.asarray(X, np.float64).reshape(2, 3)
+
             if is_mono:
-                aligned = cv2.warpAffine(img, A, (Ww, Hh), flags=cv2.INTER_LANCZOS4,
-                                         borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+                aligned = cv2.warpAffine(
+                    img, A, (Ww, Hh),
+                    flags=cv2.INTER_LANCZOS4,
+                    borderMode=cv2.BORDER_CONSTANT, borderValue=0
+                )
             else:
-                aligned = np.stack([cv2.warpAffine(img[..., c], A, (Ww, Hh),
-                                                   flags=cv2.INTER_LANCZOS4,
-                                                   borderMode=cv2.BORDER_CONSTANT, borderValue=0)
-                                    for c in range(img.shape[2])], axis=2)
+                aligned = np.stack([
+                    cv2.warpAffine(
+                        img[..., c], A, (Ww, Hh),
+                        flags=cv2.INTER_LANCZOS4,
+                        borderMode=cv2.BORDER_CONSTANT, borderValue=0
+                    )
+                    for c in range(img.shape[2])
+                ], axis=2)
+
             drizzle_tuple = ("affine", A.astype(np.float64))
-            warp_label = "affine"
+            warp_label = ("similarity" if kind == "similarity" else "affine")
+
         elif kind == "homography":
             Hm = np.asarray(X, np.float64).reshape(3, 3)
+
             if is_mono:
-                aligned = cv2.warpPerspective(img, Hm, (Ww, Hh), flags=cv2.INTER_LANCZOS4,
-                                              borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+                aligned = cv2.warpPerspective(
+                    img, Hm, (Ww, Hh),
+                    flags=cv2.INTER_LANCZOS4,
+                    borderMode=cv2.BORDER_CONSTANT, borderValue=0
+                )
             else:
-                aligned = np.stack([cv2.warpPerspective(img[..., c], Hm, (Ww, Hh),
-                                                        flags=cv2.INTER_LANCZOS4,
-                                                        borderMode=cv2.BORDER_CONSTANT, borderValue=0)
-                                    for c in range(img.shape[2])], axis=2)
+                aligned = np.stack([
+                    cv2.warpPerspective(
+                        img[..., c], Hm, (Ww, Hh),
+                        flags=cv2.INTER_LANCZOS4,
+                        borderMode=cv2.BORDER_CONSTANT, borderValue=0
+                    )
+                    for c in range(img.shape[2])
+                ], axis=2)
+
             drizzle_tuple = ("homography", Hm.astype(np.float64))
             warp_label = "homography"
-        else:
-            Xm = np.asarray(X, np.float64)
-            if Xm.shape == (3, 3):
-                if is_mono:
-                    aligned = cv2.warpPerspective(img, Xm, (Ww, Hh), flags=cv2.INTER_LANCZOS4,
-                                                  borderMode=cv2.BORDER_CONSTANT, borderValue=0)
-                else:
-                    aligned = np.stack([cv2.warpPerspective(img[..., c], Xm, (Ww, Hh),
-                                                            flags=cv2.INTER_LANCZOS4,
-                                                            borderMode=cv2.BORDER_CONSTANT, borderValue=0)
-                                        for c in range(img.shape[2])], axis=2)
+
+        elif kind in ("poly3","poly4"):
+            map_x, map_y = X
+            if is_mono:
+                aligned = cv2.remap(img, map_x, map_y, cv2.INTER_LANCZOS4,
+                                    borderMode=cv2.BORDER_CONSTANT, borderValue=0)
             else:
-                if is_mono:
-                    aligned = cv2.warpAffine(img, Xm.reshape(2,3), (Ww, Hh), flags=cv2.INTER_LANCZOS4,
-                                             borderMode=cv2.BORDER_CONSTANT, borderValue=0)
-                else:
-                    aligned = np.stack([cv2.warpAffine(img[..., c], Xm.reshape(2,3), (Ww, Hh),
-                                                       flags=cv2.INTER_LANCZOS4,
-                                                       borderMode=cv2.BORDER_CONSTANT, borderValue=0)
-                                        for c in range(img.shape[2])], axis=2)
-            drizzle_tuple = (align_model, None)   # mark as poly*
+                aligned = np.stack([
+                    cv2.remap(img[...,c], map_x, map_y, cv2.INTER_LANCZOS4,
+                              borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+                    for c in range(img.shape[2])
+                ], axis=2)
+
+            drizzle_tuple = (align_model, None)
             warp_label = align_model
 
         if np.isnan(aligned).any() or np.isinf(aligned).any():
@@ -1709,21 +2239,30 @@ def _finalize_write_job(args):
 
         # 5) save
         name, _ = os.path.splitext(base)
-        if name.endswith("_n"): name = name[:-2]
-        if not name.endswith("_n_r"): name += "_n_r"
+        if name.endswith("_n"):
+            name = name[:-2]
+        if not name.endswith("_n_r"):
+            name += "_n_r"
+
         out_path = os.path.join(output_directory, f"{name}.fit")
 
         from legacy.image_manager import save_image as _legacy_save
         _legacy_save(img_array=aligned, filename=out_path, original_format="fit",
                      bit_depth=None, original_header=hdr, is_mono=is_mono)
 
-        msg = f"🌀 Distortion Correction on {base}: warp={warp_label}\n" \
-              f"💾 Wrote {os.path.basename(out_path)} [{warp_label}]"
+        msg = (
+            f"🌀 Distortion Correction on {base}: warp={warp_label}\n"
+            f"💾 Wrote {os.path.basename(out_path)} [{warp_label}]"
+        )
+        if debug_lines:
+            msg = "\n".join(debug_lines) + "\n" + msg
         return (orig_path, out_path, msg, True, drizzle_tuple)
 
     except Exception as e:
+        if debug_lines:
+            pre = "\n".join(debug_lines)
+            return (orig_path, "", f"{pre}\n⚠️ Finalize error {os.path.basename(orig_path)}: {e}", False, None)
         return (orig_path, "", f"⚠️ Finalize error {os.path.basename(orig_path)}: {e}", False, None)
-
 
 
 class StarRegistrationWorker(QRunnable):
@@ -1889,6 +2428,74 @@ class StarRegistrationWorker(QRunnable):
             return (T @ A3)[0:2, :]
         return None
 
+def _project_to_similarity(T2x3: np.ndarray) -> np.ndarray:
+    T2x3 = np.asarray(T2x3, np.float64).reshape(2,3)
+    R = T2x3[:, :2]
+    t = T2x3[:, 2]
+    U, S, Vt = np.linalg.svd(R)
+    rot = U @ Vt
+    if np.linalg.det(rot) < 0:
+        U[:, -1] *= -1
+        rot = U @ Vt
+    s = float((S[0] + S[1]) * 0.5)  # uniform scale
+    Rsim = rot * s
+    out = np.zeros((2,3), np.float64)
+    out[:, :2] = Rsim
+    out[:, 2] = t
+    return out
+
+def _detect_stars_uniform(img32: np.ndarray,
+                          det_sigma: float = 12.0,
+                          minarea: int = 10,
+                          grid=(4,4),
+                          max_per_cell: int = 25,
+                          max_total: int = 500) -> np.ndarray:
+    """
+    Fast star detection on float32 mono image.
+    Returns Nx2 (x,y) float32 points spread across the image.
+    """
+    import numpy as np, sep
+
+    img32 = np.asarray(img32, np.float32, order="C")
+    H, W = img32.shape[:2]
+
+    # SEP background / threshold
+    bkg = sep.Background(img32, bw=64, bh=64)
+    thresh = float(det_sigma) * float(bkg.globalrms)
+
+    objs = sep.extract(img32 - bkg.back(), thresh, minarea=int(minarea))
+    if objs is None or len(objs) == 0:
+        return np.empty((0,2), np.float32)
+
+    # sort by flux desc (brightest first)
+    order = np.argsort(objs["flux"])[::-1]
+    xs = objs["x"][order].astype(np.float32)
+    ys = objs["y"][order].astype(np.float32)
+
+    gy, gx = int(grid[0]), int(grid[1])
+    cell_w = W / gx
+    cell_h = H / gy
+
+    keep_counts = np.zeros((gy, gx), dtype=np.int32)
+    pts = []
+
+    for x, y in zip(xs, ys):
+        cx = int(x / cell_w)
+        cy = int(y / cell_h)
+        if cx < 0 or cy < 0 or cx >= gx or cy >= gy:
+            continue
+        if keep_counts[cy, cx] >= max_per_cell:
+            continue
+        keep_counts[cy, cx] += 1
+        pts.append((x, y))
+        if len(pts) >= max_total:
+            break
+
+    if not pts:
+        return np.empty((0,2), np.float32)
+    return np.asarray(pts, np.float32)
+
+
 class StarRegistrationThread(QThread):
     progress_update = pyqtSignal(str)
     registration_complete = pyqtSignal(bool, str)
@@ -1934,9 +2541,11 @@ class StarRegistrationThread(QThread):
         """
         AA on a ~1.2× center crop; lift matches to full coords; re-estimate requested model.
         Returns: (kind, X, residual_rms_px, n_inliers)
-        kind in {"affine","homography"} or "affine"/"homography" base if poly fails upstream.
+
+        kind in {"affine","homography","similarity"} or base affine/homography if poly fails upstream.
         For poly3/4 we still return the base model here; finalize does the true residual warp.
         """
+        import numpy as np
         import astroalign, cv2
 
         src = np.ascontiguousarray(src_gray.astype(np.float32))
@@ -1944,6 +2553,7 @@ class StarRegistrationThread(QThread):
         Hs, Ws = src.shape[:2]
         Hr, Wr = ref.shape[:2]
 
+        # ---- 1) center crop the reference to ~1.2× source ----
         scale = 1.20
         h = min(int(round(Hs * scale)), Hr)
         w = min(int(round(Ws * scale)), Wr)
@@ -1955,14 +2565,32 @@ class StarRegistrationThread(QThread):
         if max_control_points is not None:
             kwargs["max_control_points"] = int(max_control_points)
 
-        tform, (src_pts_s, tgt_pts_s) = astroalign.find_transform(src, ref_crop, **kwargs)
+        # ---- 2) astroalign correspondences (adaptive tiling) ----
+        src_xy, tgt_xy, best_P, best_xy0 = _aa_find_pairs_multitile(
+            src, ref,
+            scale=1.20, tiles=1,
+            det_sigma=det_sigma, minarea=minarea,
+            max_control_points=max_control_points
+        )
 
-        src_xy = np.asarray(src_pts_s, dtype=np.float32)
-        tgt_xy = np.asarray(tgt_pts_s, dtype=np.float32)
-        tgt_xy[:, 0] += x0   # lift crop -> full ref coords
-        tgt_xy[:, 1] += y0
+        if src_xy is None or len(src_xy) < 8:
+            raise RuntimeError("astroalign produced too few matches")
 
-        P = np.asarray(tform.params, dtype=np.float64)
+        # ✅ your spread / covariance gate:
+        if not _points_spread_ok(tgt_xy, Wr, Hr):
+            src_xy2, tgt_xy2, best_P2, best_xy0_2 = _aa_find_pairs_multitile(
+                src, ref,
+                scale=1.20, tiles=3,           # 3x3 grid
+                det_sigma=det_sigma, minarea=minarea,
+                max_control_points=max_control_points
+            )
+            if src_xy2 is not None and len(src_xy2) > len(src_xy):
+                src_xy, tgt_xy = src_xy2, tgt_xy2
+                best_P, best_xy0 = best_P2, best_xy0_2
+
+        # ---- 3) base full-ref transform from best_P + crop translation ----
+        x0, y0 = best_xy0
+        P = np.asarray(best_P, dtype=np.float64)
         if P.shape == (3, 3):
             T  = np.array([[1,0,x0],[0,1,y0],[0,0,1]], dtype=np.float64)
             base_kind = "homography"
@@ -1973,9 +2601,31 @@ class StarRegistrationThread(QThread):
             base_kind = "affine"
             base_X    = (T @ A3)[0:2, :]
 
-        # Re-estimate requested model (RANSAC) with lifted pairs
+        # helper: force an affine 2x3 into nearest similarity (no shear)
+        def _affine_to_similarity(A2x3: np.ndarray) -> np.ndarray:
+            A2x3 = np.asarray(A2x3, np.float64).reshape(2, 3)
+            R = A2x3[:, :2]
+            t = A2x3[:, 2]
+            # SVD to get closest rotation + uniform scale
+            U, S, Vt = np.linalg.svd(R)
+            rot = U @ Vt
+            if np.linalg.det(rot) < 0:
+                U[:, -1] *= -1
+                rot = U @ Vt
+            s = float((S[0] + S[1]) * 0.5)
+            Rsim = rot * s
+            out = np.zeros((2, 3), dtype=np.float64)
+            out[:, :2] = Rsim
+            out[:, 2] = t
+            return out
+
+        # ---- 4) re-estimate requested model (RANSAC) with lifted pairs ----
         hth = float(h_reproj)
-        if model == "homography":
+        m = (model or "affine").lower()
+        if m in ("no_distortion", "nodistortion"):
+            m = "similarity"
+
+        if m == "homography":
             H, inl = cv2.findHomography(src_xy, tgt_xy, cv2.RANSAC, ransacReprojThreshold=hth)
             if H is None:
                 kind, X = base_kind, base_X
@@ -1983,7 +2633,8 @@ class StarRegistrationThread(QThread):
             else:
                 kind, X = "homography", np.asarray(H, np.float64)
                 inl_mask = inl.ravel().astype(bool)
-        elif model == "affine":
+
+        elif m == "affine":
             A, inl = cv2.estimateAffine2D(src_xy, tgt_xy, method=cv2.RANSAC, ransacReprojThreshold=hth)
             if A is None:
                 kind, X = base_kind, base_X
@@ -1991,20 +2642,34 @@ class StarRegistrationThread(QThread):
             else:
                 kind, X = "affine", np.asarray(A, np.float64)
                 inl_mask = inl.ravel().astype(bool)
+
+        elif m == "similarity":
+            A, inl = cv2.estimateAffinePartial2D(src_xy, tgt_xy, method=cv2.RANSAC, ransacReprojThreshold=hth)
+            if A is None:
+                # fallback: project base to similarity so we NEVER shear
+                if base_kind == "affine":
+                    kind, X = "similarity", _affine_to_similarity(base_X)
+                else:
+                    kind, X = base_kind, base_X
+                inl_mask = None
+            else:
+                kind, X = "similarity", np.asarray(A, np.float64)
+                inl_mask = inl.ravel().astype(bool)
+
         else:
-            # poly3/4: we report residual versus the base model here; finalize will apply poly residual warp.
+            # poly3/4: report residual versus base model; finalize applies poly residual warp
             kind, X  = base_kind, base_X
             inl_mask = None
 
-        # Compute residual RMS (px) using whichever model we returned
+        # ---- 5) residual RMS (px) using whichever model we returned ----
         if kind == "homography":
             ones = np.ones((src_xy.shape[0], 1), dtype=np.float32)
             P3   = np.hstack([src_xy.astype(np.float32), ones]).T
             Q    = (np.asarray(X, np.float32) @ P3)
             pred = (Q[:2, :] / Q[2:3, :]).T
-        else:  # affine
-            A = np.asarray(X, np.float32).reshape(2, 3)
-            pred = (src_xy @ A[:, :2].T) + A[:, 2]
+        else:  # affine or similarity (2x3)
+            A2 = np.asarray(X, np.float32).reshape(2, 3)
+            pred = (src_xy @ A2[:, :2].T) + A2[:, 2]
 
         if inl_mask is not None and inl_mask.sum() >= 10:
             res = np.linalg.norm(pred[inl_mask] - tgt_xy[inl_mask], axis=1)
@@ -2015,6 +2680,7 @@ class StarRegistrationThread(QThread):
 
         residual_rms = float(np.sqrt(np.mean(res**2))) if res.size else float("inf")
         return kind, X, residual_rms, nin
+
 
 
     def _estimate_model_transform(self, src_gray_full: np.ndarray) -> tuple[str, object]:
@@ -2403,7 +3069,8 @@ class StarRegistrationThread(QThread):
                 current_path,
                 current_transform,
                 ref_small, Wref, Href,
-                resample_flag, float(self.det_sigma), int(self.limit_stars), int(self.minarea)
+                resample_flag, float(self.det_sigma), int(self.limit_stars), int(self.minarea),
+                model, float(self.h_reproj)
             ))
 
         from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
@@ -2436,6 +3103,8 @@ class StarRegistrationThread(QThread):
                         continue
 
                     T_new = np.array(T_new, dtype=np.float64).reshape(2, 3)
+                    if model in ("no_distortion", "nodistortion", "similarity"):
+                        T_new = _project_to_similarity(T_new)                    
                     self.delta_transforms[k_orig] = float(np.hypot(T_new[0, 2], T_new[1, 2]))
 
                     T_prev = np.array(self.alignment_matrices.get(k_orig, IDENTITY_2x3), dtype=np.float64).reshape(2, 3)
@@ -2638,7 +3307,10 @@ class StarRegistrationThread(QThread):
                 ref_npy,
                 A,
                 float(self.h_reproj),
-                self.output_directory
+                self.output_directory,
+                float(self.det_sigma),
+                int(self.minarea),
+                int(self.limit_stars) if self.limit_stars is not None else None
             ))
 
         self.progress_update.emit(f"📝 Finalizing aligned outputs with {finalize_workers} processes…")

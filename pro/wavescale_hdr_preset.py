@@ -41,7 +41,9 @@ class WaveScaleHDRPresetDialog(QDialog):
             "mask_gamma": float(self.gamma.value()),
         }
 
-def run_wavescale_hdr_via_preset(main, preset: dict | None = None, *, target_doc=None):
+
+
+def run_wavescale_hdr_via_preset(main, preset: dict | None = None, target_doc=None):
     """
     Drive WaveScale HDR headlessly: set dialog controls from 'preset',
     run Preview, then auto-Apply on finish (same pipeline as UI).
@@ -67,16 +69,11 @@ def run_wavescale_hdr_via_preset(main, preset: dict | None = None, *, target_doc
     except Exception:
         pass
 
-    # Resolve doc (prefer explicit target)
-    doc = target_doc
-    if doc is None:
-        doc = getattr(main, "_active_doc", None)
-        if callable(doc):
-            doc = doc()
+    from pro.headless_utils import normalize_headless_main, unwrap_docproxy
 
+    main, doc, _dm = normalize_headless_main(main, target_doc)
     if doc is None or getattr(doc, "image", None) is None:
-        QMessageBox.warning(main, "WaveScale HDR", "Load an image first.")
-        _clear_wavescale_flags(main, s)
+        QMessageBox.warning(main or None, "...", "Load an image first.")
         return
 
     # Build headless dialog and apply preset

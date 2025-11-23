@@ -274,9 +274,12 @@ def apply_convo_via_preset(main_window, doc, preset: dict):
                 out = np.clip(out, 0.0, 1.0)
             out = _blend(img, out, float(p.get("strength", 1.0)))
 
+
         elif algo == "Larson-Sekanina":
             H, W = img.shape[:2]
-            cx = float(p.get("center", [W/2, H/2])[0]); cy = float(p.get("center", [W/2, H/2])[1])
+            cxy = p.get("center", [W/2, H/2])
+            cx = float(cxy[0]); cy = float(cxy[1])
+
             B = larson_sekanina(
                 image=img,
                 center=(cy, cx),  # (y,x)
@@ -284,15 +287,24 @@ def apply_convo_via_preset(main_window, doc, preset: dict):
                 angular_step_deg=float(p.get("ls_astep", 1.0)),
                 operator=p.get("ls_operator", "Divide")
             )
-            # blend modes from dialog
+
             A = img
             if A.ndim == 3 and A.shape[2] == 3:
-                B_rgb, A_rgb = np.repeat(B[...,None], 3, 0), A
+                # ✅ FIX: repeat into channel axis
+                B_rgb = np.repeat(B[..., None], 3, axis=2)
+                A_rgb = A
             else:
-                B_rgb, A_rgb = B[...,None], A[...,None]
+                B_rgb = B[..., None]
+                A_rgb = A[..., None]
+
             blend_mode = p.get("ls_blend", "SoftLight")
-            C = (A_rgb + B_rgb - (A_rgb * B_rgb)) if blend_mode == "Screen" else ((1 - 2 * B_rgb) * (A_rgb**2) + 2 * B_rgb * A_rgb)
-            out = np.clip(C, 0.0, 1.0); out = out[...,0] if img.ndim == 2 else out
+            if blend_mode == "Screen":
+                C = (A_rgb + B_rgb - (A_rgb * B_rgb))
+            else:  # SoftLight
+                C = (1 - 2 * B_rgb) * (A_rgb ** 2) + 2 * B_rgb * A_rgb
+
+            out = np.clip(C, 0.0, 1.0)
+            out = out[..., 0] if img.ndim == 2 else out
             out = _blend(img, out, float(p.get("strength", 1.0)))
 
         elif algo == "Van Cittert":
@@ -347,3 +359,56 @@ def apply_convo_via_preset(main_window, doc, preset: dict):
     except Exception:
         # Re-raise so replay_last_action_on_base can show the warning
         raise
+
+def run_convo_via_preset(main, doc_or_preset=None, preset: dict | None = None, *, target_doc=None):
+    """
+    Headless Convo/Deconvo/TV entrypoint for CommandSpec + Replay.
+
+    Supports BOTH call shapes:
+      1) New CommandRunner shape:
+            run_convo_via_preset(main, target_doc, preset)
+      2) Legacy shape:
+            run_convo_via_preset(main, preset_dict, target_doc=doc)
+            run_convo_via_preset(main, preset_dict)
+    """
+
+    from PyQt6.QtWidgets import QMessageBox
+
+    # ---- Interpret arguments for backward compat / new executor ----
+    if preset is None and isinstance(doc_or_preset, dict):
+        # Legacy: (main, preset_dict, target_doc=?)
+        p = dict(doc_or_preset or {})
+        doc = target_doc
+    else:
+        # New executor: (main, doc, preset_dict)
+        p = dict(preset or {})
+        doc = target_doc if target_doc is not None else doc_or_preset
+
+    # Resolve active doc if still None
+    if doc is None:
+        d = getattr(main, "_active_doc", None)
+        doc = d() if callable(d) else d
+
+    if doc is None or getattr(doc, "image", None) is None:
+        QMessageBox.warning(main, "Convolution / Deconvolution", "Load an image first.")
+        return
+
+    # ---- Record for Replay ----
+    try:
+        remember = getattr(main, "remember_last_headless_command", None)
+        if remember is None:
+            remember = getattr(main, "_remember_last_headless_command", None)
+
+        if callable(remember):
+            # IMPORTANT: store canonical id that exists in registry
+            remember("convo", p, description="Convolution / Deconvolution")
+        else:
+            setattr(main, "_last_headless_command", {
+                "command_id": "convo",
+                "preset": dict(p),
+            })
+    except Exception:
+        pass
+
+    apply_convo_via_preset(main, doc, p)
+

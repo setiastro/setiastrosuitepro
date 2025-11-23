@@ -16,38 +16,41 @@ from .remove_stars import (
 )
 
 # ---------- Headless public entry ----------
-def run_remove_stars_via_preset(main, preset: dict | None = None, target_doc=None):
+def run_remove_stars_via_preset(main, doc_or_preset=None, preset: dict | None = None, target_doc=None):
     """
     Headless star removal from a shortcut preset.
-      preset = {
-        "tool": "starnet" | "darkstar",
-        # StarNet:
-        "linear": True/False,                # default True
-        "exe": "/path/to/starnet(.exe)",     # optional override; else QSettings
-        # DarkStar:
-        "disable_gpu": False,                # default False
-        "mode": "unscreen" | "additive",     # default "unscreen"
-        "show_extracted_stars": True/False,  # default True
-        "stride": 512,                       # 64..1024 power of two
-        "exe": "/path/to/setiastrocosmicclarity_darkstar(.exe)"  # optional override
-      }
 
-    If target_doc is provided, it is used (ROI, base, etc.); otherwise
-    we fall back to main._active_doc for backward-compat.
+    Supports BOTH call shapes:
+      1) New CommandRunner shape:
+            run_remove_stars_via_preset(main, target_doc, preset)
+      2) Legacy shape:
+            run_remove_stars_via_preset(main, preset_dict, target_doc=doc)
+            run_remove_stars_via_preset(main, preset_dict)
     """
-    p = dict(preset or {})
-    tool = str(p.get("tool", "starnet")).lower()
+    from PyQt6.QtWidgets import QMessageBox
+    from PyQt6.QtCore import QTimer
+    import os, platform
 
-    # explicit doc (ROI/base) wins; fall back to _active_doc
-    doc = target_doc
+    # ---- Interpret arguments for backward compat / new executor ----
+    if preset is None and isinstance(doc_or_preset, dict):
+        # Legacy: (main, preset_dict, target_doc=?)
+        p = dict(doc_or_preset or {})
+        doc = target_doc
+    else:
+        # New executor: (main, doc, preset_dict)
+        p = dict(preset or {})
+        doc = target_doc if target_doc is not None else doc_or_preset
+
+    # Resolve active doc if still None
     if doc is None:
-        doc = getattr(main, "_active_doc", None)
-        if callable(doc):
-            doc = doc()
+        d = getattr(main, "_active_doc", None)
+        doc = d() if callable(d) else d
 
     if doc is None or getattr(doc, "image", None) is None:
         QMessageBox.warning(main, "Remove Stars", "Load an image first.")
         return
+
+    tool = str(p.get("tool", "starnet")).lower()
 
     # mark headless + short cool-down to block the interactive path
     setattr(main, "_remove_stars_headless_running", True)
@@ -71,6 +74,21 @@ def run_remove_stars_via_preset(main, preset: dict | None = None, target_doc=Non
         QTimer.singleShot(1200, _clear_flags)
 
 
+def apply_remove_stars_to_doc(parent, target_doc, preset: dict | None):
+    """
+    Replay helper: apply Remove Stars to a specific doc (base/ROI).
+    """
+    if parent is None:
+        return
+    main = parent
+    # walk up to main window if needed
+    while main is not None and not hasattr(main, "doc_manager"):
+        main = main.parent() if hasattr(main, "parent") else None
+    if main is None:
+        main = parent
+
+    run_remove_stars_via_preset(main, preset, target_doc=target_doc)
+
 
 # ---------- StarNet headless ----------
 def _resolve_starnet_exe_headless(main, override: str | None) -> str | None:
@@ -91,7 +109,7 @@ def _resolve_starnet_exe_headless(main, override: str | None) -> str | None:
     return exe
 
 def _run_starnet_headless(main, doc, p):
-    exe = _resolve_starnet_exe_headless(main, p.get("exe"))
+    exe = _resolve_starnet_exe_headless(main, p.get("starnet_exe") or p.get("exe"))
     if not exe:
         QMessageBox.warning(main, "StarNet", "StarNet path not set. Open the interactive tool once to set it.")
         return
@@ -216,7 +234,7 @@ def _resolve_darkstar_exe_headless(main, override: str | None) -> tuple[str | No
     return exe, base
 
 def _run_darkstar_headless(main, doc, p):
-    exe, base = _resolve_darkstar_exe_headless(main, p.get("exe"))
+    exe, base = _resolve_darkstar_exe_headless(main, p.get("darkstar_exe") or p.get("exe"))
     if not exe or not base:
         QMessageBox.warning(main, "CosmicClarity DarkStar", "DarkStar path not set. Open the interactive tool once to set it.")
         return
@@ -249,7 +267,7 @@ def _run_darkstar_headless(main, doc, p):
     command = [exe] + args
 
     dlg = _ProcDialog(main, title="CosmicClarityDarkStar Progress")
-    thr = _ProcThread(command, cwd=output_dir)
+    thr = _ProcThread(command, cwd=base)
     thr.output_signal.connect(dlg.append_text)
     thr.finished_signal.connect(lambda rc: _finish_darkstar(main, doc, rc, dlg, in_path, output_dir))
     dlg.cancel_button.clicked.connect(thr.terminate)
