@@ -1,9 +1,9 @@
 {
-  "version": "1.4.17",
+  "version": "1.5.0",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.17/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.17/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.4.17/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.5.0/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.5.0/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.5.0/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.4.17 Bug fixes and some niceties."
+  "notes": "Seti Astro Suite Pro V1.5.0 Scripts! Under Menubar there is Scripts now. An option to create sample scripts to help guide you. There is also a Command Help in the script editor with all functions callable and scripting coding language needed to get your script up and running. Share your script files with other by simply adding new .py files to the scripts folder.  Improved star alignment for highly spatially distorted images in Stacking Suite."
 }
