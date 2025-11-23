@@ -509,3 +509,18 @@ class BackgroundNeutralizationDialog(QDialog):
         # keep it fitted while the user hasn't manually zoomed
         if not self._user_zoomed:
             self.fit_to_view()
+
+from pro.headless_utils import normalize_headless_main, unwrap_docproxy
+
+def run_background_neutral_via_preset(main, preset=None, target_doc=None):
+    from PyQt6.QtWidgets import QMessageBox
+    from pro.backgroundneutral import apply_background_neutral_to_doc
+
+    p = dict(preset or {})
+    main, doc, _dm = normalize_headless_main(main, target_doc)
+
+    if doc is None or getattr(doc, "image", None) is None:
+        QMessageBox.warning(main or None, "Background Neutralization", "Load an image first.")
+        return
+
+    apply_background_neutral_to_doc(doc, p)
