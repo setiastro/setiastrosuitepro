@@ -760,7 +760,7 @@ def _try_load_raw_with_rawpy(filename: str, allow_thumb_preview: bool = True, de
     raise RuntimeError("RAW decode failed (rawpy).")
 
 import os, datetime
-from astropy.io import fits
+
 import exifread
 
 RAW_EXTS = ('.cr2', '.cr3', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2', '.pef')
@@ -981,8 +981,39 @@ def _fill_hdr_from_raw_metadata(raw, hdr: fits.Header | None = None) -> fits.Hea
 
     return hdr
 
+from astropy.wcs import WCS
 
-def load_image(filename, max_retries=3, wait_seconds=3):
+
+def attach_wcs_to_metadata(meta: dict, hdr: fits.Header | dict | None) -> dict:
+    """
+    If hdr contains WCS, create an astropy.wcs.WCS and stash in metadata.
+    Doesn't overwrite an existing non-None meta['wcs'].
+    """
+    if not hdr or meta is None:
+        return meta or {}
+
+    if meta.get("wcs") is not None:
+        return meta  # already present
+
+    try:
+        fhdr = hdr if isinstance(hdr, fits.Header) else fits.Header(hdr)
+        w = WCS(fhdr, relax=True)
+
+        # Only keep if it looks valid (has celestial axes)
+        if w.has_celestial:
+            meta["wcs"] = w
+            meta["wcs_header"] = w.to_header(relax=True)
+            meta["wcsaxes"] = int(w.wcs.naxis)  # handy cheap check for other tools
+            print("🔷 Attached astropy WCS into metadata.")
+        else:
+            print("⚠️ WCS parsed but has no celestial axes; not attaching.")
+    except Exception as e:
+        print(f"⚠️ Failed to build WCS from header: {e}")
+
+    return meta
+
+
+def load_image(filename, max_retries=3, wait_seconds=3, return_metadata: bool = False):
     """
     Loads an image from the specified filename with support for various formats.
     If a "buffer is too small for requested array" error occurs, it retries loading after waiting.
@@ -1044,6 +1075,8 @@ def load_image(filename, max_retries=3, wait_seconds=3):
                         bit_depth = "16-bit"
                         print("Identified 16-bit FITS image.")
                         image = image_data.astype(np.float32) / 65535.0
+                        #image = image_data.astype(np.float32) / 65530.0
+                        #image = np.clip(image, 0.0, 1.0)
 
                     elif image_data.dtype == np.int32:
                         bit_depth = "32-bit signed"
@@ -1091,9 +1124,21 @@ def load_image(filename, max_retries=3, wait_seconds=3):
                             raise ValueError(f"Unsupported 3D shape after squeeze: {image.shape}")
                     else:
                         raise ValueError(f"Unsupported FITS dimensions after squeeze: {image.shape}")
-                    
+
                     print(f"Loaded FITS image: shape={image.shape}, bit depth={bit_depth}, mono={is_mono}")
                     image = _finalize_loaded_image(image)
+
+                    # NEW: build metadata + attach WCS
+                    meta = {
+                        "file_path": filename,
+                        "fits_header": original_header,
+                        "bit_depth": bit_depth,
+                        "mono": is_mono,
+                    }
+                    meta = attach_wcs_to_metadata(meta, original_header)
+
+                    if return_metadata:
+                        return image, original_header, bit_depth, is_mono, meta
                     return image, original_header, bit_depth, is_mono
 
 
@@ -1196,6 +1241,23 @@ def load_image(filename, max_retries=3, wait_seconds=3):
                 # ─── Build FITS header from PixInsight XISFProperties ─────────────────
                 # ─── Build FITS header from XISFProperties, then fallback to FITSKeywords & Pixel‐Scale ─────────────────
                 props = image_meta.get('XISFProperties', {})
+                def _dump_astrometric_keys(props, image_meta, file_meta):
+                    print("🔎 [XISF] XISFProperties AstrometricSolution-related keys:")
+                    for k in sorted(props.keys()):
+                        if "AstrometricSolution" in k or "SplineWorldTransformation" in k or "SIP" in k:
+                            print("   ", k)
+
+                    def _dump_fk(meta, tag):
+                        fk = meta.get("FITSKeywords", {})
+                        if not fk:
+                            print(f"🔎 [XISF] No FITSKeywords in {tag}")
+                            return
+                        sip_keys = [k for k in fk.keys() if k.startswith(("A_", "B_", "AP_", "BP_", "A_ORDER", "B_ORDER"))]
+                        print(f"🔎 [XISF] FITSKeywords SIP-ish keys in {tag}: {sorted(sip_keys)}")
+
+                    _dump_fk(image_meta, "image_meta")
+                    _dump_fk(file_meta, "file_meta")          
+                #_dump_astrometric_keys(props, image_meta, file_meta)          
                 hdr   = fits.Header()
                 _filled = set()
 
@@ -1221,43 +1283,163 @@ def load_image(filename, max_retries=3, wait_seconds=3):
                 except KeyError:
                     print("⚠️ Missing CD matrix in XISFProperties")
 
-                # 3) SIP polynomial fitting
-                try:
-                    gx = np.array(props['PCL:AstrometricSolution:SplineWorldTransformation:'
-                                        'PointGridInterpolation:ImageToNative:GridX']['value'], dtype=float)
-                    gy = np.array(props['PCL:AstrometricSolution:SplineWorldTransformation:'
-                                        'PointGridInterpolation:ImageToNative:GridY']['value'], dtype=float)
-                    grid = np.stack([gx, gy], axis=-1)
-                    crpix = (hdr['CRPIX1'], hdr['CRPIX2'])
-                    def fit_sip(grid, cr, order):
-                        rows, cols, _ = grid.shape
-                        u = np.repeat(np.arange(cols), rows) - cr[0]
-                        v = np.tile(np.arange(rows), cols)   - cr[1]
-                        dx = grid[:,:,0].ravel(); dy = grid[:,:,1].ravel()
-                        terms = [(i,j) for i in range(order+1) for j in range(order+1-i) if (i,j)!=(0,0)]
-                        M = np.vstack([(u**i)*(v**j) for (i,j) in terms]).T
-                        a, *_ = np.linalg.lstsq(M, dx, rcond=None)
-                        b, *_ = np.linalg.lstsq(M, dy, rcond=None)
-                        rms = np.hypot(dx - M.dot(a), dy - M.dot(b)).std()
-                        return a, b, terms, rms
+                # 3) SIP polynomial fitting  (CORRECTED for PI ImageToNative grids)
+                def _try_inject_sip_from_fitskeywords(hdr, image_meta, file_meta):
+                    """If PI already wrote SIP in FITSKeywords, pull it in verbatim."""
+                    def _lookup_kw(key):
+                        for meta in (image_meta, file_meta):
+                            fk = meta.get("FITSKeywords", {})
+                            if key in fk and fk[key]:
+                                return fk[key][0].get("value")
+                        return None
 
-                    best = {'order':None, 'rms':np.inf}
-                    for order in range(2,7):
-                        a, b, terms, rms = fit_sip(grid, crpix, order)
-                        if rms < best['rms']:
-                            best.update(order=order, a=a, b=b, terms=terms, rms=rms)
-                    o = best['order']
-                    hdr['A_ORDER'] = o; hdr['B_ORDER'] = o
-                    _filled |= {'A_ORDER','B_ORDER'}
-                    for (i,j), coef in zip(best['terms'], best['a']):
-                        hdr[f'A_{i}_{j}'] = float(coef)
-                        _filled.add(f'A_{i}_{j}')
-                    for (i,j), coef in zip(best['terms'], best['b']):
-                        hdr[f'B_{i}_{j}'] = float(coef)
-                        _filled.add(f'B_{i}_{j}')
-                    print(f"🔷 Injected SIP order {o}")
-                except KeyError:
-                    print("⚠️ No SIP grid in XISFProperties; skipping SIP")
+                    a_order = _lookup_kw("A_ORDER")
+                    b_order = _lookup_kw("B_ORDER")
+                    if a_order is None or b_order is None:
+                        return False
+
+                    try:
+                        a_order = int(a_order); b_order = int(b_order)
+                    except Exception:
+                        return False
+
+                    hdr["A_ORDER"] = a_order
+                    hdr["B_ORDER"] = b_order
+
+                    # pull all A_i_j / B_i_j that exist in FITSKeywords
+                    for order_key, prefix in (("A_ORDER", "A_"), ("B_ORDER", "B_")):
+                        o = int(hdr[order_key])
+                        for i in range(o + 1):
+                            for j in range(o + 1 - i):
+                                if i == 0 and j == 0:
+                                    continue
+                                k = f"{prefix}{i}_{j}"
+                                v = _lookup_kw(k)
+                                if v is not None:
+                                    try:
+                                        hdr[k] = float(v)
+                                    except Exception:
+                                        pass
+
+                    # if CTYPE isn't SIP already, make it SIP
+                    hdr.setdefault("CTYPE1", "RA---TAN-SIP")
+                    hdr.setdefault("CTYPE2", "DEC--TAN-SIP")
+
+                    print(f"🔷 Injected SIP directly from FITSKeywords (A/B order {a_order})")
+                    return True
+                # 3a) First try to import SIP directly if PI already gave it to us
+                if _try_inject_sip_from_fitskeywords(hdr, image_meta, file_meta):
+                    _filled |= {"A_ORDER", "B_ORDER"} | {k for k in hdr.keys() if k.startswith(("A_", "B_"))}
+                else:
+                    try:
+                        def _find_image_to_native_grid(props):
+                            """
+                            Return a dict-like pg with keys GridX/GridY/Delta/Rect in the same shape
+                            your SIP fitter expects.
+
+                            PI can store this either as:
+                            A) one nested property:
+                                ...:PointGridInterpolation:ImageToNative  -> dict with GridX/GridY/etc
+                            B) separate leaf properties:
+                                ...:ImageToNative:GridX, :GridY, :Delta, :Rect
+                            """
+                            base = "PCL:AstrometricSolution:SplineWorldTransformation:PointGridInterpolation:ImageToNative"
+
+                            # Case A: full nested block exists
+                            if base in props:
+                                return props[base]
+
+                            # Case B: leaf keys exist — rebuild a pseudo-block
+                            gx_key = base + ":GridX"
+                            gy_key = base + ":GridY"
+                            if gx_key in props and gy_key in props:
+                                pg = {
+                                    "GridX": props[gx_key],
+                                    "GridY": props[gy_key],
+                                    "Delta": props.get(base + ":Delta", {"value": 1.0}),
+                                    "Rect":  props.get(base + ":Rect",  {"value": None}),
+                                }
+                                return pg
+
+                            return None
+                       
+                        pg = _find_image_to_native_grid(props)
+                        if pg is None:
+                            raise KeyError("No ImageToNative grid found")
+                        gx = np.asarray(pg['GridX']['value'], dtype=float)
+                        gy = np.asarray(pg['GridY']['value'], dtype=float)
+                        delta = float(pg.get('Delta', {}).get('value', 1.0))
+                        rect  = np.asarray(pg.get('Rect', {}).get('value', [0,0,gx.shape[1]*delta, gx.shape[0]*delta]), dtype=float)
+                        x0, y0 = rect[0], rect[1]
+
+                        # grid gives native-plane coords (deg) at sampled pixels
+                        # build pixel coord for each grid sample
+                        rows, cols = gx.shape
+                        xs = x0 + np.arange(cols, dtype=float) * delta
+                        ys = y0 + np.arange(rows, dtype=float) * delta
+                        Xs, Ys = np.meshgrid(xs, ys)
+
+                        # u,v relative to CRPIX for SIP basis
+                        crpix1, crpix2 = float(hdr['CRPIX1']), float(hdr['CRPIX2'])
+                        u = (Xs - crpix1).ravel()
+                        v = (Ys - crpix2).ravel()
+
+                        # linear native-plane coords from CD
+                        CD = np.array([[hdr['CD1_1'], hdr['CD1_2']],
+                                    [hdr['CD2_1'], hdr['CD2_2']]], dtype=float)
+                        duv = np.vstack([u, v])  # 2×N
+                        native_lin = CD @ duv                 # deg residuals predicted by linear model
+                        native_true = np.vstack([gx.ravel(), gy.ravel()])  # deg native coords from PI grids
+
+                        # residual in native plane (deg)
+                        d_native = native_true - native_lin   # 2×N in degrees
+
+                        # convert residual degrees back to pixel residuals (dp) using inv(CD)
+                        try:
+                            invCD = np.linalg.inv(CD)
+                        except np.linalg.LinAlgError:
+                            invCD = np.linalg.pinv(CD)
+                        d_pix = invCD @ d_native              # 2×N in pixels
+                        dx_pix = d_pix[0]
+                        dy_pix = d_pix[1]
+
+                        # robust mask to avoid NaNs/infs
+                        m = np.isfinite(u) & np.isfinite(v) & np.isfinite(dx_pix) & np.isfinite(dy_pix)
+                        u = u[m]; v = v[m]; dx_pix = dx_pix[m]; dy_pix = dy_pix[m]
+
+                        def fit_sip_pixels(u, v, dx, dy, order):
+                            terms = [(i,j) for i in range(order+1) for j in range(order+1-i) if (i,j)!=(0,0)]
+                            M = np.vstack([(u**i)*(v**j) for (i,j) in terms]).T
+                            a, *_ = np.linalg.lstsq(M, dx, rcond=None)
+                            b, *_ = np.linalg.lstsq(M, dy, rcond=None)
+                            rms = np.hypot(dx - M.dot(a), dy - M.dot(b)).std()
+                            return a, b, terms, rms
+
+                        # cap order hard to avoid overfit; PI splines can be complex
+                        best = {'order':None, 'rms':np.inf}
+
+                        for order in (2,3,4):  # <=4 is plenty for real optics
+                            a, b, terms, rms = fit_sip_pixels(u, v, dx_pix, dy_pix, order)
+                            if rms < best['rms']:
+                                best.update(order=order, a=a, b=b, terms=terms, rms=rms)
+
+                        o = best['order']
+                        hdr['A_ORDER'] = o; hdr['B_ORDER'] = o
+                        _filled |= {'A_ORDER','B_ORDER'}
+
+                        for (i,j), coef in zip(best['terms'], best['a']):
+                            hdr[f'A_{i}_{j}'] = float(coef); _filled.add(f'A_{i}_{j}')
+                        for (i,j), coef in zip(best['terms'], best['b']):
+                            hdr[f'B_{i}_{j}'] = float(coef); _filled.add(f'B_{i}_{j}')
+
+                        print(f"🔷 Injected SIP order {o} (from PI native grids), rms={best['rms']:.4g}px")
+
+                    except KeyError:
+                        print("⚠️ No PI ImageToNative grid; skipping SIP")
+                    except Exception as e:
+                        print(f"⚠️ SIP fit failed; skipping SIP. Reason: {e}")
+
+
 
                 # Helper: look in FITSKeywords dicts
                 def _lookup_kw(key):
@@ -1325,6 +1507,19 @@ def load_image(filename, max_retries=3, wait_seconds=3):
                 original_header = hdr
                 print(f"Loaded XISF header with keys: {_filled}")
                 image = _finalize_loaded_image(image)
+
+                # NEW: build metadata + attach WCS
+                meta = {
+                    "file_path": filename,
+                    "fits_header": original_header,   # your synthesized FITS header
+                    "bit_depth": bit_depth,
+                    "mono": is_mono,
+                    "xisf_meta": image_meta,          # optional, handy for debugging later
+                }
+                meta = attach_wcs_to_metadata(meta, original_header)
+
+                if return_metadata:
+                    return image, original_header, bit_depth, is_mono, meta
                 return image, original_header, bit_depth, is_mono
 
             elif filename.lower().endswith(('.cr2', '.cr3', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2', '.pef')):
