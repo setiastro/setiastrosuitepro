@@ -301,7 +301,7 @@ def _set_manual_seed(settings, ra: str, dec: str, scale_arcsec: float | None):
         settings.setValue("astap/manual_scale_arcsec", str(float(scale_arcsec)))
 
 def _astrometry_api_request(method: str, url: str, *, data=None, files=None,
-                            timeout=(10, 60),  # (connect, read)
+                            timeout=(10, 60),
                             max_retries: int = 5,
                             parent=None,
                             stage: str = "") -> dict | None:
@@ -316,6 +316,16 @@ def _astrometry_api_request(method: str, url: str, *, data=None, files=None,
     for attempt in range(1, max_retries + 1):
         try:
             if method.upper() == "POST":
+                # ✅ IMPORTANT: rewind any file handles before each attempt,
+                # because requests consumes them.
+                if files:
+                    try:
+                        for v in files.values():
+                            if hasattr(v, "seek"):
+                                v.seek(0)
+                    except Exception:
+                        pass
+
                 r = requests.post(url, data=data, files=files, timeout=timeout)
             else:
                 r = requests.get(url, timeout=timeout)
@@ -340,6 +350,7 @@ def _astrometry_api_request(method: str, url: str, *, data=None, files=None,
             _set_status_ui(parent, f"Status: {stage or 'request'} retry {attempt}/{max_retries}…")
             _sleep_ui(int(delay * 1000))
     return None
+
 
 # ---------------------------------------------------------------------
 # Utilities (headers, parsing, normalization)
@@ -509,6 +520,85 @@ def _minimal_header_for(img: np.ndarray, is_mono: bool) -> Header:
     h.add_comment("Temp FITS written for ASTAP solve.")
     return h
 
+def _write_temp_fit_web_16bit(gray2d_unit: np.ndarray) -> str:
+    """
+    Write full-res mono FITS as 16-bit unsigned for web upload.
+    gray2d_unit must be float32 in [0,1].
+    Returns path to temp .fits.
+    """
+    import os, tempfile, numpy as np
+    from astropy.io import fits
+    from astropy.io.fits import Header
+
+    if gray2d_unit.ndim != 2:
+        raise ValueError("Expected 2-D grayscale array for web FITS.")
+
+    g = np.clip(gray2d_unit.astype(np.float32), 0.0, 1.0)
+    u16 = (g * 65535.0 + 0.5).astype(np.uint16)
+
+    H, W = u16.shape
+    hdr = Header()
+    hdr["SIMPLE"] = True
+    hdr["BITPIX"] = 16
+    hdr["NAXIS"]  = 2
+    hdr["NAXIS1"] = int(W)
+    hdr["NAXIS2"] = int(H)
+    hdr.add_comment("Temp FITS (16-bit) written for Astrometry.net upload.")
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".fits", delete=False)
+    tmp_path = tmp.name
+    tmp.close()
+
+    fits.PrimaryHDU(u16, header=hdr).writeto(tmp_path, overwrite=True, output_verify="silentfix")
+
+    try:
+        print(f"[tempfits-web] Saved 16-bit FITS to: {tmp_path} (size={os.path.getsize(tmp_path)} bytes)")
+    except Exception:
+        pass
+
+    return tmp_path
+
+
+def _astrometry_download_wcs_file(settings, job_id: int, parent=None) -> Header | None:
+    """
+    Download the solved WCS FITS from astrometry.net.
+    This includes SIP terms when present.
+    Returns fits.Header or None.
+    """
+    import os, tempfile
+    from astropy.io import fits
+    from astropy.io.fits import Header
+
+    base_site = _get_astrometry_api_url(settings).split("/api/")[0].rstrip("/") + "/"
+    url = base_site + f"wcs_file/{int(job_id)}"
+
+    _set_status_ui(parent, "Status: Downloading WCS file (with SIP) from Astrometry.net…")
+    try:
+        r = requests.get(url, timeout=(10, 60))
+        if r.status_code != 200 or len(r.content) < 2000:
+            print(f"[Astrometry] WCS download failed HTTP {r.status_code}, bytes={len(r.content)}")
+            return None
+
+        tmp = tempfile.NamedTemporaryFile(suffix=".wcs.fits", delete=False)
+        tmp_path = tmp.name
+        tmp.write(r.content)
+        tmp.close()
+
+        try:
+            hdr = fits.getheader(tmp_path)
+            h2 = Header()
+            for k, v in dict(hdr).items():
+                if k not in ("COMMENT", "HISTORY", "END"):
+                    h2[k] = v
+            return h2
+        finally:
+            try: os.remove(tmp_path)
+            except Exception: pass
+
+    except Exception as e:
+        print("[Astrometry] WCS download exception:", e)
+        return None
+
 
 def _float01(arr: np.ndarray) -> np.ndarray:
     a = np.asarray(arr)
@@ -523,23 +613,32 @@ def _normalize_for_astap(img: np.ndarray) -> np.ndarray:
     """
     Use migrated stretch functions when available.
     Returns float32 in [0,1], 2D for mono or 3D for color.
+    Guaranteed to return something usable even if stretch funcs fail.
     """
     f01 = _float01(img)
-    if f01.ndim == 2 or (f01.ndim == 3 and f01.shape[2] == 1):
-        try:
-            print("DEBUG stretching mono")
-            out = stretch_mono_image(f01, 0.1, False)
-            return out
-        except Exception:
-            pass
 
-    else:
+    # Mono
+    if f01.ndim == 2 or (f01.ndim == 3 and f01.shape[2] == 1):
+        if stretch_mono_image is not None:
+            try:
+                print("DEBUG stretching mono")
+                out = stretch_mono_image(f01, 0.1, False)
+                return np.clip(out.astype(np.float32), 0.0, 1.0)
+            except Exception as e:
+                print("DEBUG mono stretch failed, fallback:", e)
+        return np.clip(f01.astype(np.float32), 0.0, 1.0)
+
+    # Color
+    if stretch_color_image is not None:
         try:
             print("DEBUG stretching color")
             out = stretch_color_image(f01, 0.1, False, False)
-            return out
-        except Exception:
-            pass
+            return np.clip(out.astype(np.float32), 0.0, 1.0)
+        except Exception as e:
+            print("DEBUG color stretch failed, fallback:", e)
+
+    return np.clip(f01.astype(np.float32), 0.0, 1.0)
+
 
 
 
@@ -726,6 +825,16 @@ def _astrometry_login(settings, parent=None) -> str | None:
 def _astrometry_upload(settings, session: str, image_path: str, parent=None) -> int | None:
     _set_status_ui(parent, "Status: Uploading image to Astrometry.net…")
     base = _get_astrometry_api_url(settings)
+
+    try:
+        sz = os.path.getsize(image_path)
+        if sz < 1024:  # fits headers alone are ~2880 bytes
+            print(f"[Astrometry] temp FITS too small ({sz} bytes): {image_path}")
+            _set_status_ui(parent, "Status: Upload failed (temp FITS empty).")
+            return None
+    except Exception:
+        pass
+
     try:
         with open(image_path, "rb") as f:
             files = {"file": f}
@@ -738,7 +847,7 @@ def _astrometry_upload(settings, session: str, image_path: str, parent=None) -> 
             resp = _astrometry_api_request(
                 "POST", base + "upload",
                 data=data, files=files,
-                timeout=(15, 180),  # longer read timeout for upload
+                timeout=(15, 180),
                 parent=parent, stage="upload"
             )
         if resp and resp.get("status") == "success":
@@ -746,8 +855,10 @@ def _astrometry_upload(settings, session: str, image_path: str, parent=None) -> 
             return int(resp["subid"])
     except Exception as e:
         print("Upload error:", e)
+
     _set_status_ui(parent, "Status: Upload failed.")
     return None
+
 
 
 def _solve_with_local_solvefield(parent, settings, tmp_fit_path: str) -> tuple[bool, Header | str]:
@@ -1079,20 +1190,31 @@ def _write_temp_fit_via_save_image(gray2d: np.ndarray, _header: Header | None) -
 
 def _solve_numpy_with_astrometry(parent, settings, image: np.ndarray) -> tuple[bool, Header | str]:
     """
-    Try local solve-field first; if unavailable/failed, try web API.
-    Returns (ok, Header|err).
+    Try local solve-field first; if unavailable/failed, try astrometry.net web API.
+
+    WEB MODE:
+      - keep ORIGINAL dimensions (no downsample)
+      - stretch to non-linear for star detectability
+      - quantize to 16-bit unsigned FITS to reduce upload size
+      - prefer solved WCS file from astrometry.net (includes SIP)
     """
-    # Prefer to *not* re-stretch for astrometry; linear works fine.
-    gray = _to_gray2d_unit(_float01(image))
-    tmp_fit, _unused_sidecar = _write_temp_fit_via_save_image(gray, None)
+    import os, numpy as np
+    from astropy.io.fits import Header
+
+    # Build full-res mono in [0,1], but NON-LINEAR (stretched) for detectability
+    norm_full = _normalize_for_astap(image)                 # float32 [0,1], mono/color
+    gray_full = _to_gray2d_unit(norm_full)                 # 2D float32 [0,1]
+    Hfull, Wfull = int(gray_full.shape[0]), int(gray_full.shape[1])
+
+    # Always write a full-res temp for LOCAL solve-field (float32)
+    tmp_fit_full, _unused_sidecar = _write_temp_fit_via_save_image(gray_full, None)
 
     try:
-        # 1) local solve-field path
-        ok, res = _solve_with_local_solvefield(parent, settings, tmp_fit)
+        # 1) local solve-field path (full-res float FITS)
+        ok, res = _solve_with_local_solvefield(parent, settings, tmp_fit_full)
         if ok:
             hdr = res if isinstance(res, Header) else None
             if hdr is not None:
-                # coerce and ensure TAN if needed, parity with ASTAP path
                 d = _ensure_ctypes(_coerce_wcs_numbers(dict(hdr)))
                 if any(re.match(r"^(A|B|AP|BP)_\d+_\d+$", k) for k in d.keys()):
                     if not str(d.get("CTYPE1","RA---TAN")).endswith("-SIP"):
@@ -1106,14 +1228,27 @@ def _solve_numpy_with_astrometry(parent, settings, image: np.ndarray) -> tuple[b
                 return True, hh
             return False, "solve-field returned no header."
 
-        # 2) web API fallback
+        # 2) web API fallback (full-res, 16-bit upload)
         if requests is None:
             return False, "requests not available for astrometry.net API."
+
+        _set_status_ui(parent, "Status: Preparing full-res 16-bit FITS for web solve…")
+
+        tmp_fit_web = _write_temp_fit_web_16bit(gray_full)
+
+        # Verify web temp file isn't empty
+        try:
+            sz = os.path.getsize(tmp_fit_web)
+            if sz < 3000:
+                return False, f"Temp FITS for web upload is empty/tiny ({sz} bytes)."
+        except Exception:
+            pass
+
         session = _astrometry_login(settings, parent=parent)
         if not session:
             return False, "Astrometry.net login failed."
 
-        subid = _astrometry_upload(settings, session, tmp_fit, parent=parent)
+        subid = _astrometry_upload(settings, session, tmp_fit_web, parent=parent)
         if not subid:
             return False, "Astrometry.net upload failed."
 
@@ -1121,32 +1256,51 @@ def _solve_numpy_with_astrometry(parent, settings, image: np.ndarray) -> tuple[b
         if not job_id:
             return False, "Astrometry.net job ID not received in time."
 
-        calib = _astrometry_poll_calib(settings, job_id, parent=parent)
-        if not calib:
-            return False, "Astrometry.net calibration not received in time."
+        # Prefer full WCS file (includes SIP)
+        hdr_wcs = _astrometry_download_wcs_file(settings, job_id, parent=parent)
 
-        # Build WCS header from calibration
-        _set_status_ui(parent, "Status: Building WCS header from calibration…")
-        hdr = _wcs_header_from_astrometry_calib(calib, gray.shape)
-        # Coerce numeric & ensure types (reuse your merge path)
-        d = _ensure_ctypes(_coerce_wcs_numbers(dict(hdr)))
+        if hdr_wcs is None:
+            # fallback to calibration (no SIP)
+            calib = _astrometry_poll_calib(settings, job_id, parent=parent)
+            if not calib:
+                return False, "Astrometry.net calibration not received in time."
+
+            _set_status_ui(parent, "Status: Building WCS header from calibration…")
+            hdr_wcs = _wcs_header_from_astrometry_calib(calib, (Hfull, Wfull))
+
+        # Coerce & ensure TAN-SIP if SIP terms exist
+        d = _ensure_ctypes(_coerce_wcs_numbers(dict(hdr_wcs)))
+        if any(re.match(r"^(A|B|AP|BP)_\d+_\d+$", k) for k in d.keys()):
+            if not str(d.get("CTYPE1","RA---TAN")).endswith("-SIP"):
+                d["CTYPE1"] = "RA---TAN-SIP"
+            if not str(d.get("CTYPE2","DEC--TAN")).endswith("-SIP"):
+                d["CTYPE2"] = "DEC--TAN-SIP"
+
         hh = Header()
         for k, v in d.items():
             try: hh[k] = v
             except Exception: pass
+
+        # clean temp web file
+        try:
+            if os.path.exists(tmp_fit_web):
+                os.remove(tmp_fit_web)
+        except Exception:
+            pass
+
         return True, hh
 
     finally:
-        # clean temp + typical astrometry byproducts created next to tmp
-        _set_status_ui(parent, "Status: Cleaning up temporary files…")
-        base = os.path.splitext(tmp_fit)[0]
-        for ext in (".fit",".fits",".wcs",".axy",".corr",".rdls",".solved",".new",".match",".ngc",".png",".ppm",".xyls"):
-            try:
+        # clean temp + solve-field byproducts next to tmp_fit_full
+        try:
+            base = os.path.splitext(tmp_fit_full)[0]
+            for ext in (".fit",".fits",".wcs",".axy",".corr",".rdls",".solved",".new",".match",".ngc",".png",".ppm",".xyls"):
                 p = base + ext
                 if os.path.exists(p):
                     os.remove(p)
-            except Exception:
-                pass
+        except Exception:
+            pass
+
 
 def _solve_numpy_with_fallback(parent, settings, image: np.ndarray, seed_header: Header | None) -> tuple[bool, Header | str]:
     # Try ASTAP first

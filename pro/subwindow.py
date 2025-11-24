@@ -2286,16 +2286,40 @@ class ImageSubWindow(QWidget):
                 s = float(self.scale)
                 img_w = int(W_full * s)
                 img_h = int(H_full * s)
+                Wf, Hf = float(W_full), float(H_full)
+                margin = float(max(Wf, Hf) * 2.0)  # 2x image size margin                
                 def draw_world_poly(xs_world, ys_world):
                     try:
                         px, py = wcs2.world_to_pixel_values(xs_world, ys_world)
                     except Exception:
                         return
+
+                    px = _np.asarray(px, dtype=float)
+                    py = _np.asarray(py, dtype=float)
+
+                    # --- validity mask ---
+                    ok = _np.isfinite(px) & _np.isfinite(py)
+
+                    # Allow a margin around the image so near-edge lines still draw
+                    margin = float(max(Wf, Hf) * 2.0)  # 2x image size margin
+                    ok &= (px > -margin) & (px < (Wf - 1.0 + margin))
+                    ok &= (py > -margin) & (py < (Hf - 1.0 + margin))
+
                     for i in range(1, len(px)):
-                        x0 = float(px[i-1]) * s; y0 = float(py[i-1]) * s
-                        x1 = float(px[i])   * s; y1 = float(py[i])   * s
-                        if _np.isfinite([x0,y0,x1,y1]).all():
-                            p.drawLine(int(x0), int(y0), int(x1), int(y1))
+                        if not (ok[i-1] and ok[i]):
+                            continue
+
+                        x0 = float(px[i-1]) * s
+                        y0 = float(py[i-1]) * s
+                        x1 = float(px[i])   * s
+                        y1 = float(py[i])   * s
+
+                        # Final sanity gate before int() -> Qt 32-bit
+                        if max(abs(x0), abs(y0), abs(x1), abs(y1)) > 2.0e9:
+                            continue
+
+                        p.drawLine(int(x0), int(y0), int(x1), int(y1))
+
 
                 ra_samples = _np.linspace(ra_min, ra_max, 512, dtype=float)
                 ra_samples_wrapped = _np.mod(ra_samples + ra_shift, 360.0) if ra_shift else ra_samples
@@ -2358,7 +2382,6 @@ class ImageSubWindow(QWidget):
                     p.drawText(rect.adjusted(3, 2, -3, -2),
                             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, txt)
 
-                Wf, Hf = float(W_full), float(H_full)
 
                 # DEC labels on left edge
                 for dec in _frange(dec_start, dec_max, step_deg):
