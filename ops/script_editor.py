@@ -5,8 +5,8 @@ from pathlib import Path
 
 from ops.scripts import get_scripts_dir  # your existing helper
 
-from PyQt6.QtCore import Qt, QRect, QSize
-from PyQt6.QtGui import QFont, QAction, QColor, QPainter, QTextCursor, QTextDocument
+from PyQt6.QtCore import Qt, QRect, QSize, QRegularExpression
+from PyQt6.QtGui import QFont, QAction, QColor, QPainter, QTextCursor, QTextDocument, QSyntaxHighlighter, QTextCharFormat
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QPlainTextEdit, QPushButton,
     QLabel, QMessageBox, QFileDialog, QSplitter, QInputDialog, QDockWidget,
@@ -401,6 +401,125 @@ class _StdCapture:
     def text(self) -> str:
         return self.buf.getvalue()
 
+class PythonHighlighter(QSyntaxHighlighter):
+    """
+    Simple Python syntax highlighter for QPlainTextEdit/QTextDocument.
+    Dark-theme friendly colors.
+    """
+    def __init__(self, document):
+        super().__init__(document)
+
+        def fmt(color, bold=False, italic=False):
+            f = QTextCharFormat()
+            f.setForeground(QColor(color))
+            if bold:
+                f.setFontWeight(QFont.Weight.Bold)
+            if italic:
+                f.setFontItalic(True)
+            return f
+
+        # ---- formats ----
+        self.f_keyword   = fmt("#C586C0", bold=True)
+        self.f_builtin   = fmt("#4FC1FF")
+        self.f_number    = fmt("#B5CEA8")
+        self.f_string    = fmt("#CE9178")
+        self.f_comment   = fmt("#6A9955", italic=True)
+        self.f_decorator = fmt("#DCDCAA")
+        self.f_self      = fmt("#9CDCFE")
+        self.f_defclass  = fmt("#569CD6", bold=True)
+
+        # ---- keyword lists ----
+        keywords = [
+            "False","None","True","and","as","assert","async","await","break",
+            "class","continue","def","del","elif","else","except","finally","for",
+            "from","global","if","import","in","is","lambda","nonlocal","not",
+            "or","pass","raise","return","try","while","with","yield","match","case"
+        ]
+
+        builtins = [
+            "abs","all","any","ascii","bin","bool","breakpoint","bytearray","bytes",
+            "callable","chr","classmethod","compile","complex","delattr","dict","dir",
+            "divmod","enumerate","eval","exec","filter","float","format","frozenset",
+            "getattr","globals","hasattr","hash","help","hex","id","input","int",
+            "isinstance","issubclass","iter","len","list","locals","map","max",
+            "memoryview","min","next","object","oct","open","ord","pow","print",
+            "property","range","repr","reversed","round","set","setattr","slice",
+            "sorted","staticmethod","str","sum","super","tuple","type","vars","zip"
+        ]
+
+        # ---- rules ----
+        self.rules = []
+
+        # keywords
+        for kw in keywords:
+            self.rules.append((QRegularExpression(rf"\b{kw}\b"), self.f_keyword))
+
+        # builtins
+        for bi in builtins:
+            self.rules.append((QRegularExpression(rf"\b{bi}\b"), self.f_builtin))
+
+        # def / class name highlighting
+        self.rules.append((QRegularExpression(r"\bdef\s+([A-Za-z_]\w*)"), self.f_defclass))
+        self.rules.append((QRegularExpression(r"\bclass\s+([A-Za-z_]\w*)"), self.f_defclass))
+
+        # decorators
+        self.rules.append((QRegularExpression(r"^\s*@\w+"), self.f_decorator))
+
+        # numbers (int/float/hex/binary with underscores)
+        self.rules.append((QRegularExpression(r"\b0[xX][0-9A-Fa-f_]+\b"), self.f_number))
+        self.rules.append((QRegularExpression(r"\b0[bB][01_]+\b"), self.f_number))
+        self.rules.append((QRegularExpression(r"\b0[oO][0-7_]+\b"), self.f_number))
+        self.rules.append((QRegularExpression(r"\b\d[\d_]*(\.\d[\d_]*)?([eE][+-]?\d[\d_]*)?\b"), self.f_number))
+
+        # self / cls
+        self.rules.append((QRegularExpression(r"\bself\b"), self.f_self))
+        self.rules.append((QRegularExpression(r"\bcls\b"), self.f_self))
+
+        # single-line strings
+        self.rules.append((QRegularExpression(r"(?<!\\)'.*?(?<!\\)'"), self.f_string))
+        self.rules.append((QRegularExpression(r'(?<!\\)".*?(?<!\\)"'), self.f_string))
+
+        # comments
+        self.rules.append((QRegularExpression(r"#.*$"), self.f_comment))
+
+        # multiline triple-quoted strings
+        self.tri_single = QRegularExpression("'''")
+        self.tri_double = QRegularExpression('"""')
+
+    def highlightBlock(self, text: str):
+        # apply normal single-line rules
+        for pattern, form in self.rules:
+            it = pattern.globalMatch(text)
+            while it.hasNext():
+                m = it.next()
+                start = m.capturedStart()
+                length = m.capturedLength()
+                self.setFormat(start, length, form)
+
+        # handle multiline triple strings
+        self.setCurrentBlockState(0)
+        self._do_multiline(text, self.tri_single, 1, self.f_string)
+        self._do_multiline(text, self.tri_double, 2, self.f_string)
+
+    def _do_multiline(self, text, delimiter, in_state, style):
+        start = 0
+        if self.previousBlockState() != in_state:
+            m = delimiter.match(text)
+            start = m.capturedStart() if m.hasMatch() else -1
+
+        while start >= 0:
+            m = delimiter.match(text, start + 3)
+            end = m.capturedStart() if m.hasMatch() else -1
+
+            if end >= 0:
+                length = end - start + 3
+                self.setFormat(start, length, style)
+                start = delimiter.match(text, start + length).capturedStart()
+            else:
+                self.setFormat(start, len(text) - start, style)
+                self.setCurrentBlockState(in_state)
+                return
+
 
 class ScriptEditorDock(QDockWidget):
     def __init__(self, app_window, parent=None):
@@ -488,6 +607,7 @@ class ScriptEditorDock(QDockWidget):
         editor_lay.setSpacing(0)
 
         self.editor = CodeEditor()
+        self.highlighter = PythonHighlighter(self.editor.document())
         f = QFont("Consolas")
         f.setStyleHint(QFont.StyleHint.Monospace)
         f.setPointSize(10)
