@@ -32,6 +32,34 @@ import sep
 from .plate_solver import plate_solve_doc_inplace
 from imageops.stretch import stretch_mono_image, stretch_color_image
 
+from astropy.wcs import WCS
+
+def _header_from_meta(meta):
+    # Prefer real Header
+    hdr = _ensure_fits_header(meta.get("original_header"))
+    if hdr is not None:
+        return hdr
+
+    # Next try stored WCS header
+    wh = meta.get("wcs_header")
+    if isinstance(wh, fits.Header):
+        return wh
+    if isinstance(wh, dict):
+        try:
+            return fits.Header(wh)
+        except Exception:
+            pass
+
+    # Finally try astropy WCS object
+    w = meta.get("wcs")
+    if isinstance(w, WCS):
+        try:
+            return w.to_header(relax=True)
+        except Exception:
+            pass
+
+    return None
+
 
 class PreviewPane(QWidget):
     def __init__(self, parent=None):
@@ -1548,20 +1576,44 @@ class ImagePeekerDialogPro(QDialog):
                 SurfaceDialog("Orientation Map", ori_heat, mn_o, mx_o, "rad", "hsv", parent=self).show()
 
             elif mode == "Astrometric Distortion Analysis":
-                hdr = _ensure_fits_header(meta.get("original_header"))
-                if (hdr is None) or not any(k.startswith("A_") for k in (hdr.keys() if hdr else [])):
-                    # solve the target document **in place**
-                    ok, hdr_or_err = plate_solve_doc_inplace(parent=self, doc=self._coerce_doc(self.document), settings=self.settings)
+                hdr = _header_from_meta(meta)
+
+                # If we truly have no WCS, plate-solve
+                if hdr is None or not WCS(hdr, relax=True).has_celestial:
+                    ok, hdr_or_err = plate_solve_doc_inplace(
+                        parent=self, doc=self._coerce_doc(self.document), settings=self.settings
+                    )
                     if not ok:
                         QMessageBox.warning(self, "Plate Solve", f"ASTAP/Astrometry failed:\n{hdr_or_err}")
                         return
-                    _, meta = self._arr_and_meta()
-                    hdr = _ensure_fits_header(meta.get("original_header"))
 
-                if hdr is None or not any(k.startswith("A_") for k in hdr.keys()):
-                    QMessageBox.warning(self, "No Distortion Data",
-                        "Plate solve completed, but no SIP distortion matrices were found.\n\n"
-                        "Install ASTAP with the D80 catalog, then retry.")
+                    # IMPORTANT: if solver returned a Header, store it
+                    if isinstance(hdr_or_err, fits.Header):
+                        doc = self._coerce_doc(self.document)
+                        if doc and isinstance(getattr(doc, "metadata", None), dict):
+                            doc.metadata["original_header"] = hdr_or_err
+                            doc.metadata["wcs_header"] = hdr_or_err
+                            try:
+                                doc.metadata["wcs"] = WCS(hdr_or_err, relax=True)
+                            except Exception:
+                                pass
+
+                    arr, meta = self._arr_and_meta()
+                    hdr = _header_from_meta(meta)
+
+                # Now WCS exists, but do we have SIP?
+                if hdr is None:
+                    QMessageBox.critical(self, "WCS Error", "Plate solve did not produce a readable WCS header.")
+                    return
+
+                has_sip = any(k.startswith("A_") for k in hdr.keys()) and any(k.startswith("B_") for k in hdr.keys())
+                if not has_sip:
+                    QMessageBox.warning(
+                        self, "No Distortion Model",
+                        "This image has a valid WCS, but no SIP distortion terms (A_*, B_*).\n"
+                        "Astrometric distortion analysis requires a SIP-enabled solve.\n\n"
+                        "Re-solve with distortion fitting enabled in ASTAP."
+                    )
                     return
 
                 asp = _arcsec_per_pix_from_header(hdr, fallback_px_um=ps_um, fallback_fl_mm=fl_mm)
@@ -1573,6 +1625,7 @@ class ImagePeekerDialogPro(QDialog):
                     img=np.clip(arr, 0, 1), sip_meta=hdr, arcsec_per_pix=float(asp),
                     n_grid_lines=10, amplify=60.0, parent=self
                 ).show()
+
 
             else:
                 self._refresh_mosaic()

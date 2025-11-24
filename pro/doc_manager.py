@@ -9,7 +9,8 @@ from astropy.io import fits  # local import; optional dep
 from legacy.image_manager import load_image as legacy_load_image, save_image as legacy_save_image
 from legacy.image_manager import list_fits_extensions, load_fits_extension
 import uuid
-
+from legacy.image_manager import attach_wcs_to_metadata  # or wherever you put it
+from astropy.wcs import WCS  # only if not already imported in this module
 # --- WCS DEBUGGING ------------------------------------------------------
 _DEBUG_WCS = False  # flip to False when you’re done debugging
 
@@ -1299,6 +1300,41 @@ class LiveViewDocument(QObject):
             return getattr(d, name)
         return getattr(self._base, name)
 
+def _xisf_meta_to_fits_header(m: dict) -> fits.Header | None:
+    """
+    Best-effort: pull common WCS keys out of XISF FITSKeywords into a fits.Header.
+    Returns None if nothing usable found.
+    """
+    fk = m.get("FITSKeywords", {}) if isinstance(m, dict) else {}
+    if not fk:
+        return None
+
+    want = (
+        "WCSAXES", "CTYPE1", "CTYPE2", "CRPIX1", "CRPIX2",
+        "CRVAL1", "CRVAL2", "CD1_1", "CD1_2", "CD2_1", "CD2_2",
+        "CDELT1", "CDELT2", "PC1_1", "PC1_2", "PC2_1", "PC2_2",
+        "A_ORDER", "B_ORDER"
+    )
+
+    hdr = fits.Header()
+    found = False
+    for k in want:
+        vlist = fk.get(k)
+        if vlist and isinstance(vlist, list) and vlist[0].get("value") is not None:
+            hdr[k] = vlist[0]["value"]
+            found = True
+
+    # also pull SIP coeffs if present
+    for k, vlist in fk.items():
+        if k.startswith(("A_", "B_", "AP_", "BP_")) and vlist and vlist[0].get("value") is not None:
+            try:
+                hdr[k] = float(vlist[0]["value"])
+                found = True
+            except Exception:
+                pass
+
+    return hdr if found else None
+
 
 class DocManager(QObject):
     documentAdded = pyqtSignal(object)   # ImageDocument
@@ -1511,23 +1547,43 @@ class DocManager(QObject):
 
         # ---------- 1) Try the universal loader first (ALL formats) ----------
         img = header = bit_depth = is_mono = None
+        meta = None
         try:
-            img, header, bit_depth, is_mono = legacy_load_image(path)
+            # NEW: prefer metadata-aware return
+            out = legacy_load_image(path, return_metadata=True)
+            if out and len(out) == 5:
+                img, header, bit_depth, is_mono, meta = out
+            else:
+                img, header, bit_depth, is_mono = out
+        except TypeError:
+            # legacy_load_image older signature → fall back
+            try:
+                img, header, bit_depth, is_mono = legacy_load_image(path)
+            except Exception as e:
+                print(f"[DocManager] legacy_load_image failed (non-fatal if FITS/XISF): {e}")
         except Exception as e:
             print(f"[DocManager] legacy_load_image failed (non-fatal if FITS/XISF): {e}")
+
         maybe_warn_raw_preview(path, header)
+
         if img is not None:
-            meta = {
-                "file_path": path,
-                "original_header": header,
-                "bit_depth": bit_depth,
-                "is_mono": is_mono,
-                "original_format": norm_ext,
-            }
+            if meta is None:
+                meta = {
+                    "file_path": path,
+                    "original_header": header,
+                    "bit_depth": bit_depth,
+                    "is_mono": is_mono,
+                    "original_format": norm_ext,
+                }
+
+                # NEW: attach WCS even for old loader
+                meta = attach_wcs_to_metadata(meta, header)
+
             _snapshot_header_for_metadata(meta)
             primary_doc = ImageDocument(img, meta)
             self._register_doc(primary_doc)
             created_any = True
+
 
 
         # ---------- 2) FITS: enumerate HDUs (tables + extra images + ICC) ----------
@@ -1611,10 +1667,13 @@ class DocManager(QObject):
                         # Otherwise: treat as image doc
                         try:
                             if arr.dtype.kind in "ui":
-                                a = arr.astype(np.float32, copy=False) / np.float32(np.iinfo(arr.dtype).max)
+                                a = arr.astype(np.float32, copy=False)  # NO normalization
+                                # optional: if you want to record original scale:
+                                ext_depth = f"{arr.dtype.itemsize*8}-bit {'unsigned' if arr.dtype.kind=='u' else 'signed'}"
                             else:
-                                a = arr.astype(np.float32, copy=False)
-                            ext_depth = "32-bit floating point"
+                                a = arr.astype(np.float32, copy=False)  # floats preserved
+                                ext_depth = "32-bit floating point" if arr.dtype == np.float32 else "64-bit floating point"
+
                             ext_mono = bool(a.ndim == 2 or (a.ndim == 3 and a.shape[2] == 1))
                             key_str = extname or f"HDU {i}"
                             disp = f"{base} {key_str}"
@@ -1628,8 +1687,13 @@ class DocManager(QObject):
                                 "image_meta": {"derived_from": path, "layer": key_str, "readonly": True},
                                 "display_name": disp,
                             }
+
+                            # NEW: attach WCS from this HDU header
+                            aux_meta = attach_wcs_to_metadata(aux_meta, ext_hdr)
+
                             _snapshot_header_for_metadata(aux_meta)
                             aux_doc = ImageDocument(a, aux_meta)
+
                             self._register_doc(aux_doc)
                             try: aux_doc.changed.emit()
                             except Exception: pass
@@ -1661,6 +1725,10 @@ class DocManager(QObject):
                         return (a.astype(np.float32) / np.iinfo(a.dtype).max).clip(0.0, 1.0)
                     return a.astype(np.float32, copy=False)
 
+                def _to_float32_preserve(arr: np.ndarray) -> np.ndarray:
+                    a = np.asarray(arr)
+                    return a if a.dtype == np.float32 else a.astype(np.float32, copy=False)
+
                 xisf = XISFReader(path)
                 metas = xisf.get_images_metadata() or []
                 base = os.path.basename(path)
@@ -1669,7 +1737,7 @@ class DocManager(QObject):
                 if primary_doc is None and len(metas) >= 1:
                     try:
                         arr0 = xisf.read_image(0, data_format="channels_last")
-                        arr0_f32 = _to_float32_01(arr0)
+                        arr0_f32 = _to_float32_preserve(arr0)
                         bd0 = _bit_depth_from_dtype(metas[0].get("dtype", arr0.dtype))
                         is_mono0 = (arr0_f32.ndim == 2) or (arr0_f32.ndim == 3 and arr0_f32.shape[2] == 1)
 
@@ -1684,6 +1752,11 @@ class DocManager(QObject):
                             "image_meta": {"derived_from": path, "layer_index": 0, "readonly": True},
                             "display_name": f"{base} {label0}",
                         }
+                        # NEW: attach WCS if possible
+                        hdr0 = _xisf_meta_to_fits_header(metas[0])
+                        if hdr0 is not None:
+                            md0 = attach_wcs_to_metadata(md0, hdr0)
+
                         _snapshot_header_for_metadata(md0)
                         primary_doc = ImageDocument(arr0_f32, md0)
                         self._register_doc(primary_doc)
@@ -1699,7 +1772,7 @@ class DocManager(QObject):
                     try:
                         m = metas[i]
                         arr = xisf.read_image(i, data_format="channels_last")
-                        arr_f32 = _to_float32_01(arr)
+                        arr_f32 = _to_float32_preserve(arr)
 
                         bd = _bit_depth_from_dtype(m.get("dtype", arr.dtype))
                         is_mono_i = (arr_f32.ndim == 2) or (arr_f32.ndim == 3 and arr_f32.shape[2] == 1)
@@ -1727,8 +1800,11 @@ class DocManager(QObject):
                             "image_meta": {"derived_from": path, "layer_index": i, "readonly": True},
                             "display_name": f"{base} {label}",
                         }
-                        _snapshot_header_for_metadata(md)
+                        hdri = _xisf_meta_to_fits_header(m)
+                        if hdri is not None:
+                            md = attach_wcs_to_metadata(md, hdri)
 
+                        _snapshot_header_for_metadata(md)
                         sib = ImageDocument(arr_f32, md)
                         self._register_doc(sib)
                         try: sib.changed.emit()
