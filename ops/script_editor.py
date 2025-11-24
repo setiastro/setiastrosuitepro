@@ -579,24 +579,41 @@ class PythonHighlighter(QSyntaxHighlighter):
             self.setFormat(m.capturedStart(), m.capturedLength(), self.f_trailing_ws)
 
 
-    def _do_multiline(self, text, delimiter, in_state, style):
-        start = 0
-        if self.previousBlockState() != in_state:
-            m = delimiter.match(text)
-            start = m.capturedStart() if m.hasMatch() else -1
+    def _do_multiline(self, text: str, delimiter: QRegularExpression, in_state: int, style: QTextCharFormat):
+        delim_len = 3
+        prev_in = (self.previousBlockState() == in_state)
+
+        # If we're continuing from a previous block, content starts at 0.
+        if prev_in:
+            start = 0
+        else:
+            m_start = delimiter.match(text)
+            start = m_start.capturedStart() if m_start.hasMatch() else -1
 
         while start >= 0:
-            m = delimiter.match(text, start + 3)
-            end = m.capturedStart() if m.hasMatch() else -1
+            # If continuing, allow delimiter at column 0 to close.
+            search_from = start if prev_in else start + delim_len
+
+            m_end = delimiter.match(text, search_from)
+            end = m_end.capturedStart() if m_end.hasMatch() else -1
 
             if end >= 0:
-                length = end - start + 3
+                length = end - start + delim_len
                 self.setFormat(start, length, style)
-                start = delimiter.match(text, start + length).capturedStart()
+
+                # We closed the multiline string in this block.
+                self.setCurrentBlockState(0)
+
+                # Look for another opening delimiter later in the same line.
+                m_next = delimiter.match(text, start + length)
+                start = m_next.capturedStart() if m_next.hasMatch() else -1
+                prev_in = False
             else:
+                # No closing delimiter found: highlight to end of line and stay "in string".
                 self.setFormat(start, len(text) - start, style)
                 self.setCurrentBlockState(in_state)
-                return
+                break
+
 
 
 class ScriptEditorDock(QDockWidget):
