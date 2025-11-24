@@ -213,6 +213,23 @@ class CodeEditor(QPlainTextEdit):
 
         super().keyPressEvent(e)
 
+    def insertFromMimeData(self, source):
+        """
+        Normalize pasted indentation:
+          - Convert tabs to 4 spaces
+          - Replace weird NBSP with normal space
+        """
+        try:
+            text = source.text()
+            if text:
+                text = text.replace("\u00A0", " ")  # NBSP → space
+                text = text.replace("\t", self.INDENT)
+                self.textCursor().insertText(text)
+                return
+        except Exception:
+            pass
+        super().insertFromMimeData(source)
+
 # -----------------------------------------------------------------------------
 # Find / Replace bar
 # -----------------------------------------------------------------------------
@@ -640,7 +657,20 @@ class ScriptEditorDock(QDockWidget):
         if self._current_path is None:
             return self.save_script_as()
         try:
-            self._current_path.write_text(self.editor.toPlainText(), encoding="utf-8")
+            txt = self.editor.toPlainText()
+
+            # Normalize tabs and NBSP on save
+            txt = txt.replace("\u00A0", " ")
+            txt = txt.replace("\t", self.editor.INDENT)
+
+            self._current_path.write_text(txt, encoding="utf-8")
+
+            # If we modified text, reflect it in editor so user sees reality
+            if txt != self.editor.toPlainText():
+                self.editor.blockSignals(True)
+                self.editor.setPlainText(txt)
+                self.editor.blockSignals(False)
+
             self._dirty = False
             self._update_title()
             self.reload_scripts()  # refresh menu + list
@@ -661,6 +691,8 @@ class ScriptEditorDock(QDockWidget):
             p = p.with_suffix(".py")
         self._current_path = p
         return self.save_script()
+
+
 
     def delete_script(self):
         """
@@ -748,9 +780,39 @@ class ScriptEditorDock(QDockWidget):
             if not ok:
                 return
 
-        self.output.setPlainText("")  # clear old output
+        self.output.setPlainText("")
         self._log(f"Running {self._current_path.name} (on_base={on_base})")
 
+        # ---- PRE-FLIGHT: compile & indentation sanity ----
+        src = self.editor.toPlainText()
+        try:
+            # 1) Python parser check (catches IndentationError immediately)
+            compile(src, str(self._current_path), "exec")
+
+            # 2) tabnanny mixed-indent check (more specific warnings)
+            import tabnanny, tempfile, os
+            with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False, encoding="utf-8") as tf:
+                tf.write(src)
+                tmp_name = tf.name
+            try:
+                tabnanny.check(tmp_name)
+            finally:
+                try: os.remove(tmp_name)
+                except Exception: pass
+
+        except Exception as e:
+            tb = traceback.format_exc()
+            self.output.appendPlainText(tb)
+            QMessageBox.critical(
+                self,
+                "Indentation / Syntax Error",
+                "This script has a Python parse or indentation problem.\n\n"
+                f"{e}\n\n"
+                "Fix it before running."
+            )
+            return
+
+        # ---- RUN ----
         try:
             man = getattr(self.app, "scriptman", None)
             if man is None:
@@ -760,7 +822,6 @@ class ScriptEditorDock(QDockWidget):
             if entry is None or entry.run is None:
                 raise RuntimeError("Script has no run(ctx).")
 
-            # capture stdout/stderr so print() works for debugging
             with _StdCapture() as cap:
                 man.run_entry(entry, on_base=on_base)
 
@@ -772,6 +833,7 @@ class ScriptEditorDock(QDockWidget):
             tb = traceback.format_exc()
             self.output.appendPlainText(tb)
             self._log("Script ERROR:\n" + tb)
+
 
 
     # ------------------------------------------------------------------
