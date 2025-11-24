@@ -40,6 +40,9 @@ class CodeEditor(QPlainTextEdit):
         self.updateRequest.connect(self._update_line_number_area)
         self.cursorPositionChanged.connect(self._highlight_current_line)
 
+        # --- NEW: indent guide toggle ---
+        self.show_indent_guides = True
+
         self._update_line_number_area_width(0)
         self._highlight_current_line()
 
@@ -229,6 +232,52 @@ class CodeEditor(QPlainTextEdit):
         except Exception:
             pass
         super().insertFromMimeData(source)
+
+    def paintEvent(self, event):
+        # let Qt paint text first
+        super().paintEvent(event)
+
+        if not getattr(self, "show_indent_guides", True):
+            return
+
+        painter = QPainter(self.viewport())
+        painter.setPen(QColor(100, 85, 115, 120))
+
+        indent_chars = len(self.INDENT)
+        indent_px = self.fontMetrics().horizontalAdvance(" ") * indent_chars
+
+        block = self.firstVisibleBlock()
+        top = int(self.blockBoundingGeometry(block).translated(self.contentOffset()).top())
+        bottom = top + int(self.blockBoundingRect(block).height())
+
+        # contentOffset().x() is 0 at no scroll, negative when scrolled right
+        x_scroll = int(self.contentOffset().x())
+        view_w = self.viewport().width()
+
+        while block.isValid() and top <= event.rect().bottom():
+            if block.isVisible() and bottom >= event.rect().top():
+                text = block.text()
+
+                # count leading WS, treating tabs as INDENT width
+                lead = 0
+                for ch in text:
+                    if ch == " ":
+                        lead += 1
+                    elif ch == "\t":
+                        lead += indent_chars
+                    else:
+                        break
+
+                level = lead // indent_chars
+                if level > 0:
+                    for i in range(1, level + 1):
+                        x = int(i * indent_px + x_scroll)
+                        if 0 <= x <= view_w:
+                            painter.drawLine(x, top, x, bottom)
+
+            block = block.next()
+            top = bottom
+            bottom = top + int(self.blockBoundingRect(block).height())
 
 # -----------------------------------------------------------------------------
 # Find / Replace bar
@@ -427,7 +476,13 @@ class PythonHighlighter(QSyntaxHighlighter):
         self.f_decorator = fmt("#DCDCAA")
         self.f_self      = fmt("#9CDCFE")
         self.f_defclass  = fmt("#569CD6", bold=True)
+        # whitespace warnings
+        self.f_trailing_ws = QTextCharFormat()
+        self.f_trailing_ws.setUnderlineColor(QColor("#F44747"))  # soft red
+        self.f_trailing_ws.setUnderlineStyle(QTextCharFormat.UnderlineStyle.SpellCheckUnderline)
 
+        self.f_tab_ws = QTextCharFormat()
+        self.f_tab_ws.setBackground(QColor(80, 20, 20, 120))  # faint red-ish block
         # ---- keyword lists ----
         keywords = [
             "False","None","True","and","as","assert","async","await","break",
@@ -500,6 +555,29 @@ class PythonHighlighter(QSyntaxHighlighter):
         self.setCurrentBlockState(0)
         self._do_multiline(text, self.tri_single, 1, self.f_string)
         self._do_multiline(text, self.tri_double, 2, self.f_string)
+
+        # -------- NEW: whitespace warnings --------
+
+        # 1) highlight any literal tabs
+        tab_re = QRegularExpression(r"\t+")
+        it = tab_re.globalMatch(text)
+        while it.hasNext():
+            m = it.next()
+            self.setFormat(m.capturedStart(), m.capturedLength(), self.f_tab_ws)
+
+        # 2) highlight trailing whitespace at end of line
+        trailing_re = QRegularExpression(r"[ \t]+$")
+        m = trailing_re.match(text)
+        if m.hasMatch():
+            self.setFormat(m.capturedStart(), m.capturedLength(), self.f_trailing_ws)
+
+        # 3) (optional) warn on NBSP too, just in case
+        nbsp_re = QRegularExpression(u"\u00A0+")
+        it = nbsp_re.globalMatch(text)
+        while it.hasNext():
+            m = it.next()
+            self.setFormat(m.capturedStart(), m.capturedLength(), self.f_trailing_ws)
+
 
     def _do_multiline(self, text, delimiter, in_state, style):
         start = 0
