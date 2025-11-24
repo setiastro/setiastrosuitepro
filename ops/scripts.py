@@ -117,6 +117,85 @@ class ScriptContext:
         except Exception:
             print("[Script]", msg)
 
+    # ------------------------------------------------------------------
+    # File-based image I/O (canonical SASpro routes)
+    # ------------------------------------------------------------------
+    def load_image(self, filename: str, *, return_metadata: bool = False,
+                   max_retries: int = 3, wait_seconds: int = 3):
+        """
+        Load an image from disk using SASpro's canonical loader.
+
+        This does NOT open or register a document or subwindow.
+        It is purely file I/O.
+
+        Returns:
+            If return_metadata=False (default):
+                (img, original_header, bit_depth, is_mono)
+            If return_metadata=True:
+                whatever legacy.image_manager.load_image returns in metadata mode
+                (typically includes image_meta/file_meta)
+        """
+        from legacy import image_manager  # canonical route
+        return image_manager.load_image(
+            filename,
+            max_retries=max_retries,
+            wait_seconds=wait_seconds,
+            return_metadata=bool(return_metadata),
+        )
+
+    def save_image(self, img_array, filename: str, *,
+                   original_format: str | None = None,
+                   bit_depth=None,
+                   original_header=None,
+                   is_mono: bool = False,
+                   image_meta=None,
+                   file_meta=None):
+        """
+        Save an image to disk using SASpro's canonical saver.
+
+        This does NOT require an open document.
+        It writes exactly through legacy.image_manager.save_image.
+
+        Args:
+            img_array: numpy array (mono or RGB). Any dtype accepted; saver handles it.
+            filename: output path
+            original_format: e.g. "fits", "tiff", "png". If None, inferred from suffix.
+            bit_depth/original_header/is_mono/image_meta/file_meta:
+                passed through to legacy saver.
+
+        Returns:
+            Whatever legacy.image_manager.save_image returns (often None or success flag).
+        """
+        from legacy import image_manager  # canonical route
+        from pathlib import Path
+
+        p = Path(filename)
+        fmt = original_format
+        if fmt is None or not str(fmt).strip():
+            # infer from extension (".fits", ".fit", ".fz", ".tif", ".tiff", ".png", etc.)
+            ext = p.suffix.lower().lstrip(".")
+            if ext in ("fit", "fits", "fz", "fits.gz", "fit.gz"):
+                fmt = "fits"
+            elif ext in ("tif", "tiff"):
+                fmt = "tiff"
+            else:
+                fmt = ext  # png/jpg/x
+
+        return image_manager.save_image(
+            img_array,
+            str(p),
+            fmt,
+            bit_depth=bit_depth,
+            original_header=original_header,
+            is_mono=bool(is_mono),
+            image_meta=image_meta,
+            file_meta=file_meta,
+        )
+
+    # Friendly aliases (optional, but nice UX)
+    open_image = load_image
+    write_image = save_image
+
     # ---- active view/doc access ----
     def active_subwindow(self):
         try:
