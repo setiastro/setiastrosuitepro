@@ -113,13 +113,65 @@ _WINDOWS_RESERVED = {
 
 _FITS_EXTS = ('.fits', '.fit', '.fts', '.fits.gz', '.fit.gz', '.fts.gz', '.fz')
 
-def get_valid_header(path):
+def get_valid_header(path: str):
+    """
+    Return a robust FITS header for both normal and compressed FITS.
+
+    - Opens the HDU list and picks the first image-like HDU (ndim >= 2).
+    - Forces NAXIS, NAXIS1, NAXIS2 from the actual data.shape if possible.
+    - Falls back to ZNAXIS1/2 for tile-compressed images.
+    """
     try:
         from astropy.io import fits
-        hdr = fits.getheader(path, ext=0)
+
+        with fits.open(path, memmap=False) as hdul:
+            science_hdu = None
+
+            # Prefer the first HDU that actually has 2D+ image data
+            for hdu in hdul:
+                data = getattr(hdu, "data", None)
+                if data is None:
+                    continue
+                if getattr(data, "ndim", 0) >= 2:
+                    science_hdu = hdu
+                    break
+
+            if science_hdu is None:
+                # Fallback: just use primary
+                science_hdu = hdul[0]
+
+            hdr = science_hdu.header.copy()
+            data = science_hdu.data
+
+            # --- Ensure NAXIS / NAXIS1 / NAXIS2 are real numbers ---
+            try:
+                if data is not None and getattr(data, "ndim", 0) >= 2:
+                    shape = data.shape
+                    # FITS: final axes are X, Y
+                    ny, nx = shape[-2], shape[-1]
+                    hdr["NAXIS"] = int(data.ndim)
+                    hdr["NAXIS1"] = int(nx)
+                    hdr["NAXIS2"] = int(ny)
+            except Exception:
+                pass
+
+            # --- Extra fallback from ZNAXISn (tile-compressed FITS) ---
+            for ax in (1, 2):
+                key = f"NAXIS{ax}"
+                zkey = f"ZNAXIS{ax}"
+                val = hdr.get(key, None)
+                if (val is None or (isinstance(val, str) and not val.strip())) and zkey in hdr:
+                    try:
+                        hdr[key] = int(hdr[zkey])
+                    except Exception:
+                        pass
+
         return hdr, True
+
     except Exception:
         return None, False
+
+
 
 
 def _read_tile_stack(file_list, y0, y1, x0, x1, channels, out_buf):
@@ -7910,57 +7962,65 @@ class StackingSuiteDialog(QDialog):
         if not self.flat_files:
             return
 
+        import numpy as np
+        import re
+
         tol = float(self.flat_exposure_tolerance_spinbox.value())
 
-        # Flatten
+        # Flatten from our canonical flat_files mapping:
+        #   (flat_key, session_tag) -> [paths]
+        # where flat_key looks like "FilterName - 1.00s (6264x4180)"
         all_flats = []
         for (filter_exp_size, session_tag), files in self.flat_files.items():
             for f in files:
                 all_flats.append((filter_exp_size, session_tag, f))
 
-        # Group
         grouped = {}  # (filter_name, min_exp, max_exp, image_size) -> [(path, exposure, session)]
+
         for (filter_exp_size, session_tag, file_path) in all_flats:
             try:
-                hdr = fits.getheader(file_path, ext=0)
-                filter_name = self._sanitize_name(hdr.get("FILTER", "Unknown"))
-                exposure    = float(hdr.get("EXPOSURE", hdr.get("EXPTIME", 0.0)) or 0.0)
-                W, H        = hdr.get("NAXIS1", 0), hdr.get("NAXIS2", 0)
-                image_size  = f"{W}x{H}" if (W and H) else "Unknown"
+                # Same parsing logic we use in create_master_flat()
+                filter_name, exposure_size = filter_exp_size.split(" - ")
+                exposure_str, image_size = exposure_size.split(" (")
+                image_size = image_size.rstrip(")")
 
-                # find compatible bucket (by filter+size+exp within tol)
-                found = None
-                for (filt, mn, mx, sz) in grouped.keys():
-                    if filt == filter_name and sz == image_size and (mn - tol) <= exposure <= (mx + tol):
-                        found = (filt, mn, mx, sz); break
-
-                if found:
-                    grouped[found].append((file_path, exposure, session_tag))
-                else:
-                    key = (filter_name, exposure, exposure, image_size)
-                    grouped.setdefault(key, []).append((file_path, exposure, session_tag))
-
+                m = re.match(r"([\d.]+)", exposure_str)
+                exposure = float(m.group(1)) if m else 0.0
             except Exception as e:
-                print(f"⚠️ Failed reading {file_path}: {e}")
+                self.update_status(f"⚠️ rebuild_flat_tree: could not parse key '{filter_exp_size}': {e}")
+                continue
 
-        # Build tree
+            # find compatible bucket (by filter+size+exp within tol)
+            found = None
+            for (filt, mn, mx, sz) in grouped.keys():
+                if filt == filter_name and sz == image_size and (mn - tol) <= exposure <= (mx + tol):
+                    found = (filt, mn, mx, sz)
+                    break
+
+            if found:
+                grouped[found].append((file_path, exposure, session_tag))
+            else:
+                key = (filter_name, exposure, exposure, image_size)
+                grouped.setdefault(key, []).append((file_path, exposure, session_tag))
+
+        # Build tree from grouped buckets
         for (filter_name, min_exp, max_exp, image_size), files in grouped.items():
-            # normalize the bin so it’s stable
             e_min = min(p[1] for p in files)
             e_max = max(p[1] for p in files)
-            # A readable label range (you can tweak formatting)
+
             expmin = np.floor(e_min)
+            # label matches what create_master_flat expects to re-parse
             exposure_str = f"{expmin:.1f}s–{(expmin + tol):.1f}s" if len(files) > 1 else f"{e_min:.1f}s"
 
             top_item = QTreeWidgetItem()
             top_item.setText(0, f"{filter_name} - {exposure_str} ({image_size})")
             top_item.setText(1, f"{len(files)} files")
 
-            # ---- canonical group_key (used everywhere) ----
+            # canonical group_key (used by overrides & create_master_flat)
             group_key = f"{filter_name}|{image_size}|{expmin:.3f}|{(expmin+tol):.3f}"
             top_item.setData(0, Qt.ItemDataRole.UserRole, group_key)
 
-            # column 3 shows what will be used
+            # column 2 shows what dark will be used
             ud = self.flat_dark_override.get(group_key, None)  # None→Auto, "__NO_DARK__", or path
             if ud is None:
                 col2_txt = "Auto" if self.auto_select_dark_checkbox.isChecked() else "None"
@@ -7973,12 +8033,13 @@ class StackingSuiteDialog(QDialog):
 
             self.flat_tree.addTopLevelItem(top_item)
 
-            # leaves
+            # leaves: we don’t touch file paths or sessions
             for file_path, _, session_tag in files:
                 leaf_item = QTreeWidgetItem([
                     os.path.basename(file_path),
                     f"Size: {image_size} | Session: {session_tag}"
                 ])
+                leaf_item.setData(0, Qt.ItemDataRole.UserRole, file_path)
                 top_item.addChild(leaf_item)
 
 
@@ -8958,14 +9019,25 @@ class StackingSuiteDialog(QDialog):
         return f"{s}s"
 
     def _exposure_from_label(self, label: str) -> float | None:
-        # Parses "20s (1080x1920)" → 20.0
+        """
+        Extract exposure in seconds from labels like:
+        "300s (6264x4180)"
+        "Luminance - 300s (6264x4180)"
+        "Ha - 0.5s (3000x2000)"
+        Returns float(seconds) or None if not found.
+        """
+        if not label:
+            return None
 
-        m = re.search(r"([0-9]*\.?[0-9]+)\s*s\b", (label or ""))
-        if not m: return None
+        # Look for the first number followed by optional space and 's'
+        m = re.search(r"([+-]?\d+(?:\.\d*)?)\s*s\b", label)
+        if not m:
+            return None
         try:
             return float(m.group(1))
         except Exception:
             return None
+
 
 
     def _busy_progress(self, text):
@@ -9903,52 +9975,99 @@ class StackingSuiteDialog(QDialog):
                     self.update_status("⛔ Master Flat creation cancelled.")
                     break
 
-                self.update_status(f"🟢 Processing {len(file_list)} flats for {exposure_time}s ({image_size}) [{filter_name}] in session '{session}'…")
+                exp_label = f"{exposure_time}s" if exposure_time >= 0 else "Unknown"
+                self.update_status(
+                    f"🟢 Processing {len(file_list)} flats for {exp_label} ({image_size}) [{filter_name}] in session '{session}'…"
+                )
                 QApplication.processEvents()
 
                 # Select matching master dark (optional)
-                # --- resolve override / auto-select per group ---
-                # rebuild the SAME key we stored on the tree
-                expmin = math.floor(float(exposure_time))
-                tol    = float(self.flat_exposure_tolerance_spinbox.value())
-                group_key = f"{filter_name}|{image_size}|{expmin:.3f}|{(expmin+tol):.3f}"
-
-                override_val = self.flat_dark_override.get(group_key, None)  # None | "__NO_DARK__" | path
                 selected_master_dark = None
+                override_val = None
+
+                # --- resolve OVERRIDE from flat_dark_override robustly ---
+                fdo = getattr(self, "flat_dark_override", {}) or {}
+                if fdo:
+                    exp_here = float(exposure_time)
+                    tol = float(self.flat_exposure_tolerance_spinbox.value())
+                    for k, v in fdo.items():
+                        # keys are stored as "filter|size|exp_lo|exp_hi"
+                        try:
+                            f_name, sz, lo_s, hi_s = k.split("|")
+                        except Exception:
+                            continue
+
+                        # filter must match
+                        if f_name != filter_name:
+                            continue
+
+                        # size: treat "Unknown" as wildcard on either side
+                        if sz != "Unknown" and image_size != "Unknown" and sz != image_size:
+                            continue
+
+                        # exposure: if we don't know (negative), accept any in range
+                        if exp_here >= 0:
+                            lo = float(lo_s); hi = float(hi_s)
+                            if not (lo - 1e-6 <= exp_here <= hi + 1e-6):
+                                continue
+
+                        override_val = v
+                        break
 
                 if override_val == "__NO_DARK__":
                     self.update_status("ℹ️ This flat group: override = No Calibration.")
                 elif isinstance(override_val, str):
                     if os.path.exists(override_val):
                         selected_master_dark = override_val
-                        self.update_status(f"🌓 This flat group: using OVERRIDE dark → {os.path.basename(selected_master_dark)}")
+                        self.update_status(
+                            f"🌓 This flat group: using OVERRIDE dark → {os.path.basename(selected_master_dark)}"
+                        )
                     else:
                         self.update_status("⚠️ Override dark missing on disk; falling back to Auto/None.")
                         override_val = None  # fall through
 
+                # --- AUTO-SELECT when no override ---
                 if (override_val is None) and self.auto_select_dark_checkbox.isChecked():
-                    # Auto-select closest exposure, same size
                     best_diff = float("inf")
+                    exp_here = float(exposure_time)
+
                     for key, path in (getattr(self, "master_files", {}) or {}).items():
                         # keep only MasterDark files
                         if "MasterDark" not in os.path.basename(path):
                             continue
+
                         dark_size = self.master_sizes.get(path, "Unknown")
                         m = re.match(r"([\d.]+)s", key or "")
                         dark_exp = float(m.group(1)) if m else float("inf")
-                        if dark_size == image_size:
-                            diff = abs(dark_exp - float(exposure_time))
-                            if diff < best_diff:
-                                best_diff = diff
-                                selected_master_dark = path
+
+                        # size: again, "Unknown" on either side is a wildcard
+                        size_ok = (
+                            image_size == "Unknown"
+                            or dark_size == "Unknown"
+                            or dark_size == image_size
+                        )
+                        if not size_ok:
+                            continue
+
+                        diff = abs(dark_exp - exp_here)
+                        if diff < best_diff:
+                            best_diff = diff
+                            selected_master_dark = path
 
                     if selected_master_dark:
-                        self.update_status(f"🌓 This flat group: using AUTO dark → {os.path.basename(selected_master_dark)}")
+                        self.update_status(
+                            f"🌓 This flat group: using AUTO dark → {os.path.basename(selected_master_dark)}"
+                        )
                     else:
-                        self.update_status("ℹ️ This flat group: no matching Master Dark (size) — proceeding without subtraction.")
+                        self.update_status(
+                            "ℹ️ This flat group: no matching Master Dark (size) — proceeding without subtraction."
+                        )
+
                 elif (override_val is None) and (not self.auto_select_dark_checkbox.isChecked()):
                     # explicit: no auto and no override → no dark
-                    self.update_status("ℹ️ This flat group: Auto-Select is OFF and no override set → No Calibration.")
+                    self.update_status(
+                        "ℹ️ This flat group: Auto-Select is OFF and no override set → No Calibration."
+                    )
 
                 # Load the chosen dark if any
                 if selected_master_dark:
