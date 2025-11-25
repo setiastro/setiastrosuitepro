@@ -262,7 +262,8 @@ def starnet_starless_from_array(arr_rgb01: np.ndarray, settings, *, tmp_prefix="
     import numpy as np
     from imageops.stretch import stretch_color_image, stretch_mono_image
     # save_image / load_image / _get_setting_any / _safe_rm assumed available in this module
-
+    arr = np.asarray(arr_rgb01, dtype=np.float32)
+    was_single = (arr.ndim == 2) or (arr.ndim == 3 and arr.shape[2] == 1)
     exe = _get_setting_any(settings, ("starnet/exe_path", "paths/starnet"), "")
     if not exe or not os.path.exists(exe):
         raise RuntimeError("StarNet executable not configured (settings 'paths/starnet').")
@@ -272,7 +273,7 @@ def starnet_starless_from_array(arr_rgb01: np.ndarray, settings, *, tmp_prefix="
     out_path = os.path.join(workdir, f"{tmp_prefix}_out.tif")
 
     # --- Normalize input shape and safe values
-    x = np.asarray(arr_rgb01, dtype=np.float32)
+    x = arr
     if x.ndim == 2:
         x = np.stack([x]*3, axis=-1)
     elif x.ndim == 3 and x.shape[2] == 1:
@@ -362,7 +363,13 @@ def starnet_starless_from_array(arr_rgb01: np.ndarray, settings, *, tmp_prefix="
         starless_lin *= scale_factor
 
     # Match previous function’s contract (float32, clipped to [0..1])
-    return np.clip(starless_lin, 0.0, 1.0).astype(np.float32, copy=False)
+    result = np.clip(starless_lin, 0.0, 1.0).astype(np.float32, copy=False)
+
+    # If the source was mono, return mono
+    if was_single and result.ndim == 3:
+        result = result.mean(axis=2)
+
+    return result
 
 
 
@@ -375,7 +382,8 @@ def darkstar_starless_from_array(arr_rgb01: np.ndarray, settings, *, tmp_prefix=
     exe, base = _resolve_darkstar_exe(type("dummy", (), {"settings": settings}) )
     if not exe or not base:
         raise RuntimeError("Cosmic Clarity DarkStar executable not configured.")
-
+    arr = np.asarray(arr_rgb01, dtype=np.float32)
+    was_single = (arr.ndim == 2) or (arr.ndim == 3 and arr.shape[2] == 1)
     input_dir  = os.path.join(base, "input")
     output_dir = os.path.join(base, "output")
     os.makedirs(input_dir, exist_ok=True)
@@ -383,8 +391,11 @@ def darkstar_starless_from_array(arr_rgb01: np.ndarray, settings, *, tmp_prefix=
     _purge_darkstar_io(base, prefix=None, clear_input=True, clear_output=True)
 
     in_path = os.path.join(input_dir, f"{tmp_prefix}_in.tif")
-    save_image(arr_rgb01, in_path, original_format="tif", bit_depth="32-bit floating point",
-               original_header=None, is_mono=False, image_meta=None, file_meta=None)
+    save_image(
+        arr, in_path,
+        original_format="tif", bit_depth="32-bit floating point",
+        original_header=None, is_mono=was_single, image_meta=None, file_meta=None
+    )
 
     args = []
     if disable_gpu: args.append("--disable_gpu")
@@ -398,12 +409,17 @@ def darkstar_starless_from_array(arr_rgb01: np.ndarray, settings, *, tmp_prefix=
     starless, _, _, _ = load_image(starless_path)
     if starless is None:
         _safe_rm(in_path); raise RuntimeError("DarkStar produced no starless image.")
-    if starless.ndim == 2: starless = np.stack([starless]*3, axis=-1)
-    starless = starless.astype(np.float32, copy=False)
+    if starless.ndim == 2 or (starless.ndim == 3 and starless.shape[2] == 1):
+        starless = np.stack([starless] * 3, axis=-1)
+    starless = np.clip(starless.astype(np.float32, copy=False), 0.0, 1.0)
+
+    # If the source was mono, collapse back to single channel
+    if was_single and starless.ndim == 3:
+        starless = starless.mean(axis=2)
 
     # cleanup typical outputs
     _purge_darkstar_io(base, prefix="imagetoremovestars", clear_input=True, clear_output=True)
-    return np.clip(starless, 0.0, 1.0)
+    return starless
 
 
 # ------------------------------------------------------------
@@ -704,15 +720,19 @@ def _on_starnet_finished(main, doc, return_code, dialog, input_path, output_path
         starless_rgb = np.repeat(starless_rgb, 3, axis=2)
     starless_rgb = np.clip(starless_rgb.astype(np.float32, copy=False), 0.0, 1.0)
 
-    # original image (from the doc) as 3ch float32
+    # original image (from the doc) as 3ch float32, track if it was mono
     orig = np.asarray(doc.image)
     if orig.ndim == 2:
         original_rgb = np.stack([orig] * 3, axis=-1)
+        orig_was_mono = True
     elif orig.ndim == 3 and orig.shape[2] == 1:
         original_rgb = np.repeat(orig, 3, axis=2)
+        orig_was_mono = True
     else:
         original_rgb = orig
+        orig_was_mono = False
     original_rgb = original_rgb.astype(np.float32, copy=False)
+
 
     # ---- Inversion back to the document’s domain ----
     if did_stretch:
@@ -786,19 +806,31 @@ def _on_starnet_finished(main, doc, return_code, dialog, input_path, output_path
     else:
         dialog.append_text("ℹ️ No active mask for stars-only; skipping.\n")
 
+    # If the original doc was mono, return a mono stars-only image
+    if orig_was_mono:
+        stars_to_push = stars_only.mean(axis=2).astype(np.float32, copy=False)
+    else:
+        stars_to_push = stars_only
+
     # push Stars-Only as new document with suffix _stars
-    _push_as_new_doc(main, doc, stars_only, title_suffix="_stars", source="Stars-Only (StarNet)")
+    _push_as_new_doc(main, doc, stars_to_push, title_suffix="_stars", source="Stars-Only (StarNet)")
     dialog.append_text("Stars-only image pushed.\n")
 
     # mask-blend starless with original using active mask, then overwrite current view
     dialog.append_text("Preparing to update current view with starless (mask-blend)...\n")
     final_starless = _mask_blend_with_doc_mask(doc, starless_rgb, original_rgb)
 
+    # If the original doc was mono, collapse back to single-channel
+    if orig_was_mono:
+        final_to_apply = final_starless.mean(axis=2).astype(np.float32, copy=False)
+    else:
+        final_to_apply = final_starless.astype(np.float32, copy=False)
+
     try:
         meta = {
             "step_name": "Stars Removed",
             "bit_depth": "32-bit floating point",
-            "is_mono": False,
+            "is_mono": bool(orig_was_mono),
         }
 
         # 🔹 Attach replay-last metadata
@@ -829,7 +861,7 @@ def _on_starnet_finished(main, doc, return_code, dialog, input_path, output_path
             pass
 
         doc.apply_edit(
-            final_starless.astype(np.float32, copy=False),
+            final_to_apply,
             metadata=meta,
             step_name="Stars Removed"
         )
@@ -1013,11 +1045,15 @@ def _on_darkstar_finished(main, doc, return_code, dialog, in_path, output_dir, b
     src = np.asarray(doc.image)
     if src.ndim == 2:
         original_rgb = np.stack([src] * 3, axis=-1)
+        orig_was_mono = True
     elif src.ndim == 3 and src.shape[2] == 1:
         original_rgb = np.repeat(src, 3, axis=2)
+        orig_was_mono = True
     else:
         original_rgb = src
+        orig_was_mono = False
     original_rgb = original_rgb.astype(np.float32, copy=False)
+
 
     # stars-only optional push
     stars_path = os.path.join(output_dir, "imagetoremovestars_stars_only.tif")
@@ -1034,21 +1070,35 @@ def _on_darkstar_finished(main, doc, return_code, dialog, in_path, output_dir, b
                 dialog.append_text("✅ Applied active mask to stars-only image.\n")
             else:
                 dialog.append_text("ℹ️ Mask not active for stars-only; skipping.\n")
-            _push_as_new_doc(main, doc, stars_only, title_suffix="_stars", source="Stars-Only (DarkStar)")
+
+            # If the original doc was mono, collapse stars-only back to single channel
+            if orig_was_mono:
+                stars_to_push = stars_only.mean(axis=2).astype(np.float32, copy=False)
+            else:
+                stars_to_push = stars_only
+
+            _push_as_new_doc(main, doc, stars_to_push, title_suffix="_stars", source="Stars-Only (DarkStar)")
+
         else:
             dialog.append_text("Failed to load stars-only image.\n")
     else:
         dialog.append_text("No stars-only image generated.\n")
 
     # mask-blend starless → overwrite current doc
-    # mask-blend starless → overwrite current doc
     dialog.append_text("Mask-blending starless image before update...\n")
     final_starless = _mask_blend_with_doc_mask(doc, starless_rgb, original_rgb)
+
+    # If the original doc was mono, collapse back to single-channel
+    if orig_was_mono:
+        final_to_apply = final_starless.mean(axis=2).astype(np.float32, copy=False)
+    else:
+        final_to_apply = final_starless.astype(np.float32, copy=False)
+
     try:
         meta = {
             "step_name": "Stars Removed",
             "bit_depth": "32-bit floating point",
-            "is_mono": False,
+            "is_mono": bool(orig_was_mono),
         }
 
         # 🔹 Attach replay-last metadata
@@ -1077,7 +1127,7 @@ def _on_darkstar_finished(main, doc, return_code, dialog, in_path, output_dir, b
             pass
 
         doc.apply_edit(
-            final_starless.astype(np.float32, copy=False),
+            final_to_apply,
             metadata=meta,
             step_name="Stars Removed"
         )
