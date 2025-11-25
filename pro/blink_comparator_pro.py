@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
     QWidget, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QToolButton,
     QTreeWidget, QTreeWidgetItem, QFileDialog, QMessageBox, QProgressBar,
     QAbstractItemView, QMenu, QSplitter, QStyle, QScrollArea, QSlider, QDoubleSpinBox, QProgressDialog, QComboBox, QLineEdit, QApplication, QGridLayout, QCheckBox, QInputDialog,
-    QMdiArea
+    QMdiArea, QDialogButtonBox
 )
 from bisect import bisect_right
 # 3rd-party (your code already expects these)
@@ -1400,6 +1400,22 @@ class BlinkTab(QWidget):
                         leaf.setData(0, Qt.ItemDataRole.UserRole, p)
                         exp_item.addChild(leaf)
 
+        # 🔹 NEW: re-apply flagged styling
+        RED = Qt.GlobalColor.red
+        normal = self.fileTree.palette().color(QPalette.ColorRole.WindowText)
+        for idx, entry in enumerate(self.loaded_images):
+            item = self.get_tree_item_for_index(idx)
+            if not item:
+                continue
+            base = os.path.basename(self.image_paths[idx])
+            if entry.get("flagged", False):
+                item.setText(0, f"⚠️ {base}")
+                item.setForeground(0, QBrush(RED))
+            else:
+                item.setText(0, base)
+                item.setForeground(0, QBrush(normal))
+
+
     def _after_list_changed(self, removed_indices: List[int] | None = None):
         """Call after you mutate image_paths/loaded_images. Keeps UI + metrics in sync w/o recompute."""
         # 1) rebuild the tree (groups collapse if empty)
@@ -2213,6 +2229,11 @@ class BlinkTab(QWidget):
         rename_action.triggered.connect(lambda: self.rename_item(item))
         menu.addAction(rename_action)
 
+        # 🔹 NEW: batch rename selected
+        batch_rename_action = QAction("Batch Rename Selected…", self)
+        batch_rename_action.triggered.connect(self.batch_rename_items)
+        menu.addAction(batch_rename_action)
+
         move_action = QAction("Move Selected Items", self)
         move_action.triggered.connect(self.move_items)
         menu.addAction(move_action)
@@ -2222,6 +2243,7 @@ class BlinkTab(QWidget):
         menu.addAction(delete_action)
 
         menu.addSeparator()
+
         batch_delete_action = QAction("Delete All Flagged Images", self)
         batch_delete_action.triggered.connect(self.batch_delete_flagged_images)
         menu.addAction(batch_delete_action)
@@ -2229,6 +2251,13 @@ class BlinkTab(QWidget):
         batch_move_action = QAction("Move All Flagged Images", self)
         batch_move_action.triggered.connect(self.batch_move_flagged_images)
         menu.addAction(batch_move_action)
+
+        # 🔹 NEW: rename all flagged images
+        rename_flagged_action = QAction("Rename Flagged Images…", self)
+        rename_flagged_action.triggered.connect(self.rename_flagged_images)
+        menu.addAction(rename_flagged_action)
+
+        menu.addSeparator()
 
         send_lights_act = QAction("Send to Stacking → Lights", self)
         send_lights_act.triggered.connect(self._send_to_stacking_lights)
@@ -2239,6 +2268,7 @@ class BlinkTab(QWidget):
         menu.addAction(send_integ_act)
 
         menu.exec(self.fileTree.mapToGlobal(pos))
+
 
     def push_to_docs(self, item):
         # Resolve file + entry
@@ -2322,6 +2352,114 @@ class BlinkTab(QWidget):
                     item.setText(0, new_name)
                 except Exception as e:
                     QMessageBox.critical(self, "Error", f"Failed to rename the file: {e}")
+
+    def rename_flagged_images(self):
+        """Prefix all *flagged* images on disk and in the tree."""
+        # Collect indices of flagged frames
+        flagged_indices = [i for i, e in enumerate(self.loaded_images)
+                           if e.get("flagged", False)]
+
+        if not flagged_indices:
+            QMessageBox.information(
+                self,
+                "Rename Flagged Images",
+                "There are no flagged images to rename."
+            )
+            return
+
+        # Small dialog like in your mockup: just a prefix field
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Rename flagged images")
+        layout = QVBoxLayout(dlg)
+
+        layout.addWidget(QLabel("Prefix to add to flagged image filenames:", dlg))
+
+        prefix_edit = QLineEdit(dlg)
+        prefix_edit.setText("Bad_")  # sensible default
+        layout.addWidget(prefix_edit)
+
+        btn_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            parent=dlg,
+        )
+        btn_box.accepted.connect(dlg.accept)
+        btn_box.rejected.connect(dlg.reject)
+        layout.addWidget(btn_box)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        prefix = prefix_edit.text()
+        if prefix is None:
+            prefix = ""
+        prefix = prefix.strip()
+        if not prefix:
+            # Allow empty but warn – otherwise user may be confused
+            ret = QMessageBox.question(
+                self,
+                "No Prefix",
+                "No prefix entered. This will not change any filenames.\n\n"
+                "Continue anyway?",
+                QMessageBox.StandardButton.Yes | QDialogButtonBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if ret != QMessageBox.StandardButton.Yes:
+                return
+
+        successes = 0
+        failures = []
+
+        for idx in flagged_indices:
+            old_path = self.image_paths[idx]
+            directory, base = os.path.split(old_path)
+
+            new_base = f"{prefix}{base}"
+            new_path = os.path.join(directory, new_base)
+
+            # Skip if unchanged
+            if new_path == old_path:
+                continue
+
+            # Avoid overwriting an existing file
+            if os.path.exists(new_path):
+                failures.append((old_path, "target already exists"))
+                continue
+
+            try:
+                os.rename(old_path, new_path)
+            except Exception as e:
+                failures.append((old_path, str(e)))
+                continue
+
+            # Update internal paths
+            self.image_paths[idx] = new_path
+            self.loaded_images[idx]["file_path"] = new_path
+
+            # Update tree item text + UserRole data
+            item = self.get_tree_item_for_index(idx)
+            if item is not None:
+                # preserve ⚠️ prefix
+                disp_name = new_base
+                if self.loaded_images[idx].get("flagged", False):
+                    disp_name = f"⚠️ {disp_name}"
+                item.setText(0, disp_name)
+                item.setData(0, Qt.ItemDataRole.UserRole, new_path)
+
+            successes += 1
+
+        # Rebuild tree so new names are naturally re-sorted, keep flags
+        self._after_list_changed()
+        # Also sync the metrics panel flags/colors
+        self._sync_metrics_flags()
+
+        msg = f"Renamed {successes} flagged image{'s' if successes != 1 else ''}."
+        if failures:
+            msg += f"\n\n{len(failures)} file(s) could not be renamed:"
+            for old, err in failures[:10]:  # don’t spam too hard
+                msg += f"\n• {os.path.basename(old)} – {err}"
+
+        QMessageBox.information(self, "Rename Flagged Images", msg)
+
 
     def batch_rename_items(self):
         """Batch rename selected items by adding a prefix or suffix."""
