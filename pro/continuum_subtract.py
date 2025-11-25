@@ -27,7 +27,7 @@ from PyQt6.QtGui import (
 )
 
 
-qRegisterMetaType(QImage)
+#qRegisterMetaType(QImage)
 
 from .doc_manager import ImageDocument  # add this import
 from legacy.image_manager import load_image as legacy_load_image
@@ -1285,4 +1285,5 @@ class ContinuumProcessingThread(QThread):
 
         self.status_update.emit("Linear → Non-linear stretch…")
         final = self._nonlinear_finalize(lin)
+
         self.processing_complete_starless.emit(final, 0, qimg, empty, empty)
