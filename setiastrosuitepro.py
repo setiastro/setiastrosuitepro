@@ -312,7 +312,7 @@ from pro.autostretch import autostretch as _autostretch
 from ops.scripts import ScriptManager
 
 
-VERSION = "1.5.1"
+VERSION = "1.5.2"
 
 
 
@@ -3708,6 +3708,28 @@ class AstroSuiteProMainWindow(QMainWindow):
 
 
     # --- Shortcuts -> View Panels (dynamic) --------------------------------------
+    def _auto_fit_all_subwindows(self):
+        """Apply auto-fit to every visible subwindow when the mode is enabled."""
+        if not getattr(self, "_auto_fit_on_resize", False):
+            return
+
+        subs = self._visible_subwindows()
+        if not subs:
+            return
+
+        # Remember current active so we can restore it
+        prev_active = self.mdi.activeSubWindow()
+
+        for sw in subs:
+            # Make this subwindow active so _zoom_active_fit() works on it
+            self.mdi.setActiveSubWindow(sw)
+            self._zoom_active_fit()
+
+        # Restore previously active subwindow if still around
+        if prev_active and prev_active in subs:
+            self.mdi.setActiveSubWindow(prev_active)
+
+
     def _visible_subwindows(self):
         # Only arrange visible, non-minimized views
         subs = [sw for sw in self.mdi.subWindowList()
@@ -3716,9 +3738,11 @@ class AstroSuiteProMainWindow(QMainWindow):
 
     def _cascade_views(self):
         self.mdi.cascadeSubWindows()
+        self._auto_fit_all_subwindows()
 
     def _tile_views(self):
         self.mdi.tileSubWindows()
+        self._auto_fit_all_subwindows()
 
     def _tile_views_direction(self, direction: str):
         """direction: 'v' for vertical columns, 'h' for horizontal rows"""
@@ -3739,6 +3763,9 @@ class AstroSuiteProMainWindow(QMainWindow):
             row_h = max(1, area.height() // n)
             for i, sw in enumerate(subs):
                 sw.setGeometry(origin_x, origin_y + i*row_h, area.width(), row_h)
+
+        self._auto_fit_all_subwindows()
+
 
     def _tile_views_grid(self):
         """Arrange near-square grid across the MDI area."""
@@ -3762,6 +3789,7 @@ class AstroSuiteProMainWindow(QMainWindow):
             c = idx % cols
             sw.setGeometry(origin_x + c*cell_w, origin_y + r*cell_h, cell_w, cell_h)
 
+        self._auto_fit_all_subwindows()
 
     def _ensure_view_panels_menu(self):
         if getattr(self, "_shutting_down", False):
@@ -11048,6 +11076,15 @@ class AstroSuiteProMainWindow(QMainWindow):
                     pass
                 return existing
 
+        # Track whether there were any visible subwindows before we add this one
+        first_window = False
+        try:
+            subs = [s for s in self.mdi.subWindowList() if s.isVisible()]
+            first_window = (len(subs) == 0)
+        except Exception:
+            # be conservative on error – just don't special-case it
+            first_window = False
+
         # ── 1) Import view classes
         try:
             from pro.subwindow import ImageSubWindow, TableSubWindow
@@ -11129,11 +11166,8 @@ class AstroSuiteProMainWindow(QMainWindow):
                 except Exception:
                     print(f"[Replay] FAILED to connect {sig_name_used} for view id={id(view)}: {e}")
 
-
-
         self._hook_preview_awareness(view)
         base_title = self._pretty_title(doc, linked=False)
-
         final_title = self._unique_window_title(base_title)
 
         # ── 6) Add subwindow and set chrome
@@ -11141,17 +11175,19 @@ class AstroSuiteProMainWindow(QMainWindow):
         sw.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         if hasattr(view, "resized"):
             view.resized.connect(self._on_view_resized)
-        # Use unique, per-view title (handles previews, ROI docs, etc.)
         sw.setWindowIcon(self.app_icon)
         sw.setWindowTitle(final_title)
-        
 
-        # Apply standard window flags then show/raise
+        # Apply standard window flags
         flags = sw.windowFlags()
         flags |= Qt.WindowType.WindowCloseButtonHint
         flags |= Qt.WindowType.WindowMinimizeButtonHint
         flags |= Qt.WindowType.WindowMaximizeButtonHint
         sw.setWindowFlags(flags)
+
+        # ❌ removed the "fill MDI viewport" block – we *don't* want full-monitor first window
+
+        # Show / activate
         sw.show()
         sw.raise_()
         self.mdi.setActiveSubWindow(sw)
@@ -11166,8 +11202,10 @@ class AstroSuiteProMainWindow(QMainWindow):
 
         # Shelf cleanup on destroy
         try:
-            sw.destroyed.connect(lambda _=None, s=sw:
-                hasattr(self, "window_shelf") and self.window_shelf.remove_for_subwindow(s))
+            sw.destroyed.connect(
+                lambda _=None, s=sw:
+                hasattr(self, "window_shelf") and self.window_shelf.remove_for_subwindow(s)
+            )
         except Exception:
             pass
 
@@ -11198,30 +11236,17 @@ class AstroSuiteProMainWindow(QMainWindow):
 
         # ── 7) Initial sizing + scale
         if is_table:
+            # Tables still get a reasonable fixed size
             sw.resize(1000, 700)
         else:
-            w = h = None
+            # Image docs: just do a one-time fit-to-window into whatever
+            # geometry Qt gave this subwindow. This avoids hard 900x700 boxes.
             try:
-                img = getattr(doc, "image", None)
-                if isinstance(img, np.ndarray) and img.size:
-                    h, w = img.shape[:2]
+                if self.mdi.activeSubWindow() is not sw:
+                    self.mdi.setActiveSubWindow(sw)
+                self._zoom_active_fit()
             except Exception:
                 pass
-
-            if w and h and w <= 900 and h <= 700 and hasattr(view, "set_scale"):
-                try:
-                    view.set_scale(1.0)
-                except Exception:
-                    pass
-                from PyQt6.QtCore import QTimer
-                QTimer.singleShot(0, sw.adjustSize)
-            else:
-                sw.resize(900, 700)
-                if w and h and hasattr(view, "set_scale"):
-                    try:
-                        view.set_scale(min(900 / float(w), 700 / float(h)))
-                    except Exception:
-                        pass
 
         # ── 8) Sync autostretch UI state
         if hasattr(view, "autostretch_enabled"):
@@ -11232,7 +11257,6 @@ class AstroSuiteProMainWindow(QMainWindow):
 
         # ── 9) View-level duplicate signal → route to handler
         if hasattr(view, "requestDuplicate"):
-
             try:
                 view.requestDuplicate.connect(self._duplicate_view_from_signal)
             except Exception:
@@ -11241,14 +11265,25 @@ class AstroSuiteProMainWindow(QMainWindow):
         # ── 10) Log if image missing (non-table)
         if not is_table and getattr(doc, "image", None) is None:
             try:
-                self._log(f"[spawn] No image and not recognized as table; metadata keys: {list((getattr(doc,'metadata',{}) or {}).keys())}")
+                self._log(f"[spawn] No image and not recognized as table; metadata keys: "
+                        f"{list((getattr(doc,'metadata',{}) or {}).keys())}")
             except Exception:
                 pass
 
         # activate hook
         try:
-
             self._on_subwindow_activated(sw)
+        except Exception:
+            pass
+
+        # ── 11) If this is the first window and it's an image, mimic "Cascade Views"
+        try:
+            if first_window and not is_table:
+                # Prefer our helper (does cascade + auto-fit), else raw Qt cascade
+                if hasattr(self, "_cascade_views") and callable(self._cascade_views):
+                    self._cascade_views()
+                else:
+                    self.mdi.cascadeSubWindows()
         except Exception:
             pass
 
