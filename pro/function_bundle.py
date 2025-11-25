@@ -7,7 +7,7 @@ from PyQt6.QtCore import Qt, QSettings, QByteArray, QMimeData, QSize, QPoint, QE
 from PyQt6.QtWidgets import (
     QDialog, QWidget, QHBoxLayout, QVBoxLayout, QListWidget, QListWidgetItem, QProgressBar,
     QPushButton, QSplitter, QMessageBox, QLabel, QAbstractItemView, QDialogButtonBox,
-    QApplication, QMenu, QInputDialog, QPlainTextEdit
+    QApplication, QMenu, QInputDialog, QPlainTextEdit, QListView
 )
 from PyQt6.QtGui import QDrag, QCloseEvent, QCursor, QShortcut, QKeySequence
 from PyQt6.QtCore import  QThread
@@ -282,6 +282,14 @@ class FunctionBundleDialog(QDialog):
         self.steps.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.steps.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self.steps.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+
+        # ✅ make long step text readable
+        self.steps.setWordWrap(True)  # wrap long lines
+        self.steps.setTextElideMode(Qt.TextElideMode.ElideRight)  # if still too long, show …
+        self.steps.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.steps.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.steps.setResizeMode(QListView.ResizeMode.Adjust)  # recompute item layout on width change
+        self.steps.setUniformItemSizes(False)
 
         self.add_hint = QLabel("Drop shortcuts here to add steps")
         self.add_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -570,12 +578,16 @@ class FunctionBundleDialog(QDialog):
         cid = step.get("command_id", "<cmd>")
         preset = step.get("preset", None)
         desc = f"{cid}{self._preset_label(preset)}"
+
         it = QListWidgetItem(desc)
+        it.setToolTip(desc)  # ✅ hover shows full line
         it.setData(Qt.ItemDataRole.UserRole, step)
+
         if at is None:
             self.steps.addItem(it)
         else:
             self.steps.insertItem(at, it)
+
 
     def _collect_steps_from_ui(self) -> list:
         out = []
@@ -745,6 +757,7 @@ class FunctionBundleDialog(QDialog):
         v = QVBoxLayout(dlg)
         v.addWidget(QLabel("Edit the preset as JSON (e.g. {\"name\":\"My Preset\", \"strength\": 0.8})"))
         edit = QPlainTextEdit()
+        edit.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
         try:
             seed = json.dumps(current, ensure_ascii=False, indent=2)
         except Exception:
