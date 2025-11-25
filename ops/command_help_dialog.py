@@ -7,7 +7,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont, QTextCursor
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
-    QLineEdit, QTextBrowser, QPushButton, QLabel, QSplitter
+    QLineEdit, QTextBrowser, QPushButton, QLabel, QSplitter, QApplication
 )
 
 from ops.commands import COMMAND_REGISTRY, CommandSpec, PresetSpec
@@ -128,7 +128,15 @@ def _preset_line(ps: PresetSpec) -> str:
         parts.append(f"enum={ps.enum}")
     if not ps.optional:
         parts.append("**required**")
-    return " — ".join(parts) + (f"<br> {ps.desc}" if ps.desc else "")
+
+    head = " — ".join(parts)
+
+    # For markdown: use two spaces + newline to force a line-break under the bullet
+    # and indent the description a bit. No <br> or weird unicode spaces.
+    if ps.desc:
+        return f"{head}  \n    {ps.desc}"
+    return head
+
 
 
 def _supports_line(spec: CommandSpec) -> str:
@@ -418,10 +426,10 @@ class CommandHelpDialog(QDialog):
 
         self.detail = QTextBrowser()
         self.detail.setOpenExternalLinks(True)
-        mono = QFont("Consolas")
-        mono.setStyleHint(QFont.StyleHint.Monospace)
-        mono.setPointSize(10)
-        self.detail.setFont(mono)
+        #mono = QFont("Consolas")
+        #mono.setStyleHint(QFont.StyleHint.Monospace)
+        #mono.setPointSize(10)
+        #self.detail.setFont(mono)
         right.addWidget(self.detail, 1)
 
         btnrow = QHBoxLayout()
@@ -507,59 +515,60 @@ class CommandHelpDialog(QDialog):
         if item is None:
             self.detail.setText("")
             return
+
         cid = item.data(Qt.ItemDataRole.UserRole)
 
         # ---- synthetic doc rendering ----
         if cid == "__available_libs__":
             md = render_available_libs_markdown()
-            self.detail.setHtml(md.replace("\n", "<br>"))
+            self.detail.setMarkdown(md)
             return
+
         if cid == "__script_quickstart__":
             md = render_scripting_quickstart_markdown()
-            self.detail.setHtml(md.replace("\n", "<br>"))
+            self.detail.setMarkdown(md)
             return
 
         if cid == "__ctx_help__":
             md = render_ctx_api_markdown()
-            self.detail.setHtml(md.replace("\n", "<br>"))
+            self.detail.setMarkdown(md)
             return
+
+        # ---- normal command specs ----
         spec = COMMAND_REGISTRY.get(cid)
         if spec is None:
             self.detail.setText("")
             return
 
         md = render_spec_markdown(cid, spec)
+        # Real markdown rendering (handles headings, bullets, code fences, etc.)
+        self.detail.setMarkdown(md)
 
-        # QTextBrowser renders markdown-ish OK if we replace \n with <br>
-        html = md.replace("\n", "<br>")
-        self.detail.setHtml(html)
 
 
     def copy_markdown(self):
         item = self.listw.currentItem()
         if item is None:
             return
+
         cid = item.data(Qt.ItemDataRole.UserRole)
 
         if cid == "__available_libs__":
-            self.clipboard().setText(render_available_libs_markdown())
-            return
+            md = render_available_libs_markdown()
+        elif cid == "__script_quickstart__":
+            md = render_scripting_quickstart_markdown()
+        elif cid == "__ctx_help__":
+            md = render_ctx_api_markdown()
+        else:
+            spec = COMMAND_REGISTRY.get(cid)
+            if spec is None:
+                return
+            md = render_spec_markdown(cid, spec)
 
-        if cid == "__script_quickstart__":
-            self.clipboard().setText(render_scripting_quickstart_markdown())
-            return
-
-        if cid == "__ctx_help__":
-            self.clipboard().setText(render_ctx_api_markdown())
-            return
-
-        spec = COMMAND_REGISTRY.get(cid)
-        if spec is None:
-            return
-        md = render_spec_markdown(cid, spec)
-
-        cb = self.clipboard()
+        cb = QApplication.clipboard()
         cb.setText(md)
+
+
 
 
     def insert_first_example(self):

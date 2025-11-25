@@ -25,7 +25,11 @@ class LineNumberArea(QWidget):
         return QSize(self.code_editor.line_number_area_width(), 0)
 
     def paintEvent(self, event):
+        # Always paint line numbers with the editor's font
+        painter = QPainter(self)
+        painter.setFont(self.code_editor.font())
         self.code_editor.line_number_area_paint_event(event)
+
 
 
 class CodeEditor(QPlainTextEdit):
@@ -33,6 +37,8 @@ class CodeEditor(QPlainTextEdit):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._line_number_area = LineNumberArea(self)
+
+        self._line_number_area.setFont(self.font())
 
         self.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
 
@@ -45,6 +51,18 @@ class CodeEditor(QPlainTextEdit):
 
         self._update_line_number_area_width(0)
         self._highlight_current_line()
+
+    def setFont(self, font: QFont) -> None:
+        """Ensure editor and line-number area share the same font."""
+        super().setFont(font)
+        try:
+            if hasattr(self, "_line_number_area") and self._line_number_area is not None:
+                self._line_number_area.setFont(font)
+            # Recompute gutter width when font changes
+            self._update_line_number_area_width(0)
+        except Exception:
+            pass
+
 
     def line_number_area_width(self):
         digits = max(1, len(str(self.blockCount())))
@@ -529,6 +547,7 @@ class PythonHighlighter(QSyntaxHighlighter):
         # self / cls
         self.rules.append((QRegularExpression(r"\bself\b"), self.f_self))
         self.rules.append((QRegularExpression(r"\bcls\b"), self.f_self))
+        self.rules.append((QRegularExpression(r"\bctx\b"),  self.f_self))
 
         # single-line strings
         self.rules.append((QRegularExpression(r"(?<!\\)'.*?(?<!\\)'"), self.f_string))
