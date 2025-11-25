@@ -27,6 +27,7 @@ from PyQt6.QtGui import (
 )
 
 
+qRegisterMetaType(QImage)
 
 from .doc_manager import ImageDocument  # add this import
 from legacy.image_manager import load_image as legacy_load_image
@@ -1197,19 +1198,21 @@ class ContinuumProcessingThread(QThread):
                     )
 
                 # learned recipe + fit data (reused for starless)
-                recipe = {
-                    "pedestal": ped,
-                    "rnorm_gain": g_gain,
-                    "rnorm_offs": g_offs,
-                    "wb_a": wb_a,
-                    "wb_b": wb_b,
-                    "Q": Q,
-                    "green_median": green_med,
-                    "fit_qimg": qimg,
-                    "fit_star_count": int(star_count),
-                    "fit_raw": np.array(raw_star_pixels),
-                    "fit_after": np.array(after_star_pixels),
-                }
+            recipe = {
+                "pedestal": ped,
+                "rnorm_gain": g_gain,
+                "rnorm_offs": g_offs,
+                "wb_a": wb_a,
+                "wb_b": wb_b,
+                "Q": Q,
+                "green_median": green_med,
+
+                # store raw overlay + star stats for reuse
+                "overlay_uint8": overlay_uint8,
+                "fit_star_count": int(star_count),
+                "fit_raw": np.array(raw_star_pixels, copy=True),
+                "fit_after": np.array(after_star_pixels, copy=True),
+            }
 
             # ----- starless paired pass (apply recipe) -----
             if self.starless_nb is not None and self.starless_cont is not None:
@@ -1225,10 +1228,12 @@ class ContinuumProcessingThread(QThread):
                     lin = self._linear_subtract(rgb, recipe["Q"], recipe["green_median"])
 
                     # reuse gamma-bright overlay & fit info from the starry pass
-                    fit_qimg  = recipe["fit_qimg"]
-                    fit_count = recipe["fit_star_count"]
-                    fit_raw   = recipe["fit_raw"]
-                    fit_after = recipe["fit_after"]
+                    # rebuild overlay & make fresh copies of arrays for the starless emit
+                    overlay_uint8 = np.array(recipe["overlay_uint8"], copy=True)
+                    fit_qimg = self._qimage_from_uint8(overlay_uint8)
+                    fit_count = int(recipe["fit_star_count"])
+                    fit_raw   = np.array(recipe["fit_raw"], copy=True)
+                    fit_after = np.array(recipe["fit_after"], copy=True)
 
                     if self.output_linear:
                         self.processing_complete_starless.emit(
@@ -1245,6 +1250,7 @@ class ContinuumProcessingThread(QThread):
                             final.astype(np.float32, copy=False),
                             fit_count, fit_qimg, fit_raw, fit_after
                         )
+
                 elif self.starless_only:
                     pass  # handled in _run_starless_only
         except Exception as e:
