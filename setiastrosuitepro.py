@@ -2471,6 +2471,8 @@ class AstroSuiteProMainWindow(QMainWindow):
 
         # Put Display-Stretch on the bar first so we can attach a menu to its button
         tb.addAction(self.act_autostretch)
+        tb.addAction(self.act_zoom_out)
+        tb.addAction(self.act_zoom_in)        
         tb.addAction(self.act_zoom_1_1)
         tb.addAction(self.act_zoom_fit)
 
@@ -2769,6 +2771,23 @@ class AstroSuiteProMainWindow(QMainWindow):
         # choose any shortcut you like; avoid Ctrl+A etc
         self.act_bake_display_stretch.setShortcut(QKeySequence("Shift+A"))
         self.act_bake_display_stretch.triggered.connect(self._bake_display_stretch)
+
+        # --- Zoom controls ---
+        self.act_zoom_out = QAction("−", self)  # unicode minus
+        self.act_zoom_out.setStatusTip("Zoom out")
+        self.act_zoom_out.setShortcuts([
+            QKeySequence("Ctrl+-"),
+        ])
+        self.act_zoom_out.triggered.connect(lambda: self._zoom_step_active(-1))
+
+        self.act_zoom_in = QAction("+", self)
+        self.act_zoom_in.setStatusTip("Zoom in")
+        self.act_zoom_in.setShortcuts([
+            QKeySequence("Ctrl++"),  # Ctrl + (Shift + = on many keyboards)
+            QKeySequence("Ctrl+="),  # backup for layouts where '+' is tricky
+        ])
+        self.act_zoom_in.triggered.connect(lambda: self._zoom_step_active(+1))
+
 
         self.act_zoom_1_1 = QAction("1:1", self)
         self.act_zoom_1_1.setStatusTip("Zoom to 100% (pixel-for-pixel)")
@@ -4077,6 +4096,8 @@ class AstroSuiteProMainWindow(QMainWindow):
             # View zoom
             ("Ctrl+1", "View", "Zoom to 100% (1:1)"),
             ("Ctrl+0", "View", "Fit image to current window"),
+            ("Ctrl++", "View", "Zoom In"),
+            ("Ctrl+-", "View", "Zoom Out"),
 
             # Window switching
             ("Ctrl+PgDown", "MDI", "Switch to previously active view"),
@@ -7107,6 +7128,54 @@ class AstroSuiteProMainWindow(QMainWindow):
             vbar.setValue(min(vbar.maximum(), cy))
         except Exception:
             pass
+
+    def _zoom_step_active(self, direction: int):
+        """
+        Zoom the active view in or out by a fixed factor.
+        direction > 0 → zoom in, direction < 0 → zoom out.
+        """
+        sw = self.mdi.activeSubWindow()
+        if not sw:
+            return
+
+        view = sw.widget()
+        try:
+            cur_scale = float(getattr(view, "scale", 1.0))
+        except Exception:
+            cur_scale = 1.0
+
+        # Reasonable step factor; tweak if you like
+        step = 1.25
+        factor = step if direction > 0 else 1.0 / step
+
+        new_scale = cur_scale * factor
+        # Clamp to sane bounds
+        new_scale = max(1e-4, min(32.0, new_scale))
+
+        # Manual zoom → we are no longer in a “perfect fit” state
+        try:
+            self.act_zoom_fit.setChecked(False)
+        except Exception:
+            pass
+
+        # Prefer anchor-based zoom so we keep the current scroll-center stable.
+        if hasattr(view, "_zoom_at_anchor") and callable(view._zoom_at_anchor):
+            try:
+                rel = float(new_scale) / max(cur_scale, 1e-12)
+                view._zoom_at_anchor(rel)
+                return
+            except Exception:
+                pass
+
+        # Fallback: absolute set_scale without forcing recentering
+        if hasattr(view, "set_scale") and callable(view.set_scale):
+            try:
+                view.set_scale(float(new_scale))
+                return
+            except Exception:
+                pass
+
+
 
     def _infer_image_size(self, view):
         """Return (img_w, img_h) in device-independent pixels (ints), best-effort."""
