@@ -1,0 +1,57 @@
+# Miscellaneous Scripts Collection
+
+This repository is a collection of scripts gathered from various sources for convenience and archival purposes.
+
+**Important:**
+- **Franklin Marek did not create these scripts.**
+- **Seti Astro did not create these scripts.**
+- Unless otherwise noted in an individual file, the original authors are unknown or not affiliated with Franklin Marek or Seti Astro in any way.
+
+---
+
+## Disclaimer
+
+These scripts are provided **as-is**:
+
+- **No warranty** of any kind is expressed or implied, including but not limited to:
+  - fitness for a particular purpose,
+  - correctness,
+  - reliability,
+  - security, or
+  - compatibility with any hardware, software, or workflow.
+- You use these scripts **entirely at your own risk**.
+
+By using anything in this repository, you agree that:
+
+- **Franklin Marek**, **Seti Astro**, and any contributors to this repository are **not liable** for:
+  - data loss,
+  - damage to equipment,
+  - corrupted files,
+  - loss of time or productivity,
+  - or any other direct or indirect damages arising from the use or misuse of these scripts.
+
+If you do not agree to these terms, **do not use** any of the scripts in this repository.
+
+---
+
+## Usage
+
+1. Review each script before running it.
+2. Test on **backup data** or non-critical files first.
+3. Follow any usage notes or comments inside individual scripts.
+4. Respect any licenses or attribution notes contained within the original files.
+
+---
+
+## Licensing
+
+Because these scripts were collected from various sources, licensing may differ from file to file:
+
+- Where a license header is present in a script, that license applies.
+- Where no explicit license is provided, you should assume **no additional rights** are granted beyond what is allowed by applicable law (fair use, etc.).
+
+If you are the original author of any script in this repository and:
+- want attribution added, or  
+- want your script removed,
+
+please open an issue or contact the maintainer with details, and it will be addressed as soon as reasonably possible.
