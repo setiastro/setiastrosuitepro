@@ -201,11 +201,11 @@ from PyQt6 import sip
 # ----- QtWidgets -----
 from PyQt6.QtWidgets import (QDialog, QApplication, QMainWindow, QWidget, QHBoxLayout, QFileDialog, QMessageBox, QSizePolicy, QToolBar, QPushButton, QAbstractItemDelegate,
     QLineEdit, QMenu, QListWidget, QListWidgetItem, QSplashScreen, QDockWidget, QListView, QCompleter, QMdiArea, QMdiArea, QMdiSubWindow, QWidgetAction, QAbstractItemView,
-    QInputDialog, QVBoxLayout, QLabel, QCheckBox, QProgressBar, QProgressDialog, QGraphicsItem, QTabWidget, QTableWidget, QHeaderView, QTableWidgetItem, QToolButton
+    QInputDialog, QVBoxLayout, QLabel, QCheckBox, QProgressBar, QProgressDialog, QGraphicsItem, QTabWidget, QTableWidget, QHeaderView, QTableWidgetItem, QToolButton, QPlainTextEdit
 )
 
 # ----- QtGui -----
-from PyQt6.QtGui import (QPixmap, QColor, QIcon, QKeySequence, QShortcut, QGuiApplication, QStandardItemModel, QStandardItem, QAction, QPalette, QBrush, QActionGroup, QDesktopServices, QFont
+from PyQt6.QtGui import (QPixmap, QColor, QIcon, QKeySequence, QShortcut, QGuiApplication, QStandardItemModel, QStandardItem, QAction, QPalette, QBrush, QActionGroup, QDesktopServices, QFont, QTextCursor
 )
 
 # ----- QtCore -----
@@ -312,7 +312,7 @@ from pro.autostretch import autostretch as _autostretch
 from ops.scripts import ScriptManager
 
 
-VERSION = "1.5.2"
+VERSION = "1.5.3"
 
 
 
@@ -1132,6 +1132,31 @@ class ConsoleListWidget(QListWidget):
         elif action is act_clear:
             self.clear()
 
+class QtLogStream(QObject):
+    text_emitted = pyqtSignal(str)
+
+    def __init__(self, orig_stream, parent=None):
+        super().__init__(parent)
+        self._orig = orig_stream
+
+    def write(self, text: str):
+        # still write to the original stream
+        try:
+            if self._orig is not None:
+                self._orig.write(text)
+        except Exception:
+            pass
+        # mirror into Qt
+        if text:
+            self.text_emitted.emit(text)
+
+    def flush(self):
+        try:
+            if self._orig is not None:
+                self._orig.flush()
+        except Exception:
+            pass
+
 
 class AstroSuiteProMainWindow(QMainWindow):
     currentDocumentChanged = pyqtSignal(object)  # ImageDocument | None
@@ -1197,7 +1222,8 @@ class AstroSuiteProMainWindow(QMainWindow):
         self._init_layers_dock()
         self._shutting_down = False
         self._init_status_log_dock()
-
+        self._init_log_dock()
+        self._hook_stdout_stderr()
 
         # Toolbar / actions
         self._create_actions()
@@ -1314,6 +1340,58 @@ class AstroSuiteProMainWindow(QMainWindow):
         self._link_views_enabled = QSettings().value("view/link_scroll_zoom", True, type=bool)
 
         self.status_log_dock.hide()
+
+    def _init_log_dock(self):
+        self.log_dock = QDockWidget("Log", self)
+        self.log_dock.setObjectName("LogDock")
+        self.log_dock.setAllowedAreas(
+            Qt.DockWidgetArea.BottomDockWidgetArea
+            | Qt.DockWidgetArea.TopDockWidgetArea
+        )
+
+        self.log_text = QPlainTextEdit(self.log_dock)
+        self.log_text.setReadOnly(True)
+        self.log_text.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        self.log_dock.setWidget(self.log_text)
+
+        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.log_dock)
+
+        # Optional: show/hide action in View menu
+        view_menu = self.menuBar().findChild(QMenu, "view_menu")
+        if view_menu is None:
+            view_menu = self.menuBar().addMenu("&View")
+            view_menu.setObjectName("view_menu")
+
+        self.act_toggle_log = self.log_dock.toggleViewAction()
+        self.act_toggle_log.setText("Show Log Panel")
+        view_menu.addAction(self.act_toggle_log)
+
+    def _hook_stdout_stderr(self):
+        import sys
+
+        # Remember original streams so we still print to real console.
+        self._orig_stdout = sys.stdout
+        self._orig_stderr = sys.stderr
+
+        self._qt_stdout = QtLogStream(self._orig_stdout, self)
+        self._qt_stderr = QtLogStream(self._orig_stderr, self)
+
+        self._qt_stdout.text_emitted.connect(self._append_log_text)
+        self._qt_stderr.text_emitted.connect(self._append_log_text)
+
+        sys.stdout = self._qt_stdout
+        sys.stderr = self._qt_stderr
+
+    def _append_log_text(self, text: str):
+        if not text:
+            return
+        # Append to the bottom and keep view scrolled
+        cursor = self.log_text.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.insertText(text)
+        self.log_text.setTextCursor(cursor)
+        self.log_text.ensureCursorVisible()
+
 
     def _on_sw_activated(self, sw):
         if not sw:
@@ -12150,6 +12228,14 @@ class AstroSuiteProMainWindow(QMainWindow):
             QTimer.singleShot(0, lambda: self.changeEvent(QEvent(QEvent.Type.WindowStateChange)))
 
     def closeEvent(self, e):
+
+        try:
+            if hasattr(self, "_orig_stdout") and self._orig_stdout is not None:
+                sys.stdout = self._orig_stdout
+            if hasattr(self, "_orig_stderr") and self._orig_stderr is not None:
+                sys.stderr = self._orig_stderr
+        except Exception:
+            pass        
         self._shutting_down = True
         # Gather open docs
         docs = []
