@@ -1342,7 +1342,7 @@ class AstroSuiteProMainWindow(QMainWindow):
         self.status_log_dock.hide()
 
     def _init_log_dock(self):
-        self.log_dock = QDockWidget("Log", self)
+        self.log_dock = QDockWidget("System Log", self)
         self.log_dock.setObjectName("LogDock")
         self.log_dock.setAllowedAreas(
             Qt.DockWidgetArea.BottomDockWidgetArea
