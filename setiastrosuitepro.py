@@ -1185,6 +1185,12 @@ class AstroSuiteProMainWindow(QMainWindow):
         self._headless_history: list[dict] = []  # newest at the end
         self._headless_history_max = 150
 
+        # ── Recent files / projects ───────────────────────────────────────
+        self._recent_max = 20
+        self._recent_image_paths: list[str] = []
+        self._recent_project_paths: list[str] = []
+        self._load_recent_lists()
+
         # Debounce timer for auto-fit on resize
         self._auto_fit_timer = QTimer(self)
         self._auto_fit_timer.setSingleShot(True)
@@ -1356,15 +1362,9 @@ class AstroSuiteProMainWindow(QMainWindow):
 
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.log_dock)
 
-        # Optional: show/hide action in View menu
-        view_menu = self.menuBar().findChild(QMenu, "view_menu")
-        if view_menu is None:
-            view_menu = self.menuBar().addMenu("&View")
-            view_menu.setObjectName("view_menu")
-
         self.act_toggle_log = self.log_dock.toggleViewAction()
         self.act_toggle_log.setText("Show System Log Panel")
-        view_menu.addAction(self.act_toggle_log)
+
 
     def _hook_stdout_stderr(self):
         import sys
@@ -3464,8 +3464,16 @@ class AstroSuiteProMainWindow(QMainWindow):
         m_file.addAction(self.act_project_new)
         m_file.addAction(self.act_project_save)
         m_file.addAction(self.act_project_load)
+        # --- Recent submenus ---------------------------------------------
+        m_file.addSeparator()
+        self.m_recent_images_menu = m_file.addMenu("Open Recent Images")
+        self.m_recent_projects_menu = m_file.addMenu("Open Recent Projects")
+
         m_file.addSeparator()
         m_file.addAction(self.act_exit)
+
+        # Populate from QSettings
+        self._rebuild_recent_menus()
 
         # Edit (with icons)
         m_edit = mb.addMenu("&Edit")
@@ -3667,6 +3675,165 @@ class AstroSuiteProMainWindow(QMainWindow):
 
         # initialize enabled state + names
         self.update_undo_redo_action_labels()
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Recent images / projects
+    # ─────────────────────────────────────────────────────────────────────
+    def _load_recent_lists(self):
+        """Load MRU lists from QSettings."""
+        def _as_list(val):
+            if val is None:
+                return []
+            if isinstance(val, list):
+                return [str(v) for v in val if v]
+            if isinstance(val, str):
+                if not val:
+                    return []
+                # allow ";;" separated fallback if ever needed
+                return [s for s in val.split(";;") if s]
+            return []
+
+        self._recent_image_paths = _as_list(
+            self.settings.value("recent/image_paths", [])
+        )
+        self._recent_project_paths = _as_list(
+            self.settings.value("recent/project_paths", [])
+        )
+
+        # Enforce max + uniqueness (most recent first)
+        def _dedupe_keep_order(seq):
+            seen = set()
+            out = []
+            for p in seq:
+                if p in seen:
+                    continue
+                seen.add(p)
+                out.append(p)
+            return out[: self._recent_max]
+
+        self._recent_image_paths = _dedupe_keep_order(self._recent_image_paths)
+        self._recent_project_paths = _dedupe_keep_order(self._recent_project_paths)
+
+    def _save_recent_lists(self):
+        try:
+            self.settings.setValue("recent/image_paths", self._recent_image_paths)
+            self.settings.setValue("recent/project_paths", self._recent_project_paths)
+        except Exception:
+            pass
+
+    def _add_recent_image(self, path: str):
+        p = os.path.abspath(path)
+        self._recent_image_paths = [p] + [
+            x for x in self._recent_image_paths if x != p
+        ]
+        self._recent_image_paths = self._recent_image_paths[: self._recent_max]
+        self._save_recent_lists()
+        self._rebuild_recent_menus()
+
+    def _add_recent_project(self, path: str):
+        p = os.path.abspath(path)
+        self._recent_project_paths = [p] + [
+            x for x in self._recent_project_paths if x != p
+        ]
+        self._recent_project_paths = self._recent_project_paths[: self._recent_max]
+        self._save_recent_lists()
+        self._rebuild_recent_menus()
+
+    def _clear_recent_images(self):
+        self._recent_image_paths = []
+        self._save_recent_lists()
+        self._rebuild_recent_menus()
+
+    def _clear_recent_projects(self):
+        self._recent_project_paths = []
+        self._save_recent_lists()
+        self._rebuild_recent_menus()
+
+    def _rebuild_recent_menus(self):
+        """Rebuild both 'Open Recent' submenus."""
+        # Menus might not exist yet if called very early
+        if not hasattr(self, "m_recent_images_menu") or not hasattr(self, "m_recent_projects_menu"):
+            return
+
+        # ---- Images ------------------------------------------------------
+        self.m_recent_images_menu.clear()
+        if not self._recent_image_paths:
+            act = self.m_recent_images_menu.addAction("No recent images")
+            act.setEnabled(False)
+        else:
+            for path in self._recent_image_paths:
+                label = os.path.basename(path) or path
+                act = self.m_recent_images_menu.addAction(label)
+                act.setToolTip(path)
+                act.triggered.connect(
+                    lambda checked=False, p=path: self._open_recent_image(p)
+                )
+            self.m_recent_images_menu.addSeparator()
+            clear_act = self.m_recent_images_menu.addAction("Clear List")
+            clear_act.triggered.connect(self._clear_recent_images)
+
+        # ---- Projects ----------------------------------------------------
+        self.m_recent_projects_menu.clear()
+        if not self._recent_project_paths:
+            act = self.m_recent_projects_menu.addAction("No recent projects")
+            act.setEnabled(False)
+        else:
+            for path in self._recent_project_paths:
+                label = os.path.basename(path) or path
+                act = self.m_recent_projects_menu.addAction(label)
+                act.setToolTip(path)
+                act.triggered.connect(
+                    lambda checked=False, p=path: self._open_recent_project(p)
+                )
+            self.m_recent_projects_menu.addSeparator()
+            clear_act = self.m_recent_projects_menu.addAction("Clear List")
+            clear_act.triggered.connect(self._clear_recent_projects)
+
+    def _open_recent_image(self, path: str):
+        if not path:
+            return
+        if not os.path.exists(path):
+            if QMessageBox.question(
+                self,
+                "File not found",
+                f"The file does not exist:\n{path}\n\n"
+                "Remove it from the recent images list?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            ) == QMessageBox.StandardButton.Yes:
+                self._recent_image_paths = [p for p in self._recent_image_paths if p != path]
+                self._save_recent_lists()
+                self._rebuild_recent_menus()
+            return
+
+        try:
+            self.docman.open_path(path)
+            self._log(f"Opened (recent): {path}")
+            # bump to front
+            self._add_recent_image(path)
+        except Exception as e:
+            QMessageBox.warning(self, "Open failed", f"{path}\n\n{e}")
+
+    def _open_recent_project(self, path: str):
+        if not path:
+            return
+        if not os.path.exists(path):
+            if QMessageBox.question(
+                self,
+                "Project not found",
+                f"The project file does not exist:\n{path}\n\n"
+                "Remove it from the recent projects list?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            ) == QMessageBox.StandardButton.Yes:
+                self._recent_project_paths = [p for p in self._recent_project_paths if p != path]
+                self._save_recent_lists()
+                self._rebuild_recent_menus()
+            return
+
+        if not self._prepare_for_project_load("Load Project"):
+            return
+
+        self._do_load_project_path(path)
+
 
     def _on_exit(self):
         # Funnel through closeEvent so your confirmation + state saves run
@@ -4913,27 +5080,41 @@ class AstroSuiteProMainWindow(QMainWindow):
                 compress,
                 parent=self,
             )
-            self._proj_save_worker.ok.connect(lambda: (dlg.close(), self._log("Project saved.")))
-            self._proj_save_worker.error.connect(lambda msg: (dlg.close(), QMessageBox.critical(self, "Save Project", f"Failed to save:\n{msg}")))
-            self._proj_save_worker.finished.connect(lambda: setattr(self, "_proj_save_worker", None))  # GC
+
+            def _on_proj_save_ok():
+                dlg.close()
+                self._log("Project saved.")
+                self._add_recent_project(path)
+
+            self._proj_save_worker.ok.connect(_on_proj_save_ok)
+            self._proj_save_worker.error.connect(
+                lambda msg: (
+                    dlg.close(),
+                    QMessageBox.critical(self, "Save Project", f"Failed to save:\n{msg}"),
+                )
+            )
+            self._proj_save_worker.finished.connect(
+                lambda: setattr(self, "_proj_save_worker", None)
+            )
             self._proj_save_worker.start()
 
         except Exception as e:
             QMessageBox.critical(self, "Save Project", f"Failed to save:\n{e}")
 
-
-    def _load_project(self):
-        # warn / clear current desktop
+    def _prepare_for_project_load(self, title: str = "Load Project") -> bool:
+        """Confirm and clear current desktop before loading a project."""
         if getattr(self, "doc_manager", None) and self.doc_manager._docs:
             if not self._confirm_discard(
-                title="Load Project",
-                msg=("Loading a project will close current views and replace desktop shortcuts.\n"
-                    "Continue?")
+                title=title,
+                msg=(
+                    "Loading a project will close current views and replace desktop shortcuts.\n"
+                    "Continue?"
+                ),
             ):
-                return
+                return False
             self._close_all_subwindows()
             self._clear_all_documents()
-            self._clear_minimized_shelf() 
+            self._clear_minimized_shelf()
             if getattr(self, "shortcuts", None):
                 try:
                     self.shortcuts.canvas.raise_()
@@ -4941,17 +5122,19 @@ class AstroSuiteProMainWindow(QMainWindow):
                     self.shortcuts.canvas.setFocus()
                 except Exception:
                     pass
+        return True
 
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Load Project", "", "SetiAstro Project (*.sas)"
-        )
+    def _do_load_project_path(self, path: str):
+        """Internal helper to actually load a .sas file."""
         if not path:
             return
 
         # ensure DocManager exists
         if not hasattr(self, "doc_manager") or self.doc_manager is None:
             from pro.doc_manager import DocManager
-            self.doc_manager = DocManager(image_manager=getattr(self, "image_manager", None), parent=self)
+            self.doc_manager = DocManager(
+                image_manager=getattr(self, "image_manager", None), parent=self
+            )
 
         # progress (“thinking”) dialog
         dlg = QProgressDialog("Loading project…", "", 0, 0, self)
@@ -4969,13 +5152,28 @@ class AstroSuiteProMainWindow(QMainWindow):
         dlg.show()
 
         try:
-            # ✅ instantiate the reader
             ProjectReader(self).read(path)
             self._log("Project loaded.")
+            self._add_recent_project(path)   # ✅ track in MRU
         except Exception as e:
             QMessageBox.critical(self, "Load Project", f"Failed to load:\n{e}")
         finally:
             dlg.close()
+
+
+    def _load_project(self):
+        # warn / clear current desktop
+        if not self._prepare_for_project_load("Load Project"):
+            return
+
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load Project", "", "SetiAstro Project (*.sas)"
+        )
+        if not path:
+            return
+
+        self._do_load_project_path(path)
+
 
 
 
@@ -10867,8 +11065,8 @@ class AstroSuiteProMainWindow(QMainWindow):
         for p in paths:
             try:
                 doc = self.docman.open_path(p)   # this emits documentAdded
-                # self._spawn_subwindow_for(doc)  # ← keep disabled; handled by signal
                 self._log(f"Opened: {p}")
+                self._add_recent_image(p)        # ✅ track in MRU
             except Exception as e:
                 QMessageBox.warning(self, "Open failed", f"{p}\n\n{e}")
 
