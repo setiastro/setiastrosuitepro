@@ -76,7 +76,12 @@ class GhsDialogPro(QDialog):
         rowb = QHBoxLayout()
         self.btn_apply = QPushButton("Apply")
         self.btn_reset = QToolButton(); self.btn_reset.setText("Reset")
-        rowb.addWidget(self.btn_apply); rowb.addWidget(self.btn_reset)
+        self.btn_hist = QToolButton(); self.btn_hist.setText("Histogram")
+        self.btn_hist.setToolTip("Open a Histogram for this image.\n"
+                                 "Ctrl+Click on the histogram to set the GHS pivot.")
+        rowb.addWidget(self.btn_apply)
+        rowb.addWidget(self.btn_reset)
+        rowb.addWidget(self.btn_hist)
         left.addLayout(rowb)
         left.addStretch(1)
 
@@ -119,6 +124,8 @@ class GhsDialogPro(QDialog):
 
         self.btn_apply.clicked.connect(self._apply)
         self.btn_reset.clicked.connect(self._reset)
+        self._hist_dlg = None  # will hold our per-GHS histogram dialog
+        self.btn_hist.clicked.connect(self._open_histogram)
 
         b_out.clicked.connect(lambda: self._set_zoom(self._zoom / 1.25))
         b_in .clicked.connect(lambda: self._set_zoom(self._zoom * 1.25))
@@ -135,6 +142,48 @@ class GhsDialogPro(QDialog):
         self._rebuild_from_params()
 
     # ---------- params → handles/curve ----------
+    def _open_histogram(self):
+        """Open (or raise) a HistogramDialog bound to this document and
+        connect its pivot signal to our symmetry pivot."""
+        try:
+            from .histogram import HistogramDialog
+        except Exception as e:
+            QMessageBox.warning(self, "Histogram",
+                                f"Could not import histogram module:\n{e}")
+            return
+
+        # If we already created one and it's still alive, just bring it forward.
+        if self._hist_dlg is not None:
+            try:
+                if self._hist_dlg.isVisible():
+                    self._hist_dlg.raise_()
+                    self._hist_dlg.activateWindow()
+                    return
+            except RuntimeError:
+                # dialog was destroyed; fall through to recreate
+                self._hist_dlg = None
+
+        dlg = HistogramDialog(self, self.doc)
+        self._hist_dlg = dlg
+        try:
+            dlg.pivotPicked.connect(self._on_hist_pivot)
+        except Exception:
+            # if signal isn't there for some reason, just ignore
+            pass
+        dlg.show()
+
+    def _on_hist_pivot(self, u: float):
+        """
+        Receive normalized pivot from Histogram (0..1) and update our symmetry
+        point & curve.
+        """
+        u = float(np.clip(u, 0.0, 1.0))
+        self._sym_u = u
+        # CurveEditor uses 0..360 in X; Y doesn't matter for the vertical line
+        self.editor.setSymmetryPoint(u * 360.0, 0.0)
+        self._rebuild_from_params()
+
+
     def _on_symmetry_pick(self, u, v):
         self._sym_u = float(u)
         self._rebuild_from_params()

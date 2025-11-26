@@ -2,7 +2,7 @@
 from __future__ import annotations
 import numpy as np
 
-from PyQt6.QtCore import Qt, QSettings, QTimer, QEvent
+from PyQt6.QtCore import Qt, QSettings, QTimer, QEvent, pyqtSignal
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QSlider, QPushButton, QScrollArea,
     QTableWidget, QTableWidgetItem, QMessageBox, QToolButton, QInputDialog, QSplitter, QSizePolicy, QHeaderView
@@ -35,6 +35,7 @@ class HistogramDialog(QDialog):
     - Connects to ImageDocument.changed and repaints automatically.
     - Multiple dialogs can be open at once (each bound to one doc).
     """
+    pivotPicked = pyqtSignal(float)  # normalized [0..1] x position for GHS pivot
     def __init__(self, parent, document):
         super().__init__(parent)
         self.setWindowTitle("Histogram")
@@ -45,7 +46,10 @@ class HistogramDialog(QDialog):
         self.log_scale   = False # log X
         self.log_y       = False # log Y
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self._eps_log         = 1e-6      # first log bin edge (for labels)
 
+        # for mapping clicks → normalized x
+        self._click_mapping = None  # dict or None
         self.settings = QSettings()
         self.sensor_max01 = 1.0
         self.sensor_native_max = None     # user ADU max (e.g., 65532)
@@ -114,7 +118,11 @@ class HistogramDialog(QDialog):
         self.hist_label = QLabel(self)
         self.hist_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.scroll_area.setWidget(self.hist_label)
-
+        self.hist_label.installEventFilter(self)
+        self.hist_label.setToolTip(
+            "Ctrl+Click on the histogram to send that intensity as the "
+            "pivot to Hyperbolic Stretch (if open)."
+        )
         self.scroll_area.viewport().installEventFilter(self)
 
         splitter.addWidget(self.scroll_area)
@@ -254,10 +262,23 @@ class HistogramDialog(QDialog):
 
         bin_count = len(bin_edges) - 1
 
+        # precompute log range if needed
+        if self.log_scale:
+            # guard: avoid log10(<=0)
+            be0 = float(bin_edges[0])
+            if be0 <= 0:
+                be0 = self._eps_log
+            log_min = np.log10(be0)
+            log_max = 0.0
+        else:
+            log_min = None
+            log_max = None
+
         # map X-domain edge → pixel X
         def x_pos(edge: float) -> int:
             if self.log_scale:
-                log_min, log_max = np.log10(bin_edges[0]), 0.0
+                if edge <= 0:
+                    edge = self._eps_log
                 if abs(log_max - log_min) < 1e-12:
                     return left_margin
                 return left_margin + int(
@@ -397,10 +418,56 @@ class HistogramDialog(QDialog):
             p.drawLine(x, top_margin, x, axis_y)
             p.drawText(min(x + 4, width - 80), top_margin + 12,
                        f"True Max {self.sensor_max01:.4f}")
-
+        # store mapping info for Ctrl+click → normalized x
+        try:
+            self._click_mapping = {
+                "left_margin": left_margin,
+                "plot_width": plot_width,
+                "axis_y": axis_y,
+                "top_margin": top_margin,
+                "height": height,
+                "log_scale": bool(self.log_scale),
+                "log_min": log_min,
+                "log_max": log_max,
+            }
+        except Exception:
+            self._click_mapping = None
         p.end()
         self.hist_label.setPixmap(pm)
         self.hist_label.resize(pm.size())
+
+    def _x_pix_to_u(self, x_pix: int) -> float | None:
+        """
+        Map a horizontal pixel coordinate (in the label) to a normalized
+        intensity in [0..1], respecting linear / log X modes.
+        """
+        m = self._click_mapping
+        if not m:
+            return None
+
+        left = m["left_margin"]
+        width = max(1, m["plot_width"])
+        if x_pix < left or x_pix > left + width:
+            return None
+
+        t = (x_pix - left) / float(width)
+        t = max(0.0, min(1.0, t))
+
+        if not m["log_scale"]:
+            # linear: domain is already [0..1]
+            return float(t)
+
+        # log X: t in [0..1] corresponds to [10^log_min .. 10^log_max] (log_max ~ 0)
+        log_min = m.get("log_min", None)
+        log_max = m.get("log_max", None)
+        if log_min is None or log_max is None or abs(log_max - log_min) < 1e-12:
+            return float(t)
+
+        log_v = log_min + t * (log_max - log_min)
+        v = 10.0 ** log_v
+        # v is in (eps .. 1]; clamp to [0..1]
+        return float(max(0.0, min(1.0, v)))
+
 
     def _recompute_hist_cache(self):
         """Compute histograms once for the current image.
@@ -471,10 +538,23 @@ class HistogramDialog(QDialog):
         self._schedule_redraw()
 
     def eventFilter(self, obj, event):
+        # Ctrl+click on the histogram pixmap → emit pivotPicked(u)
+        if obj is self.hist_label and event.type() == QEvent.Type.MouseButtonPress:
+            if (event.button() == Qt.MouseButton.LeftButton and
+                    (event.modifiers() & Qt.KeyboardModifier.ControlModifier)):
+                pos = event.position().toPoint()
+                u = self._x_pix_to_u(pos.x())
+                if u is not None:
+                    # emit normalized pivot in [0..1]
+                    self.pivotPicked.emit(u)
+                    event.accept()
+                    return True
+
         # When the splitter moves, the scroll_area viewport gets a Resize event
         if self.scroll_area is not None and obj is self.scroll_area.viewport():
             if event.type() == QEvent.Type.Resize:
                 self._schedule_redraw()
+
         return super().eventFilter(obj, event)
 
     def _update_stats(self):
