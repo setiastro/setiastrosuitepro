@@ -1363,7 +1363,7 @@ class AstroSuiteProMainWindow(QMainWindow):
             view_menu.setObjectName("view_menu")
 
         self.act_toggle_log = self.log_dock.toggleViewAction()
-        self.act_toggle_log.setText("Show Log Panel")
+        self.act_toggle_log.setText("Show System Log Panel")
         view_menu.addAction(self.act_toggle_log)
 
     def _hook_stdout_stderr(self):
