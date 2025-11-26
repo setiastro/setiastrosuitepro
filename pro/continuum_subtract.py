@@ -15,7 +15,8 @@ except Exception:
     pywt = None
 
 from PyQt6.QtCore import (
-    Qt, QSize, QPoint, QEvent, QThread, pyqtSignal, QTimer, QCoreApplication
+    Qt, QSize, QPoint, QEvent, QThread, pyqtSignal, QTimer,
+    QCoreApplication
 )
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -26,7 +27,7 @@ from PyQt6.QtGui import (
     QPixmap, QImage, QCursor, QWheelEvent
 )
 
-
+# register QImage for cross-thread signals
 #qRegisterMetaType(QImage)
 
 from .doc_manager import ImageDocument  # add this import
@@ -1285,5 +1286,4 @@ class ContinuumProcessingThread(QThread):
 
         self.status_update.emit("Linear → Non-linear stretch…")
         final = self._nonlinear_finalize(lin)
-
         self.processing_complete_starless.emit(final, 0, qimg, empty, empty)

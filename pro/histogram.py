@@ -2,12 +2,12 @@
 from __future__ import annotations
 import numpy as np
 
-from PyQt6.QtCore import Qt, QSettings
+from PyQt6.QtCore import Qt, QSettings, QTimer, QEvent
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QSlider, QPushButton, QScrollArea,
-    QTableWidget, QTableWidgetItem, QMessageBox, QToolButton, QInputDialog
+    QTableWidget, QTableWidgetItem, QMessageBox, QToolButton, QInputDialog, QSplitter, QSizePolicy, QHeaderView
 )
-from PyQt6.QtGui import QPixmap, QPainter, QPen, QColor, QFont
+from PyQt6.QtGui import QPixmap, QPainter, QPen, QColor, QFont, QPalette
 
 def _to_float01(img: np.ndarray | None) -> np.ndarray | None:
     if img is None:
@@ -45,20 +45,39 @@ class HistogramDialog(QDialog):
         self.log_scale   = False # log X
         self.log_y       = False # log Y
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+
         self.settings = QSettings()
         self.sensor_max01 = 1.0
         self.sensor_native_max = None     # user ADU max (e.g., 65532)
         self.native_theoretical_max = None
+
+        # histogram cache
+        self._bin_count       = 512
+        self._bin_edges_lin   = None      # np.ndarray | None
+        self._bin_edges_log   = None      # np.ndarray | None
+        self._counts_lin      = None      # list[np.ndarray] | None
+        self._counts_log      = None      # list[np.ndarray] | None
+        self._is_color        = False
+        self._eps_log         = 1e-6      # first log bin edge (for labels)
+
         self._load_sensor_max_setting()
         self._build_ui()
+
+        # debounce timer for resize / splitter moves
+        self._resize_timer = QTimer(self)
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.setInterval(80)  # ms; tweak if you want snappier/slower
+        self._resize_timer.timeout.connect(self._draw_histogram)
+
+        # prime histogram & stats from initial image
+        self._recompute_hist_cache()
+        self._update_stats()
 
         # wire up to this specific document
         self.doc.changed.connect(self._on_doc_changed)
         # If the doc object goes away, close this dialog
         self.doc.destroyed.connect(self.deleteLater)
 
-        # Render initial
-        self._draw_histogram()
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self._doc_conn = False
         if getattr(self, "doc", None) is not None:
@@ -66,41 +85,76 @@ class HistogramDialog(QDialog):
                 self.doc.destroyed.connect(self._on_doc_destroyed)
                 self._doc_conn = True
             except Exception:
-                pass        
+                pass
+
+        # Do the first draw once the widget has a real size
+        QTimer.singleShot(0, self._draw_histogram)
+
+
 
     # ---------- UI ----------
     def _build_ui(self):
+        # Make it start at a sensible size
+        self.setMinimumSize(800, 400)
+        self.resize(900, 500)
+
         main_layout = QVBoxLayout(self)
 
-        top = QHBoxLayout()
-        # scroll area + label for the pixmap
+        # --- top area: splitter with histogram + stats ---
+        splitter = QSplitter(Qt.Orientation.Horizontal, self)
+
+        # left: scroll area + label for the pixmap
         self.scroll_area = QScrollArea(self)
-        self.scroll_area.setFixedSize(520, 310)
-        self.scroll_area.setWidgetResizable(False)
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
+        )
 
         self.hist_label = QLabel(self)
         self.hist_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.scroll_area.setWidget(self.hist_label)
-        top.addWidget(self.scroll_area)
 
-        # stats table
+        self.scroll_area.viewport().installEventFilter(self)
+
+        splitter.addWidget(self.scroll_area)
+
+        # right: stats table
         self.stats_table = QTableWidget(self)
-        # we'll set row/col labels dynamically in _update_stats
         self.stats_table.setRowCount(7)
         self.stats_table.setColumnCount(1)
         self.stats_table.setVerticalHeaderLabels([
             "Min", "Max", "Median", "StdDev",
             "MAD", "Low Clipped", "High Clipped"
         ])
-        self.stats_table.setFixedWidth(360)
-        top.addWidget(self.stats_table)
 
-        main_layout.addLayout(top)
+        # Let it grow/shrink with the splitter
+        self.stats_table.setMinimumWidth(260)
+        self.stats_table.setSizePolicy(
+            QSizePolicy.Policy.Preferred,      # <- was Fixed
+            QSizePolicy.Policy.Expanding,
+        )
 
-        # controls
+        # Make the columns use available width nicely
+        hdr = self.stats_table.horizontalHeader()
+        hdr.setStretchLastSection(True)
+        # or, if you prefer all channels to stretch equally:
+        # hdr.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+
+        splitter.addWidget(self.stats_table)
+
+        # Give more space to histogram side by default
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 1)
+        # Explicit initial sizes so it doesn't start with a tiny histogram
+        splitter.setSizes([650, 250])
+
+        main_layout.addWidget(splitter)
+
+        # --- controls row (unchanged except for being below splitter) ---
         ctl = QHBoxLayout()
         self.zoom_slider = QSlider(Qt.Orientation.Horizontal, self)
-        self.zoom_slider.setRange(50, 1000)   # 50%..1000%
+        self.zoom_slider.setRange(50, 1000)
         self.zoom_slider.setValue(100)
         self.zoom_slider.setTickInterval(10)
         self.zoom_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
@@ -136,9 +190,13 @@ class HistogramDialog(QDialog):
 
         self.setLayout(main_layout)
 
+
+
     # ---------- slots ----------
     def _on_doc_changed(self):
         self.image = _to_float_preserve(self.doc.image)
+        self._recompute_hist_cache()
+        self._update_stats()
         self._draw_histogram()
 
     def _on_zoom_changed(self, v: int):
@@ -154,115 +212,270 @@ class HistogramDialog(QDialog):
         self._draw_histogram()
 
     # ---------- drawing ----------
+    # ---------- drawing ----------
     def _draw_histogram(self):
-        if self.image is None:
+        # nothing to draw yet
+        if self.image is None or self._bin_edges_lin is None:
             self.hist_label.clear()
             return
 
-        img = self.image
-        # squeeze 1-channel 3D → 2D
-        if img.ndim == 3 and img.shape[2] == 1:
-            img = img[..., 0]
-
-        base_width = 512
-        height = 300
-        width = int(base_width * self.zoom_factor)
-        bin_count = 512
-
-        # choose bin edges (0..1 domain)
-        if self.log_scale:
-            # epsilon > 0 to avoid log(0). If entire image is 0, use tiny eps.
-            eps = max(1e-6, float(np.min(img[img > 0])) if np.any(img > 0) else 1e-6)
-            log_min, log_max = np.log10(eps), 0.0
-            if abs(log_max - log_min) < 1e-12:
-                # degenerate → fallback linear
-                bin_edges = np.linspace(eps, 1.0, bin_count + 1)
-                def x_pos(edge):  # noqa
-                    if eps >= 1.0:
-                        return 0
-                    return int((edge - eps) / max(1e-12, (1.0 - eps)) * width)
-            else:
-                bin_edges = np.logspace(log_min, log_max, bin_count + 1)
-                def x_pos(edge):  # noqa
-                    return int((np.log10(edge) - log_min) / (log_max - log_min) * width)
+        # use available size in the scroll area's viewport
+        if self.scroll_area is not None:
+            vp = self.scroll_area.viewport()
+            avail_w = max(200, vp.width())
+            avail_h = max(200, vp.height())
         else:
-            bin_edges = np.linspace(0.0, 1.0, bin_count + 1)
-            def x_pos(edge):  # noqa
-                return int(edge * width)
+            avail_w = 512
+            avail_h = 300
 
-        # prepare canvas
+        base_width = avail_w
+        height = avail_h
+        width = int(base_width * self.zoom_factor)
+
+        # layout margins
+        left_margin    = 32   # room for Y labels
+        top_margin     = 12   # room so top ticks/text aren't clipped
+        bottom_margin  = 24   # room for X labels
+        axis_y         = height - bottom_margin
+        usable_h       = max(1, axis_y - top_margin)
+        plot_width     = max(1, width - left_margin)
+
+        # choose edges + raw counts from cache
+        if self.log_scale:
+            bin_edges   = self._bin_edges_log
+            counts_list = self._counts_log
+        else:
+            bin_edges   = self._bin_edges_lin
+            counts_list = self._counts_lin
+
+        if bin_edges is None or counts_list is None:
+            self.hist_label.clear()
+            return
+
+        bin_count = len(bin_edges) - 1
+
+        # map X-domain edge → pixel X
+        def x_pos(edge: float) -> int:
+            if self.log_scale:
+                log_min, log_max = np.log10(bin_edges[0]), 0.0
+                if abs(log_max - log_min) < 1e-12:
+                    return left_margin
+                return left_margin + int(
+                    (np.log10(edge) - log_min) / (log_max - log_min) * plot_width
+                )
+            else:
+                return left_margin + int(edge * plot_width)
+
+        # --- convert counts → display values (linear or log Y) ---
+        vals_list: list[np.ndarray] = []
+        max_val = 0.0
+        for counts in counts_list:
+            if self.log_y:
+                vals = np.log10(counts + 1.0)
+            else:
+                vals = counts.astype(np.float32)
+            if vals.size:
+                max_val = max(max_val, float(vals.max()))
+            vals_list.append(vals)
+
+        if max_val <= 0:
+            max_val = 1.0
+
+        # theme colors
+        pal = self.window().palette() if self.window() else self.palette()
+        bg_color   = pal.color(QPalette.ColorRole.Window)
+        text_color = pal.color(QPalette.ColorRole.Text)
+
+        if bg_color.lightness() < 128:
+            axis_color  = QColor(210, 210, 210)
+            label_color = QColor(245, 245, 245)
+        else:
+            axis_color  = QColor(40, 40, 40)
+            label_color = text_color
+
+        grid_color = QColor(axis_color)
+        grid_color.setAlpha(60)
+        grid_pen = QPen(grid_color)
+        grid_pen.setWidth(1)
+
         pm = QPixmap(width, height)
-        pm.fill(QColor("white"))
+        pm.fill(bg_color)
         p = QPainter(pm)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        # draw bars
-        if img.ndim == 3 and img.shape[2] == 3:
-            colors = [QColor(255, 0, 0, 140), QColor(0, 180, 0, 140), QColor(0, 0, 255, 140)]
-            for ch in range(3):
-                hist, _ = np.histogram(img[..., ch].ravel(), bins=bin_edges)
-                hist = hist.astype(np.float32)
-                if self.log_y:
-                    hist = np.log10(hist + 1.0)
-                mv = float(hist.max())
-                if mv > 0:
-                    hist /= mv
-                p.setPen(QPen(colors[ch]))
+        # helper: map normalized [0,1] → Y pixel (0 at bottom, 1 at top)
+        def y_pos(norm: float) -> int:
+            # norm in [0,1], map 0→axis_y, 1→top_margin
+            return int(top_margin + (1.0 - norm) * usable_h)
+
+        # ----- draw bars -----
+        if self._is_color:
+            colors = [
+                QColor(255, 0, 0, 140),
+                QColor(0, 180, 0, 140),
+                QColor(0, 0, 255, 140),
+            ]
+            for ch_idx, vals in enumerate(vals_list):
+                hn = vals / max_val
+                p.setPen(QPen(colors[ch_idx]))
                 for i in range(bin_count):
-                    x0 = x_pos(bin_edges[i]); x1 = x_pos(bin_edges[i+1])
+                    x0 = x_pos(float(bin_edges[i]))
+                    x1 = x_pos(float(bin_edges[i + 1]))
                     w  = max(1, x1 - x0)
-                    h  = int(hist[i] * height)
-                    p.drawRect(x0, height - h, w, h)
+                    h  = int(hn[i] * usable_h)
+                    y0 = axis_y - h
+                    p.drawRect(x0, y0, w, h)
         else:
-            # mono
-            gray = img if img.ndim == 2 else img[..., 0]
-            hist, _ = np.histogram(gray.ravel(), bins=bin_edges)
-            hist = hist.astype(np.float32)
-            if self.log_y:
-                hist = np.log10(hist + 1.0)
-            mv = float(hist.max())
-            if mv > 0:
-                hist /= mv
-            p.setPen(QPen(QColor(0, 0, 0)))
+            vals = vals_list[0]
+            hn = vals / max_val
+            p.setPen(QPen(axis_color))
             for i in range(bin_count):
-                x0 = x_pos(bin_edges[i]); x1 = x_pos(bin_edges[i+1])
+                x0 = x_pos(float(bin_edges[i]))
+                x1 = x_pos(float(bin_edges[i + 1]))
                 w  = max(1, x1 - x0)
-                h  = int(hist[i] * height)
-                p.drawRect(x0, height - h, w, h)
+                h  = int(hn[i] * usable_h)
+                y0 = axis_y - h
+                p.drawRect(x0, y0, w, h)
 
-        # axis
-        p.setPen(QPen(QColor(0, 0, 0), 2))
-        p.drawLine(0, height - 1, width, height - 1)
+        # ----- axes -----
+        p.setPen(QPen(axis_color, 2))
+        # X axis at axis_y, Y axis from top_margin down to axis_y
+        p.drawLine(left_margin, axis_y, width - 1, axis_y)
+        p.drawLine(left_margin, top_margin, left_margin, axis_y)
 
-        # ticks + labels
         p.setFont(QFont("Arial", 10))
+
+        # ----- X ticks + grid -----
         if self.log_scale:
-            # tick values from eps..1 (10 ticks)
-            eps = bin_edges[0]
-            ticks = np.logspace(np.log10(eps), 0.0, 11)
+            ticks = np.logspace(np.log10(bin_edges[0]), 0.0, 11)
             for t in ticks:
-                x = x_pos(t)
-                p.drawLine(x, height - 1, x, height - 6)
-                p.drawText(x - 18, height - 10, f"{t:.3f}")
+                x = x_pos(float(t))
+                if left_margin < x < width - 1:
+                    p.setPen(grid_pen)
+                    p.drawLine(x, top_margin, x, axis_y)
+                p.setPen(axis_color)
+                p.drawLine(x, axis_y, x, axis_y - 5)
+                p.setPen(label_color)
+                p.drawText(x - 18, axis_y + bottom_margin - 8, f"{t:.3f}")
         else:
             ticks = np.linspace(0.0, 1.0, 11)
             for t in ticks:
-                x = x_pos(t)
-                p.drawLine(x, height - 1, x, height - 6)
-                p.drawText(x - 10, height - 10, f"{t:.1f}")
+                x = x_pos(float(t))
+                if left_margin < x < width - 1:
+                    p.setPen(grid_pen)
+                    p.drawLine(x, top_margin, x, axis_y)
+                p.setPen(axis_color)
+                p.drawLine(x, axis_y, x, axis_y - 5)
+                p.setPen(label_color)
+                p.drawText(x - 10, axis_y + bottom_margin - 8, f"{t:.1f}")
+
+        # ----- Y ticks + grid -----
+        n_yticks = 6
+        if self.log_y:
+            exps = np.linspace(0.0, max_val, n_yticks)
+            norms = exps / max_val
+            labels = [f"{10**e:.0f}" for e in exps]
+        else:
+            vals_for_ticks = np.linspace(0.0, max_val, n_yticks)
+            norms = vals_for_ticks / max_val
+            labels = [f"{v:.0f}" for v in vals_for_ticks]
+
+        for i, (yn, lab) in enumerate(zip(norms, labels)):
+            y = y_pos(float(yn))
+            if 0 < i < n_yticks - 1:
+                p.setPen(grid_pen)
+                p.drawLine(left_margin, y, width - 1, y)
+            p.setPen(axis_color)
+            p.drawLine(left_margin - 5, y, left_margin, y)
+            p.setPen(label_color)
+            p.drawText(2, y + 4, lab)
 
         # --- draw effective-max marker if user set one ---
         if self.sensor_max01 < 0.9999:
             x = x_pos(self.sensor_max01)
             p.setPen(QPen(QColor(220, 0, 0), 2, Qt.PenStyle.DashLine))
-            p.drawLine(x, 0, x, height)
-            p.drawText(min(x + 4, width - 60), 12, f"True Max {self.sensor_max01:.4f}")
+            p.drawLine(x, top_margin, x, axis_y)
+            p.drawText(min(x + 4, width - 80), top_margin + 12,
+                       f"True Max {self.sensor_max01:.4f}")
 
         p.end()
         self.hist_label.setPixmap(pm)
         self.hist_label.resize(pm.size())
 
-        self._update_stats()
+    def _recompute_hist_cache(self):
+        """Compute histograms once for the current image.
+
+        This is called when the document image changes. Resizing / zooming
+        will only redraw using this cached data.
+        """
+        img = self.image
+        self._bin_edges_lin = None
+        self._bin_edges_log = None
+        self._counts_lin    = None
+        self._counts_log    = None
+        self._is_color      = False
+        self._eps_log       = 1e-6
+
+        if img is None:
+            return
+
+        a = img
+        if a.ndim == 3 and a.shape[2] == 1:
+            a = a[..., 0]
+
+        if a.ndim == 3 and a.shape[2] == 3:
+            chans = [a[..., i] for i in range(3)]
+            self._is_color = True
+        else:
+            chan = a if a.ndim == 2 else a[..., 0]
+            chans = [chan]
+            self._is_color = False
+
+        bin_count = self._bin_count
+
+        # --- linear X bins ---
+        bin_edges_lin = np.linspace(0.0, 1.0, bin_count + 1).astype(np.float32)
+        counts_lin: list[np.ndarray] = []
+        for c in chans:
+            counts, _ = np.histogram(c.ravel(), bins=bin_edges_lin)
+            counts_lin.append(counts.astype(np.float32))
+
+        # --- log X bins ---
+        pos = a[a > 0]
+        eps = max(1e-6, float(pos.min())) if pos.size else 1e-6
+        log_min, log_max = np.log10(eps), 0.0
+        if abs(log_max - log_min) < 1e-12:
+            bin_edges_log = np.linspace(eps, 1.0, bin_count + 1).astype(np.float32)
+        else:
+            bin_edges_log = np.logspace(log_min, log_max, bin_count + 1).astype(np.float32)
+
+        counts_log: list[np.ndarray] = []
+        for c in chans:
+            counts, _ = np.histogram(c.ravel(), bins=bin_edges_log)
+            counts_log.append(counts.astype(np.float32))
+
+        self._bin_edges_lin = bin_edges_lin
+        self._bin_edges_log = bin_edges_log
+        self._counts_lin    = counts_lin
+        self._counts_log    = counts_log
+        self._eps_log       = float(eps)
+
+
+    def _schedule_redraw(self):
+        # Only bother if visible; restart timer each time
+        if self.isVisible():
+            self._resize_timer.start()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._schedule_redraw()
+
+    def eventFilter(self, obj, event):
+        # When the splitter moves, the scroll_area viewport gets a Resize event
+        if self.scroll_area is not None and obj is self.scroll_area.viewport():
+            if event.type() == QEvent.Type.Resize:
+                self._schedule_redraw()
+        return super().eventFilter(obj, event)
 
     def _update_stats(self):
         if self.image is None:
@@ -416,6 +629,7 @@ class HistogramDialog(QDialog):
                 self.settings.setValue("histogram/sensor_max01_generic", float(val))
 
         self._recompute_effective_max01()
+        self._update_stats()      # High Clipped row depends on sensor_max01
         self._draw_histogram()
 
 
