@@ -1,9 +1,9 @@
 {
-  "version": "1.5.2",
+  "version": "1.5.3",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.5.2/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.5.2/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.5.2/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.5.3/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.5.3/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.5.3/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.5.2 View window sizing upon opening update. Blink Comparator update for renaming flagged items. Other minor fixes."
+  "notes": "Seti Astro Suite Pro V1.5.3 Histogram Improvements and link between GHS to ctrl+click the histogram to set symmetry points and open histogram from GHS.  Open Recent Files in File Menu.  zoom in and out buttons on the main UI.  new system terminal panel to show what is being written in the terminal window to allow those with limited real estate to view what the terminal window is saying."
 }
