@@ -312,7 +312,7 @@ from pro.autostretch import autostretch as _autostretch
 from ops.scripts import ScriptManager
 
 
-VERSION = "1.5.3"
+VERSION = "1.5.4"
 
 
 
