@@ -1111,6 +1111,30 @@ def load_image(filename, max_retries=3, wait_seconds=3, return_metadata: bool = 
                         #image = image_data.astype(np.float32) / 65530.0
                         #image = np.clip(image, 0.0, 1.0)
 
+                    elif image_data.dtype == np.int16:
+                        bit_depth = "16-bit signed"
+                        print("Identified 16-bit signed FITS image.")
+                        bzero  = original_header.get('BZERO', 0)
+                        bscale = original_header.get('BSCALE', 1)
+
+                        # Apply FITS scaling
+                        data = image_data.astype(np.float32) * float(bscale) + float(bzero)
+
+                        if bzero != 0 or bscale != 1:
+                            # Typical DSLR/astro case: BITPIX=16, BZERO=32768, BSCALE=1
+                            # Physical range is ~0..65535 → normalize to [0,1]
+                            image = np.clip(data / 65535.0, 0.0, 1.0)
+                        else:
+                            # Fallback: min–max normalize whatever range we actually have
+                            dmin = float(data.min())
+                            dmax = float(data.max())
+                            if dmax > dmin:
+                                image = (data - dmin) / (dmax - dmin)
+                            else:
+                                # Completely flat frame; just return zeros
+                                image = np.zeros_like(data, dtype=np.float32)
+
+
                     elif image_data.dtype == np.int32:
                         bit_depth = "32-bit signed"
                         print("Identified 32-bit signed FITS image.")
