@@ -983,17 +983,15 @@ def _fill_hdr_from_raw_metadata(raw, hdr: fits.Header | None = None) -> fits.Hea
 
 from astropy.wcs import WCS
 
-
-
-
 def attach_wcs_to_metadata(meta: dict, hdr: fits.Header | dict | None) -> dict:
     """
     If hdr contains WCS, create an astropy.wcs.WCS and stash in metadata.
 
     Strategy:
+      0) If there is obviously no WCS (no CTYPE1/2 or CRVAL1/2), bail out.
       1) Try WCS(header, relax=True) normally.
-      2) On ANY failure, retry with naxis=2 (common case: 3D RGB + 2D SIP).
-      3) If that still fails, retry with naxis=2 and sip=False (ignore distortions).
+      2) On failure, retry with naxis=2 (common case: 3D RGB + 2D SIP).
+      3) On failure, strip SIP-related keys and retry with naxis=2.
       4) If all attempts fail, log and give up (no 'wcs' attached).
 
     Doesn't overwrite an existing non-None meta['wcs'].
@@ -1006,6 +1004,12 @@ def attach_wcs_to_metadata(meta: dict, hdr: fits.Header | dict | None) -> dict:
 
     try:
         fhdr = hdr if isinstance(hdr, fits.Header) else fits.Header(hdr)
+
+        # --- Quick sanity: if we don't even have a basic celestial WCS, skip quietly ---
+        core_keys = ("CTYPE1", "CTYPE2", "CRVAL1", "CRVAL2")
+        if not all(k in fhdr for k in core_keys):
+            # No real astrometric solution; don't spam warnings
+            return meta
 
         # --- Attempt 1: plain WCS ---
         try:
@@ -1021,18 +1025,22 @@ def attach_wcs_to_metadata(meta: dict, hdr: fits.Header | dict | None) -> dict:
 
             except Exception as e2:
                 print(f"⚠️ WCS(..., naxis=2) failed: {e2}")
-                print("⚠️ Retrying WCS with naxis=2 and sip=False (no distortion).")
+                print("⚠️ Retrying WCS with naxis=2 after stripping SIP terms.")
 
-                # --- Attempt 3: 2D, but ignore SIP/distortions completely ---
+                # --- Attempt 3: strip SIP/distortion keywords and retry ---
                 try:
-                    w = WCS(fhdr, relax=True, naxis=2, sip=False)
+                    fhdr2 = fhdr.copy()
+                    for k in list(fhdr2.keys()):
+                        if k.startswith(("A_", "B_", "AP_", "BP_", "A_ORDER", "B_ORDER")):
+                            del fhdr2[k]
+                    w = WCS(fhdr2, relax=True, naxis=2)
                 except Exception as e3:
-                    print(f"⚠️ WCS(..., naxis=2, sip=False) failed: {e3}")
+                    print(f"⚠️ WCS(..., naxis=2) after SIP-strip failed: {e3}")
                     # Give up – we’ll leave meta['wcs'] unset
                     raise e1  # re-raise the original for the outer handler
 
         # If we got here, we have some WCS object
-        if w.has_celestial:
+        if getattr(w, "has_celestial", False):
             meta["wcs"] = w
             meta["wcs_header"] = w.to_header(relax=True)
             meta["wcsaxes"] = int(getattr(w, "naxis", getattr(w.wcs, "naxis", 2)))
@@ -1108,53 +1116,91 @@ def load_image(filename, max_retries=3, wait_seconds=3, return_metadata: bool = 
                         bit_depth = "16-bit"
                         print("Identified 16-bit FITS image.")
                         image = image_data.astype(np.float32) / 65535.0
-                        #image = image_data.astype(np.float32) / 65530.0
-                        #image = np.clip(image, 0.0, 1.0)
 
                     elif image_data.dtype == np.int16:
                         bit_depth = "16-bit signed"
                         print("Identified 16-bit signed FITS image.")
                         bzero  = original_header.get('BZERO', 0)
                         bscale = original_header.get('BSCALE', 1)
-
-                        # Apply FITS scaling
                         data = image_data.astype(np.float32) * float(bscale) + float(bzero)
 
                         if bzero != 0 or bscale != 1:
-                            # Typical DSLR/astro case: BITPIX=16, BZERO=32768, BSCALE=1
-                            # Physical range is ~0..65535 → normalize to [0,1]
                             image = np.clip(data / 65535.0, 0.0, 1.0)
                         else:
-                            # Fallback: min–max normalize whatever range we actually have
                             dmin = float(data.min())
                             dmax = float(data.max())
                             if dmax > dmin:
                                 image = (data - dmin) / (dmax - dmin)
                             else:
-                                # Completely flat frame; just return zeros
                                 image = np.zeros_like(data, dtype=np.float32)
 
+                    elif image_data.dtype == np.int8:
+                        bit_depth = "8-bit signed"
+                        print("Identified 8-bit signed FITS image.")
+                        # Use BSCALE/BZERO if present, else generic normalize
+                        bzero  = original_header.get('BZERO', 0)
+                        bscale = original_header.get('BSCALE', 1)
+                        data = image_data.astype(np.float32) * float(bscale) + float(bzero)
+                        dmin = float(data.min())
+                        dmax = float(data.max())
+                        if dmax > dmin:
+                            image = (data - dmin) / (dmax - dmin)
+                        else:
+                            image = np.zeros_like(data, dtype=np.float32)
 
                     elif image_data.dtype == np.int32:
                         bit_depth = "32-bit signed"
                         print("Identified 32-bit signed FITS image.")
-                        bzero  = original_header.get('BZERO', 0)
-                        bscale = original_header.get('BSCALE', 1)
-                        image = image_data.astype(np.float32) * bscale + bzero
+                        bzero  = float(original_header.get('BZERO', 0))
+                        bscale = float(original_header.get('BSCALE', 1))
+
+                        # Rebuild physical values
+                        data = image_data.astype(np.float32) * bscale + bzero
+
+                        # Normalize to [0,1] for the viewer / pipeline
+                        dmin = float(data.min())
+                        dmax = float(data.max())
+                        if dmax > dmin:
+                            image = (data - dmin) / (dmax - dmin)
+                        else:
+                            image = np.zeros_like(data, dtype=np.float32)
+
 
                     elif image_data.dtype == np.uint32:
                         bit_depth = "32-bit unsigned"
                         print("Identified 32-bit unsigned FITS image.")
-                        bzero  = original_header.get('BZERO', 0)
-                        bscale = original_header.get('BSCALE', 1)
-                        image = image_data.astype(np.float32) * bscale + bzero
+
+                        bzero  = float(original_header.get('BZERO', 0))
+                        bscale = float(original_header.get('BSCALE', 1))
+
+                        if bzero == 0.0 and bscale == 1.0:
+                            # Literal 0..2^32-1 data → map directly to [0,1]
+                            image = image_data.astype(np.float32) / 4294967295.0
+                        else:
+                            # Non-trivial BSCALE/BZERO: reconstruct physical values, then normalize
+                            data = image_data.astype(np.float32) * bscale + bzero
+                            dmin = float(data.min())
+                            dmax = float(data.max())
+                            if dmax > dmin:
+                                image = (data - dmin) / (dmax - dmin)
+                            else:
+                                image = np.zeros_like(data, dtype=np.float32)
+
 
                     elif image_data.dtype == np.float32:
                         bit_depth = "32-bit floating point"
                         print("Identified 32-bit floating point FITS image.")
                         image = np.array(image_data, dtype=np.float32, copy=True, order="C")
+
+                    elif image_data.dtype == np.float64:
+                        bit_depth = "64-bit floating point"
+                        print("Identified 64-bit floating point FITS image.")
+                        # Keep dynamic range as-is, just cast down to float32
+                        image = image_data.astype(np.float32, copy=True)
+
                     else:
                         raise ValueError(f"Unsupported FITS data type: {image_data.dtype}")
+
 
                     # ---------------------------------------------------------------------
                     # 2) Squeeze out any singleton dimensions (fix weird NAXIS combos)
@@ -1199,27 +1245,44 @@ def load_image(filename, max_retries=3, wait_seconds=3, return_metadata: bool = 
                     return image, original_header, bit_depth, is_mono
 
 
-
             elif filename.lower().endswith(('.tiff', '.tif')):
                 print(f"Loading TIFF file: {filename}")
                 image_data = tiff.imread(filename)
                 print(f"Loaded TIFF image with dtype: {image_data.dtype}")
 
-                # Determine bit depth and normalize
                 if image_data.dtype == np.uint8:
                     bit_depth = "8-bit"
                     image = image_data.astype(np.float32) / 255.0
+
                 elif image_data.dtype == np.uint16:
                     bit_depth = "16-bit"
                     image = image_data.astype(np.float32) / 65535.0
+
                 elif image_data.dtype == np.uint32:
                     bit_depth = "32-bit unsigned"
                     image = image_data.astype(np.float32) / 4294967295.0
+
                 elif image_data.dtype == np.float32:
                     bit_depth = "32-bit floating point"
-                    image = image_data
+                    image = image_data.astype(np.float32)
+
+                elif image_data.dtype == np.float64:
+                    bit_depth = "64-bit floating point"
+                    image = image_data.astype(np.float32)
+
+                elif np.issubdtype(image_data.dtype, np.integer):
+                    # Generic integer fallback (int16, int32, etc.)
+                    info = np.iinfo(image_data.dtype)
+                    bit_depth = f"{info.bits}-bit signed"
+                    print(f"Generic int TIFF; normalizing by [{info.min}, {info.max}]")
+                    data = image_data.astype(np.float32)
+                    # shift to [0, max-min] then normalize
+                    data -= info.min
+                    image = data / float(info.max - info.min)
+
                 else:
                     raise ValueError("Unsupported TIFF format!")
+
 
                 #if image.dtype == np.float32:
                 #    max_val = image.max()
