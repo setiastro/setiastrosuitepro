@@ -377,10 +377,19 @@ class SFCCDialog(QDialog):
         doc = self.doc_manager.get_active_document()
         if doc is None:
             return None, None, None
+
         img = doc.image
         meta = doc.metadata or {}
-        hdr = meta.get("original_header")
+
+        # Prefer the normalized WCS header if present, then fall back
+        hdr = (
+            meta.get("wcs_header") or
+            meta.get("original_header") or
+            meta.get("header")
+        )
+
         return img, hdr, meta
+
     
     def _get_img_meta(self) -> Tuple[Optional[np.ndarray], dict]:
         """Try a few common shapes to obtain image + metadata from the view."""
@@ -782,15 +791,14 @@ class SFCCDialog(QDialog):
         idx = self.sens_combo.findText(current_s); self.sens_combo.setCurrentIndex(idx if idx != -1 else 0)
 
     # ── WCS utilities ──────────────────────────────────────────────────
-
     def initialize_wcs_from_header(self, header):
         if header is None:
-            print("No FITS header available; cannot build WCS."); return
+            print("No FITS header available; cannot build WCS.")
+            return
         try:
             hdr = header.copy()
 
             # --- normalize deprecated keywords ---
-            # RADECSYS → RADESYS (and remove the deprecated key)
             if "RADECSYS" in hdr and "RADESYS" not in hdr:
                 radesys_val = str(hdr["RADECSYS"]).strip()
                 hdr["RADESYS"] = radesys_val
@@ -799,40 +807,48 @@ class SFCCDialog(QDialog):
                 except Exception:
                     pass
 
-                # If there are alternate WCS solutions (e.g., CTYPE1A/CTYPE2A),
-                # also provide RADESYSA / RADESYSB, etc., when missing.
-                alt_letters = {k[-1]
-                            for k in hdr.keys()
-                            if re.match(r"^CTYPE[12][A-Z]$", k)}
+                alt_letters = {
+                    k[-1]
+                    for k in hdr.keys()
+                    if re.match(r"^CTYPE[12][A-Z]$", k)
+                }
                 for a in alt_letters:
                     key = f"RADESYS{a}"
                     if key not in hdr:
                         hdr[key] = radesys_val
 
-            # EPOCH → EQUINOX (and remove EPOCH to avoid warnings)
             if "EPOCH" in hdr and "EQUINOX" not in hdr:
                 hdr["EQUINOX"] = hdr["EPOCH"]
                 try:
                     del hdr["EPOCH"]
                 except Exception:
                     pass
-            # -------------------------------------  
-            self.wcs = WCS(header, naxis=2, relax=True)
+
+            # IMPORTANT: use the normalized hdr, not the original header
+            self.wcs = WCS(hdr, naxis=2, relax=True)
+
             psm = self.wcs.pixel_scale_matrix
-            self.pixscale = (np.hypot(psm[0,0], psm[1,0]) * 3600.0)
+            self.pixscale = np.hypot(psm[0, 0], psm[1, 0]) * 3600.0
             self.center_ra, self.center_dec = self.wcs.wcs.crval
             self.wcs_header = self.wcs.to_header(relax=True)
-            if 'CROTA2' in header:
-                try: self.orientation = float(header['CROTA2'])
-                except Exception: self.orientation = None
+
+            # Orientation from normalized header
+            if "CROTA2" in hdr:
+                try:
+                    self.orientation = float(hdr["CROTA2"])
+                except Exception:
+                    self.orientation = None
             else:
-                self.orientation = self.calculate_orientation(header)
+                self.orientation = self.calculate_orientation(hdr)
+
             if self.orientation is not None:
                 self.orientation_label.setText(f"Orientation: {self.orientation:.2f}°")
             else:
                 self.orientation_label.setText("Orientation: N/A")
+
         except Exception as e:
             print("WCS initialization error:\n", e)
+
 
     def calculate_orientation(self, header):
         try:
