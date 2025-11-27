@@ -7,7 +7,7 @@ from PyQt6.QtCore import Qt, QTimer, QPointF
 from PyQt6.QtGui import QIcon, QCursor, QImage, QPixmap, QTransform, QActionGroup
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGroupBox, QGridLayout, QLabel,
-    QPushButton, QPlainTextEdit, QComboBox, QDialogButtonBox, QRadioButton, QApplication,
+    QPushButton, QPlainTextEdit, QComboBox, QDialogButtonBox, QRadioButton, QApplication, QSplitter,
     QTabWidget, QWidget, QMessageBox, QMenu, QScrollArea, QButtonGroup, QListWidget, QListWidgetItem, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QToolButton
 )
 
@@ -803,10 +803,20 @@ class PixelMathDialogPro(QDialog):
         right_col.setContentsMargins(0, 0, 0, 0)
         right_col.setSpacing(8)
 
-        root.addWidget(left_scroll, 0)   # controls
-        root.addWidget(right_panel, 1)   # preview expands
-        root.setStretch(0, 0)
-        root.setStretch(1, 1)
+        # Put them into a splitter so user can drag the boundary
+        splitter = QSplitter(Qt.Orientation.Horizontal, self)
+        splitter.setChildrenCollapsible(False)
+        splitter.addWidget(left_scroll)
+        splitter.addWidget(right_panel)
+        splitter.setStretchFactor(0, 0)   # left: fixed-ish
+        splitter.setStretchFactor(1, 1)   # right: grows
+
+        # Give the left side a reasonable minimum so it doesn't disappear
+        left_scroll.setMinimumWidth(260)
+
+        root.addWidget(splitter)
+        self._splitter = splitter  # optional, if you ever want to tweak later
+
 
         # ──────────────────────────────────────────────────────────────────────────
         # Variables mapping (raw title → identifier)
@@ -817,16 +827,36 @@ class PixelMathDialogPro(QDialog):
         self.vars_list = QListWidget()
         self.vars_list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
         self.vars_list.setAlternatingRowColors(True)
+        self.vars_list.setTextElideMode(Qt.TextElideMode.ElideRight)
+
+        def _shorten_title(raw_title: str, ident: str, max_chars: int = 48) -> tuple[str, str]:
+            """
+            Return (display_text, full_text).
+            display_text is shortened so the left panel doesn't explode.
+            full_text is put into the tooltip.
+            """
+            base = str(raw_title)
+            if len(base) > max_chars:
+                head = max_chars // 2 - 1
+                tail = max_chars - head - 1
+                base = base[:head] + "…" + base[-tail:]
+            disp = f"{base} → {ident}"
+            full = f"{raw_title} → {ident}"
+            return disp, full
+
 
         # First item = active view
-        item = QListWidgetItem("img (active)")
-        item.setData(Qt.ItemDataRole.UserRole, "img")   # ← stash the real name
-        self.vars_list.addItem(item)
+        active_item = QListWidgetItem("img (active)")
+        active_item.setData(Qt.ItemDataRole.UserRole, "img")   # ← stash the real name
+        active_item.setToolTip("img (active)")
+        self.vars_list.addItem(active_item)
 
         # Other open views
         for raw, ident in self.ev.title_map:
-            it = QListWidgetItem(f"{raw} → {ident}")
-            it.setData(Qt.ItemDataRole.UserRole, ident)  # ← stash the ident
+            disp, full = _shorten_title(raw, ident)
+            it = QListWidgetItem(disp)
+            it.setData(Qt.ItemDataRole.UserRole, ident)   # ← stash the ident
+            it.setToolTip(full)
             self.vars_list.addItem(it)
 
         # Comfortable height; scroll appears as needed
@@ -1103,6 +1133,7 @@ class PixelMathDialogPro(QDialog):
 
         # A little wider to favor the preview
         self.resize(940, 700)
+        QTimer.singleShot(0, lambda: self._splitter.setSizes([320, max(620, self.width() - 320)]))
 
     # ─────────────── Auto-stretch prefs ───────────────
     def _as_settings(self):

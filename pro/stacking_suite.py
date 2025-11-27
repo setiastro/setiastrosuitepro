@@ -4695,8 +4695,19 @@ class StackingSuiteDialog(QDialog):
         # Precision
         self.precision_combo = QComboBox()
         self.precision_combo.addItems(["32-bit float", "64-bit float"])
-        # Default to 32-bit (index 0)
-        self.precision_combo.setCurrentIndex(0)
+
+        # Restore from current internal dtype / QSettings instead of hard-coding 32-bit
+        saved_dtype = (self.settings.value("stacking/internal_dtype", "float32") or "float32").lower()
+
+        if "64" in saved_dtype:
+            idx = 1
+        elif getattr(self, "internal_dtype", None) is np.float64:
+            # fallback if settings missing but runtime already using 64-bit
+            idx = 1
+        else:
+            idx = 0
+
+        self.precision_combo.setCurrentIndex(idx)
         self.precision_combo.setToolTip("64-bit uses ~2× RAM; 32-bit is faster/lighter.")
         fl_general.addRow("Internal Precision:", self.precision_combo)
 
@@ -5444,7 +5455,8 @@ class StackingSuiteDialog(QDialog):
         # --- capture previous state BEFORE we change anything ---
         prev_dir_raw   = self.stacking_directory or ""
         prev_dir       = self._norm_dir(prev_dir_raw)
-        prev_dtype_str = "float64" if (getattr(self, "internal_dtype", np.float64) is np.float64) else "float32"
+        prev_dtype_str = "float64" if (getattr(self, "internal_dtype", np.float32) is np.float64) else "float32"
+
 
         # --- read dialog widgets ---
         dir_edit   = getattr(dialog, "_dir_edit", None)
