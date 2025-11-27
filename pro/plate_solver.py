@@ -709,30 +709,62 @@ def _parse_dec_deg(h: Header) -> float | None:
 
 
 def _compute_scale_arcsec_per_pix(h: Header) -> float | None:
+    """
+    Try to compute pixel scale from WCS / instrument metadata.
+    If the result is obviously insane, return None so we can fall back
+    to RA/Dec-only seeding.
+    """
+    def _sanity(val: float | None) -> float | None:
+        if val is None or not np.isfinite(val) or val <= 0:
+            return None
+        # Typical imaging: ~0.1"–100"/px. Allow up to ~1000"/px for very wide,
+        # but anything beyond that is almost certainly bogus.
+        if val > 1000.0:
+            return None
+        return float(val)
+
     cd11 = _first_float(h.get("CD1_1"))
     cd21 = _first_float(h.get("CD2_1"))
     cdelt1 = _first_float(h.get("CDELT1"))
     cdelt2 = _first_float(h.get("CDELT2"))
+
+    # 1) CD matrix
     if cd11 is not None or cd21 is not None:
         cd11 = cd11 or 0.0
         cd21 = cd21 or 0.0
-        return ((cd11**2 + cd21**2)**0.5) * 3600.0
+        val = ((cd11**2 + cd21**2)**0.5) * 3600.0
+        val = _sanity(val)
+        if val is not None:
+            return val
+
+    # 2) CDELT
     if cdelt1 is not None or cdelt2 is not None:
         cdelt1 = cdelt1 or 0.0
         cdelt2 = cdelt2 or 0.0
-        return ((cdelt1**2 + cdelt2**2)**0.5) * 3600.0
+        val = ((cdelt1**2 + cdelt2**2)**0.5) * 3600.0
+        val = _sanity(val)
+        if val is not None:
+            return val
+
+    # 3) Pixel size + focal length
     px_um_x = _first_float(h.get("XPIXSZ"))
     px_um_y = _first_float(h.get("YPIXSZ"))
     focal_mm = _first_float(h.get("FOCALLEN"))
     if focal_mm and (px_um_x or px_um_y):
-        px_um = px_um_x if (px_um_x and not px_um_y) else px_um_y if (px_um_y and not px_um_x) else (None)
-        if px_um is None: px_um = (px_um_x + px_um_y) / 2.0
+        px_um = px_um_x if (px_um_x and not px_um_y) else px_um_y if (px_um_y and not px_um_x) else None
+        if px_um is None:
+            px_um = (px_um_x + px_um_y) / 2.0
         bx = _first_int(h.get("XBINNING")) or _first_int(h.get("XBIN")) or 1
         by = _first_int(h.get("YBINNING")) or _first_int(h.get("YBIN")) or 1
         bin_factor = (bx + by) / 2.0
         px_um_eff = px_um * bin_factor
-        return 206.264806 * px_um_eff / float(focal_mm)
+        val = 206.264806 * px_um_eff / float(focal_mm)
+        val = _sanity(val)
+        if val is not None:
+            return val
+
     return None
+
 
 def _build_astap_seed_with_overrides(settings, header: Header | None, image: np.ndarray) -> tuple[list[str], str, float | None]:
     """
@@ -780,22 +812,43 @@ def _build_astap_seed_with_overrides(settings, header: Header | None, image: np.
 
 
 def _build_astap_seed(h: Header) -> Tuple[list[str], str]:
+    """
+    Build ASTAP seed args from a header.
+    RA/Dec are REQUIRED. Scale is OPTIONAL and sanity-checked.
+    """
     dbg = []
     ra_deg  = _parse_ra_deg(h)
     dec_deg = _parse_dec_deg(h)
-    scale   = _compute_scale_arcsec_per_pix(h)
 
-    if ra_deg is None:  dbg.append("RA unknown")
-    if dec_deg is None: dbg.append("Dec unknown")
-    if not scale or not np.isfinite(scale) or scale <= 0: dbg.append("scale unknown")
+    if ra_deg is None:
+        dbg.append("RA unknown")
+    if dec_deg is None:
+        dbg.append("Dec unknown")
 
-    if dbg:
-        return [], " / ".join(dbg)
+    # If we don't have RA/Dec, there's nothing useful to seed.
+    if ra_deg is None or dec_deg is None:
+        return [], " / ".join(dbg) if dbg else "RA/Dec unknown"
+
+    # Scale is now optional
+    scale = _estimate_scale_arcsec_from_header(h)
+    if scale is None:
+        dbg.append("scale unknown")
 
     ra_h = ra_deg / 15.0
     spd  = dec_deg + 90.0
-    args = ["-ra", f"{ra_h:.6f}", "-spd", f"{spd:.6f}", "-scale", f"{scale:.3f}"]
-    return args, f"RA={ra_h:.6f} h | SPD={spd:.6f}° | scale={scale:.3f}\"/px"
+
+    args = ["-ra", f"{ra_h:.6f}", "-spd", f"{spd:.6f}"]
+    if scale is not None:
+        args += ["-scale", f"{scale:.3f}"]
+
+    dbg_str = f"RA={ra_h:.6f} h | SPD={spd:.6f}°"
+    if scale is not None:
+        dbg_str += f" | scale={scale:.3f}\"/px"
+    else:
+        dbg_str += " | scale unknown"
+
+    return args, dbg_str
+
 
 
 def _astrometry_login(settings, parent=None) -> str | None:
@@ -1544,16 +1597,21 @@ def _solve_numpy_with_astap(parent, settings, image: np.ndarray, seed_header: He
 # ---------------------------------------------------------------------
 
 def plate_solve_doc_inplace(parent, doc, settings) -> Tuple[bool, Header | str]:
-    """
-    Run ASTAP on the doc's image; merge WCS/SIP back into doc.metadata.
-    If called headless (no inline status/log), show a small modeless status popup.
-    """
     img = getattr(doc, "image", None)
     if img is None:
         return False, "Active document has no image data."
 
-    meta  = getattr(doc, "metadata", {}) or {}
-    seed_h = _as_header(meta.get("original_header") or meta)
+    meta = getattr(doc, "metadata", {}) or {}
+    seed_h = _seed_header_from_meta(meta)
+
+    # Better debug: use our new scale estimator
+    try:
+        ra  = seed_h.get("CRVAL1", None)
+        dec = seed_h.get("CRVAL2", None)
+        scale = _estimate_scale_arcsec_from_header(seed_h)
+        print(f"[PlateSolve seed] CRVAL1={ra}, CRVAL2={dec}, scale≈{scale} \"/px")
+    except Exception as e:
+        print("Seed: debug print failed:", e)
 
     # Determine if we have inline status/log widgets; if not, show the popup.
     headless = not (
@@ -1614,6 +1672,132 @@ def plate_solve_doc_inplace(parent, doc, settings) -> Tuple[bool, Header | str]:
         return True, hdr
     finally:
         _status_popup_close()
+
+from astropy.io import fits
+from astropy.io.fits import Header
+from astropy.wcs import WCS
+
+
+def _estimate_scale_arcsec_from_header(hdr: Header) -> float | None:
+    """
+    Estimate pixel scale in arcsec/pixel from a FITS Header.
+    Tries WCS, then CD matrix, then PC*CDELT, then PIXSCALE-style keys.
+    Returns None if we can't get a sane value.
+    """
+    # 1) Try astropy WCS, which handles CD vs PC*CDELT automatically
+    try:
+        w = WCS(hdr)
+        from astropy.wcs.utils import proj_plane_pixel_scales
+        scales_deg = proj_plane_pixel_scales(w)  # degrees/pixel
+        if scales_deg is not None and len(scales_deg) >= 2:
+            s_deg = float(np.mean(scales_deg[:2]))
+            scale = s_deg * 3600.0  # arcsec/pixel
+            if 0 < scale < 10000:
+                return scale
+    except Exception as e:
+        print("Seed: WCS->scale via proj_plane_pixel_scales failed:", e)
+
+    # 2) Try CD matrix directly
+    cd11 = hdr.get("CD1_1")
+    cd21 = hdr.get("CD2_1")
+    try:
+        if cd11 is not None or cd21 is not None:
+            cd11 = float(cd11 or 0.0)
+            cd21 = float(cd21 or 0.0)
+            s_deg = (cd11 * cd11 + cd21 * cd21) ** 0.5
+            scale = s_deg * 3600.0
+            if 0 < scale < 10000:
+                return scale
+    except Exception as e:
+        print("Seed: CD-based scale failed:", e)
+
+    # 3) Try PC * CDELT fallback
+    try:
+        cdelt1 = hdr.get("CDELT1")
+        cdelt2 = hdr.get("CDELT2")
+        pc11   = hdr.get("PC1_1")
+        pc21   = hdr.get("PC2_1")
+        if cdelt1 is not None and pc11 is not None:
+            cd11 = float(cdelt1) * float(pc11)
+        else:
+            cd11 = None
+        if cdelt2 is not None and pc21 is not None:
+            cd21 = float(cdelt2) * float(pc21)
+        else:
+            cd21 = None
+
+        if cd11 is not None or cd21 is not None:
+            s_deg = ( (cd11 or 0.0)**2 + (cd21 or 0.0)**2 ) ** 0.5
+            scale = s_deg * 3600.0
+            if 0 < scale < 10000:
+                return scale
+    except Exception as e:
+        print("Seed: PC*CDELT-based scale failed:", e)
+
+    # 4) Fallback on explicit pixscale-like keywords, if present
+    for key in ("PIXSCALE", "SECPIX"):
+        if key in hdr:
+            try:
+                scale = float(hdr[key])
+                if 0 < scale < 10000:
+                    return scale
+            except Exception:
+                pass
+
+    # If we get here, we couldn't find a sane scale
+    return None
+
+def _seed_header_from_meta(meta: dict) -> Header:
+    """
+    Build the header used for ASTAP seeding from doc.metadata.
+
+    Priority:
+      1. original_header (if present)
+      2. meta as a dict
+    Then merge in any WCS info from:
+      - meta['wcs_header'] (Header or string)
+      - meta['wcs'] (WCS object)
+    """
+    # Base: original FITS header if present, otherwise treat meta dict as header
+    base = _as_header(meta.get("original_header") or meta)
+
+    wcs_hdr: Header | None = None
+
+    # 1) Use explicit wcs_header if present
+    raw_wcs = meta.get("wcs_header")
+    if isinstance(raw_wcs, Header):
+        wcs_hdr = raw_wcs
+    elif isinstance(raw_wcs, str):
+        # This is your case: stored as Header.tostring()
+        try:
+            # In real metadata this likely has newlines; sep='\n' handles that.
+            wcs_hdr = fits.Header.fromstring(raw_wcs, sep='\n')
+        except Exception as e:
+            print("Seed: failed to parse wcs_header string:", e)
+
+    # 2) Fallback: derive from WCS object if we still don't have a header
+    if wcs_hdr is None:
+        wcs_obj = meta.get("wcs")
+        if isinstance(wcs_obj, WCS):
+            try:
+                wcs_hdr = wcs_obj.to_header(relax=True)
+            except Exception as e:
+                print("Seed: failed to derive WCS header from WCS object:", e)
+
+    # 3) Merge WCS header into base header, with WCS keys winning
+    if wcs_hdr is not None:
+        if not isinstance(base, Header):
+            base = Header()
+        else:
+            base = base.copy()
+        for k, v in wcs_hdr.items():
+            try:
+                base[k] = v
+            except Exception:
+                pass
+
+    return base
+
 
 def _compute_fov_deg(image: np.ndarray, arcsec_per_px: float | None) -> float | None:
     if arcsec_per_px is None or not np.isfinite(arcsec_per_px) or arcsec_per_px <= 0:
