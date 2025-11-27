@@ -984,9 +984,18 @@ def _fill_hdr_from_raw_metadata(raw, hdr: fits.Header | None = None) -> fits.Hea
 from astropy.wcs import WCS
 
 
+
+
 def attach_wcs_to_metadata(meta: dict, hdr: fits.Header | dict | None) -> dict:
     """
     If hdr contains WCS, create an astropy.wcs.WCS and stash in metadata.
+
+    Strategy:
+      1) Try WCS(header, relax=True) normally.
+      2) On ANY failure, retry with naxis=2 (common case: 3D RGB + 2D SIP).
+      3) If that still fails, retry with naxis=2 and sip=False (ignore distortions).
+      4) If all attempts fail, log and give up (no 'wcs' attached).
+
     Doesn't overwrite an existing non-None meta['wcs'].
     """
     if not hdr or meta is None:
@@ -997,16 +1006,40 @@ def attach_wcs_to_metadata(meta: dict, hdr: fits.Header | dict | None) -> dict:
 
     try:
         fhdr = hdr if isinstance(hdr, fits.Header) else fits.Header(hdr)
-        w = WCS(fhdr, relax=True)
 
-        # Only keep if it looks valid (has celestial axes)
+        # --- Attempt 1: plain WCS ---
+        try:
+            w = WCS(fhdr, relax=True)
+
+        except Exception as e1:
+            print(f"⚠️ WCS(fhdr, relax=True) failed: {e1}")
+            print("⚠️ Retrying WCS with naxis=2 (ignore extra axis).")
+
+            # --- Attempt 2: force 2 pixel axes (typical RGB+SIP scenario) ---
+            try:
+                w = WCS(fhdr, relax=True, naxis=2)
+
+            except Exception as e2:
+                print(f"⚠️ WCS(..., naxis=2) failed: {e2}")
+                print("⚠️ Retrying WCS with naxis=2 and sip=False (no distortion).")
+
+                # --- Attempt 3: 2D, but ignore SIP/distortions completely ---
+                try:
+                    w = WCS(fhdr, relax=True, naxis=2, sip=False)
+                except Exception as e3:
+                    print(f"⚠️ WCS(..., naxis=2, sip=False) failed: {e3}")
+                    # Give up – we’ll leave meta['wcs'] unset
+                    raise e1  # re-raise the original for the outer handler
+
+        # If we got here, we have some WCS object
         if w.has_celestial:
             meta["wcs"] = w
             meta["wcs_header"] = w.to_header(relax=True)
-            meta["wcsaxes"] = int(w.wcs.naxis)  # handy cheap check for other tools
-            print("🔷 Attached astropy WCS into metadata.")
+            meta["wcsaxes"] = int(getattr(w, "naxis", getattr(w.wcs, "naxis", 2)))
+            print(f"🔷 Attached astropy WCS into metadata (naxis={meta['wcsaxes']})")
         else:
             print("⚠️ WCS parsed but has no celestial axes; not attaching.")
+
     except Exception as e:
         print(f"⚠️ Failed to build WCS from header: {e}")
 
