@@ -100,15 +100,16 @@ class FunctionBundleChip(QWidget):
     def __init__(self, panel: "FunctionBundleDialog", name: str, bundle_key: str, parent_canvas: QWidget):
         super().__init__(parent_canvas)
         
+        self._panel = panel
+        self._bundle_key = bundle_key     # <── store bundle key for panel lookups
+        self._dragging = False
+        self._grab_offset = None
+
         self.setAcceptDrops(True)
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         self.setMouseTracking(True)
-
-        self._panel = panel
-        self._bundle_key = bundle_key
-        self._dragging = False
-        self._grab_offset = None
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)  # <── allows Delete key
 
         self.setObjectName("FunctionBundleChip")
         self.setMinimumSize(240, 44)
@@ -142,10 +143,12 @@ class FunctionBundleChip(QWidget):
 
     def mousePressEvent(self, ev):
         if ev.button() == Qt.MouseButton.LeftButton:
+            self.setFocus(Qt.FocusReason.MouseFocusReason)  # <── so Delete works
             self._grab_offset = ev.position()  # QPointF in widget coords
             self._dragging = True
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
-            ev.accept(); return
+            ev.accept()
+            return
         super().mousePressEvent(ev)
 
     def mouseMoveEvent(self, ev):
@@ -176,7 +179,13 @@ class FunctionBundleChip(QWidget):
         if ev.button() == Qt.MouseButton.LeftButton:
             self._dragging = False
             self.setCursor(Qt.CursorShape.OpenHandCursor)
-            ev.accept(); return
+            # Save layout whenever the user finishes a drag
+            try:
+                self._panel._save_chip_layout()
+            except Exception:
+                pass
+            ev.accept()
+            return
         super().mouseReleaseEvent(ev)
 
     def mouseDoubleClickEvent(self, ev):
@@ -187,6 +196,32 @@ class FunctionBundleChip(QWidget):
         except Exception:
             pass
         ev.accept()
+
+    def contextMenuEvent(self, ev):
+        from PyQt6.QtWidgets import QMenu  # already imported at top, but safe
+
+        m = QMenu(self)
+        act_del = m.addAction("Delete Chip")
+        act = m.exec(ev.globalPos())
+        if act is act_del:
+            try:
+                self._panel._remove_chip_widget(self)
+            except Exception:
+                pass
+        else:
+            ev.ignore()
+
+    def keyPressEvent(self, ev):
+        key = ev.key()
+        if key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            try:
+                self._panel._remove_chip_widget(self)
+            except Exception:
+                pass
+            ev.accept()
+            return
+        super().keyPressEvent(ev)
+
 
     def dragEnterEvent(self, e):
         if e.mimeData().hasFormat(MIME_CMD):
@@ -254,6 +289,7 @@ def _activate_target_sw(mw, sw):
 # =============================  FunctionBundleDialog  =============================
 class FunctionBundleDialog(QDialog):
     SETTINGS_KEY = "functionbundles/v1"
+    CHIP_KEY     = "functionbundles/chips_v1"   # <── new
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -405,6 +441,121 @@ class FunctionBundleDialog(QDialog):
 
         # chips per bundle index
         self._chips: dict[int, FunctionBundleChip] = {}
+
+        # Restore any chips that were saved in QSettings
+        try:
+            self._restore_chips_from_settings()
+        except Exception:
+            pass
+
+    def _save_chip_layout(self):
+        """
+        Persist current chips and their positions to QSettings so they
+        reappear on the canvas next time SASpro is opened.
+        """
+        try:
+            data = []
+            for idx, chip in list(self._chips.items()):
+                if chip is None or chip.parent() is None:
+                    continue
+                pos = chip.pos()
+                data.append({
+                    "index": int(idx),
+                    "x": int(pos.x()),
+                    "y": int(pos.y()),
+                })
+            self._settings.setValue(self.CHIP_KEY, json.dumps(data, ensure_ascii=False))
+            self._settings.sync()
+        except Exception:
+            pass
+
+    def _restore_chips_from_settings(self):
+        """
+        Recreate chips on the ShortcutCanvas from saved layout.
+        Called on dialog init.
+        """
+        mw = _find_main_window(self)
+        if not mw:
+            return
+
+        raw = self._settings.value(self.CHIP_KEY, "[]", type=str)
+        try:
+            data = json.loads(raw)
+        except Exception:
+            data = []
+
+        if not isinstance(data, list):
+            return
+
+        for entry in data:
+            try:
+                idx = int(entry.get("index", -1))
+            except Exception:
+                continue
+            if idx < 0 or idx >= len(self._bundles):
+                continue
+
+            name = self._bundles[idx].get("name", "Function Bundle")
+            chip = _spawn_function_chip_on_canvas(mw, self, name, bundle_key=f"fn-{idx}")
+            if chip is None:
+                continue
+
+            # Restore position if provided
+            x = entry.get("x")
+            y = entry.get("y")
+            if isinstance(x, int) and isinstance(y, int):
+                chip.move(x, y)
+
+            self._chips[idx] = chip
+
+    def reload_from_settings_after_import(self):
+        """
+        Reload bundles + chips from QSettings after an external import
+        (e.g., shortcuts .sass import).
+        """
+        try:
+            self._bundles = self._load_all()
+        except Exception:
+            self._bundles = []
+        self._refresh_bundle_list()
+        if self.list.count():
+            self.list.setCurrentRow(0)
+
+        # Remove existing chips from canvas
+        for ch in list(self._chips.values()):
+            try:
+                ch.setParent(None)
+                ch.deleteLater()
+            except Exception:
+                pass
+        self._chips.clear()
+
+        # And recreate them from CHIP_KEY
+        try:
+            self._restore_chips_from_settings()
+        except Exception:
+            pass
+
+
+    def _remove_chip_widget(self, chip: FunctionBundleChip):
+        """
+        Remove a chip from the canvas and from our registry, without
+        deleting the underlying function bundle.
+        """
+        # Drop from the index → chip dict
+        for idx, ch in list(self._chips.items()):
+            if ch is chip:
+                self._chips.pop(idx, None)
+                break
+
+        try:
+            chip.setParent(None)
+            chip.deleteLater()
+        except Exception:
+            pass
+
+        self._save_chip_layout()
+
 
     def _progress_reset(self):
         try:
@@ -627,12 +778,23 @@ class FunctionBundleDialog(QDialog):
         # close any chip for that index
         ch = self._chips.pop(i, None)
         if ch:
-            try: ch.setParent(None); ch.deleteLater()
-            except Exception: pass
+            try:
+                ch.setParent(None)
+                ch.deleteLater()
+            except Exception:
+                pass
+
         del self._bundles[i]
-        self._save_all(); self._refresh_bundle_list()
+        self._save_all()
+        self._refresh_bundle_list()
         if self.list.count():
             self.list.setCurrentRow(min(i, self.list.count() - 1))
+
+        # Also update chip layout persistence
+        try:
+            self._save_chip_layout()
+        except Exception:
+            pass
 
     def _remove_selected_steps(self):
         rows = sorted({ix.row() for ix in self.steps.selectedIndexes()}, reverse=True)
@@ -979,13 +1141,26 @@ class FunctionBundleDialog(QDialog):
             chip.show()
             chip.raise_()
         # keep the panel visible (matches View Bundle behavior)
+        try:
+            self._save_chip_layout()   # <── persist chip presence/pos
+        except Exception:
+            pass
 
     def closeEvent(self, e: QCloseEvent):
         super().closeEvent(e)
 
 # ---------- singleton open helper ----------
 _dialog_singleton: FunctionBundleDialog | None = None
-def show_function_bundles(parent: QWidget | None):
+def show_function_bundles(parent: QWidget | None,
+                          focus_name: str | None = None,
+                          *,
+                          auto_spawn_only: bool = False):
+    """
+    Open (or focus) the Function Bundles dialog.
+
+    If auto_spawn_only=True, ensure the dialog + chips exist,
+    but do NOT show the dialog (for startup chip restore).
+    """
     global _dialog_singleton
     if _dialog_singleton is None:
         _dialog_singleton = FunctionBundleDialog(parent)
@@ -993,7 +1168,133 @@ def show_function_bundles(parent: QWidget | None):
             global _dialog_singleton
             _dialog_singleton = None
         _dialog_singleton.destroyed.connect(_clear)
-    _dialog_singleton.show()
-    _dialog_singleton.raise_()
-    _dialog_singleton.activateWindow()
+
+    if focus_name:
+        ...
+
+    if not auto_spawn_only:
+        _dialog_singleton.show()
+        _dialog_singleton.raise_()
+        _dialog_singleton.activateWindow()
     return _dialog_singleton
+
+def restore_function_bundle_chips(parent: QWidget | None):
+    """
+    Called at app startup: create the FunctionBundleDialog singleton,
+    restore any saved chips onto the ShortcutCanvas, but keep the
+    dialog itself hidden.
+    """
+    try:
+        show_function_bundles(parent, auto_spawn_only=True)
+    except Exception:
+        pass
+
+def export_function_bundles_payload() -> dict:
+    """
+    Export function bundle definitions + chip layout so they can be embedded
+    into a shortcuts .sass file. This works even if the dialog isn't open.
+    """
+    s = QSettings()
+    raw_bundles = s.value(FunctionBundleDialog.SETTINGS_KEY, "[]", type=str)
+    raw_chips   = s.value(FunctionBundleDialog.CHIP_KEY, "[]", type=str)
+
+    try:
+        bundles = json.loads(raw_bundles)
+    except Exception:
+        bundles = []
+    try:
+        chips = json.loads(raw_chips)
+    except Exception:
+        chips = []
+
+    if not isinstance(bundles, list):
+        bundles = []
+    if not isinstance(chips, list):
+        chips = []
+
+    # `bundles` contains full guts: name + steps (+ presets)
+    # `chips` contains chip positions keyed by bundle index
+    return {
+        "bundles": bundles,
+        "chips": chips,
+    }
+
+def import_function_bundles_payload(payload: dict, parent: QWidget | None, replace_existing: bool = False):
+    """
+    Apply imported bundle+chip payload from a .sass file.
+
+    - If replace_existing=True, overwrite existing bundles/chips.
+    - If False, append to existing bundles and offset chip indices accordingly.
+    """
+    if not isinstance(payload, dict):
+        return
+
+    new_bundles = payload.get("bundles") or []
+    new_chips   = payload.get("chips") or []
+
+    if not isinstance(new_bundles, list):
+        new_bundles = []
+    if not isinstance(new_chips, list):
+        new_chips = []
+
+    s = QSettings()
+
+    if replace_existing:
+        bundles = new_bundles
+        chips   = new_chips
+    else:
+        raw_b = s.value(FunctionBundleDialog.SETTINGS_KEY, "[]", type=str)
+        raw_c = s.value(FunctionBundleDialog.CHIP_KEY, "[]", type=str)
+        try:
+            old_bundles = json.loads(raw_b)
+        except Exception:
+            old_bundles = []
+        try:
+            old_chips = json.loads(raw_c)
+        except Exception:
+            old_chips = []
+
+        if not isinstance(old_bundles, list):
+            old_bundles = []
+        if not isinstance(old_chips, list):
+            old_chips = []
+
+        offset = len(old_bundles)
+        bundles = old_bundles + new_bundles
+
+        chips = list(old_chips)
+        for entry in new_chips:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                idx = int(entry.get("index", -1))
+            except Exception:
+                continue
+            if idx < 0:
+                continue
+            chips.append({
+                "index": offset + idx,
+                "x": entry.get("x"),
+                "y": entry.get("y"),
+            })
+
+    try:
+        s.setValue(FunctionBundleDialog.SETTINGS_KEY, json.dumps(bundles, ensure_ascii=False))
+        s.setValue(FunctionBundleDialog.CHIP_KEY,     json.dumps(chips,    ensure_ascii=False))
+        s.sync()
+    except Exception:
+        pass
+
+    # Refresh any live dialog or, if none, spawn chips from settings
+    from typing import cast
+    global _dialog_singleton
+    if _dialog_singleton is not None:
+        try:
+            cast(FunctionBundleDialog, _dialog_singleton).reload_from_settings_after_import()
+        except Exception:
+            pass
+    else:
+        try:
+            restore_function_bundle_chips(parent)
+        except Exception:
+            pass

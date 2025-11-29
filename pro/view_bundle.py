@@ -141,7 +141,9 @@ class BundleChip(QWidget):
         self._bundle_uuid = bundle_uuid
         self._name = name
         self._steps = steps or []   # optional future use (not required now)
+
         self.setAcceptDrops(True)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)  # ← so Delete/Backspace work
 
         self.setObjectName("BundleChip")
         self.setMinimumSize(160, 38)
@@ -179,6 +181,8 @@ class BundleChip(QWidget):
 
         self._press_pos: QPoint | None = None
         self._moving = False
+        self._grab_offset = None
+        self._dragging = False
 
     # --- data binding ---
     @property
@@ -194,6 +198,7 @@ class BundleChip(QWidget):
     # --- movement inside canvas / external DnD ---
     def mousePressEvent(self, ev):
         if ev.button() == Qt.MouseButton.LeftButton:
+            self.setFocus(Qt.FocusReason.MouseFocusReason)  # ← focus for Delete key
             # store where in the chip the user grabbed (widget-local)
             self._grab_offset = ev.position()     # QPointF
             self._dragging = True
@@ -238,9 +243,15 @@ class BundleChip(QWidget):
         if ev.button() == Qt.MouseButton.LeftButton:
             self._dragging = False
             self.setCursor(Qt.CursorShape.OpenHandCursor)
+            # persist chip positions when a drag finishes
+            try:
+                self._panel._save_chip_layout()
+            except Exception:
+                pass
             ev.accept()
             return
         super().mouseReleaseEvent(ev)
+
 
     def mouseDoubleClickEvent(self, ev):
         # reopen the panel and STOP propagation so canvas double-click doesn't fire
@@ -251,6 +262,30 @@ class BundleChip(QWidget):
         except Exception:
             pass
         ev.accept()
+
+    def contextMenuEvent(self, ev):
+        m = QMenu(self)
+        act_del = m.addAction("Delete Chip")
+        act = m.exec(ev.globalPos())
+        if act is act_del:
+            try:
+                self._panel._remove_chip_widget(self)
+            except Exception:
+                pass
+        else:
+            ev.ignore()
+
+    def keyPressEvent(self, ev):
+        key = ev.key()
+        if key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            try:
+                self._panel._remove_chip_widget(self)
+            except Exception:
+                pass
+            ev.accept()
+            return
+        super().keyPressEvent(ev)
+
 
     def _start_external_drag(self):
         # unchanged from your current version
@@ -349,29 +384,37 @@ class SelectViewsDialog(QDialog):
         v.addWidget(QLabel("Choose views to add:"))
         v.setSpacing(6)
 
+        # NEW: "Select all" checkbox
+        self._select_all = QCheckBox("Select all open views")
+        self._select_all.toggled.connect(self._on_select_all_toggled)
+        v.addWidget(self._select_all)
+
         box = QVBoxLayout()
         cont = QWidget(); cont.setLayout(box)
         cont.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.MinimumExpanding)
+
         for title, ptr in choices:
             cb = QCheckBox(f"{title}")
             cb.setProperty("doc_ptr", int(ptr))
             box.addWidget(cb)
             self._boxes.append(cb)
+
         box.addStretch(1)
         frame = QFrame(); frame.setLayout(box)
         v.addWidget(frame, 1)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         v.addWidget(buttons)
 
-    def selected_ptrs(self) -> list[int]:
-        out = []
+    # NEW: handler for the "Select all" checkbox
+    def _on_select_all_toggled(self, checked: bool):
         for cb in self._boxes:
-            if cb.isChecked():
-                out.append(int(cb.property("doc_ptr")))
-        return out
+            cb.setChecked(checked)
+
 
 
 class _HeadlessView:
@@ -455,6 +498,7 @@ class ViewBundleDialog(QDialog):
       • Multiple chips at once (one per bundle)
     """
     SETTINGS_KEY = "viewbundles/v3"  # bumped for uuid
+    CHIP_KEY     = "viewbundles/chips_v1"  # ← new: chip layout    
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -550,6 +594,95 @@ class ViewBundleDialog(QDialog):
 
         # chips by uuid
         self._chips: dict[str, BundleChip] = {}  # uuid -> chip widget
+
+        try:
+            self._restore_chips_from_settings()
+        except Exception:
+            pass
+
+    def _save_chip_layout(self):
+        """
+        Persist current bundle chips and their positions so they reappear
+        on the ShortcutCanvas next time SASpro is opened.
+        """
+        try:
+            data = []
+            for uuid, chip in list(self._chips.items()):
+                if chip is None or chip.parent() is None:
+                    continue
+                pos = chip.pos()
+                data.append({
+                    "uuid": str(uuid),
+                    "x": int(pos.x()),
+                    "y": int(pos.y()),
+                })
+            self._settings.setValue(self.CHIP_KEY, json.dumps(data, ensure_ascii=False))
+            self._settings.sync()
+        except Exception:
+            pass
+
+    def _restore_chips_from_settings(self):
+        """
+        Recreate chips on the ShortcutCanvas from saved layout.
+        Called on dialog init.
+        """
+        mw = _find_main_window(self)
+        if not mw:
+            return
+
+        raw = self._settings.value(self.CHIP_KEY, "[]", type=str)
+        try:
+            data = json.loads(raw)
+        except Exception:
+            data = []
+
+        if not isinstance(data, list):
+            return
+
+        for entry in data:
+            try:
+                u = str(entry.get("uuid", "")).strip()
+            except Exception:
+                continue
+            if not u:
+                continue
+
+            # must still exist as a bundle
+            b = self._get_bundle(u)
+            if not b:
+                continue
+
+            name = b.get("name", "Bundle")
+            chip = spawn_bundle_chip_on_canvas(mw, self, u, name)
+            if chip is None:
+                continue
+
+            x = entry.get("x")
+            y = entry.get("y")
+            if isinstance(x, int) and isinstance(y, int):
+                chip.move(x, y)
+
+            self._chips[u] = chip
+
+    def _remove_chip_widget(self, chip: BundleChip):
+        """
+        Remove a chip from the canvas and our uuid→chip registry,
+        without deleting the underlying bundle.
+        """
+        # drop from the mapping
+        for u, ch in list(self._chips.items()):
+            if ch is chip:
+                self._chips.pop(u, None)
+                break
+
+        try:
+            chip.setParent(None)
+            chip.deleteLater()
+        except Exception:
+            pass
+
+        self._save_chip_layout()
+
 
     # ---------- persistence ----------
     @staticmethod
@@ -934,9 +1067,17 @@ class ViewBundleDialog(QDialog):
             except Exception:
                 pass
         del self._bundles[i]
-        self._save_all(); self._refresh_bundle_list()
+        self._save_all()
+        self._refresh_bundle_list()
         if self.list.count():
             self.list.setCurrentRow(min(i, self.list.count() - 1))
+
+        # update chip layout persistence
+        try:
+            self._save_chip_layout()
+        except Exception:
+            pass
+
 
     # ---------- right controls ----------
     def _clear_bundle(self):
@@ -1007,9 +1148,12 @@ class ViewBundleDialog(QDialog):
             chip.show()
             chip.raise_()
 
-        # Do NOT hide the panel automatically; leave it to user preference.
-        # If you prefer hiding, uncomment the next line:
-        # self.hide()
+        # persist chip presence/position
+        try:
+            self._save_chip_layout()
+        except Exception:
+            pass
+
 
     # ---------- DnD into the PANEL (applies to CURRENT bundle only) ----------
     def dragEnterEvent(self, e):
@@ -1360,9 +1504,15 @@ class ViewBundleDialog(QDialog):
 # ----------------------------- singleton open helpers -----------------------------
 _dialog_singleton: ViewBundleDialog | None = None
 
-def show_view_bundles(parent: QWidget | None, focus_name: str | None = None):
+def show_view_bundles(parent: QWidget | None,
+                      focus_name: str | None = None,
+                      *,
+                      auto_spawn_only: bool = False):
     """
     Open (or focus) the View Bundles dialog. Optionally set focus to a bundle name.
+
+    If auto_spawn_only=True, ensure the dialog + chips exist,
+    but do NOT show the dialog (for startup chip restore).
     """
     global _dialog_singleton
     if _dialog_singleton is None:
@@ -1380,7 +1530,20 @@ def show_view_bundles(parent: QWidget | None, focus_name: str | None = None):
                 _dialog_singleton.list.setCurrentRow(i)
                 break
 
-    _dialog_singleton.show()
-    _dialog_singleton.raise_()
-    _dialog_singleton.activateWindow()
+    if not auto_spawn_only:
+        _dialog_singleton.show()
+        _dialog_singleton.raise_()
+        _dialog_singleton.activateWindow()
     return _dialog_singleton
+
+def restore_view_bundle_chips(parent: QWidget | None):
+    """
+    Called at app startup: create the ViewBundleDialog singleton,
+    restore any saved chips onto the ShortcutCanvas, but keep the
+    dialog itself hidden.
+    """
+    try:
+        show_view_bundles(parent, auto_spawn_only=True)
+    except Exception:
+        # fail silently; nothing critical here
+        pass

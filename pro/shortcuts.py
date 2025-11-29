@@ -878,7 +878,12 @@ class ShortcutManager:
         self.selected.discard(sid)
 
     def _collect_live_items(self) -> list[dict]:
-        """Collect visible shortcut widgets into a serializable list."""
+        """
+        Collect visible shortcut widgets into a serializable list.
+
+        For each shortcut we also try to inline its preset (if any) so that
+        function bundles and other per-instance presets can be exported.
+        """
         data = []
         for sid, w in list(self.widgets.items()):
             if _is_dead(w):
@@ -888,32 +893,128 @@ class ShortcutManager:
             try:
                 if not w.isVisible():
                     continue
+
                 p = w.pos()
-                data.append({
+                item = {
                     "id": sid,
                     "command_id": getattr(w, "command_id", None),
                     "label": w.text(),
                     "x": int(p.x()),
                     "y": int(p.y()),
-                })
+                }
+
+                # Try to inline per-instance preset
+                preset = None
+                try:
+                    if hasattr(w, "_load_preset"):
+                        preset = w._load_preset()
+                except Exception:
+                    preset = None
+
+                if isinstance(preset, dict) and preset:
+                    item["preset"] = preset
+
+                data.append(item)
             except RuntimeError:
                 self.widgets.pop(sid, None)
                 self.selected.discard(sid)
+
+        # Debug: summarize what we collected
+        try:
+            summary = []
+            for it in data:
+                cid = it.get("command_id")
+                has_preset = "preset" in it
+                summary.append(f"{cid!r} preset={has_preset}")
+            self._debug(f"_collect_live_items: {len(data)} item(s): " + ", ".join(summary))
+        except Exception:
+            pass
+
         return data
+
+    def _export_function_bundles_for_shortcuts(self) -> dict | None:
+        """
+        Ask pro.function_bundle for function bundle defs + chip layout
+        so we can embed them into the .sass export.
+        """
+        try:
+            from pro.function_bundle import export_function_bundles_payload
+        except Exception:
+            return None
+        try:
+            fb = export_function_bundles_payload()
+            if isinstance(fb, dict):
+                return fb
+        except Exception:
+            pass
+        return None
+
+    def _import_function_bundles_for_shortcuts(self, payload: dict | None, replace_existing: bool):
+        """
+        Restore function bundle defs + chips after a .sass import.
+        """
+        if not isinstance(payload, dict):
+            return
+        try:
+            from pro.function_bundle import import_function_bundles_payload
+        except Exception:
+            return
+        try:
+            mw = getattr(self, "mw", None)
+            import_function_bundles_payload(payload, mw, replace_existing=replace_existing)
+        except Exception:
+            pass
+
+
+    def _debug(self, msg: str):
+        """Best-effort debug logging for shortcuts."""
+        try:
+            # Prefer main window log if available
+            if hasattr(self.mw, "_log") and callable(self.mw._log):
+                self.mw._log(f"[Shortcuts] {msg}")
+                return
+        except Exception:
+            pass
+        # Fallback to stdout
+        try:
+            print(f"[Shortcuts] {msg}")
+        except Exception:
+            pass
+
 
     # ---------- New: export/import ----------
     def export_to_file(self, file_path: str) -> tuple[bool, str]:
         try:
             fp = self._ensure_ext(file_path, ".sass")
+
+            items = self._collect_live_items()
             payload = {
                 "kind": SASS_KIND,
                 "version": SASS_VER,
                 "exported_at": int(time.time()),
-                "items": self._collect_live_items(),
+                "items": items,
             }
+
+            # NEW: include function bundles + chip layout if available
+            fb_payload = self._export_function_bundles_for_shortcuts()
+            if fb_payload is not None:
+                payload["function_bundles"] = fb_payload
+
             Path(fp).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+            # optional debug
+            try:
+                self._debug(f"export_to_file → {fp}, shortcuts={len(items)}, "
+                            f"fb_bundles={len((fb_payload or {}).get('bundles', []))}")
+            except Exception:
+                pass
+
             return True, fp
         except Exception as e:
+            try:
+                self._debug(f"export_to_file FAILED: {e}")
+            except Exception:
+                pass
             return False, str(e)
 
     def import_from_file(self, file_path: str, *, replace_existing: bool = False) -> tuple[bool, str]:
@@ -921,35 +1022,60 @@ class ShortcutManager:
             txt = Path(file_path).read_text(encoding="utf-8")
             obj = json.loads(txt)
 
+            fb_payload = None
+
             # Basic validation (accepts legacy raw arrays too)
             if isinstance(obj, dict) and obj.get("kind") == SASS_KIND:
                 items = obj.get("items", [])
+                fb_payload = obj.get("function_bundles")
             elif isinstance(obj, list):
-                # legacy: straight array of items
+                # legacy: straight array of items (no function bundle info)
                 items = obj
             else:
                 return False, "File is not a SAS shortcuts file."
 
+            # optional debug
+            try:
+                self._debug(
+                    f"import_from_file ← {file_path}, items={len(items)}, "
+                    f"has_fb={isinstance(fb_payload, dict)}, replace_existing={replace_existing}"
+                )
+            except Exception:
+                pass
+
             if replace_existing:
                 self.clear()  # clears both UI + settings keys, keeps manager ready
 
-            # Build widgets
+            # Build widgets (shortcuts) as before
             for it in items:
                 cid = it.get("command_id")
                 if not cid:
-                    # skip invalid
                     continue
-                sid   = it.get("id") or uuid.uuid4().hex
-                x     = int(it.get("x", 10))
-                y     = int(it.get("y", 10))
-                label = it.get("label") or self._default_label_for(cid)
+                sid    = it.get("id") or uuid.uuid4().hex
+                x      = int(it.get("x", 10))
+                y      = int(it.get("y", 10))
+                label  = it.get("label") or self._default_label_for(cid)
+
                 self.add_shortcut(cid, QPoint(x, y), label=label, shortcut_id=sid)
 
-            # Persist to QSettings so they survive restarts
+                # If you also inline per-instance presets for normal shortcuts,
+                # you can restore them here as well (omitted here for brevity).
+
+            # Persist shortcuts to QSettings
             self.save_shortcuts()
+
+            # NEW: Restore function bundle definitions + chips
+            self._import_function_bundles_for_shortcuts(fb_payload, replace_existing=replace_existing)
+
             return True, "OK"
         except Exception as e:
+            try:
+                self._debug(f"import_from_file FAILED: {e}")
+            except Exception:
+                pass
             return False, str(e)
+
+
 
     # ---------- utils ----------
     def _ensure_ext(self, path: str, ext: str) -> str:
