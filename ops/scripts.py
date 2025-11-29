@@ -719,6 +719,14 @@ class ScriptManager(QObject):
             menu_scripts.addAction(self.app.act_script_editor)
             menu_scripts.addSeparator()
 
+        # NEW: external “Go To” entries
+        if hasattr(self.app, "act_open_user_scripts_github"):
+            menu_scripts.addAction(self.app.act_open_user_scripts_github)
+        if hasattr(self.app, "act_open_scripts_discord"):
+            menu_scripts.addAction(self.app.act_open_scripts_discord)
+
+        menu_scripts.addSeparator()
+
         menu_scripts.addAction(self.app.act_open_scripts_folder)
         menu_scripts.addAction(self.app.act_reload_scripts)
         menu_scripts.addAction(self.app.act_create_sample_script)
