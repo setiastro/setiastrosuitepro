@@ -312,7 +312,7 @@ from pro.autostretch import autostretch as _autostretch
 from ops.scripts import ScriptManager
 
 
-VERSION = "1.5.4"
+VERSION = "1.5.5"
 
 
 
@@ -1279,7 +1279,17 @@ class AstroSuiteProMainWindow(QMainWindow):
         self.shortcuts.load_shortcuts()
         self._ensure_persistent_names() 
         self._restore_window_placement()
+        try:
+            from pro.function_bundle import restore_function_bundle_chips
+            restore_function_bundle_chips(self)
+        except Exception:
+            pass
 
+        try:
+            from pro.view_bundle import restore_view_bundle_chips
+            restore_view_bundle_chips(self)
+        except Exception:
+            pass
         self._updates_url = self.settings.value(
             "updates/url",
             "https://raw.githubusercontent.com/setiastro/setiastrosuitepro/main/updates.json",
@@ -3286,6 +3296,12 @@ class AstroSuiteProMainWindow(QMainWindow):
         self.act_script_editor.setStatusTip("Open the built-in script editor")
         self.act_script_editor.triggered.connect(self._show_script_editor)
 
+        self.act_open_user_scripts_github = QAction("Open User Scripts (GitHub)…", self)
+        self.act_open_user_scripts_github.triggered.connect(self._open_user_scripts_github)
+
+        self.act_open_scripts_discord = QAction("Open Scripts Forum (Discord)…", self)
+        self.act_open_scripts_discord.triggered.connect(self._open_scripts_discord_forum)
+
         # --- FITS Header Modifier action ---
         self.act_fits_modifier = QAction("FITS Header Modifier…", self)
         # self.act_fits_modifier.setIcon(QIcon(path_to_icon))  # (optional) icon goes here later
@@ -3675,6 +3691,16 @@ class AstroSuiteProMainWindow(QMainWindow):
 
         # initialize enabled state + names
         self.update_undo_redo_action_labels()
+
+    def _open_user_scripts_github(self):
+        # User script examples on GitHub
+        url = QUrl("https://github.com/setiastro/setiastrosuitepro/tree/main/scripts")
+        QDesktopServices.openUrl(url)
+
+    def _open_scripts_discord_forum(self):
+        # Scripts Discord forum
+        url = QUrl("https://discord.gg/vvYH82C82f")
+        QDesktopServices.openUrl(url)
 
     # ─────────────────────────────────────────────────────────────────────
     # Recent images / projects
@@ -12381,43 +12407,47 @@ class AstroSuiteProMainWindow(QMainWindow):
     def _clear_view_bundles_for_next_launch(self):
         """
         On app exit, wipe any saved doc_ptrs in View Bundles so they don't point
-        to stale objects on next run. We keep bundle names/uuids, just empty lists.
-        If you prefer a full wipe (remove all bundles), see the commented lines.
+        to stale objects on next run. We keep bundle names/uuids/file_paths, just
+        empty the 'doc_ptrs' lists.
+
+        This handles both the old v2 and the new v3 stores.
         """
         try:
             s = QSettings()
-            # ---- OPTION A: keep bundles, clear their views (recommended) ----
-            raw = s.value("viewbundles/v2", "[]", type=str) or "[]"
-            try:
-                data = json.loads(raw)
-            except Exception:
-                data = []
 
-            if isinstance(data, list):
-                for b in data:
-                    if isinstance(b, dict):
-                        b["doc_ptrs"] = []  # drop all pointers
-                s.setValue("viewbundles/v2", json.dumps(data, ensure_ascii=False))
-            else:
-                s.setValue("viewbundles/v2", "[]")
+            def _scrub_doc_ptrs(key: str):
+                raw = s.value(key, "[]", type=str) or "[]"
+                try:
+                    data = json.loads(raw)
+                except Exception:
+                    data = []
+                if isinstance(data, list):
+                    for b in data:
+                        if isinstance(b, dict):
+                            b["doc_ptrs"] = []  # drop all view pointers
+                    s.setValue(key, json.dumps(data, ensure_ascii=False))
+                else:
+                    s.setValue(key, "[]")
 
-            # also neutralize any legacy store just in case
+            # scrub both generations
+            _scrub_doc_ptrs("viewbundles/v2")
+            _scrub_doc_ptrs("viewbundles/v3")
+
+            # nuke legacy v1 entirely
             s.setValue("viewbundles/v1", "[]")
-
-            # ---- OPTION B: nuke everything (uncomment to prefer a clean slate) ----
-            # s.setValue("viewbundles/v2", "[]")
-            # s.setValue("viewbundles/v1", "[]")
 
             s.sync()
         except Exception:
-            # last-resort: try to at least write empty arrays
+            # last-resort: write empty arrays everywhere
             try:
                 s = QSettings()
-                s.setValue("viewbundles/v2", "[]")
                 s.setValue("viewbundles/v1", "[]")
+                s.setValue("viewbundles/v2", "[]")
+                s.setValue("viewbundles/v3", "[]")
                 s.sync()
             except Exception:
                 pass
+
 
     def showEvent(self, ev):
         super().showEvent(ev)
