@@ -1,15 +1,40 @@
-#setiastrosuitepro.py
-from pro.runtime_torch import add_runtime_to_sys_path, _ban_shadow_torch_paths, _purge_bad_torch_from_sysmodules
+from pro.runtime_torch import (
+    add_runtime_to_sys_path,
+    _ban_shadow_torch_paths,
+    _purge_bad_torch_from_sysmodules,
+)
+
 add_runtime_to_sys_path(status_cb=lambda *_: None)
 _ban_shadow_torch_paths(status_cb=lambda *_: None)
 _purge_bad_torch_from_sysmodules(status_cb=lambda *_: None)
 
-import time, traceback
 # ─────────────────────────────────────────────────────────────
-# Matplotlib bootstrap (for frozen + for prewarmed cache)
+# Stdlib + matplotlib bootstrap
 # ─────────────────────────────────────────────────────────────
 import os
 import sys
+import time
+import traceback
+import warnings
+import json
+import logging
+import re
+import threading
+import webbrowser
+import multiprocessing
+import math
+
+from itertools import combinations
+from decimal import getcontext
+from urllib.parse import quote, quote_plus
+from pathlib import Path
+from typing import List, Tuple, Dict, Set, Optional
+from datetime import datetime
+from io import BytesIO
+
+import numpy as np
+from tifffile import imwrite
+from xisf import XISF
 
 def _ensure_mpl_config_dir() -> str:
     """
@@ -37,15 +62,10 @@ def _ensure_mpl_config_dir() -> str:
     return mpl_cfg
 
 _MPL_CFG_DIR = _ensure_mpl_config_dir()
-# (optional) print once in dev:
-# print("MPLCONFIGDIR →", _MPL_CFG_DIR)
-# ─────────────────────────────────────────────────────────────
-
-
 
 import importlib
 
-if getattr(sys, 'frozen', False):
+if getattr(sys, "frozen", False):
     # 1) Attempt to import both metadata modules
     try:
         std_md = importlib.import_module('importlib.metadata')
@@ -101,94 +121,35 @@ if getattr(sys, 'frozen', False):
         if orig_distribution:
             m.distribution = safe_distribution
 
-
-
-import warnings
 warnings.filterwarnings(
     "ignore",
     message=r"Call to deprecated function \(or staticmethod\) _destroy\.",
-    category=DeprecationWarning
+    category=DeprecationWarning,
 )
 
-# Standard library imports
-from itertools import combinations
-from tifffile import imwrite
-
-from math import isnan
-import re, threading, webbrowser
-
-os.environ['LIGHTKURVE_STYLE'] = 'default'
-
-import json
-import logging
-
-from decimal import getcontext
-from urllib.parse import quote
-from urllib.parse import quote_plus
-
-from xisf import XISF
-
-from pathlib import Path
-
-from typing import List, Tuple, Dict, Set, Optional
-import time
-from datetime import datetime
-
-from io import BytesIO
-
-
-from scipy.ndimage import gaussian_filter, laplace
-
-
-from scipy.ndimage import zoom
-import multiprocessing
+# Configure matplotlib backend early (can be moved later if desired)
 import matplotlib
-matplotlib.use("QtAgg") 
+matplotlib.use("QtAgg")
 
-import numpy as np
-
-
-#if running in IDE which runs ipython or jupiter in backend reconfigure may not be available
-if (sys.stdout is not None) and (hasattr(sys.stdout, "reconfigure")):
+# If running in IDE which runs IPython / Jupyter in backend, reconfigure may not be available
+if (sys.stdout is not None) and hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding='utf-8')
 
-try:
-    from photutils.isophote import Ellipse, EllipseGeometry, build_ellipse_model
-except Exception as e:
-    Ellipse = EllipseGeometry = build_ellipse_model = None
+# NOTE:
+# - photutils.isophote imports moved into pro/isophote.py
+# - lightkurve import moved into pro/runtime_imports.get_lightkurve()
+# - scipy.ndimage imports moved into the modules that actually use them
+# - reproject import moved into plate-solve / star-alignment module
 
 
-from numba_utils import *
-
-
-import lightkurve as lk
-
-
-lk.MPLSTYLE = None
-
-
-
-# Reproject for WCS-based alignment
-try:
-    from reproject import reproject_interp
-except ImportError:
-    reproject_interp = None  # fallback if not installed
+#from numba_utils import *
 
 # OpenCV for transform estimation & warping
-try:
-    import cv2
-    OPENCV_AVAILABLE = True
-except ImportError:
-    OPENCV_AVAILABLE = False
-
-
-# Third-party library imports
-
-import numpy as np
-
-import cv2
-
-
+#try:
+#    import cv2
+#    OPENCV_AVAILABLE = True
+#except ImportError:
+#    OPENCV_AVAILABLE = False
 
 
 #################################
@@ -215,14 +176,10 @@ from PyQt6.QtCore import (Qt, pyqtSignal, QCoreApplication, QTimer, QSize, QSign
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 
 
-# Math functions
-
-import math
 
 
-from pro.doc_manager import DocManager
-from pro.subwindow import ImageSubWindow, TableSubWindow
-from legacy.image_manager import ImageManager
+#from pro.subwindow import ImageSubWindow, TableSubWindow
+
 from pro.header_viewer import HeaderViewerDock
 from pro.batch_convert import BatchConvertDialog
 from pro.autostretch import autostretch
@@ -283,7 +240,7 @@ from pro.live_stacking import LiveStackWindow
 from pro.stacking_suite import StackingSuiteDialog
 from pro.supernovaasteroidhunter import SupernovaAsteroidHunterDialog
 from pro.star_spikes import StarSpikesDialogPro
-from pro.exoplanet_detector import ExoPlanetWindow
+
 from pro.isophote import IsophoteModelerDialog
 from wims import WhatsInMySkyDialog
 from wimi import WIMIDialog 
@@ -1163,6 +1120,7 @@ class AstroSuiteProMainWindow(QMainWindow):
 
     def __init__(self, image_manager=None, parent=None):
         super().__init__(parent)
+        from pro.doc_manager import DocManager
         self.setWindowTitle(f"Seti Astro Suite Pro v{VERSION}")
         self.resize(1400, 900)
         self._ensure_network_manager()
@@ -4786,7 +4744,7 @@ class AstroSuiteProMainWindow(QMainWindow):
 
         # Ensure basic axis cards exist (needed for non-FITS sources)
         try:
-            import numpy as np
+
             img = getattr(doc, "image", None)
             if img is not None:
                 a = np.asarray(img)
@@ -5231,7 +5189,7 @@ class AstroSuiteProMainWindow(QMainWindow):
         self._refresh_mask_action_states()
 
     def _invert_mask(self):
-        import numpy as np
+
         doc = self._active_doc()
         if not doc:
             return
@@ -5866,7 +5824,7 @@ class AstroSuiteProMainWindow(QMainWindow):
 
         dims = ""
         try:
-            import numpy as np
+
             arr = getattr(doc, "image", None)
             if isinstance(arr, np.ndarray) and arr.size:
                 h, w = arr.shape[:2]
@@ -7494,7 +7452,7 @@ class AstroSuiteProMainWindow(QMainWindow):
         try:
             doc = getattr(view, "document", None)
             if doc and getattr(doc, "image", None) is not None:
-                import numpy as np
+
                 h, w = np.asarray(doc.image).shape[:2]
                 return int(w), int(h)
         except Exception:
@@ -8132,24 +8090,29 @@ class AstroSuiteProMainWindow(QMainWindow):
         dlg.show()
 
     def _open_exo_detector(self):
+        # Lazy import so lightkurve only loads when needed
+        from pro.runtime_imports import get_lightkurve
+        lk = get_lightkurve()
+
+        from pro.exoplanet_detector import ExoPlanetWindow
         dlg = ExoPlanetWindow(
             parent=self,
             wrench_path=wrench_path,
+            # optional, once ExoPlanetWindow accepts it:
+            # lk_module=lk,
         )
         dlg.setWindowFlag(Qt.WindowType.Window, True)
         dlg.setWindowIcon(QIcon(exoicon_path))
 
-        # Optional WIMI wiring (safe guards so we don’t assume exact API names)
+        # Optional WIMI wiring
         if hasattr(self, "wimi_tab"):
-            # WIMI → dialog: emit RA/Dec once solved
             if hasattr(self.wimi_tab, "wcsCoordinatesAvailable"):
                 self.wimi_tab.wcsCoordinatesAvailable.connect(dlg.receive_wcs_coordinates)
-            # dialog → WIMI: send a reference FITS path to solve
-            # (rename this to whatever your WIMI expects; kept guarded)
             if hasattr(self.wimi_tab, "open_reference_path"):
                 dlg.referenceSelected.connect(self.wimi_tab.open_reference_path)
 
         dlg.show()
+
 
     def _open_isophote(self):
         # Mirror PSF opener: use MDI active subwindow → widget → document → image
@@ -9037,7 +9000,7 @@ class AstroSuiteProMainWindow(QMainWindow):
                 else:
                     # Fallback: direct compute, similar to _handle_command_drop
                     from pro.wavescalede import compute_wavescale_dse
-                    import numpy as np
+
 
                     img = np.asarray(getattr(base_doc, "image", None), dtype=np.float32)
                     if img.size:
@@ -10767,7 +10730,7 @@ class AstroSuiteProMainWindow(QMainWindow):
         Drop on a specific subwindow → apply Star Stretch headlessly to that doc.
         Uses your Numba kernel (applyPixelMath_numba). If unavailable, raises.
         """
-        import numpy as np
+
         try:
             from legacy.numba_utils import applyPixelMath_numba, applySCNR_numba
             _has_numba = True
@@ -12166,7 +12129,7 @@ class AstroSuiteProMainWindow(QMainWindow):
 
     # Reuse the attach helper from earlier answer; include here if not already present:
     def _prepare_mask_array(self, src_img, target_hw, invert=False, feather_px=0.0):
-        import numpy as np
+
         a = np.asarray(src_img)
         if a.ndim == 3:
             a = (0.2126*a[...,0] + 0.7152*a[...,1] + 0.0722*a[...,2])
@@ -12190,7 +12153,7 @@ class AstroSuiteProMainWindow(QMainWindow):
             a = 1.0 - a
         if feather_px and feather_px > 0.5:
             k = max(1, min(int(round(feather_px)), 64))
-            import numpy as np
+
             w = np.ones((k,), dtype=np.float32) / float(k)
             a = np.apply_along_axis(lambda r: np.convolve(r, w, mode='same'), 1, a)
             a = np.apply_along_axis(lambda c: np.convolve(c, w, mode='same'), 0, a)
@@ -12198,7 +12161,7 @@ class AstroSuiteProMainWindow(QMainWindow):
         return a.astype(np.float32, copy=False)
 
     def _attach_mask_to_document(self, target_doc, mask_doc, *, name="Mask", mode="replace", invert=False, feather=0.0):
-        import numpy as np
+
         if getattr(target_doc, "image", None) is None or getattr(mask_doc, "image", None) is None:
             return False
         th, tw = target_doc.image.shape[:2]
@@ -12828,17 +12791,35 @@ if __name__ == "__main__":
 
     # Helper: build QPixmap for the splash from icon_path (fallback to windowslogo_path)
     def _splash_pixmap():
-        p = icon_path if os.path.exists(icon_path) else (windowslogo_path if os.path.exists(windowslogo_path) else icon_path)
+        p = icon_path if os.path.exists(icon_path) else (
+            windowslogo_path if os.path.exists(windowslogo_path) else icon_path
+        )
         ext = os.path.splitext(p)[1].lower()
+
+        # Start from whatever we can load
         if ext == ".ico":
             ic = QIcon(p)
-            pm = ic.pixmap(512, 512)
+            pm = ic.pixmap(1024, 1024)  # request big, we'll clamp below
             if pm.isNull():
                 pm = QPixmap(p)
-            return pm
-        pm = QPixmap(p)
+        else:
+            pm = QPixmap(p)
+            if pm.isNull():
+                pm = QIcon(p).pixmap(1024, 1024)
+
         if pm.isNull():
-            pm = QIcon(p).pixmap(512, 512)
+            return pm  # nothing we can do
+
+        # Hard cap splash size to 512×512 (logical pixels)
+        max_side = 512
+        if pm.width() > max_side or pm.height() > max_side:
+            pm = pm.scaled(
+                max_side,
+                max_side,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+
         return pm
 
     # --- Splash FIRST ---
@@ -12868,6 +12849,7 @@ if __name__ == "__main__":
         logging.exception("Multiprocessing init failed (continuing).")
 
     try:
+        from legacy.image_manager import ImageManager
         # If you have heavy imports/numba warmups, you can update the splash here:
         splash.showMessage(
             "Initializing UI…",
