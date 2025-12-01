@@ -180,12 +180,12 @@ from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkRepl
 
 #from pro.subwindow import ImageSubWindow, TableSubWindow
 
-from pro.header_viewer import HeaderViewerDock
-from pro.batch_convert import BatchConvertDialog
+
+
 from pro.autostretch import autostretch
-from pro.stat_stretch import StatisticalStretchDialog
-from pro.save_options import SaveOptionsDialog
-from pro.history_explorer import HistoryExplorerDialog
+
+
+
 from pro.star_stretch import StarStretchDialog
 from pro.histogram import HistogramDialog
 from pro.curve_editor_pro import CurvesDialogPro
@@ -6396,6 +6396,7 @@ class AstroSuiteProMainWindow(QMainWindow):
         dlg.show()
 
     def _open_statistical_stretch(self):
+        from pro.stat_stretch import StatisticalStretchDialog
         sw = self.mdi.activeSubWindow()
         if not sw:
             QMessageBox.information(self, "No image", "Open an image first.")
@@ -7347,6 +7348,7 @@ class AstroSuiteProMainWindow(QMainWindow):
                                 f"Failed to open Cosmic Clarity Satellite:\n{e}")
 
     def _open_history_explorer(self):
+        from pro.history_explorer import HistoryExplorerDialog
         sw = self.mdi.activeSubWindow()
         doc = sw.widget().document if sw else None
         if not doc:
@@ -8241,6 +8243,7 @@ class AstroSuiteProMainWindow(QMainWindow):
         dlg.show()
 
     def _open_batch_convert(self):
+        from pro.batch_convert import BatchConvertDialog
         dlg = BatchConvertDialog(self)
         dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         dlg.show()
@@ -11149,6 +11152,7 @@ class AstroSuiteProMainWindow(QMainWindow):
             pass
 
     def _init_header_viewer_dock(self):
+        from pro.header_viewer import HeaderViewerDock
         self.header_viewer = HeaderViewerDock(self)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.header_viewer)
 
