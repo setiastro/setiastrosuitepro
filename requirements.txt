@@ -40,6 +40,7 @@ onnxruntime-directml; sys_platform != "darwin"
 # image formats & camera raw
 xisf
 rawpy
+imageio
 
 # coordinate transforms
 astropy

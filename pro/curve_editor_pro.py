@@ -8,6 +8,10 @@ from PyQt6.QtWidgets import (
     QWidget, QMessageBox, QRadioButton, QButtonGroup, QToolButton, QGraphicsEllipseItem, QGraphicsItem, QGraphicsTextItem, QInputDialog, QMenu
 )
 from PyQt6.QtGui import QPixmap, QImage, QWheelEvent, QPainter, QPainterPath, QPen, QColor, QBrush, QIcon, QKeyEvent, QCursor
+
+# Import shared utilities
+from pro.widgets.image_utils import float_to_qimage_rgb8 as _float_to_qimage_rgb8
+
 from pro.curves_preset import (
     list_custom_presets, save_custom_preset, _points_norm_to_scene, _norm_mode,
     _shape_points_norm, open_curves_with_preset, _lut_from_preset
@@ -715,17 +719,7 @@ class CommaToDotLineEdit(QLineEdit):
 
 
 # ---------- small utilities ----------
-
-def _float_to_qimage_rgb8(img01: np.ndarray) -> QImage:
-    """float32 [0..1] → QImage RGB888 (adds channels if needed)."""
-    f = img01
-    if f.ndim == 2:
-        f = np.stack([f]*3, axis=-1)
-    elif f.ndim == 3 and f.shape[2] == 1:
-        f = np.repeat(f, 3, axis=2)
-    buf8 = (np.clip(f, 0.0, 1.0) * 255.0).astype(np.uint8, copy=False)
-    h, w, _ = buf8.shape
-    return QImage(buf8.data, w, h, buf8.strides[0], QImage.Format.Format_RGB888)
+# _float_to_qimage_rgb8 imported from pro.widgets.image_utils
 
 def _downsample_for_preview(img01: np.ndarray, max_w: int = 1200) -> np.ndarray:
     h, w = img01.shape[:2]
@@ -760,20 +754,24 @@ def _apply_lut_float01_channel(ch: np.ndarray, lut01: np.ndarray) -> np.ndarray:
     return lut01[idx]
 
 def _apply_lut_rgb(img01: np.ndarray, lut01: np.ndarray) -> np.ndarray:
-    out = img01.copy()
-    for c in range(out.shape[2]):
-        out[..., c] = _apply_lut_float01_channel(out[..., c], lut01)
-    return out
+    """Optimized: use Numba LUT for RGB images, falls back to NumPy otherwise."""
+    try:
+        # Use Numba-accelerated LUT application (parallel, cache-optimized)
+        return _nb_apply_lut_color(img01.astype(np.float32, copy=False), lut01.astype(np.float32, copy=False))
+    except Exception:
+        # Fallback: vectorized NumPy (still faster than loop)
+        idx = np.clip((img01 * (len(lut01)-1)).astype(np.int32), 0, len(lut01)-1)
+        return lut01[idx]
 
 def _np_apply_lut_channel(ch: np.ndarray, lut01: np.ndarray) -> np.ndarray:
     idx = np.clip((ch * (len(lut01)-1)).astype(np.int32), 0, len(lut01)-1)
     return lut01[idx]
 
 def _np_apply_lut_rgb(img01: np.ndarray, lut01: np.ndarray) -> np.ndarray:
-    out = img01.copy()
-    for c in range(out.shape[2]):
-        out[..., c] = _np_apply_lut_channel(out[..., c], lut01)
-    return out
+    """Optimized: vectorized LUT on all channels at once instead of per-channel loop."""
+    # Vectorized: apply LUT to all channels simultaneously
+    idx = np.clip((img01 * (len(lut01)-1)).astype(np.int32), 0, len(lut01)-1)
+    return lut01[idx]
 
 # ---- color-space fallbacks (vectorized NumPy) ----
 # sRGB <-> XYZ (D65)

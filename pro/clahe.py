@@ -4,66 +4,16 @@ import numpy as np
 import cv2
 
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QImage, QPixmap, QIcon, QWheelEvent, QPainter
+from PyQt6.QtGui import QImage, QPixmap, QIcon
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGroupBox, QGridLayout,
-    QLabel, QPushButton, QSlider, QGraphicsView, QGraphicsScene,
+    QLabel, QPushButton, QSlider, QGraphicsScene,
     QGraphicsPixmapItem, QMessageBox
 )
 
-# ----------------------- Zoomable view -----------------------
-class ZoomableGraphicsView(QGraphicsView):
-    def __init__(self, *a, **k):
-        super().__init__(*a, **k)
-        self._zoom = 1.0
-        self._step = 1.25
-        self._min  = 0.10
-        self._max  = 12.0
-        self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
-        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
-        self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
-        self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
-        self.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-
-    def wheelEvent(self, e: QWheelEvent):
-        if e.modifiers() & Qt.KeyboardModifier.ControlModifier:
-            dy = e.angleDelta().y()
-            if dy == 0:
-                e.accept(); return
-            self._apply_zoom(up=(dy > 0), anchor=QGraphicsView.ViewportAnchor.AnchorUnderMouse)
-            e.accept()
-        else:
-            super().wheelEvent(e)
-
-    # ---- NEW: direct zoom helpers (no synthetic wheel events) ----
-    def _apply_zoom(self, up: bool, anchor: QGraphicsView.ViewportAnchor | None = None):
-        old_anchor = self.transformationAnchor()
-        if anchor is not None:
-            self.setTransformationAnchor(anchor)
-
-        step = self._step if up else (1.0 / self._step)
-        new_zoom = max(self._min, min(self._max, self._zoom * step))
-        factor = new_zoom / self._zoom
-        if factor != 1.0:
-            self.scale(factor, factor)
-            self._zoom = new_zoom
-
-        if anchor is not None:
-            self.setTransformationAnchor(old_anchor)
-
-    def zoom_in(self):
-        # zoom around view center for button press
-        self._apply_zoom(True, anchor=QGraphicsView.ViewportAnchor.AnchorViewCenter)
-
-    def zoom_out(self):
-        self._apply_zoom(False, anchor=QGraphicsView.ViewportAnchor.AnchorViewCenter)
-
-    def fit_to_item(self, item):
-        if not item or item.pixmap().isNull():
-            return
-        self._zoom = 1.0
-        self.resetTransform()
-        self.fitInView(item, Qt.AspectRatioMode.KeepAspectRatio)
+# Import centralized widgets
+from pro.widgets.graphics_views import ZoomableGraphicsView
+from pro.widgets.image_utils import extract_mask_resized as _get_active_mask_resized
 
 
 # ----------------------- Core -----------------------
@@ -90,65 +40,7 @@ def apply_clahe(image: np.ndarray, clip_limit: float = 2.0, tile_grid_size: tupl
         cl = cl[..., None]
     return cl
 
-def _nearest_resize_2d(m: np.ndarray, H: int, W: int) -> np.ndarray:
-    if m.shape == (H, W):
-        return m.astype(np.float32, copy=False)
-    try:
-        return cv2.resize(m.astype(np.float32), (W, H), interpolation=cv2.INTER_NEAREST)
-    except Exception:
-        yi = (np.linspace(0, m.shape[0] - 1, H)).astype(np.int32)
-        xi = (np.linspace(0, m.shape[1] - 1, W)).astype(np.int32)
-        return m[yi][:, xi].astype(np.float32, copy=False)
-
-def _get_active_mask_resized(doc, H: int, W: int) -> np.ndarray | None:
-    """
-    Read doc.active_mask_id → masks[mid], pull first non-None payload among
-    (data, mask, image, array), normalize to [0..1], and resize to (H, W).
-    Returns 2-D float32 or None.
-    """
-    if doc is None:
-        return None
-    mid = getattr(doc, "active_mask_id", None)
-    if not mid:
-        return None
-
-    masks = getattr(doc, "masks", {}) or {}
-    layer = masks.get(mid)
-    if layer is None:
-        return None
-
-    data = None
-    # object-like
-    for attr in ("data", "mask", "image", "array"):
-        if hasattr(layer, attr):
-            val = getattr(layer, attr)
-            if val is not None:
-                data = val
-                break
-    # dict-like
-    if data is None and isinstance(layer, dict):
-        for key in ("data", "mask", "image", "array"):
-            if key in layer and layer[key] is not None:
-                data = layer[key]
-                break
-    # raw ndarray
-    if data is None and isinstance(layer, np.ndarray):
-        data = layer
-    if data is None:
-        return None
-
-    m = np.asarray(data)
-    if m.ndim == 3:  # collapse RGB(A) → gray
-        m = m.mean(axis=2)
-    m = m.astype(np.float32, copy=False)
-
-    # normalize → [0..1]
-    mx = float(m.max()) if m.size else 1.0
-    if mx > 1.0:
-        m = m / mx
-    m = np.clip(m, 0.0, 1.0)
-
-    return _nearest_resize_2d(m, H, W)
+# Note: _get_active_mask_resized imported from pro.widgets.image_utils
 
 def apply_clahe_to_doc(doc, preset: dict | None):
     if doc is None or getattr(doc, "image", None) is None:

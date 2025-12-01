@@ -4,6 +4,7 @@ import os, sys, tempfile, subprocess, shutil, math
 import numpy as np
 import cv2
 from typing import List, Dict, Tuple, Optional
+from functools import lru_cache
 from astropy.io import fits
 from astropy.stats import sigma_clipped_stats
 import sep
@@ -356,11 +357,13 @@ def build_star_masks_per_frame(file_list: List[str], sigma: float=3.5, dilate_px
         log(f"  ◦ star mask made for {os.path.basename(fp)}")
     return masks
 
+@lru_cache(maxsize=32)
 def _directional_gaussian_kernel(long_px: int, sig_long: float,
                                  sig_cross: float, angle_deg: float) -> np.ndarray:
     """
     Anisotropic Gaussian (elongated) rotated to `angle_deg`.
     long_px controls kernel size along the tail axis.
+    Results are cached for reuse.
     """
     long_px = max(21, int(long_px) | 1)
     half = long_px // 2

@@ -755,8 +755,8 @@ class ExoPlanetWindow(QDialog):
                                 try:
                                     am = self.estimate_airmass_from_altitude(float(ent[0]['value']))
                                     break
-                                except:
-                                    pass
+                                except Exception:
+                                    pass  # Ignore airmass estimation errors
                         else:
                             am = 1.0
                 if am is None:
@@ -876,8 +876,8 @@ class ExoPlanetWindow(QDialog):
                                 try:
                                     am = self.estimate_airmass_from_altitude(float(ent[0]['value']))
                                     break
-                                except:
-                                    pass
+                                except Exception:
+                                    pass  # Ignore airmass estimation errors
                         else:
                             am = 1.0
                 else:

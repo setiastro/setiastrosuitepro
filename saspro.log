@@ -622,3 +622,21 @@ Traceback (most recent call last):
     m_about.addAction("About...", self._about)
                                   ^^^^^^^^^^^
 AttributeError: 'AstroSuiteProMainWindow' object has no attribute '_about'. Did you mean: 'layout'?
+2025-11-30 19:49:39,104 - root - INFO - Logging to: saspro.log
+2025-11-30 19:49:39,104 - root - INFO - Platform: win32
+2025-11-30 19:49:39,104 - root - INFO - PyInstaller bundle: False
+2025-11-30 20:12:52,824 - root - INFO - Logging to: saspro.log
+2025-11-30 20:12:52,824 - root - INFO - Platform: win32
+2025-11-30 20:12:52,824 - root - INFO - PyInstaller bundle: False
+2025-11-30 23:58:18,515 - root - INFO - Logging to: saspro.log
+2025-11-30 23:58:18,517 - root - INFO - Platform: win32
+2025-11-30 23:58:18,517 - root - INFO - PyInstaller bundle: False
+2025-12-01 09:19:59,793 - root - INFO - Logging to: saspro.log
+2025-12-01 09:19:59,793 - root - INFO - Platform: win32
+2025-12-01 09:19:59,793 - root - INFO - PyInstaller bundle: False
+2025-12-01 11:52:44,807 - root - INFO - Logging to: saspro.log
+2025-12-01 11:52:44,807 - root - INFO - Platform: win32
+2025-12-01 11:52:44,807 - root - INFO - PyInstaller bundle: False
+2025-12-01 15:58:24,434 - root - INFO - Logging to: saspro.log
+2025-12-01 15:58:24,434 - root - INFO - Platform: win32
+2025-12-01 15:58:24,434 - root - INFO - PyInstaller bundle: False

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os, re, math, tempfile
 from typing import Tuple, Dict, Any, Optional
+from functools import lru_cache
 
 import numpy as np
 import json, time
@@ -253,7 +254,9 @@ def _get_manual_scale(settings) -> float | None:
     except Exception:
         return None
 
+@lru_cache(maxsize=256)
 def _parse_ra_input_to_deg(s: str) -> float | None:
+    """Parse RA input string to degrees. Cached for repeated lookups."""
     s = (s or "").strip()
     if not s: return None
     # allow plain degrees if > 24 or contains "deg"
@@ -275,7 +278,9 @@ def _parse_ra_input_to_deg(s: str) -> float | None:
     except Exception:
         return None
 
+@lru_cache(maxsize=256)
 def _parse_dec_input_to_deg(s: str) -> float | None:
+    """Parse DEC input string to degrees. Cached for repeated lookups."""
     s = (s or "").strip()
     if not s: return None
     sign = -1.0 if s.startswith("-") else 1.0

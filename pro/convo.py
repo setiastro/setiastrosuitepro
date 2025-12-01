@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os, math, numpy as np
 from typing import Optional, Tuple
+from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor
 
 # ── SciPy / scikit-image
@@ -31,18 +32,8 @@ from astropy.io import fits
 
 import sep  # PSF estimator
 
-
-# --- SASpro shim: CustomSpinBox (property-style .value like SASv2) -----------
-class CustomSpinBox(QSpinBox):
-    def __init__(self, minimum=0, maximum=100, initial=0, step=1, parent=None):
-        super().__init__(parent)
-        self.setRange(minimum, maximum)
-        self.setSingleStep(step)
-        self.setValue(initial)
-
-    @property
-    def value(self) -> int:
-        return super().value()
+# Import centralized widgets
+from pro.widgets.spinboxes import CustomSpinBox
 
 
 # --- GraphicsView with Shift+Click LS center + optional scene ctor -----------
@@ -1241,7 +1232,9 @@ def estimate_psf_from_image(image_array: np.ndarray,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+@lru_cache(maxsize=64)
 def make_elliptical_gaussian_psf(radius: float, kurtosis: float, aspect: float, rotation_deg: float) -> np.ndarray:
+    """Generate elliptical Gaussian PSF kernel. Results are cached."""
     sigma_x = radius
     sigma_y = radius / max(aspect, 1e-8)
 

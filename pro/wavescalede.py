@@ -11,97 +11,21 @@ from PyQt6.QtWidgets import (
     QMessageBox, QProgressBar, QMainWindow
 )
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Optional Numba color-space acceleration from legacy.numba_utils
-# ─────────────────────────────────────────────────────────────────────────────
-try:
-    from legacy.numba_utils import (
-        rgb_to_xyz_numba, xyz_to_lab_numba,
-        lab_to_xyz_numba,  xyz_to_rgb_numba,
-    )
-    _HAVE_NUMBA = True
-except Exception:
-    _HAVE_NUMBA = False
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Convolution (+gaussian fallback if SciPy is missing)
-# ─────────────────────────────────────────────────────────────────────────────
-try:
-    from scipy.ndimage import convolve as _nd_convolve
-    from scipy.ndimage import gaussian_filter as _nd_gauss
-
-    def _conv_sep_reflect(image2d: np.ndarray, k1d: np.ndarray, axis: int) -> np.ndarray:
-        if axis == 1:  # x
-            return _nd_convolve(image2d, k1d.reshape(1, -1), mode="reflect")
-        else:          # y
-            return _nd_convolve(image2d, k1d.reshape(-1, 1), mode="reflect")
-
-    def _gauss_blur(image2d: np.ndarray, sigma: float) -> np.ndarray:
-        return _nd_gauss(image2d, sigma=sigma, mode="reflect")
-except Exception:
-    def _conv_sep_reflect(image2d: np.ndarray, k1d: np.ndarray, axis: int) -> np.ndarray:
-        image2d = np.asarray(image2d, dtype=np.float32)
-        k1d = np.asarray(k1d, dtype=np.float32)
-        r = len(k1d) // 2
-        if axis == 1:  # horizontal
-            pad = np.pad(image2d, ((0, 0), (r, r)), mode="reflect")
-            out = np.empty_like(image2d, dtype=np.float32)
-            for i in range(image2d.shape[0]):
-                out[i] = np.convolve(pad[i], k1d, mode="valid")
-            return out
-        else:          # vertical
-            pad = np.pad(image2d, ((r, r), (0, 0)), mode="reflect")
-            out = np.empty_like(image2d, dtype=np.float32)
-            for j in range(image2d.shape[1]):
-                out[:, j] = np.convolve(pad[:, j], k1d, mode="valid")
-            return out
-
-    def _gauss1d(sigma: float) -> np.ndarray:
-        if sigma <= 0:
-            return np.array([1.0], dtype=np.float32)
-        # pragmatic kernel length
-        radius = max(1, int(round(3.0 * sigma)))
-        x = np.arange(-radius, radius + 1, dtype=np.float32)
-        k = np.exp(-0.5 * (x / sigma)**2)
-        k /= np.sum(k)
-        return k.astype(np.float32)
-
-    def _gauss_blur(image2d: np.ndarray, sigma: float) -> np.ndarray:
-        k = _gauss1d(float(sigma))
-        tmp = _conv_sep_reflect(image2d, k, axis=1)
-        return _conv_sep_reflect(tmp, k, axis=0)
+# Import shared wavelet utilities
+from pro.widgets.wavelet_utils import (
+    conv_sep_reflect as _conv_sep_reflect,
+    build_spaced_kernel as _build_spaced_kernel,
+    atrous_decompose as _atrous_decompose,
+    atrous_reconstruct as _atrous_reconstruct,
+    rgb_to_lab as _rgb_to_lab,
+    lab_to_rgb as _lab_to_rgb,
+    gauss_blur as _gauss_blur,
+    B3_KERNEL as _B3,
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Core math (shared)
 # ─────────────────────────────────────────────────────────────────────────────
-_B3 = (np.array([1, 4, 6, 4, 1], dtype=np.float32) / 16.0)
-
-def _build_spaced_kernel(kernel: np.ndarray, scale_idx: int) -> np.ndarray:
-    if scale_idx == 0:
-        return kernel.astype(np.float32, copy=False)
-    step = 2 ** scale_idx
-    spaced_len = len(kernel) + (len(kernel) - 1) * (step - 1)
-    spaced = np.zeros(spaced_len, dtype=np.float32)
-    spaced[0::step] = kernel
-    return spaced
-
-def _atrous_decompose(img2d: np.ndarray, n_scales: int, base_k: np.ndarray) -> list[np.ndarray]:
-    current = img2d.astype(np.float32, copy=True)
-    planes: list[np.ndarray] = []
-    for s in range(n_scales):
-        k = _build_spaced_kernel(base_k, s)
-        tmp = _conv_sep_reflect(current, k, axis=1)
-        smooth = _conv_sep_reflect(tmp, k, axis=0)
-        planes.append(current - smooth)
-        current = smooth
-    planes.append(current)  # residual
-    return planes
-
-def _atrous_reconstruct(planes: list[np.ndarray]) -> np.ndarray:
-    out = planes[-1].astype(np.float32, copy=True)
-    for w in planes[:-1]:
-        out += w
-    return out
 
 def _resize_mask_nn(mask2d: np.ndarray, target_hw: tuple[int, int]) -> np.ndarray:
     H, W = target_hw
@@ -110,43 +34,6 @@ def _resize_mask_nn(mask2d: np.ndarray, target_hw: tuple[int, int]) -> np.ndarra
     yi = (np.linspace(0, mask2d.shape[0] - 1, H)).astype(np.int32)
     xi = (np.linspace(0, mask2d.shape[1] - 1, W)).astype(np.int32)
     return mask2d[yi][:, xi].astype(np.float32, copy=False)
-
-# Color space helpers
-def _rgb_to_lab(rgb: np.ndarray) -> np.ndarray:
-    if _HAVE_NUMBA:
-        xyz = rgb_to_xyz_numba(np.ascontiguousarray(rgb.astype(np.float32)))
-        return xyz_to_lab_numba(xyz)
-    # numpy fallback
-    M = np.array([[0.4124564, 0.3575761, 0.1804375],
-                  [0.2126729, 0.7151522, 0.0721750],
-                  [0.0193339, 0.1191920, 0.9503041]], dtype=np.float32)
-    rgb = np.clip(rgb, 0.0, 1.0).astype(np.float32, copy=False)
-    xyz = rgb.reshape(-1, 3) @ M.T
-    xyz = xyz.reshape(rgb.shape); xyz[...,0] /= 0.95047; xyz[...,2] /= 1.08883
-    delta = 6/29
-    def f(t): return np.where(t > delta**3, np.cbrt(t), (t/(3*delta**2)) + (4/29))
-    fx, fy, fz = f(xyz[...,0]), f(xyz[...,1]), f(xyz[...,2])
-    L = 116*fy - 16; a = 500*(fx - fy); b = 200*(fy - fz)
-    return np.stack([L, a, b], axis=-1)
-
-def _lab_to_rgb(lab: np.ndarray) -> np.ndarray:
-    if _HAVE_NUMBA:
-        xyz = lab_to_xyz_numba(np.ascontiguousarray(lab.astype(np.float32)))
-        rgb = xyz_to_rgb_numba(xyz)
-        return rgb.astype(np.float32, copy=False)
-    M_inv = np.array([[ 3.2404542, -1.5371385, -0.4985314],
-                      [-0.9692660,  1.8760108,  0.0415560],
-                      [ 0.0556434, -0.2040259,  1.0572252]], dtype=np.float32)
-    delta = 6/29
-    fy = (lab[...,0] + 16.0)/116.0
-    fx = fy + lab[...,1]/500.0
-    fz = fy - lab[...,2]/200.0
-    def finv(t): return np.where(t > delta, t**3, 3*delta**2*(t - 4/29))
-    X = 0.95047*finv(fx); Y = finv(fy); Z = 1.08883*finv(fz)
-    xyz = np.stack([X, Y, Z], axis=-1)
-    rgb = xyz.reshape(-1,3) @ M_inv.T
-    rgb = rgb.reshape(xyz.shape)
-    return np.clip(rgb, 0.0, 1.0).astype(np.float32, copy=False)
 
 # Darkness mask (scales 2–4, negative parts, mean → normalize → gamma → smooth → mild S-curve)
 def _darkness_mask(L: np.ndarray, n_scales: int, base_k: np.ndarray, gamma: float) -> np.ndarray:

@@ -15,20 +15,18 @@ try:
 except Exception:
     cv2 = None
 
+# Shared utilities
+from pro.widgets.image_utils import (
+    to_float01 as _to_float01,
+    extract_mask_from_document as _active_mask_array_from_doc
+)
+
 _LUMA_WEIGHTS = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
 
 # ---------- helpers ----------
 def _doc_name(d) -> str:
     try: return d.display_name()
     except Exception: return "Untitled"
-
-def _to_float01(img: np.ndarray) -> np.ndarray:
-    f = np.asarray(img, dtype=np.float32)
-    if f.size:
-        mx = float(np.nanmax(f))
-        if np.isfinite(mx) and mx > 1.0:
-            f = f / mx
-    return np.clip(f, 0.0, 1.0).astype(np.float32, copy=False)
 
 def _rgb_to_luma(img: np.ndarray) -> np.ndarray:
     f = _to_float01(img)
@@ -69,36 +67,7 @@ def _blend_dispatch(A: np.ndarray, B: np.ndarray, mode: str, alpha: float) -> np
     if mode == "Difference": return mix(np.abs(A-B))
     return np.clip(A*(1-alpha) + B*alpha, 0.0, 1.0)
 
-# ---------- mask helpers (match Remove Green) ----------
-def _active_mask_array_from_doc(doc) -> np.ndarray | None:
-    """
-    Pull the active mask from the destination document (like Remove Green).
-    Returns float32 in [0..1], 2D.
-    """
-    try:
-        mid = getattr(doc, "active_mask_id", None)
-        if not mid:
-            return None
-        masks = getattr(doc, "masks", {}) or {}
-        layer = masks.get(mid)
-        data = getattr(layer, "data", None) if layer is not None else None
-        if data is None:
-            return None
-        m = np.asarray(data)
-        # if mask is RGB, convert to gray
-        if m.ndim == 3:
-            if cv2 is not None:
-                m = cv2.cvtColor(m, cv2.COLOR_BGR2GRAY)
-            else:
-                m = m.mean(axis=2)
-        m = m.astype(np.float32, copy=False)
-        # normalize 0..1 if it looks like 0..255
-        if m.max() > 1.0:
-            m /= 255.0
-        return np.clip(m, 0.0, 1.0)
-    except Exception:
-        return None
-
+# ---------- mask helpers ----------
 def _resize_mask_nearest(m: np.ndarray, shape_hw: tuple[int,int]) -> np.ndarray:
     """Resize mask to (H,W) with nearest neighbor."""
     h, w = shape_hw

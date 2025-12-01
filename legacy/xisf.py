@@ -210,7 +210,65 @@ class XISF:
         for p in self._xisf_header_xml.find("xisf:Metadata", self._xml_ns):
             self._file_meta[p.attrib["id"]] = self._process_property(p)
 
-        # TODO: rest of XISF core elements: Resolution, ICCProfile, Thumbnail, ...
+        # Parse additional XISF core elements: Resolution, ICCProfile, Thumbnail
+        self._parse_resolution_elements()
+        self._parse_icc_profiles()
+        self._parse_thumbnails()
+
+    def _parse_resolution_elements(self):
+        """Parse Resolution core elements and attach to image metadata."""
+        for i, image in enumerate(self._xisf_header_xml.findall("xisf:Image", self._xml_ns)):
+            res_elem = image.find("xisf:Resolution", self._xml_ns)
+            if res_elem is not None:
+                try:
+                    res_data = {
+                        "horizontal": float(res_elem.attrib.get("horizontal", 72.0)),
+                        "vertical": float(res_elem.attrib.get("vertical", 72.0)),
+                        "unit": res_elem.attrib.get("unit", "inch"),  # "inch" or "cm"
+                    }
+                    if i < len(self._images_meta):
+                        self._images_meta[i]["Resolution"] = res_data
+                except (ValueError, KeyError):
+                    pass
+
+    def _parse_icc_profiles(self):
+        """Parse ICCProfile core elements and attach to image metadata."""
+        for i, image in enumerate(self._xisf_header_xml.findall("xisf:Image", self._xml_ns)):
+            icc_elem = image.find("xisf:ICCProfile", self._xml_ns)
+            if icc_elem is not None:
+                try:
+                    icc_data = {"present": True}
+                    if "location" in icc_elem.attrib:
+                        loc = self._parse_location(icc_elem.attrib["location"])
+                        icc_data["location"] = loc
+                        # Read ICC profile binary data
+                        if loc[0] == "attachment" and len(loc) >= 3:
+                            icc_data["size"] = loc[2]
+                    if i < len(self._images_meta):
+                        self._images_meta[i]["ICCProfile"] = icc_data
+                except (ValueError, KeyError):
+                    pass
+
+    def _parse_thumbnails(self):
+        """Parse Thumbnail core elements and attach to image metadata."""
+        for i, image in enumerate(self._xisf_header_xml.findall("xisf:Image", self._xml_ns)):
+            thumb_elem = image.find("xisf:Thumbnail", self._xml_ns)
+            if thumb_elem is not None:
+                try:
+                    thumb_data = {
+                        "present": True,
+                        "geometry": self._parse_geometry(thumb_elem.attrib.get("geometry", "0:0:0")),
+                    }
+                    if "location" in thumb_elem.attrib:
+                        thumb_data["location"] = self._parse_location(thumb_elem.attrib["location"])
+                    if "sampleFormat" in thumb_elem.attrib:
+                        thumb_data["dtype"] = self._parse_sampleFormat(thumb_elem.attrib["sampleFormat"])
+                    if "colorSpace" in thumb_elem.attrib:
+                        thumb_data["colorSpace"] = thumb_elem.attrib["colorSpace"]
+                    if i < len(self._images_meta):
+                        self._images_meta[i]["Thumbnail"] = thumb_data
+                except (ValueError, KeyError):
+                    pass
 
     def get_images_metadata(self):
         """Provides the metadata of all image blocks contained in the XISF File, extracted from
@@ -532,8 +590,8 @@ class XISF:
                 try:
                     del xisf_metadata["XISF:CompressionCodecs"]
                     del xisf_metadata["XISF:CompressionLevel"]
-                except:
-                    pass
+                except KeyError:
+                    pass  # Ignore if keys don't exist
 
         def _compute_attached_positions(hdr_prov_sz, attached_blocks_locations):
             # Computes aligned position nearest to the given one
@@ -669,8 +727,17 @@ class XISF:
 
         if p_dict["type"] == "TimePoint":
             # Timepoint 'value' attribute already set (as str)
-            # TODO: convert to datetime?
-            pass
+            # Convert ISO 8601 string to datetime object
+            try:
+                tp_str = p_dict.get("value", "")
+                if tp_str:
+                    # Handle XISF TimePoint format: ISO 8601 with optional timezone
+                    tp_str = tp_str.replace("Z", "+00:00")
+                    if "." in tp_str and "+" not in tp_str.split(".")[-1] and "-" not in tp_str.split(".")[-1]:
+                        tp_str += "+00:00"
+                    p_dict["datetime"] = datetime.fromisoformat(tp_str)
+            except (ValueError, TypeError):
+                p_dict["datetime"] = None
         elif p_dict["type"] == "String":
             p_dict["value"] = p_et.text
             if "location" in p_dict:

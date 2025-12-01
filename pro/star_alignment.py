@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os, math, random, sys
+import gc  # For explicit memory cleanup after heavy operations
 import os as _os, threading as _threading, ctypes as _ctypes
 import multiprocessing
 N = str(max(1, min( (os.cpu_count() or 8), 32 )))
@@ -52,6 +53,9 @@ from PyQt6.QtWidgets import (
 )
 
 from skimage.transform import warp, PolynomialTransform 
+
+# Memory management utilities
+from pro.memory_utils import smart_zeros, should_use_memmap
 
 # I/O & stretch (same stack we used for Plate Solver)
 from legacy.image_manager import load_image, save_image
@@ -3349,6 +3353,7 @@ class StarRegistrationThread(QThread):
         finally:
             try: shutil.rmtree(tmpdir, ignore_errors=True)
             except Exception: pass
+            gc.collect()  # Free memory after finalization
 
         try:
             sasd_path = os.path.join(self.output_directory, "alignment_transforms.sasd")
@@ -5326,10 +5331,10 @@ class MosaicMasterDialog(QDialog):
         self.was_single_channel = (not is_color)
 
         if is_color:
-            self.final_mosaic = np.zeros((mosaic_height, mosaic_width, 3), dtype=np.float32)
+            self.final_mosaic, _ = smart_zeros((mosaic_height, mosaic_width, 3), dtype=np.float32)
         else:
-            self.final_mosaic = np.zeros((mosaic_height, mosaic_width), dtype=np.float32)
-        self.weight_mosaic = np.zeros((mosaic_height, mosaic_width), dtype=np.float32)
+            self.final_mosaic, _ = smart_zeros((mosaic_height, mosaic_width), dtype=np.float32)
+        self.weight_mosaic, _ = smart_zeros((mosaic_height, mosaic_width), dtype=np.float32)
 
         first_image = True
         for idx, itm in enumerate(wcs_items):
@@ -6087,13 +6092,13 @@ class MosaicMasterDialog(QDialog):
 
                 if mosaic_sum.ndim == 3:
                     channels = mosaic_sum.shape[2]
-                    expanded_sum = np.zeros((new_canvas_height, new_canvas_width, channels), dtype=np.float32)
+                    expanded_sum, _ = smart_zeros((new_canvas_height, new_canvas_width, channels), dtype=np.float32)
                     expanded_count = np.zeros_like(expanded_sum, dtype=np.float32)
                     # Copy existing mosaic_sum/mosaic_count
                     expanded_sum[y0:y0+h_m, x0:x0+w_m, :] = mosaic_sum
                     expanded_count[y0:y0+h_m, x0:x0+w_m, :] = mosaic_count
                 else:
-                    expanded_sum = np.zeros((new_canvas_height, new_canvas_width), dtype=np.float32)
+                    expanded_sum, _ = smart_zeros((new_canvas_height, new_canvas_width), dtype=np.float32)
                     expanded_count = np.zeros_like(expanded_sum, dtype=np.float32)
                     expanded_sum[y0:y0+h_m, x0:x0+w_m] = mosaic_sum
                     expanded_count[y0:y0+h_m, x0:x0+w_m] = mosaic_count

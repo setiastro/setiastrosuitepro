@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (QToolBar, QWidget, QToolButton, QMenu, QApplication
     QFormLayout, QDialogButtonBox, QDoubleSpinBox, QCheckBox, QLabel, QRubberBand, QRadioButton, QPlainTextEdit, QTabWidget, QLineEdit, QPushButton, QFileDialog)
 
 from PyQt6.QtWidgets import QMdiArea, QMdiSubWindow
-from pro.linear_fit import _LinearFitPresetDialog
+# _LinearFitPresetDialog loaded on demand (see line ~334)
 
 
 

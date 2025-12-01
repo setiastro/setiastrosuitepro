@@ -209,7 +209,65 @@ class XISF:
         for p in self._xisf_header_xml.find("xisf:Metadata", self._xml_ns):
             self._file_meta[p.attrib["id"]] = self._process_property(p)
 
-        # TODO: rest of XISF core elements: Resolution, ICCProfile, Thumbnail, ...
+        # Parse additional XISF core elements: Resolution, ICCProfile, Thumbnail
+        self._parse_resolution_elements()
+        self._parse_icc_profiles()
+        self._parse_thumbnails()
+
+    def _parse_resolution_elements(self):
+        """Parse Resolution core elements and attach to image metadata."""
+        for i, image in enumerate(self._xisf_header_xml.findall("xisf:Image", self._xml_ns)):
+            res_elem = image.find("xisf:Resolution", self._xml_ns)
+            if res_elem is not None:
+                try:
+                    res_data = {
+                        "horizontal": float(res_elem.attrib.get("horizontal", 72.0)),
+                        "vertical": float(res_elem.attrib.get("vertical", 72.0)),
+                        "unit": res_elem.attrib.get("unit", "inch"),  # "inch" or "cm"
+                    }
+                    if i < len(self._images_meta):
+                        self._images_meta[i]["Resolution"] = res_data
+                except (ValueError, KeyError):
+                    pass
+
+    def _parse_icc_profiles(self):
+        """Parse ICCProfile core elements and attach to image metadata."""
+        for i, image in enumerate(self._xisf_header_xml.findall("xisf:Image", self._xml_ns)):
+            icc_elem = image.find("xisf:ICCProfile", self._xml_ns)
+            if icc_elem is not None:
+                try:
+                    icc_data = {"present": True}
+                    if "location" in icc_elem.attrib:
+                        loc = self._parse_location(icc_elem.attrib["location"])
+                        icc_data["location"] = loc
+                        # Read ICC profile binary data
+                        if loc[0] == "attachment" and len(loc) >= 3:
+                            icc_data["size"] = loc[2]
+                    if i < len(self._images_meta):
+                        self._images_meta[i]["ICCProfile"] = icc_data
+                except (ValueError, KeyError):
+                    pass
+
+    def _parse_thumbnails(self):
+        """Parse Thumbnail core elements and attach to image metadata."""
+        for i, image in enumerate(self._xisf_header_xml.findall("xisf:Image", self._xml_ns)):
+            thumb_elem = image.find("xisf:Thumbnail", self._xml_ns)
+            if thumb_elem is not None:
+                try:
+                    thumb_data = {
+                        "present": True,
+                        "geometry": self._parse_geometry(thumb_elem.attrib.get("geometry", "0:0:0")),
+                    }
+                    if "location" in thumb_elem.attrib:
+                        thumb_data["location"] = self._parse_location(thumb_elem.attrib["location"])
+                    if "sampleFormat" in thumb_elem.attrib:
+                        thumb_data["dtype"] = self._parse_sampleFormat(thumb_elem.attrib["sampleFormat"])
+                    if "colorSpace" in thumb_elem.attrib:
+                        thumb_data["colorSpace"] = thumb_elem.attrib["colorSpace"]
+                    if i < len(self._images_meta):
+                        self._images_meta[i]["Thumbnail"] = thumb_data
+                except (ValueError, KeyError):
+                    pass
 
     def get_images_metadata(self):
         """Provides the metadata of all image blocks contained in the XISF File, extracted from
@@ -531,8 +589,8 @@ class XISF:
                 try:
                     del xisf_metadata["XISF:CompressionCodecs"]
                     del xisf_metadata["XISF:CompressionLevel"]
-                except:
-                    pass
+                except KeyError:
+                    pass  # Ignore if keys don't exist
 
         def _compute_attached_positions(hdr_prov_sz, attached_blocks_locations):
             # Computes aligned position nearest to the given one
@@ -668,8 +726,20 @@ class XISF:
 
         if p_dict["type"] == "TimePoint":
             # Timepoint 'value' attribute already set (as str)
-            # TODO: convert to datetime?
-            pass
+            # Convert ISO 8601 string to datetime object
+            try:
+                tp_str = p_dict.get("value", "")
+                if tp_str:
+                    # Handle XISF TimePoint format: ISO 8601 with optional timezone
+                    # Examples: "2023-01-15T10:30:00Z", "2023-01-15T10:30:00.123456"
+                    tp_str = tp_str.replace("Z", "+00:00")
+                    if "." in tp_str and "+" not in tp_str.split(".")[-1] and "-" not in tp_str.split(".")[-1]:
+                        # Add UTC timezone if missing after fractional seconds
+                        tp_str += "+00:00"
+                    p_dict["datetime"] = datetime.fromisoformat(tp_str)
+            except (ValueError, TypeError):
+                # Keep original string value if parsing fails
+                p_dict["datetime"] = None
         elif p_dict["type"] == "String":
             p_dict["value"] = p_et.text
             if "location" in p_dict:
@@ -713,109 +783,130 @@ class XISF:
 
     # Insert XISF properties in the XML tree
     @staticmethod
-    def _insert_property(parent, p_dict, max_inline_block_size):
-        # TODO ignores optional attributes (format, comment)
+    def _insert_property(parent, p_dict, max_inline_block_size, codec=None, shuffle=False):
+        """Insert a property into the XML tree.
+        
+        Args:
+            parent: Parent XML element
+            p_dict: Property dictionary with 'id', 'type', 'value', and optional 'format', 'comment'
+            max_inline_block_size: Maximum size for inline data blocks
+            codec: Compression codec (None, 'zlib', 'lz4', 'lz4hc', 'zstd')
+            shuffle: Enable byte shuffling for compression
+        """
         scalars = ["Int", "Byte", "Short", "Float", "Boolean", "TimePoint"]
+        
+        # Build base attributes including optional format and comment
+        def _build_attrs(base_attrs):
+            attrs = dict(base_attrs)
+            if "format" in p_dict and p_dict["format"]:
+                attrs["format"] = str(p_dict["format"])
+            if "comment" in p_dict and p_dict["comment"]:
+                attrs["comment"] = str(p_dict["comment"])
+            return attrs
 
         if any(t in p_dict["type"] for t in scalars):
             # scalars and TimePoint
-            # TODO add check for scalar or TimePoint
-            # TODO Boolean requires lowercase
-            ET.SubElement(
-                parent,
-                "Property",
-                {
-                    "id": p_dict["id"],
-                    "type": p_dict["type"],
-                    "value": str(p_dict["value"]),
-                },
-            )
+            value_str = str(p_dict["value"])
+            # Boolean requires lowercase per XISF spec
+            if p_dict["type"] == "Boolean":
+                value_str = "true" if p_dict["value"] else "false"
+            attrs = _build_attrs({
+                "id": p_dict["id"],
+                "type": p_dict["type"],
+                "value": value_str,
+            })
+            ET.SubElement(parent, "Property", attrs)
         elif p_dict["type"] == "String":
             text = str(p_dict["value"])
-            sz = len(text.encode("utf-8"))
+            data_bytes = text.encode("utf-8")
+            sz = len(data_bytes)
             if sz > max_inline_block_size:
-                # Attach string as data block (position pending)
-                # TODO ignores compression
-                xml = ET.SubElement(
-                    parent,
-                    "Property",
-                    {
-                        "id": p_dict["id"],
-                        "type": p_dict["type"],
-                        "location": XISF._to_location(("attachment", "", sz)),
-                    },
-                )
-                return {"xml": xml, "location": 0, "size": sz, "data": text.encode()}
+                # Attach string as data block with optional compression
+                attrs = _build_attrs({
+                    "id": p_dict["id"],
+                    "type": p_dict["type"],
+                })
+                if codec:
+                    compressed, comp_str = XISF._compress_data_block(data_bytes, codec, shuffle, 1)
+                    attrs["location"] = XISF._to_location(("attachment", "", len(compressed)))
+                    attrs["compression"] = comp_str
+                    xml = ET.SubElement(parent, "Property", attrs)
+                    return {"xml": xml, "location": 0, "size": len(compressed), "data": compressed}
+                else:
+                    attrs["location"] = XISF._to_location(("attachment", "", sz))
+                    xml = ET.SubElement(parent, "Property", attrs)
+                    return {"xml": xml, "location": 0, "size": sz, "data": data_bytes}
             else:
                 # string directly as child (no 'location' attribute)
-                ET.SubElement(
-                    parent,
-                    "Property",
-                    {
-                        "id": p_dict["id"],
-                        "type": p_dict["type"],
-                    },
-                ).text = text
+                attrs = _build_attrs({
+                    "id": p_dict["id"],
+                    "type": p_dict["type"],
+                })
+                ET.SubElement(parent, "Property", attrs).text = text
         elif "Vector" in p_dict["type"]:
-            # TODO ignores compression
             data = p_dict["value"]
-            sz = data.nbytes
+            raw_bytes = data.tobytes()
+            sz = len(raw_bytes)
+            item_size = data.itemsize
             if sz > max_inline_block_size:
-                # Attach vector as data block (position pending)
-                xml = ET.SubElement(
-                    parent,
-                    "Property",
-                    {
-                        "id": p_dict["id"],
-                        "type": p_dict["type"],
-                        "length": str(data.size),
-                        "location": XISF._to_location(("attachment", "", sz)),
-                    },
-                )
-                return {"xml": xml, "location": 0, "size": sz, "data": data}
+                # Attach vector as data block with optional compression
+                attrs = _build_attrs({
+                    "id": p_dict["id"],
+                    "type": p_dict["type"],
+                    "length": str(data.size),
+                })
+                if codec:
+                    compressed, comp_str = XISF._compress_data_block(raw_bytes, codec, shuffle, item_size)
+                    attrs["location"] = XISF._to_location(("attachment", "", len(compressed)))
+                    attrs["compression"] = comp_str
+                    xml = ET.SubElement(parent, "Property", attrs)
+                    return {"xml": xml, "location": 0, "size": len(compressed), "data": compressed}
+                else:
+                    attrs["location"] = XISF._to_location(("attachment", "", sz))
+                    xml = ET.SubElement(parent, "Property", attrs)
+                    return {"xml": xml, "location": 0, "size": sz, "data": data}
             else:
                 # Inline data block (assuming base64)
-                ET.SubElement(
-                    parent,
-                    "Property",
-                    {
-                        "id": p_dict["id"],
-                        "type": p_dict["type"],
-                        "length": str(data.size),
-                        "location": XISF._to_location(("inline", "base64")),
-                    },
-                ).text = str(base64.b64encode(data.tobytes()), "ascii")
+                attrs = _build_attrs({
+                    "id": p_dict["id"],
+                    "type": p_dict["type"],
+                    "length": str(data.size),
+                    "location": XISF._to_location(("inline", "base64")),
+                })
+                ET.SubElement(parent, "Property", attrs).text = str(base64.b64encode(data.tobytes()), "ascii")
         elif "Matrix" in p_dict["type"]:
-            # TODO ignores compression
             data = p_dict["value"]
-            sz = data.nbytes
+            raw_bytes = data.tobytes()
+            sz = len(raw_bytes)
+            item_size = data.itemsize
             if sz > max_inline_block_size:
-                # Attach vector as data block (position pending)
-                xml = ET.SubElement(
-                    parent,
-                    "Property",
-                    {
-                        "id": p_dict["id"],
-                        "type": p_dict["type"],
-                        "rows": str(data.shape[0]),
-                        "columns": str(data.shape[1]),
-                        "location": XISF._to_location(("attachment", "", sz)),
-                    },
-                )
-                return {"xml": xml, "location": 0, "size": sz, "data": data}
+                # Attach matrix as data block with optional compression
+                attrs = _build_attrs({
+                    "id": p_dict["id"],
+                    "type": p_dict["type"],
+                    "rows": str(data.shape[0]),
+                    "columns": str(data.shape[1]),
+                })
+                if codec:
+                    compressed, comp_str = XISF._compress_data_block(raw_bytes, codec, shuffle, item_size)
+                    attrs["location"] = XISF._to_location(("attachment", "", len(compressed)))
+                    attrs["compression"] = comp_str
+                    xml = ET.SubElement(parent, "Property", attrs)
+                    return {"xml": xml, "location": 0, "size": len(compressed), "data": compressed}
+                else:
+                    attrs["location"] = XISF._to_location(("attachment", "", sz))
+                    xml = ET.SubElement(parent, "Property", attrs)
+                    return {"xml": xml, "location": 0, "size": sz, "data": data}
             else:
                 # Inline data block (assuming base64)
-                ET.SubElement(
-                    parent,
-                    "Property",
-                    {
-                        "id": p_dict["id"],
-                        "type": p_dict["type"],
-                        "rows": str(data.shape[0]),
-                        "columns": str(data.shape[1]),
-                        "location": XISF._to_location(("inline", "base64")),
-                    },
-                ).text = str(base64.b64encode(data.tobytes()), "ascii")
+                attrs = _build_attrs({
+                    "id": p_dict["id"],
+                    "type": p_dict["type"],
+                    "rows": str(data.shape[0]),
+                    "columns": str(data.shape[1]),
+                    "location": XISF._to_location(("inline", "base64")),
+                })
+                ET.SubElement(parent, "Property", attrs).text = str(base64.b64encode(data.tobytes()), "ascii")
         else:
             print(f"Warning: skipping unsupported property {p_dict}")
 
@@ -978,6 +1069,35 @@ class XISF:
             data = XISF._unshuffle(data, item_size)
 
         return data
+
+    @staticmethod
+    def _compress_data_block(data, codec, shuffle=False, itemsize=1):
+        """Compress a data block and return (compressed_bytes, compression_attr_string).
+        
+        Args:
+            data: bytes or numpy array to compress
+            codec: 'zlib', 'lz4', 'lz4hc', or 'zstd'
+            shuffle: enable byte shuffling
+            itemsize: item size for byte shuffling (1 for strings, dtype.itemsize for arrays)
+        
+        Returns:
+            tuple: (compressed_bytes, compression_attribute_string)
+        """
+        if hasattr(data, 'tobytes'):
+            raw_bytes = data.tobytes()
+        else:
+            raw_bytes = bytes(data)
+        
+        uncompressed_size = len(raw_bytes)
+        compressed = XISF._compress(raw_bytes, codec, shuffle=shuffle, itemsize=itemsize if shuffle else None)
+        
+        # Build compression attribute string: "codec:uncompressed_size" or "codec+sh:uncompressed_size:itemsize"
+        if shuffle and itemsize > 1:
+            comp_str = f"{codec}+sh:{uncompressed_size}:{itemsize}"
+        else:
+            comp_str = f"{codec}:{uncompressed_size}"
+        
+        return compressed, comp_str
 
     # LZ4/zlib/zstd compression
     @staticmethod

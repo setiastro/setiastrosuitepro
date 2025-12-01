@@ -11,8 +11,8 @@ from PyQt6.QtWidgets import (
 
 # Reuse existing helpers + autostretch
 from imageops.stretch import stretch_color_image
-# These helpers already exist per handoff (in pro/add_stars.py)
-from pro.add_stars import _active_mask_array_from_doc
+# Shared utilities
+from pro.widgets.image_utils import extract_mask_from_document as _active_mask_array_from_doc
 
 
 # ----------------------------
@@ -57,14 +57,39 @@ def _find_best_patch_center(lum: np.ndarray) -> tuple[int, int]:
     """Port of your downhill-walk tile search (works on a luminance plane)."""
     h, w = lum.shape
     th, tw = h // 10, w // 10
-
+    
+    # Optimized: compute 10x10 tile medians using strided views where possible
+    # This avoids repeated slicing and is cache-friendlier
     meds = np.zeros((10, 10), dtype=np.float32)
-    for i in range(10):
-        for j in range(10):
-            y0, x0 = i * th, j * tw
-            y1 = (i + 1) * th if i < 9 else h
-            x1 = (j + 1) * tw if j < 9 else w
-            meds[i, j] = np.median(lum[y0:y1, x0:x1])
+    
+    # For tiles that fit evenly, use reshape + median (faster than loop)
+    crop_h, crop_w = th * 10, tw * 10
+    if crop_h <= h and crop_w <= w:
+        lum_crop = lum[:crop_h, :crop_w]
+        # Reshape to (10, th, 10, tw) and compute medians
+        tiles = lum_crop.reshape(10, th, 10, tw).transpose(0, 2, 1, 3).reshape(10, 10, -1)
+        meds = np.median(tiles, axis=2).astype(np.float32)
+        
+        # Handle edge tiles if image doesn't divide evenly
+        if h > crop_h or w > crop_w:
+            # Bottom row edge
+            if h > crop_h:
+                for j in range(10):
+                    x0, x1 = j * tw, (j + 1) * tw if j < 9 else w
+                    meds[9, j] = np.median(lum[9*th:h, x0:x1])
+            # Right column edge
+            if w > crop_w:
+                for i in range(10):
+                    y0, y1 = i * th, (i + 1) * th if i < 9 else h
+                    meds[i, 9] = np.median(lum[y0:y1, 9*tw:w])
+    else:
+        # Fallback for very small images
+        for i in range(10):
+            for j in range(10):
+                y0, x0 = i * th, j * tw
+                y1 = (i + 1) * th if i < 9 else h
+                x1 = (j + 1) * tw if j < 9 else w
+                meds[i, j] = np.median(lum[y0:y1, x0:x1])
 
     idxs = np.argsort(meds.flatten())[:2]
 
