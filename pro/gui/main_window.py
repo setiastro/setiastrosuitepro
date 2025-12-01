@@ -1,4 +1,4 @@
-#setiastrosuitepro.py
+#pro.gui.main_window.py
 from pro.runtime_torch import add_runtime_to_sys_path, _ban_shadow_torch_paths, _purge_bad_torch_from_sysmodules
 add_runtime_to_sys_path(status_cb=lambda *_: None)
 _ban_shadow_torch_paths(status_cb=lambda *_: None)
@@ -258,23 +258,22 @@ from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkRepl
 import math
 
 
-from pro.doc_manager import DocManager
-from pro.subwindow import ImageSubWindow, TableSubWindow
-from legacy.image_manager import ImageManager
-from pro.header_viewer import HeaderViewerDock
-from pro.batch_convert import BatchConvertDialog
+#from pro.subwindow import ImageSubWindow, TableSubWindow
+#from legacy.image_manager import ImageManager
+
+
 from pro.autostretch import autostretch
-from pro.stat_stretch import StatisticalStretchDialog
-from pro.save_options import SaveOptionsDialog
-from pro.history_explorer import HistoryExplorerDialog
-from pro.star_stretch import StarStretchDialog
-from pro.histogram import HistogramDialog
-from pro.curve_editor_pro import CurvesDialogPro
-from pro.ghs_dialog_pro import GhsDialogPro
-from pro.crop_dialog_pro import CropDialogPro
-from pro.blink_comparator_pro import BlinkComparatorPro
-from pro.perfect_palette_picker import PerfectPalettePicker
-from pro.nbtorgb_stars import NBtoRGBStars
+
+
+
+
+
+
+
+
+
+
+
 from pro.frequency_separation import FrequencySeperationTab
 from pro.shortcuts import DraggableToolBar, ShortcutManager, _StatStretchPresetDialog
 from pro.shortcuts import _unpack_cmd_payload
@@ -350,10 +349,6 @@ from imageops.mdi_snap import MdiSnapController
 from pro.fitsmodifier import BatchFITSHeaderDialog
 from pro.autostretch import autostretch as _autostretch
 from ops.scripts import ScriptManager
-
-
-VERSION = "1.5.5"
-
 
 
 # Icon paths are now centralized in pro.resources module
@@ -453,9 +448,13 @@ class AstroSuiteProMainWindow(
 ):
     currentDocumentChanged = pyqtSignal(object)  # ImageDocument | None
 
-    def __init__(self, image_manager=None, parent=None):
+    def __init__(self, image_manager=None, parent=None,
+                 version: str = "dev", build_timestamp: str = "dev"):
         super().__init__(parent)
-        self.setWindowTitle(f"Seti Astro Suite Pro v{VERSION}")
+        from pro.doc_manager import DocManager
+        self._version = version
+        self._build_timestamp = build_timestamp
+        self.setWindowTitle(f"Seti Astro Suite Pro v{self._version}")
         self.resize(1400, 900)
         self._ensure_network_manager()
         self.app_icon = QIcon(windowslogo_path if os.path.exists(windowslogo_path) else icon_path)
@@ -2478,6 +2477,7 @@ class AstroSuiteProMainWindow(
 
 
     def _open_histogram(self):
+        from pro.histogram import HistogramDialog
         sw = self.mdi.activeSubWindow()
         if not sw:
             QMessageBox.information(self, "Histogram", "No active image window.")
@@ -2514,6 +2514,7 @@ class AstroSuiteProMainWindow(
 
 
     def _open_crop_dialog(self):
+        from pro.crop_dialog_pro import CropDialogPro
         sw = self.mdi.activeSubWindow()
         if not sw:
             QMessageBox.information(self, "Crop", "No active image window.")
@@ -2532,6 +2533,7 @@ class AstroSuiteProMainWindow(
         dlg.show()
 
     def _open_statistical_stretch(self):
+        from pro.stat_stretch import StatisticalStretchDialog
         sw = self.mdi.activeSubWindow()
         if not sw:
             QMessageBox.information(self, "No image", "Open an image first.")
@@ -2550,6 +2552,7 @@ class AstroSuiteProMainWindow(
 
 
     def _open_star_stretch(self):
+        from pro.star_stretch import StarStretchDialog
         sw = self.mdi.activeSubWindow()
         if not sw:
             QMessageBox.information(self, "No image", "Open an image first.")
@@ -2565,6 +2568,7 @@ class AstroSuiteProMainWindow(
         self._log("Functions: opened Star Stretch.")
 
     def _open_curves_editor(self):
+        from pro.curve_editor_pro import CurvesDialogPro
         sw = self.mdi.activeSubWindow()
         if not sw:
             QMessageBox.information(self, "No image", "Open an image first.")
@@ -2580,6 +2584,7 @@ class AstroSuiteProMainWindow(
         dlg.show()   # non-modal; you can open one per subwindow
 
     def _open_hyperbolic(self):
+        from pro.ghs_dialog_pro import GhsDialogPro
         sw = self.mdi.activeSubWindow()
         if not sw:
             QMessageBox.information(self, "No image", "Open an image first.")
@@ -3483,6 +3488,7 @@ class AstroSuiteProMainWindow(
                                 f"Failed to open Cosmic Clarity Satellite:\n{e}")
 
     def _open_history_explorer(self):
+        from pro.history_explorer import HistoryExplorerDialog
         sw = self.mdi.activeSubWindow()
         doc = sw.widget().document if sw else None
         if not doc:
@@ -3513,6 +3519,7 @@ class AstroSuiteProMainWindow(
         dlg.show()
 
     def _open_ppp_tool(self):
+        from pro.perfect_palette_picker import PerfectPalettePicker
         w = PerfectPalettePicker(doc_manager=self.docman)  # parent gives access to _spawn_subwindow_for
         w.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         w.setWindowTitle("Perfect Palette Picker")
@@ -3523,7 +3530,7 @@ class AstroSuiteProMainWindow(
         w.show()   
 
     def _open_nbtorgb_tool(self):
-
+        from pro.nbtorgb_stars import NBtoRGBStars
         w = NBtoRGBStars(doc_manager=self.docman)
         w.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         w.setWindowTitle("NB -> RGB Stars")
@@ -4070,6 +4077,7 @@ class AstroSuiteProMainWindow(
         dlg.show()
 
     def _open_batch_convert(self):
+        from pro.batch_convert import BatchConvertDialog
         dlg = BatchConvertDialog(self)
         dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         dlg.show()
@@ -4149,8 +4157,12 @@ class AstroSuiteProMainWindow(
 
 
     def _about(self):
-        dlg = AboutDialog(self)
-        dlg.show()
+        dlg = AboutDialog(
+            parent=self,
+            version=getattr(self, "_version", ""),
+            build_timestamp=getattr(self, "_build_timestamp", ""),
+        )
+        dlg.exec()
 
     #######-------COMMAND DROPS-------#################
     def remember_last_headless_command(
@@ -6476,6 +6488,7 @@ class AstroSuiteProMainWindow(
 
 
     def _open_star_stretch_with_preset(self, preset: dict):
+        from pro.star_stretch import StarStretchDialog
         """Background drop -> open Star Stretch dialog with controls preloaded."""
         sw = self.mdi.activeSubWindow()
         if not sw:
@@ -7281,6 +7294,7 @@ class AstroSuiteProMainWindow(
 
 
     def _maybe_clear_ui_after_close(self):
+        from pro.header_viewer import HeaderViewerDock
         # If no subwindows remain, clear all "active doc" UI bits, including header
         if not self.mdi.subWindowList():
             self.currentDocumentChanged.emit(None)   # drives HeaderViewerDock.set_document(None)
