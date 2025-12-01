@@ -1149,6 +1149,128 @@ class FunctionBundleDialog(QDialog):
     def closeEvent(self, e: QCloseEvent):
         super().closeEvent(e)
 
+# ---------- script / command entry point ----------
+
+def run_function_bundle_command(ctx, cfg: dict | None = None):
+    """
+    Command entry point for 'function_bundle', used by ctx.run_command.
+
+    Two modes:
+
+      1) Named bundle (preferred from scripts):
+
+         cfg = {
+             "name" or "bundle_name": "<Function Bundle Name>",
+             "targets": ...,          # optional, forwarded to children
+             "inherit_target": True,  # default
+             ...                      # other per-step overrides
+         }
+
+         Steps are loaded from QSettings['functionbundles/v1'].
+
+      2) Anonymous / inline bundle (legacy chips / shortcuts):
+
+         cfg = {
+             "steps": [ {command_id, preset?, ...}, ... ],
+             "targets": ...,
+             "inherit_target": True,
+             ...
+         }
+
+         Steps are taken directly from cfg["steps"].
+    """
+    import json
+    from PyQt6.QtCore import QSettings
+
+    if cfg is None:
+        cfg = {}
+
+    # Explicit steps (chips, old payloads, etc.)
+    steps = cfg.get("steps")
+    if not isinstance(steps, list):
+        steps = None
+
+    # Named bundle lookup
+    name = (cfg.get("name") or cfg.get("bundle_name") or "").strip()
+
+    # ── Mode A: named bundle from QSettings ────────────────────────────────
+    if name:
+        s = QSettings()
+        raw = s.value(FunctionBundleDialog.SETTINGS_KEY, "[]", type=str)
+        try:
+            bundles = json.loads(raw)
+        except Exception:
+            bundles = []
+
+        if not isinstance(bundles, list):
+            bundles = []
+
+        bundle = None
+        for b in bundles:
+            if not isinstance(b, dict):
+                continue
+            bname = (b.get("name") or "").strip()
+            if bname == name:
+                bundle = b
+                break
+
+        if bundle is None:
+            raise ValueError(f"function_bundle: bundle '{name}' not found")
+
+        steps = bundle.get("steps") or []
+        if not isinstance(steps, list):
+            raise ValueError(f"function_bundle: bundle '{name}' has invalid steps list")
+
+    # ── Mode B: anonymous bundle via cfg['steps'] ──────────────────────────
+    if not steps:
+        raise ValueError(
+            "function_bundle: 'name' or 'bundle_name' is required, or "
+            "cfg['steps'] must be a non-empty list"
+        )
+
+    inherit_target = bool(cfg.get("inherit_target", True))
+    base_targets = cfg.get("targets", None)
+
+    errors: list[str] = []
+
+    for st in steps:
+        if not isinstance(st, dict):
+            continue
+        cid = st.get("command_id")
+        if not cid:
+            continue
+
+        # Start with the step's preset dict, if any
+        sub_cfg = dict(st.get("preset") or {})
+
+        # Merge any extra keys from the step (except command_id/preset)
+        for k, v in st.items():
+            if k in ("command_id", "preset"):
+                continue
+            sub_cfg.setdefault(k, v)
+
+        # Bundle-level overrides (but don't clobber per-step keys)
+        for k, v in cfg.items():
+            if k in ("name", "bundle_name", "inherit_target", "targets", "steps"):
+                continue
+            sub_cfg.setdefault(k, v)
+
+        # Propagate targets to child commands if requested
+        if inherit_target and base_targets is not None:
+            sub_cfg.setdefault("targets", base_targets)
+
+        try:
+            ctx.run_command(cid, sub_cfg)
+        except Exception as e:
+            errors.append(f"{cid}: {e}")
+
+    if errors:
+        # You can soften this later (log-only) if you want
+        raise RuntimeError(
+            "function_bundle: some steps failed:\n" + "\n".join(errors)
+        )
+
+
 # ---------- singleton open helper ----------
 _dialog_singleton: FunctionBundleDialog | None = None
 def show_function_bundles(parent: QWidget | None,
