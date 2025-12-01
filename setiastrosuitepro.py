@@ -1,5 +1,9 @@
-#setiastrosuitepro.py
-from pro.runtime_torch import add_runtime_to_sys_path, _ban_shadow_torch_paths, _purge_bad_torch_from_sysmodules
+from pro.runtime_torch import (
+    add_runtime_to_sys_path,
+    _ban_shadow_torch_paths,
+    _purge_bad_torch_from_sysmodules,
+)
+
 add_runtime_to_sys_path(status_cb=lambda *_: None)
 _ban_shadow_torch_paths(status_cb=lambda *_: None)
 _purge_bad_torch_from_sysmodules(status_cb=lambda *_: None)
@@ -10,6 +14,28 @@ import time, traceback
 # ----------------------------------------
 import os
 import sys
+import time
+import traceback
+import warnings
+import json
+import logging
+import re
+import threading
+import webbrowser
+import multiprocessing
+import math
+
+from itertools import combinations
+from decimal import getcontext
+from urllib.parse import quote, quote_plus
+from pathlib import Path
+from typing import List, Tuple, Dict, Set, Optional
+from datetime import datetime
+from io import BytesIO
+
+import numpy as np
+from tifffile import imwrite
+from xisf import XISF
 
 def _ensure_mpl_config_dir() -> str:
     """
@@ -45,7 +71,7 @@ _MPL_CFG_DIR = _ensure_mpl_config_dir()
 
 import importlib
 
-if getattr(sys, 'frozen', False):
+if getattr(sys, "frozen", False):
     # 1) Attempt to import both metadata modules
     try:
         std_md = importlib.import_module('importlib.metadata')
@@ -101,13 +127,10 @@ if getattr(sys, 'frozen', False):
         if orig_distribution:
             m.distribution = safe_distribution
 
-
-
-import warnings
 warnings.filterwarnings(
     "ignore",
     message=r"Call to deprecated function \(or staticmethod\) _destroy\.",
-    category=DeprecationWarning
+    category=DeprecationWarning,
 )
 
 # Standard library imports
@@ -528,17 +551,35 @@ if __name__ == "__main__":
 
     # Helper: build QPixmap for the splash from icon_path (fallback to windowslogo_path)
     def _splash_pixmap():
-        p = icon_path if os.path.exists(icon_path) else (windowslogo_path if os.path.exists(windowslogo_path) else icon_path)
+        p = icon_path if os.path.exists(icon_path) else (
+            windowslogo_path if os.path.exists(windowslogo_path) else icon_path
+        )
         ext = os.path.splitext(p)[1].lower()
+
+        # Start from whatever we can load
         if ext == ".ico":
             ic = QIcon(p)
-            pm = ic.pixmap(512, 512)
+            pm = ic.pixmap(1024, 1024)  # request big, we'll clamp below
             if pm.isNull():
                 pm = QPixmap(p)
-            return pm
-        pm = QPixmap(p)
+        else:
+            pm = QPixmap(p)
+            if pm.isNull():
+                pm = QIcon(p).pixmap(1024, 1024)
+
         if pm.isNull():
-            pm = QIcon(p).pixmap(512, 512)
+            return pm  # nothing we can do
+
+        # Hard cap splash size to 512×512 (logical pixels)
+        max_side = 512
+        if pm.width() > max_side or pm.height() > max_side:
+            pm = pm.scaled(
+                max_side,
+                max_side,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+
         return pm
 
     # --- Splash FIRST ---
@@ -569,6 +610,7 @@ if __name__ == "__main__":
         logging.exception("Multiprocessing init failed (continuing).")
 
     try:
+        from legacy.image_manager import ImageManager
         # If you have heavy imports/numba warmups, you can update the splash here:
         splash.showMessage(
             "Initializing UI...",
