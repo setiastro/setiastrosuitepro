@@ -109,6 +109,7 @@ class _DragTab(QLabel):
             if (mods & Qt.KeyboardModifier.AltModifier):
                 self.owner._start_link_drag()
             elif (mods & Qt.KeyboardModifier.ShiftModifier):
+                print("[DragTab] Shift+drag → start_mask_drag() from", id(self.owner))
                 self.owner._start_mask_drag()
             elif (mods & Qt.KeyboardModifier.ControlModifier):
                 self.owner._start_astrometry_drag()
@@ -1666,14 +1667,25 @@ class ImageSubWindow(QWidget):
         """
         Start a drag that carries 'this document is a mask' to drop targets.
         """
+        doc = self.document
+        if doc is None:
+            return
+
         payload = {
-            "mask_doc_ptr": id(self.document),
+            # New-style field
+            "mask_doc_ptr": id(doc),
+
+            # Backward-compat field: many handlers still look for 'doc_ptr'
+            "doc_ptr": id(doc),
+
             "mode": "replace",       # future: "union"/"intersect"/"diff"
             "invert": False,
             "feather": 0.0,          # px
-            "name": self.document.display_name(),
+            "name": doc.display_name(),
         }
-        payload.update(self._drag_identity_fields())           # ← add uid/base_uid/file_path
+
+        # Add identity hints (uids, base uid, file_path)
+        payload.update(self._drag_identity_fields())
 
         md = QMimeData()
         md.setData(MIME_MASK, QByteArray(json.dumps(payload).encode("utf-8")))
@@ -1681,8 +1693,13 @@ class ImageSubWindow(QWidget):
         drag = QDrag(self)
         drag.setMimeData(md)
         if self.label.pixmap():
-            drag.setPixmap(self.label.pixmap().scaled(
-                64, 64, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+            drag.setPixmap(
+                self.label.pixmap().scaled(
+                    64, 64,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
             drag.setHotSpot(QPoint(16, 16))
         drag.exec(Qt.DropAction.CopyAction)
 
