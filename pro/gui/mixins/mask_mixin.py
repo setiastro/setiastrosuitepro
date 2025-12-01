@@ -238,6 +238,47 @@ class MaskMixin:
 
         self._refresh_mask_action_states()
 
+    def _resolve_mask_source_doc_from_payload(self, payload: dict):
+        """
+        Robustly resolve the source document for a mask drop using any of:
+        - doc_ptr / mask_doc_ptr (legacy pointer)
+        - doc_uid / base_doc_uid
+        - file_path
+        """
+        # 1) Try pointer first, using the existing helper if present
+        ptr = payload.get("doc_ptr") or payload.get("mask_doc_ptr")
+        if ptr and hasattr(self, "_doc_by_ptr"):
+            try:
+                doc = self._doc_by_ptr(ptr)
+                if doc is not None:
+                    return doc
+            except Exception:
+                pass
+
+        # 2) Fall back to uid-based matching
+        uid = payload.get("doc_uid") or payload.get("base_doc_uid")
+        file_path = payload.get("file_path")
+
+        try:
+            open_docs = self._list_open_docs()
+        except Exception:
+            open_docs = []
+
+        for d in open_docs:
+            # A) uid match
+            if uid and getattr(d, "uid", None) == uid:
+                return d
+
+        if file_path:
+            # B) file_path match as last resort
+            for d in open_docs:
+                meta = getattr(d, "metadata", {}) or {}
+                if meta.get("file_path") == file_path:
+                    return d
+
+        return None
+
+
     def _remove_mask_menu(self):
         """Remove the active mask from the current document."""
         doc = self._active_doc()
@@ -263,32 +304,65 @@ class MaskMixin:
         self._refresh_mask_action_states()
 
     def _handle_mask_drop(self, payload: dict, target_sw):
+        print("[MainWindow] _handle_mask_drop payload:", payload)
         """
         Handle mask drag-and-drop from one document to another.
         
         Args:
             payload: Dict with source document info
-            target_sw: Target subwindow
+            target_sw: Target QMdiSubWindow
         """
-        src_ptr = payload.get("doc_ptr")
-        if not src_ptr:
-            return
-
-        src_doc = self._doc_by_ptr(src_ptr)
+        # --- Resolve the source mask doc robustly ---
+        src_doc = self._resolve_mask_source_doc_from_payload(payload)
         if not src_doc:
+            print("[MainWindow] _handle_mask_drop: could not resolve src_doc from payload")
             return
 
-        target_view = target_sw.widget() if target_sw else None
+        # --- Resolve the target view/doc ---
+        target_view = None
+        if target_sw is not None:
+            try:
+                root = target_sw.widget()
+            except Exception:
+                root = None
+
+            if root is not None:
+                # Try direct: is the root itself an ImageSubWindow?
+                try:
+                    from pro.subwindow import ImageSubWindow  # local import to avoid cycles
+                    if isinstance(root, ImageSubWindow):
+                        target_view = root
+                    else:
+                        # Search inside the container for the first ImageSubWindow
+                        target_view = root.findChild(ImageSubWindow)
+                except Exception:
+                    # Fallback: just use root if it has a .document
+                    if hasattr(root, "document"):
+                        target_view = root
+
+        # Last-resort: fall back to the current active view
+        if target_view is None:
+            try:
+                target_view = self._active_view()
+            except Exception:
+                target_view = None
+
         target_doc = getattr(target_view, "document", None) if target_view else None
+
+        # Don’t apply mask if we still don’t have a valid target doc, or if it’s the same as src
         if not target_doc or target_doc is src_doc:
+            print(
+                "[MainWindow] _handle_mask_drop: no valid target_doc "
+                f"(target_view={target_view}, target_doc={target_doc})"
+            )
             return
 
-        # Use source as mask
+        # --- Apply source as mask onto target ---
         name = src_doc.display_name() or "Dropped Mask"
         ok = self._attach_mask_to_document(
             target_doc, src_doc,
             name=name, mode="replace",
-            invert=False, feather=0.0
+            invert=False, feather=0.0,
         )
 
         if ok and hasattr(self, "_log"):
