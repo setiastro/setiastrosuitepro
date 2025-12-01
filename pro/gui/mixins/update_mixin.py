@@ -30,6 +30,19 @@ class UpdateMixin:
     # Default URL for update checks
     _updates_url = "https://raw.githubusercontent.com/user/repo/main/updates.json"
 
+    @property
+    def _current_version_str(self) -> str:
+        """
+        Return the current app version as a string.
+
+        Prefer an attribute set on the main window (self._version),
+        fall back to any module-level VERSION if present, then "0.0.0".
+        """
+        v = getattr(self, "_version", None)
+        if not v:
+            v = globals().get("VERSION", None)
+        return str(v or "0.0.0")
+
     def _ensure_network_manager(self):
         """Ensure the network access manager exists."""
         from PyQt6.QtNetwork import QNetworkAccessManager
@@ -48,7 +61,10 @@ class UpdateMixin:
         self._ensure_network_manager()
         url_str = self.settings.value("updates/url", self._updates_url, type=str) or self._updates_url
         req = QNetworkRequest(QUrl(url_str))
-        req.setRawHeader(b"User-Agent", f"SASPro/{globals().get('VERSION', '0.0.0')}".encode("utf-8"))
+        req.setRawHeader(
+            b"User-Agent",
+            f"SASPro/{self._current_version_str}".encode("utf-8")
+        )
         reply = self._nam.get(req)
         reply.setProperty("interactive", interactive)
 
@@ -126,9 +142,9 @@ class UpdateMixin:
                     print("[updates] JSON missing 'version'")
                 return
 
-            cur_tuple = self._parse_version_tuple(globals().get("VERSION", "0.0.0"))
+            cur_tuple = self._parse_version_tuple(self._current_version_str)
             latest_tuple = self._parse_version_tuple(latest_str)
-            available = bool(latest_tuple and latest_tuple > cur_tuple)
+            available = bool(latest_tuple and cur_tuple and latest_tuple > cur_tuple)
 
             if available:
                 if self.statusBar():
@@ -201,7 +217,10 @@ class UpdateMixin:
         target_path = Path(downloads_dir) / fname
 
         req = QNetworkRequest(QUrl(url))
-        req.setRawHeader(b"User-Agent", f"SASPro/{globals().get('VERSION', '0.0.0')}".encode("utf-8"))
+        req.setRawHeader(
+            b"User-Agent",
+            f"SASPro/{self._current_version_str}".encode("utf-8")
+        )
 
         reply = self._nam.get(req)
         # mark this reply as "this is the actual installer file, not updates.json"
