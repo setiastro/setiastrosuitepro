@@ -194,8 +194,15 @@ register(CommandSpec(
     id="function_bundle",
     title="Function Bundle",
     group="Bundles",
-    summary="Runs a sequence of steps. steps=[{command_id,preset},..], inherit_target, targets=all_open or doc_ptr list.",
+    summary=(
+        "Runs a sequence of steps from a saved Function Bundle or an inline "
+        "steps list. "
+        "Config: name/bundle_name='Bundle Name' OR steps=[...], "
+        "optional targets, inherit_target."
+    ),
     call_style="ctx.run_command",
+    import_path="pro.function_bundle",          # <── important
+    callable_name="run_function_bundle_command" # <── important
 ))
 
 register(CommandSpec(
