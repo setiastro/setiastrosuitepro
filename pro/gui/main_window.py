@@ -194,8 +194,6 @@ def get_lightkurve():
 # --- End lazy imports ---
 
 
-from numba_utils import *
-
 # Shared UI utilities (avoiding code duplication)
 from pro.widgets.common_utilities import (
     AboutDialog,
@@ -218,14 +216,6 @@ try:
     OPENCV_AVAILABLE = True
 except ImportError:
     OPENCV_AVAILABLE = False
-
-
-# Third-party library imports
-
-import numpy as np
-
-import cv2
-
 
 
 
@@ -263,44 +253,10 @@ import math
 
 
 from pro.autostretch import autostretch
+from pro.autostretch import autostretch as _autostretch
 
 
 
-
-
-
-
-
-
-
-
-from pro.frequency_separation import FrequencySeperationTab
-from pro.shortcuts import DraggableToolBar, ShortcutManager, _StatStretchPresetDialog
-from pro.shortcuts import _unpack_cmd_payload
-from pro.continuum_subtract import ContinuumSubtractTab
-from pro.abe import ABEDialog
-from ops.settings import SettingsDialog
-from pro.mask_creation import create_mask_and_attach
-from pro.dnd_mime import MIME_VIEWSTATE, MIME_CMD, MIME_MASK, MIME_ASTROMETRY, MIME_LINKVIEW
-from pro.graxpert import remove_gradient_with_graxpert
-from pro.remove_stars import remove_stars
-from pro.add_stars import add_stars 
-from pro.window_shelf import WindowShelf, MinimizeInterceptor
-from pro.pedestal import remove_pedestal
-from pro.remove_green import open_remove_green_dialog, apply_remove_green_preset_to_doc
-from pro.backgroundneutral import BackgroundNeutralizationDialog, apply_background_neutral_to_doc
-from pro.luminancerecombine import apply_recombine_to_doc, compute_luminance, _to_float01_strict, _estimate_noise_sigma_per_channel, _LUMA_REC709, _LUMA_REC601, _LUMA_REC2020
-from pro.sfcc import SFCCDialog
-from pro.rgb_extract import extract_rgb_channels 
-from pro.rgb_combination import RGBCombinationDialogPro
-from pro.blemish_blaster import BlemishBlasterDialogPro
-from pro.wavescale_hdr import WaveScaleHDRDialogPro, compute_wavescale_hdr
-from pro.wavescalede import install_wavescale_dark_enhancer
-from pro.clahe import CLAHEDialogPro
-from pro.morphology import MorphologyDialogPro
-from pro.pixelmath import PixelMathDialogPro
-from pro.signature_insert import SignatureInsertDialogPro
-from pro.cosmicclarity import CosmicClarityDialogPro, CosmicClaritySatelliteDialogPro
 from legacy.numba_utils import (
     rescale_image_numba,
     flip_horizontal_numba,
@@ -310,45 +266,17 @@ from legacy.numba_utils import (
     invert_image_numba,
     rotate_180_numba,
 )
-from pro.wcs_update import update_wcs_after_crop
-from pro.project_io import ProjectWriter, ProjectReader
-from pro.psf_viewer import PSFViewer
-from pro.plate_solver import plate_solve_doc_inplace, PlateSolverDialog
-from pro.star_alignment import StellarAlignmentDialog, StarRegistrationWindow, MosaicMasterDialog
-from pro.image_peeker_pro import ImagePeekerDialogPro
-# Lazy imports for heavy dialogs (loaded on demand)
-# from pro.live_stacking import LiveStackWindow  # loaded on demand
-# from pro.stacking_suite import StackingSuiteDialog  # loaded on demand
-# from pro.supernovaasteroidhunter import SupernovaAsteroidHunterDialog  # loaded on demand
-from pro.star_spikes import StarSpikesDialogPro
-# Lazy imports for modules that load lightkurve (~12s)
-# from pro.exoplanet_detector import ExoPlanetWindow  # loaded on demand
-# from wimi import WIMIDialog  # loaded on demand
-from pro.isophote import IsophoteModelerDialog
-from wims import WhatsInMySkyDialog
-from pro.fitsmodifier import FITSModifier
-from pro.batch_renamer import BatchRenamerDialog
-from pro.astrobin_exporter import AstrobinExporterDialog
-from pro.linear_fit import LinearFitDialog
-from pro.debayer import DebayerDialog, apply_debayer_preset_to_doc
-from pro.copyastro import CopyAstrometryDialog
-from pro.layers_dock import LayersDock
+
 try:
     from pro._generated.build_info import BUILD_TIMESTAMP
 except Exception:
     BUILD_TIMESTAMP = "dev"
-from pro.aberration_ai import AberrationAIDialog
-from pro.view_bundle import show_view_bundles
-from pro.function_bundle import show_function_bundles
-from pro.ghs_preset import open_ghs_with_preset
-from pro.curves_preset import open_curves_with_preset
-from pro.save_options import _normalize_ext
-from pro.status_log_dock import StatusLogDock
-from pro.log_bus import LogBus
-from imageops.mdi_snap import MdiSnapController
-from pro.fitsmodifier import BatchFITSHeaderDialog
-from pro.autostretch import autostretch as _autostretch
-from ops.scripts import ScriptManager
+
+
+
+
+
+
 
 
 # Icon paths are now centralized in pro.resources module
@@ -452,6 +380,9 @@ class AstroSuiteProMainWindow(
                  version: str = "dev", build_timestamp: str = "dev"):
         super().__init__(parent)
         from pro.doc_manager import DocManager
+        from pro.window_shelf import WindowShelf, MinimizeInterceptor
+        from imageops.mdi_snap import MdiSnapController
+        from ops.scripts import ScriptManager
         self._version = version
         self._build_timestamp = build_timestamp
         self.setWindowTitle(f"Seti Astro Suite Pro v{self._version}")
@@ -1746,6 +1677,7 @@ class AstroSuiteProMainWindow(
 
 
     def _open_view_bundles(self):
+        from pro.view_bundle import show_view_bundles
         try:
 
             show_view_bundles(self)
@@ -1753,6 +1685,7 @@ class AstroSuiteProMainWindow(
             QMessageBox.warning(self, "View Bundles", f"Open failed:\n{e}")
 
     def _open_function_bundles(self):
+        from pro.function_bundle import show_function_bundles
         try:
 
             show_function_bundles(self)
@@ -1978,6 +1911,7 @@ class AstroSuiteProMainWindow(
         return True
 
     def _do_load_project_path(self, path: str):
+        from pro.project_io import ProjectWriter, ProjectReader
         """Internal helper to actually load a .sas file."""
         if not path:
             return
@@ -2079,6 +2013,7 @@ class AstroSuiteProMainWindow(
 
 
     def _open_settings(self):
+        from ops.settings import SettingsDialog
         dlg = SettingsDialog(self, self.settings)
         if dlg.exec():
             # (Optional) react to changes if needed
@@ -2273,6 +2208,7 @@ class AstroSuiteProMainWindow(
 
 
     def _action_create_mask(self):
+        from pro.mask_creation import create_mask_and_attach
         doc = self._current_document()
         if doc is None or getattr(doc, "image", None) is None:
             QMessageBox.information(self, "No image", "Open an image first.")
@@ -2308,6 +2244,7 @@ class AstroSuiteProMainWindow(
 
     # --- WCS summary popup ----------------------------------------
     def _show_wcs_update_popup(self, debug_summary: dict, step_name: str):
+        from pro.wcs_update import update_wcs_after_crop
         """
         Show a small WCS update summary dialog using the debug payload
         from update_wcs_after_crop (stored under '__wcs_debug__').
@@ -2599,6 +2536,7 @@ class AstroSuiteProMainWindow(
         dlg.show()
 
     def _remove_stars(self, doc=None):
+        from pro.remove_stars import remove_stars
         """
         Wrapper so both the menu and Replay Last Action can call star removal
         on a specific document (ROI, base, etc.).
@@ -2615,6 +2553,7 @@ class AstroSuiteProMainWindow(
 
 
     def _open_graxpert(self):
+        from pro.graxpert import remove_gradient_with_graxpert
         """Open GraXpert for the active document (same style as Star Stretch)."""
         sw = self.mdi.activeSubWindow()
         if not sw:
@@ -2635,7 +2574,8 @@ class AstroSuiteProMainWindow(
         except Exception:
             pass
 
-    def _open_abe_tool(self):
+    def _open_abe_tool(self):        
+        from pro.abe import ABEDialog
         sw = self.mdi.activeSubWindow()
         if not sw:
             QMessageBox.information(self, "No image", "Open an image first.")
@@ -2650,6 +2590,7 @@ class AstroSuiteProMainWindow(
         dlg.show()
 
     def _open_background_neutral(self):
+        from pro.backgroundneutral import BackgroundNeutralizationDialog
         sw = self.mdi.activeSubWindow()
         if not sw:
             QMessageBox.information(self, "No image", "Open an image first.")
@@ -2665,7 +2606,7 @@ class AstroSuiteProMainWindow(
         dlg.show()
 
     def _apply_background_neutral_preset_to_doc(self, doc, preset: dict):
-
+        from pro.backgroundneutral import apply_background_neutral_to_doc
         apply_background_neutral_to_doc(doc, preset or {"mode": "auto"})
 
     def _open_white_balance(self):
@@ -2734,6 +2675,7 @@ class AstroSuiteProMainWindow(
 
 
     def SFCC_show(self):
+        from pro.sfcc import SFCCDialog
         if getattr(self, "SFCC_window", None) and self.SFCC_window.isVisible():
             self.SFCC_window.raise_()
             self.SFCC_window.activateWindow()
@@ -2837,6 +2779,7 @@ class AstroSuiteProMainWindow(
 
 
     def _extract_luminance(self, doc=None, preset: dict | None = None):
+        from pro.luminancerecombine import _LUMA_REC709, _LUMA_REC601, _LUMA_REC2020
         """
         If doc is None, uses the active subwindow's document.
         Otherwise, run on the provided doc (for drag-and-drop to a specific view).
@@ -2917,6 +2860,7 @@ class AstroSuiteProMainWindow(
             luma_weights = np.array([1/3, 1/3, 1/3], dtype=np.float32)
             y = a.mean(axis=2)
         elif method == "snr":
+            from pro.luminancerecombine import _estimate_noise_sigma_per_channel
             sigma = _estimate_noise_sigma_per_channel(a)
             w = 1.0 / (sigma[:3]**2 + 1e-12)
             w = w / w.sum()
@@ -3045,6 +2989,7 @@ class AstroSuiteProMainWindow(
             sel_title, src_doc = candidates[idx]
 
         try:
+            from pro.luminancerecombine import _to_float01_strict
             src_img = _to_float01_strict(np.asarray(src_doc.image))
 
             # Prefer the source doc's stored method/weights (for perfect round-trip),
@@ -3069,7 +3014,7 @@ class AstroSuiteProMainWindow(
             # Optional knobs: you can expose these in a small dialog later
             blend = 1.0       # exact replace
             soft_knee = 0.0   # no highlight protection by default
-
+            from pro.luminancerecombine import apply_recombine_to_doc
             apply_recombine_to_doc(
                 target_doc,
                 luminance_source_img=src_img,
@@ -3160,6 +3105,7 @@ class AstroSuiteProMainWindow(
         return items
 
     def _open_rgb_combination(self):
+        from pro.rgb_combination import RGBCombinationDialogPro
         dlg = RGBCombinationDialogPro(
             parent=self,
             list_open_docs_fn=self._list_open_docs_for_rgb,
@@ -3173,6 +3119,7 @@ class AstroSuiteProMainWindow(
         dlg.show()
 
     def _open_blemish_blaster(self):
+        from pro.blemish_blaster import BlemishBlasterDialogPro
         sw = self.mdi.activeSubWindow()
         if not sw:
             QMessageBox.information(self, "Blemish Blaster", "No active image window.")
@@ -3191,6 +3138,7 @@ class AstroSuiteProMainWindow(
         dlg.show()
 
     def _open_wavescale_hdr(self):
+        from pro.wavescale_hdr import WaveScaleHDRDialogPro
         sw = self.mdi.activeSubWindow()
         if not sw:
             QMessageBox.information(self, "WaveScale HDR", "No active image window.")
@@ -3433,6 +3381,7 @@ class AstroSuiteProMainWindow(
 
 
     def _open_aberration_ai(self):
+        from pro.aberration_ai import AberrationAIDialog
         sw = self.mdi.activeSubWindow()
         if not sw:
             QMessageBox.information(self, "Aberration Correction", "No active image view.")
@@ -3452,6 +3401,18 @@ class AstroSuiteProMainWindow(
             print(f"Failed to open Aberration AI: {e}")
 
     def _open_cosmic_clarity_ui(self):
+        print("Opening Cosmic Clarity UI...")
+        try:
+            from pro import cosmicclarity as cc
+            CosmicClarityDialogPro = cc.CosmicClarityDialogPro
+        except Exception as e:
+            import traceback
+            print("Failed to import pro.cosmicclarity:", e)
+            traceback.print_exc()
+            QMessageBox.critical(self, "Cosmic Clarity",
+                                f"Failed to import Cosmic Clarity module:\n{e}")
+            return
+
         sw = self.mdi.activeSubWindow()
         if not sw:
             QMessageBox.information(self, "Cosmic Clarity", "No active image view.")
@@ -3463,13 +3424,35 @@ class AstroSuiteProMainWindow(
             QMessageBox.information(self, "Cosmic Clarity", "Active view has no image.")
             return
 
+        # 🔸 Clear any stale headless flag when user explicitly opens the UI
         try:
-            dlg = CosmicClarityDialogPro(self, doc, icon=QIcon(cosmic_path))
-            dlg.exec()
+            s = QSettings()
+            s.remove("cc/headless_in_progress")
+        except Exception:
+            pass
+
+        try:
+            print("Creating CosmicClarityDialogPro (interactive)...")
+            dlg = CosmicClarityDialogPro(
+                self,
+                doc,
+                icon=QIcon(cosmic_path),
+                headless=False,
+                bypass_guard=True,          # <-- key change
+            )
+            print("Dialog created, calling exec()...")
+            result = dlg.exec()
+            print(f"Cosmic Clarity dialog returned code {result}")
         except Exception as e:
-            print(f"Failed to open Cosmic Clarity UI: {e}")
+            import traceback
+            print("Failed to open Cosmic Clarity UI:", e)
+            traceback.print_exc()
+            QMessageBox.critical(self, "Cosmic Clarity",
+                                f"Failed to open Cosmic Clarity UI:\n{e}")
+
 
     def _open_cosmic_clarity_satellite(self):
+        from pro.cosmicclarity import CosmicClaritySatelliteDialogPro
         # It's OK if there is no active subwindow or no image.
         sw = self.mdi.activeSubWindow() if hasattr(self, "mdi") else None
         doc = None
@@ -3558,6 +3541,7 @@ class AstroSuiteProMainWindow(
         w.show()
 
     def _open_freqsep_tool(self):
+        from pro.frequency_separation import FrequencySeperationTab
         # get the active ImageDocument (same pattern you use elsewhere)
         doc = None
         if hasattr(self, "mdi") and self.mdi.activeSubWindow():
@@ -3583,6 +3567,7 @@ class AstroSuiteProMainWindow(
         w.show()
 
     def _open_contsub_tool(self):
+        from pro.continuum_subtract import ContinuumSubtractTab
         w = ContinuumSubtractTab(doc_manager=self.docman)
         w.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         w.setWindowTitle("Continuum Subtract")
@@ -3688,6 +3673,7 @@ class AstroSuiteProMainWindow(
             QMessageBox.critical(self, "Image Combine", f"Failed:\n{e}")
 
     def _open_psf_viewer(self, preset: dict | None = None):
+        from pro.psf_viewer import PSFViewer
         sw = self.mdi.activeSubWindow()
         if not sw:
             QMessageBox.information(self, "Pixel Math", "No active image window.")
@@ -3714,6 +3700,7 @@ class AstroSuiteProMainWindow(
         dlg.show()
 
     def _open_image_peeker(self):
+        from pro.image_peeker_pro import ImagePeekerDialogPro
         sw = self.mdi.activeSubWindow()
         if not sw:
             QMessageBox.information(self, "Image Peaker", "No active image window.")
@@ -3724,7 +3711,7 @@ class AstroSuiteProMainWindow(
         dlg.show()
 
     def _open_image_peeker_for_doc(self, doc, title_hint=None):
-
+        from pro.image_peeker_pro import ImagePeekerDialogPro
         dlg = ImagePeekerDialogPro(parent=self, document=doc, settings=self.settings)
         try: dlg.setWindowIcon(QIcon(peeker_icon))
         except Exception: pass
@@ -3734,6 +3721,7 @@ class AstroSuiteProMainWindow(
 
 
     def _open_plate_solver(self):
+        from pro.plate_solver import plate_solve_doc_inplace, PlateSolverDialog
         dlg = PlateSolverDialog(self.settings, parent=self)
         dlg.setWindowIcon(QIcon(platesolve_path))
         dlg.show()  # modal; keeps the dialog (and its QProcess) alive until done
@@ -3755,6 +3743,7 @@ class AstroSuiteProMainWindow(
 
 
     def _open_stellar_alignment(self):
+        from pro.star_alignment import StellarAlignmentDialog
         dlg = StellarAlignmentDialog(
             parent=self,
             settings=self.settings,
@@ -3811,6 +3800,7 @@ class AstroSuiteProMainWindow(
         dlg.show()
 
     def _open_mosaic_master(self):
+        from pro.star_alignment import MosaicMasterDialog
         dlg = MosaicMasterDialog(
             settings=self.settings,
             parent=self,
@@ -3910,7 +3900,7 @@ class AstroSuiteProMainWindow(
         dlg.show()
 
     def _open_star_spikes(self, *, doc=None, preset: dict | None = None, title_hint: str | None = None):
-
+        from pro.star_spikes import StarSpikesDialogPro
         dlg = StarSpikesDialogPro(
             parent=self,
             doc_manager=getattr(self, "docman", None),
@@ -3950,6 +3940,7 @@ class AstroSuiteProMainWindow(
         dlg.show()
 
     def _open_isophote(self):
+        from pro.isophote import IsophoteModelerDialog
         # Mirror PSF opener: use MDI active subwindow -> widget -> document -> image
         sw = self.mdi.activeSubWindow()
         if not sw:
@@ -4001,6 +3992,7 @@ class AstroSuiteProMainWindow(
         dlg.show()
 
     def _open_whats_in_my_sky(self):
+        from wims import WhatsInMySkyDialog
         dlg = WhatsInMySkyDialog(
             parent=self,
             wims_path=wims_path,          # window icon
@@ -4026,6 +4018,7 @@ class AstroSuiteProMainWindow(
 
 
     def _open_fits_modifier(self):
+        from pro.fitsmodifier import FITSModifier
         doc = self.doc_manager.get_active_document()
         if not doc:
             QMessageBox.information(self, "FITS Header Editor", "No active image window.")
@@ -4046,6 +4039,7 @@ class AstroSuiteProMainWindow(
         dlg.show()
 
     def _open_fits_batch_modifier(self):
+        from pro.fitsmodifier import BatchFITSHeaderDialog
         """
         doc = self.doc_manager.get_active_document()
         if not doc:
@@ -4064,11 +4058,13 @@ class AstroSuiteProMainWindow(
 
 
     def _open_batch_renamer(self):
+        from pro.batch_renamer import BatchRenamerDialog
         dlg = BatchRenamerDialog(parent=self)
         dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         dlg.show()
 
     def _open_astrobin_exporter(self):
+        from pro.astrobin_exporter import AstrobinExporterDialog
         # you said this is defined in the parent main UI:
         # astrobin_filters_csv_path = os.path.join(sys._MEIPASS, 'astrobin_filters.csv')
 
@@ -4083,6 +4079,7 @@ class AstroSuiteProMainWindow(
         dlg.show()
 
     def _open_copy_astrometry(self):
+        from pro.copyastro import CopyAstrometryDialog
         sw = self.mdi.activeSubWindow()
         if not sw:
             QMessageBox.information(self, "Copy Astrometric Solution", "No active image window.")
@@ -4093,6 +4090,7 @@ class AstroSuiteProMainWindow(
         dlg.show()
 
     def _open_linear_fit(self):
+        from pro.linear_fit import LinearFitDialog
         dm = getattr(self, "doc_manager", None) or getattr(self, "docman", None)
         if dm is None:
             QMessageBox.information(self, "Linear Fit", "No document manager available.")
@@ -4134,6 +4132,7 @@ class AstroSuiteProMainWindow(
 
 
     def _open_debayer(self):
+        from pro.debayer import DebayerDialog
         sw = self.mdi.activeSubWindow()
         if not sw:
             QMessageBox.information(self, "No image", "Open an image first.")
@@ -5110,6 +5109,18 @@ class AstroSuiteProMainWindow(
     
         payload = payload or {}
 
+        # 🔍 Global debug sniffer
+        try:
+            print(
+                f"[HCD] DROP cid={cid!r}, target_sw={repr(target_sw)}, payload_keys={list((payload or {}).keys())}",
+                flush=True,
+            )
+        except Exception:
+            pass
+        try:
+            QApplication.processEvents()
+        except Exception:
+            pass
         def _extract_cid(p):
             # accept several shapes: "command_id": str | dict | list, or "command": {...}
             c = p.get("command_id")
@@ -5220,49 +5231,133 @@ class AstroSuiteProMainWindow(
             return False
 
         # ----- Function bundle: run a sequence of steps on the target view(s) -----
+        # ----- Function bundle: run a sequence of steps on the target view(s) -----
         if cid in ("function_bundle", "bundle_functions"):
+            from PyQt6.QtWidgets import QApplication
+
+            payload = payload or {}
             steps   = list((payload or {}).get("steps") or [])
-            inherit = bool((payload or {}).get("inherit_target", True))  # NEW: default True
+            inherit = bool((payload or {}).get("inherit_target", True))
+
+            print(
+                f"[HCD] ENTER function_bundle: inherit={inherit}, target_sw={repr(target_sw)}, steps={len(steps)}, payload={payload!r}",
+                flush=True,
+            )
+            QApplication.processEvents()
+
+            if not steps:
+                print("[HCD] function_bundle: NO STEPS, returning", flush=True)
+                QApplication.processEvents()
+                return
 
             # If user dropped onto the background (no direct target), support 'targets'
             if target_sw is None:
                 targets = (payload or {}).get("targets")
+                print(f"[HCD] function_bundle: NO target_sw, targets={targets!r}", flush=True)
+                QApplication.processEvents()
 
-                # Apply to all open subwindows
                 if targets == "all_open":
+                    print("[HCD] function_bundle: apply to ALL OPEN subwindows", flush=True)
+                    QApplication.processEvents()
                     for sw in list(self.mdi.subWindowList()):
-                        for st in steps:
-                            self._handle_command_drop(st, target_sw=sw)
+                        print(f"[HCD]   all_open -> sw={repr(sw)}", flush=True)
+                        QApplication.processEvents()
+                        for i, st in enumerate(steps, start=1):
+                            if not isinstance(st, dict) or not st.get("command_id"):
+                                print(f"[HCD]     skip step[{i}]: bad payload {st!r}", flush=True)
+                                QApplication.processEvents()
+                                continue
+                            cid2 = st.get("command_id")
+                            print(f"[HCD]     BEGIN step[{i}/{len(steps)}] cid={cid2}", flush=True)
+                            QApplication.processEvents()
+                            try:
+                                self._handle_command_drop(st, target_sw=sw)
+                                print(f"[HCD]     END   step[{i}/{len(steps)}] cid={cid2} OK", flush=True)
+                            except Exception as e:
+                                print(f"[HCD]     END   step[{i}/{len(steps)}] cid={cid2} ERROR={e!r}", flush=True)
+                            QApplication.processEvents()
+                    print("[HCD] EXIT function_bundle (all_open)", flush=True)
+                    QApplication.processEvents()
                     return
 
-                # Apply to explicit list of doc_ptrs
                 if isinstance(targets, (list, tuple)):
+                    print(f"[HCD] function_bundle: apply to explicit targets={targets!r}", flush=True)
+                    QApplication.processEvents()
                     for ptr in targets:
                         try:
                             doc, sw = self._find_doc_by_id(int(ptr))
-                        except Exception:
+                            print(f"[HCD]   _find_doc_by_id({ptr}) -> sw={repr(sw)}", flush=True)
+                        except Exception as e:
+                            print(f"[HCD]   _find_doc_by_id({ptr}) ERROR={e!r}", flush=True)
                             sw = None
+                        QApplication.processEvents()
                         if sw:
-                            for st in steps:
-                                self._handle_command_drop(st, target_sw=sw)
+                            for i, st in enumerate(steps, start=1):
+                                if not isinstance(st, dict) or not st.get("command_id"):
+                                    print(f"[HCD]     skip step[{i}]: bad payload {st!r}", flush=True)
+                                    QApplication.processEvents()
+                                    continue
+                                cid2 = st.get("command_id")
+                                print(f"[HCD]     BEGIN step[{i}/{len(steps)}] cid={cid2}", flush=True)
+                                QApplication.processEvents()
+                                try:
+                                    self._handle_command_drop(st, target_sw=sw)
+                                    print(f"[HCD]     END   step[{i}/{len(steps)}] cid={cid2} OK", flush=True)
+                                except Exception as e:
+                                    print(f"[HCD]     END   step[{i}/{len(steps)}] cid={cid2} ERROR={e!r}", flush=True)
+                                QApplication.processEvents()
+                    print("[HCD] EXIT function_bundle (explicit targets)", flush=True)
+                    QApplication.processEvents()
                     return
 
                 # No target info -> open Function Bundles UI
+                print("[HCD] function_bundle: no target info, opening Function Bundles UI", flush=True)
+                QApplication.processEvents()
                 try:
                     from pro.function_bundle import show_function_bundles
                     show_function_bundles(self)
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"[HCD] show_function_bundles ERROR={e!r}", flush=True)
+                    QApplication.processEvents()
+                print("[HCD] EXIT function_bundle (UI path)", flush=True)
+                QApplication.processEvents()
                 return
 
             # We DO have an explicit target subwindow -> run the sequence there.
-            # If inherit=True (default), forward the SAME target to each child step.
-            for st in steps:
-                if not isinstance(st, dict) or not st.get("command_id"):
-                    continue
-                self._handle_command_drop(st, target_sw=target_sw if inherit else None)
-            return
+            print(f"[HCD] function_bundle: USING target_sw={repr(target_sw)}", flush=True)
+            QApplication.processEvents()
 
+            for i, st in enumerate(steps, start=1):
+                if not isinstance(st, dict) or not st.get("command_id"):
+                    print(f"[HCD]   skip step[{i}]: bad payload {st!r}", flush=True)
+                    QApplication.processEvents()
+                    continue
+
+                cid2 = st.get("command_id")
+                is_cc = str(cid2).lower().startswith("cosmic")
+                print(
+                    f"[HCD]   BEGIN step[{i}/{len(steps)}]{' (CC)' if is_cc else ''} cid={cid2}, payload={st!r}",
+                    flush=True,
+                )
+                QApplication.processEvents()
+
+                try:
+                    self._handle_command_drop(st, target_sw=target_sw if inherit else None)
+                    print(
+                        f"[HCD]   END   step[{i}/{len(steps)}]{' (CC)' if is_cc else ''} cid={cid2} OK",
+                        flush=True,
+                    )
+                except Exception as e:
+                    print(
+                        f"[HCD]   END   step[{i}/{len(steps)}]{' (CC)' if is_cc else ''} cid={cid2} ERROR={e!r}",
+                        flush=True,
+                    )
+
+                QApplication.processEvents()
+
+            print("[HCD] EXIT function_bundle (explicit target)", flush=True)
+            QApplication.processEvents()
+            return
         # --- Bundle runner ----------------------------------------
         if cid in ("bundle", "__bundle_exec__"):
             steps = list((payload or {}).get("steps") or [])
@@ -5337,6 +5432,7 @@ class AstroSuiteProMainWindow(
             if cid == "star_stretch":
                 self._open_star_stretch_with_preset(preset); return
             if cid == "remove_green":
+                from pro.remove_green import open_remove_green_dialog
                 open_remove_green_dialog(self, preset); return
             if cid == "extract_luminance":
                 self._extract_luminance(doc=None); return
@@ -5355,7 +5451,7 @@ class AstroSuiteProMainWindow(
             if cid == "rgb_combine":
                 self._open_rgb_combination(); return
             if cid == "curves":
-                
+                from pro.curves_preset import open_curves_with_preset
                 open_curves_with_preset(self, preset)
                 return
             if cid == "crop":
@@ -5382,7 +5478,7 @@ class AstroSuiteProMainWindow(
                 return            
             if target_sw is None:
                 if cid == "ghs":
-                    
+                    from pro.ghs_preset import open_ghs_with_preset
                     open_ghs_with_preset(self, preset)
                     return
 
@@ -5448,6 +5544,7 @@ class AstroSuiteProMainWindow(
             return
 
         if cid == "pedestal":
+            from pro.pedestal import remove_pedestal
             remove_pedestal(self, target_doc=doc)
             return
 
@@ -5792,6 +5889,7 @@ class AstroSuiteProMainWindow(
             return
 
         if cid == "blemish_blaster":
+            from pro.blemish_blaster import BlemishBlasterDialogPro
             dlg = BlemishBlasterDialogPro(self, doc)
             try: dlg.setWindowIcon(QIcon(blastericon_path))
             except Exception: pass
@@ -5803,6 +5901,7 @@ class AstroSuiteProMainWindow(
 
         if cid == "wavescale_hdr":
             # (unchanged block)
+            from pro.wavescale_hdr import compute_wavescale_hdr
             try:
                 img = np.asarray(doc.image, dtype=np.float32)
                 if img.ndim == 2:
@@ -6123,7 +6222,8 @@ class AstroSuiteProMainWindow(
                 )
                 return
 
-            try:                
+            try:       
+                from pro.plate_solver import plate_solve_doc_inplace         
                 ok, hdr_or_err = plate_solve_doc_inplace(self, doc, self.settings)
                 if ok:
                     h = hdr_or_err  # astropy.io.fits.Header
