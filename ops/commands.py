@@ -139,10 +139,11 @@ ALIASES: Dict[str, str] = {
     "starnet": "remove_stars",
     "darkstar": "remove_stars",
 
-    # AI tools
-    "aberrationai": "aberrationai",
-    "aberration": "aberrationai",
-    "ai_aberration": "aberrationai",
+    # AI tools  ✅ FIXED
+    "aberrationai": "aberration_ai",
+    "aberration_ai": "aberration_ai",   # explicit canonical alias
+    "aberration": "aberration_ai",
+    "ai_aberration": "aberration_ai",
 
     "cosmic": "cosmic_clarity",
     "cosmicclarity": "cosmic_clarity",
@@ -202,8 +203,70 @@ register(CommandSpec(
     ),
     call_style="ctx.run_command",
     import_path="pro.function_bundle",          # <── important
-    callable_name="run_function_bundle_command" # <── important
+    callable_name="run_function_bundle_command",# <── important
+    notes=(
+        "Use this command from scripts to run a saved Function Bundle or an "
+        "inline list of steps.\n\n"
+        "- For saved bundles, specify `bundle_name` (or `name`).\n"
+        "- `inherit_target=True` forwards the current target (active view / ROI) "
+        "into each step.\n"
+        "- This is the same mechanism used by the bundled 'Run Function Bundle…' script."
+    ),
+    presets=[
+        PresetSpec(
+            key="bundle_name",
+            type="str",
+            desc="Name of the saved Function Bundle to run (same as shown in the Function Bundles dialog).",
+            optional=True,
+        ),
+        PresetSpec(
+            key="name",
+            type="str",
+            desc="Alias of `bundle_name` for backward compatibility.",
+            optional=True,
+        ),
+        PresetSpec(
+            key="steps",
+            type="list",
+            desc="Inline steps list (advanced). If given, this is used instead of a saved bundle.",
+            optional=True,
+        ),
+        PresetSpec(
+            key="inherit_target",
+            type="bool",
+            default=True,
+            desc="If True, each step runs on the same target (active view / ROI) as the bundle call.",
+            optional=True,
+        ),
+        PresetSpec(
+            key="target",
+            type="dict",
+            desc="Optional explicit target override (advanced; normally you just let inherit_target=True).",
+            optional=True,
+        ),
+    ],
+    examples=[
+        # Mirrors your run_function_bundle.py config, but simplified
+        "def run(ctx):\n"
+        "    cfg = {\n"
+        "        'bundle_name': 'PreProcess',  # name from Function Bundles dialog\n"
+        "        'inherit_target': True,\n"
+        "    }\n"
+        "    ctx.run_command('function_bundle', cfg)\n",
+
+        # Inline steps example (for power users)
+        "def run(ctx):\n"
+        "    steps = [\n"
+        "        {'id': 'stat_stretch', 'preset': {'target_median': 0.25}},\n"
+        "        {'id': 'remove_green', 'preset': {'amount': 0.6}},\n"
+        "    ]\n"
+        "    ctx.run_command('function_bundle', {\n"
+        "        'steps': steps,\n"
+        "        'inherit_target': True,\n"
+        "    })\n",
+    ],
 ))
+
 
 register(CommandSpec(
     id="bundle",
@@ -211,7 +274,10 @@ register(CommandSpec(
     group="Bundles",
     summary="Internal bundle runner. steps=[...], targets='all_open'|[doc_ptrs], stop_on_error.",
     call_style="ctx.run_command",
+    import_path="pro.function_bundle",
+    callable_name="run_function_bundle_command",
 ))
+
 
 # ---------------- Stretches / tone ----------------
 

@@ -255,14 +255,33 @@ def render_scripting_quickstart_markdown() -> str:
         "    ctx.run_command('remove_green', {'amount': 0.7})",
         "```",
         "",
+        "### Running Function Bundles from scripts",
+        "Function Bundles are saved sequences of commands you manage in the **Function Bundles** dialog.",
+        "You can trigger them from scripts using the `function_bundle` command:",
+        "",
+        "```python",
+        "def run(ctx):",
+        "    cfg = {",
+        "        'bundle_name': 'PreProcess',  # name as shown in Function Bundles dialog",
+        "        'inherit_target': True,       # forward the active view / ROI into each step",
+        "    }",
+        "    ctx.run_command('function_bundle', cfg)",
+        "```",
+        "",
+        "- `bundle_name` (or `name`) must match an existing Function Bundle.",
+        "- `inherit_target=True` makes each step run on the same target (active view or ROI).",
+        "- Optional: `targets='all_open'` to apply the bundle to **every** open image,",
+        "  or `targets=[doc_id1, doc_id2, ...]` to target specific docs (same semantics as drag-and-drop).",
+        "- Internally this behaves **exactly like** dropping a Function Bundle chip onto a view.",
+        "- The bundled **Run Function Bundle…** script shows a complete picker dialog and then",
+        "  calls `ctx.run_command('function_bundle', cfg)` under the hood.",
+        "",
         "### Tips",
         "- Scripts operate on the **active view** unless you explicitly target others.",
         "- `ctx.set_image(...)` routes through DocManager so undo + ROI previews stay correct.",
         "- File I/O helpers do **not** open documents unless you call `ctx.open_new_document(...)`.",
         "- Use `ctx.log(...)` to write to the SASpro log and Script Editor output.",
     ])
-
-
 
 def render_ctx_api_markdown() -> str:
     return "\n".join([
@@ -352,10 +371,23 @@ def render_ctx_api_markdown() -> str:
         "ctx.run_command('abe', {'degree':2, 'samples':150})",
         "```",
         "",
+        "You can also run **Function Bundles**:",
+        "```python",
+        "cfg = {",
+        "    'bundle_name': 'PreProcess',   # Function Bundle name",
+        "    'inherit_target': True,        # forward active view / ROI to each step",
+        "    # optional: 'targets': 'all_open' ",
+        "    # optional: 'targets': [doc_id1, doc_id2, ...],",
+        "}",
+        "ctx.run_command('function_bundle', cfg)",
+        "```",
+        "",
         "Notes:",
         "- `command_id` can be any registered id or alias (see left panel).",
         "- `preset` is a dict matching that command’s Presets section.",
         "- Most commands support masks automatically if an active mask exists.",
+        "- For `function_bundle`, the command delegates to the same internal path as",
+        "  dragging a Function Bundle chip onto a view, so UI and scripts stay in sync.",
         "",
         "### Environment helpers",
         "- `ctx.is_frozen()` — True if running from packaged app (PyInstaller).",
@@ -390,6 +422,7 @@ def render_ctx_api_markdown() -> str:
         "# ctx.open_new_document(out, name=\"a_dim\")",
         "```",
     ])
+
 
 
 class CommandHelpDialog(QDialog):
