@@ -114,6 +114,14 @@ except Exception as e:
 
 from numba_utils import *
 
+# Shared UI utilities (avoiding code duplication)
+from pro.widgets.common_utilities import (
+    AboutDialog,
+    ProjectSaveWorker as _ProjectSaveWorker,
+    DECOR_GLYPHS,
+    _strip_ui_decorations,
+    install_crash_handlers,
+)
 
 import lightkurve as lk
 
@@ -542,39 +550,7 @@ class MdiArea(QMdiArea):
 
 _ROLE_ACTION = Qt.ItemDataRole.UserRole + 1
 
-class AboutDialog(QDialog):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("About Seti Astro Suite")
-        layout = QVBoxLayout()
-
-        # Create a QLabel with rich text (HTML) for clickable links
-        about_text = (
-            f"<h2>Seti Astro's Suite Pro {VERSION}</h2>"
-            "<p>Written by Franklin Marek</p>"
-            "<p>Copyright © 2025 Seti Astro</p>"
-            "<p>Website: <a href='http://www.setiastro.com'>www.setiastro.com</a></p>"
-            "<p>Donations: <a href='https://www.setiastro.com/checkout/donate?donatePageId=65ae7e7bac20370d8c04c1ab'>Click here to donate</a></p>"
-        )
-        label = QLabel(about_text)
-        label.setTextFormat(Qt.TextFormat.RichText)
-        label.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
-        label.setOpenExternalLinks(True)
-        
-        layout.addWidget(label)
-        self.setLayout(layout)
-
-DECOR_GLYPHS = "■●◆▲▪▫•◼◻◾◽"
-def _strip_ui_decorations(s: str) -> str:
-    s = s or ""
-    # strip any number of leading glyph+space
-    while len(s) >= 2 and s[1] == " " and s[0] in DECOR_GLYPHS:
-        s = s[2:]
-    # strip leading Active prefix if present
-    ACTIVE = "Active View: "
-    if s.startswith(ACTIVE):
-        s = s[len(ACTIVE):]
-    return s
+# AboutDialog, DECOR_GLYPHS, _strip_ui_decorations imported from pro.widgets.common_utilities
 
 class AstroSuiteProMainWindow(QMainWindow):
     currentDocumentChanged = pyqtSignal(object)  # ImageDocument | None
@@ -5743,81 +5719,7 @@ class AstroSuiteProMainWindow(QMainWindow):
         super().closeEvent(e)
 
 
-class _ProjectSaveWorker(QThread):
-    ok = pyqtSignal()
-    error = pyqtSignal(str)
-
-    def __init__(self, path, docs, shortcuts, mdi, compress, parent=None):
-        super().__init__(parent)
-        self.path = path
-        self.docs = docs
-        self.shortcuts = shortcuts
-        self.mdi = mdi
-        self.compress = compress
-
-    def run(self):
-        try:
-            from pro.project_io import ProjectWriter
-            ProjectWriter.write(
-                self.path,
-                docs=self.docs,
-                shortcuts=self.shortcuts,
-                mdi=self.mdi,
-                compress=self.compress,
-                shelf=getattr(self, "window_shelf", None),
-            )
-            self.ok.emit()
-        except Exception as e:
-            self.error.emit(str(e))
-
-# --- Global crash/exception handlers (Qt-safe) ---
-def install_crash_handlers(app):
-    import sys, threading, traceback, faulthandler, atexit, logging
-    from PyQt6.QtWidgets import QMessageBox
-    from PyQt6.QtCore import QTimer
-
-    # 1) Hard crashes (segfaults, access violations) → saspro_crash.log
-    try:
-        _crash_log = open("saspro_crash.log", "w", encoding="utf-8", errors="replace")
-        faulthandler.enable(file=_crash_log, all_threads=True)
-        atexit.register(_crash_log.close)
-    except Exception:
-        logging.exception("Failed to enable faulthandler")
-
-    def _show_dialog(title: str, head: str, details: str):
-        # Always marshal UI to the main thread
-        def _ui():
-            m = QMessageBox(app.activeWindow())
-            m.setIcon(QMessageBox.Icon.Critical)
-            m.setWindowTitle(title)
-            m.setText(head)
-            m.setInformativeText("Details are available below and in saspro.log.")
-            if details:
-                m.setDetailedText(details)
-            m.setStandardButtons(QMessageBox.StandardButton.Ok)
-            m.exec()
-        QTimer.singleShot(0, _ui)
-
-    # 2) Any uncaught exception on the main thread
-    def _excepthook(exc_type, exc_value, exc_tb):
-        tb = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
-        logging.error("Uncaught exception:\n%s", tb)
-        _show_dialog("Unhandled Exception",
-                     f"{exc_type.__name__}: {exc_value}",
-                     tb)
-    sys.excepthook = _excepthook
-
-    # 3) Any uncaught exception in background threads (Py3.8+)
-    def _threadhook(args: threading.ExceptHookArgs):
-        tb = "".join(traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback))
-        logging.error("Uncaught thread exception (%s):\n%s", args.thread.name, tb)
-        _show_dialog("Unhandled Thread Exception",
-                     f"{args.exc_type.__name__}: {args.exc_value}",
-                     tb)
-    try:
-        threading.excepthook = _threadhook  # type: ignore[attr-defined]
-    except Exception:
-        pass
+# _ProjectSaveWorker and install_crash_handlers imported from pro.widgets.common_utilities
 
 if __name__ == "__main__":
     # --- Early diagnostics (before importing PyQt) ---------------------------

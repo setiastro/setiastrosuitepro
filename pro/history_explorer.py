@@ -329,18 +329,8 @@ def _payloads_from_headless_history(main_window, undo_entries):
 
     return payloads
 
-
-def _to_float01(img: np.ndarray) -> np.ndarray:
-    if img is None:
-        return None
-    a = np.asarray(img)
-    if a.dtype.kind in "ui":
-        info = np.iinfo(a.dtype)
-        return (a.astype(np.float32) / float(info.max)).clip(0, 1)
-    if a.dtype.kind == "f":
-        m = float(a.max()) if a.size else 1.0
-        return (a.astype(np.float32) / (m if m > 0 else 1.0)).clip(0, 1)
-    return a.astype(np.float32)
+# Shared utilities
+from pro.widgets.image_utils import to_float01 as _to_float01
 
 
 def _mk_qimage_rgb8(float01: np.ndarray) -> tuple[QImage, np.ndarray]:

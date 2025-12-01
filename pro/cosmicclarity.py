@@ -18,6 +18,9 @@ from legacy.image_manager import load_image, save_image
 
 from imageops.stretch import stretch_mono_image, stretch_color_image
 
+# Import centralized preview dialog
+from pro.widgets.preview_dialogs import ImagePreviewDialog
+
 import shutil, subprocess
 
 # --- replace your _atomic_fsync_replace with this ---
@@ -1476,104 +1479,6 @@ class CosmicClaritySatelliteDialogPro(QDialog):
         temp_folder = os.path.join(user_dir, "CosmicClarityTemp")
         os.makedirs(temp_folder, exist_ok=True)
         return temp_folder
-
-class ImagePreviewDialog(QDialog):
-    def __init__(self, np_image, is_mono=False, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Image Preview")
-        self.resize(640, 480)
-        self.autostretch_enabled = False
-        self.is_mono = is_mono
-        self.zoom_factor = 1.0
-        self.np_image = np.clip(np_image, 0, 1).astype(np.float32)
-
-        v = QVBoxLayout(self)
-
-        row = QHBoxLayout()
-        self.btn_auto = QPushButton("AutoStretch (Off)")
-        self.btn_auto.setCheckable(True)
-        self.btn_auto.toggled.connect(self._toggle_autostretch)
-        row.addWidget(self.btn_auto)
-
-        self.btn_zi = QPushButton("Zoom In");  self.btn_zi.clicked.connect(self._zoom_in)
-        self.btn_zo = QPushButton("Zoom Out"); self.btn_zo.clicked.connect(self._zoom_out)
-        row.addWidget(self.btn_zi); row.addWidget(self.btn_zo)
-        v.addLayout(row)
-
-        self.scroll = QTextEdit()  # placeholder, replaced by QLabel in a scroll area
-        # Real scroll area:
-        self.area = QFileDialog()  # placeholder to keep names unique
-        self.area = QWidget()      # not used
-
-        self.scroll_area = QFileDialog()  # placeholder
-        from PyQt6.QtWidgets import QScrollArea
-        self.scroll_area = QScrollArea(self)
-        self.scroll_area.setWidgetResizable(True)
-        v.addWidget(self.scroll_area)
-
-        self.lbl = QLabel()
-        self.scroll_area.setWidget(self.lbl)
-        self._display_qimage(self.np_image)
-
-        self.lbl.installEventFilter(self)
-
-        QTimer.singleShot(0, self._center_scrollbars)
-
-    def _display_qimage(self, np_img):
-        arr = (np.clip(np_img, 0, 1) * 255).astype(np.uint8)
-        if arr.ndim == 3 and arr.shape[2] == 3:
-            h, w, _ = arr.shape; bpl = 3 * w
-            qimg = QImage(arr.tobytes(), w, h, bpl, QImage.Format.Format_RGB888)
-        elif arr.ndim == 2:
-            h, w = arr.shape; bpl = w
-            qimg = QImage(arr.tobytes(), w, h, bpl, QImage.Format.Format_Grayscale8)
-        else:
-            raise ValueError(f"Unexpected image shape: {arr.shape}")
-        pm = QPixmap.fromImage(qimg)
-        pm = pm.scaled(int(pm.width()*self.zoom_factor), int(pm.height()*self.zoom_factor),
-                       Qt.AspectRatioMode.KeepAspectRatio)
-        self.lbl.setPixmap(pm); self.lbl.adjustSize()
-
-    def _toggle_autostretch(self, checked):
-        self.autostretch_enabled = checked
-        self.btn_auto.setText("AutoStretch (On)" if checked else "AutoStretch (Off)")
-        self._apply_autostretch()
-
-    def _apply_autostretch(self):
-        tgt = 0.25
-        if self.autostretch_enabled:
-            if self.np_image.ndim == 2:
-                disp = np.stack([stretch_mono_image(self.np_image, tgt)]*3, axis=-1)
-            elif self.np_image.ndim == 3 and self.np_image.shape[2] == 3:
-                disp = stretch_color_image(self.np_image, tgt, linked=False)
-            else:
-                disp = self.np_image
-        else:
-            if self.np_image.ndim == 2:
-                disp = np.stack([self.np_image]*3, axis=-1)
-            else:
-                disp = self.np_image
-        self._display_qimage(disp)
-
-    def _zoom_in(self):
-        self.zoom_factor *= 1.2
-        self._apply_autostretch() if self.autostretch_enabled else self._display_qimage(self.np_image)
-
-    def _zoom_out(self):
-        self.zoom_factor /= 1.2
-        self._apply_autostretch() if self.autostretch_enabled else self._display_qimage(self.np_image)
-
-    def eventFilter(self, source, event):
-        if source == self.lbl and event.type() == QEvent.Type.Wheel:
-            self._zoom_in() if event.angleDelta().y() > 0 else self._zoom_out()
-            return True
-        return super().eventFilter(source, event)
-
-    def _center_scrollbars(self):
-        sa = self.scroll_area
-        h = sa.horizontalScrollBar(); v = sa.verticalScrollBar()
-        h.setValue((h.maximum()+h.minimum())//2)
-        v.setValue((v.maximum()+v.minimum())//2)
 
 
 class SatelliteProcessingThread(QThread):

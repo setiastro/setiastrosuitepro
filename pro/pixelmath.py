@@ -13,26 +13,17 @@ from PyQt6.QtWidgets import (
 
 from pro.autostretch import autostretch
 
+# Import shared utilities
+from pro.widgets.image_utils import nearest_resize_2d as _nearest_resize_2d
+from pro.widgets.image_utils import float_to_qimage_rgb8 as _float_to_qimage_rgb8
+
 # ---- Optional accelerators from legacy.numba_utils -------------------------
 try:
     from legacy.numba_utils import fast_mad as _fast_mad
 except Exception:
     _fast_mad = None
 
-def _float_to_qimage_rgb8(arr: np.ndarray) -> QImage:
-    """Accepts HxW (mono) or HxWx3 float32 [0..1]. Returns 8-bit QImage (RGB888)."""
-    a = np.asarray(arr, dtype=np.float32)
-    if a.ndim == 2:
-        a = np.repeat(a[..., None], 3, axis=2)
-    a = np.clip(a, 0.0, 1.0)
-    b = (a * 255.0 + 0.5).astype(np.uint8)
-    # Ensure contiguous, RGB888
-    h, w, _ = b.shape
-    b = np.ascontiguousarray(b)
-    img = QImage(b.data, w, h, 3 * w, QImage.Format.Format_RGB888)
-    # keep a reference so bytes stay alive
-    img._buf = b
-    return img
+# _float_to_qimage_rgb8 imported from pro.widgets.image_utils
 
 
 # =============================================================================
@@ -154,17 +145,7 @@ def _as_rgb(arr: np.ndarray) -> np.ndarray:
         a = np.repeat(a, 3, axis=2)
     return a
 
-def _nearest_resize_2d(m: np.ndarray, H: int, W: int) -> np.ndarray:
-    m = np.asarray(m, dtype=np.float32)
-    if m.shape == (H, W):
-        return m
-    try:
-        import cv2
-        return cv2.resize(m, (W, H), interpolation=cv2.INTER_NEAREST).astype(np.float32, copy=False)
-    except Exception:
-        yi = (np.linspace(0, m.shape[0] - 1, H)).astype(np.int32)
-        xi = (np.linspace(0, m.shape[1] - 1, W)).astype(np.int32)
-        return m[yi][:, xi].astype(np.float32, copy=False)
+# _nearest_resize_2d imported from pro.widgets.image_utils
 
 def _get_doc_active_mask_2d(doc, H: int, W: int) -> np.ndarray | None:
     """

@@ -3,12 +3,7 @@ from __future__ import annotations
 from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QPushButton
 from PyQt6.QtCore import Qt
 
-def _normalize_ext(ext: str) -> str:
-    e = ext.lower().lstrip(".")
-    if e == "jpeg": return "jpg"
-    if e == "tiff": return "tif"
-    if e in ("fit", "fits"): return e
-    return e
+from pro.file_utils import _normalize_ext
 
 # Allowed bit depths per output format (what your saver actually supports)
 _BIT_DEPTHS = {

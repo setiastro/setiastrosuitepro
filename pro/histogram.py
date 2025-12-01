@@ -9,18 +9,8 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QPixmap, QPainter, QPen, QColor, QFont, QPalette
 
-def _to_float01(img: np.ndarray | None) -> np.ndarray | None:
-    if img is None:
-        return None
-    a = np.asarray(img)
-    if a.dtype.kind in "ui":
-        info = np.iinfo(a.dtype)
-        return (a.astype(np.float32) / float(info.max)).clip(0, 1)
-    if a.dtype.kind == "f":
-        # assume already normalized-ish; softly normalize if above 1
-        mx = float(a.max()) if a.size else 1.0
-        return (a.astype(np.float32) / (mx if mx > 1.0 else 1.0)).clip(0, 1)
-    return a.astype(np.float32)
+# Shared utilities
+from pro.widgets.image_utils import to_float01 as _to_float01
 
 def _to_float_preserve(img):
     if img is None: return None

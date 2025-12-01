@@ -2,17 +2,8 @@
 from __future__ import annotations
 import numpy as np
 
-def _to_float01(a: np.ndarray) -> np.ndarray:
-    x = np.asarray(a)
-    if x.dtype.kind in "ui":
-        x = x.astype(np.float32)
-    elif x.dtype.kind == "f" and x.dtype != np.float32:
-        x = x.astype(np.float32)
-    if x.size:
-        m = float(np.nanmax(x))
-        if m > 1.0 and np.isfinite(m):
-            x = x / m
-    return np.clip(x, 0.0, 1.0).astype(np.float32, copy=False)
+# Shared utilities
+from pro.widgets.image_utils import to_float01 as _to_float01
 
 def extract_rgb_channels(img: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """

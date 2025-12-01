@@ -863,15 +863,8 @@ from imageops.starbasedwhitebalance import apply_star_based_white_balance
 # (optional) for applying result back to active doc
 from pro.whitebalance import apply_white_balance_to_doc
 
-
-def _to_float01(img: np.ndarray) -> np.ndarray:
-    a = np.asarray(img).astype(np.float32, copy=False)
-    if a.size == 0:
-        return a
-    m = float(np.nanmax(a))
-    if np.isfinite(m) and m > 1.0:
-        a = a / m
-    return np.clip(a, 0.0, 1.0)
+# Shared utilities
+from pro.widgets.image_utils import to_float01 as _to_float01
 
 
 class StarPreviewDialog(QDialog):

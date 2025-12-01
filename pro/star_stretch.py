@@ -10,6 +10,9 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QPixmap, QImage, QMovie
 
+# Shared utilities
+from pro.widgets.image_utils import to_float01 as _to_float01
+
 # --- use your Numba kernels; fall back to pure numpy SCNR if needed ----
 try:
     from legacy.numba_utils import applyPixelMath_numba, applySCNR_numba
@@ -28,20 +31,6 @@ except Exception:
         return np.clip(out, 0.0, 1.0)
 
 # ---- small helpers --------------------------------------------------------
-
-def _to_float01(img: np.ndarray) -> np.ndarray:
-    if img is None:
-        return None
-    a = np.asarray(img)
-    if a.dtype.kind in "ui":
-        info = np.iinfo(a.dtype)
-        return (a.astype(np.float32) / float(info.max)).clip(0.0, 1.0)
-    if a.dtype.kind == "f":
-        # Assume already ~0..1; normalize softly if >1
-        mx = float(a.max()) if a.size else 1.0
-        return (a.astype(np.float32) / (mx if mx > 1.0 else 1.0)).clip(0.0, 1.0)
-    return a.astype(np.float32)
-
 
 def _as_qimage_rgb8(float01: np.ndarray) -> QImage:
     f = np.asarray(float01, dtype=np.float32)

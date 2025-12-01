@@ -11,6 +11,14 @@ from legacy.image_manager import list_fits_extensions, load_fits_extension
 import uuid
 from legacy.image_manager import attach_wcs_to_metadata  # or wherever you put it
 from astropy.wcs import WCS  # only if not already imported in this module
+
+# Memory utilities for lazy loading and caching
+try:
+    from pro.memory_utils import get_thumbnail_cache, LazyImage
+except ImportError:
+    get_thumbnail_cache = None
+    LazyImage = None
+
 # --- WCS DEBUGGING ------------------------------------------------------
 _DEBUG_WCS = False  # flip to False when you’re done debugging
 
@@ -115,12 +123,7 @@ def _debug_log_undo(context: str, **info):
         except Exception:
             pass
 
-def _normalize_ext(ext: str) -> str:
-    e = ext.lower().lstrip(".")
-    if e == "jpeg": return "jpg"
-    if e == "tiff": return "tif"
-    if e in ("fit", "fits"): return e
-    return e
+from pro.file_utils import _normalize_ext
 
 _ALLOWED_DEPTHS = {
     "png":  {"8-bit"},

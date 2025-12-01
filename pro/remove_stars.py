@@ -18,6 +18,9 @@ try:
 except Exception:
     cv2 = None
 
+# Shared utilities
+from pro.widgets.image_utils import extract_mask_from_document as _active_mask_array_from_doc
+
 # --------- deterministic, invertible stretch used for StarNet ----------
 # ---------- Siril-like MTF (linked) pre-stretch for StarNet ----------
 def _robust_peak_sigma(gray: np.ndarray) -> tuple[float, float]:
@@ -1158,28 +1161,7 @@ def _on_darkstar_finished(main, doc, return_code, dialog, in_path, output_dir, b
 # ------------------------------------------------------------
 # Mask helpers (doc-centric)
 # ------------------------------------------------------------
-def _active_mask_array_from_doc(doc) -> np.ndarray | None:
-    """Return active mask (H,W) float32 in [0,1] from the document, if present."""
-    try:
-        mid = getattr(doc, "active_mask_id", None)
-        if not mid:
-            return None
-        masks = getattr(doc, "masks", {}) or {}
-        layer = masks.get(mid)
-        data = getattr(layer, "data", None) if layer is not None else None
-        if data is None:
-            return None
-        a = np.asarray(data)
-        if a.ndim == 3:
-            if cv2 is not None:
-                a = cv2.cvtColor(a, cv2.COLOR_BGR2GRAY)
-            else:
-                a = a.mean(axis=2)
-        a = a.astype(np.float32, copy=False)
-        a = np.clip(a, 0.0, 1.0)
-        return a
-    except Exception:
-        return None
+# _active_mask_array_from_doc is now imported from pro.widgets.image_utils
 
 
 def _active_mask3_from_doc(doc, w, h) -> np.ndarray | None:

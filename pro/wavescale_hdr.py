@@ -6,124 +6,27 @@ from PyQt6.QtCore import Qt, QObject, pyqtSignal, QThread, QTimer, QSettings
 from PyQt6.QtGui import QImage, QPixmap, QIcon
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGroupBox, QFormLayout, QLabel, QPushButton,
-    QSlider, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QScrollArea,
+    QSlider, QGraphicsScene, QGraphicsPixmapItem, QScrollArea,
     QMessageBox, QProgressBar
 )
 
-try:
-    from legacy.numba_utils import (
-        rgb_to_xyz_numba, xyz_to_lab_numba,
-        lab_to_xyz_numba,  xyz_to_rgb_numba,
-        # fast_mad  # handy later if we want auto-tune based on noise
-    )
-    _HAVE_NUMBA = True
-except Exception:
-    _HAVE_NUMBA = False
+# Import centralized widget
+from pro.widgets.graphics_views import ZoomableGraphicsView
 
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Convolution (SciPy if available; otherwise a separable reflect conv fallback)
-# ──────────────────────────────────────────────────────────────────────────────
-try:
-    from scipy.ndimage import convolve as _nd_convolve
-
-    def _conv_sep_reflect(image2d: np.ndarray, k1d: np.ndarray, axis: int) -> np.ndarray:
-        if axis == 1:  # x
-            return _nd_convolve(image2d, k1d.reshape(1, -1), mode="reflect")
-        else:          # y
-            return _nd_convolve(image2d, k1d.reshape(-1, 1), mode="reflect")
-except Exception:
-    def _conv_sep_reflect(image2d: np.ndarray, k1d: np.ndarray, axis: int) -> np.ndarray:
-        """minimal 1D conv along a given axis with reflect padding; 'same' size."""
-        image2d = np.asarray(image2d, dtype=np.float32)
-        k1d = np.asarray(k1d, dtype=np.float32)
-        r = len(k1d) // 2
-        if axis == 1:  # horizontal
-            pad = np.pad(image2d, ((0, 0), (r, r)), mode="reflect")
-            out = np.empty_like(image2d, dtype=np.float32)
-            for i in range(image2d.shape[0]):
-                out[i] = np.convolve(pad[i], k1d, mode="valid")
-            return out
-        else:          # vertical
-            pad = np.pad(image2d, ((r, r), (0, 0)), mode="reflect")
-            out = np.empty_like(image2d, dtype=np.float32)
-            for j in range(image2d.shape[1]):
-                out[:, j] = np.convolve(pad[:, j], k1d, mode="valid")
-            return out
+# Import shared wavelet utilities
+from pro.widgets.wavelet_utils import (
+    conv_sep_reflect as _conv_sep_reflect,
+    build_spaced_kernel as _build_spaced_kernel,
+    atrous_decompose as _atrous_decompose,
+    atrous_reconstruct as _atrous_reconstruct,
+    rgb_to_lab as _rgb_to_lab,
+    lab_to_rgb as _lab_to_rgb,
+    B3_KERNEL as _B3,
+)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Core math (shared by dialog + headless apply)
 # ──────────────────────────────────────────────────────────────────────────────
-
-_B3 = (np.array([1, 4, 6, 4, 1], dtype=np.float32) / 16.0)
-
-def _build_spaced_kernel(kernel: np.ndarray, scale_idx: int) -> np.ndarray:
-    if scale_idx == 0:
-        return kernel.astype(np.float32, copy=False)
-    step = 2 ** scale_idx
-    spaced_len = len(kernel) + (len(kernel) - 1) * (step - 1)
-    spaced = np.zeros(spaced_len, dtype=np.float32)
-    spaced[0::step] = kernel
-    return spaced
-
-def _atrous_decompose(img2d: np.ndarray, n_scales: int, base_k: np.ndarray) -> list[np.ndarray]:
-    current = img2d.astype(np.float32, copy=True)
-    scales: list[np.ndarray] = []
-    for s in range(n_scales):
-        k = _build_spaced_kernel(base_k, s)
-        tmp = _conv_sep_reflect(current, k, axis=1)
-        smooth = _conv_sep_reflect(tmp, k, axis=0)
-        scales.append(current - smooth)
-        current = smooth
-    scales.append(current)  # residual
-    return scales
-
-def _atrous_reconstruct(scales: list[np.ndarray]) -> np.ndarray:
-    out = scales[-1].astype(np.float32, copy=True)
-    for w in scales[:-1]:
-        out += w
-    return out
-
-def _rgb_to_lab(rgb: np.ndarray) -> np.ndarray:
-    if _HAVE_NUMBA:
-        rgb32 = np.ascontiguousarray(rgb.astype(np.float32))
-        xyz   = rgb_to_xyz_numba(rgb32)           # (H,W,3) float32
-        lab   = xyz_to_lab_numba(xyz)             # L in [0..100]
-        return lab
-    # ← existing numpy path (keep as-is below)
-    M = np.array([[0.4124564, 0.3575761, 0.1804375],
-                  [0.2126729, 0.7151522, 0.0721750],
-                  [0.0193339, 0.1191920, 0.9503041]], dtype=np.float32)
-    rgb = np.clip(rgb, 0.0, 1.0).astype(np.float32, copy=False)
-    xyz = rgb.reshape(-1, 3) @ M.T
-    xyz = xyz.reshape(rgb.shape); xyz[...,0] /= 0.95047; xyz[...,2] /= 1.08883
-    delta = 6/29
-    def f(t): return np.where(t > delta**3, np.cbrt(t), (t/(3*delta**2)) + (4/29))
-    fx, fy, fz = f(xyz[...,0]), f(xyz[...,1]), f(xyz[...,2])
-    L = 116*fy - 16; a = 500*(fx - fy); b = 200*(fy - fz)
-    return np.stack([L, a, b], axis=-1)
-
-def _lab_to_rgb(lab: np.ndarray) -> np.ndarray:
-    if _HAVE_NUMBA:
-        lab32 = np.ascontiguousarray(lab.astype(np.float32))
-        xyz   = lab_to_xyz_numba(lab32)           # (H,W,3) float32
-        rgb   = xyz_to_rgb_numba(xyz)             # clipped [0..1]
-        return rgb.astype(np.float32, copy=False)
-    # ← existing numpy path (keep as-is below)
-    M_inv = np.array([[ 3.2404542, -1.5371385, -0.4985314],
-                      [-0.9692660,  1.8760108,  0.0415560],
-                      [ 0.0556434, -0.2040259,  1.0572252]], dtype=np.float32)
-    delta = 6/29
-    fy = (lab[...,0] + 16.0)/116.0
-    fx = fy + lab[...,1]/500.0
-    fz = fy - lab[...,2]/200.0
-    def finv(t): return np.where(t > delta, t**3, 3*delta**2*(t - 4/29))
-    X = 0.95047*finv(fx); Y = finv(fy); Z = 1.08883*finv(fz)
-    xyz = np.stack([X, Y, Z], axis=-1)
-    rgb = xyz.reshape(-1,3) @ M_inv.T
-    rgb = rgb.reshape(xyz.shape)
-    return np.clip(rgb, 0.0, 1.0).astype(np.float32, copy=False)
 
 def _mask_from_L(L: np.ndarray, gamma: float) -> np.ndarray:
     m = np.clip(L / 100.0, 0.0, 1.0).astype(np.float32)
@@ -274,48 +177,6 @@ class MaskDisplayWindow(QDialog):
 # ──────────────────────────────────────────────────────────────────────────────
 # Dialog
 # ──────────────────────────────────────────────────────────────────────────────
-
-class ZoomableGraphicsView(QGraphicsView):
-    def __init__(self, scene, parent=None):
-        super().__init__(parent)
-        self.setScene(scene)
-        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
-        self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
-        self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
-        self._zoom = 1.0
-        self._zoom_min = 0.05
-        self._zoom_max = 10.0
-        self._zoom_step = 1.25
-
-    def wheelEvent(self, event):
-        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
-            delta = event.angleDelta().y()
-            if delta > 0:
-                self.zoom_in()
-            else:
-                self.zoom_out()
-            event.accept()
-        else:
-            super().wheelEvent(event)
-
-    def zoom_in(self):
-        new_zoom = min(self._zoom * self._zoom_step, self._zoom_max)
-        self._apply_zoom(new_zoom)
-
-    def zoom_out(self):
-        new_zoom = max(self._zoom / self._zoom_step, self._zoom_min)
-        self._apply_zoom(new_zoom)
-
-    def fit_item(self, item):
-        if item and not item.pixmap().isNull():
-            self.fitInView(item, Qt.AspectRatioMode.KeepAspectRatio)
-            self._zoom = 1.0
-
-    def _apply_zoom(self, new_zoom):
-        factor = new_zoom / self._zoom
-        self.scale(factor, factor)
-        self._zoom = new_zoom
-
 
 class WaveScaleHDRDialogPro(QDialog):
     applied_preset = pyqtSignal(object, dict)

@@ -2,8 +2,11 @@ from __future__ import annotations
 import numpy as np, cv2
 from typing import Optional
 
-# destination-mask helper (optional blend)
-from pro.add_stars import _active_mask_array_from_doc
+# Shared utilities
+from pro.widgets.image_utils import (
+    extract_mask_from_document as _active_mask_array_from_doc,
+    to_float01_strict as _to_float01_strict,
+)
 
 # Linear luma weights
 _LUMA_REC709  = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
@@ -11,26 +14,6 @@ _LUMA_REC601  = np.array([0.2990, 0.5870, 0.1140], dtype=np.float32)
 _LUMA_REC2020 = np.array([0.2627, 0.6780, 0.0593], dtype=np.float32)
 
 # ---------- helpers ----------
-
-def _to_float01_strict(a: np.ndarray) -> np.ndarray:
-    """
-    Convert to float32 in [0,1] without 'normalize by image max'.
-    Integers are scaled by their full-range max; float input is passed through.
-    """
-    a = np.asarray(a)
-    if a.dtype == np.float32:
-        return a
-    if a.dtype == np.float64:
-        return a.astype(np.float32)
-    if a.dtype == np.uint8:
-        return (a.astype(np.float32) / 255.0)
-    if a.dtype == np.uint16:
-        return (a.astype(np.float32) / 65535.0)
-    if np.issubdtype(a.dtype, np.integer):
-        maxv = np.float32(np.iinfo(a.dtype).max)
-        return (a.astype(np.float32) / maxv)
-    # other floats: assume already 0..1
-    return a.astype(np.float32)
 
 def _estimate_noise_sigma_per_channel(img01: np.ndarray) -> np.ndarray:
     # unchanged (but call with strict input)

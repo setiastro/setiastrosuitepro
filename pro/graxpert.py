@@ -1,14 +1,14 @@
 # pro/graxpert.py
 from __future__ import annotations
 import os, platform, shutil, tempfile, stat, glob, subprocess
-import numpy as np
 
-from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtCore import QThread, pyqtSignal, Qt
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QTextEdit, QPushButton, QFileDialog,
     QMessageBox, QInputDialog, QFormLayout, QDialogButtonBox, QDoubleSpinBox,
-    QRadioButton, QLabel, QComboBox, QCheckBox
+    QRadioButton, QLabel, QComboBox, QCheckBox, QWidget
 )
+from pro.config import Config
 
 # Prefer the exact loader you used in SASv2
 try:
@@ -282,17 +282,20 @@ def _resolve_graxpert_exec(main_window) -> str | None:
         return path
 
     sysname = platform.system()
+    default = Config.get_graxpert_default_path()
+    
     if sysname == "Windows":
-        # rely on PATH (like v2)
-        return "GraXpert.exe"
+        # rely on PATH (like v2) or default
+        return default if default else "GraXpert.exe"
+        
     if sysname == "Darwin":
-        default = "/Applications/GraXpert.app/Contents/MacOS/GraXpert"
-        if os.path.exists(default):
+        if default and os.path.exists(default):
             _ensure_exec_bit(default)
             if hasattr(main_window, "settings"):
                 main_window.settings.setValue("paths/graxpert", default)
             return default
         return _pick_graxpert_path_and_store(main_window)
+        
     if sysname == "Linux":
         # in v2 you asked user and saved; do the same
         return _pick_graxpert_path_and_store(main_window)
@@ -300,19 +303,18 @@ def _resolve_graxpert_exec(main_window) -> str | None:
     QMessageBox.critical(main_window, "GraXpert", f"Unsupported operating system: {sysname}")
     return None
 
-
-def _pick_graxpert_path_and_store(parent) -> str | None:
-    path, _ = QFileDialog.getOpenFileName(parent, "Select GraXpert Executable", "", "Executable Files (*)")
+def _pick_graxpert_path_and_store(main_window) -> str | None:
+    path, _ = QFileDialog.getOpenFileName(main_window, "Select GraXpert Executable")
     if not path:
-        QMessageBox.warning(parent, "Cancelled", "GraXpert path selection was cancelled.")
+        QMessageBox.warning(main_window, "Cancelled", "GraXpert path selection was cancelled.")
         return None
     try:
         _ensure_exec_bit(path)
     except Exception as e:
-        QMessageBox.critical(parent, "GraXpert", f"Failed to set execute permissions:\n{e}")
+        QMessageBox.critical(main_window, "GraXpert", f"Failed to set execute permissions:\n{e}")
         return None
-    if hasattr(parent, "settings"):
-        parent.settings.setValue("paths/graxpert", path)
+    if hasattr(main_window, "settings"):
+        main_window.settings.setValue("paths/graxpert", path)
     return path
 
 

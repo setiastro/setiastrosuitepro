@@ -22,12 +22,15 @@ def apply_average_neutral_scnr(image: np.ndarray, amount: float = 1.0) -> np.nda
     G = img[..., 1]
     B = img[..., 2]
 
-    # G' = min(G, 0.5*(R + B))
+    # G' = min(G, 0.5*(R + B)) - optimized: compute blended G directly without full array copy
     G_scnr = np.minimum(G, 0.5 * (R + B))
-
-    scnr_img = img.copy()
-    scnr_img[..., 1] = G_scnr
-
-    # Blend original and SCNR result
-    out = (1.0 - amount) * img + amount * scnr_img
-    return np.clip(out, 0.0, 1.0)
+    
+    # Blend original G and SCNR G directly: avoids allocating a full copy of the image
+    G_blended = G + amount * (G_scnr - G)  # Equivalent to (1-amount)*G + amount*G_scnr
+    
+    # Build output array only once
+    out = np.empty_like(img, dtype=np.float32)
+    out[..., 0] = R
+    out[..., 1] = np.clip(G_blended, 0.0, 1.0)
+    out[..., 2] = B
+    return out

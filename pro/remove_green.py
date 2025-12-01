@@ -12,18 +12,11 @@ try:
 except Exception:
     cv2 = None
 
-# ---------- utils ----------
-def _to_float01(a: np.ndarray) -> np.ndarray:
-    arr = np.asarray(a)
-    if arr.dtype.kind in "ui":
-        arr = arr.astype(np.float32) / float(np.iinfo(arr.dtype).max)
-    else:
-        arr = arr.astype(np.float32, copy=False)
-        if arr.size:
-            mx = float(arr.max())
-            if mx > 5.0:
-                arr = arr / mx
-    return np.clip(arr, 0.0, 1.0)
+# ---------- utils (now imported from shared location) ----------
+from pro.widgets.image_utils import (
+    to_float01 as _to_float01,
+    extract_mask_from_document as _active_mask_array_from_doc
+)
 
 def _ensure_rgb(arr: np.ndarray) -> np.ndarray | None:
     """Return float32 RGB [0..1] or None if impossible."""
@@ -35,27 +28,6 @@ def _ensure_rgb(arr: np.ndarray) -> np.ndarray | None:
     if a.ndim == 3 and a.shape[2] >= 3:
         return a[..., :3].astype(np.float32, copy=False)
     return None
-
-def _active_mask_array_from_doc(doc) -> np.ndarray | None:
-    try:
-        mid = getattr(doc, "active_mask_id", None)
-        if not mid:
-            return None
-        masks = getattr(doc, "masks", {}) or {}
-        layer = masks.get(mid)
-        data = getattr(layer, "data", None) if layer is not None else None
-        if data is None:
-            return None
-        m = np.asarray(data)
-        if m.ndim == 3:
-            if cv2 is not None:
-                m = cv2.cvtColor(m, cv2.COLOR_BGR2GRAY)
-            else:
-                m = m.mean(axis=2)
-        m = m.astype(np.float32, copy=False)
-        return np.clip(m, 0.0, 1.0)
-    except Exception:
-        return None
 
 # ---------- SCNR core (with modes + preserve lightness) ----------
 _SCNR_MODE_LABELS = {

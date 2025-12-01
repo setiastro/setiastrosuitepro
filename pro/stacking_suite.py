@@ -2,6 +2,7 @@
 from __future__ import annotations
 import os, glob, shutil, tempfile, datetime as _dt
 import sys, platform
+import gc  # For explicit memory cleanup after heavy operations
 from time import perf_counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy as np
@@ -13,7 +14,14 @@ import weakref
 import re, unicodedata
 import math            # used in compute_safe_chunk
 import psutil          # used in bytes_available / compute_safe_chunk
-from typing import List 
+from typing import List
+
+# Memory management utilities
+from pro.memory_utils import (
+    smart_zeros, smart_empty, get_buffer_pool, 
+    should_use_memmap, cleanup_memmap, get_thumbnail_cache
+)
+
 from PyQt6.QtCore import Qt, QTimer, QSettings, pyqtSignal, QObject, pyqtSlot, QThread, QEvent, QPoint, QSize, QEventLoop, QCoreApplication, QRectF, QPointF, QMetaObject
 from PyQt6.QtGui import QIcon, QImage, QPixmap, QAction, QIntValidator, QDoubleValidator, QFontMetrics, QTextCursor, QPalette, QPainter, QPen, QTransform, QColor, QBrush, QCursor
 from PyQt6.QtWidgets import (QDialog, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QLineEdit, QTreeWidget, QHeaderView, QTreeWidgetItem, QProgressBar, QProgressDialog,
@@ -50,6 +58,9 @@ from legacy.xisf import XISF  # ← add this
 from PyQt6 import sip
 # your helpers/utilities
 from imageops.stretch import stretch_mono_image, stretch_color_image, siril_style_autostretch
+
+# Import shared utilities
+from pro.widgets.image_utils import nearest_resize_2d as _nearest_resize_2d_shared
 from legacy.numba_utils import *   
 from legacy.image_manager import load_image, save_image, get_valid_header
 from pro.star_alignment import StarRegistrationWorker, StarRegistrationThread, IDENTITY_2x3
@@ -457,6 +468,29 @@ def _quick_preview_from_fits(fp: str, target_xbin: int, target_ybin: int) -> np.
         prev = _resize_to_scale_fast(prev, sx, sy)
 
     return np.ascontiguousarray(prev, dtype=np.float32)
+
+
+def _quick_preview_from_fits_cached(fp: str, target_xbin: int, target_ybin: int) -> np.ndarray | None:
+    """
+    Cached version of _quick_preview_from_fits.
+    Uses thumbnail cache for faster repeated access.
+    """
+    cache = get_thumbnail_cache()
+    target_size = (target_xbin, target_ybin)
+    
+    # Check cache first
+    cached = cache.get(fp, target_size)
+    if cached is not None:
+        return cached
+    
+    # Generate preview
+    preview = _quick_preview_from_fits(fp, target_xbin, target_ybin)
+    
+    # Cache it
+    if preview is not None:
+        cache.put(fp, target_size, preview)
+    
+    return preview
 
 
 def _safe_hard_or_soft_link(src: str, dst: str) -> bool:
@@ -2776,13 +2810,8 @@ def _nearest_index(src_len: int, dst_len: int) -> np.ndarray:
     return idx
 
 def _nearest_resize_2d(m: np.ndarray, H: int, W: int) -> np.ndarray:
-    """Resize 2-D array to (H,W) using nearest-neighbor, cv2 if available else pure NumPy."""
-    m = np.asarray(m, dtype=np.float32)
-    if cv2 is not None:
-        return cv2.resize(m, (W, H), interpolation=cv2.INTER_NEAREST).astype(np.float32, copy=False)
-    yi = _nearest_index(m.shape[0], H)
-    xi = _nearest_index(m.shape[1], W)
-    return m[yi[:, None], xi[None, :]].astype(np.float32, copy=False)
+    """Resize 2-D array to (H,W) using nearest-neighbor. Uses shared implementation."""
+    return _nearest_resize_2d_shared(m, H, W)
 
 def _expand_mask_for(image_like: np.ndarray, mask_like: np.ndarray) -> np.ndarray:
     """
@@ -9570,6 +9599,7 @@ class StackingSuiteDialog(QDialog):
 
                 master_dark_data = np.asarray(final_stacked, dtype=np.float32)
                 del final_stacked
+                gc.collect()  # Free memory after master dark creation
 
                 master_dark_stem = f"MasterDark_{int(exposure_time)}s_{image_size}"
                 master_dark_path = self._build_out(master_dir, master_dark_stem, "fit")
@@ -10207,6 +10237,7 @@ class StackingSuiteDialog(QDialog):
 
                 master_flat_data = np.asarray(final_stacked, dtype=np.float32)
                 del final_stacked
+                gc.collect()  # Free memory after master flat creation
 
                 master_flat_stem = f"MasterFlat_{session}_{int(exposure_time)}s_{image_size}_{filter_name}"
                 master_flat_path = self._build_out(master_dir, master_flat_stem, "fit")
@@ -11544,9 +11575,10 @@ class StackingSuiteDialog(QDialog):
         d = self._angdiff(pa_cur, pa_ref)
         if abs(d - 180.0) <= tol_deg:
             # 180° is just two 90° rotations; cheap & exact
+            # np.rot90 returns a view, make contiguous for downstream processing
             self.update_status(f"Flipping Image")
             QApplication.processEvents()
-            return np.rot90(img, 2).copy(), True
+            return np.ascontiguousarray(np.rot90(img, 2)), True
         return img, False
 
     def _ui_log(self, msg: str):
@@ -12209,6 +12241,7 @@ class StackingSuiteDialog(QDialog):
                         measured_frames.append(fp)
 
                 del chunk_images
+                gc.collect()  # Free memory after processing each chunk
 
             if not measured_frames:
                 self.update_status("⚠️ No frames could be measured!")
@@ -16114,7 +16147,8 @@ class StackingSuiteDialog(QDialog):
             return None, {}, None
 
         DTYPE = self._dtype()
-        integrated_image = np.zeros((height, width, channels), dtype=DTYPE)
+        # Use smart_zeros for large arrays - will use memmap if > 500MB
+        integrated_image, integrated_memmap_path = smart_zeros((height, width, channels), dtype=DTYPE)
         per_file_rejections = {f: [] for f in file_list}
 
         # --- chunk size ---
@@ -16331,10 +16365,19 @@ class StackingSuiteDialog(QDialog):
         self._rej_maps[group_key] = {"any": rej_any, "frac": rej_frac, "count": rej_count, "n": N}
 
         log(f"Integration complete for group '{group_key}'.")
+        
+        # If we used memmap, convert to regular array and cleanup
+        if integrated_memmap_path is not None:
+            integrated_image = np.array(integrated_image)  # Copy to regular array
+            try:
+                cleanup_memmap(None, integrated_memmap_path)
+            except Exception:
+                pass
+        
         try:
             _free_torch_memory()
-        except:
-            pass    
+        except Exception:
+            pass  # Ignore torch cleanup errors
         return integrated_image, per_file_rejections, ref_header
 
 

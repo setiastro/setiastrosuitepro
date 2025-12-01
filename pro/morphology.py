@@ -4,56 +4,19 @@ import numpy as np
 import cv2
 
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QImage, QPixmap, QIcon, QWheelEvent, QPainter
+from PyQt6.QtGui import QImage, QPixmap, QIcon
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGroupBox, QGridLayout,
-    QLabel, QPushButton, QSlider, QComboBox, QGraphicsView,
+    QLabel, QPushButton, QSlider, QComboBox,
     QGraphicsScene, QGraphicsPixmapItem, QMessageBox, QSpinBox
 )
 
-# ---------------- Zoomable view (same helper) ----------------
-class ZoomableGraphicsView(QGraphicsView):
-    def __init__(self, *a, **k):
-        super().__init__(*a, **k)
-        self._zoom = 1.0
-        self._step = 1.25
-        self._min  = 0.10
-        self._max  = 12.0
-        self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
-        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
-        self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
-        self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
-        self.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-
-    def wheelEvent(self, e: QWheelEvent):
-        if e.modifiers() & Qt.KeyboardModifier.ControlModifier:
-            dy = e.angleDelta().y()
-            if dy == 0:
-                e.accept(); return
-            factor = self._step if dy > 0 else (1.0 / self._step)
-            new_zoom = max(self._min, min(self._max, self._zoom * factor))
-            factor = new_zoom / self._zoom
-            if factor != 1.0:
-                self.scale(factor, factor)
-                self._zoom = new_zoom
-            e.accept()
-        else:
-            super().wheelEvent(e)
-
-    def zoom_in(self):
-        self.wheelEvent(QWheelEvent(self.viewport().rect().center(), 120, Qt.MouseButton.NoButton,
-                                    Qt.KeyboardModifier.ControlModifier, Qt.ScrollPhase.ScrollUpdate, False))
-
-    def zoom_out(self):
-        self.wheelEvent(QWheelEvent(self.viewport().rect().center(), -120, Qt.MouseButton.NoButton,
-                                    Qt.KeyboardModifier.ControlModifier, Qt.ScrollPhase.ScrollUpdate, False))
-
-    def fit_to_item(self, item):
-        if not item or item.pixmap().isNull():
-            return
-        self._zoom = 1.0
-        self.resetTransform()
-        self.fitInView(item, Qt.AspectRatioMode.KeepAspectRatio)
+# Import centralized widgets
+from pro.widgets.graphics_views import ZoomableGraphicsView
+from pro.widgets.image_utils import (
+    extract_mask_resized as _get_active_mask_resized,
+    blend_with_mask as _blend_with_mask
+)
 
 # ---------------- Core (unchanged) ----------------
 def apply_morphology(image: np.ndarray, *, operation: str = "erosion",
@@ -116,88 +79,7 @@ def apply_morphology_to_doc(doc, preset: dict | None):
     elif hasattr(doc, "apply_numpy"): doc.apply_numpy(out, step_name="Morphology")
     else: doc.image = out
 
-def _nearest_resize_2d(m: np.ndarray, H: int, W: int) -> np.ndarray:
-    m = np.asarray(m, dtype=np.float32)
-    if m.shape == (H, W):
-        return m
-    try:
-        return cv2.resize(m, (W, H), interpolation=cv2.INTER_NEAREST)
-    except Exception:
-        yi = (np.linspace(0, m.shape[0] - 1, H)).astype(np.int32)
-        xi = (np.linspace(0, m.shape[1] - 1, W)).astype(np.int32)
-        return m[yi][:, xi].astype(np.float32, copy=False)
-
-def _get_active_mask_resized(doc, H: int, W: int) -> np.ndarray | None:
-    """
-    Returns doc's active mask as a 2-D float32 array in [0..1], resized to (H, W).
-    Handles layer objects, dicts, or raw ndarrays.
-    """
-    if doc is None:
-        return None
-    mid = getattr(doc, "active_mask_id", None)
-    if not mid:
-        return None
-    masks = getattr(doc, "masks", {}) or {}
-    layer = masks.get(mid)
-    if layer is None:
-        return None
-
-    data = None
-    # object-like
-    for attr in ("data", "mask", "image", "array"):
-        if hasattr(layer, attr):
-            val = getattr(layer, attr)
-            if val is not None:
-                data = val
-                break
-    # dict-like
-    if data is None and isinstance(layer, dict):
-        for key in ("data", "mask", "image", "array"):
-            if key in layer and layer[key] is not None:
-                data = layer[key]
-                break
-    # raw ndarray
-    if data is None and isinstance(layer, np.ndarray):
-        data = layer
-    if data is None:
-        return None
-
-    m = np.asarray(data)
-    if m.ndim == 3:                      # collapse RGB(A) → gray
-        m = m.mean(axis=2)
-    m = m.astype(np.float32, copy=False)
-
-    # normalize into [0..1]
-    mx = float(m.max()) if m.size else 1.0
-    if mx > 1.0:
-        m = m / mx
-    m = np.clip(m, 0.0, 1.0)
-
-    return _nearest_resize_2d(m, H, W)
-
-def _blend_with_mask(base: np.ndarray, out: np.ndarray, m2d: np.ndarray) -> np.ndarray:
-    """
-    Blend base and out using m2d in [0..1]. Shapes:
-    - If out is RGB, broadcast mask & base to 3-ch as needed.
-    - If out is mono (2-D), use 2-D mask.
-    All inputs assumed float32 in [0..1].
-    """
-    base = np.asarray(base, dtype=np.float32)
-    out  = np.asarray(out,  dtype=np.float32)
-    m2d  = np.clip(np.asarray(m2d, dtype=np.float32), 0.0, 1.0)
-
-    if out.ndim == 3:
-        if base.ndim == 2:
-            base = base[:, :, None].repeat(out.shape[2], axis=2)
-        elif base.ndim == 3 and base.shape[2] == 1:
-            base = base.repeat(out.shape[2], axis=2)
-        M = m2d[:, :, None].repeat(out.shape[2], axis=2)
-        return np.clip(base * (1.0 - M) + out * M, 0.0, 1.0)
-
-    # out is mono
-    if base.ndim == 3 and base.shape[2] == 1:
-        base = base.squeeze(axis=2)
-    return np.clip(base * (1.0 - m2d) + out * m2d, 0.0, 1.0)
+# Note: _get_active_mask_resized and _blend_with_mask imported from pro.widgets.image_utils
 
 
 # ---------------- Dialog ----------------

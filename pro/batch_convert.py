@@ -34,11 +34,7 @@ _ALLOWED_DEPTHS = {
     "xisf": {"16-bit", "32-bit unsigned", "32-bit floating point"},
 }
 
-def _normalize_ext(ext: str) -> str:
-    e = ext.lower().lstrip(".")
-    if e == "jpeg": return "jpg"
-    if e == "tiff": return "tif"
-    return e
+from pro.file_utils import _normalize_ext
 
 def _format_token_for_save(ext: str) -> str:
     """

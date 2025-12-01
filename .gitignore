@@ -1,21 +1,179 @@
-# Fichiers bytecode Python
+# Python bytecode
 __pycache__/
 *.py[cod]
 *$py.class
+*.pyo
 
-# Environnements virtuels
+# Virtual environments
 venv/
+test_venv/
 env/
 .env/
 .venv/
+ENV/
 
 # IDE
 .vscode/
+.idea/
+*.swp
+*.swo
+*~
 
-# Fichiers système macOS
+# macOS system files
 .DS_Store
 .AppleDouble
 .LSOverride
+._*
+
+# Windows system files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
 
 # Logs
 *.log
+logs/
+saspro.log
+saspro_crash.log
+astro_editing_suite.log
+
+# Matplotlib cache (generated at runtime)
+mpl_config/
+
+# Numba cache (generated at runtime)
+__numba_cache__/
+*.nbc
+*.nbi
+
+# FITS/temporary data files
+*.tmp
+*.temp
+SASP_data.fits
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+*.egg
+*.whl
+*.spec.bak
+
+# PyInstaller
+*.manifest
+*.spec.backup
+
+# Test outputs
+*.coverage
+.pytest_cache/
+htmlcov/
+
+# Jupyter notebooks checkpoints
+.ipynb_checkpoints/
+
+# Distribution/packaging
+.Python
+develop-eggs/
+downloads/
+eggs/
+lib/
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+
+# Virtual environments
+venv/
+test_venv/
+env/
+.env/
+.venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS system files
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows system files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Logs
+*.log
+logs/
+saspro.log
+saspro_crash.log
+astro_editing_suite.log
+
+# Matplotlib cache (generated at runtime)
+mpl_config/
+
+# Numba cache (generated at runtime)
+__numba_cache__/
+*.nbc
+*.nbi
+
+# FITS/temporary data files
+*.tmp
+*.temp
+SASP_data.fits
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+*.egg
+*.whl
+*.spec.bak
+
+# PyInstaller
+*.manifest
+*.spec.backup
+
+# Test outputs
+*.coverage
+.pytest_cache/
+htmlcov/
+
+# Jupyter notebooks checkpoints
+.ipynb_checkpoints/
+
+# Distribution/packaging
+.Python
+develop-eggs/
+downloads/
+eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+
+# Local development files
+*.local
+.env.local
+.env.*.local
+
+# Node
+node_modules/
+
+# macOS
+__MACOSX
+
+# Database
+*.sqlite
+*.db
+
+# PyInstaller
+*.spec

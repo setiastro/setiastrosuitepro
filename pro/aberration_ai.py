@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
     QComboBox, QSpinBox, QProgressBar, QMessageBox, QCheckBox
 )
 from PyQt6.QtGui import QIcon
+from pro.config import Config
 
 # Optional import (soft dep)
 try:
@@ -22,7 +23,7 @@ except Exception:
 
 
 # ---------- GitHub model fetching ----------
-GITHUB_REPO = "riccardoalberghi/abberation_models"
+GITHUB_REPO = Config.GITHUB_ABERRATION_REPO
 LATEST_API  = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
 def _model_required_patch(model_path: str) -> int | None:
@@ -43,10 +44,7 @@ def _model_required_patch(model_path: str) -> int | None:
 
 
 def _app_model_dir() -> str:
-    base = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation)
-    if not base:
-        base = os.path.expanduser("~/.local/share/SetiAstro")
-    d = os.path.join(base, "Models", "aberration_ai")
+    d = Config.get_aberration_models_dir()
     os.makedirs(d, exist_ok=True)
     return d
 

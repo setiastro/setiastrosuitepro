@@ -15,8 +15,11 @@ from PyQt6.QtWidgets import (
 from imageops.starbasedwhitebalance import apply_star_based_white_balance
 from imageops.stretch import stretch_color_image
 
-# destination-mask helper
-from pro.add_stars import _active_mask_array_from_doc
+# Shared utilities
+from pro.widgets.image_utils import (
+    to_float01 as _to_float01,
+    extract_mask_from_document as _active_mask_array_from_doc
+)
 
 from matplotlib import pyplot as plt                # NEW
 from matplotlib.patches import Circle               # NEW
@@ -24,15 +27,6 @@ from matplotlib.ticker import MaxNLocator           # NEW
 # ----------------------------
 # Core WB implementations
 # ----------------------------
-def _to_float01(arr: np.ndarray) -> np.ndarray:
-    a = np.asarray(arr).astype(np.float32, copy=False)
-    if a.size == 0:
-        return a
-    m = float(np.nanmax(a))
-    if m > 1.0 and np.isfinite(m):
-        a = a / m
-    return np.clip(a, 0.0, 1.0)
-
 def plot_star_color_ratios_comparison(raw_pixels: np.ndarray, after_pixels: np.ndarray):
     """
     Replicates the SASv2 diagnostic plot: star color ratios before/after WB,
