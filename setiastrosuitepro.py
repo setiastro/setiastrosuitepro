@@ -281,101 +281,13 @@ from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkRepl
 import math
 
 
-from pro.doc_manager import DocManager
-from pro.subwindow import ImageSubWindow, TableSubWindow
-from legacy.image_manager import ImageManager
-from pro.header_viewer import HeaderViewerDock
-from pro.batch_convert import BatchConvertDialog
-from pro.autostretch import autostretch
-from pro.stat_stretch import StatisticalStretchDialog
-from pro.save_options import SaveOptionsDialog
-from pro.history_explorer import HistoryExplorerDialog
-from pro.star_stretch import StarStretchDialog
-from pro.histogram import HistogramDialog
-from pro.curve_editor_pro import CurvesDialogPro
-from pro.ghs_dialog_pro import GhsDialogPro
-from pro.crop_dialog_pro import CropDialogPro
-from pro.blink_comparator_pro import BlinkComparatorPro
-from pro.perfect_palette_picker import PerfectPalettePicker
-from pro.nbtorgb_stars import NBtoRGBStars
-from pro.frequency_separation import FrequencySeperationTab
-from pro.shortcuts import DraggableToolBar, ShortcutManager, _StatStretchPresetDialog
-from pro.shortcuts import _unpack_cmd_payload
-from pro.continuum_subtract import ContinuumSubtractTab
-from pro.abe import ABEDialog
-from ops.settings import SettingsDialog
-from pro.mask_creation import create_mask_and_attach
-from pro.dnd_mime import MIME_VIEWSTATE, MIME_CMD, MIME_MASK, MIME_ASTROMETRY, MIME_LINKVIEW
-from pro.graxpert import remove_gradient_with_graxpert
-from pro.remove_stars import remove_stars
-from pro.add_stars import add_stars 
-from pro.window_shelf import WindowShelf, MinimizeInterceptor
-from pro.pedestal import remove_pedestal
-from pro.remove_green import open_remove_green_dialog, apply_remove_green_preset_to_doc
-from pro.backgroundneutral import BackgroundNeutralizationDialog, apply_background_neutral_to_doc
-from pro.luminancerecombine import apply_recombine_to_doc, compute_luminance, _to_float01_strict, _estimate_noise_sigma_per_channel, _LUMA_REC709, _LUMA_REC601, _LUMA_REC2020
-from pro.sfcc import SFCCDialog
-from pro.rgb_extract import extract_rgb_channels 
-from pro.rgb_combination import RGBCombinationDialogPro
-from pro.blemish_blaster import BlemishBlasterDialogPro
-from pro.wavescale_hdr import WaveScaleHDRDialogPro, compute_wavescale_hdr
-from pro.wavescalede import install_wavescale_dark_enhancer
-from pro.clahe import CLAHEDialogPro
-from pro.morphology import MorphologyDialogPro
-from pro.pixelmath import PixelMathDialogPro
-from pro.signature_insert import SignatureInsertDialogPro
-from pro.cosmicclarity import CosmicClarityDialogPro, CosmicClaritySatelliteDialogPro
-from legacy.numba_utils import (
-    rescale_image_numba,
-    flip_horizontal_numba,
-    flip_vertical_numba,
-    rotate_90_clockwise_numba,
-    rotate_90_counterclockwise_numba,
-    invert_image_numba,
-    rotate_180_numba,
-)
-from pro.wcs_update import update_wcs_after_crop
-from pro.project_io import ProjectWriter, ProjectReader
-from pro.psf_viewer import PSFViewer
-from pro.plate_solver import plate_solve_doc_inplace, PlateSolverDialog
-from pro.star_alignment import StellarAlignmentDialog, StarRegistrationWindow, MosaicMasterDialog
-from pro.image_peeker_pro import ImagePeekerDialogPro
-# Lazy imports for heavy dialogs (loaded on demand)
-# from pro.live_stacking import LiveStackWindow  # loaded on demand
-# from pro.stacking_suite import StackingSuiteDialog  # loaded on demand
-# from pro.supernovaasteroidhunter import SupernovaAsteroidHunterDialog  # loaded on demand
-from pro.star_spikes import StarSpikesDialogPro
-# Lazy imports for modules that load lightkurve (~12s)
-# from pro.exoplanet_detector import ExoPlanetWindow  # loaded on demand
-# from wimi import WIMIDialog  # loaded on demand
-from pro.isophote import IsophoteModelerDialog
-from wims import WhatsInMySkyDialog
-from pro.fitsmodifier import FITSModifier
-from pro.batch_renamer import BatchRenamerDialog
-from pro.astrobin_exporter import AstrobinExporterDialog
-from pro.linear_fit import LinearFitDialog
-from pro.debayer import DebayerDialog, apply_debayer_preset_to_doc
-from pro.copyastro import CopyAstrometryDialog
-from pro.layers_dock import LayersDock
 try:
     from pro._generated.build_info import BUILD_TIMESTAMP
 except Exception:
     BUILD_TIMESTAMP = "dev"
-from pro.aberration_ai import AberrationAIDialog
-from pro.view_bundle import show_view_bundles
-from pro.function_bundle import show_function_bundles
-from pro.ghs_preset import open_ghs_with_preset
-from pro.curves_preset import open_curves_with_preset
-from pro.save_options import _normalize_ext
-from pro.status_log_dock import StatusLogDock
-from pro.log_bus import LogBus
-from imageops.mdi_snap import MdiSnapController
-from pro.fitsmodifier import BatchFITSHeaderDialog
-from pro.autostretch import autostretch as _autostretch
-from ops.scripts import ScriptManager
 
 
-VERSION = "1.5.5"
+VERSION = "1.5.6"
 
 
 
@@ -405,19 +317,6 @@ from pro.resources import (
     functionbundles_path, viewbundles_path, selectivecolor_path, rgbalign_path,
 )
 
-import faulthandler
-
-def _install_crash_logging():
-    faulthandler.enable(all_threads=True)
-    def _excepthook(t, v, tb):
-        logging.critical("Uncaught exception", exc_info=(t, v, tb))
-        try:
-            faulthandler.dump_traceback(file=sys.stderr)
-        except Exception:
-            pass
-    sys.excepthook = _excepthook
-
-_install_crash_logging()
 
 
 from PyQt6.QtCore import qInstallMessageHandler, QtMsgType
@@ -626,7 +525,11 @@ if __name__ == "__main__":
 
         # Your image manager + main window
         imgr = ImageManager(max_slots=100)
-        win = AstroSuiteProMainWindow(image_manager=imgr)
+        win = AstroSuiteProMainWindow(
+            image_manager=imgr,
+            version=VERSION,
+            build_timestamp=BUILD_TIMESTAMP,
+        )
         win.show()
 
         # Start background Numba warmup after UI is visible
