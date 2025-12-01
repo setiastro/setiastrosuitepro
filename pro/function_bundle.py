@@ -1,7 +1,7 @@
 # pro/function_bundle.py
 from __future__ import annotations
 import json
-from typing import Iterable, List
+from typing import Iterable, List, Any, Dict
 import sys
 from PyQt6.QtCore import Qt, QSettings, QByteArray, QMimeData, QSize, QPoint, QEventLoop
 from PyQt6.QtWidgets import (
@@ -13,7 +13,7 @@ from PyQt6.QtGui import QDrag, QCloseEvent, QCursor, QShortcut, QKeySequence
 from PyQt6.QtCore import  QThread
 import time
 from pro.dnd_mime import MIME_CMD
-
+from ops.commands import normalize_cid
 def _pin_on_top_mac(win: QDialog):
     if sys.platform == "darwin":
         # Float above normal windows, behave like a palette/tool window
@@ -246,18 +246,31 @@ class FunctionBundleChip(QWidget):
         e.ignore()
 
     def _start_external_drag(self):
+        from PyQt6.QtWidgets import QApplication
+
+        print(f"[FBChip] _start_external_drag: bundle_key={self._bundle_key}, name={self._title.text()!r}", flush=True)
+        QApplication.processEvents()
+
         payload = {
             "command_id": "function_bundle",
             "steps": self._panel.current_steps(),
-            # NEW: tell the drop handler to forward the same target_sw to all steps
-            "inherit_target": True
+            "inherit_target": True,
         }
+        print(f"[FBChip]   payload steps={len(payload['steps'])}", flush=True)
+        QApplication.processEvents()
+
         md = QMimeData()
         md.setData(MIME_CMD, QByteArray(_pack_cmd_safely(payload)))
         drag = QDrag(self)
         drag.setMimeData(md)
         drag.setHotSpot(QPoint(self.width() // 2, self.height() // 2))
+
+        print("[FBChip]   starting drag.exec(...)", flush=True)
+        QApplication.processEvents()
         drag.exec(Qt.DropAction.CopyAction)
+        print("[FBChip]   drag.exec finished", flush=True)
+        QApplication.processEvents()
+
 
 # helper to create/place the chip on the ShortcutCanvas
 def _spawn_function_chip_on_canvas(mw: QWidget, panel: "FunctionBundleDialog",
@@ -1070,12 +1083,30 @@ class FunctionBundleDialog(QDialog):
 
 
     def _apply_steps_to_target_sw(self, mw, sw, steps: list[dict]):
+        # local logger
+        def _fb(msg: str):
+            m = f"[FunctionBundleDialog] {msg}"
+            try:
+                # main window logger if present
+                if hasattr(mw, "_log"):
+                    mw._log(m)
+            except Exception:
+                pass
+            try:
+                print(m, flush=True)
+            except Exception:
+                pass
+
+        _fb(f"ENTER _apply_steps_to_target_sw: sw={repr(sw)}, steps={len(steps)}")
+
         errors = []
         total = len(steps)
 
         # busy cursor while running this set
-        try: QApplication.setOverrideCursor(Qt.CursorShape.BusyCursor)
-        except Exception: pass
+        try:
+            QApplication.setOverrideCursor(Qt.CursorShape.BusyCursor)
+        except Exception:
+            pass
 
         # start fresh
         self._progress_reset()
@@ -1084,40 +1115,54 @@ class FunctionBundleDialog(QDialog):
             _activate_target_sw(mw, sw)
 
             label = self._step_label(st)
-            self._progress_set_step(i - 1, total, label)  # show we've advanced to the next step
+            self._progress_set_step(i - 1, total, label)
 
-            # If next step is CC, switch to indeterminate while it’s working
-            is_cc = isinstance(st, dict) and st.get("command_id") in ("cosmic_clarity", "cosmic", "cosmicclarity")
+            if not isinstance(st, dict) or not st.get("command_id"):
+                _fb(f"  skip step[{i}]: invalid payload={repr(st)}")
+                continue
+
+            cid = st.get("command_id")
+            if str(cid).lower().startswith("cosmic"):
+                _fb(f"  >>> BEGIN CC step[{i}/{total}] cid={cid} payload={repr(st)}")
+            else:
+                _fb(f"  BEGIN step[{i}/{total}] cid={cid} payload={repr(st)}")
 
             try:
-                if is_cc:
-                    # brief settle, then show busy
-                    QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 100)
-                    self._progress_busy(f"{label} — running…")
-
                 mw._handle_command_drop(st, target_sw=sw)
+
+                if str(cid).lower().startswith("cosmic"):
+                    _fb(f"  <<< END   CC step[{i}/{total}] cid={cid} OK")
+                else:
+                    _fb(f"  END   step[{i}/{total}] cid={cid} OK")
 
             except Exception as e:
                 errors.append(str(e))
+                if str(cid).lower().startswith("cosmic"):
+                    _fb(f"  <<< END   CC step[{i}/{total}] cid={cid} ERROR: {e!r}")
+                else:
+                    _fb(f"  END   step[{i}/{total}] cid={cid} ERROR: {e!r}")
 
-            # Wait if CC was launched; keep indeterminate during the wait
-            self._wait_for_cosmicclarity(mw)
-
-            # return to determinate and advance the bar after the step finishes
             self._progress_set_step(i, total, label)
             self._pump_events(0)
 
-        try: QApplication.restoreOverrideCursor()
-        except Exception: pass
+        try:
+            QApplication.restoreOverrideCursor()
+        except Exception:
+            pass
 
-        # finish bar
         self.run_status.setText("Done.")
         self.run_progress.setRange(0, 100)
         self.run_progress.setValue(100)
 
         if errors:
-            QMessageBox.warning(self, "Apply", "Some steps failed:\n\n" + "\n".join(errors))
-
+            _fb(f"EXIT with errors: {errors}")
+            QMessageBox.warning(
+                self,
+                "Apply",
+                "Some steps failed:\n\n" + "\n".join(errors),
+            )
+        else:
+            _fb("EXIT OK (no errors)")
 
 
     def _compress_to_chip(self):
@@ -1151,124 +1196,198 @@ class FunctionBundleDialog(QDialog):
 
 # ---------- script / command entry point ----------
 
-def run_function_bundle_command(ctx, cfg: dict | None = None):
+
+class FunctionBundleManager:
     """
-    Command entry point for 'function_bundle', used by ctx.run_command.
+    Simple QSettings-backed store for Function Bundles.
 
-    Two modes:
-
-      1) Named bundle (preferred from scripts):
-
-         cfg = {
-             "name" or "bundle_name": "<Function Bundle Name>",
-             "targets": ...,          # optional, forwarded to children
-             "inherit_target": True,  # default
-             ...                      # other per-step overrides
-         }
-
-         Steps are loaded from QSettings['functionbundles/v1'].
-
-      2) Anonymous / inline bundle (legacy chips / shortcuts):
-
-         cfg = {
-             "steps": [ {command_id, preset?, ...}, ... ],
-             "targets": ...,
-             "inherit_target": True,
-             ...
-         }
-
-         Steps are taken directly from cfg["steps"].
+    This MUST use the same "functionbundles/v1" key that the dialog uses,
+    so scripts and UI always see the same bundles.
     """
-    import json
-    from PyQt6.QtCore import QSettings
+    SETTINGS_KEY = "functionbundles/v1"
 
-    if cfg is None:
-        cfg = {}
+    def __init__(self, app=None):
+        # app is unused for now but kept for future (e.g. per-profile settings).
+        self._settings = QSettings()
 
-    # Explicit steps (chips, old payloads, etc.)
-    steps = cfg.get("steps")
-    if not isinstance(steps, list):
-        steps = None
-
-    # Named bundle lookup
-    name = (cfg.get("name") or cfg.get("bundle_name") or "").strip()
-
-    # ── Mode A: named bundle from QSettings ────────────────────────────────
-    if name:
-        s = QSettings()
-        raw = s.value(FunctionBundleDialog.SETTINGS_KEY, "[]", type=str)
+    # ---- low-level ----
+    def _load_all(self) -> list[dict]:
+        raw = self._settings.value(self.SETTINGS_KEY, "[]", type=str)
         try:
             bundles = json.loads(raw)
         except Exception:
             bundles = []
 
         if not isinstance(bundles, list):
-            bundles = []
+            return []
+        return [b for b in bundles if isinstance(b, dict)]
 
-        bundle = None
-        for b in bundles:
-            if not isinstance(b, dict):
-                continue
-            bname = (b.get("name") or "").strip()
-            if bname == name:
-                bundle = b
-                break
+    # ---- public API ----
+    def list_bundles(self) -> list[dict]:
+        return self._load_all()
 
-        if bundle is None:
-            raise ValueError(f"function_bundle: bundle '{name}' not found")
+    def get_bundle(self, name: str) -> dict | None:
+        if not name:
+            return None
+        want = name.strip().lower()
+        for b in self._load_all():
+            n = (b.get("name") or "").strip().lower()
+            if n == want:
+                return b
+        return None
 
-        steps = bundle.get("steps") or []
-        if not isinstance(steps, list):
-            raise ValueError(f"function_bundle: bundle '{name}' has invalid steps list")
 
-    # ── Mode B: anonymous bundle via cfg['steps'] ──────────────────────────
-    if not steps:
-        raise ValueError(
-            "function_bundle: 'name' or 'bundle_name' is required, or "
-            "cfg['steps'] must be a non-empty list"
-        )
+# Optional: cache a single instance per process
+_bundle_mgr: FunctionBundleManager | None = None
 
-    inherit_target = bool(cfg.get("inherit_target", True))
-    base_targets = cfg.get("targets", None)
+def get_bundle_manager(app=None) -> FunctionBundleManager:
+    """
+    Return a process-wide FunctionBundleManager.
 
-    errors: list[str] = []
+    Keeping a single instance avoids re-parsing JSON constantly,
+    but still reads from QSettings each time you call list/get.
+    """
+    global _bundle_mgr
+    if _bundle_mgr is None:
+        _bundle_mgr = FunctionBundleManager(app)
+    return _bundle_mgr
 
-    for st in steps:
+# ---------- script / command entry point ----------
+def _normalize_steps_for_hcd(steps: list[Any]) -> list[Dict[str, Any]]:
+    """
+    Take whatever is stored in the bundle and normalize it into the
+    drop-payload shape that MainWindow._handle_command_drop expects:
+
+        {
+            "command_id": "<cid>",
+            "preset": { ...optional... },
+            "on_base": bool,
+            ... (other keys passed through as-is)
+        }
+
+    This keeps old bundles (with 'id' or 'cid' fields) working.
+    """
+    out: list[Dict[str, Any]] = []
+
+    for st in steps or []:
         if not isinstance(st, dict):
             continue
-        cid = st.get("command_id")
+
+        cid = (
+            st.get("command_id")
+            or st.get("cid")
+            or st.get("id")
+        )
         if not cid:
             continue
 
-        # Start with the step's preset dict, if any
-        sub_cfg = dict(st.get("preset") or {})
+        payload: Dict[str, Any] = {
+            "command_id": cid,
+        }
 
-        # Merge any extra keys from the step (except command_id/preset)
+        # Preserve preset if present
+        if "preset" in st:
+            payload["preset"] = st["preset"]
+
+        # Preserve on_base if present
+        if "on_base" in st:
+            payload["on_base"] = bool(st.get("on_base"))
+
+        # Keep label / description for logging / UI if you want
+        if "label" in st:
+            payload["label"] = st["label"]
+
+        # Pass through any extra keys you want HCD to see
         for k, v in st.items():
-            if k in ("command_id", "preset"):
+            if k in payload:
                 continue
-            sub_cfg.setdefault(k, v)
-
-        # Bundle-level overrides (but don't clobber per-step keys)
-        for k, v in cfg.items():
-            if k in ("name", "bundle_name", "inherit_target", "targets", "steps"):
+            if k in ("command_id", "cid", "id"):
                 continue
-            sub_cfg.setdefault(k, v)
+            payload[k] = v
 
-        # Propagate targets to child commands if requested
-        if inherit_target and base_targets is not None:
-            sub_cfg.setdefault("targets", base_targets)
+        out.append(payload)
 
+    return out
+
+
+
+def run_function_bundle_command(ctx, preset: dict | None = None):
+    """
+    Entry point for CommandSpec(id="function_bundle").
+
+    IMPORTANT:
+    This is meant to behave EXACTLY like dropping a Function Bundle
+    on a view in the UI. That means we DO NOT iterate steps via
+    ctx.run_command; instead we synthesize a single payload with
+    command_id='function_bundle' and let MainWindow._handle_command_drop
+    do all the work.
+    """
+    preset = dict(preset or {})
+
+    app = getattr(ctx, "app", None) or getattr(ctx, "main_window", lambda: None)()
+    if app is None:
+        raise RuntimeError("Function Bundle command requires a GUI main window / ctx.app")
+
+    # --- resolve steps: saved bundle OR inline ---
+    bundle_name = preset.get("bundle_name") or preset.get("name")
+    steps: list[dict[str, Any]] = list(preset.get("steps") or [])
+    inherit = bool(preset.get("inherit_target", True))
+
+    # optional: targets='all_open' or [doc_ptrs], same as HCD branch supports
+    targets = preset.get("targets", None)
+
+    if bundle_name and not steps:
+        # Use the same bundle store as the Function Bundles dialog
+        mgr = get_bundle_manager(app)
+        data = mgr.get_bundle(bundle_name)
+        if not data:
+            raise RuntimeError(f"Function Bundle '{bundle_name}' not found.")
+        steps = list(data.get("steps") or [])
+
+    steps = _normalize_steps_for_hcd(steps)
+
+    if not steps:
         try:
-            ctx.run_command(cid, sub_cfg)
-        except Exception as e:
-            errors.append(f"{cid}: {e}")
+            ctx.log("Function Bundle: no steps to run.")
+        except Exception:
+            pass
+        return
 
-    if errors:
-        # You can soften this later (log-only) if you want
-        raise RuntimeError(
-            "function_bundle: some steps failed:\n" + "\n".join(errors)
-        )
+    # --- build the same payload the UI uses for a bundle drop ---
+    payload: Dict[str, Any] = {
+        "command_id": "function_bundle",
+        "steps": steps,
+        "inherit_target": inherit,
+    }
+    if targets is not None:
+        payload["targets"] = targets
+
+    # If targets were specified, we mimic dropping on the background:
+    #   _handle_command_drop(payload, target_sw=None)
+    # so the HCD branch fans out to all_open / explicit ptr list.
+    if targets is not None:
+        target_sw = None
+    else:
+        # "Normal" script usage: run on the active view, exactly like
+        # dragging the bundle chip onto that view.
+        try:
+            target_sw = ctx.active_subwindow()
+        except Exception:
+            target_sw = None
+
+    if target_sw is None and targets is None:
+        # No active view and no explicit targets – nothing to do.
+        raise RuntimeError("Function Bundle: no active view and no explicit targets.")
+
+    # --- delegate to main-window drop handler (single point of truth) ---
+    print(
+        f"[FunctionBundle] Script call → _handle_command_drop() "
+        f"inherit_target={inherit}, targets={targets!r}, steps={len(steps)}",
+        flush=True,
+    )
+    QApplication.processEvents()
+    app._handle_command_drop(payload, target_sw=target_sw)
+    QApplication.processEvents()
 
 
 # ---------- singleton open helper ----------

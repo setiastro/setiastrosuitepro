@@ -702,20 +702,28 @@ class ShortcutCanvas(QWidget):
         return None
 
     def _forward_command_drop(self, e) -> bool:
+        from PyQt6.QtWidgets import QApplication
         md = e.mimeData()
         if not md.hasFormat(MIME_CMD):
             return False
         sw = self._top_subwindow_at(e.position().toPoint())
         if sw is None:
+            print("[ShortcutCanvas] _forward_command_drop: no subwindow under cursor", flush=True)
+            QApplication.processEvents()
             return False
         try:
             raw = bytes(md.data(MIME_CMD))
             payload = _unpack_cmd_payload(raw)  # your existing helper
-        except Exception:
+            print(f"[ShortcutCanvas] _forward_command_drop → subwin={sw}, payload={payload!r}", flush=True)
+            QApplication.processEvents()
+        except Exception as ex:
+            print(f"[ShortcutCanvas] _forward_command_drop: failed to unpack payload: {ex!r}", flush=True)
+            QApplication.processEvents()
             return False
         self._mgr.apply_command_to_subwindow(sw, payload)
         e.acceptProposedAction()
         return True
+
 
     def dragMoveEvent(self, e):
         if e.mimeData().hasFormat(MIME_ACTION) or e.mimeData().hasFormat(MIME_CMD) or self._md_has_openable_urls(e.mimeData()):
@@ -1237,67 +1245,127 @@ class ShortcutManager:
 
     def apply_command_to_subwindow(self, subwin, payload):
         """Apply a dragged command (or bundle) to the specific subwindow."""
+        from PyQt6.QtWidgets import QApplication
+
         # --- normalize payload to a dict ---
         if isinstance(payload, (bytes, bytearray)):
             try:
                 payload = json.loads(payload.decode("utf-8"))
             except Exception:
+                print("[Shortcuts] apply_command_to_subwindow: invalid bytes payload", flush=True)
+                QApplication.processEvents()
                 return
         if not isinstance(payload, dict):
+            print(f"[Shortcuts] apply_command_to_subwindow: non-dict payload {type(payload)}", flush=True)
+            QApplication.processEvents()
             return
 
+        print(f"[Shortcuts] apply_command_to_subwindow: subwin={subwin}, payload={payload!r}", flush=True)
+        QApplication.processEvents()
+
         # --- flatten accidental nesting:
-        #     sometimes command_id itself is a dict like {"command_id": {...}}
         cid = payload.get("command_id")
         if isinstance(cid, dict):
             payload = cid
             cid = payload.get("command_id")
 
-        # still not a string? try one more level
         if not isinstance(cid, str) and isinstance(payload.get("command_id"), dict):
             payload = payload["command_id"]
             cid = payload.get("command_id")
 
         if not isinstance(cid, str) or not cid:
+            print("[Shortcuts] apply_command_to_subwindow: no valid command_id", flush=True)
+            QApplication.processEvents()
             return
 
-        # --- expand function bundles inline ---
+        # --- function bundle handling ---
         if cid == "function_bundle":
-            steps = payload.get("steps") or []
-            for st in steps:
-                self.apply_command_to_subwindow(subwin, st)
-            return
+            steps = payload.get("steps")
+            inherit_target = bool(payload.get("inherit_target", True))
+            print(f"[Shortcuts] function_bundle: {len(steps or [])} step(s), inherit_target={inherit_target}", flush=True)
+            QApplication.processEvents()
 
-        # --- primary path: use your main window’s drop handler (headless-capable) ---
+            # If explicit steps are present (chip DnD / history replay payload),
+            # run them INLINE via the normal command path (same as FunctionBundleDialog).
+            if isinstance(steps, list) and steps:
+                for i, st in enumerate(steps, start=1):
+                    try:
+                        scid = st.get("command_id")
+                    except Exception:
+                        scid = None
+                    print(f"[Shortcuts]   inline step {i}/{len(steps)} → {scid!r}", flush=True)
+                    QApplication.processEvents()
+                    # Reuse the same target subwindow for each step
+                    self.apply_command_to_subwindow(subwin, st)
+                return
+
+            # No inline steps → this is a true 'function_bundle' command (e.g. from Scripts),
+            # so delegate to the central executor.
+            try:
+                from pro.function_bundle import run_function_bundle_command
+                print("[Shortcuts] function_bundle: using run_function_bundle_command (no inline steps)", flush=True)
+                QApplication.processEvents()
+
+                try:
+                    self.mdi.setActiveSubWindow(subwin)
+                except Exception:
+                    pass
+
+                # Pass the whole payload as cfg so things like bundle_key, etc., are available.
+                cfg = dict(payload)
+                try:
+                    run_function_bundle_command(self.mw, preset=payload.get("preset") or None, cfg=cfg)
+                except TypeError:
+                    # older signature: (ctx, cfg)
+                    run_function_bundle_command(self.mw, cfg)
+                print("[Shortcuts] function_bundle: run_function_bundle_command finished", flush=True)
+                QApplication.processEvents()
+                return
+            except Exception as ex:
+                print(f"[Shortcuts] function_bundle: FAILED in central executor: {ex!r}", flush=True)
+                QApplication.processEvents()
+                return
+
+        # --- primary path (unchanged) ---
         mw = self.mw
         try:
             if hasattr(mw, "_handle_command_drop"):
+                print(f"[Shortcuts] forwarding cid={cid!r} to _handle_command_drop", flush=True)
+                QApplication.processEvents()
                 mw._handle_command_drop(payload, target_sw=subwin)
                 return
-        except Exception:
-            # fall through to the more generic paths
-            pass
+        except Exception as ex:
+            print(f"[Shortcuts] _handle_command_drop raised: {ex!r}, falling through", flush=True)
+            QApplication.processEvents()
 
-        # --- secondary paths (optional hooks) ---
+        # --- secondary paths (unchanged) ---
         w = getattr(subwin, "widget", None)
         target = w() if callable(w) else w
         preset = payload.get("preset") or {}
 
         if hasattr(target, "apply_command"):
+            print(f"[Shortcuts] target.apply_command for cid={cid!r}", flush=True)
+            QApplication.processEvents()
             target.apply_command(cid, preset)
             return
         if hasattr(mw, "apply_command_to_view"):
+            print(f"[Shortcuts] mw.apply_command_to_view for cid={cid!r}", flush=True)
+            QApplication.processEvents()
             mw.apply_command_to_view(target, cid, preset)
             return
         if hasattr(mw, "run_command"):
+            print(f"[Shortcuts] mw.run_command for cid={cid!r}", flush=True)
+            QApplication.processEvents()
             mw.run_command(cid, preset, view=target)
             return
 
-        # --- last resort: activate & trigger registered QAction ---
+        print(f"[Shortcuts] fallback QAction trigger for cid={cid!r}", flush=True)
+        QApplication.processEvents()
         self.mdi.setActiveSubWindow(subwin)
         act = self.registry.get(cid if isinstance(cid, str) else str(cid))
         if act:
             act.trigger()
+
 
     def clear(self):
         for sid, w in list(self.widgets.items()):

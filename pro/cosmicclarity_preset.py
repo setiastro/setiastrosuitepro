@@ -93,6 +93,7 @@ class _CCHeadlessWorker(QThread):
 
     def run(self):
         try:
+            print("starting cc headless worker")
             in_dir  = os.path.join(self.root, "input")
             out_dir = os.path.join(self.root, "output")
             os.makedirs(in_dir, exist_ok=True)
@@ -109,7 +110,7 @@ class _CCHeadlessWorker(QThread):
 
             staged_input = in_path
             result = None
-
+            print("entering cc headless run")
             for (mode, suffix) in self.ops:
                 if self._stop: raise RuntimeError("Cancelled")
                 self.step_changed.emit(mode)
