@@ -1,6 +1,8 @@
 # pro/remove_stars_preset.py
 from __future__ import annotations
-import os, platform, shutil
+import os
+import platform
+import shutil
 import numpy as np
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QMessageBox, QDialog, QFormLayout, QDialogButtonBox, QComboBox, QCheckBox, QSpinBox, QLabel
@@ -29,7 +31,8 @@ def run_remove_stars_via_preset(main, doc_or_preset=None, preset: dict | None = 
     """
     from PyQt6.QtWidgets import QMessageBox
     from PyQt6.QtCore import QTimer
-    import os, platform
+    import os
+    import platform
 
     # ---- Interpret arguments for backward compat / new executor ----
     if preset is None and isinstance(doc_or_preset, dict):
@@ -396,4 +399,6 @@ class RemoveStarsPresetDialog(QDialog):
 def _safe_rm(p):
     try:
         if p and os.path.exists(p): os.remove(p)
-    except Exception: pass
+    except Exception as e:
+        import logging
+        logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")

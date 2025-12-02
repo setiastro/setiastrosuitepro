@@ -1,6 +1,8 @@
 # pro/star_alignment_preset.py
 from __future__ import annotations
-import os, json, re
+import os
+import json
+import re
 import numpy as np
 import cv2
 import astroalign

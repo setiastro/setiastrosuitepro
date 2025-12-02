@@ -92,7 +92,9 @@ class MorphologyDialogPro(QDialog):
         self.setWindowTitle("Morphological Operations")
         if icon:
             try: self.setWindowIcon(icon)
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
         self.doc  = doc
         self.orig = np.clip(np.asarray(doc.image, dtype=np.float32), 0.0, 1.0)

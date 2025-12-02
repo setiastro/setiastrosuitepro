@@ -364,7 +364,9 @@ class SignatureInsertDialogPro(QDialog):
         self.setWindowTitle("Signature / Insert")
         if icon:
             try: self.setWindowIcon(icon)
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
         self.doc = doc
         self.scene = QGraphicsScene(self)

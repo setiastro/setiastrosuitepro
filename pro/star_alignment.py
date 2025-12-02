@@ -1,9 +1,14 @@
 #pro.star_alignment.py
 from __future__ import annotations
 
-import os, math, random, sys
+import os
+import math
+import random
+import sys
 import gc  # For explicit memory cleanup after heavy operations
-import os as _os, threading as _threading, ctypes as _ctypes
+import os as _os
+import threading as _threading
+import ctypes as _ctypes
 import multiprocessing
 N = str(max(1, min( (os.cpu_count() or 8), 32 )))
 os.environ.setdefault("OMP_NUM_THREADS", N)
@@ -27,7 +32,8 @@ import numpy as np
 
 import astroalign
 import sep
-import re, warnings
+import re
+import warnings
 import json
 import time
 from scipy.spatial import KDTree, Delaunay
@@ -71,7 +77,15 @@ try:
 except Exception:
     fast_star_detect = None
 
-from legacy.numba_utils import *
+from legacy.numba_utils import (
+    rescale_image_numba,
+    flip_horizontal_numba,
+    flip_vertical_numba,
+    rotate_90_clockwise_numba,
+    rotate_90_counterclockwise_numba,
+    rotate_180_numba,
+    invert_image_numba,
+)
 from pro.abe import _generate_sample_points as abe_generate_sample_points
 
 # ---------------------------------------------------------------------
@@ -1554,7 +1568,8 @@ def _aa_find_pairs_multitile(src_gray: np.ndarray,
       - ALSO used as a per-tile cap after detection to balance tiles
         (if you want only AA limiting, set tiles=1).
     """
-    import numpy as np, astroalign
+    import numpy as np
+    import astroalign
     try:
         _lock = _AA_LOCK
     except NameError:
@@ -1564,7 +1579,9 @@ def _aa_find_pairs_multitile(src_gray: np.ndarray,
     def dbg(msg):
         if _dbg:
             try: _dbg(msg)
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
     src = np.ascontiguousarray(src_gray.astype(np.float32))
     ref = np.ascontiguousarray(ref2d.astype(np.float32))
@@ -1699,7 +1716,9 @@ def compute_similarity_transform_astroalign_cropped(source_img, reference_img,
     Like compute_affine_transform_astroalign_cropped, but returns a
     similarity (rigid+uniform scale) 2x3 matrix: no shear.
     """
-    import numpy as np, astroalign, cv2
+    import numpy as np
+    import astroalign
+    import cv2
 
     try:
         _lock = _AA_LOCK
@@ -1821,7 +1840,9 @@ def _solve_delta_job(args):
         try:
             cv2.setNumThreads(1)
             try: cv2.ocl.setUseOpenCL(False)
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
         except Exception:
             pass
 
@@ -1920,7 +1941,8 @@ def _suppress_tiny_islands(img32: np.ndarray, det_sigma: float, minarea: int) ->
     Returns float32 image, same shape as input.
     """
 
-    import sep, cv2
+    import sep
+    import cv2
 
     img32 = np.asarray(img32, np.float32, order="C")
 
@@ -1978,7 +2000,9 @@ def _finalize_write_job(args):
     try:
         cv2.setNumThreads(1)
         try: cv2.ocl.setUseOpenCL(False)
-        except Exception: pass
+        except Exception as e:
+            import logging
+            logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
     except Exception:
         pass
 
@@ -2458,7 +2482,8 @@ def _detect_stars_uniform(img32: np.ndarray,
     Fast star detection on float32 mono image.
     Returns Nx2 (x,y) float32 points spread across the image.
     """
-    import numpy as np, sep
+    import numpy as np
+    import sep
 
     img32 = np.asarray(img32, np.float32, order="C")
     H, W = img32.shape[:2]
@@ -2550,7 +2575,8 @@ class StarRegistrationThread(QThread):
         For poly3/4 we still return the base model here; finalize does the true residual warp.
         """
         import numpy as np
-        import astroalign, cv2
+        import astroalign
+        import cv2
 
         src = np.ascontiguousarray(src_gray.astype(np.float32))
         ref = np.ascontiguousarray(ref2d.astype(np.float32))
@@ -2937,7 +2963,9 @@ class StarRegistrationThread(QThread):
     # ─────────────────────────────────────────────────────────────
     def run_one_registration_pass(self, _ref_stars_unused, _ref_triangles_unused, pass_index):
         _cap_native_threads_once()
-        import os, shutil, tempfile
+        import os
+        import shutil
+        import tempfile
         import cv2
 
         model = (self.align_model or "affine").lower()
@@ -2963,7 +2991,9 @@ class StarRegistrationThread(QThread):
                 np.save(ref_npy, ref_small)
             except Exception as e:
                 try: shutil.rmtree(tmpdir, ignore_errors=True)
-                except Exception: pass
+                except Exception as e:
+                    import logging
+                    logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
                 self.on_worker_error(f"Failed to persist residual reference: {e}")
                 return False, "Residual pass aborted."
 
@@ -3030,7 +3060,9 @@ class StarRegistrationThread(QThread):
                 return True, "Residual pass complete."
             finally:
                 try: shutil.rmtree(tmpdir, ignore_errors=True)
-                except Exception: pass
+                except Exception as e:
+                    import logging
+                    logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
         # ---------- AFFINE PATH (incremental delta accumulation) ----------
         resample_flag = cv2.INTER_AREA if pass_index == 0 else cv2.INTER_LINEAR
@@ -3271,7 +3303,9 @@ class StarRegistrationThread(QThread):
     # ─────────────────────────────────────────────────────────────
     def _finalize_writes(self):
         from concurrent.futures import ProcessPoolExecutor, as_completed
-        import tempfile, shutil, os
+        import tempfile
+        import shutil
+        import os
 
         self.drizzle_xforms = {}
 
@@ -3289,7 +3323,9 @@ class StarRegistrationThread(QThread):
         except Exception as e:
             self.progress_update.emit(f"⚠️ Failed to persist reference for workers: {e}")
             try: shutil.rmtree(tmpdir, ignore_errors=True)
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
             return
 
         finalize_workers = int(self.align_prefs.get("finalize_workers", min(os.cpu_count() or 8, 8)))
@@ -3352,7 +3388,9 @@ class StarRegistrationThread(QThread):
                                 pass
         finally:
             try: shutil.rmtree(tmpdir, ignore_errors=True)
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
             gc.collect()  # Free memory after finalization
 
         try:
@@ -3694,7 +3732,9 @@ def sanitize_wcs_header(hdr_in):
     for k in list(hdr.keys()):
         if any(k.startswith(pref) for pref in _3RD_AXIS_PREFIXES):
             try: del hdr[k]
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
     # Minimal, sane defaults
     if not hdr.get("CTYPE1"): hdr["CTYPE1"] = "RA---TAN"
@@ -3704,13 +3744,17 @@ def sanitize_wcs_header(hdr_in):
     if "RADESYS" not in hdr and "RADECSYS" in hdr:
         hdr["RADESYS"] = str(hdr["RADECSYS"]).strip()
         try: del hdr["RADECSYS"]
-        except Exception: pass
+        except Exception as e:
+            import logging
+            logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
     # Coerce common numeric keys to the right types
     for k in _NUM_FLOAT:
         if k in hdr:
             try: hdr[k] = _coerce_num(hdr[k], float)
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
     # SIP orders: ensure ints + pair up A/B and AP/BP if one is missing
     for k in ("A_ORDER","B_ORDER","AP_ORDER","BP_ORDER"):

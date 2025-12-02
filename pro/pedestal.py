@@ -3,7 +3,8 @@ from __future__ import annotations
 import numpy as np
 
 try:
-    import cv2  # not required, just for mask helpers if you later want it
+    import cv2  # not required
+    # just for mask helpers if you later want it
 except Exception:
     cv2 = None
 

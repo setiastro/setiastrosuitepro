@@ -1,4 +1,6 @@
-import os, cv2, numpy as np
+import os
+import cv2
+import numpy as np
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QHBoxLayout, QLineEdit, QPushButton, QFileDialog,
                              QListWidget, QSlider, QCheckBox, QMessageBox, QTextEdit, QDialog, QApplication,
                              QTreeWidget, QTreeWidgetItem, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QToolBar, QSizePolicy)

@@ -1,6 +1,7 @@
 # pro/shortcuts.py
 from __future__ import annotations
-import json, time
+import json
+import time
 from dataclasses import dataclass
 from typing import Dict, Optional
 import uuid

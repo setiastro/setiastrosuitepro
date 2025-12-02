@@ -1,12 +1,16 @@
 # pro/plate_solver.py
 from __future__ import annotations
 
-import os, re, math, tempfile
+import os
+import re
+import math
+import tempfile
 from typing import Tuple, Dict, Any, Optional
 from functools import lru_cache
 
 import numpy as np
-import json, time
+import json
+import time
 import requests
 from astropy.io import fits
 from astropy.io.fits import Header
@@ -317,7 +321,8 @@ def _astrometry_api_request(method: str, url: str, *, data=None, files=None,
         print("Requests not available for astrometry.net API.")
         return None
 
-    import random, requests as _rq
+    import random
+    import requests as _rq
     for attempt in range(1, max_retries + 1):
         try:
             if method.upper() == "POST":
@@ -468,7 +473,9 @@ def _parse_header_blob_to_header(blob: str) -> Header:
             except Exception:
                 val = vraw
         try: h[key] = val
-        except Exception: pass
+        except Exception as e:
+            import logging
+            logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
     if "A_ORDER" in h and "B_ORDER" not in h:
         h["B_ORDER"] = int(h["A_ORDER"])
@@ -531,7 +538,9 @@ def _write_temp_fit_web_16bit(gray2d_unit: np.ndarray) -> str:
     gray2d_unit must be float32 in [0,1].
     Returns path to temp .fits.
     """
-    import os, tempfile, numpy as np
+    import os
+    import tempfile
+    import numpy as np
     from astropy.io import fits
     from astropy.io.fits import Header
 
@@ -570,7 +579,8 @@ def _astrometry_download_wcs_file(settings, job_id: int, parent=None) -> Header 
     This includes SIP terms when present.
     Returns fits.Header or None.
     """
-    import os, tempfile
+    import os
+    import tempfile
     from astropy.io import fits
     from astropy.io.fits import Header
 
@@ -598,7 +608,9 @@ def _astrometry_download_wcs_file(settings, job_id: int, parent=None) -> Header 
             return h2
         finally:
             try: os.remove(tmp_path)
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
     except Exception as e:
         print("[Astrometry] WCS download exception:", e)
@@ -986,7 +998,9 @@ def _astrometry_poll_job(settings, subid: int, *, max_wait_s=900, parent=None) -
             if jobs and jobs[0] is not None:
                 _set_status_ui(parent, f"Status: Job assigned (ID {jobs[0]}).")
                 try: return int(jobs[0])
-                except Exception: pass
+                except Exception as e:
+                    import logging
+                    logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
         _sleep_ui(1000)
     return None
 
@@ -1066,7 +1080,9 @@ def _header_from_text_block(s: str) -> Header:
             except Exception:
                 val = val_str
         try: h[key] = val
-        except Exception: pass
+        except Exception as e:
+            import logging
+            logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
     if "A_ORDER" in h and "B_ORDER" not in h:
         h["B_ORDER"] = int(h["A_ORDER"])
     if "B_ORDER" in h and "A_ORDER" not in h:
@@ -1169,10 +1185,14 @@ def _build_header_from_astap_outputs(tmp_fits: str, sidecar_wcs: Optional[str]) 
     # parity for SIP orders (if only one present)
     if "A_ORDER" in merged and "B_ORDER" not in merged:
         try: merged["B_ORDER"] = int(merged["A_ORDER"])
-        except Exception: pass
+        except Exception as e:
+            import logging
+            logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
     if "B_ORDER" in merged and "A_ORDER" not in merged:
         try: merged["A_ORDER"] = int(merged["B_ORDER"])
-        except Exception: pass
+        except Exception as e:
+            import logging
+            logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
     # --- 4) build a real astropy Header from the merged dict ---
     final_hdr = Header()
@@ -1256,7 +1276,8 @@ def _solve_numpy_with_astrometry(parent, settings, image: np.ndarray) -> tuple[b
       - quantize to 16-bit unsigned FITS to reduce upload size
       - prefer solved WCS file from astrometry.net (includes SIP)
     """
-    import os, numpy as np
+    import os
+    import numpy as np
     from astropy.io.fits import Header
 
     # Build full-res mono in [0,1], but NON-LINEAR (stretched) for detectability
@@ -1282,7 +1303,9 @@ def _solve_numpy_with_astrometry(parent, settings, image: np.ndarray) -> tuple[b
                 hh = Header()
                 for k, v in d.items():
                     try: hh[k] = v
-                    except Exception: pass
+                    except Exception as e:
+                        import logging
+                        logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
                 return True, hh
             return False, "solve-field returned no header."
 
@@ -1337,7 +1360,9 @@ def _solve_numpy_with_astrometry(parent, settings, image: np.ndarray) -> tuple[b
         hh = Header()
         for k, v in d.items():
             try: hh[k] = v
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
         # clean temp web file
         try:
@@ -1576,10 +1601,14 @@ def _solve_numpy_with_astap(parent, settings, image: np.ndarray, seed_header: He
         err = bytes(proc.readAllStandardError()).decode(errors="ignore")
         print("ASTAP failed.\nSTDOUT:\n", out, "\nSTDERR:\n", err)
         try: os.remove(tmp_fit)
-        except Exception: pass
+        except Exception as e:
+            import logging
+            logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
         try:
             if os.path.exists(sidecar_wcs): os.remove(sidecar_wcs)
-        except Exception: pass
+        except Exception as e:
+            import logging
+            logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
         return False, "ASTAP returned a non-zero exit code."
 
     # >>> THIS is the key change: read the header **directly** from the FITS ASTAP wrote
@@ -1587,10 +1616,14 @@ def _solve_numpy_with_astap(parent, settings, image: np.ndarray, seed_header: He
         hdr = _build_header_from_astap_outputs(tmp_fit, sidecar_wcs)
     finally:
         try: os.remove(tmp_fit)
-        except Exception: pass
+        except Exception as e:
+            import logging
+            logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
         try:
             if os.path.exists(sidecar_wcs): os.remove(sidecar_wcs)
-        except Exception: pass
+        except Exception as e:
+            import logging
+            logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
     # return a REAL fits.Header (no blobs/strings/dicts)
     return True, hdr
@@ -1663,7 +1696,9 @@ def plate_solve_doc_inplace(parent, doc, settings) -> Tuple[bool, Header | str]:
         # Notify UI
         if hasattr(doc, "changed"):
             try: doc.changed.emit()
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
         if hasattr(parent, "header_viewer") and hasattr(parent.header_viewer, "set_document"):
             QTimer.singleShot(0, lambda: parent.header_viewer.set_document(doc))
