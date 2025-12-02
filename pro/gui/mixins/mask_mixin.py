@@ -307,71 +307,115 @@ class MaskMixin:
         print("[MainWindow] _handle_mask_drop payload:", payload)
         """
         Handle mask drag-and-drop from one document to another.
-        
+
         Args:
             payload: Dict with source document info
             target_sw: Target QMdiSubWindow
         """
-        # --- Resolve the source mask doc robustly ---
-        src_doc = self._resolve_mask_source_doc_from_payload(payload)
-        if not src_doc:
-            print("[MainWindow] _handle_mask_drop: could not resolve src_doc from payload")
+        from PyQt6.QtCore import Qt, QTimer
+        from PyQt6.QtWidgets import QMessageBox
+        from pro.subwindow import ImageSubWindow
+
+        if target_sw is None:
+            # applying a mask requires a target view
+            print("[MainWindow] _handle_mask_drop: target_sw is None")
             return
 
-        # --- Resolve the target view/doc ---
-        target_view = None
-        if target_sw is not None:
-            try:
-                root = target_sw.widget()
-            except Exception:
-                root = None
+        # --- 1) Resolve source doc pointer ---------------------------------
+        src_ptr = payload.get("mask_doc_ptr") or payload.get("doc_ptr")
+        if not src_ptr:
+            print("[MainWindow] _handle_mask_drop: missing mask_doc_ptr/doc_ptr")
+            return
 
-            if root is not None:
-                # Try direct: is the root itself an ImageSubWindow?
-                try:
-                    from pro.subwindow import ImageSubWindow  # local import to avoid cycles
-                    if isinstance(root, ImageSubWindow):
-                        target_view = root
-                    else:
-                        # Search inside the container for the first ImageSubWindow
-                        target_view = root.findChild(ImageSubWindow)
-                except Exception:
-                    # Fallback: just use root if it has a .document
-                    if hasattr(root, "document"):
-                        target_view = root
+        src_doc = None
+        src_sw = None
 
-        # Last-resort: fall back to the current active view
-        if target_view is None:
+        # Prefer a doc-manager helper if you ever add one
+        dm = getattr(self, "docman", None)
+        if dm is not None and hasattr(dm, "doc_for_ptr"):
             try:
-                target_view = self._active_view()
+                src_doc = dm.doc_for_ptr(src_ptr)
             except Exception:
+                src_doc = None
+
+        # Legacy resolver: walk MDI subwindows and compare id(document)
+        if src_doc is None and hasattr(self, "_find_doc_by_id"):
+            try:
+                src_doc, src_sw = self._find_doc_by_id(src_ptr)
+            except Exception:
+                src_doc, src_sw = None, None
+
+        if src_doc is None:
+            print(f"[MainWindow] _handle_mask_drop: no src_doc for ptr={src_ptr}")
+            QMessageBox.warning(self, "Mask", "Could not resolve mask document.")
+            return
+
+        # --- 2) Resolve target view / doc ----------------------------------
+        target_view = target_sw.widget()
+        if not isinstance(target_view, ImageSubWindow):
+            # In case there’s a wrapper widget
+            tv = target_sw.widget()
+            if tv is not None:
+                target_view = tv.findChild(ImageSubWindow)
+            else:
                 target_view = None
 
-        target_doc = getattr(target_view, "document", None) if target_view else None
-
-        # Don’t apply mask if we still don’t have a valid target doc, or if it’s the same as src
-        if not target_doc or target_doc is src_doc:
-            print(
-                "[MainWindow] _handle_mask_drop: no valid target_doc "
-                f"(target_view={target_view}, target_doc={target_doc})"
-            )
+        if target_view is None:
+            print("[MainWindow] _handle_mask_drop: no target_view resolved")
             return
 
-        # --- Apply source as mask onto target ---
-        name = src_doc.display_name() or "Dropped Mask"
+        target_doc = getattr(target_view, "document", None)
+        if target_doc is None:
+            print("[MainWindow] _handle_mask_drop: target_view has no document")
+            return
+
+        # Allow DocProxy, but unwrap if it exposes base_document
+        real_target = getattr(target_doc, "base_document", None) or target_doc
+
+        mode    = str(payload.get("mode", "replace"))
+        invert  = bool(payload.get("invert", False))
+        feather = float(payload.get("feather", 0.0))
+        name    = payload.get("name") or src_doc.display_name() or "Mask"
+
+        print(f"[MainWindow] _handle_mask_drop: src_doc={src_doc}, target_doc={real_target}, "
+              f"mode={mode}, invert={invert}, feather={feather}, name={name!r}")
+
+        # --- 3) Attach mask using the shared helper -------------------------
         ok = self._attach_mask_to_document(
-            target_doc, src_doc,
-            name=name, mode="replace",
-            invert=False, feather=0.0,
+            real_target,
+            src_doc,
+            name=name,
+            mode=mode,
+            invert=invert,
+            feather=feather,
         )
 
-        if ok and hasattr(self, "_log"):
-            self._log(f"Mask '{name}' dropped onto '{target_doc.display_name()}'")
+        if not ok:
+            print("[MainWindow] _handle_mask_drop: _attach_mask_to_document() returned False")
+            return
 
-        if ok:
+        if hasattr(self, "_log"):
             try:
-                target_doc.changed.emit()
+                self._log(f"Mask '{name}' applied to '{real_target.display_name()}'")
             except Exception:
                 pass
 
-        self._refresh_mask_action_states()
+        if hasattr(real_target, "changed"):
+            try:
+                real_target.changed.emit()
+            except Exception:
+                pass
+
+        # Make the drop target the active subwindow immediately (like before)
+        def _activate():
+            try:
+                self.mdi.setActiveSubWindow(target_sw)
+                target_sw.activateWindow()
+                target_sw.raise_()
+                target_sw.widget().setFocus(Qt.FocusReason.MouseFocusReason)
+            except Exception:
+                pass
+            self._refresh_mask_action_states()
+
+        _activate()
+        QTimer.singleShot(0, _activate)
