@@ -2552,6 +2552,20 @@ class AstroSuiteProMainWindow(
 
         remove_stars(self, doc)
 
+    def _add_stars(self, doc=None):
+        from pro.add_stars import add_stars
+        """
+        Wrapper so both the menu and Replay Last Action can call add_stars
+        on a specific document (ROI, base, etc.).
+        """
+        # If replay passed a specific doc, use it.
+        if doc is None:
+            sw = self.mdi.activeSubWindow()
+            if not sw:
+                QMessageBox.information(self, "No image", "Open an image first.")
+                return
+
+        add_stars(self)
 
     def _open_graxpert(self):
         from pro.graxpert import remove_gradient_with_graxpert
