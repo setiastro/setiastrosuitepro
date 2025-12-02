@@ -65,6 +65,9 @@ from PyQt6 import sip
 # your helpers/utilities
 from imageops.stretch import stretch_mono_image, stretch_color_image, siril_style_autostretch
 
+# Fix for missing star count preview function
+from legacy.numba_utils import compute_star_count_fast_preview
+
 # Import shared utilities
 from pro.widgets.image_utils import nearest_resize_2d as _nearest_resize_2d_shared
 from legacy.numba_utils import (
