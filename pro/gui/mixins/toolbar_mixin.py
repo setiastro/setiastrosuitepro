@@ -44,6 +44,9 @@ class ToolbarMixin:
     Provides methods for creating and managing toolbars and actions.
     """
     
+    # Placeholder methods for tool openers (implemented in main window)
+    
+    
     def _sync_link_action_state(self):
         """Synchronize the link views action state."""
         if not hasattr(self, "_link_views_enabled"):
