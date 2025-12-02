@@ -4,197 +4,86 @@ add_runtime_to_sys_path(status_cb=lambda *_: None)
 _ban_shadow_torch_paths(status_cb=lambda *_: None)
 _purge_bad_torch_from_sysmodules(status_cb=lambda *_: None)
 
-import time, traceback
-# ----------------------------------------
-# Matplotlib bootstrap (for frozen + for prewarmed cache)
-# ----------------------------------------
-import os
-import sys
-
-def _ensure_mpl_config_dir() -> str:
-    """
-    Make matplotlib use a known, writable folder.
-
-    Frozen (PyInstaller): <folder-with-exe>/mpl_config
-    Dev / IDE:            <repo-folder>/mpl_config
-
-    This matches the pre-warm script that will build the font cache there.
-    """
-    if getattr(sys, "frozen", False):
-        base = os.path.dirname(sys.executable)
-    else:
-        base = os.path.dirname(os.path.abspath(__file__))
-
-    mpl_cfg = os.path.join(base, "mpl_config")
-    try:
-        os.makedirs(mpl_cfg, exist_ok=True)
-    except OSError:
-        # worst case: let matplotlib pick its default
-        return mpl_cfg
-
-    # only set if user / env didn't force something else
-    os.environ.setdefault("MPLCONFIGDIR", mpl_cfg)
-    return mpl_cfg
-
-_MPL_CFG_DIR = _ensure_mpl_config_dir()
-# (optional) print once in dev:
-# print("MPLCONFIGDIR ->", _MPL_CFG_DIR)
-# ----------------------------------------
-
-
-
+# ============================================================================
+# Standard Library Imports
+# ============================================================================
 import importlib
-
-if getattr(sys, 'frozen', False):
-    # 1) Attempt to import both metadata modules
-    try:
-        std_md = importlib.import_module('importlib.metadata')
-    except ImportError:
-        std_md = None
-
-    try:
-        back_md = importlib.import_module('importlib_metadata')
-    except ImportError:
-        back_md = None
-
-    # 2) Ensure that any "import importlib.metadata" or
-    #    "import importlib_metadata" picks up our loaded module
-    if std_md:
-        sys.modules['importlib.metadata'] = std_md
-        setattr(importlib, 'metadata', std_md)
-    if back_md:
-        sys.modules['importlib_metadata'] = back_md
-
-    # 3) Pick whichever is available for defaults (prefer stdlib)
-    meta = std_md or back_md
-    if not meta:
-        # nothing to patch
-        sys.exit(0)
-
-    # 4) Save originals
-    orig_version      = getattr(meta, 'version', None)
-    orig_distribution = getattr(meta, 'distribution', None)
-
-    # 5) Define safe fallbacks
-    def safe_version(pkg, *args, **kwargs):
-        try:
-            return orig_version(pkg, *args, **kwargs)
-        except Exception:
-            return "0.0.0"
-
-    class DummyDist:
-        version = "0.0.0"
-        metadata = {}
-
-    def safe_distribution(pkg, *args, **kwargs):
-        try:
-            return orig_distribution(pkg, *args, **kwargs)
-        except Exception:
-            return DummyDist()
-
-    # 6) Patch both modules (stdlib and back-port) if they exist
-    for m in (std_md, back_md):
-        if not m:
-            continue
-        if orig_version:
-            m.version = safe_version
-        if orig_distribution:
-            m.distribution = safe_distribution
-
-
-
+import json
+import logging
+import math
+import os
+import re
+import sys
+import threading
+import time
+import traceback
 import warnings
+import webbrowser
+from datetime import datetime
+from decimal import getcontext
+from io import BytesIO
+from itertools import combinations
+from math import isnan
+from pathlib import Path
+from typing import List, Tuple, Dict, Set, Optional
+from urllib.parse import quote, quote_plus
+
+# ============================================================================
+# Third-Party Imports
+# ============================================================================
+import numpy as np
+import matplotlib
+from tifffile import imwrite
+from xisf import XISF
+
+# ============================================================================
+# Bootstrap Configuration (must run early)
+# ============================================================================
+from pro.config_bootstrap import ensure_mpl_config_dir
+from pro.metadata_patcher import apply_metadata_patches
+
+# Apply matplotlib configuration
+_MPL_CFG_DIR = ensure_mpl_config_dir()
+
+# Apply metadata patches for frozen builds
+apply_metadata_patches()
+
+# Configure matplotlib backend
+matplotlib.use("QtAgg")
+
+# Configure warnings
 warnings.filterwarnings(
     "ignore",
     message=r"Call to deprecated function \(or staticmethod\) _destroy\.",
     category=DeprecationWarning
 )
 
-# Standard library imports
-from itertools import combinations
-from tifffile import imwrite
-
-from math import isnan
-import re, threading, webbrowser
-
+# Configure lightkurve style
 os.environ['LIGHTKURVE_STYLE'] = 'default'
 
-import json
-import logging
+# Configure stdout encoding if available
+if (sys.stdout is not None) and (hasattr(sys.stdout, "reconfigure")):
+    sys.stdout.reconfigure(encoding='utf-8')
 
-from decimal import getcontext
-from urllib.parse import quote
-from urllib.parse import quote_plus
-
-from xisf import XISF
-
-from pathlib import Path
-
-from typing import List, Tuple, Dict, Set, Optional
-import time
-from datetime import datetime
-
-from io import BytesIO
+# ============================================================================
+# Lazy Imports for Heavy Dependencies
+# ============================================================================
+from pro.lazy_imports import (
+    get_photutils_isophote,
+    get_Ellipse,
+    get_EllipseGeometry,
+    get_build_ellipse_model,
+    get_lightkurve,
+    get_reproject_interp,
+    lazy_cv2,
+)
 
 # scipy.ndimage imports removed - not used in main module
 # gaussian_filter, laplace, zoom loaded on demand in specific modules
 
-import matplotlib
-matplotlib.use("QtAgg") 
-
-import numpy as np
-
-
-#if running in IDE which runs ipython or jupiter in backend reconfigure may not be available
-if (sys.stdout is not None) and (hasattr(sys.stdout, "reconfigure")):
-    sys.stdout.reconfigure(encoding='utf-8')
-
-# --- Lazy imports for heavy dependencies (performance optimization) ---
-# photutils: loaded on first use
-_photutils_isophote = None
-def _get_photutils_isophote():
-    """Lazy loader for photutils.isophote module."""
-    global _photutils_isophote
-    if _photutils_isophote is None:
-        try:
-            from photutils import isophote as _isophote_module
-            _photutils_isophote = _isophote_module
-        except Exception:
-            _photutils_isophote = False  # Mark as failed
-    return _photutils_isophote if _photutils_isophote else None
-
-def get_Ellipse():
-    """Get photutils.isophote.Ellipse, loading lazily."""
-    mod = _get_photutils_isophote()
-    return mod.Ellipse if mod else None
-
-def get_EllipseGeometry():
-    """Get photutils.isophote.EllipseGeometry, loading lazily."""
-    mod = _get_photutils_isophote()
-    return mod.EllipseGeometry if mod else None
-
-def get_build_ellipse_model():
-    """Get photutils.isophote.build_ellipse_model, loading lazily."""
-    mod = _get_photutils_isophote()
-    return mod.build_ellipse_model if mod else None
-
-# lightkurve: loaded on first use
-_lightkurve_module = None
-def get_lightkurve():
-    """Lazy loader for lightkurve module."""
-    global _lightkurve_module
-    if _lightkurve_module is None:
-        try:
-            import lightkurve as _lk
-            _lk.MPLSTYLE = None
-            _lightkurve_module = _lk
-        except Exception:
-            _lightkurve_module = False  # Mark as failed
-    return _lightkurve_module if _lightkurve_module else None
-# --- End lazy imports ---
-
-
-# Shared UI utilities (avoiding code duplication)
+# ============================================================================
+# Shared UI Utilities
+# ============================================================================
 from pro.widgets.common_utilities import (
     AboutDialog,
     ProjectSaveWorker as _ProjectSaveWorker,
@@ -1591,7 +1480,9 @@ class AstroSuiteProMainWindow(
         ok, msg = self.shortcuts.export_to_file(fn)
         if not ok:
             try: self._log(f"Export failed: {msg}")
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
     def _import_shortcuts_dialog(self):
         from PyQt6.QtWidgets import QFileDialog, QMessageBox
@@ -1614,7 +1505,9 @@ class AstroSuiteProMainWindow(
         ok, msg = self.shortcuts.import_from_file(fn, replace_existing=replace)
         if not ok:
             try: self._log(f"Import failed: {msg}")
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
     def changeEvent(self, ev):
         super().changeEvent(ev)
@@ -1818,7 +1711,9 @@ class AstroSuiteProMainWindow(
             except Exception:
                 # fallback: force drop
                 try: dm.close_document(doc)
-                except Exception: pass
+                except Exception as e:
+                    import logging
+                    logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
     def _clear_minimized_shelf(self):
         try:
@@ -3702,16 +3597,24 @@ class AstroSuiteProMainWindow(
         if isinstance(preset, dict):
             if "threshold" in preset:
                 try: dlg.threshold_slider.setValue(int(preset["threshold"]))
-                except Exception: pass
+                except Exception as e:
+                    import logging
+                    logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
             if preset.get("mode") == "Flux":
                 try: dlg.toggleHistogramMode()
-                except Exception: pass
+                except Exception as e:
+                    import logging
+                    logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
             if bool(preset.get("log", False)) != bool(dlg.log_scale):
                 try: dlg.log_toggle_button.setChecked(bool(preset.get("log", False)))
-                except Exception: pass
+                except Exception as e:
+                    import logging
+                    logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
             if "zoom" in preset:
                 try: dlg.zoom_slider.setValue(int(preset["zoom"]))
-                except Exception: pass
+                except Exception as e:
+                    import logging
+                    logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
         dlg.show()
 
@@ -3730,7 +3633,9 @@ class AstroSuiteProMainWindow(
         from pro.image_peeker_pro import ImagePeekerDialogPro
         dlg = ImagePeekerDialogPro(parent=self, document=doc, settings=self.settings)
         try: dlg.setWindowIcon(QIcon(peeker_icon))
-        except Exception: pass
+        except Exception as e:
+            import logging
+            logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
         dlg.show()
         if hasattr(self, "_log"):
             self._log(f"Opened Image Peeker for '{title_hint or getattr(doc, 'display_name', lambda:'view')()}'")
@@ -5411,7 +5316,9 @@ class AstroSuiteProMainWindow(
 
             # Optional: light progress text in Console
             try: self._log(f"Bundle: {len(steps)} step(s) -> {targets or 'target view'}")
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
 
             for sw in _iter_bundle_targets():
@@ -5428,17 +5335,23 @@ class AstroSuiteProMainWindow(
                         self._handle_command_drop(sp, sw)
                         QCoreApplication.processEvents()
                         try: self._log(f"Bundle [{i}/{len(steps)}] on '{title}' -> {sp.get('command_id')}")
-                        except Exception: pass
+                        except Exception as e:
+                            import logging
+                            logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
                     except Exception as e:
                         try: self._log(f"Bundle step failed on '{title}': {e}")
-                        except Exception: pass
+                        except Exception as e:
+                            import logging
+                            logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
                         if stop_on_error:
                             QMessageBox.warning(self, "Bundle", f"Stopped on error:\n{e}")
                             return
                         # else continue to next step
 
             try: self._log("Bundle complete.")
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
             return
 
         # ------------------- No target subwindow -> open UIs / active ops -------------------
@@ -5908,7 +5821,9 @@ class AstroSuiteProMainWindow(
             from pro.blemish_blaster import BlemishBlasterDialogPro
             dlg = BlemishBlasterDialogPro(self, doc)
             try: dlg.setWindowIcon(QIcon(blastericon_path))
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
             dlg.resize(900, 650)
             dlg.show()
             return
@@ -6623,17 +6538,23 @@ class AstroSuiteProMainWindow(
             preset.get("amount", None)))
         if amt is not None:
             try: dlg.sld_st.setValue(int(float(amt) * 100.0))
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
         sat = preset.get("color_boost", preset.get("saturation", None))
         if sat is not None:
             try: dlg.sld_sat.setValue(int(float(sat) * 100.0))
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
         scnr = preset.get("scnr_green", preset.get("scnr", None))
         if scnr is not None:
             try: dlg.chk_scnr.setChecked(bool(scnr))
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
         dlg.resize(1000, 650)
         dlg.show()
@@ -6787,14 +6708,18 @@ class AstroSuiteProMainWindow(
         tb = getattr(self, "_search_tb", None)
         if tb:
             try: self.removeToolBar(tb)
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
             tb.deleteLater()
             self._search_tb = None
 
         old_dock = getattr(self, "_search_dock", None)
         if old_dock:
             try: old_dock.hide(); old_dock.setParent(None)
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
             old_dock.deleteLater()
             self._search_dock = None
 
@@ -7015,9 +6940,13 @@ class AstroSuiteProMainWindow(
                 pass
 
             try: self.update_undo_redo_action_labels()
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
             try: self._refresh_mask_action_states()
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
             try:
                 # any other UI you keep in sync (histogram, header viewer, etc.)
                 if hasattr(self, "_hdr_refresh_timer") and self._hdr_refresh_timer is not None:

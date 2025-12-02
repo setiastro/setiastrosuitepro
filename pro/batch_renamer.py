@@ -1,7 +1,9 @@
 # pro/batch_renamer.py
 from __future__ import annotations
 
-import os, re, shutil
+import os
+import re
+import shutil
 from typing import List
 from collections import defaultdict
 from datetime import datetime, timezone

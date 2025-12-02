@@ -1061,7 +1061,9 @@ class FunctionBundleDialog(QDialog):
 
         # show busy cursor during batch apply
         try: QApplication.setOverrideCursor(Qt.CursorShape.BusyCursor)
-        except Exception: pass
+        except Exception as e:
+            import logging
+            logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
         applied = 0
         for p in ptrs:
@@ -1076,7 +1078,9 @@ class FunctionBundleDialog(QDialog):
             self._pump_events(0)
 
         try: QApplication.restoreOverrideCursor()
-        except Exception: pass
+        except Exception as e:
+            import logging
+            logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
         if applied == 0:
             QMessageBox.information(self, "Apply", "No valid targets in the selected bundle.")

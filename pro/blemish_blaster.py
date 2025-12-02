@@ -1,6 +1,7 @@
 # pro/blemish_blaster.py
 from __future__ import annotations
-import math, numpy as np
+import math
+import numpy as np
 from typing import Optional
 from PyQt6.QtCore import Qt, QEvent, QPointF, QRunnable, QThreadPool, pyqtSlot, QObject, pyqtSignal
 from PyQt6.QtGui import QImage, QPixmap, QPen, QBrush, QAction, QKeySequence, QColor, QWheelEvent, QIcon
@@ -417,7 +418,9 @@ class BlemishBlasterDialogPro(QDialog):
 
         if applied and hasattr(self.parent(), "_refresh_active_view"):
             try: self.parent()._refresh_active_view()
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
         self.accept()
 

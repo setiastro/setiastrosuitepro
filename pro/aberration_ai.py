@@ -1,8 +1,11 @@
 # pro/aberration_ai.py
 from __future__ import annotations
-import os, webbrowser, requests
+import os
+import webbrowser
+import requests
 import numpy as np
-import sys, platform  # add
+import sys
+import platform  # add
 import time
 
 IS_APPLE_ARM = (sys.platform == "darwin" and platform.machine() == "arm64")
@@ -403,9 +406,11 @@ class AberrationAIDialog(QDialog):
             if os.name == "nt":
                 os.startfile(d)  # type: ignore
             elif sys.platform == "darwin":
-                import subprocess; subprocess.Popen(["open", d])
+                import subprocess; subprocess.Popen(["open"
+                import d])
             else:
-                import subprocess; subprocess.Popen(["xdg-open", d])
+                import subprocess; subprocess.Popen(["xdg-open"
+                import d])
         except Exception:
             webbrowser.open(f"file://{d}")
 
@@ -648,10 +653,14 @@ class AberrationAIDialog(QDialog):
             w = sw.widget()
             if hasattr(w, "reload_from_doc"):
                 try: w.reload_from_doc()
-                except Exception: pass
+                except Exception as e:
+                    import logging
+                    logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
             elif hasattr(w, "update_view"):
                 try: w.update_view()
-                except Exception: pass
+                except Exception as e:
+                    import logging
+                    logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
             elif hasattr(w, "update"):
                 w.update()
 

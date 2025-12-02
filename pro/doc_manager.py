@@ -935,13 +935,17 @@ class _RoiViewDocument(ImageDocument):
         new_full[y:y+h, x:x+w] = img
         parent.image = new_full
         try: parent.changed.emit()
-        except Exception: pass
+        except Exception as e:
+            import logging
+            logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
         # notify region update + repaint
         dm = getattr(self, "_doc_manager", None) or getattr(parent, "_doc_manager", None)
         if dm is not None:
             try: dm.imageRegionUpdated.emit(parent, (x, y, w, h))
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
 
     # --- helper to snapshot what's currently visible in the Preview
@@ -1639,7 +1643,9 @@ class DocManager(QObject):
                                 tdoc = TableDocument(rows, headers, tmeta, parent=self.parent())
                                 self._register_doc(tdoc)
                                 try: tdoc.changed.emit()
-                                except Exception: pass
+                                except Exception as e:
+                                    import logging
+                                    logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
                                 created_any = True
                                 #print(f"[DocManager] Added TableDocument: rows={len(rows)} cols={len(headers)} title='{tdoc.display_name()}'")
                             except Exception as e_tab:
@@ -1699,7 +1705,9 @@ class DocManager(QObject):
 
                             self._register_doc(aux_doc)
                             try: aux_doc.changed.emit()
-                            except Exception: pass
+                            except Exception as e:
+                                import logging
+                                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
                             created_any = True
 
                         except Exception as e_img:
@@ -1764,7 +1772,9 @@ class DocManager(QObject):
                         primary_doc = ImageDocument(arr0_f32, md0)
                         self._register_doc(primary_doc)
                         try: primary_doc.changed.emit()
-                        except Exception: pass
+                        except Exception as e:
+                            import logging
+                            logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
                         created_any = True
 
                     except Exception as e0:
@@ -1811,7 +1821,9 @@ class DocManager(QObject):
                         sib = ImageDocument(arr_f32, md)
                         self._register_doc(sib)
                         try: sib.changed.emit()
-                        except Exception: pass
+                        except Exception as e:
+                            import logging
+                            logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
                         created_any = True
 
                     except Exception as _e:

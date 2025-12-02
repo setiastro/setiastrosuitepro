@@ -1,7 +1,12 @@
 #pro.stacking_suite.py
 from __future__ import annotations
-import os, glob, shutil, tempfile, datetime as _dt
-import sys, platform
+import os
+import glob
+import shutil
+import tempfile
+import datetime as _dt
+import sys
+import platform
 import gc  # For explicit memory cleanup after heavy operations
 from time import perf_counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -11,7 +16,8 @@ import hashlib
 from numpy.lib.format import open_memmap 
 import tzlocal
 import weakref
-import re, unicodedata
+import re
+import unicodedata
 import math            # used in compute_safe_chunk
 import psutil          # used in bytes_available / compute_safe_chunk
 from typing import List
@@ -61,7 +67,13 @@ from imageops.stretch import stretch_mono_image, stretch_color_image, siril_styl
 
 # Import shared utilities
 from pro.widgets.image_utils import nearest_resize_2d as _nearest_resize_2d_shared
-from legacy.numba_utils import *   
+from legacy.numba_utils import (
+    windsorized_sigma_clip_weighted,
+    kappa_sigma_clip_weighted,
+    apply_flat_division_numba,
+    subtract_dark_with_pedestal,
+    debayer_raw_fast,
+)
 from legacy.image_manager import load_image, save_image, get_valid_header
 from pro.star_alignment import StarRegistrationWorker, StarRegistrationThread, IDENTITY_2x3
 from pro.log_bus import LogBus
@@ -191,7 +203,8 @@ def _read_tile_stack(file_list, y0, y1, x0, x1, channels, out_buf):
     out_buf: (N, th, tw, C) float32, C-order (preallocated by caller).
     Returns (th, tw) = actual tile extents.
     """
-    import os, numpy as np
+    import os
+    import numpy as np
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     th = int(y1 - y0)
@@ -691,7 +704,8 @@ def _force_shape_hw(img: np.ndarray, target_h: int, target_w: int) -> np.ndarray
     Return img with exactly (target_h, target_w) spatial shape.
     If bigger → center-crop; if smaller → reflect-pad. Preserves channels/layout.
     """
-    import numpy as np, cv2
+    import numpy as np
+    import cv2
     a = np.asarray(img)
     if a.ndim < 2:
         return a
@@ -1168,7 +1182,8 @@ def remove_gradient_stack_abe(stack, target_hw: tuple[int,int] | None = None, **
 
     # ---- local helper: force exact (H,W) via center-crop or reflect-pad ----
     def _force_shape_hw(img: np.ndarray, target_h: int, target_w: int) -> np.ndarray:
-        import numpy as np, cv2
+        import numpy as np
+        import cv2
         a = np.asarray(img)
         if a.ndim < 2:
             return a
@@ -1278,7 +1293,8 @@ def load_fits_tile(filepath, y_start, y_end, x_start, x_end):
       - (th, tw) mono tile
       - (th, tw, 3) color tile (or CHW if that’s how it lives on disk)
     """
-    import numpy as np, gzip
+    import numpy as np
+    import gzip
     from astropy.io import fits
     from io import BytesIO
 
@@ -3308,7 +3324,9 @@ def _open_sources_for_mfdeconv(paths, log):
         # close anything we already opened
         for s in srcs:
             try: s.close()
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
         raise RuntimeError(f"{e}")
 
 # --- RAW helpers ------------------------------------------------------------
@@ -4282,7 +4300,9 @@ class StackingSuiteDialog(QDialog):
                         token = _rawpy_pattern_to_token(rp)
                         if token:
                             try: header['BAYERPAT'] = token
-                            except Exception: pass
+                            except Exception as e:
+                                import logging
+                                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
                             try:
                                 from legacy.numba_utils import debayer_raw_fast
                                 return debayer_raw_fast(image, bayer_pattern=token, cfa_drizzle=cfa, method="edge")
@@ -4306,14 +4326,18 @@ class StackingSuiteDialog(QDialog):
                         )
                         rgb = (rgb16.astype(np.float32) / 65535.0)
                         try: header['XTRANS'] = True
-                        except Exception: pass
+                        except Exception as e:
+                            import logging
+                            logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
                         return rgb
 
                     # If still unknown, last attempt: if we do have a 2x2 pattern, use it
                     token = _rawpy_pattern_to_token(rp)
                     if token:
                         try: header['BAYERPAT'] = token
-                        except Exception: pass
+                        except Exception as e:
+                            import logging
+                            logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
                         try:
                             from legacy.numba_utils import debayer_raw_fast
                             return debayer_raw_fast(image, bayer_pattern=token, cfa_drizzle=cfa, method="edge")
@@ -4339,7 +4363,9 @@ class StackingSuiteDialog(QDialog):
             # without the RAW we cannot demosaic now, so keep mosaic but mark it.
             if _probably_fuji_xtrans(file_path, header):
                 try: header['XTRANS'] = True
-                except Exception: pass
+                except Exception as e:
+                    import logging
+                    logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
                 print("[INFO] FITS likely from X-Trans; cannot demosaic without RAW. Keeping mosaic.")
                 return image
 
@@ -9592,9 +9618,13 @@ class StackingSuiteDialog(QDialog):
                 if pd.cancelled:
                     self.update_status("⛔ Master Dark creation cancelled; cleaning up temporary files.")
                     try: del final_stacked
-                    except Exception: pass
+                    except Exception as e:
+                        import logging
+                        logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
                     try: os.remove(memmap_path)
-                    except Exception: pass
+                    except Exception as e:
+                        import logging
+                        logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
                     break
 
                 master_dark_data = np.asarray(final_stacked, dtype=np.float32)
@@ -9625,7 +9655,9 @@ class StackingSuiteDialog(QDialog):
             self.assign_best_master_files()
         finally:
             try: _free_torch_memory()
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
             pd.close()
             
     def add_master_dark_to_tree(self, exposure_label: str, master_dark_path: str):
@@ -10229,9 +10261,13 @@ class StackingSuiteDialog(QDialog):
 
                 if pd.cancelled:
                     try: del final_stacked
-                    except Exception: pass
+                    except Exception as e:
+                        import logging
+                        logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
                     try: os.remove(memmap_path)
-                    except Exception: pass
+                    except Exception as e:
+                        import logging
+                        logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
                     self.update_status("⛔ Master Flat creation cancelled; cleaning up temporary files.")
                     break
 
@@ -10264,7 +10300,9 @@ class StackingSuiteDialog(QDialog):
             self.assign_best_master_files()
         finally:
             try: _free_torch_memory()
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
             pd.close()
 
 
@@ -11906,7 +11944,8 @@ class StackingSuiteDialog(QDialog):
 
         # ---- local helper: force exact (H,W) via center-crop or reflect-pad ----
         def _force_shape_hw(img: np.ndarray, target_h: int, target_w: int) -> np.ndarray:
-            import numpy as np, cv2
+            import numpy as np
+            import cv2
             a = np.asarray(img)
             if a.ndim < 2:
                 return a
@@ -14470,7 +14509,9 @@ class StackingSuiteDialog(QDialog):
         except Exception as e:
             for s in sources:
                 try: s.close()
-                except Exception: pass
+                except Exception as e:
+                    import logging
+                    logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
             log(f"⚠️ Failed to open images (memmap): {e}")
             return None, {}, None
 
@@ -14486,7 +14527,9 @@ class StackingSuiteDialog(QDialog):
         except MemoryError as e:
             for s in sources:
                 try: s.close()
-                except Exception: pass
+                except Exception as e:
+                    import logging
+                    logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
             log(f"⚠️ {e}")
             return None, {}, None
 
@@ -14604,7 +14647,9 @@ class StackingSuiteDialog(QDialog):
                 # Swap readers to the comet-aligned starless temp files
                 for s in sources:
                     try: s.close()
-                    except Exception: pass
+                    except Exception as e:
+                        import logging
+                        logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
                 sources = [_MMFits(p) for p in starless_temp_paths]
                 starless_readers_paths = list(starless_temp_paths)  
 
@@ -14754,11 +14799,15 @@ class StackingSuiteDialog(QDialog):
         # Close readers and clean temp
         for s in sources:
             try: s.close()
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
         if tmp_root is not None:
             try: shutil.rmtree(tmp_root, ignore_errors=True)
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
         if C == 1:
             integrated_image = integrated_image[..., 0]
@@ -16142,7 +16191,9 @@ class StackingSuiteDialog(QDialog):
         except Exception as e:
             for s in sources:
                 try: s.close()
-                except Exception: pass
+                except Exception as e:
+                    import logging
+                    logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
             log(f"⚠️ Failed to open images (memmap): {e}")
             return None, {}, None
 

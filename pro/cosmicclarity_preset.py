@@ -1,6 +1,11 @@
 # pro/cosmicclarity_preset.py
 from __future__ import annotations
-import os, sys, time, glob, shutil, subprocess
+import os
+import sys
+import time
+import glob
+import shutil
+import subprocess
 import numpy as np
 
 from PyQt6.QtCore import QThread, pyqtSignal, Qt, QTimer, QSettings, QLockFile
@@ -86,10 +91,14 @@ class _CCHeadlessWorker(QThread):
         # Parse both formats used by your tools
         if s.startswith("Progress:"):
             try: self.progress.emit(int(float(s.split()[1].replace("%",""))))
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
         elif s.startswith("PROGRESS:"):
             try: self.progress.emit(int(s.split(":",1)[1].strip().replace("%","")))
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
     def run(self):
         try:

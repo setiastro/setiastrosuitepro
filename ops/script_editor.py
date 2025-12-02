@@ -1,6 +1,8 @@
 # ops/script_editor.py
 from __future__ import annotations
-import io, sys, traceback
+import io
+import sys
+import traceback
 from pathlib import Path
 
 from ops.scripts import get_scripts_dir  # your existing helper
@@ -1024,7 +1026,9 @@ class ScriptEditorDock(QDockWidget):
             compile(src, str(self._current_path), "exec")
 
             # 2) tabnanny mixed-indent check (more specific warnings)
-            import tabnanny, tempfile, os
+            import tabnanny
+            import tempfile
+            import os
             with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False, encoding="utf-8") as tf:
                 tf.write(src)
                 tmp_name = tf.name
@@ -1032,7 +1036,9 @@ class ScriptEditorDock(QDockWidget):
                 tabnanny.check(tmp_name)
             finally:
                 try: os.remove(tmp_name)
-                except Exception: pass
+                except Exception as e:
+                    import logging
+                    logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
         except Exception as e:
             tb = traceback.format_exc()

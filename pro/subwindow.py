@@ -16,10 +16,14 @@ except Exception:
         def __init__(self, obj): self.obj = obj
         def __enter__(self):
             try: self.obj.blockSignals(True)
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
         def __exit__(self, *exc):
             try: self.obj.blockSignals(False)
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
 from .autostretch import autostretch   # ← uses pro/imageops/stretch.py
 
@@ -175,14 +179,18 @@ def build_celestial_wcs(header) -> _AstroWCS | None:
                         except Exception: hdr_obj[str(k)] = val
                 elif v is not None:
                     try: hdr_obj[str(k)] = v
-                    except Exception: pass
+                    except Exception as e:
+                        import logging
+                        logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
         else:
             # Flat dict of FITS-like cards
             from astropy.io.fits import Header
             hdr_obj = Header()
             for k, v in header.items():
                 try: hdr_obj[str(k)] = v
-                except Exception: pass
+                except Exception as e:
+                    import logging
+                    logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
     if hdr_obj is None:
         return None
@@ -1352,7 +1360,9 @@ class ImageSubWindow(QWidget):
             if title != self._last_title_for_emit:
                 self._last_title_for_emit = title
                 try: self.viewTitleChanged.emit(self, title)
-                except Exception: pass
+                except Exception as e:
+                    import logging
+                    logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
 
     def _strip_decorations(self, title: str) -> tuple[str, bool]:

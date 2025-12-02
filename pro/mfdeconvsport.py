@@ -1,6 +1,8 @@
 # pro/mfdeconvsport.py
 from __future__ import annotations
-import os, math, re
+import os
+import math
+import re
 import numpy as np
 from astropy.io import fits
 from PyQt6.QtCore import QObject, pyqtSignal
@@ -44,7 +46,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from queue import SimpleQueue
 
 # ── XISF decode cache → memmap on disk ─────────────────────────────────
-import tempfile, threading, uuid, atexit
+import tempfile
+import threading
+import uuid
+import atexit
 _XISF_CACHE = {}
 _XISF_LOCK  = threading.Lock()
 _XISF_TMPFILES = []
@@ -124,9 +129,13 @@ _FRAME_LRU = _FrameCHWLRU(capacity=8)  # tune if you like
 
 def _clear_all_caches():
     try: _clear_xisf_cache()
-    except Exception: pass
+    except Exception as e:
+        import logging
+        logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
     try: _FRAME_LRU.clear()
-    except Exception: pass
+    except Exception as e:
+        import logging
+        logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
 def _as_chw(np_img: np.ndarray) -> np.ndarray:
     x = np.asarray(np_img, dtype=np.float32, order="C")
@@ -188,7 +197,9 @@ def _clear_xisf_cache():
     with _XISF_LOCK:
         for fn in _XISF_TMPFILES:
             try: os.remove(fn)
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
         _XISF_CACHE.clear()
         _XISF_TMPFILES.clear()
 
@@ -1198,7 +1209,9 @@ def _variance_map_from_precomputed(
             try:
                 g = float(hdr[k]);  gain = g if (np.isfinite(g) and g > 0) else None
                 if gain is not None: break
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
     if gain is not None:
         a_shot = 1.0 / gain
@@ -2110,7 +2123,9 @@ def multiframe_deconv(
                         del yt, mt, vt, pred_super, pred_low, wmap_low, up_y, up_pred
                         if cuda_ok:
                             try: torch.cuda.empty_cache()
-                            except Exception: pass
+                            except Exception as e:
+                                import logging
+                                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
                         if per_frame_logging and ((fidx & 7) == 0):
                             status_cb(f"Iter {it}/{max_iters} — frame {fidx+1}/{len(paths)} (SR spatial)")
@@ -2136,7 +2151,9 @@ def multiframe_deconv(
                         del yt, mt, vt, pred, wmap, up_y, up_pred
                         if cuda_ok:
                             try: torch.cuda.empty_cache()
-                            except Exception: pass
+                            except Exception as e:
+                                import logging
+                                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
                 ratio = num / (den + EPS)
                 neutral = (den.abs() < 1e-12) & (num.abs() < 1e-12)
@@ -2281,9 +2298,13 @@ def multiframe_deconv(
     try:
         if use_torch:
             try: del num, den
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
             try: del psf_t, psfT_t
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
             _free_torch_memory()
     except Exception:
         pass

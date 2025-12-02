@@ -1,6 +1,9 @@
 # pro/image_peeker_pro.py
 from __future__ import annotations
-import os, math, re, tempfile
+import os
+import math
+import re
+import tempfile
 import numpy as np
 
 from typing import Optional, Tuple, List

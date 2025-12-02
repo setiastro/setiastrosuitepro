@@ -11,7 +11,11 @@
 
 from __future__ import annotations
 
-import os, re, cv2, math, time
+import os
+import re
+import cv2
+import math
+import time
 from datetime import datetime
 from typing import List, Tuple, Optional
 

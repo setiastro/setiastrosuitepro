@@ -1,6 +1,8 @@
 # pro/pixelmath.py
 from __future__ import annotations
-import os, re, json
+import os
+import re
+import json
 import numpy as np
 
 from PyQt6.QtCore import Qt, QTimer, QPointF

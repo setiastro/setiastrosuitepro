@@ -1,5 +1,8 @@
 # ops/write_build_info.py
-import os, datetime, textwrap, pathlib
+import os
+import datetime
+import textwrap
+import pathlib
 
 UTC = datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 

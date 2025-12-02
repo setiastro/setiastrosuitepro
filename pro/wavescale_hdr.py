@@ -189,10 +189,14 @@ class WaveScaleHDRDialogPro(QDialog):
         if self._headless:
             # Don’t show any windows; we’ll still exec() to run the event loop.
             try: self.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
         if icon_path:
             try: self.setWindowIcon(QIcon(icon_path))
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
         self.resize(980, 700)
 
         self._doc = doc

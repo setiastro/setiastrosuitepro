@@ -1,6 +1,8 @@
 #legacy.image_manager.py
 # --- required imports for this module ---
-import os, time, gzip
+import os
+import time
+import gzip
 from io import BytesIO
 from typing import Optional, Dict
 import datetime
@@ -759,7 +761,8 @@ def _try_load_raw_with_rawpy(filename: str, allow_thumb_preview: bool = True, de
 
     raise RuntimeError("RAW decode failed (rawpy).")
 
-import os, datetime
+import os
+import datetime
 
 import exifread
 

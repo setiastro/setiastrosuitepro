@@ -350,7 +350,9 @@ class ImageCombineDialog(QDialog):
                 else:
                     A.image = result
                 try: self.mw._log(f"Image Combine → replaced '{_doc_name(A)}' ({step})")
-                except Exception: pass
+                except Exception as e:
+                    import logging
+                    logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
             else:
                 newdoc = self.dm.create_document(result, metadata={
                     "display_name": f"Combined ({step})",
@@ -360,7 +362,9 @@ class ImageCombineDialog(QDialog):
                 }, name=f"Combined ({step})")
                 self.mw._spawn_subwindow_for(newdoc)
                 try: self.mw._log(f"Image Combine → new view '{_doc_name(newdoc)}' ({step})")
-                except Exception: pass
+                except Exception as e:
+                    import logging
+                    logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
         except Exception as e:
             QMessageBox.critical(self, "Image Combine", f"Failed:\n{e}")

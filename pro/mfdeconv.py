@@ -1,6 +1,8 @@
 # pro/mfdeconv.py non-sport normal version
 from __future__ import annotations
-import os, math, re
+import os
+import math
+import re
 import numpy as np
 import time
 from astropy.io import fits
@@ -46,7 +48,10 @@ from pathlib import Path
 from queue import SimpleQueue
 
 # ── XISF decode cache → memmap on disk ─────────────────────────────────
-import tempfile, threading, uuid, atexit
+import tempfile
+import threading
+import uuid
+import atexit
 _XISF_CACHE = {}
 _XISF_LOCK  = threading.Lock()
 _XISF_TMPFILES = []
@@ -114,9 +119,13 @@ _FRAME_LRU = _FrameCHWLRU(capacity=8)  # tune if you like
 
 def _clear_all_caches():
     try: _clear_xisf_cache()
-    except Exception: pass
+    except Exception as e:
+        import logging
+        logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
     try: _FRAME_LRU.clear()
-    except Exception: pass
+    except Exception as e:
+        import logging
+        logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
 
 def _normalize_to_float32(a: np.ndarray) -> np.ndarray:
@@ -160,7 +169,9 @@ def _clear_xisf_cache():
     with _XISF_LOCK:
         for fn in _XISF_TMPFILES:
             try: os.remove(fn)
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
         _XISF_CACHE.clear()
         _XISF_TMPFILES.clear()
 
@@ -959,7 +970,8 @@ def _conv_same_np(img, psf):
     NumPy FFT-based SAME convolution for (H,W) or (C,H,W).
     IMPORTANT: ifftshift the PSF so its peak is at [0,0] before FFT.
     """
-    import numpy as _np, numpy.fft as _fft
+    import numpy as _np
+    import numpy.fft as _fft
 
     kh, kw = psf.shape
 
@@ -1495,7 +1507,9 @@ def _variance_map_from_precomputed(
             try:
                 g = float(hdr[k]);  gain = g if (np.isfinite(g) and g > 0) else None
                 if gain is not None: break
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
     if gain is not None:
         a_shot = 1.0 / gain
@@ -2263,7 +2277,8 @@ def _robust_med_mad_t(x, max_elems_per_sample: int = 2_000_000):
     Returns (median[B,1,1,1], mad[B,1,1,1]) computed on a strided subsample
     to avoid 'quantile() input tensor is too large'.
     """
-    import math, torch
+    import math
+    import torch
     B = x.shape[0]
     flat = x.reshape(B, -1)
     N = flat.shape[1]
@@ -2821,9 +2836,13 @@ def multiframe_deconv(
         torch = import_torch(prefer_cuda=True, status_cb=status_cb)
         TORCH_OK = True
         try: cuda_ok = hasattr(torch, "cuda") and torch.cuda.is_available()
-        except Exception: pass
+        except Exception as e:
+            import logging
+            logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
         try: mps_ok = hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
-        except Exception: pass
+        except Exception as e:
+            import logging
+            logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
         try:
             import torch_directml
             dml_device = torch_directml.device()
@@ -2997,7 +3016,9 @@ def multiframe_deconv(
             x = _upsample_sum(x if x.ndim==2 else x[0], r, target_hw=(expected_H, expected_W))
             if x.ndim == 2: x = x[None, ...]
     try: del seed_native
-    except Exception: pass
+    except Exception as e:
+        import logging
+        logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
     try:
         import gc as _gc
@@ -3091,7 +3112,8 @@ def multiframe_deconv(
         if y is not None:
             return y
         # No OpenCV → always use the ifftshifted FFT path
-        import numpy as _np, numpy.fft as _fft
+        import numpy as _np
+        import numpy.fft as _fft
         H, W = a.shape[-2:]
         kh, kw = k.shape
         fftH, fftW = _fftshape_same(H, W, kh, kw)
@@ -3681,9 +3703,13 @@ def multiframe_deconv(
     try:
         if use_torch:
             try: del num, den
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
             try: del psf_t, psfT_t
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
             _free_torch_memory()
     except Exception:
         pass

@@ -1,6 +1,9 @@
 # pro/accel_installer.py
 from __future__ import annotations
-import platform, subprocess, sys, os
+import platform
+import subprocess
+import sys
+import os
 from typing import Callable, Optional
 from PyQt6.QtWidgets import QMessageBox
 from pro.runtime_torch import import_torch, add_runtime_to_sys_path, _user_runtime_dir, _venv_paths
@@ -176,7 +179,8 @@ def ensure_torch_installed(prefer_gpu: bool, log_cb: LogCB) -> tuple[bool, Optio
 def current_backend() -> str:
     try:
         add_runtime_to_sys_path(status_cb=lambda *_: None)
-        import importlib, platform as _plat
+        import importlib
+        import platform as _plat
         torch = importlib.import_module("torch")
 
         if getattr(torch, "cuda", None) and torch.cuda.is_available():

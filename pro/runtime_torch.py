@@ -1,6 +1,15 @@
 # pro/runtime_torch.py  (hardened against shadowing / broken wheels)
 from __future__ import annotations
-import os, sys, subprocess, platform, shutil, json, time, errno, importlib, re
+import os
+import sys
+import subprocess
+import platform
+import shutil
+import json
+import time
+import errno
+import importlib
+import re
 from pathlib import Path
 from contextlib import contextmanager
 
@@ -165,7 +174,8 @@ def _purge_bad_torch_from_sysmodules(status_cb=print) -> None:
 
 def _torch_sanity_check(status_cb=print):
     try:
-        import torch, importlib
+        import torch
+        import importlib
         tf = getattr(torch, "__file__", "") or ""
         pkg_dir = Path(tf).parent if tf else None
 
@@ -203,7 +213,9 @@ def _pip_ok(venv_python: Path, args: list[str], status_cb=print) -> bool:
     if r.returncode != 0:
         tail = (r.stdout or "").strip()
         try: status_cb(tail[-4000:])
-        except Exception: pass
+        except Exception as e:
+            import logging
+            logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
     return r.returncode == 0
 
 def _ensure_numpy(venv_python: Path, status_cb=print) -> None:
@@ -367,7 +379,8 @@ def _check_cuda_in_venv(venv_python: Path, status_cb=print) -> tuple[bool, str |
       • error_msg – text from any exception or stderr, for logging.
     """
     code = r"""
-import json, sys
+import json
+import sys
 try:
     import torch
     info = {
@@ -412,7 +425,8 @@ except Exception as e:
 
 def _check_xpu_in_venv(venv_python: Path, status_cb=print) -> tuple[bool, str | None]:
     code = r"""
-import json, sys
+import json
+import sys
 try:
     import torch
     has_xpu = hasattr(torch, "xpu") and torch.xpu.is_available()
@@ -438,7 +452,9 @@ except Exception as e:
     except Exception as e:
         msg = f"Failed to parse XPU check output: {e}\nRaw output:\n{out}"
         try: status_cb(msg)
-        except Exception: pass
+        except Exception as e:
+            import logging
+            logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
         return False, msg
     return bool(data.get("has_xpu")), data.get("err")
 

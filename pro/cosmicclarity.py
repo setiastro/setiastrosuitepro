@@ -1,6 +1,11 @@
 # pro/cosmicclarity.py
 from __future__ import annotations
-import os, sys, glob, time, tempfile, uuid
+import os
+import sys
+import glob
+import time
+import tempfile
+import uuid
 import numpy as np
 
 from PyQt6.QtCore import Qt, QTimer, QSettings, QThread, pyqtSignal, QFileSystemWatcher, QEvent
@@ -21,7 +26,8 @@ from imageops.stretch import stretch_mono_image, stretch_color_image
 # Import centralized preview dialog
 from pro.widgets.preview_dialogs import ImagePreviewDialog
 
-import shutil, subprocess
+import shutil
+import subprocess
 
 # --- replace your _atomic_fsync_replace with this ---
 def _atomic_fsync_replace(src_bytes_writer, final_path: str):
@@ -163,7 +169,9 @@ def _purge_dir(path: str, *, prefix: str | None = None):
                 continue
             if os.path.splitext(fn)[1].lower() in _IMG_EXTS:
                 try: os.remove(fp)
-                except Exception: pass
+                except Exception as e:
+                    import logging
+                    logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
     except Exception:
         pass
 
@@ -257,13 +265,17 @@ class CosmicClarityDialogPro(QDialog):
         if not bypass_guard and self._headless_guard_active():
             # avoid any flash; never show
             try: self.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
             QTimer.singleShot(0, self.reject)
             return        
         self.setWindowTitle("Cosmic Clarity")
         if icon: 
             try: self.setWindowIcon(icon)
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
         self.parent_ref = parent
         self.doc = doc
@@ -367,7 +379,9 @@ class CosmicClarityDialogPro(QDialog):
         if self._headless:
             # Don’t show the control panel; we’ll still exec() to run the event loop.
             try: self.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
         self.resize(560, 540)
 
     # ----- UI helpers -----
@@ -698,7 +712,9 @@ class CosmicClarityDialogPro(QDialog):
     def _cancel_all(self):
         try:
             if self._proc: self._proc.kill()
-        except Exception: pass
+        except Exception as e:
+            import logging
+            logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
         self._on_wait_cancel()
 
     def _base_name(self) -> str:
@@ -995,7 +1011,9 @@ class CosmicClaritySatelliteDialogPro(QDialog):
         self.setWindowTitle("Cosmic Clarity – Satellite Removal")
         if icon:
             try: self.setWindowIcon(icon)
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
         self.settings = QSettings()
         self.cosmic_clarity_folder = self.settings.value("paths/cosmic_clarity", "", type=str) or ""
@@ -1458,7 +1476,9 @@ class CosmicClaritySatelliteDialogPro(QDialog):
         if self._wait: self._wait.close(); self._wait = None
         if callable(on_finish):
             try: on_finish()
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
         QMessageBox.information(self, "Done", "Processing finished.")
 
     def _run_satellite(self, *, input_dir: str, output_dir: str, live: bool):
