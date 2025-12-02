@@ -1,6 +1,7 @@
 # pro/graxpert.py
 from __future__ import annotations
 import os, platform, shutil, tempfile, stat, glob, subprocess
+import numpy as np
 
 from PyQt6.QtCore import QThread, pyqtSignal, Qt
 from PyQt6.QtWidgets import (
