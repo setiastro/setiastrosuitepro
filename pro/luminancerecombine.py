@@ -1,5 +1,6 @@
 from __future__ import annotations
-import numpy as np, cv2
+import numpy as np
+import cv2
 from typing import Optional
 
 # Shared utilities

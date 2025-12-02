@@ -1,7 +1,9 @@
 # pro/convo.py
 from __future__ import annotations
 
-import os, math, numpy as np
+import os
+import math
+import numpy as np
 from typing import Optional, Tuple
 from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor
@@ -1173,7 +1175,8 @@ class ConvoDeconvoDialog(QDialog):
         if ext == 'fits':
             fits.PrimaryHDU(self._last_stellar_psf.astype(np.float32)).writeto(path, overwrite=True)
         elif ext in ('tif', 'tiff'):
-            import tifffile; tifffile.imwrite(path, self._last_stellar_psf.astype(np.float32))
+            import tifffile; tifffile.imwrite(path
+            import self._last_stellar_psf.astype(np.float32))
         else:
             QMessageBox.warning(self, "Invalid Extension", "Please choose .fits or .tif."); return
         QMessageBox.information(self, "Saved", f"PSF saved to:\n{path}")

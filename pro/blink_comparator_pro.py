@@ -2,7 +2,11 @@
 from __future__ import annotations
 
 # ⬇️ keep your existing imports used by the code you pasted
-import os, re, time, psutil, numpy as np
+import os
+import re
+import time
+import psutil
+import numpy as np
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from typing import Optional, List
@@ -19,7 +23,9 @@ from PyQt6.QtWidgets import (
 )
 from bisect import bisect_right
 # 3rd-party (your code already expects these)
-import cv2, sep, pyqtgraph as pg
+import cv2
+import sep
+import pyqtgraph as pg
 
 from legacy.image_manager import load_image
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
-import os, glob
+import os
+import glob
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal

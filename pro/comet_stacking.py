@@ -1,6 +1,11 @@
 # pro/comet_stacking.py
 from __future__ import annotations
-import os, sys, tempfile, subprocess, shutil, math
+import os
+import sys
+import tempfile
+import subprocess
+import shutil
+import math
 import numpy as np
 import cv2
 from typing import List, Dict, Tuple, Optional
@@ -118,7 +123,9 @@ def starnet_starless_pair_from_array(
     rc = subprocess.call(cmd, cwd=starnet_dir)
     if rc != 0 or not os.path.exists(out_path):
         try: os.remove(in_path)
-        except Exception: pass
+        except Exception as e:
+            import logging
+            logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
         raise RuntimeError(f"StarNet failed (rc={rc}).")
 
     starless_pre, _, _, _ = load_image(out_path)
@@ -194,7 +201,9 @@ def darkstar_starless_from_array(src_rgb01: np.ndarray, settings, **_ignored) ->
     rc = subprocess.call(cmd, cwd=output_dir)
     if rc != 0 or not os.path.exists(out_path):
         try: os.remove(in_path)
-        except Exception: pass
+        except Exception as e:
+            import logging
+            logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
         raise RuntimeError(f"DarkStar failed (rc={rc}).")
 
     starless, _, _, _ = load_image(out_path)

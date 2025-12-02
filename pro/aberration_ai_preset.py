@@ -1,6 +1,7 @@
 # pro/aberration_ai_preset.py
 from __future__ import annotations
-import os, time
+import os
+import time
 import numpy as np
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QDialog, QVBoxLayout, QProgressBar, QPushButton, QMessageBox, QFormLayout, QDialogButtonBox, QSpinBox, QCheckBox, QComboBox, QLabel

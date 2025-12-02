@@ -161,7 +161,9 @@ def apply_crop_via_preset(mw, doc, preset: dict) -> np.ndarray:
             setattr(doc, "metadata", {**meta, "step_name": "Crop"})
             if hasattr(doc, "changed"):
                 try: doc.changed.emit()
-                except Exception: pass
+                except Exception as e:
+                    import logging
+                    logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
     return out
 

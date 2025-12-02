@@ -1,6 +1,7 @@
 # pro/header_viewer.py
 from __future__ import annotations
-import os, csv
+import os
+import csv
 from typing import Optional, Dict, Any
 
 from PyQt6.QtWidgets import (

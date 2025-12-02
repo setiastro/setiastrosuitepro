@@ -657,7 +657,9 @@ class CurveEditor(QGraphicsView):
         if hasattr(self, "_overlay_items") and self._overlay_items:
             for it in self._overlay_items:
                 try: self.scene.removeItem(it)
-                except Exception: pass
+                except Exception as e:
+                    import logging
+                    logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
         self._overlay_items = []
 
         colors = {
