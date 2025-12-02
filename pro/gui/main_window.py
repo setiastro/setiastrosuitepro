@@ -254,6 +254,7 @@ import math
 
 from pro.autostretch import autostretch
 from pro.autostretch import autostretch as _autostretch
+from pro.rgb_extract import extract_rgb_channels
 
 
 
@@ -2551,6 +2552,20 @@ class AstroSuiteProMainWindow(
 
         remove_stars(self, doc)
 
+    def _add_stars(self, doc=None):
+        from pro.add_stars import add_stars
+        """
+        Wrapper so both the menu and Replay Last Action can call add_stars
+        on a specific document (ROI, base, etc.).
+        """
+        # If replay passed a specific doc, use it.
+        if doc is None:
+            sw = self.mdi.activeSubWindow()
+            if not sw:
+                QMessageBox.information(self, "No image", "Open an image first.")
+                return
+
+        add_stars(self)
 
     def _open_graxpert(self):
         from pro.graxpert import remove_gradient_with_graxpert
@@ -2676,6 +2691,7 @@ class AstroSuiteProMainWindow(
 
     def SFCC_show(self):
         from pro.sfcc import SFCCDialog
+        from pro.doc_manager import DocManager
         if getattr(self, "SFCC_window", None) and self.SFCC_window.isVisible():
             self.SFCC_window.raise_()
             self.SFCC_window.activateWindow()
@@ -2989,7 +3005,7 @@ class AstroSuiteProMainWindow(
             sel_title, src_doc = candidates[idx]
 
         try:
-            from pro.luminancerecombine import _to_float01_strict
+            from pro.luminancerecombine import _to_float01_strict, _LUMA_REC601, _LUMA_REC2020
             src_img = _to_float01_strict(np.asarray(src_doc.image))
 
             # Prefer the source doc's stored method/weights (for perfect round-trip),

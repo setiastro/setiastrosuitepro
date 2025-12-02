@@ -60,8 +60,7 @@ class LiveStackSettingsDialog(QDialog):
             minimum=0.1,
             maximum=10.0,
             initial=parent.clip_threshold,
-            step=0.1,
-            suffix="σ"
+            step=0.1
         )
         self.sigma_spin.valueChanged.connect(lambda v: None)
 
@@ -71,8 +70,7 @@ class LiveStackSettingsDialog(QDialog):
             minimum=0.1,
             maximum=50.0,
             initial=parent.max_fwhm,
-            step=0.1,
-            suffix=" px"
+            step=0.1
         )
         self.fwhm_spin.valueChanged.connect(lambda v: None)
 
@@ -99,8 +97,7 @@ class LiveStackSettingsDialog(QDialog):
             minimum=0.0,
             maximum=60.0,
             initial=parent.FILE_STABLE_SECS,
-            step=0.5,
-            suffix="s"
+            step=0.5
         )
 
 
