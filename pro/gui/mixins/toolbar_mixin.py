@@ -44,6 +44,12 @@ class ToolbarMixin:
     Provides methods for creating and managing toolbars and actions.
     """
     
+    # Placeholder methods for tool openers (implemented in main window)
+    def _open_multiscale_hdr_tool(self):
+        """Open Multiscale HDR transform tool (overridden in main window)."""
+        from PyQt6.QtWidgets import QMessageBox
+        QMessageBox.information(self, "Not available", "Multiscale HDR tool is not configured.")
+    
     def _sync_link_action_state(self):
         """Synchronize the link views action state."""
         if not hasattr(self, "_link_views_enabled"):
@@ -213,6 +219,7 @@ class ToolbarMixin:
         tb_tl.addAction(self.act_nbtorgb)
         tb_tl.addAction(self.act_selective_color)
         tb_tl.addAction(self.act_freqsep)
+        tb_tl.addAction(self.act_multiscale_hdr)
         tb_tl.addAction(self.act_contsub)
         tb_tl.addAction(self.act_image_combine)
 
@@ -714,6 +721,12 @@ class ToolbarMixin:
         self.act_freqsep.setIconVisibleInMenu(True)
         self.act_freqsep.triggered.connect(self._open_freqsep_tool)
 
+        # NEW: Multiscale HDR (à trous / starlet style)
+        self.act_multiscale_hdr = QAction(QIcon(freqsep_path), "Multiscale HDR...", self)
+        self.act_multiscale_hdr.setStatusTip("Apply Multiscale HDR transform to recover details in bright regions")
+        self.act_multiscale_hdr.setIconVisibleInMenu(True)
+        self.act_multiscale_hdr.triggered.connect(self._open_multiscale_hdr_tool)
+
         self.act_contsub = QAction(QIcon(contsub_path), "Continuum Subtract...", self)
         self.act_contsub.setStatusTip("Continuum subtract (NB - scaled broadband)")
         self.act_contsub.setIconVisibleInMenu(True)
@@ -929,6 +942,7 @@ class ToolbarMixin:
         reg("ppp",            self.act_ppp)
         reg("nbtorgb",       self.act_nbtorgb)
         reg("freqsep",       self.act_freqsep)
+        reg("multiscale_hdr", self.act_multiscale_hdr)
         reg("selective_color", self.act_selective_color)
         reg("contsub",      self.act_contsub)
         reg("abe",          self.act_abe)

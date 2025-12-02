@@ -4,7 +4,7 @@ import numpy as np
 
 try:
     import cv2  # not required
-    import just for mask helpers if you later want it
+    # just for mask helpers if you later want it
 except Exception:
     cv2 = None
 

@@ -144,6 +144,7 @@ class MenuMixin:
         m_tools.addAction(self.act_nbtorgb)
         m_tools.addAction(self.act_selective_color)
         m_tools.addAction(self.act_freqsep)
+        m_tools.addAction(self.act_multiscale_hdr)
         m_tools.addAction(self.act_contsub)
         m_tools.addAction(self.act_image_combine)
         m_tools.addSeparator()

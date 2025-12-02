@@ -3477,6 +3477,31 @@ class AstroSuiteProMainWindow(
        
         w.show()
 
+    def _open_multiscale_hdr_tool(self):
+        from pro.multiscale_hdr import MultiscaleHDRTab
+        # get the active ImageDocument (same pattern you use elsewhere)
+        doc = None
+        if hasattr(self, "mdi") and self.mdi.activeSubWindow():
+            sw = self.mdi.activeSubWindow().widget()
+            doc = getattr(sw, "document", None)
+
+        if doc is None and getattr(self, "docman", None) and self.docman._docs:
+            doc = self.docman._docs[-1]
+
+        w = MultiscaleHDRTab(doc_manager=self.docman, document=doc, parent=self)
+        w.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        w.setWindowTitle("Multiscale HDR")
+        try:
+            from PyQt6.QtGui import QIcon
+            w.setWindowIcon(QIcon(freqsep_path))
+        except Exception:
+            pass
+
+        if doc is not None and getattr(doc, "image", None) is not None:
+            w.set_image_from_doc(doc.image)
+
+        w.show()
+
     def _open_contsub_tool(self):
         from pro.continuum_subtract import ContinuumSubtractTab
         w = ContinuumSubtractTab(doc_manager=self.docman)

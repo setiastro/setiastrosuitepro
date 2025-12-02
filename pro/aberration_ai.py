@@ -406,11 +406,9 @@ class AberrationAIDialog(QDialog):
             if os.name == "nt":
                 os.startfile(d)  # type: ignore
             elif sys.platform == "darwin":
-                import subprocess; subprocess.Popen(["open"
-                import d])
+                import subprocess; subprocess.Popen(["open", d])
             else:
-                import subprocess; subprocess.Popen(["xdg-open"
-                import d])
+                import subprocess; subprocess.Popen(["xdg-open", d])
         except Exception:
             webbrowser.open(f"file://{d}")
 
