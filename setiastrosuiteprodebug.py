@@ -70,7 +70,9 @@ from itertools import combinations
 from tifffile import imwrite
 import requests
 
-import re, threading, webbrowser
+import re
+import threading
+import webbrowser
 import os
 os.environ['LIGHTKURVE_STYLE'] = 'default'
 
@@ -1777,12 +1779,16 @@ class AstroSuiteProMainWindow(QMainWindow):
         # 7) Notify UI
         if changed and hasattr(doc, "changed"):
             try: doc.changed.emit()
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
         if hasattr(self, "_refresh_header_viewer"):
             self._refresh_header_viewer(doc)
         if hasattr(self, "currentDocumentChanged"):
             try: self.currentDocumentChanged.emit(doc)
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
         return True
 
 
@@ -1811,7 +1817,9 @@ class AstroSuiteProMainWindow(QMainWindow):
             except Exception:
                 # fallback: force drop
                 try: dm.close_document(doc)
-                except Exception: pass
+                except Exception as e:
+                    import logging
+                    logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
     def _clear_minimized_shelf(self):
         try:
@@ -3469,16 +3477,24 @@ class AstroSuiteProMainWindow(QMainWindow):
         if isinstance(preset, dict):
             if "threshold" in preset:
                 try: dlg.threshold_slider.setValue(int(preset["threshold"]))
-                except Exception: pass
+                except Exception as e:
+                    import logging
+                    logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
             if preset.get("mode") == "Flux":
                 try: dlg.toggleHistogramMode()
-                except Exception: pass
+                except Exception as e:
+                    import logging
+                    logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
             if bool(preset.get("log", False)) != bool(dlg.log_scale):
                 try: dlg.log_toggle_button.setChecked(bool(preset.get("log", False)))
-                except Exception: pass
+                except Exception as e:
+                    import logging
+                    logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
             if "zoom" in preset:
                 try: dlg.zoom_slider.setValue(int(preset["zoom"]))
-                except Exception: pass
+                except Exception as e:
+                    import logging
+                    logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
         dlg.show()
 
@@ -3496,7 +3512,9 @@ class AstroSuiteProMainWindow(QMainWindow):
 
         dlg = ImagePeekerDialogPro(parent=self, document=doc, settings=self.settings)
         try: dlg.setWindowIcon(QIcon(peeker_icon))
-        except Exception: pass
+        except Exception as e:
+            import logging
+            logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
         dlg.show()
         if hasattr(self, "_log"):
             self._log(f"Opened Image Peeker for '{title_hint or getattr(doc, 'display_name', lambda:'view')()}'")
@@ -4023,7 +4041,9 @@ class AstroSuiteProMainWindow(QMainWindow):
         if cid == "blemish_blaster":
             dlg = BlemishBlasterDialogPro(self, doc)
             try: dlg.setWindowIcon(QIcon(blastericon_path))
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
             dlg.resize(900, 650)
             dlg.show()
             return
@@ -4623,17 +4643,23 @@ class AstroSuiteProMainWindow(QMainWindow):
             preset.get("amount", None)))
         if amt is not None:
             try: dlg.sld_st.setValue(int(float(amt) * 100.0))
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
         sat = preset.get("color_boost", preset.get("saturation", None))
         if sat is not None:
             try: dlg.sld_sat.setValue(int(float(sat) * 100.0))
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
         scnr = preset.get("scnr_green", preset.get("scnr", None))
         if scnr is not None:
             try: dlg.chk_scnr.setChecked(bool(scnr))
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
         dlg.resize(1000, 650)
         dlg.show()
@@ -5723,7 +5749,15 @@ class AstroSuiteProMainWindow(QMainWindow):
 
 if __name__ == "__main__":
     # --- Early diagnostics (before importing PyQt) ---------------------------
-    import os, sys, tempfile, atexit, logging, traceback, faulthandler, warnings, platform
+    import os
+    import sys
+    import tempfile
+    import atexit
+    import logging
+    import traceback
+    import faulthandler
+    import warnings
+    import platform
 
     # Log files (always-writable locations)
     LOG_DIR = tempfile.gettempdir()

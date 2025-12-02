@@ -82,7 +82,6 @@ from astropy.table import Table, vstack
 from numba import njit, prange
 from scipy.optimize import curve_fit
 import exifread
-from numba_utils import *
 import astroalign
 
 import traceback
@@ -195,14 +194,27 @@ if hasattr(sys, '_MEIPASS'):
     # Set path for PyInstaller bundle
     data_path = os.path.join(sys._MEIPASS, "astroquery", "simbad", "data")
 else:
-    # Set path for regular Python environment
-    data_path = "C:/Users/Gaming/Desktop/Python Code/venv/Lib/site-packages/astroquery/simbad/data"
+    # Set path using astroquery package location (cross-platform)
+    try:
+        import astroquery.simbad
+        data_path = os.path.join(os.path.dirname(astroquery.simbad.__file__), "data")
+    except Exception:
+        # Fallback: try to find in site-packages
+        import site
+        for sp in site.getsitepackages():
+            candidate = os.path.join(sp, "astroquery", "simbad", "data")
+            if os.path.isdir(candidate):
+                data_path = candidate
+                break
+        else:
+            data_path = ""  # Will fail gracefully if not found
 
 # Ensure the final path doesn't contain 'data/data' duplication
 if 'data/data' in data_path:
     data_path = data_path.replace('data/data', 'data')
 
-conf.dataurl = f'file://{data_path}/'
+if data_path:
+    conf.dataurl = f'file://{data_path}/'
 
 # Access wrench_icon.png, adjusting for PyInstaller executable
 if hasattr(sys, '_MEIPASS'):

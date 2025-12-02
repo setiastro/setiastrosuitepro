@@ -8,124 +8,48 @@ add_runtime_to_sys_path(status_cb=lambda *_: None)
 _ban_shadow_torch_paths(status_cb=lambda *_: None)
 _purge_bad_torch_from_sysmodules(status_cb=lambda *_: None)
 
-import time, traceback
 # ----------------------------------------
-# Matplotlib bootstrap (for frozen + for prewarmed cache)
+# Standard library imports (consolidated)
 # ----------------------------------------
+import importlib
+import json
+import logging
+import math
+import multiprocessing
 import os
+import re
 import sys
+import threading
 import time
 import traceback
 import warnings
-import json
-import logging
-import re
-import threading
 import webbrowser
-import multiprocessing
-import math
 
-from itertools import combinations
-from decimal import getcontext
-from urllib.parse import quote, quote_plus
-from pathlib import Path
-from typing import List, Tuple, Dict, Set, Optional
+from collections import defaultdict
 from datetime import datetime
+from decimal import getcontext
 from io import BytesIO
+from itertools import combinations
+from math import isnan
+from pathlib import Path
+from typing import Dict, List, Optional, Set, Tuple
+from urllib.parse import quote, quote_plus
 
+# ----------------------------------------
+# Third-party imports
+# ----------------------------------------
 import numpy as np
 from tifffile import imwrite
 from xisf import XISF
 
-def _ensure_mpl_config_dir() -> str:
-    """
-    Make matplotlib use a known, writable folder.
+# Use shared bootstrap module for matplotlib configuration
+from pro.config_bootstrap import ensure_mpl_config_dir
+_MPL_CFG_DIR = ensure_mpl_config_dir()
 
-    Frozen (PyInstaller): <folder-with-exe>/mpl_config
-    Dev / IDE:            <repo-folder>/mpl_config
-
-    This matches the pre-warm script that will build the font cache there.
-    """
-    if getattr(sys, "frozen", False):
-        base = os.path.dirname(sys.executable)
-    else:
-        base = os.path.dirname(os.path.abspath(__file__))
-
-    mpl_cfg = os.path.join(base, "mpl_config")
-    try:
-        os.makedirs(mpl_cfg, exist_ok=True)
-    except OSError:
-        # worst case: let matplotlib pick its default
-        return mpl_cfg
-
-    # only set if user / env didn't force something else
-    os.environ.setdefault("MPLCONFIGDIR", mpl_cfg)
-    return mpl_cfg
-
-_MPL_CFG_DIR = _ensure_mpl_config_dir()
-# (optional) print once in dev:
-# print("MPLCONFIGDIR ->", _MPL_CFG_DIR)
+# Apply metadata patches for frozen builds
+from pro.metadata_patcher import apply_metadata_patches
+apply_metadata_patches()
 # ----------------------------------------
-
-
-
-import importlib
-
-if getattr(sys, "frozen", False):
-    # 1) Attempt to import both metadata modules
-    try:
-        std_md = importlib.import_module('importlib.metadata')
-    except ImportError:
-        std_md = None
-
-    try:
-        back_md = importlib.import_module('importlib_metadata')
-    except ImportError:
-        back_md = None
-
-    # 2) Ensure that any "import importlib.metadata" or
-    #    "import importlib_metadata" picks up our loaded module
-    if std_md:
-        sys.modules['importlib.metadata'] = std_md
-        setattr(importlib, 'metadata', std_md)
-    if back_md:
-        sys.modules['importlib_metadata'] = back_md
-
-    # 3) Pick whichever is available for defaults (prefer stdlib)
-    meta = std_md or back_md
-    if not meta:
-        # nothing to patch
-        sys.exit(0)
-
-    # 4) Save originals
-    orig_version      = getattr(meta, 'version', None)
-    orig_distribution = getattr(meta, 'distribution', None)
-
-    # 5) Define safe fallbacks
-    def safe_version(pkg, *args, **kwargs):
-        try:
-            return orig_version(pkg, *args, **kwargs)
-        except Exception:
-            return "0.0.0"
-
-    class DummyDist:
-        version = "0.0.0"
-        metadata = {}
-
-    def safe_distribution(pkg, *args, **kwargs):
-        try:
-            return orig_distribution(pkg, *args, **kwargs)
-        except Exception:
-            return DummyDist()
-
-    # 6) Patch both modules (stdlib and back-port) if they exist
-    for m in (std_md, back_md):
-        if not m:
-            continue
-        if orig_version:
-            m.version = safe_version
-        if orig_distribution:
-            m.distribution = safe_distribution
 
 warnings.filterwarnings(
     "ignore",
@@ -133,42 +57,15 @@ warnings.filterwarnings(
     category=DeprecationWarning,
 )
 
-# Standard library imports
-from itertools import combinations
-from tifffile import imwrite
-
-from math import isnan
-import re, threading, webbrowser
-
 os.environ['LIGHTKURVE_STYLE'] = 'default'
 
-import json
-import logging
-
-from decimal import getcontext
-from urllib.parse import quote
-from urllib.parse import quote_plus
-
-from xisf import XISF
-
-from pathlib import Path
-
-from typing import List, Tuple, Dict, Set, Optional
-import time
-from datetime import datetime
-
-from io import BytesIO
-
-# scipy.ndimage imports removed - not used in main module
-# gaussian_filter, laplace, zoom loaded on demand in specific modules
-
+# ----------------------------------------
+# Matplotlib configuration
+# ----------------------------------------
 import matplotlib
 matplotlib.use("QtAgg") 
 
-import numpy as np
-
-
-#if running in IDE which runs ipython or jupiter in backend reconfigure may not be available
+# Configure stdout encoding
 if (sys.stdout is not None) and (hasattr(sys.stdout, "reconfigure")):
     sys.stdout.reconfigure(encoding='utf-8')
 
@@ -217,8 +114,6 @@ def get_lightkurve():
 # --- End lazy imports ---
 
 
-from numba_utils import *
-
 # Shared UI utilities (avoiding code duplication)
 from pro.widgets.common_utilities import (
     AboutDialog,
@@ -243,25 +138,15 @@ except ImportError:
     OPENCV_AVAILABLE = False
 
 
-# Third-party library imports
-
-import numpy as np
-
-import cv2
-
-
-
 
 #################################
 # PyQt6 Imports
 #################################
-from collections import defaultdict
-
 from PyQt6 import sip
 
 # ----- QtWidgets -----
 from PyQt6.QtWidgets import (QDialog, QApplication, QMainWindow, QWidget, QHBoxLayout, QFileDialog, QMessageBox, QSizePolicy, QToolBar, QPushButton, QAbstractItemDelegate,
-    QLineEdit, QMenu, QListWidget, QListWidgetItem, QSplashScreen, QDockWidget, QListView, QCompleter, QMdiArea, QMdiArea, QMdiSubWindow, QWidgetAction, QAbstractItemView,
+    QLineEdit, QMenu, QListWidget, QListWidgetItem, QSplashScreen, QDockWidget, QListView, QCompleter, QMdiArea, QMdiSubWindow, QWidgetAction, QAbstractItemView,
     QInputDialog, QVBoxLayout, QLabel, QCheckBox, QProgressBar, QProgressDialog, QGraphicsItem, QTabWidget, QTableWidget, QHeaderView, QTableWidgetItem, QToolButton, QPlainTextEdit
 )
 
@@ -270,15 +155,10 @@ from PyQt6.QtGui import (QPixmap, QColor, QIcon, QKeySequence, QShortcut, QGuiAp
 )
 
 # ----- QtCore -----
-from PyQt6.QtCore import (Qt, pyqtSignal, QCoreApplication, QTimer, QSize, QSignalBlocker,  QModelIndex, QThread, QUrl, QSettings, QEvent, QByteArray, QObject
+from PyQt6.QtCore import (Qt, pyqtSignal, QCoreApplication, QTimer, QSize, QSignalBlocker, QModelIndex, QThread, QUrl, QSettings, QEvent, QByteArray, QObject
 )
 
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
-
-
-# Math functions
-
-import math
 
 
 try:
@@ -367,7 +247,10 @@ from pro.gui.main_window import AstroSuiteProMainWindow
 
 if __name__ == "__main__":
     # --- Logging (catch unhandled exceptions to a file) ---
-    import logging, sys, os, multiprocessing
+    import logging
+    import sys
+    import os
+    import multiprocessing
     import tempfile
     from PyQt6.QtCore import Qt, QCoreApplication, QSettings
     from PyQt6.QtGui import QGuiApplication, QIcon, QPixmap, QColor
