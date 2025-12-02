@@ -692,7 +692,7 @@ class BlinkTab(QWidget):
 
         # Custom float spin (your class)
         self.speed_spin = CustomDoubleSpinBox(
-            minimum=0.1, maximum=10.0, initial=self.play_fps, step=0.1, suffix=" fps", parent=self
+            minimum=0.1, maximum=10.0, initial=self.play_fps, step=0.1, parent=self
         )
         speed_layout.addWidget(self.speed_spin)
 
@@ -1149,7 +1149,7 @@ class BlinkTab(QWidget):
 
     def _apply_playback_interval(self, *_):
         # read from custom spin if present
-        fps = float(self.speed_spin.value()) if hasattr(self, "speed_spin") else float(getattr(self, "play_fps", 1.0))
+        fps = float(self.speed_spin.value) if hasattr(self, "speed_spin") else float(getattr(self, "play_fps", 1.0))
         fps = max(0.1, min(10.0, fps))
         self.play_fps = fps
         self.playback_timer.setInterval(int(round(1000.0 / fps)))  # 0.1 fps -> 10000 ms
