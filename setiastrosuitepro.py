@@ -283,8 +283,13 @@ if __name__ == "__main__":
                 # Fallback to temp directory if user directory fails
                 log_file = Path(tempfile.gettempdir()) / 'saspro.log'
         else:
-            # Development mode - use current directory
-            log_file = Path('saspro.log')
+            # Development mode - use logs folder in project
+            log_dir = Path('logs')
+            try:
+                log_dir.mkdir(parents=True, exist_ok=True)
+                log_file = log_dir / 'saspro.log'
+            except (OSError, PermissionError):
+                log_file = Path('saspro.log')
         
         return str(log_file)
     

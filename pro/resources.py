@@ -190,8 +190,8 @@ class Resources:
     """
     Centralized data resource paths.
     """
-    SASP_DATA = property(lambda self: _resource_path('SASP_data.fits'))
-    ASTROBIN_FILTERS_CSV = property(lambda self: _resource_path('astrobin_filters.csv'))
+    SASP_DATA = property(lambda self: _resource_path('data/SASP_data.fits'))
+    ASTROBIN_FILTERS_CSV = property(lambda self: _resource_path('data/catalogs/astrobin_filters.csv'))
     SPINNER_GIF = property(lambda self: _resource_path('spinner.gif'))
 
 
@@ -317,11 +317,11 @@ def _init_legacy_paths():
         'hrdiagram_path': get_icon_path('HRDiagram.png'),
         'convoicon_path': get_icon_path('convo.png'),
         'spcc_icon_path': get_icon_path('spcc.png'),
-        'sasp_data_path': get_data_path('SASP_data.fits'),
+        'sasp_data_path': get_data_path('data/SASP_data.fits'),
         'exoicon_path': get_icon_path('exoicon.png'),
         'peeker_icon': get_icon_path('gridicon.png'),
         'dse_icon_path': get_icon_path('dse.png'),
-        'astrobin_filters_csv_path': get_data_path('astrobin_filters.csv'),
+        'astrobin_filters_csv_path': get_data_path('data/catalogs/astrobin_filters.csv'),
         'isophote_path': get_icon_path('isophote.png'),
         'statstretch_path': get_icon_path('statstretch.png'),
         'starstretch_path': get_icon_path('starstretch.png'),

@@ -77,7 +77,7 @@ class CalculationThread(QThread):
     def get_catalog_file_path(self) -> str:
         user_catalog_path = os.path.join(os.path.expanduser("~"), "celestial_catalog.csv")
         if not os.path.exists(user_catalog_path):
-            bundled = os.path.join(_app_root(), "celestial_catalog.csv")
+            bundled = os.path.join(_app_root(), "data", "catalogs", "celestial_catalog.csv")
             if os.path.exists(bundled):
                 try: shutil.copyfile(bundled, user_catalog_path)
                 except Exception as e:

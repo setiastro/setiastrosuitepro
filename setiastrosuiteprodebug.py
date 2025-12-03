@@ -322,11 +322,11 @@ if hasattr(sys, '_MEIPASS'):
     hrdiagram_path = os.path.join(sys._MEIPASS, 'HRDiagram.png')
     convoicon_path = os.path.join(sys._MEIPASS, 'convo.png')
     spcc_icon_path = os.path.join(sys._MEIPASS, 'spcc.png')
-    sasp_data_path = os.path.join(sys._MEIPASS, 'SASP_data.fits')
+    sasp_data_path = os.path.join(sys._MEIPASS, 'data', 'SASP_data.fits')
     exoicon_path = os.path.join(sys._MEIPASS, 'exoicon.png')
     peeker_icon = os.path.join(sys._MEIPASS, 'gridicon.png')
     dse_icon_path = os.path.join(sys._MEIPASS, 'dse.png')
-    astrobin_filters_csv_path = os.path.join(sys._MEIPASS, 'astrobin_filters.csv')
+    astrobin_filters_csv_path = os.path.join(sys._MEIPASS, 'data', 'catalogs', 'astrobin_filters.csv')
     isophote_path = os.path.join(sys._MEIPASS, 'isophote.png')
     statstretch_path = os.path.join(sys._MEIPASS, 'statstretch.png')
     starstretch_path = os.path.join(sys._MEIPASS, 'starstretch.png')
@@ -419,11 +419,11 @@ else:
     hrdiagram_path = 'HRDiagram.png'
     convoicon_path = 'convo.png'
     spcc_icon_path = 'spcc.png'
-    sasp_data_path = 'SASP_data.fits'
+    sasp_data_path = 'data/SASP_data.fits'
     exoicon_path = 'exoicon.png'
     peeker_icon = 'gridicon.png'
     dse_icon_path = 'dse.png'
-    astrobin_filters_csv_path = 'astrobin_filters.csv'
+    astrobin_filters_csv_path = 'data/catalogs/astrobin_filters.csv'
     isophote_path = 'isophote.png'
     statstretch_path = 'statstretch.png'
     starstretch_path = 'starstretch.png'
