@@ -177,3 +177,7 @@ __MACOSX
 
 # PyInstaller
 *.spec
+
+# WIP
+
+optimized/
