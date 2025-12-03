@@ -1,14 +1,3 @@
-"""
-AstroSpike Script for SETI Astro
-================================
-Applies diffraction spikes, halos and soft flares to stars in astrophotography images.
-
-This script opens a full GUI interface with live preview, star detection,
-and the ability to add/remove stars manually. Includes save functionality.
-"""
-
-SCRIPT_NAME = "AstroSpike - Star Diffraction Spikes"
-SCRIPT_GROUP = "Effects"
 
 import numpy as np
 import math
@@ -19,7 +8,7 @@ from enum import Enum
 # PyQt6 imports (available in SETI Astro)
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, 
                              QVBoxLayout, QPushButton, QFileDialog, QLabel, QSlider,
-                             QScrollArea, QCheckBox, QGroupBox, QDialog)
+                             QScrollArea, QCheckBox, QGroupBox, QDialog, QSizePolicy)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QPointF, QRectF
 from PyQt6.QtGui import (QImage, QPixmap, QPainter, QColor, QPalette, QLinearGradient, 
                          QRadialGradient, QBrush, QPen, QPaintEvent, QMouseEvent, 
@@ -1057,7 +1046,6 @@ class AstroSpikeWindow(QDialog):
     def __init__(self, image_data_255: np.ndarray, image_data_float: np.ndarray, ctx):
         super().__init__()
         self.setWindowTitle("AstroSpike - Star Diffraction Spikes")
-        self.resize(1200, 800)
         self.setModal(True)
         
         self.ctx = ctx
@@ -1088,7 +1076,7 @@ class AstroSpikeWindow(QDialog):
         
         self._init_ui()
         self._apply_dark_theme()
-        
+
         # Auto-detect stars on open
         QTimer.singleShot(100, self.detect_stars)
         
@@ -1108,6 +1096,7 @@ class AstroSpikeWindow(QDialog):
         
     def _init_ui(self):
         root_layout = QVBoxLayout(self)
+        root_layout.setSizeConstraint(QVBoxLayout.SizeConstraint.SetNoConstraint)
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
         
@@ -1233,6 +1222,7 @@ class AstroSpikeWindow(QDialog):
         
         self.status_label = QLabel("Ready")
         self.status_label.setStyleSheet("color: #aaa;")
+        self.status_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         top_layout.addWidget(self.status_label)
         
         root_layout.addWidget(top_bar)
@@ -1246,6 +1236,8 @@ class AstroSpikeWindow(QDialog):
         self.canvas = CanvasPreview()
         self.canvas.stars_updated.connect(self.on_stars_updated)
         self.canvas.set_image(self.qimage)
+        self.canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.canvas.setMinimumSize(100, 100) 
         content_layout.addWidget(self.canvas, stretch=1)
         
         # Connect Zoom
@@ -1267,7 +1259,8 @@ class AstroSpikeWindow(QDialog):
         
         content_layout.addWidget(controls_container)
         
-        root_layout.addWidget(content_area)
+        # content_area deve espandersi verticalmente per riempire lo spazio disponibile
+        root_layout.addWidget(content_area, stretch=1)
         
         # Style
         self.setStyleSheet("""

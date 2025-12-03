@@ -1261,9 +1261,31 @@ def load_image(filename, max_retries=3, wait_seconds=3, return_metadata: bool = 
                     bit_depth = "16-bit"
                     image = image_data.astype(np.float32) / 65535.0
 
+                elif image_data.dtype == np.int16:
+                    bit_depth = "16-bit signed"
+                    print("Detected 16-bit signed TIFF image.")
+                    data = image_data.astype(np.float32)
+                    dmin = float(data.min())
+                    dmax = float(data.max())
+                    if dmax > dmin:
+                        image = (data - dmin) / (dmax - dmin)
+                    else:
+                        image = np.zeros_like(data, dtype=np.float32)
+
                 elif image_data.dtype == np.uint32:
                     bit_depth = "32-bit unsigned"
                     image = image_data.astype(np.float32) / 4294967295.0
+
+                elif image_data.dtype == np.int32:
+                    bit_depth = "32-bit signed"
+                    print("Detected 32-bit signed TIFF image.")
+                    data = image_data.astype(np.float32)
+                    dmin = float(data.min())
+                    dmax = float(data.max())
+                    if dmax > dmin:
+                        image = (data - dmin) / (dmax - dmin)
+                    else:
+                        image = np.zeros_like(data, dtype=np.float32)
 
                 elif image_data.dtype == np.float32:
                     bit_depth = "32-bit floating point"
@@ -1274,7 +1296,7 @@ def load_image(filename, max_retries=3, wait_seconds=3, return_metadata: bool = 
                     image = image_data.astype(np.float32)
 
                 elif np.issubdtype(image_data.dtype, np.integer):
-                    # Generic integer fallback (int16, int32, etc.)
+                    # Generic integer fallback (int8, etc.)
                     info = np.iinfo(image_data.dtype)
                     bit_depth = f"{info.bits}-bit signed"
                     print(f"Generic int TIFF; normalizing by [{info.min}, {info.max}]")

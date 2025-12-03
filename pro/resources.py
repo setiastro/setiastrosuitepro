@@ -66,6 +66,7 @@ class Icons:
     STAR_ALIGN = property(lambda self: _resource_path('staralign.png'))
     STAR_REGISTRATION = property(lambda self: _resource_path('starregistration.png'))
     STAR_SPIKE = property(lambda self: _resource_path('starspike.png'))
+    ASTRO_SPIKE = property(lambda self: _resource_path('Astro_Spikes.png'))
     STAR_STRETCH = property(lambda self: _resource_path('starstretch.png'))
     
     # Luminance
@@ -310,6 +311,7 @@ def _init_legacy_paths():
         'stacking_path': get_icon_path('stacking.png'),
         'pedestal_icon_path': get_icon_path('pedestal.png'),
         'starspike_path': get_icon_path('starspike.png'),
+        'astrospike_path': get_icon_path('Astro_Spikes.png'),
         'aperture_path': get_icon_path('aperture.png'),
         'jwstpupil_path': get_icon_path('jwstpupil.png'),
         'signature_icon_path': get_icon_path('pen.png'),

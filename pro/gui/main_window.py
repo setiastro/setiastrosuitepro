@@ -3838,6 +3838,73 @@ class AstroSuiteProMainWindow(
         dlg.setWindowIcon(QIcon(starspike_path))
         dlg.show()
 
+    def _open_astrospike(self, *, doc=None):
+        """Open the AstroSpike dialog with advanced diffraction effects."""
+        from pro.astrospike import AstroSpikeDialog
+        from pro.resources import Icons
+        from pro.headless_utils import unwrap_docproxy
+        
+        # Get the active document first
+        active_doc = doc
+        if active_doc is None:
+            sw = self.mdi.activeSubWindow()
+            if sw:
+                view = sw.widget()
+                if hasattr(view, "document"):
+                    active_doc = view.document
+        
+        # Unwrap DocProxy if needed - call _target() if it exists
+        if active_doc and hasattr(active_doc, "_target"):
+            active_doc = active_doc._target()
+        else:
+            active_doc = unwrap_docproxy(active_doc)
+        
+        # Print debug info
+        print(f"[AstroSpike] Active document (unwrapped): {active_doc}")
+        if active_doc and hasattr(active_doc, "image"):
+            img = active_doc.image
+            print(f"[AstroSpike] Active image shape: {img.shape if img is not None else 'None'}")
+        
+        # Create a callback to get the current image from the active document
+        def get_image_callback():
+            """Get image from active document if available."""
+            if active_doc and hasattr(active_doc, "image"):
+                img = active_doc.image
+                if img is not None:
+                    print(f"[AstroSpike] Callback: Retrieved image shape {img.shape}, dtype {img.dtype}")
+                    # Ensure correct format for the script
+                    if img.dtype == np.uint8:
+                        return img.astype(np.float32) / 255.0
+                    elif img.dtype == np.float32:
+                        if img.max() > 1.0:
+                            return img / 255.0
+                        return img
+                    else:
+                        return img.astype(np.float32)
+                else:
+                    print("[AstroSpike] Callback: image is None")
+            else:
+                print("[AstroSpike] Callback: active_doc or image attribute not available")
+            return None
+        
+        # Create a callback to set the image back to the document
+        def set_image_callback(image_data, step_name):
+            """Apply the result image back to the active document."""
+            if active_doc and hasattr(active_doc, "set_image"):
+                print(f"[AstroSpike] Setting image back to document, shape: {image_data.shape}")
+                # Pass metadata as empty dict and step_name separately
+                active_doc.set_image(image_data, metadata={}, step_name=step_name)
+            elif active_doc and hasattr(active_doc, "image"):
+                print(f"[AstroSpike] Setting image directly, shape: {image_data.shape}")
+                active_doc.image = image_data
+            else:
+                print("[AstroSpike] Cannot set image - active_doc or methods not available")
+        
+        icon_path = Icons().ASTRO_SPIKE
+        dlg = AstroSpikeDialog(parent=self, icon_path=icon_path, get_image_callback=get_image_callback, set_image_callback=set_image_callback)
+        dlg.showMaximized()
+        dlg.exec()
+
     def _open_exo_detector(self):
         # Lazy import to avoid loading lightkurve at startup (~12s)
         from pro.exoplanet_detector import ExoPlanetWindow

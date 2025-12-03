@@ -23,7 +23,7 @@ from pro.resources import (
     rotate180_path, maskcreate_path, maskapply_path, maskremove_path,
     pixelmath_path, histogram_path, mosaic_path, rescale_path, staralign_path,
     platesolve_path, psf_path, supernova_path, starregistration_path,
-    stacking_path, pedestal_icon_path, starspike_path,
+    stacking_path, pedestal_icon_path, starspike_path, astrospike_path,
     signature_icon_path, livestacking_path, convoicon_path, spcc_icon_path,
     exoicon_path, peeker_icon, dse_icon_path, isophote_path, statstretch_path,
     starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path,
@@ -247,6 +247,7 @@ class ToolbarMixin:
         tb_star.addAction(self.act_mosaic_master)
         tb_star.addAction(self.act_supernova_hunter)
         tb_star.addAction(self.act_star_spikes)
+        tb_star.addAction(self.act_astrospike)
         tb_star.addAction(self.act_exo_detector)
         tb_star.addAction(self.act_isophote)  
 
@@ -779,6 +780,11 @@ class ToolbarMixin:
         self.act_star_spikes.setStatusTip("Add diffraction spikes to detected stars")
         self.act_star_spikes.triggered.connect(self._open_star_spikes)
 
+        self.act_astrospike = QAction(QIcon(astrospike_path), "AstroSpike...", self)
+        self.act_astrospike.setIconVisibleInMenu(True)
+        self.act_astrospike.setStatusTip("Advanced diffraction spikes with halos, flares and rainbow effects")
+        self.act_astrospike.triggered.connect(self._open_astrospike)
+
         self.act_exo_detector = QAction(QIcon(exoicon_path), "Exoplanet Detector...", self)
         self.act_exo_detector.setIconVisibleInMenu(True)
         self.act_exo_detector.setStatusTip("Detect exoplanet transits from time-series subs")
@@ -978,6 +984,7 @@ class ToolbarMixin:
         reg("stacking_suite", self.act_stacking_suite)
         reg("supernova_hunter", self.act_supernova_hunter)
         reg("star_spikes", self.act_star_spikes)
+        reg("astrospike", self.act_astrospike)
         reg("exo_detector", self.act_exo_detector)
         reg("isophote", self.act_isophote) 
         reg("rgb_align", self.act_rgb_align) 
