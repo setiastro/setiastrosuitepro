@@ -753,7 +753,7 @@ class BlinkTab(QWidget):
         left_layout.addWidget(self.progress_bar)
 
         # Add loading message label
-        self.loading_label = QLabel("Load images...", self)
+        self.loading_label = QLabel("Loading images...", self)
         left_layout.addWidget(self.loading_label)
         self.imagesChanged.emit(len(self.loaded_images)) 
 
