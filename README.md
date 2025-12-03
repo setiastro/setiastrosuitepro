@@ -1,36 +1,10 @@
 # Seti Astro Suite Pro (SASpro)
 
-**Author:** Franklin Marek  
-**Website:** [www.setiastro.com](http://www.setiastro.com)
+### Author: Franklin Marek
+#### Website: [www.setiastro.com](http://www.setiastro.com)
 
----
-
-## 📖 About
-Seti Astro Suite Pro (SASpro) is an advanced, cross-platform astrophotography toolkit designed to streamline image processing, stacking, star analysis, and deep-sky imaging workflows. SASpro integrates powerful algorithms and a modern GUI to help both amateur and professional astronomers achieve high-quality results with minimal effort.
-
-- **Key Features:**
-  - Multi-format image support (FITS, TIFF, RAW, XISF, PNG, JPEG, etc.)
-  - Automated calibration, stacking, and registration
-  - Advanced star detection, photometry, and astrometry
-  - White balance, background neutralization, and color calibration tools
-  - AI-powered aberration correction and blemish removal
-  - Batch processing and scripting capabilities
-  - Interactive plotting and visualization (matplotlib, plotly, pyqtgraph)
-  - Catalog integration (NGC, IC, Messier, custom CSVs)
-  - Export to AstroBin and other platforms
-  - Modular architecture for easy extension
-
-SASpro is distributed as **donationware**. The software is free to use by anyone, but if you find it valuable, please consider a suggested donation of **$20** to support continued development.
-
-👉 **Donate here:** [Donate to SASpro](https://www.setiastro.com/checkout/donate?donatePageId=65ae7e7bac20370d8c04c1ab)
-
----
-
-## 🚀 Getting Started
-# Seti Astro Suite Pro (SASpro)
-
-**Author:** Franklin Marek  
-**Website:** [www.setiastro.com](http://www.setiastro.com)
+### Other contributors:
+- Fabio Tempera: https://github.com/Ft2801
 
 ---
 
