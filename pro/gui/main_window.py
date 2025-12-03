@@ -122,7 +122,9 @@ from PyQt6.QtWidgets import (QDialog, QApplication, QMainWindow, QWidget, QHBoxL
 )
 
 # ----- QtGui -----
-from PyQt6.QtGui import (QPixmap, QColor, QIcon, QKeySequence, QShortcut, QGuiApplication, QStandardItemModel, QStandardItem, QAction, QPalette, QBrush, QActionGroup, QDesktopServices, QFont, QTextCursor
+from PyQt6.QtGui import (QPixmap, QColor, QIcon, QKeySequence, QShortcut,
+     QGuiApplication, QStandardItemModel, QStandardItem, QAction, QPalette,
+     QBrush, QActionGroup, QDesktopServices, QFont, QTextCursor, QPainter
 )
 
 # ----- QtCore -----
@@ -316,6 +318,26 @@ class AstroSuiteProMainWindow(
         # MDI workspace
         self.mdi = MdiArea()
         self.mdi.setViewMode(QMdiArea.ViewMode.SubWindowView)
+
+        # Absolute path to the background image
+        bg_path = os.path.abspath(os.path.join("images", "background.png"))
+        self._bg_pixmap = QPixmap(bg_path)
+
+        def _draw_transparent_bg(event):
+
+            painter = QPainter(self.mdi.viewport())
+            
+            painter.fillRect(self.mdi.rect(), QColor("#1e1e1e"))
+
+            if not self._bg_pixmap.isNull():
+                # 50% opacity  
+                painter.setOpacity(0.5)
+                
+                x = (self.mdi.width() - self._bg_pixmap.width()) // 2
+                y = (self.mdi.height() - self._bg_pixmap.height()) // 2
+                painter.drawPixmap(x, y, self._bg_pixmap)
+
+        self.mdi.paintEvent = _draw_transparent_bg
 
         self.mdi.subWindowActivated.connect(self._remember_active_pair)
         self.mdi.backgroundDoubleClicked.connect(self.open_files)   # <- new
