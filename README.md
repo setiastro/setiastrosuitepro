@@ -46,8 +46,8 @@ This project follows a modular layout. High-level modules and responsibilities:
 
 Files of note:
 - `setiastrosuitepro.py` - Application entrypoint used for development and direct runs.
-- `setiastrosuitepro_mac.spec` - PyInstaller spec for macOS packaging (moved to `config/`).
-- `SASP_data.fits` - Large dataset used by the app (moved to `data/`).
+- `setiastrosuitepro_mac.spec` - PyInstaller spec for macOS packaging.
+- `SASP_data.fits` - Large dataset used by the app.
 - `astrobin_filters.csv` and other CSV catalogs are under `data/catalogs/`.
 
 Example tree (abridged):
@@ -109,7 +109,7 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process
 ---
 
 ## Running a Packaged App
-- Packagers like PyInstaller or similar are used to create distributables. See `config/setiastrosuitepro_mac.spec` and `build/create_dmg.sh` for packaging examples.
+- Packagers like PyInstaller or similar are used to create distributables. See `setiastrosuitepro_mac.spec` and `create_dmg.sh` for packaging examples.
 - When packaged, resources such as `SASP_data.fits` and `astrobin_filters.csv` are expected under the internal resources path. The application code resolves their paths using the `pro.resources` helpers.
 
 ---
