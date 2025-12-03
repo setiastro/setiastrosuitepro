@@ -2389,6 +2389,8 @@ class WIMIDialog(QDialog):
         self.max_results = 100  # Default maximum number of query results     
         self.current_tool = None  # Track the active annotation tool
         self.header = Header()
+        # store optional original FITS header when available (pre-seed for plate solver)
+        self.original_header = None
         self.marker_style = "Circle" 
         self.settings = QSettings() 
             
@@ -3307,22 +3309,53 @@ class WIMIDialog(QDialog):
             return
 
         img = self.image_data
-        # normalize to [0,1] if not already
+        # Prepare image data, preserving color if present.
         img = img.astype(np.float32)
+        is_color = False
         if img.ndim == 2:
             src = img
         else:
-            # if RGB, choose luminance plane for FITS primary (or consider writing separate planes)
-            src = img[..., 0]
+            # If image has >=3 channels, keep the first 3 as RGB
+            if img.shape[2] >= 3:
+                src = img[..., :3]
+                is_color = True
+            else:
+                # fallback to first plane
+                src = img[..., 0]
 
+        # If data seems to be in 0-255 range, scale to 0-1
+        try:
+            maxv = float(np.nanmax(src))
+        except Exception:
+            maxv = 0.0
+        if maxv > 1.1:
+            src = src / 255.0
+
+        # Clip to [0,1]
+        src = np.clip(src, 0.0, 1.0)
+
+        # Convert to desired bit depth and arrange axes for multichannel data
         if bit_depth == "8-bit":
-            arr = (np.clip(src, 0, 1) * 255.0).astype(np.uint8)
+            if is_color:
+                arr = (src * 255.0).astype(np.uint8)
+                # FITS expects axes: (plane, y, x)
+                arr = np.transpose(arr, (2, 0, 1))
+            else:
+                arr = (src * 255.0).astype(np.uint8)
         elif bit_depth == "16-bit":
-            arr = (np.clip(src, 0, 1) * 65535.0).astype(np.uint16)
+            if is_color:
+                arr = (src * 65535.0).astype(np.uint16)
+                arr = np.transpose(arr, (2, 0, 1))
+            else:
+                arr = (src * 65535.0).astype(np.uint16)
         else:  # 32-bit float
-            arr = src.astype(np.float32)
+            if is_color:
+                arr = src.astype(np.float32)
+                arr = np.transpose(arr, (2, 0, 1))
+            else:
+                arr = src.astype(np.float32)
 
-        hdr = (self.original_header.copy() if self.original_header else fits.Header())
+        hdr = (self.original_header.copy() if getattr(self, 'original_header', None) else fits.Header())
         try:
             hdr.update(self.wcs.to_header(relax=True))
         except Exception:
