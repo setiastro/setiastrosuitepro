@@ -1,3 +1,245 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Seti Astro Suite Pro - Main Entry Point
+"""
+
+# Show splash screen IMMEDIATELY before any heavy imports
+
+import sys
+import os
+
+# Only run splash logic when executed as main script
+if __name__ == "__main__":
+    # Minimal imports for splash screen
+    from PyQt6.QtWidgets import QApplication, QWidget
+    from PyQt6.QtCore import Qt, QCoreApplication, QRect
+    from PyQt6.QtGui import QGuiApplication, QIcon, QPixmap, QColor, QPainter, QFont, QLinearGradient
+    
+    # Set application attributes before creating QApplication
+    try:
+        QGuiApplication.setHighDpiScaleFactorRoundingPolicy(
+            Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+        )
+    except Exception:
+        pass
+    
+    QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_DontShowIconsInMenus, False)
+    QCoreApplication.setOrganizationName("SetiAstro")
+    QCoreApplication.setOrganizationDomain("setiastrosuite.pro")
+    QCoreApplication.setApplicationName("Seti Astro Suite Pro")
+    
+    # Create QApplication FIRST
+    _app = QApplication(sys.argv)
+    
+    # Determine icon paths early
+    def _find_icon_path():
+        """Find the best available icon path."""
+        if hasattr(sys, '_MEIPASS'):
+            base = sys._MEIPASS
+        else:
+            base = os.path.dirname(os.path.abspath(__file__))
+        
+        candidates = [
+            os.path.join(base, "images", "astrosuitepro.png"),
+            os.path.join(base, "images", "astrosuitepro.ico"),
+            os.path.join(base, "images", "astrosuite.png"),
+            os.path.join(base, "images", "astrosuite.ico"),
+        ]
+        for p in candidates:
+            if os.path.exists(p):
+                return p
+        return candidates[0]  # fallback
+    
+    _early_icon_path = _find_icon_path()
+    
+    # =========================================================================
+    # PhotoshopStyleSplash - Custom splash screen widget
+    # =========================================================================
+    class _EarlySplash(QWidget):
+        """
+        A modern, Photoshop-style splash screen shown immediately on startup.
+        """
+        def __init__(self, logo_path: str):
+            super().__init__()
+            self._version = "1.5.6"  # Hardcoded for early display
+            self._build = ""
+            self.current_message = "Starting..."
+            self.progress_value = 0
+            
+            # Window setup
+            self.setWindowFlags(
+                Qt.WindowType.SplashScreen |
+                Qt.WindowType.FramelessWindowHint |
+                Qt.WindowType.WindowStaysOnTopHint
+            )
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+            self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+            
+            # Splash dimensions
+            self.splash_width = 600
+            self.splash_height = 400
+            self.setFixedSize(self.splash_width, self.splash_height)
+            
+            # Center on screen
+            screen = QGuiApplication.primaryScreen()
+            if screen:
+                screen_geo = screen.availableGeometry()
+                x = (screen_geo.width() - self.splash_width) // 2 + screen_geo.x()
+                y = (screen_geo.height() - self.splash_height) // 2 + screen_geo.y()
+                self.move(x, y)
+            
+            # Load and scale logo
+            self.logo_pixmap = self._load_logo(logo_path)
+            
+            # Fonts
+            self.title_font = QFont("Segoe UI", 28, QFont.Weight.Bold)
+            self.subtitle_font = QFont("Segoe UI", 11)
+            self.message_font = QFont("Segoe UI", 9)
+            self.copyright_font = QFont("Segoe UI", 8)
+        
+        def _load_logo(self, path: str) -> QPixmap:
+            """Load the logo and scale appropriately."""
+            if not path or not os.path.exists(path):
+                return QPixmap()
+            
+            ext = os.path.splitext(path)[1].lower()
+            if ext == ".ico":
+                ic = QIcon(path)
+                pm = ic.pixmap(256, 256)
+                if pm.isNull():
+                    pm = QPixmap(path)
+            else:
+                pm = QPixmap(path)
+                if pm.isNull():
+                    pm = QIcon(path).pixmap(256, 256)
+            
+            if not pm.isNull():
+                pm = pm.scaled(
+                    180, 180,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation
+                )
+            return pm
+        
+        def setMessage(self, message: str):
+            """Update the loading message."""
+            self.current_message = message
+            self.repaint()
+            _app.processEvents()
+        
+        def setProgress(self, value: int):
+            """Update progress (0-100)."""
+            self.progress_value = max(0, min(100, value))
+            self.repaint()
+            _app.processEvents()
+        
+        def setBuildInfo(self, version: str, build: str):
+            """Update version and build info once available."""
+            self._version = version
+            self._build = build
+            self.repaint()
+        
+        def paintEvent(self, event):
+            """Custom paint for the splash screen."""
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+            
+            w, h = self.splash_width, self.splash_height
+            
+            # --- Background gradient (deep space theme) ---
+            gradient = QLinearGradient(0, 0, 0, h)
+            gradient.setColorAt(0.0, QColor(15, 15, 25))
+            gradient.setColorAt(0.5, QColor(25, 25, 45))
+            gradient.setColorAt(1.0, QColor(10, 10, 20))
+            painter.fillRect(0, 0, w, h, gradient)
+            
+            # --- Subtle border ---
+            painter.setPen(QColor(60, 60, 80))
+            painter.drawRect(0, 0, w - 1, h - 1)
+            
+            # --- Logo (centered upper area) ---
+            if not self.logo_pixmap.isNull():
+                logo_x = (w - self.logo_pixmap.width()) // 2
+                logo_y = 40
+                painter.drawPixmap(logo_x, logo_y, self.logo_pixmap)
+            
+            # --- Title ---
+            painter.setFont(self.title_font)
+            painter.setPen(QColor(255, 255, 255))
+            title_rect = QRect(0, 230, w, 40)
+            painter.drawText(title_rect, Qt.AlignmentFlag.AlignCenter, "Seti Astro Suite Pro")
+            
+            # --- Subtitle with version ---
+            painter.setFont(self.subtitle_font)
+            painter.setPen(QColor(180, 180, 200))
+            subtitle_text = f"Version {self._version}"
+            if self._build and self._build != "dev":
+                subtitle_text += f"  •  Build {self._build}"
+            subtitle_rect = QRect(0, 270, w, 25)
+            painter.drawText(subtitle_rect, Qt.AlignmentFlag.AlignCenter, subtitle_text)
+            
+            # --- Progress bar ---
+            bar_margin = 50
+            bar_height = 4
+            bar_y = h - 70
+            bar_width = w - (bar_margin * 2)
+            
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(40, 40, 60))
+            painter.drawRoundedRect(bar_margin, bar_y, bar_width, bar_height, 2, 2)
+            
+            if self.progress_value > 0:
+                fill_width = int(bar_width * self.progress_value / 100)
+                bar_gradient = QLinearGradient(bar_margin, 0, bar_margin + bar_width, 0)
+                bar_gradient.setColorAt(0.0, QColor(80, 140, 220))
+                bar_gradient.setColorAt(1.0, QColor(140, 180, 255))
+                painter.setBrush(bar_gradient)
+                painter.drawRoundedRect(bar_margin, bar_y, fill_width, bar_height, 2, 2)
+            
+            # --- Loading message ---
+            painter.setFont(self.message_font)
+            painter.setPen(QColor(150, 150, 180))
+            msg_rect = QRect(bar_margin, bar_y + 10, bar_width, 20)
+            painter.drawText(msg_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, 
+                           self.current_message)
+            
+            # --- Copyright ---
+            painter.setFont(self.copyright_font)
+            painter.setPen(QColor(100, 100, 130))
+            copyright_text = "© 2024-2025 Franklin Marek (Seti Astro)  •  All Rights Reserved"
+            copyright_rect = QRect(0, h - 30, w, 20)
+            painter.drawText(copyright_rect, Qt.AlignmentFlag.AlignCenter, copyright_text)
+            
+            painter.end()
+        
+        def finish(self):
+            """Hide and cleanup the splash."""
+            self.hide()
+            self.close()
+            self.deleteLater()
+    
+    # --- Show splash IMMEDIATELY ---
+    _splash = _EarlySplash(_early_icon_path)
+    _splash.show()
+    _splash.setMessage("Initializing Python runtime...")
+    _splash.setProgress(2)
+    _app.processEvents()
+
+
+# =============================================================================
+# Now proceed with all the heavy imports (splash is visible)
+# =============================================================================
+
+# Helper to update splash during imports (only when running as main)
+def _update_splash(msg: str, progress: int):
+    if __name__ == "__main__":
+        _splash.setMessage(msg)
+        _splash.setProgress(progress)
+
+_update_splash("Loading PyTorch runtime...", 5)
+
 from pro.runtime_torch import (
     add_runtime_to_sys_path,
     _ban_shadow_torch_paths,
@@ -7,6 +249,8 @@ from pro.runtime_torch import (
 add_runtime_to_sys_path(status_cb=lambda *_: None)
 _ban_shadow_torch_paths(status_cb=lambda *_: None)
 _purge_bad_torch_from_sysmodules(status_cb=lambda *_: None)
+
+_update_splash("Loading standard libraries...", 10)
 
 # ----------------------------------------
 # Standard library imports (consolidated)
@@ -35,14 +279,18 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 from urllib.parse import quote, quote_plus
 
+_update_splash("Loading NumPy...", 15)
+
 # ----------------------------------------
 # Third-party imports
 # ----------------------------------------
 import numpy as np
+
+_update_splash("Loading image libraries...", 20)
 from tifffile import imwrite
 from xisf import XISF
 
-# Use shared bootstrap module for matplotlib configuration
+_update_splash("Configuring matplotlib...", 25)
 from pro.config_bootstrap import ensure_mpl_config_dir
 _MPL_CFG_DIR = ensure_mpl_config_dir()
 
@@ -113,6 +361,7 @@ def get_lightkurve():
     return _lightkurve_module if _lightkurve_module else None
 # --- End lazy imports ---
 
+_update_splash("Loading UI utilities...", 30)
 
 # Shared UI utilities (avoiding code duplication)
 from pro.widgets.common_utilities import (
@@ -123,12 +372,15 @@ from pro.widgets.common_utilities import (
     install_crash_handlers,
 )
 
+_update_splash("Loading reproject library...", 35)
 
 # Reproject for WCS-based alignment
 try:
     from reproject import reproject_interp
 except ImportError:
     reproject_interp = None  # fallback if not installed
+
+_update_splash("Loading OpenCV...", 40)
 
 # OpenCV for transform estimation & warping
 try:
@@ -138,6 +390,7 @@ except ImportError:
     OPENCV_AVAILABLE = False
 
 
+_update_splash("Loading PyQt6 components...", 45)
 
 #################################
 # PyQt6 Imports
@@ -169,7 +422,7 @@ except Exception:
 
 VERSION = "1.5.6"
 
-
+_update_splash("Loading resources...", 50)
 
 # Icon paths are now centralized in pro.resources module
 from pro.resources import (
@@ -198,6 +451,7 @@ from pro.resources import (
 )
 
 
+_update_splash("Configuring Qt message handler...", 55)
 
 from PyQt6.QtCore import qInstallMessageHandler, QtMsgType
 
@@ -212,6 +466,8 @@ def _qt_msg_handler(mode, ctx, msg):
     logging.log(lvl, "Qt: %s (%s:%s)", msg, getattr(ctx, "file", "?"), getattr(ctx, "line", -1))
 
 qInstallMessageHandler(_qt_msg_handler)
+
+_update_splash("Loading MDI widgets...", 60)
 
 # MDI widgets imported from pro.mdi_widgets
 from pro.mdi_widgets import (
@@ -241,22 +497,20 @@ from pro.file_utils import (
     WIN_RESERVED_NAMES as _WIN_RESERVED,
 )
 
-
+_update_splash("Loading main window module...", 65)
 
 from pro.gui.main_window import AstroSuiteProMainWindow
 
+_update_splash("Modules loaded, finalizing...", 70)
+
 if __name__ == "__main__":
+    # Update splash with build info now that we have VERSION and BUILD_TIMESTAMP
+    _splash.setBuildInfo(VERSION, BUILD_TIMESTAMP)
+    _splash.setMessage("Setting up logging...")
+    _splash.setProgress(72)
+    
     # --- Logging (catch unhandled exceptions to a file) ---
-    import logging
-    import sys
-    import os
-    import multiprocessing
     import tempfile
-    from PyQt6.QtCore import Qt, QCoreApplication, QSettings
-    from PyQt6.QtGui import QGuiApplication, QIcon, QPixmap, QColor
-    from PyQt6.QtWidgets import QApplication, QSplashScreen, QMessageBox
-
-
     from pathlib import Path
  
     # Cross-platform log file location
@@ -317,75 +571,16 @@ if __name__ == "__main__":
         print("Using console-only logging")
         
 
-    # --- Qt app (make splash ASAP) ---
+    # Setup crash handlers and app icon
+    _splash.setMessage("Installing crash handlers...")
+    _splash.setProgress(75)
+    install_crash_handlers(_app) 
+    _app.setWindowIcon(QIcon(windowslogo_path if os.path.exists(windowslogo_path) else icon_path))
+
+    # --- Windows exe / multiprocessing friendly ---
+    _splash.setMessage("Configuring multiprocessing...")
+    _splash.setProgress(78)
     try:
-        # Small nicety on some PyQt6 builds; ignore if not available.
-        QGuiApplication.setHighDpiScaleFactorRoundingPolicy(
-            Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
-        )
-    except Exception:
-        pass
-
-    QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_DontShowIconsInMenus, False)
-
-    QCoreApplication.setOrganizationName("SetiAstro")
-    QCoreApplication.setOrganizationDomain("setiastrosuite.pro")
-    QCoreApplication.setApplicationName("Seti Astro Suite Pro")
-
-    app = QApplication(sys.argv)
-    install_crash_handlers(app) 
-    app.setWindowIcon(QIcon(windowslogo_path if os.path.exists(windowslogo_path) else icon_path))
-
-    # Helper: build QPixmap for the splash from icon_path (fallback to windowslogo_path)
-    def _splash_pixmap():
-        p = icon_path if os.path.exists(icon_path) else (
-            windowslogo_path if os.path.exists(windowslogo_path) else icon_path
-        )
-        ext = os.path.splitext(p)[1].lower()
-
-        # Start from whatever we can load
-        if ext == ".ico":
-            ic = QIcon(p)
-            pm = ic.pixmap(1024, 1024)  # request big, we'll clamp below
-            if pm.isNull():
-                pm = QPixmap(p)
-        else:
-            pm = QPixmap(p)
-            if pm.isNull():
-                pm = QIcon(p).pixmap(1024, 1024)
-
-        if pm.isNull():
-            return pm  # nothing we can do
-
-        # Hard cap splash size to 512×512 (logical pixels)
-        max_side = 512
-        if pm.width() > max_side or pm.height() > max_side:
-            pm = pm.scaled(
-                max_side,
-                max_side,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-
-        return pm
-
-    # --- Splash FIRST ---
-    _pm = _splash_pixmap()
-    # Use the SplashScreen window type; keep frameless; ensure it will be deleted.
-    splash = QSplashScreen(_pm, Qt.WindowType.SplashScreen)
-    splash.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
-    splash.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-
-    splash.show()
-    splash.showMessage(
-        "Starting Seti Astro Suite Pro...",
-        Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignLeft,
-        QColor("white"),
-    )
-    app.processEvents()
-    # --- Windows exe / multiprocessing friendly (after splash is visible) ---
-    try:
-        import multiprocessing
         multiprocessing.freeze_support()
         try:
             multiprocessing.set_start_method("spawn", force=True)
@@ -393,31 +588,32 @@ if __name__ == "__main__":
             # Already set in this interpreter
             pass
     except Exception:
-        # If something here is slow/complains, at least the splash is up.
         logging.exception("Multiprocessing init failed (continuing).")
 
     try:
+        _splash.setMessage("Loading image manager...")
+        _splash.setProgress(80)
         from legacy.image_manager import ImageManager
-        # If you have heavy imports/numba warmups, you can update the splash here:
-        splash.showMessage(
-            "Initializing UI...",
-            Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignLeft,
-            QColor("white"),
-        )
-        app.processEvents()
-
-        import warnings
+        
+        _splash.setMessage("Suppressing warnings...")
+        _splash.setProgress(82)
         from matplotlib import MatplotlibDeprecationWarning
         warnings.filterwarnings("ignore", category=MatplotlibDeprecationWarning)
 
-
-        # Your image manager + main window
+        _splash.setMessage("Creating image manager...")
+        _splash.setProgress(85)
         imgr = ImageManager(max_slots=100)
+        
+        _splash.setMessage("Building main window...")
+        _splash.setProgress(90)
         win = AstroSuiteProMainWindow(
             image_manager=imgr,
             version=VERSION,
             build_timestamp=BUILD_TIMESTAMP,
         )
+        
+        _splash.setMessage("Showing main window...")
+        _splash.setProgress(95)
         win.show()
 
         # Start background Numba warmup after UI is visible
@@ -427,24 +623,32 @@ if __name__ == "__main__":
         except Exception:
             pass  # Non-critical if warmup fails
 
+        _splash.setMessage("Ready!")
+        _splash.setProgress(100)
+        _app.processEvents()
+        
+        # Small delay to show "Ready!" before closing
+        import time
+        time.sleep(0.3)
+        _app.processEvents()
+
         # Ensure the splash cannot resurrect later:
         try:
-            splash.finish(win)   # hide and wait for first paint of win
+            _splash.finish()
         finally:
-            splash.hide()
-            splash.close()       # triggers WA_DeleteOnClose if set
-            splash.deleteLater() # in case close doesn't destroy immediately
-            splash = None        # drop all references
+            _splash.hide()
+            _splash.close()
+            _splash.deleteLater()
+        
         print(f"Seti Astro Suite Pro v{VERSION} (build {BUILD_TIMESTAMP}) up and running!")
-        sys.exit(app.exec())
+        sys.exit(_app.exec())
 
     except Exception:
         import traceback
         try:
-            if splash is not None:
-                splash.hide()
-                splash.close()
-                splash.deleteLater()
+            _splash.hide()
+            _splash.close()
+            _splash.deleteLater()
         except Exception:
             pass
         tb = traceback.format_exc()
@@ -452,11 +656,8 @@ if __name__ == "__main__":
         msg = QMessageBox(None)
         msg.setIcon(QMessageBox.Icon.Critical)
         msg.setWindowTitle("Application Error")
-        # Short headline:
         msg.setText("An unexpected error occurred.")
-        # One-line summary:
         msg.setInformativeText(tb.splitlines()[-1] if tb else "See details.")
-        # Full traceback:
         msg.setDetailedText(tb)
         msg.setStandardButtons(QMessageBox.StandardButton.Ok)
         msg.exec()
