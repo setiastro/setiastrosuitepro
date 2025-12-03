@@ -41,8 +41,8 @@ This project follows a modular layout. High-level modules and responsibilities:
 - `scripts/` - Example scripts and small utilities that demonstrate automation.
 - `data/` - Bundled data files and catalogs. (See `data/catalogs/` for CSV files.)
 - `logs/` - Runtime logs produced during development or packaged runs.
-- `config/` - Packaging specs and configuration files (e.g. `.spec`, update JSON).
-- `build/` - Packaging and distribution scripts (e.g. `create_dmg.sh`).
+- `config/` - Packaging specs and configuration files.
+- `build/` - Packaging and distribution scripts.
 
 Files of note:
 - `setiastrosuitepro.py` - Application entrypoint used for development and direct runs.
