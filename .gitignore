@@ -48,7 +48,7 @@ __numba_cache__/
 # FITS/temporary data files
 *.tmp
 *.temp
-SASP_data.fits
+
 
 # Build artifacts
 build/
