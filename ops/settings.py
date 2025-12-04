@@ -1,7 +1,7 @@
 # ops.settings.py
 from PyQt6.QtWidgets import (
     QLineEdit, QDialogButtonBox, QFileDialog, QDialog, QPushButton, QFormLayout,QApplication,
-    QHBoxLayout, QVBoxLayout, QWidget, QCheckBox, QComboBox, QSpinBox, QDoubleSpinBox, QLabel, QColorDialog, QFontDialog)
+    QHBoxLayout, QVBoxLayout, QWidget, QCheckBox, QComboBox, QSpinBox, QDoubleSpinBox, QLabel, QColorDialog, QFontDialog, QSlider)
 from PyQt6.QtCore import QSettings, Qt
 import pytz  # for timezone list
 
@@ -122,6 +122,24 @@ class SettingsDialog(QDialog):
             self.settings.value("display/autostretch_16bit", True, type=bool)
         )
 
+        self.slider_bg_opacity = QSlider(Qt.Orientation.Horizontal)
+        self.slider_bg_opacity.setRange(0, 100)
+        current_opacity = self.settings.value("display/bg_opacity", 50, type=int)
+        self.slider_bg_opacity.setValue(current_opacity)
+        
+        self.lbl_bg_opacity_val = QLabel(f"{current_opacity}%")
+        self.lbl_bg_opacity_val.setFixedWidth(40)
+
+        self.slider_bg_opacity.valueChanged.connect(
+            lambda val: self.lbl_bg_opacity_val.setText(f"{val}%")
+        )
+
+        row_bg_opacity = QHBoxLayout()
+        row_bg_opacity.addWidget(self.slider_bg_opacity)
+        row_bg_opacity.addWidget(self.lbl_bg_opacity_val)
+        w_bg_opacity = QWidget()
+        w_bg_opacity.setLayout(row_bg_opacity)
+
         # ─────────────────────────────────────────────────────────────────────
         # LAYOUT MUST EXIST BEFORE ANY addRow(...) — build it here
         # ─────────────────────────────────────────────────────────────────────
@@ -208,6 +226,8 @@ class SettingsDialog(QDialog):
         right_col.addRow(QLabel("<b>Display</b>"))
         right_col.addRow(self.chk_autostretch_16bit)
 
+        right_col.addRow("Background Opacity:", w_bg_opacity)
+        
         # ---- Buttons ----
         btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self
@@ -284,6 +304,8 @@ class SettingsDialog(QDialog):
         self.settings.setValue("updates/url", self.le_updates_url.text().strip())
         self.settings.setValue("display/autostretch_16bit", self.chk_autostretch_16bit.isChecked())
 
+        self.settings.setValue("display/bg_opacity", self.slider_bg_opacity.value())
+
         # Theme
         idx = max(0, self.cb_theme.currentIndex())
         if idx == 0:
@@ -307,6 +329,9 @@ class SettingsDialog(QDialog):
                 p.apply_theme_from_settings()
             except Exception:
                 pass
+        
+        if hasattr(p, "mdi") and hasattr(p.mdi, "viewport"):
+                p.mdi.viewport().update()
 
         self.accept()
 

@@ -330,8 +330,12 @@ class AstroSuiteProMainWindow(
             painter.fillRect(self.mdi.rect(), QColor("#1e1e1e"))
 
             if not self._bg_pixmap.isNull():
-                # 50% opacity  
-                painter.setOpacity(0.5)
+
+                opacity_percent = self.settings.value("display/bg_opacity", 50, type=int)
+                
+                opacity_float = opacity_percent / 100.0
+                
+                painter.setOpacity(opacity_float)
                 
                 x = (self.mdi.width() - self._bg_pixmap.width()) // 2
                 y = (self.mdi.height() - self._bg_pixmap.height()) // 2
