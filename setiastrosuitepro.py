@@ -62,7 +62,7 @@ if __name__ == "__main__":
         """
         def __init__(self, logo_path: str):
             super().__init__()
-            self._version = "1.5.6"  # Hardcoded for early display
+            self._version = "1.5.7"  # Hardcoded for early display
             self._build = ""
             self.current_message = "Starting..."
             self.progress_value = 0
@@ -662,4 +662,5 @@ if __name__ == "__main__":
         msg.setStandardButtons(QMessageBox.StandardButton.Ok)
         msg.exec()
         sys.exit(1)
+
 
