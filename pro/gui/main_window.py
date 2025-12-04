@@ -195,6 +195,7 @@ from pro.resources import (
     colorwheel_path, font_path, csv_icon_path, spinner_path, wims_path,
     wimi_path, linearfit_path, debayer_path, aberration_path,
     functionbundles_path, viewbundles_path, selectivecolor_path, rgbalign_path,
+    background_path, 
 )
 
 import faulthandler
@@ -338,7 +339,7 @@ class AstroSuiteProMainWindow(
                 self._custom_bg_path = ""
 
         # Absolute path to the default background image and placeholders for custom bg
-        bg_path = os.path.abspath(os.path.join("images", "background.png"))
+        bg_path = background_path
         self._bg_pixmap = QPixmap(bg_path)
         self._custom_bg_path = getattr(self, "_custom_bg_path", "") or ""
         self._custom_bg_pixmap = QPixmap()  # original loaded custom pixmap (unscaled)

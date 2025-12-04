@@ -50,6 +50,7 @@ class Icons:
     # Application
     APP = property(lambda self: _resource_path('astrosuitepro.png'))
     APP_ICO = property(lambda self: _resource_path('astrosuitepro.ico'))
+    BACKGROUND = property(lambda self: _resource_path('background.png')) 
     
     # Processing tools
     GREEN = property(lambda self: _resource_path('green.png'))
@@ -359,6 +360,7 @@ def _init_legacy_paths():
         'viewbundles_path': get_icon_path('viewbundle.png'),
         'selectivecolor_path': get_icon_path('selectivecolor.png'),
         'rgbalign_path': get_icon_path('rgbalign.png'),
+        'background_path': get_icon_path('background.png'), 
     }
 
 
