@@ -318,23 +318,59 @@ class AstroSuiteProMainWindow(
         # MDI workspace
         self.mdi = MdiArea()
         self.mdi.setViewMode(QMdiArea.ViewMode.SubWindowView)
+        # --- Custom background support: load saved path and apply after init
+        self._custom_bg_path = self.settings.value("ui/custom_background", "", type=str) or ""
+        if self._custom_bg_path:
+            # If the file exists, apply it silently after init. If it doesn't exist,
+            # remove the stale setting so the app doesn't try to load it and hang.
+            try:
+                if os.path.exists(self._custom_bg_path):
+                    QTimer.singleShot(0, lambda: self._apply_custom_background(self._custom_bg_path, silent=True))
+                else:
+                    try:
+                        self.settings.remove("ui/custom_background")
+                        self.settings.sync()
+                    except Exception:
+                        pass
+                    self._custom_bg_path = ""
+            except Exception:
+                # In case of any odd error, just skip applying the custom background
+                self._custom_bg_path = ""
 
-        # Absolute path to the background image
+        # Absolute path to the default background image and placeholders for custom bg
         bg_path = os.path.abspath(os.path.join("images", "background.png"))
         self._bg_pixmap = QPixmap(bg_path)
+        self._custom_bg_path = getattr(self, "_custom_bg_path", "") or ""
+        self._custom_bg_pixmap = QPixmap()  # original loaded custom pixmap (unscaled)
 
         def _draw_transparent_bg(event):
             painter = QPainter(self.mdi.viewport())
-            
+
+            # Base fill (same as default app background color)
             painter.fillRect(self.mdi.rect(), QColor("#1e1e1e"))
 
-            if not self._bg_pixmap.isNull():
+            # Choose which pixmap to draw: custom if available, else default
+            pix = None
+            if not self._custom_bg_pixmap.isNull():
+                pix = self._custom_bg_pixmap
+            elif not self._bg_pixmap.isNull():
+                pix = self._bg_pixmap
+
+            if pix is not None and not pix.isNull():
+                # scale to cover MDI area while preserving aspect ratio
+                target = self.mdi.size()
+                if target.width() > 0 and target.height() > 0:
+                    scaled = pix.scaled(target, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
+                else:
+                    scaled = pix
+
                 opacity_percent = self.settings.value("display/bg_opacity", 50, type=int)
-                opacity_float = opacity_percent / 100.0
+                opacity_float = max(0.0, min(1.0, float(opacity_percent) / 100.0))
                 painter.setOpacity(opacity_float)
-                x = (self.mdi.width() - self._bg_pixmap.width()) // 2
-                y = (self.mdi.height() - self._bg_pixmap.height()) // 2
-                painter.drawPixmap(x, y, self._bg_pixmap)
+
+                x = (self.mdi.width() - scaled.width()) // 2
+                y = (self.mdi.height() - scaled.height()) // 2
+                painter.drawPixmap(x, y, scaled)
 
         self.mdi.paintEvent = _draw_transparent_bg
 
@@ -1935,6 +1971,105 @@ class AstroSuiteProMainWindow(
         if dlg.exec():
             # (Optional) react to changes if needed
             pass
+
+    # ---------------- Custom Background ----------------
+    def _choose_custom_background(self):
+        """Ask the user to pick a JPG/PNG and apply it as app background. Persists in QSettings."""
+        path, _ = QFileDialog.getOpenFileName(self, "Select background image", "", "Images (*.png *.jpg *.jpeg)")
+        if not path:
+            return
+        try:
+            self.settings.setValue("ui/custom_background", path)
+            self.settings.sync()
+            self._custom_bg_path = path
+            self._apply_custom_background(path)
+        except Exception as e:
+            QMessageBox.warning(self, "Background error", f"Could not apply background: {e}")
+
+    def _clear_custom_background(self):
+        """Clear any custom background (removes setting and restores default palette)."""
+        try:
+            self.settings.remove("ui/custom_background")
+            self.settings.sync()
+            self._custom_bg_path = ""
+            # clear internal custom pixmap and restore default palette/styles
+            try:
+                self._custom_bg_pixmap = QPixmap()
+            except Exception:
+                pass
+            try:
+                self.setAutoFillBackground(False)
+                self.setPalette(QApplication.palette())
+            except Exception:
+                pass
+            # also clear MDI stylesheet fallback
+            try:
+                if hasattr(self, "mdi") and self.mdi is not None:
+                    self.mdi.setStyleSheet("")
+                    # trigger repaint so paintEvent draws default background
+                    try:
+                        self.mdi.viewport().update()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        except Exception as e:
+            QMessageBox.warning(self, "Background error", f"Could not clear background: {e}")
+
+    def _apply_custom_background(self, path: str, silent: bool = False):
+        """Apply a background image from `path` to the main window (and MDI if present).
+
+        The image is scaled to the current window size for a single non-tiled background.
+        """
+        try:
+            pix = QPixmap(path)
+            if pix.isNull():
+                # If we failed to load, remove any stale persisted reference so we don't
+                # repeatedly try to load it on future starts. Optionally warn the user
+                # when not running in silent mode.
+                try:
+                    self.settings.remove("ui/custom_background")
+                    self.settings.sync()
+                except Exception:
+                    pass
+                if not silent:
+                    QMessageBox.warning(self, "Background load failed", "Could not load image file.")
+                return
+
+            # Keep the original pixmap around and let the paintEvent scale/draw it
+            try:
+                self._custom_bg_pixmap = QPixmap(path)
+                if self._custom_bg_pixmap.isNull():
+                    QMessageBox.warning(self, "Background load failed", "Could not load image file.")
+                    return
+                self._custom_bg_path = path
+            except Exception:
+                # fallback: set via palette as a best-effort
+                sz = self.size()
+                if sz.width() > 0 and sz.height() > 0:
+                    pix = pix.scaled(sz, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
+                brush = QBrush(pix)
+                pal = self.palette()
+                pal.setBrush(QPalette.ColorRole.Window, brush)
+                self.setAutoFillBackground(True)
+                self.setPalette(pal)
+
+            # Trigger repaint so paintEvent uses the new custom pixmap
+            try:
+                if hasattr(self, "mdi") and self.mdi is not None:
+                    # clear any stylesheet fallback (we rely on paintEvent now)
+                    try:
+                        self.mdi.setStyleSheet("")
+                    except Exception:
+                        pass
+                    try:
+                        self.mdi.viewport().update()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        except Exception as e:
+            QMessageBox.warning(self, "Background error", str(e))
 
     def graxpert_path(self) -> str:
         return self.settings.value("paths/graxpert", "", type=str)
