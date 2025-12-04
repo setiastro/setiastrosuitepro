@@ -779,14 +779,28 @@ class ABEDialog(QDialog):
                     if hasattr(mw, "_spawn_subwindow_for"):
                         mw._spawn_subwindow_for(doc_bg)
 
+            # Preserve the current view's autostretch state: capture before/restore after
             mw = self.parent()
-            if hasattr(mw, "mdi") and mw.mdi.activeSubWindow():
-                view = mw.mdi.activeSubWindow().widget()
-                if getattr(view, "autostretch_enabled", False):
-                    view.set_autostretch(False)
+            prev_autostretch = False
+            view = None
+            try:
+                if hasattr(mw, "mdi") and mw.mdi.activeSubWindow():
+                    view = mw.mdi.activeSubWindow().widget()
+                    prev_autostretch = bool(getattr(view, "autostretch_enabled", False))
+            except Exception:
+                prev_autostretch = False
+
 
             if hasattr(mw, "_log"):
                 mw._log(step_name)
+
+            # Restore autostretch state on the view (recompute display) so the
+            # user's display-stretch choice survives the edit.
+            try:
+                if view is not None and hasattr(view, "set_autostretch") and callable(view.set_autostretch):
+                    view.set_autostretch(prev_autostretch)
+            except Exception:
+                pass
 
             self._set_status("Done")
             self.accept()

@@ -1,6 +1,7 @@
 # pro/halobgon.py
 from __future__ import annotations
-import numpy as np, cv2
+import numpy as np
+import cv2
 from typing import Optional
 
 from PyQt6.QtCore import Qt, QTimer, QRectF
@@ -249,7 +250,9 @@ class HaloBGonDialogPro(QDialog):
         self.setWindowTitle("Halo-B-Gon")
         if icon:
             try: self.setWindowIcon(icon)
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
         self.parent_ref = parent
         self.doc = doc

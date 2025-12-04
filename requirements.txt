@@ -42,8 +42,7 @@ xisf
 rawpy
 imageio
 
-# coordinate transforms
-astropy
+# coordinate transforms (using astropy from astronomy section above)
 
 # utilities
 pytz

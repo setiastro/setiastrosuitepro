@@ -1,7 +1,7 @@
 # ops.settings.py
 from PyQt6.QtWidgets import (
     QLineEdit, QDialogButtonBox, QFileDialog, QDialog, QPushButton, QFormLayout,QApplication,
-    QHBoxLayout, QVBoxLayout, QWidget, QCheckBox, QComboBox, QSpinBox, QDoubleSpinBox, QLabel, QColorDialog, QFontDialog)
+    QHBoxLayout, QVBoxLayout, QWidget, QCheckBox, QComboBox, QSpinBox, QDoubleSpinBox, QLabel, QColorDialog, QFontDialog, QSlider)
 from PyQt6.QtCore import QSettings, Qt
 import pytz  # for timezone list
 
@@ -122,6 +122,54 @@ class SettingsDialog(QDialog):
             self.settings.value("display/autostretch_16bit", True, type=bool)
         )
 
+        self.slider_bg_opacity = QSlider(Qt.Orientation.Horizontal)
+        self.slider_bg_opacity.setRange(0, 100)
+        current_opacity = self.settings.value("display/bg_opacity", 50, type=int)
+        self.slider_bg_opacity.setValue(current_opacity)
+        # Keep a copy of the original opacity so we can restore it if the user cancels
+        self._initial_bg_opacity = int(current_opacity)
+
+        self.lbl_bg_opacity_val = QLabel(f"{current_opacity}%")
+        self.lbl_bg_opacity_val.setFixedWidth(40)
+
+        def _on_opacity_changed(val):
+            self.lbl_bg_opacity_val.setText(f"{val}%")
+            # Aggiorna in tempo reale il valore nei settings
+            self.settings.setValue("display/bg_opacity", val)
+            self.settings.sync()
+            # Richiedi al parent (main window) di aggiornare il rendering della MDI
+            parent = self.parent()
+            if parent and hasattr(parent, "mdi") and hasattr(parent.mdi, "viewport"):
+                parent.mdi.viewport().update()
+
+        self.slider_bg_opacity.valueChanged.connect(_on_opacity_changed)
+
+        row_bg_opacity = QHBoxLayout()
+        row_bg_opacity.addWidget(self.slider_bg_opacity)
+        row_bg_opacity.addWidget(self.lbl_bg_opacity_val)
+        w_bg_opacity = QWidget()
+        w_bg_opacity.setLayout(row_bg_opacity)
+
+        # ---- Custom background: choose/clear preview ----
+        self.le_bg_path = QLineEdit()
+        self.le_bg_path.setReadOnly(True)
+        # remember initial custom background so Cancel can restore it
+        self._initial_bg_path = self.settings.value("ui/custom_background", "", type=str) or ""
+        self.le_bg_path.setText(self._initial_bg_path)
+        btn_choose_bg = QPushButton("Choose Background…")
+        btn_choose_bg.setToolTip("Pick a PNG or JPG to use as the application background")
+        btn_choose_bg.clicked.connect(self._choose_background_clicked)
+        btn_clear_bg = QPushButton("Clear")
+        btn_clear_bg.setToolTip("Remove custom background and restore default")
+        btn_clear_bg.clicked.connect(self._clear_background_clicked)
+
+        row_bg_image = QHBoxLayout()
+        row_bg_image.addWidget(self.le_bg_path, 1)
+        row_bg_image.addWidget(btn_choose_bg)
+        row_bg_image.addWidget(btn_clear_bg)
+        w_bg_image = QWidget()
+        w_bg_image.setLayout(row_bg_image)
+
         # ─────────────────────────────────────────────────────────────────────
         # LAYOUT MUST EXIST BEFORE ANY addRow(...) — build it here
         # ─────────────────────────────────────────────────────────────────────
@@ -153,6 +201,12 @@ class SettingsDialog(QDialog):
         w_theme = QWidget()
         w_theme.setLayout(row_theme)
         left_col.addRow("Theme:", w_theme)
+
+        # ---- Display (moved under Theme) ----
+        left_col.addRow(QLabel("<b>Display</b>"))
+        left_col.addRow(self.chk_autostretch_16bit)
+        left_col.addRow("Background Opacity:", w_bg_opacity)
+        left_col.addRow("Background Image:", w_bg_image)
 
         # ---- Right column: WIMS + RA/Dec + Updates + Display ----
         right_col.addRow(QLabel("<b>What's In My Sky — Defaults</b>"))
@@ -204,10 +258,8 @@ class SettingsDialog(QDialog):
         w = QWidget(); w.setLayout(row_updates_url)
         right_col.addRow("Updates JSON URL:", w)
 
-        # ---- Display ----
-        right_col.addRow(QLabel("<b>Display</b>"))
-        right_col.addRow(self.chk_autostretch_16bit)
-
+        
+        
         # ---- Buttons ----
         btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self
@@ -215,6 +267,39 @@ class SettingsDialog(QDialog):
         btns.accepted.connect(self._save_and_accept)
         btns.rejected.connect(self.reject)
         root.addWidget(btns)
+
+    def reject(self):
+        """User cancelled: restore the original background opacity (revert live changes)."""
+        try:
+            # Restore saved original value
+            self.settings.setValue("display/bg_opacity", int(self._initial_bg_opacity))
+            self.settings.sync()
+            # Ask parent to redraw with restored value
+            parent = self.parent()
+            if parent:
+                # restore original custom background (may be empty)
+                try:
+                    # If there was an initial custom background, restore it; otherwise clear.
+                    if self._initial_bg_path:
+                        if hasattr(parent, "_apply_custom_background"):
+                            parent._apply_custom_background(self._initial_bg_path)
+                    else:
+                        # Avoid calling _apply_custom_background("") which shows a warning
+                        if hasattr(parent, "_clear_custom_background"):
+                            parent._clear_custom_background()
+                        elif hasattr(parent, "_apply_custom_background"):
+                            parent._apply_custom_background("")
+                except Exception:
+                    pass
+                # update MDI viewport/redraw
+                try:
+                    if hasattr(parent, "mdi") and hasattr(parent.mdi, "viewport"):
+                        parent.mdi.viewport().update()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        super().reject()
 
 
     # ----------------- helpers -----------------
@@ -240,6 +325,41 @@ class SettingsDialog(QDialog):
                 parent._check_for_updates_async(interactive=True)
             except Exception:
                 pass
+
+    def _choose_background_clicked(self):
+        """Open a file picker and apply a custom background image for the app."""
+        path, _ = QFileDialog.getOpenFileName(self, "Select background image", "", "Images (*.png *.jpg *.jpeg)")
+        if not path:
+            return
+        try:
+            # Do NOT persist yet — just update UI and preview via parent.
+            self.le_bg_path.setText(path)
+            parent = self.parent()
+            if parent and hasattr(parent, "_apply_custom_background"):
+                try:
+                    parent._apply_custom_background(path)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _clear_background_clicked(self):
+        """Clear persisted custom background and ask main window to restore defaults."""
+        try:
+            # Do NOT modify settings yet — clear preview and let Save apply
+            self.le_bg_path.setText("")
+            parent = self.parent()
+            if parent:
+                # request parent to clear preview/background for now
+                try:
+                    if hasattr(parent, "_clear_custom_background"):
+                        parent._clear_custom_background()
+                    elif hasattr(parent, "_apply_custom_background"):
+                        parent._apply_custom_background("")
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def _on_theme_changed(self, idx: int):
         # Enable the "Customize…" button only when Custom is selected
@@ -284,6 +404,18 @@ class SettingsDialog(QDialog):
         self.settings.setValue("updates/url", self.le_updates_url.text().strip())
         self.settings.setValue("display/autostretch_16bit", self.chk_autostretch_16bit.isChecked())
 
+        # Custom background: persist the chosen path (empty -> remove)
+        bg_path = (self.le_bg_path.text() or "").strip()
+        if bg_path:
+            self.settings.setValue("ui/custom_background", bg_path)
+        else:
+            try:
+                self.settings.remove("ui/custom_background")
+            except Exception:
+                self.settings.setValue("ui/custom_background", "")
+
+        # bg_opacity is already saved in real-time by _on_opacity_changed()
+
         # Theme
         idx = max(0, self.cb_theme.currentIndex())
         if idx == 0:
@@ -307,6 +439,9 @@ class SettingsDialog(QDialog):
                 p.apply_theme_from_settings()
             except Exception:
                 pass
+        
+        if hasattr(p, "mdi") and hasattr(p.mdi, "viewport"):
+                p.mdi.viewport().update()
 
         self.accept()
 

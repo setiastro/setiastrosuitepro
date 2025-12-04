@@ -1,7 +1,9 @@
 # pro/crop_dialog_pro.py
 from __future__ import annotations
 
-import math, numpy as np, cv2
+import math
+import numpy as np
+import cv2
 from typing import Optional
 
 from PyQt6.QtCore import Qt, QEvent, QPointF, QRectF, pyqtSignal, QPoint, QTimer

@@ -66,6 +66,7 @@ class Icons:
     STAR_ALIGN = property(lambda self: _resource_path('staralign.png'))
     STAR_REGISTRATION = property(lambda self: _resource_path('starregistration.png'))
     STAR_SPIKE = property(lambda self: _resource_path('starspike.png'))
+    ASTRO_SPIKE = property(lambda self: _resource_path('Astro_Spikes.png'))
     STAR_STRETCH = property(lambda self: _resource_path('starstretch.png'))
     
     # Luminance
@@ -190,8 +191,8 @@ class Resources:
     """
     Centralized data resource paths.
     """
-    SASP_DATA = property(lambda self: _resource_path('SASP_data.fits'))
-    ASTROBIN_FILTERS_CSV = property(lambda self: _resource_path('astrobin_filters.csv'))
+    SASP_DATA = property(lambda self: _resource_path('data/SASP_data.fits'))
+    ASTROBIN_FILTERS_CSV = property(lambda self: _resource_path('data/catalogs/astrobin_filters.csv'))
     SPINNER_GIF = property(lambda self: _resource_path('spinner.gif'))
 
 
@@ -310,6 +311,7 @@ def _init_legacy_paths():
         'stacking_path': get_icon_path('stacking.png'),
         'pedestal_icon_path': get_icon_path('pedestal.png'),
         'starspike_path': get_icon_path('starspike.png'),
+        'astrospike_path': get_icon_path('Astro_Spikes.png'),
         'aperture_path': get_icon_path('aperture.png'),
         'jwstpupil_path': get_icon_path('jwstpupil.png'),
         'signature_icon_path': get_icon_path('pen.png'),
@@ -317,11 +319,11 @@ def _init_legacy_paths():
         'hrdiagram_path': get_icon_path('HRDiagram.png'),
         'convoicon_path': get_icon_path('convo.png'),
         'spcc_icon_path': get_icon_path('spcc.png'),
-        'sasp_data_path': get_data_path('SASP_data.fits'),
+        'sasp_data_path': get_data_path('data/SASP_data.fits'),
         'exoicon_path': get_icon_path('exoicon.png'),
         'peeker_icon': get_icon_path('gridicon.png'),
         'dse_icon_path': get_icon_path('dse.png'),
-        'astrobin_filters_csv_path': get_data_path('astrobin_filters.csv'),
+        'astrobin_filters_csv_path': get_data_path('data/catalogs/astrobin_filters.csv'),
         'isophote_path': get_icon_path('isophote.png'),
         'statstretch_path': get_icon_path('statstretch.png'),
         'starstretch_path': get_icon_path('starstretch.png'),

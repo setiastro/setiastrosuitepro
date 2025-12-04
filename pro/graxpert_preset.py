@@ -1,6 +1,8 @@
 # pro/graxpert_preset.py
 from __future__ import annotations
-import os, shutil, tempfile
+import os
+import shutil
+import tempfile
 import numpy as np
 from PyQt6.QtWidgets import (QMessageBox, QDialog, QFormLayout, QDialogButtonBox, QDoubleSpinBox, QCheckBox,
     QRadioButton, QLabel, QComboBox)

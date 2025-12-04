@@ -1,8 +1,12 @@
 # pro/mfdeconvsport.py
 from __future__ import annotations
-import os, math, re
+import os
+import math
+import re
 import numpy as np
-import tempfile, uuid, atexit
+import tempfile
+import uuid
+import atexit
 from astropy.io import fits
 from PyQt6.QtCore import QObject, pyqtSignal
 from pro.psf_utils import compute_psf_kernel_for_image
@@ -48,7 +52,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from queue import SimpleQueue
 
 # ── XISF decode cache → memmap on disk ─────────────────────────────────
-import tempfile, threading, uuid, atexit
+import tempfile
+import threading
+import uuid
+import atexit
 _XISF_CACHE = {}
 _XISF_LOCK  = threading.Lock()
 _XISF_TMPFILES = []
@@ -87,7 +94,9 @@ def _maybe_memmap(shape, dtype=np.float32, *,
 def _cleanup_scratch_mm():
     for fn in _SCRATCH_MMAPS[:]:
         try: os.remove(fn)
-        except Exception: pass
+        except Exception as e:
+            import logging
+            logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
     _SCRATCH_MMAPS.clear()
 
 atexit.register(_cleanup_scratch_mm)
@@ -153,9 +162,13 @@ _FRAME_LRU = _FrameCHWLRU(capacity=8)  # tune if you like
 
 def _clear_all_caches():
     try: _clear_xisf_cache()
-    except Exception: pass
+    except Exception as e:
+        import logging
+        logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
     try: _FRAME_LRU.clear()
-    except Exception: pass
+    except Exception as e:
+        import logging
+        logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
 def _as_chw(np_img: np.ndarray) -> np.ndarray:
     x = np.asarray(np_img, dtype=np.float32, order="C")
@@ -217,7 +230,9 @@ def _clear_xisf_cache():
     with _XISF_LOCK:
         for fn in _XISF_TMPFILES:
             try: os.remove(fn)
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
         _XISF_CACHE.clear()
         _XISF_TMPFILES.clear()
 
@@ -452,7 +467,9 @@ def _compute_frame_assets(i, arr, hdr, *, make_masks, make_varmaps,
             vmc = varmap_cfg or {}
             def _vprog(frac: float, msg: str = ""):
                 try: log(f"__PROGRESS__ {0.16 + 0.02*float(frac):.4f} {msg}")
-                except Exception: pass
+                except Exception as e:
+                    import logging
+                    logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
             var_path = _variance_map_from_precomputed_memmap(
                 luma, sky_map, rms_map, hdr,
@@ -539,7 +556,9 @@ def _compute_one_worker(args):
     # Force Option B behavior: close any memmap and only pass a path
     if isinstance(var, np.memmap):
         try: var.flush()
-        except Exception: pass
+        except Exception as e:
+            import logging
+            logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
         var = None
 
     return i2, psf, mask, var, var_path, logs
@@ -1366,7 +1385,9 @@ def _variance_map_from_precomputed(
             try:
                 g = float(hdr[k]);  gain = g if (np.isfinite(g) and g > 0) else None
                 if gain is not None: break
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
     if gain is not None:
         a_shot = 1.0 / gain
@@ -1451,14 +1472,18 @@ def _variance_map_from_precomputed_memmap(
         # periodic flush + progress
         if (ti & 7) == 0 or ti == total:
             try: var_mm.flush()
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
         try:
             progress_cb(ti / float(total), f"varmap tiles {ti}/{total}")
         except Exception:
             pass
 
     try: var_mm.flush()
-    except Exception: pass
+    except Exception as e:
+        import logging
+        logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
     # drop the handle (Option B)
     del var_mm
 
@@ -2002,7 +2027,8 @@ def _seed_median_streaming(
     scratch_dir: str | None = None,
     tile_loader=None,              # NEW
 ):
-    import time, gc
+    import time
+    import gc
     from concurrent.futures import ThreadPoolExecutor, as_completed
     scratch_dir = _ensure_scratch_dir(scratch_dir)
     th, tw = int(tile_hw[0]), int(tile_hw[1])
@@ -2099,7 +2125,9 @@ def _seed_median_streaming(
         # free tile buffers aggressively
         del slab
         try: del med_np
-        except Exception: pass
+        except Exception as e:
+            import logging
+            logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
         done += 1
         if (done & 1) == 0:
@@ -2224,7 +2252,9 @@ def _make_memmap_tile_loader(frame_infos, max_open=32):
         while len(opened) > int(max_open):
             _, old = opened.popitem(last=False)
             try: del old
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
         return mm
 
     def tile_loader(i, y0, y1, x0, x1, csel=None):
@@ -2255,7 +2285,9 @@ def _make_memmap_tile_loader(frame_infos, max_open=32):
         while opened:
             _, mm = opened.popitem(last=False)
             try: del mm
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
     tile_loader.close = _close
 
     return tile_loader
@@ -2363,7 +2395,9 @@ def _prepare_frame_stack_memmap(
                     mm[0, y0:y1, x0:x1] = t
 
         try: mm.flush()
-        except Exception: pass
+        except Exception as e:
+            import logging
+            logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
         del mm
 
         infos.append({"path": mm_path, "shape": tuple(shape), "dtype": out_dtype})
@@ -2598,7 +2632,9 @@ def multiframe_deconv(
         finally:
             # drop any open memmap handles held by the loader
             try: tile_loader.close()
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
             import gc as _gc; _gc.collect()
     else:
         status_cb("MFDeconv: Building robust seed (live μ-σ stacking)…")
@@ -2854,7 +2890,9 @@ def multiframe_deconv(
                         del yt, mt, vt, pred_sr, pred_low, wmap_low, up_y, up_pred
                         if cuda_ok:
                             try: torch.cuda.empty_cache()
-                            except Exception: pass
+                            except Exception as e:
+                                import logging
+                                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
                         if per_frame_logging and ((fidx & 7) == 0):
                             status_cb(f"Iter {it}/{max_iters} — frame {fidx+1}/{len(paths)} (SR spatial)")
@@ -2882,7 +2920,9 @@ def multiframe_deconv(
                         del yt, mt, vt, pred, wmap, up_y, up_pred
                         if cuda_ok:
                             try: torch.cuda.empty_cache()
-                            except Exception: pass
+                            except Exception as e:
+                                import logging
+                                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
                 ratio = num / (den + EPS)
                 neutral = (den.abs() < 1e-12) & (num.abs() < 1e-12)
@@ -2946,7 +2986,9 @@ def multiframe_deconv(
                             # close per-frame resources
                             if vt_np is not None:
                                 try: del vt_np
-                                except Exception: pass
+                                except Exception as e:
+                                    import logging
+                                    logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
                             del y_nat
                 else:
                     # -------- Native (NumPy) --------
@@ -2981,7 +3023,9 @@ def multiframe_deconv(
                             # close per-frame resources
                             if vt_np is not None:
                                 try: del vt_np
-                                except Exception: pass
+                                except Exception as e:
+                                    import logging
+                                    logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
                             del y_nat
 
                 ratio = num / (den + EPS)
@@ -3087,9 +3131,13 @@ def multiframe_deconv(
     try:
         if use_torch:
             try: del num, den
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
             try: del psf_t, psfT_t
-            except Exception: pass
+            except Exception as e:
+                import logging
+                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
             _free_torch_memory()
     except Exception:
         pass

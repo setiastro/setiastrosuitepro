@@ -1,5 +1,6 @@
 # ops/prime_matplotlib_cache.py
-import os, sys
+import os
+import sys
 from pathlib import Path
 
 def resolve_mpl_cfg():

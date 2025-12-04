@@ -1,6 +1,10 @@
 # pro/remove_stars.py
 from __future__ import annotations
-import os, platform, shutil, stat, tempfile
+import os
+import platform
+import shutil
+import stat
+import tempfile
 import numpy as np
 
 from PyQt6.QtCore import QThread, pyqtSignal
@@ -261,7 +265,9 @@ def starnet_starless_from_array(arr_rgb01: np.ndarray, settings, *, tmp_prefix="
       6) Add back BP[c]
     Returns starless RGB float32 in [0..1] (or scaled back if you fed >1).
     """
-    import os, platform, subprocess
+    import os
+    import platform
+    import subprocess
     import numpy as np
     from imageops.stretch import stretch_color_image, stretch_mono_image
     # save_image / load_image / _get_setting_any / _safe_rm assumed available in this module
@@ -547,7 +553,9 @@ def _inverse_statstretch_from_starless(starless_s01: np.ndarray, meta: dict) -> 
 # StarNet (SASv2-like: 16-bit TIFF in StarNet folder)
 # ------------------------------------------------------------
 def _run_starnet(main, doc):
-    import os, platform, numpy as np
+    import os
+    import platform
+    import numpy as np
     from PyQt6.QtWidgets import QFileDialog, QMessageBox
 
     # --- Resolve StarNet exe, persist in settings
@@ -682,7 +690,8 @@ def _run_starnet(main, doc):
 
 
 def _on_starnet_finished(main, doc, return_code, dialog, input_path, output_path, did_stretch):
-    import os, numpy as np
+    import os
+    import numpy as np
     from PyQt6.QtWidgets import QMessageBox
     from imageops.stretch import stretch_mono_image  # used for statistical inverse
 
@@ -1338,7 +1347,8 @@ class _ProcThread(QThread):
         self.cwd = cwd
 
     def run(self):
-        import subprocess, os
+        import subprocess
+        import os
         env = os.environ.copy()
         for k in ("PYTHONHOME","PYTHONPATH","DYLD_LIBRARY_PATH","DYLD_FALLBACK_LIBRARY_PATH","PYTHONEXECUTABLE"):
             env.pop(k, None)

@@ -2,7 +2,11 @@
 from __future__ import annotations
 
 # --- stdlib ---
-import os, sys, shutil, warnings, webbrowser
+import os
+import sys
+import shutil
+import warnings
+import webbrowser
 from datetime import datetime
 from decimal import getcontext
 from typing import Optional
@@ -73,10 +77,12 @@ class CalculationThread(QThread):
     def get_catalog_file_path(self) -> str:
         user_catalog_path = os.path.join(os.path.expanduser("~"), "celestial_catalog.csv")
         if not os.path.exists(user_catalog_path):
-            bundled = os.path.join(_app_root(), "celestial_catalog.csv")
+            bundled = os.path.join(_app_root(), "data", "catalogs", "celestial_catalog.csv")
             if os.path.exists(bundled):
                 try: shutil.copyfile(bundled, user_catalog_path)
-                except Exception: pass
+                except Exception as e:
+                    import logging
+                    logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
         return user_catalog_path
 
     def run(self):

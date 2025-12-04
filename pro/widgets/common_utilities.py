@@ -81,6 +81,7 @@ class AboutDialog(QDialog):
         about_lines = [
             f"<h2>Seti Astro's Suite Pro {version}</h2>",
             "<p>Written by Franklin Marek</p>",
+            "<p>Collaborators: Fabio Tempera</p>",
             "<p>Copyright © 2025 Seti Astro</p>",
         ]
         
