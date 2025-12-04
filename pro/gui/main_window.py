@@ -324,19 +324,14 @@ class AstroSuiteProMainWindow(
         self._bg_pixmap = QPixmap(bg_path)
 
         def _draw_transparent_bg(event):
-
             painter = QPainter(self.mdi.viewport())
             
             painter.fillRect(self.mdi.rect(), QColor("#1e1e1e"))
 
             if not self._bg_pixmap.isNull():
-
                 opacity_percent = self.settings.value("display/bg_opacity", 50, type=int)
-                
                 opacity_float = opacity_percent / 100.0
-                
                 painter.setOpacity(opacity_float)
-                
                 x = (self.mdi.width() - self._bg_pixmap.width()) // 2
                 y = (self.mdi.height() - self._bg_pixmap.height()) // 2
                 painter.drawPixmap(x, y, self._bg_pixmap)

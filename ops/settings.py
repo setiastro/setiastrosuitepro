@@ -126,13 +126,23 @@ class SettingsDialog(QDialog):
         self.slider_bg_opacity.setRange(0, 100)
         current_opacity = self.settings.value("display/bg_opacity", 50, type=int)
         self.slider_bg_opacity.setValue(current_opacity)
-        
+        # Keep a copy of the original opacity so we can restore it if the user cancels
+        self._initial_bg_opacity = int(current_opacity)
+
         self.lbl_bg_opacity_val = QLabel(f"{current_opacity}%")
         self.lbl_bg_opacity_val.setFixedWidth(40)
 
-        self.slider_bg_opacity.valueChanged.connect(
-            lambda val: self.lbl_bg_opacity_val.setText(f"{val}%")
-        )
+        def _on_opacity_changed(val):
+            self.lbl_bg_opacity_val.setText(f"{val}%")
+            # Aggiorna in tempo reale il valore nei settings
+            self.settings.setValue("display/bg_opacity", val)
+            self.settings.sync()
+            # Richiedi al parent (main window) di aggiornare il rendering della MDI
+            parent = self.parent()
+            if parent and hasattr(parent, "mdi") and hasattr(parent.mdi, "viewport"):
+                parent.mdi.viewport().update()
+
+        self.slider_bg_opacity.valueChanged.connect(_on_opacity_changed)
 
         row_bg_opacity = QHBoxLayout()
         row_bg_opacity.addWidget(self.slider_bg_opacity)
@@ -236,6 +246,20 @@ class SettingsDialog(QDialog):
         btns.rejected.connect(self.reject)
         root.addWidget(btns)
 
+    def reject(self):
+        """User cancelled: restore the original background opacity (revert live changes)."""
+        try:
+            # Restore saved original value
+            self.settings.setValue("display/bg_opacity", int(self._initial_bg_opacity))
+            self.settings.sync()
+            # Ask parent to redraw with restored value
+            parent = self.parent()
+            if parent and hasattr(parent, "mdi") and hasattr(parent.mdi, "viewport"):
+                parent.mdi.viewport().update()
+        except Exception:
+            pass
+        super().reject()
+
 
     # ----------------- helpers -----------------
     def _browse_into(self, lineedit: QLineEdit):
@@ -304,7 +328,7 @@ class SettingsDialog(QDialog):
         self.settings.setValue("updates/url", self.le_updates_url.text().strip())
         self.settings.setValue("display/autostretch_16bit", self.chk_autostretch_16bit.isChecked())
 
-        self.settings.setValue("display/bg_opacity", self.slider_bg_opacity.value())
+        # bg_opacity is already saved in real-time by _on_opacity_changed()
 
         # Theme
         idx = max(0, self.cb_theme.currentIndex())
