@@ -79,7 +79,12 @@ from legacy.numba_utils import (
     drizzle_deposit_numba_kernel_mono,
     finalize_drizzle_2d,
 )
-from numba_utils import bulk_cosmetic_correction_numba, bulk_cosmetic_correction_bayer
+from numba_utils import (
+    bulk_cosmetic_correction_numba,
+    drizzle_deposit_numba_naive,
+    drizzle_deposit_color_naive,
+    bulk_cosmetic_correction_bayer
+)
 from legacy.image_manager import load_image, save_image, get_valid_header
 from pro.star_alignment import StarRegistrationWorker, StarRegistrationThread, IDENTITY_2x3
 from pro.log_bus import LogBus
@@ -11063,10 +11068,7 @@ class StackingSuiteDialog(QDialog):
                             light_data = bulk_cosmetic_correction_numba(
                                 light_data,
                                 hot_sigma=hot_sigma,
-                                cold_sigma=cold_sigma,
-                                star_mean_ratio=star_mean_ratio,
-                                star_max_ratio=star_max_ratio,
-                                sat_quantile=sat_quantile
+                                cold_sigma=cold_sigma
                             )
                             self.update_status("Cosmetic Correction Applied (debayered/mono)")
 
@@ -16128,7 +16130,10 @@ class StackingSuiteDialog(QDialog):
                     continue
 
                 if line.startswith("REF_SHAPE:"):
-                    ...
+                    parts = line.split(":", 1)[1].split(",")
+                    if len(parts) >= 2:
+                        ref_H = int(float(parts[0].strip()))
+                        ref_W = int(float(parts[1].strip()))
                     continue
 
                 if line.startswith("FILE:"):

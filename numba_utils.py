@@ -2398,6 +2398,77 @@ def numba_mono_final_formula(rescaled, median_rescaled, target_median):
 
     return out
 
+@njit(parallel=True, fastmath=True)
+def drizzle_deposit_numba_naive(image_data, affine_2x3, drizzle_buffer, coverage_buffer, scale, weight):
+    """
+    Naive drizzle deposit (point-to-point-ish) for Mono images.
+    Maps input (x,y) -> output (u,v) via affine, deposits 'weight' at nearest integer pixel.
+    
+    image_data: (H, W)
+    affine_2x3: (2, 3) matrix mapping source->canvas
+    drizzle_buffer: (Ho, Wo)
+    coverage_buffer: (Ho, Wo)
+    """
+    H, W = image_data.shape
+    Ho, Wo = drizzle_buffer.shape
+    
+    # We iterate over source pixels
+    for y in prange(H):
+        for x in range(W):
+            val = image_data[y, x]
+            if val == 0:
+                continue
+
+            # Project center of pixel (x, y)
+            # u = a*x + b*y + tx
+            # v = c*x + d*y + ty
+            
+            u = affine_2x3[0, 0] * x + affine_2x3[0, 1] * y + affine_2x3[0, 2]
+            v = affine_2x3[1, 0] * x + affine_2x3[1, 1] * y + affine_2x3[1, 2]
+            
+            # Nearest neighbor deposit
+            ui = int(round(u))
+            vi = int(round(v))
+            
+            if 0 <= ui < Wo and 0 <= vi < Ho:
+                # Accumulate
+                drizzle_buffer[vi, ui] += val * weight
+                coverage_buffer[vi, ui] += weight
+                
+    return drizzle_buffer, coverage_buffer
+
+
+@njit(parallel=True, fastmath=True)
+def drizzle_deposit_color_naive(image_data, affine_2x3, drizzle_buffer, coverage_buffer, scale, drop_shrink, weight):
+    """
+    Naive drizzle deposit for Color images (H,W,C).
+    image_data: (H, W, C)
+    affine_2x3: (2, 3)
+    drizzle_buffer: (Ho, Wo, C)
+    coverage_buffer: (Ho, Wo, C)
+    """
+    H, W, C = image_data.shape
+    Ho, Wo, _ = drizzle_buffer.shape
+    
+    for y in prange(H):
+        for x in range(W):
+            # Check if pixel has any data (simple check: if sum > 0 or checks per channel)
+            # usually we just project.
+            
+            u = affine_2x3[0, 0] * x + affine_2x3[0, 1] * y + affine_2x3[0, 2]
+            v = affine_2x3[1, 0] * x + affine_2x3[1, 1] * y + affine_2x3[1, 2]
+            
+            ui = int(round(u))
+            vi = int(round(v))
+            
+            if 0 <= ui < Wo and 0 <= vi < Ho:
+                for c in range(C):
+                    val = image_data[y, x, c]
+                    drizzle_buffer[vi, ui, c] += val * weight
+                    coverage_buffer[vi, ui, c] += weight
+
+    return drizzle_buffer, coverage_buffer
+
 @njit(parallel=True, fastmath=True, cache=True)
 def numba_color_final_formula_linked(rescaled, median_rescaled, target_median):
     """
