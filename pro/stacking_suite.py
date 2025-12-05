@@ -77,7 +77,9 @@ from legacy.numba_utils import (
     subtract_dark_with_pedestal,
     debayer_raw_fast,
     drizzle_deposit_numba_kernel_mono,
+    drizzle_deposit_color_kernel,
     finalize_drizzle_2d,
+    finalize_drizzle_3d,
 )
 from numba_utils import (
     bulk_cosmetic_correction_numba,
