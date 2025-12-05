@@ -79,7 +79,7 @@ from legacy.numba_utils import (
     drizzle_deposit_numba_kernel_mono,
     finalize_drizzle_2d,
 )
-from numba_utils import bulk_cosmetic_correction_numba
+from numba_utils import bulk_cosmetic_correction_numba, bulk_cosmetic_correction_bayer
 from legacy.image_manager import load_image, save_image, get_valid_header
 from pro.star_alignment import StarRegistrationWorker, StarRegistrationThread, IDENTITY_2x3
 from pro.log_bus import LogBus
