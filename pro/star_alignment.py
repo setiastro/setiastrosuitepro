@@ -2019,6 +2019,12 @@ def _finalize_write_job(args):
         if img is None:
             return (orig_path, "", f"⚠️ Failed to read {os.path.basename(orig_path)}", False, None)
 
+        # Fix for white images: Normalize integer types to [0,1]
+        if img.dtype == np.uint16:
+            img = img.astype(np.float32) / 65535.0
+        elif img.dtype == np.uint8:
+            img = img.astype(np.float32) / 255.0
+        
         is_mono = (img.ndim == 2)
         src_gray_full = img if is_mono else np.mean(img, axis=2)
         src_gray_full = np.nan_to_num(src_gray_full, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
