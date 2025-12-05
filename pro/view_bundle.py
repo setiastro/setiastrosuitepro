@@ -415,6 +415,10 @@ class SelectViewsDialog(QDialog):
         for cb in self._boxes:
             cb.setChecked(checked)
 
+    def selected_ptrs(self) -> list[int]:
+        """Return list of doc_ptrs for checked boxes."""
+        return [int(cb.property("doc_ptr")) for cb in self._boxes if cb.isChecked()]
+
 
 
 class _HeadlessView:
