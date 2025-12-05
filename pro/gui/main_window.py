@@ -2753,6 +2753,10 @@ class AstroSuiteProMainWindow(
         if not hasattr(self, "doc_manager") or self.doc_manager is None:
             self.doc_manager = DocManager(image_manager=getattr(self, "image_manager", None), parent=self)
 
+        if not os.path.exists(sasp_data_path):
+            QMessageBox.critical(self, "Missing Resource", f"SASP Data file not found:\n{sasp_data_path}")
+            return
+
         self.SFCC_window = SFCCDialog(
             doc_manager=self.doc_manager,
             sasp_data_path=sasp_data_path,

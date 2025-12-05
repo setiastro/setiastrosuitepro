@@ -3415,3 +3415,50 @@ def fast_star_detect(image,
         return np.empty((0,2), dtype=np.float32)
     else:
         return np.array(star_positions, dtype=np.float32)
+
+
+@njit(fastmath=True)
+def _drizzle_kernel_weights(kernel_code: int, Xo: float, Yo: float,
+                            min_x: int, max_x: int, min_y: int, max_y: int,
+                            sigma_out: float,
+                            weights_out):  # preallocated 2D view (max_y-min_y+1, max_x-min_x+1)
+    """
+    Fill `weights_out` with unnormalized kernel weights centered at (Xo,Yo).
+    Returns (sum_w, count_used).
+    """
+    H = max_y - min_y + 1
+    W = max_x - min_x + 1
+    r2_limit = sigma_out * sigma_out  # for circle, sigma_out := radius
+
+    sum_w = 0.0
+    cnt = 0
+    for j in range(H):
+        oy = min_y + j
+        cy = (oy + 0.5) - Yo  # pixel-center distance
+        for i in range(W):
+            ox = min_x + i
+            cx = (ox + 0.5) - Xo
+            w = 0.0
+
+            if kernel_code == 0:
+                # square = uniform weight in the bounding box
+                w = 1.0
+            elif kernel_code == 1:
+                # circle = uniform weight if inside radius
+                if (cx*cx + cy*cy) <= r2_limit:
+                    w = 1.0
+            else:  # gaussian
+                # gaussian centered at (Xo,Yo) with sigma_out
+                z = (cx*cx + cy*cy) / (2.0 * sigma_out * sigma_out)
+                # drop tiny far-away contributions to keep perf ok
+                if z <= 9.0:  # ~3σ
+                    w = math.exp(-z)
+
+            weights_out[j, i] = w
+            sum_w += w
+            if w > 0.0:
+                cnt += 1
+
+    return sum_w, cnt
+
+
