@@ -388,6 +388,7 @@ class FunctionBundleDialog(QDialog):
 
         self.run_status = QLabel("Ready.")
         self.run_status.setStyleSheet("color:#aaa; padding:2px 0;")
+        self.run_status.setWordWrap(True)  # Fix for window stretching on long text
         self.run_progress = QProgressBar()
         self.run_progress.setMinimum(0)
         self.run_progress.setMaximum(100)
