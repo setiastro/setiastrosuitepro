@@ -8,7 +8,7 @@ from PyQt6.QtGui import QImage, QPixmap, QIcon, QPainter, QAction, QTransform, Q
 from PyQt6.QtCore import Qt, pyqtSignal, QRectF, QPointF, QTimer
 
 from legacy.image_manager import load_image, save_image
-from legacy.numba_utils import bulk_cosmetic_correction_numba
+from numba_utils import bulk_cosmetic_correction_numba
 from imageops.stretch import stretch_mono_image, stretch_color_image
 from pro.star_alignment import PolyGradientRemoval 
 
