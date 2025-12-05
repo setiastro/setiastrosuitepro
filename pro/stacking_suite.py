@@ -25,7 +25,8 @@ from typing import List
 # Memory management utilities
 from pro.memory_utils import (
     smart_zeros, smart_empty, get_buffer_pool, 
-    should_use_memmap, cleanup_memmap, get_thumbnail_cache
+    should_use_memmap, cleanup_memmap, get_thumbnail_cache,
+    LRUDict,  # LRU-bounded dict for caches
 )
 
 from PyQt6.QtCore import Qt, QTimer, QSettings, pyqtSignal, QObject, pyqtSlot, QThread, QEvent, QPoint, QSize, QEventLoop, QCoreApplication, QRectF, QPointF, QMetaObject
@@ -382,8 +383,9 @@ def _safe_torch_inference_ctx():
 import shutil
 from contextlib import contextmanager
 
-_HDR_CACHE = {}     # path -> fits.Header
-_BIN_CACHE = {}     # path -> (xb, yb)
+# LRU-limited caches (500 entries each prevents unbounded growth during long sessions)
+_HDR_CACHE = LRUDict(500)     # path -> fits.Header
+_BIN_CACHE = LRUDict(500)     # path -> (xb, yb)
 
 def _to_native_endian(a: np.ndarray) -> np.ndarray:
     """Return a view of `a` in native-endian dtype (no copy)."""

@@ -277,7 +277,7 @@ def _star_suppress(L: np.ndarray) -> np.ndarray:
     small = cv2.GaussianBlur(L, (0, 0), 1.6).astype(np.float32)
     thr = np.percentile(small, 99.7)
     mask = small > thr              # very bright, compact stuff
-    out = L.astype(np.float32).copy()
+    out = L.astype(np.float32, copy=True)
     out[mask] *= 0.35               # damp stars; keep coma
     return out
 

@@ -29,6 +29,7 @@ from .autostretch import autostretch   # ← uses pro/imageops/stretch.py
 
 from pro.dnd_mime import MIME_VIEWSTATE, MIME_MASK, MIME_ASTROMETRY, MIME_CMD, MIME_LINKVIEW 
 from pro.shortcuts import _unpack_cmd_payload
+from pro.widgets.image_utils import ensure_contiguous
 
 from .layers import composite_stack, ImageLayer, BLEND_MODES
 
@@ -2210,7 +2211,9 @@ class ImageSubWindow(QWidget):
         # ---------------------------------------
         # 6) Wrap into QImage (keep buffer alive)
         # ---------------------------------------
-        buf8 = np.ascontiguousarray(buf8, dtype=np.uint8)
+        if buf8.dtype != np.uint8:
+            buf8 = buf8.astype(np.uint8)
+        buf8 = ensure_contiguous(buf8)
         h, w, c = buf8.shape
         # Be explicit. RGB888 means 3 bytes per pixel, full stop.
         bytes_per_line = int(w * 3)

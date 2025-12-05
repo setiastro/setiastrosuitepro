@@ -10,6 +10,26 @@ import numpy as np
 from PyQt6.QtGui import QImage, QPixmap
 
 
+def ensure_contiguous(arr: np.ndarray) -> np.ndarray:
+    """
+    Ensure array is C-contiguous without unnecessary copy.
+    
+    This is an optimization over np.ascontiguousarray()
+    which always copies if the array is not contiguous.
+    
+    Args:
+        arr: Input array
+        
+    Returns:
+        C-contiguous array (same object if already contiguous)
+    """
+    if arr is None:
+        return arr
+    if arr.flags.c_contiguous:
+        return arr
+    return np.ascontiguousarray(arr)
+
+
 def numpy_to_qimage(arr: np.ndarray, normalize: bool = True) -> QImage:
     """
     Convert a numpy array to QImage.
@@ -28,7 +48,7 @@ def numpy_to_qimage(arr: np.ndarray, normalize: bool = True) -> QImage:
     if arr is None:
         raise ValueError("Input array is None")
     
-    arr = np.ascontiguousarray(arr)
+    arr = ensure_contiguous(arr)
     
     # Handle float vs uint8
     if arr.dtype in (np.float32, np.float64):
@@ -40,7 +60,7 @@ def numpy_to_qimage(arr: np.ndarray, normalize: bool = True) -> QImage:
         arr = arr.astype(np.uint8)
     
     # Ensure contiguous
-    arr = np.ascontiguousarray(arr)
+    arr = ensure_contiguous(arr)
     
     # Handle dimensions
     if arr.ndim == 2:
@@ -111,7 +131,7 @@ def float_to_qimage_rgb8(arr: np.ndarray) -> QImage:
         f = np.repeat(f, 3, axis=2)
     
     buf8 = (np.clip(f, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
-    buf8 = np.ascontiguousarray(buf8)
+    buf8 = ensure_contiguous(buf8)
     h, w, _ = buf8.shape
     img = QImage(buf8.data, w, h, 3 * w, QImage.Format.Format_RGB888)
     # Keep reference so bytes stay alive

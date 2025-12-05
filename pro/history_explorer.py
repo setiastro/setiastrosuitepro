@@ -11,6 +11,8 @@ import json
 
 from .autostretch import autostretch
 from .dnd_mime import MIME_CMD
+from pro.swap_manager import get_swap_manager
+
 
 
 # ---------- helpers ----------
@@ -363,14 +365,16 @@ def _extract_undo_entries(doc):
         for item in stack:
             if isinstance(item, (list, tuple)):
                 if len(item) >= 3:
-                    img, meta, name = item[0], item[1] or {}, item[2] or "Unnamed"
+                    # item[0] is now swap_id (str) or image (ndarray)
+                    sid_or_img, meta, name = item[0], item[1] or {}, item[2] or "Unnamed"
                 elif len(item) == 2:
-                    img, meta = item
+                    sid_or_img, meta = item
                     meta = meta or {}
                     name = meta.get("step_name", "Unnamed")
                 else:
                     continue
-                out.append((img, meta, str(name)))
+                out.append((sid_or_img, meta, str(name)))
+
         if out:
             return out
     return []
@@ -441,8 +445,8 @@ class HistoryExplorerDialog(QDialog):
         layout.addWidget(self.history_list)
 
         # ---- Fetch undo stack ----
-        self.undo_entries = _extract_undo_entries(self.doc)  # list[(img, meta, name)]
-        self.items: list[tuple[np.ndarray, dict, str]] = []
+        self.undo_entries = _extract_undo_entries(self.doc)  # list[(sid_or_img, meta, name)]
+        self.items: list[tuple[object, dict, str]] = []
         # Headless command presets aligned to each undo entry
         mw = self._find_main_window()
         self._history_payloads = _payloads_from_headless_history(mw, self.undo_entries)
@@ -511,10 +515,10 @@ class HistoryExplorerDialog(QDialog):
         # 1) Original Image (if any undo entries exist)
         row_index = 0
         if self.undo_entries:
-            orig_img, orig_meta, _ = self.undo_entries[0]
+            orig_src, orig_meta, _ = self.undo_entries[0]
             item = QListWidgetItem("1. Original Image")
             self.history_list.addItem(item)
-            self.items.append((orig_img, orig_meta, "Original Image"))
+            self.items.append((orig_src, orig_meta, "Original Image"))
             row_index += 1
 
         # 2) Per-operation states
@@ -523,10 +527,10 @@ class HistoryExplorerDialog(QDialog):
             op_name = self.undo_entries[op_idx][2] or f"Step {op_idx + 1}"
 
             if op_idx + 1 < n:
-                img, meta, _ = self.undo_entries[op_idx + 1]
+                src, meta, _ = self.undo_entries[op_idx + 1]
             else:
                 # Last operation → use current image + metadata
-                img = getattr(self.doc, "image", None)
+                src = getattr(self.doc, "image", None)
                 meta = getattr(self.doc, "metadata", {}) or {}
 
             # 1) Prefer preset from headless history
@@ -551,7 +555,7 @@ class HistoryExplorerDialog(QDialog):
                 item.setToolTip("Replayable step. Alt+Drag to drop onto a view or desktop.")
             self.history_list.addItem(item)
 
-            self.items.append((img, meta, op_name))
+            self.items.append((src, meta, op_name))
             row_index += 1
 
 
@@ -594,34 +598,11 @@ class HistoryExplorerDialog(QDialog):
     def _open_preview(self, item):
         row = self.history_list.row(item)
         if 0 <= row < len(self.items):
-            img, meta, name = self.items[row]
-            if img is None:
+            src, meta, name = self.items[row]
+            if src is None:
                 QMessageBox.warning(self, "Preview", "No image stored for this step.")
                 return
-            pv = HistoryImagePreview(img, meta, self.doc, parent=self)
-            pv.setWindowTitle(item.text())
-            pv.show()
-            mw = self._find_main_window()
-            if mw and hasattr(mw, "_log"):
-                mw._log(f"History: preview opened → {item.text()}")
-        else:
-            QMessageBox.warning(self, "Preview", "Invalid selection.")
-
-    def _find_main_window(self):
-        p = self.parent()
-        while p is not None and not hasattr(p, "docman"):
-            p = p.parent()
-        return p
-
-
-    def _open_preview(self, item):
-        row = self.history_list.row(item)
-        if 0 <= row < len(self.items):
-            img, meta, name = self.items[row]
-            if img is None:
-                QMessageBox.warning(self, "Preview", "No image stored for this step.")
-                return
-            pv = HistoryImagePreview(img, meta, self.doc, parent=self)
+            pv = HistoryImagePreview(src, meta, self.doc, parent=self)
             pv.setWindowTitle(item.text())
             pv.show()
             mw = self._find_main_window()
@@ -642,11 +623,29 @@ class HistoryImagePreview(QWidget):
     Preview a single history entry with zoom/pan, optional display autostretch,
     compare vs current, and restore.
     """
-    def __init__(self, image_data: np.ndarray, metadata: dict, document, parent=None):
+    def __init__(self, image_source: object, metadata: dict, document, parent=None):
         super().__init__(parent, Qt.WindowType.Window)
         self.doc = document
-        self.image_data = image_data
         self.metadata = metadata or {}
+        
+        # Resolve image source (ndarray or swap_id)
+        self.image_data = None
+        if isinstance(image_source, str):
+            # It's a swap ID
+            sm = get_swap_manager()
+            loaded = sm.load_state(image_source)
+            if loaded is not None:
+                self.image_data = loaded
+            else:
+                # Failed to load
+                self.image_data = None
+        else:
+            # Assume it's an ndarray
+            self.image_data = image_source
+            
+        if self.image_data is None:
+            # Fallback placeholder?
+            self.image_data = np.zeros((100, 100, 3), dtype=np.float32)
 
         self.zoom = 1.0
         self._panning = False
@@ -776,6 +775,7 @@ class HistoryImagePreview(QWidget):
         b_fit.clicked.connect(self.slider_widget.fit_to_view)
         b_1.clicked.connect(lambda: self.slider_widget.set_zoom(1.0))
         b_st.clicked.connect(self.slider_widget.toggle_autostretch)
+
         bar.addWidget(b_out); bar.addWidget(b_in); bar.addWidget(b_fit); bar.addWidget(b_1)
         bar.addStretch(1); bar.addWidget(b_st)
         v.addLayout(bar)

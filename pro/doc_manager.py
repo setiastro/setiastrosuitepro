@@ -19,6 +19,10 @@ except ImportError:
     get_thumbnail_cache = None
     LazyImage = None
 
+from pro.swap_manager import get_swap_manager
+from pro.widgets.image_utils import ensure_contiguous
+
+
 # --- WCS DEBUGGING ------------------------------------------------------
 _DEBUG_WCS = False  # flip to False when you’re done debugging
 
@@ -167,8 +171,9 @@ class ImageDocument(QObject):
         self.image = image
         self.metadata = dict(metadata or {})
         self.mask = None
-        self._undo: list[tuple[np.ndarray, dict, str]] = []
-        self._redo: list[tuple[np.ndarray, dict, str]] = []        
+        # _undo / _redo now store tuples: (swap_id: str, metadata: dict, step_name: str)
+        self._undo: list[tuple[str, dict, str]] = []
+        self._redo: list[tuple[str, dict, str]] = []        
         self.masks: dict[str, MaskLayer] = {}
         self.active_mask_id: str | None = None
         self.uid = uuid.uuid4().hex  # stable identity for DnD, layers, masks, etc.
@@ -183,6 +188,11 @@ class ImageDocument(QObject):
         #   "ts": float
         # }
         self._op_log: list[dict] = []
+        
+        # Copy-on-write support: if this document shares image data with another,
+        # _cow_source holds reference to the source. On first write (apply_edit),
+        # we copy the image data and clear _cow_source.
+        self._cow_source: 'ImageDocument | None' = None
     # --- history helpers (NEW) ---
     # --- operation log helpers (NEW) -----------------------------------
     def record_operation(
@@ -243,6 +253,29 @@ class ImageDocument(QObject):
     def get_active_mask(self):
         return self.masks.get(self.active_mask_id) if self.active_mask_id else None
 
+    def close(self):
+        """
+        Explicit cleanup of swap files.
+        """
+        sm = get_swap_manager()
+        # Clean up undo stack
+        for swap_id, _, _ in self._undo:
+            sm.delete_state(swap_id)
+        self._undo.clear()
+        
+        # Clean up redo stack
+        for swap_id, _, _ in self._redo:
+            sm.delete_state(swap_id)
+        self._redo.clear()
+
+    def __del__(self):
+        # Fallback cleanup if close() wasn't called (though explicit close is better)
+        try:
+            self.close()
+        except Exception:
+            pass
+
+
     # in class ImageDocument
     def apply_edit(self, new_image: np.ndarray, metadata: dict | None = None, step_name: str = "Edit"):
         """
@@ -282,8 +315,19 @@ class ImageDocument(QObject):
                 if metadata:
                     parent.metadata.update(metadata)
                 parent.metadata.setdefault("step_name", step_name)
-                parent._undo.append((parent.image.copy(), parent.metadata.copy(), step_name))
+                
+                # Swap-based history for parent
+                sm = get_swap_manager()
+                # Snapshot parent's current image to swap
+                sid = sm.save_state(parent.image)
+                if sid:
+                    parent._undo.append((sid, parent.metadata.copy(), step_name))
+                
+                # Clear parent's redo stack (and delete files)
+                for old_sid, _, _ in parent._redo:
+                    sm.delete_state(old_sid)
                 parent._redo.clear()
+                
                 parent.image = new_full
                 parent.changed.emit()
 
@@ -300,11 +344,22 @@ class ImageDocument(QObject):
                 return  # done
 
         # ------ Normal (full-image) branch ------
+        
+        # Copy-on-write: if we're sharing image data with another document,
+        # we must copy it now before modifying (so source document is unaffected)
+        if self._cow_source is not None and self.image is not None:
+            self.image = self.image.copy()
+            self._cow_source = None  # We now own our own copy
+        
         if self.image is not None:
             # snapshot current image + metadata for undo
             try:
                 curr = np.asarray(self.image, dtype=np.float32)
-                curr = np.ascontiguousarray(curr)
+                curr = ensure_contiguous(curr)
+                
+                sm = get_swap_manager()
+                sid = sm.save_state(curr)
+                
                 _debug_log_undo(
                     "ImageDocument.apply_edit.snapshot",
                     doc_id=id(self),
@@ -313,10 +368,17 @@ class ImageDocument(QObject):
                     undo_len_before=len(self._undo),
                     redo_len_before=len(self._redo),
                     step_name=step_name,
+                    swap_id=sid
                 )
-                self._undo.append((curr, self.metadata.copy(), step_name))
+                if sid:
+                    self._undo.append((sid, self.metadata.copy(), step_name))
             except Exception as e:
                 print(f"[ImageDocument] apply_edit: failed to snapshot current image for undo: {e}")
+            
+            # Clear redo stack and delete files
+            sm = get_swap_manager()
+            for old_sid, _, _ in self._redo:
+                sm.delete_state(old_sid)
             self._redo.clear()
 
 
@@ -330,7 +392,7 @@ class ImageDocument(QObject):
             raise ValueError("apply_edit: new image is empty")
 
         # **critical**: ensure C-contiguous for Qt/QImage
-        img = np.ascontiguousarray(img)
+        img = ensure_contiguous(img)
 
         _debug_log_undo(
             "ImageDocument.apply_edit.apply",
@@ -386,7 +448,7 @@ class ImageDocument(QObject):
         # Pop with an extra guard in case something cleared _undo between
         # the check above and this call (re-entrancy / threading).
         try:
-            prev_img, prev_meta, name = self._undo.pop()
+            prev_sid, prev_meta, name = self._undo.pop()
         except IndexError:
             _debug_log_undo(
                 "ImageDocument.undo.pop_index_error",
@@ -397,6 +459,18 @@ class ImageDocument(QObject):
             )
             return None
 
+        # Load previous image from swap
+        sm = get_swap_manager()
+        prev_img = sm.load_state(prev_sid)
+        
+        # We can delete the swap file now that we have it in RAM
+        # (unless we want to keep it for some reason, but standard undo consumes the state)
+        sm.delete_state(prev_sid)
+
+        if prev_img is None:
+             print(f"[ImageDocument] undo: failed to load swap state {prev_sid}")
+             return None
+
         # Normalize previous image before using it
         try:
             prev_arr = np.asarray(prev_img, dtype=np.float32)
@@ -405,8 +479,8 @@ class ImageDocument(QObject):
             prev_arr = np.ascontiguousarray(prev_arr)
         except Exception as e:
             print(f"[ImageDocument] undo: invalid prev_img in stack ({type(prev_img)}): {e}")
-            # Put it back so we don't corrupt history further
-            self._undo.append((prev_img, prev_meta, name))
+            # Put it back so we don't corrupt history further? 
+            # Actually if load failed we are in trouble.
             return None
 
         _debug_log_undo(
@@ -426,9 +500,14 @@ class ImageDocument(QObject):
             if curr_img is not None:
                 curr_arr = np.asarray(curr_img, dtype=np.float32)
                 curr_arr = np.ascontiguousarray(curr_arr)
-                self._redo.append((curr_arr, dict(curr_meta), name))
+                
+                # Save to swap for Redo
+                sid = sm.save_state(curr_arr)
+                if sid:
+                    self._redo.append((sid, dict(curr_meta), name))
             else:
-                self._redo.append((curr_img, dict(curr_meta), name))
+                # Handle None image? Should not happen usually
+                pass
         except Exception as e:
             print(f"[ImageDocument] undo: failed to snapshot current image for redo: {e}")
 
@@ -472,7 +551,16 @@ class ImageDocument(QObject):
             top_step=self._redo[-1][2] if self._redo else None,
         )
 
-        nxt_img, nxt_meta, name = self._redo.pop()
+        nxt_sid, nxt_meta, name = self._redo.pop()
+
+        # Load next image from swap
+        sm = get_swap_manager()
+        nxt_img = sm.load_state(nxt_sid)
+        sm.delete_state(nxt_sid)
+
+        if nxt_img is None:
+            print(f"[ImageDocument] redo: failed to load swap state {nxt_sid}")
+            return None
 
         # Normalize next image before using it
         try:
@@ -482,9 +570,8 @@ class ImageDocument(QObject):
             nxt_arr = np.ascontiguousarray(nxt_arr)
         except Exception as e:
             print(f"[ImageDocument] redo: invalid nxt_img in stack ({type(nxt_img)}): {e}")
-            # Put it back so we don't corrupt history further
-            self._redo.append((nxt_img, nxt_meta, name))
             return None
+            
         _debug_log_undo(
             "ImageDocument.redo.normalized_next",
             doc_id=id(self),
@@ -500,9 +587,13 @@ class ImageDocument(QObject):
             if curr_img is not None:
                 curr_arr = np.asarray(curr_img, dtype=np.float32)
                 curr_arr = np.ascontiguousarray(curr_arr)
-                self._undo.append((curr_arr, dict(curr_meta), name))
+                
+                # Save current to swap for Undo
+                sid = sm.save_state(curr_arr)
+                if sid:
+                    self._undo.append((sid, dict(curr_meta), name))
             else:
-                self._undo.append((curr_img, dict(curr_meta), name))
+                pass
         except Exception as e:
             print(f"[ImageDocument] redo: failed to snapshot current image for undo: {e}")
         _debug_log_undo(
@@ -546,11 +637,11 @@ class ImageDocument(QObject):
     def get_undo_stack(self):
         """
         Oldest → newest *before* current image.
-        Returns [(img, meta, name), ...]
+        Returns [(swap_id, meta, name), ...]
         """
         out = []
-        for img, meta, name in self._undo:
-            out.append((img, meta or {}, name or "Unnamed"))
+        for sid, meta, name in self._undo:
+            out.append((sid, meta or {}, name or "Unnamed"))
         return out
 
     def display_name(self) -> str:
@@ -1980,7 +2071,10 @@ class DocManager(QObject):
             
             _debug_log_wcs_context("  source.metadata", getattr(source_doc, "metadata", {}))
 
-        img_copy = source_doc.image.copy() if source_doc.image is not None else None
+        # COPY-ON-WRITE: Share the source image instead of copying immediately.
+        # The duplicate's apply_edit will copy when it first modifies the image.
+        # This saves memory when duplicates are created but not modified.
+        img_ref = source_doc.image  # Shared reference, no copy
 
         meta = dict(source_doc.metadata or {})
         base = source_doc.display_name()
@@ -1989,7 +2083,7 @@ class DocManager(QObject):
         dup_title = dup_title.replace("🔗", "").strip()
         meta["display_name"] = dup_title
 
-        # Remove anything that makes the view look “linked/preview”
+        # Remove anything that makes the view look "linked/preview"
         imi = dict(meta.get("image_meta") or {})
         for k in ("readonly", "view_kind", "derived_from", "layer", "layer_index", "linked"):
             imi.pop(k, None)
@@ -2003,12 +2097,14 @@ class DocManager(QObject):
 
         # Safe bit depth / mono flags
         meta.setdefault("original_format", meta.get("original_format", "fits"))
-        if isinstance(img_copy, np.ndarray):
-            meta["is_mono"] = (img_copy.ndim == 2 or (img_copy.ndim == 3 and img_copy.shape[2] == 1))
+        if isinstance(img_ref, np.ndarray):
+            meta["is_mono"] = (img_ref.ndim == 2 or (img_ref.ndim == 3 and img_ref.shape[2] == 1))
 
         _snapshot_header_for_metadata(meta)
 
-        dup = ImageDocument(img_copy, meta, parent=self.parent())
+        dup = ImageDocument(img_ref, meta, parent=self.parent())
+        # Mark this duplicate as sharing image data with source
+        dup._cow_source = source_doc
         self._register_doc(dup)
 
         # DEBUG: log the duplicate doc WCS
@@ -2077,6 +2173,14 @@ class DocManager(QObject):
                     self._by_uid.pop(doc.uid, None)
             except Exception:
                 pass
+            
+            # Cleanup swap files
+            if hasattr(doc, "close"):
+                try:
+                    doc.close()
+                except Exception as e:
+                    print(f"[DocManager] Failed to close document {doc}: {e}")
+                    
             self.documentRemoved.emit(doc)
             
     # --- Active-document helpers (NEW) ---------------------------------

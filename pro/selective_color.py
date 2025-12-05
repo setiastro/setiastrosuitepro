@@ -207,7 +207,7 @@ def _apply_selective_adjustments(img01: np.ndarray,
     CMY/RGB sliders in [-1..+1] range (we’ll clamp).
     L/S/C also in [-1..+1].
     """
-    a = img01.astype(np.float32).copy()
+    a = img01.astype(np.float32, copy=True)
     m = np.clip(mask01.astype(np.float32) * float(intensity), 0.0, 1.0)
 
     # RGB base

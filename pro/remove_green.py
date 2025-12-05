@@ -116,7 +116,7 @@ def remove_green_headless(
 
     # put processed back into original shape if source had >=3 channels
     if src.ndim == 3 and src.shape[2] > 3:
-        out = src.astype(np.float32, copy=False).copy()
+        out = src.astype(np.float32, copy=True)
         out[..., :3] = processed
     else:
         out = processed

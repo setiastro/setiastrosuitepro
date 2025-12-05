@@ -255,11 +255,18 @@ def aa_find_transform_with_backoff(tgt_gray: np.ndarray, src_gray: np.ndarray):
 def _warp_like_ref(target_img: np.ndarray, M_2x3: np.ndarray, ref_shape_hw: tuple[int,int]) -> np.ndarray:
     H, W = ref_shape_hw
     if target_img.ndim == 2:
+        if not target_img.flags['C_CONTIGUOUS']:
+            target_img = np.ascontiguousarray(target_img)
         return cv2.warpAffine(target_img, M_2x3, (W, H),
                                flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
-    chs = [cv2.warpAffine(target_img[..., i], M_2x3, (W, H),
-                           flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
-           for i in range(target_img.shape[2])]
+    
+    chs = []
+    for i in range(target_img.shape[2]):
+        ch = target_img[..., i]
+        if not ch.flags['C_CONTIGUOUS']:
+            ch = np.ascontiguousarray(ch)
+        chs.append(cv2.warpAffine(ch, M_2x3, (W, H),
+                           flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=0))
     return np.stack(chs, axis=2)
 
 def run_star_alignment_headless(mw, target_sw, preset: dict) -> bool:
@@ -281,7 +288,7 @@ def run_star_alignment_headless(mw, target_sw, preset: dict) -> bool:
         target_doc = _doc_from_sw(target_sw) if target_sw else None
         if target_doc is None or getattr(target_doc, "image", None) is None:
             return False
-        tgt_img = np.asarray(target_doc.image, dtype=np.float32)
+        tgt_img = np.ascontiguousarray(np.asarray(target_doc.image, dtype=np.float32))
 
         # ---------- resolve reference image ----------
         ref_spec = (preset or {}).get("reference", {"type": "active"})
@@ -294,7 +301,7 @@ def run_star_alignment_headless(mw, target_sw, preset: dict) -> bool:
             ref_doc, _ = _resolve_doc_and_sw_by_ptr(mw, doc_ptr)
             if ref_doc is None or getattr(ref_doc, "image", None) is None:
                 raise RuntimeError("reference view_ptr not found or has no image")
-            ref_img = np.asarray(ref_doc.image, dtype=np.float32)
+            ref_img = np.ascontiguousarray(np.asarray(ref_doc.image, dtype=np.float32))
             # nice name
             try:
                 ref_name = ref_doc.display_name() if callable(getattr(ref_doc, "display_name", None)) else (getattr(ref_doc, "title", None) or "Reference")
@@ -319,7 +326,7 @@ def run_star_alignment_headless(mw, target_sw, preset: dict) -> bool:
                         ref_doc = d; break
             if ref_doc is None or getattr(ref_doc, "image", None) is None:
                 raise RuntimeError(f"reference view_name '{wanted}' not found")
-            ref_img = np.asarray(ref_doc.image, dtype=np.float32)
+            ref_img = np.ascontiguousarray(np.asarray(ref_doc.image, dtype=np.float32))
             ref_name = wanted
 
         elif ref_type == "file":
@@ -336,7 +343,7 @@ def run_star_alignment_headless(mw, target_sw, preset: dict) -> bool:
             act_doc = target_doc
             if act_doc is None:
                 return False
-            ref_img = np.asarray(act_doc.image, dtype=np.float32)
+            ref_img = np.ascontiguousarray(np.asarray(act_doc.image, dtype=np.float32))
             try:
                 ref_name = act_doc.display_name() if callable(getattr(act_doc, "display_name", None)) else (getattr(act_doc, "title", None) or "Reference")
             except Exception:
@@ -410,6 +417,10 @@ def compute_pairs_astroalign(source_img: np.ndarray, reference_img: np.ndarray):
     """
     Lock astroalign, return (transform_obj, src_pts(float32), tgt_pts(float32)).
     """
+    # Ensure contiguous arrays for astroalign/sep
+    source_img = np.ascontiguousarray(source_img)
+    reference_img = np.ascontiguousarray(reference_img)
+
     global _AA_LOCK
     with _AA_LOCK:
         transform_obj, (src_pts, tgt_pts) = astroalign.find_transform(source_img, reference_img)
@@ -1114,18 +1125,24 @@ class StellarAlignmentDialog(QDialog):
                 # Pass A: base warp to reference grid
                 if base_kind == "affine":
                     if img.ndim == 2:
+                        if not img.flags['C_CONTIGUOUS']:
+                            img = np.ascontiguousarray(img)
                         base_img = cv2.warpAffine(img, base_X, (Wout, Hout),
                                                 flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
                     else:
-                        base_img = np.stack([cv2.warpAffine(img[..., c], base_X, (Wout, Hout),
+                        # Ensure contiguous channels
+                        base_img = np.stack([cv2.warpAffine(np.ascontiguousarray(img[..., c]), base_X, (Wout, Hout),
                                                             flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
                                             for c in range(img.shape[2])], axis=2)
                 else:
                     if img.ndim == 2:
+                        if not img.flags['C_CONTIGUOUS']:
+                            img = np.ascontiguousarray(img)
                         base_img = cv2.warpPerspective(img, base_X, (Wout, Hout),
                                                     flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
                     else:
-                        base_img = np.stack([cv2.warpPerspective(img[..., c], base_X, (Wout, Hout),
+                        # Ensure contiguous channels
+                        base_img = np.stack([cv2.warpPerspective(np.ascontiguousarray(img[..., c]), base_X, (Wout, Hout),
                                                                 flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
                                             for c in range(img.shape[2])], axis=2)
 
@@ -1149,7 +1166,7 @@ class StellarAlignmentDialog(QDialog):
                         out = warp(base_img.astype(np.float32), inverse_map=inv,
                                 output_shape=(Hout, Wout), preserve_range=True)
                     else:
-                        out = np.stack([warp(base_img[..., c].astype(np.float32), inverse_map=inv,
+                        out = np.stack([warp(np.ascontiguousarray(base_img[..., c].astype(np.float32)), inverse_map=inv,
                                             output_shape=(Hout, Wout), preserve_range=True)
                                         for c in range(base_img.shape[2])], axis=2)
                 return out.astype(np.float32, copy=False)

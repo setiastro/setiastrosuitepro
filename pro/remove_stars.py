@@ -224,7 +224,7 @@ def _stat_unstretch_rgb(img: np.ndarray, params: dict) -> np.ndarray:
     """
     lo = np.asarray(params["lo"], dtype=np.float32)
     hi = np.asarray(params["hi"], dtype=np.float32)
-    out = img.astype(np.float32, copy=False).copy()
+    out = img.astype(np.float32, copy=True)
     for c in range(3):
         out[..., c] = out[..., c] * (hi[c] - lo[c]) + lo[c]
     out = np.clip(out, 0.0, 1.0)

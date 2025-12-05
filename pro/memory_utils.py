@@ -17,6 +17,143 @@ from typing import Tuple, Optional, Dict, Any
 import threading
 import weakref
 
+
+# ============================================================================
+# COPY-ON-WRITE ARRAY WRAPPER
+# ============================================================================
+
+class CopyOnWriteArray:
+    """
+    A wrapper that defers copying a numpy array until it's actually modified.
+    
+    This is used to optimize duplicate_document: instead of copying the
+    full image immediately, we share the source array and only copy when
+    the duplicate is about to be modified (via apply_edit).
+    
+    Usage:
+        cow = CopyOnWriteArray(source_array)
+        arr = cow.get_array()  # Returns view of source (no copy)
+        arr = cow.get_writable()  # Forces copy if not already copied
+    """
+    
+    __slots__ = ('_source', '_copy', '_lock', '_copied')
+    
+    def __init__(self, source: np.ndarray):
+        """
+        Initialize with source array (no copy made yet).
+        
+        Args:
+            source: The source numpy array to potentially copy later
+        """
+        self._source = source
+        self._copy: Optional[np.ndarray] = None
+        self._lock = threading.Lock()
+        self._copied = False
+    
+    def get_array(self) -> np.ndarray:
+        """
+        Get the array for read-only access.
+        
+        Returns the copy if one was made, otherwise the source.
+        This does NOT make a copy.
+        """
+        if self._copied:
+            return self._copy
+        return self._source
+    
+    def get_writable(self) -> np.ndarray:
+        """
+        Get a writable copy of the array.
+        
+        Forces a copy if one hasn't been made yet.
+        Thread-safe.
+        """
+        if self._copied:
+            return self._copy
+        
+        with self._lock:
+            # Double-check after acquiring lock
+            if self._copied:
+                return self._copy
+            
+            # Make the copy now
+            if self._source is not None:
+                self._copy = self._source.copy()
+            else:
+                self._copy = None
+            self._copied = True
+            self._source = None  # Release reference to source
+            return self._copy
+    
+    @property
+    def is_copied(self) -> bool:
+        """Check if a copy has been made."""
+        return self._copied
+    
+    @property
+    def shape(self) -> tuple:
+        """Get shape of the underlying array."""
+        arr = self.get_array()
+        return arr.shape if arr is not None else ()
+    
+    @property
+    def ndim(self) -> int:
+        """Get number of dimensions."""
+        arr = self.get_array()
+        return arr.ndim if arr is not None else 0
+    
+    @property
+    def dtype(self):
+        """Get dtype of the underlying array."""
+        arr = self.get_array()
+        return arr.dtype if arr is not None else None
+    
+    def __array__(self, dtype=None):
+        """Support numpy array conversion."""
+        arr = self.get_array()
+        if dtype is None:
+            return arr
+        return arr.astype(dtype)
+
+
+# ============================================================================
+# LRU DICTIONARY FOR BOUNDED CACHES
+# ============================================================================
+
+from collections import OrderedDict
+
+class LRUDict(OrderedDict):
+    """
+    Simple LRU cache based on OrderedDict.
+    When maxsize is exceeded, oldest items are evicted.
+    Thread-safe for basic operations.
+    """
+    __slots__ = ('maxsize',)
+    
+    def __init__(self, maxsize: int = 500):
+        super().__init__()
+        self.maxsize = maxsize
+    
+    def __getitem__(self, key):
+        # Move to end on access (most recently used)
+        self.move_to_end(key)
+        return super().__getitem__(key)
+    
+    def get(self, key, default=None):
+        if key in self:
+            self.move_to_end(key)
+            return super().__getitem__(key)
+        return default
+    
+    def __setitem__(self, key, value):
+        if key in self:
+            self.move_to_end(key)
+        super().__setitem__(key, value)
+        # Evict oldest if over limit
+        while len(self) > self.maxsize:
+            self.popitem(last=False)  # Remove oldest
+
+
 # ============================================================================
 # MEMORY-MAPPED ARRAY UTILITIES
 # ============================================================================

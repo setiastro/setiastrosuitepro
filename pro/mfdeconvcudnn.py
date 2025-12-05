@@ -50,13 +50,14 @@ except Exception:
 # at top of file with the other imports
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from queue import SimpleQueue
+from pro.memory_utils import LRUDict
 
 # ── XISF decode cache → memmap on disk ─────────────────────────────────
 import tempfile
 import threading
 import uuid
 import atexit
-_XISF_CACHE = {}
+_XISF_CACHE = LRUDict(50)
 _XISF_LOCK  = threading.Lock()
 _XISF_TMPFILES = []
 
