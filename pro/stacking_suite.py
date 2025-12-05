@@ -11057,11 +11057,7 @@ class StackingSuiteDialog(QDialog):
                             light_data = bulk_cosmetic_correction_bayer(
                                 light_data,
                                 hot_sigma=hot_sigma,
-                                cold_sigma=cold_sigma,
-                                star_mean_ratio=star_mean_ratio,
-                                star_max_ratio=star_max_ratio,
-                                sat_quantile=sat_quantile,
-                                pattern=pattern
+                                cold_sigma=cold_sigma
                             )
                             self.update_status(f"Cosmetic Correction Applied for Bayer Pattern ({pattern})")
                         else:
