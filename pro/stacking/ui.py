@@ -37,6 +37,7 @@ from .functions import (
     bulk_cosmetic_correction_numba, drizzle_deposit_numba_naive, drizzle_deposit_color_naive,
     bulk_cosmetic_correction_bayer,
     compute_star_count_fast_preview, siril_style_autostretch,
+    _SM_DEF_THRESH, _SM_DEF_GROW, _SM_DEF_SOFT, _SM_DEF_RMAX, _SM_DEF_MAXOBJS, _SM_DEF_KEEPF, _SM_DEF_ES, _VM_DEF_STRIDE,
 )
 from .functions import *
 from .functions import _get_log_dock
@@ -1929,10 +1930,7 @@ class StackingSuiteDialog(QDialog):
             self.populate_dark_tab()
 
         # Flats
-        if hasattr(self, "rebuild_flat_tree"):
-            self.flat_tab.rebuild_flat_tree(self.flat_files)
-        elif hasattr(self, "populate_flat_tab"):
-            self.populate_flat_tab()
+        self.flat_ctrl.rebuild_flat_tree()
 
         # Lights
         if hasattr(self, "rebuild_light_tree"):
@@ -3507,11 +3505,11 @@ class StackingSuiteDialog(QDialog):
                 if directory_mode:
                     self.add_directory(self.flat_tree, "Select Flat Directory", "FLAT")
                     self.assign_best_master_dark()
-                    self.flat_tab.rebuild_flat_tree()
+                    self.flat_ctrl.rebuild_flat_tree()
                 else:
                     self.add_files(self.flat_tree, "Select Flat Files", "FLAT")
                     self.assign_best_master_dark()
-                    self.flat_tab.rebuild_flat_tree()
+                    self.flat_ctrl.rebuild_flat_tree()
             else:
                 if directory_mode:
                     self.add_directory(self.light_tree, "Select Light Directory", "LIGHT")
@@ -3624,7 +3622,7 @@ class StackingSuiteDialog(QDialog):
                 busy.close()
         elif expected_type.upper() == "FLAT":
             self.assign_best_master_dark()
-            self.flat_tab.rebuild_flat_tree()
+            self.flat_ctrl.rebuild_flat_tree()
 
 
 

@@ -4,6 +4,7 @@ import os
 import sys
 import platform
 import math
+import gc
 import time
 import numpy as np
 import cv2
@@ -23,7 +24,11 @@ from datetime import datetime
 # Import shared utilities from project
 from legacy.image_manager import load_image, save_image
 from legacy.numba_utils import debayer_raw_fast
-from pro.stacking.dialogs import _Progress
+from pro.stacking.dialogs import _Progress, _count_tiles
+from pro.stacking.functions import (
+    _torch_ok, _gpu_algo_supported, _torch_reduce_tile,
+    _tile_grid, _read_tile_stack, load_fits_tile, _free_torch_memory,
+)
 
 
 class DarkTab(QObject):
