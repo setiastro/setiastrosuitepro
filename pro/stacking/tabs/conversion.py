@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QHeaderView, QFileDialog, QAbstractItemView,
     QProgressDialog, QApplication, QMessageBox, QCheckBox, QComboBox,
     QSpinBox, QDoubleSpinBox, QGroupBox, QToolButton, QLineEdit, QSlider,
-    QInputDialog, QMenu
+    QInputDialog, QMenu, QDialog
 )
 from astropy.io import fits
 from datetime import datetime
