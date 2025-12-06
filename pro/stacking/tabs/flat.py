@@ -23,6 +23,7 @@ from datetime import datetime
 # Import shared utilities from project
 from legacy.image_manager import load_image, save_image
 from legacy.numba_utils import debayer_raw_fast
+from pro.stacking.dialogs import _Progress
 
 
 class FlatTab(QObject):
@@ -198,7 +199,7 @@ class FlatTab(QObject):
 
     def load_master_flat(self):
         last_dir = self.main.settings.value("last_opened_folder", "", type=str)
-        files, _ = QFileDialog.getOpenFileNames(self, "Select Master Flat", last_dir, "FITS Files (*.fits *.fit)")
+        files, _ = QFileDialog.getOpenFileNames(self.main, "Select Master Flat", last_dir, "FITS Files (*.fits *.fit)")
 
         if files:
             self.main.settings.setValue("last_opened_folder", os.path.dirname(files[0]))
@@ -212,7 +213,7 @@ class FlatTab(QObject):
         with adaptive reducers and fast per-frame normalization."""
         self.main.update_status("Starting Master Flat Creation...")
         if not self.main.stacking_directory:
-            QMessageBox.warning(self, "Error", "Please set the stacking directory first using the wrench button.")
+            QMessageBox.warning(self.main, "Error", "Please set the stacking directory first using the wrench button.")
             return
 
         # Keep both paths available; we'll override algo selection per group.
@@ -386,7 +387,7 @@ class FlatTab(QObject):
             scales = np.clip(scales, 1e-3, 1e3).astype(np.float32)
             return scales
 
-        pd = _Progress(self, "Create Master Flats", total_tiles)
+        pd = _Progress(self.main, "Create Master Flats", total_tiles)
         self.main.update_status(f"Progress initialized: {total_tiles} tiles across groups.")
         QApplication.processEvents()
         try:

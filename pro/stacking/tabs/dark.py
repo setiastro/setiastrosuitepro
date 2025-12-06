@@ -23,6 +23,7 @@ from datetime import datetime
 # Import shared utilities from project
 from legacy.image_manager import load_image, save_image
 from legacy.numba_utils import debayer_raw_fast
+from pro.stacking.dialogs import _Progress
 
 
 class DarkTab(QObject):
@@ -158,7 +159,7 @@ class DarkTab(QObject):
     def load_master_dark(self):
         """ Loads a Master Dark and updates the UI. """
         last_dir = self.main.settings.value("last_opened_folder", "", type=str)  # Get last folder
-        files, _ = QFileDialog.getOpenFileNames(self, "Select Master Dark", last_dir, "FITS Files (*.fits *.fit)")
+        files, _ = QFileDialog.getOpenFileNames(self.main, "Select Master Dark", last_dir, "FITS Files (*.fits *.fit)")
         
         if files:
             self.main.settings.setValue("last_opened_folder", os.path.dirname(files[0]))  # Save last used folder
@@ -179,7 +180,7 @@ class DarkTab(QObject):
         if not self.main.stacking_directory:
             self.main.select_stacking_directory()
             if not self.main.stacking_directory:
-                QMessageBox.warning(self, "Error", "Output directory is not set.")
+                QMessageBox.warning(self.main, "Error", "Output directory is not set.")
                 return
 
         # Keep both paths available; we'll override algo selection per group.
@@ -278,7 +279,7 @@ class DarkTab(QObject):
             out = np.where(cnt > 0, num / np.maximum(cnt, 1.0), med)
             return out.astype(np.float32, copy=False)
 
-        pd = _Progress(self, "Create Master Darks", total_tiles)
+        pd = _Progress(self.main, "Create Master Darks", total_tiles)
         try:
             for (exposure_time, image_size), file_list in dark_files_by_group.items():
                 if len(file_list) < 2:

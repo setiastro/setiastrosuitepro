@@ -235,7 +235,7 @@ class LightTab(QObject):
         self.main.assign_best_master_files(fill_only=True)
 
         if not self.main.stacking_directory:
-            QMessageBox.warning(self, "Error", "Please set the stacking directory first.")
+            QMessageBox.warning(self.main, "Error", "Please set the stacking directory first.")
             return
 
         calibrated_dir = os.path.join(self.main.stacking_directory, "Calibrated")
