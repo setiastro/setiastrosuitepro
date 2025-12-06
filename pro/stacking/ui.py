@@ -31,6 +31,7 @@ from .functions import (
     compute_star_count_fast_preview, siril_style_autostretch,
 )
 from .functions import *
+from .tabs import ConversionTab, DarkTab, FlatTab, LightTab, RegistrationTab, IntegrationTab
 
 
 class StackingSuiteDialog(QDialog):
