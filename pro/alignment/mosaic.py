@@ -58,6 +58,11 @@ except ImportError:
     stretch_color_image = None
 
 # ABE / Poly
+from pro.memory_utils import smart_zeros
+from pro.stacking.functions import debayer_raw_fast, debayer_fits_fast
+from reproject import reproject_interp
+
+# ABE / Poly
 try:
     from pro.abe import build_poly_terms, evaluate_polynomial, abe_generate_sample_points
 except ImportError:

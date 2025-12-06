@@ -189,6 +189,9 @@ class ImageDocument(QObject):
         # }
         self._op_log: list[dict] = []
         
+        # Track unsaved changes explicitly
+        self.dirty: bool = False
+        
         # Copy-on-write support: if this document shares image data with another,
         # _cow_source holds reference to the source. On first write (apply_edit),
         # we copy the image data and clear _cow_source.
@@ -405,6 +408,7 @@ class ImageDocument(QObject):
         )
 
         self.image = img
+        self.dirty = True  # <--- Mark as dirty
         self.changed.emit()
 
         # full-image repaint hint to views
@@ -521,6 +525,7 @@ class ImageDocument(QObject):
 
         self.image = prev_arr
         self.metadata = dict(prev_meta or {})
+        self.dirty = True
         try:
             self.changed.emit()
         except Exception:
@@ -605,6 +610,7 @@ class ImageDocument(QObject):
         )
         self.image = nxt_arr
         self.metadata = dict(nxt_meta or {})
+        self.dirty = True
         try:
             self.changed.emit()
         except Exception:

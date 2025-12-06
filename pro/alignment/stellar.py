@@ -60,6 +60,8 @@ from PyQt6.QtWidgets import (
     QRadioButton, QFileDialog, QComboBox, QMessageBox, QTextEdit, QDialogButtonBox, QTreeWidget,QCheckBox, QFormLayout, QListWidgetItem, QScrollArea, QTreeWidgetItem, QSpinBox, QDoubleSpinBox
 )
 
+
+
 from skimage.transform import warp, PolynomialTransform 
 
 from pro.memory_utils import smart_zeros, should_use_memmap
@@ -87,7 +89,7 @@ from legacy.numba_utils import (
 from pro.abe import _generate_sample_points as abe_generate_sample_points
 
 # CORE & FUNCTIONS IMPORTS
-from pro.alignment.core import _gray2d, aa_find_transform_with_backoff, IDENTITY_2x3
+from pro.alignment.core import _gray2d, aa_find_transform_with_backoff, IDENTITY_2x3, _suppress_tiny_islands, _AA_LOCK
 from pro.alignment.functions import (
     _apply_affine_to_pts, _align_prefs, _cap_native_threads_once, _find_main_window_from_child,
     _resolve_doc_and_sw_by_ptr, _doc_from_sw, _warp_like_ref, run_star_alignment_headless,

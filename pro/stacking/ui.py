@@ -17,6 +17,14 @@ from PyQt6.QtWidgets import (QDialog, QWidget, QLabel, QPushButton, QVBoxLayout,
 
 from astropy.io import fits
 from datetime import datetime
+import re
+import shutil
+import tempfile
+import hashlib
+import unicodedata
+from pathlib import Path
+from PyQt6 import sip
+from numpy.lib.format import open_memmap
 
 # Import shared utilities from functions.py
 from .functions import (
@@ -31,6 +39,7 @@ from .functions import (
     compute_star_count_fast_preview, siril_style_autostretch,
 )
 from .functions import *
+from .functions import _get_log_dock
 from .tabs import ConversionTab, DarkTab, FlatTab, LightTab, RegistrationTab, IntegrationTab
 
 

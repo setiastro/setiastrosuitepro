@@ -77,6 +77,7 @@ from legacy.numba_utils import (
     apply_flat_division_numba,
     subtract_dark_with_pedestal,
     debayer_raw_fast,
+    debayer_fits_fast,
     drizzle_deposit_numba_kernel_mono,
     drizzle_deposit_color_kernel,
     finalize_drizzle_2d,
@@ -89,7 +90,8 @@ from numba_utils import (
     bulk_cosmetic_correction_bayer
 )
 from legacy.image_manager import load_image, save_image, get_valid_header
-from pro.star_alignment import StarRegistrationWorker, StarRegistrationThread, IDENTITY_2x3
+from pro.alignment.stellar import StarRegistrationWorker, StarRegistrationThread
+from pro.alignment.core import IDENTITY_2x3
 from pro.log_bus import LogBus
 from pro import comet_stacking as CS
 #from pro.remove_stars import starnet_starless_from_array, darkstar_starless_from_array

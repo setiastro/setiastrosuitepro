@@ -40,7 +40,7 @@ def _uniq_keep_order(items):
 
 def _seqs_for_action(act: QAction):
     """Get non-empty key sequences for an action."""
-    seqs = [s for s in act.shortcuts() or []] or ([act.shortcut()] if act.shortcut() else [])
+    seqs = [seq for seq in act.shortcuts() or []] or ([act.shortcut()] if act.shortcut() else [])
     return [s for s in seqs if not s.isEmpty()]
 
 
