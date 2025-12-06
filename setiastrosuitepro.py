@@ -420,7 +420,7 @@ except Exception:
     BUILD_TIMESTAMP = "dev"
 
 
-VERSION = "1.5.8"
+VERSION = "1.5.7"
 
 _update_splash("Loading resources...", 50)
 
@@ -662,7 +662,6 @@ if __name__ == "__main__":
         msg.setStandardButtons(QMessageBox.StandardButton.Ok)
         msg.exec()
         sys.exit(1)
-
 
 
 
