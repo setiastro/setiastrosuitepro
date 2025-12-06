@@ -476,7 +476,7 @@ class RegistrationTab(QObject):
         self.main._registration_busy = False
 
         self.main.integrate_registered_btn = QPushButton("Integrate Previously Registered Images")
-        self.main.integrate_registered_btn.clicked.connect(self.main.integrate_registered_images)
+        self.main.integrate_registered_btn.clicked.connect(self.main.integration_ctrl.integrate_registered_images)
         self.main.integrate_registered_btn.setStyleSheet("""
             QPushButton {
                 background-color: #333;
