@@ -435,12 +435,16 @@ class RegistrationTab(QObject):
             self.main._accel_worker.progress.connect(lambda s: self.main.status_signal.emit(s), Qt.ConnectionType.QueuedConnection)
 
             def _cancel():
-                if self.main._accel_thread.isRunning():
-                    self.main._accel_thread.requestInterruption()
+                try:
+                    th = getattr(self.main, "_accel_thread", None)
+                    if th and th.isRunning():
+                        th.requestInterruption()
+                except RuntimeError:
+                    pass
             self.main._accel_pd.canceled.connect(_cancel, Qt.ConnectionType.QueuedConnection)
 
             def _done(ok: bool, msg: str):
-                if getattr(self, "_accel_pd", None):
+                if getattr(self.main, "_accel_pd", None):
                     self.main._accel_pd.reset(); self.main._accel_pd.deleteLater(); self.main._accel_pd = None
                 self.main._accel_thread.quit(); self.main._accel_thread.wait()
                 self.main.install_accel_btn.setEnabled(True)
