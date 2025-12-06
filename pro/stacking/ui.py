@@ -3532,7 +3532,7 @@ class StackingSuiteDialog(QDialog):
             else:
                 self.add_files(self.flat_tree, "Select Flat Files", "FLAT")
             self.assign_best_master_dark()
-            self.flat_tab.rebuild_flat_tree()
+            self.flat_ctrl.rebuild_flat_tree()
         else:
             if directory_mode:
                 self.add_directory(self.light_tree, "Select Light Directory", "LIGHT")

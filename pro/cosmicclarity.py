@@ -1470,7 +1470,15 @@ class CosmicClaritySatelliteDialogPro(QDialog):
         self._sat_thread = SatelliteProcessingThread(cmd)
         self._sat_thread.log_signal.connect(self._wait.append_output)
         self._sat_thread.finished_signal.connect(lambda: self._on_thread_finished(on_finish))
+        self._wait.cancelled.connect(self._cancel_sat_thread)
         self._sat_thread.start()
+
+    def _cancel_sat_thread(self):
+        if self._sat_thread:
+            self._sat_thread.cancel()
+        if self._wait:
+            self._wait.close()
+            self._wait = None
 
     def _on_thread_finished(self, on_finish):
         if self._wait: self._wait.close(); self._wait = None
@@ -1507,14 +1515,50 @@ class SatelliteProcessingThread(QThread):
     def __init__(self, command):
         super().__init__()
         self.command = command
+        self.process = None
+
+    def cancel(self):
+        if self.process:
+            try:
+                self.process.kill()
+            except Exception:
+                pass
+
     def run(self):
         try:
             self.log_signal.emit("Running command: " + " ".join(self.command))
-            subprocess.run(self.command, check=True)
-            self.log_signal.emit("Processing complete.")
-        except subprocess.CalledProcessError as e:
-            self.log_signal.emit(f"Processing failed: {e}")
+            self.process = subprocess.Popen(
+                self.command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                universal_newlines=True,
+                text=True
+            )
+            # Read output to prevent deadlock
+            for line in iter(self.process.stdout.readline, ""):
+                if not line: break
+                # Optional: emit log signal for verbose output? 
+                # The original code didn't log stdout, but blocked.
+                # Let's just log it if we want, or consume it.
+                # The prompt says "I think starnet stops but the window doesnt close"
+                # so maybe verbose logging isn't the priority, but consuming stdout is mandatory.
+                # However, the original code used subprocess.run which captures output if specified,
+                # but it didn't specify capture_output=True or stdout/stderr args in the snippet I saw?
+                # Wait, let's check the snippet I saw earlier for SatelliteProcessingThread.
+                pass
+            
+            # Close stdout to ensure cleanup
+            if self.process.stdout:
+                self.process.stdout.close()
+
+            rc = self.process.wait()
+            if rc == 0:
+                self.log_signal.emit("Processing complete.")
+            else:
+                self.log_signal.emit(f"Processing failed with code {rc}")
+
         except Exception as e:
             self.log_signal.emit(f"Unexpected error: {e}")
         finally:
+            self.process = None
             self.finished_signal.emit()

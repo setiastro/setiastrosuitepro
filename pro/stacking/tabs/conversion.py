@@ -79,7 +79,7 @@ class ConversionTab(QObject):
 
     def add_conversion_files(self):
         last_dir = self.main.settings.value("last_opened_folder", "", type=str)
-        files, _ = QFileDialog.getOpenFileNames(self, "Select Files for Conversion", last_dir,
+        files, _ = QFileDialog.getOpenFileNames(self.main, "Select Files for Conversion", last_dir,
                                                 "Supported Files (*.fits *.fit *.fz *.fz *.fits.gz *.fit.gz *.tiff *.tif *.png *.jpg *.jpeg *.cr2 *.cr3 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef *.xisf)")
         if files:
             self.main.settings.setValue("last_opened_folder", os.path.dirname(files[0]))
@@ -91,7 +91,7 @@ class ConversionTab(QObject):
 
     def add_conversion_directory(self):
         last_dir = self.main.settings.value("last_opened_folder", "", type=str)
-        directory = QFileDialog.getExistingDirectory(self, "Select Directory for Conversion", last_dir)
+        directory = QFileDialog.getExistingDirectory(self.main, "Select Directory for Conversion", last_dir)
         if directory:
             self.main.settings.setValue("last_opened_folder", directory)
             for file in os.listdir(directory):
@@ -104,7 +104,7 @@ class ConversionTab(QObject):
 
 
     def select_conversion_output_dir(self):
-        directory = QFileDialog.getExistingDirectory(self, "Select Conversion Output Directory")
+        directory = QFileDialog.getExistingDirectory(self.main, "Select Conversion Output Directory")
         if directory:
             self.main.conversion_output_directory = directory
             self.main.update_status(f"Conversion output directory set to: {directory}")
@@ -119,7 +119,7 @@ class ConversionTab(QObject):
         # If no output directory is set, ask the user if they want to set it now.
         if not self.main.conversion_output_directory:
             reply = QMessageBox.question(
-                self,
+                self.main,
                 "No Output Directory",
                 "No output directory is set. Do you want to select one now?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
@@ -132,16 +132,16 @@ class ConversionTab(QObject):
 
             # If it's still empty after that, bail out
             if not self.main.conversion_output_directory:
-                QMessageBox.warning(self, "No Output Directory", "Please select a conversion output directory first.")
+                QMessageBox.warning(self.main, "No Output Directory", "Please select a conversion output directory first.")
                 return
 
         count = self.main.conversion_tree.topLevelItemCount()
         if count == 0:
-            QMessageBox.information(self, "No Files", "There are no files to convert.")
+            QMessageBox.information(self.main, "No Files", "There are no files to convert.")
             return
 
         # 1) Show the batch settings dialog
-        dialog = BatchSettingsDialog(self)
+        dialog = BatchSettingsDialog(self.main)
         result = dialog.exec()
         if result == int(QDialog.DialogCode.Rejected):
             # user canceled

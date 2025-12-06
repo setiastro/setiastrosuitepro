@@ -682,7 +682,7 @@ def _run_starnet(main, doc):
             main, doc, rc, dlg, input_image_path, output_image_path, ds
         )
     )
-    dlg.cancel_button.clicked.connect(thr.terminate)
+    dlg.cancel_button.clicked.connect(thr.cancel)
 
     dlg.show()
     thr.start()
@@ -974,7 +974,7 @@ def _run_darkstar(main, doc):
     thr.finished_signal.connect(
         lambda rc, base=base: _on_darkstar_finished(main, doc, rc, dlg, in_path, output_dir, base)
             )
-    dlg.cancel_button.clicked.connect(thr.terminate)
+    dlg.cancel_button.clicked.connect(thr.cancel)
 
     dlg.show()
     thr.start()
@@ -1345,6 +1345,16 @@ class _ProcThread(QThread):
         super().__init__(parent)
         self.command = command
         self.cwd = cwd
+        self.process = None
+
+    def cancel(self):
+        """Request the subprocess to stop."""
+        if self.process:
+            try:
+                self.process.kill()
+            except Exception:
+                pass
+
 
     def run(self):
         import subprocess
@@ -1354,22 +1364,24 @@ class _ProcThread(QThread):
             env.pop(k, None)
         rc = -1
         try:
-            p = subprocess.Popen(
+            self.process = subprocess.Popen(
                 self.command, cwd=self.cwd,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 universal_newlines=True, text=True, start_new_session=True, env=env
             )
-            for line in iter(p.stdout.readline, ""):
+            for line in iter(self.process.stdout.readline, ""):
                 if not line: break
                 self.output_signal.emit(line.rstrip())
             try:
-                p.stdout.close()
+                self.process.stdout.close()
             except Exception:
                 pass
-            rc = p.wait()
+            rc = self.process.wait()
         except Exception as e:
             self.output_signal.emit(str(e))
             rc = -1
+        finally:
+            self.process = None
         self.finished_signal.emit(rc)
 
 

@@ -7,6 +7,7 @@ import math
 import time
 import numpy as np
 import cv2
+import re
 cv2.setNumThreads(0)
 
 from PyQt6.QtCore import Qt, QObject, QThread, QTimer, pyqtSlot, pyqtSignal
