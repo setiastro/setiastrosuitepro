@@ -127,7 +127,7 @@ class HistogramDialog(QDialog):
         ])
 
         # Let it grow/shrink with the splitter
-        self.stats_table.setMinimumWidth(260)
+        self.stats_table.setMinimumWidth(320)
         self.stats_table.setSizePolicy(
             QSizePolicy.Policy.Preferred,      # <- was Fixed
             QSizePolicy.Policy.Expanding,
@@ -135,10 +135,8 @@ class HistogramDialog(QDialog):
 
         # Make the columns use available width nicely
         hdr = self.stats_table.horizontalHeader()
-        hdr.setStretchLastSection(True)
-        # or, if you prefer all channels to stretch equally:
-        # hdr.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-
+        hdr.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        # hdr.setStretchLastSection(True)
         splitter.addWidget(self.stats_table)
 
         # Give more space to histogram side by default
@@ -719,4 +717,5 @@ class HistogramDialog(QDialog):
             except (TypeError, RuntimeError):
                 pass
             self._doc_conn = False
+
         super().closeEvent(event)
