@@ -5386,13 +5386,6 @@ class AstroSuiteProMainWindow(
 
             payload = payload or {}
             steps   = list((payload or {}).get("steps") or [])
-
-            # Fix: if 'command_id' is actually the bundle dict, it might have 'steps'
-            if not steps:
-                raw_cid = payload.get("command_id")
-                if isinstance(raw_cid, dict):
-                    steps = list(raw_cid.get("steps") or [])
-            
             inherit = bool((payload or {}).get("inherit_target", True))
 
             print(
