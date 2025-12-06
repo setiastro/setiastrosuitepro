@@ -9550,6 +9550,9 @@ class StackingSuiteDialog(QDialog):
                         continue
                     height, width = ref_data.shape[:2]
                     channels = 1 if (ref_data.ndim == 2) else 3
+                
+                # Ensure channels is at least 1 (mono images)
+                channels = max(1, channels)
 
                 # --- choose reducer adaptively ---
                 N = len(file_list)
@@ -9622,6 +9625,22 @@ class StackingSuiteDialog(QDialog):
                             tile_result = _cpu_tile_trimmed_mean(ts_np, float(params.get("trim_fraction", 0.05)))
                         else:  # 'kappa1'
                             tile_result = _cpu_tile_kappa_sigma_1iter(ts_np, float(params.get("kappa", 3.0)))
+
+                    # Ensure tile_result has correct shape (th, tw, channels)
+                    if tile_result.ndim == 2:
+                        tile_result = tile_result[:, :, None]
+                    expected_shape = (th, tw, channels)
+                    if tile_result.shape != expected_shape:
+                        # Try to reshape or pad if needed
+                        if tile_result.shape[2] == 0:
+                            # Empty channel dimension - this shouldn't happen, create fallback
+                            tile_result = np.zeros(expected_shape, dtype=np.float32)
+                        elif tile_result.shape[:2] == (th, tw):
+                            # Channel count mismatch - take first channel or expand
+                            if tile_result.shape[2] > channels:
+                                tile_result = tile_result[:, :, :channels]
+                            else:
+                                tile_result = np.repeat(tile_result, channels, axis=2)[:, :, :channels]
 
                     # commit
                     final_stacked[y0:y1, x0:x1, :] = tile_result
@@ -10266,6 +10285,19 @@ class StackingSuiteDialog(QDialog):
                             tile_result = _cpu_tile_trimmed_mean(ts_np, float(params.get("trim_fraction", 0.05)))
                         else:  # 'kappa1'
                             tile_result = _cpu_tile_kappa_sigma_1iter(ts_np, float(params.get("kappa", 3.0)))
+
+                    # Ensure tile_result has correct shape (th, tw, channels)
+                    if tile_result.ndim == 2:
+                        tile_result = tile_result[:, :, None]
+                    expected_shape = (th, tw, channels)
+                    if tile_result.shape != expected_shape:
+                        if tile_result.shape[2] == 0:
+                            tile_result = np.zeros(expected_shape, dtype=np.float32)
+                        elif tile_result.shape[:2] == (th, tw):
+                            if tile_result.shape[2] > channels:
+                                tile_result = tile_result[:, :, :channels]
+                            else:
+                                tile_result = np.repeat(tile_result, channels, axis=2)[:, :, :channels]
 
                     # commit + progress
                     final_stacked[y0:y1, x0:x1, :] = tile_result
@@ -15056,6 +15088,19 @@ class StackingSuiteDialog(QDialog):
                         tile_result, tile_rej_map = windsorized_sigma_clip_weighted(
                             tile_stack, weights_list, lower=self.sigma_low, upper=self.sigma_high
                         )
+
+                    # Ensure tile_result has correct shape
+                    if tile_result.ndim == 2:
+                        tile_result = tile_result[:, :, None]
+                    expected_shape = (tile_h, tile_w, channels)
+                    if tile_result.shape != expected_shape:
+                        if tile_result.shape[2] == 0:
+                            tile_result = np.zeros(expected_shape, dtype=np.float32)
+                        elif tile_result.shape[:2] == (tile_h, tile_w):
+                            if tile_result.shape[2] > channels:
+                                tile_result = tile_result[:, :, :channels]
+                            else:
+                                tile_result = np.repeat(tile_result, channels, axis=2)[:, :, :channels]
 
                     # Commit tile
                     final_stacked[y_start:y_end, x_start:x_end, :] = tile_result

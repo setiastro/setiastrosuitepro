@@ -230,6 +230,10 @@ def torch_reduce_tile(
     if ts_np.ndim == 3:
         ts_np = ts_np[..., None]
     F, H, W, C = ts_np.shape
+    
+    # Sanity check: C must be at least 1
+    if C < 1:
+        raise ValueError(f"torch_reduce_tile received input with C={C} channels (shape={ts_np.shape}). Expected C >= 1.")
 
     # Host → device
     ts = torch.from_numpy(ts_np).to(dev, dtype=torch.float32, non_blocking=True)
