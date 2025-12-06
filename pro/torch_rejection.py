@@ -58,7 +58,15 @@ def _get_torch(prefer_cuda: bool = True):
         elif getattr(getattr(torch, "backends", None), "mps", None) and torch.backends.mps.is_available():
             _DEVICE = torch.device("mps")
         else:
-            _DEVICE = torch.device("cpu")
+            # Try DirectML for AMD/Intel GPUs on Windows
+            try:
+                import torch_directml
+                dml_device = torch_directml.device()
+                # Quick sanity check
+                _ = (torch.ones(1, device=dml_device) + 1).item()
+                _DEVICE = dml_device
+            except Exception:
+                _DEVICE = torch.device("cpu")
     except Exception:
         _DEVICE = torch.device("cpu")
 
