@@ -25,6 +25,7 @@ from legacy.image_manager import load_image, save_image
 from legacy.numba_utils import debayer_raw_fast
 from pro.accel_installer import current_backend
 from pro.stacking.functions import compute_star_count_fast_preview
+from pro.accel_workers import AccelInstallWorker
 
 
 class RegistrationTab(QObject):
