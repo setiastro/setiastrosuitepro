@@ -2065,6 +2065,11 @@ class DocManager(QObject):
         doc.metadata["file_path"] = path
         doc.metadata["original_format"] = ext
         doc.metadata["bit_depth"] = bit_depth
+        
+        # Reset dirty flag (if tracking edits)
+        if hasattr(doc, "dirty"):
+            doc.dirty = False
+
         doc.changed.emit()
 
     def duplicate_document(self, source_doc: ImageDocument, new_name: str | None = None) -> ImageDocument:

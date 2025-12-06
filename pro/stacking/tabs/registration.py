@@ -23,6 +23,7 @@ from datetime import datetime
 # Import shared utilities from project
 from legacy.image_manager import load_image, save_image
 from legacy.numba_utils import debayer_raw_fast
+from pro.accel_installer import current_backend
 
 
 class RegistrationTab(QObject):
