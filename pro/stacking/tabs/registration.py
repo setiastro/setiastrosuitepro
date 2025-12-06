@@ -409,7 +409,7 @@ class RegistrationTab(QObject):
                         " • Install python3.12 or 3.11 via your package manager\n"
                         " • Then relaunch the app.")
 
-                QMessageBox.warning(self, "Unsupported Python Version", why + tip)
+                QMessageBox.warning(self.main, "Unsupported Python Version", why + tip)
                 # reflect the abort in UI/status and leave button enabled
                 try:
                     self.main.backend_label.setText("Backend: CPU (Python version not supported for GPU install)")
@@ -419,7 +419,7 @@ class RegistrationTab(QObject):
                 return
             self.main.install_accel_btn.setEnabled(False)
             self.main.backend_label.setText("Backend: installing…")
-            self.main._accel_pd = QProgressDialog("Preparing runtime…", "Cancel", 0, 0, self)
+            self.main._accel_pd = QProgressDialog("Preparing runtime…", "Cancel", 0, 0, self.main)
             self.main._accel_pd.setWindowTitle("Installing GPU Acceleration")
             self.main._accel_pd.setWindowModality(Qt.WindowModality.ApplicationModal)
             self.main._accel_pd.setAutoClose(True)
@@ -446,8 +446,8 @@ class RegistrationTab(QObject):
                 from pro.accel_installer import current_backend
                 self.main.backend_label.setText(f"Backend: {current_backend()}")
                 self.main.status_signal.emit(("✅ " if ok else "❌ ") + msg)
-                if ok: QMessageBox.information(self, "Acceleration", f"✅ {msg}")
-                else:  QMessageBox.warning(self, "Acceleration", f"❌ {msg}")
+                if ok: QMessageBox.information(self.main, "Acceleration", f"✅ {msg}")
+                else:  QMessageBox.warning(self.main, "Acceleration", f"❌ {msg}")
 
             self.main._accel_worker.finished.connect(_done, Qt.ConnectionType.QueuedConnection)
             self.main._accel_thread.finished.connect(self.main._accel_worker.deleteLater, Qt.ConnectionType.QueuedConnection)
@@ -566,7 +566,7 @@ class RegistrationTab(QObject):
 
     def select_reference_frame(self):
         """ Opens a file dialog to select the reference frame. """
-        file_path, _ = QFileDialog.getOpenFileName(self, "Select Reference Frame", "", 
+        file_path, _ = QFileDialog.getOpenFileName(self.main, "Select Reference Frame", "", 
                                                 "FITS Images (*.fits *.fit);;All Files (*)")
         if file_path:
             self.main._set_user_reference(file_path)
@@ -574,7 +574,7 @@ class RegistrationTab(QObject):
 
     def prompt_for_reference_frame(self):
         new_ref, _ = QFileDialog.getOpenFileName(
-            self,
+            self.main,
             "Select New Reference Frame",
             "",  # default directory
             "FITS Files (*.fit *.fits);;All Files (*)"
@@ -687,7 +687,7 @@ class RegistrationTab(QObject):
                 QApplication.processEvents()
                 ok = self.main._ensure_comet_seed_now()
                 if not ok:
-                    QMessageBox.information(self, "Comet Mode",
+                    QMessageBox.information(self.main, "Comet Mode",
                         "No comet center was selected. Registration has been cancelled so you can try again.")
                     self.main.update_status("❌ Registration cancelled (no comet seed).")
                     return
@@ -1506,7 +1506,7 @@ class RegistrationTab(QObject):
                 align_dir,
                 max_refinement_passes=passes,
                 shift_tolerance=shift_tol,
-                parent_window=self
+                parent_window=self.main
             )
             try:
                 self.main.alignment_thread.progress_update.disconnect(self.main.update_status)
@@ -1518,7 +1518,7 @@ class RegistrationTab(QObject):
 
             self.main.alignment_thread.registration_complete.connect(self.on_registration_complete)
 
-            self.main.align_progress = QProgressDialog("Aligning stars…", None, 0, 0, self)
+            self.main.align_progress = QProgressDialog("Aligning stars…", None, 0, 0, self.main)
             self.main.align_progress.setWindowModality(Qt.WindowModality.WindowModal)
             self.main.align_progress.setMinimumDuration(0)
             self.main.align_progress.setCancelButton(None)
@@ -1762,7 +1762,7 @@ class RegistrationTab(QObject):
             self.main.post_thread.started.connect(self.main.post_worker.run)
             self.main.post_thread.start()
 
-            self.main.post_progress = QProgressDialog("Stacking & drizzle (if enabled)…", None, 0, 0, self)
+            self.main.post_progress = QProgressDialog("Stacking & drizzle (if enabled)…", None, 0, 0, self.main)
             self.main.post_progress.setWindowModality(Qt.WindowModality.WindowModal)
             self.main.post_progress.setCancelButton(None)
             self.main.post_progress.setMinimumDuration(0)
@@ -1781,7 +1781,7 @@ class RegistrationTab(QObject):
         # Build a single global rect from all aligned frames (registered paths)
         _mf_global_rect = None
         if autocrop_enabled_ui:
-            pd = QProgressDialog("Calculating autocrop bounding box…", None, 0, 0, self)
+            pd = QProgressDialog("Calculating autocrop bounding box…", None, 0, 0, self.main)
             pd.setWindowTitle("Auto Crop")
             pd.setWindowModality(Qt.WindowModality.WindowModal)
             pd.setCancelButton(None)
@@ -1860,14 +1860,14 @@ class RegistrationTab(QObject):
             if not mf_groups:
                 self.main.update_status("⚠️ No aligned frames available for MF deconvolution.")
             else:
-                self.main._mf_pd = QProgressDialog("Multi-frame deconvolving…", "Cancel", 0, len(mf_groups), self)
+                self.main._mf_pd = QProgressDialog("Multi-frame deconvolving…", "Cancel", 0, len(mf_groups), self.main)
                 # self.main._mf_pd.setWindowModality(Qt.WindowModality.ApplicationModal)
                 self.main._mf_pd.setMinimumDuration(0)
                 self.main._mf_pd.setWindowTitle("MF Deconvolution")
                 self.main._mf_pd.setValue(0)
                 self.main._mf_pd.show()
 
-                if getattr(self, "_mf_pd", None):
+                if getattr(self.main, "_mf_pd", None):
                     self.main._mf_pd.setLabelText("Preparing MF deconvolution…")
                     self.main._mf_pd.setMinimumWidth(520)
 
@@ -1888,7 +1888,7 @@ class RegistrationTab(QObject):
 
                 def _finish_mf_phase_and_exit():
                     """Tear down MF UI/threads and either continue or exit."""
-                    if getattr(self, "_mf_pd", None):
+                    if getattr(self.main, "_mf_pd", None):
                         try:
                             self.main._mf_pd.reset()
                             self.main._mf_pd.deleteLater()
@@ -2007,7 +2007,7 @@ class RegistrationTab(QObject):
 
                     # when the worker says finished, log & cleanup; the *thread* quitting will trigger starting the next job
                     def _job_finished(ok: bool, message: str, out: str):
-                        if getattr(self, "_mf_pd", None):
+                        if getattr(self.main, "_mf_pd", None):
                             self.main._mf_pd.setLabelText(f"{'✅' if ok else '❌'} {group_key}: {message}")
                         if ok and out:
                             self.main._mf_results[group_key] = out
@@ -2037,7 +2037,7 @@ class RegistrationTab(QObject):
                                     self.main.update_status(f"⚠️ (MF) Auto-crop of output failed: {e}")
 
                         # advance progress segment
-                        if getattr(self, "_mf_pd", None):
+                        if getattr(self.main, "_mf_pd", None):
                             self.main._mf_groups_done = min(self.main._mf_groups_done + 1, self.main._mf_total_groups)
                             self.main._mf_pd.setValue(self.main._mf_groups_done * 1000)
 
@@ -2061,7 +2061,7 @@ class RegistrationTab(QObject):
 
                     # go
                     self.main._mf_thread.start()
-                    if getattr(self, "_mf_pd", None):
+                    if getattr(self.main, "_mf_pd", None):
                         self.main._mf_pd.setLabelText(f"Deconvolving '{group_key}' ({len(frames)} frames)…")
 
 
@@ -2125,7 +2125,7 @@ class RegistrationTab(QObject):
         self.main.post_thread.started.connect(self.main.post_worker.run)
         self.main.post_thread.start()
 
-        self.main.post_progress = QProgressDialog("Stacking & drizzle (if enabled)…", None, 0, 0, self)
+        self.main.post_progress = QProgressDialog("Stacking & drizzle (if enabled)…", None, 0, 0, self.main)
         self.main.post_progress.setWindowModality(Qt.WindowModality.WindowModal)
         self.main.post_progress.setCancelButton(None)
         self.main.post_progress.setMinimumDuration(0)
