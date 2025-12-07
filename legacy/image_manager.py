@@ -1875,7 +1875,8 @@ def save_image(img_array,
                original_header=None,
                is_mono=False,
                image_meta=None,
-               file_meta=None):
+               file_meta=None,
+               wcs_header=None):   # 🔥 NEW
     """
     Save an image array to a file in the specified format and bit depth.
     - Robust to mis-ordered positional args (header/bit_depth swap).
@@ -2009,10 +2010,23 @@ def save_image(img_array,
                     try:
                         fits_header[key] = value
                     except Exception:
-                        # skip keys Astropy can't serialize
                         pass
             else:
                 fits_header = _minimal_fits_header(h, w, is_rgb)
+
+            # 🔥 NEW: merge explicit WCS header from metadata, if present
+            from astropy.io import fits as _fits_mod
+            if isinstance(wcs_header, _fits_mod.Header):
+                for key, value in wcs_header.items():
+                    # don't let the WCS header stomp on structural cards
+                    if key in ("SIMPLE", "BITPIX", "NAXIS", "NAXIS1", "NAXIS2",
+                               "NAXIS3", "BSCALE", "BZERO", "EXTEND", "END"):
+                        continue
+                    try:
+                        fits_header[key] = value  # WCS cards overwrite older values
+                    except Exception:
+                        # if astropy can't serialize it, just skip
+                        pass
 
             # Ensure dimensional + datatype keywords match what we write
             fits_header["BSCALE"] = 1.0

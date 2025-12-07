@@ -2059,6 +2059,8 @@ class DocManager(QObject):
             is_mono=doc.metadata.get("is_mono", img.ndim == 2),
             image_meta=doc.metadata.get("image_meta"),
             file_meta=doc.metadata.get("file_meta"),
+            # 🔥 NEW: pass WCS header we keep in metadata
+            wcs_header=doc.metadata.get("wcs_header"),
         )
 
         # Update metadata with the user’s choice
