@@ -102,6 +102,7 @@ class FunctionBundleChip(QWidget):
         
         self._panel = panel
         self._bundle_key = bundle_key     # <── store bundle key for panel lookups
+        self._bundle_index: int | None = None
         self._dragging = False
         self._grab_offset = None
 
@@ -248,12 +249,19 @@ class FunctionBundleChip(QWidget):
     def _start_external_drag(self):
         from PyQt6.QtWidgets import QApplication
 
-        print(f"[FBChip] _start_external_drag: bundle_key={self._bundle_key}, name={self._title.text()!r}", flush=True)
+        print(f"[FBChip] _start_external_drag: bundle_key={self._bundle_key}, "
+              f"index={self._bundle_index}, name={self._title.text()!r}", flush=True)
         QApplication.processEvents()
+
+        # Use the bundle that this chip represents, not the panel selection
+        if self._bundle_index is not None:
+            steps = self._panel.steps_for_index(self._bundle_index)
+        else:
+            steps = self._panel.current_steps()
 
         payload = {
             "command_id": "function_bundle",
-            "steps": self._panel.current_steps(),
+            "steps": steps,
             "inherit_target": True,
         }
         print(f"[FBChip]   payload steps={len(payload['steps'])}", flush=True)
@@ -271,6 +279,24 @@ class FunctionBundleChip(QWidget):
         print("[FBChip]   drag.exec finished", flush=True)
         QApplication.processEvents()
 
+    def set_bundle_index(self, idx: int):
+        """Called by the panel so this chip knows which bundle it represents."""
+        try:
+            self._bundle_index = int(idx)
+        except Exception:
+            self._bundle_index = None
+        self._sync_count()
+
+    def _sync_count(self):
+        # Show the count for *this* bundle, not whatever is currently selected
+        if self._bundle_index is not None:
+            try:
+                n = self._panel.step_count_for_index(self._bundle_index)
+            except Exception:
+                n = self._panel.step_count()
+        else:
+            n = self._panel.step_count()
+        self._count.setText(f"({n})")
 
 # helper to create/place the chip on the ShortcutCanvas
 def _spawn_function_chip_on_canvas(mw: QWidget, panel: "FunctionBundleDialog",
@@ -521,6 +547,10 @@ class FunctionBundleDialog(QDialog):
                 chip.move(x, y)
 
             self._chips[idx] = chip
+            try:
+                chip.set_bundle_index(idx)
+            except Exception:
+                pass
 
     def reload_from_settings_after_import(self):
         """
@@ -1185,16 +1215,34 @@ class FunctionBundleDialog(QDialog):
             if chip is None:
                 QMessageBox.information(self, "Compress", "Shortcut canvas not available."); return
             self._chips[i] = chip
-        else:
-            chip._title.setText(name)
-            chip._sync_count()
-            chip.show()
-            chip.raise_()
+
+        # Ensure chip knows which bundle it represents
+        try:
+            chip.set_bundle_index(i)
+        except Exception:
+            pass
+
+        chip._title.setText(name)
+        chip._sync_count()
+        chip.show()
+        chip.raise_()
+
         # keep the panel visible (matches View Bundle behavior)
         try:
             self._save_chip_layout()   # <── persist chip presence/pos
         except Exception:
             pass
+
+    def steps_for_index(self, idx: int) -> list[dict]:
+        if 0 <= idx < len(self._bundles):
+            return list(self._bundles[idx].get("steps") or [])
+        return []
+
+    def step_count_for_index(self, idx: int) -> int:
+        if 0 <= idx < len(self._bundles):
+            return len(self._bundles[idx].get("steps") or [])
+        return 0
+
 
     def closeEvent(self, e: QCloseEvent):
         super().closeEvent(e)
