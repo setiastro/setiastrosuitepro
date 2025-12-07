@@ -8,7 +8,7 @@ from PyQt6.QtGui import QImage, QPixmap, QIcon
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGroupBox, QGridLayout,
     QLabel, QPushButton, QSlider, QComboBox,
-    QGraphicsScene, QGraphicsPixmapItem, QMessageBox, QSpinBox
+    QGraphicsScene, QGraphicsPixmapItem, QMessageBox, QSpinBox, QDialogButtonBox
 )
 
 # Import centralized widgets
