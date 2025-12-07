@@ -4520,6 +4520,7 @@ class PolyGradientRemoval:
         x_coords, y_coords = sample_points[:, 0], sample_points[:, 1]
 
         # Precompute polynomial design matrix
+        from legacy.numba_utils import build_poly_terms, evaluate_polynomial
         A = build_poly_terms(x_coords, y_coords, degree)
 
         # Extract sample values efficiently
@@ -5562,6 +5563,7 @@ class MosaicMasterDialog(QDialog):
       
 
     def debayer_image(self, image, file_path, header):
+        from legacy.numba_utils import debayer_raw_fast, debayer_fits_fast  
         if file_path.lower().endswith(('.cr2', '.cr3', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2', '.pef')):
             print(f"Debayering RAW image: {file_path}")
             return debayer_raw_fast(image)
