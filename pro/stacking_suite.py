@@ -10058,7 +10058,7 @@ class StackingSuiteDialog(QDialog):
 
     def create_master_flat(self):
         """Creates master flats using per-frame dark subtraction before stacking (GPU-accelerated if available),
-        with adaptive reducers and fast per-frame normalization."""
+        with adaptive reducers, fast per-frame normalization, and memmapped tile reads (each flat opened once per group)."""
         self.update_status("Starting Master Flat Creation...")
         if not self.stacking_directory:
             QMessageBox.warning(self, "Error", "Please set the stacking directory first using the wrench button.")
@@ -10070,9 +10070,11 @@ class StackingSuiteDialog(QDialog):
             ui_algo = "Windsorized Sigma Clipping"
 
         exposure_tolerance = self.flat_exposure_tolerance_spinbox.value()
-        flat_files_by_group = {}  # (Exposure, Size, Filter, Session) -> list
+        flat_files_by_group: dict[tuple[float, str, str, str], list[str]] = {}  # (Exposure, Size, Filter, Session) -> list
 
-        # --- group flats exactly as before ---
+        # -------------------------------------------------------------------------
+        # Group flats exactly as before
+        # -------------------------------------------------------------------------
         for (filter_exposure, session), file_list in self.flat_files.items():
             try:
                 filter_name, exposure_size = filter_exposure.split(" - ")
@@ -10106,7 +10108,10 @@ class StackingSuiteDialog(QDialog):
         try:
             n_groups = sum(1 for k, v in flat_files_by_group.items() if len(v) >= 2)
             total_files = sum(len(v) for v in flat_files_by_group.values())
-            self.update_status(f"🔎 Discovered {len(flat_files_by_group)} flat groups ({n_groups} eligible to stack) — {total_files} files total.")
+            self.update_status(
+                f"🔎 Discovered {len(flat_files_by_group)} flat groups "
+                f"({n_groups} eligible to stack) — {total_files} files total."
+            )
         except Exception:
             pass
         QApplication.processEvents()
@@ -10115,9 +10120,15 @@ class StackingSuiteDialog(QDialog):
         master_dir = os.path.join(self.stacking_directory, "Master_Calibration_Files")
         os.makedirs(master_dir, exist_ok=True)
 
-        # Pre-count tiles
+        # -------------------------------------------------------------------------
+        # Pre-count tiles with per-group safe chunk sizes
+        # -------------------------------------------------------------------------
         total_tiles = 0
-        group_shapes = {}
+        group_shapes: dict[tuple[float, str, str, str], tuple[int, int, int, int, int]] = {}
+        pref_chunk_h = self.chunk_height
+        pref_chunk_w = self.chunk_width
+        DTYPE = np.float32
+
         for (exposure_time, image_size, filter_name, session), file_list in flat_files_by_group.items():
             if len(file_list) < 2:
                 continue
@@ -10126,17 +10137,31 @@ class StackingSuiteDialog(QDialog):
                 continue
             H, W = ref_data.shape[:2]
             C = 1 if ref_data.ndim == 2 else 3
-            group_shapes[(exposure_time, image_size, filter_name, session)] = (H, W, C)
-            total_tiles += _count_tiles(H, W, self.chunk_height, self.chunk_width)
+            C = max(1, C)
+            N = len(file_list)
+
+            try:
+                chunk_h, chunk_w = compute_safe_chunk(
+                    H, W, N, C, DTYPE, pref_chunk_h, pref_chunk_w
+                )
+            except MemoryError:
+                chunk_h, chunk_w = pref_chunk_h, pref_chunk_w
+
+            group_shapes[(exposure_time, image_size, filter_name, session)] = (H, W, C, chunk_h, chunk_w)
+            total_tiles += _count_tiles(H, W, chunk_h, chunk_w)
 
         if total_tiles == 0:
             self.update_status("⚠️ No eligible flat groups found to stack.")
             return
 
-        self.update_status(f"🧭 Total tiles to process: {total_tiles} (chunk size {self.chunk_height}×{self.chunk_width})")
+        self.update_status(
+            f"🧭 Total tiles to process: {total_tiles} (base chunk preference {pref_chunk_h}×{pref_chunk_w})"
+        )
         QApplication.processEvents()
 
-        # ------- helpers (local to this function) --------------------------------
+        # -------------------------------------------------------------------------
+        # Helpers (local to this function)
+        # -------------------------------------------------------------------------
         def _select_reducer(kind: str, N: int):
             """
             kind: 'flat' or 'dark'; return (algo_name, params_dict, cpu_label)
@@ -10150,8 +10175,7 @@ class StackingSuiteDialog(QDialog):
                     return ("Trimmed Mean", {"trim_fraction": 0.05}, "trimmed")
                 else:
                     return ("Trimmed Mean", {"trim_fraction": 0.02}, "trimmed")
-            else:  # darks
-                # <16: Kappa-Sigma 1-iter; 17–200: simple median; >200: trimmed mean 5% to reduce noise
+            else:  # darks (kept for consistency; not really used here)
                 if N < 16:
                     return ("Kappa-Sigma Clipping", {"kappa": 3.0, "iterations": 1}, "kappa1")
                 elif N <= 200:
@@ -10170,7 +10194,6 @@ class StackingSuiteDialog(QDialog):
             k = int(max(1, round(frac * F)))
             if 2 * k >= F:  # if too aggressive, fall back to median
                 return _cpu_tile_median(ts4)
-            # sort along frame axis and average middle slice
             s = np.sort(ts4, axis=0)
             core = s[k:F - k]
             return core.mean(axis=0, dtype=np.float32)
@@ -10181,7 +10204,6 @@ class StackingSuiteDialog(QDialog):
             lo = med - kappa * std
             hi = med + kappa * std
             mask = (ts4 >= lo) & (ts4 <= hi)
-            # avoid division by zero
             num = (ts4 * mask).sum(axis=0, dtype=np.float32)
             cnt = mask.sum(axis=0).astype(np.float32)
             out = np.where(cnt > 0, num / np.maximum(cnt, 1.0), med)
@@ -10192,7 +10214,6 @@ class StackingSuiteDialog(QDialog):
             Read one central patch (min(512, H/W)) from each frame, subtract dark (if present),
             compute per-frame median, and normalize scales to overall median.
             """
-            # central patch
             th = min(512, H); tw = min(512, W)
             y0 = (H - th) // 2; y1 = y0 + th
             x0 = (W - tw) // 2; x1 = x0 + tw
@@ -10200,7 +10221,6 @@ class StackingSuiteDialog(QDialog):
             N = len(file_list)
             meds = np.empty((N,), dtype=np.float64)
 
-            # small parallel read
             from concurrent.futures import ThreadPoolExecutor, as_completed
             with ThreadPoolExecutor(max_workers=min(os.cpu_count() or 4, 8)) as exe:
                 fut2i = {exe.submit(load_fits_tile, fp, y0, y1, x0, x1): i for i, fp in enumerate(file_list)}
@@ -10227,21 +10247,28 @@ class StackingSuiteDialog(QDialog):
                         sub = sub - d_tile
 
                     meds[i] = np.median(sub, axis=(0, 1, 2))
-            # normalize to global median
+
             gmed = np.median(meds) if np.all(np.isfinite(meds)) else 1.0
             gmed = 1.0 if gmed == 0.0 else gmed
             scales = meds / gmed
-            # clamp to sane range
             scales = np.clip(scales, 1e-3, 1e3).astype(np.float32)
             return scales
 
         pd = _Progress(self, "Create Master Flats", total_tiles)
         self.update_status(f"Progress initialized: {total_tiles} tiles across groups.")
         QApplication.processEvents()
+
+        from concurrent.futures import ThreadPoolExecutor
+
         try:
+            # ---------------------------------------------------------------------
+            # Per-group stacking loop
+            # ---------------------------------------------------------------------
             for (exposure_time, image_size, filter_name, session), file_list in flat_files_by_group.items():
                 if len(file_list) < 2:
-                    self.update_status(f"⚠️ Skipping {exposure_time}s ({image_size}) [{filter_name}] [{session}] - Not enough frames to stack.")
+                    self.update_status(
+                        f"⚠️ Skipping {exposure_time}s ({image_size}) [{filter_name}] [{session}] - Not enough frames to stack."
+                    )
                     continue
                 if pd.cancelled:
                     self.update_status("⛔ Master Flat creation cancelled.")
@@ -10249,15 +10276,17 @@ class StackingSuiteDialog(QDialog):
 
                 exp_label = f"{exposure_time}s" if exposure_time >= 0 else "Unknown"
                 self.update_status(
-                    f"🟢 Processing {len(file_list)} flats for {exp_label} ({image_size}) [{filter_name}] in session '{session}'…"
+                    f"🟢 Processing {len(file_list)} flats for {exp_label} ({image_size}) "
+                    f"[{filter_name}] in session '{session}'…"
                 )
                 QApplication.processEvents()
 
-                # Select matching master dark (optional)
+                # -----------------------------------------------------------------
+                # Select matching master dark (override / auto-select logic)
+                # -----------------------------------------------------------------
                 selected_master_dark = None
                 override_val = None
 
-                # --- resolve OVERRIDE from flat_dark_override robustly ---
                 fdo = getattr(self, "flat_dark_override", {}) or {}
                 if fdo:
                     exp_here = float(exposure_time)
@@ -10269,7 +10298,6 @@ class StackingSuiteDialog(QDialog):
                         except Exception:
                             continue
 
-                        # filter must match
                         if f_name != filter_name:
                             continue
 
@@ -10277,7 +10305,6 @@ class StackingSuiteDialog(QDialog):
                         if sz != "Unknown" and image_size != "Unknown" and sz != image_size:
                             continue
 
-                        # exposure: if we don't know (negative), accept any in range
                         if exp_here >= 0:
                             lo = float(lo_s); hi = float(hi_s)
                             if not (lo - 1e-6 <= exp_here <= hi + 1e-6):
@@ -10296,15 +10323,14 @@ class StackingSuiteDialog(QDialog):
                         )
                     else:
                         self.update_status("⚠️ Override dark missing on disk; falling back to Auto/None.")
-                        override_val = None  # fall through
+                        override_val = None
 
-                # --- AUTO-SELECT when no override ---
+                # AUTO-SELECT when no override
                 if (override_val is None) and self.auto_select_dark_checkbox.isChecked():
                     best_diff = float("inf")
                     exp_here = float(exposure_time)
 
                     for key, path in (getattr(self, "master_files", {}) or {}).items():
-                        # keep only MasterDark files
                         if "MasterDark" not in os.path.basename(path):
                             continue
 
@@ -10312,7 +10338,6 @@ class StackingSuiteDialog(QDialog):
                         m = re.match(r"([\d.]+)s", key or "")
                         dark_exp = float(m.group(1)) if m else float("inf")
 
-                        # size: again, "Unknown" on either side is a wildcard
                         size_ok = (
                             image_size == "Unknown"
                             or dark_size == "Unknown"
@@ -10334,9 +10359,7 @@ class StackingSuiteDialog(QDialog):
                         self.update_status(
                             "ℹ️ This flat group: no matching Master Dark (size) — proceeding without subtraction."
                         )
-
                 elif (override_val is None) and (not self.auto_select_dark_checkbox.isChecked()):
-                    # explicit: no auto and no override → no dark
                     self.update_status(
                         "ℹ️ This flat group: Auto-Select is OFF and no override set → No Calibration."
                     )
@@ -10347,69 +10370,152 @@ class StackingSuiteDialog(QDialog):
                 else:
                     dark_data = None
 
-                # reference shape
+                # -----------------------------------------------------------------
+                # Reference shape + per-group chunk size
+                # -----------------------------------------------------------------
                 if (exposure_time, image_size, filter_name, session) in group_shapes:
-                    height, width, channels = group_shapes[(exposure_time, image_size, filter_name, session)]
+                    height, width, channels, chunk_height, chunk_width = group_shapes[
+                        (exposure_time, image_size, filter_name, session)
+                    ]
                 else:
                     ref_data, _, _, _ = load_image(file_list[0])
                     if ref_data is None:
-                        self.update_status(f"❌ Failed to load reference {os.path.basename(file_list[0])}")
+                        self.update_status(
+                            f"❌ Failed to load reference {os.path.basename(file_list[0])}"
+                        )
                         continue
                     height, width = ref_data.shape[:2]
                     channels = 1 if ref_data.ndim == 2 else 3
+                    channels = max(1, channels)
+                    N_tmp = len(file_list)
+                    try:
+                        chunk_height, chunk_width = compute_safe_chunk(
+                            height, width, N_tmp, channels, DTYPE,
+                            pref_chunk_h, pref_chunk_w
+                        )
+                    except MemoryError:
+                        chunk_height, chunk_width = pref_chunk_h, pref_chunk_w
 
-                # --- choose reducer based on N (adaptive) ---
+                channels = max(1, channels)
                 N = len(file_list)
+
+                # -----------------------------------------------------------------
+                # Reducer selection & per-frame normalization scales
+                # -----------------------------------------------------------------
                 algo_name, params, cpu_label = _select_reducer("flat", N)
                 use_gpu = bool(self._hw_accel_enabled()) and _torch_ok() and _gpu_algo_supported(algo_name)
+
                 self.update_status(f"⚙️ Normalizing {N} flats by per-frame medians (central patch).")
                 QApplication.processEvents()
-                # --- precompute normalization scales (fast, one central patch) ---
                 scales = _estimate_flat_scales(file_list, height, width, channels, dark_data)
 
-                self.update_status(f"⚙️ {'GPU' if use_gpu else 'CPU'} reducer for flats — {algo_name} ({'k=%.1f' % params.get('kappa', 0) if cpu_label=='kappa1' else 'trim=%.0f%%' % (params.get('trim_fraction', 0)*100) if cpu_label=='trimmed' else 'median'})")
+                self.update_status(
+                    f"⚙️ {'GPU' if use_gpu else 'CPU'} reducer for flats — {algo_name} "
+                    f"({ 'k=%.1f' % params.get('kappa', 0) if cpu_label=='kappa1' else 'trim=%.0f%%' % (params.get('trim_fraction', 0)*100) if cpu_label=='trimmed' else 'median'})"
+                )
                 QApplication.processEvents()
 
-                memmap_path = os.path.join(master_dir, f"temp_flat_{session}_{exposure_time}_{image_size}_{filter_name}.dat")
-                self.update_status(f"🗂️ Creating temp memmap: {os.path.basename(memmap_path)} (shape={height}×{width}×{channels})")
-                QApplication.processEvents()
-                final_stacked = np.memmap(memmap_path, dtype=np.float32, mode="w+", shape=(height, width, channels))
+                # -----------------------------------------------------------------
+                # Open all flats as memmapped sources (once per group)
+                # -----------------------------------------------------------------
+                sources = []
+                try:
+                    for p in file_list:
+                        sources.append(_MMImage(p))
+                except Exception as e:
+                    for s in sources:
+                        try:
+                            s.close()
+                        except Exception:
+                            pass
+                    self.update_status(f"❌ Failed to memmap flat frames: {e}")
+                    QApplication.processEvents()
+                    continue
 
-                tiles = _tile_grid(height, width, self.chunk_height, self.chunk_width)
+                # Temporary memmap for the master stack
+                memmap_path = os.path.join(
+                    master_dir,
+                    f"temp_flat_{session}_{exposure_time}_{image_size}_{filter_name}.dat",
+                )
+                self.update_status(
+                    f"🗂️ Creating temp memmap: {os.path.basename(memmap_path)} "
+                    f"(shape={height}×{width}×{channels}, dtype=float32)"
+                )
+                QApplication.processEvents()
+                final_stacked = np.memmap(
+                    memmap_path,
+                    dtype=np.float32,
+                    mode="w+",
+                    shape=(height, width, channels),
+                )
+
+                tiles = _tile_grid(height, width, chunk_height, chunk_width)
                 total_tiles_group = len(tiles)
-                self.update_status(f"📦 {total_tiles_group} tiles to process for this group.")
+                self.update_status(
+                    f"📦 {total_tiles_group} tiles to process for this group "
+                    f"(chunk {chunk_height}×{chunk_width})."
+                )
                 QApplication.processEvents()
 
-                # allocate max-chunk buffers (C-order, float32)
-                buf0 = np.empty((N, min(self.chunk_height, height), min(self.chunk_width, width), channels),
-                                dtype=np.float32, order="C")
+                # Allocate max-chunk buffers
+                buf0 = np.empty(
+                    (N, chunk_height, chunk_width, channels),
+                    dtype=np.float32,
+                    order="C",
+                )
                 buf1 = np.empty_like(buf0)
 
-                from concurrent.futures import ThreadPoolExecutor
+                # Helper: read one tile into the given buffer from all memmapped sources
+                def _read_tile_into(buf, y0, y1, x0, x1):
+                    th = y1 - y0
+                    tw = x1 - x0
+                    ts = buf[:N, :th, :tw, :channels]
+                    for i, src in enumerate(sources):
+                        sub = src.read_tile(y0, y1, x0, x1)  # float32 (th,tw) or (th,tw,3)
+                        if sub.ndim == 2:
+                            if channels == 3:
+                                sub = sub[:, :, None].repeat(3, axis=2)
+                            else:
+                                sub = sub[:, :, None]
+                        ts[i, :, :, :] = sub
+                    return th, tw
+
                 tp = ThreadPoolExecutor(max_workers=1)
 
-                # prime first read
+                # Prime first read
                 (y0, y1, x0, x1) = tiles[0]
-                fut = tp.submit(_read_tile_stack, file_list, y0, y1, x0, x1, channels, buf0)
+                fut = tp.submit(_read_tile_into, buf0, y0, y1, x0, x1)
                 use0 = True
 
-                self.update_status(f"▶️ Starting tile processing for group '{filter_name}' ({exposure_time}s, {image_size})")
+                self.update_status(
+                    f"▶️ Starting tile processing for group '{filter_name}' ({exposure_time}s, {image_size}, session '{session}')"
+                )
                 QApplication.processEvents()
 
+                weights_np = np.ones((N,), dtype=np.float32)
+                cancelled_group = False
+
+                # -----------------------------------------------------------------
+                # Tile loop
+                # -----------------------------------------------------------------
                 for t_idx, (y0, y1, x0, x1) in enumerate(tiles, start=1):
                     if pd.cancelled:
+                        cancelled_group = True
                         break
 
                     th, tw = fut.result()
-                    ts_np = (buf0 if use0 else buf1)[:N, :th, :tw, :channels]  # (F, th, tw, C)
+                    ts_np = (buf0 if use0 else buf1)[:N, :th, :tw, :channels]
 
-                    # prefetch next
+                    # Prefetch next
                     if t_idx < total_tiles_group:
                         ny0, ny1, nx0, nx1 = tiles[t_idx]
-                        fut = tp.submit(_read_tile_stack, file_list, ny0, ny1, nx0, nx1, channels,
-                                        (buf1 if use0 else buf0))
+                        fut = tp.submit(
+                            _read_tile_into,
+                            (buf1 if use0 else buf0),
+                            ny0, ny1, nx0, nx1,
+                        )
 
-                    pd.set_label(f"[{filter_name}] {session} — y:{y0}-{y1} x:{x0}-{x1}")
+                    pd.set_label(f"[{filter_name}] {session} — tile {t_idx}/{total_tiles_group} y:{y0}-{y1} x:{x0}-{x1}")
 
                     # ---- per-tile dark subtraction (HWC), BEFORE normalization ----
                     if dark_data is not None:
@@ -10426,10 +10532,9 @@ class StackingSuiteDialog(QDialog):
 
                     # ---- reduction (GPU or CPU) ----
                     if use_gpu:
-                        # pass parameters through the GPU reducer
                         tile_result, _ = _torch_reduce_tile(
                             ts_np,
-                            np.ones((N,), dtype=np.float32),
+                            weights_np,
                             algo_name=algo_name,
                             kappa=float(params.get("kappa", getattr(self, "kappa", 3.0))),
                             iterations=int(params.get("iterations", getattr(self, "iterations", 1))),
@@ -10446,9 +10551,15 @@ class StackingSuiteDialog(QDialog):
                         if cpu_label == "median":
                             tile_result = _cpu_tile_median(ts_np)
                         elif cpu_label == "trimmed":
-                            tile_result = _cpu_tile_trimmed_mean(ts_np, float(params.get("trim_fraction", 0.05)))
+                            tile_result = _cpu_tile_trimmed_mean(
+                                ts_np,
+                                float(params.get("trim_fraction", 0.05)),
+                            )
                         else:  # 'kappa1'
-                            tile_result = _cpu_tile_kappa_sigma_1iter(ts_np, float(params.get("kappa", 3.0)))
+                            tile_result = _cpu_tile_kappa_sigma_1iter(
+                                ts_np,
+                                float(params.get("kappa", 3.0)),
+                            )
 
                     # Ensure tile_result has correct shape (th, tw, channels)
                     if tile_result.ndim == 2:
@@ -10461,44 +10572,68 @@ class StackingSuiteDialog(QDialog):
                             if tile_result.shape[2] > channels:
                                 tile_result = tile_result[:, :, :channels]
                             else:
-                                tile_result = np.repeat(tile_result, channels, axis=2)[:, :, :channels]
+                                tile_result = np.repeat(
+                                    tile_result, channels, axis=2
+                                )[:, :, :channels]
 
-                    # commit + progress
                     final_stacked[y0:y1, x0:x1, :] = tile_result
                     pd.step()
                     use0 = not use0
 
                 tp.shutdown(wait=True)
 
-                if pd.cancelled:
-                    try: del final_stacked
-                    except Exception as e:
-                        import logging
-                        logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
-                    try: os.remove(memmap_path)
-                    except Exception as e:
-                        import logging
-                        logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
-                    self.update_status("⛔ Master Flat creation cancelled; cleaning up temporary files.")
+                # Close memmapped sources
+                for s in sources:
+                    try:
+                        s.close()
+                    except Exception:
+                        pass
+
+                if cancelled_group:
+                    self.update_status(
+                        "⛔ Master Flat creation cancelled; cleaning up temporary files."
+                    )
+                    try:
+                        del final_stacked
+                    except Exception:
+                        pass
+                    try:
+                        os.remove(memmap_path)
+                    except Exception:
+                        pass
                     break
 
+                # Convert memmap to regular array, free file
                 master_flat_data = np.asarray(final_stacked, dtype=np.float32)
                 del final_stacked
-                gc.collect()  # Free memory after master flat creation
+                gc.collect()
+                try:
+                    os.remove(memmap_path)
+                except Exception:
+                    pass
 
                 master_flat_stem = f"MasterFlat_{session}_{int(exposure_time)}s_{image_size}_{filter_name}"
                 master_flat_path = self._build_out(master_dir, master_flat_stem, "fit")
 
                 header = fits.Header()
                 header["IMAGETYP"] = "FLAT"
-                header["EXPTIME"]  = (exposure_time, "grouped exposure")
-                header["FILTER"]   = filter_name
-                header["NAXIS"]    = 3 if channels == 3 else 2
-                header["NAXIS1"]   = width
-                header["NAXIS2"]   = height
-                if channels == 3: header["NAXIS3"] = 3
+                header["EXPTIME"] = (exposure_time, "grouped exposure")
+                header["FILTER"] = filter_name
+                header["NAXIS"] = 3 if channels == 3 else 2
+                header["NAXIS1"] = master_flat_data.shape[1]
+                header["NAXIS2"] = master_flat_data.shape[0]
+                if channels == 3:
+                    header["NAXIS3"] = 3
 
-                save_image(master_flat_data, master_flat_path, "fit", "32-bit floating point", header, is_mono=(channels == 1))
+                save_image(
+                    master_flat_data,
+                    master_flat_path,
+                    "fit",
+                    "32-bit floating point",
+                    header,
+                    is_mono=(channels == 1),
+                )
+
                 key = f"{filter_name} ({image_size}) [{session}]"
                 self.master_files[key] = master_flat_path
                 self.master_sizes[master_flat_path] = image_size
@@ -10507,15 +10642,17 @@ class StackingSuiteDialog(QDialog):
                 QApplication.processEvents()
                 self.save_master_paths_to_settings()
 
+            # Final wrap-up
             self.assign_best_master_dark()
             self.assign_best_master_files()
+
         finally:
-            try: _free_torch_memory()
+            try:
+                _free_torch_memory()
             except Exception as e:
                 import logging
                 logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
             pd.close()
-
 
     def add_master_flat_to_tree(self, filter_name, master_flat_path):
         """ Adds the newly created Master Flat to the Master Flat TreeBox and stores it. """
