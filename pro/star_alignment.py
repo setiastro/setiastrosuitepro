@@ -4443,6 +4443,7 @@ class PolyGradientRemoval:
             mono_array = image_3ch[..., 0]  # shape (H,W)
             cmed = medians_after_sub[0]     # The median for that channel
             # We call the numba function
+            from legacy.numba_utils import numba_mono_final_formula
             stretched_mono = numba_mono_final_formula(mono_array, cmed, target_median)
 
             # Now place it back into image_3ch for consistency
@@ -4452,6 +4453,7 @@ class PolyGradientRemoval:
             # 3-channel unlinked
             medians_rescaled = np.array(medians_after_sub, dtype=np.float32)
             # 'image_3ch' is our 'rescaled'
+            from legacy.numba_utils import numba_color_final_formula_unlinked
             stretched_3ch = numba_color_final_formula_unlinked(
                 image_3ch, medians_rescaled, target_median
             )
@@ -4474,6 +4476,7 @@ class PolyGradientRemoval:
         stretch_original_mins = np.array(self.stretch_original_mins, dtype=np.float32)
 
         # Call the Numba function
+        from legacy.numba_utils import numba_unstretch
         unstretched = numba_unstretch(image, stretch_original_medians, stretch_original_mins)
 
         if self.was_single_channel:
