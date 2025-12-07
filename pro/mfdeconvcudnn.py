@@ -2950,94 +2950,143 @@ def multiframe_deconv(
                 x_t = (1.0 - relax) * x_t + relax * x_next
 
             else:
-                # -------- NumPy path (unchanged) --------
+                # -------- NumPy path (fixed, no 'data') --------
                 num.fill(0.0); den.fill(0.0)
+
                 if r > 1:
-                    # -------- SR (NumPy) --------
+                    # -------- Super-resolution (NumPy) --------
                     if cache_psf_ffts == "none":
-                        for fidx, (y_nat, m2d, v2d) in enumerate(zip(data, mask_list, var_list)):
-                            # Compute per-frame PSF FFTs on the fly (same math)
+                        # No precomputed PSF FFTs → compute per-frame per-iter
+                        for fidx, (m2d, v2d) in enumerate(zip(mask_list, var_list)):
+                            # Load native frame on demand (CHW or HW)
+                            y_nat = _open_frame_numpy(fidx)
+
+                            # PSF for this frame
                             k, kT = psfs[fidx], flip_psf[fidx]
                             kh, kw = k.shape
                             fftH, fftW = _fftshape_same(Hs, Ws, kh, kw)
-                            Kf  = _fft.rfftn(np.fft.ifftshift(k),  s=(fftH, fftW))
-                            KTf = _fft.rfftn(np.fft.ifftshift(kT), s=(fftH, fftW))
 
+                            # Per-frame FFTs (same math as precomputed branch)
+                            Kf  = _fft.rfftn(np.fft.ifftshift(k).astype(np.float32, copy=False),  s=(fftH, fftW))
+                            KTf = _fft.rfftn(np.fft.ifftshift(kT).astype(np.float32, copy=False), s=(fftH, fftW))
+
+                            # Convolve current estimate x_t → SR prediction, then downsample
                             _fft_conv_same_np(x_t, Kf, kh, kw, fftH, fftW, pred_super)
                             pred_low = _downsample_avg(pred_super, r)
+
+                            # Weight map in native grid
                             wmap_low = _weight_map(y_nat, pred_low, local_delta, var_map=v2d, mask=m2d)
-                            up_y     = _upsample_sum(wmap_low * y_nat,    r, target_hw=pred_super.shape[-2:])
-                            up_pred  = _upsample_sum(wmap_low * pred_low, r, target_hw=pred_super.shape[-2:])
+
+                            # Lift back to SR via sum-replicate
+                            up_y    = _upsample_sum(wmap_low * y_nat,    r, target_hw=pred_super.shape[-2:])
+                            up_pred = _upsample_sum(wmap_low * pred_low, r, target_hw=pred_super.shape[-2:])
+
+                            # Accumulate adjoint contributions
                             _fft_conv_same_np(up_y,    KTf, kh, kw, fftH, fftW, tmp_out); num += tmp_out
                             _fft_conv_same_np(up_pred, KTf, kh, kw, fftH, fftW, tmp_out); den += tmp_out
+
+                            del y_nat, up_y, up_pred, wmap_low, pred_low, Kf, KTf
+
                     else:
-                        for (Kf, KTf, (kh, kw, fftH, fftW)), m2d, pvar, fidx in zip(zip(Kfs, KTfs, meta), mask_list, (var_paths or [None]*len(frame_infos)), range(len(frame_infos))):
+                        # Precomputed PSF FFTs (RAM or disk memmap)
+                        for (Kf, KTf, (kh, kw, fftH, fftW)), m2d, pvar, fidx in zip(
+                            zip(Kfs, KTfs, meta),
+                            mask_list,
+                            (var_paths or [None] * len(frame_infos)),
+                            range(len(frame_infos)),
+                        ):
                             y_nat = _open_frame_numpy(fidx)  # CHW or HW
+
                             vt_np = None
                             if use_variance_maps and pvar is not None:
                                 vt_np = np.memmap(pvar, mode="r", dtype=_VAR_DTYPE, shape=(Ht, Wt))
 
                             _fft_conv_same_np(x_t, Kf, kh, kw, fftH, fftW, pred_super)
                             pred = pred_super
+
                             wmap = _weight_map(y_nat, pred, local_delta, var_map=vt_np, mask=m2d)
                             up_y, up_pred = (wmap * y_nat), (wmap * pred)
+
                             _fft_conv_same_np(up_y,    KTf, kh, kw, fftH, fftW, tmp_out); num += tmp_out
                             _fft_conv_same_np(up_pred, KTf, kh, kw, fftH, fftW, tmp_out); den += tmp_out
 
-                            # close per-frame resources
                             if vt_np is not None:
-                                try: del vt_np
+                                try:
+                                    del vt_np
                                 except Exception as e:
                                     import logging
                                     logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
-                            del y_nat
+                            del y_nat, up_y, up_pred, wmap, pred
+
                 else:
                     # -------- Native (NumPy) --------
                     if cache_psf_ffts == "none":
-                        for fidx, (y_nat, m2d, v2d) in enumerate(zip(data, mask_list, var_list)):
+                        # No precomputed PSF FFTs → compute per-frame per-iter
+                        for fidx, (m2d, v2d) in enumerate(zip(mask_list, var_list)):
+                            y_nat = _open_frame_numpy(fidx)
+
                             k, kT = psfs[fidx], flip_psf[fidx]
                             kh, kw = k.shape
                             fftH, fftW = _fftshape_same(Hs, Ws, kh, kw)
-                            Kf  = _fft.rfftn(np.fft.ifftshift(k),  s=(fftH, fftW))
-                            KTf = _fft.rfftn(np.fft.ifftshift(kT), s=(fftH, fftW))
+
+                            Kf  = _fft.rfftn(np.fft.ifftshift(k).astype(np.float32, copy=False),  s=(fftH, fftW))
+                            KTf = _fft.rfftn(np.fft.ifftshift(kT).astype(np.float32, copy=False), s=(fftH, fftW))
 
                             _fft_conv_same_np(x_t, Kf, kh, kw, fftH, fftW, pred_super)
                             pred = pred_super
+
                             wmap = _weight_map(y_nat, pred, local_delta, var_map=v2d, mask=m2d)
                             up_y, up_pred = (wmap * y_nat), (wmap * pred)
+
                             _fft_conv_same_np(up_y,    KTf, kh, kw, fftH, fftW, tmp_out); num += tmp_out
                             _fft_conv_same_np(up_pred, KTf, kh, kw, fftH, fftW, tmp_out); den += tmp_out
+
+                            del y_nat, up_y, up_pred, wmap, pred, Kf, KTf
+
                     else:
-                        for (Kf, KTf, (kh, kw, fftH, fftW)), m2d, pvar, fidx in zip(zip(Kfs, KTfs, meta), mask_list, (var_paths or [None]*len(frame_infos)), range(len(frame_infos))):
-                            y_nat = _open_frame_numpy(fidx)  # CHW or HW
+                        # Precomputed PSF FFTs (RAM or disk memmap)
+                        for (Kf, KTf, (kh, kw, fftH, fftW)), m2d, pvar, fidx in zip(
+                            zip(Kfs, KTfs, meta),
+                            mask_list,
+                            (var_paths or [None] * len(frame_infos)),
+                            range(len(frame_infos)),
+                        ):
+                            y_nat = _open_frame_numpy(fidx)
+
                             vt_np = None
                             if use_variance_maps and pvar is not None:
                                 vt_np = np.memmap(pvar, mode="r", dtype=_VAR_DTYPE, shape=(Ht, Wt))
 
                             _fft_conv_same_np(x_t, Kf, kh, kw, fftH, fftW, pred_super)
                             pred = pred_super
+
                             wmap = _weight_map(y_nat, pred, local_delta, var_map=vt_np, mask=m2d)
                             up_y, up_pred = (wmap * y_nat), (wmap * pred)
+
                             _fft_conv_same_np(up_y,    KTf, kh, kw, fftH, fftW, tmp_out); num += tmp_out
                             _fft_conv_same_np(up_pred, KTf, kh, kw, fftH, fftW, tmp_out); den += tmp_out
 
-                            # close per-frame resources
                             if vt_np is not None:
-                                try: del vt_np
+                                try:
+                                    del vt_np
                                 except Exception as e:
                                     import logging
                                     logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
-                            del y_nat
+                            del y_nat, up_y, up_pred, wmap, pred
 
+                # --- multiplicative update (NumPy) ---
                 ratio = num / (den + EPS)
                 neutral = (np.abs(den) < 1e-12) & (np.abs(num) < 1e-12)
                 ratio[neutral] = 1.0
+
                 upd = np.clip(ratio, 1.0 / kappa, kappa)
                 x_next = np.clip(x_t * upd, 0.0, None)
 
                 upd_med = np.median(np.abs(upd - 1.0))
-                rel_change = (np.median(np.abs(x_next - x_t)) /
-                            (np.median(np.abs(x_t)) + 1e-8))
+                rel_change = (
+                    np.median(np.abs(x_next - x_t)) /
+                    (np.median(np.abs(x_t)) + 1e-8)
+                )
 
                 um = float(upd_med)
                 rc = float(rel_change)
@@ -3050,8 +3099,8 @@ def multiframe_deconv(
                     _process_gui_events_safely()
                     break
 
-
                 x_t = (1.0 - relax) * x_t + relax * x_next
+
 
             # save intermediate
             if save_intermediate and (it % int(max(1, save_every)) == 0):

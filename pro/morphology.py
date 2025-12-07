@@ -6,7 +6,7 @@ import cv2
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QImage, QPixmap, QIcon
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QGroupBox, QGridLayout,
+    QDialog, QVBoxLayout, QHBoxLayout, QGroupBox, QGridLayout, QFormLayout,
     QLabel, QPushButton, QSlider, QComboBox,
     QGraphicsScene, QGraphicsPixmapItem, QMessageBox, QSpinBox, QDialogButtonBox
 )
