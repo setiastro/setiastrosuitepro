@@ -6,6 +6,7 @@ import os
 import shutil
 import tempfile
 import time
+from typing import List, Tuple, Set
 import webbrowser
 import multiprocessing
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -1991,7 +1992,7 @@ class ExoPlanetWindow(QDialog):
         header_lines = [
             "#TYPE=EXTENDED",
             f"#OBSCODE={code}",
-            f"#SOFTWARE=Seti Astro Suite v{VERSION}",
+            f"#SOFTWARE=Seti Astro Suite Pro",
             "#DELIM=,",
             "#DATE=JD",
             "#OBSTYPE=CCD",

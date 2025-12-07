@@ -9423,9 +9423,10 @@ class StackingSuiteDialog(QDialog):
                 QApplication.processEvents()
 
     def create_master_dark(self):
-        """Creates master darks with minimal RAM usage by loading frames in small tiles (GPU-accelerated if available),
-        with adaptive reducers."""
-        self.update_status(f"Starting Master Dark Creation...")
+        """Creates master darks with minimal RAM usage by loading frames in small tiles
+        (GPU-accelerated if available), with adaptive reducers, using a memmap-based
+        tile reader (each source file opened once per group)."""
+        self.update_status("Starting Master Dark Creation...")
         if not self.stacking_directory:
             self.select_stacking_directory()
             if not self.stacking_directory:
@@ -9438,13 +9439,16 @@ class StackingSuiteDialog(QDialog):
             ui_algo = "Windsorized Sigma Clipping"
 
         exposure_tolerance = self.exposure_tolerance_spinbox.value()
-        dark_files_by_group = {}
+        dark_files_by_group: dict[tuple[float, str], list[str]] = {}
 
-        # group darks by exposure + size
+        # -------------------------------------------------------------------------
+        # Group darks by (exposure +/- tolerance, image size string)
+        # -------------------------------------------------------------------------
         for exposure_key, file_list in self.dark_files.items():
+            # exposure_key is like "300.0s (4144x2822)"
             exposure_time_str, image_size = exposure_key.split(" (")
             image_size = image_size.rstrip(")")
-            exposure_time = float(exposure_time_str.replace("s", "")) if "Unknown" not in exposure_time_str else 0
+            exposure_time = float(exposure_time_str.replace("s", "")) if "Unknown" not in exposure_time_str else 0.0
 
             matched_group = None
             for (existing_exposure, existing_size) in dark_files_by_group.keys():
@@ -9459,39 +9463,66 @@ class StackingSuiteDialog(QDialog):
         master_dir = os.path.join(self.stacking_directory, "Master_Calibration_Files")
         os.makedirs(master_dir, exist_ok=True)
 
+        # -------------------------------------------------------------------------
         # Informative status about discovery
+        # -------------------------------------------------------------------------
         try:
             n_groups = sum(1 for k, v in dark_files_by_group.items() if len(v) >= 2)
             total_files = sum(len(v) for v in dark_files_by_group.values())
-            self.update_status(f"🔎 Discovered {len(dark_files_by_group)} grouped exposures ({n_groups} eligible to stack) — {total_files} files total.")
+            self.update_status(
+                f"🔎 Discovered {len(dark_files_by_group)} grouped exposures "
+                f"({n_groups} eligible to stack) — {total_files} files total."
+            )
         except Exception:
             pass
         QApplication.processEvents()
 
-        # Pre-count tiles
-        chunk_height = self.chunk_height
-        chunk_width  = self.chunk_width
+        # -------------------------------------------------------------------------
+        # Pre-count tiles for progress bar (using per-group safe chunk sizes)
+        # -------------------------------------------------------------------------
         total_tiles = 0
-        group_shapes = {}
+        group_shapes: dict[tuple[float, str], tuple[int, int, int, int, int]] = {}
+        pref_chunk_h = self.chunk_height
+        pref_chunk_w = self.chunk_width
+        DTYPE = np.float32  # master darks are always 32-bit float internally
+
         for (exposure_time, image_size), file_list in dark_files_by_group.items():
             if len(file_list) < 2:
                 continue
+
             ref_data, _, _, _ = load_image(file_list[0])
             if ref_data is None:
                 continue
+
             H, W = ref_data.shape[:2]
-            C = 1 if (ref_data.ndim == 2) else 3
-            group_shapes[(exposure_time, image_size)] = (H, W, C)
-            total_tiles += _count_tiles(H, W, chunk_height, chunk_width)
+            C = 1 if ref_data.ndim == 2 else 3
+            C = max(1, C)
+            N = len(file_list)
+
+            # Use the same safe-chunk logic as normal integration
+            try:
+                chunk_h, chunk_w = compute_safe_chunk(
+                    H, W, N, C, DTYPE, pref_chunk_h, pref_chunk_w
+                )
+            except MemoryError:
+                # Fall back to user chunk config if memory check failed
+                chunk_h, chunk_w = pref_chunk_h, pref_chunk_w
+
+            group_shapes[(exposure_time, image_size)] = (H, W, C, chunk_h, chunk_w)
+            total_tiles += _count_tiles(H, W, chunk_h, chunk_w)
 
         if total_tiles == 0:
             self.update_status("⚠️ No eligible dark groups found to stack.")
             return
 
-        self.update_status(f"🧭 Total tiles to process: {total_tiles} (chunk size {chunk_height}×{chunk_width})")
+        self.update_status(
+            f"🧭 Total tiles to process: {total_tiles} (base chunk preference {pref_chunk_h}×{pref_chunk_w})"
+        )
         QApplication.processEvents()
 
-        # ------- small helpers (local) -------------------------------------------
+        # -------------------------------------------------------------------------
+        # Local CPU reducers for fallback (same behavior as before)
+        # -------------------------------------------------------------------------
         def _select_reducer(kind: str, N: int):
             if kind == "dark":
                 if N < 16:
@@ -9529,157 +9560,286 @@ class StackingSuiteDialog(QDialog):
             return out.astype(np.float32, copy=False)
 
         pd = _Progress(self, "Create Master Darks", total_tiles)
+
+        from concurrent.futures import ThreadPoolExecutor
+
         try:
+            # ---------------------------------------------------------------------
+            # Per-group stacking loop
+            # ---------------------------------------------------------------------
             for (exposure_time, image_size), file_list in dark_files_by_group.items():
                 if len(file_list) < 2:
-                    self.update_status(f"⚠️ Skipping {exposure_time}s ({image_size}) - Not enough frames to stack.")
+                    self.update_status(
+                        f"⚠️ Skipping {exposure_time}s ({image_size}) - Not enough frames to stack."
+                    )
                     QApplication.processEvents()
                     continue
+
                 if pd.cancelled:
                     self.update_status("⛔ Master Dark creation cancelled.")
                     break
 
-                self.update_status(f"🟢 Processing {len(file_list)} darks for {exposure_time}s ({image_size}) exposure…")
+                self.update_status(
+                    f"🟢 Processing {len(file_list)} darks for {exposure_time}s ({image_size}) exposure…"
+                )
                 QApplication.processEvents()
 
-                # reference shape
+                # --- reference shape and per-group chunk size ---
                 if (exposure_time, image_size) in group_shapes:
-                    height, width, channels = group_shapes[(exposure_time, image_size)]
+                    height, width, channels, chunk_height, chunk_width = group_shapes[
+                        (exposure_time, image_size)
+                    ]
                 else:
                     ref_data, _, _, _ = load_image(file_list[0])
                     if ref_data is None:
-                        self.update_status(f"❌ Failed to load reference {os.path.basename(file_list[0])}")
+                        self.update_status(
+                            f"❌ Failed to load reference {os.path.basename(file_list[0])}"
+                        )
                         continue
                     height, width = ref_data.shape[:2]
-                    channels = 1 if (ref_data.ndim == 2) else 3
-                
-                # Ensure channels is at least 1 (mono images)
+                    channels = 1 if ref_data.ndim == 2 else 3
+                    channels = max(1, channels)
+                    N_tmp = len(file_list)
+                    try:
+                        chunk_height, chunk_width = compute_safe_chunk(
+                            height, width, N_tmp, channels, DTYPE,
+                            pref_chunk_h, pref_chunk_w
+                        )
+                    except MemoryError:
+                        chunk_height, chunk_width = pref_chunk_h, pref_chunk_w
+
                 channels = max(1, channels)
+                N = len(file_list)
 
                 # --- choose reducer adaptively ---
-                N = len(file_list)
                 algo_name, params, cpu_label = _select_reducer("dark", N)
                 use_gpu = bool(self._hw_accel_enabled()) and _torch_ok() and _gpu_algo_supported(algo_name)
-                algo_brief = ('GPU' if use_gpu else 'CPU') + " " + algo_name
-                self.update_status(f"⚙️ {algo_brief} selected for {N} frames ({'channels='+str(channels)})")
+                algo_brief = ("GPU" if use_gpu else "CPU") + " " + algo_name
+                self.update_status(
+                    f"⚙️ {algo_brief} selected for {N} frames (channels={channels})"
+                )
                 QApplication.processEvents()
 
-                memmap_path = os.path.join(master_dir, f"temp_dark_{exposure_time}_{image_size}.dat")
-                self.update_status(f"🗂️ Creating temp memmap: {os.path.basename(memmap_path)} (shape={height}×{width}×{channels})")
-                QApplication.processEvents()
-                final_stacked = np.memmap(memmap_path, dtype=np.float32, mode='w+', shape=(height, width, channels))
+                # --- open all dark frames as memmapped sources (once per group) ---
+                sources = []
+                try:
+                    for p in file_list:
+                        sources.append(_MMImage(p))  # same class used in normal integration
+                except Exception as e:
+                    # Clean up any partially opened sources
+                    for s in sources:
+                        try:
+                            s.close()
+                        except Exception:
+                            pass
+                    self.update_status(f"❌ Failed to memmap dark frames: {e}")
+                    QApplication.processEvents()
+                    continue
 
+                # Temporary memmap for the master stack
+                memmap_path = os.path.join(
+                    master_dir, f"temp_dark_{exposure_time}_{image_size}.dat"
+                )
+                self.update_status(
+                    f"🗂️ Creating temp memmap: {os.path.basename(memmap_path)} "
+                    f"(shape={height}×{width}×{channels}, dtype=float32)"
+                )
+                QApplication.processEvents()
+                final_stacked = np.memmap(
+                    memmap_path,
+                    dtype=np.float32,
+                    mode="w+",
+                    shape=(height, width, channels),
+                )
+
+                # Tile grid for this group
                 tiles = _tile_grid(height, width, chunk_height, chunk_width)
                 total_tiles_group = len(tiles)
-                self.update_status(f"📦 {total_tiles_group} tiles to process for this group.")
+                self.update_status(
+                    f"📦 {total_tiles_group} tiles to process for this group "
+                    f"(chunk {chunk_height}×{chunk_width})."
+                )
                 QApplication.processEvents()
 
-                # double-buffer
-                buf0 = np.empty((N, min(chunk_height, height), min(chunk_width, width), channels),
-                                dtype=np.float32, order="C")
+                # --- reusable double-buffer tile storage ---
+                buf0 = np.empty(
+                    (N, chunk_height, chunk_width, channels),
+                    dtype=np.float32,
+                    order="C",
+                )
                 buf1 = np.empty_like(buf0)
 
-                from concurrent.futures import ThreadPoolExecutor
+                # Helper: read one tile into the given buffer from all memmapped sources
+                def _read_tile_into(buf, y0, y1, x0, x1):
+                    th = y1 - y0
+                    tw = x1 - x0
+                    ts = buf[:N, :th, :tw, :channels]
+                    for i, src in enumerate(sources):
+                        sub = src.read_tile(y0, y1, x0, x1)  # float32, (th,tw) or (th,tw,3)
+                        if sub.ndim == 2:
+                            if channels == 3:
+                                sub = sub[:, :, None].repeat(3, axis=2)
+                            else:
+                                sub = sub[:, :, None]
+                        ts[i, :, :, :] = sub
+                    return th, tw  # actual extents for edge tiles
+
                 tp = ThreadPoolExecutor(max_workers=1)
 
-                # prime first read
+                # Prime first read
                 (y0, y1, x0, x1) = tiles[0]
-                fut = tp.submit(_read_tile_stack, file_list, y0, y1, x0, x1, channels, buf0)
+                fut = tp.submit(_read_tile_into, buf0, y0, y1, x0, x1)
                 use0 = True
 
+                # Uniform weights for darks (no quality weighting)
+                weights_np = np.ones((N,), dtype=np.float32)
+
+                # --- per-tile loop ---
+                cancelled_group = False
                 for t_idx, (y0, y1, x0, x1) in enumerate(tiles, start=1):
                     if pd.cancelled:
-                        self.update_status("⛔ Master Dark creation cancelled during tile processing.")
+                        cancelled_group = True
+                        self.update_status(
+                            "⛔ Master Dark creation cancelled during tile processing."
+                        )
                         break
 
                     th, tw = fut.result()
                     ts_np = (buf0 if use0 else buf1)[:N, :th, :tw, :channels]
 
-                    # prefetch next
+                    # Prefetch next tile
                     if t_idx < total_tiles_group:
                         ny0, ny1, nx0, nx1 = tiles[t_idx]
-                        fut = tp.submit(_read_tile_stack, file_list, ny0, ny1, nx0, nx1, channels,
-                                        (buf1 if use0 else buf0))
+                        fut = tp.submit(
+                            _read_tile_into,
+                            (buf1 if use0 else buf0),
+                            ny0, ny1, nx0, nx1,
+                        )
 
-                    pd.set_label(f"{int(exposure_time)}s ({image_size}) — y:{y0}-{y1} x:{x0}-{x1}")
+                    pd.set_label(
+                        f"{int(exposure_time)}s ({image_size}) — "
+                        f"tile {t_idx}/{total_tiles_group} "
+                        f"y:{y0}-{y1} x:{x0}-{x1}"
+                    )
 
                     # ---- reduction (GPU or CPU) ----
                     if use_gpu:
                         tile_result, _ = _torch_reduce_tile(
                             ts_np,
-                            np.ones((N,), dtype=np.float32),
+                            weights_np,
                             algo_name=algo_name,
                             kappa=float(params.get("kappa", getattr(self, "kappa", 3.0))),
                             iterations=int(params.get("iterations", getattr(self, "iterations", 1))),
                             sigma_low=float(getattr(self, "sigma_low", 2.5)),
                             sigma_high=float(getattr(self, "sigma_high", 2.5)),
-                            trim_fraction=float(params.get("trim_fraction", getattr(self, "trim_fraction", 0.05))),
+                            trim_fraction=float(
+                                params.get("trim_fraction", getattr(self, "trim_fraction", 0.05))
+                            ),
                             esd_threshold=float(getattr(self, "esd_threshold", 3.0)),
-                            biweight_constant=float(getattr(self, "biweight_constant", 6.0)),
+                            biweight_constant=float(
+                                getattr(self, "biweight_constant", 6.0)
+                            ),
                             modz_threshold=float(getattr(self, "modz_threshold", 3.5)),
-                            comet_hclip_k=float(self.settings.value("stacking/comet_hclip_k", 1.30, type=float)),
-                            comet_hclip_p=float(self.settings.value("stacking/comet_hclip_p", 25.0, type=float)),
+                            comet_hclip_k=float(
+                                self.settings.value("stacking/comet_hclip_k", 1.30, type=float)
+                            ),
+                            comet_hclip_p=float(
+                                self.settings.value("stacking/comet_hclip_p", 25.0, type=float)
+                            ),
                         )
                     else:
                         if cpu_label == "median":
                             tile_result = _cpu_tile_median(ts_np)
                         elif cpu_label == "trimmed":
-                            tile_result = _cpu_tile_trimmed_mean(ts_np, float(params.get("trim_fraction", 0.05)))
+                            tile_result = _cpu_tile_trimmed_mean(
+                                ts_np,
+                                float(params.get("trim_fraction", 0.05)),
+                            )
                         else:  # 'kappa1'
-                            tile_result = _cpu_tile_kappa_sigma_1iter(ts_np, float(params.get("kappa", 3.0)))
+                            tile_result = _cpu_tile_kappa_sigma_1iter(
+                                ts_np,
+                                float(params.get("kappa", 3.0)),
+                            )
 
                     # Ensure tile_result has correct shape (th, tw, channels)
                     if tile_result.ndim == 2:
                         tile_result = tile_result[:, :, None]
                     expected_shape = (th, tw, channels)
                     if tile_result.shape != expected_shape:
-                        # Try to reshape or pad if needed
                         if tile_result.shape[2] == 0:
-                            # Empty channel dimension - this shouldn't happen, create fallback
                             tile_result = np.zeros(expected_shape, dtype=np.float32)
                         elif tile_result.shape[:2] == (th, tw):
-                            # Channel count mismatch - take first channel or expand
                             if tile_result.shape[2] > channels:
                                 tile_result = tile_result[:, :, :channels]
                             else:
-                                tile_result = np.repeat(tile_result, channels, axis=2)[:, :, :channels]
+                                tile_result = np.repeat(
+                                    tile_result, channels, axis=2
+                                )[:, :, :channels]
 
-                    # commit
+                    # Commit tile result into final memmap
                     final_stacked[y0:y1, x0:x1, :] = tile_result
+
                     pd.step()
                     use0 = not use0
 
                 tp.shutdown(wait=True)
 
-                if pd.cancelled:
-                    self.update_status("⛔ Master Dark creation cancelled; cleaning up temporary files.")
-                    try: del final_stacked
-                    except Exception as e:
-                        import logging
-                        logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
-                    try: os.remove(memmap_path)
-                    except Exception as e:
-                        import logging
-                        logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
+                # Close memmapped sources for this group
+                for s in sources:
+                    try:
+                        s.close()
+                    except Exception:
+                        pass
+
+                if cancelled_group:
+                    self.update_status(
+                        "⛔ Master Dark creation cancelled; cleaning up temporary files."
+                    )
+                    try:
+                        del final_stacked
+                    except Exception:
+                        pass
+                    try:
+                        os.remove(memmap_path)
+                    except Exception:
+                        pass
                     break
 
+                # Convert memmap to regular array and free the file
                 master_dark_data = np.asarray(final_stacked, dtype=np.float32)
                 del final_stacked
-                gc.collect()  # Free memory after master dark creation
+                gc.collect()
+                try:
+                    os.remove(memmap_path)
+                except Exception:
+                    pass
 
                 master_dark_stem = f"MasterDark_{int(exposure_time)}s_{image_size}"
                 master_dark_path = self._build_out(master_dir, master_dark_stem, "fit")
 
                 master_header = fits.Header()
                 master_header["IMAGETYP"] = "DARK"
-                master_header["EXPTIME"]  = (exposure_time, "User-specified or from grouping")
-                master_header["NAXIS"]    = 3 if channels==3 else 2
-                master_header["NAXIS1"]   = master_dark_data.shape[1]
-                master_header["NAXIS2"]   = master_dark_data.shape[0]
-                if channels==3: master_header["NAXIS3"] = 3
+                master_header["EXPTIME"] = (
+                    exposure_time,
+                    "User-specified or from grouping",
+                )
+                master_header["NAXIS"] = 3 if channels == 3 else 2
+                master_header["NAXIS1"] = master_dark_data.shape[1]
+                master_header["NAXIS2"] = master_dark_data.shape[0]
+                if channels == 3:
+                    master_header["NAXIS3"] = 3
 
-                save_image(master_dark_data, master_dark_path, "fit", "32-bit floating point", master_header, is_mono=(channels==1))
-                self.add_master_dark_to_tree(f"{exposure_time}s ({image_size})", master_dark_path)
+                save_image(
+                    master_dark_data,
+                    master_dark_path,
+                    "fit",
+                    "32-bit floating point",
+                    master_header,
+                    is_mono=(channels == 1),
+                )
+                self.add_master_dark_to_tree(
+                    f"{exposure_time}s ({image_size})", master_dark_path
+                )
                 self.update_status(f"✅ Master Dark saved: {master_dark_path}")
                 QApplication.processEvents()
                 self.assign_best_master_files()
@@ -9689,13 +9849,15 @@ class StackingSuiteDialog(QDialog):
             self.assign_best_master_dark()
             self.update_override_dark_combo()
             self.assign_best_master_files()
+
         finally:
-            try: _free_torch_memory()
+            try:
+                _free_torch_memory()
             except Exception as e:
                 import logging
                 logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
             pd.close()
-            
+      
     def add_master_dark_to_tree(self, exposure_label: str, master_dark_path: str):
         """
         Adds the newly created Master Dark to the Master Dark TreeBox and updates the dropdown.

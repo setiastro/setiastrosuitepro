@@ -54,39 +54,6 @@ def _find_main_window(w):
         p = p.parent()
     return p
 
-
-def _ensure_mdi_view_for(mw, doc):
-    """Open a subwindow for doc if it’s not already visible."""
-    # already open?
-    for sw in mw.mdi.subWindowList():
-        if getattr(sw.widget(), "document", None) is doc:
-            return
-
-    # Try main-window/DocManager hooks if they exist
-    for meth in ("open_document", "show_document",
-                 "add_view_for_document", "create_view_for_document"):
-        fn = getattr(mw, meth, None)
-        if callable(fn):
-            try:
-                fn(doc)
-                return
-            except Exception:
-                pass
-
-    # Manual fallback: make a subwindow with your viewer
-    try:
-        from .image_view import ImageView  # adjust if your viewer is named differently
-        vw = ImageView(document=doc, parent=mw)
-    except Exception:
-        # ultra-safe fallback so we at least show *something*
-        vw = QLabel("New document view not wired"); setattr(vw, "document", doc)
-
-    sw = QMdiSubWindow(mw)
-    sw.setWidget(vw)
-    mw.mdi.addSubWindow(sw)
-    sw.show()
-
-
 def _push_numpy_as_new_document(owner_widget, arr01: np.ndarray, default_name: str = "Mask") -> bool:
     mw = _find_main_window(owner_widget)
     if mw is None or not hasattr(mw, "docman"):
