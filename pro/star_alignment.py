@@ -3349,6 +3349,7 @@ class StarRegistrationThread(QThread):
     # NEW METHOD: StarRegistrationThread._finalize_writes
     # ─────────────────────────────────────────────────────────────
     def _finalize_writes(self):
+        import shutil
 
         self.drizzle_xforms = {}
 
