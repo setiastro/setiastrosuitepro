@@ -62,7 +62,7 @@ if __name__ == "__main__":
         """
         def __init__(self, logo_path: str):
             super().__init__()
-            self._version = "1.5.8"  # Hardcoded for early display
+            self._version = "1.5.9"  # Hardcoded for early display
             self._build = ""
             self.current_message = "Starting..."
             self.progress_value = 0
@@ -175,8 +175,14 @@ if __name__ == "__main__":
             painter.setFont(self.subtitle_font)
             painter.setPen(QColor(180, 180, 200))
             subtitle_text = f"Version {self._version}"
-            if self._build and self._build != "dev":
-                subtitle_text += f"  •  Build {self._build}"
+
+            if self._build:
+                if self._build == "dev":
+                    # No build_info → running from source checkout
+                    subtitle_text += "  •  Running locally from source code"
+                else:
+                    subtitle_text += f"  •  Build {self._build}"
+
             subtitle_rect = QRect(0, 270, w, 25)
             painter.drawText(subtitle_rect, Qt.AlignmentFlag.AlignCenter, subtitle_text)
             
@@ -417,10 +423,11 @@ from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkRepl
 try:
     from pro._generated.build_info import BUILD_TIMESTAMP
 except Exception:
+    # No generated build info → running from local source checkout
     BUILD_TIMESTAMP = "dev"
 
 
-VERSION = "1.5.8"
+VERSION = "1.5.9"
 
 _update_splash("Loading resources...", 50)
 
@@ -640,7 +647,12 @@ if __name__ == "__main__":
             _splash.close()
             _splash.deleteLater()
         
-        print(f"Seti Astro Suite Pro v{VERSION} (build {BUILD_TIMESTAMP}) up and running!")
+        if BUILD_TIMESTAMP == "dev":
+            build_label = "running from local source code"
+        else:
+            build_label = f"build {BUILD_TIMESTAMP}"
+
+        print(f"Seti Astro Suite Pro v{VERSION} ({build_label}) up and running!")
         sys.exit(_app.exec())
 
     except Exception:

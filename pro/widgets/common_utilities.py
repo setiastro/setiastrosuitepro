@@ -42,12 +42,16 @@ def get_version() -> str:
 
 
 def get_build_timestamp() -> str:
-    """Get build timestamp from main module."""
+    """Get human-friendly build timestamp from main module."""
     try:
         from setiastrosuitepro import BUILD_TIMESTAMP
-        return BUILD_TIMESTAMP
     except ImportError:
         return "Unknown"
+
+    if BUILD_TIMESTAMP == "dev":
+        # No generated build_info → running from local source checkout
+        return "Running locally from source code"
+    return BUILD_TIMESTAMP
 
 
 # ---------------------------------------------------------------------------
@@ -57,26 +61,26 @@ def get_build_timestamp() -> str:
 class AboutDialog(QDialog):
     """
     Standard About dialog for Seti Astro Suite.
-    
-    Displays version, author, copyright, and links to website/donations.
-    
-    Example:
-        dialog = AboutDialog(parent=main_window)
-        dialog.exec()
     """
-    
+
     def __init__(self, parent: Optional[Any] = None, version: str = "", build_timestamp: str = ""):
         super().__init__(parent)
         self.setWindowTitle("About Seti Astro Suite")
-        
+
         # Get version info if not provided
         if not version:
             version = get_version()
+
+        # Normalize build_timestamp
         if not build_timestamp:
             build_timestamp = get_build_timestamp()
-        
+        else:
+            # If someone passed the raw sentinel from the main module
+            if build_timestamp == "dev":
+                build_timestamp = "Running locally from source code"
+
         layout = QVBoxLayout()
-        
+
         # Build about text with optional build timestamp
         about_lines = [
             f"<h2>Seti Astro's Suite Pro {version}</h2>",
@@ -84,24 +88,25 @@ class AboutDialog(QDialog):
             "<p>Collaborators: Fabio Tempera</p>",
             "<p>Copyright © 2025 Seti Astro</p>",
         ]
-        
+
         if build_timestamp and build_timestamp != "Unknown":
             about_lines.append(f"<p><b>Build:</b> {build_timestamp}</p>")
-        
+
         about_lines.extend([
             "<p>Website: <a href='http://www.setiastro.com'>www.setiastro.com</a></p>",
             "<p>Donations: <a href='https://www.setiastro.com/checkout/donate?donatePageId=65ae7e7bac20370d8c04c1ab'>Click here to donate</a></p>",
         ])
-        
+
         about_text = "".join(about_lines)
-        
+
         label = QLabel(about_text)
         label.setTextFormat(Qt.TextFormat.RichText)
         label.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
         label.setOpenExternalLinks(True)
-        
+
         layout.addWidget(label)
         self.setLayout(layout)
+
 
 
 # ---------------------------------------------------------------------------

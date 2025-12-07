@@ -145,6 +145,8 @@ class HistogramDialog(QDialog):
         # Explicit initial sizes so it doesn't start with a tiny histogram
         splitter.setSizes([650, 250])
 
+        QTimer.singleShot(0, self._adjust_stats_width)
+
         main_layout.addWidget(splitter)
 
         # --- controls row (unchanged except for being below splitter) ---
@@ -619,6 +621,8 @@ class HistogramDialog(QDialog):
 
                 self.stats_table.setItem(r, c_idx, it)
 
+        self._adjust_stats_width()        
+
     def _theoretical_native_max_from_meta(self):
         meta = getattr(self.doc, "metadata", None) or {}
         bd = str(meta.get("bit_depth", "")).lower()
@@ -699,6 +703,33 @@ class HistogramDialog(QDialog):
         self._recompute_effective_max01()
         self._update_stats()      # High Clipped row depends on sensor_max01
         self._draw_histogram()
+
+    def _adjust_stats_width(self):
+        """Resize stats table so all columns are visible without a scrollbar."""
+        if not self.stats_table:
+            return
+
+        # Let Qt compute natural column widths
+        self.stats_table.resizeColumnsToContents()
+        self.stats_table.resizeRowsToContents()
+
+        vh = self.stats_table.verticalHeader()
+        frame = self.stats_table.frameWidth()
+
+        total_w = vh.width() + 2 * frame
+
+        for col in range(self.stats_table.columnCount()):
+            total_w += self.stats_table.columnWidth(col)
+
+        # Room for a possible vertical scrollbar
+        vbar = self.stats_table.verticalScrollBar()
+        if vbar is not None:
+            total_w += vbar.sizeHint().width()
+
+        # A tiny padding so text isn't tight
+        total_w += 6
+
+        self.stats_table.setMinimumWidth(total_w)
 
 
     def _on_doc_destroyed(self, *args):
