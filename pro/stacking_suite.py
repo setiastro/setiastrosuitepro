@@ -21,6 +21,7 @@ import unicodedata
 import math            # used in compute_safe_chunk
 import psutil          # used in bytes_available / compute_safe_chunk
 from typing import List
+from legacy.numba_utils import *
 
 # Memory management utilities
 from pro.memory_utils import (
@@ -4322,6 +4323,7 @@ class StackingSuiteDialog(QDialog):
                                 from legacy.numba_utils import debayer_raw_fast
                                 return debayer_raw_fast(image, bayer_pattern=token, cfa_drizzle=cfa, method="edge")
                             except Exception:
+                                
                                 return debayer_fits_fast(image, token, cfa_drizzle=cfa)
 
                     # X-Trans or ambiguous → treat Fuji RAF/X-Series as X-Trans
