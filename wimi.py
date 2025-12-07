@@ -845,7 +845,7 @@ def _qt_is_alive(obj) -> bool:
     except Exception:
         pass
     try:
-        import sip
+        from PyQt6 import sip
         return not sip.isdeleted(obj)
     except Exception:
         pass
