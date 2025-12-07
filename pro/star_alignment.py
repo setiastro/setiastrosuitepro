@@ -5,6 +5,25 @@ import os
 import math
 import random
 import sys
+# ---------------------------------------------------------------------
+# Executor helper: avoid ProcessPool in frozen (PyInstaller) builds
+# ---------------------------------------------------------------------
+_IS_FROZEN = bool(getattr(sys, "frozen", False))
+
+def _make_executor(max_workers: int):
+    """
+    Return an appropriate executor.
+
+    - In frozen builds (PyInstaller), we MUST avoid ProcessPoolExecutor
+      because each worker spawns a full copy of the EXE (extra SASpro windows).
+    - In dev (non-frozen), you can still use processes if you want. For
+      now we keep it simple and always use threads – safer everywhere.
+    """
+    # If you want to keep processes in dev, uncomment the if-block:
+    # if not _IS_FROZEN:
+    #     return ProcessPoolExecutor(max_workers=max_workers)
+    return ThreadPoolExecutor(max_workers=max_workers)
+
 import gc  # For explicit memory cleanup after heavy operations
 import os as _os
 import threading as _threading
@@ -22,7 +41,13 @@ try:
 except Exception:
     pass
 
-from concurrent.futures import ProcessPoolExecutor, as_completed, wait, FIRST_COMPLETED
+from concurrent.futures import (
+    ProcessPoolExecutor,
+    ThreadPoolExecutor,
+    as_completed,
+    wait,
+    FIRST_COMPLETED,
+)
 from itertools import combinations
 from typing import Callable, Iterable, Tuple
 import tempfile
@@ -3022,7 +3047,7 @@ class StarRegistrationThread(QThread):
 
             pass_deltas = []
             try:
-                from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
+
                 import time
 
                 jobs = [
@@ -3035,8 +3060,8 @@ class StarRegistrationThread(QThread):
                 self.progress_update.emit(f"Using {procs} processes to measure residuals (model={model}).")
                 self.progress_step.emit(0, total)
 
-                with ProcessPoolExecutor(max_workers=procs) as ex:
-                    pending = {ex.submit(_residual_job_worker, j): j[0] for j in jobs}  # future -> ORIGINAL path
+                with _make_executor(procs) as ex:
+                    pending = {ex.submit(_residual_job_worker, j): j[0] for j in jobs}
                     last_heartbeat = time.monotonic()
 
                     while pending:
@@ -3132,9 +3157,8 @@ class StarRegistrationThread(QThread):
                 model, float(self.h_reproj)
             ))
 
-        from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
         import time
-        executor = ProcessPoolExecutor(max_workers=procs)
+        executor = _make_executor(procs)
 
         try:
             fut_info, pending = {}, set()
@@ -3325,10 +3349,6 @@ class StarRegistrationThread(QThread):
     # NEW METHOD: StarRegistrationThread._finalize_writes
     # ─────────────────────────────────────────────────────────────
     def _finalize_writes(self):
-        from concurrent.futures import ProcessPoolExecutor, as_completed
-        import tempfile
-        import shutil
-        import os
 
         self.drizzle_xforms = {}
 
@@ -3380,7 +3400,7 @@ class StarRegistrationThread(QThread):
 
         ok = 0
         try:
-            with ProcessPoolExecutor(max_workers=finalize_workers) as ex:
+            with _make_executor(finalize_workers) as ex:
                 futs = [ex.submit(_finalize_write_job, j) for j in jobs]
                 for fut in as_completed(futs):
                     try:
