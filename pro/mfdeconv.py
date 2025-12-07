@@ -2704,7 +2704,18 @@ def _coerce_sr_factor(srf, *, default_on_bad=2):
     except Exception:
         return int(default_on_bad)
 
-
+def _pad_kernel_to(k: np.ndarray, K: int) -> np.ndarray:
+    """Pad/center an odd-sized kernel to K×K (K odd)."""
+    k = np.asarray(k, dtype=np.float32)
+    kh, kw = int(k.shape[0]), int(k.shape[1])
+    assert (kh % 2 == 1) and (kw % 2 == 1)
+    if kh == K and kw == K:
+        return k
+    out = np.zeros((K, K), dtype=np.float32)
+    y0 = (K - kh)//2; x0 = (K - kw)//2
+    out[y0:y0+kh, x0:x0+kw] = k
+    s = float(out.sum())
+    return out if s <= 0 else (out / s).astype(np.float32, copy=False)
 
 # -----------------------------
 # Core

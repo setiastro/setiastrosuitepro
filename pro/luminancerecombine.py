@@ -3,6 +3,10 @@ import numpy as np
 import cv2
 from typing import Optional
 
+from pro.headless_utils import normalize_headless_main, unwrap_docproxy
+from ops.command_runner import CommandError
+import numpy as np
+
 # Shared utilities
 from pro.widgets.image_utils import (
     extract_mask_from_document as _active_mask_array_from_doc,
@@ -136,7 +140,7 @@ def _resolve_active_doc_from(main, target_doc=None):
     if doc is None:
         d = getattr(main, "_active_doc", None)
         doc = d() if callable(d) else d
-    doc = _unwrap_docproxy(doc)
+    doc = unwrap_docproxy(doc)
     return doc
 
 
@@ -191,9 +195,6 @@ def apply_recombine_to_doc(
         step_name="Recombine Luminance",
     )
 
-from pro.headless_utils import normalize_headless_main, unwrap_docproxy
-from ops.command_runner import CommandError
-import numpy as np
 
 def run_recombine_luminance_via_preset(main_or_ctx, preset=None, target_doc=None):
     """
