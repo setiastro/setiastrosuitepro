@@ -1311,20 +1311,27 @@ def load_fits_tile(filepath, y_start, y_end, x_start, x_end):
     """
     import numpy as np
     import gzip
+    import os
     from astropy.io import fits
     from io import BytesIO
 
     # Find the "intended" HDU index (may be wrong for this reopen; we re-check below)
     hdr, ext_index = get_valid_header(filepath)
 
+    # -------------------------------------------------------------------------
     # Open appropriately for gzip-compressed files
+    #   NOTE: we always use memmap=False here:
+    #     - Gzip: can't memmap a BytesIO
+    #     - CompImageHDU / tile-compressed: astropy needs full image in RAM anyway
+    #   We *also* set do_not_scale_image_data=True so that astropy does NOT
+    #   apply BZERO/BSCALE/BLANK scaling; we handle scaling ourselves.
+    # -------------------------------------------------------------------------
     if filepath.lower().endswith((".fits.gz", ".fit.gz")):
         with gzip.open(filepath, "rb") as f:
             file_content = f.read()
-        hdul = fits.open(BytesIO(file_content), memmap=False)
+        hdul = fits.open(BytesIO(file_content), memmap=False, do_not_scale_image_data=True)
     else:
-        # memmap=False is IMPORTANT for CompImageHDU / tile-compressed
-        hdul = fits.open(filepath, memmap=False)
+        hdul = fits.open(filepath, memmap=False, do_not_scale_image_data=True)
 
     with hdul as H:
         # ---- pick a safe HDU index in THIS open ----
@@ -1363,8 +1370,11 @@ def load_fits_tile(filepath, y_start, y_end, x_start, x_end):
             img_hdr = H[ei].header if ei is not None else hdr
         except Exception:
             img_hdr = hdr
-        bzero  = float(img_hdr.get("BZERO", hdr.get("BZERO", 0.0)))
+
+        bzero  = float(img_hdr.get("BZERO",  hdr.get("BZERO",  0.0)))
         bscale = float(img_hdr.get("BSCALE", hdr.get("BSCALE", 1.0)))
+        # BLANK is available if you want to mask later:
+        blank  = img_hdr.get("BLANK", hdr.get("BLANK", None))
 
         a = np.asarray(data)
         a = np.squeeze(a)  # match load_image behavior
@@ -1380,6 +1390,7 @@ def load_fits_tile(filepath, y_start, y_end, x_start, x_end):
             if (y_end <= dim0) and (x_end <= dim1):
                 tile_data = a[y_start:y_end, x_start:x_end]
             else:
+                # some rare FITS flip axes; keep the legacy fallback
                 tile_data = a[x_start:x_end, y_start:y_end]
 
         elif ndim == 3:
@@ -1401,6 +1412,7 @@ def load_fits_tile(filepath, y_start, y_end, x_start, x_end):
                     spat_axes.append(idx)
 
             if color_axis is None or len(spat_axes) != 2:
+                # treat as plain 2D + extra axis
                 tile_data = a[y_start:y_end, x_start:x_end]
             else:
                 spat0, spat1 = spat_axes
@@ -1416,22 +1428,35 @@ def load_fits_tile(filepath, y_start, y_end, x_start, x_end):
 
         # ---------------------------
         # Scale/normalize like load_image
+        #   We explicitly apply BZERO/BSCALE only for 32-bit ints,
+        #   mirroring your existing behavior.
         # ---------------------------
+
+        # Handle BLANK on the *raw* integer tile if present
+        # (optional: right now we'll just leave them as-is; we could set
+        #  them to 0 or np.nan if needed later)
+        # if blank is not None and np.issubdtype(orig_dtype, np.integer):
+        #     mask = (tile_data == blank)
+        #     # e.g., tile_data = tile_data.astype(orig_dtype, copy=False)
+        #     # then later after scaling you could zero-out or nan-out mask.
+
         if orig_dtype == np.uint8:
             tile_data = tile_data.astype(np.float32) / 255.0
         elif orig_dtype == np.uint16:
             tile_data = tile_data.astype(np.float32) / 65535.0
-        elif orig_dtype == np.int32:
+        elif orig_dtype == np.int32 or orig_dtype == np.int64:
+            # Signed 32-bit / 64-bit → apply BSCALE/BZERO
             tile_data = tile_data.astype(np.float32) * bscale + bzero
-        elif orig_dtype == np.uint32:
+        elif orig_dtype == np.uint32 or orig_dtype == np.uint64:
+            # Unsigned 32-bit / 64-bit → apply BSCALE/BZERO
             tile_data = tile_data.astype(np.float32) * bscale + bzero
         elif orig_dtype == np.float32:
             tile_data = np.asarray(tile_data, dtype=np.float32, order="C")
         else:
+            # Fallback: just cast to float32
             tile_data = tile_data.astype(np.float32)
 
         return tile_data
-
 
 
 def _get_log_dock():
@@ -1445,8 +1470,32 @@ class _MMFits:
     """
     def __init__(self, path: str):
         self.path = path
-        # Keep file open for the whole integration of the group
-        self.hdul = fits.open(path, memmap=True)
+        import os
+        try:
+            self.hdul = fits.open(
+                path,
+                memmap=True,
+                do_not_scale_image_data=True,
+            )
+        except Exception as e:
+            msg = str(e)
+            if (
+                "BZERO" in msg
+                or "BSCALE" in msg
+                or "BLANK" in msg
+            ) and "memmap" in msg:
+                print(
+                    f"[_MMFits] {os.path.basename(path)} has BZERO/BSCALE/BLANK; "
+                    f"falling back to memmap=False."
+                )
+                self.hdul = fits.open(
+                    path,
+                    memmap=False,
+                    do_not_scale_image_data=True,
+                )
+            else:
+                raise
+
         self.data = self.hdul[0].data
         if self.data is None:
             raise ValueError(f"Empty FITS: {path}")
@@ -3180,12 +3229,49 @@ class _MMImage:
 
     # ---------------- FITS ----------------
     def _open_fits(self, path: str):
-        self._fits_hdul = fits.open(path, memmap=True)
+        """
+        Open FITS, preferring a memmapped, *unscaled* view of the raw data.
+        If the underlying stack refuses memmap for BZERO/BSCALE/BLANK, fall
+        back to memmap=False just for that file.
+        """
+        import os
+
+        try:
+            # 1) Prefer raw, unscaled data so BZERO/BSCALE don't interfere.
+            #    This keeps memmap fast and lets SASpro ignore or handle scaling.
+            self._fits_hdul = fits.open(
+                path,
+                memmap=True,
+                do_not_scale_image_data=True,  # <– critical
+            )
+        except Exception as e:
+            msg = str(e)
+            # This matches the error you saw: "Cannot load a memory-mapped image:
+            # BZERO/BSCALE/BLANK header keywords present. Set memmap=False."
+            if (
+                "BZERO" in msg
+                or "BSCALE" in msg
+                or "BLANK" in msg
+            ) and "memmap" in msg:
+                print(
+                    f"[MMImage] {os.path.basename(path)} has BZERO/BSCALE/BLANK; "
+                    f"falling back to memmap=False for this file."
+                )
+                self._fits_hdul = fits.open(
+                    path,
+                    memmap=False,              # one full frame in RAM for this file
+                    do_not_scale_image_data=True,  # still get raw ints
+                )
+            else:
+                raise
+
+        # --- rest of your original code unchanged ---
         # choose first image-like HDU (don’t assume PRIMARY only)
         hdu = None
         for h in self._fits_hdul:
             if getattr(h, "data", None) is not None:
-                hdu = h; break
+                hdu = h
+                break
         if hdu is None or hdu.data is None:
             raise ValueError(f"Empty FITS: {path}")
 
@@ -3195,21 +3281,23 @@ class _MMImage:
         self.ndim  = d.ndim
         self._orig_dtype = d.dtype
 
-        # Detect color axis (size==3) and spatial axes once
         if self.ndim == 2:
             self._color_axis = None
             self._spat_axes  = (0, 1)
         elif self.ndim == 3:
             dims = self.shape
             self._color_axis = next((i for i, s in enumerate(dims) if s == 3), None)
-            self._spat_axes  = (0, 1) if self._color_axis is None else tuple(i for i in range(3) if i != self._color_axis)
+            self._spat_axes  = (0, 1) if self._color_axis is None else tuple(
+                i for i in range(3) if i != self._color_axis
+            )
         else:
             raise ValueError(f"Unsupported ndim={self.ndim} for {path}")
 
         # late normalization scale for integer data
         if   self._orig_dtype == np.uint8:  self._scale = 1.0/255.0
         elif self._orig_dtype == np.uint16: self._scale = 1.0/65535.0
-        else:                                self._scale = None
+        else:                               self._scale = None
+
 
     # ---------------- XISF ----------------
     def _open_xisf(self, path: str):
