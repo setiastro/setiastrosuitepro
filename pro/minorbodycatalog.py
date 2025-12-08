@@ -21,15 +21,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Iterable, Dict, Any, Tuple
 
-# Optional Skyfield imports (not strictly required just to manage the DB)
-try:
-    from skyfield.api import load as sf_load
-    from skyfield.data import mpc as sf_mpc
-    from skyfield.constants import GM_SUN
-except Exception:  # Skyfield not installed / optional
-    sf_load = None
-    sf_mpc = None
-    GM_SUN = None
+# Skyfield imports (required for position computations)
+from skyfield.api import load as sf_load
+from skyfield.data import mpc as sf_mpc
+from skyfield.constants import GM_SUN_Pitjeva_2005_km3_s2 as GM_SUN
 
 
 # ---------------------------------------------------------------------------
@@ -382,85 +377,89 @@ class MinorBodyCatalog:
     # -----------------------------------------------------------------------
     # Ephemeris / position scaffold (Skyfield-based, for small subsets)
     # -----------------------------------------------------------------------
-
     def compute_positions_skyfield(
         self,
         asteroid_rows,
         jd: float,
         ephemeris_path: Optional[Path] = None,
         topocentric: Optional[Tuple[float, float, float]] = None,
+        debug: bool = False,
     ):
         """
-        Compute RA/Dec for a small set of asteroids at a given Julian date.
-
-        Parameters
-        ----------
-        asteroid_rows : pandas.DataFrame or list of dict-like rows
-            Each row must contain the columns Skyfield's mpcorb_orbit()
-            expects (as in the Skyfield-generated MPCORB DataFrame).
-        jd : float
-            Julian date (TT or TDB is fine, as long as you're consistent).
-        ephemeris_path : Path or None
-            Path to a JPL ephemeris file (e.g. 'de421.bsp').
-            If None, Skyfield will try to download it on first use.
-        topocentric : (lat_deg, lon_deg, elevation_m) or None
-            If given, positions will be computed from that observing site.
-            Otherwise, geocentric positions are returned.
-
-        Returns
-        -------
-        list of dicts, each of form:
-            {
-              "designation": "...",
-              "ra_deg": float,
-              "dec_deg": float,
-              "distance_au": float,
-            }
-
-        Notes
-        -----
-        - This is intended for a *small* subset (hundreds or thousands,
-          not millions); it's a scaffold for WIMI integration.
-        - A higher-level function can wrap this and perform a cone search
-          against a given WCS center / FOV.
+        Compute RA/Dec for a small set of minor bodies at a given Julian date.
         """
-        if sf_load is None or sf_mpc is None or GM_SUN is None:
-            raise RuntimeError("Skyfield is not available; install skyfield to use this feature.")
-
         import pandas as pd
 
+        required_cols = [
+            "epoch_packed",
+            "mean_anomaly_degrees",
+            "argument_of_perihelion_degrees",
+            "longitude_of_ascending_node_degrees",
+            "inclination_degrees",
+            "eccentricity",
+            "mean_daily_motion_degrees",
+            "semimajor_axis_au",
+        ]
+
+        # Normalize to DataFrame so we can clean up numeric columns safely
         if isinstance(asteroid_rows, pd.DataFrame):
-            rows_iter = asteroid_rows.to_dict(orient="records")
+            df = asteroid_rows.copy()
         else:
-            rows_iter = list(asteroid_rows)
+            df = pd.DataFrame(list(asteroid_rows))
+
+        if debug:
+            print(
+                f"[MinorBodies] compute_positions_skyfield: incoming rows="
+                f"{len(df)}, jd={jd}"
+            )
+            print(f"[MinorBodies] DataFrame columns: {list(df.columns)}")
+
+        # Coerce required columns to numeric, turning '-----' etc. into NaN
+        for col in required_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+
+        before = len(df)
+        df = df.dropna(subset=required_cols)
+        if debug:
+            print(
+                f"[MinorBodies] rows after dropping NaNs in required cols: "
+                f"{len(df)} (was {before})"
+            )
+
+        rows_iter = df.to_dict(orient="records")
 
         ts = sf_load.timescale()
         t = ts.tt_jd(jd)
 
-        # Load ephemeris
-        if ephemeris_path is not None:
-            eph = sf_load(str(ephemeris_path))
-        else:
-            # Will download if not present; you may want to manage this
-            # in a higher-level app data dir instead.
-            eph = sf_load("de421.bsp")
+        eph_path = str(ephemeris_path) if ephemeris_path is not None else "de421.bsp"
+        eph = sf_load(eph_path)
+
+        sun = eph["sun"]
+        earth = eph["earth"]
 
         if topocentric is not None:
             lat_deg, lon_deg, elev_m = topocentric
-            earth = eph["earth"] + sf_load("de421.bsp")["earth"].topos(
+            observer = earth + wgs84.latlon(
                 latitude_degrees=lat_deg,
                 longitude_degrees=lon_deg,
                 elevation_m=elev_m,
             )
         else:
-            earth = eph["earth"]
+            observer = earth
 
+        total = len(rows_iter)
+        ok_count = 0
+        fail_count = 0
         results = []
+
         for row in rows_iter:
             try:
-                orb = sf_mpc.mpcorb_orbit(row, ts, GM_SUN)
-                ast_at_t = earth.at(t).observe(orb)
-                ra, dec, distance = ast_at_t.radec()
+                orbit = sf_mpc.mpcorb_orbit(row, ts, GM_SUN)
+                target = sun + orbit  # make it barycentric
+                astrometric = observer.at(t).observe(target)
+                ra, dec, distance = astrometric.radec()
+
                 results.append(
                     {
                         "designation": row.get("designation", ""),
@@ -469,8 +468,22 @@ class MinorBodyCatalog:
                         "distance_au": distance.au,
                     }
                 )
-            except Exception:
-                # Skip problematic orbits gracefully
+                ok_count += 1
+
+            except Exception as e:
+                fail_count += 1
+                if debug and fail_count <= 10:
+                    print(
+                        f"[MinorBodies] mpcorb_orbit FAILED for "
+                        f"{row.get('designation', '')!r}: {e!r}"
+                    )
                 continue
 
+        if debug:
+            print(
+                f"[MinorBodies] Skyfield positions: "
+                f"total={total}, ok={ok_count}, failed={fail_count}"
+            )
+
         return results
+

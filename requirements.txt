@@ -28,6 +28,8 @@ astroalign
 sep
 reproject
 tzlocal
+skyfield 
+jplephem
 
 # performance
 numba
