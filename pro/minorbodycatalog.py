@@ -385,13 +385,18 @@ class MinorBodyCatalog:
         topocentric: Optional[Tuple[float, float, float]] = None,
         debug: bool = False,
     ):
-        """
-        Compute RA/Dec for a small set of minor bodies at a given Julian date.
-        """
         import pandas as pd
 
-        required_cols = [
-            "epoch_packed",
+        if isinstance(asteroid_rows, pd.DataFrame):
+            df = asteroid_rows.copy()
+        else:
+            df = pd.DataFrame(list(asteroid_rows))
+
+        if debug:
+            print("[MinorBodies] DataFrame columns:", list(df.columns))
+
+        # REQUIRED NUMERIC COLUMNS (note: epoch_packed is deliberately *not* here)
+        required_numeric = [
             "mean_anomaly_degrees",
             "argument_of_perihelion_degrees",
             "longitude_of_ascending_node_degrees",
@@ -401,89 +406,77 @@ class MinorBodyCatalog:
             "semimajor_axis_au",
         ]
 
-        # Normalize to DataFrame so we can clean up numeric columns safely
-        if isinstance(asteroid_rows, pd.DataFrame):
-            df = asteroid_rows.copy()
-        else:
-            df = pd.DataFrame(list(asteroid_rows))
-
-        if debug:
-            print(
-                f"[MinorBodies] compute_positions_skyfield: incoming rows="
-                f"{len(df)}, jd={jd}"
-            )
-            print(f"[MinorBodies] DataFrame columns: {list(df.columns)}")
-
-        # Coerce required columns to numeric, turning '-----' etc. into NaN
-        for col in required_cols:
+        for col in required_numeric:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
 
         before = len(df)
-        df = df.dropna(subset=required_cols)
+        df = df.dropna(subset=[c for c in required_numeric if c in df.columns])
         if debug:
             print(
-                f"[MinorBodies] rows after dropping NaNs in required cols: "
+                f"[MinorBodies] rows after dropping NaNs in required numeric cols: "
                 f"{len(df)} (was {before})"
             )
+            # Optional: peek at first few numeric rows for sanity
+            try:
+                print("[MinorBodies] sample numeric rows:\n",
+                      df[required_numeric].head(3))
+            except Exception:
+                pass
 
-        rows_iter = df.to_dict(orient="records")
+        if df.empty:
+            if debug:
+                print("[MinorBodies] no valid rows after cleaning; aborting.")
+            return []
 
         ts = sf_load.timescale()
         t = ts.tt_jd(jd)
 
-        eph_path = str(ephemeris_path) if ephemeris_path is not None else "de421.bsp"
-        eph = sf_load(eph_path)
+        if ephemeris_path is not None:
+            eph = sf_load(str(ephemeris_path))
+        else:
+            eph = sf_load("de440s.bsp")
 
         sun = eph["sun"]
         earth = eph["earth"]
 
         if topocentric is not None:
+            from skyfield.api import wgs84
             lat_deg, lon_deg, elev_m = topocentric
-            observer = earth + wgs84.latlon(
-                latitude_degrees=lat_deg,
-                longitude_degrees=lon_deg,
-                elevation_m=elev_m,
-            )
-        else:
-            observer = earth
+            earth = earth + wgs84.latlon(lat_deg, lon_deg, elevation_m=elev_m)
 
-        total = len(rows_iter)
-        ok_count = 0
-        fail_count = 0
         results = []
+        total = len(df)
+        ok = 0
+        failed = 0
 
-        for row in rows_iter:
+        for idx, row in df.iterrows():
             try:
-                orbit = sf_mpc.mpcorb_orbit(row, ts, GM_SUN)
-                target = sun + orbit  # make it barycentric
-                astrometric = observer.at(t).observe(target)
-                ra, dec, distance = astrometric.radec()
+                orb = sf_mpc.mpcorb_orbit(row, ts, GM_SUN)
+                body = sun + orb  # Sun-centered orbit so Earth can observe it
+                ast_at_t = earth.at(t).observe(body).apparent()
+                ra, dec, distance = ast_at_t.radec()
 
                 results.append(
                     {
                         "designation": row.get("designation", ""),
-                        "ra_deg": ra.hours * 15.0,
-                        "dec_deg": dec.degrees,
-                        "distance_au": distance.au,
+                        "ra_deg": float(ra.hours * 15.0),
+                        "dec_deg": float(dec.degrees),
+                        "distance_au": float(distance.au),
                     }
                 )
-                ok_count += 1
-
+                ok += 1
             except Exception as e:
-                fail_count += 1
-                if debug and fail_count <= 10:
+                failed += 1
+                if debug and failed <= 10:
                     print(
-                        f"[MinorBodies] mpcorb_orbit FAILED for "
-                        f"{row.get('designation', '')!r}: {e!r}"
+                        f"[MinorBodies] mpcorb_orbit/observe FAILED for "
+                        f"'{row.get('designation', '')}': {repr(e)}"
                     )
-                continue
 
         if debug:
             print(
-                f"[MinorBodies] Skyfield positions: "
-                f"total={total}, ok={ok_count}, failed={fail_count}"
+                f"[MinorBodies] Skyfield positions: total={total}, ok={ok}, failed={failed}"
             )
 
         return results
-

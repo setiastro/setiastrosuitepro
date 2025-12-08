@@ -3420,6 +3420,22 @@ class _MMImage:
             out = np.squeeze(out, axis=-1)
         return out
 
+    def close(self):
+        """Release any open handles / buffers associated with this image."""
+        # Close FITS HDUList if present
+        try:
+            if getattr(self, "_fits_hdul", None) is not None:
+                self._fits_hdul.close()
+        except Exception:
+            pass
+
+        # For XISF, just drop references so GC can reclaim
+        self._fits_hdul = None
+        self._fits_data = None
+        self._xisf = None
+        self._xisf_memmap = None
+        self._xisf_arr = None
+
 def _open_sources_for_mfdeconv(paths, log):
     srcs = []
     try:
