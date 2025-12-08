@@ -377,16 +377,42 @@ class MinorBodyCatalog:
     # -----------------------------------------------------------------------
     # Ephemeris / position scaffold (Skyfield-based, for small subsets)
     # -----------------------------------------------------------------------
+
     def compute_positions_skyfield(
         self,
         asteroid_rows,
         jd: float,
         ephemeris_path: Optional[Path] = None,
         topocentric: Optional[Tuple[float, float, float]] = None,
+        progress_cb=None,
         debug: bool = False,
     ):
+        """
+        Compute RA/Dec for a small set of asteroids at a given Julian date.
+
+        Parameters
+        ----------
+        asteroid_rows : pandas.DataFrame or list of dict-like rows
+        jd : float
+            Julian date (TT or TDB is fine, as long as you're consistent).
+        ephemeris_path : Path or None
+        topocentric : (lat_deg, lon_deg, elevation_m) or None
+        progress_cb : callable or None
+            Optional callback(done:int, total:int) -> bool.
+            Return False to request abort.
+        debug : bool
+
+        Returns
+        -------
+        list of dicts with keys:
+            designation, ra_deg, dec_deg, distance_au
+        """
+        if sf_load is None or sf_mpc is None or GM_SUN is None:
+            raise RuntimeError("Skyfield is not available; install skyfield to use this feature.")
+
         import pandas as pd
 
+        # Normalize to DataFrame
         if isinstance(asteroid_rows, pd.DataFrame):
             df = asteroid_rows.copy()
         else:
@@ -395,7 +421,7 @@ class MinorBodyCatalog:
         if debug:
             print("[MinorBodies] DataFrame columns:", list(df.columns))
 
-        # REQUIRED NUMERIC COLUMNS (note: epoch_packed is deliberately *not* here)
+        # REQUIRED NUMERIC COLUMNS (epoch_packed stays as string)
         required_numeric = [
             "mean_anomaly_degrees",
             "argument_of_perihelion_degrees",
@@ -406,6 +432,7 @@ class MinorBodyCatalog:
             "semimajor_axis_au",
         ]
 
+        # Coerce numeric columns safely
         for col in required_numeric:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -417,12 +444,6 @@ class MinorBodyCatalog:
                 f"[MinorBodies] rows after dropping NaNs in required numeric cols: "
                 f"{len(df)} (was {before})"
             )
-            # Optional: peek at first few numeric rows for sanity
-            try:
-                print("[MinorBodies] sample numeric rows:\n",
-                      df[required_numeric].head(3))
-            except Exception:
-                pass
 
         if df.empty:
             if debug:
@@ -432,28 +453,49 @@ class MinorBodyCatalog:
         ts = sf_load.timescale()
         t = ts.tt_jd(jd)
 
+        # Ephemeris
         if ephemeris_path is not None:
             eph = sf_load(str(ephemeris_path))
         else:
+            # small ephemeris; OK for bundling/download
             eph = sf_load("de440s.bsp")
 
         sun = eph["sun"]
         earth = eph["earth"]
 
+        # Optional observatory site
         if topocentric is not None:
             from skyfield.api import wgs84
             lat_deg, lon_deg, elev_m = topocentric
-            earth = earth + wgs84.latlon(lat_deg, lon_deg, elevation_m=elev_m)
+            earth = earth + wgs84.latlon(
+                latitude_degrees=lat_deg,
+                longitude_degrees=lon_deg,
+                elevation_m=elev_m,
+            )
 
         results = []
         total = len(df)
         ok = 0
         failed = 0
 
-        for idx, row in df.iterrows():
+        for i, (_, row) in enumerate(df.iterrows(), start=1):
+            # Progress callback
+            if progress_cb is not None:
+                try:
+                    cont = progress_cb(i, total)
+                except Exception:
+                    cont = True
+                if cont is False:
+                    if debug:
+                        print("[MinorBodies] progress_cb requested abort.")
+                    break
+
             try:
+                # Let Skyfield interpret the MPCORB-style dict
                 orb = sf_mpc.mpcorb_orbit(row, ts, GM_SUN)
-                body = sun + orb  # Sun-centered orbit so Earth can observe it
+
+                # Sun-centered small body, observed from Earth
+                body = sun + orb
                 ast_at_t = earth.at(t).observe(body).apparent()
                 ra, dec, distance = ast_at_t.radec()
 

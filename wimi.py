@@ -2868,52 +2868,96 @@ class WIMIDialog(QDialog):
         # Minor Planets / Comets block
         # ─────────────────────────────
         self.minor_group = QGroupBox("Minor Planets / Comets")
+        minor_layout = QGridLayout(self.minor_group)
 
-        # Use a vertical layout for nicer spacing
-        minor_layout = QVBoxLayout(self.minor_group)
-
-        # DB status label
+        # --- DB info + buttons ---
         self.minor_db_label = QLabel("Database: not downloaded")
         self.minor_db_label.setStyleSheet("font-size: 10px; color: gray;")
-        minor_layout.addWidget(self.minor_db_label)
 
-        # --- Row 1: download/update button ---
-        self.btn_minor_download = QPushButton("Download / Update Catalog")
-        self.btn_minor_download.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
-        )
-        self.btn_minor_download.clicked.connect(self.download_minor_body_catalog)
-
-        row1 = QHBoxLayout()
-        row1.addWidget(self.btn_minor_download)
-        minor_layout.addLayout(row1)
-
-        # --- Row 2: search buttons ---
-        self.btn_minor_search = QPushButton("Search Defined Region")
-        self.btn_minor_search.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
-        )
-        self.btn_minor_search.clicked.connect(
-            lambda: self.perform_minor_body_search(mode="circle")
+        self.btn_minor_download = QPushButton("Download Catalog")
+        self.btn_minor_download.setToolTip(
+            "Download or update the minor-body catalog.\n"
+            "Shift-click to force a fresh re-download."
         )
 
-        self.btn_minor_search_full = QPushButton("Search Entire Image")
-        self.btn_minor_search_full.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
-        )
-        self.btn_minor_search_full.clicked.connect(
-            lambda: self.perform_minor_body_search(mode="full")
+        def _on_minor_download_clicked():
+            # Shift-click = force re-download
+            mods = QApplication.keyboardModifiers()
+            force = bool(mods & Qt.KeyboardModifier.ShiftModifier)
+            self.download_minor_body_catalog(force=force)
+
+        self.btn_minor_download.clicked.connect(_on_minor_download_clicked)
+
+        self.btn_minor_search = QPushButton("Search Minor Bodies")
+        self.btn_minor_search.clicked.connect(self.perform_minor_body_search)
+
+        # 4 columns in this grid; make buttons span 2 each so they
+        # don't get squeezed into a quarter width.
+        minor_layout.addWidget(self.minor_db_label,      0, 0, 1, 4)
+        minor_layout.addWidget(self.btn_minor_download,  1, 0, 1, 2)
+        minor_layout.addWidget(self.btn_minor_search,    1, 2, 1, 2)
+
+        # --- Search scope (Defined Circle vs Entire Image) ---
+        scope_label = QLabel("Search scope:")
+        self.minor_scope_combo = QComboBox()
+        self.minor_scope_combo.addItems([
+            "Defined Region",
+            "Entire Image",
+        ])
+
+        minor_layout.addWidget(scope_label,          2, 0)
+        minor_layout.addWidget(self.minor_scope_combo, 2, 1, 1, 3)
+
+        # --- Limits row 1: asteroid H_max + max count ---
+        ast_H_label = QLabel("Asteroid H ≤")
+        self.minor_ast_H_spin = QDoubleSpinBox()
+        self.minor_ast_H_spin.setRange(0.0, 40.0)
+        self.minor_ast_H_spin.setDecimals(1)
+        self.minor_ast_H_spin.setSingleStep(0.5)
+        self.minor_ast_H_spin.setValue(
+            float(self.settings.value("wimi/minor/asteroid_H_max", 20.0))
         )
 
-        row2 = QHBoxLayout()
-        row2.addWidget(self.btn_minor_search)
-        row2.addWidget(self.btn_minor_search_full)
-        minor_layout.addLayout(row2)
+        ast_max_label = QLabel("Max asteroids:")
+        self.minor_ast_max_spin = QSpinBox()
+        self.minor_ast_max_spin.setRange(100, 500000)
+        self.minor_ast_max_spin.setSingleStep(1000)
+        self.minor_ast_max_spin.setValue(
+            int(self.settings.value("wimi/minor/asteroid_max", 20000))
+        )
 
-        # Spacer at bottom so it doesn’t feel cramped
-        minor_layout.addStretch(1)
+        minor_layout.addWidget(ast_H_label,           3, 0)
+        minor_layout.addWidget(self.minor_ast_H_spin, 3, 1)
+        minor_layout.addWidget(ast_max_label,         3, 2)
+        minor_layout.addWidget(self.minor_ast_max_spin, 3, 3)
+
+        # --- Limits row 2: comet H_max + max count ---
+        com_H_label = QLabel("Comet H ≤")
+        self.minor_com_H_spin = QDoubleSpinBox()
+        self.minor_com_H_spin.setRange(0.0, 40.0)
+        self.minor_com_H_spin.setDecimals(1)
+        self.minor_com_H_spin.setSingleStep(0.5)
+        self.minor_com_H_spin.setValue(
+            float(self.settings.value("wimi/minor/comet_H_max", 15.0))
+        )
+
+        com_max_label = QLabel("Max comets:")
+        self.minor_com_max_spin = QSpinBox()
+        self.minor_com_max_spin.setRange(100, 100000)
+        self.minor_com_max_spin.setSingleStep(500)
+        self.minor_com_max_spin.setValue(
+            int(self.settings.value("wimi/minor/comet_max", 5000))
+        )
+
+        minor_layout.addWidget(com_H_label,           4, 0)
+        minor_layout.addWidget(self.minor_com_H_spin, 4, 1)
+        minor_layout.addWidget(com_max_label,         4, 2)
+        minor_layout.addWidget(self.minor_com_max_spin, 4, 3)
 
         self.advanced_search_panel.addWidget(self.minor_group)
+
+        # Try to pick up an already-downloaded DB on startup
+        self._load_minor_db_path()
 
         # Adding the "Deep Vizier Search" button below the other search buttons
         self.deep_vizier_button = QPushButton("Caution - Deep Vizier Search")
@@ -5160,44 +5204,70 @@ class WIMIDialog(QDialog):
     def _minor_settings(self) -> QSettings:
         return getattr(self, "settings", None) or QSettings()
 
+    # ─────────────────────────────────────────
+    # Minor-planet DB path via QSettings
+    # ─────────────────────────────────────────
     def _load_minor_db_path(self) -> str:
-        s = self._minor_settings()
-        path = s.value("minor/db_path", "", type=str)
+        """Load cached DB path from QSettings and update the label."""
+        from pathlib import Path
+        from pro import minorbodycatalog as mbc
+
+        path = self.settings.value("wimi/minorbody_db_path", "", type=str)
         self.minor_db_path = path or ""
-        # update label if we already have it
-        if hasattr(self, "minor_db_label"):
-            if self.minor_db_path:
-                self.minor_db_label.setText(f"Database: {os.path.basename(self.minor_db_path)}")
-            else:
-                self.minor_db_label.setText("Database: (none)")
+
+        if not hasattr(self, "minor_db_label"):
+            return self.minor_db_path
+
+        if not path:
+            self.minor_db_label.setText("Database: not downloaded")
+            return self.minor_db_path
+
+        p = Path(path)
+        if not p.is_file():
+            self.minor_db_label.setText("Database: not downloaded")
+            return self.minor_db_path
+
+        # Try to load local manifest to show version + counts
+        manifest_path = p.parent / mbc.DEFAULT_MANIFEST_BASENAME
+        manifest = mbc.load_local_manifest(manifest_path)
+
+        if manifest is not None:
+            ast = f"{manifest.counts_asteroids:,}"
+            com = f"{manifest.counts_comets:,}"
+            self.minor_db_label.setText(
+                f"Database: v{manifest.version} — {ast} asteroids, {com} comets"
+            )
+        else:
+            self.minor_db_label.setText(f"Database: {p.name}")
+
         return self.minor_db_path
 
     def _save_minor_db_path(self, path: str) -> None:
-        s = self._minor_settings()
-        s.setValue("minor/db_path", path)
-        s.sync()
+        """Save DB path to QSettings and update label."""
+        self.settings.setValue("wimi/minorbody_db_path", path)
+        self.settings.sync()
         self.minor_db_path = path
-        if hasattr(self, "minor_db_label"):
-            if path:
-                self.minor_db_label.setText(f"Database: {os.path.basename(path)}")
-            else:
-                self.minor_db_label.setText("Database: (none)")
+        self._load_minor_db_path()   # reuse logic to update label
 
     def download_minor_body_catalog(self, force: bool = False) -> None:
         """
         Download or update the minor-body SQLite DB using pro.minorbodycatalog,
         showing a progress UI while it runs.
+
+        Shift-clicking the button sets force=True (handled in the click slot).
         """
+        from PyQt6.QtCore import QEventLoop
+        from pro import minorbodycatalog as mbc
+
         data_dir = self._minorbody_data_dir()
 
-        # Optional: disable the button while downloading (if it exists)
-        if hasattr(self, "download_minor_body_btn"):
-            self.download_minor_body_btn.setEnabled(False)
+        # Disable the button while downloading
+        if hasattr(self, "btn_minor_download"):
+            self.btn_minor_download.setEnabled(False)
 
         self.status_label.setText("Status: Downloading minor-body catalog…")
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
 
-        # Indeterminate progress dialog
         dlg = QProgressDialog(
             "Downloading minor-body catalog…\n"
             "This may take a minute on first use.",
@@ -5210,17 +5280,15 @@ class WIMIDialog(QDialog):
         dlg.setWindowModality(Qt.WindowModality.ApplicationModal)
         dlg.setAutoClose(False)
         dlg.setAutoReset(False)
-        dlg.setCancelButton(None)   # no cancel; worker is blocking I/O
+        dlg.setCancelButton(None)
         dlg.show()
 
-        # Worker thread that calls mbc.ensure_minor_body_db
         worker = MinorBodyDownloadWorker(
             data_dir=data_dir,
             force_refresh=force,
             parent=self,
         )
 
-        # Collect result via small event loop
         result = {
             "ok": False,
             "db_path": "",
@@ -5247,20 +5315,18 @@ class WIMIDialog(QDialog):
 
         worker.finished_ok.connect(_on_ok)
         worker.failed.connect(_on_fail)
-        worker.finished.connect(loop.quit)  # safety net
+        worker.finished.connect(loop.quit)
 
         worker.start()
-        loop.exec()  # keeps UI responsive while we wait
+        loop.exec()
 
         dlg.close()
         QApplication.restoreOverrideCursor()
 
-        # Re-enable button
-        if hasattr(self, "download_minor_body_btn"):
-            self.download_minor_body_btn.setEnabled(True)
+        if hasattr(self, "btn_minor_download"):
+            self.btn_minor_download.setEnabled(True)
 
         if not result["ok"]:
-            # Error case
             self.status_label.setText("Status: Minor-body catalog download failed.")
             msg = result["error"] or "Unknown error."
             QMessageBox.critical(
@@ -5270,17 +5336,11 @@ class WIMIDialog(QDialog):
             )
             return
 
-        # Success: store path + update labels / QSettings
-        self.minor_db_path = result["db_path"]
-        self.settings.setValue("wimi/minorbody_db_path", self.minor_db_path)
+        # Success
+        self._save_minor_db_path(result["db_path"])
 
         ast = f"{result['ast']:,}"
         com = f"{result['com']:,}"
-
-        if hasattr(self, "minor_db_label"):
-            self.minor_db_label.setText(
-                f"Database: v{result['version']} — {ast} asteroids, {com} comets"
-            )
 
         self.status_label.setText("Status: Minor-body catalog ready.")
         QMessageBox.information(
@@ -5292,8 +5352,6 @@ class WIMIDialog(QDialog):
             f"Comets: {com}",
         )
 
-
-
     def _ensure_minor_planet_db(self) -> str | None:
         """
         Ensure the minor-body SQLite DB exists.
@@ -5301,7 +5359,9 @@ class WIMIDialog(QDialog):
         Returns:
             Path string to the DB, or None if the user cancels or download fails.
         """
-        # 1) If we already have a cached path and the file exists, just reuse it.
+        from pathlib import Path
+
+        # 1) If we already know the path and it exists, just reuse it.
         p_str = getattr(self, "minor_db_path", "") or self.settings.value(
             "wimi/minorbody_db_path", "", type=str
         )
@@ -5322,8 +5382,8 @@ class WIMIDialog(QDialog):
         if reply != QMessageBox.StandardButton.Yes:
             return None
 
-        # This will call pro.minorbodycatalog.ensure_minor_body_db() internally
-        self.download_minor_body_catalog()
+        # This will check manifest and only re-download if needed
+        self.download_minor_body_catalog(force=False)
 
         p_str = getattr(self, "minor_db_path", "")
         if p_str and Path(p_str).is_file():
@@ -5335,6 +5395,7 @@ class WIMIDialog(QDialog):
             "Failed to download or locate the minor-body database.",
         )
         return None
+
 
     # ------------------------------------------------------------------
     # Minor-body helpers
@@ -5503,15 +5564,30 @@ class WIMIDialog(QDialog):
         self.observation_datetime = dt
         return dt
 
-    def perform_minor_body_search(self, mode: str = "circle"):
+    def perform_minor_body_search(self, checked: bool = False, mode: str | None = None):
         """
         Search local minor-planet/comet database in either:
 
-          - the current WCS-defined search circle (mode="circle"), or
-          - the entire image FOV (mode="full").
+        - the current WCS-defined search circle ("circle"), or
+        - the entire image FOV ("full").
 
-        Uses the observation date/time from header or prompt.
+        If mode is None, it is derived from the Scope combo box.
+        'checked' is the bool coming from QPushButton.clicked and is ignored.
         """
+        # Persist current minor-body settings so they survive restarts
+        self.settings.setValue("wimi/minor/asteroid_H_max", self.minor_ast_H_spin.value())
+        self.settings.setValue("wimi/minor/asteroid_max", self.minor_ast_max_spin.value())
+        self.settings.setValue("wimi/minor/comet_H_max", self.minor_com_H_spin.value())
+        self.settings.setValue("wimi/minor/comet_max", self.minor_com_max_spin.value())
+
+        # Determine mode from combo if not forced by caller
+        if mode is None and hasattr(self, "minor_scope_combo"):
+            idx = self.minor_scope_combo.currentIndex()
+            # 0 = Defined Region, 1 = Entire Image
+            mode = "circle" if idx == 0 else "full"
+        if mode is None:
+            mode = "circle"
+
         # Need WCS + pixscale for either mode
         if self.wcs is None or self.pixscale is None:
             QMessageBox.warning(
@@ -5532,7 +5608,7 @@ class WIMIDialog(QDialog):
                 )
                 return
         else:
-            # Default: use the defined search circle
+            # Defined region: use the search circle
             if not self.circle_center or self.circle_radius <= 0:
                 QMessageBox.warning(
                     self,
@@ -5552,7 +5628,6 @@ class WIMIDialog(QDialog):
                 )
                 return
 
-            # radius in degrees from circle radius (pixels) and pixscale (arcsec/pixel)
             radius_deg = float((self.circle_radius * self.pixscale) / 3600.0)
 
         # 2) Observation datetime
@@ -5602,7 +5677,7 @@ class WIMIDialog(QDialog):
             name  = r.get("name", r.get("designation", "N/A"))
             mag   = r.get("mag", "N/A")
             qtype = r.get("type", "Minor body")
-            dist  = r.get("distance", "N/A")   # AU or whatever you decide
+            dist  = r.get("distance", "N/A")
             src   = r.get("source", "MinorDB")
 
             item = QTreeWidgetItem([
@@ -5633,6 +5708,8 @@ class WIMIDialog(QDialog):
         self.query_results = query_results
         self.update_object_count()
 
+
+
     def _query_minor_planets_from_db(
         self,
         db_path,
@@ -5644,20 +5721,7 @@ class WIMIDialog(QDialog):
         """
         Query the local minor-body DB using MinorBodyCatalog + Skyfield.
 
-        Args
-        ----
-        db_path : str or Path
-            Path to the minor-body SQLite database.
-        ra_center, dec_center : float
-            Center of search region (deg, ICRS).
-        radius_deg : float
-            Cone search radius in degrees.
-        obs_datetime : datetime
-            Observation midpoint in UTC.
-
-        Returns
-        -------
-        list of dicts, each with keys:
+        Returns list of dicts:
             ra, dec, name, mag, type, distance, source, designation
         """
         from pathlib import Path
@@ -5678,6 +5742,30 @@ class WIMIDialog(QDialog):
         )
         print(f"[MinorBodies] DB path: {db_path}")
 
+        # Read user limits from the UI, with safe fallbacks
+        try:
+            H_ast = float(self.minor_ast_H_spin.value())
+        except Exception:
+            H_ast = 20.0
+        try:
+            N_ast = int(self.minor_ast_max_spin.value())
+        except Exception:
+            N_ast = 50000
+        try:
+            H_com = float(self.minor_com_H_spin.value())
+        except Exception:
+            H_com = 15.0
+        try:
+            N_com = int(self.minor_com_max_spin.value())
+        except Exception:
+            N_com = 5000
+
+        print(
+            f"[MinorBodies] user limits: "
+            f"Asteroids H<={H_ast}, max={N_ast}; "
+            f"Comets H<={H_com}, max={N_com}"
+        )
+
         # 2) Open catalog
         cat = mbc.MinorBodyCatalog(db_path)
 
@@ -5686,13 +5774,13 @@ class WIMIDialog(QDialog):
         com_df: pd.DataFrame | None = None
 
         try:
-            ast_df = cat.get_bright_asteroids(H_max=20.0, limit=50000)
+            ast_df = cat.get_bright_asteroids(H_max=H_ast, limit=N_ast)
         except Exception as e:
             print(f"[MinorBodies] get_bright_asteroids FAILED: {e!r}")
             ast_df = None
 
         try:
-            com_df = cat.get_bright_comets(H_max=15.0, limit=5000)
+            com_df = cat.get_bright_comets(H_max=H_com, limit=N_com)
         except Exception as e:
             print(f"[MinorBodies] get_bright_comets FAILED: {e!r}")
             com_df = None
@@ -5718,7 +5806,10 @@ class WIMIDialog(QDialog):
                 mag_val = None
                 for mk in mag_keys_ast:
                     if mk in row and row[mk] is not None:
-                        mag_val = float(row[mk])
+                        try:
+                            mag_val = float(row[mk])
+                        except Exception:
+                            mag_val = None
                         break
                 if mag_val is not None:
                     asteroid_mag[desig] = mag_val
@@ -5734,7 +5825,10 @@ class WIMIDialog(QDialog):
                 mag_val = None
                 for mk in mag_keys_com:
                     if mk in row and row[mk] is not None:
-                        mag_val = float(row[mk])
+                        try:
+                            mag_val = float(row[mk])
+                        except Exception:
+                            mag_val = None
                         break
                 if mag_val is not None:
                     comet_mag[desig] = mag_val
@@ -5751,17 +5845,60 @@ class WIMIDialog(QDialog):
             return []
 
         rows_df = pd.concat(frames, ignore_index=True)
-        print(f"[MinorBodies] total candidate rows sent to Skyfield: {len(rows_df)}")
+        total_rows = len(rows_df)
+        print(f"[MinorBodies] total candidate rows sent to Skyfield: {total_rows}")
         print(f"[MinorBodies] columns in candidate DataFrame: {list(rows_df.columns)}")
 
-        # 4) Compute positions with Skyfield at this JD
-        positions = cat.compute_positions_skyfield(
-            asteroid_rows=rows_df,
-            jd=jd,
-            ephemeris_path=None,
-            topocentric=None,
-            debug=True,
+        # --------------------------------------------------------------
+        # Progress dialog for the Skyfield loop
+        # --------------------------------------------------------------
+        prog = QProgressDialog(
+            "Computing minor-body ephemerides...\n"
+            "This may take a while on first run.",
+            "Cancel",
+            0,
+            total_rows,
+            self,
         )
+        prog.setWindowTitle("Minor-Body Search")
+        prog.setWindowModality(Qt.WindowModality.ApplicationModal)
+        prog.setAutoClose(True)
+        prog.setAutoReset(True)
+        prog.setMinimumDuration(500)  # don't flash for very quick runs
+        prog.show()
+
+        cancelled = {"flag": False}
+
+        def progress_cb(done: int, total: int) -> bool:
+            if cancelled["flag"]:
+                return False
+            prog.setMaximum(total)
+            prog.setValue(done)
+            QApplication.processEvents()
+            if prog.wasCanceled():
+                cancelled["flag"] = True
+                return False
+            return True
+
+        # 4) Compute positions with Skyfield at this JD
+        print(
+            f"[MinorBodies] compute_positions_skyfield: sending {total_rows} rows, jd={jd}"
+        )
+        try:
+            positions = cat.compute_positions_skyfield(
+                asteroid_rows=rows_df,
+                jd=jd,
+                ephemeris_path=None,
+                topocentric=None,
+                progress_cb=progress_cb,
+                debug=True,
+            )
+        finally:
+            prog.close()
+
+        if cancelled["flag"]:
+            print("[MinorBodies] search cancelled by user.")
+            return []
 
         print(f"[MinorBodies] positions returned from Skyfield: {len(positions)}")
 
@@ -5804,9 +5941,6 @@ class WIMIDialog(QDialog):
 
         print(f"[MinorBodies] objects inside cone: {kept}")
         return results
-
-
-
 
     def _get_astap_exe(self) -> str:
         s = self._settings()
