@@ -1712,7 +1712,7 @@ def _solve_numpy_with_astap(parent, settings, image: np.ndarray, seed_header: He
 # ---------------------------------------------------------------------
 
 # --- Debug helpers ---------------------------------------------------
-DEBUG_PLATESOLVE_HEADERS = True  # set False to silence all header dumps
+DEBUG_PLATESOLVE_HEADERS = False  # set False to silence all header dumps
 
 
 def _debug_dump_header(label: str, hdr: Header | None):

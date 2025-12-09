@@ -5876,7 +5876,8 @@ class WIMIDialog(QDialog):
                 desig = row.get("designation", "") or row.get("name", "")
                 if not desig:
                     continue
-                asteroid_designations.add(str(desig))
+                desig_str = str(desig)
+                asteroid_designations.add(desig_str)
 
                 mag_val = None
                 for mk in mag_keys_ast:
@@ -5887,7 +5888,7 @@ class WIMIDialog(QDialog):
                             mag_val = None
                         break
                 if mag_val is not None:
-                    asteroid_mag[str(desig)] = mag_val
+                    asteroid_mag[desig_str] = mag_val
 
         if com_df is not None and len(com_df):
             mag_keys_com = ("absolute_magnitude", "magnitude_H", "H")
@@ -5895,7 +5896,8 @@ class WIMIDialog(QDialog):
                 desig = row.get("designation", "") or row.get("name", "")
                 if not desig:
                     continue
-                comet_designations.add(str(desig))
+                desig_str = str(desig)
+                comet_designations.add(desig_str)
 
                 mag_val = None
                 for mk in mag_keys_com:
@@ -5906,7 +5908,7 @@ class WIMIDialog(QDialog):
                             mag_val = None
                         break
                 if mag_val is not None:
-                    comet_mag[str(desig)] = mag_val
+                    comet_mag[desig_str] = mag_val
 
         # --- Combine into a single DataFrame for Skyfield ---
         frames: list[pd.DataFrame] = []
@@ -5928,17 +5930,54 @@ class WIMIDialog(QDialog):
         if target_filter:
             tf = target_filter.strip().lower()
             if tf:
-                mask = pd.Series(False, index=rows_df.index)
                 text_cols = [
                     c for c in rows_df.columns
                     if rows_df[c].dtype == object
                 ]
-                for col in text_cols:
+                print(f"[MinorBodies] target filter: scanning text columns {text_cols}")
+
+                if text_cols:
+                    # Small progress dialog for the name-filter pass
+                    filter_prog = QProgressDialog(
+                        f"Filtering catalog for target '{target_filter}'…",
+                        "Cancel",
+                        0,
+                        len(text_cols),
+                        self,
+                    )
+                    filter_prog.setWindowTitle("Minor-Body Target Search")
+                    filter_prog.setWindowModality(Qt.WindowModality.ApplicationModal)
+                    filter_prog.setAutoClose(True)
+                    filter_prog.setAutoReset(True)
+                    filter_prog.setMinimumDuration(500)
+                    filter_prog.show()
+                else:
+                    filter_prog = None
+
+                mask = pd.Series(False, index=rows_df.index)
+
+                for i, col in enumerate(text_cols):
+                    if filter_prog is not None:
+                        filter_prog.setLabelText(
+                            f"Filtering in column '{col}' for '{target_filter}'…"
+                        )
+                        filter_prog.setValue(i)
+                        QApplication.processEvents()
+                        if filter_prog.wasCanceled():
+                            print("[MinorBodies] target filter cancelled by user.")
+                            filter_prog.close()
+                            return []
+
                     s = rows_df[col].astype(str).str.lower()
                     col_mask = s.str.contains(tf, na=False)
                     count = int(col_mask.sum())
                     print(f"[MinorBodies] target filter: column '{col}' matches={count}")
                     mask |= col_mask
+
+                if filter_prog is not None:
+                    filter_prog.setValue(len(text_cols))
+                    QApplication.processEvents()
+                    filter_prog.close()
 
                 rows_df = rows_df[mask]
                 total_rows = len(rows_df)
@@ -5964,7 +6003,7 @@ class WIMIDialog(QDialog):
         prog.setWindowModality(Qt.WindowModality.ApplicationModal)
         prog.setAutoClose(True)
         prog.setAutoReset(True)
-        prog.setMinimumDuration(500)
+        prog.setMinimumDuration(500)  # don't flash for very quick runs
         prog.show()
 
         cancelled = {"flag": False}
@@ -6042,7 +6081,7 @@ class WIMIDialog(QDialog):
 
         print(f"[MinorBodies] objects inside cone: {kept}")
         return results
-    
+
 
     def _get_astap_exe(self) -> str:
         s = self._settings()

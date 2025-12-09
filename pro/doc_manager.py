@@ -1465,24 +1465,27 @@ def _xisf_meta_to_fits_header(m: dict) -> fits.Header | None:
 
     return hdr if found else None
 
+DEBUG_SAVE_DOCUMENT = True
+
 def debug_dump_metadata_print(meta: dict, context: str = ""):
-    print(f"\n===== METADATA DUMP ({context}) =====")
-    if not isinstance(meta, dict):
-        print("  (not a dict) ->", type(meta))
-        print("====================================")
-        return
+    if DEBUG_SAVE_DOCUMENT:
+        print(f"\n===== METADATA DUMP ({context}) =====")
+        if not isinstance(meta, dict):
+            print("  (not a dict) ->", type(meta))
+            print("====================================")
+            return
 
-    keys = sorted(str(k) for k in meta.keys())
-    print("  keys:", ", ".join(keys))
+        keys = sorted(str(k) for k in meta.keys())
+        print("  keys:", ", ".join(keys))
 
-    for key in keys:
-        val = meta[key]
-        if isinstance(val, fits.Header):
-            print(f"  {key}: fits.Header with {len(val.cards)} cards")
-        else:
-            print(f"  {key}: {val!r} ({type(val).__name__})")
+        for key in keys:
+            val = meta[key]
+            if isinstance(val, fits.Header):
+                print(f"  {key}: fits.Header with {len(val.cards)} cards")
+            else:
+                print(f"  {key}: {val!r} ({type(val).__name__})")
 
-    print("===== END METADATA DUMP ({}) =====".format(context))
+        print("===== END METADATA DUMP ({}) =====".format(context))
 
 class DocManager(QObject):
     documentAdded = pyqtSignal(object)   # ImageDocument
