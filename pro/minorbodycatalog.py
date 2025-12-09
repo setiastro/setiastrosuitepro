@@ -263,26 +263,19 @@ class MinorBodyCatalog:
         """
         Return a pandas DataFrame of relatively bright asteroids.
 
-        Parameters
-        ----------
-        H_max : float
-            Only include asteroids with absolute magnitude H <= H_max.
-            (Column is 'magnitude_H' in the Skyfield-generated table.)
-        limit : int or None
-            Maximum number of rows to return; None for no limit.
-
-        Returns
-        -------
-        pandas.DataFrame
+        We treat magnitude_H as numeric even though the column is TEXT in the
+        current schema, by casting it to REAL for filtering and ordering.
         """
         import pandas as pd
 
         conn = self._get_conn()
+
+        # Force numeric comparison + ordering
         sql = """
             SELECT *
             FROM asteroids
-            WHERE magnitude_H <= ?
-            ORDER BY magnitude_H ASC
+            WHERE CAST(magnitude_H AS REAL) <= ?
+            ORDER BY CAST(magnitude_H AS REAL) ASC
         """
         if limit is not None:
             sql += " LIMIT ?"
@@ -299,18 +292,12 @@ class MinorBodyCatalog:
         """
         Return a pandas DataFrame of 'bright' comets.
 
-        The magnitude columns in the comets table differ slightly;
-        Skyfield usually stores them as 'absolute_magnitude' (or similar).
-        This function uses a best-effort filter and is mainly a convenience.
-
-        Returns
-        -------
-        pandas.DataFrame
+        We auto-detect the magnitude column and cast it to REAL so that
+        filtering and ordering are done in brightness order.
         """
         import pandas as pd
 
         conn = self._get_conn()
-        # Try to detect magnitude column
         cur = conn.cursor()
         cur.execute("PRAGMA table_info(comets)")
         cols = {row[1] for row in cur.fetchall()}
@@ -323,6 +310,51 @@ class MinorBodyCatalog:
 
         if mag_col is None:
             # No magnitude info, just return a limited subset
+            sql = "SELECT * FROM comets"
+            if limit is not None:
+                sql += " LIMIT ?"
+                return pd.read_sql_query(sql, conn, params=(limit,))
+            return pd.read_sql_query(sql, conn)
+
+        # Cast to REAL so TEXT columns behave numerically
+        mag_expr = f"CAST({mag_col} AS REAL)"
+
+        sql = f"""
+            SELECT *
+            FROM comets
+            WHERE {mag_expr} <= ?
+            ORDER BY {mag_expr} ASC
+        """
+        if limit is not None:
+            sql += " LIMIT ?"
+            df = pd.read_sql_query(sql, conn, params=(H_max, limit))
+        else:
+            df = pd.read_sql_query(sql, conn, params=(H_max,))
+        return df
+
+
+    def get_bright_comets(
+        self,
+        H_max: float = 15.0,
+        limit: Optional[int] = 5000,
+    ):
+        import pandas as pd
+
+        conn = self._get_conn()
+        # Try to detect magnitude column
+        cur = conn.cursor()
+        cur.execute("PRAGMA table_info(comets)")
+        cols = {row[1] for row in cur.fetchall()}
+
+        mag_col = None
+        # Prefer g, then k, then any H-style absolute mag
+        for candidate in ("magnitude_g", "magnitude_k", "absolute_magnitude", "magnitude_H", "H"):
+            if candidate in cols:
+                mag_col = candidate
+                break
+
+        if mag_col is None:
+            # No magnitude info we recognize – just return a limited subset
             sql = "SELECT * FROM comets"
             if limit is not None:
                 sql += " LIMIT ?"
@@ -377,7 +409,6 @@ class MinorBodyCatalog:
     # -----------------------------------------------------------------------
     # Ephemeris / position scaffold (Skyfield-based, for small subsets)
     # -----------------------------------------------------------------------
-
     def compute_positions_skyfield(
         self,
         asteroid_rows,
@@ -453,72 +484,84 @@ class MinorBodyCatalog:
         ts = sf_load.timescale()
         t = ts.tt_jd(jd)
 
-        # Ephemeris
-        if ephemeris_path is not None:
-            eph = sf_load(str(ephemeris_path))
-        else:
-            # small ephemeris; OK for bundling/download
-            eph = sf_load("de440s.bsp")
+        eph = None  # track ephemeris so we can close it
+        try:
+            # Ephemeris
+            if ephemeris_path is not None:
+                eph = sf_load(str(ephemeris_path))
+            else:
+                # small ephemeris; OK for bundling/download
+                eph = sf_load("de440s.bsp")
 
-        sun = eph["sun"]
-        earth = eph["earth"]
+            sun = eph["sun"]
+            earth = eph["earth"]
 
-        # Optional observatory site
-        if topocentric is not None:
-            from skyfield.api import wgs84
-            lat_deg, lon_deg, elev_m = topocentric
-            earth = earth + wgs84.latlon(
-                latitude_degrees=lat_deg,
-                longitude_degrees=lon_deg,
-                elevation_m=elev_m,
-            )
-
-        results = []
-        total = len(df)
-        ok = 0
-        failed = 0
-
-        for i, (_, row) in enumerate(df.iterrows(), start=1):
-            # Progress callback
-            if progress_cb is not None:
-                try:
-                    cont = progress_cb(i, total)
-                except Exception:
-                    cont = True
-                if cont is False:
-                    if debug:
-                        print("[MinorBodies] progress_cb requested abort.")
-                    break
-
-            try:
-                # Let Skyfield interpret the MPCORB-style dict
-                orb = sf_mpc.mpcorb_orbit(row, ts, GM_SUN)
-
-                # Sun-centered small body, observed from Earth
-                body = sun + orb
-                ast_at_t = earth.at(t).observe(body).apparent()
-                ra, dec, distance = ast_at_t.radec()
-
-                results.append(
-                    {
-                        "designation": row.get("designation", ""),
-                        "ra_deg": float(ra.hours * 15.0),
-                        "dec_deg": float(dec.degrees),
-                        "distance_au": float(distance.au),
-                    }
+            # Optional observatory site
+            if topocentric is not None:
+                from skyfield.api import wgs84
+                lat_deg, lon_deg, elev_m = topocentric
+                earth = earth + wgs84.latlon(
+                    latitude_degrees=lat_deg,
+                    longitude_degrees=lon_deg,
+                    elevation_m=elev_m,
                 )
-                ok += 1
-            except Exception as e:
-                failed += 1
-                if debug and failed <= 10:
-                    print(
-                        f"[MinorBodies] mpcorb_orbit/observe FAILED for "
-                        f"'{row.get('designation', '')}': {repr(e)}"
+
+            results = []
+            total = len(df)
+            ok = 0
+            failed = 0
+
+            for i, (_, row) in enumerate(df.iterrows(), start=1):
+                # Progress callback
+                if progress_cb is not None:
+                    try:
+                        cont = progress_cb(i, total)
+                    except Exception:
+                        cont = True
+                    if cont is False:
+                        if debug:
+                            print("[MinorBodies] progress_cb requested abort.")
+                        break
+
+                try:
+                    # Let Skyfield interpret the MPCORB-style dict
+                    orb = sf_mpc.mpcorb_orbit(row, ts, GM_SUN)
+
+                    # Sun-centered small body, observed from Earth
+                    body = sun + orb
+                    ast_at_t = earth.at(t).observe(body).apparent()
+                    ra, dec, distance = ast_at_t.radec()
+
+                    results.append(
+                        {
+                            "designation": row.get("designation", ""),
+                            "ra_deg": float(ra.hours * 15.0),
+                            "dec_deg": float(dec.degrees),
+                            "distance_au": float(distance.au),
+                        }
                     )
+                    ok += 1
+                except Exception as e:
+                    failed += 1
+                    if debug and failed <= 10:
+                        print(
+                            f"[MinorBodies] mpcorb_orbit/observe FAILED for "
+                            f"'{row.get('designation', '')}': {repr(e)}"
+                        )
 
-        if debug:
-            print(
-                f"[MinorBodies] Skyfield positions: total={total}, ok={ok}, failed={failed}"
-            )
+            if debug:
+                print(
+                    f"[MinorBodies] Skyfield positions: total={total}, ok={ok}, failed={failed}"
+                )
 
-        return results
+            return results
+
+        finally:
+            # Make sure the ephemeris file handle is closed
+            if eph is not None:
+                close = getattr(eph, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:
+                        pass

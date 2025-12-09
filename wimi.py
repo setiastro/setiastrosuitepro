@@ -4,7 +4,7 @@ import urllib
 # Standard library imports
 from itertools import combinations
 from tifffile import imwrite
-
+from datetime import timedelta
 import pickle
 import os
 os.environ['LIGHTKURVE_STYLE'] = 'default'
@@ -970,15 +970,23 @@ class CustomGraphicsView(QGraphicsView):
 
 
     def mouseDoubleClickEvent(self, event):
-        """Handle double-click event on an object in the main image to open SIMBAD or NED URL based on source."""
+        """Handle double-click on an object in the main image."""
         scene_pos = self.mapToScene(event.pos())
         clicked_object = self.get_object_at_position(scene_pos)
 
         if clicked_object:
-            object_name = clicked_object.get("name")  # Access 'name' key from the dictionary
-            ra = float(clicked_object.get("ra"))  # Ensure RA is a float for precision
-            dec = float(clicked_object.get("dec"))  # Ensure Dec is a float for precision
-            source = clicked_object.get("source", "Simbad")  # Default to "Simbad" if source not specified
+            object_name = clicked_object.get("name")
+            ra  = float(clicked_object.get("ra"))
+            dec = float(clicked_object.get("dec"))
+            source = clicked_object.get("source", "Simbad")
+            kind   = clicked_object.get("long_type", "") or clicked_object.get("type", "")
+
+            s = (source or "").strip().lower()
+
+            # --- Minor-body overlays → 3d-asteroids.space ---
+            if s.startswith("minordb"):
+                open_minor_body_3d_page(object_name, kind=kind)
+                return
 
             if source == "Simbad" and object_name:
                 # Open Simbad URL with encoded object name
@@ -2494,6 +2502,51 @@ class MinorBodySearchWorker(QThread):
         except Exception as e:
             self.failed.emit(str(e))
 
+def slugify_minor_body_for_3d(name: str) -> str:
+    """
+    Turn things like '(584) Semiramis' or '584 Semiramis'
+    into '584-Semiramis', and fall back to a generic slug.
+    """
+    if not name:
+        return ""
+
+    s = name.replace("\u00a0", " ").strip()  # normalize non-breaking spaces
+
+    # Look for a leading numeric designation, possibly in parentheses:
+    #   "(584) Semiramis"  → num=584, rest="Semiramis"
+    #   "584 Semiramis"    → num=584, rest="Semiramis"
+    m = re.match(r'^\(?\s*([0-9]+)\s*\)?\s*(.*)$', s)
+    if m:
+        num = m.group(1)
+        rest = m.group(2).strip()
+        if rest:
+            rest_clean = re.sub(r'[^A-Za-z0-9]+', '-', rest).strip('-')
+            return f"{num}-{rest_clean}"
+        return num  # just the number (edge case)
+
+    # Fallback for comets / weird designations: generic slug
+    return re.sub(r'[^A-Za-z0-9]+', '-', s).strip('-')
+
+
+def open_minor_body_3d_page(name: str, kind: str = "Asteroid") -> None:
+    """
+    Open the 3d-asteroids page for a minor body.
+    Uses /asteroids/ for asteroids and /comets/ for comets.
+    """
+    if not name:
+        return
+
+    slug = slugify_minor_body_for_3d(name)
+    if not slug:
+        return
+
+    base = "asteroids"
+    if kind and str(kind).lower().startswith("comet"):
+        base = "comets"
+
+    url = f"https://3d-asteroids.space/{base}/{slug}"
+    webbrowser.open(url)
+
 
 class WIMIDialog(QDialog):
     def __init__(self, parent=None, settings=None, doc_manager=None, wimi_path: Optional[str] = None, wrench_path: Optional[str] = None):
@@ -3022,6 +3075,14 @@ class WIMIDialog(QDialog):
         minor_layout.addWidget(target_label,          5, 0)
         minor_layout.addWidget(self.minor_target_edit, 5, 1, 1, 3)
 
+        self.minor_count_button = QPushButton("Count Objects Brighter Than Limits")
+        self.minor_count_button.setToolTip(
+            "Show how many catalog objects are brighter than the selected H limits."
+        )
+        self.minor_count_button.clicked.connect(self.count_minor_bodies_brighter_than_limits)
+        # Put it on its own row spanning all 4 columns
+        minor_layout.addWidget(self.minor_count_button, 6, 0, 1, 4)
+
         self.advanced_search_panel.addWidget(self.minor_group)
 
 
@@ -3106,6 +3167,126 @@ class WIMIDialog(QDialog):
         legend = LegendDialog(self)
         legend.setModal(False)
     
+    def count_minor_bodies_brighter_than_limits(self):
+        """
+        Count how many catalog objects are brighter than the current H limits
+        (for asteroids and comets), and show the result to the user.
+
+        This is a *global* catalog count, not limited to your image FOV.
+        """
+        import sqlite3
+        from pathlib import Path
+
+        # Ensure DB exists / is configured
+        try:
+            db_path = self._ensure_minor_planet_db()
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Minor-Body Catalog",
+                f"Could not access the minor-body database:\n{e}",
+            )
+            return
+
+        if not db_path:
+            QMessageBox.warning(
+                self,
+                "Minor-Body Catalog",
+                "Minor-body database is not available. Please download it first.",
+            )
+            return
+
+        db_path = Path(db_path)
+        if not db_path.is_file():
+            QMessageBox.warning(
+                self,
+                "Minor-Body Catalog",
+                f"Minor-body database file not found:\n{db_path}",
+            )
+            return
+
+        # Read current limits from the UI
+        try:
+            H_ast = float(self.minor_ast_H_spin.value())
+        except Exception:
+            H_ast = 20.0
+        try:
+            H_com = float(self.minor_com_H_spin.value())
+        except Exception:
+            H_com = 15.0
+
+        ast_count = 0
+        com_count = 0
+
+        con = None
+        try:
+            con = sqlite3.connect(str(db_path))
+            cur = con.cursor()
+
+            # ----- Asteroids: use magnitude_H (indexed in the builder) -----
+            try:
+                cur.execute(
+                    "SELECT COUNT(*) FROM asteroids WHERE magnitude_H <= ?",
+                    (H_ast,),
+                )
+                row = cur.fetchone()
+                if row and row[0] is not None:
+                    ast_count = int(row[0])
+            except Exception as e:
+                print(f"[MinorBodies] COUNT asteroids failed: {e!r}")
+
+            # ----- Comets: detect magnitude column (g/k/H-style) -----
+            try:
+                cur.execute("PRAGMA table_info(comets)")
+                cols = {r[1] for r in cur.fetchall()}
+                mag_col = None
+                # Prefer g, then k, then any H-style absolute mag
+                for candidate in ("magnitude_g", "magnitude_k",
+                                  "absolute_magnitude", "magnitude_H", "H"):
+                    if candidate in cols:
+                        mag_col = candidate
+                        break
+
+                if mag_col is not None:
+                    sql = f"SELECT COUNT(*) FROM comets WHERE {mag_col} <= ?"
+                    cur.execute(sql, (H_com,))
+                    row = cur.fetchone()
+                    if row and row[0] is not None:
+                        com_count = int(row[0])
+                else:
+                    print("[MinorBodies] comets table has no usable magnitude column; comet count set to 0")
+            except Exception as e:
+                print(f"[MinorBodies] COUNT comets failed: {e!r}")
+
+        finally:
+            try:
+                if con is not None:
+                    con.close()
+            except Exception:
+                pass
+
+        # Build message
+        msg_lines = [
+            f"Asteroids with H ≤ {H_ast:.1f}: {ast_count:,}",
+            f"Comets with H ≤ {H_com:.1f}: {com_count:,}",
+            "",
+            "Note: This counts objects in the entire catalog,",
+            "not just those in your current image field of view.",
+        ]
+        msg = "\n".join(msg_lines)
+
+        QMessageBox.information(
+            self,
+            "Minor-Body Catalog Counts",
+            msg,
+        )
+
+        # Optionally also reflect this in the status bar
+        self.status_label.setText(
+            f"Minor bodies brighter than limits — Asteroids: {ast_count:,}, "
+            f"Comets: {com_count:,}"
+        )
+
 
     def toggle_object_names(self, state=None):
         self.show_names = self.show_names_checkbox.isChecked() if state is None else bool(state)
@@ -4658,7 +4839,13 @@ class WIMIDialog(QDialog):
         print(f"[DEBUG] Matched source: {source!r}")  # ← debug print
 
         s = source.strip().lower()
-
+        # --- Minor-body rows (local MinorDB results) → 3d-asteroids.space ----
+        if s.startswith("minordb"):
+            kind = (entry.get("long_type") if entry else "") or ""
+            # 'kind' will usually be "Asteroid" or "Comet"
+            open_minor_body_3d_page(object_name, kind=kind)
+            return
+        
         if s == "simbad" and object_name:
             encoded = quote(object_name)
             webbrowser.open(
@@ -5339,7 +5526,7 @@ class WIMIDialog(QDialog):
 
         dlg = QProgressDialog(
             "Downloading minor-body catalog…\n"
-            "This may take a minute on first use.",
+            "This may take a minute ~350MB file.",
             "",
             0,
             0,
@@ -5796,7 +5983,7 @@ class WIMIDialog(QDialog):
         # 4) Run query in a worker thread with a progress dialog
         prog = QProgressDialog(
             "Computing minor-body ephemerides...\n"
-            "This may take a while on first run.",
+            "This may take awhile...",
             "Cancel",
             0,
             0,
@@ -5942,6 +6129,12 @@ class WIMIDialog(QDialog):
         db_path = Path(db_path)
         if not db_path.is_file():
             raise FileNotFoundError(f"Minor-body DB not found: {db_path}")
+
+        # ── HACK: shift observation time by +1 hour for testing ──
+        hack_hours = -2.0
+        obs_datetime = obs_datetime + timedelta(hours=hack_hours)
+        print(f"[MinorBodies] HACK: using obs_datetime +{hack_hours}h = {obs_datetime.isoformat()}")
+
 
         # 1) Convert observation datetime to JD
         jd = Time(obs_datetime).jd
