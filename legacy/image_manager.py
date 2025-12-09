@@ -989,15 +989,6 @@ from astropy.wcs import WCS
 def attach_wcs_to_metadata(meta: dict, hdr: fits.Header | dict | None) -> dict:
     """
     If hdr contains WCS, create an astropy.wcs.WCS and stash in metadata.
-
-    Strategy:
-      0) If there is obviously no WCS (no CTYPE1/2 or CRVAL1/2), bail out.
-      1) Try WCS(header, relax=True) normally.
-      2) On failure, retry with naxis=2 (common case: 3D RGB + 2D SIP).
-      3) On failure, strip SIP-related keys and retry with naxis=2.
-      4) If all attempts fail, log and give up (no 'wcs' attached).
-
-    Doesn't overwrite an existing non-None meta['wcs'].
     """
     if not hdr or meta is None:
         return meta or {}
@@ -1008,29 +999,33 @@ def attach_wcs_to_metadata(meta: dict, hdr: fits.Header | dict | None) -> dict:
     try:
         fhdr = hdr if isinstance(hdr, fits.Header) else fits.Header(hdr)
 
-        # --- Quick sanity: if we don't even have a basic celestial WCS, skip quietly ---
+        # 🔹 Drop problematic long-string cards that upset astropy.wcs
+        # FILE_PATH is the one we saw erroring, but you can add more here if needed.
+        if "FILE_PATH" in fhdr:
+            val = str(fhdr["FILE_PATH"])
+            if len(val) > 68:  # FITS cards max 80 chars, ~68 for value
+                print(f"⚠️ Dropping FILE_PATH from WCS header build (too long: {len(val)} chars)")
+                del fhdr["FILE_PATH"]
+
+        # Optional: also run through our invalid-card stripper
+        fhdr = _drop_invalid_cards(fhdr)
+
+        # --- Quick sanity: no basic WCS → bail quietly ---
         core_keys = ("CTYPE1", "CTYPE2", "CRVAL1", "CRVAL2")
         if not all(k in fhdr for k in core_keys):
-            # No real astrometric solution; don't spam warnings
             return meta
 
-        # --- Attempt 1: plain WCS ---
+        # --- Attempt 1: basic WCS ---
         try:
             w = WCS(fhdr, relax=True)
-
         except Exception as e1:
             print(f"⚠️ WCS(fhdr, relax=True) failed: {e1}")
             print("⚠️ Retrying WCS with naxis=2 (ignore extra axis).")
-
-            # --- Attempt 2: force 2 pixel axes (typical RGB+SIP scenario) ---
             try:
                 w = WCS(fhdr, relax=True, naxis=2)
-
             except Exception as e2:
                 print(f"⚠️ WCS(..., naxis=2) failed: {e2}")
                 print("⚠️ Retrying WCS with naxis=2 after stripping SIP terms.")
-
-                # --- Attempt 3: strip SIP/distortion keywords and retry ---
                 try:
                     fhdr2 = fhdr.copy()
                     for k in list(fhdr2.keys()):
@@ -1039,10 +1034,8 @@ def attach_wcs_to_metadata(meta: dict, hdr: fits.Header | dict | None) -> dict:
                     w = WCS(fhdr2, relax=True, naxis=2)
                 except Exception as e3:
                     print(f"⚠️ WCS(..., naxis=2) after SIP-strip failed: {e3}")
-                    # Give up – we’ll leave meta['wcs'] unset
-                    raise e1  # re-raise the original for the outer handler
+                    raise e1  # re-raise original
 
-        # If we got here, we have some WCS object
         if getattr(w, "has_celestial", False):
             meta["wcs"] = w
             meta["wcs_header"] = w.to_header(relax=True)

@@ -6585,7 +6585,130 @@ class AstroSuiteProMainWindow(
 
         return None
 
+    def _apply_wcs_dict_to_doc(self, doc, wcs_dict: dict) -> bool:
+        """
+        Apply a WCS/SIP solution (flat dict of FITS cards) to an ImageDocument.
 
+        - Updates doc.metadata['wcs_header'] with the new WCS/SIP cards.
+        - Preserves all acquisition cards already in doc.metadata['fits_header'].
+        - Builds a full doc.metadata['original_header'] = fits_header + wcs_header.
+        - Rebuilds astropy.wcs.WCS from the combined header.
+        - Sets HasAstrometricSolution flags and mirrors WCS into image_meta["WCS"].
+
+        Used by:
+          * CopyAstrometryDialog
+          * Ctrl+drag/drop ASTROMETRY payloads
+        """
+        if doc is None or not wcs_dict:
+            return False
+
+        from astropy.io import fits
+
+        meta = getattr(doc, "metadata", {}) or {}
+
+        # --- 1) Get current headers ----------------------------------------
+        # Acquisition header from loader (what you see as "FITS Header.*")
+        fits_hdr = meta.get("fits_header")
+        # Existing WCS header (usually just WCSAXES/CRVAL/CRPIX/CD/SIP etc.)
+        wcs_hdr = meta.get("wcs_header")
+        # Old "original" header, if any
+        orig_hdr = meta.get("original_header")
+
+        # Normalize types
+        if not isinstance(fits_hdr, fits.Header):
+            # If we have an original header but no fits_header, use that as base
+            if isinstance(orig_hdr, fits.Header):
+                fits_hdr = orig_hdr.copy()
+            else:
+                fits_hdr = fits.Header()
+
+        if not isinstance(wcs_hdr, fits.Header):
+            wcs_hdr = fits.Header()
+
+        # --- 2) Normalize / sanitize the incoming WCS dict ------------------
+        if hasattr(self, "_normalize_wcs_dict"):
+            w = self._normalize_wcs_dict(wcs_dict)
+        else:
+            w = dict(wcs_dict)
+
+        # If you have WCS key sets / prefixes defined, you can optionally
+        # filter w down to "true" WCS keys here. Otherwise we just trust w.
+
+        # --- 3) Merge WCS into wcs_header (WCS-only store) ------------------
+        changed = False
+        for k, v in w.items():
+            try:
+                old = wcs_hdr.get(k)
+                if old != v:
+                    wcs_hdr[k] = v
+                    changed = True
+            except Exception:
+                # Skip weird keys
+                pass
+
+        # --- 4) Build a full combined header for export / WCS object -------
+        full_hdr = fits_hdr.copy()
+        for card in wcs_hdr.cards:
+            try:
+                full_hdr[card.keyword] = card.value, card.comment
+            except Exception:
+                # Be robust against pathological keywords
+                pass
+
+        # Mark solution flags in header and metadata
+        try:
+            if full_hdr.get("HasAstrometricSolution") is not True:
+                full_hdr["HasAstrometricSolution"] = True
+                changed = True
+        except Exception:
+            pass
+
+        if meta.get("HasAstrometricSolution") is not True:
+            meta["HasAstrometricSolution"] = True
+            changed = True
+
+        # --- 5) Mirror into image_meta["WCS"] for quick lookups ------------
+        im = meta.get("image_meta")
+        if not isinstance(im, dict):
+            im = {}
+        im["WCS"] = dict(w)
+        meta["image_meta"] = im
+
+        # --- 6) Build astropy WCS from the combined header ------------------
+        try:
+            from astropy.wcs import WCS
+            meta["wcs"] = WCS(full_hdr)
+        except Exception:
+            # If this fails we still keep headers; WCS-based tools can handle None
+            meta.pop("wcs", None)
+
+        # --- 7) Store headers back into metadata ---------------------------
+        meta["fits_header"] = fits_hdr           # unchanged acquisition header
+        meta["wcs_header"] = wcs_hdr             # updated WCS-only header
+        meta["original_header"] = full_hdr       # full export header
+
+        doc.metadata = meta
+
+        # --- 8) Notify UI / listeners --------------------------------------
+        if changed and hasattr(doc, "changed"):
+            try:
+                doc.changed.emit()
+            except Exception:
+                pass
+
+        if hasattr(self, "_refresh_header_viewer"):
+            try:
+                self._refresh_header_viewer(doc)
+            except Exception:
+                pass
+
+        if hasattr(self, "currentDocumentChanged"):
+            try:
+                self.currentDocumentChanged.emit(doc)
+            except Exception:
+                pass
+
+        return True
 
     def _on_astrometry_drop(self, payload: dict, target_subwindow):
         """

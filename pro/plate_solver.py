@@ -90,12 +90,14 @@ def _status_popup_update(text: str):
         _STATUS_POPUP.update_text(text)
 
 def _status_popup_close():
-    
+    """Hide (but do not destroy) the singleton status popup if it exists."""
+    global _STATUS_POPUP
     try:
-        global _STATUS_POPUP
-        _STATUS_POPUP.hide()
+        if _STATUS_POPUP is not None:
+            _STATUS_POPUP.hide()
             # keep instance for reuse (fast re-open)
     except Exception:
+        # Completely safe to ignore; worst case the popup was already gone.
         pass
 
 def _sleep_ui(ms: int):
@@ -1219,6 +1221,10 @@ def _build_header_from_astap_outputs(
 ) -> Header:
     """
     Build final header as:  base_header (acquisition) + WCS/SIP from .wcs.
+    """
+    _debug_dump_header("ASTAP: BASE_HEADER ARG INTO _build_header_from_astap_outputs", base_header)
+    """
+    Build final header as:  base_header (acquisition) + WCS/SIP from .wcs.
 
     tmp_fits is only used as a last-resort source if base_header is None.
     """
@@ -1241,7 +1247,7 @@ def _build_header_from_astap_outputs(
                 base_hdr[k] = v
             except Exception:
                 pass
-
+    _debug_dump_header("ASTAP: BASE_HDR (acquisition header after fallback)", base_hdr)
     # 2) Load WCS from sidecar
     wcs_hdr = Header()
     if sidecar_wcs and os.path.exists(sidecar_wcs):
@@ -1255,10 +1261,11 @@ def _build_header_from_astap_outputs(
                         pass
         except Exception as e:
             print("Error parsing .wcs file:", e)
-
+    _debug_dump_header("ASTAP: WCS_HDR FROM SIDECAR .WCS", wcs_hdr)
     # 3) Merge WCS into base acquisition header (base wins for non-WCS keys)
     final_hdr = _merge_wcs_into_base_header(base_hdr, wcs_hdr)
 
+    _debug_dump_header("ASTAP: FINAL MERGED HEADER (base_hdr + wcs_hdr)", final_hdr)
     # Debug (optional)
     try:
         print("\n================ ASTAP merged header ==================")
@@ -1598,11 +1605,15 @@ def _solve_numpy_with_astap(parent, settings, image: np.ndarray, seed_header: He
     if isinstance(seed_header, Header):
         clean_for_temp = _strip_wcs_keys(seed_header)
         base_for_merge = clean_for_temp        # acquisition info lives here
+        _debug_dump_header("ASTAP: CLEAN_FOR_TEMP (seed_header with WCS stripped)", clean_for_temp)
+        _debug_dump_header("ASTAP: BASE_FOR_MERGE (acquisition header we expect to preserve)", base_for_merge)
     else:
         clean_for_temp = _minimal_header_for_gray2d(*gray.shape)
         base_for_merge = None
+        _debug_dump_header("ASTAP: CLEAN_FOR_TEMP (minimal header, no seed)", clean_for_temp)
 
     tmp_fit, sidecar_wcs = _write_temp_fit_via_save_image(gray, clean_for_temp)
+    print(f"[ASTAP] Temp FITS: {tmp_fit}, sidecar WCS: {sidecar_wcs}")
 
     # seed if possible; otherwise blind
     seed_args: list[str] = []
@@ -1700,19 +1711,70 @@ def _solve_numpy_with_astap(parent, settings, image: np.ndarray, seed_header: He
 # Solve active doc in-place
 # ---------------------------------------------------------------------
 
+# --- Debug helpers ---------------------------------------------------
+DEBUG_PLATESOLVE_HEADERS = False  # set False to silence all header dumps
+
+
+def _debug_dump_header(label: str, hdr: Header | None):
+    """Print a full FITS Header to the console for debugging."""
+    if not DEBUG_PLATESOLVE_HEADERS:
+        return
+
+    print(f"\n===== {label} =====")
+    if hdr is None:
+        print("  (None)")
+    elif isinstance(hdr, Header):
+        print(f"  (#cards = {len(hdr)})")
+        for k, v in hdr.items():
+            print(f"  {k:8s} = {v!r}")
+    else:
+        print(f"  (not a Header: {type(hdr)!r})")
+    print("========================================\n")
+
+def _debug_dump_meta(label: str, meta: dict):
+    if not DEBUG_PLATESOLVE_HEADERS:
+        return
+    print(f"\n===== {label} (meta keys) =====")
+    for k in sorted(meta.keys()):
+        v = meta[k]
+        print(f"  {k}: {type(v).__name__}")
+    print("================================\n")
+
+
+
 def plate_solve_doc_inplace(parent, doc, settings) -> Tuple[bool, Header | str]:
     img = getattr(doc, "image", None)
     if img is None:
         return False, "Active document has no image data."
 
+    # Make sure metadata is a dict we can mutate
     meta = getattr(doc, "metadata", {}) or {}
-    seed_h = _seed_header_from_meta(meta)
+    if not isinstance(meta, dict):
+        try:
+            meta = dict(meta)
+        except Exception:
+            meta = {}
 
+    _debug_dump_meta("META BEFORE SOLVE", meta)
+    _debug_dump_header("META['original_header'] BEFORE SOLVE", meta.get("original_header"))
+
+    seed_h = _seed_header_from_meta(meta)
+    _debug_dump_header("SEED HEADER FROM META (seed_h)", seed_h)
+
+    # Keep a copy of acquisition header (no WCS) for merge
+    fits_hdr = meta.get("fits_header")
+    acq_base: Header | None = None
+    if isinstance(seed_h, Header):
+        acq_base = _strip_wcs_keys(fits_hdr.copy())
+        _debug_dump_header("ACQ_BASE (seed_h with WCS stripped)", acq_base)
+    else:
+        # Fallback (rare): still fall back to the synthetic seed
+        acq_base = _strip_wcs_keys(seed_h.copy())
     # Better debug: use our new scale estimator
     try:
-        ra  = seed_h.get("CRVAL1", None)
-        dec = seed_h.get("CRVAL2", None)
-        scale = _estimate_scale_arcsec_from_header(seed_h)
+        ra  = seed_h.get("CRVAL1", None) if isinstance(seed_h, Header) else None
+        dec = seed_h.get("CRVAL2", None) if isinstance(seed_h, Header) else None
+        scale = _estimate_scale_arcsec_from_header(seed_h) if isinstance(seed_h, Header) else None
         print(f"[PlateSolve seed] CRVAL1={ra}, CRVAL2={dec}, scale≈{scale} \"/px")
     except Exception as e:
         print("Seed: debug print failed:", e)
@@ -1730,32 +1792,38 @@ def plate_solve_doc_inplace(parent, doc, settings) -> Tuple[bool, Header | str]:
         ok, res = _solve_numpy_with_fallback(parent, settings, img, seed_h)
         if not ok:
             return False, res
+
         hdr: Header = res
+        _debug_dump_header("SOLVER RAW HEADER (from _solve_numpy_with_fallback)", hdr)
 
-        # Debug print
+        # Final header = acquisition + new WCS (solver)
+        if isinstance(acq_base, Header) and isinstance(hdr, Header):
+            hdr_final = _merge_wcs_into_base_header(acq_base, hdr)
+        else:
+            hdr_final = hdr if isinstance(hdr, Header) else Header()
+
+        _debug_dump_header("FINAL MERGED HEADER (hdr_final)", hdr_final)
+        # 🔹 NEW: stash pre-solve header ONCE so we never lose it
         try:
-            print("\n================ Storing into doc.metadata =================")
-            print(f"original_header -> FITS.Header with {len(hdr)} keys")
-            for k, v in hdr.items():
-                print(f"  META_HDR[{k}] = {v!r}")
-            print("===========================================================\n")
+            if "original_header" in meta and "pre_solve_header" not in meta:
+                old = meta["original_header"]
+                if isinstance(old, Header):
+                    meta["pre_solve_header"] = old.copy()
         except Exception as e:
-            print("Debug print of stored header failed:", e)
+            print("plate_solve_doc_inplace: failed to stash pre_solve_header:", e)
 
-        # Store back
-        if not isinstance(doc.metadata, dict):
-            setattr(doc, "metadata", {})
-        doc.metadata["original_header"] = hdr
+        # 🔹 Ensure doc.metadata is our updated dict
+        doc.metadata = meta
 
-        # Build WCS object
+        # Store merged header as the current "original_header"
+        doc.metadata["original_header"] = hdr_final
+        _debug_dump_header("DOC.METADATA['original_header'] AFTER SOLVE", doc.metadata.get("original_header"))
+
+
+        # Build WCS object from the same header we just stored
         try:
-            wcs_obj = WCS(hdr)
+            wcs_obj = WCS(hdr_final)
             doc.metadata["wcs"] = wcs_obj
-            try:
-                naxis = getattr(wcs_obj, "naxis", None)
-                print(f"WCS constructed successfully (naxis={naxis}).")
-            except Exception:
-                print("WCS constructed successfully.")
         except Exception as e:
             print("WCS build FAILED:", e)
 
@@ -2171,22 +2239,42 @@ class PlateSolverDialog(QDialog):
             QMessageBox.warning(self, "Plate Solver", "Unsupported or unreadable image.")
             return
 
+        # Seed header from original_header
         seed_h = _as_header(original_header) if isinstance(original_header, (dict, Header)) else None
 
+        # Acquisition base for final merge (strip old WCS)
+        acq_base: Header | None = None
+        if isinstance(seed_h, Header):
+            acq_base = _strip_wcs_keys(seed_h)
+
+        # Solve
         ok, res = _solve_numpy_with_fallback(self, self.settings, image_data, seed_h)
         if not ok:
-            self.status.setText(str(res)); return
-        hdr: Header = res
+            self.status.setText(str(res))
+            return
+        solver_hdr: Header = res
+
+        # Merge solver WCS into acquisition header
+        if isinstance(acq_base, Header) and isinstance(solver_hdr, Header):
+            hdr_final = _merge_wcs_into_base_header(acq_base, solver_hdr)
+        else:
+            hdr_final = solver_hdr if isinstance(solver_hdr, Header) else Header()
 
         # Save-as using legacy.save_image() with ORIGINAL pixels (not normalized)
-        save_path, _ = QFileDialog.getSaveFileName(self, "Save Plate-Solved FITS", "", "FITS files (*.fits *.fit)")
+        save_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Plate-Solved FITS",
+            "",
+            "FITS files (*.fits *.fit)"
+        )
         if save_path:
             try:
                 # never persist 'file_path' inside FITS
                 h2 = Header()
-                for k in hdr.keys(): 
+                for k in hdr_final.keys():
                     if k.upper() != "FILE_PATH":
-                        h2[k] = hdr[k]
+                        h2[k] = hdr_final[k]
+
                 save_image(
                     img_array=image_data,
                     filename=save_path,
@@ -2202,6 +2290,7 @@ class PlateSolverDialog(QDialog):
         else:
             self.status.setText("Solved (not saved).")
 
+
     def _run_batch(self):
         in_dir  = self.le_in.text().strip()
         out_dir = self.le_out.text().strip()
@@ -2213,7 +2302,11 @@ class PlateSolverDialog(QDialog):
             return
 
         exts = {".xisf", ".fits", ".fit", ".tif", ".tiff", ".png", ".jpg", ".jpeg"}
-        files = [os.path.join(in_dir, f) for f in os.listdir(in_dir) if os.path.splitext(f)[1].lower() in exts]
+        files = [
+            os.path.join(in_dir, f)
+            for f in os.listdir(in_dir)
+            if os.path.splitext(f)[1].lower() in exts
+        ]
         if not files:
             QMessageBox.information(self, "Batch", "No acceptable image files found.")
             return
@@ -2229,21 +2322,40 @@ class PlateSolverDialog(QDialog):
             QApplication.processEvents()
 
             try:
+                # Load using legacy.load_image()
                 image_data, original_header, bit_depth, is_mono = load_image(path)
                 if image_data is None:
-                    self.log.append("  ❌ Failed to load"); continue
+                    self.log.append("  ❌ Failed to load")
+                    continue
 
+                # Seed header from original_header
                 seed_h = _as_header(original_header) if isinstance(original_header, (dict, Header)) else None
+
+                # Acquisition base for final merge (strip old WCS)
+                acq_base: Header | None = None
+                if isinstance(seed_h, Header):
+                    acq_base = _strip_wcs_keys(seed_h)
+
+                # Solve
                 ok, res = _solve_numpy_with_fallback(self, self.settings, image_data, seed_h)
                 if not ok:
-                    self.log.append(f"  ❌ {res}"); continue
+                    self.log.append(f"  ❌ {res}")
+                    continue
                 hdr: Header = res
 
-                h2 = Header()
-                for k in hdr.keys():
-                    if k.upper() != "FILE_PATH":
-                        h2[k] = hdr[k]
+                # Merge solver WCS into acquisition header
+                if isinstance(acq_base, Header) and isinstance(hdr, Header):
+                    hdr_final = _merge_wcs_into_base_header(acq_base, hdr)
+                else:
+                    hdr_final = hdr if isinstance(hdr, Header) else Header()
 
+                # Build header to save (and strip FILE_PATH)
+                h2 = Header()
+                for k in hdr_final.keys():
+                    if k.upper() != "FILE_PATH":
+                        h2[k] = hdr_final[k]
+
+                # Save using original pixels
                 save_image(
                     img_array=image_data,
                     filename=out,
@@ -2253,9 +2365,11 @@ class PlateSolverDialog(QDialog):
                     is_mono=is_mono
                 )
                 self.log.append("  ✔ saved: " + out)
+
             except Exception as e:
                 self.log.append("  ❌ error: " + str(e))
 
             QApplication.processEvents()
 
         self.log.append("Batch plate solving completed.")
+
