@@ -11,6 +11,7 @@ from legacy.image_manager import list_fits_extensions, load_fits_extension
 import uuid
 from legacy.image_manager import attach_wcs_to_metadata  # or wherever you put it
 from astropy.wcs import WCS  # only if not already imported in this module
+from pro.debug_utils import debug_dump_metadata
 
 # Memory utilities for lazy loading and caching
 try:
@@ -132,8 +133,8 @@ from pro.file_utils import _normalize_ext
 _ALLOWED_DEPTHS = {
     "png":  {"8-bit"},
     "jpg":  {"8-bit"},
-    "fits": {"32-bit floating point"},
-    "fit":  {"32-bit floating point"},
+    "fits": ["8-bit", "16-bit", "32-bit unsigned", "32-bit floating point"],
+    "fit":  ["8-bit", "16-bit", "32-bit unsigned", "32-bit floating point"],
     "tif":  {"8-bit", "16-bit", "32-bit unsigned", "32-bit floating point"},
     "xisf": {"16-bit", "32-bit unsigned", "32-bit floating point"},
 }
@@ -742,25 +743,32 @@ def _compute_cropped_wcs(parent_hdr_like: dict | "fits.Header",
 
     return base
 
-def _pick_header_for_save(meta: dict):
-    """
-    Choose the best header object to write back to disk.
+import logging
 
-    Preference:
-      1. 'fits_header'  – often the fully-updated astropy.Header
-                          after plate solving / header edits
-      2. 'header'       – generic header key some tools may stash
-      3. 'original_header' – whatever we opened the file with
+log = logging.getLogger(__name__)
+
+def _pick_header_for_save(meta: dict) -> fits.Header | None:
+    """
+    Choose the best header to write to disk.
+
+    Priority:
+        1. 'wcs_header'      – if you stash a solved header here
+        2. 'fits_header'     – common name after ASTAP / plate solve
+        3. 'original_header' – whatever came from disk
+        4. 'header'          – older code paths
     """
     if not isinstance(meta, dict):
         return None
 
-    hdr = (
-        meta.get("fits_header")
-        or meta.get("header")
-        or meta.get("original_header")
-    )
-    return hdr
+    for key in ("wcs_header", "fits_header", "original_header", "header"):
+        hdr = meta.get(key)
+        if isinstance(hdr, fits.Header):
+            log.debug("[_pick_header_for_save] using %s (%d cards)", key, len(hdr))
+            return hdr
+
+    log.debug("[_pick_header_for_save] no fits.Header found in metadata; "
+              "will let legacy_save_image fall back.")
+    return None
 
 def _snapshot_header_for_metadata(meta: dict):
     """
@@ -1457,6 +1465,24 @@ def _xisf_meta_to_fits_header(m: dict) -> fits.Header | None:
 
     return hdr if found else None
 
+def debug_dump_metadata_print(meta: dict, context: str = ""):
+    print(f"\n===== METADATA DUMP ({context}) =====")
+    if not isinstance(meta, dict):
+        print("  (not a dict) ->", type(meta))
+        print("====================================")
+        return
+
+    keys = sorted(str(k) for k in meta.keys())
+    print("  keys:", ", ".join(keys))
+
+    for key in keys:
+        val = meta[key]
+        if isinstance(val, fits.Header):
+            print(f"  {key}: fits.Header with {len(val.cards)} cards")
+        else:
+            print(f"  {key}: {val!r} ({type(val).__name__})")
+
+    print("===== END METADATA DUMP ({}) =====".format(context))
 
 class DocManager(QObject):
     documentAdded = pyqtSignal(object)   # ImageDocument
@@ -2049,61 +2075,123 @@ class DocManager(QObject):
             return current_bit_depth if current_bit_depth in _ALLOWED_DEPTHS["xisf"] else "32-bit floating point"
         return "32-bit floating point"
 
-    def save_document(self, doc: ImageDocument, path: str, bit_depth_override: str | None = None):
+    def save_document(
+        self,
+        doc: "ImageDocument",
+        path: str,
+        bit_depth: str | None = None,
+        *,
+        bit_depth_override: str | None = None,
+    ):
+        """
+        Save the given ImageDocument to 'path'.
+
+        bit_depth_override:
+            New-style explicit choice from a dialog.
+
+        bit_depth:
+            Legacy positional argument; still honored if override is None.
+        """
         ext = _normalize_ext(os.path.splitext(path)[1])
         img = doc.image
+        meta = doc.metadata or {}
 
-        # Decide bit depth (override → fallback inference)
-        if bit_depth_override:
+        # ── MASSIVE DEBUG: show everything we know coming in ───────────────
+        debug_dump_metadata_print(meta, context="save_document: BEFORE HEADER PICK")
+
+        # --- Decide final bit depth ---------------------------------------
+        requested = bit_depth_override or bit_depth or meta.get("bit_depth")
+
+        if requested:
             allowed = _ALLOWED_DEPTHS.get(ext, set())
-            if allowed and bit_depth_override not in allowed:
-                # Guardrail: if someone passes an invalid choice, fallback
-                bit_depth = next(iter(allowed))
+            if allowed and requested not in allowed:
+                print(f"[save_document] Requested bit depth {requested!r} "
+                      f"not in allowed {allowed}, falling back to first.")
+                final_bit_depth = next(iter(allowed))
             else:
-                bit_depth = bit_depth_override
+                final_bit_depth = requested
         else:
-            bit_depth = self._infer_bit_depth_for_format(img, ext, doc.metadata.get("bit_depth"))
+            final_bit_depth = self._infer_bit_depth_for_format(
+                img, ext, meta.get("bit_depth")
+            )
 
-        # For integer encodes, clip to [0..1] to avoid wrap/overflow
-        needs_clip = ext in ("png", "jpg", "tif") and bit_depth in ("8-bit", "16-bit", "32-bit unsigned")
+        print(f"[save_document] ext={ext!r}, final_bit_depth={final_bit_depth!r}")
+
+        # --- Clip if needed for integer encodes ---------------------------
+        needs_clip = (
+            ext in ("png", "jpg", "jpeg", "tif", "tiff")
+            and final_bit_depth in ("8-bit", "16-bit", "32-bit unsigned")
+        )
+        if needs_clip:
+            print("[save_document] Clipping image to [0,1] for integer encode.")
         img_to_save = np.clip(img, 0.0, 1.0) if needs_clip else img
 
-        meta = doc.metadata or {}
-        effective_header = _pick_header_for_save(meta)
+        # --- PICK THE HEADER EXPLICITLY -----------------------------------
+        # Priority:
+        #   1) wcs_header
+        #   2) fits_header
+        #   3) original_header
+        #   4) header
+        effective_header = None
+        for key in ("original_header", "fits_header", "wcs_header", "header"):
+            val = meta.get(key)
+            if isinstance(val, fits.Header):
+                effective_header = val
+                print(f"[save_document] Using header from meta['{key}'] "
+                      f"with {len(val.cards)} cards.")
+                break
+
+        if effective_header is None:
+            print("[save_document] WARNING: No fits.Header in metadata, "
+                  "legacy_save_image will pick a default header.")
+        else:
+            # Print first few cards so we can confirm we have the SIP stuff
+            print("[save_document] effective_header preview (first 25 cards):")
+            for i, card in enumerate(effective_header.cards):
+                if i >= 25:
+                    print("  ... (truncated)")
+                    break
+                print(f"  {card.keyword:8s} = {card.value!r}")
+
+        # ── Call the legacy saver ─────────────────────────────────────────
+        print("[save_document] Calling legacy_save_image(...) now")
 
         legacy_save_image(
             img_array=img_to_save,
             filename=path,
             original_format=ext,
-            bit_depth=bit_depth,
+            bit_depth=final_bit_depth,
             original_header=effective_header,
-            is_mono=meta.get("is_mono", img.ndim == 2),
+            is_mono=meta.get("mono", img.ndim == 2),
             image_meta=meta.get("image_meta"),
             file_meta=meta.get("file_meta"),
-            # Keep WCS/SIP override if your saver supports it
             wcs_header=meta.get("wcs_header"),
         )
-        # Update metadata with the user’s choice
-        # Update metadata with the user’s choice
-        doc.metadata["file_path"] = path
-        doc.metadata["original_format"] = ext
-        doc.metadata["bit_depth"] = bit_depth
 
-        # Keep our in-memory header in sync with what we just wrote
-        if effective_header is not None:
-            doc.metadata["original_header"] = effective_header
-            # optional: refresh the snapshot for header viewer / project IO
+        # ── Update metadata in memory to match what we just wrote ─────────
+        meta["file_path"] = path
+        meta["original_format"] = ext
+        meta["bit_depth"] = final_bit_depth
+
+        if isinstance(effective_header, fits.Header):
+            meta["original_header"] = effective_header
+
+            # If you have this helper, keep it; if not, you can skip it
             try:
-                _snapshot_header_for_metadata(doc.metadata)
-            except Exception:
-                pass
-        
-        # Reset dirty flag (if tracking edits)
+                _snapshot_header_for_metadata(meta)
+            except Exception as e:
+                print("[save_document] _snapshot_header_for_metadata error:", e)
+
+        doc.metadata = meta
+
+        # reset dirty flag
         if hasattr(doc, "dirty"):
             doc.dirty = False
 
-        doc.changed.emit()
+        if hasattr(doc, "changed"):
+            doc.changed.emit()
 
+        print("[save_document] DONE, saved to", path)
     def duplicate_document(self, source_doc: ImageDocument, new_name: str | None = None) -> ImageDocument:
         # DEBUG: log the source doc WCS before we touch anything
         if _DEBUG_WCS:

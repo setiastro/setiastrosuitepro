@@ -1861,6 +1861,10 @@ def _has_xisf_props(meta) -> bool:
         pass
     return False
 
+import logging
+
+log = logging.getLogger(__name__)
+
 def save_image(img_array,
                filename,
                original_format,
@@ -1876,6 +1880,23 @@ def save_image(img_array,
     - Never calls .keys() on a non-mapping.
     - FITS always written as float32; header is sanitized or synthesized.
     """
+    # 🔊 Debug what we got
+    if isinstance(original_header, fits.Header):
+        log.debug(
+            "[legacy_save_image] original_header: fits.Header with %d cards, first few:",
+            len(original_header)
+        )
+        for i, card in enumerate(original_header.cards):
+            if i >= 20:
+                log.debug("[legacy_save_image]   ... (truncated)")
+                break
+            log.debug("[legacy_save_image]   %-10s = %r", card.keyword, card.value)
+    else:
+        log.debug(
+            "[legacy_save_image] original_header is %r, wcs_header is %r",
+            type(original_header), type(wcs_header),
+        )
+
     # --- Fix for accidental positional arg swap: (header <-> bit_depth) -----
     if isinstance(original_header, str) and original_header in _BIT_DEPTH_STRS and _is_header_obj(bit_depth):
         original_header, bit_depth = bit_depth, original_header

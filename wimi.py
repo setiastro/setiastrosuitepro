@@ -5696,6 +5696,13 @@ class WIMIDialog(QDialog):
         if not db_path:
             return
 
+        # Optional: target name (e.g. "Semiramis")
+        target_filter = None
+        if hasattr(self, "minor_target_edit"):
+            t = self.minor_target_edit.text().strip()
+            if t:
+                target_filter = t
+
         # 4) Query DB
         try:
             results = self._query_minor_planets_from_db(
@@ -5704,7 +5711,7 @@ class WIMIDialog(QDialog):
                 dec_center=dec_center,
                 radius_deg=radius_deg,
                 obs_datetime=obs_dt,
-                target_filter=target_filter or None,
+                target_filter=target_filter,
             )
         except Exception as e:
             QMessageBox.critical(self, "Minor-Body Search", f"Query failed:\n{e}")
@@ -5772,10 +5779,30 @@ class WIMIDialog(QDialog):
         obs_datetime,
         target_filter: str | None = None,
     ):
-        ...
+        """
+        Query the local minor-body DB using MinorBodyCatalog + Skyfield.
+
+        Returns list of dicts:
+            ra, dec, name, mag, type, distance, source, designation
+        """
+        from pathlib import Path
+        from astropy.time import Time
+        import pandas as pd
+        from pro import minorbodycatalog as mbc
+
+        db_path = Path(db_path)
+        if not db_path.is_file():
+            raise FileNotFoundError(f"Minor-body DB not found: {db_path}")
+
         # 1) Convert observation datetime to JD
         jd = Time(obs_datetime).jd
-        ...
+
+        print(
+            f"[MinorBodies] Search: RA={ra_center:.6f} deg  "
+            f"Dec={dec_center:.6f} deg  radius={radius_deg:.4f} deg  JD={jd:.6f}"
+        )
+        print(f"[MinorBodies] DB path: {db_path}")
+
         # Read user limits from the UI, with safe fallbacks
         try:
             H_ast = float(self.minor_ast_H_spin.value())
@@ -5794,21 +5821,17 @@ class WIMIDialog(QDialog):
         except Exception:
             N_com = 5000
 
-        # --- OVERRIDE for specific-target searches --------------------
+        # If searching for a specific target, override limits so we don't miss it
         if target_filter:
-            # For a named object, we don't want to miss it because of limits.
-            # Use very loose limits so we effectively search the whole DB.
             H_ast = 40.0
             H_com = 40.0
-            # Use a huge limit; MinorBodyCatalog will clamp to catalog size.
             N_ast = 2_000_000
             N_com = 100_000
             print(
-                "[MinorBodies] target search – overriding limits to near-full "
-                f"catalog: Asteroids H<={H_ast}, max={N_ast}; "
+                "[MinorBodies] target search – overriding limits to near-full catalog: "
+                f"Asteroids H<={H_ast}, max={N_ast}; "
                 f"Comets H<={H_com}, max={N_com}"
             )
-        # --------------------------------------------------------------
 
         print(
             f"[MinorBodies] user limits: "
@@ -5839,43 +5862,7 @@ class WIMIDialog(QDialog):
 
         n_ast = len(ast_df) if ast_df is not None else 0
         n_com = len(com_df) if com_df is not None else 0
-        print(f"[MinorBodies] bright subset (before target filter): "
-              f"asteroids={n_ast}, comets={n_com}")
-
-        # If user specified a specific target name/id, try to restrict to that
-        def _apply_target_filter(df: pd.DataFrame, label: str) -> pd.DataFrame:
-            if df is None or df.empty or not target_filter:
-                return df
-
-            tf = target_filter.strip()
-            mask = pd.Series(False, index=df.index)
-
-            # Try several columns
-            for col in ("designation", "designation_packed", "name"):
-                if col in df.columns:
-                    col_str = df[col].astype(str)
-                    mask = mask | col_str.str.contains(tf, case=False, na=False)
-
-            # If it's numeric like "584", also try zero-padded packed form "00584"
-            if tf.isdigit() and "designation_packed" in df.columns:
-                zp = tf.zfill(5)
-                mask = mask | df["designation_packed"].astype(str).str.contains(zp, na=False)
-
-            filtered = df[mask]
-            print(f"[MinorBodies] target filter matched {len(filtered)} {label} rows.")
-            return filtered
-
-        if target_filter:
-            if ast_df is not None:
-                ast_df = _apply_target_filter(ast_df, "asteroid")
-            if com_df is not None:
-                com_df = _apply_target_filter(com_df, "comet")
-
-        # Re-count after filtering
-        n_ast = len(ast_df) if ast_df is not None else 0
-        n_com = len(com_df) if com_df is not None else 0
-        print(f"[MinorBodies] bright subset (after target filter): "
-              f"asteroids={n_ast}, comets={n_com}")
+        print(f"[MinorBodies] bright subset (before target filter): asteroids={n_ast}, comets={n_com}")
 
         asteroid_designations: set[str] = set()
         comet_designations: set[str] = set()
@@ -5889,7 +5876,7 @@ class WIMIDialog(QDialog):
                 desig = row.get("designation", "") or row.get("name", "")
                 if not desig:
                     continue
-                asteroid_designations.add(desig)
+                asteroid_designations.add(str(desig))
 
                 mag_val = None
                 for mk in mag_keys_ast:
@@ -5900,7 +5887,7 @@ class WIMIDialog(QDialog):
                             mag_val = None
                         break
                 if mag_val is not None:
-                    asteroid_mag[desig] = mag_val
+                    asteroid_mag[str(desig)] = mag_val
 
         if com_df is not None and len(com_df):
             mag_keys_com = ("absolute_magnitude", "magnitude_H", "H")
@@ -5908,7 +5895,7 @@ class WIMIDialog(QDialog):
                 desig = row.get("designation", "") or row.get("name", "")
                 if not desig:
                     continue
-                comet_designations.add(desig)
+                comet_designations.add(str(desig))
 
                 mag_val = None
                 for mk in mag_keys_com:
@@ -5919,7 +5906,7 @@ class WIMIDialog(QDialog):
                             mag_val = None
                         break
                 if mag_val is not None:
-                    comet_mag[desig] = mag_val
+                    comet_mag[str(desig)] = mag_val
 
         # --- Combine into a single DataFrame for Skyfield ---
         frames: list[pd.DataFrame] = []
@@ -5937,6 +5924,31 @@ class WIMIDialog(QDialog):
         print(f"[MinorBodies] total candidate rows sent to Skyfield: {total_rows}")
         print(f"[MinorBodies] columns in candidate DataFrame: {list(rows_df.columns)}")
 
+        # --- Robust target-name filtering across ALL text columns -----
+        if target_filter:
+            tf = target_filter.strip().lower()
+            if tf:
+                mask = pd.Series(False, index=rows_df.index)
+                text_cols = [
+                    c for c in rows_df.columns
+                    if rows_df[c].dtype == object
+                ]
+                for col in text_cols:
+                    s = rows_df[col].astype(str).str.lower()
+                    col_mask = s.str.contains(tf, na=False)
+                    count = int(col_mask.sum())
+                    print(f"[MinorBodies] target filter: column '{col}' matches={count}")
+                    mask |= col_mask
+
+                rows_df = rows_df[mask]
+                total_rows = len(rows_df)
+                print(f"[MinorBodies] target filter: total rows after filter: {total_rows}")
+
+                if total_rows == 0:
+                    print("[MinorBodies] target filter removed all rows; returning [].")
+                    return []
+        # ----------------------------------------------------------------
+
         # --------------------------------------------------------------
         # Progress dialog for the Skyfield loop
         # --------------------------------------------------------------
@@ -5952,7 +5964,7 @@ class WIMIDialog(QDialog):
         prog.setWindowModality(Qt.WindowModality.ApplicationModal)
         prog.setAutoClose(True)
         prog.setAutoReset(True)
-        prog.setMinimumDuration(500)  # don't flash for very quick runs
+        prog.setMinimumDuration(500)
         prog.show()
 
         cancelled = {"flag": False}
@@ -5979,7 +5991,7 @@ class WIMIDialog(QDialog):
                 ephemeris_path=None,
                 topocentric=None,
                 progress_cb=progress_cb,
-                debug=bool(target_filter),  # crank debug on if we're chasing a target
+                debug=True,
             )
         finally:
             prog.close()
@@ -5998,28 +6010,19 @@ class WIMIDialog(QDialog):
             ra = float(pos["ra_deg"])
             dec = float(pos["dec_deg"])
             ang = self.calculate_angular_distance(ra_center, dec_center, ra, dec)
-
-            # Extra debug: if we asked for a specific target, log its separation
-            if target_filter:
-                name = str(pos.get("designation", pos.get("name", "")))
-                if name and target_filter.lower() in name.lower():
-                    print(
-                        f"[MinorBodies] target '{target_filter}' at RA={ra:.6f}, "
-                        f"Dec={dec:.6f}, sep={ang:.4f} deg (radius={radius_deg:.4f} deg)"
-                    )
-
             if ang > radius_deg:
                 continue
 
             kept += 1
             desig = pos.get("designation", "") or "Unknown"
+            desig_str = str(desig)
 
-            if desig in asteroid_designations:
+            if desig_str in asteroid_designations:
                 kind = "Asteroid"
-                mag = asteroid_mag.get(desig, "N/A")
-            elif desig in comet_designations:
+                mag = asteroid_mag.get(desig_str, "N/A")
+            elif desig_str in comet_designations:
                 kind = "Comet"
-                mag = comet_mag.get(desig, "N/A")
+                mag = comet_mag.get(desig_str, "N/A")
             else:
                 kind = "Minor body"
                 mag = "N/A"
@@ -6028,8 +6031,8 @@ class WIMIDialog(QDialog):
                 {
                     "ra": ra,
                     "dec": dec,
-                    "name": desig,
-                    "designation": desig,
+                    "name": desig_str,
+                    "designation": desig_str,
                     "mag": mag,
                     "type": kind,
                     "distance": pos.get("distance_au", "N/A"),
@@ -6039,6 +6042,7 @@ class WIMIDialog(QDialog):
 
         print(f"[MinorBodies] objects inside cone: {kept}")
         return results
+    
 
     def _get_astap_exe(self) -> str:
         s = self._settings()
