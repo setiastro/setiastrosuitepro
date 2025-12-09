@@ -34,7 +34,8 @@ import sep
 # (we assume they live next to this file or already in pro/)
 from .plate_solver import plate_solve_doc_inplace
 from imageops.stretch import stretch_mono_image, stretch_color_image
-
+from astropy.wcs import WCS
+from .plate_solver import _seed_header_from_meta, _solve_numpy_with_fallback
 from astropy.wcs import WCS
 
 def _header_from_meta(meta):
@@ -1226,40 +1227,53 @@ def make_header_from_xisf_meta(meta: dict) -> fits.Header:
 
 def plate_solve_current_image(image_manager, settings, parent=None):
     """
-    Plate-solve the current slot image *including* SIP terms,
-    and return the updated metadata dict (with all the A_*, B_* SIP cards).
+    Plate-solve the current slot image using the SASpro plate solver logic
+    (ASTAP + Astrometry.net fallback) and update the slot's metadata in-place.
+
+    Returns the updated metadata dict for the current slot.
     """
-
-    # 1) grab pixel data + original header
+    # 1) Grab pixel data + metadata from Image Peeker Pro
     arr, meta = image_manager.get_current_image_and_metadata()
-    orig_hdr  = meta.get("original_header", fits.Header())
+    if meta is None:
+        meta = {}
+    elif not isinstance(meta, dict):
+        meta = dict(meta)
 
+    # 2) Build the seed header from metadata (original_header / wcs / wcs_header)
+    seed_h = _seed_header_from_meta(meta)
 
-    # if it's our XISF‐dict, turn it into a real Header
-    if isinstance(orig_hdr, dict) and 'astrometry' in orig_hdr:
-        orig_hdr = make_header_from_xisf_meta(orig_hdr)
+    # 3) Pick a parent for UI/status if none is given
+    if parent is None and hasattr(image_manager, "parent"):
+        try:
+            parent = image_manager.parent()
+        except Exception:
+            parent = None
 
-    # 2) dump to a temp FITS so ASTAP can read & inject SIP
-    tmp = tempfile.NamedTemporaryFile(suffix=".fits", delete=False)
-    tmpname = tmp.name; tmp.close()
-    fits.writeto(tmpname, arr.astype(np.float32), orig_hdr, overwrite=True)
+    # 4) Run the actual solve (ASTAP first, then astrometry.net if needed)
+    ok, res = _solve_numpy_with_fallback(parent, settings, arr, seed_h)
+    if not ok:
+        # You can raise, return None, or bubble the error string.
+        # Here we raise to make failures obvious.
+        raise RuntimeError(f"Plate solve failed: {res}")
 
-    # 3) run ASTAP in “slot-only” mode so it updates meta in place
-    solver            = PlateSolver(settings, parent=parent)
-    solver._from_slot = True
-    solver._slot_meta = meta
-    solver.image_path = tmpname
+    hdr = res  # this is a real astropy.io.fits.Header
 
-    if not solver.run_astap(tmpname):
-        solver.run_astrometry_net(tmpname)
+    # 5) Store back into metadata
+    meta["original_header"] = hdr
 
-    # 4) grab the updated metadata dict
-    slot       = image_manager.current_slot
-    solved_meta = image_manager._metadata[slot]
+    try:
+        wcs_obj = WCS(hdr)
+        meta["wcs"] = wcs_obj
+    except Exception as e:
+        print("Image Peeker: WCS build failed:", e)
 
-    # 5) clean up and return
-    os.remove(tmpname)
-    return solved_meta
+    # 6) Update image_manager’s internal metadata for this slot
+    slot = image_manager.current_slot
+    if hasattr(image_manager, "_metadata"):
+        image_manager._metadata[slot] = meta
+
+    return meta
+
 
 
 # ----------------------------- small utils -----------------------------------

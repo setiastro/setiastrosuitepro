@@ -62,7 +62,7 @@ if __name__ == "__main__":
         """
         def __init__(self, logo_path: str):
             super().__init__()
-            self._version = "1.5.9"  # Hardcoded for early display
+            self._version = "1.5.10"  # Hardcoded for early display
             self._build = ""
             self.current_message = "Starting..."
             self.progress_value = 0
@@ -427,7 +427,7 @@ except Exception:
     BUILD_TIMESTAMP = "dev"
 
 
-VERSION = "1.5.9"
+VERSION = "1.5.10"
 
 _update_splash("Loading resources...", 50)
 

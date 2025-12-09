@@ -989,15 +989,6 @@ from astropy.wcs import WCS
 def attach_wcs_to_metadata(meta: dict, hdr: fits.Header | dict | None) -> dict:
     """
     If hdr contains WCS, create an astropy.wcs.WCS and stash in metadata.
-
-    Strategy:
-      0) If there is obviously no WCS (no CTYPE1/2 or CRVAL1/2), bail out.
-      1) Try WCS(header, relax=True) normally.
-      2) On failure, retry with naxis=2 (common case: 3D RGB + 2D SIP).
-      3) On failure, strip SIP-related keys and retry with naxis=2.
-      4) If all attempts fail, log and give up (no 'wcs' attached).
-
-    Doesn't overwrite an existing non-None meta['wcs'].
     """
     if not hdr or meta is None:
         return meta or {}
@@ -1008,29 +999,33 @@ def attach_wcs_to_metadata(meta: dict, hdr: fits.Header | dict | None) -> dict:
     try:
         fhdr = hdr if isinstance(hdr, fits.Header) else fits.Header(hdr)
 
-        # --- Quick sanity: if we don't even have a basic celestial WCS, skip quietly ---
+        # 🔹 Drop problematic long-string cards that upset astropy.wcs
+        # FILE_PATH is the one we saw erroring, but you can add more here if needed.
+        if "FILE_PATH" in fhdr:
+            val = str(fhdr["FILE_PATH"])
+            if len(val) > 68:  # FITS cards max 80 chars, ~68 for value
+                print(f"⚠️ Dropping FILE_PATH from WCS header build (too long: {len(val)} chars)")
+                del fhdr["FILE_PATH"]
+
+        # Optional: also run through our invalid-card stripper
+        fhdr = _drop_invalid_cards(fhdr)
+
+        # --- Quick sanity: no basic WCS → bail quietly ---
         core_keys = ("CTYPE1", "CTYPE2", "CRVAL1", "CRVAL2")
         if not all(k in fhdr for k in core_keys):
-            # No real astrometric solution; don't spam warnings
             return meta
 
-        # --- Attempt 1: plain WCS ---
+        # --- Attempt 1: basic WCS ---
         try:
             w = WCS(fhdr, relax=True)
-
         except Exception as e1:
             print(f"⚠️ WCS(fhdr, relax=True) failed: {e1}")
             print("⚠️ Retrying WCS with naxis=2 (ignore extra axis).")
-
-            # --- Attempt 2: force 2 pixel axes (typical RGB+SIP scenario) ---
             try:
                 w = WCS(fhdr, relax=True, naxis=2)
-
             except Exception as e2:
                 print(f"⚠️ WCS(..., naxis=2) failed: {e2}")
                 print("⚠️ Retrying WCS with naxis=2 after stripping SIP terms.")
-
-                # --- Attempt 3: strip SIP/distortion keywords and retry ---
                 try:
                     fhdr2 = fhdr.copy()
                     for k in list(fhdr2.keys()):
@@ -1039,10 +1034,8 @@ def attach_wcs_to_metadata(meta: dict, hdr: fits.Header | dict | None) -> dict:
                     w = WCS(fhdr2, relax=True, naxis=2)
                 except Exception as e3:
                     print(f"⚠️ WCS(..., naxis=2) after SIP-strip failed: {e3}")
-                    # Give up – we’ll leave meta['wcs'] unset
-                    raise e1  # re-raise the original for the outer handler
+                    raise e1  # re-raise original
 
-        # If we got here, we have some WCS object
         if getattr(w, "has_celestial", False):
             meta["wcs"] = w
             meta["wcs_header"] = w.to_header(relax=True)
@@ -1868,6 +1861,10 @@ def _has_xisf_props(meta) -> bool:
         pass
     return False
 
+import logging
+
+log = logging.getLogger(__name__)
+
 def save_image(img_array,
                filename,
                original_format,
@@ -1883,6 +1880,23 @@ def save_image(img_array,
     - Never calls .keys() on a non-mapping.
     - FITS always written as float32; header is sanitized or synthesized.
     """
+    # 🔊 Debug what we got
+    if isinstance(original_header, fits.Header):
+        log.debug(
+            "[legacy_save_image] original_header: fits.Header with %d cards, first few:",
+            len(original_header)
+        )
+        for i, card in enumerate(original_header.cards):
+            if i >= 20:
+                log.debug("[legacy_save_image]   ... (truncated)")
+                break
+            log.debug("[legacy_save_image]   %-10s = %r", card.keyword, card.value)
+    else:
+        log.debug(
+            "[legacy_save_image] original_header is %r, wcs_header is %r",
+            type(original_header), type(wcs_header),
+        )
+
     # --- Fix for accidental positional arg swap: (header <-> bit_depth) -----
     if isinstance(original_header, str) and original_header in _BIT_DEPTH_STRS and _is_header_obj(bit_depth):
         original_header, bit_depth = bit_depth, original_header
@@ -1936,14 +1950,14 @@ def save_image(img_array,
             return
 
         # ---------------------------------------------------------------------
-        # FITS — always float32, sanitize or synthesize header
+        # FITS — honor bit_depth like TIFF (8/16/32U/32f)
         # ---------------------------------------------------------------------
         if fmt in ("fit", "fits"):
             # Helper to build minimal valid header
             def _minimal_fits_header(h: int, w: int, is_rgb: bool) -> fits.Header:
                 hdr = fits.Header()
                 hdr["SIMPLE"] = True
-                hdr["BITPIX"] = -32
+                hdr["BITPIX"] = -32  # will be overridden below if needed
                 hdr["NAXIS"]  = 3 if is_rgb else 2
                 hdr["NAXIS1"] = w
                 hdr["NAXIS2"] = h
@@ -1958,7 +1972,7 @@ def save_image(img_array,
             h, w = img_array.shape[:2]
             is_rgb = (img_array.ndim == 3 and img_array.shape[2] == 3)
 
-            # Build header (same as you already had)
+            # Build base header (same as before)
             if is_xisf:
                 fits_header = fits.Header()
                 props = None
@@ -1990,12 +2004,11 @@ def save_image(img_array,
                 fits_header.setdefault("CTYPE2", "DEC--TAN")
 
             elif _is_header_obj(original_header):
-                # Clean up any invalid cards first (e.g. TELESCOP with bad value)
+                # Clean up invalid cards
                 if isinstance(original_header, fits.Header):
                     safe_header = _drop_invalid_cards(original_header)
                     src_items = safe_header.items()
                 else:
-                    # dict-like metadata – assumed already safe
                     safe_header = original_header
                     src_items = safe_header.items()
 
@@ -2014,61 +2027,68 @@ def save_image(img_array,
             else:
                 fits_header = _minimal_fits_header(h, w, is_rgb)
 
-            # 🔥 NEW: merge explicit WCS header from metadata, if present
+            # 🔥 Merge explicit WCS header from metadata, if present
             from astropy.io import fits as _fits_mod
             if isinstance(wcs_header, _fits_mod.Header):
                 for key, value in wcs_header.items():
-                    # don't let the WCS header stomp on structural cards
                     if key in ("SIMPLE", "BITPIX", "NAXIS", "NAXIS1", "NAXIS2",
                                "NAXIS3", "BSCALE", "BZERO", "EXTEND", "END"):
                         continue
                     try:
-                        fits_header[key] = value  # WCS cards overwrite older values
+                        fits_header[key] = value
                     except Exception:
-                        # if astropy can't serialize it, just skip
                         pass
 
-            # Ensure dimensional + datatype keywords match what we write
-            fits_header["BSCALE"] = 1.0
-            fits_header["BZERO"]  = 0.0
-            fits_header["BITPIX"] = -32
-
+            # --- Shape + base data (float), then quantize based on bit_depth ---
             if is_rgb:
-                data_to_write = np.transpose(img_array, (2, 0, 1)).astype(np.float32)  # (3,H,W)
+                base_data = np.transpose(img_array, (2, 0, 1))  # (3, H, W)
                 fits_header["NAXIS"]  = 3
                 fits_header["NAXIS1"] = w
                 fits_header["NAXIS2"] = h
                 fits_header["NAXIS3"] = 3
             else:
                 if img_array.ndim == 3 and img_array.shape[2] == 1:
-                    data = img_array[:, :, 0]
+                    base_data = img_array[:, :, 0]
                 else:
-                    data = img_array
-                data_to_write = data.astype(np.float32)
+                    base_data = img_array
                 fits_header["NAXIS"]  = 2
                 fits_header["NAXIS1"] = w
                 fits_header["NAXIS2"] = h
-                if "NAXIS3" in fits_header:
-                    del fits_header["NAXIS3"]
+                fits_header.pop("NAXIS3", None)
 
-            # --- NEW: robust write with cleanup + minimal-header fallback ---
+            bd = (bit_depth or "32-bit floating point").lower()
+
+            if bd == "8-bit":
+                data_to_write = (np.clip(base_data, 0, 1) * 255).astype(np.uint8)
+                fits_header["BITPIX"] = 8
+            elif bd == "16-bit":
+                data_to_write = (np.clip(base_data, 0, 1) * 65535).astype(np.uint16)
+                fits_header["BITPIX"] = 16
+            elif bd == "32-bit unsigned":
+                data_to_write = (np.clip(base_data, 0, 1) * 4294967295).astype(np.uint32)
+                fits_header["BITPIX"] = 32
+            else:
+                # default / 32-bit float
+                data_to_write = base_data.astype(np.float32)
+                fits_header["BITPIX"] = -32
+
+            # Linear scaling for all these
+            fits_header["BSCALE"] = 1.0
+            fits_header["BZERO"]  = 0.0
+
+            # --- Write with the same robust path you already had ---
             hdu = fits.PrimaryHDU(data_to_write, header=fits_header)
 
             try:
-                # First try: straight write
                 hdu.writeto(filename, overwrite=True)
-
             except VerifyError as ve:
                 print(f"FITS header verify error while saving {filename}: {ve}")
                 print("Attempting header auto-fix via hdu.verify('fix') and manual cleanup...")
-
-                # 1) Let Astropy try to fix in-place
                 try:
                     hdu.verify('fix')
                 except Exception as ve2:
                     print(f"hdu.verify('fix') raised: {ve2}")
 
-                # 2) Brutal cleanup: drop any cards that still can't be stringified
                 bad_keys = []
                 for card in list(hdu.header.cards):
                     try:
@@ -2082,21 +2102,17 @@ def save_image(img_array,
                     except Exception:
                         pass
 
-                # 3) Retry write; if it still fails, fall back to minimal header
                 try:
                     hdu.writeto(filename, overwrite=True)
                 except VerifyError as ve3:
                     print(f"Still failing after cleanup: {ve3}")
                     print("Falling back to minimal FITS header (dropping all original cards).")
-
                     clean_header = _minimal_fits_header(h, w, is_rgb)
-                    hdu2 = fits.PrimaryHDU(data_to_write, header=clean_header)
+                    hdu2 = fits.PrimaryHDU(data_to_write.astype(np.float32), header=clean_header)
                     hdu2.writeto(filename, overwrite=True)
 
             print(f"Saved FITS image to: {filename}")
             return
-
-
         # ---------------------------------------------------------------------
         # RAW inputs — not writable; convert to FITS (float32)
         # ---------------------------------------------------------------------

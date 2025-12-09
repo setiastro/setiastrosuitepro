@@ -1168,18 +1168,31 @@ class ConvoDeconvoDialog(QDialog):
         if self._last_stellar_psf is None:
             QMessageBox.warning(self, "No PSF", "Run SEP extraction before saving.")
             return
-        path, _ = QFileDialog.getSaveFileName(self, "Save PSF as...", "", "TIFF (*.tif);;FITS (*.fits)")
+
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save PSF as...",
+            "",
+            "TIFF (*.tif);;FITS (*.fits)"
+        )
         if not path:
             return
+
         ext = path.lower().split('.')[-1]
+
         if ext == 'fits':
             fits.PrimaryHDU(self._last_stellar_psf.astype(np.float32)).writeto(path, overwrite=True)
+
         elif ext in ('tif', 'tiff'):
-            import tifffile; tifffile.imwrite(path
-            import self._last_stellar_psf.astype(np.float32))
+            import tifffile
+            tifffile.imwrite(path, self._last_stellar_psf.astype(np.float32))
+
         else:
-            QMessageBox.warning(self, "Invalid Extension", "Please choose .fits or .tif."); return
+            QMessageBox.warning(self, "Invalid Extension", "Please choose .fits or .tif.")
+            return
+
         QMessageBox.information(self, "Saved", f"PSF saved to:\n{path}")
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────

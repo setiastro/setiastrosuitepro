@@ -1311,20 +1311,27 @@ def load_fits_tile(filepath, y_start, y_end, x_start, x_end):
     """
     import numpy as np
     import gzip
+    import os
     from astropy.io import fits
     from io import BytesIO
 
     # Find the "intended" HDU index (may be wrong for this reopen; we re-check below)
     hdr, ext_index = get_valid_header(filepath)
 
+    # -------------------------------------------------------------------------
     # Open appropriately for gzip-compressed files
+    #   NOTE: we always use memmap=False here:
+    #     - Gzip: can't memmap a BytesIO
+    #     - CompImageHDU / tile-compressed: astropy needs full image in RAM anyway
+    #   We *also* set do_not_scale_image_data=True so that astropy does NOT
+    #   apply BZERO/BSCALE/BLANK scaling; we handle scaling ourselves.
+    # -------------------------------------------------------------------------
     if filepath.lower().endswith((".fits.gz", ".fit.gz")):
         with gzip.open(filepath, "rb") as f:
             file_content = f.read()
-        hdul = fits.open(BytesIO(file_content), memmap=False)
+        hdul = fits.open(BytesIO(file_content), memmap=False, do_not_scale_image_data=True)
     else:
-        # memmap=False is IMPORTANT for CompImageHDU / tile-compressed
-        hdul = fits.open(filepath, memmap=False)
+        hdul = fits.open(filepath, memmap=False, do_not_scale_image_data=True)
 
     with hdul as H:
         # ---- pick a safe HDU index in THIS open ----
@@ -1363,8 +1370,11 @@ def load_fits_tile(filepath, y_start, y_end, x_start, x_end):
             img_hdr = H[ei].header if ei is not None else hdr
         except Exception:
             img_hdr = hdr
-        bzero  = float(img_hdr.get("BZERO", hdr.get("BZERO", 0.0)))
+
+        bzero  = float(img_hdr.get("BZERO",  hdr.get("BZERO",  0.0)))
         bscale = float(img_hdr.get("BSCALE", hdr.get("BSCALE", 1.0)))
+        # BLANK is available if you want to mask later:
+        blank  = img_hdr.get("BLANK", hdr.get("BLANK", None))
 
         a = np.asarray(data)
         a = np.squeeze(a)  # match load_image behavior
@@ -1380,6 +1390,7 @@ def load_fits_tile(filepath, y_start, y_end, x_start, x_end):
             if (y_end <= dim0) and (x_end <= dim1):
                 tile_data = a[y_start:y_end, x_start:x_end]
             else:
+                # some rare FITS flip axes; keep the legacy fallback
                 tile_data = a[x_start:x_end, y_start:y_end]
 
         elif ndim == 3:
@@ -1401,6 +1412,7 @@ def load_fits_tile(filepath, y_start, y_end, x_start, x_end):
                     spat_axes.append(idx)
 
             if color_axis is None or len(spat_axes) != 2:
+                # treat as plain 2D + extra axis
                 tile_data = a[y_start:y_end, x_start:x_end]
             else:
                 spat0, spat1 = spat_axes
@@ -1416,22 +1428,35 @@ def load_fits_tile(filepath, y_start, y_end, x_start, x_end):
 
         # ---------------------------
         # Scale/normalize like load_image
+        #   We explicitly apply BZERO/BSCALE only for 32-bit ints,
+        #   mirroring your existing behavior.
         # ---------------------------
+
+        # Handle BLANK on the *raw* integer tile if present
+        # (optional: right now we'll just leave them as-is; we could set
+        #  them to 0 or np.nan if needed later)
+        # if blank is not None and np.issubdtype(orig_dtype, np.integer):
+        #     mask = (tile_data == blank)
+        #     # e.g., tile_data = tile_data.astype(orig_dtype, copy=False)
+        #     # then later after scaling you could zero-out or nan-out mask.
+
         if orig_dtype == np.uint8:
             tile_data = tile_data.astype(np.float32) / 255.0
         elif orig_dtype == np.uint16:
             tile_data = tile_data.astype(np.float32) / 65535.0
-        elif orig_dtype == np.int32:
+        elif orig_dtype == np.int32 or orig_dtype == np.int64:
+            # Signed 32-bit / 64-bit → apply BSCALE/BZERO
             tile_data = tile_data.astype(np.float32) * bscale + bzero
-        elif orig_dtype == np.uint32:
+        elif orig_dtype == np.uint32 or orig_dtype == np.uint64:
+            # Unsigned 32-bit / 64-bit → apply BSCALE/BZERO
             tile_data = tile_data.astype(np.float32) * bscale + bzero
         elif orig_dtype == np.float32:
             tile_data = np.asarray(tile_data, dtype=np.float32, order="C")
         else:
+            # Fallback: just cast to float32
             tile_data = tile_data.astype(np.float32)
 
         return tile_data
-
 
 
 def _get_log_dock():
@@ -1440,20 +1465,43 @@ def _get_log_dock():
 
 class _MMFits:
     """
-    Keeps one FITS open (memmap=True) for the whole group; slices tiles without
-    re-opening the file. Handles spatial/color axis detection once.
+    Keeps one FITS open for the whole group; slices tiles without re-opening.
+    Handles spatial/color axis detection and fixed normalization once.
     """
     def __init__(self, path: str):
         self.path = path
-        # Keep file open for the whole integration of the group
-        self.hdul = fits.open(path, memmap=True)
-        self.data = self.hdul[0].data
-        if self.data is None:
-            raise ValueError(f"Empty FITS: {path}")
+        import os
+        from astropy.io import fits
 
+        def _do_open(memmap_flag: bool):
+            hdul = fits.open(path, memmap=memmap_flag)
+            h0 = hdul[0]
+            data = h0.data
+            if data is None:
+                hdul.close()
+                raise ValueError(f"Empty FITS: {path}")
+            return hdul, h0, data
+
+        try:
+            hdul, h0, data = _do_open(memmap_flag=True)
+        except Exception as e:
+            print(
+                f"[_MMFits] memmap=True failed for {os.path.basename(path)} "
+                f"({type(e).__name__}: {e}); retrying with memmap=False."
+            )
+            hdul, h0, data = _do_open(memmap_flag=False)
+
+        self.hdul = hdul
+        self.header = h0.header
+        self.data = data
         self.shape = self.data.shape
-        self.ndim  = self.data.ndim
+        self.ndim = self.data.ndim
         self.orig_dtype = self.data.dtype
+
+        try:
+            self._bitpix = int(self.header.get("BITPIX", 0))
+        except Exception:
+            self._bitpix = 0
 
         # detect color axis (size==3) and spatial axes once
         if self.ndim == 2:
@@ -1469,17 +1517,20 @@ class _MMFits:
         else:
             raise ValueError(f"Unsupported ndim={self.ndim} for {path}")
 
-        # scalar normalization chosen once
-        if   self.orig_dtype == np.uint8:  self._scale = 1.0/255.0
-        elif self.orig_dtype == np.uint16: self._scale = 1.0/65535.0
-        else:                              self._scale = None
+    def _apply_fixed_fits_scale(self, arr: np.ndarray) -> np.ndarray:
+        bitpix = getattr(self, "_bitpix", 0)
+        if bitpix == 8:
+            arr /= 255.0
+        elif bitpix == 16:
+            arr /= 65535.0
+        return arr
 
     def read_tile(self, y0, y1, x0, x1) -> np.ndarray:
         d = self.data
         if self.ndim == 2:
             tile = d[y0:y1, x0:x1]
         else:
-            sl = [slice(None)]*3
+            sl = [slice(None)] * 3
             sl[self.spat_axes[0]] = slice(y0, y1)
             sl[self.spat_axes[1]] = slice(x0, x1)
             tile = d[tuple(sl)]
@@ -1487,40 +1538,27 @@ class _MMFits:
             if self.color_axis is not None and self.color_axis != 2:
                 tile = np.moveaxis(tile, self.color_axis, -1)
 
-        # late normalize to float32
-        if self._scale is None:
-            tile = tile.astype(np.float32, copy=False)
-        else:
-            tile = tile.astype(np.float32, copy=False) * self._scale
+        tile = tile.astype(np.float32, copy=False)
+        tile = self._apply_fixed_fits_scale(tile)
 
         # ensure (h,w,3) or (h,w)
-        if tile.ndim == 3 and tile.shape[-1] not in (1,3):
-            # uncommon mono-3D (e.g. (3,h,w)): move to (h,w,3)
+        if tile.ndim == 3 and tile.shape[-1] not in (1, 3):
             if tile.shape[0] == 3 and tile.shape[-1] != 3:
                 tile = np.moveaxis(tile, 0, -1)
         return tile
 
     def read_full(self) -> np.ndarray:
-        """
-        Return the whole frame as float32 in (H,W) or (H,W,3) with color last,
-        normalized the same way as read_tile().
-        """
         d = self.data
         if self.ndim == 2:
             full = d
         else:
-            # move color to last if present
             full = d
             if self.color_axis is not None and self.color_axis != 2:
                 full = np.moveaxis(full, self.color_axis, -1)
 
-        # late normalize to float32
-        if self._scale is None:
-            full = full.astype(np.float32, copy=False)
-        else:
-            full = full.astype(np.float32, copy=False) * self._scale
+        full = full.astype(np.float32, copy=False)
+        full = self._apply_fixed_fits_scale(full)
 
-        # ensure (H,W,3) or (H,W)
         if full.ndim == 3 and full.shape[-1] not in (1, 3):
             if full.shape[0] == 3 and full.shape[-1] != 3:
                 full = np.moveaxis(full, 0, -1)
@@ -1531,6 +1569,7 @@ class _MMFits:
             self.hdul.close()
         except Exception:
             pass
+
 
 # --------------------------------------------------
 # Stacking Suite
@@ -3149,14 +3188,27 @@ class _MMImage:
     """
     Unified memory-friendly reader for FITS (memmap) and XISF.
     Exposes: .shape, .ndim, .read_tile(y0,y1,x0,x1), .read_full(), .close()
-    Always returns float32 arrays (writeable) with color last if present.
+
+    For FITS:
+      - Try memmap=True first.
+      - If that fails, retry with memmap=False.
+      - We let Astropy apply BZERO/BSCALE.
+      - Then we apply a **fixed** normalization based on BITPIX:
+          * BITPIX=8  -> /255
+          * BITPIX=16 -> /65535
     """
 
     def __init__(self, path: str):
         self.path = path
         self._kind = None          # "fits" | "xisf"
-        self._scale = None         # integer -> [0..1] scale
         self._fits_hdul = None
+        self._fits_data = None
+        self._fits_header = None
+        self._bitpix = 0
+        self._orig_dtype = None
+        self._color_axis = None
+        self._spat_axes = (0, 1)
+
         self._xisf = None
         self._xisf_memmap = None   # np.memmap when possible
         self._xisf_arr = None      # decompressed ndarray when needed
@@ -3180,36 +3232,68 @@ class _MMImage:
 
     # ---------------- FITS ----------------
     def _open_fits(self, path: str):
-        self._fits_hdul = fits.open(path, memmap=True)
-        # choose first image-like HDU (don’t assume PRIMARY only)
-        hdu = None
-        for h in self._fits_hdul:
-            if getattr(h, "data", None) is not None:
-                hdu = h; break
-        if hdu is None or hdu.data is None:
-            raise ValueError(f"Empty FITS: {path}")
+        """
+        Try memmap=True first; if anything fails while opening or accessing data,
+        fall back to memmap=False for this file.
+        Astropy is allowed to apply BZERO/BSCALE, then we normalize to 0..1 for
+        8/16-bit images.
+        """
+        import os
+        from astropy.io import fits
 
+        def _do_open(memmap_flag: bool):
+            hdul = fits.open(path, memmap=memmap_flag)
+            # choose first image-like HDU (don’t assume PRIMARY only)
+            hdu = None
+            for h in hdul:
+                if getattr(h, "data", None) is not None:
+                    hdu = h
+                    break
+            if hdu is None or hdu.data is None:
+                hdul.close()
+                raise ValueError(f"Empty FITS: {path}")
+            return hdul, hdu
+
+        # First attempt: memmap=True
+        try:
+            hdul, hdu = _do_open(memmap_flag=True)
+        except Exception as e:
+            print(
+                f"[MMImage] memmap=True failed for {os.path.basename(path)} "
+                f"({type(e).__name__}: {e}); retrying with memmap=False."
+            )
+            # Second attempt: memmap=False; if THIS fails, let it propagate.
+            hdul, hdu = _do_open(memmap_flag=False)
+
+        self._fits_hdul = hdul
+        self._fits_header = hdu.header
         d = hdu.data
+
         self._fits_data = d
         self.shape = d.shape
-        self.ndim  = d.ndim
+        self.ndim = d.ndim
         self._orig_dtype = d.dtype
 
-        # Detect color axis (size==3) and spatial axes once
+        # BITPIX from header drives our normalization choice
+        try:
+            self._bitpix = int(self._fits_header.get("BITPIX", 0))
+        except Exception:
+            self._bitpix = 0
+
+        # Detect color axis (size==3) and spatial axes
         if self.ndim == 2:
             self._color_axis = None
-            self._spat_axes  = (0, 1)
+            self._spat_axes = (0, 1)
         elif self.ndim == 3:
             dims = self.shape
             self._color_axis = next((i for i, s in enumerate(dims) if s == 3), None)
-            self._spat_axes  = (0, 1) if self._color_axis is None else tuple(i for i in range(3) if i != self._color_axis)
+            self._spat_axes = (
+                (0, 1)
+                if self._color_axis is None
+                else tuple(i for i in range(3) if i != self._color_axis)
+            )
         else:
             raise ValueError(f"Unsupported ndim={self.ndim} for {path}")
-
-        # late normalization scale for integer data
-        if   self._orig_dtype == np.uint8:  self._scale = 1.0/255.0
-        elif self._orig_dtype == np.uint16: self._scale = 1.0/65535.0
-        else:                                self._scale = None
 
     # ---------------- XISF ----------------
     def _open_xisf(self, path: str):
@@ -3222,16 +3306,11 @@ class _MMImage:
         self._xisf_dtype = m0["dtype"]              # numpy dtype
         w, h, chc = m0["geometry"]                  # (width, height, channels)
         self.shape = (h, w) if chc == 1 else (h, w, chc)
-        self.ndim  = 2 if chc == 1 else 3
+        self.ndim = 2 if chc == 1 else 3
 
         # color and spatial axes (image data is planar CHW on disk, we expose HWC)
         self._xisf_color_axis = None if chc == 1 else 2
-        self._xisf_spat_axes  = (0, 1)
-
-        # choose integer scale (same convention as FITS branch)
-        if   self._xisf_dtype == np.dtype("uint8"):  self._scale = 1.0/255.0
-        elif self._xisf_dtype == np.dtype("uint16"): self._scale = 1.0/65535.0
-        else:                                        self._scale = None
+        self._xisf_spat_axes = (0, 1)
 
         # Try zero-copy memmap only when the image block is an uncompressed attachment.
         loc = m0.get("location", None)
@@ -3239,28 +3318,43 @@ class _MMImage:
         if isinstance(loc, tuple) and loc[0] == "attachment" and not comp:
             # location = ("attachment", pos, size)
             pos = int(loc[1])
-            # on-disk order for XISF planar is (C,H,W). We memmap that and rearrange at slice time.
             chc = 1 if self.ndim == 2 else self.shape[2]
             shp_on_disk = (chc, self.shape[0], self.shape[1])
-            # Align dtype endianness to native when mapping
-            dt = self._xisf_dtype.newbyteorder("<") if self._xisf_dtype.byteorder == ">" else self._xisf_dtype
-            self._xisf_memmap = np.memmap(path, mode="r", dtype=dt, offset=pos, shape=shp_on_disk)
+            dt = (
+                self._xisf_dtype.newbyteorder("<")
+                if self._xisf_dtype.byteorder == ">"
+                else self._xisf_dtype
+            )
+            self._xisf_memmap = np.memmap(
+                path, mode="r", dtype=dt, offset=pos, shape=shp_on_disk
+            )
             self._xisf_arr = None
         else:
             # Compressed / inline / embedded → must decompress whole image once
             arr = x.read_image(0)  # HWC float/uint per metadata
-            # Ensure we own a writeable, contiguous float32 buffer
             self._xisf_arr = np.array(arr, dtype=np.float32, copy=True, order="C")
             self._xisf_memmap = None
 
     # ---------------- common API ----------------
+    def _apply_fixed_fits_scale(self, arr: np.ndarray) -> np.ndarray:
+        """
+        Map 8/16-bit FITS (already BZERO/BSCALE-scaled by Astropy) to [0,1]
+        using a fixed divisor. No per-frame img/max(img) normalization.
+        """
+        bitpix = getattr(self, "_bitpix", 0)
+        if bitpix == 8:
+            arr /= 255.0
+        elif bitpix == 16:
+            arr /= 65535.0
+        return arr
+
     def read_tile(self, y0, y1, x0, x1) -> np.ndarray:
         if self._kind == "fits":
             d = self._fits_data
             if self.ndim == 2:
                 tile = d[y0:y1, x0:x1]
             else:
-                sl = [slice(None)]*3
+                sl = [slice(None)] * 3
                 sl[self._spat_axes[0]] = slice(y0, y1)
                 sl[self._spat_axes[1]] = slice(x0, x1)
                 tile = d[tuple(sl)]
@@ -3273,17 +3367,18 @@ class _MMImage:
                 if C == 1:
                     tile = self._xisf_memmap[0, y0:y1, x0:x1]
                 else:
-                    tile = np.moveaxis(self._xisf_memmap[:, y0:y1, x0:x1], 0, -1)
+                    tile = np.moveaxis(
+                        self._xisf_memmap[:, y0:y1, x0:x1], 0, -1
+                    )
             else:
-                # decompressed full array (H,W[,C]) → slice
-                tile = self._xisf_arr[y0:y1, x0:x1]  # already HWC or HW
+                tile = self._xisf_arr[y0:y1, x0:x1]
 
-        # late normalize → float32 writeable, contiguous
-        if self._scale is None:
-            out = np.array(tile, dtype=np.float32, copy=True, order="C")
-        else:
-            out = np.array(tile, dtype=np.float32, copy=True, order="C")
-            out *= self._scale
+        # Cast to float32
+        out = np.array(tile, dtype=np.float32, copy=True, order="C")
+
+        # For FITS, apply fixed 8/16-bit normalization
+        if self._kind == "fits":
+            out = self._apply_fixed_fits_scale(out)
 
         # ensure (h,w,3) or (h,w)
         if out.ndim == 3 and out.shape[-1] not in (1, 3):
@@ -3305,16 +3400,18 @@ class _MMImage:
         else:
             if self._xisf_memmap is not None:
                 C = 1 if self.ndim == 2 else self.shape[2]
-                full = self._xisf_memmap[0] if C == 1 else np.moveaxis(self._xisf_memmap, 0, -1)
+                full = (
+                    self._xisf_memmap[0]
+                    if C == 1
+                    else np.moveaxis(self._xisf_memmap, 0, -1)
+                )
             else:
                 full = self._xisf_arr
 
-        # late normalize → float32 writeable, contiguous
-        if self._scale is None:
-            out = np.array(full, dtype=np.float32, copy=True, order="C")
-        else:
-            out = np.array(full, dtype=np.float32, copy=True, order="C")
-            out *= self._scale
+        out = np.array(full, dtype=np.float32, copy=True, order="C")
+
+        if self._kind == "fits":
+            out = self._apply_fixed_fits_scale(out)
 
         if out.ndim == 3 and out.shape[-1] not in (1, 3):
             if out.shape[0] == 3 and out.shape[-1] != 3:
@@ -3324,11 +3421,20 @@ class _MMImage:
         return out
 
     def close(self):
+        """Release any open handles / buffers associated with this image."""
+        # Close FITS HDUList if present
         try:
-            if self._fits_hdul is not None:
+            if getattr(self, "_fits_hdul", None) is not None:
                 self._fits_hdul.close()
         except Exception:
             pass
+
+        # For XISF, just drop references so GC can reclaim
+        self._fits_hdul = None
+        self._fits_data = None
+        self._xisf = None
+        self._xisf_memmap = None
+        self._xisf_arr = None
 
 def _open_sources_for_mfdeconv(paths, log):
     srcs = []

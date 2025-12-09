@@ -4,7 +4,7 @@ import urllib
 # Standard library imports
 from itertools import combinations
 from tifffile import imwrite
-
+from datetime import timedelta
 import pickle
 import os
 os.environ['LIGHTKURVE_STYLE'] = 'default'
@@ -83,7 +83,8 @@ from numba import njit, prange
 from scipy.optimize import curve_fit
 import exifread
 import astroalign
-
+import sqlite3
+from datetime import datetime
 import traceback
 import sep
 from astroquery.mast import Tesscut
@@ -166,7 +167,7 @@ from PyQt6.QtWidgets import (    QApplication,    QMainWindow,    QWidget,    QV
     QTreeWidgetItem,    QGraphicsPolygonItem,    QFrame,    QToolTip,    QCheckBox,    QDialog,    QFormLayout,    QSpinBox,    QDialogButtonBox,    QGridLayout,    QGraphicsEllipseItem,    QGraphicsLineItem,    QGraphicsRectItem,
     QGraphicsPathItem,    QDoubleSpinBox,    QColorDialog,    QFontDialog,    QStyle,    QSlider,    QTabWidget,    QScrollArea,    QSizePolicy,    QSpacerItem,    QAbstractItemView,    QToolBar,    QGraphicsPixmapItem,    QRubberBand,
     QGroupBox,    QGraphicsTextItem,    QComboBox,    QLineEdit,    QRadioButton,    QButtonGroup,    QHeaderView,    QStackedWidget,    QSplitter,    QMenuBar,    QTextEdit,    QPlainTextEdit,          QProgressBar,    QGraphicsItem,
-    QToolButton,    QStatusBar,    QMenu,    QTableWidget,    QTableWidgetItem,    QListWidget,    QListWidgetItem,    QSplashScreen,    QProgressDialog,     QDockWidget,    QAbstractItemView,    QStyledItemDelegate,    QListView,    QCompleter    
+    QToolButton,    QStatusBar,    QMenu,    QTableWidget,    QTableWidgetItem,    QListWidget,    QListWidgetItem,    QSplashScreen,    QProgressDialog,     QDockWidget,    QAbstractItemView,    QStyledItemDelegate,    QListView,    QCompleter    , QDateTimeEdit
 )
 
 # ----- QtGui -----
@@ -176,7 +177,7 @@ from PyQt6.QtGui import (QPixmap,QImage,    QPainter,    QPen,    QColor,    QTr
 
 # ----- QtCore -----
 from PyQt6.QtCore import (    Qt,    QRectF,    QLineF,    QPointF,    QThread,    pyqtSignal,    QCoreApplication,    QPoint,    QTimer,    QRect,    QFileSystemWatcher,    QEvent,    pyqtSlot,    QLocale,    QProcess,    QSize,
-    QObject,    QSettings,    QRunnable,    QThreadPool,    QSignalBlocker,    QStandardPaths,    QModelIndex,    QMetaObject
+    QObject,    QSettings,    QRunnable,    QThreadPool,    QSignalBlocker,    QStandardPaths,    QModelIndex,    QMetaObject, QDateTime, QEventLoop
 )
 
 
@@ -186,7 +187,7 @@ import math
 
 from legacy.image_manager import load_image, save_image
 from imageops.stretch import stretch_color_image, stretch_mono_image
-
+from pro import minorbodycatalog as mbc
 
 
 # Determine if running inside a PyInstaller bundle
@@ -969,15 +970,23 @@ class CustomGraphicsView(QGraphicsView):
 
 
     def mouseDoubleClickEvent(self, event):
-        """Handle double-click event on an object in the main image to open SIMBAD or NED URL based on source."""
+        """Handle double-click on an object in the main image."""
         scene_pos = self.mapToScene(event.pos())
         clicked_object = self.get_object_at_position(scene_pos)
 
         if clicked_object:
-            object_name = clicked_object.get("name")  # Access 'name' key from the dictionary
-            ra = float(clicked_object.get("ra"))  # Ensure RA is a float for precision
-            dec = float(clicked_object.get("dec"))  # Ensure Dec is a float for precision
-            source = clicked_object.get("source", "Simbad")  # Default to "Simbad" if source not specified
+            object_name = clicked_object.get("name")
+            ra  = float(clicked_object.get("ra"))
+            dec = float(clicked_object.get("dec"))
+            source = clicked_object.get("source", "Simbad")
+            kind   = clicked_object.get("long_type", "") or clicked_object.get("type", "")
+
+            s = (source or "").strip().lower()
+
+            # --- Minor-body overlays → 3d-asteroids.space ---
+            if s.startswith("minordb"):
+                open_minor_body_3d_page(object_name, kind=kind)
+                return
 
             if source == "Simbad" and object_name:
                 # Open Simbad URL with encoded object name
@@ -2370,6 +2379,175 @@ class _WIMIAdapterDoc:
         self.metadata = metadata if isinstance(metadata, dict) else {}
         self.changed = _NoopSignal()
 
+import numpy.ma as ma
+
+def _mask_safe_float(val):
+    """
+    Convert SIMBAD / Astropy table values to a normal float or None.
+    - Returns None for masked, None, or NaN.
+    """
+    if val is None:
+        return None
+    if ma.is_masked(val):
+        return None
+    try:
+        f = float(val)
+    except Exception:
+        return None
+    if np.isnan(f):
+        return None
+    return f
+
+class MinorBodyDownloadWorker(QThread):
+    """
+    Background worker to download/update the minor-body catalog.
+
+    Emits:
+        finished_ok(db_path: str, version: str, asteroids: int, comets: int)
+        failed(error_message: str)
+    """
+    finished_ok = pyqtSignal(str, str, int, int)   # db_path, version, ast, com
+    failed = pyqtSignal(str)
+
+    def __init__(self, data_dir: Path, force_refresh: bool = False, parent=None):
+        super().__init__(parent)
+        self.data_dir = Path(data_dir)
+        self.force_refresh = force_refresh
+
+    def run(self):
+        try:
+            from pro import minorbodycatalog as mbc
+            db_path, manifest = mbc.ensure_minor_body_db(
+                data_dir=self.data_dir,
+                manifest_url=mbc.MANIFEST_URL,
+                force_refresh=self.force_refresh,
+            )
+            # Emit db path, version and counts so the UI can show nice stats
+            self.finished_ok.emit(
+                str(db_path),
+                str(manifest.version),
+                int(manifest.counts_asteroids),
+                int(manifest.counts_comets),
+            )
+        except Exception as e:
+            self.failed.emit(str(e))
+
+class MinorBodySearchWorker(QThread):
+    """
+    Runs the minor-body Skyfield computation in a background thread.
+
+    Emits:
+      - finished_ok(list[dict]) on success
+      - failed(str) on error
+      - progress(int done, int total) for UI updates
+    """
+    finished_ok = pyqtSignal(list)
+    failed = pyqtSignal(str)
+    progress = pyqtSignal(int, int)
+
+    def __init__(
+        self,
+        dialog,
+        db_path,
+        ra_center,
+        dec_center,
+        radius_deg,
+        obs_datetime,
+        H_ast,
+        N_ast,
+        H_com,
+        N_com,
+        target_name=None,
+    ):
+        super().__init__(dialog)
+        self.dialog = dialog
+        self.db_path = db_path
+        self.ra_center = ra_center
+        self.dec_center = dec_center
+        self.radius_deg = radius_deg
+        self.obs_datetime = obs_datetime
+        self.H_ast = H_ast
+        self.N_ast = N_ast
+        self.H_com = H_com
+        self.N_com = N_com
+        self.target_name = target_name
+        self._cancelled = False
+
+    def request_cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        try:
+            def progress_cb(done: int, total: int) -> bool:
+                self.progress.emit(done, total)
+                return not self._cancelled
+
+            results = self.dialog._query_minor_planets_from_db(
+                db_path=self.db_path,
+                ra_center=self.ra_center,
+                dec_center=self.dec_center,
+                radius_deg=self.radius_deg,
+                obs_datetime=self.obs_datetime,
+                H_ast=self.H_ast,
+                N_ast=self.N_ast,
+                H_com=self.H_com,
+                N_com=self.N_com,
+                target_name=self.target_name,
+                progress_cb=progress_cb,
+            )
+            if self._cancelled:
+                self.finished_ok.emit([])
+            else:
+                self.finished_ok.emit(results)
+        except Exception as e:
+            self.failed.emit(str(e))
+
+def slugify_minor_body_for_3d(name: str) -> str:
+    """
+    Turn things like '(584) Semiramis' or '584 Semiramis'
+    into '584-Semiramis', and fall back to a generic slug.
+    """
+    if not name:
+        return ""
+
+    s = name.replace("\u00a0", " ").strip()  # normalize non-breaking spaces
+
+    # Look for a leading numeric designation, possibly in parentheses:
+    #   "(584) Semiramis"  → num=584, rest="Semiramis"
+    #   "584 Semiramis"    → num=584, rest="Semiramis"
+    m = re.match(r'^\(?\s*([0-9]+)\s*\)?\s*(.*)$', s)
+    if m:
+        num = m.group(1)
+        rest = m.group(2).strip()
+        if rest:
+            rest_clean = re.sub(r'[^A-Za-z0-9]+', '-', rest).strip('-')
+            return f"{num}-{rest_clean}"
+        return num  # just the number (edge case)
+
+    # Fallback for comets / weird designations: generic slug
+    return re.sub(r'[^A-Za-z0-9]+', '-', s).strip('-')
+
+
+def open_minor_body_3d_page(name: str, kind: str = "Asteroid") -> None:
+    """
+    Open the 3d-asteroids page for a minor body.
+    Uses /asteroids/ for asteroids and /comets/ for comets.
+    """
+    if not name:
+        return
+
+    slug = slugify_minor_body_for_3d(name)
+    if not slug:
+        return
+
+    base = "asteroids"
+    if kind and str(kind).lower().startswith("comet"):
+        base = "comets"
+
+    url = f"https://3d-asteroids.space/{base}/{slug}"
+    webbrowser.open(url)
+
+
 class WIMIDialog(QDialog):
     def __init__(self, parent=None, settings=None, doc_manager=None, wimi_path: Optional[str] = None, wrench_path: Optional[str] = None):
         super().__init__(parent)
@@ -2809,6 +2987,126 @@ class WIMIDialog(QDialog):
 
         self.advanced_search_panel.addLayout(search_button_layout)
 
+        # ─────────────────────────────
+        # Minor Planets / Comets block
+        # ─────────────────────────────
+        self.minor_group = QGroupBox("Minor Planets / Comets")
+        minor_layout = QGridLayout(self.minor_group)
+
+        # --- DB info + buttons ---
+        self.minor_db_label = QLabel("Database: not downloaded")
+        self.minor_db_label.setStyleSheet("font-size: 10px; color: gray;")
+
+        self.btn_minor_download = QPushButton("Download Catalog")
+        self.btn_minor_download.clicked.connect(self.download_minor_body_catalog)
+
+        self.btn_minor_search = QPushButton("Search Minor Bodies")
+        self.btn_minor_search.clicked.connect(self.perform_minor_body_search)
+
+        # Row 0: status label across full width
+        minor_layout.addWidget(self.minor_db_label, 0, 0, 1, 4)
+
+        # Row 1: download + search buttons
+        minor_layout.addWidget(self.btn_minor_download, 1, 0, 1, 2)
+        minor_layout.addWidget(self.btn_minor_search,   1, 2, 1, 2)
+
+        # --- Search scope (Defined Circle vs Entire Image) ---
+        scope_label = QLabel("Search scope:")
+        self.minor_scope_combo = QComboBox()
+        self.minor_scope_combo.addItems([
+            "Defined Region",
+            "Entire Image",
+        ])
+
+        minor_layout.addWidget(scope_label,          2, 0)
+        minor_layout.addWidget(self.minor_scope_combo, 2, 1, 1, 3)
+
+        # --- Limits row 1: asteroid H_max + max count ---
+        ast_H_label = QLabel("Asteroid H \u2264")
+        self.minor_ast_H_spin = QDoubleSpinBox()
+        self.minor_ast_H_spin.setRange(0.0, 40.0)
+        self.minor_ast_H_spin.setDecimals(1)
+        self.minor_ast_H_spin.setSingleStep(0.5)
+        self.minor_ast_H_spin.setValue(
+            float(self.settings.value("wimi/minor/asteroid_H_max", 20.0))
+        )
+
+        ast_max_label = QLabel("Max asteroids:")
+        self.minor_ast_max_spin = QSpinBox()
+        self.minor_ast_max_spin.setRange(100, 2000000)
+        self.minor_ast_max_spin.setSingleStep(1000)
+        self.minor_ast_max_spin.setValue(
+            int(self.settings.value("wimi/minor/asteroid_max", 20000))
+        )
+
+        minor_layout.addWidget(ast_H_label,          3, 0)
+        minor_layout.addWidget(self.minor_ast_H_spin, 3, 1)
+        minor_layout.addWidget(ast_max_label,        3, 2)
+        minor_layout.addWidget(self.minor_ast_max_spin, 3, 3)
+
+        # --- Limits row 2: comet H_max + max count ---
+        com_H_label = QLabel("Comet H \u2264")
+        self.minor_com_H_spin = QDoubleSpinBox()
+        self.minor_com_H_spin.setRange(0.0, 40.0)
+        self.minor_com_H_spin.setDecimals(1)
+        self.minor_com_H_spin.setSingleStep(0.5)
+        self.minor_com_H_spin.setValue(
+            float(self.settings.value("wimi/minor/comet_H_max", 15.0))
+        )
+
+        com_max_label = QLabel("Max comets:")
+        self.minor_com_max_spin = QSpinBox()
+        self.minor_com_max_spin.setRange(100, 100000)
+        self.minor_com_max_spin.setSingleStep(500)
+        self.minor_com_max_spin.setValue(
+            int(self.settings.value("wimi/minor/comet_max", 5000))
+        )
+
+        minor_layout.addWidget(com_H_label,          4, 0)
+        minor_layout.addWidget(self.minor_com_H_spin, 4, 1)
+        minor_layout.addWidget(com_max_label,        4, 2)
+        minor_layout.addWidget(self.minor_com_max_spin, 4, 3)
+
+        # --- Optional specific target (designation / name) ---
+        target_label = QLabel("Target (optional):")
+        self.minor_target_edit = QLineEdit()
+        self.minor_target_edit.setPlaceholderText("e.g. 584, Semiramis, C/2023 A3...")
+
+        minor_layout.addWidget(target_label,          5, 0)
+        minor_layout.addWidget(self.minor_target_edit, 5, 1, 1, 3)
+
+        self.minor_count_button = QPushButton("Count Objects Brighter Than Limits")
+        self.minor_count_button.setToolTip(
+            "Show how many catalog objects are brighter than the selected H limits."
+        )
+        self.minor_count_button.clicked.connect(self.count_minor_bodies_brighter_than_limits)
+        # Put it on its own row spanning all 4 columns
+        minor_layout.addWidget(self.minor_count_button, 6, 0, 1, 4)
+
+        # --- Time offset (hours) for ephemerides ---
+        time_offset_label = QLabel("Time offset (hours):")
+        self.minor_time_offset_spin = QDoubleSpinBox()
+        self.minor_time_offset_spin.setRange(-24.0, 24.0)
+        self.minor_time_offset_spin.setDecimals(2)
+        self.minor_time_offset_spin.setSingleStep(0.25)
+        self.minor_time_offset_spin.setValue(
+            float(self.settings.value("wimi/minor/time_offset_hours", 0.0))
+        )
+        self.minor_time_offset_spin.setToolTip(
+            "Applied to observation time before computing minor-body ephemerides.\n"
+            "Negative = earlier, positive = later."
+        )
+
+        minor_layout.addWidget(time_offset_label,          7, 0)
+        minor_layout.addWidget(self.minor_time_offset_spin, 7, 1)
+        # (optional) span the spin box wider:
+        # minor_layout.addWidget(self.minor_time_offset_spin, 7, 1, 1, 3)
+        self.advanced_search_panel.addWidget(self.minor_group)
+
+
+        # Try to pick up an already-downloaded DB on startup
+        self._load_minor_db_path()
+
         # Adding the "Deep Vizier Search" button below the other search buttons
         self.deep_vizier_button = QPushButton("Caution - Deep Vizier Search")
         self.deep_vizier_button.setIcon(QIcon(nuke_path))  # Assuming `nuke_path` is the correct path for the icon
@@ -2855,10 +3153,158 @@ class WIMIDialog(QDialog):
         self.selected_color = QColor(Qt.GlobalColor.red)  # Default annotation color
         self.selected_font = QFont("Arial", 12)  # Default font for text annotations   
         self.populate_object_tree()     
+        # Minor-planet bits
+        # Minor-body initial state
+        self.minor_db_path = self.settings.value(
+            "wimi/minorbody_db_path", "", type=str
+        )
+        self._load_minor_db_path()
+        if self.minor_db_path:
+            p = Path(self.minor_db_path)
+            if p.is_file():
+                # Try to read local manifest for nicer label
+                try:
+                    data_dir = p.parent
+                    manifest_path = data_dir / mbc.DEFAULT_MANIFEST_BASENAME
+                    manifest = mbc.load_local_manifest(manifest_path)
+                    if manifest is not None:
+                        ast = f"{manifest.counts_asteroids:,}"
+                        com = f"{manifest.counts_comets:,}"
+                        self.minor_db_label.setText(
+                            f"Database: v{manifest.version} — {ast} asteroids, {com} comets"
+                        )
+                    else:
+                        self.minor_db_label.setText(f"Database: {p.name}")
+                except Exception:
+                    self.minor_db_label.setText(f"Database: {p.name}")
+            else:
+                self.minor_db_label.setText("Database: not downloaded")
+        else:
+            self.minor_db_label.setText("Database: not downloaded")      
         #self._legend_dock = QDockWidget("Object Type Legend", self)
         legend = LegendDialog(self)
         legend.setModal(False)
     
+    def count_minor_bodies_brighter_than_limits(self):
+        """
+        Count how many catalog objects are brighter than the current H limits
+        (for asteroids and comets), and show the result to the user.
+
+        This is a *global* catalog count, not limited to your image FOV.
+        """
+        import sqlite3
+        from pathlib import Path
+
+        # Ensure DB exists / is configured
+        try:
+            db_path = self._ensure_minor_planet_db()
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Minor-Body Catalog",
+                f"Could not access the minor-body database:\n{e}",
+            )
+            return
+
+        if not db_path:
+            QMessageBox.warning(
+                self,
+                "Minor-Body Catalog",
+                "Minor-body database is not available. Please download it first.",
+            )
+            return
+
+        db_path = Path(db_path)
+        if not db_path.is_file():
+            QMessageBox.warning(
+                self,
+                "Minor-Body Catalog",
+                f"Minor-body database file not found:\n{db_path}",
+            )
+            return
+
+        # Read current limits from the UI
+        try:
+            H_ast = float(self.minor_ast_H_spin.value())
+        except Exception:
+            H_ast = 20.0
+        try:
+            H_com = float(self.minor_com_H_spin.value())
+        except Exception:
+            H_com = 15.0
+
+        ast_count = 0
+        com_count = 0
+
+        con = None
+        try:
+            con = sqlite3.connect(str(db_path))
+            cur = con.cursor()
+
+            # ----- Asteroids: use magnitude_H (indexed in the builder) -----
+            try:
+                cur.execute(
+                    "SELECT COUNT(*) FROM asteroids WHERE magnitude_H <= ?",
+                    (H_ast,),
+                )
+                row = cur.fetchone()
+                if row and row[0] is not None:
+                    ast_count = int(row[0])
+            except Exception as e:
+                print(f"[MinorBodies] COUNT asteroids failed: {e!r}")
+
+            # ----- Comets: detect magnitude column (g/k/H-style) -----
+            try:
+                cur.execute("PRAGMA table_info(comets)")
+                cols = {r[1] for r in cur.fetchall()}
+                mag_col = None
+                # Prefer g, then k, then any H-style absolute mag
+                for candidate in ("magnitude_g", "magnitude_k",
+                                  "absolute_magnitude", "magnitude_H", "H"):
+                    if candidate in cols:
+                        mag_col = candidate
+                        break
+
+                if mag_col is not None:
+                    sql = f"SELECT COUNT(*) FROM comets WHERE {mag_col} <= ?"
+                    cur.execute(sql, (H_com,))
+                    row = cur.fetchone()
+                    if row and row[0] is not None:
+                        com_count = int(row[0])
+                else:
+                    print("[MinorBodies] comets table has no usable magnitude column; comet count set to 0")
+            except Exception as e:
+                print(f"[MinorBodies] COUNT comets failed: {e!r}")
+
+        finally:
+            try:
+                if con is not None:
+                    con.close()
+            except Exception:
+                pass
+
+        # Build message
+        msg_lines = [
+            f"Asteroids with H ≤ {H_ast:.1f}: {ast_count:,}",
+            f"Comets with H ≤ {H_com:.1f}: {com_count:,}",
+            "",
+            "Note: This counts objects in the entire catalog,",
+            "not just those in your current image field of view.",
+        ]
+        msg = "\n".join(msg_lines)
+
+        QMessageBox.information(
+            self,
+            "Minor-Body Catalog Counts",
+            msg,
+        )
+
+        # Optionally also reflect this in the status bar
+        self.status_label.setText(
+            f"Minor bodies brighter than limits — Asteroids: {ast_count:,}, "
+            f"Comets: {com_count:,}"
+        )
+
 
     def toggle_object_names(self, state=None):
         self.show_names = self.show_names_checkbox.isChecked() if state is None else bool(state)
@@ -4399,7 +4845,7 @@ class WIMIDialog(QDialog):
             except ValueError:
                 return parse_value(result[key])
 
-        def _close(a, b, tol=1e-8):
+        def _close(a, b, tol=1e-6):
             return abs(a - b) <= tol
 
         entry = next(
@@ -4411,7 +4857,13 @@ class WIMIDialog(QDialog):
         print(f"[DEBUG] Matched source: {source!r}")  # ← debug print
 
         s = source.strip().lower()
-
+        # --- Minor-body rows (local MinorDB results) → 3d-asteroids.space ----
+        if s.startswith("minordb"):
+            kind = (entry.get("long_type") if entry else "") or ""
+            # 'kind' will usually be "Asteroid" or "Comet"
+            open_minor_body_3d_page(object_name, kind=kind)
+            return
+        
         if s == "simbad" and object_name:
             encoded = quote(object_name)
             webbrowser.open(
@@ -4762,9 +5214,21 @@ class WIMIDialog(QDialog):
 
     def initialize_wcs_from_header(self, header):
         """ Initialize WCS data from a FITS header or constructed XISF header """
+        from astropy.io import fits
+
+        # normalize header → always keep a real fits.Header on self.header
+        if isinstance(header, fits.Header):
+            self.header = header.copy()
+        else:
+            # assume dict-like
+            h = fits.Header()
+            for k, v in dict(header).items():
+                h[k] = v
+            self.header = h
+
         try:
             # Use only the first two dimensions for WCS
-            self.wcs = WCS(header, naxis=2, relax=True)
+            self.wcs = WCS(self.header, naxis=2, relax=True)
             
             # Calculate and set pixel scale
             pixel_scale_matrix = self.wcs.pixel_scale_matrix
@@ -4791,17 +5255,17 @@ class WIMIDialog(QDialog):
                     return np.degrees(np.arctan2(-c12, c11))
                 if None not in (pc11, pc12, pc21, pc22):
                     # If PC given, use CDELT to scale
-                    cdelt1 = float(header.get("CDELT1", 1.0))
+                    cdelt1 = float(hdr.get("CDELT1", 1.0))
                     return np.degrees(np.arctan2(-pc12 * cdelt1, pc11 * cdelt1))
                 return None
 
-            if 'CROTA2' in header:
+            if 'CROTA2' in self.header:
                 try:
-                    self.orientation = float(header['CROTA2'])
+                    self.orientation = float(self.header['CROTA2'])
                 except Exception:
-                    self.orientation = _cd_orientation(header)
+                    self.orientation = _cd_orientation(self.header)
             else:
-                self.orientation = _cd_orientation(header)
+                self.orientation = _cd_orientation(self.header)
             self.orientation_label.setText(f"Orientation: {self.orientation:.2f}°" if self.orientation is not None else "Orientation: N/A")
 
             # --- ✅ Ensure `self.orientation` is a float before using it ---
@@ -5007,6 +5471,936 @@ class WIMIDialog(QDialog):
 
     def _settings(self) -> QSettings:
         return getattr(self, "settings", None) or QSettings()
+
+    # ─────────────────────────────────────────
+    # Minor-planet DB path via QSettings
+    # ─────────────────────────────────────────
+    def _minor_settings(self) -> QSettings:
+        return getattr(self, "settings", None) or QSettings()
+
+    # ─────────────────────────────────────────
+    # Minor-planet DB path via QSettings
+    # ─────────────────────────────────────────
+    def _load_minor_db_path(self) -> str:
+        """Load cached DB path from QSettings and update the label."""
+        from pathlib import Path
+        from pro import minorbodycatalog as mbc
+
+        path = self.settings.value("wimi/minorbody_db_path", "", type=str)
+        self.minor_db_path = path or ""
+
+        if not hasattr(self, "minor_db_label"):
+            return self.minor_db_path
+
+        if not path:
+            self.minor_db_label.setText("Database: not downloaded")
+            return self.minor_db_path
+
+        p = Path(path)
+        if not p.is_file():
+            self.minor_db_label.setText("Database: not downloaded")
+            return self.minor_db_path
+
+        # Try to load local manifest to show version + counts
+        manifest_path = p.parent / mbc.DEFAULT_MANIFEST_BASENAME
+        manifest = mbc.load_local_manifest(manifest_path)
+
+        if manifest is not None:
+            ast = f"{manifest.counts_asteroids:,}"
+            com = f"{manifest.counts_comets:,}"
+            self.minor_db_label.setText(
+                f"Database: v{manifest.version} — {ast} asteroids, {com} comets"
+            )
+        else:
+            self.minor_db_label.setText(f"Database: {p.name}")
+
+        return self.minor_db_path
+
+    def _save_minor_db_path(self, path: str) -> None:
+        """Save DB path to QSettings and update label."""
+        self.settings.setValue("wimi/minorbody_db_path", path)
+        self.settings.sync()
+        self.minor_db_path = path
+        self._load_minor_db_path()   # reuse logic to update label
+
+    def download_minor_body_catalog(self, force: bool = False) -> None:
+        """
+        Download or update the minor-body SQLite DB using pro.minorbodycatalog,
+        showing a progress UI while it runs.
+
+        Shift-clicking the button sets force=True (handled in the click slot).
+        """
+        from PyQt6.QtCore import QEventLoop
+        from pro import minorbodycatalog as mbc
+
+        data_dir = self._minorbody_data_dir()
+
+        # Disable the button while downloading
+        if hasattr(self, "btn_minor_download"):
+            self.btn_minor_download.setEnabled(False)
+
+        self.status_label.setText("Status: Downloading minor-body catalog…")
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+
+        dlg = QProgressDialog(
+            "Downloading minor-body catalog…\n"
+            "This may take a minute ~350MB file.",
+            "",
+            0,
+            0,
+            self,
+        )
+        dlg.setWindowTitle("Minor-Body Catalog")
+        dlg.setWindowModality(Qt.WindowModality.ApplicationModal)
+        dlg.setAutoClose(False)
+        dlg.setAutoReset(False)
+        dlg.setCancelButton(None)
+        dlg.show()
+
+        worker = MinorBodyDownloadWorker(
+            data_dir=data_dir,
+            force_refresh=force,
+            parent=self,
+        )
+
+        result = {
+            "ok": False,
+            "db_path": "",
+            "version": "",
+            "ast": 0,
+            "com": 0,
+            "error": "",
+        }
+
+        loop = QEventLoop()
+
+        def _on_ok(db_path: str, version: str, asteroids: int, comets: int):
+            result["ok"] = True
+            result["db_path"] = db_path
+            result["version"] = version
+            result["ast"] = asteroids
+            result["com"] = comets
+            loop.quit()
+
+        def _on_fail(msg: str):
+            result["ok"] = False
+            result["error"] = msg
+            loop.quit()
+
+        worker.finished_ok.connect(_on_ok)
+        worker.failed.connect(_on_fail)
+        worker.finished.connect(loop.quit)
+
+        worker.start()
+        loop.exec()
+
+        dlg.close()
+        QApplication.restoreOverrideCursor()
+
+        if hasattr(self, "btn_minor_download"):
+            self.btn_minor_download.setEnabled(True)
+
+        if not result["ok"]:
+            self.status_label.setText("Status: Minor-body catalog download failed.")
+            msg = result["error"] or "Unknown error."
+            QMessageBox.critical(
+                self,
+                "Minor-Body Catalog Error",
+                f"Failed to download minor-body catalog:\n{msg}",
+            )
+            return
+
+        # Success
+        self._save_minor_db_path(result["db_path"])
+
+        ast = f"{result['ast']:,}"
+        com = f"{result['com']:,}"
+
+        self.status_label.setText("Status: Minor-body catalog ready.")
+        QMessageBox.information(
+            self,
+            "Minor-Body Catalog",
+            f"Minor-body catalog downloaded/updated successfully.\n"
+            f"Version: {result['version']}\n"
+            f"Asteroids: {ast}\n"
+            f"Comets: {com}",
+        )
+
+    def _ensure_minor_planet_db(self) -> str | None:
+        """
+        Ensure the minor-body SQLite DB exists.
+
+        Returns:
+            Path string to the DB, or None if the user cancels or download fails.
+        """
+        from pathlib import Path
+
+        # 1) If we already know the path and it exists, just reuse it.
+        p_str = getattr(self, "minor_db_path", "") or self.settings.value(
+            "wimi/minorbody_db_path", "", type=str
+        )
+        if p_str:
+            p = Path(p_str)
+            if p.is_file():
+                self.minor_db_path = p_str
+                return p_str
+
+        # 2) Ask user to download / update
+        reply = QMessageBox.question(
+            self,
+            "Minor-Body Catalog",
+            "The minor-body catalog is not available.\n"
+            "Do you want to download or update it now?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return None
+
+        # This will check manifest and only re-download if needed
+        self.download_minor_body_catalog(force=False)
+
+        p_str = getattr(self, "minor_db_path", "")
+        if p_str and Path(p_str).is_file():
+            return p_str
+
+        QMessageBox.critical(
+            self,
+            "Minor-Body Catalog",
+            "Failed to download or locate the minor-body database.",
+        )
+        return None
+
+
+    # ------------------------------------------------------------------
+    # Minor-body helpers
+    # ------------------------------------------------------------------
+    def _minorbody_data_dir(self) -> Path:
+        """
+        Return the per-user data directory for the minor-body catalog.
+
+        Uses QStandardPaths.AppDataLocation so it automatically maps to:
+          - Windows: %LOCALAPPDATA%/SetiAstroSuitePro (or similar)
+          - macOS:   ~/Library/Application Support/SetiAstroSuitePro
+          - Linux:   ~/.local/share/SetiAstroSuitePro
+        and then a 'minor_bodies' subfolder.
+        """
+        base = QStandardPaths.writableLocation(
+            QStandardPaths.StandardLocation.AppDataLocation
+        )
+        base_path = Path(base) if base else Path.home() / ".saspro"
+        data_dir = base_path / "minor_bodies"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        return data_dir
+
+    def _get_full_fov_center_and_radius_deg(self):
+        """
+        Compute (RA, Dec) at the image center and a radius (deg)
+        that roughly covers the whole image (center to a corner).
+
+        Returns (ra_center, dec_center, radius_deg) or (None, None, None)
+        on failure.
+        """
+        if self.main_image is None or self.wcs is None or self.pixscale is None:
+            return None, None, None
+
+        try:
+            # self.main_image is a QImage here (like in search_entire_image)
+            width  = self.main_image.width()
+            height = self.main_image.height()
+
+            cx = width  / 2.0
+            cy = height / 2.0
+
+            ra_center, dec_center = self.calculate_ra_dec_from_pixel(cx, cy)
+            if ra_center is None or dec_center is None:
+                return None, None, None
+
+            # pixel radius from center to bottom-right corner (same idea as SIMBAD)
+            corner_x, corner_y = width, height
+            dx = corner_x - cx
+            dy = corner_y - cy
+            radius_px = float((dx * dx + dy * dy) ** 0.5)
+
+            # convert pixel radius to degrees using pixscale (arcsec/pixel)
+            radius_deg = float((radius_px * self.pixscale) / 3600.0)
+
+            return ra_center, dec_center, radius_deg
+        except Exception:
+            return None, None, None
+
+    # ─────────────────────────────────────────
+    # Observation datetime helpers
+    # ─────────────────────────────────────────
+    def _get_observation_datetime_from_header(self):
+        """
+        Try to extract observation datetime from:
+
+          1) self.original_header   (full FITS header, if present)
+          2) self.wcs.wcs.dateobs   (DATE-OBS stored in the WCS header)
+          3) MJD-OBS in the WCS header
+
+        Returns a Python datetime (UTC) or None.
+        """
+
+        def _extract_from_header(hdr: fits.Header):
+            """Best-effort extraction from a FITS Header."""
+            # 1) DATE-OBS (+ optional TIME-OBS)
+            try:
+                if "DATE-OBS" in hdr:
+                    val = str(hdr["DATE-OBS"]).strip()
+
+                    # Already full ISO timestamp
+                    if "T" in val:
+                        t = Time(val, format="isot", scale="utc")
+                        return t.to_datetime()
+
+                    # DATE-OBS + TIME-OBS split
+                    if "TIME-OBS" in hdr:
+                        val2 = str(hdr["TIME-OBS"]).strip()
+                        t = Time(f"{val}T{val2}", format="isot", scale="utc")
+                        return t.to_datetime()
+            except Exception as e:
+                print(f"[WIMI] DATE-OBS parse failed from header: {e!r}")
+
+            # 2) MJD-OBS
+            try:
+                if "MJD-OBS" in hdr:
+                    t = Time(float(hdr["MJD-OBS"]), format="mjd", scale="utc")
+                    return t.to_datetime()
+            except Exception as e:
+                print(f"[WIMI] MJD-OBS parse failed from header: {e!r}")
+
+            # 3) JD
+            try:
+                if "JD" in hdr:
+                    t = Time(float(hdr["JD"]), format="jd", scale="utc")
+                    return t.to_datetime()
+            except Exception as e:
+                print(f"[WIMI] JD parse failed from header: {e!r}")
+
+            return None
+
+        # --- 1) Try original_header if we have it ---
+        hdr = getattr(self, "original_header", None)
+        if isinstance(hdr, fits.Header):
+            dt = _extract_from_header(hdr)
+            if dt is not None:
+                print(f"[WIMI] Observation time from original_header: {dt.isoformat()}")
+                return dt
+
+        # --- 2) Fall back to WCS header (this matches your Metadata.WCS.* block) ---
+        w = getattr(self, "wcs", None)
+        if w is not None:
+            # 2a) native dateobs field
+            dateobs = None
+            try:
+                dateobs = getattr(w.wcs, "dateobs", None)
+            except Exception:
+                dateobs = None
+
+            if dateobs:
+                try:
+                    # Handles 'YYYY-MM-DDTHH:MM:SS...' (your case)
+                    fmt = "isot" if "T" in dateobs else "iso"
+                    t = Time(dateobs, format=fmt, scale="utc")
+                    dt = t.to_datetime()
+                    print(f"[WIMI] Observation time from WCS.dateobs: {dt.isoformat()}")
+                    return dt
+                except Exception as e:
+                    print(f"[WIMI] failed to parse WCS.dateobs={dateobs!r}: {e!r}")
+
+            # 2b) If that fails, try MJD-OBS in the WCS header
+            try:
+                w_hdr = w.to_header(relax=True)
+                if "MJD-OBS" in w_hdr:
+                    t = Time(float(w_hdr["MJD-OBS"]), format="mjd", scale="utc")
+                    dt = t.to_datetime()
+                    print(f"[WIMI] Observation time from WCS MJD-OBS: {dt.isoformat()}")
+                    return dt
+            except Exception as e:
+                print(f"[WIMI] failed to parse MJD-OBS from WCS header: {e!r}")
+
+        # --- 3) Give up; caller will prompt ---
+        return None
+
+
+    def _prompt_for_observation_datetime(self):
+        """
+        Show a small dialog asking for observation date/time if header doesn't have it.
+        Returns a Python datetime or None if user cancels.
+        """
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Observation Date & Time")
+
+        layout = QFormLayout(dialog)
+        lbl = QLabel(
+            "The FITS header does not contain an observation date/time.\n"
+            "Please enter the midpoint of the exposure (UTC):"
+        )
+        lbl.setWordWrap(True)
+        layout.addRow(lbl)
+
+        dt_edit = QDateTimeEdit(dialog)
+        dt_edit.setCalendarPopup(True)
+        dt_edit.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
+        dt_edit.setDateTime(QDateTime.currentDateTimeUtc())
+        layout.addRow("Date & Time (UTC):", dt_edit)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        layout.addWidget(buttons)
+
+        def _accept():
+            dialog.accept()
+
+        def _reject():
+            dialog.reject()
+
+        buttons.accepted.connect(_accept)
+        buttons.rejected.connect(_reject)
+
+        dialog.setLayout(layout)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            qdt = dt_edit.dateTime().toUTC()
+            py_dt = qdt.toPyDateTime()
+            return py_dt
+        return None
+
+    def _get_or_prompt_observation_datetime(self):
+        """
+        Returns a Python datetime for the observation. Uses:
+        1) cached self.observation_datetime
+        2) header (DATE-OBS / TIME-OBS / MJD-OBS / JD)
+        3) prompt the user
+        """
+        # Cached?
+        if getattr(self, "observation_datetime", None) is not None:
+            return self.observation_datetime
+
+        # Try header
+        dt = self._get_observation_datetime_from_header()
+        if dt is None:
+            dt = self._prompt_for_observation_datetime()
+        self.observation_datetime = dt
+        return dt
+
+    def perform_minor_body_search(self, mode: str = "circle"):
+        """
+        Search local minor-planet/comet database in either:
+
+        - the current WCS-defined search circle (mode="circle"), or
+        - the entire image FOV (mode="full").
+
+        Uses the observation date/time from header or prompt.
+        """
+        # Scope from combo overrides the default 'mode' argument
+        if hasattr(self, "minor_scope_combo"):
+            scope = self.minor_scope_combo.currentText()
+            if "Entire" in scope:
+                mode = "full"
+            else:
+                mode = "circle"
+
+        # Persist current minor-body settings so they survive restarts
+        self.settings.setValue("wimi/minor/asteroid_H_max", self.minor_ast_H_spin.value())
+        self.settings.setValue("wimi/minor/asteroid_max", self.minor_ast_max_spin.value())
+        self.settings.setValue("wimi/minor/comet_H_max", self.minor_com_H_spin.value())
+        self.settings.setValue("wimi/minor/comet_max", self.minor_com_max_spin.value())
+        self.settings.setValue(
+            "wimi/minor/time_offset_hours",
+            self.minor_time_offset_spin.value()
+        )
+        # Optional specific target from UI (designation or name)
+        target_name: str | None = None
+        if hasattr(self, "minor_target_edit") and self.minor_target_edit is not None:
+            t = self.minor_target_edit.text().strip()
+            if t:
+                target_name = t
+
+        # Need WCS + pixscale for either mode
+        if self.wcs is None or self.pixscale is None:
+            QMessageBox.warning(
+                self,
+                "No WCS",
+                "No valid WCS/pixel scale is available. Please solve the image first."
+            )
+            return
+
+        # 1) Determine center + radius
+        if mode == "full":
+            ra_center, dec_center, radius_deg = self._get_full_fov_center_and_radius_deg()
+            if ra_center is None or radius_deg is None:
+                QMessageBox.warning(
+                    self,
+                    "Minor-Body Search",
+                    "Could not determine the field of view for this image."
+                )
+                return
+        else:
+            # Default: use the defined search circle
+            if not self.circle_center or self.circle_radius <= 0:
+                QMessageBox.warning(
+                    self,
+                    "No Search Area",
+                    "Please define a search circle by Shift-clicking and dragging."
+                )
+                return
+
+            ra_center, dec_center = self.calculate_ra_dec_from_pixel(
+                self.circle_center.x(), self.circle_center.y()
+            )
+            if ra_center is None or dec_center is None:
+                QMessageBox.warning(
+                    self,
+                    "Invalid Coordinates",
+                    "Could not determine the RA/Dec of the circle center."
+                )
+                return
+
+            # radius in degrees from circle radius (pixels) and pixscale (arcsec/pixel)
+            radius_deg = float((self.circle_radius * self.pixscale) / 3600.0)
+
+        # 2) Observation datetime
+        obs_dt = self._get_or_prompt_observation_datetime()
+        if obs_dt is None:
+            QMessageBox.information(
+                self,
+                "Minor-Body Search",
+                "No observation date/time specified; search cancelled."
+            )
+            return
+
+        # 3) DB path
+        db_path = self._ensure_minor_planet_db()
+        if not db_path:
+            return
+
+        # Read numeric limits once (in UI thread)
+        try:
+            H_ast = float(self.minor_ast_H_spin.value())
+        except Exception:
+            H_ast = 20.0
+        try:
+            N_ast = int(self.minor_ast_max_spin.value())
+        except Exception:
+            N_ast = 50000
+        try:
+            H_com = float(self.minor_com_H_spin.value())
+        except Exception:
+            H_com = 15.0
+        try:
+            N_com = int(self.minor_com_max_spin.value())
+        except Exception:
+            N_com = 5000
+
+        # Optional: target name (e.g. "Semiramis")
+        target_filter = None
+        if hasattr(self, "minor_target_edit"):
+            t = self.minor_target_edit.text().strip()
+            if t:
+                target_filter = t
+
+        # 4) Run query in a worker thread with a progress dialog
+        prog = QProgressDialog(
+            "Computing minor-body ephemerides...\n"
+            "This may take awhile...",
+            "Cancel",
+            0,
+            0,
+            self,
+        )
+        prog.setWindowTitle("Minor-Body Search")
+        prog.setWindowModality(Qt.WindowModality.ApplicationModal)
+        prog.setAutoClose(True)
+        prog.setAutoReset(True)
+        prog.setMinimumDuration(500)
+        prog.show()
+
+        worker = MinorBodySearchWorker(
+            dialog=self,
+            db_path=db_path,
+            ra_center=ra_center,
+            dec_center=dec_center,
+            radius_deg=radius_deg,
+            obs_datetime=obs_dt,
+            H_ast=H_ast,
+            N_ast=N_ast,
+            H_com=H_com,
+            N_com=N_com,
+            target_name=target_filter,
+        )
+
+        loop = QEventLoop()
+        container = {"results": None, "error": None}
+
+        def on_progress(done: int, total: int):
+            if total <= 0:
+                prog.setMaximum(0)
+            else:
+                prog.setMaximum(total)
+                prog.setValue(done)
+
+        def on_ok(results: list):
+            container["results"] = results
+            loop.quit()
+
+        def on_fail(msg: str):
+            container["error"] = msg
+            loop.quit()
+
+        def on_cancel():
+            worker.request_cancel()
+
+        worker.progress.connect(on_progress)
+        worker.finished_ok.connect(on_ok)
+        worker.failed.connect(on_fail)
+        prog.canceled.connect(on_cancel)
+
+        worker.start()
+        loop.exec()
+        prog.close()
+
+        if container["error"] is not None:
+            QMessageBox.critical(self, "Minor-Body Search", f"Query failed:\n{container['error']}")
+            return
+
+        results = container["results"] or []
+
+
+        if not results:
+            where = "the specified region" if mode == "circle" else "the image field of view"
+            extra = ""
+            if target_name:
+                extra = f"\n(Target '{target_name}' not found in the catalog subset.)"
+            QMessageBox.information(
+                self,
+                "Minor-Body Search",
+                f"No minor planets or comets found in {where} at the given time.{extra}"
+            )
+            return
+
+        # 5) Populate tree & overlay (unchanged)
+        self.results_tree.clear()
+        query_results = []
+
+        for r in results:
+            ra  = float(r["ra"])
+            dec = float(r["dec"])
+            name  = r.get("name", r.get("designation", "N/A"))
+            mag   = r.get("mag", "N/A")
+            qtype = r.get("type", "Minor body")
+            dist  = r.get("distance", "N/A")   # AU or whatever you decide
+            src   = r.get("source", "MinorDB")
+
+            item = QTreeWidgetItem([
+                f"{ra:.6f}",
+                f"{dec:.6f}",
+                name,
+                str(mag),
+                "MP",
+                qtype,
+                str(dist),
+                src,
+            ])
+            self.results_tree.addTopLevelItem(item)
+
+            query_results.append({
+                "ra": ra,
+                "dec": dec,
+                "name": name,
+                "diameter": mag,
+                "short_type": "MP",
+                "long_type": qtype,
+                "redshift": dist,
+                "comoving_distance": dist,
+                "source": src,
+            })
+
+        self.main_preview.set_query_results(query_results)
+        self.query_results = query_results
+        self.update_object_count()
+
+    def _query_minor_planets_from_db(
+        self,
+        db_path,
+        ra_center,
+        dec_center,
+        radius_deg,
+        obs_datetime,
+        H_ast: float,
+        N_ast: int,
+        H_com: float,
+        N_com: int,
+        target_name: str | None = None,
+        progress_cb=None,
+    ):
+        """
+        Query the local minor-body DB using MinorBodyCatalog + Skyfield.
+
+        Returns list of dicts:
+            ra, dec, name, mag, type, distance, source, designation
+        """
+        from pathlib import Path
+        from astropy.time import Time
+        import pandas as pd
+        import sqlite3
+        from pro import minorbodycatalog as mbc
+
+        db_path = Path(db_path)
+        if not db_path.is_file():
+            raise FileNotFoundError(f"Minor-body DB not found: {db_path}")
+
+        # --- Apply user-configurable time offset (hours), if any ---
+        offset_hours = 0.0
+        if hasattr(self, "minor_time_offset_spin"):
+            try:
+                offset_hours = float(self.minor_time_offset_spin.value())
+            except Exception:
+                offset_hours = 0.0
+
+        if offset_hours != 0.0:
+            obs_datetime = obs_datetime + timedelta(hours=offset_hours)
+            print(
+                f"[MinorBodies] applying time offset {offset_hours:+.2f} h, "
+                f"effective obs_datetime = {obs_datetime.isoformat()}"
+            )
+
+
+        # 1) Convert observation datetime to JD
+        jd = Time(obs_datetime).jd
+
+        print(
+            f"[MinorBodies] Search: RA={ra_center:.6f} deg  "
+            f"Dec={dec_center:.6f} deg  radius={radius_deg:.4f} deg  JD={jd:.6f}"
+        )
+        print(f"[MinorBodies] DB path: {db_path}")
+
+        # ------------------------------------------------------------------
+        # Branch 1: targeted search (Search by Name) → direct SQL LIKE
+        # ------------------------------------------------------------------
+        ast_df = None
+        com_df = None
+
+        if target_name:
+            like = f"%{target_name.strip()}%"
+            print(f"[MinorBodies] targeted search for {target_name!r} via direct SQL LIKE")
+
+            with sqlite3.connect(str(db_path)) as con:
+                # Introspect available columns
+                ast_cols = {row[1] for row in con.execute("PRAGMA table_info(asteroids);")}
+                com_cols = {row[1] for row in con.execute("PRAGMA table_info(comets);")}
+
+                # ---- asteroids ----
+                ast_where = []
+                ast_params = []
+                if "designation" in ast_cols:
+                    ast_where.append("designation LIKE ?")
+                    ast_params.append(like)
+                if "designation_packed" in ast_cols:
+                    ast_where.append("designation_packed LIKE ?")
+                    ast_params.append(like)
+
+                if ast_where:
+                    ast_sql = (
+                        "SELECT * FROM asteroids "
+                        f"WHERE {' OR '.join(ast_where)} "
+                        "LIMIT 5000;"
+                    )
+                    ast_df = pd.read_sql(ast_sql, con, params=ast_params)
+                else:
+                    print("[MinorBodies] no designation columns in asteroids table")
+                    ast_df = pd.DataFrame()
+
+                # ---- comets ----
+                com_where = []
+                com_params = []
+                if "designation" in com_cols:
+                    com_where.append("designation LIKE ?")
+                    com_params.append(like)
+                if "designation_packed" in com_cols:
+                    com_where.append("designation_packed LIKE ?")
+                    com_params.append(like)
+
+                if com_where:
+                    com_sql = (
+                        "SELECT * FROM comets "
+                        f"WHERE {' OR '.join(com_where)} "
+                        "LIMIT 2000;"
+                    )
+                    com_df = pd.read_sql(com_sql, con, params=com_params)
+                else:
+                    print("[MinorBodies] no designation columns in comets table")
+                    com_df = pd.DataFrame()
+
+            print(
+                f"[MinorBodies] targeted SQL results: "
+                f"asteroids={len(ast_df)}, comets={len(com_df)}"
+            )
+
+            if ast_df.empty and com_df.empty:
+                print("[MinorBodies] target not found in SQLite tables; returning [].")
+                return []
+
+        # ------------------------------------------------------------------
+        # Branch 2: normal “brightness-limited” search (no target_name)
+        # ------------------------------------------------------------------
+        else:
+            print(
+                f"[MinorBodies] user limits: "
+                f"Asteroids H<={H_ast}, max={N_ast}; "
+                f"Comets H<={H_com}, max={N_com}"
+            )
+
+            cat = mbc.MinorBodyCatalog(db_path)
+
+            try:
+                ast_df = cat.get_bright_asteroids(H_max=H_ast, limit=N_ast)
+            except Exception as e:
+                print(f"[MinorBodies] get_bright_asteroids FAILED: {e!r}")
+                ast_df = None
+
+            try:
+                com_df = cat.get_bright_comets(H_max=H_com, limit=N_com)
+            except Exception as e:
+                print(f"[MinorBodies] get_bright_comets FAILED: {e!r}")
+                com_df = None
+
+            n_ast = len(ast_df) if ast_df is not None else 0
+            n_com = len(com_df) if com_df is not None else 0
+            print(
+                f"[MinorBodies] bright subset (no target filter): "
+                f"asteroids={n_ast}, comets={n_com}"
+            )
+
+            if (ast_df is None or ast_df.empty) and (com_df is None or com_df.empty):
+                print("[MinorBodies] NO rows to compute positions for, returning [].")
+                return []
+
+        # ------------------------------------------------------------------
+        # Common path from here down (we now have ast_df/com_df)
+        # ------------------------------------------------------------------
+        cat = mbc.MinorBodyCatalog(db_path)
+
+        # ---------- Build designation / magnitude maps ----------
+        asteroid_designations: set[str] = set()
+        comet_designations: set[str] = set()
+        asteroid_mag: dict[str, float] = {}
+        comet_mag: dict[str, float] = {}
+
+        if ast_df is not None and len(ast_df):
+            mag_keys_ast = ("magnitude_H", "H", "absolute_magnitude")
+            for _, row in ast_df.iterrows():
+                desig = row.get("designation", "") or row.get("name", "")
+                if not desig:
+                    continue
+                asteroid_designations.add(desig)
+
+                mag_val = None
+                for mk in mag_keys_ast:
+                    if mk in row and row[mk] is not None:
+                        try:
+                            mag_val = float(row[mk])
+                        except Exception:
+                            mag_val = None
+                        break
+                if mag_val is not None:
+                    asteroid_mag[desig] = mag_val
+
+        if com_df is not None and len(com_df):
+            mag_keys_com = ("absolute_magnitude", "magnitude_H", "H")
+            for _, row in com_df.iterrows():
+                desig = row.get("designation", "") or row.get("name", "")
+                if not desig:
+                    continue
+                comet_designations.add(desig)
+
+                mag_val = None
+                for mk in mag_keys_com:
+                    if mk in row and row[mk] is not None:
+                        try:
+                            mag_val = float(row[mk])
+                        except Exception:
+                            mag_val = None
+                        break
+                if mag_val is not None:
+                    comet_mag[desig] = mag_val
+
+        # --- Combine into a single DataFrame for Skyfield ---
+        frames: list[pd.DataFrame] = []
+        if ast_df is not None and len(ast_df):
+            frames.append(ast_df)
+        if com_df is not None and len(com_df):
+            frames.append(com_df)
+
+        if not frames:
+            print("[MinorBodies] NO rows to compute positions for after mapping; returning [].")
+            return []
+
+        rows_df = pd.concat(frames, ignore_index=True)
+        total_rows = len(rows_df)
+        print(f"[MinorBodies] total candidate rows sent to Skyfield: {total_rows}")
+        print(f"[MinorBodies] columns in candidate DataFrame: {list(rows_df.columns)}")
+
+        # ---------- progress callback ----------
+        if progress_cb is None:
+            def progress_cb(done: int, total: int) -> bool:
+                return True
+
+        # 4) Compute positions with Skyfield at this JD
+        print(
+            f"[MinorBodies] compute_positions_skyfield: sending {total_rows} rows, jd={jd}"
+        )
+        positions = cat.compute_positions_skyfield(
+            asteroid_rows=rows_df,
+            jd=jd,
+            ephemeris_path=None,
+            topocentric=None,
+            progress_cb=progress_cb,
+            debug=True,
+        )
+
+        print(f"[MinorBodies] positions returned from Skyfield: {len(positions)}")
+
+        # 5) Filter to cone
+        results: list[dict[str, object]] = []
+        kept = 0
+
+        for pos in positions:
+            ra = float(pos["ra_deg"])
+            dec = float(pos["dec_deg"])
+            ang = self.calculate_angular_distance(ra_center, dec_center, ra, dec)
+            if ang > radius_deg:
+                continue
+
+            kept += 1
+            desig = pos.get("designation", "") or "Unknown"
+
+            if desig in asteroid_designations:
+                kind = "Asteroid"
+                mag = asteroid_mag.get(desig, "N/A")
+            elif desig in comet_designations:
+                kind = "Comet"
+                mag = comet_mag.get(desig, "N/A")
+            else:
+                kind = "Minor body"
+                mag = "N/A"
+
+            results.append(
+                {
+                    "ra": ra,
+                    "dec": dec,
+                    "name": desig,
+                    "designation": desig,
+                    "mag": mag,
+                    "type": kind,
+                    "distance": pos.get("distance_au", "N/A"),
+                    "source": "MinorDB",
+                }
+            )
+
+        print(f"[MinorBodies] objects inside cone: {kept}")
+        return results
 
     def _get_astap_exe(self) -> str:
         s = self._settings()
@@ -5251,7 +6645,8 @@ class WIMIDialog(QDialog):
         # 5) Finally swap in the new header and re-init WCS (with SIP!)
         self.header = new_hdr
         try:
-            self.wcs = WCS(self.header, naxis=2, relax=True)
+            self.apply_wcs_header(self.header)
+            self.status_label.setText("Status: ASTAP solve succeeded.")
         except Exception as e:
             QMessageBox.critical(self, "Plate Solve", f"Error initializing WCS from solved header:\n{e}")
             return
@@ -5430,27 +6825,24 @@ class WIMIDialog(QDialog):
             delay = 10  # seconds
             
             for attempt in range(max_retries):
-                # Attempt to download the file
                 response = requests.get(wcs_url, stream=True)
                 response.raise_for_status()
 
-                # Save the WCS file locally
                 with open(wcs_filepath, 'wb') as f:
                     for chunk in response.iter_content(chunk_size=8192):
                         f.write(chunk)
 
-                # Check if the downloaded file is a valid FITS file
                 try:
                     with fits.open(wcs_filepath, ignore_missing_simple=True, ignore_missing_end=True) as hdul:
-                        # If it opens correctly, return the header
                         wcs_header = hdul[0].header
                         print("WCS header successfully retrieved.")
-                        self.wcs = WCS(wcs_header)
+                        # 🔁 use common path
+                        self.apply_wcs_header(wcs_header)
                         return wcs_header
                 except Exception as e:
                     print(f"Attempt {attempt + 1}: Failed to process WCS file - possibly HTML instead of FITS. Retrying in {delay} seconds...")
                     print(f"Error: {e}")
-                    time.sleep(delay)  # Wait and retry
+                    time.sleep(delay)
             
             print("Failed to download a valid WCS FITS file after multiple attempts.")
             return None
@@ -5512,17 +6904,38 @@ class WIMIDialog(QDialog):
             print("Warning: could not extract CRVAL1/CRVAL2")        
 
 
+
     def calculate_pixel_from_ra_dec(self, ra, dec):
         """Convert RA/Dec to pixel coordinates using the WCS data."""
-        if not hasattr(self, 'wcs'):
+        if not hasattr(self, "wcs") or self.wcs is None:
             print("WCS not initialized.")
             return None, None
 
         # Convert RA and Dec to pixel coordinates using the WCS object
-        sky_coord = SkyCoord(ra, dec, unit=(u.deg, u.deg), frame='icrs')
-        x, y = self.wcs.world_to_pixel(sky_coord)
-        
-        return int(x), int(y)
+        try:
+            sky_coord = SkyCoord(ra, dec, unit=(u.deg, u.deg), frame="icrs")
+            x, y = self.wcs.world_to_pixel(sky_coord)
+        except Exception as e:
+            print(f"world_to_pixel failed for RA={ra}, Dec={dec}: {e}")
+            return None, None
+
+        # world_to_pixel can return scalars or numpy arrays – normalize to scalars
+        x_arr = np.asarray(x)
+        y_arr = np.asarray(y)
+
+        if x_arr.size == 0 or y_arr.size == 0:
+            print(f"WCS returned empty pixel coords for RA={ra}, Dec={dec}")
+            return None, None
+
+        x_val = float(x_arr.ravel()[0])
+        y_val = float(y_arr.ravel()[0])
+
+        # Guard against NaNs / infinities
+        if not np.isfinite(x_val) or not np.isfinite(y_val):
+            print(f"WCS returned invalid pixel coords for RA={ra}, Dec={dec}: x={x_val}, y={y_val}")
+            return None, None
+
+        return int(round(x_val)), int(round(y_val))
 
     def login_to_astrometry(self, api_key):
         try:
@@ -5765,32 +7178,32 @@ class WIMIDialog(QDialog):
 
     def compute_pixscale(self):
         """
-        Computes the pixel scale (arcsec/pixel) from the header's CD keywords.
+        Computes the pixel scale (arcsec/pixel) from WCS if possible,
+        otherwise falls back to header CD keywords.
         """
+        from astropy.wcs.utils import proj_plane_pixel_scales
+
+        # Prefer WCS-derived scale
+        if getattr(self, "wcs", None) is not None:
+            try:
+                scales = proj_plane_pixel_scales(self.wcs) * 3600.0  # arcsec/pixel
+                pixscale = float(np.mean(scales))
+                print("Calculated pixscale from WCS:", pixscale)
+                return pixscale
+            except Exception as e:
+                print("Error calculating pixscale from WCS:", e)
+
+        # Fallback: CD matrix
         try:
             cd1_1 = float(self.header.get('CD1_1', 0))
             cd1_2 = float(self.header.get('CD1_2', 0))
-            # Calculate scale in degrees per pixel and convert to arcsec.
             pixscale = math.sqrt(cd1_1**2 + cd1_2**2) * 3600.0
             print("Calculated pixscale from header:", pixscale)
             return pixscale
         except Exception as e:
-            print("Error calculating pixscale:", e)
+            print("Error calculating pixscale from header:", e)
             return None
 
-    def get_defined_radius(self):
-        """
-        Returns the radius (in arcminutes) for the current circle.
-        If self.pixscale is None, attempt to calculate it manually.
-        """
-        if self.pixscale is None:
-            self.pixscale = self.compute_pixscale()
-            if self.pixscale is None:
-                print("Warning: Could not compute pixscale from header.")
-                return None
-
-        # The circle_radius is in pixels; convert to arcminutes.
-        return float((self.circle_radius * self.pixscale) / 3600.0)
 
     def update_circle_data(self):
         """Updates the status based on the circle's center and radius."""
@@ -5943,37 +7356,34 @@ class WIMIDialog(QDialog):
             # basics
             ra, dec = float(row["ra"]), float(row["dec"])
             diam     = row.get("galdim_majaxis", "N/A")
-            rz       = row["rvz_redshift"]
-            red_z    = float(rz) if rz is not None else None
+
+            rz_raw   = row["rvz_redshift"]
+            red_z    = _mask_safe_float(rz_raw)  # ← no warning, None if masked
 
             # pull extras only if it’s a star
             extra = extras.get(name, {})
-            Bmag  = extra.get("FLUX_B")
-            Vmag  = extra.get("FLUX_V")
-            plx   = extra.get("PLX_VALUE")
+
+            Bmag  = _mask_safe_float(extra.get("FLUX_B"))
+            Vmag  = _mask_safe_float(extra.get("FLUX_V"))
+            plx   = _mask_safe_float(extra.get("PLX_VALUE"))
             spec  = extra.get("SP_TYPE")
 
-            if plx is not None:
-                pv = abs(float(plx))          # <— absolute value here
-                if pv > 0:
-                    dist_pc  = 1000.0 / pv
-                    dist_ly  = dist_pc * 3.261563777
-                    # store comoving distance in Gyr for consistency with your zs_raw pipeline:
-                    distance = round(dist_ly / 1e9, 9)
-                    red_val  = pv              # use the positive parallax in the "redshift" column
-                else:
-                    # parallax was 0⇒ no distance
-                    red_val  = red_z if red_z is not None else "--"
-                    distance = (calculate_comoving_distance(red_val)
-                                if red_val != "--" else "N/A")
+            if plx is not None and plx > 0.0:
+                pv = plx  # already positive; absolute if you want
+                dist_pc  = 1000.0 / pv
+                dist_ly  = dist_pc * 3.261563777
+                # store comoving distance in Gyr for consistency with your zs_raw pipeline:
+                distance = round(dist_ly / 1e9, 9)
+                red_val  = pv  # mas, goes in the "redshift" column but clearly not a z
             else:
+                # no usable parallax → fall back to redshift if present
                 red_val  = red_z if red_z is not None else "--"
                 distance = (calculate_comoving_distance(red_val)
-                            if red_val != "--" else "N/A")
+                            if isinstance(red_val, (int, float)) else "N/A")
 
             # absolute V magnitude if we have Vmag & plx
             absV = None
-            if Vmag is not None and plx and plx > 0:
+            if Vmag is not None and plx is not None and plx > 0:
                 absV = Vmag - (5 * np.log10(1000.0 / plx) - 5)
 
             long_type = otype_long_name_lookup.get(short_type, short_type)
@@ -5982,7 +7392,7 @@ class WIMIDialog(QDialog):
             item = QTreeWidgetItem([
                 f"{ra:.6f}", f"{dec:.6f}", name,
                 str(diam), short_type, long_type,
-                f"{red_val:.6f}" if isinstance(red_val, (int,float)) else str(red_val),
+                f"{red_val:.6f}" if isinstance(red_val, (int, float)) else str(red_val),
                 f"{distance:.6f}" if isinstance(distance, float) else str(distance)
             ])
             self.results_tree.addTopLevelItem(item)
@@ -6005,6 +7415,7 @@ class WIMIDialog(QDialog):
         self.main_preview.set_query_results(query_results)
         self.query_results = query_results
         self.update_object_count()
+
 
 
 

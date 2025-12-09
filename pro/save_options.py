@@ -9,8 +9,8 @@ from pro.file_utils import _normalize_ext
 _BIT_DEPTHS = {
     "png":  ["8-bit"],
     "jpg":  ["8-bit"],
-    "fits": ["32-bit floating point"],     # your saver writes float32 for FITS
-    "fit":  ["32-bit floating point"],
+    "fits": ["8-bit", "16-bit", "32-bit unsigned", "32-bit floating point"],
+    "fit":  ["8-bit", "16-bit", "32-bit unsigned", "32-bit floating point"],
     "tif":  ["8-bit", "16-bit", "32-bit unsigned", "32-bit floating point"],
     "xisf": ["16-bit", "32-bit unsigned", "32-bit floating point"],
 }
@@ -21,7 +21,24 @@ class SaveOptionsDialog(QDialog):
         self.setWindowTitle("Save Options")
         self.setModal(True)
 
-        self._ext = _normalize_ext(target_ext)
+        # Normalize extension aggressively so it matches _BIT_DEPTHS keys
+        raw_ext = (target_ext or "").lower().strip()
+
+        # If it's like ".fits" or "image.fits" just keep the part after last dot
+        if "." in raw_ext:
+            raw_ext = raw_ext.split(".")[-1]
+
+        # Handle common synonyms / compressed variants
+        if raw_ext in ("fit", "fits", "fz", "fits.gz", "fit.gz"):
+            self._ext = "fits"
+        elif raw_ext in ("tif", "tiff"):
+            self._ext = "tif"
+        elif raw_ext in ("jpg", "jpeg"):
+            self._ext = "jpg"
+        else:
+            # Fallback – already lowercase, no leading dot
+            self._ext = raw_ext
+
         allowed = _BIT_DEPTHS.get(self._ext, ["32-bit floating point"])
 
         self.combo = QComboBox(self)
@@ -39,9 +56,8 @@ class SaveOptionsDialog(QDialog):
 
         row = QHBoxLayout()
         row.addStretch(1)
-        row.addWidget(btn_ok)        
+        row.addWidget(btn_ok)
         row.addWidget(btn_cancel)
-
 
         lay = QVBoxLayout(self)
         lay.addWidget(lbl)
@@ -51,3 +67,4 @@ class SaveOptionsDialog(QDialog):
 
     def selected_bit_depth(self) -> str:
         return self.combo.currentText()
+
