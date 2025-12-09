@@ -2875,27 +2875,17 @@ class WIMIDialog(QDialog):
         self.minor_db_label.setStyleSheet("font-size: 10px; color: gray;")
 
         self.btn_minor_download = QPushButton("Download Catalog")
-        self.btn_minor_download.setToolTip(
-            "Download or update the minor-body catalog.\n"
-            "Shift-click to force a fresh re-download."
-        )
-
-        def _on_minor_download_clicked():
-            # Shift-click = force re-download
-            mods = QApplication.keyboardModifiers()
-            force = bool(mods & Qt.KeyboardModifier.ShiftModifier)
-            self.download_minor_body_catalog(force=force)
-
-        self.btn_minor_download.clicked.connect(_on_minor_download_clicked)
+        self.btn_minor_download.clicked.connect(self.download_minor_body_catalog)
 
         self.btn_minor_search = QPushButton("Search Minor Bodies")
         self.btn_minor_search.clicked.connect(self.perform_minor_body_search)
 
-        # 4 columns in this grid; make buttons span 2 each so they
-        # don't get squeezed into a quarter width.
-        minor_layout.addWidget(self.minor_db_label,      0, 0, 1, 4)
-        minor_layout.addWidget(self.btn_minor_download,  1, 0, 1, 2)
-        minor_layout.addWidget(self.btn_minor_search,    1, 2, 1, 2)
+        # Row 0: status label across full width
+        minor_layout.addWidget(self.minor_db_label, 0, 0, 1, 4)
+
+        # Row 1: download + search buttons
+        minor_layout.addWidget(self.btn_minor_download, 1, 0, 1, 2)
+        minor_layout.addWidget(self.btn_minor_search,   1, 2, 1, 2)
 
         # --- Search scope (Defined Circle vs Entire Image) ---
         scope_label = QLabel("Search scope:")
@@ -2909,7 +2899,7 @@ class WIMIDialog(QDialog):
         minor_layout.addWidget(self.minor_scope_combo, 2, 1, 1, 3)
 
         # --- Limits row 1: asteroid H_max + max count ---
-        ast_H_label = QLabel("Asteroid H ≤")
+        ast_H_label = QLabel("Asteroid H \u2264")
         self.minor_ast_H_spin = QDoubleSpinBox()
         self.minor_ast_H_spin.setRange(0.0, 40.0)
         self.minor_ast_H_spin.setDecimals(1)
@@ -2920,19 +2910,19 @@ class WIMIDialog(QDialog):
 
         ast_max_label = QLabel("Max asteroids:")
         self.minor_ast_max_spin = QSpinBox()
-        self.minor_ast_max_spin.setRange(100, 500000)
+        self.minor_ast_max_spin.setRange(100, 2000000)
         self.minor_ast_max_spin.setSingleStep(1000)
         self.minor_ast_max_spin.setValue(
             int(self.settings.value("wimi/minor/asteroid_max", 20000))
         )
 
-        minor_layout.addWidget(ast_H_label,           3, 0)
+        minor_layout.addWidget(ast_H_label,          3, 0)
         minor_layout.addWidget(self.minor_ast_H_spin, 3, 1)
-        minor_layout.addWidget(ast_max_label,         3, 2)
+        minor_layout.addWidget(ast_max_label,        3, 2)
         minor_layout.addWidget(self.minor_ast_max_spin, 3, 3)
 
         # --- Limits row 2: comet H_max + max count ---
-        com_H_label = QLabel("Comet H ≤")
+        com_H_label = QLabel("Comet H \u2264")
         self.minor_com_H_spin = QDoubleSpinBox()
         self.minor_com_H_spin.setRange(0.0, 40.0)
         self.minor_com_H_spin.setDecimals(1)
@@ -2949,12 +2939,21 @@ class WIMIDialog(QDialog):
             int(self.settings.value("wimi/minor/comet_max", 5000))
         )
 
-        minor_layout.addWidget(com_H_label,           4, 0)
+        minor_layout.addWidget(com_H_label,          4, 0)
         minor_layout.addWidget(self.minor_com_H_spin, 4, 1)
-        minor_layout.addWidget(com_max_label,         4, 2)
+        minor_layout.addWidget(com_max_label,        4, 2)
         minor_layout.addWidget(self.minor_com_max_spin, 4, 3)
 
+        # --- Optional specific target (designation / name) ---
+        target_label = QLabel("Target (optional):")
+        self.minor_target_edit = QLineEdit()
+        self.minor_target_edit.setPlaceholderText("e.g. 584, Semiramis, C/2023 A3...")
+
+        minor_layout.addWidget(target_label,          5, 0)
+        minor_layout.addWidget(self.minor_target_edit, 5, 1, 1, 3)
+
         self.advanced_search_panel.addWidget(self.minor_group)
+
 
         # Try to pick up an already-downloaded DB on startup
         self._load_minor_db_path()
@@ -5611,29 +5610,33 @@ class WIMIDialog(QDialog):
         self.observation_datetime = dt
         return dt
 
-    def perform_minor_body_search(self, checked: bool = False, mode: str | None = None):
+    def perform_minor_body_search(self, mode: str = "circle"):
         """
         Search local minor-planet/comet database in either:
 
-        - the current WCS-defined search circle ("circle"), or
-        - the entire image FOV ("full").
+          - the current WCS-defined search circle (mode="circle"), or
+          - the entire image FOV (mode="full").
 
-        If mode is None, it is derived from the Scope combo box.
-        'checked' is the bool coming from QPushButton.clicked and is ignored.
+        Uses the observation date/time from header or prompt.
         """
+        # Scope from combo overrides the default 'mode' argument
+        if hasattr(self, "minor_scope_combo"):
+            scope = self.minor_scope_combo.currentText()
+            if "Entire" in scope:
+                mode = "full"
+            else:
+                mode = "circle"
+
         # Persist current minor-body settings so they survive restarts
         self.settings.setValue("wimi/minor/asteroid_H_max", self.minor_ast_H_spin.value())
         self.settings.setValue("wimi/minor/asteroid_max", self.minor_ast_max_spin.value())
         self.settings.setValue("wimi/minor/comet_H_max", self.minor_com_H_spin.value())
         self.settings.setValue("wimi/minor/comet_max", self.minor_com_max_spin.value())
 
-        # Determine mode from combo if not forced by caller
-        if mode is None and hasattr(self, "minor_scope_combo"):
-            idx = self.minor_scope_combo.currentIndex()
-            # 0 = Defined Region, 1 = Entire Image
-            mode = "circle" if idx == 0 else "full"
-        if mode is None:
-            mode = "circle"
+        # Optional specific target from UI (designation or name)
+        target_filter = ""
+        if hasattr(self, "minor_target_edit") and self.minor_target_edit is not None:
+            target_filter = self.minor_target_edit.text().strip()
 
         # Need WCS + pixscale for either mode
         if self.wcs is None or self.pixscale is None:
@@ -5655,7 +5658,7 @@ class WIMIDialog(QDialog):
                 )
                 return
         else:
-            # Defined region: use the search circle
+            # Default: use the defined search circle
             if not self.circle_center or self.circle_radius <= 0:
                 QMessageBox.warning(
                     self,
@@ -5675,6 +5678,7 @@ class WIMIDialog(QDialog):
                 )
                 return
 
+            # radius in degrees from circle radius (pixels) and pixscale (arcsec/pixel)
             radius_deg = float((self.circle_radius * self.pixscale) / 3600.0)
 
         # 2) Observation datetime
@@ -5700,6 +5704,7 @@ class WIMIDialog(QDialog):
                 dec_center=dec_center,
                 radius_deg=radius_deg,
                 obs_datetime=obs_dt,
+                target_filter=target_filter or None,
             )
         except Exception as e:
             QMessageBox.critical(self, "Minor-Body Search", f"Query failed:\n{e}")
@@ -5707,10 +5712,13 @@ class WIMIDialog(QDialog):
 
         if not results:
             where = "the specified region" if mode == "circle" else "the image field of view"
+            extra = ""
+            if target_filter:
+                extra = f"\n(Target '{target_filter}' not found in the catalog subset.)"
             QMessageBox.information(
                 self,
                 "Minor-Body Search",
-                f"No minor planets or comets found in {where} at the given time."
+                f"No minor planets or comets found in {where} at the given time.{extra}"
             )
             return
 
@@ -5724,7 +5732,7 @@ class WIMIDialog(QDialog):
             name  = r.get("name", r.get("designation", "N/A"))
             mag   = r.get("mag", "N/A")
             qtype = r.get("type", "Minor body")
-            dist  = r.get("distance", "N/A")
+            dist  = r.get("distance", "N/A")   # AU or whatever you decide
             src   = r.get("source", "MinorDB")
 
             item = QTreeWidgetItem([
@@ -5755,8 +5763,6 @@ class WIMIDialog(QDialog):
         self.query_results = query_results
         self.update_object_count()
 
-
-
     def _query_minor_planets_from_db(
         self,
         db_path,
@@ -5764,31 +5770,12 @@ class WIMIDialog(QDialog):
         dec_center,
         radius_deg,
         obs_datetime,
+        target_filter: str | None = None,
     ):
-        """
-        Query the local minor-body DB using MinorBodyCatalog + Skyfield.
-
-        Returns list of dicts:
-            ra, dec, name, mag, type, distance, source, designation
-        """
-        from pathlib import Path
-        from astropy.time import Time
-        import pandas as pd
-        from pro import minorbodycatalog as mbc
-
-        db_path = Path(db_path)
-        if not db_path.is_file():
-            raise FileNotFoundError(f"Minor-body DB not found: {db_path}")
-
+        ...
         # 1) Convert observation datetime to JD
         jd = Time(obs_datetime).jd
-
-        print(
-            f"[MinorBodies] Search: RA={ra_center:.6f} deg  "
-            f"Dec={dec_center:.6f} deg  radius={radius_deg:.4f} deg  JD={jd:.6f}"
-        )
-        print(f"[MinorBodies] DB path: {db_path}")
-
+        ...
         # Read user limits from the UI, with safe fallbacks
         try:
             H_ast = float(self.minor_ast_H_spin.value())
@@ -5807,11 +5794,29 @@ class WIMIDialog(QDialog):
         except Exception:
             N_com = 5000
 
+        # --- OVERRIDE for specific-target searches --------------------
+        if target_filter:
+            # For a named object, we don't want to miss it because of limits.
+            # Use very loose limits so we effectively search the whole DB.
+            H_ast = 40.0
+            H_com = 40.0
+            # Use a huge limit; MinorBodyCatalog will clamp to catalog size.
+            N_ast = 2_000_000
+            N_com = 100_000
+            print(
+                "[MinorBodies] target search – overriding limits to near-full "
+                f"catalog: Asteroids H<={H_ast}, max={N_ast}; "
+                f"Comets H<={H_com}, max={N_com}"
+            )
+        # --------------------------------------------------------------
+
         print(
             f"[MinorBodies] user limits: "
             f"Asteroids H<={H_ast}, max={N_ast}; "
             f"Comets H<={H_com}, max={N_com}"
         )
+        if target_filter:
+            print(f"[MinorBodies] target filter: {target_filter!r}")
 
         # 2) Open catalog
         cat = mbc.MinorBodyCatalog(db_path)
@@ -5834,7 +5839,43 @@ class WIMIDialog(QDialog):
 
         n_ast = len(ast_df) if ast_df is not None else 0
         n_com = len(com_df) if com_df is not None else 0
-        print(f"[MinorBodies] bright subset: asteroids={n_ast}, comets={n_com}")
+        print(f"[MinorBodies] bright subset (before target filter): "
+              f"asteroids={n_ast}, comets={n_com}")
+
+        # If user specified a specific target name/id, try to restrict to that
+        def _apply_target_filter(df: pd.DataFrame, label: str) -> pd.DataFrame:
+            if df is None or df.empty or not target_filter:
+                return df
+
+            tf = target_filter.strip()
+            mask = pd.Series(False, index=df.index)
+
+            # Try several columns
+            for col in ("designation", "designation_packed", "name"):
+                if col in df.columns:
+                    col_str = df[col].astype(str)
+                    mask = mask | col_str.str.contains(tf, case=False, na=False)
+
+            # If it's numeric like "584", also try zero-padded packed form "00584"
+            if tf.isdigit() and "designation_packed" in df.columns:
+                zp = tf.zfill(5)
+                mask = mask | df["designation_packed"].astype(str).str.contains(zp, na=False)
+
+            filtered = df[mask]
+            print(f"[MinorBodies] target filter matched {len(filtered)} {label} rows.")
+            return filtered
+
+        if target_filter:
+            if ast_df is not None:
+                ast_df = _apply_target_filter(ast_df, "asteroid")
+            if com_df is not None:
+                com_df = _apply_target_filter(com_df, "comet")
+
+        # Re-count after filtering
+        n_ast = len(ast_df) if ast_df is not None else 0
+        n_com = len(com_df) if com_df is not None else 0
+        print(f"[MinorBodies] bright subset (after target filter): "
+              f"asteroids={n_ast}, comets={n_com}")
 
         asteroid_designations: set[str] = set()
         comet_designations: set[str] = set()
@@ -5938,7 +5979,7 @@ class WIMIDialog(QDialog):
                 ephemeris_path=None,
                 topocentric=None,
                 progress_cb=progress_cb,
-                debug=True,
+                debug=bool(target_filter),  # crank debug on if we're chasing a target
             )
         finally:
             prog.close()
@@ -5957,6 +5998,16 @@ class WIMIDialog(QDialog):
             ra = float(pos["ra_deg"])
             dec = float(pos["dec_deg"])
             ang = self.calculate_angular_distance(ra_center, dec_center, ra, dec)
+
+            # Extra debug: if we asked for a specific target, log its separation
+            if target_filter:
+                name = str(pos.get("designation", pos.get("name", "")))
+                if name and target_filter.lower() in name.lower():
+                    print(
+                        f"[MinorBodies] target '{target_filter}' at RA={ra:.6f}, "
+                        f"Dec={dec:.6f}, sep={ang:.4f} deg (radius={radius_deg:.4f} deg)"
+                    )
+
             if ang > radius_deg:
                 continue
 

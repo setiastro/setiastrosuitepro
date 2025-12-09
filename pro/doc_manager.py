@@ -742,7 +742,25 @@ def _compute_cropped_wcs(parent_hdr_like: dict | "fits.Header",
 
     return base
 
+def _pick_header_for_save(meta: dict):
+    """
+    Choose the best header object to write back to disk.
 
+    Preference:
+      1. 'fits_header'  – often the fully-updated astropy.Header
+                          after plate solving / header edits
+      2. 'header'       – generic header key some tools may stash
+      3. 'original_header' – whatever we opened the file with
+    """
+    if not isinstance(meta, dict):
+        return None
+
+    hdr = (
+        meta.get("fits_header")
+        or meta.get("header")
+        or meta.get("original_header")
+    )
+    return hdr
 
 def _snapshot_header_for_metadata(meta: dict):
     """
@@ -2050,23 +2068,35 @@ class DocManager(QObject):
         needs_clip = ext in ("png", "jpg", "tif") and bit_depth in ("8-bit", "16-bit", "32-bit unsigned")
         img_to_save = np.clip(img, 0.0, 1.0) if needs_clip else img
 
+        meta = doc.metadata or {}
+        effective_header = _pick_header_for_save(meta)
+
         legacy_save_image(
             img_array=img_to_save,
             filename=path,
             original_format=ext,
             bit_depth=bit_depth,
-            original_header=doc.metadata.get("original_header"),
-            is_mono=doc.metadata.get("is_mono", img.ndim == 2),
-            image_meta=doc.metadata.get("image_meta"),
-            file_meta=doc.metadata.get("file_meta"),
-            # 🔥 NEW: pass WCS header we keep in metadata
-            wcs_header=doc.metadata.get("wcs_header"),
+            original_header=effective_header,
+            is_mono=meta.get("is_mono", img.ndim == 2),
+            image_meta=meta.get("image_meta"),
+            file_meta=meta.get("file_meta"),
+            # Keep WCS/SIP override if your saver supports it
+            wcs_header=meta.get("wcs_header"),
         )
-
+        # Update metadata with the user’s choice
         # Update metadata with the user’s choice
         doc.metadata["file_path"] = path
         doc.metadata["original_format"] = ext
         doc.metadata["bit_depth"] = bit_depth
+
+        # Keep our in-memory header in sync with what we just wrote
+        if effective_header is not None:
+            doc.metadata["original_header"] = effective_header
+            # optional: refresh the snapshot for header viewer / project IO
+            try:
+                _snapshot_header_for_metadata(doc.metadata)
+            except Exception:
+                pass
         
         # Reset dirty flag (if tracking edits)
         if hasattr(doc, "dirty"):
