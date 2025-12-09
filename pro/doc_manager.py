@@ -1465,7 +1465,7 @@ def _xisf_meta_to_fits_header(m: dict) -> fits.Header | None:
 
     return hdr if found else None
 
-DEBUG_SAVE_DOCUMENT = True
+DEBUG_SAVE_DOCUMENT = False
 
 def debug_dump_metadata_print(meta: dict, context: str = ""):
     if DEBUG_SAVE_DOCUMENT:
@@ -2118,7 +2118,7 @@ class DocManager(QObject):
                 img, ext, meta.get("bit_depth")
             )
 
-        print(f"[save_document] ext={ext!r}, final_bit_depth={final_bit_depth!r}")
+
 
         # --- Clip if needed for integer encodes ---------------------------
         needs_clip = (
@@ -2140,24 +2140,23 @@ class DocManager(QObject):
             val = meta.get(key)
             if isinstance(val, fits.Header):
                 effective_header = val
-                print(f"[save_document] Using header from meta['{key}'] "
-                      f"with {len(val.cards)} cards.")
+
                 break
 
-        if effective_header is None:
-            print("[save_document] WARNING: No fits.Header in metadata, "
-                  "legacy_save_image will pick a default header.")
-        else:
-            # Print first few cards so we can confirm we have the SIP stuff
-            print("[save_document] effective_header preview (first 25 cards):")
-            for i, card in enumerate(effective_header.cards):
-                if i >= 25:
-                    print("  ... (truncated)")
-                    break
-                print(f"  {card.keyword:8s} = {card.value!r}")
+        #if effective_header is None:
+        #    print("[save_document] WARNING: No fits.Header in metadata, "
+        #          "legacy_save_image will pick a default header.")
+        #else:
+        #    # Print first few cards so we can confirm we have the SIP stuff
+        #    print("[save_document] effective_header preview (first 25 cards):")
+        #    for i, card in enumerate(effective_header.cards):
+        #        if i >= 25:
+        #            print("  ... (truncated)")
+        #            break
+        #        print(f"  {card.keyword:8s} = {card.value!r}")
 
         # ── Call the legacy saver ─────────────────────────────────────────
-        print("[save_document] Calling legacy_save_image(...) now")
+
 
         legacy_save_image(
             img_array=img_to_save,
@@ -2194,7 +2193,6 @@ class DocManager(QObject):
         if hasattr(doc, "changed"):
             doc.changed.emit()
 
-        print("[save_document] DONE, saved to", path)
     def duplicate_document(self, source_doc: ImageDocument, new_name: str | None = None) -> ImageDocument:
         # DEBUG: log the source doc WCS before we touch anything
         if _DEBUG_WCS:

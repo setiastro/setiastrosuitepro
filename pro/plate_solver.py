@@ -33,7 +33,33 @@ except Exception:
     stretch_color_image = None
 
 
+_NONFITS_META_KEYS = {
+    "FILE_PATH",
+    "FITS_HEADER",
+    "BIT_DEPTH",
+    "WCS_HEADER",
+    "__HEADER_SNAPSHOT__",
+    "ORIGINAL_HEADER",
+    "PRE_SOLVE_HEADER",
+}
 
+def _strip_nonfits_meta_keys_from_header(h: Header | None) -> Header:
+    """
+    Return a copy of the header with all of our internal, non-FITS metadata
+    keys removed. This prevents HIERARCH warnings and WCS failures on keys
+    like FILE_PATH with very long values.
+    """
+    if not isinstance(h, Header):
+        return Header()
+
+    out = h.copy()
+    for k in list(out.keys()):
+        if k.upper() in _NONFITS_META_KEYS:
+            try:
+                out.remove(k)
+            except Exception:
+                pass
+    return out
 
 # --- Lightweight, modeless status popup for headless runs ---
 _STATUS_POPUP = None  # module-level singleton
@@ -418,6 +444,11 @@ def _as_header(hdr_like: Any) -> Header | None:
         int_keys = {"A_ORDER", "B_ORDER", "AP_ORDER", "BP_ORDER", "WCSAXES", "NAXIS", "NAXIS1", "NAXIS2", "NAXIS3"}
         for k, v in d.items():
             K = str(k).upper()
+
+            # 🚫 Never promote our internal metadata keys to FITS cards
+            if K in _NONFITS_META_KEYS:
+                continue
+
             try:
                 if K in int_keys:
                     h[K] = int(float(str(v).strip().split()[0]))
@@ -430,6 +461,7 @@ def _as_header(hdr_like: Any) -> Header | None:
                     h[K] = v
             except Exception:
                 pass
+
         # SIP order parity
         if "A_ORDER" in h and "B_ORDER" not in h:
             h["B_ORDER"] = int(h["A_ORDER"])
@@ -1144,6 +1176,9 @@ def _merge_wcs_into_base_header(base_header: Header | None, wcs_header: Header |
     """
     if not isinstance(base_header, Header):
         base_header = Header()
+    # Always strip our internal meta keys from the acquisition header
+    base_header = _strip_nonfits_meta_keys_from_header(base_header)
+
     if not isinstance(wcs_header, Header):
         # nothing special to merge; just normalize the base and return it.
         d0 = _ensure_ctypes(_coerce_wcs_numbers(dict(base_header)))
@@ -1154,6 +1189,10 @@ def _merge_wcs_into_base_header(base_header: Header | None, wcs_header: Header |
             except Exception:
                 pass
         return out
+
+    # Start from a copy of the acquisition header (drop COMMENT/HISTORY from it)
+    base = base_header.copy()
+
 
     # Start from a copy of the acquisition header (drop COMMENT/HISTORY from it)
     base = base_header.copy()
@@ -1266,14 +1305,7 @@ def _build_header_from_astap_outputs(
     final_hdr = _merge_wcs_into_base_header(base_hdr, wcs_hdr)
 
     _debug_dump_header("ASTAP: FINAL MERGED HEADER (base_hdr + wcs_hdr)", final_hdr)
-    # Debug (optional)
-    try:
-        print("\n================ ASTAP merged header ==================")
-        for k, v in final_hdr.items():
-            print(f"  HDR[{k}] = {v!r}")
-        print("======================================================\n")
-    except Exception:
-        pass
+
 
     return final_hdr
 
@@ -1858,6 +1890,9 @@ def _estimate_scale_arcsec_from_header(hdr: Header) -> float | None:
     Tries WCS, then CD matrix, then PC*CDELT, then PIXSCALE-style keys.
     Returns None if we can't get a sane value.
     """
+    # Always work on a copy with our internal meta keys stripped
+    hdr = _strip_nonfits_meta_keys_from_header(hdr)
+
     # 1) Try astropy WCS, which handles CD vs PC*CDELT automatically
     try:
         w = WCS(hdr)
@@ -1933,7 +1968,8 @@ def _seed_header_from_meta(meta: dict) -> Header:
       - meta['wcs'] (WCS object)
     """
     # Base: original FITS header if present, otherwise treat meta dict as header
-    base = _as_header(meta.get("original_header") or meta)
+    base_src = meta.get("original_header") or meta.get("fits_header") or meta
+    base = _as_header(base_src)
 
     wcs_hdr: Header | None = None
 
@@ -1970,7 +2006,7 @@ def _seed_header_from_meta(meta: dict) -> Header:
             except Exception:
                 pass
 
-    return base
+    return _strip_nonfits_meta_keys_from_header(base)
 
 
 def _compute_fov_deg(image: np.ndarray, arcsec_per_px: float | None) -> float | None:
