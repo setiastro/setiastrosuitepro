@@ -5454,54 +5454,101 @@ class WIMIDialog(QDialog):
         except Exception:
             return None, None, None
 
-
     # ─────────────────────────────────────────
     # Observation datetime helpers
     # ─────────────────────────────────────────
     def _get_observation_datetime_from_header(self):
         """
-        Try to extract observation datetime from the original FITS header.
+        Try to extract observation datetime from:
+
+          1) self.original_header   (full FITS header, if present)
+          2) self.wcs.wcs.dateobs   (DATE-OBS stored in the WCS header)
+          3) MJD-OBS in the WCS header
+
         Returns a Python datetime (UTC) or None.
         """
-        hdr = getattr(self, "original_header", None)
-        if not isinstance(hdr, fits.Header):
+
+        def _extract_from_header(hdr: fits.Header):
+            """Best-effort extraction from a FITS Header."""
+            # 1) DATE-OBS (+ optional TIME-OBS)
+            try:
+                if "DATE-OBS" in hdr:
+                    val = str(hdr["DATE-OBS"]).strip()
+
+                    # Already full ISO timestamp
+                    if "T" in val:
+                        t = Time(val, format="isot", scale="utc")
+                        return t.to_datetime()
+
+                    # DATE-OBS + TIME-OBS split
+                    if "TIME-OBS" in hdr:
+                        val2 = str(hdr["TIME-OBS"]).strip()
+                        t = Time(f"{val}T{val2}", format="isot", scale="utc")
+                        return t.to_datetime()
+            except Exception as e:
+                print(f"[WIMI] DATE-OBS parse failed from header: {e!r}")
+
+            # 2) MJD-OBS
+            try:
+                if "MJD-OBS" in hdr:
+                    t = Time(float(hdr["MJD-OBS"]), format="mjd", scale="utc")
+                    return t.to_datetime()
+            except Exception as e:
+                print(f"[WIMI] MJD-OBS parse failed from header: {e!r}")
+
+            # 3) JD
+            try:
+                if "JD" in hdr:
+                    t = Time(float(hdr["JD"]), format="jd", scale="utc")
+                    return t.to_datetime()
+            except Exception as e:
+                print(f"[WIMI] JD parse failed from header: {e!r}")
+
             return None
 
-        # 1) DATE-OBS with full ISO timestamp
-        try:
-            if "DATE-OBS" in hdr:
-                val = str(hdr["DATE-OBS"]).strip()
+        # --- 1) Try original_header if we have it ---
+        hdr = getattr(self, "original_header", None)
+        if isinstance(hdr, fits.Header):
+            dt = _extract_from_header(hdr)
+            if dt is not None:
+                print(f"[WIMI] Observation time from original_header: {dt.isoformat()}")
+                return dt
 
-                # If DATE-OBS already includes time (ISO)
-                if "T" in val:
-                    t = Time(val, format="isot", scale="utc")
-                    return t.to_datetime()
+        # --- 2) Fall back to WCS header (this matches your Metadata.WCS.* block) ---
+        w = getattr(self, "wcs", None)
+        if w is not None:
+            # 2a) native dateobs field
+            dateobs = None
+            try:
+                dateobs = getattr(w.wcs, "dateobs", None)
+            except Exception:
+                dateobs = None
 
-                # Else try DATE-OBS + TIME-OBS
-                if "TIME-OBS" in hdr:
-                    val2 = str(hdr["TIME-OBS"]).strip()
-                    t = Time(f"{val}T{val2}", format="isot", scale="utc")
-                    return t.to_datetime()
-        except Exception:
-            pass
+            if dateobs:
+                try:
+                    # Handles 'YYYY-MM-DDTHH:MM:SS...' (your case)
+                    fmt = "isot" if "T" in dateobs else "iso"
+                    t = Time(dateobs, format=fmt, scale="utc")
+                    dt = t.to_datetime()
+                    print(f"[WIMI] Observation time from WCS.dateobs: {dt.isoformat()}")
+                    return dt
+                except Exception as e:
+                    print(f"[WIMI] failed to parse WCS.dateobs={dateobs!r}: {e!r}")
 
-        # 2) MJD-OBS
-        try:
-            if "MJD-OBS" in hdr:
-                t = Time(float(hdr["MJD-OBS"]), format="mjd", scale="utc")
-                return t.to_datetime()
-        except Exception:
-            pass
+            # 2b) If that fails, try MJD-OBS in the WCS header
+            try:
+                w_hdr = w.to_header(relax=True)
+                if "MJD-OBS" in w_hdr:
+                    t = Time(float(w_hdr["MJD-OBS"]), format="mjd", scale="utc")
+                    dt = t.to_datetime()
+                    print(f"[WIMI] Observation time from WCS MJD-OBS: {dt.isoformat()}")
+                    return dt
+            except Exception as e:
+                print(f"[WIMI] failed to parse MJD-OBS from WCS header: {e!r}")
 
-        # 3) JD
-        try:
-            if "JD" in hdr:
-                t = Time(float(hdr["JD"]), format="jd", scale="utc")
-                return t.to_datetime()
-        except Exception:
-            pass
-
+        # --- 3) Give up; caller will prompt ---
         return None
+
 
     def _prompt_for_observation_datetime(self):
         """
@@ -6444,17 +6491,38 @@ class WIMIDialog(QDialog):
             print("Warning: could not extract CRVAL1/CRVAL2")        
 
 
+
     def calculate_pixel_from_ra_dec(self, ra, dec):
         """Convert RA/Dec to pixel coordinates using the WCS data."""
-        if not hasattr(self, 'wcs'):
+        if not hasattr(self, "wcs") or self.wcs is None:
             print("WCS not initialized.")
             return None, None
 
         # Convert RA and Dec to pixel coordinates using the WCS object
-        sky_coord = SkyCoord(ra, dec, unit=(u.deg, u.deg), frame='icrs')
-        x, y = self.wcs.world_to_pixel(sky_coord)
-        
-        return int(x), int(y)
+        try:
+            sky_coord = SkyCoord(ra, dec, unit=(u.deg, u.deg), frame="icrs")
+            x, y = self.wcs.world_to_pixel(sky_coord)
+        except Exception as e:
+            print(f"world_to_pixel failed for RA={ra}, Dec={dec}: {e}")
+            return None, None
+
+        # world_to_pixel can return scalars or numpy arrays – normalize to scalars
+        x_arr = np.asarray(x)
+        y_arr = np.asarray(y)
+
+        if x_arr.size == 0 or y_arr.size == 0:
+            print(f"WCS returned empty pixel coords for RA={ra}, Dec={dec}")
+            return None, None
+
+        x_val = float(x_arr.ravel()[0])
+        y_val = float(y_arr.ravel()[0])
+
+        # Guard against NaNs / infinities
+        if not np.isfinite(x_val) or not np.isfinite(y_val):
+            print(f"WCS returned invalid pixel coords for RA={ra}, Dec={dec}: x={x_val}, y={y_val}")
+            return None, None
+
+        return int(round(x_val)), int(round(y_val))
 
     def login_to_astrometry(self, api_key):
         try:
