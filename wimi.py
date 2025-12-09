@@ -3083,6 +3083,24 @@ class WIMIDialog(QDialog):
         # Put it on its own row spanning all 4 columns
         minor_layout.addWidget(self.minor_count_button, 6, 0, 1, 4)
 
+        # --- Time offset (hours) for ephemerides ---
+        time_offset_label = QLabel("Time offset (hours):")
+        self.minor_time_offset_spin = QDoubleSpinBox()
+        self.minor_time_offset_spin.setRange(-24.0, 24.0)
+        self.minor_time_offset_spin.setDecimals(2)
+        self.minor_time_offset_spin.setSingleStep(0.25)
+        self.minor_time_offset_spin.setValue(
+            float(self.settings.value("wimi/minor/time_offset_hours", 0.0))
+        )
+        self.minor_time_offset_spin.setToolTip(
+            "Applied to observation time before computing minor-body ephemerides.\n"
+            "Negative = earlier, positive = later."
+        )
+
+        minor_layout.addWidget(time_offset_label,          7, 0)
+        minor_layout.addWidget(self.minor_time_offset_spin, 7, 1)
+        # (optional) span the spin box wider:
+        # minor_layout.addWidget(self.minor_time_offset_spin, 7, 1, 1, 3)
         self.advanced_search_panel.addWidget(self.minor_group)
 
 
@@ -5889,7 +5907,10 @@ class WIMIDialog(QDialog):
         self.settings.setValue("wimi/minor/asteroid_max", self.minor_ast_max_spin.value())
         self.settings.setValue("wimi/minor/comet_H_max", self.minor_com_H_spin.value())
         self.settings.setValue("wimi/minor/comet_max", self.minor_com_max_spin.value())
-
+        self.settings.setValue(
+            "wimi/minor/time_offset_hours",
+            self.minor_time_offset_spin.value()
+        )
         # Optional specific target from UI (designation or name)
         target_name: str | None = None
         if hasattr(self, "minor_target_edit") and self.minor_target_edit is not None:
@@ -6130,10 +6151,20 @@ class WIMIDialog(QDialog):
         if not db_path.is_file():
             raise FileNotFoundError(f"Minor-body DB not found: {db_path}")
 
-        # ── HACK: shift observation time by +1 hour for testing ──
-        hack_hours = -2.0
-        obs_datetime = obs_datetime + timedelta(hours=hack_hours)
-        print(f"[MinorBodies] HACK: using obs_datetime +{hack_hours}h = {obs_datetime.isoformat()}")
+        # --- Apply user-configurable time offset (hours), if any ---
+        offset_hours = 0.0
+        if hasattr(self, "minor_time_offset_spin"):
+            try:
+                offset_hours = float(self.minor_time_offset_spin.value())
+            except Exception:
+                offset_hours = 0.0
+
+        if offset_hours != 0.0:
+            obs_datetime = obs_datetime + timedelta(hours=offset_hours)
+            print(
+                f"[MinorBodies] applying time offset {offset_hours:+.2f} h, "
+                f"effective obs_datetime = {obs_datetime.isoformat()}"
+            )
 
 
         # 1) Convert observation datetime to JD
