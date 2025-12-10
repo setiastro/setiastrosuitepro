@@ -362,6 +362,14 @@ class CropDialogPro(QDialog):
         zoom_row.addStretch(1)
         main.addLayout(zoom_row)
 
+        dim_row = QHBoxLayout()
+        dim_row.addStretch(1)
+        self.lbl_dims = QLabel("Selection: —")
+        self.lbl_dims.setStyleSheet("color: gray;")
+        dim_row.addWidget(self.lbl_dims)
+        dim_row.addStretch(1)
+        main.addLayout(dim_row)
+
         # wire zoom buttons
         self.btn_zoom_in.clicked.connect(lambda: self._zoom_by(1.25))
         self.btn_zoom_out.clicked.connect(lambda: self._zoom_by(1/1.25))
@@ -465,11 +473,50 @@ class CropDialogPro(QDialog):
         self.scene.addItem(self._pix_item)
         self._apply_zoom_transform()
         self._deferred_fit() 
+        self._set_dim_label_none()
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
         if self._fit_mode:
             self._apply_zoom_transform()
+
+    # ---------- selection dimensions label ----------
+
+    def _set_dim_label_none(self):
+        if hasattr(self, "lbl_dims"):
+            self.lbl_dims.setText("Selection: —")
+
+    def _update_dim_label_from_corners(self, corners_scene):
+        """
+        corners_scene: iterable of 4 QPointF in order TL, TR, BR, BL (scene coords).
+        Computes width/height in *image pixels* and updates the label.
+        """
+        if not hasattr(self, "lbl_dims") or not corners_scene or not self._pix_item:
+            self._set_dim_label_none()
+            return
+
+        w_img, h_img = self._orig_w, self._orig_h
+        src = np.array(
+            [self._scene_to_img_pixels(p, w_img, h_img) for p in corners_scene],
+            dtype=np.float32,
+        )
+
+        # same convention as _apply_one(): width = |TR-TL|, height = |BL-TL|
+        width  = float(np.linalg.norm(src[1] - src[0]))
+        height = float(np.linalg.norm(src[3] - src[0]))
+
+        self.lbl_dims.setText(
+            f"Selection: {int(round(height))}×{int(round(width))} px"
+        )
+
+    def _update_dim_label_from_rect_item(self):
+        """Update label from the current finalized rect item."""
+        if not self._rect_item:
+            self._set_dim_label_none()
+            return
+        corners = self._corners_scene()  # uses mapToScene on the item
+        self._update_dim_label_from_corners(corners)
+
 
     @staticmethod
     def _to_qimage(img01: np.ndarray) -> QImage:
@@ -515,9 +562,13 @@ class CropDialogPro(QDialog):
             if e.type() == QEvent.Type.Wheel and (e.modifiers() & Qt.KeyboardModifier.ControlModifier):
                 delta = e.angleDelta().y()
                 self._zoom_by(1.25 if delta > 0 else 1/1.25)
-                return True            
+                return True
             if e.type() in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseMove, QEvent.Type.MouseButtonRelease):
                 scene_pt = self.view.mapToScene(e.pos())
+
+            # ⬇️ New: if we already have a rect, keep dims updated on mouse move
+            if e.type() == QEvent.Type.MouseMove and self._rect_item is not None:
+                self._update_dim_label_from_rect_item()
 
             if self._rect_item is None:
                 if e.type() == QEvent.Type.MouseButtonPress and e.button() == Qt.MouseButton.LeftButton:
@@ -526,7 +577,12 @@ class CropDialogPro(QDialog):
                 if e.type() == QEvent.Type.MouseMove and self._drawing:
                     r = QRectF(self._origin, scene_pt).normalized()
                     r = self._apply_ar_to_rect(r, live=True, scene_pt=scene_pt)
-                    self._draw_live_rect(r); return True
+                    self._draw_live_rect(r)
+
+                    # ⬇️ live dims from the temporary rect (axis-aligned TL,TR,BR,BL)
+                    corners = [r.topLeft(), r.topRight(), r.bottomRight(), r.bottomLeft()]
+                    self._update_dim_label_from_corners(corners)
+                    return True
 
                 if e.type() == QEvent.Type.MouseButtonRelease and e.button() == Qt.MouseButton.LeftButton and self._drawing:
                     self._drawing = False
@@ -542,10 +598,14 @@ class CropDialogPro(QDialog):
                     CropDialogPro._prev_rect = QRectF(r)
                     CropDialogPro._prev_angle = self._rect_item.rotation()
                     CropDialogPro._prev_pos = self._rect_item.pos()
+
+                    # ⬇️ finalized selection dims
+                    self._update_dim_label_from_rect_item()
                     return True
 
             return False
         return super().eventFilter(src, e)
+
     
     def _apply_zoom_transform(self):
         if not self._pix_item:
@@ -619,10 +679,11 @@ class CropDialogPro(QDialog):
             self.scene.addItem(self._rect_item)
         else:
             self._rect_item.setRotation(0.0)
-            self._rect_item.setPos(QPointF(0, 0))  # keep in image coordinates
+            self._rect_item.setPos(QPointF(0, 0))
             self._rect_item.setRect(r)
 
         self._rect_item.setTransformOriginPoint(r.center())
+        self._update_dim_label_from_rect_item()
 
 
     def _current_ar_value(self) -> Optional[float]:
@@ -674,6 +735,8 @@ class CropDialogPro(QDialog):
         self._rect_item.setPos(pos)
         self._rect_item.setTransformOriginPoint(r.center())
         self.scene.addItem(self._rect_item)
+        self._update_dim_label_from_rect_item()
+
 
     def _load_previous(self):
         if CropDialogPro._prev_rect is None:
@@ -689,6 +752,7 @@ class CropDialogPro(QDialog):
         self._rect_item.setPos(CropDialogPro._prev_pos)
         self._rect_item.setTransformOriginPoint(r.center())
         self.scene.addItem(self._rect_item)
+        self._update_dim_label_from_rect_item()
 
     # ---------- apply ----------
     def _corners_scene(self):
