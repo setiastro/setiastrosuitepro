@@ -16612,7 +16612,6 @@ class StackingSuiteDialog(QDialog):
         return int(ref_H), int(ref_W), xforms
 
 
-
     def normal_integration_with_rejection(
         self,
         group_key,
@@ -16622,6 +16621,8 @@ class StackingSuiteDialog(QDialog):
         *,
         algo_override: str | None = None
     ):
+        import errno
+
         log = status_cb or (lambda *_: None)
         log(f"Starting integration for group '{group_key}' with {len(file_list)} files.")
         if not file_list:
@@ -16646,17 +16647,41 @@ class StackingSuiteDialog(QDialog):
 
         log(f"📊 Stacking group '{group_key}' with {algo}{' [GPU]' if use_gpu else ''}")
 
-        # --- keep all FITSes open (memmap) once for the whole group ---
-        sources = []
+        # --- keep all FITSes open (memmap) once for the whole group (fast path) ---
+        # If the OS complains about too many open files, we fall back to a lazy path
+        # that opens/closes each file per tile.
+        use_memmap_sources = True
+        sources: list[_MMImage] = []
+        source_paths = list(file_list)
+
         try:
             for p in file_list:
-                sources.append(_MMImage(p))   # << was _MMFits
+                sources.append(_MMImage(p))   # may use memmap internally
+        except OSError as e:
+            # Too many open files / file table overflow → switch to lazy mode
+            if e.errno in (errno.EMFILE, errno.ENFILE):
+                log(f"⚠️ Too many open files ({e}); falling back to lazy per-tile reads.")
+                for s in sources:
+                    try:
+                        s.close()
+                    except Exception:
+                        pass
+                sources.clear()
+                use_memmap_sources = False
+            else:
+                for s in sources:
+                    try:
+                        s.close()
+                    except Exception:
+                        pass
+                log(f"⚠️ Failed to open images (memmap): {e}")
+                return None, {}, None
         except Exception as e:
             for s in sources:
-                try: s.close()
-                except Exception as e:
-                    import logging
-                    logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
+                try:
+                    s.close()
+                except Exception:
+                    pass
             log(f"⚠️ Failed to open images (memmap): {e}")
             return None, {}, None
 
@@ -16672,21 +16697,18 @@ class StackingSuiteDialog(QDialog):
             chunk_h, chunk_w = compute_safe_chunk(height, width, N, channels, DTYPE, pref_h, pref_w)
             log(f"🔧 Using chunk size {chunk_h}×{chunk_w} for {DTYPE}")
         except MemoryError as e:
-            for s in sources: s.close()
+            for s in sources:
+                s.close()
             log(f"⚠️ {e}")
             return None, {}, None
 
         # --- reusable C-order tile buffers (avoid copies before GPU) ---
-        # Use pinned memory only if we’ll actually ship tiles to GPU.
         def _mk_buf():
             buf = np.empty((N, chunk_h, chunk_w, channels), dtype=np.float32, order='C')
             if use_gpu:
-                # Mark as pinned (page-locked) so torch can H->D quickly if _torch_reduce_tile uses it.
+                # We'll pin tensors inside _torch_reduce_tile; nothing to do here.
                 try:
-                    import torch
-                    # torch can wrap numpy pinned via from_numpy(...).pin_memory() ONLY on tensors.
-                    # We'll keep numpy here; _torch_reduce_tile will move to pinned tensors internally.
-                    # So no-op here to avoid extra copies.
+                    import torch  # noqa: F401
                 except Exception:
                     pass
             return buf
@@ -16707,19 +16729,44 @@ class StackingSuiteDialog(QDialog):
 
         # --------- helper: read a tile into a provided buffer (blocking) ----------
         def _read_tile_into(buf, y0, y1, x0, x1):
+            """
+            Fill buf[:N, :th, :tw, :channels] with the (y0:y1, x0:x1) tile
+            from all frames. In fast mode, reuse open _MMImage memmaps.
+            In fallback mode, open/close a fresh _MMImage per file.
+            """
             th = y1 - y0
             tw = x1 - x0
-            # slice view (C-order)
             ts = buf[:N, :th, :tw, :channels]
-            # sequential, low-overhead sliced reads (OS prefetch + memmap)
-            for i, src in enumerate(sources):
-                sub = src.read_tile(y0, y1, x0, x1)  # float32, (th,tw) or (th,tw,3)
-                if sub.ndim == 2:
-                    if channels == 3:
-                        sub = sub[:, :, None].repeat(3, axis=2)
-                    else:
-                        sub = sub[:, :, None]
-                ts[i, :, :, :] = sub
+
+            if use_memmap_sources:
+                # Fast path: re-use open memmaps / XISF mappings
+                for i, src in enumerate(sources):
+                    sub = src.read_tile(y0, y1, x0, x1)  # float32, (th,tw) or (th,tw,3)
+                    if sub.ndim == 2:
+                        if channels == 3:
+                            sub = sub[:, :, None].repeat(3, axis=2)
+                        else:
+                            sub = sub[:, :, None]
+                    ts[i, :, :, :] = sub
+            else:
+                # Fallback path: open/close per file (no persistent FDs).
+                # Still uses _MMImage so scaling/normalization stays consistent.
+                for i, path in enumerate(source_paths):
+                    src = _MMImage(path)
+                    try:
+                        sub = src.read_tile(y0, y1, x0, x1)
+                    finally:
+                        try:
+                            src.close()
+                        except Exception:
+                            pass
+                    if sub.ndim == 2:
+                        if channels == 3:
+                            sub = sub[:, :, None].repeat(3, axis=2)
+                        else:
+                            sub = sub[:, :, None]
+                    ts[i, :, :, :] = sub
+
             return th, tw  # actual extents for edge tiles
 
         # Prefetcher (single background worker is enough; IO is the bottleneck)
@@ -16753,12 +16800,18 @@ class StackingSuiteDialog(QDialog):
                 # Kick off prefetch for the NEXT tile (if any) into the other buffer
                 if tile_idx < total_tiles:
                     ny0, ny1, nx0, nx1 = tiles[tile_idx]
-                    fut = tp.submit(_read_tile_into, (buf1 if use_buf0 else buf0), ny0, ny1, nx0, nx1)
+                    fut = tp.submit(
+                        _read_tile_into,
+                        (buf1 if use_buf0 else buf0),
+                        ny0, ny1, nx0, nx1
+                    )
 
                 # --- rejection/integration for this tile ---
-                log(f"Integrating tile {tile_idx}/{total_tiles} "
+                log(
+                    f"Integrating tile {tile_idx}/{total_tiles} "
                     f"[y:{y0}:{y1} x:{x0}:{x1} size={th}×{tw}] "
-                    f"mode={'GPU' if use_gpu else 'CPU'}…")
+                    f"mode={'GPU' if use_gpu else 'CPU'}…"
+                )
 
                 if use_gpu:
                     print(f"Using GPU for tile {tile_idx} with algo {algo}")
@@ -16856,7 +16909,6 @@ class StackingSuiteDialog(QDialog):
 
                 # perf log
                 dt = time.perf_counter() - t0
-                # simple “work” metric: pixels processed (× frames × channels)
                 work_px = th * tw * N * channels
                 mpx_s = (work_px / 1e6) / dt if dt > 0 else float("inf")
                 log(f"  ↳ tile {tile_idx} done in {dt:.3f}s  (~{mpx_s:.1f} MPx/s)")
@@ -16866,8 +16918,9 @@ class StackingSuiteDialog(QDialog):
 
         # close mmapped FITSes and prefetch pool
         tp.shutdown(wait=True)
-        for s in sources:
-            s.close()
+        if use_memmap_sources:
+            for s in sources:
+                s.close()
 
         if channels == 1:
             integrated_image = integrated_image[..., 0]
@@ -16879,7 +16932,7 @@ class StackingSuiteDialog(QDialog):
         self._rej_maps[group_key] = {"any": rej_any, "frac": rej_frac, "count": rej_count, "n": N}
 
         log(f"Integration complete for group '{group_key}'.")
-        
+
         # If we used memmap, convert to regular array and cleanup
         if integrated_memmap_path is not None:
             integrated_image = np.array(integrated_image)  # Copy to regular array
@@ -16887,12 +16940,14 @@ class StackingSuiteDialog(QDialog):
                 cleanup_memmap(None, integrated_memmap_path)
             except Exception:
                 pass
-        
+
         try:
             _free_torch_memory()
         except Exception:
             pass  # Ignore torch cleanup errors
+
         return integrated_image, per_file_rejections, ref_header
+
 
 
     def _safe_component(self, s: str, *, replacement:str="_", maxlen:int=180) -> str:
