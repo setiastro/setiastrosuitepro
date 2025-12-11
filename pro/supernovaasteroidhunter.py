@@ -268,12 +268,23 @@ class ImagePreviewWindow(QDialog):
     pushed = pyqtSignal(object, str)           # (numpy_image, title)
     minorBodySearchRequested = pyqtSignal()    # emitted when user clicks MB button
 
-    def __init__(self, np_img_rgb_or_gray, title="Preview", parent=None, icon: QIcon | None = None):
+    def __init__(
+        self,
+        np_img_rgb_or_gray,
+        title="Preview",
+        parent=None,
+        icon: QIcon | None = None,
+        source_path: str | None = None,
+    ):
         super().__init__(parent)
         self.setWindowTitle(title)
         if icon:
             self.setWindowIcon(icon)
-        self._original = np_img_rgb_or_gray  # keep in memory to push upstream
+
+        # This is the anomaly-marked image we want to push
+        self._original = np_img_rgb_or_gray
+        # Remember where it came from so we can re-load metadata
+        self._source_path = source_path
 
         lay = QVBoxLayout(self)
 
@@ -284,7 +295,7 @@ class ImagePreviewWindow(QDialog):
         self.act_zoom_in = QAction("Zoom In", self)
         self.act_zoom_out = QAction("Zoom Out", self)
         self.act_push = QAction("Push to New View", self)
-        #self.act_minor = QAction("Check Catalogued Minor Bodies in Field", self)
+        # self.act_minor = QAction("Check Catalogued Minor Bodies in Field", self)
 
         self.act_zoom_in.setShortcut("Ctrl++")
         self.act_zoom_out.setShortcut("Ctrl+-")
@@ -298,10 +309,9 @@ class ImagePreviewWindow(QDialog):
         tb.addAction(self.act_zoom_out)
         tb.addSeparator()
         tb.addAction(self.act_push)
-        #tb.addSeparator()
-        #tb.addAction(self.act_minor)
+        # tb.addSeparator()
+        # tb.addAction(self.act_minor)
 
-        # zoom label spacer
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         tb.addWidget(spacer)
@@ -310,21 +320,18 @@ class ImagePreviewWindow(QDialog):
 
         lay.addWidget(tb)
 
-        # view
         self.view = ZoomableImageView(self)
         lay.addWidget(self.view)
         self.view.set_image(np_img_rgb_or_gray)
         self.view.zoomChanged.connect(self._on_zoom_changed)
 
-        # connect actions
         self.act_fit.triggered.connect(self.view.fit_to_view)
         self.act_1to1.triggered.connect(self.view.set_1to1)
         self.act_zoom_in.triggered.connect(lambda: self.view.zoom(1.25))
         self.act_zoom_out.triggered.connect(lambda: self.view.zoom(0.8))
         self.act_push.triggered.connect(self._on_push)
-        #self.act_minor.triggered.connect(self._on_minor_body_search)
+        # self.act_minor.triggered.connect(self._on_minor_body_search)
 
-        # start in "Fit"
         self.view.fit_to_view()
         self.resize(900, 700)
 
@@ -332,9 +339,10 @@ class ImagePreviewWindow(QDialog):
         self._zoom_label.setText(f"{round(s*100)}%")
 
     def _on_push(self):
-        # Emit the original (float or uint8) image up to the parent/dialog
+        # Emit the anomaly-marked image
         self.pushed.emit(self._original, self.windowTitle())
         QMessageBox.information(self, "Pushed", "New View Created.")
+
 
     def _on_minor_body_search(self):
         # Just emit a signal; the parent dialog will handle the heavy lifting.
@@ -1261,12 +1269,22 @@ class SupernovaAsteroidHunterDialog(QDialog):
         idx = item.data(0, Qt.ItemDataRole.UserRole)
         if idx is None:
             return
+
         anomalies = self.anomalyData[idx]["anomalies"]
         image_name = self.anomalyData[idx]["imageName"]
-        search_img = self.preprocessed_search[idx]["image"]  # float in [0..1]
 
-        # Show zoomable preview with overlays
-        self.showAnomaliesOnImage(search_img, anomalies, window_title=f"Anomalies in {image_name}")
+        entry = self.preprocessed_search[idx]
+        search_img = entry["image"]          # stretched float [0..1]
+        source_path = entry["path"]          # original file path
+
+        # Show zoomable preview with overlays, remembering which file it came from
+        self.showAnomaliesOnImage(
+            search_img,
+            anomalies,
+            window_title=f"Anomalies in {image_name}",
+            source_path=source_path,
+        )
+
 
     def _match_anomalies_to_minor_bodies(self, bodies, search_radius_arcsec=20.0):
         """
@@ -1495,7 +1513,13 @@ class SupernovaAsteroidHunterDialog(QDialog):
         dialog.show()
 
 
-    def showAnomaliesOnImage(self, image: np.ndarray, anomalies: list, window_title="Anomalies"):
+    def showAnomaliesOnImage(
+        self,
+        image: np.ndarray,
+        anomalies: list,
+        window_title: str = "Anomalies",
+        source_path: str | None = None,
+    ):
         """
         Shows a zoomable, pannable preview. CTRL+wheel zoom, buttons for fit/1:1.
         Pushing emits a signal you can wire to your main UI.
@@ -1550,7 +1574,13 @@ class SupernovaAsteroidHunterDialog(QDialog):
         except Exception:
             pass
 
-        prev = ImagePreviewWindow(img_u8, title=window_title, parent=self, icon=icon)
+        prev = ImagePreviewWindow(
+            img_u8,                    # anomaly-marked display image
+            title=window_title,
+            parent=self,
+            icon=icon,
+            source_path=source_path,   # original file path
+        )
         prev.pushed.connect(self._handle_preview_push)
         prev.minorBodySearchRequested.connect(self._on_preview_minor_body_search)
         prev.show()  # non-modal
@@ -1565,45 +1595,88 @@ class SupernovaAsteroidHunterDialog(QDialog):
 
     def _handle_preview_push(self, np_img, title: str):
         """
-        Try to push the preview up to your main UI using doc_manager.
-        Customize this to your actual document API.
+        Take the anomaly preview (np_img) and push it into SASpro as a *new*
+        document by reusing *all* metadata/header information returned by
+        load_image() for the source file, and only swapping the image array.
         """
-        # If your doc_manager has a known API, call it here:
-        if self.doc_manager and hasattr(self.doc_manager, "open_numpy"):
-            try:
-                self.doc_manager.open_numpy(np_img, title=title)
-                return
-            except Exception as e:
-                print("doc_manager.open_numpy failed:", e)
+        if not self.doc_manager:
+            QMessageBox.warning(
+                self,
+                "No DocManager",
+                "No document manager is available to push the preview."
+            )
+            return
 
-        if self.doc_manager and hasattr(self.doc_manager, "open_image_array"):
-            try:
-                self.doc_manager.open_image_array(np_img, title)
-                return
-            except Exception as e:
-                print("doc_manager.open_image_array failed:", e)
+        # Which preview window emitted the signal?  Grab its source_path.
+        src_path = None
+        sender = self.sender()
+        if isinstance(sender, ImagePreviewWindow):
+            src_path = getattr(sender, "_source_path", None)
 
-        # Fallback: write a temp PNG and let the user open it
+        if not src_path:
+            QMessageBox.warning(
+                self,
+                "No Source File",
+                "Could not determine the original file for this preview.\n"
+                "Push to New View requires the original image path."
+            )
+            return
+
+        # Re-load the ORIGINAL file so we get the full tuple:
+        # image, original_header, bit_depth, is_mono, meta
         try:
-            tmpdir = tempfile.gettempdir()
-            safe_title = "".join(c if c.isalnum() or c in " _-" else "_" for c in title)
-            out = os.path.join(tmpdir, f"{safe_title}.png")
-            # Ensure RGB uint8
-            arr = np_img
-            if arr.dtype != np.uint8:
-                arr = (np.clip(arr, 0, 1) * 255).astype(np.uint8)
-            if arr.ndim == 2:
-                arr = cv2.cvtColor(arr, cv2.COLOR_GRAY2RGB)
-            elif arr.ndim == 3 and arr.shape[2] == 3:
-                pass  # already RGB
-            elif arr.ndim == 3 and arr.shape[2] == 4:
-                arr = cv2.cvtColor(arr, cv2.COLOR_RGBA2RGB)
-            cv2.imwrite(out, cv2.cvtColor(arr, cv2.COLOR_RGB2BGR))
-            QMessageBox.information(self, "Pushed",
-                f"No document API found; saved preview to:\n{out}")
+            res = load_image(src_path, return_metadata=True)
         except Exception as e:
-            QMessageBox.warning(self, "Push failed", f"Could not export preview: {e}")
+            QMessageBox.critical(
+                self,
+                "Load Error",
+                f"Failed to load original image:\n{e}"
+            )
+            return
 
+        if not res or res[0] is None:
+            QMessageBox.critical(
+                self,
+                "Load Error",
+                "Could not read original image data from disk."
+            )
+            return
+
+        orig_img, original_header, bit_depth, is_mono, meta = res
+
+        # Ensure meta is a dict we can stuff things into
+        if not isinstance(meta, dict):
+            meta = {}
+
+        # Keep ALL of the original pieces:
+        # - store the original header explicitly if not already present
+        meta.setdefault("fits_header", original_header)
+        meta.setdefault("original_header", original_header)
+        meta.setdefault("bit_depth", bit_depth)
+        meta.setdefault("is_mono", is_mono)
+        meta.setdefault("source_path", src_path)
+
+        # Give the new doc a nice display name
+        meta["display_name"] = title
+
+        # Our preview image (with boxes). Normalize to float32 [0,1].
+        img = np.asarray(np_img, copy=False)
+        if img.dtype != np.float32:
+            img = img.astype(np.float32, copy=False)
+
+        # If it looks like 0–255 data, rescale to 0–1
+        if img.max() > 1.01 or img.min() < -0.01:
+            img = np.clip(img, 0, 255) / 255.0
+
+        # Finally: create the new document using the preview pixels
+        # but with *all* original metadata/header intact.
+        self.doc_manager.create_document(
+            image=img,
+            metadata=meta,
+            name=title,
+        )
+
+     
     def newInstance(self):
         # Reset parameters and UI elements for a new run
         self.parameters = {

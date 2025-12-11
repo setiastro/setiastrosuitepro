@@ -2,7 +2,9 @@
 from __future__ import annotations
 import os
 import numpy as np
-
+import time          # NEW
+import glob          # NEW
+import subprocess    # NEW
 # Optional deps used by the processing threads
 try:
     import cv2
@@ -21,7 +23,7 @@ from PyQt6.QtCore import (
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QGroupBox, QScrollArea, QDialog, QInputDialog, QFileDialog,
-    QMessageBox, QCheckBox, QApplication, QMainWindow
+    QMessageBox, QCheckBox, QApplication, QMainWindow, QCheckBox
 )
 from PyQt6.QtGui import (
     QPixmap, QImage, QCursor, QWheelEvent
@@ -31,10 +33,11 @@ from PyQt6.QtGui import (
 #qRegisterMetaType(QImage)
 
 from .doc_manager import ImageDocument  # add this import
-from legacy.image_manager import load_image as legacy_load_image
+from legacy.image_manager import load_image as legacy_load_image, save_image as legacy_save_image  # CHANGED
 from imageops.stretch import stretch_mono_image, stretch_color_image
 from imageops.starbasedwhitebalance import apply_star_based_white_balance
 from legacy.numba_utils import apply_curves_numba
+from pro.cosmicclarity_preset import _cosmic_root, _platform_exe_names 
 
 
 def apply_curves_adjustment(image, target_median, curves_boost):
@@ -84,7 +87,17 @@ class ContinuumSubtractTab(QWidget):
         self.red_image   = None
         self.green_image = None
         self.osc_image   = None
+        # NEW: composite HaO3 / S2O3 "source" images (optional)
+        self.hao3_image          = None
+        self.s2o3_image          = None
+        self.hao3_starless_image = None
+        self.s2o3_starless_image = None
 
+        # NEW: OIII components extracted from composites (for averaging)
+        self._o3_from_hao3          = None
+        self._o3_from_s2o3          = None
+        self._o3_from_hao3_starless = None
+        self._o3_from_s2o3_starless = None
         self.filename = None
         self.is_mono = True
         self.combined_image = None
@@ -134,10 +147,33 @@ class ContinuumSubtractTab(QWidget):
             btn_sl.clicked.connect(lambda _, n=f"{name} (Starless)": self.loadImage(n))
             nb_l.addWidget(btn_sl); nb_l.addWidget(lbl_sl)
 
+        for name, attr in [("HaO3", "hao3"), ("S2O3", "s2o3")]:
+            # starry
+            btn = QPushButton(f"Load {name}")
+            lbl = QLabel(f"No {name}")
+            setattr(self, f"{attr}Button", btn)
+            setattr(self, f"{attr}Label", lbl)
+            btn.clicked.connect(lambda _, n=name: self.loadImage(n))
+            nb_l.addWidget(btn); nb_l.addWidget(lbl)
+
+            # starless
+            btn_sl = QPushButton(f"Load {name} (Starless)")
+            lbl_sl = QLabel(f"No {name} (starless)")
+            setattr(self, f"{attr}StarlessButton", btn_sl)
+            setattr(self, f"{attr}StarlessLabel", lbl_sl)
+            btn_sl.clicked.connect(lambda _, n=f"{name} (Starless)": self.loadImage(n))
+            nb_l.addWidget(btn_sl); nb_l.addWidget(lbl_sl)
+
         # user controls
         self.linear_output_checkbox = QCheckBox("Output Linear Image Only")
         nb_l.addWidget(self.linear_output_checkbox)
-
+        self.denoise_checkbox = QCheckBox("Denoise continuum result with Cosmic Clarity (0.9)")  # NEW
+        self.denoise_checkbox.setToolTip(
+            "Runs Cosmic Clarity denoise on the linear continuum-subtracted image "
+            "before any non-linear stretch."
+        )  # NEW
+        self.denoise_checkbox.setChecked(True)
+        nb_l.addWidget(self.denoise_checkbox) 
         # ---- Advanced (collapsed) ----
         # defaults used elsewhere
         self.threshold_value = 5.0
@@ -176,6 +212,8 @@ class ContinuumSubtractTab(QWidget):
         q_row.addWidget(self.q_label)
         q_row.addWidget(self.q_btn)
         adv_l.addLayout(q_row)
+
+
 
         self.advanced_panel.setVisible(False)  # start hidden
         nb_l.addWidget(self.advanced_panel)
@@ -314,13 +352,22 @@ class ContinuumSubtractTab(QWidget):
         for attr in (
             "ha_image","sii_image","oiii_image","red_image","green_image","osc_image",
             "ha_starless_image","sii_starless_image","oiii_starless_image",
-            "red_starless_image","green_starless_image","osc_starless_image"
+            "red_starless_image","green_starless_image","osc_starless_image",
+            # NEW composite attrs
+            "hao3_image","s2o3_image",
+            "hao3_starless_image","s2o3_starless_image"
         ):
             setattr(self, attr, None)
 
+        # Reset NB labels
         self.haLabel.setText("No Ha")
         self.siiLabel.setText("No SII")
         self.oiiiLabel.setText("No OIII")
+        # NEW composite labels
+        self.hao3Label.setText("No HaO3")
+        self.s2o3Label.setText("No S2O3")
+
+        # Reset continuum labels
         self.redLabel.setText("No Red")
         self.greenLabel.setText("No Green")
         self.oscLabel.setText("No OSC")
@@ -332,8 +379,15 @@ class ContinuumSubtractTab(QWidget):
         self.greenStarlessLabel.setText("No Green (starless)")
         self.oscStarlessLabel.setText("No OSC (starless)")
 
+        # NEW: clear OIII-from-composite caches
+        self._o3_from_hao3 = None
+        self._o3_from_s2o3 = None
+        self._o3_from_hao3_starless = None
+        self._o3_from_s2o3_starless = None
+
         self.combined_image = None
         self.statusLabel.setText("All loaded images cleared.")
+
 
     def loadImage(self, channel: str):
         """
@@ -377,6 +431,7 @@ class ContinuumSubtractTab(QWidget):
             else:
                 self.ha_image = image
                 self.haLabel.setText(label_text)
+
         elif base == "SII":
             if is_starless:
                 self.sii_starless_image = image
@@ -384,6 +439,7 @@ class ContinuumSubtractTab(QWidget):
             else:
                 self.sii_image = image
                 self.siiLabel.setText(label_text)
+
         elif base == "OIII":
             if is_starless:
                 self.oiii_starless_image = image
@@ -391,6 +447,7 @@ class ContinuumSubtractTab(QWidget):
             else:
                 self.oiii_image = image
                 self.oiiiLabel.setText(label_text)
+
         elif base == "Red":
             if is_starless:
                 self.red_starless_image = image
@@ -398,6 +455,7 @@ class ContinuumSubtractTab(QWidget):
             else:
                 self.red_image = image
                 self.redLabel.setText(label_text)
+
         elif base == "Green":
             if is_starless:
                 self.green_starless_image = image
@@ -405,6 +463,7 @@ class ContinuumSubtractTab(QWidget):
             else:
                 self.green_image = image
                 self.greenLabel.setText(label_text)
+
         elif base == "OSC":
             if is_starless:
                 self.osc_starless_image = image
@@ -412,13 +471,126 @@ class ContinuumSubtractTab(QWidget):
             else:
                 self.osc_image = image
                 self.oscLabel.setText(label_text)
+
+        # NEW: HaO3 composite → Ha (R), OIII (G)
+        elif base == "HaO3":
+            # keep the full composite for reference
+            if is_starless:
+                self.hao3_starless_image = image
+                self.hao3StarlessLabel.setText(label_text)
+            else:
+                self.hao3_image = image
+                self.hao3Label.setText(label_text)
+
+            if not (isinstance(image, np.ndarray) and image.ndim == 3 and image.shape[2] >= 2):
+                QMessageBox.warning(
+                    self,
+                    "HaO3 Load",
+                    "HaO3 expects a 3-channel color image (R=Ha, G=OIII). "
+                    "Loaded image is not 3-channel; cannot extract Ha/OIII."
+                )
+                return
+
+            img32 = image.astype(np.float32, copy=False)
+            ha_from_r = img32[..., 0]
+            o3_from_g = img32[..., 1]
+
+            if is_starless:
+                self.ha_starless_image = ha_from_r
+                self.haStarlessLabel.setText(label_text + " [R → Ha (starless)]")
+                self._o3_from_hao3_starless = o3_from_g
+                self._update_oiii_from_composites(starless=True)
+            else:
+                self.ha_image = ha_from_r
+                self.haLabel.setText(label_text + " [R → Ha]")
+                self._o3_from_hao3 = o3_from_g
+                self._update_oiii_from_composites(starless=False)
+
+        # NEW: S2O3 composite → SII (R), OIII (G)
+        elif base == "S2O3":
+            # keep the full composite for reference
+            if is_starless:
+                self.s2o3_starless_image = image
+                self.s2o3StarlessLabel.setText(label_text)
+            else:
+                self.s2o3_image = image
+                self.s2o3Label.setText(label_text)
+
+            if not (isinstance(image, np.ndarray) and image.ndim == 3 and image.shape[2] >= 2):
+                QMessageBox.warning(
+                    self,
+                    "S2O3 Load",
+                    "S2O3 expects a 3-channel color image (R=SII, G=OIII). "
+                    "Loaded image is not 3-channel; cannot extract SII/OIII."
+                )
+                return
+
+            img32 = image.astype(np.float32, copy=False)
+            s2_from_r = img32[..., 0]
+            o3_from_g = img32[..., 1]
+
+            if is_starless:
+                self.sii_starless_image = s2_from_r
+                self.siiStarlessLabel.setText(label_text + " [R → SII (starless)]")
+                self._o3_from_s2o3_starless = o3_from_g
+                self._update_oiii_from_composites(starless=True)
+            else:
+                self.sii_image = s2_from_r
+                self.siiLabel.setText(label_text + " [R → SII]")
+                self._o3_from_s2o3 = o3_from_g
+                self._update_oiii_from_composites(starless=False)
+
         else:
             QMessageBox.critical(self, "Error", f"Unknown channel '{channel}'.")
             return
 
+
         # Store header and mono-flag for later saving
         self.original_header = header
         self.is_mono         = is_mono
+
+    # --- NEW: helper to combine OIII from HaO3 and S2O3 ---
+    def _update_oiii_from_composites(self, starless: bool):
+        """
+        Average all available composite-derived green channels into a single OIII NB image.
+        Only averages HaO3+S2O3 (does NOT touch any manually loaded OIII).
+        """
+        sources = []
+        labels = []
+
+        if starless:
+            if self._o3_from_hao3_starless is not None:
+                sources.append(self._o3_from_hao3_starless)
+                labels.append("HaO3")
+            if self._o3_from_s2o3_starless is not None:
+                sources.append(self._o3_from_s2o3_starless)
+                labels.append("S2O3")
+        else:
+            if self._o3_from_hao3 is not None:
+                sources.append(self._o3_from_hao3)
+                labels.append("HaO3")
+            if self._o3_from_s2o3 is not None:
+                sources.append(self._o3_from_s2o3)
+                labels.append("S2O3")
+
+        if not sources:
+            return
+
+        try:
+            combo = np.mean(np.stack(sources, axis=0), axis=0).astype(np.float32, copy=False)
+        except ValueError:
+            # shape mismatch – fall back to last one
+            combo = sources[-1]
+
+        if starless:
+            self.oiii_starless_image = combo
+            base_label = "OIII from " + "+".join(labels) + " (starless)"
+            self.oiiiStarlessLabel.setText(base_label)
+        else:
+            self.oiii_image = combo
+            base_label = "OIII from " + "+".join(labels)
+            self.oiiiLabel.setText(base_label)
+
 
     def _collect_open_documents(self):
         # kept for compatibility with callers; returns only docs
@@ -582,7 +754,9 @@ class ContinuumSubtractTab(QWidget):
         if not pairs:
             self.statusLabel.setText("Load at least one NB + matching continuum channel (or OSC).")
             return
-
+        mw = self._main_window()
+        cosmic_root = _cosmic_root(mw) if mw is not None else ""      # NEW
+        denoise_linear = self.denoise_checkbox.isChecked()             # NEW
         self.showSpinner()
         self._threads = []
         self._results = []
@@ -600,7 +774,8 @@ class ContinuumSubtractTab(QWidget):
             t = ContinuumProcessingThread(
                 p["nb"], p["cont"], self.linear_output_checkbox.isChecked(),
                 starless_nb=p["nb_sl"], starless_cont=p["cont_sl"], starless_only=p["starless_only"],
-                threshold=self.threshold_value, summary_gamma=self.summary_gamma, q_factor=self.q_factor
+                threshold=self.threshold_value, summary_gamma=self.summary_gamma, q_factor=self.q_factor,
+                cosmic_root=cosmic_root, denoise_linear=denoise_linear  # NEW
             )
             name = p["name"]  # avoid late binding in lambdas
 
@@ -995,7 +1170,8 @@ class ContinuumProcessingThread(QThread):
 
     def __init__(self, nb_image, continuum_image, output_linear, *,
                  starless_nb=None, starless_cont=None, starless_only=False,
-                 threshold: float = 5.0, summary_gamma: float = 0.6, q_factor: float = 0.8):
+                 threshold: float = 5.0, summary_gamma: float = 0.6, q_factor: float = 0.8,
+                 cosmic_root: str = "", denoise_linear: bool = False):  # NEW params
         super().__init__()
         self.nb_image = nb_image
         self.continuum_image = continuum_image
@@ -1010,6 +1186,10 @@ class ContinuumProcessingThread(QThread):
         self.threshold = float(threshold)
         self.summary_gamma = float(summary_gamma)
         self.q_factor = float(q_factor)
+
+        # NEW: Cosmic Clarity integration
+        self.cosmic_root = (cosmic_root or "").strip()
+        self.denoise_linear = bool(denoise_linear)
 
     # ---------- small helpers ----------
     @staticmethod
@@ -1173,7 +1353,9 @@ class ContinuumProcessingThread(QThread):
                 green_med = float(np.median(balanced_rgb[..., 1]))
                 Q = self.q_factor
                 linear_image = self._linear_subtract(balanced_rgb, Q, green_med)
-
+                if self.denoise_linear and self.cosmic_root:
+                    self.status_update.emit("Denoising continuum-subtracted image (Cosmic Clarity)…")
+                    linear_image = self._denoise_linear_image(linear_image)
                 # --- NEW: gamma brighten overlay for the summary ---
                 g = max(self.summary_gamma, 1e-6)
                 overlay_gamma = np.power(np.clip(star_overlay, 0.0, 1.0), g)
@@ -1227,7 +1409,9 @@ class ContinuumProcessingThread(QThread):
                         rgb[..., c] = np.clip(rgb[..., c] * recipe["wb_a"][c] + recipe["wb_b"][c], 0.0, 1.0)
 
                     lin = self._linear_subtract(rgb, recipe["Q"], recipe["green_median"])
-
+                    if self.denoise_linear and self.cosmic_root:
+                        self.status_update.emit("Denoising starless continuum-subtracted image (Cosmic Clarity)…")
+                        lin = self._denoise_linear_image(lin)
                     # reuse gamma-bright overlay & fit info from the starry pass
                     # rebuild overlay & make fresh copies of arrays for the starless emit
                     overlay_uint8 = np.array(recipe["overlay_uint8"], copy=True)
@@ -1273,7 +1457,9 @@ class ContinuumProcessingThread(QThread):
 
         green_med = float(np.median(rgb[..., 1]))
         lin = self._linear_subtract(rgb, 0.9, green_med)
-
+        if self.denoise_linear and self.cosmic_root:
+            self.status_update.emit("Denoising starless continuum-subtracted image (Cosmic Clarity)…")
+            lin = self._denoise_linear_image(lin)
         # Blank overlay & empty star lists (no star detection in starless-only path)
         h, w = lin.shape[:2]
         blank = np.zeros((h, w, 3), np.uint8)
@@ -1287,3 +1473,126 @@ class ContinuumProcessingThread(QThread):
         self.status_update.emit("Linear → Non-linear stretch…")
         final = self._nonlinear_finalize(lin)
         self.processing_complete_starless.emit(final, 0, qimg, empty, empty)
+
+    def _denoise_linear_image(self, img: np.ndarray) -> np.ndarray:
+        """
+        Run Cosmic Clarity denoise on a [0,1] float image and return the result.
+        If anything fails (no path, no exe, timeout, etc.), returns the input.
+        """
+        try:
+            if img is None:
+                return img
+
+            root = self.cosmic_root
+            if not root:
+                # No configured CC path; silently skip
+                return img
+
+            exe_name = _platform_exe_names("denoise")
+            if not exe_name:
+                return img
+
+            exe = os.path.join(root, exe_name)
+            if not os.path.exists(exe):
+                # Executable missing; skip denoise
+                return img
+
+            in_dir = os.path.join(root, "input")
+            out_dir = os.path.join(root, "output")
+            os.makedirs(in_dir, exist_ok=True)
+            os.makedirs(out_dir, exist_ok=True)
+
+            # Unique base name to avoid collisions with other threads
+            base = f"contsub_{os.getpid()}_{id(self)}_{int(time.time() * 1000)}"
+            in_path = os.path.join(in_dir, f"{base}.tif")
+
+            # Stage image as 32-bit float TIFF in [0,1]
+            arr = np.clip(np.asarray(img, dtype=np.float32), 0.0, 1.0)
+            is_mono = not (arr.ndim == 3 and arr.shape[2] == 3)
+            legacy_save_image(
+                arr,
+                in_path,
+                "tiff",
+                "32-bit floating point",
+                None,      # no header needed
+                is_mono
+            )
+
+            # Build denoise args (fixed strength 0.9 for both luma + color, full mode)
+            args = [
+                "--denoise_strength", "0.90",
+                "--color_denoise_strength", "0.90",
+                "--denoise_mode", "full",
+            ]
+
+            proc = subprocess.Popen(
+                [exe] + args,
+                cwd=root,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                universal_newlines=True,
+            )
+
+            # Consume output (optional: could parse progress)
+            if proc.stdout is not None:
+                for line in proc.stdout:
+                    line = (line or "").strip()
+                    if not line:
+                        continue
+                    # We could parse "Progress:" here if desired.
+
+            rc = proc.wait()
+            if rc != 0:
+                return img
+
+            # Cosmic Clarity will create something like base_* in the output folder
+            pattern = os.path.join(out_dir, f"{base}_*.*")
+            out_path = self._wait_for_cc_output(pattern)
+            if not out_path:
+                return img
+
+            out_img, _, _, _ = legacy_load_image(out_path)
+            if out_img is None:
+                return img
+
+            result = np.clip(np.asarray(out_img, dtype=np.float32), 0.0, 1.0)
+
+            # Cleanup temp files
+            for path in (in_path, out_path):
+                try:
+                    if path and os.path.exists(path):
+                        os.remove(path)
+                except Exception:
+                    pass
+
+            return result
+
+        except Exception as e:
+            try:
+                self.status_update.emit(f"Cosmic Clarity denoise failed: {e}")
+            except Exception:
+                pass
+            return img
+
+    def _wait_for_cc_output(self, pattern: str, timeout: float = 1800.0, poll: float = 0.25) -> str:
+        """
+        Wait for a CC output file matching glob `pattern`. Returns most recent path or "" on timeout.
+        """
+        t0 = time.time()
+        last = ""
+        while time.time() - t0 < timeout:
+            matches = glob.glob(pattern)
+            if matches:
+                try:
+                    matches.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+                except Exception:
+                    matches.sort()
+                last = matches[0]
+                try:
+                    if os.path.getsize(last) > 0:
+                        return last
+                except Exception:
+                    return last
+            time.sleep(poll)
+        return ""

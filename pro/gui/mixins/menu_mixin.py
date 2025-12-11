@@ -176,6 +176,7 @@ class MenuMixin:
         m_star.addAction(self.act_mosaic_master)
         m_star.addAction(self.act_supernova_hunter)
         m_star.addAction(self.act_star_spikes)
+        m_star.addAction(self.act_astrospike)
         m_star.addAction(self.act_exo_detector)
         m_star.addAction(self.act_isophote)
         
