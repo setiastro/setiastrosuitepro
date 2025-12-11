@@ -4,11 +4,12 @@ import numpy as np
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QHBoxLayout, QLineEdit, QPushButton, QFileDialog,
     QListWidget, QSlider, QCheckBox, QMessageBox, QTextEdit, QDialog, QApplication,
-    QTreeWidget, QTreeWidgetItem, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
-    QToolBar, QSizePolicy, QSpinBox, QDoubleSpinBox   # ← added
+    QTreeWidget, QTreeWidgetItem, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QGridLayout,
+    QToolBar, QSizePolicy, QSpinBox, QDoubleSpinBox, QProgressBar
 )
 from PyQt6.QtGui import QImage, QPixmap, QIcon, QPainter, QAction, QTransform, QCursor
-from PyQt6.QtCore import Qt, pyqtSignal, QRectF, QPointF, QTimer
+from PyQt6.QtCore import Qt, pyqtSignal, QRectF, QPointF, QTimer, QThread, QObject
+
 
 from pathlib import Path
 import tempfile
@@ -140,6 +141,35 @@ def _numpy_to_qimage(img: np.ndarray) -> QImage:
     # fallback empty
     return QImage()
 
+class MinorBodyWorker(QObject):
+    """
+    Runs the heavy minor-body prediction in a background thread.
+    Does NOT touch any widgets directly.
+    """
+    finished = pyqtSignal(list, str)   # (bodies, error_message or "")
+    progress = pyqtSignal(int, str)    # (percent, message)
+
+    def __init__(self, owner, jd_for_calc: float):
+        super().__init__()
+        self._owner = owner      # SupernovaAsteroidHunterDialog
+        self._jd = jd_for_calc
+
+    def run(self):
+        try:
+            # Kick off with a low percentage
+            self.progress.emit(0, "Minor-body search: preparing catalog query...")
+            bodies = self._owner._get_predicted_minor_bodies_for_field(
+                H_ast_max=self._owner.minor_H_ast_max,
+                H_com_max=self._owner.minor_H_com_max,
+                jd=self._jd,
+                progress_cb=self.progress.emit,   # pass our signal as callback
+            )
+            if bodies is None:
+                bodies = []
+            self.finished.emit(bodies, "")
+        except Exception as e:
+            self.finished.emit([], str(e))
+
 class ZoomableImageView(QGraphicsView):
     zoomChanged = pyqtSignal(float)  # emits current scale (1.0 = 100%)
 
@@ -254,7 +284,7 @@ class ImagePreviewWindow(QDialog):
         self.act_zoom_in = QAction("Zoom In", self)
         self.act_zoom_out = QAction("Zoom Out", self)
         self.act_push = QAction("Push to New View", self)
-        self.act_minor = QAction("Check Catalogued Minor Bodies in Field", self)
+        #self.act_minor = QAction("Check Catalogued Minor Bodies in Field", self)
 
         self.act_zoom_in.setShortcut("Ctrl++")
         self.act_zoom_out.setShortcut("Ctrl+-")
@@ -268,8 +298,8 @@ class ImagePreviewWindow(QDialog):
         tb.addAction(self.act_zoom_out)
         tb.addSeparator()
         tb.addAction(self.act_push)
-        tb.addSeparator()
-        tb.addAction(self.act_minor)
+        #tb.addSeparator()
+        #tb.addAction(self.act_minor)
 
         # zoom label spacer
         spacer = QWidget()
@@ -292,7 +322,7 @@ class ImagePreviewWindow(QDialog):
         self.act_zoom_in.triggered.connect(lambda: self.view.zoom(1.25))
         self.act_zoom_out.triggered.connect(lambda: self.view.zoom(0.8))
         self.act_push.triggered.connect(self._on_push)
-        self.act_minor.triggered.connect(self._on_minor_body_search)
+        #self.act_minor.triggered.connect(self._on_minor_body_search)
 
         # start in "Fit"
         self.view.fit_to_view()
@@ -354,7 +384,9 @@ class SupernovaAsteroidHunterDialog(QDialog):
         # default H limits for minor bodies (you can later expose via UI)
         self.minor_H_ast_max = 20.0
         self.minor_H_com_max = 15.0
-
+        self.minor_ast_max_count = 50000
+        self.minor_com_max_count = 5000
+        self.minor_time_offset_hours = 0.0
         self.initUI()
         self.resize(900, 700)
 
@@ -421,6 +453,13 @@ class SupernovaAsteroidHunterDialog(QDialog):
         # -- Status label --
         self.status_label = QLabel("Status: Idle", self)
         layout.addWidget(self.status_label)
+
+        # Minor-body progress bar (hidden by default)
+        self.minor_progress = QProgressBar(self)
+        self.minor_progress.setRange(0, 100)
+        self.minor_progress.setValue(0)
+        self.minor_progress.setVisible(False)
+        layout.addWidget(self.minor_progress)
 
         # --- New Instance Button ---
         self.new_instance_button = QPushButton("New Instance", self)
@@ -698,7 +737,12 @@ class SupernovaAsteroidHunterDialog(QDialog):
         com_H_default = getattr(self, "minor_H_com_max", 10.0)
         ast_max_default = getattr(self, "minor_ast_max_count", 5000)
         com_max_default = getattr(self, "minor_com_max_count", 1000)
-        dt_default = getattr(self, "minor_time_offset_days", 0.0)
+
+        # Time offset in *hours* now; if old days-based attr exists, convert.
+        if hasattr(self, "minor_time_offset_hours"):
+            dt_default = float(self.minor_time_offset_hours)
+        else:
+            dt_default = float(getattr(self, "minor_time_offset_days", 0.0)) * 24.0
 
         # Row 0: Asteroids
         row_layout.addWidget(QLabel("Asteroid H ≤"), 0, 0)
@@ -730,14 +774,14 @@ class SupernovaAsteroidHunterDialog(QDialog):
         com_max_spin.setValue(com_max_default)
         row_layout.addWidget(com_max_spin, 1, 3)
 
-        # Row 2: Time offset (days)
-        row_layout.addWidget(QLabel("Time offset (days)"), 2, 0)
+        # Row 2: Time offset (hours)
+        row_layout.addWidget(QLabel("Time offset (hours)"), 2, 0)
         dt_spin = QDoubleSpinBox(dlg)
-        dt_spin.setDecimals(2)
-        dt_spin.setRange(-30.0, 30.0)
-        dt_spin.setSingleStep(0.25)
+        dt_spin.setDecimals(1)
+        dt_spin.setRange(-72.0, 72.0)   # ±3 days in hours
+        dt_spin.setSingleStep(1.0)
         dt_spin.setValue(dt_default)
-        row_layout.addWidget(dt_spin, 2, 1)
+        row_layout.addWidget(dt_spin, 2, 1, 1, 3)
 
         # Buttons
         btn_row = QHBoxLayout()
@@ -753,7 +797,10 @@ class SupernovaAsteroidHunterDialog(QDialog):
             self.minor_H_com_max = float(com_H_spin.value())
             self.minor_ast_max_count = int(ast_max_spin.value())
             self.minor_com_max_count = int(com_max_spin.value())
-            self.minor_time_offset_days = float(dt_spin.value())
+            hours = float(dt_spin.value())
+            self.minor_time_offset_hours = hours
+            # backward compat if anything still reads the old name:
+            self.minor_time_offset_days = hours / 24.0
             dlg.accept()
 
         def on_cancel():
@@ -763,6 +810,70 @@ class SupernovaAsteroidHunterDialog(QDialog):
         cancel_btn.clicked.connect(on_cancel)
 
         return dlg.exec() == QDialog.DialogCode.Accepted
+
+    def _on_minor_body_progress(self, pct: int, msg: str):
+        self.status_label.setText(msg)
+        if hasattr(self, "minor_progress"):
+            self.minor_progress.setVisible(True)
+            self.minor_progress.setValue(int(pct))
+        QApplication.processEvents()
+
+    def _on_minor_body_finished(self, bodies: list, error: str):
+        if hasattr(self, "minor_progress"):
+            # show as done, then hide
+            self.minor_progress.setValue(100 if not error else 0)
+            self.minor_progress.setVisible(False)        
+        if error:
+            print("[MinorBodies] prediction failed:", error)
+            QMessageBox.critical(
+                self,
+                "Minor-body Search",
+                f"Minor-body prediction failed:\n{error}"
+            )
+            self.status_label.setText("Minor-body search failed.")
+            return
+
+        self.predicted_minor_bodies = bodies or []
+
+        if not self.predicted_minor_bodies:
+            self.status_label.setText(
+                "Minor-body search complete: no catalogued objects in this field "
+                "for the current magnitude limits."
+            )
+            QMessageBox.information(
+                self,
+                "Minor-body Search",
+                "No catalogued minor bodies (within the configured magnitude limits) "
+                "were found in this field."
+            )
+            return
+
+        self.status_label.setText(
+            f"Minor-body search complete: {len(self.predicted_minor_bodies)} objects in field."
+        )
+        QApplication.processEvents()
+
+        # Now cross-match on the UI thread if we already have anomalies
+        try:
+            if self.anomalyData:
+                print(f"[MinorBodies] cross-matching anomalies to "
+                      f"{len(self.predicted_minor_bodies)} predicted bodies...")
+                self._match_anomalies_to_minor_bodies(
+                    self.predicted_minor_bodies,
+                    search_radius_arcsec=60.0
+                )
+                self.showDetailedResultsDialog(self.anomalyData)
+            else:
+                QMessageBox.information(
+                    self,
+                    "Minor-body Search",
+                    "Minor bodies in field have been computed.\n\n"
+                    "Run the anomaly search (Process) to cross-match detections "
+                    "against the predicted objects."
+                )
+        except Exception as e:
+            print("[MinorBodies] cross-match failed:", e)
+
 
     def runMinorBodySearch(self):
         """
@@ -845,86 +956,73 @@ class SupernovaAsteroidHunterDialog(QDialog):
             print("[MinorBodies] failed to fetch observatory site from settings:", e)
             self.ref_site = None
 
-        # JD adjusted by time offset (days)
-        jd_for_calc = self.ref_jd + getattr(self, "minor_time_offset_days", 0.0)
+        # JD adjusted by time offset (hours → days)
+        offset_hours = getattr(self, "minor_time_offset_hours", 0.0)
+        jd_for_calc = self.ref_jd + (offset_hours / 24.0)
 
-        # Step 3: Heavy minor-body prediction
+        # Kick off the heavy catalog + ephemeris work in a background thread
         self.status_label.setText(
-            "Minor-body search: querying catalog and computing ephemerides..."
+            "Minor-body search: starting background catalog query..."
         )
         QApplication.processEvents()
+        if hasattr(self, "minor_progress"):
+            self.minor_progress.setVisible(True)
+            self.minor_progress.setValue(0)
 
-        try:
-            bodies = self._get_predicted_minor_bodies_for_field(
-                H_ast_max=self.minor_H_ast_max,
-                H_com_max=self.minor_H_com_max,
-                jd=jd_for_calc,
-            )
-            self.predicted_minor_bodies = bodies or []
-        except Exception as e:
-            print("[MinorBodies] prediction failed:", e)
-            QMessageBox.critical(
-                self, "Minor-body Search",
-                f"Minor-body prediction failed:\n{e}"
-            )
-            self.status_label.setText("Minor-body search failed.")
-            return
+        self._mb_thread = QThread(self)
+        self._mb_worker = MinorBodyWorker(self, jd_for_calc)
+        self._mb_worker.moveToThread(self._mb_thread)
 
-        if not self.predicted_minor_bodies:
-            self.status_label.setText(
-                "Minor-body search complete: no catalogued objects in this field "
-                "for the current magnitude limits."
-            )
-            QMessageBox.information(
-                self,
-                "Minor-body Search",
-                "No catalogued minor bodies (within the configured magnitude limits) "
-                "were found in this field."
-            )
-            return
+        # Wire up thread lifecycle
+        self._mb_thread.started.connect(self._mb_worker.run)
+        self._mb_worker.progress.connect(self._on_minor_body_progress)
+        self._mb_worker.finished.connect(self._on_minor_body_finished)
+        self._mb_worker.finished.connect(self._mb_thread.quit)
+        self._mb_worker.finished.connect(self._mb_worker.deleteLater)
+        self._mb_thread.finished.connect(self._mb_thread.deleteLater)
 
-        self.status_label.setText(
-            f"Minor-body search complete: {len(self.predicted_minor_bodies)} objects in field."
-        )
-        QApplication.processEvents()
+        self._mb_thread.start()
 
-        # Step 4: If we already have anomalies, cross-match now
-        try:
-            if self.anomalyData:
-                print(f"[MinorBodies] cross-matching anomalies to "
-                      f"{len(self.predicted_minor_bodies)} predicted bodies...")
-                self._match_anomalies_to_minor_bodies(
-                    self.predicted_minor_bodies,
-                    search_radius_arcsec=10.0
-                )
-                # Refresh the detailed text summary with match info
-                self.showDetailedResultsDialog(self.anomalyData)
-            else:
-                QMessageBox.information(
-                    self,
-                    "Minor-body Search",
-                    "Minor bodies in field have been computed.\n\n"
-                    "Run the anomaly search (Process) to cross-match detections "
-                    "against the predicted objects."
-                )
-        except Exception as e:
-            print("[MinorBodies] cross-match failed:", e)
-
-
-
-    def _get_predicted_minor_bodies_for_field(self, H_ast_max: float, H_com_max: float):
+    def _get_predicted_minor_bodies_for_field(
+        self,
+        H_ast_max: float,
+        H_com_max: float,
+        jd: float | None = None,
+        progress_cb=None,
+    ):
         """
         Return a list of predicted minor bodies in the current ref image FOV
-        at self.ref_jd, with pixel coords.
+        at 'jd' (or self.ref_jd if jd is None), with pixel coords.
         """
-        if self.ref_wcs is None or self.ref_jd is None or self.preprocessed_reference is None:
+        # Need WCS and an image
+        if self.ref_wcs is None or self.preprocessed_reference is None:
+            return []
+
+        def emit(pct, msg):
+            if progress_cb is not None:
+                try:
+                    progress_cb(int(pct), msg)
+                except TypeError:
+                    # fallback if callback only wants a message
+                    progress_cb(msg)
+
+
+        # Resolve JD: explicit first, then self.ref_jd
+        if jd is None:
+            jd = self.ref_jd
+        if jd is None:
             return []
 
         if self.settings is None:
             print("[MinorBodies] settings object is None; cannot resolve DB path.")
             return []
 
+        # Per-type max counts with safe defaults
+        ast_limit = getattr(self, "minor_ast_max_count", 50000)
+        com_limit = getattr(self, "minor_com_max_count", 5000)
+
         # 1) open DB (reuse WIMI’s ensure logic)
+        emit(5, "Minor-body search: opening minor-body database...")
         try:
             data_dir = Path(
                 self.settings.value("wimi/minorbody_data_dir", "", type=str)
@@ -934,32 +1032,38 @@ class SupernovaAsteroidHunterDialog(QDialog):
             catalog = mbc.MinorBodyCatalog(db_path)
         except Exception as e:
             print("[MinorBodies] could not open DB:", e)
+            emit(100, "Minor-body search: failed to open database.")
             return []
 
         try:
-            # 2) get a manageable set of bright asteroids / comets
-            ast_df = catalog.get_bright_asteroids(H_max=H_ast_max, limit=50000)
-            com_df = catalog.get_bright_comets(H_max=H_com_max,   limit=5000)
+            emit(20, "Minor-body search: selecting bright asteroids/comets...")
+            ast_df = catalog.get_bright_asteroids(H_max=H_ast_max, limit=ast_limit)
+            com_df = catalog.get_bright_comets(H_max=H_com_max,   limit=com_limit)
 
-            # 3) compute positions at this JD
+            emit(40, "Minor-body search: computing asteroid positions...")
             ast_pos = catalog.compute_positions_skyfield(
                 ast_df,
-                self.ref_jd,
+                jd,
                 topocentric=self.ref_site,
                 debug=False,
             )
+            emit(60, "Minor-body search: computing comet positions...")
             com_pos = catalog.compute_positions_skyfield(
                 com_df,
-                self.ref_jd,
+                jd,
                 topocentric=self.ref_site,
                 debug=False,
             )
+
+            emit(80, "Minor-body search: projecting onto image pixels...")
 
             # 4) map RA/Dec -> pixel with ref WCS, and drop those outside FOV
             h, w = self.preprocessed_reference.shape[:2]
             bodies = []
-            for src, kind, df in ((ast_pos, "asteroid", ast_df),
-                                (com_pos, "comet",   com_df)):
+            for src, kind, df in (
+                (ast_pos, "asteroid", ast_df),
+                (com_pos, "comet",   com_df),
+            ):
                 df_by_name = {row["designation"]: row for _, row in df.iterrows()}
                 for row in src:
                     ra = row["ra_deg"]
@@ -977,12 +1081,14 @@ class SupernovaAsteroidHunterDialog(QDialog):
                             "H": float(base.get("magnitude_H", np.nan)),
                             "distance_au": row.get("distance_au", np.nan),
                         })
+            emit(100, "Minor-body search: finished computing positions.")            
             return bodies
         finally:
             try:
                 catalog.close()
             except Exception:
                 pass
+
 
     def preprocessImage(self, img, debug_prefix=None):
         """
@@ -1107,7 +1213,7 @@ class SupernovaAsteroidHunterDialog(QDialog):
             bodies = getattr(self, "predicted_minor_bodies", None)
             if bodies:
                 print(f"[MinorBodies] cross-matching anomalies to {len(bodies)} predicted bodies...")
-                self._match_anomalies_to_minor_bodies(bodies, search_radius_arcsec=10.0)
+                self._match_anomalies_to_minor_bodies(bodies, search_radius_arcsec=60.0)
         except Exception as e:
             print("[MinorBodies] cross-match failed:", e)
 
@@ -1162,11 +1268,14 @@ class SupernovaAsteroidHunterDialog(QDialog):
         # Show zoomable preview with overlays
         self.showAnomaliesOnImage(search_img, anomalies, window_title=f"Anomalies in {image_name}")
 
-    def _match_anomalies_to_minor_bodies(self, bodies, search_radius_arcsec=10.0):
+    def _match_anomalies_to_minor_bodies(self, bodies, search_radius_arcsec=20.0):
         """
         For each anomaly, compute center pixel and find
-        any predicted minor body within search_radius_arcsec.
-        Adds 'matched_body' entry to each anomaly dict (or None).
+        all predicted minor bodies within search_radius_arcsec.
+
+        Adds:
+          - anomaly["matched_bodies"] = [body, ...]
+          - anomaly["matched_body"]   = closest body or None
         """
         if self.ref_wcs is None or not bodies:
             return
@@ -1179,22 +1288,29 @@ class SupernovaAsteroidHunterDialog(QDialog):
             arcsec_per_pix = deg_per_pix * 3600.0
         except Exception:
             arcsec_per_pix = 1.0  # fallback
+
         pix_radius = search_radius_arcsec / arcsec_per_pix
 
         for entry in self.anomalyData:
             for anomaly in entry["anomalies"]:
                 cx = 0.5 * (anomaly["minX"] + anomaly["maxX"])
                 cy = 0.5 * (anomaly["minY"] + anomaly["maxY"])
-                best = None
-                best_r = 1e9
+
+                matches = []
                 for body in bodies:
                     dx = body["x"] - cx
                     dy = body["y"] - cy
-                    r = np.hypot(dx, dy)
-                    if r < pix_radius and r < best_r:
-                        best_r = r
-                        best = body
-                anomaly["matched_body"] = best
+                    r_pix = np.hypot(dx, dy)
+                    if r_pix <= pix_radius:
+                        matches.append((r_pix, body))
+
+                if matches:
+                    matches.sort(key=lambda t: t[0])
+                    anomaly["matched_body"] = matches[0][1]
+                    anomaly["matched_bodies"] = [b for _, b in matches]
+                else:
+                    anomaly["matched_body"] = None
+                    anomaly["matched_bodies"] = []
 
 
     def draw_bounding_boxes_on_stretched(self,
@@ -1357,21 +1473,27 @@ class SupernovaAsteroidHunterDialog(QDialog):
                     f"Top-Left ({group['minX']}, {group['minY']}), "
                     f"Bottom-Right ({group['maxX']}, {group['maxY']})\n"
                 )
-                mb = group.get("matched_body")
-                if mb:
-                    H_str = f"{mb['H']:.1f}" if np.isfinite(mb.get("H", np.nan)) else "?"
-                    result_text += (
-                        f"    → Matches {mb['kind']} {mb['designation']} "
-                        f"(H={H_str})\n"
-                    )
-                else:
-                    result_text += "    → No catalog match (candidate)\n"
+                mbs = group.get("matched_bodies") or []
+                if mbs:
+                    result_text += "    → Candidate matches:\n"
+                    for mb in mbs:
+                        H_str = (
+                            f"{mb['H']:.1f}"
+                            if np.isfinite(mb.get("H", np.nan))
+                            else "?"
+                        )
+                        result_text += (
+                            f"      - {mb['kind']} {mb['designation']} "
+                            f"(H={H_str})\n"
+                        )
+                # if no matches, leave as a pure candidate box
             result_text += "\n"
 
         text_edit.setText(result_text)
         layout.addWidget(text_edit)
         dialog.setLayout(layout)
         dialog.show()
+
 
     def showAnomaliesOnImage(self, image: np.ndarray, anomalies: list, window_title="Anomalies"):
         """
@@ -1399,15 +1521,26 @@ class SupernovaAsteroidHunterDialog(QDialog):
             x1 = max(0, x1 - margin); y1 = max(0, y1 - margin)
             x2 = min(w - 1, x2 + margin); y2 = min(h - 1, y2 + margin)
 
-            mb = a.get("matched_body")
-            if mb:
-                # known asteroid/comet -> green
+            mbs = a.get("matched_bodies") or []
+            if mbs:
+                # anomalies with known bodies -> green box
                 color = (0, 255, 0)
             else:
-                # candidate / unknown -> red
+                # pure candidates -> red box
                 color = (255, 0, 0)
 
             cv2.rectangle(img_u8, (x1, y1), (x2, y2), color=color, thickness=5)
+
+        # NEW: overlay all predicted minor bodies as circles
+        bodies = getattr(self, "predicted_minor_bodies", None)
+        if bodies:
+            for body in bodies:
+                x = int(round(body["x"]))
+                y = int(round(body["y"]))
+                if 0 <= x < w and 0 <= y < h:
+                    # yellow circle so it stands out from red/green boxes
+                    cv2.circle(img_u8, (x, y), 8, (255, 255, 0), thickness=2)
+
 
         # Launch preview window
         icon = None
