@@ -1794,20 +1794,31 @@ def plate_solve_doc_inplace(parent, doc, settings) -> Tuple[bool, Header | str]:
     _debug_dump_header("SEED HEADER FROM META (seed_h)", seed_h)
 
     # Keep a copy of acquisition header (no WCS) for merge
-    fits_hdr = meta.get("fits_header")
+    # Prefer the true acquisition header if we have it, otherwise fall back.
+    raw_acq = meta.get("original_header") or meta.get("fits_header")
+
     acq_base: Header | None = None
-    if isinstance(seed_h, Header):
-        acq_base = _strip_wcs_keys(fits_hdr.copy())
+    if isinstance(raw_acq, Header):
+        # Use the original acquisition header (OBJECT, EXPTIME, GAIN, etc.)
+        acq_base = _strip_wcs_keys(raw_acq.copy())
+        _debug_dump_header("ACQ_BASE (original/fits header with WCS stripped)", acq_base)
+    elif isinstance(seed_h, Header):
+        # Fallback: use the seed header as our acquisition base
+        acq_base = _strip_wcs_keys(seed_h.copy())
         _debug_dump_header("ACQ_BASE (seed_h with WCS stripped)", acq_base)
     else:
-        # Fallback (rare): still fall back to the synthetic seed
-        acq_base = _strip_wcs_keys(seed_h.copy())
+        acq_base = None
+        _debug_dump_header("ACQ_BASE (none available)", None)
+
     # Better debug: use our new scale estimator
     try:
-        ra  = seed_h.get("CRVAL1", None) if isinstance(seed_h, Header) else None
-        dec = seed_h.get("CRVAL2", None) if isinstance(seed_h, Header) else None
-        scale = _estimate_scale_arcsec_from_header(seed_h) if isinstance(seed_h, Header) else None
-        print(f"[PlateSolve seed] CRVAL1={ra}, CRVAL2={dec}, scale≈{scale} \"/px")
+        if isinstance(seed_h, Header):
+            ra  = seed_h.get("CRVAL1", None)
+            dec = seed_h.get("CRVAL2", None)
+            scale = _estimate_scale_arcsec_from_header(seed_h)
+            print(f"[PlateSolve seed] CRVAL1={ra}, CRVAL2={dec}, scale≈{scale} \"/px")
+        else:
+            print("[PlateSolve seed] No valid seed header available.")
     except Exception as e:
         print("Seed: debug print failed:", e)
 
@@ -1879,9 +1890,6 @@ def plate_solve_doc_inplace(parent, doc, settings) -> Tuple[bool, Header | str]:
     finally:
         _status_popup_close()
 
-from astropy.io import fits
-from astropy.io.fits import Header
-from astropy.wcs import WCS
 
 
 def _estimate_scale_arcsec_from_header(hdr: Header) -> float | None:
@@ -2016,6 +2024,20 @@ def _compute_fov_deg(image: np.ndarray, arcsec_per_px: float | None) -> float | 
     if H <= 0:
         return None
     return (H * arcsec_per_px) / 3600.0  # vertical FOV in degrees
+
+def plate_solve_active_document(parent, settings) -> tuple[bool, Header | str]:
+    """
+    Convenience wrapper:
+      - Finds the active document from the given parent (main window, ImagePeeker, etc.)
+      - Calls plate_solve_doc_inplace(...)
+    
+    Returns (ok, Header | error_message).
+    """
+    doc = _active_doc_from_parent(parent)
+    if doc is None:
+        return False, "No active document to plate-solve."
+
+    return plate_solve_doc_inplace(parent, doc, settings)
 
 # ---------------------------------------------------------------------
 # Dialog UI with Active/File and Batch modes

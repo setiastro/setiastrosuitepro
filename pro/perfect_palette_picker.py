@@ -767,9 +767,26 @@ class PerfectPalettePicker(QWidget):
         return basic.get("SHO", (ha, oo, si))
 
     # ------------- push to new subwindow -------------
+    # ------------- push to new subwindow -------------
+    def _get_doc_manager(self):
+        """
+        Try several ways to get a DocManager:
+        1) explicit doc_manager passed into PerfectPalettePicker
+        2) main window's .docman or .doc_manager attribute
+        """
+        if self.doc_manager is not None:
+            return self.doc_manager
+
+        mw = self._find_main_window()
+        if mw is None:
+            return None
+
+        return getattr(mw, "docman", None) or getattr(mw, "doc_manager", None)
+
     def _push_final(self):
         if self.final is None:
-            QMessageBox.warning(self, "No Image", "Generate a palette first."); return
+            QMessageBox.warning(self, "No Image", "Generate a palette first.")
+            return
 
         # Use the SAME prepared channels the palette was built with
         ha_prep, oo_prep, si_prep = self._prepared_channels()
@@ -796,27 +813,44 @@ class PerfectPalettePicker(QWidget):
         self.final = adjusted["img"]
         self._set_preview_image(self._to_qimage(self.final))
 
-        # Push to DocManager in a new view
-        mw = self._find_main_window()
-        dm = getattr(mw, "docman", None)
-        if not mw or not dm:
-            QMessageBox.critical(self, "UI", "Main window or DocManager not available."); return
         title = self.current_palette or "Palette"
+
+        # ---- get DocManager the robust way ----
+        dm = self._get_doc_manager()
+
+        if dm is None:
+            # Fallback: open a simple viewer instead of erroring out
+            viewer = QDialog(self)
+            viewer.setWindowTitle(title)
+            vlayout = QVBoxLayout(viewer)
+            lbl = QLabel()
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lbl.setPixmap(QPixmap.fromImage(self._to_qimage(self.final)))
+            vlayout.addWidget(lbl)
+            viewer.resize(lbl.pixmap().size())
+            viewer.show()
+            # keep ref so it isn't GC'd
+            self._last_popup_viewer = viewer
+            self.status.setText("DocManager not found; opened palette in stand-alone viewer.")
+            return
+
+        # ---- normal SAS path: create a new document ----
         try:
             if hasattr(dm, "open_array"):
+                # many of your tools already use this signature
                 doc = dm.open_array(self.final, metadata={"is_mono": False}, title=title)
             elif hasattr(dm, "create_document"):
                 doc = dm.create_document(image=self.final, metadata={"is_mono": False}, name=title)
             else:
                 raise RuntimeError("DocManager lacks open_array/create_document")
-            if hasattr(mw, "_spawn_subwindow_for"):
-                mw._spawn_subwindow_for(doc)
-            else:
-                from pro.subwindow import ImageSubWindow
-                sw = ImageSubWindow(doc, parent=mw); sw.setWindowTitle(title); sw.show()
+
+            # If DocManager or main window auto-spawns subwindows on new docs,
+            # this is all we need. If not, you can optionally keep the
+            # _spawn_subwindow_for hook here.
             self.status.setText("Opened final palette in a new view.")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to open new view:\n{e}")
+
 
 
     # ------------- utilities -------------

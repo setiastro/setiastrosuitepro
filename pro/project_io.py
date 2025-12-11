@@ -18,18 +18,60 @@ try:
 except Exception:
     sip = None
 # ---------- helpers ----------
-def _np_save_to_bytes(arr: np.ndarray, *, compress: bool = True) -> bytes:
+def _np_save_to_bytes(arr, *, compress: bool = True) -> bytes:
     """
-    If compress=True -> np.savez_compressed (zlib)
-    If compress=False -> np.save (raw .npy)
+    Safely serialize an image-like payload to bytes.
+
+    - Accepts numpy arrays, things convertible via np.asarray, and (optionally)
+      torch tensors if torch is installed.
+    - Ensures the final payload is a numeric float32 ndarray before writing.
+    - Raises a clear TypeError for non-numeric / unexpected payloads.
     """
+    import numpy as _np
     bio = io.BytesIO()
-    arr = arr.astype(np.float32, copy=False)
+
+    # Unwrap various possible payload types into a numpy array
+    a = arr
+
+    # Torch tensor support (if present)
+    try:
+        import torch
+    except Exception:
+        torch = None
+
+    if torch is not None and isinstance(a, torch.Tensor):  # type: ignore[name-defined]
+        a = a.detach().cpu().numpy()
+
+    # If it's not already an ndarray, try to coerce
+    if not isinstance(a, _np.ndarray):
+        try:
+            a = _np.asarray(a)
+        except Exception as exc:
+            raise TypeError(
+                f"Unsupported image payload type {type(arr).__name__} (cannot convert to ndarray)"
+            ) from exc
+
+    # At this point we MUST have an ndarray
+    if not isinstance(a, _np.ndarray):
+        raise TypeError(
+            f"Unsupported image payload type after coercion: {type(a).__name__}"
+        )
+
+    # Only allow numeric arrays (int/float); bail out on strings/objects
+    if not _np.issubdtype(a.dtype, _np.number):
+        raise TypeError(
+            f"Non-numeric image payload dtype {a.dtype!r} (expected numeric image data)"
+        )
+
+    a = a.astype(_np.float32, copy=False)
+
     if compress:
-        np.savez_compressed(bio, img=arr)
+        _np.savez_compressed(bio, img=a)
     else:
-        np.save(bio, arr)
+        _np.save(bio, a)
+
     return bio.getvalue()
+
 
 
 def _is_dead(obj) -> bool:
@@ -304,30 +346,45 @@ class ProjectWriter:
                     z.writestr(f"{base}/current.{cur_ext}", _np_save_to_bytes(doc.image, compress=compress))
 
                 # --- history stacks --------------------------------------------------
+                # --- history stacks --------------------------------------------------
                 undo_list = []
                 for i, (img, m, name) in enumerate(getattr(doc, "_undo", []) or []):
                     fname = f"history/undo_{i:04d}.{hist_ext}"
+                    try:
+                        payload = _np_save_to_bytes(img, compress=compress)
+                    except Exception as exc:
+                        # Skip bad entries but keep saving the rest of the project
+                        # (optional: log exc somewhere)
+                        continue
+
                     undo_list.append({
                         "name": name or "Edit",
                         "meta": _json_sanitize(m or {}),
                         "file": fname
                     })
-                    z.writestr(f"{base}/{fname}", _np_save_to_bytes(img, compress=compress))
+                    z.writestr(f"{base}/{fname}", payload)
 
                 redo_list = []
                 for i, (img, m, name) in enumerate(getattr(doc, "_redo", []) or []):
                     fname = f"history/redo_{i:04d}.{hist_ext}"
+                    try:
+                        payload = _np_save_to_bytes(img, compress=compress)
+                    except Exception:
+                        # Same logic: skip broken entries
+                        continue
+
                     redo_list.append({
                         "name": name or "Edit",
                         "meta": _json_sanitize(m or {}),
                         "file": fname
                     })
-                    z.writestr(f"{base}/{fname}", _np_save_to_bytes(img, compress=compress))
+                    z.writestr(f"{base}/{fname}", payload)
 
                 z.writestr(
                     f"{base}/history/stack.json",
                     json.dumps({"undo": undo_list, "redo": redo_list}, indent=2),
                 )
+
 
 
 
