@@ -1,16 +1,111 @@
 import os
 import cv2
 import numpy as np
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QHBoxLayout, QLineEdit, QPushButton, QFileDialog,
-                             QListWidget, QSlider, QCheckBox, QMessageBox, QTextEdit, QDialog, QApplication,
-                             QTreeWidget, QTreeWidgetItem, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QToolBar, QSizePolicy)
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QLabel, QHBoxLayout, QLineEdit, QPushButton, QFileDialog,
+    QListWidget, QSlider, QCheckBox, QMessageBox, QTextEdit, QDialog, QApplication,
+    QTreeWidget, QTreeWidgetItem, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
+    QToolBar, QSizePolicy, QSpinBox, QDoubleSpinBox   # ← added
+)
 from PyQt6.QtGui import QImage, QPixmap, QIcon, QPainter, QAction, QTransform, QCursor
 from PyQt6.QtCore import Qt, pyqtSignal, QRectF, QPointF, QTimer
+
+from pathlib import Path
+import tempfile
+
+from astropy.wcs import WCS
+from astropy.time import Time
+from astropy import units as u
+
 
 from legacy.image_manager import load_image, save_image
 from numba_utils import bulk_cosmetic_correction_numba
 from imageops.stretch import stretch_mono_image, stretch_color_image
 from pro.star_alignment import PolyGradientRemoval 
+from pro import minorbodycatalog as mbc
+from pro.plate_solver import PlateSolverDialog as PlateSolver
+
+from pro.plate_solver import (
+    _solve_numpy_with_fallback,
+    _as_header,
+    _strip_wcs_keys,
+    _merge_wcs_into_base_header,
+)
+
+def _xisf_kw_value(xisf_meta: dict, key: str, default=None):
+    """
+    Return the first 'value' for FITSKeywords[key] from a XISF meta dict.
+
+    xisf_meta: the dict stored in doc.metadata["xisf_meta"]
+    """
+    if not xisf_meta:
+        return default
+
+    fk = xisf_meta.get("FITSKeywords", {})
+    if key not in fk:
+        return default
+
+    entry = fk[key]
+    # In your sample, it's a list of {"value": "...", "comment": "..."}
+    if isinstance(entry, list) and entry:
+        v = entry[0].get("value", default)
+    elif isinstance(entry, dict):
+        v = entry.get("value", default)
+    else:
+        v = entry
+    return v
+
+def ensure_jd_from_xisf_meta(meta: dict) -> None:
+    """
+    If this document came from a XISF and we haven't stored a JD yet,
+    derive JD / MJD from XISF FITSKeywords (DATE-OBS + EXPOSURE).
+
+    Safe no-op if anything is missing.
+    """
+    # Already have it? Don't overwrite.
+    if "jd" in meta and np.isfinite(meta["jd"]):
+        return
+
+    xisf_meta = meta.get("xisf_meta")
+    if not isinstance(xisf_meta, dict):
+        return
+
+    # 1) Get UTC observation timestamp and exposure
+    date_obs = _xisf_kw_value(xisf_meta, "DATE-OBS")
+    if not date_obs:
+        # Optional fallback to local time if you *really* want:
+        # date_obs = _xisf_kw_value(xisf_meta, "DATE-LOC")
+        return
+
+    exp_str = (_xisf_kw_value(xisf_meta, "EXPOSURE") or
+               _xisf_kw_value(xisf_meta, "EXPTIME"))
+    exposure = None
+    if exp_str is not None:
+        try:
+            exposure = float(exp_str)
+        except Exception:
+            exposure = None
+
+    # 2) Parse the date string → Time
+    # SGP / PI are emitting ISO8601 with fractional seconds: 2024-04-22T06:58:08.4217144
+    try:
+        t = Time(date_obs, format="isot", scale="utc")
+    except Exception:
+        # Last-resort: let astropy guess; if that fails, bail out
+        try:
+            t = Time(date_obs, scale="utc")
+        except Exception:
+            return
+
+    # 3) Move to mid-exposure if we know the exposure length
+    if exposure and exposure > 0:
+        t = t + 0.5 * exposure * u.s
+
+    # 4) Store JD/MJD for later minor-body prediction
+    meta["jd"] = float(t.jd)
+    meta["mjd"] = float(t.mjd)
+    # Optional: keep a cleaned-up timestamp string too
+    meta.setdefault("date_obs", t.isot)
 
 def _numpy_to_qimage(img: np.ndarray) -> QImage:
     """
@@ -140,7 +235,8 @@ class ZoomableImageView(QGraphicsView):
             self.fit_to_view()
 
 class ImagePreviewWindow(QDialog):
-    pushed = pyqtSignal(object, str)  # (numpy_image, title)
+    pushed = pyqtSignal(object, str)           # (numpy_image, title)
+    minorBodySearchRequested = pyqtSignal()    # emitted when user clicks MB button
 
     def __init__(self, np_img_rgb_or_gray, title="Preview", parent=None, icon: QIcon | None = None):
         super().__init__(parent)
@@ -158,6 +254,7 @@ class ImagePreviewWindow(QDialog):
         self.act_zoom_in = QAction("Zoom In", self)
         self.act_zoom_out = QAction("Zoom Out", self)
         self.act_push = QAction("Push to New View", self)
+        self.act_minor = QAction("Check Catalogued Minor Bodies in Field", self)
 
         self.act_zoom_in.setShortcut("Ctrl++")
         self.act_zoom_out.setShortcut("Ctrl+-")
@@ -171,6 +268,8 @@ class ImagePreviewWindow(QDialog):
         tb.addAction(self.act_zoom_out)
         tb.addSeparator()
         tb.addAction(self.act_push)
+        tb.addSeparator()
+        tb.addAction(self.act_minor)
 
         # zoom label spacer
         spacer = QWidget()
@@ -193,6 +292,7 @@ class ImagePreviewWindow(QDialog):
         self.act_zoom_in.triggered.connect(lambda: self.view.zoom(1.25))
         self.act_zoom_out.triggered.connect(lambda: self.view.zoom(0.8))
         self.act_push.triggered.connect(self._on_push)
+        self.act_minor.triggered.connect(self._on_minor_body_search)
 
         # start in "Fit"
         self.view.fit_to_view()
@@ -205,6 +305,10 @@ class ImagePreviewWindow(QDialog):
         # Emit the original (float or uint8) image up to the parent/dialog
         self.pushed.emit(self._original, self.windowTitle())
         QMessageBox.information(self, "Pushed", "New View Created.")
+
+    def _on_minor_body_search(self):
+        # Just emit a signal; the parent dialog will handle the heavy lifting.
+        self.minorBodySearchRequested.emit()
 
     def showEvent(self, e):
         super().showEvent(e)
@@ -220,6 +324,8 @@ class SupernovaAsteroidHunterDialog(QDialog):
         self.setWindowTitle("Supernova / Asteroid Hunter")
         if supernova_path:
             self.setWindowIcon(QIcon(supernova_path))
+        # keep icon path for previews
+        self.supernova_path = supernova_path
 
         self.settings = settings
         self.image_manager = image_manager
@@ -238,14 +344,28 @@ class SupernovaAsteroidHunterDialog(QDialog):
         self.preprocessed_search = []
         self.anomalyData = []
 
+        # WCS / timing / minor bodies
+        self.ref_header = None
+        self.ref_wcs = None
+        self.ref_jd = None
+        self.ref_site = None  # you can fill this from settings later
+        self.predicted_minor_bodies = None
+
+        # default H limits for minor bodies (you can later expose via UI)
+        self.minor_H_ast_max = 20.0
+        self.minor_H_com_max = 15.0
+
         self.initUI()
         self.resize(900, 700)
 
     def initUI(self):
-        layout = self.layout() 
+        layout = self.layout()
 
         # Instruction Label
-        instructions = QLabel("Select the reference image and search images. Then click Process to hunt for anomalies.")
+        instructions = QLabel(
+            "Select the reference image and search images. "
+            "Then click Process to hunt for anomalies."
+        )
         layout.addWidget(instructions)
 
         # --- Reference Image Selection ---
@@ -268,7 +388,9 @@ class SupernovaAsteroidHunterDialog(QDialog):
         layout.addLayout(search_layout)
 
         # --- Cosmetic Correction Checkbox ---
-        self.cosmetic_checkbox = QCheckBox("Apply Cosmetic Correction before Preprocessing", self)
+        self.cosmetic_checkbox = QCheckBox(
+            "Apply Cosmetic Correction before Preprocessing", self
+        )
         layout.addWidget(self.cosmetic_checkbox)
 
         # --- Threshold Slider ---
@@ -276,7 +398,7 @@ class SupernovaAsteroidHunterDialog(QDialog):
         self.thresh_label = QLabel("Anomaly Detection Threshold: 0.10", self)
         self.thresh_slider = QSlider(Qt.Orientation.Horizontal, self)
         self.thresh_slider.setMinimum(1)
-        self.thresh_slider.setMaximum(50)  # Represents 0.01 to 0.50
+        self.thresh_slider.setMaximum(50)    # Represents 0.01 to 0.50
         self.thresh_slider.setValue(10)      # 10 => 0.10 threshold
         self.thresh_slider.valueChanged.connect(self.updateThreshold)
         thresh_layout.addWidget(self.thresh_label)
@@ -284,7 +406,9 @@ class SupernovaAsteroidHunterDialog(QDialog):
         layout.addLayout(thresh_layout)
 
         # --- Process Button ---
-        self.process_button = QPushButton("Process (Cosmetic Correction, Preprocess, and Search)", self)
+        self.process_button = QPushButton(
+            "Process (Cosmetic Correction, Preprocess, and Search)", self
+        )
         self.process_button.clicked.connect(self.process)
         layout.addWidget(self.process_button)
 
@@ -294,7 +418,7 @@ class SupernovaAsteroidHunterDialog(QDialog):
         layout.addWidget(self.preprocess_progress_label)
         layout.addWidget(self.search_progress_label)
 
-        # -- Add a new status label --
+        # -- Status label --
         self.status_label = QLabel("Status: Idle", self)
         layout.addWidget(self.status_label)
 
@@ -305,6 +429,8 @@ class SupernovaAsteroidHunterDialog(QDialog):
 
         self.setLayout(layout)
         self.setWindowTitle("Supernova/Asteroid Hunter")
+
+
 
     def updateThreshold(self, value):
         threshold = value / 100.0  # e.g. slider value 10 becomes 0.10
@@ -384,6 +510,7 @@ class SupernovaAsteroidHunterDialog(QDialog):
     def preprocessImages(self):
         # Update status label for reference image
         self.status_label.setText("Preprocessing reference image...")
+        print("[Preprocessing] Preprocessing reference image...")
         QApplication.processEvents()
 
         ref_path = self.parameters["referenceImagePath"]
@@ -392,43 +519,93 @@ class SupernovaAsteroidHunterDialog(QDialog):
             return
 
         try:
-            ref_img, header, bit_depth, is_mono = load_image(ref_path)
+            # --- Load reference with metadata so we can grab header / XISF info ---
+            ref_res = load_image(ref_path, return_metadata=True)
+            if not ref_res or ref_res[0] is None:
+                raise ValueError("load_image() returned no data for reference image.")
 
-            # Create a debug prefix from the reference path (e.g. "C:/data/ref_debug")
+            ref_img, header, bit_depth, is_mono, meta = ref_res
+
+            # Prefer synthesized FITS header from meta if present
+            self.ref_header = meta.get("fits_header", header) if isinstance(meta, dict) else header
+
+            # Try to build WCS directly from header (if it already has one).
+            try:
+                self.ref_wcs = WCS(self.ref_header)
+            except Exception:
+                self.ref_wcs = None
+
+            # --- Derive mid-exposure JD ---
+            self.ref_jd = None
+
+            # 1) XISF-aware path: use FITSKeywords (DATE-OBS + EXPOSURE/EXPTIME)
+            if isinstance(meta, dict):
+                ensure_jd_from_xisf_meta(meta)
+                jd_val = meta.get("jd", None)
+                if jd_val is not None:
+                    self.ref_jd = float(jd_val)
+
+            # 2) FITS-style fallback from header (for non-XISF, or if XISF path failed)
+            if self.ref_jd is None and isinstance(self.ref_header, (dict, Header)):
+                try:
+                    date_obs = self.ref_header.get("DATE-OBS")
+                    exptime = float(
+                        self.ref_header.get("EXPTIME", self.ref_header.get("EXPOSURE", 0.0))
+                    )
+                    if date_obs:
+                        t = Time(str(date_obs), scale="utc")
+                        # mid-exposure
+                        t_mid = t + (exptime / 2.0) * u.s
+                        self.ref_jd = float(t_mid.tt.jd)
+                except Exception:
+                    self.ref_jd = None
+
+            print(f"[Preprocessing] ref JD={self.ref_jd!r}")
+            print("[Preprocessing] (Minor-body prediction is now manual only.)")
+
+            # --- Background neutralization + ABE + stretch for reference ---
             debug_prefix_ref = os.path.splitext(ref_path)[0] + "_debug_ref"
 
-            self.status_label.setText("Applying background neutralization & ABE on reference...")
+            self.status_label.setText(
+                "Applying background neutralization & ABE on reference..."
+            )
             QApplication.processEvents()
 
-            # Pass debug_prefix_ref to preprocessImage
             ref_processed = self.preprocessImage(ref_img, debug_prefix=debug_prefix_ref)
             self.preprocessed_reference = ref_processed
-            self.preprocess_progress_label.setText("Preprocessing reference image... Done.")
+            self.preprocess_progress_label.setText(
+                "Preprocessing reference image... Done."
+            )
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to preprocess reference image: {e}")
             return
 
+        # --- Preprocess search images ---
         self.preprocessed_search = []
         search_paths = self.parameters["searchImagePaths"]
+        total = len(search_paths)
+
         for i, path in enumerate(search_paths):
             try:
-                self.status_label.setText(f"Preprocessing search image {i+1}/{len(search_paths)} => {os.path.basename(path)}")
+                self.status_label.setText(
+                    f"Preprocessing search image {i+1}/{total} => {os.path.basename(path)}"
+                )
                 QApplication.processEvents()
 
-                # Create a debug prefix from the search path
                 debug_prefix_search = os.path.splitext(path)[0] + f"_debug_search_{i+1}"
 
-                if hasattr(self, 'cosmetic_images') and path in self.cosmetic_images:
+                if hasattr(self, "cosmetic_images") and path in self.cosmetic_images:
                     img = self.cosmetic_images[path]
                 else:
                     img, header, bit_depth, is_mono = load_image(path)
 
-                # Pass debug_prefix_search to preprocessImage
                 processed = self.preprocessImage(img, debug_prefix=debug_prefix_search)
                 self.preprocessed_search.append({"path": path, "image": processed})
 
-                self.preprocess_progress_label.setText(f"Preprocessing image {i+1} of {len(search_paths)}... Done.")
+                self.preprocess_progress_label.setText(
+                    f"Preprocessing image {i+1} of {total}... Done."
+                )
                 QApplication.processEvents()
 
             except Exception as e:
@@ -437,7 +614,375 @@ class SupernovaAsteroidHunterDialog(QDialog):
         self.status_label.setText("All search images preprocessed.")
         QApplication.processEvents()
 
+    def _ensure_wcs(self, ref_path: str):
+        """
+        Ensure we have a WCS (and, if possible, JD) for the reference frame.
+        This does NOT do any minor-body catalog work.
+        """
+        # If we already have a WCS and header, don't re-solve.
+        if self.ref_wcs is not None and self.ref_header is not None:
+            return
 
+        try:
+            image_data, original_header, bit_depth, is_mono = load_image(ref_path)
+        except Exception as e:
+            print(f"[SupernovaHunter] Failed to load reference image for plate solve: {e}")
+            self.ref_wcs = None
+            return
+
+        if image_data is None:
+            print("[SupernovaHunter] Reference image is unsupported or unreadable for plate solve.")
+            self.ref_wcs = None
+            return
+
+        # Seed header from original_header (dict/Header/etc.)
+        seed_h = _as_header(original_header) if isinstance(original_header, (dict, Header)) else None
+
+        # Acquisition base for merge (strip any existing WCS)
+        acq_base: Header | None = None
+        if isinstance(seed_h, Header):
+            acq_base = _strip_wcs_keys(seed_h)
+
+        # Run the same solver core used by PlateSolverDialog
+        ok, res = _solve_numpy_with_fallback(self, self.settings, image_data, seed_h)
+        if not ok:
+            print(f"[SupernovaHunter] Plate solve failed for {ref_path}: {res}")
+            self.ref_wcs = None
+            return
+
+        solver_hdr: Header = res if isinstance(res, Header) else Header()
+
+        # Merge solver WCS into acquisition header
+        if isinstance(acq_base, Header) and isinstance(solver_hdr, Header):
+            hdr_final = _merge_wcs_into_base_header(acq_base, solver_hdr)
+        else:
+            hdr_final = solver_hdr
+
+        self.ref_header = hdr_final
+        try:
+            self.ref_wcs = WCS(hdr_final)
+        except Exception as e:
+            print("[SupernovaHunter] WCS build failed after plate solve:", e)
+            self.ref_wcs = None
+
+        # If we still lack JD, try to derive it from the header
+        if self.ref_jd is None and isinstance(self.ref_header, Header):
+            try:
+                date_obs = self.ref_header.get("DATE-OBS")
+                exptime = float(
+                    self.ref_header.get("EXPTIME", self.ref_header.get("EXPOSURE", 0.0))
+                )
+                if date_obs:
+                    t = Time(str(date_obs), scale="utc")
+                    t_mid = t + (exptime / 2.0) * u.s
+                    self.ref_jd = float(t_mid.tt.jd)
+            except Exception:
+                pass
+
+    def _prompt_minor_body_limits(self) -> bool:
+        """
+        Modal dialog to configure minor-body search limits.
+
+        Returns True if the user pressed OK (and updates self.* attributes),
+        False if they cancelled.
+        """
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Minor-body Search Limits")
+        layout = QVBoxLayout(dlg)
+
+        row_layout = QGridLayout()
+        layout.addLayout(row_layout)
+
+        # Defaults / existing values
+        ast_H_default = getattr(self, "minor_H_ast_max", 9.0)
+        com_H_default = getattr(self, "minor_H_com_max", 10.0)
+        ast_max_default = getattr(self, "minor_ast_max_count", 5000)
+        com_max_default = getattr(self, "minor_com_max_count", 1000)
+        dt_default = getattr(self, "minor_time_offset_days", 0.0)
+
+        # Row 0: Asteroids
+        row_layout.addWidget(QLabel("Asteroid H ≤"), 0, 0)
+        ast_H_spin = QDoubleSpinBox(dlg)
+        ast_H_spin.setDecimals(1)
+        ast_H_spin.setRange(-5.0, 40.0)
+        ast_H_spin.setSingleStep(0.1)
+        ast_H_spin.setValue(ast_H_default)
+        row_layout.addWidget(ast_H_spin, 0, 1)
+
+        row_layout.addWidget(QLabel("Max asteroid"), 0, 2)
+        ast_max_spin = QSpinBox(dlg)
+        ast_max_spin.setRange(1, 2000000)
+        ast_max_spin.setValue(ast_max_default)
+        row_layout.addWidget(ast_max_spin, 0, 3)
+
+        # Row 1: Comets
+        row_layout.addWidget(QLabel("Comet H ≤"), 1, 0)
+        com_H_spin = QDoubleSpinBox(dlg)
+        com_H_spin.setDecimals(1)
+        com_H_spin.setRange(-5.0, 40.0)
+        com_H_spin.setSingleStep(0.1)
+        com_H_spin.setValue(com_H_default)
+        row_layout.addWidget(com_H_spin, 1, 1)
+
+        row_layout.addWidget(QLabel("Max comet"), 1, 2)
+        com_max_spin = QSpinBox(dlg)
+        com_max_spin.setRange(1, 200000)
+        com_max_spin.setValue(com_max_default)
+        row_layout.addWidget(com_max_spin, 1, 3)
+
+        # Row 2: Time offset (days)
+        row_layout.addWidget(QLabel("Time offset (days)"), 2, 0)
+        dt_spin = QDoubleSpinBox(dlg)
+        dt_spin.setDecimals(2)
+        dt_spin.setRange(-30.0, 30.0)
+        dt_spin.setSingleStep(0.25)
+        dt_spin.setValue(dt_default)
+        row_layout.addWidget(dt_spin, 2, 1)
+
+        # Buttons
+        btn_row = QHBoxLayout()
+        layout.addLayout(btn_row)
+        btn_row.addStretch(1)
+        ok_btn = QPushButton("OK", dlg)
+        cancel_btn = QPushButton("Cancel", dlg)
+        btn_row.addWidget(ok_btn)
+        btn_row.addWidget(cancel_btn)
+
+        def on_ok():
+            self.minor_H_ast_max = float(ast_H_spin.value())
+            self.minor_H_com_max = float(com_H_spin.value())
+            self.minor_ast_max_count = int(ast_max_spin.value())
+            self.minor_com_max_count = int(com_max_spin.value())
+            self.minor_time_offset_days = float(dt_spin.value())
+            dlg.accept()
+
+        def on_cancel():
+            dlg.reject()
+
+        ok_btn.clicked.connect(on_ok)
+        cancel_btn.clicked.connect(on_cancel)
+
+        return dlg.exec() == QDialog.DialogCode.Accepted
+
+    def runMinorBodySearch(self):
+        """
+        Optional, slow step:
+        - Ensure we have WCS + JD for the reference frame (plate-solve if needed).
+        - Ask the user for H limits / max counts.
+        - Query the minor-body catalog and compute predicted objects in the FOV.
+        - Cross-match with existing anomalies (if any) and refresh the summary dialog.
+        """
+        ref_path = self.parameters.get("referenceImagePath") or ""
+        if not ref_path:
+            QMessageBox.warning(
+                self,
+                "Minor-body Search",
+                "No reference image selected.\n\n"
+                "Please select a reference image and run Process first."
+            )
+            return
+
+        if self.preprocessed_reference is None:
+            QMessageBox.warning(
+                self,
+                "Minor-body Search",
+                "Reference image has not been preprocessed yet.\n\n"
+                "Please click 'Process' before running the minor-body search."
+            )
+            return
+
+        if self.settings is None:
+            QMessageBox.warning(
+                self,
+                "Minor-body Search",
+                "Settings object is not available; cannot locate the minor-body database path."
+            )
+            return
+
+        # Configure limits (H, max counts, time offset)
+        if not self._prompt_minor_body_limits():
+            # user cancelled
+            return
+
+        # Step 1: Ensure WCS (plate-solve if necessary)
+        self.status_label.setText("Minor-body search: solving plate / ensuring WCS...")
+        QApplication.processEvents()
+
+        self._ensure_wcs(ref_path)
+
+        if self.ref_wcs is None:
+            QMessageBox.warning(
+                self,
+                "Minor-body Search",
+                "No valid WCS (astrometric solution) is available for the reference image.\n\n"
+                "Minor-body prediction requires a solved WCS."
+            )
+            self.status_label.setText("Minor-body search aborted: no WCS.")
+            return
+
+        # Ensure we have JD (time of observation) for ephemerides
+        if self.ref_jd is None:
+            QMessageBox.warning(
+                self,
+                "Minor-body Search",
+                "No valid observation time (JD) is available for the reference image.\n\n"
+                "Minor-body prediction requires DATE-OBS/EXPTIME or equivalent."
+            )
+            self.status_label.setText("Minor-body search aborted: no JD.")
+            return
+
+        # Optional observatory site
+        try:
+            print("[MinorBodies] fetching observatory site from settings...")
+            lat = self.settings.value("site/latitude_deg", None, type=float)
+            lon = self.settings.value("site/longitude_deg", None, type=float)
+            elev = self.settings.value("site/elevation_m", 0.0, type=float)
+            if lat is not None and lon is not None:
+                self.ref_site = (lat, lon, elev)
+            else:
+                self.ref_site = None
+        except Exception as e:
+            print("[MinorBodies] failed to fetch observatory site from settings:", e)
+            self.ref_site = None
+
+        # JD adjusted by time offset (days)
+        jd_for_calc = self.ref_jd + getattr(self, "minor_time_offset_days", 0.0)
+
+        # Step 3: Heavy minor-body prediction
+        self.status_label.setText(
+            "Minor-body search: querying catalog and computing ephemerides..."
+        )
+        QApplication.processEvents()
+
+        try:
+            bodies = self._get_predicted_minor_bodies_for_field(
+                H_ast_max=self.minor_H_ast_max,
+                H_com_max=self.minor_H_com_max,
+                jd=jd_for_calc,
+            )
+            self.predicted_minor_bodies = bodies or []
+        except Exception as e:
+            print("[MinorBodies] prediction failed:", e)
+            QMessageBox.critical(
+                self, "Minor-body Search",
+                f"Minor-body prediction failed:\n{e}"
+            )
+            self.status_label.setText("Minor-body search failed.")
+            return
+
+        if not self.predicted_minor_bodies:
+            self.status_label.setText(
+                "Minor-body search complete: no catalogued objects in this field "
+                "for the current magnitude limits."
+            )
+            QMessageBox.information(
+                self,
+                "Minor-body Search",
+                "No catalogued minor bodies (within the configured magnitude limits) "
+                "were found in this field."
+            )
+            return
+
+        self.status_label.setText(
+            f"Minor-body search complete: {len(self.predicted_minor_bodies)} objects in field."
+        )
+        QApplication.processEvents()
+
+        # Step 4: If we already have anomalies, cross-match now
+        try:
+            if self.anomalyData:
+                print(f"[MinorBodies] cross-matching anomalies to "
+                      f"{len(self.predicted_minor_bodies)} predicted bodies...")
+                self._match_anomalies_to_minor_bodies(
+                    self.predicted_minor_bodies,
+                    search_radius_arcsec=10.0
+                )
+                # Refresh the detailed text summary with match info
+                self.showDetailedResultsDialog(self.anomalyData)
+            else:
+                QMessageBox.information(
+                    self,
+                    "Minor-body Search",
+                    "Minor bodies in field have been computed.\n\n"
+                    "Run the anomaly search (Process) to cross-match detections "
+                    "against the predicted objects."
+                )
+        except Exception as e:
+            print("[MinorBodies] cross-match failed:", e)
+
+
+
+    def _get_predicted_minor_bodies_for_field(self, H_ast_max: float, H_com_max: float):
+        """
+        Return a list of predicted minor bodies in the current ref image FOV
+        at self.ref_jd, with pixel coords.
+        """
+        if self.ref_wcs is None or self.ref_jd is None or self.preprocessed_reference is None:
+            return []
+
+        if self.settings is None:
+            print("[MinorBodies] settings object is None; cannot resolve DB path.")
+            return []
+
+        # 1) open DB (reuse WIMI’s ensure logic)
+        try:
+            data_dir = Path(
+                self.settings.value("wimi/minorbody_data_dir", "", type=str)
+                or os.path.join(os.path.expanduser("~"), ".saspro_minor_bodies")
+            )
+            db_path, manifest = mbc.ensure_minor_body_db(data_dir)
+            catalog = mbc.MinorBodyCatalog(db_path)
+        except Exception as e:
+            print("[MinorBodies] could not open DB:", e)
+            return []
+
+        try:
+            # 2) get a manageable set of bright asteroids / comets
+            ast_df = catalog.get_bright_asteroids(H_max=H_ast_max, limit=50000)
+            com_df = catalog.get_bright_comets(H_max=H_com_max,   limit=5000)
+
+            # 3) compute positions at this JD
+            ast_pos = catalog.compute_positions_skyfield(
+                ast_df,
+                self.ref_jd,
+                topocentric=self.ref_site,
+                debug=False,
+            )
+            com_pos = catalog.compute_positions_skyfield(
+                com_df,
+                self.ref_jd,
+                topocentric=self.ref_site,
+                debug=False,
+            )
+
+            # 4) map RA/Dec -> pixel with ref WCS, and drop those outside FOV
+            h, w = self.preprocessed_reference.shape[:2]
+            bodies = []
+            for src, kind, df in ((ast_pos, "asteroid", ast_df),
+                                (com_pos, "comet",   com_df)):
+                df_by_name = {row["designation"]: row for _, row in df.iterrows()}
+                for row in src:
+                    ra = row["ra_deg"]
+                    dec = row["dec_deg"]
+                    x, y = self.ref_wcs.world_to_pixel_values(ra, dec)
+                    if 0 <= x < w and 0 <= y < h:
+                        base = df_by_name.get(row["designation"], {})
+                        bodies.append({
+                            "designation": row["designation"],
+                            "kind": kind,
+                            "ra_deg": ra,
+                            "dec_deg": dec,
+                            "x": float(x),
+                            "y": float(y),
+                            "H": float(base.get("magnitude_H", np.nan)),
+                            "distance_au": row.get("distance_au", np.nan),
+                        })
+            return bodies
+        finally:
+            try:
+                catalog.close()
+            except Exception:
+                pass
 
     def preprocessImage(self, img, debug_prefix=None):
         """
@@ -541,13 +1086,15 @@ class SupernovaAsteroidHunterDialog(QDialog):
             search_gray = self.to_grayscale(search_img)
 
             diff_img = self.subtractImagesOnce(search_gray, ref_gray)
-            anomalies = self.detectAnomaliesConnected(diff_img, threshold=self.parameters["threshold"])
+            anomalies = self.detectAnomaliesConnected(
+                diff_img,
+                threshold=self.parameters["threshold"],
+            )
 
-            # Just store the anomalies
             self.anomalyData.append({
                 "imageName": os.path.basename(search_dict["path"]),
                 "anomalyCount": len(anomalies),
-                "anomalies": anomalies
+                "anomalies": anomalies,
             })
 
             self.search_progress_label.setText(f"Processing image {i+1} of {total}...")
@@ -555,10 +1102,17 @@ class SupernovaAsteroidHunterDialog(QDialog):
 
         self.search_progress_label.setText("Search for anomalies complete.")
 
-        # Optionally still show the text-based summary:
-        self.showDetailedResultsDialog(self.anomalyData)
+        # Minor-body cross-match (optional)
+        try:
+            bodies = getattr(self, "predicted_minor_bodies", None)
+            if bodies:
+                print(f"[MinorBodies] cross-matching anomalies to {len(bodies)} predicted bodies...")
+                self._match_anomalies_to_minor_bodies(bodies, search_radius_arcsec=10.0)
+        except Exception as e:
+            print("[MinorBodies] cross-match failed:", e)
 
-        # Now build & show the anomaly tree for user double-click
+        # Show text-based summary & tree
+        self.showDetailedResultsDialog(self.anomalyData)
         self.showAnomalyListDialog()
 
     def showAnomalyListDialog(self):
@@ -608,6 +1162,39 @@ class SupernovaAsteroidHunterDialog(QDialog):
         # Show zoomable preview with overlays
         self.showAnomaliesOnImage(search_img, anomalies, window_title=f"Anomalies in {image_name}")
 
+    def _match_anomalies_to_minor_bodies(self, bodies, search_radius_arcsec=10.0):
+        """
+        For each anomaly, compute center pixel and find
+        any predicted minor body within search_radius_arcsec.
+        Adds 'matched_body' entry to each anomaly dict (or None).
+        """
+        if self.ref_wcs is None or not bodies:
+            return
+
+        # search radius in pixels — crude average plate scale from WCS
+        try:
+            cd = self.ref_wcs.pixel_scale_matrix  # 2x2
+            from numpy.linalg import det
+            deg_per_pix = np.sqrt(abs(det(cd)))
+            arcsec_per_pix = deg_per_pix * 3600.0
+        except Exception:
+            arcsec_per_pix = 1.0  # fallback
+        pix_radius = search_radius_arcsec / arcsec_per_pix
+
+        for entry in self.anomalyData:
+            for anomaly in entry["anomalies"]:
+                cx = 0.5 * (anomaly["minX"] + anomaly["maxX"])
+                cy = 0.5 * (anomaly["minY"] + anomaly["maxY"])
+                best = None
+                best_r = 1e9
+                for body in bodies:
+                    dx = body["x"] - cx
+                    dy = body["y"] - cy
+                    r = np.hypot(dx, dy)
+                    if r < pix_radius and r < best_r:
+                        best_r = r
+                        best = body
+                anomaly["matched_body"] = best
 
 
     def draw_bounding_boxes_on_stretched(self,
@@ -765,12 +1352,20 @@ class SupernovaAsteroidHunterDialog(QDialog):
         for data in anomalyData:
             result_text += f"Image: {data['imageName']}\nAnomalies: {data['anomalyCount']}\n"
             for group in data["anomalies"]:
-                # Now refer to 'minX', 'minY', 'maxX', 'maxY'
                 result_text += (
                     f"  Group Bounding Box: "
                     f"Top-Left ({group['minX']}, {group['minY']}), "
                     f"Bottom-Right ({group['maxX']}, {group['maxY']})\n"
                 )
+                mb = group.get("matched_body")
+                if mb:
+                    H_str = f"{mb['H']:.1f}" if np.isfinite(mb.get("H", np.nan)) else "?"
+                    result_text += (
+                        f"    → Matches {mb['kind']} {mb['designation']} "
+                        f"(H={H_str})\n"
+                    )
+                else:
+                    result_text += "    → No catalog match (candidate)\n"
             result_text += "\n"
 
         text_edit.setText(result_text)
@@ -797,19 +1392,26 @@ class SupernovaAsteroidHunterDialog(QDialog):
         else:
             img_u8 = img3.copy()
 
-        # Draw red rectangles (we’ll do it in RGB here for consistency)
         margin = 10
         h, w = img_u8.shape[:2]
         for a in anomalies:
             x1, y1, x2, y2 = a["minX"], a["minY"], a["maxX"], a["maxY"]
             x1 = max(0, x1 - margin); y1 = max(0, y1 - margin)
             x2 = min(w - 1, x2 + margin); y2 = min(h - 1, y2 + margin)
-            cv2.rectangle(img_u8, (x1, y1), (x2, y2), color=(255, 0, 0), thickness=5)  # RGB red
+
+            mb = a.get("matched_body")
+            if mb:
+                # known asteroid/comet -> green
+                color = (0, 255, 0)
+            else:
+                # candidate / unknown -> red
+                color = (255, 0, 0)
+
+            cv2.rectangle(img_u8, (x1, y1), (x2, y2), color=color, thickness=5)
 
         # Launch preview window
         icon = None
         try:
-            # if you passed supernova_path into the dialog:
             if hasattr(self, "supernova_path") and self.supernova_path:
                 icon = QIcon(self.supernova_path)
         except Exception:
@@ -817,7 +1419,16 @@ class SupernovaAsteroidHunterDialog(QDialog):
 
         prev = ImagePreviewWindow(img_u8, title=window_title, parent=self, icon=icon)
         prev.pushed.connect(self._handle_preview_push)
+        prev.minorBodySearchRequested.connect(self._on_preview_minor_body_search)
         prev.show()  # non-modal
+
+    def _on_preview_minor_body_search(self):
+        """
+        Called when the user clicks 'Check Catalogued Minor Bodies in Field'
+        on any anomaly preview window.
+        """
+        self.runMinorBodySearch()
+
 
     def _handle_preview_push(self, np_img, title: str):
         """
@@ -860,18 +1471,34 @@ class SupernovaAsteroidHunterDialog(QDialog):
         except Exception as e:
             QMessageBox.warning(self, "Push failed", f"Could not export preview: {e}")
 
-
-
     def newInstance(self):
         # Reset parameters and UI elements for a new run
-        self.parameters = {"referenceImagePath": "", "searchImagePaths": [], "threshold": 0.10}
+        self.parameters = {
+            "referenceImagePath": "",
+            "searchImagePaths": [],
+            "threshold": 0.10
+        }
+
         self.ref_line_edit.clear()
         self.search_list.clear()
         self.cosmetic_checkbox.setChecked(False)
         self.thresh_slider.setValue(10)
+
         self.preprocess_progress_label.setText("Preprocessing progress: 0 / 0")
         self.search_progress_label.setText("Processing progress: 0 / 0")
+        self.status_label.setText("Status: Idle")
+
+        # Image + results state
         self.preprocessed_reference = None
         self.preprocessed_search = []
         self.anomalyData = []
+
+        # WCS / timing / minor-body state
+        self.ref_header = None
+        self.ref_wcs = None
+        self.ref_jd = None
+        self.ref_site = None
+        self.predicted_minor_bodies = None
+
         QMessageBox.information(self, "New Instance", "Reset for a new instance.")
+

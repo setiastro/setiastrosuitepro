@@ -1,6 +1,6 @@
 # pro/mfdeconv.py non-sport normal version
 from __future__ import annotations
-import os
+import os, sys
 import math
 import re
 import numpy as np
@@ -13,7 +13,7 @@ from PyQt6.QtCore import QThread
 import contextlib
 from threadpoolctl import threadpool_limits
 from concurrent.futures import ThreadPoolExecutor, as_completed, ProcessPoolExecutor
-_USE_PROCESS_POOL_FOR_ASSETS = True
+_USE_PROCESS_POOL_FOR_ASSETS = not getattr(sys, "frozen", False)
 import gc
 try:
     import sep
@@ -2120,14 +2120,9 @@ def _chunk(seq, n):
         yield seq[i:i+n]
 
 def _read_shape_fast(path) -> tuple[int,int,int]:
-    """
-    Return (C,H,W) with C in {1,3}, squeezing trailing singleton.
-    FITS: light-weight via memmap; XISF: uses unified loader (loads once).
-    """
     if _is_xisf(path):
         a, _ = _load_image_array(path)
         if a is None:
-
             raise ValueError(f"No data in {path}")
         a = np.asarray(a)
     else:
@@ -2135,22 +2130,21 @@ def _read_shape_fast(path) -> tuple[int,int,int]:
             a = hdul[0].data
             if a is None:
                 raise ValueError(f"No data in {path}")
-        if a.ndim == 2:
-            H, W = a.shape
-            return (1, int(H), int(W))
-        if a.ndim == 3:
-            # accept (H,W,1|3) or (1|3,H,W)
-            if a.shape[-1] in (1,3):
-                C = int(a.shape[-1]); H = int(a.shape[0]); W = int(a.shape[1])
-                if C == 1:
-                    return (1, H, W)
-                return (3, H, W)
-            if a.shape[0] in (1,3):
-                return (int(a.shape[0]), int(a.shape[1]), int(a.shape[2]))
-        # fallback: treat as mono by luma-mean
-        s = tuple(map(int, a.shape))
-        H, W = s[-2], s[-1]
-        return (1, H, W)
+
+    # common logic for both XISF and FITS
+    if a.ndim == 2:
+        H, W = a.shape
+        return (1, int(H), int(W))
+    if a.ndim == 3:
+        if a.shape[-1] in (1, 3):      # HWC
+            C = int(a.shape[-1]); H = int(a.shape[0]); W = int(a.shape[1])
+            return (1 if C == 1 else 3, H, W)
+        if a.shape[0] in (1, 3):       # CHW
+            return (int(a.shape[0]), int(a.shape[1]), int(a.shape[2]))
+    s = tuple(map(int, a.shape))
+    H, W = s[-2], s[-1]
+    return (1, H, W)
+
 
 
 

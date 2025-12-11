@@ -1879,9 +1879,6 @@ def plate_solve_doc_inplace(parent, doc, settings) -> Tuple[bool, Header | str]:
     finally:
         _status_popup_close()
 
-from astropy.io import fits
-from astropy.io.fits import Header
-from astropy.wcs import WCS
 
 
 def _estimate_scale_arcsec_from_header(hdr: Header) -> float | None:
@@ -2016,6 +2013,20 @@ def _compute_fov_deg(image: np.ndarray, arcsec_per_px: float | None) -> float | 
     if H <= 0:
         return None
     return (H * arcsec_per_px) / 3600.0  # vertical FOV in degrees
+
+def plate_solve_active_document(parent, settings) -> tuple[bool, Header | str]:
+    """
+    Convenience wrapper:
+      - Finds the active document from the given parent (main window, ImagePeeker, etc.)
+      - Calls plate_solve_doc_inplace(...)
+    
+    Returns (ok, Header | error_message).
+    """
+    doc = _active_doc_from_parent(parent)
+    if doc is None:
+        return False, "No active document to plate-solve."
+
+    return plate_solve_doc_inplace(parent, doc, settings)
 
 # ---------------------------------------------------------------------
 # Dialog UI with Active/File and Batch modes
