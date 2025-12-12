@@ -50,10 +50,6 @@ class ViewMixin:
                 if sw.isVisible() and not (sw.windowState() & Qt.WindowState.WindowMinimized)]
         return subs
 
-    def _cascade_views(self):
-        """Cascade all subwindows."""
-        self.mdi.cascadeSubWindows()
-        self._auto_fit_all_subwindows()
 
     def _tile_views(self):
         """Tile all subwindows."""
