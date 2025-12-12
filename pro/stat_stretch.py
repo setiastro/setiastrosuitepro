@@ -20,9 +20,17 @@ class StatisticalStretchDialog(QDialog):
     def __init__(self, parent, document: ImageDocument):
         super().__init__(parent)
         self.setWindowTitle("Statistical Stretch")
-        self.setModal(True)
+
+        # --- IMPORTANT: avoid “attached modal” behavior on some Linux WMs ---
+        # Make this a proper top-level window (tool-style) rather than an attached sheet.
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        # Block the app if you want, but don't use WindowModal
+        self.setWindowModality(Qt.WindowModality.ApplicationModal)
+        # Don’t let the generic modal flag override the explicit modality
+        self.setModal(False)
+
         self.doc = document
-        self._last_preview = None    # np array last computed
+        self._last_preview = None
         self._panning = False
         self._pan_last = None  # QPoint
         self._preview_scale = 1.0       # NEW: zoom factor for preview

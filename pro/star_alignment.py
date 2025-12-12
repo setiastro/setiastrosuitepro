@@ -616,7 +616,9 @@ class StellarAlignmentDialog(QDialog):
 
         super().__init__(parent)
         self.setWindowTitle("Stellar Alignment")
-        self.setModal(True)
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setModal(False)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
 
         self.settings = settings
         self.parent_window = parent

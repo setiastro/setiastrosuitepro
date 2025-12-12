@@ -290,22 +290,23 @@ class _ONNXWorker(QThread):
 
 # ---------- dialog ----------
 class AberrationAIDialog(QDialog):
-    """
-    UI:
-      - Download latest model (from GitHub) OR browse existing .onnx
-      - Auto GPU & provider
-      - Patch/Overlap
-      - Run → opens corrected result in new view
-    """
     def __init__(self, parent, docman, get_active_doc_callable, icon: QIcon | None = None):
         super().__init__(parent)
         self.setWindowTitle("R.A.'s Aberration Correction (AI)")
         if icon is not None:
-            self.setWindowIcon(icon)  # <-- here
+            self.setWindowIcon(icon)
+
+        # Normalize window behavior across platforms
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        # This is a “big operation” tool; app-modal is usually fine here
+        self.setWindowModality(Qt.WindowModality.ApplicationModal)
+        self.setModal(False)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+
         self.docman = docman
         self.get_active_doc = get_active_doc_callable
-        self._t_start = None              # NEW: timing
-        self._last_used_provider = None   # NEW: what ORT actually used
+        self._t_start = None
+        self._last_used_provider = None
 
         v = QVBoxLayout(self)
 

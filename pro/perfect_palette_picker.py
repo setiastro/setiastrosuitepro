@@ -26,7 +26,9 @@ class PaletteAdjustDialog(QDialog):
         from PyQt6.QtCore import QTimer, Qt, QPoint, QEvent
         super().__init__(owner)
         self.setWindowTitle("Adjust Palette Intensities")
-        self.setModal(True)
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setModal(False)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
 
         self.base_rgb     = base_rgb.astype(np.float32)
         self.palette_name = palette_name
