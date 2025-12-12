@@ -1734,6 +1734,34 @@ class ReferenceFrameReviewDialog(QDialog):
             image = self.original_image
         self.updatePreview(image)
 
+    def _normalize_preview_01(self, img: np.ndarray) -> np.ndarray:
+        """
+        Normalize image to [0,1] for preview/stretch:
+
+        1. Handle NaNs/inf safely.
+        2. If min < 0 or max > 1, do (img - min) / (max - min).
+        3. Always return float32 in [0,1].
+        """
+        if img is None:
+            return None
+
+        img = np.asarray(img, dtype=np.float32)
+        img = np.nan_to_num(img, nan=0.0, posinf=0.0, neginf=0.0)
+
+        finite = np.isfinite(img)
+        if not finite.any():
+            return np.zeros_like(img, dtype=np.float32)
+
+        mn = float(img[finite].min())
+        mx = float(img[finite].max())
+        if mx == mn:
+            # flat frame → just zero it
+            return np.zeros_like(img, dtype=np.float32)
+
+        if mn < 0.0 or mx > 1.0:
+            img = (img - mn) / (mx - mn)
+
+        return np.clip(img, 0.0, 1.0)
 
 
     def loadImageArray(self):
@@ -1751,19 +1779,10 @@ class ReferenceFrameReviewDialog(QDialog):
         if image_data.ndim == 3 and image_data.shape[-1] == 1:
             image_data = np.squeeze(image_data, axis=-1)
 
-        img = image_data.astype(np.float32, copy=False)
+        # 🔹 NEW: preview-normalize to [0,1]
+        img = self._normalize_preview_01(image_data)
 
-        # Preview-normalize: if not already ~[0,1], bring it into [0,1]
-        mn = float(np.nanmin(img)); mx = float(np.nanmax(img))
-        if not np.isfinite(mn) or not np.isfinite(mx):
-            img = np.nan_to_num(img, nan=0.0, posinf=0.0, neginf=0.0)
-            mn = float(img.min()); mx = float(img.max())
-
-        if mx > 1.0 or mn < 0.0:
-            ptp = mx - mn
-            img = (img - mn) / ptp if ptp > 0.0 else np.zeros_like(img, dtype=np.float32)
-
-        self.original_image = np.clip(img, 0.0, 1.0)
+        self.original_image = img
 
     
     def updatePreview(self, image):
@@ -1784,11 +1803,12 @@ class ReferenceFrameReviewDialog(QDialog):
     
     def _preview_boost(self, img: np.ndarray) -> np.ndarray:
         """Robust, very gentle stretch for display when image would quantize to black."""
-        # Use your implemented siril_style_autostretch
         try:
+            img = self._normalize_preview_01(img)
             out = siril_style_autostretch(img, sigma=3.0).astype(np.float32, copy=False)
             mx = float(out.max())
-            if mx > 0: out /= mx  # keep in [0,1]
+            if mx > 0:
+                out /= mx  # keep in [0,1]
             return np.clip(out, 0.0, 1.0)
         except Exception:
             return np.clip(img, 0.0, 1.0)
@@ -1822,21 +1842,36 @@ class ReferenceFrameReviewDialog(QDialog):
         if self.original_image is None:
             QMessageBox.warning(self, "Error", "Reference image not loaded.")
             return
+
+        # 🔹 Ensure the image we feed to Statistical Stretch is in [0,1]
+        base = self._normalize_preview_01(self.original_image)
+
         self.autostretch_enabled = not self.autostretch_enabled
         if self.autostretch_enabled:
-            if self.original_image.ndim == 2:
-                new_image = stretch_mono_image(self.original_image, target_median=0.3,
-                                               normalize=True, apply_curves=False)
-            elif self.original_image.ndim == 3 and self.original_image.shape[2] == 3:
-                new_image = stretch_color_image(self.original_image, target_median=0.3,
-                                                linked=False, normalize=True, apply_curves=False)
+            if base.ndim == 2:
+                new_image = stretch_mono_image(
+                    base,
+                    target_median=0.3,
+                    normalize=True,
+                    apply_curves=False
+                )
+            elif base.ndim == 3 and base.shape[2] == 3:
+                new_image = stretch_color_image(
+                    base,
+                    target_median=0.3,
+                    linked=False,
+                    normalize=True,
+                    apply_curves=False
+                )
             else:
-                new_image = self.original_image
+                new_image = base
             self.toggleAutoStretchButton.setText("Disable Autostretch")
         else:
-            new_image = self.original_image
+            new_image = base
             self.toggleAutoStretchButton.setText("Enable Autostretch")
+
         self.updatePreview(new_image)
+
     
     def zoomIn(self):
         self.zoom_factor *= 1.2
