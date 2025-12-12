@@ -250,6 +250,23 @@ class BackgroundNeutralizationDialog(QDialog):
         self.zoom_factor = 1.0
         self._user_zoomed = False
 
+        # --- scene / view ---
+        self.scene = QGraphicsScene(self)
+        self.graphics_view = QGraphicsView(self)
+        self.graphics_view.setScene(self.scene)
+        self.graphics_view.setRenderHints(
+            QPainter.RenderHint.Antialiasing |
+            QPainter.RenderHint.SmoothPixmapTransform
+        )
+        self.graphics_view.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        self.graphics_view.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
+
+        # --- main layout ---
+        layout = QVBoxLayout(self)
+        instruction = QLabel("Draw a sample box or click ‘Find Background’ to auto-select.")
+        layout.addWidget(instruction)
+        layout.addWidget(self.graphics_view, 1)
+
         # Buttons row
         btn_row = QHBoxLayout()
         self.btn_apply = QPushButton("Apply Neutralization")
