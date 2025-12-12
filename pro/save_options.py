@@ -19,7 +19,9 @@ class SaveOptionsDialog(QDialog):
     def __init__(self, parent, target_ext: str, current_bit_depth: str | None):
         super().__init__(parent)
         self.setWindowTitle("Save Options")
-        self.setModal(True)
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setModal(False)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
 
         # Normalize extension aggressively so it matches _BIT_DEPTHS keys
         raw_ext = (target_ext or "").lower().strip()

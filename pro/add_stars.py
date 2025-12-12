@@ -219,15 +219,15 @@ def _active_mask_array_from_doc(doc) -> np.ndarray | None:
 # Dialog
 # ──────────────────────────────────────────────────────────────────────────────
 class AddStarsDialog(QDialog):
-    """
-    Pick a starless doc/view and a stars-only doc/view (or load from files),
-    choose Screen/Add, adjust intensity, preview, then emit blended image.
-    """
-    stars_added = pyqtSignal(object, np.ndarray)  # float32 [0..1], RGB or mono
-
     def __init__(self, main, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Add Stars to Image")
+
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.ApplicationModal)
+        self.setModal(False)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+
         self.main = main
         self.starless = None
         self.stars_only = None

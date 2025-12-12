@@ -233,12 +233,6 @@ def apply_background_neutral_to_doc(doc, preset: dict | None = None):
 # Interactive BN dialog UI
 # -------------------------
 class BackgroundNeutralizationDialog(QDialog):
-    """
-    Interactive BN:
-      • Draw a selection rectangle (image-space region used as sample)
-      • Optional auto-stretch preview
-      • 'Find Background' to auto-pick a 50×50 patch
-    """
     def __init__(self, parent, doc, icon: QIcon | None = None):
         super().__init__(parent)
         self.doc = doc
@@ -247,23 +241,14 @@ class BackgroundNeutralizationDialog(QDialog):
         self.setWindowTitle("Background Neutralization")
         self.resize(900, 600)
 
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.ApplicationModal)
+        self.setModal(False)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+
         self.auto_stretch = False
         self.zoom_factor = 1.0
         self._user_zoomed = False
-
-        self.scene = QGraphicsScene(self)
-        self.graphics_view = QGraphicsView(self)
-        self.graphics_view.setScene(self.scene)
-        self.graphics_view.setRenderHints(
-            QPainter.RenderHint.Antialiasing |
-            QPainter.RenderHint.SmoothPixmapTransform
-        )
-        self.graphics_view.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
-        self.graphics_view.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
-        layout = QVBoxLayout(self)
-        instruction = QLabel("Draw a sample box or click ‘Find Background’ to auto-select.")
-        layout.addWidget(instruction)
-        layout.addWidget(self.graphics_view)
 
         # Buttons row
         btn_row = QHBoxLayout()

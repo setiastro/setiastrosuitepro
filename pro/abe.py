@@ -471,13 +471,21 @@ class ABEDialog(QDialog):
     def __init__(self, parent, document: ImageDocument):
         super().__init__(parent)
         self.setWindowTitle("Automatic Background Extraction (ABE)")
-        self.setModal(True)
+
+        # IMPORTANT: avoid “attached modal sheet” behavior on some Linux WMs
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        # keep it blocking if you want, but as a top-level window
+        self.setWindowModality(Qt.WindowModality.ApplicationModal)
+        self.setModal(False)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+
         self.doc = document
 
         self._preview_scale = 1.0
         self._preview_qimg = None
         self._last_preview = None  # backing ndarray for QImage lifetime
         self._overlay = None
+
 
         # image-space polygons: list[list[QPointF]] in ORIGINAL IMAGE COORDS
         self._polygons: list[list[QPointF]] = []

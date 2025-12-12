@@ -1392,8 +1392,114 @@ class AstroSuiteProMainWindow(
         return subs
 
     def _cascade_views(self):
-        self.mdi.cascadeSubWindows()
-        self._auto_fit_all_subwindows()
+        """Cascade all subwindows and auto-fit their contents."""
+        self._cascade_subwindows_custom()
+
+    def _cascade_subwindows_custom(self, *, size_factor: float = 0.6, offset: int = 30):
+        """
+        Custom cascade layout: stagger all visible subwindows from top-left,
+        with a consistent height and width derived from each image's aspect ratio.
+        Also auto-fits each view while preserving a clean z-order.
+        """
+        # Get visible subwindows in a stable order
+        try:
+            order_enum = QMdiArea.WindowOrder
+            subs = list(self.mdi.subWindowList(order_enum.CreationOrder))
+        except Exception:
+            subs = list(self.mdi.subWindowList())
+
+        subs = [sw for sw in subs if sw.isVisible()]
+        if not subs:
+            return
+
+        # Remember which window was active so we can restore it
+        prev_active = self.mdi.activeSubWindow()
+        if prev_active in subs:
+            subs.remove(prev_active)
+            subs.append(prev_active)
+
+        # Ensure subwindow view mode (not tabbed)
+        try:
+            self.mdi.setViewMode(QMdiArea.ViewMode.SubWindowView)
+        except Exception:
+            pass
+
+        vp = self.mdi.viewport()
+        area = vp.rect() if vp is not None else self.mdi.rect()
+
+        base_height = int(area.height() * size_factor)
+        x = 0
+        y = 0
+
+        BORDER_WIDTH_FACTOR = 0.9  # shrink width by 10% to account for chrome/header
+
+        for sw in subs:
+            # Make sure window isn't maximized
+            try:
+                sw.showNormal()
+            except Exception:
+                pass
+
+            view = sw.widget()
+
+            # --- Get intrinsic image size using the SAME helper as zoom ---
+            img_w = img_h = None
+            try:
+                img_w, img_h = self._infer_image_size(view)
+            except Exception:
+                img_w = img_h = None
+
+            if not img_w or not img_h:
+                aspect = 1.0
+            else:
+                aspect = float(img_w) / float(img_h)
+
+            # Clamp aspect ratio to something sane
+            if aspect <= 0:
+                aspect = 1.0
+            aspect = max(0.3, min(aspect, 4.0))
+
+            # Base width from aspect ratio
+            width = int(base_height * aspect)
+
+            # Reduce width a bit so the viewport fits inside the framed window
+            width = int(width * BORDER_WIDTH_FACTOR)
+
+            max_width = area.width()
+            if width > max_width:
+                width = max_width
+
+            # Place & size
+            sw.resize(width, base_height)
+            sw.move(x + area.x(), y + area.y())
+
+            # Make it active so zoom/fit works on this one and z-order is in cascade order
+            try:
+                self.mdi.setActiveSubWindow(sw)
+            except Exception:
+                pass
+
+            # Auto-fit this window's contents using your existing zoom logic
+            if getattr(self, "_auto_fit_on_resize", False):
+                try:
+                    self._zoom_active_fit()
+                except Exception:
+                    pass
+
+            x += offset
+            y += offset
+
+            # Wrap if we go off the bottom/right
+            if (x + width > area.width()) or (y + base_height > area.height()):
+                x = 0
+                y = 0
+
+        # Restore previously active window, if still around
+        if prev_active and prev_active in subs:
+            try:
+                self.mdi.setActiveSubWindow(prev_active)
+            except Exception:
+                pass
 
     def _tile_views(self):
         self.mdi.tileSubWindows()

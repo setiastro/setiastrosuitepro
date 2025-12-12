@@ -603,10 +603,13 @@ def render_spikes(output: np.ndarray, stars: List[Star], config: SpikeConfig, ct
     if not stars:
         return
     
+    # Coerce quantity → safe integer (at least 1)
+    qty = max(1, int(round(config.quantity)))
+
     # Apply quantity limit
     limit = int(len(stars) * (config.star_amount / 100.0))
     active_stars = stars[:limit]
-    
+
     # Apply min size filtering
     if config.min_star_size > 0:
         internal_min_size = config.min_star_size * 0.02
@@ -667,7 +670,7 @@ def render_spikes(output: np.ndarray, stars: List[Star], config: SpikeConfig, ct
                     x_pos = int(star.x - glow_r)
                     y_pos = int(star.y - glow_r)
                     blend_screen(output, resized_glow, x_pos, y_pos, opacity)
-    
+
     # Render spikes
     for star in active_stars:
         radius_factor = math.pow(star.radius, 1.2)
@@ -682,24 +685,15 @@ def render_spikes(output: np.ndarray, stars: List[Star], config: SpikeConfig, ct
         
         # Main spikes
         if config.intensity > 0:
-            for i in range(config.quantity):
-                theta = main_angle_rad + (i * (math.pi * 2) / config.quantity)
-                cos_t = math.cos(theta)
-                sin_t = math.sin(theta)
-                
-                start_x = star.x + cos_t * 0.5
-                start_y = star.y + sin_t * 0.5
-                end_x = star.x + cos_t * base_length
-                end_y = star.y + sin_t * base_length
-                
-                draw_line_gradient(output, start_x, start_y, end_x, end_y,
-                                  color, (0, 0, 0, 0), thickness, config.sharpness)
+            for i in range(qty):
+                theta = main_angle_rad + (i * (math.pi * 2) / float(qty))
+                ...
         
         # Secondary spikes
         if config.secondary_intensity > 0:
             sec_len = base_length * (config.secondary_length / config.length)
-            for i in range(config.quantity):
-                theta = sec_angle_rad + (i * (math.pi * 2) / config.quantity)
+            for i in range(qty):
+                theta = sec_angle_rad + (i * (math.pi * 2) / float(qty))
                 cos_t = math.cos(theta)
                 sin_t = math.sin(theta)
                 
