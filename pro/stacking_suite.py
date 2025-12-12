@@ -14467,6 +14467,8 @@ class StackingSuiteDialog(QDialog):
             if integrated_image is None:
                 continue
 
+            integrated_image = self._normalize_stack_01(integrated_image)
+
             if ref_header is None:
                 ref_header = fits.Header()
 
@@ -14792,6 +14794,7 @@ class StackingSuiteDialog(QDialog):
                             stretch_pct=0.05,
                             mix=mix
                         )
+                        blend = self._normalize_stack_01(blend)
 
                         is_mono_blend = (blend.ndim == 2) or (blend.ndim == 3 and blend.shape[2] == 1)
                         blend_path = self._build_out(
@@ -15259,6 +15262,8 @@ class StackingSuiteDialog(QDialog):
         if C == 1:
             integrated_image = integrated_image[..., 0]
 
+        integrated_image = self._normalize_stack_01(integrated_image)
+
         # Store MEF rejection maps for this comet stack
         if not hasattr(self, "_rej_maps"):
             self._rej_maps = {}
@@ -15529,16 +15534,7 @@ class StackingSuiteDialog(QDialog):
             final_array = np.array(final_stacked)
             del final_stacked
 
-            flat = final_array.ravel()
-            nz = np.where(flat > 0)[0]
-            if nz.size > 0:
-                final_array -= flat[nz[0]]
-
-            new_max = final_array.max()
-            if new_max > 1.0:
-                new_min = final_array.min()
-                rng = new_max - new_min
-                final_array = (final_array - new_min) / rng if rng != 0 else np.zeros_like(final_array, np.float32)
+            final_array = self._normalize_stack_01(final_array)
 
             if final_array.ndim == 3 and final_array.shape[-1] == 1:
                 final_array = final_array[..., 0]
@@ -16199,6 +16195,35 @@ class StackingSuiteDialog(QDialog):
                 # (drizzle will simply not see this frame)
                 continue
 
+    def _normalize_stack_01(self, arr: np.ndarray) -> np.ndarray:
+        """
+        Force stacked image into [0,1] while preserving relative scaling:
+
+        1. If min < 0 → shift so min becomes 0.
+        2. After that, if max > 1 → divide by max.
+
+        NaNs/inf are ignored when computing min/max.
+        """
+        if arr is None:
+            return arr
+
+        arr = np.asarray(arr, dtype=np.float32)
+        finite = np.isfinite(arr)
+        if not finite.any():
+            return np.zeros_like(arr, dtype=np.float32)
+
+        # Step 1: shift if there are negatives
+        min_val = arr[finite].min()
+        if min_val < 0.0:
+            arr = arr - min_val
+            finite = np.isfinite(arr)
+
+        # Step 2: clamp by max if needed
+        max_val = arr[finite].max()
+        if max_val > 1.0 and max_val > 0.0:
+            arr = arr / max_val
+
+        return arr
 
 
     def drizzle_stack_one_group(
@@ -16471,7 +16496,7 @@ class StackingSuiteDialog(QDialog):
             hdr_orig["NAXIS3"] = final_drizzle.shape[2]
 
         is_mono_driz = (final_drizzle.ndim == 2)
-
+        final_drizzle = self._normalize_stack_01(final_drizzle)
         save_image(
             img_array=final_drizzle,
             filename=out_path_orig,
@@ -16496,7 +16521,7 @@ class StackingSuiteDialog(QDialog):
             base_crop = f"MasterLight_{display_group_driz_crop}_{len(file_list)}stacked_drizzle_autocrop"
             base_crop = self._normalize_master_stem(base_crop) 
             out_path_crop = self._build_out(self.stacking_directory, base_crop, "fit")
-
+            cropped_drizzle = self._normalize_stack_01(cropped_drizzle)
             save_image(
                 img_array=cropped_drizzle,
                 filename=out_path_crop,

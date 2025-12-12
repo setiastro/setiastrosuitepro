@@ -130,6 +130,38 @@ def _debug_log_undo(context: str, **info):
 
 from pro.file_utils import _normalize_ext
 
+def _normalize_image_01(arr: np.ndarray) -> np.ndarray:
+    """
+    Normalize an image to [0,1] in-place-ish:
+
+      1. If min < 0  → shift so min becomes 0.
+      2. Then if max > 1 → divide by max.
+
+    NaNs/Infs are ignored when computing min/max.
+    Returns float32 array.
+    """
+    if arr is None:
+        return arr
+
+    a = np.asarray(arr, dtype=np.float32)
+    finite = np.isfinite(a)
+    if not finite.any():
+        # completely bogus; give back zeros
+        return np.zeros_like(a, dtype=np.float32)
+
+    # Step 1: shift up if we have negatives
+    min_val = a[finite].min()
+    if min_val < 0.0:
+        a = a - min_val
+        finite = np.isfinite(a)
+
+    # Step 2: scale down if we exceed 1
+    max_val = a[finite].max()
+    if max_val > 1.0 and max_val > 0.0:
+        a = a / max_val
+
+    return a
+
 _ALLOWED_DEPTHS = {
     "png":  {"8-bit"},
     "jpg":  {"8-bit"},
@@ -1731,6 +1763,8 @@ class DocManager(QObject):
                 meta = attach_wcs_to_metadata(meta, header)
 
             _snapshot_header_for_metadata(meta)
+
+            img = _normalize_image_01(img)
             primary_doc = ImageDocument(img, meta)
             self._register_doc(primary_doc)
             created_any = True
@@ -1845,6 +1879,7 @@ class DocManager(QObject):
                             aux_meta = attach_wcs_to_metadata(aux_meta, ext_hdr)
 
                             _snapshot_header_for_metadata(aux_meta)
+                            a = _normalize_image_01(a)
                             aux_doc = ImageDocument(a, aux_meta)
 
                             self._register_doc(aux_doc)
@@ -1893,6 +1928,7 @@ class DocManager(QObject):
                     try:
                         arr0 = xisf.read_image(0, data_format="channels_last")
                         arr0_f32 = _to_float32_preserve(arr0)
+                        arr0_f32 = _normalize_image_01(arr0_f32)
                         bd0 = _bit_depth_from_dtype(metas[0].get("dtype", arr0.dtype))
                         is_mono0 = (arr0_f32.ndim == 2) or (arr0_f32.ndim == 3 and arr0_f32.shape[2] == 1)
 
@@ -1930,6 +1966,7 @@ class DocManager(QObject):
                         m = metas[i]
                         arr = xisf.read_image(i, data_format="channels_last")
                         arr_f32 = _to_float32_preserve(arr)
+                        arr_f32 = _normalize_image_01(arr_f32)
 
                         bd = _bit_depth_from_dtype(m.get("dtype", arr.dtype))
                         is_mono_i = (arr_f32.ndim == 2) or (arr_f32.ndim == 3 and arr_f32.shape[2] == 1)
