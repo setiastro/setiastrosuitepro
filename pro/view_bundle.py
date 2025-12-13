@@ -379,7 +379,7 @@ class SelectViewsDialog(QDialog):
         self.setWindowTitle("Add Views to Bundle")
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.setModal(False)
-        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        #self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self._boxes: list[QCheckBox] = []
 
         v = QVBoxLayout(self)

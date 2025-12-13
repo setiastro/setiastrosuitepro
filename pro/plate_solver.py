@@ -2058,7 +2058,7 @@ class PlateSolverDialog(QDialog):
         self.setMinimumWidth(560)
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.setModal(False)
-        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        #self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
 
         # ---------------- Main containers ----------------
         main = QVBoxLayout(self)

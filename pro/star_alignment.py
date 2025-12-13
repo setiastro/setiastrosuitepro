@@ -618,7 +618,7 @@ class StellarAlignmentDialog(QDialog):
         self.setWindowTitle("Stellar Alignment")
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.setModal(False)
-        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        #self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
 
         self.settings = settings
         self.parent_window = parent
@@ -3552,7 +3552,7 @@ class StarRegistrationWindow(QWidget):
         self.parent_window = parent
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)        
+        #self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)        
         self.initUI()
 
         self._prog_timer = QTimer(self)

@@ -244,7 +244,7 @@ class BackgroundNeutralizationDialog(QDialog):
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.setWindowModality(Qt.WindowModality.ApplicationModal)
         self.setModal(False)
-        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        #self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
 
         self.auto_stretch = False
         self.zoom_factor = 1.0

@@ -45,7 +45,7 @@ class RGBCombinationDialogPro(QDialog):
         self.setWindowTitle("RGB Combination")
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.setModal(False)
-        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        #self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self._list_open_docs = list_open_docs_fn or (lambda: [])
         self._docman = doc_manager
 

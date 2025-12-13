@@ -231,6 +231,13 @@ def torch_reduce_tile(
         ts_np = ts_np[..., None]
     F, H, W, C = ts_np.shape
     
+    if H == 0 or W == 0 or C < 1:
+        raise ValueError(
+            f"torch_reduce_tile received degenerate tile shape={ts_np.shape}. "
+            "This usually means a bad edge tile or corrupted frame; "
+            "try disabling GPU rejection or reducing chunk size."
+        )
+
     # Sanity check: C must be at least 1
     if C < 1:
         raise ValueError(f"torch_reduce_tile received input with C={C} channels (shape={ts_np.shape}). Expected C >= 1.")

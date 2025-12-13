@@ -3798,7 +3798,11 @@ class StackingSuiteDialog(QDialog):
         self.manual_flat_overrides = {}
         self.conversion_output_directory = None
         self.reg_files = {}
-        self.session_tags = {}           # file_path => session_tag
+        if not hasattr(self, "session_tags"):
+            self.session_tags = {}      # path -> session string
+        if not hasattr(self, "session_override"):
+            self.session_override = {}  # path -> {"mode": "manual"/"header"/"folder", "value": "..."}
+
         self.flat_dark_override = {}  # {(group_key:str): path | None | "__NO_DARK__"}
         self.deleted_calibrated_files = []
         self._norm_map = {}
@@ -6697,35 +6701,36 @@ class StackingSuiteDialog(QDialog):
         selected_items = tree.selectedItems()
 
         def update_file_session(filename, widget_item):
+            fpath = widget_item.data(0, Qt.ItemDataRole.UserRole)  # full path you stored elsewhere
+            if not fpath:
+                # fallback once for legacy rows
+                fpath = next((p for k, lst in target_dict.items() for p in lst
+                            if os.path.basename(p) == filename), None)
+                if not fpath:
+                    return
             for key in list(target_dict.keys()):
-                if isinstance(key, tuple) and len(key) == 2:
-                    group_key, old_session = key
-                else:
-                    continue  # Skip malformed keys
-
+                if not (isinstance(key, tuple) and len(key) == 2):
+                    continue
+                group_key, old_session = key
                 files = target_dict.get(key, [])
-                for f in list(files):
-                    if os.path.basename(f) == filename:
-                        if old_session != session_name:
-                            new_key = (group_key, session_name)
-                            if new_key not in target_dict:
-                                target_dict[new_key] = []
-                            target_dict[new_key].append(f)
-                            target_dict[key].remove(f)
-                            if not target_dict[key]:
-                                del target_dict[key]
-
-                        # Update internal session tag
-                        self.session_tags[f] = session_name
-
-                        # Update leaf's metadata column
-                        old_meta = widget_item.text(1)
-                        if "Session:" in old_meta:
-                            new_meta = re.sub(r"Session: [^|]*", f"Session: {session_name}", old_meta)
-                        else:
-                            new_meta = f"{old_meta} | Session: {session_name}"
-                        widget_item.setText(1, new_meta)
-                        return
+                if fpath in files:
+                    if old_session != session_name:
+                        new_key = (group_key, session_name)
+                        target_dict.setdefault(new_key, []).append(fpath)
+                        files.remove(fpath)
+                        if not files:
+                            del target_dict[key]
+                    # tags dict guard:
+                    if not hasattr(self, "session_tags"):
+                        self.session_tags = {}
+                    self.session_tags[fpath] = session_name
+                    # leaf text:
+                    old_meta = widget_item.text(1)
+                    widget_item.setText(1, re.sub(r"Session:\s*[^|]*",
+                                                f"Session: {session_name}",
+                                                old_meta) if "Session:" in old_meta
+                                                else (old_meta + f" | Session: {session_name}"))
+                    return
 
         def recurse_all_leaf_items(parent_item):
             for i in range(parent_item.childCount()):
@@ -8304,11 +8309,14 @@ class StackingSuiteDialog(QDialog):
 
     def _get_image_size(self, fp):
         ext = os.path.splitext(fp)[1].lower()
-        # first try FITS
-        if ext in (".fits", ".fit"):
+
+        if ext in (".fits", ".fit", ".fz"):
             hdr0 = fits.getheader(fp, ext=0)
-            data0 = fits.getdata(fp, ext=0)
-            h, w = data0.shape[-2:]
+            w = int(hdr0.get("NAXIS1", 0) or 0)
+            h = int(hdr0.get("NAXIS2", 0) or 0)
+            if not (w and h):
+                raise IOError(f"Cannot read FITS size for {fp}")
+            return w, h
         else:
             # try Pillow
             try:
@@ -8328,27 +8336,25 @@ class StackingSuiteDialog(QDialog):
         return w, h
 
     def _probe_fits_meta(self, fp: str):
-        """
-        Return (filter:str, exposure:float, size_str:'WxH') from FITS PRIMARY HDU.
-        Robust to missing keywords.
-        """
         try:
             hdr0 = fits.getheader(fp, ext=0)
+
             filt = self._sanitize_name(hdr0.get("FILTER", "Unknown"))
-            # exposure can be EXPTIME or EXPOSURE, sometimes a string
             exp_raw = hdr0.get("EXPTIME", hdr0.get("EXPOSURE", 0.0))
             try:
                 exp = float(exp_raw)
             except Exception:
                 exp = 0.0
-            # size
-            data0 = fits.getdata(fp, ext=0)
-            h, w = (int(data0.shape[-2]), int(data0.shape[-1])) if hasattr(data0, "shape") else (0, 0)
+
+            w = int(hdr0.get("NAXIS1", 0) or 0)
+            h = int(hdr0.get("NAXIS2", 0) or 0)
             size = f"{w}x{h}" if (w and h) else "Unknown"
+
             return filt or "Unknown", float(exp), size
         except Exception as e:
             print(f"⚠️ Could not read FITS {fp}: {e}; treating as generic image")
             return "Unknown", 0.0, "Unknown"
+
 
 
     def _probe_xisf_meta(self, fp: str):
@@ -8602,27 +8608,32 @@ class StackingSuiteDialog(QDialog):
         self._set_drizzle_on_items(targets, enabled, scale, drop)
 
     def gather_drizzle_settings_from_tree(self):
-        """Return per-group drizzle settings based on the global controls."""
-        enabled = bool(self.drizzle_checkbox.isChecked())
-        scale_txt = self.drizzle_scale_combo.currentText()
+        """
+        Return per-group drizzle settings (what the user set per group),
+        falling back to global defaults if a group has no stored state yet.
+        """
+        global_enabled = bool(self.drizzle_checkbox.isChecked())
         try:
-            scale_factor = float(scale_txt.replace("x", "").strip())
+            global_scale = float(self.drizzle_scale_combo.currentText().replace("x", "").strip())
         except Exception:
-            scale_factor = 1.0
-        drop_shrink = float(self.drizzle_drop_shrink_spin.value())
+            global_scale = 1.0
+        global_drop = float(self.drizzle_drop_shrink_spin.value())
 
         out = {}
-        root = self.reg_tree.invisibleRootItem()
-        for i in range(root.childCount()):
-            group_key = root.child(i).text(0)   # e.g. "L Ultimate - 300.0s (4144x2822)"
+        for top in self._iter_group_items():
+            group_key = top.text(0)
+            state = self.per_group_drizzle.get(group_key)
+            if not state:
+                state = {"enabled": global_enabled, "scale": global_scale, "drop": global_drop}
+                self.per_group_drizzle[group_key] = state
+
             out[group_key] = {
-                "drizzle_enabled": enabled,
-                "scale_factor": scale_factor,
-                "drop_shrink": drop_shrink,
+                "drizzle_enabled": bool(state["enabled"]),
+                "scale_factor": float(state["scale"]),
+                "drop_shrink": float(state["drop"]),
             }
-        # Optional: debug once to verify
-        self.update_status(f"🧪 drizzle_dict: {out}")
         return out
+
 
 
 
@@ -16841,6 +16852,75 @@ class StackingSuiteDialog(QDialog):
                 x1 = min(x0 + chunk_w, width)
                 tiles.append((y0, y1, x0, x1))
 
+        # --- CPU reducer helper so we can reuse it everywhere ---
+        def _cpu_reduce_tile(ts, th, tw):
+            """
+            CPU rejection/integration for a single tile.
+            Returns (tile_result, tile_rej_map).
+            """
+            if algo in ("Comet Median", "Simple Median (No Rejection)"):
+                tile_result  = np.median(ts, axis=0)
+                tile_rej_map = np.zeros((N, th, tw), dtype=bool)
+
+            elif algo == "Comet High-Clip Percentile":
+                k = self.settings.value("stacking/comet_hclip_k", 1.30, type=float)
+                p = self.settings.value("stacking/comet_hclip_p", 25.0, type=float)
+                tile_result  = _high_clip_percentile(ts, k=float(k), p=float(p))
+                tile_rej_map = np.zeros((N, th, tw), dtype=bool)
+
+            elif algo == "Comet Lower-Trim (30%)":
+                tile_result  = _lower_trimmed_mean(ts, trim_hi_frac=0.30)
+                tile_rej_map = np.zeros((N, th, tw), dtype=bool)
+
+            elif algo == "Comet Percentile (40th)":
+                tile_result  = _percentile40(ts)
+                tile_rej_map = np.zeros((N, th, tw), dtype=bool)
+
+            elif algo == "Simple Average (No Rejection)":
+                tile_result  = np.average(ts, axis=0, weights=weights_array)
+                tile_rej_map = np.zeros((N, th, tw), dtype=bool)
+
+            elif algo == "Weighted Windsorized Sigma Clipping":
+                tile_result, tile_rej_map = windsorized_sigma_clip_weighted(
+                    ts, weights_array, lower=self.sigma_low, upper=self.sigma_high
+                )
+
+            elif algo == "Kappa-Sigma Clipping":
+                tile_result, tile_rej_map = kappa_sigma_clip_weighted(
+                    ts, weights_array, kappa=self.kappa, iterations=self.iterations
+                )
+
+            elif algo == "Trimmed Mean":
+                tile_result, tile_rej_map = trimmed_mean_weighted(
+                    ts, weights_array, trim_fraction=self.trim_fraction
+                )
+
+            elif algo == "Extreme Studentized Deviate (ESD)":
+                tile_result, tile_rej_map = esd_clip_weighted(
+                    ts, weights_array, threshold=self.esd_threshold
+                )
+
+            elif algo == "Biweight Estimator":
+                tile_result, tile_rej_map = biweight_location_weighted(
+                    ts, weights_array, tuning_constant=self.biweight_constant
+                )
+
+            elif algo == "Modified Z-Score Clipping":
+                tile_result, tile_rej_map = modified_zscore_clip_weighted(
+                    ts, weights_array, threshold=self.modz_threshold
+                )
+
+            elif algo == "Max Value":
+                tile_result, tile_rej_map = max_value_stack(ts, weights_array)
+
+            else:
+                # sensible default if algo name somehow out-of-sync
+                tile_result, tile_rej_map = windsorized_sigma_clip_weighted(
+                    ts, weights_array, lower=self.sigma_low, upper=self.sigma_high
+                )
+
+            return tile_result, tile_rej_map
+
         # Prime first read
         tile_idx = 0
         y0, y1, x0, x1 = tiles[0]
@@ -16857,100 +16937,68 @@ class StackingSuiteDialog(QDialog):
                 th, tw = fut.result()
                 ts = (buf0 if use_buf0 else buf1)[:N, :th, :tw, :channels]
 
-                # Kick off prefetch for the NEXT tile (if any) into the other buffer
-                if tile_idx < total_tiles:
-                    ny0, ny1, nx0, nx1 = tiles[tile_idx]
-                    fut = tp.submit(
-                        _read_tile_into,
-                        (buf1 if use_buf0 else buf0),
-                        ny0, ny1, nx0, nx1
-                    )
+                # Optional debug – feel free to comment out later
+                log(f"[Stacking] tile {tile_idx}/{total_tiles} ts.shape={ts.shape}, N={N}, C={channels}")
 
-                # --- rejection/integration for this tile ---
-                log(
-                    f"Integrating tile {tile_idx}/{total_tiles} "
-                    f"[y:{y0}:{y1} x:{x0}:{x1} size={th}×{tw}] "
-                    f"mode={'GPU' if use_gpu else 'CPU'}…"
-                )
-
-                if use_gpu:
-                    print(f"Using GPU for tile {tile_idx} with algo {algo}")
-                    tile_result, tile_rej_map = _torch_reduce_tile(
-                        ts,                         # NumPy view, C-contiguous
-                        weights_array,              # (N,)
-                        algo_name=algo,
-                        kappa=float(self.kappa),
-                        iterations=int(self.iterations),
-                        sigma_low=float(self.sigma_low),
-                        sigma_high=float(self.sigma_high),
-                        trim_fraction=float(self.trim_fraction),
-                        esd_threshold=float(self.esd_threshold),
-                        biweight_constant=float(self.biweight_constant),
-                        modz_threshold=float(self.modz_threshold),
-                        comet_hclip_k=float(self.settings.value("stacking/comet_hclip_k", 1.30, type=float)),
-                        comet_hclip_p=float(self.settings.value("stacking/comet_hclip_p", 25.0, type=float)),
+                # --- defensive guard for degenerate tiles ---
+                if ts.size == 0 or ts.shape[1] == 0 or ts.shape[2] == 0 or ts.shape[3] == 0:
+                    log(
+                        f"⚠️ Degenerate tile shape {ts.shape} at tile {tile_idx} "
+                        f"[y:{y0}:{y1} x:{x0}:{x1}] – using CPU for this tile."
                     )
-                    # _torch_reduce_tile should already return NumPy; if it returns tensors, convert here.
-                    if hasattr(tile_result, "detach"):
-                        tile_result = tile_result.detach().cpu().numpy()
-                    if hasattr(tile_rej_map, "detach"):
-                        tile_rej_map = tile_rej_map.detach().cpu().numpy()
+                    tile_result, tile_rej_map = _cpu_reduce_tile(ts, th, tw)
                 else:
-                    # CPU path (NumPy/Numba)
-                    if algo in ("Comet Median", "Simple Median (No Rejection)"):
-                        tile_result  = np.median(ts, axis=0)
-                        tile_rej_map = np.zeros((N, th, tw), dtype=bool)
+                    # Kick off prefetch for the NEXT tile (if any) into the other buffer
+                    if tile_idx < total_tiles:
+                        ny0, ny1, nx0, nx1 = tiles[tile_idx]
+                        fut = tp.submit(
+                            _read_tile_into,
+                            (buf1 if use_buf0 else buf0),
+                            ny0, ny1, nx0, nx1
+                        )
 
-                    elif algo == "Comet High-Clip Percentile":
-                        k = self.settings.value("stacking/comet_hclip_k", 1.30, type=float)
-                        p = self.settings.value("stacking/comet_hclip_p", 25.0, type=float)
-                        tile_result  = _high_clip_percentile(ts, k=float(k), p=float(p))
-                        tile_rej_map = np.zeros((N, th, tw), dtype=bool)
+                    # --- rejection/integration for this tile ---
+                    log(
+                        f"Integrating tile {tile_idx}/{total_tiles} "
+                        f"[y:{y0}:{y1} x:{x0}:{x1} size={th}×{tw}] "
+                        f"mode={'GPU' if use_gpu else 'CPU'}…"
+                    )
 
-                    elif algo == "Comet Lower-Trim (30%)":
-                        tile_result  = _lower_trimmed_mean(ts, trim_hi_frac=0.30)
-                        tile_rej_map = np.zeros((N, th, tw), dtype=bool)
-
-                    elif algo == "Comet Percentile (40th)":
-                        tile_result  = _percentile40(ts)
-                        tile_rej_map = np.zeros((N, th, tw), dtype=bool)
-
-                    elif algo == "Simple Average (No Rejection)":
-                        tile_result  = np.average(ts, axis=0, weights=weights_array)
-                        tile_rej_map = np.zeros((N, th, tw), dtype=bool)
-
-                    elif algo == "Weighted Windsorized Sigma Clipping":
-                        tile_result, tile_rej_map = windsorized_sigma_clip_weighted(
-                            ts, weights_array, lower=self.sigma_low, upper=self.sigma_high
-                        )
-                    elif algo == "Kappa-Sigma Clipping":
-                        tile_result, tile_rej_map = kappa_sigma_clip_weighted(
-                            ts, weights_array, kappa=self.kappa, iterations=self.iterations
-                        )
-                    elif algo == "Trimmed Mean":
-                        tile_result, tile_rej_map = trimmed_mean_weighted(
-                            ts, weights_array, trim_fraction=self.trim_fraction
-                        )
-                    elif algo == "Extreme Studentized Deviate (ESD)":
-                        tile_result, tile_rej_map = esd_clip_weighted(
-                            ts, weights_array, threshold=self.esd_threshold
-                        )
-                    elif algo == "Biweight Estimator":
-                        tile_result, tile_rej_map = biweight_location_weighted(
-                            ts, weights_array, tuning_constant=self.biweight_constant
-                        )
-                    elif algo == "Modified Z-Score Clipping":
-                        tile_result, tile_rej_map = modified_zscore_clip_weighted(
-                            ts, weights_array, threshold=self.modz_threshold
-                        )
-                    elif algo == "Max Value":
-                        tile_result, tile_rej_map = max_value_stack(ts, weights_array)
+                    if use_gpu:
+                        print(f"Using GPU for tile {tile_idx} with algo {algo}")
+                        try:
+                            tile_result, tile_rej_map = _torch_reduce_tile(
+                                ts,                         # NumPy view, C-contiguous
+                                weights_array,              # (N,)
+                                algo_name=algo,
+                                kappa=float(self.kappa),
+                                iterations=int(self.iterations),
+                                sigma_low=float(self.sigma_low),
+                                sigma_high=float(self.sigma_high),
+                                trim_fraction=float(self.trim_fraction),
+                                esd_threshold=float(self.esd_threshold),
+                                biweight_constant=float(self.biweight_constant),
+                                modz_threshold=float(self.modz_threshold),
+                                comet_hclip_k=float(self.settings.value("stacking/comet_hclip_k", 1.30, type=float)),
+                                comet_hclip_p=float(self.settings.value("stacking/comet_hclip_p", 25.0, type=float)),
+                            )
+                            # In case GPU path ever returns tensors instead of NumPy:
+                            if hasattr(tile_result, "detach"):
+                                tile_result = tile_result.detach().cpu().numpy()
+                            if hasattr(tile_rej_map, "detach"):
+                                tile_rej_map = tile_rej_map.detach().cpu().numpy()
+                        except Exception as e:
+                            log(
+                                f"⚠️ GPU rejection failed on tile {tile_idx}/{total_tiles} "
+                                f"shape={ts.shape}: {e} – falling back to CPU for this and remaining tiles."
+                            )
+                            use_gpu = False  # disable GPU for subsequent tiles too
+                            tile_result, tile_rej_map = _cpu_reduce_tile(ts, th, tw)
                     else:
-                        tile_result, tile_rej_map = windsorized_sigma_clip_weighted(
-                            ts, weights_array, lower=self.sigma_low, upper=self.sigma_high
-                        )
+                        # Normal CPU path
+                        tile_result, tile_rej_map = _cpu_reduce_tile(ts, th, tw)
 
-                # write back
+                # --- write back integrated tile ---
                 integrated_image[y0:y1, x0:x1, :] = tile_result
 
                 # --- rejection bookkeeping ---
@@ -16981,6 +17029,7 @@ class StackingSuiteDialog(QDialog):
         if use_memmap_sources:
             for s in sources:
                 s.close()
+
 
         if channels == 1:
             integrated_image = integrated_image[..., 0]
