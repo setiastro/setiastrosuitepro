@@ -16841,6 +16841,75 @@ class StackingSuiteDialog(QDialog):
                 x1 = min(x0 + chunk_w, width)
                 tiles.append((y0, y1, x0, x1))
 
+        # --- CPU reducer helper so we can reuse it everywhere ---
+        def _cpu_reduce_tile(ts, th, tw):
+            """
+            CPU rejection/integration for a single tile.
+            Returns (tile_result, tile_rej_map).
+            """
+            if algo in ("Comet Median", "Simple Median (No Rejection)"):
+                tile_result  = np.median(ts, axis=0)
+                tile_rej_map = np.zeros((N, th, tw), dtype=bool)
+
+            elif algo == "Comet High-Clip Percentile":
+                k = self.settings.value("stacking/comet_hclip_k", 1.30, type=float)
+                p = self.settings.value("stacking/comet_hclip_p", 25.0, type=float)
+                tile_result  = _high_clip_percentile(ts, k=float(k), p=float(p))
+                tile_rej_map = np.zeros((N, th, tw), dtype=bool)
+
+            elif algo == "Comet Lower-Trim (30%)":
+                tile_result  = _lower_trimmed_mean(ts, trim_hi_frac=0.30)
+                tile_rej_map = np.zeros((N, th, tw), dtype=bool)
+
+            elif algo == "Comet Percentile (40th)":
+                tile_result  = _percentile40(ts)
+                tile_rej_map = np.zeros((N, th, tw), dtype=bool)
+
+            elif algo == "Simple Average (No Rejection)":
+                tile_result  = np.average(ts, axis=0, weights=weights_array)
+                tile_rej_map = np.zeros((N, th, tw), dtype=bool)
+
+            elif algo == "Weighted Windsorized Sigma Clipping":
+                tile_result, tile_rej_map = windsorized_sigma_clip_weighted(
+                    ts, weights_array, lower=self.sigma_low, upper=self.sigma_high
+                )
+
+            elif algo == "Kappa-Sigma Clipping":
+                tile_result, tile_rej_map = kappa_sigma_clip_weighted(
+                    ts, weights_array, kappa=self.kappa, iterations=self.iterations
+                )
+
+            elif algo == "Trimmed Mean":
+                tile_result, tile_rej_map = trimmed_mean_weighted(
+                    ts, weights_array, trim_fraction=self.trim_fraction
+                )
+
+            elif algo == "Extreme Studentized Deviate (ESD)":
+                tile_result, tile_rej_map = esd_clip_weighted(
+                    ts, weights_array, threshold=self.esd_threshold
+                )
+
+            elif algo == "Biweight Estimator":
+                tile_result, tile_rej_map = biweight_location_weighted(
+                    ts, weights_array, tuning_constant=self.biweight_constant
+                )
+
+            elif algo == "Modified Z-Score Clipping":
+                tile_result, tile_rej_map = modified_zscore_clip_weighted(
+                    ts, weights_array, threshold=self.modz_threshold
+                )
+
+            elif algo == "Max Value":
+                tile_result, tile_rej_map = max_value_stack(ts, weights_array)
+
+            else:
+                # sensible default if algo name somehow out-of-sync
+                tile_result, tile_rej_map = windsorized_sigma_clip_weighted(
+                    ts, weights_array, lower=self.sigma_low, upper=self.sigma_high
+                )
+
+            return tile_result, tile_rej_map
+
         # Prime first read
         tile_idx = 0
         y0, y1, x0, x1 = tiles[0]
@@ -16857,100 +16926,68 @@ class StackingSuiteDialog(QDialog):
                 th, tw = fut.result()
                 ts = (buf0 if use_buf0 else buf1)[:N, :th, :tw, :channels]
 
-                # Kick off prefetch for the NEXT tile (if any) into the other buffer
-                if tile_idx < total_tiles:
-                    ny0, ny1, nx0, nx1 = tiles[tile_idx]
-                    fut = tp.submit(
-                        _read_tile_into,
-                        (buf1 if use_buf0 else buf0),
-                        ny0, ny1, nx0, nx1
-                    )
+                # Optional debug – feel free to comment out later
+                log(f"[Stacking] tile {tile_idx}/{total_tiles} ts.shape={ts.shape}, N={N}, C={channels}")
 
-                # --- rejection/integration for this tile ---
-                log(
-                    f"Integrating tile {tile_idx}/{total_tiles} "
-                    f"[y:{y0}:{y1} x:{x0}:{x1} size={th}×{tw}] "
-                    f"mode={'GPU' if use_gpu else 'CPU'}…"
-                )
-
-                if use_gpu:
-                    print(f"Using GPU for tile {tile_idx} with algo {algo}")
-                    tile_result, tile_rej_map = _torch_reduce_tile(
-                        ts,                         # NumPy view, C-contiguous
-                        weights_array,              # (N,)
-                        algo_name=algo,
-                        kappa=float(self.kappa),
-                        iterations=int(self.iterations),
-                        sigma_low=float(self.sigma_low),
-                        sigma_high=float(self.sigma_high),
-                        trim_fraction=float(self.trim_fraction),
-                        esd_threshold=float(self.esd_threshold),
-                        biweight_constant=float(self.biweight_constant),
-                        modz_threshold=float(self.modz_threshold),
-                        comet_hclip_k=float(self.settings.value("stacking/comet_hclip_k", 1.30, type=float)),
-                        comet_hclip_p=float(self.settings.value("stacking/comet_hclip_p", 25.0, type=float)),
+                # --- defensive guard for degenerate tiles ---
+                if ts.size == 0 or ts.shape[1] == 0 or ts.shape[2] == 0 or ts.shape[3] == 0:
+                    log(
+                        f"⚠️ Degenerate tile shape {ts.shape} at tile {tile_idx} "
+                        f"[y:{y0}:{y1} x:{x0}:{x1}] – using CPU for this tile."
                     )
-                    # _torch_reduce_tile should already return NumPy; if it returns tensors, convert here.
-                    if hasattr(tile_result, "detach"):
-                        tile_result = tile_result.detach().cpu().numpy()
-                    if hasattr(tile_rej_map, "detach"):
-                        tile_rej_map = tile_rej_map.detach().cpu().numpy()
+                    tile_result, tile_rej_map = _cpu_reduce_tile(ts, th, tw)
                 else:
-                    # CPU path (NumPy/Numba)
-                    if algo in ("Comet Median", "Simple Median (No Rejection)"):
-                        tile_result  = np.median(ts, axis=0)
-                        tile_rej_map = np.zeros((N, th, tw), dtype=bool)
+                    # Kick off prefetch for the NEXT tile (if any) into the other buffer
+                    if tile_idx < total_tiles:
+                        ny0, ny1, nx0, nx1 = tiles[tile_idx]
+                        fut = tp.submit(
+                            _read_tile_into,
+                            (buf1 if use_buf0 else buf0),
+                            ny0, ny1, nx0, nx1
+                        )
 
-                    elif algo == "Comet High-Clip Percentile":
-                        k = self.settings.value("stacking/comet_hclip_k", 1.30, type=float)
-                        p = self.settings.value("stacking/comet_hclip_p", 25.0, type=float)
-                        tile_result  = _high_clip_percentile(ts, k=float(k), p=float(p))
-                        tile_rej_map = np.zeros((N, th, tw), dtype=bool)
+                    # --- rejection/integration for this tile ---
+                    log(
+                        f"Integrating tile {tile_idx}/{total_tiles} "
+                        f"[y:{y0}:{y1} x:{x0}:{x1} size={th}×{tw}] "
+                        f"mode={'GPU' if use_gpu else 'CPU'}…"
+                    )
 
-                    elif algo == "Comet Lower-Trim (30%)":
-                        tile_result  = _lower_trimmed_mean(ts, trim_hi_frac=0.30)
-                        tile_rej_map = np.zeros((N, th, tw), dtype=bool)
-
-                    elif algo == "Comet Percentile (40th)":
-                        tile_result  = _percentile40(ts)
-                        tile_rej_map = np.zeros((N, th, tw), dtype=bool)
-
-                    elif algo == "Simple Average (No Rejection)":
-                        tile_result  = np.average(ts, axis=0, weights=weights_array)
-                        tile_rej_map = np.zeros((N, th, tw), dtype=bool)
-
-                    elif algo == "Weighted Windsorized Sigma Clipping":
-                        tile_result, tile_rej_map = windsorized_sigma_clip_weighted(
-                            ts, weights_array, lower=self.sigma_low, upper=self.sigma_high
-                        )
-                    elif algo == "Kappa-Sigma Clipping":
-                        tile_result, tile_rej_map = kappa_sigma_clip_weighted(
-                            ts, weights_array, kappa=self.kappa, iterations=self.iterations
-                        )
-                    elif algo == "Trimmed Mean":
-                        tile_result, tile_rej_map = trimmed_mean_weighted(
-                            ts, weights_array, trim_fraction=self.trim_fraction
-                        )
-                    elif algo == "Extreme Studentized Deviate (ESD)":
-                        tile_result, tile_rej_map = esd_clip_weighted(
-                            ts, weights_array, threshold=self.esd_threshold
-                        )
-                    elif algo == "Biweight Estimator":
-                        tile_result, tile_rej_map = biweight_location_weighted(
-                            ts, weights_array, tuning_constant=self.biweight_constant
-                        )
-                    elif algo == "Modified Z-Score Clipping":
-                        tile_result, tile_rej_map = modified_zscore_clip_weighted(
-                            ts, weights_array, threshold=self.modz_threshold
-                        )
-                    elif algo == "Max Value":
-                        tile_result, tile_rej_map = max_value_stack(ts, weights_array)
+                    if use_gpu:
+                        print(f"Using GPU for tile {tile_idx} with algo {algo}")
+                        try:
+                            tile_result, tile_rej_map = _torch_reduce_tile(
+                                ts,                         # NumPy view, C-contiguous
+                                weights_array,              # (N,)
+                                algo_name=algo,
+                                kappa=float(self.kappa),
+                                iterations=int(self.iterations),
+                                sigma_low=float(self.sigma_low),
+                                sigma_high=float(self.sigma_high),
+                                trim_fraction=float(self.trim_fraction),
+                                esd_threshold=float(self.esd_threshold),
+                                biweight_constant=float(self.biweight_constant),
+                                modz_threshold=float(self.modz_threshold),
+                                comet_hclip_k=float(self.settings.value("stacking/comet_hclip_k", 1.30, type=float)),
+                                comet_hclip_p=float(self.settings.value("stacking/comet_hclip_p", 25.0, type=float)),
+                            )
+                            # In case GPU path ever returns tensors instead of NumPy:
+                            if hasattr(tile_result, "detach"):
+                                tile_result = tile_result.detach().cpu().numpy()
+                            if hasattr(tile_rej_map, "detach"):
+                                tile_rej_map = tile_rej_map.detach().cpu().numpy()
+                        except Exception as e:
+                            log(
+                                f"⚠️ GPU rejection failed on tile {tile_idx}/{total_tiles} "
+                                f"shape={ts.shape}: {e} – falling back to CPU for this and remaining tiles."
+                            )
+                            use_gpu = False  # disable GPU for subsequent tiles too
+                            tile_result, tile_rej_map = _cpu_reduce_tile(ts, th, tw)
                     else:
-                        tile_result, tile_rej_map = windsorized_sigma_clip_weighted(
-                            ts, weights_array, lower=self.sigma_low, upper=self.sigma_high
-                        )
+                        # Normal CPU path
+                        tile_result, tile_rej_map = _cpu_reduce_tile(ts, th, tw)
 
-                # write back
+                # --- write back integrated tile ---
                 integrated_image[y0:y1, x0:x1, :] = tile_result
 
                 # --- rejection bookkeeping ---
@@ -16981,6 +17018,7 @@ class StackingSuiteDialog(QDialog):
         if use_memmap_sources:
             for s in sources:
                 s.close()
+
 
         if channels == 1:
             integrated_image = integrated_image[..., 0]
