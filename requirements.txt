@@ -57,4 +57,4 @@ pyqtgraph
 psutil
 
 # computer vision
-opencv-python
+opencv-python-headless
