@@ -548,7 +548,7 @@ class AberrationAIDialog(QDialog):
         self._worker.progressed.connect(self.progress.setValue)
         self._worker.failed.connect(self._on_failed)
         self._worker.finished_ok.connect(self._on_ok)
-        self._worker.finished.connect(lambda: self.btn_run.setEnabled(True))
+        self._worker.finished.connect(self._on_worker_finished)
         self._worker.start()
 
 
@@ -681,3 +681,14 @@ class AberrationAIDialog(QDialog):
 
         self.progress.setValue(100)
         self.accept()
+
+    def _on_worker_finished(self):
+        # If dialog is already gone, this method is never called because the receiver (self)
+        # has been destroyed and Qt auto-disconnects the signal.
+        if hasattr(self, "btn_run"):
+            try:
+                self.btn_run.setEnabled(True)
+            except RuntimeError:
+                # Button already deleted; ignore
+                pass
+        self._worker = None
