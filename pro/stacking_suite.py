@@ -3893,6 +3893,21 @@ class StackingSuiteDialog(QDialog):
         self.dark_tab = self.create_dark_tab()
         self.flat_tab = self.create_flat_tab()
         self.light_tab = self.create_light_tab()
+        def _sync_auto_session_checkboxes(src_cb, dst_cb, auto_checked: bool):
+            if dst_cb.isChecked() != auto_checked:
+                dst_cb.blockSignals(True)
+                dst_cb.setChecked(auto_checked)
+                dst_cb.blockSignals(False)
+                # ensure manual-session line edit enable/disable updates too
+                dst_cb.toggled.emit(auto_checked)
+
+        # only wire if both exist (they will, after both tabs are created)
+        self.light_auto_session_cb.toggled.connect(
+            lambda v: _sync_auto_session_checkboxes(self.light_auto_session_cb, self.flat_auto_session_cb, v)
+        )
+        self.flat_auto_session_cb.toggled.connect(
+            lambda v: _sync_auto_session_checkboxes(self.flat_auto_session_cb, self.light_auto_session_cb, v)
+        )        
         add_runtime_to_sys_path(status_cb=lambda *_: None)
         self.image_integration_tab = self.create_image_registration_tab()
 
@@ -6111,35 +6126,47 @@ class StackingSuiteDialog(QDialog):
 
     def _bind_shared_setting_checkbox(self, key: str, checkbox: QCheckBox, default: bool = True):
         """Bind a QCheckBox to a shared QSettings key and keep all bound boxes in sync."""
-        # registry of sets of checkboxes per setting key
+        import weakref
+
         if not hasattr(self, "_shared_checkboxes"):
             self._shared_checkboxes = {}
 
-        # initialize from settings
+        # --- 1) initialize from settings (canonical bool) ---
         val = self.settings.value(key, default, type=bool)
+        val = bool(val)
+
         checkbox.blockSignals(True)
-        checkbox.setChecked(bool(val))
+        checkbox.setChecked(val)
         checkbox.blockSignals(False)
+
+        # ✅ IMPORTANT: persist canonical bool immediately so code reading QSettings is consistent
+        # (fixes: checkbox looks checked but QSettings still returns False until user toggles)
+        self.settings.setValue(key, val)
 
         # track this checkbox (weak so GC is fine when tabs close)
         boxset = self._shared_checkboxes.setdefault(key, weakref.WeakSet())
         boxset.add(checkbox)
 
-        # when this one toggles, update settings and all siblings
+        # --- 2) when this one toggles, update settings and siblings ---
         def _on_toggled(v: bool):
-            self.settings.setValue(key, bool(v))
+            v = bool(v)
+            self.settings.setValue(key, v)
+
             # sync siblings without re-emitting signals
             for cb in list(self._shared_checkboxes.get(key, [])):
                 if cb is checkbox:
                     continue
                 try:
                     cb.blockSignals(True)
-                    cb.setChecked(bool(v))
+                    cb.setChecked(v)
                     cb.blockSignals(False)
                 except RuntimeError:
-                    # widget was likely deleted; ignore
                     pass
 
+        try:
+            checkbox.toggled.disconnect()
+        except Exception:
+            pass
         checkbox.toggled.connect(_on_toggled, Qt.ConnectionType.QueuedConnection)
 
     def create_dark_tab(self):
@@ -6361,9 +6388,37 @@ class StackingSuiteDialog(QDialog):
         self.flat_auto_session_cb = QCheckBox("Auto-detect session")
         self._bind_shared_setting_checkbox("stacking/auto_session", self.flat_auto_session_cb, default=True)
 
+
         opts_row.addWidget(self.flat_recurse_cb)
         opts_row.addWidget(self.flat_auto_session_cb)
-        flat_frames_layout.addLayout(opts_row)      
+        flat_frames_layout.addLayout(opts_row)    
+
+        # --- Manual Session Keyword (shared setting) ---
+        sess_row = QHBoxLayout()
+        sess_row.addWidget(QLabel("Manual Session:"))
+
+        self.flat_session_keyword_edit = QLineEdit()
+        self.flat_session_keyword_edit.setPlaceholderText("e.g. Night1 / 2025-12-13 / SessionA")
+        self.flat_session_keyword_edit.setText(
+            self.settings.value("stacking/session_keyword", "Default", type=str)
+        )
+
+        def _save_sess_keyword_flat(txt: str):
+            self.settings.setValue("stacking/session_keyword", (txt or "").strip() or "Default")
+
+        self.flat_session_keyword_edit.textChanged.connect(_save_sess_keyword_flat)
+
+        sess_row.addWidget(self.flat_session_keyword_edit)
+        flat_frames_layout.addLayout(sess_row)
+
+        # enable keyword only when auto-session OFF
+        def _sync_flat_session_keyword_enabled(_=None):
+            self.flat_session_keyword_edit.setEnabled(not self.flat_auto_session_cb.isChecked())
+
+        self.flat_auto_session_cb.toggled.connect(_sync_flat_session_keyword_enabled)
+        _sync_flat_session_keyword_enabled()
+                
+          
         # 🔧 Session Tag Hint
         session_hint_label = QLabel("Right Click to Assign Session Keys if desired")
         session_hint_label.setStyleSheet("color: #888; font-style: italic; font-size: 11px; margin-left: 4px;")
@@ -6458,14 +6513,25 @@ class StackingSuiteDialog(QDialog):
     
         return tab
 
-    def flat_tree_context_menu(self, position):
-        item = self.flat_tree.itemAt(position)
-        if item:
-            menu = QMenu()
-            set_session_action = menu.addAction("Set Session Tag")
-            action = menu.exec(self.flat_tree.viewport().mapToGlobal(position))
-            if action == set_session_action:
-                self.prompt_set_session(item, "flat")
+
+
+    def flat_tree_context_menu(self, pos):
+        item = self.flat_tree.itemAt(pos)
+        if not item:
+            return
+
+        # ✅ Same selection behavior as Light tree
+        if not item.isSelected():
+            if not (QApplication.keyboardModifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier)):
+                self.flat_tree.clearSelection()
+            item.setSelected(True)
+
+        menu = QMenu(self.flat_tree)
+        set_session_action = menu.addAction("Set Session Tag...")
+
+        action = menu.exec(self.flat_tree.viewport().mapToGlobal(pos))
+        if action == set_session_action:
+            self.prompt_set_session(item, "FLAT")
 
     def _refresh_light_tree_summaries(self):
         """
@@ -6564,7 +6630,31 @@ class StackingSuiteDialog(QDialog):
         opts_row.addWidget(self.light_recurse_cb)
         opts_row.addWidget(self.light_auto_session_cb)
         opts_row.addWidget(self.auto_register_after_calibration_cb)
-        layout.addLayout(opts_row)       
+        layout.addLayout(opts_row) 
+
+        # --- Manual Session Keyword (shared setting) ---
+        sess_row = QHBoxLayout()
+        sess_row.addWidget(QLabel("Manual Session:"))
+
+        self.light_session_keyword_edit = QLineEdit()
+        self.light_session_keyword_edit.setPlaceholderText("e.g. Night1 / 2025-12-13 / SessionA")
+        self.light_session_keyword_edit.setText(
+            self.settings.value("stacking/session_keyword", "Default", type=str)
+        )
+
+        def _save_sess_keyword_light(txt: str):
+            self.settings.setValue("stacking/session_keyword", (txt or "").strip() or "Default")
+
+        self.light_session_keyword_edit.textChanged.connect(_save_sess_keyword_light)
+
+        sess_row.addWidget(self.light_session_keyword_edit)
+        layout.addLayout(sess_row)
+
+        def _sync_light_session_keyword_enabled(_=None):
+            self.light_session_keyword_edit.setEnabled(not self.light_auto_session_cb.isChecked())
+
+        self.light_auto_session_cb.toggled.connect(_sync_light_session_keyword_enabled)
+        _sync_light_session_keyword_enabled()
         session_hint_label = QLabel("Right Click to Assign Session Keys if desired")
         session_hint_label.setStyleSheet("color: #888; font-style: italic; font-size: 11px; margin-left: 4px;")
         layout.addWidget(session_hint_label)
@@ -6686,72 +6776,338 @@ class StackingSuiteDialog(QDialog):
 
         return tab
 
+    def _manual_session_keyword(self) -> str:
+        try:
+            s = (self.session_keyword_edit.text() or "").strip()
+        except Exception:
+            s = (self.settings.value("stacking/session_keyword", "Default", type=str) or "").strip()
+        return s or "Default"
 
+    def _session_for_new_file(self, path: str, header: "fits.Header|None" = None) -> str:
+        # If user wants manual mode, always use that keyword
+        auto = True
+        try:
+            auto = bool(self.auto_session_checkbox.isChecked())
+        except Exception:
+            auto = self.settings.value("stacking/session_auto", True, type=bool)
+
+        if not auto:
+            return self._manual_session_keyword()
+
+        # Otherwise fall back to your existing auto-detect logic
+        # (whatever you already have today)
+        return self._auto_detect_session(path, header)  # <-- your existing function name
+
+    def _resolve_manual_session_name_for_ingest(self) -> str | None:
+        auto_on = bool(self.light_auto_session_cb.isChecked())
+        self.light_session_keyword_edit.setEnabled(not auto_on)
+        if auto_on:
+            return None
+        name = (self.settings.value("stacking/session_keyword", "Default", type=str) or "").strip()
+        return name or "Default"
+
+    def _is_leaf_item(self, it: QTreeWidgetItem) -> bool:
+        return bool(it) and it.childCount() == 0 and it.parent() and it.parent().parent()
+
+    def _iter_leaf_descendants(self, it: QTreeWidgetItem):
+        """Yield all leaf grandchildren under a filter row or exposure row."""
+        if not it:
+            return
+        # filter row (top-level): children are exposure rows
+        if it.parent() is None:
+            for j in range(it.childCount()):
+                exp = it.child(j)
+                for k in range(exp.childCount()):
+                    leaf = exp.child(k)
+                    if self._is_leaf_item(leaf):
+                        yield leaf
+        # exposure row: children are leaves
+        elif it.parent() and it.parent().parent() is None and it.childCount() > 0:
+            for k in range(it.childCount()):
+                leaf = it.child(k)
+                if self._is_leaf_item(leaf):
+                    yield leaf
+
+    def _collect_target_leaves(self, tree: QTreeWidget, clicked_item: QTreeWidgetItem | None = None) -> list[QTreeWidgetItem]:
+        """
+        Collect all leaf rows to apply the session tag to.
+        - If user selected leaf rows, we use those.
+        - If user selected group rows (filter/exposure), we expand to their leaf descendants.
+        - If right-clicked item isn't selected, include it too.
+        """
+        selected = list(tree.selectedItems() or [])
+        if clicked_item and clicked_item not in selected:
+            selected.append(clicked_item)
+
+        leaves = []
+        for it in selected:
+            if self._is_leaf_item(it):
+                leaves.append(it)
+            else:
+                leaves.extend(list(self._iter_leaf_descendants(it)))
+
+        # unique, preserve order
+        seen = set()
+        out = []
+        for leaf in leaves:
+            key = (leaf.text(0), leaf.data(0, Qt.ItemDataRole.UserRole))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(leaf)
+        return out
+
+    def _session_from_leaf(self, leaf: QTreeWidgetItem) -> str:
+        # Prefer cached UserRole+1 (we set this during ingest / retag)
+        try:
+            s = leaf.data(0, Qt.ItemDataRole.UserRole + 1)
+            if isinstance(s, str) and s.strip():
+                return s.strip()
+        except Exception:
+            pass
+        # Fallback: parse metadata column
+        meta = leaf.text(1) or ""
+        m = re.search(r"Session:\s*([^|]+)", meta)
+        return m.group(1).strip() if m else "Default"
+
+    def _set_leaf_session_text(self, leaf: QTreeWidgetItem, new_session: str):
+        meta = leaf.text(1) or ""
+        if "Session:" in meta:
+            meta = re.sub(r"Session:\s*[^|]+", f"Session: {new_session}", meta)
+        else:
+            meta = (meta + " | " if meta else "") + f"Session: {new_session}"
+        leaf.setText(1, meta)
+        try:
+            leaf.setData(0, Qt.ItemDataRole.UserRole + 1, new_session)
+        except Exception:
+            pass
+
+    def _rekey_session_in_map(self, files_map: dict, group_key: str, path: str, old_session: str, new_session: str):
+        """
+        Move `path` from (group_key, old_session) to (group_key, new_session) inside `files_map`.
+        Includes a fallback search if old_session is stale/out-of-sync.
+        """
+        old_ck = (group_key, old_session)
+        new_ck = (group_key, new_session)
+
+        removed = False
+        if old_ck in files_map and path in files_map[old_ck]:
+            files_map[old_ck] = [p for p in files_map[old_ck] if p != path]
+            removed = True
+            if not files_map[old_ck]:
+                del files_map[old_ck]
+
+        # Fallback: find the actual composite key that contains this path for this group_key
+        if not removed:
+            found_key = None
+            for (gk, sess), lst in list(files_map.items()):
+                if gk == group_key and path in lst:
+                    found_key = (gk, sess)
+                    break
+            if found_key:
+                files_map[found_key] = [p for p in files_map[found_key] if p != path]
+                if not files_map[found_key]:
+                    del files_map[found_key]
+
+        # Add to new key (avoid dupes)
+        files_map.setdefault(new_ck, [])
+        if path not in files_map[new_ck]:
+            files_map[new_ck].append(path)
+
+    def _session_from_manual_keyword(self, path: str, keyword: str) -> str:
+        """
+        When auto-session is OFF, build a session tag from the folder names
+        using a user-provided keyword.
+        Example: keyword='NIGHT' and path contains .../NIGHT2/... => session 'NIGHT2'
+        """
+        kw = (keyword or "").strip()
+        if not kw or kw.lower() == "default":
+            return "Default"
+
+        parts = os.path.normpath(path).split(os.sep)
+
+        # Prefer folders like NIGHT1 / NIGHT_2 / NIGHT-3 etc.
+        pat = re.compile(rf"^{re.escape(kw)}\s*[_-]?\s*\d+$", re.IGNORECASE)
+        for part in reversed(parts):
+            if pat.match(part):
+                return part
+
+        # Fallback: any folder containing the keyword
+        kw_low = kw.lower()
+        for part in reversed(parts):
+            if kw_low in part.lower():
+                return part
+
+        # Last resort: just use the keyword
+        return kw
 
     def prompt_set_session(self, item, frame_type):
         text, ok = QInputDialog.getText(self, "Set Session Tag", "Enter session name:")
-        if not (ok and text.strip()):
+        if not (ok and (text or "").strip()):
             return
-
         session_name = text.strip()
-        is_flat = frame_type.upper() == "FLAT"
+
+        is_flat = (frame_type or "").upper() == "FLAT"
         tree = self.flat_tree if is_flat else self.light_tree
         target_dict = self.flat_files if is_flat else self.light_files
 
-        selected_items = tree.selectedItems()
+        if not hasattr(self, "session_tags") or self.session_tags is None:
+            self.session_tags = {}
 
-        def update_file_session(filename, widget_item):
-            fpath = widget_item.data(0, Qt.ItemDataRole.UserRole)  # full path you stored elsewhere
+        # --- helper: identify a "leaf" row in your tree (file row) ---
+        def _is_leaf(it):
+            return bool(it) and it.childCount() == 0 and it.parent() and it.parent().parent()
+
+        def _iter_leaf_descendants(parent_item):
+            """Yield all leaf file rows under a filter row or exposure row."""
+            if not parent_item:
+                return
+            # top-level filter row
+            if parent_item.parent() is None:
+                for j in range(parent_item.childCount()):
+                    exp = parent_item.child(j)
+                    for k in range(exp.childCount()):
+                        leaf = exp.child(k)
+                        if _is_leaf(leaf):
+                            yield leaf
+            # exposure row
+            elif parent_item.parent() and parent_item.parent().parent() is None and parent_item.childCount() > 0:
+                for k in range(parent_item.childCount()):
+                    leaf = parent_item.child(k)
+                    if _is_leaf(leaf):
+                        yield leaf
+
+        def _session_from_leaf(leaf):
+            # Prefer cached value (we’ll set it during ingest/retag)
+            try:
+                s = leaf.data(0, Qt.ItemDataRole.UserRole + 1)
+                if isinstance(s, str) and s.strip():
+                    return s.strip()
+            except Exception:
+                pass
+
+            meta = leaf.text(1) or ""
+            m = re.search(r"Session:\s*([^|]+)", meta)
+            return m.group(1).strip() if m else "Default"
+
+        def _set_leaf_session_text(leaf, new_session):
+            meta = leaf.text(1) or ""
+            if "Session:" in meta:
+                meta = re.sub(r"Session:\s*[^|]+", f"Session: {new_session}", meta)
+            else:
+                meta = (meta + " | " if meta else "") + f"Session: {new_session}"
+            leaf.setText(1, meta)
+            try:
+                leaf.setData(0, Qt.ItemDataRole.UserRole + 1, new_session)
+            except Exception:
+                pass
+
+        def _rekey_session_for_path(group_key, fpath, old_session, new_session):
+            """
+            Move fpath from (group_key, old_session) to (group_key, new_session).
+            Includes a fallback search if old_session is stale.
+            """
+            old_ck = (group_key, old_session)
+            new_ck = (group_key, new_session)
+
+            removed = False
+            if old_ck in target_dict and fpath in target_dict[old_ck]:
+                target_dict[old_ck] = [p for p in target_dict[old_ck] if p != fpath]
+                removed = True
+                if not target_dict[old_ck]:
+                    del target_dict[old_ck]
+
+            # fallback: find actual composite key containing this path for this group_key
+            if not removed:
+                found = None
+                for (gk, sess), lst in list(target_dict.items()):
+                    if gk == group_key and fpath in lst:
+                        found = (gk, sess)
+                        break
+                if found:
+                    target_dict[found] = [p for p in target_dict[found] if p != fpath]
+                    if not target_dict[found]:
+                        del target_dict[found]
+
+            # add to new key (avoid dupes)
+            target_dict.setdefault(new_ck, [])
+            if fpath not in target_dict[new_ck]:
+                target_dict[new_ck].append(fpath)
+
+        # --- Build the set of leaf rows to retag ---
+        selected = list(tree.selectedItems() or [])
+
+        # Include the right-clicked item even if it wasn’t selected
+        if item and item not in selected:
+            selected.append(item)
+
+        leaves = []
+        for it in selected:
+            if _is_leaf(it):
+                leaves.append(it)
+            else:
+                leaves.extend(list(_iter_leaf_descendants(it)))
+
+        # unique leaves, preserve order
+        uniq = []
+        seen = set()
+        for leaf in leaves:
+            fp = leaf.data(0, Qt.ItemDataRole.UserRole)
+            key = (leaf.text(0), fp)
+            if key in seen:
+                continue
+            seen.add(key)
+            uniq.append(leaf)
+        leaves = uniq
+
+        if not leaves:
+            self.update_status("⚠️ No leaf files selected to retag.")
+            return
+
+        changed = 0
+        for leaf in leaves:
+            fpath = leaf.data(0, Qt.ItemDataRole.UserRole)
+
+            # fallback once for legacy rows missing UserRole
             if not fpath:
-                # fallback once for legacy rows
-                fpath = next((p for k, lst in target_dict.items() for p in lst
-                            if os.path.basename(p) == filename), None)
-                if not fpath:
-                    return
-            for key in list(target_dict.keys()):
-                if not (isinstance(key, tuple) and len(key) == 2):
-                    continue
-                group_key, old_session = key
-                files = target_dict.get(key, [])
-                if fpath in files:
-                    if old_session != session_name:
-                        new_key = (group_key, session_name)
-                        target_dict.setdefault(new_key, []).append(fpath)
-                        files.remove(fpath)
-                        if not files:
-                            del target_dict[key]
-                    # tags dict guard:
-                    if not hasattr(self, "session_tags"):
-                        self.session_tags = {}
-                    self.session_tags[fpath] = session_name
-                    # leaf text:
-                    old_meta = widget_item.text(1)
-                    widget_item.setText(1, re.sub(r"Session:\s*[^|]*",
-                                                f"Session: {session_name}",
-                                                old_meta) if "Session:" in old_meta
-                                                else (old_meta + f" | Session: {session_name}"))
-                    return
+                filename = leaf.text(0).lstrip("⚠️ ").strip()
+                fpath = next(
+                    (p for (gk, sess), lst in target_dict.items() for p in lst
+                    if os.path.basename(p) == filename),
+                    None
+                )
+                if fpath:
+                    leaf.setData(0, Qt.ItemDataRole.UserRole, fpath)
 
-        def recurse_all_leaf_items(parent_item):
-            for i in range(parent_item.childCount()):
-                child = parent_item.child(i)
-                if child.childCount() == 0:
-                    update_file_session(child.text(0), child)
-                else:
-                    recurse_all_leaf_items(child)
+            if not fpath:
+                continue
 
-        # Case 1: Multi-leaf selection (e.g. Shift/Ctrl-click)
-        if selected_items and any(i.childCount() == 0 for i in selected_items):
-            for leaf in selected_items:
-                if leaf.childCount() == 0:
-                    update_file_session(leaf.text(0), leaf)
+            # group_key MUST match your ingest keys: f"{filter} - {exposure_label}"
+            exposure_item = leaf.parent()
+            filter_item = exposure_item.parent() if exposure_item else None
+            if not (exposure_item and filter_item):
+                continue
 
-        # Case 2: Right-clicked on a group (e.g. filter+exposure node)
-        elif item and item.childCount() > 0:
-            recurse_all_leaf_items(item)
+            group_key = f"{filter_item.text(0)} - {exposure_item.text(0)}"
+            old_session = _session_from_leaf(leaf)
 
-        # ✅ Reassign matching master flats/darks per leaf
-        self.assign_best_master_files()
+            if old_session != session_name:
+                _rekey_session_for_path(group_key, fpath, old_session, session_name)
+
+            self.session_tags[fpath] = session_name
+            _set_leaf_session_text(leaf, session_name)
+            changed += 1
+
+        # ✅ Only LIGHT needs reassignment of best master files (session affects flat matching)
+        if not is_flat:
+            try:
+                self.assign_best_master_files(fill_only=True)
+            except Exception:
+                pass
+
+        tree.viewport().update()
+        self.update_status(f"🟢 Assigned session '{session_name}' to {changed} file(s).")
+
 
     def _quad_coverage_add(self, cov: np.ndarray, quad: np.ndarray):
         """
@@ -8679,16 +9035,10 @@ class StackingSuiteDialog(QDialog):
 
 
     def add_flat_directory(self):
-        auto = self.settings.value("stacking/auto_session", True, type=bool)
-        if auto:
-            # No prompt — auto session tagging happens inside add_directory()
-            self.add_directory(self.flat_tree, "Select Flat Directory", "FLAT")
-            self.assign_best_master_dark()
-            self.rebuild_flat_tree()
-        else:
-            # Manual path (will prompt once for a session name)
-            self.prompt_session_before_adding("FLAT", directory_mode=True)
-
+        auto = bool(self.flat_auto_session_cb.isChecked())  # ✅ use UI state
+        self.add_directory(self.flat_tree, "Select Flat Directory", "FLAT")
+        self.assign_best_master_dark()
+        self.rebuild_flat_tree()
 
     
     def add_light_files(self):
@@ -8701,12 +9051,9 @@ class StackingSuiteDialog(QDialog):
 
     
     def add_light_directory(self):
-        auto = self.settings.value("stacking/auto_session", True, type=bool)
-        if auto:
-            self.add_directory(self.light_tree, "Select Light Directory", "LIGHT")
-            self.assign_best_master_files()
-        else:
-            self.prompt_session_before_adding("LIGHT", directory_mode=True)
+        auto = bool(self.light_auto_session_cb.isChecked())  # ✅ use UI state
+        self.add_directory(self.light_tree, "Select Light Directory", "LIGHT")
+        self.assign_best_master_files()
 
 
     def prompt_session_before_adding(self, frame_type, directory_mode=False):
@@ -8825,28 +9172,22 @@ class StackingSuiteDialog(QDialog):
 
         auto_session = self.settings.value("stacking/auto_session", True, type=bool)
 
-        # ✅ Only build auto session map if auto is ON
+        # Optional: only needed if you still use a precomputed session map for fast UI stamping
+        # Otherwise you can delete session_by_path entirely and let process_fits_header decide per-file.
         session_by_path = self._auto_tag_sessions_for_paths(paths) if auto_session else {}
 
-        # ✅ Manual session name ONLY if auto is OFF
-        manual_session_name = None
-        if not auto_session:
-            from PyQt6.QtWidgets import QInputDialog
-            session_name, ok = QInputDialog.getText(self, "Session name",
-                                                    "Enter a session name (e.g. 2024-10-09):")
-            if ok and session_name.strip():
-                manual_session_name = session_name.strip()
-
-        # Ingest (tell it the manual_session_name – it may be None)
+        # ✅ NO manual "session name" prompt anymore.
+        # Manual mode uses the stored keyword (stacking/session_keyword) and derives NIGHT1/NIGHT2/...
         self._ingest_paths_with_progress(
             paths=paths,
             tree=tree,
             expected_type=expected_type,
             title=f"Adding {expected_type.title()} from Directory…",
-            manual_session_name=manual_session_name,   # NEW
+            manual_session_name=None,  # legacy param, safe to remove later
         )
 
-        # ✅ Apply auto tags to the UI only when auto is ON
+        # ✅ If you keep this function, only use it for AUTO mode.
+        # In manual mode, your per-file logic already sets Session: NIGHT1/NIGHT2/etc.
         if auto_session:
             target_dict = self.flat_files if expected_type.upper() == "FLAT" else self.light_files
             self._apply_session_tags_to_tree(tree=tree, target_dict=target_dict, session_by_path=session_by_path)
@@ -8861,6 +9202,7 @@ class StackingSuiteDialog(QDialog):
         elif expected_type.upper() == "FLAT":
             self.assign_best_master_dark()
             self.rebuild_flat_tree()
+
 
 
 
@@ -9191,10 +9533,6 @@ class StackingSuiteDialog(QDialog):
 
 
     def _ingest_paths_with_progress(self, paths, tree, expected_type, title, manual_session_name=None):
-        """
-        Show a small standalone progress dialog while ingesting headers,
-        with cancel support. Keeps UI responsive via processEvents().
-        """
         total = len(paths)
         dlg = QProgressDialog(title, "Cancel", 0, total, self)
         dlg.setWindowTitle("Please wait")
@@ -9204,27 +9542,30 @@ class StackingSuiteDialog(QDialog):
         dlg.setAutoClose(True)
         dlg.setValue(0)
 
+        # ✅ NEW: if caller didn't force one, derive from Auto/Manual setting
+        if manual_session_name is None:
+            manual_session_name = self._resolve_manual_session_name_for_ingest()
+
         added = 0
         for i, path in enumerate(paths, start=1):
             if dlg.wasCanceled():
                 break
-
             try:
                 base = os.path.basename(path)
                 dlg.setLabelText(f"{base}  ({i}/{total})")
-                # Process events so the dialog repaints & remains responsive
                 QCoreApplication.processEvents()
-                self.process_fits_header(path, tree, expected_type, manual_session_name=manual_session_name)
+
+                self.process_fits_header(
+                    path, tree, expected_type,
+                    manual_session_name=manual_session_name
+                )
                 added += 1
-            except Exception as e:
-                # Optional: log or show a brief error — keep going
-                # print(f"Failed to add {path}: {e}")
+            except Exception:
                 pass
 
             dlg.setValue(i)
             QCoreApplication.processEvents()
 
-        # Make sure it closes
         dlg.setValue(total)
         QCoreApplication.processEvents()
 
@@ -9239,12 +9580,12 @@ class StackingSuiteDialog(QDialog):
         except Exception:
             pass
 
-        # Optional: brief status line (non-intrusive)
         try:
             if expected_type.upper() == "LIGHT":
                 self.statusBar().showMessage(f"Added {added}/{total} Light frames", 3000)
         except Exception:
             pass
+
 
     def _fmt_hms(self, seconds: float) -> str:
         s = int(round(max(0.0, float(seconds))))
@@ -9300,92 +9641,85 @@ class StackingSuiteDialog(QDialog):
     
     def process_fits_header(self, path, tree, expected_type, manual_session_name=None):
         try:
+            expected_type_u = (expected_type or "").upper()
+
+            # Ensure caches exist
+            if not hasattr(self, "_mismatch_policy") or self._mismatch_policy is None:
+                self._mismatch_policy = {}
+            if not hasattr(self, "session_tags") or self.session_tags is None:
+                self.session_tags = {}
+
             # --- Read header only (fast) ---
-            header, _ = get_valid_header(path)   # FIX: use 'path', not 'file_path'
+            header, _ = get_valid_header(path)
 
             # --- Basic image size ---
             try:
-                width = int(header.get("NAXIS1"))
-                height = int(header.get("NAXIS2"))
-                image_size = f"{width}x{height}"
+                width = int(header.get("NAXIS1", 0))
+                height = int(header.get("NAXIS2", 0))
+                image_size = f"{width}x{height}" if (width > 0 and height > 0) else "Unknown"
             except Exception as e:
                 self.update_status(f"Warning: Could not read dimensions for {os.path.basename(path)}: {e}")
                 width = height = None
                 image_size = "Unknown"
 
-            # --- Image type & exposure ---
-            imagetyp = str(header.get("IMAGETYP", "UNKNOWN")).lower()
-
+            # --- Exposure ---
             exp_val = header.get("EXPOSURE")
             if exp_val is None:
                 exp_val = header.get("EXPTIME")
+
             if exp_val is None:
                 exposure_text = "Unknown"
             else:
                 try:
-                    # canonical like "300s" or "0.5s"
                     fexp = float(exp_val)
-                    # use :g for tidy formatting (no trailing .0 unless needed)
                     exposure_text = f"{fexp:g}s"
                 except Exception:
                     exposure_text = str(exp_val)
 
-            # --- Mismatch prompt (respects "Yes to all / No to all") ---
             # --- Mismatch prompt (redirect/keep/skip with 'apply to all') ---
-            if expected_type.upper() == "DARK":
+            if expected_type_u == "DARK":
                 forbidden = ["light", "flat"]
-            elif expected_type.upper() == "FLAT":
+            elif expected_type_u == "FLAT":
                 forbidden = ["dark", "light"]
-            elif expected_type.upper() == "LIGHT":
+            elif expected_type_u == "LIGHT":
                 forbidden = ["dark", "flat"]
             else:
                 forbidden = []
 
             actual_type = self._guess_type_from_imagetyp(header.get("IMAGETYP"))
-            decision_key = (expected_type.upper(), actual_type or "UNKNOWN")
+            decision_key = (expected_type_u, (actual_type or "UNKNOWN"))
 
-            # Respect prior "Yes to all/No to all" style cache first
-            # (compat with your existing decision_attr if you want)
-            decision_attr = f"auto_confirm_{expected_type.lower()}"
+            # Legacy decision attr compatibility
+            decision_attr = f"auto_confirm_{expected_type_u.lower()}"
             if hasattr(self, decision_attr):
                 decision = getattr(self, decision_attr)
                 if decision is False:
                     return
-                # if True, keep going as-is (legacy behavior)
 
-            # New logic: if actual looks forbidden, propose options
             if (actual_type is not None) and (actual_type.lower() in forbidden):
-                # has the user already decided during this ingest burst?
                 cached = self._mismatch_policy.get(decision_key)
                 if cached == "skip":
                     return
                 elif cached == "redirect":
-                    # Re-route to the proper tab
                     dst_tree = self._tree_for_type(actual_type)
                     if dst_tree is not None:
-                        # Recursively ingest into the correct type & tree
                         self.process_fits_header(path, dst_tree, actual_type, manual_session_name=manual_session_name)
                         return
-                    # if no tree (shouldn't happen), fall through to prompt
-
                 elif cached == "keep":
-                    pass  # keep going in current tab
-
+                    pass
                 else:
-                    # Prompt the user
                     msg = QMessageBox(self)
                     msg.setWindowTitle("Mismatched Image Type")
                     pretty_actual = actual_type or "Unknown"
                     msg.setText(
                         f"Found '{os.path.basename(path)}' with IMAGETYP = {header.get('IMAGETYP')}\n"
-                        f"which looks like **{pretty_actual}**, not {expected_type}.\n\n"
+                        f"which looks like **{pretty_actual}**, not {expected_type_u}.\n\n"
                         f"What would you like to do?"
                     )
                     btn_redirect = msg.addButton(f"Send to {pretty_actual.title()} tab", QMessageBox.ButtonRole.YesRole)
-                    btn_keep     = msg.addButton(f"Add to {expected_type.title()} tab", QMessageBox.ButtonRole.YesRole)
+                    btn_keep     = msg.addButton(f"Add to {expected_type_u.title()} tab", QMessageBox.ButtonRole.YesRole)
                     btn_cancel   = msg.addButton("Skip file", QMessageBox.ButtonRole.RejectRole)
 
-                    # “Apply to all” for the rest of this add session
                     from PyQt6.QtWidgets import QCheckBox
                     apply_all_cb = QCheckBox("Apply this choice to all remaining mismatches of this kind")
                     msg.setCheckBox(apply_all_cb)
@@ -9412,44 +9746,46 @@ class StackingSuiteDialog(QDialog):
                             self.process_fits_header(path, dst_tree, actual_type, manual_session_name=manual_session_name)
                             return
 
-            # --- Resolve session tag (auto vs manual vs legacy current_session_tag) ---
+            # --- Resolve session tag (auto vs keyword-driven) ---
             auto_session = self.settings.value("stacking/auto_session", True, type=bool)
-            if manual_session_name:                           # only passed when auto is OFF and user typed one
-                session_tag = manual_session_name.strip()
-            elif auto_session:
+
+            if auto_session:
                 session_tag = self._auto_session_from_path(path, header) or "Default"
             else:
-                session_tag = getattr(self, "current_session_tag", "Default")
+                # NOTE: this is a keyword now, not a literal session name
+                keyword = self.settings.value("stacking/session_keyword", "Default", type=str)
+                session_tag = self._session_from_manual_keyword(path, keyword) or "Default"
 
-            # --- Common helpers ---
+            # --- Filter name normalization ---
             filter_name_raw = header.get("FILTER", "Unknown")
             filter_name     = self._sanitize_name(filter_name_raw)
 
+            # --- Common metadata string for leaf rows ---
+            meta_text = f"Size: {image_size} | Session: {session_tag}"
+
             # === DARKs ===
-            if expected_type.upper() == "DARK":
+            if expected_type_u == "DARK":
                 key = f"{exposure_text} ({image_size})"
                 self.dark_files.setdefault(key, []).append(path)
+                self.session_tags[path] = session_tag  # not strictly needed, but consistent
 
-                # Tree: top-level = key; child = file
                 items = tree.findItems(key, Qt.MatchFlag.MatchExactly, 0)
                 exposure_item = items[0] if items else QTreeWidgetItem([key])
                 if not items:
                     tree.addTopLevelItem(exposure_item)
 
-                metadata = f"Size: {image_size} | Session: {session_tag}"
-                leaf = QTreeWidgetItem([os.path.basename(path), metadata])
-                leaf.setData(0, Qt.ItemDataRole.UserRole, path)  # store full path
+                leaf = QTreeWidgetItem([os.path.basename(path), meta_text])
+                leaf.setData(0, Qt.ItemDataRole.UserRole, path)
+                leaf.setData(0, Qt.ItemDataRole.UserRole + 1, session_tag)  # ✅ helpful later for retag/rekey
                 exposure_item.addChild(leaf)
 
             # === FLATs ===
-            elif expected_type.upper() == "FLAT":
-                # internal dict keying (group by filter+exp+size, partition by session)
+            elif expected_type_u == "FLAT":
                 flat_key = f"{filter_name} - {exposure_text} ({image_size})"
                 composite_key = (flat_key, session_tag)
                 self.flat_files.setdefault(composite_key, []).append(path)
                 self.session_tags[path] = session_tag
 
-                # Tree: top-level = filter; second = "exp (WxH)"; leaf = file
                 filter_items = tree.findItems(filter_name, Qt.MatchFlag.MatchExactly, 0)
                 filter_item = filter_items[0] if filter_items else QTreeWidgetItem([filter_name])
                 if not filter_items:
@@ -9459,24 +9795,24 @@ class StackingSuiteDialog(QDialog):
                 exposure_item = None
                 for i in range(filter_item.childCount()):
                     if filter_item.child(i).text(0) == want_label:
-                        exposure_item = filter_item.child(i); break
+                        exposure_item = filter_item.child(i)
+                        break
                 if exposure_item is None:
                     exposure_item = QTreeWidgetItem([want_label])
                     filter_item.addChild(exposure_item)
 
-                metadata = f"Size: {image_size} | Session: {session_tag}"
-                leaf = QTreeWidgetItem([os.path.basename(path), metadata])
-                leaf.setData(0, Qt.ItemDataRole.UserRole, path)  # store full path
+                leaf = QTreeWidgetItem([os.path.basename(path), meta_text])
+                leaf.setData(0, Qt.ItemDataRole.UserRole, path)
+                leaf.setData(0, Qt.ItemDataRole.UserRole + 1, session_tag)
                 exposure_item.addChild(leaf)
 
             # === LIGHTs ===
-            elif expected_type.upper() == "LIGHT":
+            elif expected_type_u == "LIGHT":
                 light_key = f"{filter_name} - {exposure_text} ({image_size})"
                 composite_key = (light_key, session_tag)
                 self.light_files.setdefault(composite_key, []).append(path)
                 self.session_tags[path] = session_tag
 
-                # Tree: top-level = filter; second = "exp (WxH)"; leaf = file
                 filter_items = tree.findItems(filter_name, Qt.MatchFlag.MatchExactly, 0)
                 filter_item = filter_items[0] if filter_items else QTreeWidgetItem([filter_name])
                 if not filter_items:
@@ -9486,24 +9822,23 @@ class StackingSuiteDialog(QDialog):
                 exposure_item = None
                 for i in range(filter_item.childCount()):
                     if filter_item.child(i).text(0) == want_label:
-                        exposure_item = filter_item.child(i); break
+                        exposure_item = filter_item.child(i)
+                        break
                 if exposure_item is None:
                     exposure_item = QTreeWidgetItem([want_label])
                     filter_item.addChild(exposure_item)
 
-                metadata = f"Size: {image_size} | Session: {session_tag}"
-                leaf = QTreeWidgetItem([os.path.basename(path), metadata])
-                leaf.setData(0, Qt.ItemDataRole.UserRole, path)  # ✅ needed for date-aware flat fallback
+                leaf = QTreeWidgetItem([os.path.basename(path), meta_text])
+                leaf.setData(0, Qt.ItemDataRole.UserRole, path)          # ✅ needed for date-aware flat fallback
+                leaf.setData(0, Qt.ItemDataRole.UserRole + 1, session_tag)
                 exposure_item.addChild(leaf)
 
-            # --- Done ---
-            self.update_status(f"✅ Added {os.path.basename(path)} as {expected_type}")
+            self.update_status(f"✅ Added {os.path.basename(path)} as {expected_type_u}")
             QApplication.processEvents()
 
         except Exception as e:
             self.update_status(f"❌ ERROR: Could not read FITS header for {os.path.basename(path)} - {e}")
             QApplication.processEvents()
-
 
 
     def add_master_files(self, tree, file_type, files):
@@ -10985,13 +11320,19 @@ class StackingSuiteDialog(QDialog):
         if not item:
             return
 
+        # ✅ Make right-click target part of the selection (but don’t nuke multi-select)
+        if not item.isSelected():
+            if not (QApplication.keyboardModifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier)):
+                self.light_tree.clearSelection()
+            item.setSelected(True)
+
         menu = QMenu(self.light_tree)
         override_dark_action = menu.addAction("Override Dark Frame")
         override_flat_action = menu.addAction("Override Flat Frame")
+        menu.addSeparator()
         set_session_action = menu.addAction("Set Session Tag...")
 
         action = menu.exec(self.light_tree.viewport().mapToGlobal(pos))
-
         if action == override_dark_action:
             self.override_selected_master_dark()
         elif action == override_flat_action:

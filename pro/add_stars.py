@@ -219,6 +219,7 @@ def _active_mask_array_from_doc(doc) -> np.ndarray | None:
 # Dialog
 # ──────────────────────────────────────────────────────────────────────────────
 class AddStarsDialog(QDialog):
+    stars_added = pyqtSignal(object, object)
     def __init__(self, main, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Add Stars to Image")
