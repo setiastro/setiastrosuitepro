@@ -301,7 +301,7 @@ class AberrationAIDialog(QDialog):
         # This is a “big operation” tool; app-modal is usually fine here
         self.setWindowModality(Qt.WindowModality.ApplicationModal)
         self.setModal(False)
-        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        #self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
 
         self.docman = docman
         self.get_active_doc = get_active_doc_callable

@@ -3798,7 +3798,11 @@ class StackingSuiteDialog(QDialog):
         self.manual_flat_overrides = {}
         self.conversion_output_directory = None
         self.reg_files = {}
-        self.session_tags = {}           # file_path => session_tag
+        if not hasattr(self, "session_tags"):
+            self.session_tags = {}      # path -> session string
+        if not hasattr(self, "session_override"):
+            self.session_override = {}  # path -> {"mode": "manual"/"header"/"folder", "value": "..."}
+
         self.flat_dark_override = {}  # {(group_key:str): path | None | "__NO_DARK__"}
         self.deleted_calibrated_files = []
         self._norm_map = {}
@@ -6697,35 +6701,36 @@ class StackingSuiteDialog(QDialog):
         selected_items = tree.selectedItems()
 
         def update_file_session(filename, widget_item):
+            fpath = widget_item.data(0, Qt.ItemDataRole.UserRole)  # full path you stored elsewhere
+            if not fpath:
+                # fallback once for legacy rows
+                fpath = next((p for k, lst in target_dict.items() for p in lst
+                            if os.path.basename(p) == filename), None)
+                if not fpath:
+                    return
             for key in list(target_dict.keys()):
-                if isinstance(key, tuple) and len(key) == 2:
-                    group_key, old_session = key
-                else:
-                    continue  # Skip malformed keys
-
+                if not (isinstance(key, tuple) and len(key) == 2):
+                    continue
+                group_key, old_session = key
                 files = target_dict.get(key, [])
-                for f in list(files):
-                    if os.path.basename(f) == filename:
-                        if old_session != session_name:
-                            new_key = (group_key, session_name)
-                            if new_key not in target_dict:
-                                target_dict[new_key] = []
-                            target_dict[new_key].append(f)
-                            target_dict[key].remove(f)
-                            if not target_dict[key]:
-                                del target_dict[key]
-
-                        # Update internal session tag
-                        self.session_tags[f] = session_name
-
-                        # Update leaf's metadata column
-                        old_meta = widget_item.text(1)
-                        if "Session:" in old_meta:
-                            new_meta = re.sub(r"Session: [^|]*", f"Session: {session_name}", old_meta)
-                        else:
-                            new_meta = f"{old_meta} | Session: {session_name}"
-                        widget_item.setText(1, new_meta)
-                        return
+                if fpath in files:
+                    if old_session != session_name:
+                        new_key = (group_key, session_name)
+                        target_dict.setdefault(new_key, []).append(fpath)
+                        files.remove(fpath)
+                        if not files:
+                            del target_dict[key]
+                    # tags dict guard:
+                    if not hasattr(self, "session_tags"):
+                        self.session_tags = {}
+                    self.session_tags[fpath] = session_name
+                    # leaf text:
+                    old_meta = widget_item.text(1)
+                    widget_item.setText(1, re.sub(r"Session:\s*[^|]*",
+                                                f"Session: {session_name}",
+                                                old_meta) if "Session:" in old_meta
+                                                else (old_meta + f" | Session: {session_name}"))
+                    return
 
         def recurse_all_leaf_items(parent_item):
             for i in range(parent_item.childCount()):
@@ -8304,11 +8309,14 @@ class StackingSuiteDialog(QDialog):
 
     def _get_image_size(self, fp):
         ext = os.path.splitext(fp)[1].lower()
-        # first try FITS
-        if ext in (".fits", ".fit"):
+
+        if ext in (".fits", ".fit", ".fz"):
             hdr0 = fits.getheader(fp, ext=0)
-            data0 = fits.getdata(fp, ext=0)
-            h, w = data0.shape[-2:]
+            w = int(hdr0.get("NAXIS1", 0) or 0)
+            h = int(hdr0.get("NAXIS2", 0) or 0)
+            if not (w and h):
+                raise IOError(f"Cannot read FITS size for {fp}")
+            return w, h
         else:
             # try Pillow
             try:
@@ -8328,27 +8336,25 @@ class StackingSuiteDialog(QDialog):
         return w, h
 
     def _probe_fits_meta(self, fp: str):
-        """
-        Return (filter:str, exposure:float, size_str:'WxH') from FITS PRIMARY HDU.
-        Robust to missing keywords.
-        """
         try:
             hdr0 = fits.getheader(fp, ext=0)
+
             filt = self._sanitize_name(hdr0.get("FILTER", "Unknown"))
-            # exposure can be EXPTIME or EXPOSURE, sometimes a string
             exp_raw = hdr0.get("EXPTIME", hdr0.get("EXPOSURE", 0.0))
             try:
                 exp = float(exp_raw)
             except Exception:
                 exp = 0.0
-            # size
-            data0 = fits.getdata(fp, ext=0)
-            h, w = (int(data0.shape[-2]), int(data0.shape[-1])) if hasattr(data0, "shape") else (0, 0)
+
+            w = int(hdr0.get("NAXIS1", 0) or 0)
+            h = int(hdr0.get("NAXIS2", 0) or 0)
             size = f"{w}x{h}" if (w and h) else "Unknown"
+
             return filt or "Unknown", float(exp), size
         except Exception as e:
             print(f"⚠️ Could not read FITS {fp}: {e}; treating as generic image")
             return "Unknown", 0.0, "Unknown"
+
 
 
     def _probe_xisf_meta(self, fp: str):
@@ -8602,27 +8608,32 @@ class StackingSuiteDialog(QDialog):
         self._set_drizzle_on_items(targets, enabled, scale, drop)
 
     def gather_drizzle_settings_from_tree(self):
-        """Return per-group drizzle settings based on the global controls."""
-        enabled = bool(self.drizzle_checkbox.isChecked())
-        scale_txt = self.drizzle_scale_combo.currentText()
+        """
+        Return per-group drizzle settings (what the user set per group),
+        falling back to global defaults if a group has no stored state yet.
+        """
+        global_enabled = bool(self.drizzle_checkbox.isChecked())
         try:
-            scale_factor = float(scale_txt.replace("x", "").strip())
+            global_scale = float(self.drizzle_scale_combo.currentText().replace("x", "").strip())
         except Exception:
-            scale_factor = 1.0
-        drop_shrink = float(self.drizzle_drop_shrink_spin.value())
+            global_scale = 1.0
+        global_drop = float(self.drizzle_drop_shrink_spin.value())
 
         out = {}
-        root = self.reg_tree.invisibleRootItem()
-        for i in range(root.childCount()):
-            group_key = root.child(i).text(0)   # e.g. "L Ultimate - 300.0s (4144x2822)"
+        for top in self._iter_group_items():
+            group_key = top.text(0)
+            state = self.per_group_drizzle.get(group_key)
+            if not state:
+                state = {"enabled": global_enabled, "scale": global_scale, "drop": global_drop}
+                self.per_group_drizzle[group_key] = state
+
             out[group_key] = {
-                "drizzle_enabled": enabled,
-                "scale_factor": scale_factor,
-                "drop_shrink": drop_shrink,
+                "drizzle_enabled": bool(state["enabled"]),
+                "scale_factor": float(state["scale"]),
+                "drop_shrink": float(state["drop"]),
             }
-        # Optional: debug once to verify
-        self.update_status(f"🧪 drizzle_dict: {out}")
         return out
+
 
 
 

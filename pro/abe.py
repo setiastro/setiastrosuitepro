@@ -477,7 +477,7 @@ class ABEDialog(QDialog):
         # keep it blocking if you want, but as a top-level window
         self.setWindowModality(Qt.WindowModality.ApplicationModal)
         self.setModal(False)
-        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        #self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
 
         self.doc = document
 
