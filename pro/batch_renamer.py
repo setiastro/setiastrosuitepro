@@ -22,7 +22,7 @@ from PyQt6.QtCore import QSettings
 
 
 class BatchRenamerDialog(QDialog):
-    """
+    r"""
     Batch rename files using a template like:
       LIGHT_{FILTER}_{EXPOSURE:.0f}s_{DATE-OBS:%Y%m%d}_{#03}.{ext}
 
