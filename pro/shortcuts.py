@@ -7,8 +7,8 @@ from typing import Dict, Optional
 import uuid
 
 from PyQt6.QtCore import (Qt, QPoint, QRect, QMimeData, QSettings, QByteArray,
-                          QDataStream, QIODevice, QEvent)
-from PyQt6.QtGui import (QAction, QDrag, QIcon, QMouseEvent, QPixmap, QKeyEvent, QKeyEvent, QCursor)
+                          QDataStream, QIODevice, QEvent, QSize)
+from PyQt6.QtGui import (QAction, QDrag, QIcon, QMouseEvent, QPixmap, QKeyEvent, QKeyEvent, QCursor, QKeySequence)
 from PyQt6.QtWidgets import (QToolBar, QWidget, QToolButton, QMenu, QApplication, QVBoxLayout, QHBoxLayout, QComboBox, QGroupBox, QGridLayout, QDoubleSpinBox, QSpinBox,
                              QInputDialog, QMessageBox, QDialog, QSlider,
     QFormLayout, QDialogButtonBox, QDoubleSpinBox, QCheckBox, QLabel, QRubberBand, QRadioButton, QPlainTextEdit, QTabWidget, QLineEdit, QPushButton, QFileDialog)
@@ -41,7 +41,26 @@ OPENABLE_ENDINGS = (
     ".cr2", ".cr3", ".nef", ".arw", ".dng", ".raf", ".orf", ".rw2", ".pef",
 )
 
+_ICONS = None
 
+def _get_icons():
+    """Lazy-load icons so shortcuts.py can be imported early without circular deps."""
+    global _ICONS
+    if _ICONS is not None:
+        return _ICONS
+
+    # Find where get_icons() lives in your project and import it here.
+    # Try a couple common locations; keep the first that exists in your tree.
+    try:
+        from pro.icons import get_icons as _gi
+    except Exception:
+        try:
+            from pro.gui.icons import get_icons as _gi
+        except Exception:
+            _gi = None
+
+    _ICONS = _gi() if _gi else None
+    return _ICONS
 
 
 def _is_dead(w) -> bool:
@@ -65,6 +84,7 @@ def _is_dead(w) -> bool:
 SET_KEY_V1 = "Shortcuts/v1"   # legacy (id-less)
 SET_KEY_V2 = "Shortcuts/v2"   # new: stores id, label, etc.
 SET_KEY = SET_KEY_V2
+KEYBINDS_KEY = "Keybinds/v1"   # JSON dict: {command_id: "Ctrl+Alt+S"}
 
 # Used when dragging a DESKTOP shortcut onto a view for headless run
 
@@ -874,7 +894,26 @@ class ShortcutManager:
         action.setProperty("command_id", command_id)
         if not action.objectName():
             action.setObjectName(command_id)
+
+        # Ensure action shortcuts work even if focus is in child widgets / MDI
+        action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+
         self.registry[command_id] = action
+
+        # Apply saved keybind if present
+        kb = self._load_keybinds().get(command_id)
+        if kb:
+            action.setShortcut(QKeySequence(kb))
+
+    def find_keybind_conflicts(self) -> dict[str, list[str]]:
+        # returns {"Ctrl+Alt+K": ["script:...", "stat_stretch"], ...}
+        conflicts = {}
+        for cid, act in self.registry.items():
+            ks = act.shortcut().toString()
+            if not ks:
+                continue
+            conflicts.setdefault(ks, []).append(cid)
+        return {k:v for k,v in conflicts.items() if len(v) > 1}
 
     def trigger(self, command_id: str):
         act = self.registry.get(command_id)
@@ -1084,6 +1123,35 @@ class ShortcutManager:
                 pass
             return False, str(e)
 
+    def _icon_for_command(self, command_id: str, act: QAction | None) -> QIcon:
+        # 1) Prefer the QAction icon (works for built-in tools and scripts if set)
+        if act is not None:
+            try:
+                ico = act.icon()
+                if ico is not None and not ico.isNull():
+                    return ico
+            except Exception:
+                pass
+
+            # 2) Optional: if the action carries a script_icon_path property, use it
+            try:
+                p = act.property("script_icon_path")
+                if isinstance(p, str) and p.strip() and Path(p).exists():
+                    return QIcon(p.strip())
+            except Exception:
+                pass
+
+        # 3) Fallback for scripts: use the generic SCRIPT icon
+        if isinstance(command_id, str) and command_id.startswith("script:"):
+            try:
+                ic = _get_icons()
+                if ic is not None and hasattr(ic, "SCRIPT"):
+                    v = ic.SCRIPT
+                    return v if isinstance(v, QIcon) else QIcon(str(v))
+            except Exception:
+                pass
+
+        return QIcon()
 
 
     # ---------- utils ----------
@@ -1116,7 +1184,8 @@ class ShortcutManager:
         sid = shortcut_id or uuid.uuid4().hex
         lbl = (label or self._default_label_for(command_id)).strip() or command_id
 
-        w = ShortcutButton(self, sid, command_id, act.icon(), lbl, self.canvas)  # ← FIXED SIG
+        ico = self._icon_for_command(command_id, act)
+        w = ShortcutButton(self, sid, command_id, ico, lbl, self.canvas)
         w.adjustSize()
         w.move(pos)
         w.show()
@@ -1169,10 +1238,6 @@ class ShortcutManager:
             w.setText(new_label.strip())  # in case caller didn't already
         self.save_shortcuts()
 
-    def remove(self, shortcut_id: str):
-        if shortcut_id in self.widgets:
-            self.widgets.pop(shortcut_id, None)
-            self.save_shortcuts()
 
     # ---- persistence (QSettings JSON blob) ----
     def save_shortcuts(self):
@@ -1243,6 +1308,41 @@ class ShortcutManager:
                 self.mw._log(f"Shortcuts v1: failed to migrate ({e})")
             except Exception:
                 pass
+
+
+    def _load_keybinds(self) -> dict:
+        raw = self.settings.value(KEYBINDS_KEY, "", type=str) or ""
+        if not raw:
+            return {}
+        try:
+            obj = json.loads(raw)
+            return obj if isinstance(obj, dict) else {}
+        except Exception:
+            return {}
+
+    def _save_keybinds(self, d: dict):
+        self.settings.setValue(KEYBINDS_KEY, json.dumps(d))
+        self.settings.sync()
+
+    def set_keybind(self, command_id: str, keyseq: str | None):
+        """
+        keyseq: e.g. "Ctrl+Alt+K". If None/empty => clear binding.
+        Applies immediately if action is registered.
+        """
+        d = self._load_keybinds()
+        if keyseq and keyseq.strip():
+            d[command_id] = keyseq.strip()
+        else:
+            d.pop(command_id, None)
+        self._save_keybinds(d)
+
+        act = self.registry.get(command_id)
+        if act is not None:
+            if keyseq and keyseq.strip():
+                act.setShortcut(QKeySequence(keyseq.strip()))
+                act.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+            else:
+                act.setShortcut(QKeySequence())
 
     def apply_command_to_subwindow(self, subwin, payload):
         """Apply a dragged command (or bundle) to the specific subwindow."""
@@ -1368,20 +1468,6 @@ class ShortcutManager:
             act.trigger()
 
 
-    def clear(self):
-        for sid, w in list(self.widgets.items()):
-            try:
-                if not _is_dead(w):
-                    w.hide()
-                    w.deleteLater()
-            except RuntimeError:
-                pass
-        self.widgets.clear()
-        self.selected.clear()
-        self.settings.setValue(SET_KEY_V2, "[]")
-        self.settings.remove(SET_KEY_V1)
-        self.settings.sync()
-
     # ---------- selection ----------
     def _apply_sel_visual(self, sid: str, on: bool):
         w = self.widgets.get(sid)
@@ -1399,12 +1485,6 @@ class ShortcutManager:
             # C++ object died between get() and call
             self.widgets.pop(sid, None)
             self.selected.discard(sid)
-
-    def clear_selection(self):
-        # copy to avoid mutating while iterating
-        for sid in list(self.selected):
-            self._apply_sel_visual(sid, False)
-        self.selected.clear()
 
     def select_only(self, sid: str):
         self.clear_selection()
@@ -1442,6 +1522,23 @@ class ShortcutManager:
                 continue
             out.append(w)
         return out
+
+    def clear_selection(self):
+        """Clear current selection highlight without deleting shortcuts."""
+        # Remove highlight from all currently selected items
+        for sid in list(self.selected):
+            try:
+                self._apply_sel_visual(sid, False)
+            except Exception:
+                pass
+        self.selected.clear()
+
+        # Nudge repaint (optional but helps)
+        try:
+            self.canvas.update()
+        except Exception:
+            pass
+
 
     def clear(self):
         for sid, w in list(self.widgets.items()):

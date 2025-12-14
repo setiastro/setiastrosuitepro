@@ -195,7 +195,7 @@ from pro.resources import (
     colorwheel_path, font_path, csv_icon_path, spinner_path, wims_path,
     wimi_path, linearfit_path, debayer_path, aberration_path,
     functionbundles_path, viewbundles_path, selectivecolor_path, rgbalign_path,
-    background_path, 
+    background_path, script_icon_path
 )
 
 import faulthandler
@@ -5402,9 +5402,17 @@ class AstroSuiteProMainWindow(
             preset = {}
 
         def _cid_norm(c: str) -> str:
-            c = (c or "").strip().lower()
+            s = (c or "").strip()
+
+            # IMPORTANT: do NOT lowercase the script id suffix
+            # cid_raw might be "script:MyScript42" or even a filename-based id
+            if s.lower().startswith("script:"):
+                return "script:" + s.split(":", 1)[1]  # preserve exact suffix casing
+
+            c = s.lower()
+
             aliases = {
-                # geometry short <->" long ids
+                # geometry short <-> long ids
                 "flip_horizontal": "geom_flip_horizontal",
                 "geom_flip_h": "geom_flip_horizontal",
                 "geom_flip_horizontal": "geom_flip_horizontal",
@@ -5476,6 +5484,52 @@ class AstroSuiteProMainWindow(
             return aliases.get(c, c)
 
         cid = _cid_norm(cid_raw)
+
+        # ----- Scripts: "script:<script_id>" -----
+        if isinstance(cid, str) and cid.startswith("script:"):
+            sid = cid.split(":", 1)[1]
+
+            # If dropped on a view, make it active so scripts operate on that doc
+            try:
+                if target_sw is not None:
+                    self.mdi.setActiveSubWindow(target_sw)
+                    QApplication.processEvents()
+            except Exception:
+                pass
+
+            sm = getattr(self, "scriptman", None)
+            if sm is None:
+                QMessageBox.warning(self, "Scripts", "Script manager is not available.")
+                return
+
+            try:
+                # Prefer an explicit id runner if you have one
+                if callable(getattr(sm, "run_by_id", None)):
+                    sm.run_by_id(sid)
+                elif callable(getattr(sm, "run_script_id", None)):
+                    sm.run_script_id(sid)
+                else:
+                    # Fallback: find entry and run
+                    entry = None
+                    reg = getattr(sm, "registry", None)
+                    if reg:
+                        for e in reg:
+                            if getattr(e, "script_id", None) == sid:
+                                entry = e
+                                break
+                    if entry is None:
+                        raise RuntimeError(f"Unknown script id: {sid!r}")
+                    sm.run_entry(entry)
+
+                try:
+                    self._log(f"Ran Script '{sid}'")
+                except Exception:
+                    pass
+
+            except Exception as e:
+                QMessageBox.critical(self, "Script failed", f"{sid}\n\n{e}")
+            return
+
 
         def _call_any(method_names: list[str], *args, **kwargs) -> bool:
             for name in method_names:

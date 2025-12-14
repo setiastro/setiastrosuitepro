@@ -3,14 +3,15 @@ from __future__ import annotations
 
 import os
 import sys
+import uuid
 import traceback
 import importlib.util
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional, Any
 import numpy as np
-from PyQt6.QtCore import QStandardPaths, QObject
-from PyQt6.QtGui import QAction, QDesktopServices
+from PyQt6.QtCore import QStandardPaths, QObject, QSettings, Qt
+from PyQt6.QtGui import QAction, QDesktopServices, QCursor
 from PyQt6.QtWidgets import QMessageBox
 from PyQt6.QtCore import QUrl
 
@@ -611,12 +612,14 @@ class ScriptContext:
 # -----------------------------------------------------------------------------
 @dataclass
 class ScriptEntry:
+    script_id: str          # NEW
     path: Path
     name: str
     group: str = ""
-    shortcut: Optional[str] = None
+    shortcut: Optional[str] = None   # default shortcut from script
     module: Any = None
     run: Optional[Callable[[ScriptContext], None]] = None
+
 
 
 # -----------------------------------------------------------------------------
@@ -668,6 +671,7 @@ class ScriptManager(QObject):
             return None
 
         mod = importlib.util.module_from_spec(spec)
+        script_id = self._script_id_for_path(path, mod)
         try:
             spec.loader.exec_module(mod)  # type: ignore
         except Exception:
@@ -695,6 +699,7 @@ class ScriptManager(QObject):
         shortcut = _pick("SCRIPT_SHORTCUT", "script_shortcut", default=None)
 
         entry = ScriptEntry(
+            script_id=script_id,
             path=path,
             name=str(name),
             group=str(group or ""),
@@ -709,53 +714,168 @@ class ScriptManager(QObject):
     def rebuild_menu(self, menu_scripts):
         """
         Clears and rebuilds the Scripts menu from registry.
+
         Expects base actions already created on app window:
         act_script_editor, act_open_scripts_folder, act_reload_scripts, act_create_sample_script
+        (optionally) act_open_user_scripts_github, act_open_scripts_discord
+
+        Integrates scripts into ShortcutManager using command ids:
+        "script:<script_id>"
+
+        Also adds "Pin Script to Canvas" submenu to create desktop shortcuts for scripts.
         """
+        from typing import Any
+        from PyQt6.QtCore import Qt, QPoint
+        from PyQt6.QtGui import QAction, QCursor
+
         menu_scripts.clear()
 
         # --- fixed top actions ---
-        if hasattr(self.app, "act_script_editor"):
+        if getattr(self.app, "act_script_editor", None):
             menu_scripts.addAction(self.app.act_script_editor)
             menu_scripts.addSeparator()
 
-        # NEW: external “Go To” entries
-        if hasattr(self.app, "act_open_user_scripts_github"):
+        if getattr(self.app, "act_open_user_scripts_github", None):
             menu_scripts.addAction(self.app.act_open_user_scripts_github)
-        if hasattr(self.app, "act_open_scripts_discord"):
+        if getattr(self.app, "act_open_scripts_discord", None):
             menu_scripts.addAction(self.app.act_open_scripts_discord)
 
         menu_scripts.addSeparator()
 
-        menu_scripts.addAction(self.app.act_open_scripts_folder)
-        menu_scripts.addAction(self.app.act_reload_scripts)
-        menu_scripts.addAction(self.app.act_create_sample_script)
+        if getattr(self.app, "act_open_scripts_folder", None):
+            menu_scripts.addAction(self.app.act_open_scripts_folder)
+        if getattr(self.app, "act_reload_scripts", None):
+            menu_scripts.addAction(self.app.act_reload_scripts)
+        if getattr(self.app, "act_create_sample_script", None):
+            menu_scripts.addAction(self.app.act_create_sample_script)
+
         menu_scripts.addSeparator()
 
-        # group -> submenu
+        # ShortcutManager (optional)
+        sc = getattr(self.app, "shortcuts", None)
+        can_register = callable(getattr(sc, "register_action", None))
+        can_add_sc   = callable(getattr(sc, "add_shortcut", None))
+
+        # Helper: pin a command id to canvas at cursor pos
+        def _pin_to_canvas(cmdid: str):
+            if not (sc and can_add_sc):
+                return
+            mdi = getattr(self.app, "mdi", None)
+            if mdi is None:
+                return
+            vp = mdi.viewport()
+            if vp is None:
+                return
+
+            pos = vp.mapFromGlobal(QCursor.pos())
+            if not vp.rect().contains(pos):
+                pos = vp.rect().center()
+
+            try:
+                sc.add_shortcut(cmdid, QPoint(int(pos.x()), int(pos.y())))
+            except Exception:
+                pass
+
+        # "Pin Script to Canvas" submenu (grouped)
+        pin_root = menu_scripts.addMenu("Pin Script to Canvas")
+        pin_group_menus: dict[str, Any] = {}
+
+        # group -> submenu for run items
         group_menus: dict[str, Any] = {}
 
         for entry in self.registry:
-            group = entry.group.strip()
+            script_id = getattr(entry, "script_id", None)
+            if not script_id:
+                # If a script entry has no id, we can still show it in the menu,
+                # but it can't be pinned/registered reliably.
+                cmdid = None
+            else:
+                cmdid = f"script:{script_id}"
+
+            group = (entry.group or "").strip()
+
+            # ---- RUN menu placement ----
             if group:
-                sub = group_menus.get(group)
-                if sub is None:
-                    sub = menu_scripts.addMenu(group)
-                    group_menus[group] = sub
-                target_menu = sub
+                run_sub = group_menus.get(group)
+                if run_sub is None:
+                    run_sub = menu_scripts.addMenu(group)
+                    group_menus[group] = run_sub
+                target_menu = run_sub
             else:
                 target_menu = menu_scripts
 
+            from PyQt6.QtGui import QIcon
+            from pro.resources import get_icons
+
+            icons = get_icons()
+
             act = QAction(entry.name, self.app)
-            if entry.shortcut:
+            act.setIcon(QIcon(icons.SCRIPT))  # NEW
+
+            # IMPORTANT: make shortcuts/global binds work regardless of focus
+            act.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+
+            # store command_id on the action if we have one
+            if cmdid:
+                act.setProperty("command_id", cmdid)
+
+            # Default shortcut from script metadata (optional)
+            if getattr(entry, "shortcut", None):
                 try:
                     act.setShortcut(entry.shortcut)
+                except Exception:
+                    pass
+
+            # Register with ShortcutManager so persisted overrides can apply
+            if cmdid and can_register:
+                try:
+                    sc.register_action(cmdid, act)
                 except Exception:
                     pass
 
             act.triggered.connect(lambda _=False, e=entry: self.run_entry(e))
             target_menu.addAction(act)
 
+            # ---- PIN menu placement ----
+            # Only add to pin menu if we have a stable cmdid
+            if cmdid:
+                if group:
+                    pin_sub = pin_group_menus.get(group)
+                    if pin_sub is None:
+                        pin_sub = pin_root.addMenu(group)
+                        pin_group_menus[group] = pin_sub
+                    pin_menu = pin_sub
+                else:
+                    pin_menu = pin_root
+
+                act_pin = QAction(entry.name, self.app)
+                act_pin.setIcon(QIcon(icons.SCRIPT))  # NEW
+                act_pin.triggered.connect(lambda _=False, c=cmdid: _pin_to_canvas(c))
+                pin_menu.addAction(act_pin)
+
+        # If there are no pinnable scripts, disable the pin root nicely
+        if pin_root.actions() == []:
+            a = pin_root.addAction("No scripts to pin")
+            a.setEnabled(False)
+
+
+    def _script_command_id(self, entry: ScriptEntry, *, on_base: bool = False) -> str:
+        # Keep it stable and unique. Path is perfect because scripts are per-user.
+        p = entry.path.as_posix()
+        return f"script:{'base:' if on_base else ''}{p}"
+
+    def _pin_command_to_canvas(self, command_id: str):
+        mgr = getattr(self.app, "shortcuts", None)
+        mdi = getattr(self.app, "mdi", None)
+        if mgr is None or mdi is None:
+            return
+
+        vp = mdi.viewport()
+        pos = vp.mapFromGlobal(QCursor.pos())
+        if not vp.rect().contains(pos):
+            pos = vp.rect().center()
+
+        mgr.add_shortcut(command_id, pos)
 
     # ---- running ----
     def run_entry(self, entry: ScriptEntry, *, on_base: bool = False):
@@ -1272,3 +1392,22 @@ def run(ctx):
             pass
 
             self._log(f"[Scripts] Failed to write sample script:\n{traceback.format_exc()}")
+
+
+    def _script_id_for_path(self, path: Path, mod) -> str:
+        # 1) Prefer explicit SCRIPT_ID in the script file (best, survives renames)
+        sid = getattr(mod, "SCRIPT_ID", None) or getattr(mod, "script_id", None)
+        if isinstance(sid, str) and sid.strip():
+            return sid.strip()
+
+        # 2) Fallback: persist per-path in QSettings (ok for existing scripts)
+        s = QSettings()
+        key = f"Scripts/ids/{str(path)}"
+        sid = s.value(key, "", type=str) or ""
+        if sid:
+            return sid
+
+        sid = uuid.uuid4().hex
+        s.setValue(key, sid)
+        s.sync()
+        return sid
