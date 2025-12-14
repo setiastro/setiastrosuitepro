@@ -37,7 +37,7 @@ numba
 #neural net
 onnx
 onnxruntime
-onnxruntime-directml; sys_platform != "darwin"
+onnxruntime-directml; sys_platform == "win32"
 
 # image formats & camera raw
 xisf
@@ -57,4 +57,4 @@ pyqtgraph
 psutil
 
 # computer vision
-opencv-python
+opencv-python-headless
