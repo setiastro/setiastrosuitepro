@@ -1,9 +1,9 @@
 {
-  "version": "1.5.11",
+  "version": "1.5.12",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.5.11/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.5.11/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.5.11/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.5.12/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.5.12/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.5.12/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.5.11 Continuum Subtraction, SupernovaAsteroid Hunter, MinorPlanets Updates. Many bug fixes throughout"
+  "notes": "Seti Astro Suite Pro V1.5.12 Script Shortcuts, better starnet removal, and loads of other fixes and niceties."
 }
