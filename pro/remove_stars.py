@@ -25,6 +25,8 @@ except Exception:
 # Shared utilities
 from pro.widgets.image_utils import extract_mask_from_document as _active_mask_array_from_doc
 
+_MAD_NORM = 1.4826
+
 # --------- deterministic, invertible stretch used for StarNet ----------
 # ---------- Siril-like MTF (linked) pre-stretch for StarNet ----------
 def _robust_peak_sigma(gray: np.ndarray) -> tuple[float, float]:
@@ -53,16 +55,37 @@ def _mtf_apply(x: np.ndarray, shadows: float, midtones: float, highlights: float
     return np.clip(y, 0.0, 1.0).astype(np.float32, copy=False)
 
 def _mtf_inverse(y: np.ndarray, shadows: float, midtones: float, highlights: float) -> np.ndarray:
-    # Inverse via property: mtf^{-1}(·, m) = mtf(·, 1-m)
-    s, m, h = float(shadows), float(midtones), float(highlights)
+    """
+    Pseudoinverse of MTF, matching Siril's MTF_pseudoinverse() implementation.
+
+    C reference:
+
+    float MTF_pseudoinverse(float y, struct mtf_params params) {
+        return ((((params.shadows + params.highlights) * params.midtones
+                - params.shadows) * y - params.shadows * params.midtones
+                + params.shadows)
+                / ((2 * params.midtones - 1) * y - params.midtones + 1));
+    }
+    """
+    s = float(shadows)
+    m = float(midtones)
+    h = float(highlights)
+
     yp = np.clip(y.astype(np.float32, copy=False), 0.0, 1.0)
-    # apply with (1 - m)
-    m_inv = np.clip(1.0 - m, 1e-4, 1.0 - 1e-4)
-    num = (m_inv - 1.0) * yp
-    den = ((2.0 * m_inv - 1.0) * yp) - m_inv
-    xp = np.divide(num, den, out=np.zeros_like(yp, dtype=np.float32), where=np.abs(den) > 1e-12)
-    xp = np.clip(xp, 0.0, 1.0)
-    return (xp * (h - s) + s).astype(np.float32, copy=False)
+
+    num = (((s + h) * m - s) * yp - s * m + s)
+    den = (2.0 * m - 1.0) * yp - m + 1.0
+
+    x = np.divide(
+        num,
+        den,
+        out=np.full_like(yp, s, dtype=np.float32),  # fallback ~shadows if denom≈0
+        where=np.abs(den) > 1e-12
+    )
+
+    # Clamp back into [s, h] and then [0,1] for safety
+    x = np.clip(x, s, h)
+    return np.clip(x, 0.0, 1.0).astype(np.float32, copy=False)
 
 def _mtf_params_linked(img_rgb01: np.ndarray, shadowclip_sigma: float = -2.8, targetbg: float = 0.25):
     """
@@ -104,53 +127,80 @@ def _invert_mtf_linked_rgb(img_rgb01: np.ndarray, p: dict) -> np.ndarray:
 
 
 def _mtf_params_unlinked(img_rgb01: np.ndarray,
-                         shadowclip_sigma: float = -2.8,
-                         targetbg: float = 0.25):
+                         shadows_clipping: float = -2.8,
+                         targetbg: float = 0.25) -> dict:
     """
-    Compute per-channel MTF parameters for RGB image in [0..1].
-    Returns dict with arrays: {'s': (3,), 'm': (3,), 'h': (3,)}
-    Exact inverse possible with _invert_mtf_unlinked_rgb using same params.
+    Siril-style per-channel MTF parameter estimation, matching
+    find_unlinked_midtones_balance_default() / find_unlinked_midtones_balance().
+
+    Works on float32 data assumed in [0,1].
+    Returns dict with arrays: {'s': (C,), 'm': (C,), 'h': (C,)}.
     """
     x = np.asarray(img_rgb01, dtype=np.float32)
+    # Force 3 channels internally (Siril expects 1 or 3; we always give it 3 here)
     if x.ndim == 2:
-        x = np.stack([x]*3, axis=-1)
+        x = np.stack([x] * 3, axis=-1)
     elif x.ndim == 3 and x.shape[2] == 1:
         x = np.repeat(x, 3, axis=2)
 
     C = x.shape[2]
     s = np.zeros(C, dtype=np.float32)
     m = np.zeros(C, dtype=np.float32)
-    h = np.ones (C, dtype=np.float32)  # we normalize to ≤1 before 16-bit write
+    h = np.zeros(C, dtype=np.float32)
 
-    # robust peak/sigma per channel
+    med = np.zeros(C, dtype=np.float32)
+    mad = np.zeros(C, dtype=np.float32)
+    inverted_flags = np.zeros(C, dtype=bool)
+
+    # --- stats per channel (Siril: median / normValue, mad / normValue * MAD_NORM) ---
+    # Here normValue == 1.0 because we're already in [0,1]
     for c in range(C):
-        ch = x[..., c]
-        # use your robust peak/sigma if available; fallback to median/MAD
-        try:
-            peak_c, sigma_c = _robust_peak_sigma(ch)
-        except NameError:
-            med = float(np.median(ch))
-            mad = float(np.median(np.abs(ch - med))) + 1e-12
-            peak_c  = med
-            sigma_c = 1.4826 * mad
+        ch = x[..., c].astype(np.float32, copy=False)
+        med_c = float(np.median(ch))
+        mad_raw = float(np.median(np.abs(ch - med_c)))
+        mad_c = mad_raw * _MAD_NORM
+        if mad_c == 0.0:
+            mad_c = 0.001
 
-        # compute shadows s_c and clamp to [min, max-eps]
-        s_c = float(peak_c + shadowclip_sigma * sigma_c)
-        xmin = float(np.min(ch)) if ch.size else 0.0
-        xmax = float(np.max(ch)) if ch.size else 1.0
-        eps  = 1e-6
-        s_c  = float(np.clip(s_c, xmin, max(xmax - eps, xmin)))
+        med[c] = med_c
+        mad[c] = mad_c
+        if med_c > 0.5:
+            inverted_flags[c] = True
 
-        # solve midtones m so that mtf maps peak→targetbg
-        denom = max(1e-12, (h[c] - s_c))
-        xnorm = (peak_c - s_c) / denom
-        xnorm = float(np.clip(xnorm, 1e-6, 1.0 - 1e-6))
-        y     = float(np.clip(targetbg, 1e-6, 1.0 - 1e-6))
-        d     = (2.0 * y * xnorm) - y - xnorm
-        m_c   = (xnorm * (y - 1.0)) / d if abs(d) > 1e-12 else 0.5
-        m_c   = float(np.clip(m_c, 1e-4, 1.0 - 1e-4))
+    inverted_channels = int(inverted_flags.sum())
 
-        s[c], m[c] = s_c, m_c
+    # --- Main branch (non-inverted dominant) ---
+    if inverted_channels < C:
+        for c in range(C):
+            median = float(med[c])
+            mad_c = float(mad[c])
+
+            c0 = median + shadows_clipping * mad_c
+            if c0 < 0.0:
+                c0 = 0.0
+            # Siril: m2 = median - c0; midtones = MTF(m2, target_bg, 0,1)
+            m2 = median - c0
+            mid = float(_mtf_scalar(m2, targetbg, 0.0, 1.0))
+
+            s[c] = c0
+            m[c] = mid
+            h[c] = 1.0
+
+    # --- Inverted channel branch ---
+    else:
+        for c in range(C):
+            median = float(med[c])
+            mad_c = float(mad[c])
+
+            c1 = median - shadows_clipping * mad_c
+            if c1 > 1.0:
+                c1 = 1.0
+            m2 = c1 - median
+            mid = 1.0 - float(_mtf_scalar(m2, targetbg, 0.0, 1.0))
+
+            s[c] = 0.0
+            m[c] = mid
+            h[c] = c1
 
     return {"s": s, "m": m, "h": h}
 
@@ -235,6 +285,44 @@ def _stat_unstretch_rgb(img: np.ndarray, params: dict) -> np.ndarray:
         out = np.stack([out] * 3, axis=-1)
     return out
 
+def _mtf_scalar(x: float, m: float, lo: float = 0.0, hi: float = 1.0) -> float:
+    """
+    Scalar midtones transfer function matching the PixInsight / Siril spec.
+
+    For x in [lo, hi], rescale to [0,1] and apply:
+
+        M(x; m) = (m - 1) * xp / ((2*m - 1)*xp - m)
+
+    with the special cases x<=lo -> 0, x>=hi -> 1.
+    """
+    # clamp to the input domain
+    if x <= lo:
+        return 0.0
+    if x >= hi:
+        return 1.0
+
+    denom_range = hi - lo
+    if abs(denom_range) < 1e-12:
+        return 0.0
+
+    xp = (x - lo) / denom_range  # normalized x in [0,1]
+
+    num = (m - 1.0) * xp
+    den = (2.0 * m - 1.0) * xp - m
+
+    if abs(den) < 1e-12:
+        # the spec says M(m; m) = 0.5, but if we ever hit this numerically
+        # just return 0.5 as a safe fallback
+        return 0.5
+
+    y = num / den
+    # clamp to [0,1] as PI/Siril do
+    if y < 0.0:
+        y = 0.0
+    elif y > 1.0:
+        y = 1.0
+    return float(y)
+
 
 # ------------------------------------------------------------
 # Settings helper
@@ -256,23 +344,24 @@ def _get_setting_any(settings, keys: tuple[str, ...], default: str = "") -> str:
 
 def starnet_starless_from_array(arr_rgb01: np.ndarray, settings, *, tmp_prefix="comet") -> np.ndarray:
     """
-    Statistical-Stretch round-trip for 32-bit data (pedestal-safe):
-      1) Record per-channel first-nonzero blackpoints (BP[c]); subtract them
-      2) Record per-channel medians M0[c]
-      3) Unlinked statistical stretch to target 0.25 (per-channel) -> write 16-bit TIFF
-      4) StarNet -> read starless TIFF
-      5) Per-channel statistical stretch back to each original median M0[c]
-      6) Add back BP[c]
-    Returns starless RGB float32 in [0..1] (or scaled back if you fed >1).
+    Siril-style MTF round-trip for 32-bit data:
+
+      1) Normalize to [0,1] (preserving overall scale separately)
+      2) Compute unlinked MTF params per channel (Siril auto-stretch)
+      3) Apply unlinked MTF -> 16-bit TIFF for StarNet
+      4) StarNet -> read starless 16-bit TIFF
+      5) Apply per-channel MTF pseudoinverse with SAME params
+      6) Restore original scale if >1.0
     """
     import os
     import platform
     import subprocess
     import numpy as np
-    from imageops.stretch import stretch_color_image, stretch_mono_image
-    # save_image / load_image / _get_setting_any / _safe_rm assumed available in this module
+
+    # save_image / load_image / _get_setting_any assumed available
     arr = np.asarray(arr_rgb01, dtype=np.float32)
     was_single = (arr.ndim == 2) or (arr.ndim == 3 and arr.shape[2] == 1)
+
     exe = _get_setting_any(settings, ("starnet/exe_path", "paths/starnet"), "")
     if not exe or not os.path.exists(exe):
         raise RuntimeError("StarNet executable not configured (settings 'paths/starnet').")
@@ -281,10 +370,10 @@ def starnet_starless_from_array(arr_rgb01: np.ndarray, settings, *, tmp_prefix="
     in_path  = os.path.join(workdir, f"{tmp_prefix}_in.tif")
     out_path = os.path.join(workdir, f"{tmp_prefix}_out.tif")
 
-    # --- Normalize input shape and safe values
+    # --- Normalize input shape and safe values ---
     x = arr
     if x.ndim == 2:
-        x = np.stack([x]*3, axis=-1)
+        x = np.stack([x] * 3, axis=-1)
     elif x.ndim == 3 and x.shape[2] == 1:
         x = np.repeat(x, 3, axis=2)
     x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
@@ -295,41 +384,18 @@ def starnet_starless_from_array(arr_rgb01: np.ndarray, settings, *, tmp_prefix="
     xin = (x / scale_factor) if scale_factor > 1.0 else x
     xin = np.clip(xin, 0.0, 1.0)
 
-    H, W, _ = xin.shape
+    # --- Siril-style unlinked MTF params + pre-stretch ---
+    mtf_params = _mtf_params_unlinked(xin, shadows_clipping=-2.8, targetbg=0.25)
+    x_for_starnet = _apply_mtf_unlinked_rgb(xin, mtf_params).astype(np.float32, copy=False)
 
-    # --- Helper: per-channel first-nonzero (minimum positive) blackpoint
-    def _first_nonzero_bp_per_channel(img3):
-        bps = np.zeros(3, dtype=np.float32)
-        for c in range(3):
-            ch = img3[..., c].reshape(-1)
-            pos = ch[ch > 0.0]
-            bps[c] = float(pos.min()) if pos.size else 0.0
-        return bps
-
-    # 1) Per-channel "first non-zero" blackpoints, subtract pedestals
-    bp = _first_nonzero_bp_per_channel(xin)
-    xin_ped = xin - bp.reshape((1, 1, 3))
-    xin_ped = np.clip(xin_ped, 0.0, 1.0)
-
-    # 2) Record per-channel medians after pedestal removal
-    m0 = np.array([float(np.median(xin_ped[..., c])) for c in range(3)], dtype=np.float32)
-
-    # 3) Unlinked statistical stretch -> target 0.25
-    #    (uses your SAS math internally, per-channel)
-    target_bg = 0.25
-    x_for_starnet = stretch_color_image(
-        xin_ped, target_median=target_bg,
-        linked=False, normalize=False, apply_curves=False, curves_boost=0.0
-    ).astype(np.float32, copy=False)
-
-    # Write 16-bit TIFF for StarNet
+    # --- Write 16-bit TIFF for StarNet ---
     save_image(
         x_for_starnet, in_path,
         original_format="tif", bit_depth="16-bit",
         original_header=None, is_mono=False, image_meta=None, file_meta=None
     )
 
-    # 4) Run StarNet
+    # --- Run StarNet ---
     exe_name = os.path.basename(exe).lower()
     if platform.system() in ("Windows", "Linux"):
         cmd = [exe, in_path, out_path, "256"]
@@ -345,42 +411,25 @@ def starnet_starless_from_array(arr_rgb01: np.ndarray, settings, *, tmp_prefix="
     _safe_rm(in_path); _safe_rm(out_path)
 
     if starless_s.ndim == 2:
-        starless_s = np.stack([starless_s]*3, axis=-1)
+        starless_s = np.stack([starless_s] * 3, axis=-1)
     elif starless_s.ndim == 3 and starless_s.shape[2] == 1:
         starless_s = np.repeat(starless_s, 3, axis=2)
     starless_s = np.clip(starless_s.astype(np.float32, copy=False), 0.0, 1.0)
 
-    # 5) Per-channel statistical stretch back to original per-channel medians (M0)
-    #    We use your mono stretch per channel so targets can differ by channel.
-    def _per_channel_to_targets(img3, targets_rgb):
-        out = np.empty_like(img3, dtype=np.float32)
-        for c in range(3):
-            ch = img3[..., c]
-            out[..., c] = stretch_mono_image(
-                ch, target_median=float(targets_rgb[c]),
-                normalize=False, apply_curves=False, curves_boost=0.0
-            )
-        return out
-
-    starless_back = _per_channel_to_targets(starless_s, m0)
-
-    # 6) Add back the original pedestals
-    starless_lin = starless_back + bp.reshape((1, 1, 3))
+    # --- Apply Siril-style pseudoinverse MTF with SAME params ---
+    starless_lin01 = _invert_mtf_unlinked_rgb(starless_s, mtf_params)
 
     # Restore original scale if we normalized earlier
     if scale_factor > 1.0:
-        starless_lin *= scale_factor
+        starless_lin01 *= scale_factor
 
-    # Match previous function’s contract (float32, clipped to [0..1])
-    result = np.clip(starless_lin, 0.0, 1.0).astype(np.float32, copy=False)
+    result = np.clip(starless_lin01, 0.0, 1.0).astype(np.float32, copy=False)
 
     # If the source was mono, return mono
     if was_single and result.ndim == 3:
         result = result.mean(axis=2)
 
     return result
-
-
 
 
 def darkstar_starless_from_array(arr_rgb01: np.ndarray, settings, *, tmp_prefix="comet",
@@ -636,22 +685,29 @@ def _run_starnet(main, doc):
     input_image_path  = os.path.join(starnet_dir, "imagetoremovestars.tif")
     output_image_path = os.path.join(starnet_dir, "starless.tif")
 
-    # --- Prepare input for StarNet
-    meta = None
+    # --- Prepare input for StarNet (Siril-style MTF pre-stretch for linear data) ---
     img_for_starnet = processing_norm
     if is_linear:
-        # Statistical round-trip preparation (records pedestals+medians)
-        img_for_starnet, meta = _prepare_statstretch_input_for_starnet(processing_norm)
-        # 🔐 Stash the exact meta for inverse step later
-        setattr(main, "_starnet_stat_meta", {
-            "bp": meta["bp"],         # exact per-channel first-nonzero BP used
-            "m0": meta["m0"],         # exact per-channel medians after pedestal removal
-            "scale": scale_factor,    # pre-export normalization scale
-        })
+        # Siril-style unlinked MTF params from linear normalized image
+        mtf_params = _mtf_params_unlinked(processing_norm, shadows_clipping=-2.8, targetbg=0.25)
+        img_for_starnet = _apply_mtf_unlinked_rgb(processing_norm, mtf_params)
+
+        # 🔐 Stash EXACT params for inverse step later
+        try:
+            setattr(main, "_starnet_stat_meta", {
+                "scheme": "siril_mtf",
+                "s": np.asarray(mtf_params["s"], dtype=np.float32),
+                "m": np.asarray(mtf_params["m"], dtype=np.float32),
+                "h": np.asarray(mtf_params["h"], dtype=np.float32),
+                "scale": float(scale_factor),
+            })
+        except Exception:
+            pass
     else:
-        # make sure no stale meta lingers
+        # non-linear: do not try to invert any pre-stretch later
         if hasattr(main, "_starnet_stat_meta"):
             delattr(main, "_starnet_stat_meta")
+
 
     # --- Write TIFF for StarNet
     try:
@@ -748,41 +804,36 @@ def _on_starnet_finished(main, doc, return_code, dialog, input_path, output_path
 
     # ---- Inversion back to the document’s domain ----
     if did_stretch:
-        mtf_params = getattr(main, "_starnet_last_mtf_params", None)
+        # Prefer the new Siril-style MTF meta if present
+        meta = getattr(main, "_starnet_stat_meta", None)
+        mtf_params_legacy = getattr(main, "_starnet_last_mtf_params", None)
 
-        if mtf_params:
-            # Back-compat: old MTF path
-            dialog.append_text("Unstretching (MTF inverse)...\n")
+        if isinstance(meta, dict) and meta.get("scheme") == "siril_mtf":
+            dialog.append_text("Unstretching (Siril-style MTF pseudoinverse)...\n")
             try:
-                starless_rgb = _invert_mtf_linked_rgb(starless_rgb, mtf_params)
-                sc = float(mtf_params.get("scale", 1.0))
-                if sc > 1.0:
-                    starless_rgb = starless_rgb * sc
-            except Exception as e:
-                dialog.append_text(f"⚠️ MTF inverse failed: {e}\n")
-            starless_rgb = np.clip(starless_rgb, 0.0, 1.0)
-
-        else:
-            # ✅ Statistical round-trip inverse using the EXACT meta captured during prep
-            dialog.append_text("Unstretching (statistical inverse w/ original BP/M0)...\n")
-
-            meta = getattr(main, "_starnet_stat_meta", None)
-            if meta is None:
-                # Fallback (shouldn't happen, but be safe): recompute from original
-                dialog.append_text("⚠️ Missing stat meta; recomputing BP/M0 from original.\n")
-                scale_factor = float(np.max(original_rgb)) if original_rgb.size else 1.0
-                orig_norm = np.clip(original_rgb / scale_factor, 0.0, 1.0) if scale_factor > 1.0 else np.clip(original_rgb, 0.0, 1.0)
-                bp_vec = _first_nonzero_bp_per_channel(orig_norm)
-                m0_vec = np.array(
-                    [float(np.median(np.clip(orig_norm[..., c] - bp_vec[c], 0.0, 1.0))) for c in range(3)],
-                    dtype=np.float32
-                )
-            else:
-                bp_vec = np.asarray(meta.get("bp"), dtype=np.float32)
-                m0_vec = np.asarray(meta.get("m0"), dtype=np.float32)
+                s_vec = np.asarray(meta.get("s"), dtype=np.float32)
+                m_vec = np.asarray(meta.get("m"), dtype=np.float32)
+                h_vec = np.asarray(meta.get("h"), dtype=np.float32)
                 scale_factor = float(meta.get("scale", 1.0))
 
-            # Per-channel inverse: stretch back to each original median m0[c]
+                p = {"s": s_vec, "m": m_vec, "h": h_vec}
+                inv = _invert_mtf_unlinked_rgb(starless_rgb, p)
+
+                if scale_factor > 1.0:
+                    inv = inv * scale_factor
+
+                starless_rgb = np.clip(inv, 0.0, 1.0)
+            except Exception as e:
+                dialog.append_text(f"⚠️ Siril-style MTF inverse failed: {e}\n")
+
+        elif isinstance(meta, dict) and meta.get("scheme") == "statstretch":
+            # Back-compat: statistical round-trip with bp/m0
+            dialog.append_text("Unstretching (statistical inverse w/ original BP/M0)...\n")
+
+            bp_vec = np.asarray(meta.get("bp"), dtype=np.float32)
+            m0_vec = np.asarray(meta.get("m0"), dtype=np.float32)
+            scale_factor = float(meta.get("scale", 1.0))
+
             inv = np.empty_like(starless_rgb, dtype=np.float32)
             for c in range(3):
                 inv[..., c] = stretch_mono_image(
@@ -791,19 +842,31 @@ def _on_starnet_finished(main, doc, return_code, dialog, input_path, output_path
                     normalize=False, apply_curves=False, curves_boost=0.0
                 )
 
-            # 🔁 Add back the EXACT original pedestals
             inv += bp_vec.reshape((1, 1, 3))
             inv = np.clip(inv, 0.0, 1.0)
-
-            # Restore original numeric scale, if any
             if scale_factor > 1.0:
-                inv = inv * scale_factor
-
+                inv *= scale_factor
             starless_rgb = np.clip(inv, 0.0, 1.0)
 
-            # Clean up stashed meta so it can't leak to the next run
+        elif mtf_params_legacy:
+            # Very old MTF path (linked, single triple) – keep for safety
+            dialog.append_text("Unstretching (legacy MTF inverse)...\n")
+            try:
+                starless_rgb = _invert_mtf_linked_rgb(starless_rgb, mtf_params_legacy)
+                sc = float(mtf_params_legacy.get("scale", 1.0))
+                if sc > 1.0:
+                    starless_rgb = starless_rgb * sc
+            except Exception as e:
+                dialog.append_text(f"⚠️ Legacy MTF inverse failed: {e}\n")
+            starless_rgb = np.clip(starless_rgb, 0.0, 1.0)
+
+        # Clean up stashed meta so it can't leak to future ops
+        try:
             if hasattr(main, "_starnet_stat_meta"):
                 delattr(main, "_starnet_stat_meta")
+        except Exception:
+            pass
+
 
 
     # ---- Stars-Only = original − starless (linear-domain diff) ----

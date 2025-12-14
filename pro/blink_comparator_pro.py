@@ -26,7 +26,7 @@ from bisect import bisect_right
 import cv2
 import sep
 import pyqtgraph as pg
-
+from collections import OrderedDict
 from legacy.image_manager import load_image
 
 from imageops.stretch import stretch_color_image, stretch_mono_image, siril_style_autostretch
@@ -831,6 +831,59 @@ class BlinkTab(QWidget):
         self.scroll_area.verticalScrollBar().valueChanged.connect(lambda _: self._capture_view_center_norm())
         self.imagesChanged.connect(self._update_loaded_count_label)
 
+    @staticmethod
+    def _ensure_float01(img):
+        """
+        Convert to float32 and force into [0..1] using:
+        - if min < 0: subtract min
+        - if max > 1: divide by max
+        Works for mono or RGB. Handles NaN/Inf safely.
+        """
+        arr = np.asarray(img, dtype=np.float32)
+
+        finite = np.isfinite(arr)
+        if not finite.any():
+            return np.zeros_like(arr, dtype=np.float32)
+
+        mn = float(arr[finite].min())
+        if mn < 0.0:
+            arr = arr - mn
+
+        # recompute after possible shift
+        finite = np.isfinite(arr)
+        mx = float(arr[finite].max()) if finite.any() else 0.0
+        if mx > 1.0:
+            if mx > 0.0:
+                arr = arr / mx
+
+        return np.clip(arr, 0.0, 1.0)
+
+
+    def _aggressive_display_boost(self, x01: np.ndarray, strength: float = 3.7) -> np.ndarray:
+        """
+        Stronger display stretch on top of an already stretched image.
+        Input/Output are float32 in [0..1].
+        Robust: percentile normalize + asinh boost.
+        """
+        x = np.asarray(x01, dtype=np.float32)
+        x = np.nan_to_num(x, nan=0.0, posinf=1.0, neginf=0.0)
+        x = np.clip(x, 0.0, 1.0)
+
+        # Robust normalize: ignore extreme outliers so we actually expand contrast
+        lo = float(np.percentile(x, 0.25))
+        hi = float(np.percentile(x, 99.75))
+        if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo + 1e-8:
+            return x  # nothing to do, but never return black
+
+        y = (x - lo) / (hi - lo)
+        y = np.clip(y, 0.0, 1.0)
+
+        # Asinh boost (stronger -> more aggressive midtone lift)
+        k = max(1.0, float(strength) * 1.25)  # tune multiplier to taste
+        y = np.arcsinh(k * y) / np.arcsinh(k)
+
+        return np.clip(y, 0.0, 1.0)
+
 
     # --------------------------------------------
     # NEW: collect paths & emit to stacking
@@ -1047,33 +1100,30 @@ class BlinkTab(QWidget):
 
 
     def _make_display_frame(self, entry):
-        """
-        Build an 8-bit display frame from cached stretched data,
-        respecting 'Aggressive Stretch' toggle just like preview.
-        Returns uint8 ndarray (H×W or H×W×3), RGB if color.
-        """
-        stored = entry['image_data']  # already stretched & clipped on load
+        stored = entry['image_data']
         use_aggr = bool(self.aggressive_stretch_enabled)
 
         if not use_aggr:
-            # Fast path: convert cached dtype to 8-bit
             if stored.dtype == np.uint8:
                 disp8 = stored
             elif stored.dtype == np.uint16:
                 disp8 = (stored >> 8).astype(np.uint8)
             else:
                 disp8 = (np.clip(stored, 0.0, 1.0) * 255.0).astype(np.uint8)
-        else:
-            base01 = self._as_float01(stored)
-            disp = siril_style_autostretch(base01, sigma=self.current_sigma)
-            disp8 = (np.clip(disp, 0.0, 1.0) * 255.0).astype(np.uint8)
+            return disp8
 
-        # Ensure RGB for color, keep 1ch for mono
-        if disp8.ndim == 3:
-            # assume RGB
-            return disp8
+        base01 = self._as_float01(stored)
+
+        if base01.ndim == 2:
+            disp01 = self._aggressive_display_boost(base01, strength=self.current_sigma)
         else:
-            return disp8
+            lum = base01.mean(axis=2).astype(np.float32)
+            lum_boost = self._aggressive_display_boost(lum, strength=self.current_sigma)
+            gain = lum_boost / (lum + 1e-6)
+            disp01 = np.clip(base01 * gain[..., None], 0.0, 1.0)
+
+        return (disp01 * 255.0).astype(np.uint8)
+
 
 
     def _fit_letterbox(self, frame_bgr_or_rgb, target_size):
@@ -1307,13 +1357,35 @@ class BlinkTab(QWidget):
         self._toggle_flag_on_item(item)  
 
     def _as_float01(self, arr):
-        """Fast conversion to float [0..1] without any new stretching logic."""
+        """Convert any stored dtype to float32 in [0..1], with safety normalization."""
         if arr.dtype == np.uint8:
-            return arr.astype(np.float32) / 255.0
+            out = arr.astype(np.float32) / 255.0
+            return out
+
         if arr.dtype == np.uint16:
-            return arr.astype(np.float32) / 65535.0
-        # assume float already in [0..1]
-        return np.asarray(arr, dtype=np.float32)
+            out = arr.astype(np.float32) / 65535.0
+            return out
+
+        # float path (or anything else): normalize if needed
+        out = np.asarray(arr, dtype=np.float32)
+
+        if out.size == 0:
+            return out
+
+        # handle NaNs/Infs early
+        out = np.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0)
+
+        mn = float(out.min())
+        if mn < 0.0:
+            out = out - mn  # shift so min becomes 0
+
+        mx = float(out.max())
+        if mx > 1.0 and mx > 0.0:
+            out = out / mx  # scale so max becomes 1
+
+        return np.clip(out, 0.0, 1.0)
+
+
 
     def on_threshold_change(self, metric_idx, threshold):
         panel = self.metrics_window.metrics_panel
@@ -1578,6 +1650,9 @@ class BlinkTab(QWidget):
         if is_mono:
             # adjust this call to match your debayer signature
             image = BlinkTab.debayer_image(image, file_path, header)
+
+        # ✅ NEW: force 0..1 range BEFORE SEP + stretch
+        image = BlinkTab._ensure_float01(image)
 
         # 3) SEP background on mono float32
         data = np.asarray(image, dtype=np.float32, order='C')
@@ -2101,12 +2176,23 @@ class BlinkTab(QWidget):
         else:
             # Aggressive mode: compute only here (from float01)
             base01 = self._as_float01(stored)
+            # Siril-style autostretch
             if base01.ndim == 2:
-                disp = siril_style_autostretch(base01, sigma=self.current_sigma)
+                st = siril_style_autostretch(base01, sigma=self.current_sigma)
+                disp01 = self._as_float01(st)   # <-- IMPORTANT: handles 0..255 or 0..1 correctly
             else:
-                # apply per-channel or linked, your choice; keeping it simple here
-                disp = siril_style_autostretch(base01, sigma=self.current_sigma)
-            disp8 = (np.clip(disp, 0.0, 1.0) * 255.0).astype(np.uint8)
+                base01 = self._as_float01(stored)
+
+                if base01.ndim == 2:
+                    disp01 = self._aggressive_display_boost(base01, strength=self.current_sigma)
+                else:
+                    lum = base01.mean(axis=2).astype(np.float32)
+                    lum_boost = self._aggressive_display_boost(lum, strength=self.current_sigma)
+                    gain = lum_boost / (lum + 1e-6)
+                    disp01 = np.clip(base01 * gain[..., None], 0.0, 1.0)
+
+                disp8 = (disp01 * 255.0).astype(np.uint8)
+
 
         qimage = self.convert_to_qimage(disp8)
         self.current_pixmap = QPixmap.fromImage(qimage)

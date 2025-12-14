@@ -170,6 +170,7 @@ class Icons:
     FONT = property(lambda self: _resource_path('font.png'))
     CSV = property(lambda self: _resource_path('cvs.png'))
     PPP = property(lambda self: _resource_path('ppp.png'))
+    SCRIPT = property(lambda self: _resource_path('script.png'))
     
     # Blink & comparison
     BLINK = property(lambda self: _resource_path('blink.png'))
@@ -361,6 +362,7 @@ def _init_legacy_paths():
         'selectivecolor_path': get_icon_path('selectivecolor.png'),
         'rgbalign_path': get_icon_path('rgbalign.png'),
         'background_path': get_icon_path('background.png'), 
+        'script_icon_path': get_icon_path('script.png'),
     }
 
 
