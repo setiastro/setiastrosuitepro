@@ -17,7 +17,8 @@ import tempfile
 from astropy.wcs import WCS
 from astropy.time import Time
 from astropy import units as u
-
+from astropy.io import fits
+from astropy.io.fits import Header
 
 from legacy.image_manager import load_image, save_image
 from numba_utils import bulk_cosmetic_correction_numba

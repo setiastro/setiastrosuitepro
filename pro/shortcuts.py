@@ -52,13 +52,10 @@ def _get_icons():
     # Find where get_icons() lives in your project and import it here.
     # Try a couple common locations; keep the first that exists in your tree.
     try:
-        from pro.icons import get_icons as _gi
+        from pro.resources import get_icons as _gi
     except Exception:
-        try:
-            from pro.gui.icons import get_icons as _gi
-        except Exception:
-            _gi = None
-
+        _gi = None
+        
     _ICONS = _gi() if _gi else None
     return _ICONS
 

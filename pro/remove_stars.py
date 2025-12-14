@@ -960,33 +960,32 @@ def _run_darkstar(main, doc):
                              "Cosmic Clarity Dark Star executable not set.")
         return
 
-    # Input/output folders per SASv2
+    # --- Input/output folders per SASv2 ---
     input_dir  = os.path.join(base, "input")
     output_dir = os.path.join(base, "output")
     os.makedirs(input_dir, exist_ok=True)
     os.makedirs(output_dir, exist_ok=True)
-    _purge_darkstar_io(base, prefix=None, clear_input=True, clear_output=True)   
-    # Save the current image as 32-bit float TIFF (no stretch)
-    in_path = os.path.join(input_dir, "imagetoremovestars.tif")
- 
-    try:
-        save_image(doc.image, in_path, original_format="tif",
-                   bit_depth="32-bit floating point",
-                   original_header=None, is_mono=False, image_meta=None, file_meta=None)
-    except Exception as e:
-        QMessageBox.critical(main, "Cosmic Clarity", f"Failed to write input TIFF:\n{e}")
-        return
+    _purge_darkstar_io(base, prefix=None, clear_input=True, clear_output=True)
 
-    # Show SASv2-style config dialog
+    # --- Config dialog (same as before) ---
     cfg = DarkStarConfigDialog(main)
     if not cfg.exec():
-        _safe_rm(in_path)
         return
     params = cfg.get_values()
     disable_gpu = params["disable_gpu"]
     mode = params["mode"]                         # "unscreen" or "additive"
     show_extracted_stars = params["show_extracted_stars"]
     stride = params["stride"]                     # 64..1024, default 512
+
+    # 🔹 Ask if image is linear (so we know whether to MTF-prestretch)
+    reply = QMessageBox.question(
+        main, "Image Linearity", "Is the current image linear?",
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        QMessageBox.StandardButton.Yes
+    )
+    is_linear = (reply == QMessageBox.StandardButton.Yes)
+    did_prestretch = is_linear
+
     # 🔹 Stash parameters for replay-last
     try:
         main._last_remove_stars_params = {
@@ -995,10 +994,13 @@ def _run_darkstar(main, doc):
             "mode": mode,
             "show_extracted_stars": bool(show_extracted_stars),
             "stride": int(stride),
+            "is_linear": bool(is_linear),
+            "did_prestretch": bool(did_prestretch),
             "label": "Remove Stars (DarkStar)",
         }
     except Exception:
         pass
+
     # 🔁 Record headless command for Replay Last
     try:
         main._last_headless_command = {
@@ -1009,6 +1011,8 @@ def _run_darkstar(main, doc):
                 "mode": mode,
                 "show_extracted_stars": bool(show_extracted_stars),
                 "stride": int(stride),
+                "is_linear": bool(is_linear),
+                "did_prestretch": bool(did_prestretch),
             },
         }
         if hasattr(main, "_log"):
@@ -1016,11 +1020,89 @@ def _run_darkstar(main, doc):
                 "[Replay] Recorded remove_stars (DarkStar, "
                 f"mode={mode}, stride={int(stride)}, "
                 f"gpu={'off' if disable_gpu else 'on'}, "
-                f"stars={'on' if show_extracted_stars else 'off'})"
+                f"stars={'on' if show_extracted_stars else 'off'}, "
+                f"linear={'yes' if is_linear else 'no'})"
             )
     except Exception:
-        pass    
-    # Build CLI exactly like SASv2 (using --chunk_size, not chunk_size)
+        pass
+
+    # --- Build processing image (RGB float32, normalized) ---
+    src = np.asarray(doc.image)
+    if src.ndim == 2:
+        processing_image = np.stack([src] * 3, axis=-1)
+    elif src.ndim == 3 and src.shape[2] == 1:
+        processing_image = np.repeat(src, 3, axis=2)
+    else:
+        processing_image = src
+
+    processing_image = np.nan_to_num(
+        processing_image.astype(np.float32, copy=False),
+        nan=0.0, posinf=0.0, neginf=0.0
+    )
+
+    scale_factor = float(np.max(processing_image)) if processing_image.size else 1.0
+    if scale_factor > 1.0:
+        processing_norm = processing_image / scale_factor
+    else:
+        processing_norm = processing_image
+    processing_norm = np.clip(processing_norm, 0.0, 1.0)
+
+    # --- Optional Siril-style MTF pre-stretch for linear data ---
+    img_for_darkstar = processing_norm
+    if is_linear:
+        try:
+            mtf_params = _mtf_params_unlinked(
+                processing_norm,
+                shadows_clipping=-2.8,
+                targetbg=0.25
+            )
+            img_for_darkstar = _apply_mtf_unlinked_rgb(processing_norm, mtf_params)
+
+            # 🔐 Stash EXACT params for inverse step later
+            setattr(main, "_darkstar_mtf_meta", {
+                "s": np.asarray(mtf_params["s"], dtype=np.float32),
+                "m": np.asarray(mtf_params["m"], dtype=np.float32),
+                "h": np.asarray(mtf_params["h"], dtype=np.float32),
+                "scale": float(scale_factor),
+            })
+            if hasattr(main, "_log"):
+                main._log("[DarkStar] Applying Siril-style MTF pre-stretch for linear image.")
+        except Exception as e:
+            # If anything goes wrong, fall back to un-stretched normalized image
+            img_for_darkstar = processing_norm
+            try:
+                if hasattr(main, "_darkstar_mtf_meta"):
+                    delattr(main, "_darkstar_mtf_meta")
+            except Exception:
+                pass
+            if hasattr(main, "_log"):
+                main._log(f"[DarkStar] MTF pre-stretch failed, using normalized image only: {e}")
+    else:
+        # Non-linear: don't store any pre-stretch meta
+        try:
+            if hasattr(main, "_darkstar_mtf_meta"):
+                delattr(main, "_darkstar_mtf_meta")
+        except Exception:
+            pass
+
+    # --- Save pre-stretched image as 32-bit float TIFF for DarkStar ---
+    in_path = os.path.join(input_dir, "imagetoremovestars.tif")
+    try:
+        save_image(
+            img_for_darkstar,
+            in_path,
+            original_format="tif",
+            bit_depth="32-bit floating point",
+            original_header=None,
+            is_mono=False,  # we always send RGB to DarkStar
+            image_meta=None,
+            file_meta=None
+        )
+    except Exception as e:
+        QMessageBox.critical(main, "Cosmic Clarity", f"Failed to write input TIFF:\n{e}")
+        return
+
+    # --- Build CLI exactly like SASv2 (using --chunk_size, not chunk_size) ---
     args = []
     if disable_gpu:
         args.append("--disable_gpu")
@@ -1035,13 +1117,16 @@ def _run_darkstar(main, doc):
     thr = _ProcThread(command, cwd=output_dir)
     thr.output_signal.connect(dlg.append_text)
     thr.finished_signal.connect(
-        lambda rc, base=base: _on_darkstar_finished(main, doc, rc, dlg, in_path, output_dir, base)
-            )
+        lambda rc, base=base, ds=did_prestretch: _on_darkstar_finished(
+            main, doc, rc, dlg, in_path, output_dir, base, ds
+        )
+    )
     dlg.cancel_button.clicked.connect(thr.cancel)
 
     dlg.show()
     thr.start()
     dlg.exec()
+
 
 
 
@@ -1093,7 +1178,7 @@ def _resolve_darkstar_exe(main):
     return exe_path, base_folder
 
 
-def _on_darkstar_finished(main, doc, return_code, dialog, in_path, output_dir, base_folder):
+def _on_darkstar_finished(main, doc, return_code, dialog, in_path, output_dir, base_folder, did_prestretch):
     dialog.append_text(f"\nProcess finished with return code {return_code}.\n")
     if return_code != 0:
         QMessageBox.critical(main, "CosmicClarityDarkStar Error",
@@ -1129,8 +1214,35 @@ def _on_darkstar_finished(main, doc, return_code, dialog, in_path, output_dir, b
         orig_was_mono = False
     original_rgb = original_rgb.astype(np.float32, copy=False)
 
+    # --- Undo the MTF pre-stretch (if we did one) ---
+    if did_prestretch:
+        meta = getattr(main, "_darkstar_mtf_meta", None)
+        if isinstance(meta, dict):
+            dialog.append_text("Unstretching starless result (DarkStar MTF inverse)...\n")
+            try:
+                s_vec = np.asarray(meta.get("s"), dtype=np.float32)
+                m_vec = np.asarray(meta.get("m"), dtype=np.float32)
+                h_vec = np.asarray(meta.get("h"), dtype=np.float32)
+                scale = float(meta.get("scale", 1.0))
 
-    # stars-only optional push
+                p = {"s": s_vec, "m": m_vec, "h": h_vec}
+                inv = _invert_mtf_unlinked_rgb(starless_rgb, p)
+
+                if scale > 1.0:
+                    inv *= scale
+
+                starless_rgb = np.clip(inv, 0.0, 1.0)
+            except Exception as e:
+                dialog.append_text(f"⚠️ DarkStar MTF inverse failed: {e}\n")
+
+        # Clean up pre-stretch meta so it can't leak into another op
+        try:
+            if hasattr(main, "_darkstar_mtf_meta"):
+                delattr(main, "_darkstar_mtf_meta")
+        except Exception:
+            pass
+
+    # --- stars-only optional push (as before) ---
     stars_path = os.path.join(output_dir, "imagetoremovestars_stars_only.tif")
     if os.path.exists(stars_path):
         dialog.append_text(f"Loading stars-only image from {stars_path}...\n")
@@ -1153,13 +1265,12 @@ def _on_darkstar_finished(main, doc, return_code, dialog, in_path, output_dir, b
                 stars_to_push = stars_only
 
             _push_as_new_doc(main, doc, stars_to_push, title_suffix="_stars", source="Stars-Only (DarkStar)")
-
         else:
             dialog.append_text("Failed to load stars-only image.\n")
     else:
         dialog.append_text("No stars-only image generated.\n")
 
-    # mask-blend starless → overwrite current doc
+    # --- Mask-blend starless → overwrite current doc (in original domain) ---
     dialog.append_text("Mask-blending starless image before update...\n")
     final_starless = _mask_blend_with_doc_mask(doc, starless_rgb, original_rgb)
 
@@ -1211,10 +1322,8 @@ def _on_darkstar_finished(main, doc, return_code, dialog, in_path, output_dir, b
     except Exception as e:
         QMessageBox.critical(main, "CosmicClarityDarkStar", f"Failed to apply result:\n{e}")
 
-
-    # cleanup
+    # --- cleanup ---
     try:
-        # Remove known outputs
         _safe_rm(in_path)
         _safe_rm(starless_path)
         _safe_rm(os.path.join(output_dir, "imagetoremovestars_stars_only.tif"))
