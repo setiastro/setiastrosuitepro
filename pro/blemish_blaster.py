@@ -202,6 +202,18 @@ class BlemishBlasterDialogPro(QDialog):
         self.scroll.setWidgetResizable(True)
         self.scroll.setWidget(self.view)
 
+        # --- Zoom controls (buttons) ---------------------------------
+        self._zoom = 1.0  # initial zoom factor
+
+        self.btn_zoom_out = QPushButton("−")
+        self.btn_zoom_out.setToolTip("Zoom Out")
+
+        self.btn_zoom_in = QPushButton("+")
+        self.btn_zoom_in.setToolTip("Zoom In")
+
+        self.btn_zoom_fit = QPushButton("Fit to Preview")
+        self.btn_zoom_fit.setToolTip("Fit image to the preview area")
+
         # ── Controls
         ctrls = QGroupBox("Controls")
         form  = QFormLayout(ctrls)
@@ -258,6 +270,13 @@ class BlemishBlasterDialogPro(QDialog):
 
         main = QVBoxLayout(self)
         main.addWidget(self.scroll)
+        zoom_bar = QHBoxLayout()
+        zoom_bar.addStretch()
+        zoom_bar.addWidget(self.btn_zoom_out)
+        zoom_bar.addWidget(self.btn_zoom_in)
+        zoom_bar.addWidget(self.btn_zoom_fit)
+        zoom_bar.addStretch()
+        main.addLayout(zoom_bar)        
         main.addWidget(ctrls)
         main.addLayout(bb)
 
@@ -265,6 +284,11 @@ class BlemishBlasterDialogPro(QDialog):
         self._threadpool = QThreadPool.globalInstance()
         self.view.setMouseTracking(True)
         self.view.viewport().installEventFilter(self)
+
+        # zoom buttons
+        self.btn_zoom_out.clicked.connect(lambda: self._set_zoom(self._zoom / 1.25))
+        self.btn_zoom_in.clicked.connect(lambda: self._set_zoom(self._zoom * 1.25))
+        self.btn_zoom_fit.clicked.connect(self._fit_view)
 
         self.btn_apply.clicked.connect(self._commit_to_doc)
         self.btn_close.clicked.connect(self.reject)
@@ -274,10 +298,8 @@ class BlemishBlasterDialogPro(QDialog):
         self._undo, self._redo = [], []
         self._update_undo_redo_buttons()
 
-        # wheel zoom
-        self._zoom = 1.0
-
         self._update_display_autostretch()
+        self._fit_view()
 
         # shortcuts
         a_undo = QAction(self); a_undo.setShortcut(QKeySequence.StandardKey.Undo); a_undo.triggered.connect(self._undo_step)
@@ -356,14 +378,39 @@ class BlemishBlasterDialogPro(QDialog):
         self._update_undo_redo_buttons()
 
     # ── Zoom
+    # ── Zoom
     def _wheel_zoom(self, ev: QWheelEvent):
         step = 1.25 if ev.angleDelta().y() > 0 else 1/1.25
-        newz = min(4.0, max(0.05, self._zoom * step))
-        if abs(newz - self._zoom) < 1e-4:
+        self._set_zoom(self._zoom * step)
+
+
+    def _set_zoom(self, z: float):
+        """Clamp and apply zoom to the graphics view."""
+        z = float(max(0.05, min(4.0, z)))
+        if abs(z - self._zoom) < 1e-4:
             return
-        self._zoom = newz
+        self._zoom = z
         self.view.resetTransform()
         self.view.scale(self._zoom, self._zoom)
+
+    def _fit_view(self):
+        """Fit the image nicely into the view without drifting."""
+        if self.pix is None or self.pix.pixmap().isNull():
+            return
+
+        # Make sure the scene rect matches the pixmap bounds
+        br = self.pix.boundingRect()
+        if br.isNull():
+            return
+        self.scene.setSceneRect(br)
+
+        # Reset any old transform and let QGraphicsView handle the fit
+        self.view.resetTransform()
+        self.view.fitInView(br, Qt.AspectRatioMode.KeepAspectRatio)
+
+        # Track the resulting uniform scale as our current zoom
+        t = self.view.transform()
+        self._zoom = t.m11()
 
     # ── Undo/Redo
     def _undo_step(self):

@@ -596,6 +596,10 @@ class CurveEditor(QGraphicsView):
                 self.gray_line = self.scene.addLine(x, 0, x, 360, QPen(Qt.GlobalColor.gray))
             else:
                 self.gray_line.setLine(x, 0, x, 360)
+
+            # 🔑 Make sure it’s visible again after Leave/clearValueLines()
+            self.gray_line.setVisible(True)
+
             # Hide any color lines if present
             for attr in ("r_line", "g_line", "b_line"):
                 if hasattr(self, attr) and getattr(self, attr) is not None:
