@@ -10696,6 +10696,95 @@ class StackingSuiteDialog(QDialog):
             out = np.where(cnt > 0, num / np.maximum(cnt, 1.0), med)
             return out.astype(np.float32, copy=False)
 
+        def _estimate_flat_scales_bayer(
+            file_list: list[str],
+            H: int,
+            W: int,
+            dark_data: np.ndarray | None,
+            pattern: str,
+        ):
+            """
+            Returns scales shape (N,4): [R, G1, G2, B] where scale = frame_plane_median / group_plane_median.
+            """
+            pat = (pattern or "RGGB").strip().upper()
+            if pat not in ("RGGB", "BGGR", "GRBG", "GBRG"):
+                pat = "RGGB"
+
+            # Central patch
+            th = min(512, H); tw = min(512, W)
+            y0 = (H - th) // 2; y1 = y0 + th
+            x0 = (W - tw) // 2; x1 = x0 + tw
+
+            N = len(file_list)
+            meds = np.empty((N, 4), dtype=np.float64)  # R,G1,G2,B
+
+            # parity → plane label
+            if pat == "RGGB":
+                m = {(0,0):"R",  (0,1):"G1", (1,0):"G2", (1,1):"B"}
+            elif pat == "BGGR":
+                m = {(0,0):"B",  (0,1):"G1", (1,0):"G2", (1,1):"R"}
+            elif pat == "GRBG":
+                m = {(0,0):"G1", (0,1):"R",  (1,0):"B",  (1,1):"G2"}
+            else:  # GBRG
+                m = {(0,0):"G1", (0,1):"B",  (1,0):"R",  (1,1):"G2"}
+
+            idx = {"R":0, "G1":1, "G2":2, "B":3}
+
+            def _safe_med(a: np.ndarray) -> float:
+                v = a[np.isfinite(a) & (a > 0)]
+                if v.size == 0:
+                    return 1.0
+                d = float(np.median(v))
+                return d if np.isfinite(d) and d > 0 else 1.0
+
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            with ThreadPoolExecutor(max_workers=min(os.cpu_count() or 4, 8)) as exe:
+                fut2i = {exe.submit(load_fits_tile, fp, y0, y1, x0, x1): i for i, fp in enumerate(file_list)}
+                for fut in as_completed(fut2i):
+                    i = fut2i[fut]
+                    sub = fut.result()
+                    if sub is None:
+                        meds[i, :] = 1.0
+                        continue
+
+                    # Ensure 2D mosaic
+                    if sub.ndim == 3 and sub.shape[0] in (1, 3):
+                        sub = sub[0] if sub.shape[0] == 1 else sub.transpose(1, 2, 0)[:, :, 0]
+                    sub = sub.astype(np.float32, copy=False)
+
+                    # Dark subtract patch if present
+                    if dark_data is not None:
+                        dd = dark_data
+                        if dd.ndim == 3 and dd.shape[0] in (1, 3):  # CHW→HWC or pick first
+                            dd = dd.transpose(1, 2, 0)[:, :, 0]
+                        d_tile = dd[y0:y1, x0:x1].astype(np.float32, copy=False)
+                        sub = sub - d_tile
+
+                    # Extract CFA planes in this patch
+                    # (patch starts aligned with the image, so parity matches)
+                    planes = {
+                        m[(0,0)]: sub[0::2, 0::2],
+                        m[(0,1)]: sub[0::2, 1::2],
+                        m[(1,0)]: sub[1::2, 0::2],
+                        m[(1,1)]: sub[1::2, 1::2],
+                    }
+
+                    # Store medians in fixed order R,G1,G2,B
+                    r = _safe_med(planes.get("R", sub))
+                    g1 = _safe_med(planes.get("G1", sub))
+                    g2 = _safe_med(planes.get("G2", sub))
+                    b = _safe_med(planes.get("B", sub))
+                    meds[i, :] = (r, g1, g2, b)
+
+            # Group plane medians (robust)
+            gmed = np.median(meds, axis=0)
+            gmed = np.where(np.isfinite(gmed) & (gmed > 0), gmed, 1.0)
+
+            scales = meds / gmed  # (N,4)
+            scales = np.clip(scales, 1e-3, 1e3).astype(np.float32)
+            return scales
+
+
         def _estimate_flat_scales(file_list: list[str], H: int, W: int, C: int, dark_data: np.ndarray | None):
             """
             Read one central patch (min(512, H/W)) from each frame, subtract dark (if present),
