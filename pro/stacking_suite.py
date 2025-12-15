@@ -1485,10 +1485,7 @@ class _MMFits:
         try:
             hdul, h0, data = _do_open(memmap_flag=True)
         except Exception as e:
-            print(
-                f"[_MMFits] memmap=True failed for {os.path.basename(path)} "
-                f"({type(e).__name__}: {e}); retrying with memmap=False."
-            )
+            self._log(f"[MMImage] File uses FITS scaling keywords; falling back to non-memmap load for {os.path.basename(path)}.")
             hdul, h0, data = _do_open(memmap_flag=False)
 
         self.hdul = hdul
