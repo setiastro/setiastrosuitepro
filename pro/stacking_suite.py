@@ -11829,33 +11829,44 @@ class StackingSuiteDialog(QDialog):
                             QApplication.processEvents()
 
                     # ---------- APPLY FLAT (if resolved) ----------
+                    # ---------- APPLY FLAT (if resolved) ----------
                     if master_flat_path:
                         flat_data, _, _, flat_is_mono = load_image(master_flat_path)
                         if flat_data is not None:
                             if not flat_is_mono and flat_data.ndim == 3 and flat_data.shape[-1] == 3:
                                 flat_data = flat_data.transpose(2, 0, 1)  # HWC -> CHW
 
-                            # Ensure float32 and normalize flat to mean 1.0 to preserve flux scaling
                             flat_data = flat_data.astype(np.float32, copy=False)
-                            # Avoid zero/NaN in flats
                             flat_data = np.nan_to_num(flat_data, nan=1.0, posinf=1.0, neginf=1.0)
-                            if flat_data.ndim == 2:
-                                denom = np.median(flat_data[flat_data > 0])
-                                if not np.isfinite(denom) or denom <= 0: denom = 1.0
-                                flat_data /= denom
-                            else:  # CHW: normalize per-channel
-                                for c in range(flat_data.shape[0]):
-                                    band = flat_data[c]
-                                    denom = np.median(band[band > 0])
-                                    if not np.isfinite(denom) or denom <= 0: denom = 1.0
-                                    flat_data[c] = band / denom
 
-                            # Safety: forbid exact zeros in denominator
-                            flat_data[flat_data == 0] = 1.0
+                            bayerpat = hdr.get("BAYERPAT")
+                            is_bayer_mosaic = (light_data.ndim == 2) and bool(bayerpat) and (flat_data.ndim == 2)
+
+                            if is_bayer_mosaic:
+                                pattern = str(bayerpat).strip().upper()
+                                normalize_flat_cfa_inplace(flat_data, pattern, combine_greens=True)
+                            else:
+                                # your existing normalization, but it's better to normalize to median=1, not mean
+                                if flat_data.ndim == 2:
+                                    denom = np.median(flat_data[np.isfinite(flat_data) & (flat_data > 0)])
+                                    if not np.isfinite(denom) or denom <= 0:
+                                        denom = 1.0
+                                    flat_data /= denom
+                                else:
+                                    # CHW (your current working layout)
+                                    for c in range(flat_data.shape[0]):
+                                        band = flat_data[c]
+                                        denom = np.median(band[np.isfinite(band) & (band > 0)])
+                                        if not np.isfinite(denom) or denom <= 0:
+                                            denom = 1.0
+                                        flat_data[c] = band / denom
+
+                                flat_data[flat_data == 0] = 1.0
 
                             light_data = apply_flat_division_numba(light_data, flat_data)
                             self.update_status(f"Flat Applied: {os.path.basename(master_flat_path)}")
                             QApplication.processEvents()
+
 
                     # ---------- COSMETIC (optional) ----------
                     if apply_cosmetic:
