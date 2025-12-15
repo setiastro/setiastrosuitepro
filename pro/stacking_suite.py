@@ -10541,11 +10541,21 @@ class StackingSuiteDialog(QDialog):
 
         print(f"✅ Override Master Dark applied → {disp}")
 
-
-
     def create_master_flat(self):
         """Creates master flats using per-frame dark subtraction before stacking (GPU-accelerated if available),
-        with adaptive reducers, fast per-frame normalization, and memmapped tile reads (each flat opened once per group)."""
+        with adaptive reducers, fast per-frame normalization, and memmapped tile reads (each flat opened once per group).
+
+        UPDATED:
+        - If the flat group is a Bayer/mosaic group (channels==1 and BAYERPAT is present),
+            per-frame normalization is done per CFA plane (R,G1,G2,B) instead of a single global median.
+        - Master flat header preserves BAYERPAT for downstream calibration.
+        """
+        import gc
+        import re
+        import os
+        import numpy as np
+        from astropy.io import fits
+
         self.update_status("Starting Master Flat Creation...")
         if not self.stacking_directory:
             QMessageBox.warning(self, "Error", "Please set the stacking directory first using the wrench button.")
@@ -10696,6 +10706,9 @@ class StackingSuiteDialog(QDialog):
             out = np.where(cnt > 0, num / np.maximum(cnt, 1.0), med)
             return out.astype(np.float32, copy=False)
 
+        def _is_valid_bayerpat(pat: str) -> bool:
+            return pat in ("RGGB", "BGGR", "GRBG", "GBRG")
+
         def _estimate_flat_scales_bayer(
             file_list: list[str],
             H: int,
@@ -10707,7 +10720,7 @@ class StackingSuiteDialog(QDialog):
             Returns scales shape (N,4): [R, G1, G2, B] where scale = frame_plane_median / group_plane_median.
             """
             pat = (pattern or "RGGB").strip().upper()
-            if pat not in ("RGGB", "BGGR", "GRBG", "GBRG"):
+            if not _is_valid_bayerpat(pat):
                 pat = "RGGB"
 
             # Central patch
@@ -10720,15 +10733,13 @@ class StackingSuiteDialog(QDialog):
 
             # parity → plane label
             if pat == "RGGB":
-                m = {(0,0):"R",  (0,1):"G1", (1,0):"G2", (1,1):"B"}
+                m = {(0, 0): "R",  (0, 1): "G1", (1, 0): "G2", (1, 1): "B"}
             elif pat == "BGGR":
-                m = {(0,0):"B",  (0,1):"G1", (1,0):"G2", (1,1):"R"}
+                m = {(0, 0): "B",  (0, 1): "G1", (1, 0): "G2", (1, 1): "R"}
             elif pat == "GRBG":
-                m = {(0,0):"G1", (0,1):"R",  (1,0):"B",  (1,1):"G2"}
+                m = {(0, 0): "G1", (0, 1): "R",  (1, 0): "B",  (1, 1): "G2"}
             else:  # GBRG
-                m = {(0,0):"G1", (0,1):"B",  (1,0):"R",  (1,1):"G2"}
-
-            idx = {"R":0, "G1":1, "G2":2, "B":3}
+                m = {(0, 0): "G1", (0, 1): "B",  (1, 0): "R",  (1, 1): "G2"}
 
             def _safe_med(a: np.ndarray) -> float:
                 v = a[np.isfinite(a) & (a > 0)]
@@ -10737,8 +10748,8 @@ class StackingSuiteDialog(QDialog):
                 d = float(np.median(v))
                 return d if np.isfinite(d) and d > 0 else 1.0
 
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-            with ThreadPoolExecutor(max_workers=min(os.cpu_count() or 4, 8)) as exe:
+            from concurrent.futures import ThreadPoolExecutor as _TPE, as_completed
+            with _TPE(max_workers=min(os.cpu_count() or 4, 8)) as exe:
                 fut2i = {exe.submit(load_fits_tile, fp, y0, y1, x0, x1): i for i, fp in enumerate(file_list)}
                 for fut in as_completed(fut2i):
                     i = fut2i[fut]
@@ -10761,19 +10772,17 @@ class StackingSuiteDialog(QDialog):
                         sub = sub - d_tile
 
                     # Extract CFA planes in this patch
-                    # (patch starts aligned with the image, so parity matches)
                     planes = {
-                        m[(0,0)]: sub[0::2, 0::2],
-                        m[(0,1)]: sub[0::2, 1::2],
-                        m[(1,0)]: sub[1::2, 0::2],
-                        m[(1,1)]: sub[1::2, 1::2],
+                        m[(0, 0)]: sub[0::2, 0::2],
+                        m[(0, 1)]: sub[0::2, 1::2],
+                        m[(1, 0)]: sub[1::2, 0::2],
+                        m[(1, 1)]: sub[1::2, 1::2],
                     }
 
-                    # Store medians in fixed order R,G1,G2,B
-                    r = _safe_med(planes.get("R", sub))
+                    r  = _safe_med(planes.get("R",  sub))
                     g1 = _safe_med(planes.get("G1", sub))
                     g2 = _safe_med(planes.get("G2", sub))
-                    b = _safe_med(planes.get("B", sub))
+                    b  = _safe_med(planes.get("B",  sub))
                     meds[i, :] = (r, g1, g2, b)
 
             # Group plane medians (robust)
@@ -10784,6 +10793,44 @@ class StackingSuiteDialog(QDialog):
             scales = np.clip(scales, 1e-3, 1e3).astype(np.float32)
             return scales
 
+        def _apply_bayer_scales_inplace(ts_np: np.ndarray, scales_rg1g2b: np.ndarray, pattern: str):
+            """
+            ts_np: (N, th, tw, 1) float32
+            scales_rg1g2b: (N,4) float32 in order [R, G1, G2, B]
+            pattern: RGGB/BGGR/GRBG/GBRG
+            """
+            pat = (pattern or "RGGB").strip().upper()
+            if not _is_valid_bayerpat(pat):
+                pat = "RGGB"
+
+            # map parity → index in scales [R,G1,G2,B]
+            if pat == "RGGB":
+                mi = {(0, 0): 0, (0, 1): 1, (1, 0): 2, (1, 1): 3}
+            elif pat == "BGGR":
+                mi = {(0, 0): 3, (0, 1): 1, (1, 0): 2, (1, 1): 0}
+            elif pat == "GRBG":
+                mi = {(0, 0): 1, (0, 1): 0, (1, 0): 3, (1, 1): 2}
+            else:  # GBRG
+                mi = {(0, 0): 1, (0, 1): 3, (1, 0): 0, (1, 1): 2}
+
+            N = ts_np.shape[0]
+            for i in range(N):
+                sub = ts_np[i, :, :, 0]
+
+                s00 = float(scales_rg1g2b[i, mi[(0, 0)]])
+                s01 = float(scales_rg1g2b[i, mi[(0, 1)]])
+                s10 = float(scales_rg1g2b[i, mi[(1, 0)]])
+                s11 = float(scales_rg1g2b[i, mi[(1, 1)]])
+
+                if (not np.isfinite(s00)) or s00 <= 0.0: s00 = 1.0
+                if (not np.isfinite(s01)) or s01 <= 0.0: s01 = 1.0
+                if (not np.isfinite(s10)) or s10 <= 0.0: s10 = 1.0
+                if (not np.isfinite(s11)) or s11 <= 0.0: s11 = 1.0
+
+                sub[0::2, 0::2] /= s00
+                sub[0::2, 1::2] /= s01
+                sub[1::2, 0::2] /= s10
+                sub[1::2, 1::2] /= s11
 
         def _estimate_flat_scales(file_list: list[str], H: int, W: int, C: int, dark_data: np.ndarray | None):
             """
@@ -10797,8 +10844,8 @@ class StackingSuiteDialog(QDialog):
             N = len(file_list)
             meds = np.empty((N,), dtype=np.float64)
 
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-            with ThreadPoolExecutor(max_workers=min(os.cpu_count() or 4, 8)) as exe:
+            from concurrent.futures import ThreadPoolExecutor as _TPE, as_completed
+            with _TPE(max_workers=min(os.cpu_count() or 4, 8)) as exe:
                 fut2i = {exe.submit(load_fits_tile, fp, y0, y1, x0, x1): i for i, fp in enumerate(file_list)}
                 for fut in as_completed(fut2i):
                     i = fut2i[fut]
@@ -10949,12 +10996,13 @@ class StackingSuiteDialog(QDialog):
                 # -----------------------------------------------------------------
                 # Reference shape + per-group chunk size
                 # -----------------------------------------------------------------
+                ref_hdr = None
                 if (exposure_time, image_size, filter_name, session) in group_shapes:
                     height, width, channels, chunk_height, chunk_width = group_shapes[
                         (exposure_time, image_size, filter_name, session)
                     ]
                 else:
-                    ref_data, _, _, _ = load_image(file_list[0])
+                    ref_data, ref_hdr, _, _ = load_image(file_list[0])
                     if ref_data is None:
                         self.update_status(
                             f"❌ Failed to load reference {os.path.basename(file_list[0])}"
@@ -10972,8 +11020,23 @@ class StackingSuiteDialog(QDialog):
                     except MemoryError:
                         chunk_height, chunk_width = pref_chunk_h, pref_chunk_w
 
+                # If we didn't grab header above, grab it now (for BayerPAT detection)
+                if ref_hdr is None:
+                    _ref_data2, ref_hdr, _, _ = load_image(file_list[0])
+
                 channels = max(1, channels)
                 N = len(file_list)
+
+                # -----------------------------------------------------------------
+                # Detect Bayer/mosaic group
+                # -----------------------------------------------------------------
+                bayerpat = ""
+                try:
+                    if ref_hdr is not None:
+                        bayerpat = str(ref_hdr.get("BAYERPAT", "")).strip().upper()
+                except Exception:
+                    bayerpat = ""
+                is_bayer_group = (channels == 1) and bool(bayerpat) and _is_valid_bayerpat(bayerpat)
 
                 # -----------------------------------------------------------------
                 # Reducer selection & per-frame normalization scales
@@ -10981,9 +11044,18 @@ class StackingSuiteDialog(QDialog):
                 algo_name, params, cpu_label = _select_reducer("flat", N)
                 use_gpu = bool(self._hw_accel_enabled()) and _torch_ok() and _gpu_algo_supported(algo_name)
 
-                self.update_status(f"⚙️ Normalizing {N} flats by per-frame medians (central patch).")
+                if is_bayer_group:
+                    self.update_status(
+                        f"⚙️ Normalizing {N} Bayer flats by per-frame CFA-plane medians (central patch, {bayerpat})."
+                    )
+                else:
+                    self.update_status(f"⚙️ Normalizing {N} flats by per-frame medians (central patch).")
                 QApplication.processEvents()
-                scales = _estimate_flat_scales(file_list, height, width, channels, dark_data)
+
+                if is_bayer_group:
+                    scales = _estimate_flat_scales_bayer(file_list, height, width, dark_data, bayerpat)  # (N,4)
+                else:
+                    scales = _estimate_flat_scales(file_list, height, width, channels, dark_data)        # (N,)
 
                 self.update_status(
                     f"⚙️ {'GPU' if use_gpu else 'CPU'} reducer for flats — {algo_name} "
@@ -11103,8 +11175,12 @@ class StackingSuiteDialog(QDialog):
                             d_tile = np.repeat(d_tile[..., None], 3, axis=2)
                         _subtract_dark_stack_inplace_hwc(ts_np, d_tile, pedestal=0.0)
 
-                    # ---- fast per-frame normalization (divide by precomputed scale) ----
-                    ts_np /= scales.reshape(N, 1, 1, 1)
+                    # ---- fast per-frame normalization (BAYER-aware if applicable) ----
+                    if is_bayer_group:
+                        # ts_np is (N, th, tw, 1); scales is (N,4)
+                        _apply_bayer_scales_inplace(ts_np, scales, bayerpat)
+                    else:
+                        ts_np /= scales.reshape(N, 1, 1, 1)
 
                     # ---- reduction (GPU or CPU) ----
                     if use_gpu:
@@ -11200,6 +11276,8 @@ class StackingSuiteDialog(QDialog):
                 header["NAXIS2"] = master_flat_data.shape[0]
                 if channels == 3:
                     header["NAXIS3"] = 3
+                if is_bayer_group:
+                    header["BAYERPAT"] = (bayerpat, "Bayer pattern of source flats (mosaic)")
 
                 save_image(
                     master_flat_data,
