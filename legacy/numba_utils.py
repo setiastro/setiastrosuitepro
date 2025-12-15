@@ -521,6 +521,74 @@ def apply_flat_division_numba(image, master_flat, master_bias=None):
 
     raise ValueError(f"apply_flat_division_numba: expected 2D or 3D, got shape {image.shape}")
 
+def _bayerpat_to_id(pat: str) -> int:
+    pat = (pat or "RGGB").strip().upper()
+    if pat == "RGGB": return 0
+    if pat == "BGGR": return 1
+    if pat == "GRBG": return 2
+    if pat == "GBRG": return 3
+    return 0
+
+def _bayer_plane_medians(flat2d: np.ndarray, pat: str) -> np.ndarray:
+    pat = (pat or "RGGB").strip().upper()
+    if pat == "RGGB":
+        r  = np.median(flat2d[0::2, 0::2])
+        g1 = np.median(flat2d[0::2, 1::2])
+        g2 = np.median(flat2d[1::2, 0::2])
+        b  = np.median(flat2d[1::2, 1::2])
+    elif pat == "BGGR":
+        b  = np.median(flat2d[0::2, 0::2])
+        g1 = np.median(flat2d[0::2, 1::2])
+        g2 = np.median(flat2d[1::2, 0::2])
+        r  = np.median(flat2d[1::2, 1::2])
+    elif pat == "GRBG":
+        g1 = np.median(flat2d[0::2, 0::2])
+        r  = np.median(flat2d[0::2, 1::2])
+        b  = np.median(flat2d[1::2, 0::2])
+        g2 = np.median(flat2d[1::2, 1::2])
+    else:  # GBRG
+        g1 = np.median(flat2d[0::2, 0::2])
+        b  = np.median(flat2d[0::2, 1::2])
+        r  = np.median(flat2d[1::2, 0::2])
+        g2 = np.median(flat2d[1::2, 1::2])
+
+    med4 = np.array([r, g1, g2, b], dtype=np.float32)
+    med4[~np.isfinite(med4)] = 1.0
+    med4[med4 <= 0] = 1.0
+    return med4
+
+@njit(parallel=True, fastmath=True)
+def apply_flat_division_numba_bayer_2d(image, master_flat, med4, pat_id):
+    """
+    Bayer-aware mono division. image/master_flat are (H,W).
+    med4 is [R,G1,G2,B] for that master_flat, pat_id in {0..3}.
+    """
+    H, W = image.shape
+    for y in prange(H):
+        y1 = y & 1
+        for x in range(W):
+            x1 = x & 1
+
+            # map parity->plane index
+            if pat_id == 0:      # RGGB: (0,0)R (0,1)G1 (1,0)G2 (1,1)B
+                pi = 0 if (y1==0 and x1==0) else 1 if (y1==0 and x1==1) else 2 if (y1==1 and x1==0) else 3
+            elif pat_id == 1:    # BGGR
+                pi = 3 if (y1==1 and x1==1) else 1 if (y1==0 and x1==1) else 2 if (y1==1 and x1==0) else 0
+            elif pat_id == 2:    # GRBG
+                pi = 1 if (y1==0 and x1==0) else 0 if (y1==0 and x1==1) else 3 if (y1==1 and x1==0) else 2
+            else:                # GBRG
+                pi = 1 if (y1==0 and x1==0) else 3 if (y1==0 and x1==1) else 0 if (y1==1 and x1==0) else 2
+
+            denom = master_flat[y, x] / med4[pi]
+            if denom == 0.0 or not np.isfinite(denom):
+                denom = 1.0
+            image[y, x] /= denom
+    return image
+
+def apply_flat_division_bayer(image2d: np.ndarray, flat2d: np.ndarray, bayerpat: str):
+    med4 = _bayer_plane_medians(flat2d, bayerpat)
+    pid = _bayerpat_to_id(bayerpat)
+    return apply_flat_division_numba_bayer_2d(image2d, flat2d, med4, pid)
 
 @njit(parallel=True)
 def subtract_dark_3d(frames, dark_frame):
