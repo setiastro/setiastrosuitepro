@@ -241,7 +241,7 @@ collage_path    = resource_path("images", "collage.png")
 annotated_path  = resource_path("images", "annotated.png")
 colorwheel_path = resource_path("images", "colorwheel.png")
 font_path       = resource_path("images", "font.png")
-csv_icon_path   = resource_path("images", "csv.png")          # <- double-check name (you had 'cvs.png')
+csv_icon_path   = resource_path("images", "cvs.png")          # <- double-check name (you had 'cvs.png')
 hrdiagram_path  = resource_path("images", "HRDiagram.png")
 
 # Optional: loud warning if something is missing (helps catch packaging mistakes)
