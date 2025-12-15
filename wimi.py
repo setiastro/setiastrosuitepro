@@ -217,31 +217,38 @@ if 'data/data' in data_path:
 if data_path:
     conf.dataurl = f'file://{data_path}/'
 
-# Access wrench_icon.png, adjusting for PyInstaller executable
-if hasattr(sys, '_MEIPASS'):
-    wrench_path = os.path.join(sys._MEIPASS, 'wrench_icon.png')
-    eye_icon_path = os.path.join(sys._MEIPASS, 'eye.png')
-    disk_icon_path = os.path.join(sys._MEIPASS, 'disk.png')
-    nuke_path = os.path.join(sys._MEIPASS, 'nuke.png')  
-    hubble_path = os.path.join(sys._MEIPASS, 'hubble.png') 
-    collage_path = os.path.join(sys._MEIPASS, 'collage.png') 
-    annotated_path = os.path.join(sys._MEIPASS, 'annotated.png') 
-    colorwheel_path = os.path.join(sys._MEIPASS, 'colorwheel.png')
-    font_path = os.path.join(sys._MEIPASS, 'font.png')
-    csv_icon_path = os.path.join(sys._MEIPASS, 'cvs.png')
-    hrdiagram_path = os.path.join(sys._MEIPASS, 'HRDiagram.png')    
-else:
-    wrench_path = 'wrench_icon.png'  # Path for running as a script
-    eye_icon_path = 'eye.png'  # Path for running as a script
-    disk_icon_path = 'disk.png'   
-    nuke_path = 'nuke.png' 
-    hubble_path = 'hubble.png'
-    collage_path = 'collage.png'
-    annotated_path = 'annotated.png'
-    colorwheel_path = 'colorwheel.png'
-    font_path = 'font.png'
-    csv_icon_path = 'cvs.png'
-    hrdiagram_path = 'HRDiagram.png'    
+from pathlib import Path
+import os, sys
+
+def resource_path(*parts: str) -> str:
+    """
+    Returns an absolute path to a bundled or source-tree resource.
+    Assumes resources are shipped under an 'images/' folder.
+    """
+    if hasattr(sys, "_MEIPASS"):
+        base = Path(sys._MEIPASS)          # PyInstaller temp dir
+    else:
+        base = Path(__file__).resolve().parent  # folder containing wimi.py
+    return str(base.joinpath(*parts))
+
+# Prefer 'images/<file>' for BOTH bundled and source runs
+wrench_path     = resource_path("images", "wrench_icon.png")
+eye_icon_path   = resource_path("images", "eye.png")
+disk_icon_path  = resource_path("images", "disk.png")
+nuke_path       = resource_path("images", "nuke.png")
+hubble_path     = resource_path("images", "hubble.png")
+collage_path    = resource_path("images", "collage.png")
+annotated_path  = resource_path("images", "annotated.png")
+colorwheel_path = resource_path("images", "colorwheel.png")
+font_path       = resource_path("images", "font.png")
+csv_icon_path   = resource_path("images", "csv.png")          # <- double-check name (you had 'cvs.png')
+hrdiagram_path  = resource_path("images", "HRDiagram.png")
+
+# Optional: loud warning if something is missing (helps catch packaging mistakes)
+for p in (wrench_path, eye_icon_path, disk_icon_path, nuke_path, hubble_path,
+          collage_path, annotated_path, colorwheel_path, font_path, csv_icon_path, hrdiagram_path):
+    if not os.path.exists(p):
+        print(f"[WIMI] Missing resource: {p}") 
 
 # Constants for comoving radial distance calculation
 H0 = 69.6  # Hubble constant in km/s/Mpc
