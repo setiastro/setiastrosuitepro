@@ -2,6 +2,7 @@
 from __future__ import annotations
 import uuid
 import numpy as np
+import math
 
 # Optional deps
 try:
@@ -79,7 +80,6 @@ def _push_numpy_as_new_document(owner_widget, arr01: np.ndarray, default_name: s
 
 
 # ---------- Interactive ellipse handles ----------
-
 class HandleItem(QGraphicsRectItem):
     SIZE = 8
     def __init__(self, role: str, parent_ellipse: QGraphicsEllipseItem):
@@ -91,23 +91,88 @@ class HandleItem(QGraphicsRectItem):
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, False)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges, False)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
-        cursors = {'top': Qt.CursorShape.SizeVerCursor, 'bottom': Qt.CursorShape.SizeVerCursor,
-                   'left': Qt.CursorShape.SizeHorCursor, 'right': Qt.CursorShape.SizeHorCursor,
-                   'rotate': Qt.CursorShape.OpenHandCursor}
+
+        cursors = {
+            'top': Qt.CursorShape.SizeVerCursor,
+            'bottom': Qt.CursorShape.SizeVerCursor,
+            'left': Qt.CursorShape.SizeHorCursor,
+            'right': Qt.CursorShape.SizeHorCursor,
+            'rotate': Qt.CursorShape.OpenHandCursor,
+        }
         self.setCursor(cursors[role])
+
         self._lastScenePos = None
+        # extra state for rotation
+        self._centerScene = None
+        self._startAngle = None
+        self._startRotation = None
 
     def mousePressEvent(self, ev):
-        self._lastScenePos = ev.scenePos(); ev.accept()
+        if self.role == 'rotate':
+            # Store center of ellipse in scene coords
+            rect = self.parent_ellipse.rect()
+            center_item = rect.center()
+            self._centerScene = self.parent_ellipse.mapToScene(center_item)
+
+            # Starting angle from center → mouse
+            p = ev.scenePos()
+            dx = p.x() - self._centerScene.x()
+            dy = p.y() - self._centerScene.y()
+            self._startAngle = math.degrees(math.atan2(dy, dx))
+
+            # Store current item rotation
+            self._startRotation = self.parent_ellipse.rotation()
+
+            # Optional: change cursor to "grabbing"
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            ev.accept()
+            return
+
+        # Non-rotate handles use the old dx/dy code path
+        self._lastScenePos = ev.scenePos()
+        ev.accept()
 
     def mouseMoveEvent(self, ev):
+        if self.role == 'rotate':
+            if self._centerScene is None or self._startAngle is None or self._startRotation is None:
+                ev.accept()
+                return
+
+            p = ev.scenePos()
+            dx = p.x() - self._centerScene.x()
+            dy = p.y() - self._centerScene.y()
+
+            # Current angle from center → mouse
+            current_angle = math.degrees(math.atan2(dy, dx))
+
+            # Delta relative to the original grab angle
+            delta = current_angle - self._startAngle
+
+            # Set absolute rotation: starting rotation + delta
+            self.parent_ellipse.setRotation(self._startRotation + delta)
+            ev.accept()
+            return
+
+        # Resize handles: same as before
+        if self._lastScenePos is None:
+            self._lastScenePos = ev.scenePos()
         dx = ev.scenePos().x() - self._lastScenePos.x()
         dy = ev.scenePos().y() - self._lastScenePos.y()
         self.parent_ellipse.interactiveResize(self.role, dx, dy)
-        self._lastScenePos = ev.scenePos(); ev.accept()
+        self._lastScenePos = ev.scenePos()
+        ev.accept()
 
     def mouseReleaseEvent(self, ev):
-        self._lastScenePos = None; ev.accept()
+        # Reset rotation state and cursor
+        if self.role == 'rotate':
+            self._centerScene = None
+            self._startAngle = None
+            self._startRotation = None
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+
+        self._lastScenePos = None
+        ev.accept()
+
 
 
 class InteractiveEllipseItem(QGraphicsEllipseItem):
@@ -120,6 +185,12 @@ class InteractiveEllipseItem(QGraphicsEllipseItem):
             QGraphicsItem.GraphicsItemFlag.ItemIsSelectable |
             QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges
         )
+
+        # Cosmetic pen: stays the same thickness on screen regardless of zoom
+        pen = QPen(QColor(0, 255, 0), 2)
+        pen.setCosmetic(True)
+        self.setPen(pen)
+
         self.handles = {r: HandleItem(r, self) for r in ('top','bottom','left','right','rotate')}
         self.updateHandles()
 
@@ -148,14 +219,20 @@ class InteractiveEllipseItem(QGraphicsEllipseItem):
         return super().itemChange(change, value)
 
     def interactiveResize(self, role: str, dx: float, dy: float):
-        if self._resizing: return
+        if self._resizing:
+            return
         r = QRectF(self.rect())
-        if role == 'top': r.setTop(r.top() + dy)
-        elif role == 'bottom': r.setBottom(r.bottom() + dy)
-        elif role == 'left': r.setLeft(r.left() + dx)
-        elif role == 'right': r.setRight(r.right() + dx)
+        if role == 'top':
+            r.setTop(r.top() + dy)
+        elif role == 'bottom':
+            r.setBottom(r.bottom() + dy)
+        elif role == 'left':
+            r.setLeft(r.left() + dx)
+        elif role == 'right':
+            r.setRight(r.right() + dx)
         elif role == 'rotate':
-            self.setRotation(self.rotation() + dx); return
+            # rotation is handled in HandleItem.mouseMoveEvent now
+            return
         self._resizing = True
         self.prepareGeometryChange()
         self.setRect(r)
@@ -241,12 +318,15 @@ class MaskCanvas(QGraphicsView):
         self.clear_shapes()
         rect = self.bg_item.boundingRect()
         poly = QGraphicsPolygonItem(QPolygonF([rect.topLeft(), rect.topRight(),
-                                               rect.bottomRight(), rect.bottomLeft()]))
+                                            rect.bottomRight(), rect.bottomLeft()]))
         poly.setBrush(QColor(0, 255, 0, 50))
-        poly.setPen(QPen(QColor(0, 255, 0), 2))
+        pen = QPen(QColor(0, 255, 0), 2)
+        pen.setCosmetic(True)
+        poly.setPen(pen)
         poly.setFlags(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable |
-                      QGraphicsItem.GraphicsItemFlag.ItemIsMovable)
+                    QGraphicsItem.GraphicsItemFlag.ItemIsMovable)
         self.scene.addItem(poly); self.shapes.append(poly)
+
 
     def mousePressEvent(self, ev):
         pt = self.mapToScene(ev.pos())
@@ -259,14 +339,18 @@ class MaskCanvas(QGraphicsView):
             self.poly_points = [pt]
             path = QPainterPath(pt)
             self.temp_path = QGraphicsPathItem(path)
-            self.temp_path.setPen(QPen(QColor(255, 0, 0), 2, Qt.PenStyle.DashLine))
+            pen = QPen(QColor(255, 0, 0), 2, Qt.PenStyle.DashLine)
+            pen.setCosmetic(True)
+            self.temp_path.setPen(pen)
             self.scene.addItem(self.temp_path)
             return
 
         if self.mode == 'ellipse' and ev.button() == Qt.MouseButton.LeftButton:
             self.ellipse_origin = pt
             self.temp_ellipse = QGraphicsEllipseItem(QRectF(pt, pt))
-            self.temp_ellipse.setPen(QPen(QColor(0, 255, 0), 2, Qt.PenStyle.DashLine))
+            pen = QPen(QColor(0, 255, 0), 2, Qt.PenStyle.DashLine)
+            pen.setCosmetic(True)
+            self.temp_ellipse.setPen(pen)
             self.scene.addItem(self.temp_ellipse)
             return
 
@@ -292,7 +376,6 @@ class MaskCanvas(QGraphicsView):
             if final_rect.width() > 4 and final_rect.height() > 4:
                 local_rect = QRectF(0, 0, final_rect.width(), final_rect.height())
                 ell = InteractiveEllipseItem(local_rect)
-                ell.setPen(QPen(QColor(0, 255, 0), 2))
                 ell.setBrush(QBrush(Qt.BrushStyle.NoBrush))
                 ell.setZValue(1)
                 ell.setPos(final_rect.topLeft())
@@ -302,9 +385,11 @@ class MaskCanvas(QGraphicsView):
         if self.mode == 'polygon' and self.temp_path:
             poly = QGraphicsPolygonItem(QPolygonF(self.poly_points))
             poly.setBrush(QColor(0, 255, 0, 50))
-            poly.setPen(QPen(QColor(0, 255, 0), 2))
+            pen = QPen(QColor(0, 255, 0), 2)
+            pen.setCosmetic(True)
+            poly.setPen(pen)
             poly.setFlags(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable |
-                          QGraphicsItem.GraphicsItemFlag.ItemIsMovable)
+                        QGraphicsItem.GraphicsItemFlag.ItemIsMovable)
             self.scene.removeItem(self.temp_path); self.temp_path = None
             self.scene.addItem(poly); self.shapes.append(poly)
             return
