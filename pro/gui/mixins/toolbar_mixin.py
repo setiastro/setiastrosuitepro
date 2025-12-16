@@ -216,7 +216,7 @@ class ToolbarMixin:
         tb_tl.addAction(self.act_nbtorgb)
         tb_tl.addAction(self.act_selective_color)
         tb_tl.addAction(self.act_freqsep)
-        tb_fn.addAction(self.act_multiscale_decomp)
+        tb_tl.addAction(self.act_multiscale_decomp)
         tb_tl.addAction(self.act_contsub)
         tb_tl.addAction(self.act_image_combine)
 

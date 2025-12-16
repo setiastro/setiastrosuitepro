@@ -5,13 +5,64 @@ import cv2
 
 from dataclasses import dataclass
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QImage, QPixmap, QPen, QColor
+from PyQt6.QtGui import QImage, QPixmap, QPen, QColor, QIcon
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGroupBox, QFormLayout,
     QPushButton, QComboBox, QSpinBox, QDoubleSpinBox, QCheckBox,
     QTableWidget, QTableWidgetItem, QWidget, QLabel, QGraphicsView,
-    QGraphicsScene, QGraphicsPixmapItem, QMessageBox
+    QGraphicsScene, QGraphicsPixmapItem, QMessageBox, QToolButton
 )
+
+class _ZoomPanView(QGraphicsView):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setDragMode(QGraphicsView.DragMode.NoDrag)
+        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+
+        self._panning = False
+        self._pan_start = None
+
+    def wheelEvent(self, ev):
+        # Ctrl+wheel optional – but I’ll make plain wheel zoom since you asked
+        delta = ev.angleDelta().y()
+        if delta == 0:
+            return
+        factor = 1.25 if delta > 0 else 0.8
+        self.scale(factor, factor)
+        ev.accept()
+
+    def mousePressEvent(self, ev):
+        if ev.button() == Qt.MouseButton.LeftButton:
+            self._panning = True
+            self._pan_start = ev.pos()
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            ev.accept()
+            return
+        super().mousePressEvent(ev)
+
+    def mouseMoveEvent(self, ev):
+        if self._panning and self._pan_start is not None:
+            delta = ev.pos() - self._pan_start
+            self._pan_start = ev.pos()
+
+            h = self.horizontalScrollBar()
+            v = self.verticalScrollBar()
+            h.setValue(h.value() - delta.x())
+            v.setValue(v.value() - delta.y())
+            ev.accept()
+            return
+        super().mouseMoveEvent(ev)
+
+    def mouseReleaseEvent(self, ev):
+        if ev.button() == Qt.MouseButton.LeftButton and self._panning:
+            self._panning = False
+            self._pan_start = None
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+            ev.accept()
+            return
+        super().mouseReleaseEvent(ev)
+
 
 # ─────────────────────────────────────────────
 # Core math (your backbone)
@@ -76,6 +127,8 @@ class MultiscaleDecompDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Multiscale Decomposition")
         self.setMinimumSize(1050, 700)
+        self.residual_enabled = True
+
 
         self._doc = doc
         base = getattr(doc, "image", None)
@@ -131,7 +184,7 @@ class MultiscaleDecompDialog(QDialog):
         # LEFT: preview
         left = QVBoxLayout()
         self.scene = QGraphicsScene(self)
-        self.view = QGraphicsView(self.scene)
+        self.view = _ZoomPanView(self.scene)
         self.view.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.pix = QGraphicsPixmapItem()
         self.scene.addItem(self.pix)
@@ -139,14 +192,36 @@ class MultiscaleDecompDialog(QDialog):
         left.addWidget(self.view)
 
         zoom_row = QHBoxLayout()
-        self.btn_fit = QPushButton("Fit")
-        self.btn_1to1 = QPushButton("1:1")
-        self.btn_fit.clicked.connect(self._fit_view)
-        self.btn_1to1.clicked.connect(self._one_to_one)
+
+        self.zoom_out_btn = QToolButton()
+        self.zoom_out_btn.setIcon(QIcon.fromTheme("zoom-out"))
+        self.zoom_out_btn.setToolTip("Zoom Out")
+
+        self.zoom_in_btn = QToolButton()
+        self.zoom_in_btn.setIcon(QIcon.fromTheme("zoom-in"))
+        self.zoom_in_btn.setToolTip("Zoom In")
+
+        self.fit_btn = QToolButton()
+        self.fit_btn.setIcon(QIcon.fromTheme("zoom-fit-best"))
+        self.fit_btn.setToolTip("Fit to Preview")
+
+        self.one_to_one_btn = QToolButton()
+        self.one_to_one_btn.setIcon(QIcon.fromTheme("zoom-original"))
+        self.one_to_one_btn.setToolTip("1:1")
+
+        self.zoom_out_btn.clicked.connect(lambda: self.view.scale(0.8, 0.8))
+        self.zoom_in_btn.clicked.connect(lambda: self.view.scale(1.25, 1.25))
+        self.fit_btn.clicked.connect(self._fit_view)
+        self.one_to_one_btn.clicked.connect(self._one_to_one)
+
         zoom_row.addStretch(1)
-        zoom_row.addWidget(self.btn_fit)
-        zoom_row.addWidget(self.btn_1to1)
+        zoom_row.addWidget(self.zoom_out_btn)
+        zoom_row.addWidget(self.zoom_in_btn)
+        zoom_row.addSpacing(10)
+        zoom_row.addWidget(self.fit_btn)
+        zoom_row.addWidget(self.one_to_one_btn)
         zoom_row.addStretch(1)
+
         left.addLayout(zoom_row)
 
         # RIGHT: controls
@@ -180,8 +255,9 @@ class MultiscaleDecompDialog(QDialog):
         # Layers table
         gb_layers = QGroupBox("Layers")
         v = QVBoxLayout(gb_layers)
-        self.table = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(["On", "Layer", "Scale", "Gain", "Thr", "Amt"])
+        self.table = QTableWidget(0, 7)
+        self.table.setHorizontalHeaderLabels(["On", "Layer", "Scale", "Gain", "Thr", "Amt", "Type"])
+
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(self.table.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(self.table.SelectionMode.SingleSelection)
@@ -286,7 +362,8 @@ class MultiscaleDecompDialog(QDialog):
             else:
                 tuned.append(apply_layer_ops(w, cfg.bias_gain, cfg.thr, cfg.amount))
 
-        out = multiscale_reconstruct(tuned, residual)
+        res = residual if self.residual_enabled else np.zeros_like(residual)
+        out = multiscale_reconstruct(tuned, res)
         out = np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
 
         # layer preview mode
@@ -319,6 +396,7 @@ class MultiscaleDecompDialog(QDialog):
     def _fit_view(self):
         if self.pix.pixmap().isNull():
             return
+        self.view.resetTransform()
         self.view.fitInView(self.pix, Qt.AspectRatioMode.KeepAspectRatio)
 
     def _one_to_one(self):
@@ -328,40 +406,73 @@ class MultiscaleDecompDialog(QDialog):
     def _rebuild_table(self):
         self.table.blockSignals(True)
         try:
-            self.table.setRowCount(self.layers)
+            # +1 row for residual ("R")
+            self.table.setRowCount(self.layers + 1)
+
+            # detail rows
             for i in range(self.layers):
                 cfg = self.cfgs[i]
-                # On
+
                 item_on = QTableWidgetItem("")
                 item_on.setFlags(item_on.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                 item_on.setCheckState(Qt.CheckState.Checked if cfg.enabled else Qt.CheckState.Unchecked)
                 self.table.setItem(i, 0, item_on)
 
-                self.table.setItem(i, 1, QTableWidgetItem(str(i+1)))
-                self.table.setItem(i, 2, QTableWidgetItem(f"{self.base_sigma*(2**i):.2f}"))
-
+                self.table.setItem(i, 1, QTableWidgetItem(str(i + 1)))
+                self.table.setItem(i, 2, QTableWidgetItem(f"{self.base_sigma * (2**i):.2f}"))
                 self.table.setItem(i, 3, QTableWidgetItem(f"{cfg.bias_gain:.2f}"))
                 self.table.setItem(i, 4, QTableWidgetItem(f"{cfg.thr:.4f}"))
                 self.table.setItem(i, 5, QTableWidgetItem(f"{cfg.amount:.2f}"))
+                self.table.setItem(i, 6, QTableWidgetItem("D"))
+
+            # residual row
+            r = self.layers
+            item_on = QTableWidgetItem("")
+            item_on.setFlags(item_on.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item_on.setCheckState(
+                Qt.CheckState.Checked if self.residual_enabled else Qt.CheckState.Unchecked
+            )
+            self.table.setItem(r, 0, item_on)
+
+            self.table.setItem(r, 1, QTableWidgetItem("R"))
+            self.table.setItem(r, 2, QTableWidgetItem("—"))
+            self.table.setItem(r, 3, QTableWidgetItem("1.00"))
+            self.table.setItem(r, 4, QTableWidgetItem("0.0000"))
+            self.table.setItem(r, 5, QTableWidgetItem("0.00"))
+            self.table.setItem(r, 6, QTableWidgetItem("R"))
+
         finally:
             self.table.blockSignals(False)
 
-        # react to checkbox toggles / edits
+        # connect once (avoid stacking connects)
+        try:
+            self.table.itemChanged.disconnect(self._on_table_item_changed)
+        except Exception:
+            pass
         self.table.itemChanged.connect(self._on_table_item_changed)
 
-        # select first row by default
         if self.layers > 0 and not self.table.selectedItems():
             self.table.selectRow(0)
             self._load_layer_into_editor(0)
 
+
     def _on_table_item_changed(self, item: QTableWidgetItem):
         r, c = item.row(), item.column()
+
+        # Residual row
+        if r == self.layers and c == 0:
+            self.residual_enabled = (item.checkState() == Qt.CheckState.Checked)
+            self._schedule_preview()
+            return
+
         if not (0 <= r < len(self.cfgs)):
             return
+
         cfg = self.cfgs[r]
         if c == 0:
             cfg.enabled = (item.checkState() == Qt.CheckState.Checked)
             self._schedule_preview()
+
 
     def _on_table_select(self):
         rows = {it.row() for it in self.table.selectedItems()}
@@ -371,8 +482,18 @@ class MultiscaleDecompDialog(QDialog):
         self._load_layer_into_editor(r)
 
     def _load_layer_into_editor(self, idx: int):
-        cfg = self.cfgs[idx]
         self._selected_layer = idx
+
+        if idx == self.layers:
+            self.lbl_sel.setText("Layer: R (Residual)")
+            for w in (self.spin_gain, self.spin_thr, self.spin_amt):
+                w.setEnabled(False)
+            return
+
+        for w in (self.spin_gain, self.spin_thr, self.spin_amt):
+            w.setEnabled(True)
+
+        cfg = self.cfgs[idx]
         self.lbl_sel.setText(f"Layer: {idx+1} / {self.layers}")
         self.spin_gain.blockSignals(True)
         self.spin_thr.blockSignals(True)
@@ -419,7 +540,7 @@ class MultiscaleDecompDialog(QDialog):
         try:
             self.combo_preview.clear()
             self.combo_preview.addItem("Final", userData="final")
-            self.combo_preview.addItem("Residual", userData="residual")
+            self.combo_preview.addItem("R (Residual)", userData="residual")
             for i in range(self.layers):
                 self.combo_preview.addItem(f"Detail Layer {i+1}", userData=i)
         finally:
@@ -442,7 +563,8 @@ class MultiscaleDecompDialog(QDialog):
             else:
                 tuned.append(apply_layer_ops(w, cfg.bias_gain, cfg.thr, cfg.amount))
 
-        out = multiscale_reconstruct(tuned, residual)
+        res = residual if self.residual_enabled else np.zeros_like(residual)
+        out = multiscale_reconstruct(tuned, res)
         out = np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
 
         # convert back to mono if original was mono
