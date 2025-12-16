@@ -273,7 +273,7 @@ _PRESET_UI_IDS = {
     "remove_green","star_align","background_neutral","white_balance","clahe",
     "morphology","pixel_math","rgb_align","signature_insert","signature_adder",
     "signature","halo_b_gon","geom_rescale","rescale","debayer","image_combine",
-    "star_spikes","diffraction_spikes",
+    "star_spikes","diffraction_spikes", "multiscale_decomp",
 }
 
 def _has_preset_editor_for_command(command_id: str) -> bool:
@@ -362,6 +362,16 @@ def _open_preset_editor_for_command(parent, command_id: str, initial: dict | Non
         from pro.wavescalede_preset import WaveScaleDSEPresetDialog
         dlg = WaveScaleDSEPresetDialog(parent, initial=cur or {
             "n_scales":6,"boost_factor":5.0,"mask_gamma":1.0,"iterations":2
+        })
+        return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
+
+    if command_id == "multiscale_decomp":
+        from pro.multiscale_decomp import _MultiScaleDecompPresetDialog
+        dlg = _MultiScaleDecompPresetDialog(parent, initial=cur or {
+            "layers": 4,
+            "base_sigma": 1.0,
+            "linked_rgb": True,
+            "layers_cfg": [],
         })
         return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
 

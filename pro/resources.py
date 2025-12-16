@@ -145,6 +145,7 @@ class Icons:
     # Deconvolution & filters
     CONVO = property(lambda self: _resource_path('convo.png'))
     FREQ_SEP = property(lambda self: _resource_path('freqsep.png'))
+    MULTISCALE_DECOMP = property(lambda self: _resource_path('multiscale_decomp.png'))
     CONT_SUB = property(lambda self: _resource_path('contsub.png'))
     HALO = property(lambda self: _resource_path('halo.png'))
     ABERRATION = property(lambda self: _resource_path('aberration.png'))
@@ -336,6 +337,7 @@ def _init_legacy_paths():
         'ppp_path': get_icon_path('ppp.png'),
         'nbtorgb_path': get_icon_path('nbtorgb.png'),
         'freqsep_path': get_icon_path('freqsep.png'),
+        'multiscale_decomp_path': get_icon_path('multiscale_decomp.png'),
         'contsub_path': get_icon_path('contsub.png'),
         'halo_path': get_icon_path('halo.png'),
         'cosmic_path': get_icon_path('cosmic.png'),

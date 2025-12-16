@@ -27,7 +27,7 @@ from pro.resources import (
     signature_icon_path, livestacking_path, convoicon_path, spcc_icon_path,
     exoicon_path, peeker_icon, dse_icon_path, isophote_path, statstretch_path,
     starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path,
-    nbtorgb_path, freqsep_path, contsub_path, halo_path, cosmic_path,
+    nbtorgb_path, freqsep_path, multiscale_decomp_path, contsub_path, halo_path, cosmic_path,
     satellite_path, imagecombine_path, wims_path, wimi_path, linearfit_path,
     debayer_path, aberration_path, functionbundles_path, viewbundles_path,
     selectivecolor_path, rgbalign_path,
@@ -216,6 +216,7 @@ class ToolbarMixin:
         tb_tl.addAction(self.act_nbtorgb)
         tb_tl.addAction(self.act_selective_color)
         tb_tl.addAction(self.act_freqsep)
+        tb_fn.addAction(self.act_multiscale_decomp)
         tb_tl.addAction(self.act_contsub)
         tb_tl.addAction(self.act_image_combine)
 
@@ -518,6 +519,14 @@ class ToolbarMixin:
         self.act_convo.setObjectName("convo_deconvo")
         self.act_convo.setToolTip("Open Convolution / Deconvolution")
         self.act_convo.triggered.connect(self.show_convo_deconvo)
+
+        self.act_multiscale_decomp = QAction(QIcon(multiscale_decomp_path), "Multiscale Decomposition...", self)
+        self.act_multiscale_decomp.setStatusTip("Multiscale detail/residual decomposition with per-layer controls")
+        self.act_multiscale_decomp.setIconVisibleInMenu(True)
+        self.act_multiscale_decomp.triggered.connect(self._open_multiscale_decomp)
+
+
+
 
         # --- Extract Luminance main action ---
         self.act_extract_luma = QAction(QIcon(LExtract_path), "Extract Luminance", self)
@@ -963,6 +972,8 @@ class ToolbarMixin:
         reg("pixel_math", self.act_pixelmath)
         reg("signature_insert", self.act_signature) 
         reg("halo_b_gon", self.act_halobgon)
+
+        reg("multiscale_decomp", self.act_multiscale_decomp)        
         reg("geom_invert",                 self.act_geom_invert)
         reg("geom_flip_horizontal",        self.act_geom_flip_h)
         reg("geom_flip_vertical",          self.act_geom_flip_v)

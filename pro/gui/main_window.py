@@ -3744,6 +3744,15 @@ class AstroSuiteProMainWindow(
 
         w.show()
 
+    def _open_multiscale_decomp(self):
+        doc = self._active_doc()
+        if not doc:
+            QMessageBox.information(self, "Multiscale Decomposition", "No active image.")
+            return
+        from pro.multiscale_decomp import MultiscaleDecompDialog
+        dlg = MultiscaleDecompDialog(self, doc)
+        dlg.exec()
+
     def _open_contsub_tool(self):
         from pro.continuum_subtract import ContinuumSubtractTab
         w = ContinuumSubtractTab(doc_manager=self.docman)

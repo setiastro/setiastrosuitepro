@@ -473,3 +473,110 @@ class MultiscaleDecompDialog(QDialog):
                 pass
 
         self.accept()
+
+
+class _MultiScaleDecompPresetDialog(QDialog):
+    """
+    Preset editor for Multiscale Decomposition (headless + shortcuts).
+    """
+    def __init__(self, parent=None, initial: dict | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Multiscale Decomposition — Preset")
+        init = dict(initial or {})
+
+        v = QVBoxLayout(self)
+
+        # ---- Global ----
+        gb = QGroupBox("Global")
+        form = QFormLayout(gb)
+
+        self.sp_layers = QSpinBox()
+        self.sp_layers.setRange(1, 10)
+        self.sp_layers.setValue(int(init.get("layers", 4)))
+
+        self.sp_sigma = QDoubleSpinBox()
+        self.sp_sigma.setRange(0.3, 5.0)
+        self.sp_sigma.setDecimals(2)
+        self.sp_sigma.setSingleStep(0.1)
+        self.sp_sigma.setValue(float(init.get("base_sigma", 1.0)))
+
+        self.cb_linked = QCheckBox("Linked RGB channels")
+        self.cb_linked.setChecked(bool(init.get("linked_rgb", True)))
+
+        form.addRow("Layers:", self.sp_layers)
+        form.addRow("Base sigma:", self.sp_sigma)
+        form.addRow("", self.cb_linked)
+
+        v.addWidget(gb)
+
+        # ---- Layers ----
+        gb_layers = QGroupBox("Per-Layer Settings")
+        lv = QVBoxLayout(gb_layers)
+
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(["On", "Layer", "Gain", "Threshold", "Amount"])
+        self.table.verticalHeader().setVisible(False)
+        lv.addWidget(self.table)
+
+        v.addWidget(gb_layers)
+
+        # ---- Buttons ----
+        btns = QHBoxLayout()
+        ok = QPushButton("OK")
+        cancel = QPushButton("Cancel")
+        btns.addStretch(1)
+        btns.addWidget(ok)
+        btns.addWidget(cancel)
+        v.addLayout(btns)
+
+        ok.clicked.connect(self.accept)
+        cancel.clicked.connect(self.reject)
+
+        self._populate_table(init)
+
+    def _populate_table(self, init: dict):
+        layers = int(self.sp_layers.value())
+        cfgs = init.get("layers_cfg", [])
+
+        self.table.setRowCount(layers)
+
+        for i in range(layers):
+            cfg = cfgs[i] if i < len(cfgs) else {}
+
+            # Enabled
+            chk = QTableWidgetItem("")
+            chk.setFlags(chk.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            chk.setCheckState(
+                Qt.CheckState.Checked if cfg.get("enabled", True)
+                else Qt.CheckState.Unchecked
+            )
+            self.table.setItem(i, 0, chk)
+
+            self.table.setItem(i, 1, QTableWidgetItem(str(i + 1)))
+            self.table.setItem(i, 2, QTableWidgetItem(f"{float(cfg.get('gain', 1.0)):.2f}"))
+            self.table.setItem(i, 3, QTableWidgetItem(f"{float(cfg.get('thr', 0.0)):.4f}"))
+            self.table.setItem(i, 4, QTableWidgetItem(f"{float(cfg.get('amount', 0.0)):.2f}"))
+
+    def result_dict(self) -> dict:
+        layers = int(self.sp_layers.value())
+        out_layers = []
+
+        for r in range(layers):
+            enabled = self.table.item(r, 0).checkState() == Qt.CheckState.Checked
+            gain = float(self.table.item(r, 2).text())
+            thr = float(self.table.item(r, 3).text())
+            amt = float(self.table.item(r, 4).text())
+
+            out_layers.append({
+                "enabled": enabled,
+                "gain": gain,
+                "thr": thr,
+                "amount": amt,
+            })
+
+        return {
+            "layers": layers,
+            "base_sigma": float(self.sp_sigma.value()),
+            "linked_rgb": bool(self.cb_linked.isChecked()),
+            "layers_cfg": out_layers,
+        }
