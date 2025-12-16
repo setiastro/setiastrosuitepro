@@ -4794,6 +4794,24 @@ class WIMIDialog(QDialog):
 
                         extra_row = [
                             fmt(Bmag),
+                            fmt(Vmag),
+                            fmt(b_minus_v),
+                            fmt(absV),
+                            fmt(plx),
+                            fmt(dist_pc),
+                            fmt(dist_ly),
+                            spec or "",
+                            src or "",
+                        ]
+                    else:
+                        # No extra data for this row → keep columns blank
+                        extra_row = [""] * len(extra_headers)
+
+                writer.writerow(row_data + extra_row)
+
+        QMessageBox.information(self, "CSV Saved",
+                                f"Results successfully saved to {path}")
+
 
       
 
