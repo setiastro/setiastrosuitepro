@@ -138,13 +138,23 @@ class MorphologyDialogPro(QDialog):
         self.scene.addItem(self.pix)
         v.addWidget(self.view, 1)
 
-        # ---- Zoom bar ----
+        # ---- Zoom bar (themed) ----
         z = QHBoxLayout()
-        btn_in  = QPushButton("Zoom In");  btn_in.clicked.connect(self.view.zoom_in)
-        btn_out = QPushButton("Zoom Out"); btn_out.clicked.connect(self.view.zoom_out)
-        btn_fit = QPushButton("Fit to Preview"); btn_fit.clicked.connect(lambda: self.view.fit_to_item(self.pix))
-        z.addStretch(1); z.addWidget(btn_in); z.addWidget(btn_out); z.addWidget(btn_fit)
-        v.addLayout(z)
+        z.addStretch(1)
+
+        btn_in  = themed_toolbtn("zoom-in", "Zoom In")
+        btn_out = themed_toolbtn("zoom-out", "Zoom Out")
+        btn_fit = themed_toolbtn("zoom-fit-best", "Fit to Preview")
+
+        btn_in.clicked.connect(self.view.zoom_in)
+        btn_out.clicked.connect(self.view.zoom_out)
+        btn_fit.clicked.connect(lambda: self.view.fit_to_item(self.pix))
+
+        z.addWidget(btn_in)
+        z.addWidget(btn_out)
+        z.addWidget(btn_fit)
+        v.addLayout(z) 
+
 
         # ---- Buttons (unchanged) ----
         row = QHBoxLayout()

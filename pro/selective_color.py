@@ -725,14 +725,18 @@ class SelectiveColorCorrection(QDialog):
         right.setContentsMargins(0, 0, 0, 0)
         right.setSpacing(8)
 
-        # Zoom toolbar
+        # Zoom toolbar (themed)
         zoom_row = QHBoxLayout()
-        self.btn_zoom_in  = QPushButton("Zoom +")
-        self.btn_zoom_out = QPushButton("Zoom –")
-        self.btn_zoom_1   = QPushButton("1:1")
-        zoom_row.addWidget(self.btn_zoom_in)
+
+        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
+        self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
+        self.btn_zoom_1   = themed_toolbtn("zoom-original", "1:1")
+        self.btn_fit      = themed_toolbtn("zoom-fit-best", "Fit")
+
         zoom_row.addWidget(self.btn_zoom_out)
+        zoom_row.addWidget(self.btn_zoom_in)
         zoom_row.addWidget(self.btn_zoom_1)
+        zoom_row.addWidget(self.btn_fit)
         zoom_row.addStretch(1)
         right.addLayout(zoom_row)
 
@@ -878,6 +882,16 @@ class SelectiveColorCorrection(QDialog):
         nx = cx * new_zoom - pvx
         ny = cy * new_zoom - pvy
         self._set_scroll(nx, ny)
+
+    def _fit_to_preview(self):
+        if not hasattr(self, "_base_pm") or self._base_pm is None:
+            return
+        vp = self.scroll.viewport().size()
+        pm = self._base_pm.size()
+        if pm.width() <= 0 or pm.height() <= 0:
+            return
+        k = min(vp.width() / pm.width(), vp.height() / pm.height())
+        self._apply_zoom(k, anchor_label_pos=None)
 
     # --- Pan helpers -----------------------------------------------------
     def _begin_pan(self, pos_label):

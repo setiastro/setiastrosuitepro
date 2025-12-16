@@ -138,11 +138,20 @@ class ImageCombineDialog(QDialog):
         self.scroll.setWidget(self.lbl)
         root.addWidget(self.scroll, 1)
 
-        # zoom
+        # zoom (themed)
         zrow = QHBoxLayout()
-        btnOut = QPushButton("Zoom Out －"); btnFit = QPushButton("⧉ Fit"); btnIn = QPushButton("Zoom In ＋")
-        btnOut.clicked.connect(self._zoom_out); btnIn.clicked.connect(self._zoom_in); btnFit.clicked.connect(self._fit)
-        zrow.addWidget(btnOut); zrow.addWidget(btnFit); zrow.addWidget(btnIn)
+
+        btnOut = themed_toolbtn("zoom-out", "Zoom Out")
+        btnFit = themed_toolbtn("zoom-fit-best", "Fit to Preview")
+        btnIn  = themed_toolbtn("zoom-in", "Zoom In")
+
+        btnOut.clicked.connect(self._zoom_out)
+        btnIn .clicked.connect(self._zoom_in)
+        btnFit.clicked.connect(self._fit)
+
+        zrow.addWidget(btnOut)
+        zrow.addWidget(btnFit)
+        zrow.addWidget(btnIn)
         root.addLayout(zrow)
 
         # buttons

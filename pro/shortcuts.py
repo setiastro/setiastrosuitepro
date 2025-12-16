@@ -2019,8 +2019,8 @@ class _WaveScaleDarkEnhancerPresetDialog(QDialog):
 class _CLAHEPresetDialog(QDialog):
     """
     Preset UI for CLAHE:
-      • clip_limit (0.1–4.0)
-      • tile (1–32)  → used as (tile, tile)
+      • clip_limit (0.10–4.00)
+      • tile_px (8–512 px)  → converted to OpenCV tileGridSize based on image size
     """
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
@@ -2035,15 +2035,32 @@ class _CLAHEPresetDialog(QDialog):
         self.dp_clip.setSingleStep(0.10)
         self.dp_clip.setValue(float(init.get("clip_limit", 2.00)))
 
-        self.sp_tile = QSpinBox()
-        self.sp_tile.setRange(1, 32)
-        self.sp_tile.setValue(int(init.get("tile", 8)))
+        self.sp_tile_px = QSpinBox()
+        self.sp_tile_px.setRange(8, 512)
+        self.sp_tile_px.setSingleStep(8)
+
+        # Support both old and new in the UI:
+        if "tile_px" in init:
+            self.sp_tile_px.setValue(int(init.get("tile_px", 128)))
+        else:
+            # legacy tile count → rough px guess; keeps old presets "reasonable"
+            legacy_tile = int(init.get("tile", 8))
+            legacy_tile = max(2, min(legacy_tile, 128))
+            # Heuristic: convert tile count to a "typical" px size assuming ~2048 min dim
+            px_guess = int(round(2048 / float(legacy_tile)))
+            px_guess = max(8, min(px_guess, 512))
+            # snap to step 8
+            px_guess = int(round(px_guess / 8)) * 8
+            self.sp_tile_px.setValue(px_guess)
 
         form.addRow("Clip limit:", self.dp_clip)
-        form.addRow("Tile size:", self.sp_tile)
+        form.addRow("Tile size (px):", self.sp_tile_px)
 
-        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok |
-                                QDialogButtonBox.StandardButton.Cancel, parent=self)
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok |
+            QDialogButtonBox.StandardButton.Cancel,
+            parent=self
+        )
         btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
         form.addRow(btns)
@@ -2051,7 +2068,7 @@ class _CLAHEPresetDialog(QDialog):
     def result_dict(self) -> dict:
         return {
             "clip_limit": float(self.dp_clip.value()),
-            "tile": int(self.sp_tile.value()),
+            "tile_px": int(self.sp_tile_px.value()),
         }
 
 class _MorphologyPresetDialog(QDialog):

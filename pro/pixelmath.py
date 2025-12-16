@@ -1021,10 +1021,10 @@ class PixelMathDialogPro(QDialog):
         self._set_as_sigma  = _set_sigma
 
         # existing zoom buttons
-        self.btn_zoom_in  = QToolButton(); self.btn_zoom_in.setText("Zoom +")
-        self.btn_zoom_out = QToolButton(); self.btn_zoom_out.setText("Zoom −")
-        self.btn_zoom_1_1 = QToolButton(); self.btn_zoom_1_1.setText("1:1")
-        self.btn_fit      = QToolButton(); self.btn_fit.setText("Fit")
+        self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
+        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
+        self.btn_zoom_1_1 = themed_toolbtn("zoom-original", "1:1")
+        self.btn_fit      = themed_toolbtn("zoom-fit-best", "Fit to Preview")
 
         tb.addWidget(self.btn_preview)
         tb.addWidget(self.btn_autostretch)          # ← NEW

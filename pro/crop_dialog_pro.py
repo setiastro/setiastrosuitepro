@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
 )
 
 from pro.wcs_update import update_wcs_after_crop
+from pro.widgets.themed_buttons import themed_toolbtn
 
 # -------- util: Siril-style preview stretch (non-destructive) ----------
 def siril_style_autostretch(image: np.ndarray, sigma: float = 3.0) -> np.ndarray:
@@ -351,14 +352,16 @@ class CropDialogPro(QDialog):
         self.view.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)  # pan with mouse-drag
 
         zoom_row = QHBoxLayout()
-        self.btn_zoom_out = QToolButton(); self.btn_zoom_out.setText("−")
-        self.btn_zoom_in  = QToolButton(); self.btn_zoom_in.setText("+")
-        self.btn_zoom_100 = QToolButton(); self.btn_zoom_100.setText("100%")
-        self.btn_zoom_fit = QToolButton(); self.btn_zoom_fit.setText("Fit")
-
         zoom_row.addStretch(1)
+
+        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
+        self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
+        self.btn_zoom_100 = themed_toolbtn("zoom-original", "Zoom 100%")
+        self.btn_zoom_fit = themed_toolbtn("zoom-fit-best", "Fit to View")
+
         for b in (self.btn_zoom_out, self.btn_zoom_in, self.btn_zoom_100, self.btn_zoom_fit):
             zoom_row.addWidget(b)
+
         zoom_row.addStretch(1)
         main.addLayout(zoom_row)
 

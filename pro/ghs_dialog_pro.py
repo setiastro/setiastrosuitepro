@@ -91,10 +91,17 @@ class GhsDialogPro(QDialog):
         # --- Right preview panel ---
         right = QVBoxLayout()
         zoombar = QHBoxLayout()
-        b_out = QPushButton("Zoom Out"); b_in = QPushButton("Zoom In"); b_fit = QPushButton("Fit to Preview")
-        zoombar.addWidget(b_out); zoombar.addWidget(b_in); zoombar.addWidget(b_fit)
-        right.addLayout(zoombar)
+        zoombar.addStretch(1)
 
+        b_out = themed_toolbtn("zoom-out", "Zoom Out")
+        b_in  = themed_toolbtn("zoom-in", "Zoom In")
+        b_fit = themed_toolbtn("zoom-fit-best", "Fit to Preview")
+
+        zoombar.addWidget(b_out)
+        zoombar.addWidget(b_in)
+        zoombar.addWidget(b_fit)
+
+        right.addLayout(zoombar)
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)

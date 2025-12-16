@@ -516,50 +516,69 @@ def _on_graxpert_finished(parent,
         shutil.rmtree(working_dir, ignore_errors=True)
         return
 
-    # 2) read pixels (header is optional)
+    # 2) read pixels (we *do not* want its header to replace ours)
     arr, header = None, None
     if _legacy_load_image is not None:
         try:
-            a, h, _, _ = _legacy_load_image(output_file)
+            out = _legacy_load_image(output_file, return_metadata=True)
+            if out and len(out) == 5:
+                a, h, bit_depth, is_mono, out_meta = out
+            else:
+                a, h, bit_depth, is_mono = out
+                out_meta = {}
             arr, header = a, h
         except Exception:
             arr = None
-
-    if arr is None:
-        arr = _fallback_read_float01(output_file)
-
-    if arr is None or arr.size == 0:
-        QMessageBox.critical(parent, "GraXpert", "Could not read GraXpert output.")
-        shutil.rmtree(working_dir, ignore_errors=True)
-        return
-
+            header = None
+            bit_depth = "32-bit floating point"
+            is_mono = None
+            out_meta = {}
+    else:
+        out_meta = {}
+        bit_depth = "32-bit floating point"
+        is_mono = None
     # Decide how it appears in history/undo
     step_label = op_label or "GraXpert Gradient Removal"
 
-    # 3) base metadata
-    meta = {
-        "step_name": step_label,
-        "bit_depth": "32-bit floating point",
-        "is_mono": (arr.ndim == 2) or (arr.ndim == 3 and arr.shape[2] == 1),
-        "description": step_label,
-    }
-    if header is not None:
-        meta["original_header"] = header
+    # 3) base metadata: START FROM EXISTING DOC METADATA
+    base_meta = dict(getattr(target_doc, "metadata", {}) or {})
+
+    # Keep original_header / wcs_header from the doc.
+    # If you want to keep GraXpert's header for debugging, store separately:
+    from astropy.io import fits as _fits_mod
+    if header is not None and isinstance(header, _fits_mod.Header):
+        base_meta.setdefault("graxpert_header", header)
+
+    # Basic fields we do want to update
+    base_meta["step_name"]   = step_label
+    base_meta["description"] = step_label
+    base_meta["bit_depth"]   = "32-bit floating point"
+    if is_mono is not None:
+        base_meta["is_mono"] = bool(is_mono)
+
+    # Copy over any interesting fields from GraXpert's own metadata that are SAFE
+    # but do NOT overwrite original_header / wcs_header.
+    for k, v in (out_meta or {}).items():
+        if k in ("original_header", "fits_header", "wcs_header"):
+            continue
+        base_meta.setdefault(k, v)
+
+    # Operation-specific extras
     if meta_extras:
-        meta.update(meta_extras)
+        # these are non-header fields like graxpert_operation, etc.
+        base_meta.update(meta_extras)
 
     # 4) apply to the target doc
     try:
         target_doc.apply_edit(
             arr.astype(np.float32, copy=False),
-            metadata=meta,
+            metadata=base_meta,
             step_name=step_label,
         )
     except Exception as e:
         QMessageBox.critical(parent, "GraXpert", f"Failed to apply result:\n{e}")
     finally:
         shutil.rmtree(working_dir, ignore_errors=True)
-
 
 
 def _pick_exact_output(folder: str, base: str) -> str | None:

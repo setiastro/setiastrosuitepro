@@ -471,7 +471,11 @@ class MaskPreviewDialog(QDialog):
         self.scroll.setWidget(self.label)
 
         btns = QHBoxLayout()
-        b_in = QPushButton("Zoom In");  b_out = QPushButton("Zoom Out"); b_fit = QPushButton("Fit")
+        b_in   = themed_toolbtn("zoom-in", "Zoom In")
+        b_out  = themed_toolbtn("zoom-out", "Zoom Out")
+        b_fit  = themed_toolbtn("zoom-fit-best", "Fit to Preview")
+
+
         b_push = QPushButton("Push as New Document…")
         b_in.clicked.connect(lambda: self._zoom(1.2))
         b_out.clicked.connect(lambda: self._zoom(1/1.2))
@@ -585,9 +589,9 @@ class MaskCreationDialog(QDialog):
         layout.addLayout(mode_bar)
 
         zoom_bar = QHBoxLayout()
-        z_out = QPushButton("Zoom Out")
-        z_in  = QPushButton("Zoom In")
-        z_fit = QPushButton("Fit to Preview")
+        z_out = themed_toolbtn("zoom-out", "Zoom Out")
+        z_in  = themed_toolbtn("zoom-in", "Zoom In")
+        z_fit = themed_toolbtn("zoom-fit-best", "Fit to Preview")
         z_out.clicked.connect(lambda: self._zoom_canvas(1/1.25))
         z_in.clicked.connect(lambda: self._zoom_canvas(1.25))
         z_fit.clicked.connect(self._fit_canvas)

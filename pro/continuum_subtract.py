@@ -908,33 +908,29 @@ class ContinuumSubtractTab(QWidget):
 
     def _showEnlarged(self, pixmap: QPixmap):
         """
-        Detail View dialog with zoom controls, autostretch, and a 'push to document' action.
+        Detail View dialog with themed zoom controls, autostretch, and 'push to document'.
+        Uses ZoomableGraphicsView + QGraphicsScene (consistent with CLAHE).
         """
-        # --- helpers (local to this dialog) ---
-        def qimage_from_float01(arr: np.ndarray) -> QImage:
-            """float32 [0..1] -> QImage (RGB888 or Grayscale8), deep-copied."""
-            a = np.clip(arr, 0.0, 1.0)
-            if a.ndim == 2:  # mono
-                u8 = (a * 255.0 + 0.5).astype(np.uint8, copy=False)
-                h, w = u8.shape
-                qimg = QImage(u8.data, w, h, w, QImage.Format.Format_Grayscale8)
-                return qimg.copy()
-            else:            # color
-                if a.shape[2] == 1:
-                    a = a[..., 0]
-                    return qimage_from_float01(a)
-                u8 = (a * 255.0 + 0.5).astype(np.uint8, copy=False)
-                h, w, _ = u8.shape
-                qimg = QImage(u8.data, w, h, 3*w, QImage.Format.Format_RGB888)
-                return qimg.copy()
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtGui import QImage, QPixmap
+        from PyQt6.QtWidgets import (
+            QDialog, QVBoxLayout, QHBoxLayout, QMessageBox,
+            QLabel, QPushButton, QGraphicsScene, QGraphicsPixmapItem
+        )
 
-        def float01_from_qimage(qimg: QImage) -> np.ndarray:
-            """QImage -> float32 [0..1]; supports Grayscale8 and RGB888 primarily."""
-            if qimg.isNull():
+
+        from pro.widgets.graphics_views import ZoomableGraphicsView
+        from pro.widgets.themed_buttons import themed_toolbtn
+        from imageops.stretch import stretch_color_image, stretch_mono_image
+
+        # ---------- helpers ----------
+        def _float01_from_qimage(qimg: QImage) -> np.ndarray:
+            """QImage -> float32 [0..1]. Handles Grayscale8 and RGB888; converts others to RGB888."""
+            if qimg is None or qimg.isNull():
                 return np.zeros((1, 1), dtype=np.float32)
+
             fmt = qimg.format()
-            if fmt != QImage.Format.Format_Grayscale8 and fmt != QImage.Format.Format_RGB888:
-                # normalize to a friendly format
+            if fmt not in (QImage.Format.Format_Grayscale8, QImage.Format.Format_RGB888):
                 qimg = qimg.convertToFormat(QImage.Format.Format_RGB888)
                 fmt = QImage.Format.Format_RGB888
 
@@ -947,83 +943,94 @@ class ContinuumSubtractTab(QWidget):
             buf = np.frombuffer(ptr, dtype=np.uint8).reshape((h, bpl))
 
             if fmt == QImage.Format.Format_Grayscale8:
-                arr = buf[:, :w].astype(np.float32) / 255.0
-                return arr
-            else:  # RGB888
-                arr = buf[:, :w*3].reshape((h, w, 3)).astype(np.float32) / 255.0
-                return arr
+                return (buf[:, :w].astype(np.float32) / 255.0).clip(0.0, 1.0)
 
-        def qpixmap_from_float01(arr: np.ndarray) -> QPixmap:
-            return QPixmap.fromImage(qimage_from_float01(arr))
+            # RGB888
+            rgb = buf[:, :w * 3].reshape((h, w, 3)).astype(np.float32) / 255.0
+            return rgb.clip(0.0, 1.0)
 
-        def percentile_autostretch(arr: np.ndarray, low=0.5, high=99.5) -> np.ndarray:
-            """
-            Simple contrast stretch using global percentiles.
-            Works for mono or RGB; applies a single scale to all channels for coherence.
-            """
-            a = arr.astype(np.float32, copy=False)
-            if a.ndim == 3:
-                gray = np.mean(a, axis=2)
-            else:
-                gray = a
-            p1, p2 = np.percentile(gray, [low, high])
-            if p2 <= p1 + 1e-8:
-                return np.clip(a, 0.0, 1.0)
-            out = (a - p1) / (p2 - p1)
-            return np.clip(out, 0.0, 1.0)
+        def _qimage_from_float01(arr: np.ndarray) -> QImage:
+            """float32 [0..1] -> QImage (RGB888 or Grayscale8), deep-copied."""
+            a = np.clip(np.asarray(arr, dtype=np.float32), 0.0, 1.0)
 
-        # --- build dialog UI ---
+            if a.ndim == 2:
+                u8 = (a * 255.0 + 0.5).astype(np.uint8, copy=False)
+                h, w = u8.shape
+                q = QImage(u8.data, w, h, w, QImage.Format.Format_Grayscale8)
+                return q.copy()
+
+            if a.ndim == 3 and a.shape[2] == 1:
+                return _qimage_from_float01(a[..., 0])
+
+            if a.ndim == 3 and a.shape[2] == 3:
+                u8 = (a * 255.0 + 0.5).astype(np.uint8, copy=False)
+                h, w, _ = u8.shape
+                q = QImage(u8.data, w, h, 3 * w, QImage.Format.Format_RGB888)
+                return q.copy()
+
+            # fallback
+            raise ValueError(f"Unexpected image shape: {a.shape}")
+
+        def _pixmap_from_float01(arr: np.ndarray) -> QPixmap:
+            return QPixmap.fromImage(_qimage_from_float01(arr))
+
+        # ---------- dialog ----------
         dlg = QDialog(self)
         dlg.setWindowTitle("Detail View")
         dlg.resize(980, 820)
 
         outer = QVBoxLayout(dlg)
 
-        # image area in a scroll view (so large zooms can be panned)
-        scroll = QScrollArea(dlg)
-        scroll.setWidgetResizable(True)
-        img_container = QWidget()
-        img_layout = QVBoxLayout(img_container)
-        img_layout.setContentsMargins(0, 0, 0, 0)
+        # Convert input pixmap -> float01 working buffer
+        try:
+            base_qimg = pixmap.toImage()
+            current_arr = _float01_from_qimage(base_qimg)
+        except Exception:
+            current_arr = np.zeros((1, 1), dtype=np.float32)
 
-        img_label = QLabel()
-        img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # Ensure "display" is always RGB for the pixmap item (GraphicsView)
+        def _ensure_rgb(a: np.ndarray) -> np.ndarray:
+            a = np.asarray(a, dtype=np.float32)
+            if a.ndim == 2:
+                return np.stack([a, a, a], axis=-1)
+            if a.ndim == 3 and a.shape[2] == 1:
+                return np.repeat(a, 3, axis=2)
+            return a
 
-        # Keep original image as float [0..1]
-        base_qimg = pixmap.toImage()
-        base_arr = float01_from_qimage(base_qimg)
-        current_arr = base_arr.copy()
+        # Graphics view
+        scene = QGraphicsScene(dlg)
+        view = ZoomableGraphicsView(scene)
+        view.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        # zoom state
-        base_h = base_qimg.height()
-        base_w = base_qimg.width()
-        scale = 1.0
+        pix_item = QGraphicsPixmapItem()
+        scene.addItem(pix_item)
+        outer.addWidget(view, stretch=1)
 
-        def update_view():
-            nonlocal scale
-            # render current_arr -> pixmap, then scale
-            pm = qpixmap_from_float01(current_arr)
-            target_w = max(1, int(base_w * scale))
-            target_h = max(1, int(base_h * scale))
-            img_label.setPixmap(pm.scaled(
-                target_w, target_h,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
-            ))
+        def _set_scene_from_arr(arr01: np.ndarray):
+            rgb = _ensure_rgb(arr01)
+            pm = _pixmap_from_float01(rgb)
+            pix_item.setPixmap(pm)
+            scene.setSceneRect(pix_item.boundingRect())
 
-        img_layout.addWidget(img_label)
-        img_container.setLayout(img_layout)
-        scroll.setWidget(img_container)
-        outer.addWidget(scroll, stretch=1)
+        _set_scene_from_arr(current_arr)
 
-        # controls
+        # Toolbar row (themed zoom helper)
         row = QHBoxLayout()
-        btn_zoom_out = QPushButton("– Zoom")
-        btn_zoom_reset = QPushButton("Reset Zoom")
-        btn_zoom_in = QPushButton("+ Zoom")
+
+        btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
+        btn_zoom_in = themed_toolbtn("zoom-in", "Zoom In")
+        btn_zoom_1to1 = themed_toolbtn("zoom-original", "1:1 (100%)")
+        btn_zoom_fit = themed_toolbtn("zoom-fit-best", "Fit to Preview")
+
+        btn_zoom_out.clicked.connect(view.zoom_out)
+        btn_zoom_in.clicked.connect(view.zoom_in)
+        btn_zoom_1to1.clicked.connect(view.one_to_one if hasattr(view, "one_to_one") else (lambda: None))
+        btn_zoom_fit.clicked.connect(lambda: view.fit_to_item(pix_item))
+
         row.addWidget(btn_zoom_out)
-        row.addWidget(btn_zoom_reset)
         row.addWidget(btn_zoom_in)
+        row.addWidget(btn_zoom_1to1)
+        row.addWidget(btn_zoom_fit)
 
         row.addStretch(1)
 
@@ -1038,66 +1045,77 @@ class ContinuumSubtractTab(QWidget):
 
         outer.addLayout(row)
 
-        # --- wire up actions ---
-        def do_zoom_in():
-            nonlocal scale
-            scale = min(20.0, scale * 1.25)
-            update_view()
-
-        def do_zoom_out():
-            nonlocal scale
-            scale = max(0.05, scale / 1.25)
-            update_view()
-
-        def do_zoom_reset():
-            nonlocal scale
-            scale = 1.0
-            update_view()
-
-        def do_autostretch():
+        # Actions
+        def _do_autostretch():
             nonlocal current_arr
-            current_arr = stretch_color_image(current_arr, target_median=0.25)
-            update_view()
+            try:
+                a = np.asarray(current_arr, dtype=np.float32)
 
-        def do_push_to_doc():
+                # Autostretch in-place, respecting mono vs RGB
+                if a.ndim == 2:
+                    stretched = stretch_mono_image(a, target_median=0.25)
+                    current_arr = np.clip(stretched, 0.0, 1.0).astype(np.float32, copy=False)
+                elif a.ndim == 3 and a.shape[2] == 1:
+                    stretched = stretch_mono_image(a[..., 0], target_median=0.25)
+                    current_arr = np.clip(stretched, 0.0, 1.0).astype(np.float32, copy=False)
+                else:
+                    stretched = stretch_color_image(a, target_median=0.25, linked=False)
+                    current_arr = np.clip(stretched, 0.0, 1.0).astype(np.float32, copy=False)
+
+                _set_scene_from_arr(current_arr)
+                # keep current zoom, just refresh pixmap
+            except Exception as e:
+                QMessageBox.warning(dlg, "Detail View", f"Autostretch failed:\n{e}")
+
+        def _do_push_to_doc():
             dm = getattr(self, "doc_manager", None)
-            mw = self._main_window()
+            mw = self._main_window() if hasattr(self, "_main_window") else None
+
             if dm is None or mw is None or not hasattr(mw, "_spawn_subwindow_for"):
                 QMessageBox.critical(dlg, "Detail View", "Cannot create document: missing DocManager or MainWindow.")
                 return
 
-            # keep float32 [0..1] for consistency with your pipeline
-            img = current_arr.astype(np.float32, copy=False)
-
-            # make a friendly unique name
-            counter = getattr(self, "_detail_doc_counter", 0) + 1
-            self._detail_doc_counter = counter
-            name = f"DetailView_{counter}"
-
-            meta = {
-                "display_name": name,
-                "file_path": name,
-                "bit_depth": "32-bit floating point",
-                "is_mono": (img.ndim == 2 or (img.ndim == 3 and img.shape[2] == 1)),
-                "original_header": getattr(self, "original_header", None),
-                "source": "Continuum Subtract — Detail View",
-            }
             try:
+                img = np.asarray(current_arr, dtype=np.float32)
+
+                # Preserve mono where appropriate
+                is_mono = (img.ndim == 2) or (img.ndim == 3 and img.shape[2] == 1)
+
+                counter = getattr(self, "_detail_doc_counter", 0) + 1
+                self._detail_doc_counter = counter
+                name = f"DetailView_{counter}"
+
+                meta = {
+                    "display_name": name,
+                    "file_path": name,
+                    "bit_depth": "32-bit floating point",
+                    "is_mono": bool(is_mono),
+                    "original_header": getattr(self, "original_header", None),
+                    "source": "Continuum Subtract — Detail View",
+                }
+
                 doc = dm.create_document(img, metadata=meta, name=name)
                 mw._spawn_subwindow_for(doc)
-                self.statusLabel.setText(f"Pushed detail view → '{name}'.")
+
+                try:
+                    if hasattr(self, "statusLabel") and self.statusLabel is not None:
+                        self.statusLabel.setText(f"Pushed detail view → '{name}'.")
+                except Exception:
+                    pass
+
             except Exception as e:
                 QMessageBox.critical(dlg, "Detail View", f"Failed to create document:\n{e}")
 
-        btn_zoom_in.clicked.connect(do_zoom_in)
-        btn_zoom_out.clicked.connect(do_zoom_out)
-        btn_zoom_reset.clicked.connect(do_zoom_reset)
-        btn_autostretch.clicked.connect(do_autostretch)
-        btn_push.clicked.connect(do_push_to_doc)
+        btn_autostretch.clicked.connect(_do_autostretch)
+        btn_push.clicked.connect(_do_push_to_doc)
         btn_close.clicked.connect(dlg.accept)
 
-        # initial render
-        update_view()
+        # Initial fit
+        try:
+            view.fit_to_item(pix_item)
+        except Exception:
+            pass
+
         dlg.exec()
 
 

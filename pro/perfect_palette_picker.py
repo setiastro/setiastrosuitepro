@@ -53,9 +53,9 @@ class PaletteAdjustDialog(QDialog):
 
         # Zoom controls
         zoom_layout = QHBoxLayout()
-        btn_zoom_in  = QPushButton("Zoom In");  btn_zoom_in.clicked.connect(lambda: self._change_zoom(1.25))
-        btn_zoom_out = QPushButton("Zoom Out"); btn_zoom_out.clicked.connect(lambda: self._change_zoom(0.8))
-        btn_fit      = QPushButton("Fit to Preview"); btn_fit.clicked.connect(self._fit_to_preview)
+        btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
+        btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
+        btn_fit      = themed_toolbtn("zoom-fit-best", "Fit to Preview")
         zoom_layout.addWidget(btn_zoom_in); zoom_layout.addWidget(btn_zoom_out); zoom_layout.addWidget(btn_fit)
         vlayout.addLayout(zoom_layout)
 
@@ -290,12 +290,23 @@ class PerfectPalettePicker(QWidget):
         right = QVBoxLayout()
 
         # zoom toolbar
+        # zoom toolbar (themed)
         tools = QHBoxLayout()
-        self.btn_zoom_in  = QPushButton("Zoom +"); self.btn_zoom_in.clicked.connect(lambda: self._zoom_at(1.25))
-        self.btn_zoom_out = QPushButton("Zoom −"); self.btn_zoom_out.clicked.connect(lambda: self._zoom_at(0.8))
-        self.btn_fit      = QPushButton("Fit to Preview"); self.btn_fit.clicked.connect(self._fit_to_preview)
-        tools.addWidget(self.btn_zoom_in); tools.addWidget(self.btn_zoom_out); tools.addWidget(self.btn_fit)
+        self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
+        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
+        self.btn_fit      = themed_toolbtn("zoom-fit-best", "Fit to Preview")
+
+        self.btn_zoom_in.clicked.connect(lambda: self._zoom_at(1.25))
+        self.btn_zoom_out.clicked.connect(lambda: self._zoom_at(0.8))
+        self.btn_fit.clicked.connect(self._fit_to_preview)
+
+        tools.addStretch(1)
+        tools.addWidget(self.btn_zoom_out)
+        tools.addWidget(self.btn_zoom_in)
+        tools.addWidget(self.btn_fit)
+        tools.addStretch(1)
         right.addLayout(tools)
+
 
         # main preview (expands)
         self.scroll = QScrollArea(self); self.scroll.setWidgetResizable(True)
@@ -370,6 +381,58 @@ class PerfectPalettePicker(QWidget):
             return cv2.resize(arr, (w, h), interpolation=interp)
         return cv2.resize(arr, (w, h), interpolation=interp)
 
+    def _capture_view_state(self):
+        """Capture current view center in base-image coordinates + zoom."""
+        if self._base_pm is None:
+            return None
+        vp = self.scroll.viewport()
+        hbar = self.scroll.horizontalScrollBar()
+        vbar = self.scroll.verticalScrollBar()
+
+        # center of viewport in viewport coords
+        anchor_vp = QPoint(vp.width() // 2, vp.height() // 2)
+
+        # convert to label coords (scaled image coords)
+        anchor_lbl = self.preview.mapFrom(vp, anchor_vp)
+
+        # scaled -> base image coords
+        base_x = anchor_lbl.x() / max(self._zoom, 1e-6)
+        base_y = anchor_lbl.y() / max(self._zoom, 1e-6)
+
+        pm = self._base_pm.size()
+        fx = 0.5 if pm.width()  <= 0 else (base_x / pm.width())
+        fy = 0.5 if pm.height() <= 0 else (base_y / pm.height())
+
+        return {"zoom": float(self._zoom), "fx": float(fx), "fy": float(fy)}
+
+    def _restore_view_state(self, state):
+        """Restore zoom and pan using stored base-image fractions."""
+        if not state or self._base_pm is None:
+            return
+
+        # restore zoom first
+        self._zoom = max(self._min_zoom, min(self._max_zoom, float(state["zoom"])))
+        self._update_preview_pixmap()
+
+        # now restore center point
+        pm = self._base_pm.size()
+        fx = float(state.get("fx", 0.5))
+        fy = float(state.get("fy", 0.5))
+
+        base_x = fx * pm.width()
+        base_y = fy * pm.height()
+
+        # base -> scaled label coords
+        lbl_x = int(base_x * self._zoom)
+        lbl_y = int(base_y * self._zoom)
+
+        vp = self.scroll.viewport()
+        anchor_vp = QPoint(vp.width() // 2, vp.height() // 2)
+
+        hbar = self.scroll.horizontalScrollBar()
+        vbar = self.scroll.verticalScrollBar()
+        hbar.setValue(max(hbar.minimum(), min(hbar.maximum(), lbl_x - anchor_vp.x())))
+        vbar.setValue(max(vbar.minimum(), min(vbar.maximum(), lbl_y - anchor_vp.y())))
 
     # ---------- status helpers ----------
     def _set_status_label(self, which: str, text: str | None):
@@ -637,19 +700,31 @@ class PerfectPalettePicker(QWidget):
         mx = float(rgb.max()) or 1.0
         self.final = (rgb / mx).astype(np.float32)
 
-        self._set_preview_image(self._to_qimage(self.final), fit=True)
+        # Fit only when there wasn't an existing preview yet
+        first = (self._base_pm is None)
+        self._set_preview_image(self._to_qimage(self.final), fit=first, preserve_view=True)
         self.status.setText(f"Preview generated: {pal}")
 
-    def _set_preview_image(self, qimg: QImage, *, fit: bool = False):
-        self._base_pm = QPixmap.fromImage(qimg)
-        self._zoom = 1.0
-        self._update_preview_pixmap()
+    def _set_preview_image(self, qimg: QImage, *, fit: bool = False, preserve_view: bool = True):
+        state = None
+        if preserve_view and (not fit) and (self._base_pm is not None):
+            state = self._capture_view_state()
 
-        if fit:
-            # wait one event loop so viewport sizes are correct
-            QTimer.singleShot(0, self._fit_to_preview)
-        else:
-            QTimer.singleShot(0, self._center_scrollbars)
+        self._base_pm = QPixmap.fromImage(qimg)
+
+        # If we’re fitting, ignore old zoom/pan.
+        if fit or state is None:
+            self._zoom = 1.0
+            self._update_preview_pixmap()
+            if fit:
+                QTimer.singleShot(0, self._fit_to_preview)
+            else:
+                QTimer.singleShot(0, self._center_scrollbars)
+            return
+
+        # restore prior zoom/pan
+        self._restore_view_state(state)
+
 
     def _update_preview_pixmap(self):
         if self._base_pm is None:
