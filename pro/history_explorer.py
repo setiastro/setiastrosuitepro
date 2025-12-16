@@ -13,6 +13,7 @@ from .autostretch import autostretch
 from .dnd_mime import MIME_CMD
 from pro.swap_manager import get_swap_manager
 
+from pro.widgets.themed_buttons import themed_toolbtn
 
 
 # ---------- helpers ----------

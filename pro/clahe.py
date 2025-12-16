@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
 # Import centralized widgets
 from pro.widgets.graphics_views import ZoomableGraphicsView
 from pro.widgets.image_utils import extract_mask_resized as _get_active_mask_resized
+from pro.widgets.themed_buttons import themed_toolbtn
 
 
 # ----------------------- Core -----------------------
@@ -128,12 +129,24 @@ class CLAHEDialogPro(QDialog):
         v.addWidget(self.view, 1)
 
         # ---- Zoom bar ----
+        # ---- Zoom bar (themed) ----
         z = QHBoxLayout()
-        btn_in  = QPushButton("Zoom In");  btn_in.clicked.connect(self.view.zoom_in)
-        btn_out = QPushButton("Zoom Out"); btn_out.clicked.connect(self.view.zoom_out)
-        btn_fit = QPushButton("Fit to Preview"); btn_fit.clicked.connect(lambda: self.view.fit_to_item(self.pix))
-        z.addStretch(1); z.addWidget(btn_in); z.addWidget(btn_out); z.addWidget(btn_fit)
+        z.addStretch(1)
+
+        self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
+        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
+        self.btn_zoom_fit = themed_toolbtn("zoom-fit-best", "Fit to Preview")
+
+        self.btn_zoom_in.clicked.connect(self.view.zoom_in)
+        self.btn_zoom_out.clicked.connect(self.view.zoom_out)
+        self.btn_zoom_fit.clicked.connect(lambda: self.view.fit_to_item(self.pix))
+
+        z.addWidget(self.btn_zoom_in)
+        z.addWidget(self.btn_zoom_out)
+        z.addWidget(self.btn_zoom_fit)
+
         v.addLayout(z)
+
 
         # ---- Buttons (unchanged) ----
         row = QHBoxLayout()

@@ -34,6 +34,7 @@ from PyQt6.QtWidgets import (
 )
 
 from imageops.stretch import stretch_mono_image, stretch_color_image
+from pro.widgets.themed_buttons import themed_toolbtn
 
 
 # ===========================

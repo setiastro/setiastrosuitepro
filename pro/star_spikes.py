@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushBut
                              QMessageBox, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem)
 
 from PyQt6.QtGui import QPixmap, QImage, QPainter
+from pro.widgets.themed_buttons import themed_toolbtn
 
 # deps
 try:

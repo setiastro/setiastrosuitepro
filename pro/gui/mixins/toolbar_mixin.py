@@ -388,28 +388,26 @@ class ToolbarMixin:
         self.act_bake_display_stretch.triggered.connect(self._bake_display_stretch)
 
         # --- Zoom controls ---
-        self.act_zoom_out = QAction("-", self)  # unicode minus
+        # --- Zoom controls (themed icons) ---
+        self.act_zoom_out = QAction(QIcon.fromTheme("zoom-out"), "Zoom Out", self)
         self.act_zoom_out.setStatusTip("Zoom out")
-        self.act_zoom_out.setShortcuts([
-            QKeySequence("Ctrl+-"),
-        ])
+        self.act_zoom_out.setShortcuts([QKeySequence("Ctrl+-")])
         self.act_zoom_out.triggered.connect(lambda: self._zoom_step_active(-1))
 
-        self.act_zoom_in = QAction("+", self)
+        self.act_zoom_in = QAction(QIcon.fromTheme("zoom-in"), "Zoom In", self)
         self.act_zoom_in.setStatusTip("Zoom in")
         self.act_zoom_in.setShortcuts([
-            QKeySequence("Ctrl++"),  # Ctrl + (Shift + = on many keyboards)
-            QKeySequence("Ctrl+="),  # backup for layouts where '+' is tricky
+            QKeySequence("Ctrl++"),   # Ctrl + (Shift + = on many keyboards)
+            QKeySequence("Ctrl+="),   # fallback
         ])
         self.act_zoom_in.triggered.connect(lambda: self._zoom_step_active(+1))
 
-
-        self.act_zoom_1_1 = QAction("1:1", self)
+        self.act_zoom_1_1 = QAction(QIcon.fromTheme("zoom-original"), "1:1", self)
         self.act_zoom_1_1.setStatusTip("Zoom to 100% (pixel-for-pixel)")
-        self.act_zoom_1_1.setShortcut(QKeySequence("Ctrl+1"))    
+        self.act_zoom_1_1.setShortcut(QKeySequence("Ctrl+1"))
         self.act_zoom_1_1.triggered.connect(self._zoom_active_1_1)
 
-        self.act_zoom_fit = QAction("Fit", self)
+        self.act_zoom_fit = QAction(QIcon.fromTheme("zoom-fit-best"), "Fit", self)
         self.act_zoom_fit.setStatusTip("Fit image to current window")
         self.act_zoom_fit.setShortcut(QKeySequence("Ctrl+0"))
         self.act_zoom_fit.triggered.connect(self._zoom_active_fit)

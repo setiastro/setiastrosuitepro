@@ -17,6 +17,8 @@ from pro.widgets.image_utils import (
     extract_mask_resized as _get_active_mask_resized,
     blend_with_mask as _blend_with_mask
 )
+from pro.widgets.themed_buttons import themed_toolbtn
+
 
 # ---------------- Core (unchanged) ----------------
 def apply_morphology(image: np.ndarray, *, operation: str = "erosion",

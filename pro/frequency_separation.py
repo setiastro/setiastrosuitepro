@@ -27,6 +27,8 @@ from PyQt6.QtGui import (
 
 from .doc_manager import ImageDocument  # add this import
 from legacy.image_manager import load_image as legacy_load_image
+from pro.widgets.themed_buttons import themed_toolbtn
+
 # ---------------------------- Threads ----------------------------
 
 class FrequencySeperationThread(QThread):

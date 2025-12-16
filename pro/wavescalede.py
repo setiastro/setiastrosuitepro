@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import (
     QSlider, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QScrollArea,
     QMessageBox, QProgressBar, QMainWindow
 )
+from pro.widgets.themed_buttons import themed_toolbtn
 
 # Import shared wavelet utilities
 from pro.widgets.wavelet_utils import (

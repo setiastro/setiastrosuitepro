@@ -48,6 +48,7 @@ from pro.star_alignment import (
     IDENTITY_2x3,
 )
 from legacy.image_manager import load_image, save_image, get_valid_header  # adjust if different
+from pro.widgets.themed_buttons import themed_toolbtn
 
 # ------------------------------------------------------------------------
 from xisf import XISF

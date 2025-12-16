@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
 
 # Import centralized widget
 from pro.widgets.graphics_views import ZoomableGraphicsView
+from pro.widgets.themed_buttons import themed_toolbtn
 
 # Import shared wavelet utilities
 from pro.widgets.wavelet_utils import (

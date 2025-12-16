@@ -12,6 +12,8 @@ from PyQt6.QtWidgets import (
 from imageops.stretch import stretch_color_image, stretch_mono_image 
 
 from dataclasses import dataclass
+from pro.widgets.themed_buttons import themed_toolbtn
+
 
 @dataclass
 class BlemishOp:
@@ -203,16 +205,13 @@ class BlemishBlasterDialogPro(QDialog):
         self.scroll.setWidget(self.view)
 
         # --- Zoom controls (buttons) ---------------------------------
+        # --- Zoom controls (standard themed toolbuttons) ---------------
         self._zoom = 1.0  # initial zoom factor
 
-        self.btn_zoom_out = QPushButton("−")
-        self.btn_zoom_out.setToolTip("Zoom Out")
+        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
+        self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
+        self.btn_zoom_fit = themed_toolbtn("zoom-fit-best", "Fit to Preview")
 
-        self.btn_zoom_in = QPushButton("+")
-        self.btn_zoom_in.setToolTip("Zoom In")
-
-        self.btn_zoom_fit = QPushButton("Fit to Preview")
-        self.btn_zoom_fit.setToolTip("Fit image to the preview area")
 
         # ── Controls
         ctrls = QGroupBox("Controls")

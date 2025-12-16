@@ -20,6 +20,7 @@ from PyQt6.QtGui import (
 from legacy.image_manager import load_image as legacy_load_image
 
 from legacy.numba_utils import applySCNR_numba, adjust_saturation_numba
+from pro.widgets.themed_buttons import themed_toolbtn
 
 
 # Optional: your stretch helpers (only used if you’d like to pre-stretch inputs)

@@ -26,6 +26,7 @@ from imageops.stretch import stretch_mono_image, stretch_color_image
 from pro.star_alignment import PolyGradientRemoval 
 from pro import minorbodycatalog as mbc
 from pro.plate_solver import PlateSolverDialog as PlateSolver
+from pro.widgets.themed_buttons import themed_toolbtn
 
 from pro.plate_solver import (
     _solve_numpy_with_fallback,

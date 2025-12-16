@@ -20,6 +20,7 @@ except Exception:
     _lut_mono_inplace = None
     _lut_color_inplace = None
 
+from pro.widgets.themed_buttons import themed_toolbtn
 
 
 # =============================================================================

@@ -14,6 +14,8 @@ from PyQt6.QtWidgets import (
 
 # I/O (use your legacy functions)
 from legacy.image_manager import load_image
+from pro.widgets.themed_buttons import themed_toolbtn
+
 
 try:
     import cv2
@@ -255,12 +257,20 @@ class AddStarsDialog(QDialog):
         self.scroll_area.setWidget(self.preview_label)
         layout.addWidget(self.scroll_area)
 
-        # Zoom row
+        # Zoom row (standardized themed toolbuttons)
         zrow = QHBoxLayout()
-        btn_zoom_in = QPushButton("Zoom In");  btn_zoom_in.clicked.connect(self.zoom_in)
-        btn_zoom_out= QPushButton("Zoom Out"); btn_zoom_out.clicked.connect(self.zoom_out)
-        btn_fit     = QPushButton("Fit to Preview"); btn_fit.clicked.connect(self.fit_to_preview)
-        zrow.addWidget(btn_zoom_in); zrow.addWidget(btn_zoom_out); zrow.addWidget(btn_fit)
+        self.btn_zoom_in  = themed_toolbtn("zoom-in",       "Zoom In")
+        self.btn_zoom_out = themed_toolbtn("zoom-out",      "Zoom Out")
+        self.btn_fit      = themed_toolbtn("zoom-fit-best", "Fit to Preview")
+
+        self.btn_zoom_in.clicked.connect(self.zoom_in)
+        self.btn_zoom_out.clicked.connect(self.zoom_out)
+        self.btn_fit.clicked.connect(self.fit_to_preview)
+
+        zrow.addWidget(self.btn_zoom_in)
+        zrow.addWidget(self.btn_zoom_out)
+        zrow.addWidget(self.btn_fit)
+        zrow.addStretch(1)
         layout.addLayout(zrow)
 
         # Selection + blend

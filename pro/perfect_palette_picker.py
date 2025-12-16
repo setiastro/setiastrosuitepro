@@ -17,6 +17,7 @@ from legacy.image_manager import load_image as legacy_load_image
 # your statistical stretch (mono + color) like SASv2
 # (same signatures you use elsewhere)
 from imageops.stretch import stretch_mono_image, stretch_color_image
+from pro.widgets.themed_buttons import themed_toolbtn
 
 class PaletteAdjustDialog(QDialog):
     adjusted_image = pyqtSignal(np.ndarray)

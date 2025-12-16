@@ -12,6 +12,7 @@ from PyQt6 import sip
 from .doc_manager import ImageDocument
 # use your existing stretch code
 from imageops.stretch import stretch_mono_image, stretch_color_image
+from pro.widgets.themed_buttons import themed_toolbtn
 
 class StatisticalStretchDialog(QDialog):
     """

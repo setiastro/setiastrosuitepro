@@ -18,6 +18,7 @@ from pro.autostretch import autostretch
 # Import shared utilities
 from pro.widgets.image_utils import nearest_resize_2d as _nearest_resize_2d
 from pro.widgets.image_utils import float_to_qimage_rgb8 as _float_to_qimage_rgb8
+from pro.widgets.themed_buttons import themed_toolbtn
 
 # ---- Optional accelerators from legacy.numba_utils -------------------------
 try:

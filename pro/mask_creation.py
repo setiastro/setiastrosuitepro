@@ -31,6 +31,7 @@ from PyQt6.QtWidgets import (
 )
 
 from .masks_core import MaskLayer
+from pro.widgets.themed_buttons import themed_toolbtn
 
 
 # ---------- small utils ----------

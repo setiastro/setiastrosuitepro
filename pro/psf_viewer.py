@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
     QDialog, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QScrollArea,
     QSlider, QTableWidget, QTableWidgetItem, QApplication, QMessageBox
 )
+from pro.widgets.themed_buttons import themed_toolbtn
 
 class PSFViewer(QDialog):
     """

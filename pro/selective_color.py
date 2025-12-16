@@ -14,6 +14,8 @@ from PyQt6.QtWidgets import (
     QFileDialog, QScrollArea, QFrame, QTabWidget, QSplitter
 )
 from PyQt6.QtWidgets import QSizePolicy
+from pro.widgets.themed_buttons import themed_toolbtn
+
 # ---------------------------------------------------------------------
 # Small helpers
 # ---------------------------------------------------------------------

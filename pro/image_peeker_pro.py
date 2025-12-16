@@ -29,6 +29,7 @@ from astropy.stats import sigma_clipped_stats
 from scipy.interpolate import griddata
 
 import sep
+from pro.widgets.themed_buttons import themed_toolbtn
 
 # bring in your existing helpers/classes from the snippet you posted
 # (we assume they live next to this file or already in pro/)

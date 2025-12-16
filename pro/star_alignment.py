@@ -112,6 +112,7 @@ from legacy.numba_utils import (
     invert_image_numba,
 )
 from pro.abe import _generate_sample_points as abe_generate_sample_points
+from pro.widgets.themed_buttons import themed_toolbtn
 
 # ---------------------------------------------------------------------
 # Small helpers to work with the *active view/document* (no slots)

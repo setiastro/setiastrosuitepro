@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QScrollArea, QWidget, QMessageBox
 )
 from PyQt6.QtGui import QPixmap, QImage, QMovie
+from pro.widgets.themed_buttons import themed_toolbtn
 
 # Shared utilities
 from pro.widgets.image_utils import to_float01 as _to_float01

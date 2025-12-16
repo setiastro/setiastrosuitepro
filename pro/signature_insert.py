@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
     QMessageBox, QWidget, QGraphicsView, QGraphicsScene, QGraphicsItem,QFontComboBox, QGraphicsTextItem,
     QGraphicsPixmapItem, QGraphicsEllipseItem, QGraphicsRectItem, QSpinBox
 )
+from pro.widgets.themed_buttons import themed_toolbtn
 
 
 def _np_to_qimage_rgb(a: np.ndarray) -> QImage:

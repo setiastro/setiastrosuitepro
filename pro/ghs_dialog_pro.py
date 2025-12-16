@@ -12,6 +12,7 @@ from .curve_editor_pro import (
     CurveEditor, _CurvesWorker, _apply_mode_any, build_curve_lut,
     _float_to_qimage_rgb8, _downsample_for_preview, ImageLabel
 )
+from pro.widgets.themed_buttons import themed_toolbtn
 
 class GhsDialogPro(QDialog):
     """

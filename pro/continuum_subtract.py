@@ -38,6 +38,7 @@ from imageops.stretch import stretch_mono_image, stretch_color_image
 from imageops.starbasedwhitebalance import apply_star_based_white_balance
 from legacy.numba_utils import apply_curves_numba
 from pro.cosmicclarity_preset import _cosmic_root, _platform_exe_names 
+from pro.widgets.themed_buttons import themed_toolbtn
 
 
 def apply_curves_adjustment(image, target_median, curves_boost):

@@ -32,6 +32,8 @@ from legacy.image_manager import load_image
 from imageops.stretch import stretch_color_image, stretch_mono_image, siril_style_autostretch
 
 from numba_utils import debayer_fits_fast, debayer_raw_fast
+from pro.widgets.themed_buttons import themed_toolbtn
+
 
 from pro.star_metrics import measure_stars_sep
 
@@ -767,21 +769,24 @@ class BlinkTab(QWidget):
         right_widget = QWidget(self)
         right_layout = QVBoxLayout(right_widget)
 
-        # Zoom controls: Add Zoom In and Zoom Out buttons
+        # Zoom / preview toolbar (standardized)
         zoom_controls_layout = QHBoxLayout()
 
-        self.zoom_in_button = QPushButton("Zoom In")
-        self.zoom_in_button.clicked.connect(self.zoom_in)
-        zoom_controls_layout.addWidget(self.zoom_in_button)
+        self.zoom_in_btn  = themed_toolbtn("zoom-in", "Zoom In")
+        self.zoom_out_btn = themed_toolbtn("zoom-out", "Zoom Out")
+        self.fit_btn      = themed_toolbtn("zoom-fit-best", "Fit to Preview")
 
-        self.zoom_out_button = QPushButton("Zoom Out")
-        self.zoom_out_button.clicked.connect(self.zoom_out)
-        zoom_controls_layout.addWidget(self.zoom_out_button)
+        self.zoom_in_btn.clicked.connect(self.zoom_in)
+        self.zoom_out_btn.clicked.connect(self.zoom_out)
+        self.fit_btn.clicked.connect(self.fit_to_preview)
 
-        self.fit_to_preview_button = QPushButton("Fit to Preview")
-        self.fit_to_preview_button.clicked.connect(self.fit_to_preview)
-        zoom_controls_layout.addWidget(self.fit_to_preview_button)
+        zoom_controls_layout.addWidget(self.zoom_in_btn)
+        zoom_controls_layout.addWidget(self.zoom_out_btn)
+        zoom_controls_layout.addWidget(self.fit_btn)
 
+        zoom_controls_layout.addStretch(1)
+
+        # Keep Aggressive Stretch as a text toggle (it’s not really a zoom action)
         self.aggressive_button = QPushButton("Aggressive Stretch", self)
         self.aggressive_button.setCheckable(True)
         self.aggressive_button.clicked.connect(self.toggle_aggressive)

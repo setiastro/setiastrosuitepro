@@ -20,6 +20,8 @@ from pro.widgets.image_utils import (
     to_float01 as _to_float01,
     extract_mask_from_document as _active_mask_array_from_doc
 )
+from pro.widgets.themed_buttons import themed_toolbtn
+
 
 _LUMA_WEIGHTS = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
 

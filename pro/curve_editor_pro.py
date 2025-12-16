@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (
     QWidget, QMessageBox, QRadioButton, QButtonGroup, QToolButton, QGraphicsEllipseItem, QGraphicsItem, QGraphicsTextItem, QInputDialog, QMenu
 )
 from PyQt6.QtGui import QPixmap, QImage, QWheelEvent, QPainter, QPainterPath, QPen, QColor, QBrush, QIcon, QKeyEvent, QCursor
+from pro.widgets.themed_buttons import themed_toolbtn
 
 # Import shared utilities
 from pro.widgets.image_utils import float_to_qimage_rgb8 as _float_to_qimage_rgb8
