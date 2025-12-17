@@ -282,9 +282,9 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
 
         zoom_box = QGroupBox("Zoom Controls")
         zr = QHBoxLayout(zoom_box)
-        self.btn_zin  = QPushButton("Zoom In")
-        self.btn_zout = QPushButton("Zoom Out")
-        self.btn_fit  = QPushButton("Fit to Preview")
+        self.btn_zin  = themed_toolbtn("zoom-in", "Zoom In")
+        self.btn_zout = themed_toolbtn("zoom-out", "Zoom Out")
+        self.btn_fit  = themed_toolbtn("zoom-fit-best", "Fit to Preview")
         zr.addWidget(self.btn_zin); zr.addWidget(self.btn_zout); zr.addWidget(self.btn_fit)
         main.addWidget(zoom_box)
 

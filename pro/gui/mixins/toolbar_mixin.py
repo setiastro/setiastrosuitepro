@@ -73,6 +73,7 @@ class ToolbarMixin:
     def _init_toolbar(self):
         # View toolbar (Undo / Redo / Display-Stretch)
         tb = DraggableToolBar("View", self)
+        tb.setSettingsKey("Toolbar/View") 
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb)
 
         tb.addAction(self.act_open)
@@ -158,9 +159,11 @@ class ToolbarMixin:
 
         # Make sure the visual state matches the flag at startup
         self._sync_fit_auto_visual()
+        self._restore_toolbar_order(tb, "Toolbar/View")
 
         # Functions toolbar
         tb_fn = DraggableToolBar("Functions", self)
+        tb_fn.setSettingsKey("Toolbar/Functions") 
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_fn)
         tb_fn.addAction(self.act_crop) 
         tb_fn.addAction(self.act_histogram) 
@@ -201,15 +204,19 @@ class ToolbarMixin:
         tb_fn.addAction(self.act_pixelmath)
         tb_fn.addAction(self.act_signature) 
         tb_fn.addAction(self.act_halobgon)
+        self._restore_toolbar_order(tb_fn, "Toolbar/Functions")
 
         tbCosmic = DraggableToolBar("Cosmic Clarity", self)
+        tbCosmic.setSettingsKey("Toolbar/Cosmic")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tbCosmic)
         tbCosmic.addAction(self.actAberrationAI)        
         tbCosmic.addAction(self.actCosmicUI)
         tbCosmic.addAction(self.actCosmicSat)
+        self._restore_toolbar_order(tbCosmic, "Toolbar/Cosmic") 
 
 
         tb_tl = DraggableToolBar("Tools", self)
+        tb_tl.setSettingsKey("Toolbar/Tools") 
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_tl)
         tb_tl.addAction(self.act_blink) # Tools start here; Blink shows with QIcon(blink_path)
         tb_tl.addAction(self.act_ppp)   # Perfect Palette Picker
@@ -219,8 +226,10 @@ class ToolbarMixin:
         tb_tl.addAction(self.act_multiscale_decomp)
         tb_tl.addAction(self.act_contsub)
         tb_tl.addAction(self.act_image_combine)
+        self._restore_toolbar_order(tb_tl, "Toolbar/Tools")
 
         tb_geom = DraggableToolBar("Geometry", self)
+        tb_geom.setSettingsKey("Toolbar/Geometry")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_geom)
         tb_geom.addAction(self.act_geom_invert)
         tb_geom.addSeparator()
@@ -234,8 +243,10 @@ class ToolbarMixin:
         tb_geom.addAction(self.act_geom_rescale)
         tb_geom.addSeparator()
         tb_geom.addAction(self.act_debayer)
+        self._restore_toolbar_order(tb_geom, "Toolbar/Geometry")
 
         tb_star = DraggableToolBar("Star Stuff", self)
+        tb_star.setSettingsKey("Toolbar/StarStuff")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_star)
         tb_star.addAction(self.act_image_peeker)
         tb_star.addAction(self.act_psf_viewer)
@@ -251,22 +262,29 @@ class ToolbarMixin:
         tb_star.addAction(self.act_astrospike)
         tb_star.addAction(self.act_exo_detector)
         tb_star.addAction(self.act_isophote)  
+        self._restore_toolbar_order(tb_star, "Toolbar/StarStuff")
 
         tb_msk = DraggableToolBar("Masks", self)
+        tb_msk.setSettingsKey("Toolbar/Masks")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_msk)
         tb_msk.addAction(self.act_create_mask)
         tb_msk.addAction(self.act_apply_mask)
         tb_msk.addAction(self.act_remove_mask)
+        self._restore_toolbar_order(tb_msk, "Toolbar/Masks")
 
         tb_wim = DraggableToolBar("What's In My...", self)
+        tb_wim.setSettingsKey("Toolbar/WhatsInMy")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_wim)   
         tb_wim.addAction(self.act_whats_in_my_sky)     
         tb_wim.addAction(self.act_wimi)
+        self._restore_toolbar_order(tb_wim, "Toolbar/WhatsInMy")
 
         tb_bundle = DraggableToolBar("Bundles", self)
+        tb_bundle.setSettingsKey("Toolbar/Bundles")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_bundle)
         tb_bundle.addAction(self.act_view_bundles)
         tb_bundle.addAction(self.act_function_bundles)
+        self._restore_toolbar_order(tb_bundle, "Toolbar/Bundles")
 
     def _create_actions(self):
         # File actions
@@ -1006,6 +1024,48 @@ class ToolbarMixin:
         reg("aberrationai", self.actAberrationAI)
         reg("view_bundles", self.act_view_bundles)
         reg("function_bundles", self.act_function_bundles)
+
+    def _restore_toolbar_order(self, tb, settings_key: str):
+        """
+        Restore toolbar action order from QSettings, using command_id/objectName.
+        Unknown actions and separators keep their relative order at the end.
+        """
+        if not hasattr(self, "settings"):
+            return
+
+        order = self.settings.value(settings_key, None)
+        if not order:
+            return
+
+        # QSettings may return QVariantList or str; normalize to Python list[str]
+        if isinstance(order, str):
+            # if you ever decide to JSON-encode, you could json.loads here
+            order = [order]
+        try:
+            order_list = list(order)
+        except Exception:
+            return
+
+        actions = list(tb.actions())
+
+        def _cid(act):
+            return act.property("command_id") or act.objectName() or ""
+
+        rank = {str(cid): i for i, cid in enumerate(order_list)}
+        big = len(rank) + len(actions) + 10
+
+        indexed = list(enumerate(actions))
+        indexed.sort(
+            key=lambda pair: (
+                rank.get(str(_cid(pair[1])), big),
+                pair[0],
+            )
+        )
+
+        tb.clear()
+        for _, act in indexed:
+            tb.addAction(act)
+
 
     def update_undo_redo_action_labels(self):
         if not hasattr(self, "act_undo"):  # not built yet

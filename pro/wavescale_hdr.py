@@ -260,9 +260,9 @@ class WaveScaleHDRDialogPro(QDialog):
 
         # ↓ NEW: zoom controls
         zoom_row = QHBoxLayout()
-        self.btn_zoom_in  = QPushButton("Zoom In")
-        self.btn_zoom_out = QPushButton("Zoom Out")
-        self.btn_fit      = QPushButton("Fit to Preview")
+        self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
+        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
+        self.btn_fit      = themed_toolbtn("zoom-fit-best", "Fit to Preview")
         zoom_row.addWidget(self.btn_zoom_in)
         zoom_row.addWidget(self.btn_zoom_out)
         zoom_row.addWidget(self.btn_fit)

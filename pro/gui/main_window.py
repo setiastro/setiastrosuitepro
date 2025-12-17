@@ -1566,11 +1566,11 @@ class AstroSuiteProMainWindow(
         shortcuts_menu = None
         for act in self.menuBar().actions():
             m = act.menu()
-            if m and (m.title().replace("&", "").strip().lower() == "shortcuts"):
+            if m and (m.title().replace("&", "").strip().lower() == "view"):
                 shortcuts_menu = m
                 break
         if shortcuts_menu is None:
-            shortcuts_menu = self.menuBar().addMenu("&Shortcuts")
+            shortcuts_menu = self.menuBar().addMenu("&View")
 
         self._menu_view_panels = shortcuts_menu.addMenu("View Panels")
         self._view_panels_actions = {}
