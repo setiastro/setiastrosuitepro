@@ -36,6 +36,7 @@ import sep  # PSF estimator
 
 # Import centralized widgets
 from pro.widgets.spinboxes import CustomSpinBox
+from pro.widgets.themed_buttons import themed_toolbtn
 
 
 # --- GraphicsView with Shift+Click LS center + optional scene ctor -----------

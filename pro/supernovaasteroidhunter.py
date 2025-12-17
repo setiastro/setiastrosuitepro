@@ -7,7 +7,8 @@ from PyQt6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QGridLayout,
     QToolBar, QSizePolicy, QSpinBox, QDoubleSpinBox, QProgressBar
 )
-from PyQt6.QtGui import QImage, QPixmap, QIcon, QPainter, QAction, QTransform, QCursor
+from PyQt6.QtGui import QImage, QPixmap, QIcon, QPainter, QAction, QTransform, QCursor,  QKeySequence, QShortcut
+
 from PyQt6.QtCore import Qt, pyqtSignal, QRectF, QPointF, QTimer, QThread, QObject
 
 
@@ -17,7 +18,8 @@ import tempfile
 from astropy.wcs import WCS
 from astropy.time import Time
 from astropy import units as u
-
+from astropy.io import fits
+from astropy.io.fits import Header
 
 from legacy.image_manager import load_image, save_image
 from numba_utils import bulk_cosmetic_correction_numba
@@ -25,6 +27,7 @@ from imageops.stretch import stretch_mono_image, stretch_color_image
 from pro.star_alignment import PolyGradientRemoval 
 from pro import minorbodycatalog as mbc
 from pro.plate_solver import PlateSolverDialog as PlateSolver
+from pro.widgets.themed_buttons import themed_toolbtn
 
 from pro.plate_solver import (
     _solve_numpy_with_fallback,
@@ -281,32 +284,27 @@ class ImagePreviewWindow(QDialog):
         if icon:
             self.setWindowIcon(icon)
 
-        # This is the anomaly-marked image we want to push
         self._original = np_img_rgb_or_gray
-        # Remember where it came from so we can re-load metadata
         self._source_path = source_path
 
         lay = QVBoxLayout(self)
 
         # toolbar
         tb = QToolBar(self)
-        self.act_fit = QAction("Fit", self)
-        self.act_1to1 = QAction("1:1", self)
-        self.act_zoom_in = QAction("Zoom In", self)
-        self.act_zoom_out = QAction("Zoom Out", self)
-        self.act_push = QAction("Push to New View", self)
+
+        self.btn_fit     = themed_toolbtn("zoom-fit-best", "Fit (F)")
+        self.btn_1to1    = themed_toolbtn("zoom-original", "1:1 (1)")
+        self.btn_zoom_in = themed_toolbtn("zoom-in", "Zoom In (Ctrl++)")
+        self.btn_zoom_out= themed_toolbtn("zoom-out", "Zoom Out (Ctrl+-)")
+        self.act_push    = QAction("Push to New View", self)
         # self.act_minor = QAction("Check Catalogued Minor Bodies in Field", self)
 
-        self.act_zoom_in.setShortcut("Ctrl++")
-        self.act_zoom_out.setShortcut("Ctrl+-")
-        self.act_fit.setShortcut("F")
-        self.act_1to1.setShortcut("1")
-
-        tb.addAction(self.act_fit)
-        tb.addAction(self.act_1to1)
+        # Add *buttons* to the toolbar, not actions
+        tb.addWidget(self.btn_fit)
+        tb.addWidget(self.btn_1to1)
         tb.addSeparator()
-        tb.addAction(self.act_zoom_in)
-        tb.addAction(self.act_zoom_out)
+        tb.addWidget(self.btn_zoom_in)
+        tb.addWidget(self.btn_zoom_out)
         tb.addSeparator()
         tb.addAction(self.act_push)
         # tb.addSeparator()
@@ -325,15 +323,23 @@ class ImagePreviewWindow(QDialog):
         self.view.set_image(np_img_rgb_or_gray)
         self.view.zoomChanged.connect(self._on_zoom_changed)
 
-        self.act_fit.triggered.connect(self.view.fit_to_view)
-        self.act_1to1.triggered.connect(self.view.set_1to1)
-        self.act_zoom_in.triggered.connect(lambda: self.view.zoom(1.25))
-        self.act_zoom_out.triggered.connect(lambda: self.view.zoom(0.8))
+        # Button clicks
+        self.btn_fit.clicked.connect(self.view.fit_to_view)
+        self.btn_1to1.clicked.connect(self.view.set_1to1)
+        self.btn_zoom_in.clicked.connect(lambda: self.view.zoom(1.25))
+        self.btn_zoom_out.clicked.connect(lambda: self.view.zoom(0.8))
         self.act_push.triggered.connect(self._on_push)
         # self.act_minor.triggered.connect(self._on_minor_body_search)
 
+        # Keyboard shortcuts (same behavior as your old actions)
+        QShortcut(QKeySequence("F"),       self, activated=self.view.fit_to_view)
+        QShortcut(QKeySequence("1"),       self, activated=self.view.set_1to1)
+        QShortcut(QKeySequence("Ctrl++"),  self, activated=lambda: self.view.zoom(1.25))
+        QShortcut(QKeySequence("Ctrl+-"),  self, activated=lambda: self.view.zoom(0.8))
+
         self.view.fit_to_view()
         self.resize(900, 700)
+
 
     def _on_zoom_changed(self, s: float):
         self._zoom_label.setText(f"{round(s*100)}%")

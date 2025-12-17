@@ -13,6 +13,8 @@ from PyQt6.QtWidgets import (
 from imageops.stretch import stretch_color_image
 # Shared utilities
 from pro.widgets.image_utils import extract_mask_from_document as _active_mask_array_from_doc
+from pro.widgets.themed_buttons import themed_toolbtn
+
 
 
 # ----------------------------
@@ -280,13 +282,18 @@ class BackgroundNeutralizationDialog(QDialog):
         layout.addLayout(btn_row)
 
         # Zoom row
+        # Zoom row (standardized themed toolbuttons)
         zoom_row = QHBoxLayout()
-        self.btn_zoom_out = QPushButton("Zoom Out －")
-        self.btn_fit = QPushButton("Fit to View")
-        self.btn_zoom_in = QPushButton("Zoom In ＋")
+
+        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
+        self.btn_fit      = themed_toolbtn("zoom-fit-best", "Fit to View")
+        self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
+
         zoom_row.addWidget(self.btn_zoom_out)
         zoom_row.addWidget(self.btn_fit)
         zoom_row.addWidget(self.btn_zoom_in)
+        zoom_row.addStretch(1)  # optional: keeps them left-aligned
+
         layout.addLayout(zoom_row)
 
         # Events

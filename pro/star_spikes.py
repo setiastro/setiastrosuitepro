@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushBut
                              QMessageBox, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem)
 
 from PyQt6.QtGui import QPixmap, QImage, QPainter
+from pro.widgets.themed_buttons import themed_toolbtn
 
 # deps
 try:
@@ -188,14 +189,16 @@ class StarSpikesDialogPro(QDialog):
 
         # zoom toolbar
         zrow = QHBoxLayout()
-        self.btn_zoom_in = QPushButton("Zoom In")
-        self.btn_zoom_out = QPushButton("Zoom Out")
-        self.btn_fit = QPushButton("Fit to Preview")
+        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
+        self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
+        self.btn_fit      = themed_toolbtn("zoom-fit-best", "Fit to Preview")
+
         self.btn_zoom_in.clicked.connect(self._zoom_in)
         self.btn_zoom_out.clicked.connect(self._zoom_out)
         self.btn_fit.clicked.connect(self._fit_to_preview)
-        zrow.addWidget(self.btn_zoom_in)
+
         zrow.addWidget(self.btn_zoom_out)
+        zrow.addWidget(self.btn_zoom_in)
         zrow.addWidget(self.btn_fit)
         zrow.addStretch(1)
         right_v.addLayout(zrow)

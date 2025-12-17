@@ -1,0 +1,89 @@
+[tool.poetry]
+name = "setiastrosuitepro"
+version = "0.1.0"
+description = "Seti Astro Suite Pro - Advanced astrophotography toolkit for image calibration, stacking, registration, photometry, and visualization"
+authors = ["Franklin Marek <info@setiastro.com>"]
+readme = "README.md"
+license = "GPL-3.0"
+homepage = "https://www.setiastro.com"
+repository = "https://github.com/setiastro/setiastrosuitepro"
+keywords = ["astrophotography", "astronomy", "image-processing", "photometry"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Astronomy",
+]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+# numeric & scientific
+numpy = "*"
+scipy = "*"
+pywavelets = "*"
+matplotlib = "*"
+plotly = "*"
+exifread = "*"
+lightkurve = "*"
+oktopus = "*"
+
+# tables & I/O
+pandas = "*"
+tifffile = "*"
+Pillow = "*"
+
+# networking & web
+requests = "*"
+astroquery = "*"
+
+# compression
+lz4 = "*"
+zstandard = "*"
+
+# astronomy
+astropy = "*"
+photutils = "*"
+astroalign = "*"
+sep = "*"
+reproject = "*"
+tzlocal = "*"
+skyfield = "*"
+jplephem = "*"
+
+# performance
+numba = "*"
+
+# neural net
+onnx = "*"
+onnxruntime = "*"
+onnxruntime-directml = {version = "*", markers = "sys_platform == 'win32'"}
+
+# image formats & camera raw
+xisf = "*"
+rawpy = "*"
+imageio = "*"
+
+# utilities
+pytz = "*"
+
+# GUI
+PyQt6 = "*"
+pyqtgraph = "*"
+
+# system
+psutil = "*"
+
+# computer vision
+opencv-python-headless = "*"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "*"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.extras]
+# Optional extras can be added here if needed in the future
+

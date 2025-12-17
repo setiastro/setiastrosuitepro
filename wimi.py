@@ -217,31 +217,38 @@ if 'data/data' in data_path:
 if data_path:
     conf.dataurl = f'file://{data_path}/'
 
-# Access wrench_icon.png, adjusting for PyInstaller executable
-if hasattr(sys, '_MEIPASS'):
-    wrench_path = os.path.join(sys._MEIPASS, 'wrench_icon.png')
-    eye_icon_path = os.path.join(sys._MEIPASS, 'eye.png')
-    disk_icon_path = os.path.join(sys._MEIPASS, 'disk.png')
-    nuke_path = os.path.join(sys._MEIPASS, 'nuke.png')  
-    hubble_path = os.path.join(sys._MEIPASS, 'hubble.png') 
-    collage_path = os.path.join(sys._MEIPASS, 'collage.png') 
-    annotated_path = os.path.join(sys._MEIPASS, 'annotated.png') 
-    colorwheel_path = os.path.join(sys._MEIPASS, 'colorwheel.png')
-    font_path = os.path.join(sys._MEIPASS, 'font.png')
-    csv_icon_path = os.path.join(sys._MEIPASS, 'cvs.png')
-    hrdiagram_path = os.path.join(sys._MEIPASS, 'HRDiagram.png')    
-else:
-    wrench_path = 'wrench_icon.png'  # Path for running as a script
-    eye_icon_path = 'eye.png'  # Path for running as a script
-    disk_icon_path = 'disk.png'   
-    nuke_path = 'nuke.png' 
-    hubble_path = 'hubble.png'
-    collage_path = 'collage.png'
-    annotated_path = 'annotated.png'
-    colorwheel_path = 'colorwheel.png'
-    font_path = 'font.png'
-    csv_icon_path = 'cvs.png'
-    hrdiagram_path = 'HRDiagram.png'    
+from pathlib import Path
+import os, sys
+
+def resource_path(*parts: str) -> str:
+    """
+    Returns an absolute path to a bundled or source-tree resource.
+    Assumes resources are shipped under an 'images/' folder.
+    """
+    if hasattr(sys, "_MEIPASS"):
+        base = Path(sys._MEIPASS)          # PyInstaller temp dir
+    else:
+        base = Path(__file__).resolve().parent  # folder containing wimi.py
+    return str(base.joinpath(*parts))
+
+# Prefer 'images/<file>' for BOTH bundled and source runs
+wrench_path     = resource_path("images", "wrench_icon.png")
+eye_icon_path   = resource_path("images", "eye.png")
+disk_icon_path  = resource_path("images", "disk.png")
+nuke_path       = resource_path("images", "nuke.png")
+hubble_path     = resource_path("images", "hubble.png")
+collage_path    = resource_path("images", "collage.png")
+annotated_path  = resource_path("images", "annotated.png")
+colorwheel_path = resource_path("images", "colorwheel.png")
+font_path       = resource_path("images", "font.png")
+csv_icon_path   = resource_path("images", "cvs.png")          # <- double-check name (you had 'cvs.png')
+hrdiagram_path  = resource_path("images", "HRDiagram.png")
+
+# Optional: loud warning if something is missing (helps catch packaging mistakes)
+for p in (wrench_path, eye_icon_path, disk_icon_path, nuke_path, hubble_path,
+          collage_path, annotated_path, colorwheel_path, font_path, csv_icon_path, hrdiagram_path):
+    if not os.path.exists(p):
+        print(f"[WIMI] Missing resource: {p}") 
 
 # Constants for comoving radial distance calculation
 H0 = 69.6  # Hubble constant in km/s/Mpc
@@ -4680,21 +4687,133 @@ class WIMIDialog(QDialog):
         self.advanced_search_panel_widget.setVisible(not is_visible)
 
     def save_results_as_csv(self):
-        """Save the results from the TreeWidget as a CSV file."""
-        path, _ = QFileDialog.getSaveFileName(self, "Save CSV", "", "CSV Files (*.csv)")
-        if path:
-            with open(path, mode='w', newline='') as file:
-                writer = csv.writer(file)
-                # Write header
-                writer.writerow(["RA", "Dec", "Name", "Diameter", "Type", "Long Type", "Redshift", "Comoving Radial Distance (GLy)"])
+        """
+        Save the results from the TreeWidget as CSV.
 
-                # Write data from TreeWidget
-                for i in range(self.results_tree.topLevelItemCount()):
-                    item = self.results_tree.topLevelItem(i)
-                    row_data = [item.text(column) for column in range(self.results_tree.columnCount())]
-                    writer.writerow(row_data)
+        - Always writes all columns currently shown in self.results_tree.
+        - If self.query_results is present (Simbad star query), append extra
+        stellar columns (B, V, B-V, Abs V, parallax, distance, spectral type, source)
+        matched by name.
+        """
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save CSV", "", "CSV Files (*.csv)"
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".csv"):
+            path += ".csv"
 
-            QMessageBox.information(self, "CSV Saved", f"Results successfully saved to {path}")        
+        tree = self.results_tree
+        if tree.topLevelItemCount() == 0:
+            QMessageBox.information(self, "No Data", "There are no results to save.")
+            return
+
+        # --- 1) Base headers from the tree itself (old behaviour) ---
+        col_count = tree.columnCount()
+        header_item = tree.headerItem()
+        base_headers = [
+            header_item.text(c) if header_item is not None else f"Col{c}"
+            for c in range(col_count)
+        ]
+
+        # Find which column is the "name" column (to match against query_results)
+        name_col = None
+        for idx, lbl in enumerate(base_headers):
+            txt = (lbl or "").strip().lower()
+            if txt in ("name", "object", "main id", "id"):
+                name_col = idx
+                break
+
+        # --- 2) Build a map from name → rich SIMBAD dict (if present) ---
+        extra_by_name = {}
+        qr = getattr(self, "query_results", None)
+        if isinstance(qr, list):
+            for obj in qr:
+                nm = obj.get("name")
+                if not nm:
+                    continue
+                # if duplicates exist, first wins; good enough for our CSV
+                extra_by_name.setdefault(nm, obj)
+
+        # Helper for float formatting
+        def fmt(x, nd=6):
+            import numpy as _np
+            if isinstance(x, (int, float)) and _np.isfinite(x):
+                return f"{x:.{nd}f}"
+            return "" if x is None else str(x)
+
+        # Extra headers only if we actually have extra data
+        extra_headers = []
+        if extra_by_name:
+            extra_headers = [
+                "B mag",
+                "V mag",
+                "B-V",
+                "Absolute V mag",
+                "Parallax (mas)",
+                "Distance (pc)",
+                "Distance (ly)",
+                "Spectral Type",
+                "Source",
+            ]
+
+        with open(path, mode='w', newline='', encoding="utf-8") as file:
+            writer = csv.writer(file)
+
+            # Write combined header row
+            writer.writerow(base_headers + extra_headers)
+
+            # --- 3) Write one row per tree item, augmenting with extra data if we have it ---
+            for i in range(tree.topLevelItemCount()):
+                item = tree.topLevelItem(i)
+                row_data = [item.text(col) for col in range(col_count)]
+
+                extra_row = []
+                if extra_headers and name_col is not None:
+                    obj_name = row_data[name_col]
+                    obj = extra_by_name.get(obj_name)
+
+                    if obj:
+                        Bmag = obj.get("Bmag")
+                        Vmag = obj.get("Vmag")
+                        absV = obj.get("absolute_mag")
+                        plx  = obj.get("parallax_mas")
+                        spec = obj.get("spectral_type", "")
+                        src  = obj.get("source", "")
+
+                        # Derived quantities
+                        if isinstance(Bmag, (int, float)) and isinstance(Vmag, (int, float)):
+                            b_minus_v = Bmag - Vmag
+                        else:
+                            b_minus_v = None
+
+                        dist_pc = dist_ly = None
+                        if isinstance(plx, (int, float)) and plx > 0:
+                            dist_pc = 1000.0 / plx
+                            dist_ly = dist_pc * 3.261563777
+
+                        extra_row = [
+                            fmt(Bmag),
+                            fmt(Vmag),
+                            fmt(b_minus_v),
+                            fmt(absV),
+                            fmt(plx),
+                            fmt(dist_pc),
+                            fmt(dist_ly),
+                            spec or "",
+                            src or "",
+                        ]
+                    else:
+                        # No extra data for this row → keep columns blank
+                        extra_row = [""] * len(extra_headers)
+
+                writer.writerow(row_data + extra_row)
+
+        QMessageBox.information(self, "CSV Saved",
+                                f"Results successfully saved to {path}")
+
+
+      
 
     def filter_visible_objects(self):
         """Filter objects based on visibility threshold."""

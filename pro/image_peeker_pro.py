@@ -29,6 +29,7 @@ from astropy.stats import sigma_clipped_stats
 from scipy.interpolate import griddata
 
 import sep
+from pro.widgets.themed_buttons import themed_toolbtn
 
 # bring in your existing helpers/classes from the snippet you posted
 # (we assume they live next to this file or already in pro/)
@@ -93,12 +94,13 @@ class PreviewPane(QWidget):
         self.zoom_slider.setValue(100)
         self.zoom_slider.valueChanged.connect(self.on_zoom_changed)
 
-        self.zoom_in_btn  = QPushButton("＋")
+        self.zoom_in_btn  = themed_toolbtn("zoom-in", "Zoom In")
+        self.zoom_out_btn = themed_toolbtn("zoom-out", "Zoom Out")
+        self.fit_btn      = themed_toolbtn("zoom-fit-best", "Fit to Preview")
         self.zoom_in_btn.clicked .connect(lambda: self.adjust_zoom(10))
-        self.zoom_out_btn = QPushButton("－")
         self.zoom_out_btn.clicked.connect(lambda: self.adjust_zoom(-10))
-        self.fit_btn      = QPushButton("Fit")
-        self.fit_btn.clicked .connect(self.fit_to_view)
+        self.fit_btn.clicked .connect(self.fit_to_view)        
+
         self.stretch_btn  = QPushButton("AutoStretch")
         self.stretch_btn.clicked.connect(self.toggle_stretch)
 

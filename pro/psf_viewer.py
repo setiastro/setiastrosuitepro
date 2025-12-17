@@ -11,6 +11,89 @@ from PyQt6.QtWidgets import (
     QDialog, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QScrollArea,
     QSlider, QTableWidget, QTableWidgetItem, QApplication, QMessageBox
 )
+from pro.widgets.themed_buttons import themed_toolbtn
+
+from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QObject
+from PyQt6.QtWidgets import QWidget
+
+class _ProcessingOverlay(QWidget):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setStyleSheet("""
+            QWidget {
+                background: rgba(0,0,0,140);
+                border-radius: 10px;
+            }
+            QLabel {
+                color: white;
+                font-size: 14px;
+                font-weight: 600;
+            }
+        """)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(18, 14, 18, 14)
+        self.lbl = QLabel("Processing…", self)
+        self.lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(self.lbl)
+
+    def setText(self, s: str):
+        self.lbl.setText(s)
+
+class _PSFWorker(QObject):
+    finished = pyqtSignal(object, str)   # (Table or None, status_text)
+    failed   = pyqtSignal(str)
+
+    def __init__(self, image: np.ndarray, threshold_sigma: float):
+        super().__init__()
+        self.image = image
+        self.threshold_sigma = float(threshold_sigma)
+
+    def run(self):
+        try:
+            if self.image is None:
+                self.finished.emit(None, "Status: No image.")
+                return
+
+            # grayscale
+            if self.image.ndim == 3:
+                image_gray = np.mean(self.image, axis=2)
+            else:
+                image_gray = self.image
+            data = image_gray.astype(np.float32, copy=False)
+
+            # background
+            bkg = sep.Background(data)
+            data_sub = data - bkg.back()
+            try:
+                err_val = bkg.globalrms
+            except Exception:
+                err_val = float(np.median(bkg.rms()))
+
+            sources = sep.extract(data_sub, self.threshold_sigma, err=err_val)
+            if sources is None or len(sources) == 0:
+                self.finished.emit(None, "Status: Extraction completed — 0 sources.")
+                return
+
+            # HFR proxy
+            try:
+                r = 2.0 * sources["a"]
+            except Exception:
+                r = np.zeros(len(sources), dtype=np.float32)
+
+            tbl = Table()
+            tbl["xcentroid"] = sources["x"]
+            tbl["ycentroid"] = sources["y"]
+            tbl["flux"] = sources["flux"]
+            tbl["HFR"] = r
+            tbl["a"] = sources["a"]
+            tbl["b"] = sources["b"]
+            tbl["theta"] = sources["theta"]
+
+            self.finished.emit(tbl, f"Status: Extraction completed — {len(sources)} sources.")
+        except Exception as e:
+            self.failed.emit(f"Extraction failed: {e}")
+
 
 class PSFViewer(QDialog):
     """
@@ -64,8 +147,10 @@ class PSFViewer(QDialog):
 
     def _on_doc_changed(self, *_):
         self.image = self._grab_image()
-        self.compute_star_list()
-        self.drawHistogram()
+        # reuse the existing debounce timer instead of immediate recompute
+        if self.threshold_timer.isActive():
+            self.threshold_timer.stop()
+        self.threshold_timer.start()
 
     # ---------- UI ----------
     def _build_ui(self):
@@ -97,13 +182,28 @@ class PSFViewer(QDialog):
         controls_layout = QHBoxLayout()
 
         controls_layout.addWidget(QLabel("Zoom:"))
+
+        # themed zoom buttons
+        btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
+        btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
+        btn_fit      = themed_toolbtn("zoom-fit-best", "Fit")
+
+        btn_zoom_out.clicked.connect(lambda: self._step_zoom(1/1.25))
+        btn_zoom_in.clicked.connect(lambda: self._step_zoom(1.25))
+        btn_fit.clicked.connect(self._fit_histogram)
+
+        controls_layout.addWidget(btn_zoom_out)
+        controls_layout.addWidget(btn_zoom_in)
+        controls_layout.addWidget(btn_fit)
+
+        # keep the slider (nice for big jumps)
         self.zoom_slider = QSlider(Qt.Orientation.Horizontal, self)
         self.zoom_slider.setRange(50, 1000)
         self.zoom_slider.setValue(100)
         self.zoom_slider.setTickInterval(10)
         self.zoom_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.zoom_slider.valueChanged.connect(self.updateZoom)
-        controls_layout.addWidget(self.zoom_slider)
+        controls_layout.addWidget(self.zoom_slider, 1)
 
         self.log_toggle_button = QPushButton("Toggle Log X-Axis", self)
         self.log_toggle_button.setCheckable(True)
@@ -149,18 +249,89 @@ class PSFViewer(QDialog):
             self.threshold_timer.stop()
         self.threshold_timer.start()
 
+    def _step_zoom(self, factor: float):
+        v = int(round(self.zoom_slider.value() * factor))
+        v = max(self.zoom_slider.minimum(), min(self.zoom_slider.maximum(), v))
+        self.zoom_slider.setValue(v)  # drives updateZoom()
+
+    def _fit_histogram(self):
+        # Fit the histogram pixmap to the scroll viewport width.
+        # Keeps behavior consistent with your other preview dialogs.
+        if not hasattr(self, "_base_hist_pm") or self._base_hist_pm is None:
+            return
+        vp_w = self.scroll_area.viewport().width()
+        base_w = max(1, self._base_hist_pm.width())
+        z = vp_w / base_w
+        self.zoom_slider.setValue(int(round(z * 100)))
+
+    def _apply_hist_zoom(self):
+        if not hasattr(self, "_base_hist_pm") or self._base_hist_pm is None:
+            return
+        z = self.zoom_slider.value() / 100.0
+        w = max(1, int(self._base_hist_pm.width()  * z))
+        h = max(1, int(self._base_hist_pm.height() * z))
+        scaled = self._base_hist_pm.scaled(
+            w, h,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation
+        )
+        self.hist_label.setPixmap(scaled)
+        self.hist_label.resize(scaled.size())
+
     def _applyThreshold(self):
-        self.compute_star_list()
-        self.drawHistogram()
+        # kick off worker
+        if self.image is None:
+            self.star_list = None
+            self.status_label.setText("Status: No image.")
+            self.drawHistogram()
+            return
+
+        self._show_processing("Processing… extracting stars / PSFs")
+
+        # kill previous run if any
+        if hasattr(self, "_psf_thread") and self._psf_thread is not None:
+            try:
+                self._psf_thread.quit()
+                self._psf_thread.wait(50)
+            except Exception:
+                pass
+
+        self._psf_thread = QThread(self)
+        self._psf_worker = _PSFWorker(self.image, self.detection_threshold)
+        self._psf_worker.moveToThread(self._psf_thread)
+
+        self._psf_thread.started.connect(self._psf_worker.run)
+
+        def _done(tbl, status):
+            self.star_list = tbl
+            self.status_label.setText(status)
+            self._hide_processing()
+            self.drawHistogram()
+            self._psf_thread.quit()
+            self._psf_thread.wait(100)
+
+        def _fail(msg):
+            self.star_list = None
+            self.status_label.setText(f"Status: {msg}")
+            self._hide_processing()
+            self.drawHistogram()
+            self._psf_thread.quit()
+            self._psf_thread.wait(100)
+
+        self._psf_worker.finished.connect(_done)
+        self._psf_worker.failed.connect(_fail)
+
+        self._psf_thread.start()
+
 
     def updateImage(self, new_image):
         self.image = np.asarray(new_image) if new_image is not None else None
         self.compute_star_list()
         self.drawHistogram()
 
-    def updateZoom(self, val: int):
-        self.zoom_factor = max(0.1, val / 100.0)
-        self.drawHistogram()
+    def updateZoom(self, _=None):
+        self._apply_hist_zoom()
+
 
     def toggleLogScale(self, checked: bool):
         self.log_scale = bool(checked)
@@ -174,6 +345,26 @@ class PSFViewer(QDialog):
             self.histogram_mode = "PSF"
             self.mode_toggle_button.setText("Show Flux Histogram")
         self.drawHistogram()
+
+    def _show_processing(self, msg="Processing…"):
+        if not hasattr(self, "_overlay") or self._overlay is None:
+            self._overlay = _ProcessingOverlay(self.scroll_area)
+            self._overlay.hide()
+        self._overlay.setText(msg)
+        self._overlay.resize(self.scroll_area.viewport().size())
+        self._overlay.move(0, 0)
+        self._overlay.show()
+        self._overlay.raise_()
+
+    def _hide_processing(self):
+        if hasattr(self, "_overlay") and self._overlay is not None:
+            self._overlay.hide()
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if hasattr(self, "_overlay") and self._overlay is not None and self._overlay.isVisible():
+            self._overlay.resize(self.scroll_area.viewport().size())
+
 
     # ---------- compute ----------
     def compute_star_list(self):
@@ -241,8 +432,9 @@ class PSFViewer(QDialog):
     # ---------- drawing ----------
     def drawHistogram(self):
         base_w, h = 512, 300
-        w = max(64, int(base_w * self.zoom_factor))
-        pix = QPixmap(w, h)
+
+        # Render at fixed base resolution (no zoom here)
+        pix = QPixmap(base_w, h)
         pix.fill(Qt.GlobalColor.white)
 
         painter = QPainter(pix)
@@ -252,7 +444,7 @@ class PSFViewer(QDialog):
         if self.star_list is None or len(self.star_list) == 0:
             data = np.array([], dtype=float)
             edges = np.linspace(0, 1, 51)
-            low, high = edges[0], edges[-1]
+            low, high = float(edges[0]), float(edges[-1])
         else:
             if self.histogram_mode == "PSF":
                 data = np.array(self.star_list["HFR"], dtype=float)
@@ -262,16 +454,20 @@ class PSFViewer(QDialog):
                 edges = np.linspace(data.min(), data.max(), 51) if data.size else np.linspace(0, 1, 51)
             low, high = float(edges[0]), float(edges[-1])
 
-        # Axis scale
+        # Axis scale helpers (map value -> x in [0..base_w])
         if self.log_scale and high > max(low, 1e-9):
             low = max(low, 1e-4)
             edges = np.logspace(np.log10(low), np.log10(high if high > low else low * 10), 51)
+
+            lo_l = np.log10(low)
+            hi_l = np.log10(high) if high > low else lo_l + 1.0
+
             def xfun(v: float) -> int:
                 lv = np.log10(max(v, low))
-                return int((lv - np.log10(low)) / (np.log10(high) - np.log10(low)) * w) if high > low else 0
+                return int((lv - lo_l) / (hi_l - lo_l) * base_w) if hi_l > lo_l else 0
         else:
             def xfun(v: float) -> int:
-                return int((v - low) / (high - low) * w) if high > low else 0
+                return int((v - low) / (high - low) * base_w) if high > low else 0
 
         # Histogram
         hist = np.histogram(data, bins=edges)[0].astype(float)
@@ -281,28 +477,32 @@ class PSFViewer(QDialog):
         # Bars
         painter.setPen(QPen(Qt.GlobalColor.black))
         for i in range(len(hist)):
-            x0 = xfun(edges[i])
-            x1 = xfun(edges[i + 1])
+            x0 = xfun(float(edges[i]))
+            x1 = xfun(float(edges[i + 1]))
             bw = max(x1 - x0, 1)
             bh = float(hist[i]) * h
             painter.drawRect(x0, int(h - bh), bw, int(bh))
 
         # X axis
         painter.setPen(QPen(Qt.GlobalColor.black, 2))
-        painter.drawLine(0, h - 1, w, h - 1)
+        painter.drawLine(0, h - 1, base_w, h - 1)
         painter.setFont(QFont("Arial", 10))
 
-        ticks = (np.logspace(np.log10(max(low, 1e-4)), np.log10(max(high, low * 10)), 6)
-                 if self.log_scale and high > low
-                 else np.linspace(low, high, 6))
+        ticks = (
+            np.logspace(np.log10(max(low, 1e-4)), np.log10(max(high, low * 10)), 6)
+            if self.log_scale and high > low
+            else np.linspace(low, high, 6)
+        )
         for t in ticks:
             x = xfun(float(t))
             painter.drawLine(x, h - 1, x, h - 6)
             painter.drawText(x - 28, h - 10, f"{t:.3f}" if self.log_scale else f"{t:.2f}")
 
         painter.end()
-        self.hist_label.setPixmap(pix)
-        self.hist_label.resize(pix.size())
+
+        # Store base pixmap for zooming
+        self._base_hist_pm = pix
+        self._apply_hist_zoom()      # scales into hist_label
         self.updateStatistics()
 
     def updateStatistics(self):

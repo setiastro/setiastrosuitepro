@@ -22,7 +22,7 @@ except ImportError:
 
 from pro.swap_manager import get_swap_manager
 from pro.widgets.image_utils import ensure_contiguous
-
+from typing import Any
 
 # --- WCS DEBUGGING ------------------------------------------------------
 _DEBUG_WCS = False  # flip to False when you’re done debugging
@@ -207,7 +207,7 @@ class ImageDocument(QObject):
         # _undo / _redo now store tuples: (swap_id: str, metadata: dict, step_name: str)
         self._undo: list[tuple[str, dict, str]] = []
         self._redo: list[tuple[str, dict, str]] = []        
-        self.masks: dict[str, MaskLayer] = {}
+        self.masks: dict[str, np.ndarray] = {}
         self.active_mask_id: str | None = None
         self.uid = uuid.uuid4().hex  # stable identity for DnD, layers, masks, etc.
 
@@ -276,10 +276,29 @@ class ImageDocument(QObject):
     def last_redo_name(self) -> str | None:
         return self._redo[-1][2] if self._redo else None
 
-    def add_mask(self, layer: MaskLayer, make_active: bool = True):
-        self.masks[layer.id] = layer
+
+    def add_mask(self, mask: Any, mask_id: str | None = None, make_active: bool = True) -> str:
+        """
+        Store a mask on this document.
+
+        - `mask` can be a numpy array or any mask-like object.
+        - If `mask_id` is None, a random UUID is generated.
+        - Returns the mask_id used.
+        """
+        if mask_id is None:
+            mask_id = getattr(mask, "id", None) or uuid.uuid4().hex
+
+        # If it's an array, normalize to float32; otherwise just store as-is.
+        try:
+            arr = np.asarray(mask, dtype=np.float32)
+            self.masks[mask_id] = arr
+        except Exception:
+            self.masks[mask_id] = mask
+
         if make_active:
-            self.active_mask_id = layer.id
+            self.active_mask_id = mask_id
+
+        return mask_id
 
     def remove_mask(self, mask_id: str):
         self.masks.pop(mask_id, None)
@@ -318,9 +337,42 @@ class ImageDocument(QObject):
         Smart edit:
         - If this is an ROI view (has _roi_info), paste back into parent and emit region update.
         - Else: push history on self and emit full-image update.
+        - IMPORTANT: merge metadata without nuking FITS/WCS headers.
         """
         import numpy as np
-        #print(f"[ImageDocument] apply_edit called: step_name={step_name}")
+
+        def _merge_meta(old_meta: dict | None, new_meta: dict | None, step_name: str):
+            """
+            Merge new_meta into old_meta but preserve critical header fields
+            unless they are explicitly overridden with non-None values.
+            """
+            old = dict(old_meta or {})
+            incoming = dict(new_meta or {})
+
+            critical_keys = (
+                "original_header",
+                "fits_header",
+                "wcs_header",
+                "file_meta",
+                "image_meta",
+            )
+
+            # Preserve critical keys unless caller *deliberately* overrides
+            for k in critical_keys:
+                if k in incoming:
+                    if incoming[k] is not None:
+                        old[k] = incoming[k]
+                # if not in incoming → leave old value alone
+
+            # Merge all remaining keys normally
+            for k, v in incoming.items():
+                if k in critical_keys:
+                    continue
+                old[k] = v
+
+            if step_name:
+                old.setdefault("step_name", step_name)
+            return old
 
         # ------ ROI-aware branch (auto-pasteback) ------
         roi_info = getattr(self, "_roi_info", None)
@@ -349,43 +401,37 @@ class ImageDocument(QObject):
 
                 # push onto the PARENT’s history
                 if metadata:
-                    parent.metadata.update(metadata)
-                parent.metadata.setdefault("step_name", step_name)
+                    parent.metadata = _merge_meta(parent.metadata, metadata, step_name)
+                else:
+                    parent.metadata.setdefault("step_name", step_name)
                 
-                # Swap-based history for parent
                 sm = get_swap_manager()
-                # Snapshot parent's current image to swap
                 sid = sm.save_state(parent.image)
                 if sid:
                     parent._undo.append((sid, parent.metadata.copy(), step_name))
                 
-                # Clear parent's redo stack (and delete files)
                 for old_sid, _, _ in parent._redo:
                     sm.delete_state(old_sid)
                 parent._redo.clear()
                 
                 parent.image = new_full
+                parent.dirty = True
                 parent.changed.emit()
 
-                # notify views about the region that changed
                 dm = getattr(self, "_doc_manager", None) or getattr(parent, "_doc_manager", None)
                 try:
                     if dm is not None and hasattr(dm, "imageRegionUpdated"):
                         dm.imageRegionUpdated.emit(parent, (x, y, w, h))
-                        #print(f"[DocManager] Emitted imageRegionUpdated for ROI: {(x, y, w, h)}")
-                      
                 except Exception:
                     print(f"[DocManager] Failed to emit imageRegionUpdated for ROI.")
-                    pass
                 return  # done
 
         # ------ Normal (full-image) branch ------
-        
-        # Copy-on-write: if we're sharing image data with another document,
-        # we must copy it now before modifying (so source document is unaffected)
+
+        # Copy-on-write
         if self._cow_source is not None and self.image is not None:
             self.image = self.image.copy()
-            self._cow_source = None  # We now own our own copy
+            self._cow_source = None
         
         if self.image is not None:
             # snapshot current image + metadata for undo
@@ -417,17 +463,17 @@ class ImageDocument(QObject):
                 sm.delete_state(old_sid)
             self._redo.clear()
 
-
+        # --- header-safe metadata merge ---
         if metadata:
-            self.metadata.update(metadata)
-        self.metadata.setdefault("step_name", step_name)
+            self.metadata = _merge_meta(self.metadata, metadata, step_name)
+        else:
+            self.metadata.setdefault("step_name", step_name)
 
         # normalize new image
         img = np.asarray(new_image, dtype=np.float32)
         if img.size == 0:
             raise ValueError("apply_edit: new image is empty")
 
-        # **critical**: ensure C-contiguous for Qt/QImage
         img = ensure_contiguous(img)
 
         _debug_log_undo(
@@ -441,10 +487,9 @@ class ImageDocument(QObject):
         )
 
         self.image = img
-        self.dirty = True  # <--- Mark as dirty
+        self.dirty = True
         self.changed.emit()
 
-        # full-image repaint hint to views
         dm = getattr(self, "_doc_manager", None)
         try:
             if dm is not None and hasattr(dm, "imageRegionUpdated"):
@@ -452,15 +497,6 @@ class ImageDocument(QObject):
         except Exception:
             pass
 
-        self.changed.emit()
-
-        # full-image repaint hint to views
-        dm = getattr(self, "_doc_manager", None)
-        try:
-            if dm is not None and hasattr(dm, "imageRegionUpdated"):
-                dm.imageRegionUpdated.emit(self, None)
-        except Exception:
-            pass
 
 
     def undo(self) -> str | None:

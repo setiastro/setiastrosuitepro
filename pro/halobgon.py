@@ -20,6 +20,7 @@ except Exception:
     _lut_mono_inplace = None
     _lut_color_inplace = None
 
+from pro.widgets.themed_buttons import themed_toolbtn
 
 
 # =============================================================================
@@ -296,13 +297,24 @@ class HaloBGonDialogPro(QDialog):
         self.scene.addItem(self.pix)
         v.addWidget(self.view, 1)
 
-        # Buttons
+        # Buttons (themed)
         row = QHBoxLayout()
-        b_minus = QPushButton("–"); b_minus.clicked.connect(self.view.zoom_out)
-        b_plus  = QPushButton("+"); b_plus.clicked.connect(self.view.zoom_in)
-        b_fit   = QPushButton("Fit"); b_fit.clicked.connect(lambda: self.view.fit_to(self.scene.itemsBoundingRect()))
-        row.addWidget(QLabel("Zoom: Ctrl+Wheel")); row.addWidget(b_minus); row.addWidget(b_plus); row.addWidget(b_fit); row.addStretch(1)
+        row.addWidget(QLabel("Zoom: Ctrl+Wheel"))
+
+        b_minus = themed_toolbtn("zoom-out", "Zoom Out")
+        b_plus  = themed_toolbtn("zoom-in", "Zoom In")
+        b_fit   = themed_toolbtn("zoom-fit-best", "Fit to View")
+
+        b_minus.clicked.connect(self.view.zoom_out)
+        b_plus .clicked.connect(self.view.zoom_in)
+        b_fit  .clicked.connect(lambda: self.view.fit_to(self.scene.itemsBoundingRect()))
+
+        row.addWidget(b_minus)
+        row.addWidget(b_plus)
+        row.addWidget(b_fit)
+        row.addStretch(1)
         v.addLayout(row)
+
 
         row2 = QHBoxLayout()
         b_apply = QPushButton("Apply"); b_apply.clicked.connect(self._apply)

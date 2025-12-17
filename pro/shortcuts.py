@@ -31,6 +31,7 @@ import os  # ← NEW
 SASS_KIND   = "sas.shortcuts"
 SASS_VER    = 1
 
+TOOLBAR_REORDER_MIME = "application/x-saspro-toolbar-reorder"
 # Accept these endings (case-insensitive)
 OPENABLE_ENDINGS = (
     ".png", ".jpg", ".jpeg",
@@ -52,13 +53,10 @@ def _get_icons():
     # Find where get_icons() lives in your project and import it here.
     # Try a couple common locations; keep the first that exists in your tree.
     try:
-        from pro.icons import get_icons as _gi
+        from pro.resources import get_icons as _gi
     except Exception:
-        try:
-            from pro.gui.icons import get_icons as _gi
-        except Exception:
-            _gi = None
-
+        _gi = None
+        
     _ICONS = _gi() if _gi else None
     return _ICONS
 
@@ -117,6 +115,8 @@ class DraggableToolBar(QToolBar):
         self._dragging_from: QToolButton | None = None
         self._press_had_mod: dict[QToolButton, bool] = {}
         self._suppress_release: set[QToolButton] = set()
+        self._settings_key: str | None = None
+        self.setAcceptDrops(True)
 
     def _mods_ok(self, mods: Qt.KeyboardModifiers) -> bool:
         return bool(mods & (
@@ -124,6 +124,31 @@ class DraggableToolBar(QToolBar):
             Qt.KeyboardModifier.ControlModifier |
             Qt.KeyboardModifier.ShiftModifier
         ))
+
+    # NEW: called by main window / mixin
+    def setSettingsKey(self, key: str):
+        self._settings_key = str(key)
+
+    def _persist_order(self):
+        """Persist current action order (by command_id/objectName) to QSettings."""
+        if not self._settings_key:
+            return
+
+        # Prefer main-window settings if available
+        mw = self.window()
+        s = getattr(mw, "settings", None)
+        if s is None:
+            from PyQt6.QtCore import QSettings
+            s = QSettings()
+
+        ids: list[str] = []
+        for act in self.actions():
+            cid = act.property("command_id") or act.objectName()
+            if cid:
+                ids.append(str(cid))
+
+        s.setValue(self._settings_key, ids)
+
 
     # install/remove our event filter when actions are added/removed
     def actionEvent(self, e):
@@ -160,32 +185,41 @@ class DraggableToolBar(QToolBar):
                     self._show_toolbutton_context_menu(obj, act, ev.globalPos())
                     return True
                 return False            
+
             # L-press: remember start + whether a drag-modifier was held
             if ev.type() == QEvent.Type.MouseButtonPress and ev.button() == Qt.MouseButton.LeftButton:
                 self._press_pos[obj] = ev.globalPosition().toPoint()
                 self._press_had_mod[obj] = self._mods_ok(QApplication.keyboardModifiers())
                 return False  # allow normal press visuals
 
-            # Move with L held: if (had-mod at press OR has-mod now) AND moved enough → start drag
+            # Move with L held:
             if ev.type() == QEvent.Type.MouseMove and (ev.buttons() & Qt.MouseButton.LeftButton):
                 start = self._press_pos.get(obj)
                 if start is not None:
                     delta = ev.globalPosition().toPoint() - start
-                    if ((self._press_had_mod.get(obj, False) or self._mods_ok(QApplication.keyboardModifiers()))
-                        and delta.manhattanLength() > QApplication.startDragDistance()):
-                        # find the QAction backing this button
-                        act = next((a for a in self.actions() if self.widgetForAction(a) is obj), None)
-                        if act:
-                            self._start_drag_for_action(act)
-                            # eat subsequent release so the action doesn't trigger
+                    if delta.manhattanLength() > QApplication.startDragDistance():
+                        mods_now = QApplication.keyboardModifiers()
+                        had_mod  = self._press_had_mod.get(obj, False)
+                        # CASE 1: had/has modifiers → create desktop shortcut / function-bundle drag (existing behavior)
+                        if had_mod or self._mods_ok(mods_now):
+                            act = self._find_action_for_button(obj)
+                            if act:
+                                self._start_drag_for_action(act)
+                                self._suppress_release.add(obj)
+                            self._press_pos.pop(obj, None)
+                            self._press_had_mod.pop(obj, None)
+                            return True  # consume
+                        else:
+                            # CASE 2: plain drag (no modifiers) → reorder within this toolbar
+                            self._start_reorder_drag_for_button(obj)
                             self._suppress_release.add(obj)
-                        # clear press tracking
-                        self._press_pos.pop(obj, None)
-                        self._press_had_mod.pop(obj, None)
-                        return True  # consume the move (prevents click)
+                            self._press_pos.pop(obj, None)
+                            self._press_had_mod.pop(obj, None)
+                            return True  # consume
+
                 return False
 
-            # Release: if we started a drag, swallow the release so click won't fire
+            # Release: if we started any drag, swallow the release so click won't fire
             if ev.type() == QEvent.Type.MouseButtonRelease and ev.button() == Qt.MouseButton.LeftButton:
                 self._press_pos.pop(obj, None)
                 self._press_had_mod.pop(obj, None)
@@ -195,6 +229,7 @@ class DraggableToolBar(QToolBar):
                 return False
 
         return super().eventFilter(obj, ev)
+
 
     def _start_drag_for_action(self, act: QAction):
         act_id = act.property("command_id") or act.objectName()
@@ -232,12 +267,82 @@ class DraggableToolBar(QToolBar):
         drag.setHotSpot(pm.rect().center())
         drag.exec(Qt.DropAction.CopyAction)
 
+    def _start_reorder_drag_for_button(self, btn: QToolButton):
+        """
+        Start a drag whose only purpose is to reorder actions within THIS toolbar.
+        No presets, no desktop shortcuts.
+        """
+        act = self._find_action_for_button(btn)
+        if act is None:
+            return
+
+        md = QMimeData()
+        # Tag this as an internal toolbar-reorder drag
+        md.setData(TOOLBAR_REORDER_MIME, b"1")
+
+        drag = QDrag(btn)
+        drag.setMimeData(md)
+
+        pm = act.icon().pixmap(32, 32) if not act.icon().isNull() else QPixmap(32, 32)
+        if pm.isNull():
+            pm = QPixmap(32, 32)
+            pm.fill(Qt.GlobalColor.darkGray)
+        drag.setPixmap(pm)
+        drag.setHotSpot(pm.rect().center())
+        drag.exec(Qt.DropAction.MoveAction)
+
+
     def _find_action_for_button(self, btn: QToolButton) -> QAction | None:
         # Find the QAction that owns this toolbutton
         for a in self.actions():
             if self.widgetForAction(a) is btn:
                 return a
         return None
+
+    def dragEnterEvent(self, e):
+        # Accept our own reorder drags; pass everything else through
+        if e.mimeData().hasFormat(TOOLBAR_REORDER_MIME):
+            src = e.source()
+            # Only allow reordering within the *same* toolbar
+            if isinstance(src, QToolButton) and src.parent() is self:
+                e.acceptProposedAction()
+                return
+        super().dragEnterEvent(e)
+
+    def dragMoveEvent(self, e):
+        if e.mimeData().hasFormat(TOOLBAR_REORDER_MIME):
+            src = e.source()
+            if isinstance(src, QToolButton) and src.parent() is self:
+                e.acceptProposedAction()
+                return
+        super().dragMoveEvent(e)
+
+    def dropEvent(self, e):
+        if e.mimeData().hasFormat(TOOLBAR_REORDER_MIME):
+            src = e.source()
+            if isinstance(src, QToolButton) and src.parent() is self:
+                src_act = self._find_action_for_button(src)
+                if src_act is None:
+                    e.ignore()
+                    return
+
+                pos = e.position().toPoint()
+                target_act = self.actionAt(pos)
+
+                # physically reorder actions
+                self.removeAction(src_act)
+                if target_act is None:
+                    self.addAction(src_act)
+                else:
+                    self.insertAction(target_act, src_act)
+
+                # persist updated order
+                self._persist_order()
+
+                e.acceptProposedAction()
+                return
+
+        super().dropEvent(e)
 
     def _add_shortcut_for_action(self, act: QAction):
         # Resolve command id
@@ -276,7 +381,7 @@ _PRESET_UI_IDS = {
     "remove_green","star_align","background_neutral","white_balance","clahe",
     "morphology","pixel_math","rgb_align","signature_insert","signature_adder",
     "signature","halo_b_gon","geom_rescale","rescale","debayer","image_combine",
-    "star_spikes","diffraction_spikes",
+    "star_spikes","diffraction_spikes", "multiscale_decomp",
 }
 
 def _has_preset_editor_for_command(command_id: str) -> bool:
@@ -365,6 +470,16 @@ def _open_preset_editor_for_command(parent, command_id: str, initial: dict | Non
         from pro.wavescalede_preset import WaveScaleDSEPresetDialog
         dlg = WaveScaleDSEPresetDialog(parent, initial=cur or {
             "n_scales":6,"boost_factor":5.0,"mask_gamma":1.0,"iterations":2
+        })
+        return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
+
+    if command_id == "multiscale_decomp":
+        from pro.multiscale_decomp import _MultiScaleDecompPresetDialog
+        dlg = _MultiScaleDecompPresetDialog(parent, initial=cur or {
+            "layers": 4,
+            "base_sigma": 1.0,
+            "linked_rgb": True,
+            "layers_cfg": [],
         })
         return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
 
@@ -2012,8 +2127,8 @@ class _WaveScaleDarkEnhancerPresetDialog(QDialog):
 class _CLAHEPresetDialog(QDialog):
     """
     Preset UI for CLAHE:
-      • clip_limit (0.1–4.0)
-      • tile (1–32)  → used as (tile, tile)
+      • clip_limit (0.10–4.00)
+      • tile_px (8–512 px)  → converted to OpenCV tileGridSize based on image size
     """
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
@@ -2028,15 +2143,32 @@ class _CLAHEPresetDialog(QDialog):
         self.dp_clip.setSingleStep(0.10)
         self.dp_clip.setValue(float(init.get("clip_limit", 2.00)))
 
-        self.sp_tile = QSpinBox()
-        self.sp_tile.setRange(1, 32)
-        self.sp_tile.setValue(int(init.get("tile", 8)))
+        self.sp_tile_px = QSpinBox()
+        self.sp_tile_px.setRange(8, 512)
+        self.sp_tile_px.setSingleStep(8)
+
+        # Support both old and new in the UI:
+        if "tile_px" in init:
+            self.sp_tile_px.setValue(int(init.get("tile_px", 128)))
+        else:
+            # legacy tile count → rough px guess; keeps old presets "reasonable"
+            legacy_tile = int(init.get("tile", 8))
+            legacy_tile = max(2, min(legacy_tile, 128))
+            # Heuristic: convert tile count to a "typical" px size assuming ~2048 min dim
+            px_guess = int(round(2048 / float(legacy_tile)))
+            px_guess = max(8, min(px_guess, 512))
+            # snap to step 8
+            px_guess = int(round(px_guess / 8)) * 8
+            self.sp_tile_px.setValue(px_guess)
 
         form.addRow("Clip limit:", self.dp_clip)
-        form.addRow("Tile size:", self.sp_tile)
+        form.addRow("Tile size (px):", self.sp_tile_px)
 
-        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok |
-                                QDialogButtonBox.StandardButton.Cancel, parent=self)
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok |
+            QDialogButtonBox.StandardButton.Cancel,
+            parent=self
+        )
         btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
         form.addRow(btns)
@@ -2044,7 +2176,7 @@ class _CLAHEPresetDialog(QDialog):
     def result_dict(self) -> dict:
         return {
             "clip_limit": float(self.dp_clip.value()),
-            "tile": int(self.sp_tile.value()),
+            "tile_px": int(self.sp_tile_px.value()),
         }
 
 class _MorphologyPresetDialog(QDialog):

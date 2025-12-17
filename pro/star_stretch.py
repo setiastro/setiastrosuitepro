@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QScrollArea, QWidget, QMessageBox
 )
 from PyQt6.QtGui import QPixmap, QImage, QMovie
+from pro.widgets.themed_buttons import themed_toolbtn
 
 # Shared utilities
 from pro.widgets.image_utils import to_float01 as _to_float01
@@ -197,15 +198,21 @@ class StarStretchDialog(QDialog):
         # Right column (preview with zoom/pan)
         right = QVBoxLayout()
         zoombar = QHBoxLayout()
-        b_out = QPushButton("Zoom Out")
-        b_in  = QPushButton("Zoom In")
-        b_fit = QPushButton("Fit to Preview")
+
+        b_out = themed_toolbtn("zoom-out", "Zoom Out")
+        b_in  = themed_toolbtn("zoom-in", "Zoom In")
+        b_fit = themed_toolbtn("zoom-fit-best", "Fit to Preview")
+
         b_out.clicked.connect(self._zoom_out)
         b_in.clicked.connect(self._zoom_in)
         b_fit.clicked.connect(self._fit)
-        zoombar.addWidget(b_out); zoombar.addWidget(b_in); zoombar.addWidget(b_fit)
-        right.addLayout(zoombar)
 
+        zoombar.addWidget(b_out)
+        zoombar.addWidget(b_in)
+        zoombar.addWidget(b_fit)
+        zoombar.addStretch(1)
+
+        right.addLayout(zoombar)
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)

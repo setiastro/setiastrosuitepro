@@ -1566,11 +1566,11 @@ class AstroSuiteProMainWindow(
         shortcuts_menu = None
         for act in self.menuBar().actions():
             m = act.menu()
-            if m and (m.title().replace("&", "").strip().lower() == "shortcuts"):
+            if m and (m.title().replace("&", "").strip().lower() == "view"):
                 shortcuts_menu = m
                 break
         if shortcuts_menu is None:
-            shortcuts_menu = self.menuBar().addMenu("&Shortcuts")
+            shortcuts_menu = self.menuBar().addMenu("&View")
 
         self._menu_view_panels = shortcuts_menu.addMenu("View Panels")
         self._view_panels_actions = {}
@@ -3743,6 +3743,15 @@ class AstroSuiteProMainWindow(
             w.set_image_from_doc(doc.image, doc.metadata)
 
         w.show()
+
+    def _open_multiscale_decomp(self):
+        doc = self._active_doc()
+        if not doc:
+            QMessageBox.information(self, "Multiscale Decomposition", "No active image.")
+            return
+        from pro.multiscale_decomp import MultiscaleDecompDialog
+        dlg = MultiscaleDecompDialog(self, doc)
+        dlg.exec()
 
     def _open_contsub_tool(self):
         from pro.continuum_subtract import ContinuumSubtractTab

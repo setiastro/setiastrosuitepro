@@ -33,6 +33,7 @@ from scipy.interpolate import Rbf
 from .doc_manager import ImageDocument
 from legacy.numba_utils import build_poly_terms, evaluate_polynomial
 from .autostretch import autostretch as hard_autostretch
+from pro.widgets.themed_buttons import themed_toolbtn
 
 # =============================================================================
 #                         Headless ABE Core (poly + RBF)
@@ -592,10 +593,12 @@ class ABEDialog(QDialog):
         Call: opts.addLayout(self._build_toolbar()) in __init__.
         """
         bar = QHBoxLayout()
-        self.btn_zoom_in  = QPushButton("Zoom In")
-        self.btn_zoom_out = QPushButton("Zoom Out")
-        self.btn_fit      = QPushButton("Fit")
-        self.btn_autostr  = QPushButton("Autostretch")
+
+        # QToolButtons with theme icons
+        self.btn_zoom_in  = themed_toolbtn("zoom-in",        "Zoom In")
+        self.btn_zoom_out = themed_toolbtn("zoom-out",       "Zoom Out")
+        self.btn_fit      = themed_toolbtn("zoom-fit-best",  "Fit to Preview")
+        self.btn_autostr  = themed_toolbtn("color-picker",   "Autostretch")  # pick your preferred icon
 
         self.btn_zoom_in.clicked.connect(self.zoom_in)
         self.btn_zoom_out.clicked.connect(self.zoom_out)
@@ -608,7 +611,6 @@ class ABEDialog(QDialog):
         bar.addStretch(1)
         bar.addWidget(self.btn_autostr)
         return bar
-
 
     # ----- data helpers -----
     def _get_source_float(self) -> np.ndarray | None:

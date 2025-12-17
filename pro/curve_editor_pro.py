@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (
     QWidget, QMessageBox, QRadioButton, QButtonGroup, QToolButton, QGraphicsEllipseItem, QGraphicsItem, QGraphicsTextItem, QInputDialog, QMenu
 )
 from PyQt6.QtGui import QPixmap, QImage, QWheelEvent, QPainter, QPainterPath, QPen, QColor, QBrush, QIcon, QKeyEvent, QCursor
+from pro.widgets.themed_buttons import themed_toolbtn
 
 # Import shared utilities
 from pro.widgets.image_utils import float_to_qimage_rgb8 as _float_to_qimage_rgb8
@@ -596,6 +597,10 @@ class CurveEditor(QGraphicsView):
                 self.gray_line = self.scene.addLine(x, 0, x, 360, QPen(Qt.GlobalColor.gray))
             else:
                 self.gray_line.setLine(x, 0, x, 360)
+
+            # 🔑 Make sure it’s visible again after Leave/clearValueLines()
+            self.gray_line.setVisible(True)
+
             # Hide any color lines if present
             for attr in ("r_line", "g_line", "b_line"):
                 if hasattr(self, attr) and getattr(self, attr) is not None:
@@ -1108,12 +1113,18 @@ class CurvesDialogPro(QDialog):
         top.addLayout(left, 0)
 
         # Right column: preview w/ zoom/pan
-        right = QVBoxLayout()
+        right = QVBoxLayout()          
         zoombar = QHBoxLayout()
-        b_out = QPushButton("Zoom Out")
-        b_in  = QPushButton("Zoom In")
-        b_fit = QPushButton("Fit to Preview")
-        zoombar.addWidget(b_out); zoombar.addWidget(b_in); zoombar.addWidget(b_fit)
+        zoombar.addStretch(1)
+
+        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
+        self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
+        self.btn_zoom_fit = themed_toolbtn("zoom-fit-best", "Fit to Preview")
+
+        zoombar.addWidget(self.btn_zoom_out)
+        zoombar.addWidget(self.btn_zoom_in)
+        zoombar.addWidget(self.btn_zoom_fit)
+
         right.addLayout(zoombar)
 
         self.scroll = QScrollArea()
@@ -1159,9 +1170,9 @@ class CurvesDialogPro(QDialog):
         self.btn_preview.toggled.connect(self._toggle_preview)   # ⬅️ new
         self.btn_apply.clicked.connect(self._apply)
         self.btn_reset.clicked.connect(self._reset_curve)
-        b_out.clicked.connect(lambda: self._set_zoom(self._zoom / 1.25))
-        b_in .clicked.connect(lambda: self._set_zoom(self._zoom * 1.25))
-        b_fit.clicked.connect(self._fit)
+        self.btn_zoom_out.clicked.connect(lambda: self._set_zoom(self._zoom / 1.25))
+        self.btn_zoom_in.clicked.connect(lambda: self._set_zoom(self._zoom * 1.25))
+        self.btn_zoom_fit.clicked.connect(self._fit)
 
         # When curve changes, do a quick preview (non-blocking: downsampled in-UI)
         # You can switch to threaded small preview if images are huge.

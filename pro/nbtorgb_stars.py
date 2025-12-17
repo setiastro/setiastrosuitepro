@@ -20,6 +20,7 @@ from PyQt6.QtGui import (
 from legacy.image_manager import load_image as legacy_load_image
 
 from legacy.numba_utils import applySCNR_numba, adjust_saturation_numba
+from pro.widgets.themed_buttons import themed_toolbtn
 
 
 # Optional: your stretch helpers (only used if you’d like to pre-stretch inputs)
@@ -159,11 +160,20 @@ class NBtoRGBStars(QWidget):
         right = QVBoxLayout()
 
         tools = QHBoxLayout()
-        self.btn_zoom_in  = QPushButton("Zoom +"); self.btn_zoom_in.clicked.connect(lambda: self._zoom_at(1.25))
-        self.btn_zoom_out = QPushButton("Zoom −"); self.btn_zoom_out.clicked.connect(lambda: self._zoom_at(0.8))
-        self.btn_fit      = QPushButton("Fit to Preview"); self.btn_fit.clicked.connect(self._fit_to_preview)
-        tools.addWidget(self.btn_zoom_in); tools.addWidget(self.btn_zoom_out); tools.addWidget(self.btn_fit)
+
+        self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
+        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
+        self.btn_fit      = themed_toolbtn("zoom-fit-best", "Fit to Preview")
+
+        self.btn_zoom_in.clicked.connect(lambda: self._zoom_at(1.25))
+        self.btn_zoom_out.clicked.connect(lambda: self._zoom_at(0.8))
+        self.btn_fit.clicked.connect(self._fit_to_preview)
+
+        tools.addWidget(self.btn_zoom_in)
+        tools.addWidget(self.btn_zoom_out)
+        tools.addWidget(self.btn_fit)
         right.addLayout(tools)
+
 
         self.scroll = QScrollArea(self); self.scroll.setWidgetResizable(True)
         self.scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)

@@ -108,6 +108,24 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process
 
 ---
 
+## Dependency Management
+
+This project uses [Poetry](https://python-poetry.org/) for dependency management. The `requirements.txt` file is automatically generated from `pyproject.toml` to maintain backward compatibility with users who prefer `pip`.
+
+**For maintainers/contributors:**
+- Dependencies are defined in `pyproject.toml`
+- After modifying dependencies, regenerate `requirements.txt`:
+  ```powershell
+  poetry run python ops/export_requirements.py
+  ```
+- Or manually: `poetry export -f requirements.txt --without-hashes --without dev -o requirements.txt`
+
+**For users:**
+- Continue using `pip install -r requirements.txt` as usual
+- The `requirements.txt` file is kept up-to-date and ready to use
+
+---
+
 ## Running a Packaged App
 - Packagers like PyInstaller or similar are used to create distributables. See `setiastrosuitepro_mac.spec` and `create_dmg.sh` for packaging examples.
 - When packaged, resources such as `SASP_data.fits` and `astrobin_filters.csv` are expected under the internal resources path. The application code resolves their paths using the `pro.resources` helpers.

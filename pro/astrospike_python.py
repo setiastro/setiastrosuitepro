@@ -18,7 +18,7 @@ from PyQt6.QtGui import (QImage, QPixmap, QPainter, QColor, QPalette, QLinearGra
 # =============================================================================
 # DATA TYPES
 # =============================================================================
-
+from pro.widgets.themed_buttons import themed_toolbtn
 @dataclass
 class Color:
     r: float
@@ -1203,14 +1203,14 @@ class AstroSpikeWindow(QDialog):
         line3.setStyleSheet("background: #444;")
         top_layout.addWidget(line3)
         
-        # Zoom Controls
-        btn_zoom_in = QPushButton("➕")
-        btn_zoom_out = QPushButton("➖")
-        btn_fit = QPushButton("⛶ Fit")
-        
-        top_layout.addWidget(btn_zoom_in)
-        top_layout.addWidget(btn_zoom_out)
-        top_layout.addWidget(btn_fit)
+        # Zoom Controls (standardized)
+        self.btn_zoom_in  = themed_toolbtn("zoom-in",       "Zoom In")
+        self.btn_zoom_out = themed_toolbtn("zoom-out",      "Zoom Out")
+        self.btn_fit      = themed_toolbtn("zoom-fit-best", "Fit to View")
+
+        top_layout.addWidget(self.btn_zoom_in)
+        top_layout.addWidget(self.btn_zoom_out)
+        top_layout.addWidget(self.btn_fit)
         
         top_layout.addStretch()
         
@@ -1235,9 +1235,9 @@ class AstroSpikeWindow(QDialog):
         content_layout.addWidget(self.canvas, stretch=1)
         
         # Connect Zoom
-        btn_zoom_in.clicked.connect(self.canvas.zoom_in)
-        btn_zoom_out.clicked.connect(self.canvas.zoom_out)
-        btn_fit.clicked.connect(self.canvas.fit_to_view)
+        self.btn_zoom_in.clicked.connect(self.canvas.zoom_in)
+        self.btn_zoom_out.clicked.connect(self.canvas.zoom_out)
+        self.btn_fit.clicked.connect(self.canvas.fit_to_view)
         
         # Controls Panel
         self.controls = ControlPanel(self.config)

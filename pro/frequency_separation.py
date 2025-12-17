@@ -27,6 +27,8 @@ from PyQt6.QtGui import (
 
 from .doc_manager import ImageDocument  # add this import
 from legacy.image_manager import load_image as legacy_load_image
+from pro.widgets.themed_buttons import themed_toolbtn
+
 # ---------------------------- Threads ----------------------------
 
 class FrequencySeperationThread(QThread):
@@ -350,7 +352,7 @@ class FrequencySeperationTab(QWidget):
         self.spinnerLabel = QLabel(self); self.spinnerLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
         try:
             # if you have a resource_path util in your project, use it; otherwise show text
-            from utils.resource_path import resource_path  # adjust if your helper lives elsewhere
+            from pro.resources import resource_path  # adjust if your helper lives elsewhere
             mov = QMovie(resource_path("spinner.gif"))
             self.spinnerLabel.setMovie(mov)
             self._spinner = mov
@@ -365,11 +367,22 @@ class FrequencySeperationTab(QWidget):
         # right previews
         right = QVBoxLayout()
         top_row = QHBoxLayout()
-        self.btn_zoom_in = QPushButton("Zoom +", self); self.btn_zoom_in.clicked.connect(lambda: self._zoom_at_pair(1.25))
-        self.btn_zoom_out = QPushButton("Zoom −", self); self.btn_zoom_out.clicked.connect(lambda: self._zoom_at_pair(0.8))
-        self.btn_fit = QPushButton("Fit to Preview", self); self.btn_fit.clicked.connect(self._fit_to_preview)
-        top_row.addWidget(self.btn_zoom_in); top_row.addWidget(self.btn_zoom_out); top_row.addWidget(self.btn_fit)
+        top_row.addStretch(1)
+
+        self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
+        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
+        self.btn_fit      = themed_toolbtn("zoom-fit-best", "Fit to Preview")
+
+        self.btn_zoom_in.clicked.connect(lambda: self._zoom_at_pair(1.25))
+        self.btn_zoom_out.clicked.connect(lambda: self._zoom_at_pair(0.8))
+        self.btn_fit.clicked.connect(self._fit_to_preview)
+
+        top_row.addWidget(self.btn_zoom_in)
+        top_row.addWidget(self.btn_zoom_out)
+        top_row.addWidget(self.btn_fit)
+
         right.addLayout(top_row)
+
 
         # two scroll areas
         self.scrollHF = QScrollArea(self); self.scrollHF.setWidgetResizable(False); self.scrollHF.setAlignment(Qt.AlignmentFlag.AlignCenter)

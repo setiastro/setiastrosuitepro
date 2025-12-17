@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
 # Import centralized widgets
 from pro.widgets.graphics_views import ZoomableGraphicsView
 from pro.widgets.image_utils import extract_mask_resized as _get_active_mask_resized
+from pro.widgets.themed_buttons import themed_toolbtn
 
 
 # ----------------------- Core -----------------------
@@ -43,14 +44,38 @@ def apply_clahe(image: np.ndarray, clip_limit: float = 2.0, tile_grid_size: tupl
 # Note: _get_active_mask_resized imported from pro.widgets.image_utils
 
 def apply_clahe_to_doc(doc, preset: dict | None):
+    """
+    Apply CLAHE to doc.image using a preset.
+
+    Backward compatible:
+      - old presets: {"clip_limit": 2.0, "tile": 8}  # tile count across min dimension
+      - new presets: {"clip_limit": 2.0, "tile_px": 128}  # tile size in pixels
+    """
     if doc is None or getattr(doc, "image", None) is None:
         raise RuntimeError("Document has no image.")
 
     img = np.asarray(doc.image)
-    clip = float((preset or {}).get("clip_limit", 2.0))
-    tile = int((preset or {}).get("tile", 8))
 
-    out = apply_clahe(img, clip_limit=clip, tile_grid_size=(tile, tile))
+    # --- preset decode (supports old + new) ---
+    p = preset or {}
+    clip = float(p.get("clip_limit", 2.0))
+
+    # Resolve tile_grid_size for OpenCV
+    if "tile_px" in p:
+        tile_px = int(p.get("tile_px", 128))
+        h, w = img.shape[:2]
+        s = float(min(h, w))
+        tile_px = max(8, tile_px)
+        n = int(round(s / float(tile_px)))
+        n = max(2, min(n, 128))
+        tile_grid = (n, n)
+    else:
+        # legacy: treat "tile" as OpenCV tileGridSize count (tiles across)
+        tile = int(p.get("tile", 8))
+        tile = max(2, min(tile, 128))
+        tile_grid = (tile, tile)
+
+    out = apply_clahe(img, clip_limit=clip, tile_grid_size=tile_grid)
     out = np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
 
     # Blend with active mask if present
@@ -76,6 +101,7 @@ def apply_clahe_to_doc(doc, preset: dict | None):
                 base = base.squeeze(axis=2)
             out = np.clip(base * (1.0 - m) + out * m, 0.0, 1.0)
 
+    # Commit
     if hasattr(doc, "set_image"):
         doc.set_image(out, step_name="CLAHE")
     elif hasattr(doc, "apply_numpy"):
@@ -110,13 +136,28 @@ class CLAHEDialogPro(QDialog):
         self.s_clip.valueChanged.connect(lambda val: self.lbl_clip.setText(f"{val/10.0:.1f}"))
         self.s_clip.valueChanged.connect(self._debounce_preview)
 
-        self.s_tile = QSlider(Qt.Orientation.Horizontal); self.s_tile.setRange(1, 128); self.s_tile.setValue(8)
-        self.lbl_tile = QLabel("8")
-        self.s_tile.valueChanged.connect(lambda val: self.lbl_tile.setText(str(val)))
+        # tile size slider (pixels) — intuitive control
+        self.s_tile = QSlider(Qt.Orientation.Horizontal)
+        self.s_tile.setRange(8, 512)          # 4 is pointless; you clamp to >=8 anyway
+        self.s_tile.setSingleStep(8)
+        self.s_tile.setPageStep(64)
+        self.s_tile.setValue(128)             # nice default
+        self.s_tile.setToolTip("CLAHE tile size in pixels (larger = coarser, smaller = finer).")
+
+        self.lbl_tile = QLabel("128 px")
+        self.lbl_tile.setToolTip(self.s_tile.toolTip())
+
+        self.s_tile.valueChanged.connect(lambda v: self.lbl_tile.setText(f"{v} px"))
         self.s_tile.valueChanged.connect(self._debounce_preview)
 
+        grid.addWidget(QLabel("Tile Size (px):"), 1, 0)
+        grid.addWidget(self.s_tile, 1, 1)
+        grid.addWidget(self.lbl_tile, 1, 2)
+
+
+
         grid.addWidget(QLabel("Clip Limit:"), 0, 0); grid.addWidget(self.s_clip, 0, 1); grid.addWidget(self.lbl_clip, 0, 2)
-        grid.addWidget(QLabel("Tile Grid Size:"), 1, 0); grid.addWidget(self.s_tile, 1, 1); grid.addWidget(self.lbl_tile, 1, 2)
+
         v.addWidget(grp)
 
         # ---- Preview with zoom/pan ----
@@ -128,12 +169,24 @@ class CLAHEDialogPro(QDialog):
         v.addWidget(self.view, 1)
 
         # ---- Zoom bar ----
+        # ---- Zoom bar (themed) ----
         z = QHBoxLayout()
-        btn_in  = QPushButton("Zoom In");  btn_in.clicked.connect(self.view.zoom_in)
-        btn_out = QPushButton("Zoom Out"); btn_out.clicked.connect(self.view.zoom_out)
-        btn_fit = QPushButton("Fit to Preview"); btn_fit.clicked.connect(lambda: self.view.fit_to_item(self.pix))
-        z.addStretch(1); z.addWidget(btn_in); z.addWidget(btn_out); z.addWidget(btn_fit)
+        z.addStretch(1)
+
+        self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
+        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
+        self.btn_zoom_fit = themed_toolbtn("zoom-fit-best", "Fit to Preview")
+
+        self.btn_zoom_in.clicked.connect(self.view.zoom_in)
+        self.btn_zoom_out.clicked.connect(self.view.zoom_out)
+        self.btn_zoom_fit.clicked.connect(lambda: self.view.fit_to_item(self.pix))
+
+        z.addWidget(self.btn_zoom_in)
+        z.addWidget(self.btn_zoom_out)
+        z.addWidget(self.btn_zoom_fit)
+
         v.addLayout(z)
+
 
         # ---- Buttons (unchanged) ----
         row = QHBoxLayout()
@@ -161,10 +214,18 @@ class CLAHEDialogPro(QDialog):
 
     def _update_preview(self):
         clip = self.s_clip.value() / 10.0
-        tile = self.s_tile.value()
+        tile_px = int(self.s_tile.value())
+
         try:
-            out = apply_clahe(self._disp_base, clip_limit=clip, tile_grid_size=(tile, tile))
-            # Respect active mask, if present (preview works on _disp_base size)
+            tile_grid = self._tile_grid_from_px(tile_px, self._disp_base.shape[:2])
+
+            out = apply_clahe(
+                self._disp_base,
+                clip_limit=float(clip),
+                tile_grid_size=tile_grid
+            )
+
+            # Respect active mask (preview works on _disp_base size)
             H, W = out.shape[:2]
             m = _get_active_mask_resized(self.doc, H, W)
             if m is not None:
@@ -172,20 +233,29 @@ class CLAHEDialogPro(QDialog):
                     M = np.repeat(m[:, :, None], out.shape[2], axis=2).astype(np.float32)
                 else:
                     M = m.astype(np.float32)
-                base = self._disp_base.astype(np.float32)
+
+                base = self._disp_base.astype(np.float32, copy=False)
                 out = np.clip(base * (1.0 - M) + out * M, 0.0, 1.0)
 
             self._set_pix(out)
             self._preview = out
+
         except Exception as e:
             QMessageBox.warning(self, "CLAHE", f"Preview failed:\n{e}")
 
+
     def _apply(self):
         try:
-            clip = self.s_clip.value() / 10.0
-            tile = self.s_tile.value()
+            clip = float(self.s_clip.value() / 10.0)
+            tile_px = int(self.s_tile.value())
 
-            out = apply_clahe(self.orig, clip_limit=clip, tile_grid_size=(tile, tile))
+            tile_grid = self._tile_grid_from_px(tile_px, self.orig.shape[:2])
+
+            out = apply_clahe(
+                self.orig,
+                clip_limit=clip,
+                tile_grid_size=tile_grid
+            )
             out = np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
 
             # Mask-respectful commit
@@ -193,6 +263,7 @@ class CLAHEDialogPro(QDialog):
             m = _get_active_mask_resized(self.doc, H, W)
             if m is not None:
                 base = np.asarray(self.doc.image, dtype=np.float32)
+
                 # Normalize base into [0..1] for blending
                 if base.dtype.kind in "ui":
                     maxv = float(np.iinfo(base.dtype).max)
@@ -207,13 +278,13 @@ class CLAHEDialogPro(QDialog):
                         base = base.repeat(out.shape[2], axis=2)
 
                     M = np.repeat(m[:, :, None], out.shape[2], axis=2).astype(np.float32)
-                    blended = np.clip(base * (1.0 - M) + out * M, 0.0, 1.0)
+                    out = np.clip(base * (1.0 - M) + out * M, 0.0, 1.0)
                 else:
                     if base.ndim == 3 and base.shape[2] == 1:
                         base = base.squeeze(axis=2)
-                    blended = np.clip(base * (1.0 - m) + out * m, 0.0, 1.0)
+                    out = np.clip(base * (1.0 - m) + out * m, 0.0, 1.0)
 
-                out = blended.astype(np.float32, copy=False)
+                out = out.astype(np.float32, copy=False)
 
             # Commit to document
             if hasattr(self.doc, "set_image"):
@@ -229,32 +300,41 @@ class CLAHEDialogPro(QDialog):
                 if main is not None:
                     preset = {
                         "clip_limit": float(clip),
-                        "tile": int(tile),
+                        "tile_px": int(tile_px),   # NEW, intuitive
+                        # (optional debug)
+                        # "tile": int(tile_grid[0]),
                     }
-                    payload = {
-                        "command_id": "clahe",
-                        "preset": dict(preset),
-                    }
+                    payload = {"command_id": "clahe", "preset": dict(preset)}
                     setattr(main, "_last_headless_command", payload)
 
-                    # optional debug log
                     try:
                         if hasattr(main, "_log"):
                             main._log(
                                 f"[Replay] Registered CLAHE as last action "
-                                f"(clip_limit={preset['clip_limit']}, tile={preset['tile']})"
+                                f"(clip_limit={preset['clip_limit']}, tile_px={preset['tile_px']})"
                             )
                     except Exception:
                         pass
             except Exception:
-                # never break apply if replay wiring fails
                 pass
             # ─────────────────────────────────────────────────────────────
 
             self.accept()
+
         except Exception as e:
             QMessageBox.critical(self, "CLAHE", f"Failed to apply:\n{e}")
 
+    def _tile_grid_from_px(self, tile_px: int, hw: tuple[int, int]) -> tuple[int, int]:
+        """
+        Convert desired tile size (pixels) into OpenCV tileGridSize=(n,n)
+        where n is number of tiles across the *min dimension*.
+        """
+        h, w = hw
+        s = float(min(h, w))
+        tile_px = max(8, int(tile_px))
+        n = int(round(s / float(tile_px)))
+        n = max(2, min(n, 128))
+        return (n, n)
 
     def _reset(self):
         self.s_clip.setValue(20); self.s_tile.setValue(8)

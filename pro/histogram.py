@@ -11,6 +11,7 @@ from PyQt6.QtGui import QPixmap, QPainter, QPen, QColor, QFont, QPalette
 
 # Shared utilities
 from pro.widgets.image_utils import to_float01 as _to_float01
+from pro.widgets.themed_buttons import themed_toolbtn
 
 def _to_float_preserve(img):
     if img is None: return None

@@ -1485,10 +1485,7 @@ class _MMFits:
         try:
             hdul, h0, data = _do_open(memmap_flag=True)
         except Exception as e:
-            print(
-                f"[_MMFits] memmap=True failed for {os.path.basename(path)} "
-                f"({type(e).__name__}: {e}); retrying with memmap=False."
-            )
+            #self._log(f"[MMImage] File uses FITS scaling keywords; falling back to non-memmap load for {os.path.basename(path)}.")
             hdul, h0, data = _do_open(memmap_flag=False)
 
         self.hdul = hdul
@@ -3293,10 +3290,7 @@ class _MMImage:
         try:
             hdul, hdu = _do_open(memmap_flag=True)
         except Exception as e:
-            print(
-                f"[MMImage] memmap=True failed for {os.path.basename(path)} "
-                f"({type(e).__name__}: {e}); retrying with memmap=False."
-            )
+            #self._log(f"[MMImage] File uses FITS scaling keywords; falling back to non-memmap load for {os.path.basename(path)}.")
             # Second attempt: memmap=False; if THIS fails, let it propagate.
             hdul, hdu = _do_open(memmap_flag=False)
 
@@ -10541,8 +10535,6 @@ class StackingSuiteDialog(QDialog):
 
         print(f"✅ Override Master Dark applied → {disp}")
 
-
-
     def create_master_flat(self):
         """Creates master flats using per-frame dark subtraction before stacking (GPU-accelerated if available),
         with adaptive reducers, fast per-frame normalization, and memmapped tile reads (each flat opened once per group)."""
@@ -10606,6 +10598,27 @@ class StackingSuiteDialog(QDialog):
         # Output folder
         master_dir = os.path.join(self.stacking_directory, "Master_Calibration_Files")
         os.makedirs(master_dir, exist_ok=True)
+
+        # -------------------------------------------------------------------------
+        # Load Master Bias once (optional) — used when NO flat-dark is available
+        # -------------------------------------------------------------------------
+        master_bias = None
+        bias_path = (getattr(self, "master_files", {}) or {}).get("Bias")
+        if bias_path and os.path.exists(bias_path):
+            try:
+                master_bias, _, _, bias_is_mono = load_image(bias_path)
+                if master_bias is not None:
+                    # ensure 2D for bias (for flats we only use it when the flat group is mono/bayer)
+                    if (not bias_is_mono) and master_bias.ndim == 3 and master_bias.shape[-1] == 3:
+                        # If someone stored a 3ch bias, collapse to first channel (bias should be mono anyway)
+                        master_bias = master_bias[:, :, 0]
+                    if master_bias.ndim == 3 and master_bias.shape[0] in (1, 3):
+                        master_bias = master_bias.transpose(1, 2, 0)[:, :, 0]
+                    master_bias = master_bias.astype(np.float32, copy=False)
+                    self.update_status(f"Using Master Bias (for flats when needed): {os.path.basename(bias_path)}")
+            except Exception as e:
+                self.update_status(f"⚠️ Could not load Master Bias: {e}")
+                master_bias = None
 
         # -------------------------------------------------------------------------
         # Pre-count tiles with per-group safe chunk sizes
@@ -10696,6 +10709,88 @@ class StackingSuiteDialog(QDialog):
             out = np.where(cnt > 0, num / np.maximum(cnt, 1.0), med)
             return out.astype(np.float32, copy=False)
 
+        def _estimate_flat_scales_bayer(
+            file_list: list[str],
+            H: int,
+            W: int,
+            dark_data: np.ndarray | None,
+            pattern: str,
+        ):
+            """
+            Returns scales shape (N,4): [R, G1, G2, B] where scale = frame_plane_median / group_plane_median.
+            """
+            pat = (pattern or "RGGB").strip().upper()
+            if pat not in ("RGGB", "BGGR", "GRBG", "GBRG"):
+                pat = "RGGB"
+
+            # Central patch
+            th = min(512, H); tw = min(512, W)
+            y0 = (H - th) // 2; y1 = y0 + th
+            x0 = (W - tw) // 2; x1 = x0 + tw
+
+            N = len(file_list)
+            meds = np.empty((N, 4), dtype=np.float64)  # R,G1,G2,B
+
+            # parity → plane label
+            if pat == "RGGB":
+                m = {(0,0):"R",  (0,1):"G1", (1,0):"G2", (1,1):"B"}
+            elif pat == "BGGR":
+                m = {(0,0):"B",  (0,1):"G1", (1,0):"G2", (1,1):"R"}
+            elif pat == "GRBG":
+                m = {(0,0):"G1", (0,1):"R",  (1,0):"B",  (1,1):"G2"}
+            else:  # GBRG
+                m = {(0,0):"G1", (0,1):"B",  (1,0):"R",  (1,1):"G2"}
+
+            def _safe_med(a: np.ndarray) -> float:
+                v = a[np.isfinite(a) & (a > 0)]
+                if v.size == 0:
+                    return 1.0
+                d = float(np.median(v))
+                return d if np.isfinite(d) and d > 0 else 1.0
+
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            with ThreadPoolExecutor(max_workers=min(os.cpu_count() or 4, 8)) as exe:
+                fut2i = {exe.submit(load_fits_tile, fp, y0, y1, x0, x1): i for i, fp in enumerate(file_list)}
+                for fut in as_completed(fut2i):
+                    i = fut2i[fut]
+                    sub = fut.result()
+                    if sub is None:
+                        meds[i, :] = 1.0
+                        continue
+
+                    # Ensure 2D mosaic
+                    if sub.ndim == 3 and sub.shape[0] in (1, 3):
+                        sub = sub[0] if sub.shape[0] == 1 else sub.transpose(1, 2, 0)[:, :, 0]
+                    sub = sub.astype(np.float32, copy=False)
+
+                    # Dark subtract patch if present
+                    if dark_data is not None:
+                        dd = dark_data
+                        if dd.ndim == 3 and dd.shape[0] in (1, 3):
+                            dd = dd.transpose(1, 2, 0)[:, :, 0]
+                        d_tile = dd[y0:y1, x0:x1].astype(np.float32, copy=False)
+                        sub = sub - d_tile
+
+                    planes = {
+                        m[(0,0)]: sub[0::2, 0::2],
+                        m[(0,1)]: sub[0::2, 1::2],
+                        m[(1,0)]: sub[1::2, 0::2],
+                        m[(1,1)]: sub[1::2, 1::2],
+                    }
+
+                    r  = _safe_med(planes.get("R",  sub))
+                    g1 = _safe_med(planes.get("G1", sub))
+                    g2 = _safe_med(planes.get("G2", sub))
+                    b  = _safe_med(planes.get("B",  sub))
+                    meds[i, :] = (r, g1, g2, b)
+
+            gmed = np.median(meds, axis=0)
+            gmed = np.where(np.isfinite(gmed) & (gmed > 0), gmed, 1.0)
+
+            scales = meds / gmed  # (N,4)
+            scales = np.clip(scales, 1e-3, 1e3).astype(np.float32)
+            return scales
+
         def _estimate_flat_scales(file_list: list[str], H: int, W: int, C: int, dark_data: np.ndarray | None):
             """
             Read one central patch (min(512, H/W)) from each frame, subtract dark (if present),
@@ -10717,6 +10812,7 @@ class StackingSuiteDialog(QDialog):
                     if sub is None:
                         meds[i] = 1.0
                         continue
+
                     # to HWC f32
                     if sub.ndim == 2:
                         sub = sub[:, :, None]
@@ -10740,6 +10836,44 @@ class StackingSuiteDialog(QDialog):
             scales = meds / gmed
             scales = np.clip(scales, 1e-3, 1e3).astype(np.float32)
             return scales
+
+        def _apply_bayer_scales_stack_inplace(ts_np: np.ndarray, scales4: np.ndarray, pat: str, y0: int, x0: int):
+            """
+            ts_np: (N, th, tw, 1) float32
+            scales4: (N, 4) float32 [R,G1,G2,B] for that group
+            Applies per-frame normalization to the correct CFA plane in this tile, accounting for tile parity.
+            """
+            pat = (pat or "RGGB").strip().upper()
+            if pat not in ("RGGB", "BGGR", "GRBG", "GBRG"):
+                pat = "RGGB"
+
+            # Map parity -> plane index (R,G1,G2,B) index in scales4
+            if pat == "RGGB":
+                p2i = {(0,0):0, (0,1):1, (1,0):2, (1,1):3}
+            elif pat == "BGGR":
+                p2i = {(0,0):3, (0,1):1, (1,0):2, (1,1):0}
+            elif pat == "GRBG":
+                p2i = {(0,0):1, (0,1):0, (1,0):3, (1,1):2}
+            else:  # GBRG
+                p2i = {(0,0):1, (0,1):3, (1,0):0, (1,1):2}
+
+            ry = y0 & 1
+            rx = x0 & 1
+
+            # local even/odd corresponds to global parity depending on tile origin
+            y_sel = {0: (slice(0, None, 2), slice(1, None, 2)),
+                    1: (slice(1, None, 2), slice(0, None, 2))}[ry]
+            x_sel = {0: (slice(0, None, 2), slice(1, None, 2)),
+                    1: (slice(1, None, 2), slice(0, None, 2))}[rx]
+
+            # For each parity block, divide by that plane’s per-frame scale
+            # (broadcast scales to N×1×1)
+            for py in (0, 1):
+                for px in (0, 1):
+                    idx = p2i[(py, px)]
+                    ys = y_sel[py]
+                    xs = x_sel[px]
+                    ts_np[:, ys, xs, 0] /= scales4[:, idx].reshape(-1, 1, 1)
 
         pd = _Progress(self, "Create Master Flats", total_tiles)
         self.update_status(f"Progress initialized: {total_tiles} tiles across groups.")
@@ -10854,6 +10988,14 @@ class StackingSuiteDialog(QDialog):
                 # Load the chosen dark if any
                 if selected_master_dark:
                     dark_data, _, _, _ = load_image(selected_master_dark)
+                    if dark_data is not None:
+                        if dark_data.ndim == 3 and dark_data.shape[-1] == 3:
+                            # keep HWC
+                            dark_data = dark_data.astype(np.float32, copy=False)
+                        elif dark_data.ndim == 3 and dark_data.shape[0] in (1, 3):
+                            dark_data = dark_data.transpose(1, 2, 0).astype(np.float32, copy=False)
+                        else:
+                            dark_data = dark_data.astype(np.float32, copy=False)
                 else:
                     dark_data = None
 
@@ -10887,14 +11029,43 @@ class StackingSuiteDialog(QDialog):
                 N = len(file_list)
 
                 # -----------------------------------------------------------------
+                # Detect Bayer (only meaningful when channels==1)
+                # -----------------------------------------------------------------
+                bayerpat = None
+                try:
+                    hdr0, _ = get_valid_header(file_list[0])
+                    bayerpat = (hdr0.get("BAYERPAT") or hdr0.get("BAYERPATN") or hdr0.get("BAYER") or None)
+                    if bayerpat is not None:
+                        bayerpat = str(bayerpat).strip().upper()
+                except Exception:
+                    bayerpat = None
+                is_bayer_group = (channels == 1) and bool(bayerpat)
+
+                if is_bayer_group:
+                    if bayerpat not in ("RGGB", "BGGR", "GRBG", "GBRG"):
+                        bayerpat = "RGGB"
+                    self.update_status(f"🧩 Bayer flat group detected: {bayerpat}")
+                    QApplication.processEvents()
+
+                # -----------------------------------------------------------------
                 # Reducer selection & per-frame normalization scales
                 # -----------------------------------------------------------------
                 algo_name, params, cpu_label = _select_reducer("flat", N)
                 use_gpu = bool(self._hw_accel_enabled()) and _torch_ok() and _gpu_algo_supported(algo_name)
 
+                # For flat scaling estimation: subtract dark if present, else subtract bias if we have one (mono case)
+                scale_subtractor = dark_data
+                if scale_subtractor is None and is_bayer_group and master_bias is not None:
+                    # only use bias this way for mono/bayer flats
+                    scale_subtractor = master_bias
+
                 self.update_status(f"⚙️ Normalizing {N} flats by per-frame medians (central patch).")
                 QApplication.processEvents()
-                scales = _estimate_flat_scales(file_list, height, width, channels, dark_data)
+
+                if is_bayer_group:
+                    scales = _estimate_flat_scales_bayer(file_list, height, width, scale_subtractor, bayerpat)
+                else:
+                    scales = _estimate_flat_scales(file_list, height, width, channels, dark_data)
 
                 self.update_status(
                     f"⚙️ {'GPU' if use_gpu else 'CPU'} reducer for flats — {algo_name} "
@@ -11004,18 +11175,32 @@ class StackingSuiteDialog(QDialog):
 
                     pd.set_label(f"[{filter_name}] {session} — tile {t_idx}/{total_tiles_group} y:{y0}-{y1} x:{x0}-{x1}")
 
-                    # ---- per-tile dark subtraction (HWC), BEFORE normalization ----
-                    if dark_data is not None:
-                        dsub = dark_data
-                        if dsub.ndim == 3 and dsub.shape[0] in (1, 3):  # CHW → HWC
-                            dsub = dsub.transpose(1, 2, 0)
+                    # ---- per-tile subtractor (HWC), BEFORE normalization ----
+                    # Prefer flat-dark; else for mono/bayer, fall back to master bias to avoid bias imprint in flats.
+                    subtractor = dark_data
+                    if subtractor is None and is_bayer_group and master_bias is not None:
+                        subtractor = master_bias
+
+                    if subtractor is not None:
+                        dsub = subtractor
+                        if isinstance(dsub, np.ndarray):
+                            if dsub.ndim == 3 and dsub.shape[0] in (1, 3):  # CHW → HWC
+                                dsub = dsub.transpose(1, 2, 0)
+                            # If bias/dark is 2D, keep 2D
+                            if dsub.ndim == 3 and dsub.shape[2] == 1:
+                                dsub = dsub[:, :, 0]
                         d_tile = dsub[y0:y1, x0:x1].astype(np.float32, copy=False)
                         if d_tile.ndim == 2 and channels == 3:
                             d_tile = np.repeat(d_tile[..., None], 3, axis=2)
                         _subtract_dark_stack_inplace_hwc(ts_np, d_tile, pedestal=0.0)
 
-                    # ---- fast per-frame normalization (divide by precomputed scale) ----
-                    ts_np /= scales.reshape(N, 1, 1, 1)
+                    # ---- fast per-frame normalization ----
+                    if is_bayer_group:
+                        # scales is (N,4); apply to correct parity pixels in this tile
+                        _apply_bayer_scales_stack_inplace(ts_np, scales, bayerpat, y0, x0)
+                    else:
+                        # scales is (N,)
+                        ts_np /= scales.reshape(N, 1, 1, 1)
 
                     # ---- reduction (GPU or CPU) ----
                     if use_gpu:
@@ -11059,9 +11244,7 @@ class StackingSuiteDialog(QDialog):
                             if tile_result.shape[2] > channels:
                                 tile_result = tile_result[:, :, :channels]
                             else:
-                                tile_result = np.repeat(
-                                    tile_result, channels, axis=2
-                                )[:, :, :channels]
+                                tile_result = np.repeat(tile_result, channels, axis=2)[:, :, :channels]
 
                     final_stacked[y0:y1, x0:x1, :] = tile_result
                     pd.step()
@@ -11077,9 +11260,7 @@ class StackingSuiteDialog(QDialog):
                         pass
 
                 if cancelled_group:
-                    self.update_status(
-                        "⛔ Master Flat creation cancelled; cleaning up temporary files."
-                    )
+                    self.update_status("⛔ Master Flat creation cancelled; cleaning up temporary files.")
                     try:
                         del final_stacked
                     except Exception:
@@ -11099,6 +11280,10 @@ class StackingSuiteDialog(QDialog):
                 except Exception:
                     pass
 
+                # If mono, squeeze to 2D (prevents accidental “(H,W,1)” weirdness later)
+                if channels == 1 and master_flat_data.ndim == 3 and master_flat_data.shape[2] == 1:
+                    master_flat_data = master_flat_data[:, :, 0]
+
                 master_flat_stem = f"MasterFlat_{session}_{int(exposure_time)}s_{image_size}_{filter_name}"
                 master_flat_path = self._build_out(master_dir, master_flat_stem, "fit")
 
@@ -11106,11 +11291,17 @@ class StackingSuiteDialog(QDialog):
                 header["IMAGETYP"] = "FLAT"
                 header["EXPTIME"] = (exposure_time, "grouped exposure")
                 header["FILTER"] = filter_name
-                header["NAXIS"] = 3 if channels == 3 else 2
-                header["NAXIS1"] = master_flat_data.shape[1]
-                header["NAXIS2"] = master_flat_data.shape[0]
                 if channels == 3:
+                    header["NAXIS"] = 3
+                    header["NAXIS1"] = master_flat_data.shape[1]
+                    header["NAXIS2"] = master_flat_data.shape[0]
                     header["NAXIS3"] = 3
+                else:
+                    header["NAXIS"] = 2
+                    header["NAXIS1"] = master_flat_data.shape[1]
+                    header["NAXIS2"] = master_flat_data.shape[0]
+                    if is_bayer_group and bayerpat:
+                        header["BAYERPAT"] = bayerpat
 
                 save_image(
                     master_flat_data,
@@ -11832,28 +12023,60 @@ class StackingSuiteDialog(QDialog):
                     if master_flat_path:
                         flat_data, _, _, flat_is_mono = load_image(master_flat_path)
                         if flat_data is not None:
-                            if not flat_is_mono and flat_data.ndim == 3 and flat_data.shape[-1] == 3:
+
+                            # Make flat layout match your working light layout:
+                            # - color: CHW
+                            # - mono/bayer: HW
+                            if (not flat_is_mono) and flat_data.ndim == 3 and flat_data.shape[-1] == 3:
                                 flat_data = flat_data.transpose(2, 0, 1)  # HWC -> CHW
 
-                            # Ensure float32 and normalize flat to mean 1.0 to preserve flux scaling
-                            flat_data = flat_data.astype(np.float32, copy=False)
-                            # Avoid zero/NaN in flats
-                            flat_data = np.nan_to_num(flat_data, nan=1.0, posinf=1.0, neginf=1.0)
-                            if flat_data.ndim == 2:
-                                denom = np.median(flat_data[flat_data > 0])
-                                if not np.isfinite(denom) or denom <= 0: denom = 1.0
-                                flat_data /= denom
-                            else:  # CHW: normalize per-channel
-                                for c in range(flat_data.shape[0]):
-                                    band = flat_data[c]
-                                    denom = np.median(band[band > 0])
-                                    if not np.isfinite(denom) or denom <= 0: denom = 1.0
-                                    flat_data[c] = band / denom
+                            # If it's a "mono" flat but came in with a singleton channel, squeeze it
+                            if flat_is_mono and flat_data.ndim == 3:
+                                if flat_data.shape[-1] == 1:
+                                    flat_data = flat_data[:, :, 0]
+                                elif flat_data.shape[0] == 1:
+                                    flat_data = flat_data[0]
 
-                            # Safety: forbid exact zeros in denominator
+                            flat_data = flat_data.astype(np.float32, copy=False)
+                            flat_data = np.nan_to_num(flat_data, nan=1.0, posinf=1.0, neginf=1.0)
                             flat_data[flat_data == 0] = 1.0
 
-                            light_data = apply_flat_division_numba(light_data, flat_data)
+                            bayerpat = str(hdr.get("BAYERPAT") or "").strip().upper()
+                            is_bayer_mosaic = (
+                                (light_data.ndim == 2) and
+                                (flat_data.ndim == 2) and
+                                (bayerpat in ("RGGB", "BGGR", "GRBG", "GBRG"))
+                            )
+
+                            if is_bayer_mosaic:
+                                # ✅ Bayer-aware division (this replaces normalize_flat_cfa_inplace + generic division)
+                                # Requires the helper I gave you: apply_flat_division_bayer(image2d, flat2d, bayerpat)
+                                light_data = apply_flat_division_bayer(light_data, flat_data, bayerpat)
+
+                            else:
+                                # Non-bayer path (mono 2D or CHW color): normalize flat to median=1 then divide
+
+                                if flat_data.ndim == 2:
+                                    v = flat_data[np.isfinite(flat_data) & (flat_data > 0)]
+                                    denom = float(np.median(v)) if v.size else 1.0
+                                    if not np.isfinite(denom) or denom <= 0:
+                                        denom = 1.0
+                                    flat_data /= denom
+                                    flat_data[flat_data == 0] = 1.0
+
+                                else:
+                                    # CHW
+                                    for c in range(flat_data.shape[0]):
+                                        band = flat_data[c]
+                                        v = band[np.isfinite(band) & (band > 0)]
+                                        denom = float(np.median(v)) if v.size else 1.0
+                                        if not np.isfinite(denom) or denom <= 0:
+                                            denom = 1.0
+                                        flat_data[c] = band / denom
+                                    flat_data[flat_data == 0] = 1.0
+
+                                light_data = apply_flat_division_numba(light_data, flat_data)
+
                             self.update_status(f"Flat Applied: {os.path.basename(master_flat_path)}")
                             QApplication.processEvents()
 

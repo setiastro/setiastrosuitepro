@@ -112,6 +112,7 @@ from legacy.numba_utils import (
     invert_image_numba,
 )
 from pro.abe import _generate_sample_points as abe_generate_sample_points
+from pro.widgets.themed_buttons import themed_toolbtn
 
 # ---------------------------------------------------------------------
 # Small helpers to work with the *active view/document* (no slots)
@@ -3964,16 +3965,16 @@ class MosaicPreviewWindow(QDialog):
         # 4) Button row (Zoom, Fit, etc.)
         button_layout = QHBoxLayout()
 
-        self.zoom_in_button = QPushButton("Zoom In")
+        self.zoom_out_button = themed_toolbtn("zoom-out", "Zoom Out")
+        self.zoom_in_button  = themed_toolbtn("zoom-in", "Zoom In")
+        self.fit_button      = themed_toolbtn("zoom-fit-best", "Fit to Preview")
+
         self.zoom_in_button.clicked.connect(self.zoom_in)
-        button_layout.addWidget(self.zoom_in_button)
-
-        self.zoom_out_button = QPushButton("Zoom Out")
         self.zoom_out_button.clicked.connect(self.zoom_out)
-        button_layout.addWidget(self.zoom_out_button)
-
-        self.fit_button = QPushButton("Fit to Preview")
         self.fit_button.clicked.connect(self.fit_to_preview)
+
+        button_layout.addWidget(self.zoom_out_button)
+        button_layout.addWidget(self.zoom_in_button)
         button_layout.addWidget(self.fit_button)
 
         self.autostretch_button = QPushButton("Reapply Stretch")
