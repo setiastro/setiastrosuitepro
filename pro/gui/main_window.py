@@ -3749,9 +3749,17 @@ class AstroSuiteProMainWindow(
         if not doc:
             QMessageBox.information(self, "Multiscale Decomposition", "No active image.")
             return
+
         from pro.multiscale_decomp import MultiscaleDecompDialog
         dlg = MultiscaleDecompDialog(self, doc)
-        dlg.exec()
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        dlg.setWindowTitle("Multiscale Decomposition")
+        try:
+            dlg.setWindowIcon(QIcon(multiscale_decomp_path))
+        except Exception:
+            pass
+
+        dlg.show()  
 
     def _open_contsub_tool(self):
         from pro.continuum_subtract import ContinuumSubtractTab
