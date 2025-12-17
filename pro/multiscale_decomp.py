@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
     QGraphicsScene, QGraphicsPixmapItem, QMessageBox, QToolButton
 )
 
+
 class _ZoomPanView(QGraphicsView):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -94,8 +95,28 @@ def soft_threshold(x: np.ndarray, t: float):
     a = np.abs(x)
     return np.sign(x) * np.maximum(0.0, a - t)
 
-def apply_layer_ops(w: np.ndarray, bias_gain: float, thr: float, amount: float):
+def apply_layer_ops(
+    w: np.ndarray,
+    bias_gain: float,
+    thr: float,
+    amount: float,
+    denoise_strength: float = 0.0,
+    sigma: float | np.ndarray | None = None,
+):
     w2 = w
+
+    # 1) Noise reduction step (MMT-style NR)
+    if denoise_strength > 0.0:
+        if sigma is None:
+            sigma = float(np.std(w2))
+        # 3σ at denoise=1, scaled linearly
+        t_dn = max(0.0, denoise_strength * 3.0 * float(sigma))
+        if t_dn > 0.0:
+            w_dn = soft_threshold(w2, t_dn)
+            # Blend original vs denoised based on denoise_strength
+            w2 = (1.0 - denoise_strength) * w2 + denoise_strength * w_dn
+
+    # 2) Existing threshold + bias shaping (can act as detail shaping / extra NR)
     if thr > 0:
         wt = soft_threshold(w2, thr)
         w2 = (1.0 - amount) * w2 + amount * wt
@@ -107,12 +128,15 @@ def apply_layer_ops(w: np.ndarray, bias_gain: float, thr: float, amount: float):
 # Layer config
 # ─────────────────────────────────────────────
 
+
 @dataclass
 class LayerCfg:
     enabled: bool = True
     bias_gain: float = 1.0        # 1.0 = unchanged
     thr: float = 0.0              # soft threshold in detail domain
     amount: float = 0.0           # 0..1 blend toward thresholded
+    denoise: float = 0.0          # 0..1 additional noise reduction
+
 
 # ─────────────────────────────────────────────
 # Dialog
@@ -128,7 +152,7 @@ class MultiscaleDecompDialog(QDialog):
         self.setWindowTitle("Multiscale Decomposition")
         self.setMinimumSize(1050, 700)
         self.residual_enabled = True
-
+        self._layer_noise = None  # list[float] per detail layer
 
         self._doc = doc
         base = getattr(doc, "image", None)
@@ -255,8 +279,10 @@ class MultiscaleDecompDialog(QDialog):
         # Layers table
         gb_layers = QGroupBox("Layers")
         v = QVBoxLayout(gb_layers)
-        self.table = QTableWidget(0, 7)
-        self.table.setHorizontalHeaderLabels(["On", "Layer", "Scale", "Gain", "Thr", "Amt", "Type"])
+        self.table = QTableWidget(0, 8)
+        self.table.setHorizontalHeaderLabels(
+            ["On", "Layer", "Scale", "Gain", "Thr", "Amt", "NR", "Type"]
+        )
 
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(self.table.SelectionBehavior.SelectRows)
@@ -283,11 +309,16 @@ class MultiscaleDecompDialog(QDialog):
         self.spin_amt.setRange(0.0, 1.0)
         self.spin_amt.setSingleStep(0.05)
 
+        self.spin_denoise = QDoubleSpinBox()
+        self.spin_denoise.setRange(0.0, 1.0)
+        self.spin_denoise.setSingleStep(0.05)
+        self.spin_denoise.setValue(0.0)
+
         ef.addRow(self.lbl_sel)
         ef.addRow("Gain:", self.spin_gain)
         ef.addRow("Threshold:", self.spin_thr)
         ef.addRow("Amount:", self.spin_amt)
-
+        ef.addRow("Denoise:", self.spin_denoise)
         right.addWidget(gb_edit)
 
         # Buttons
@@ -312,6 +343,7 @@ class MultiscaleDecompDialog(QDialog):
         self.spin_gain.valueChanged.connect(self._on_layer_editor_changed)
         self.spin_thr.valueChanged.connect(self._on_layer_editor_changed)
         self.spin_amt.valueChanged.connect(self._on_layer_editor_changed)
+        self.spin_denoise.valueChanged.connect(self._on_layer_editor_changed)
 
         self.btn_apply.clicked.connect(self._commit_to_doc)
         self.btn_close.clicked.connect(self.reject)
@@ -335,6 +367,13 @@ class MultiscaleDecompDialog(QDialog):
             self._image, layers=self.layers, base_sigma=self.base_sigma
         )
         self._cached_key = key
+
+        self._layer_noise = []
+        for w in self._cached_layers:
+            sigma = float(np.std(w)) if w.size else 0.0
+            if sigma <= 0.0:
+                sigma = 1e-6
+            self._layer_noise.append(sigma)
 
         # ensure cfg list matches layer count
         if len(self.cfgs) != self.layers:
@@ -360,26 +399,62 @@ class MultiscaleDecompDialog(QDialog):
             if not cfg.enabled:
                 tuned.append(np.zeros_like(w))
             else:
-                tuned.append(apply_layer_ops(w, cfg.bias_gain, cfg.thr, cfg.amount))
+                sigma = None
+                if self._layer_noise is not None and i < len(self._layer_noise):
+                    sigma = self._layer_noise[i]
+                tuned.append(
+                    apply_layer_ops(
+                        w,
+                        cfg.bias_gain,
+                        cfg.thr,
+                        cfg.amount,
+                        cfg.denoise,
+                        sigma,
+                    )
+                )
 
+        # reconstruction (keep raw version for visualization)
         res = residual if self.residual_enabled else np.zeros_like(residual)
-        out = multiscale_reconstruct(tuned, res)
-        out = np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
+        out_raw = multiscale_reconstruct(tuned, res)
+        out = np.clip(out_raw, 0.0, 1.0).astype(np.float32, copy=False)
 
         # layer preview mode
         sel = self.combo_preview.currentData()
         if sel is None or sel == "final":
-            self._preview_img = out
+            if not self.residual_enabled:
+                # Detail-only visualization: center around mid-gray, scale by sigma
+                d = out_raw.astype(np.float32, copy=False)
+
+                if d.ndim == 3:
+                    med = np.median(d, axis=(0, 1), keepdims=True)
+                else:
+                    med = np.median(d)
+                d0 = d - med
+
+                sigma = float(np.std(d0))
+                if sigma <= 1e-8:
+                    vis = np.full_like(d0, 0.5, dtype=np.float32)
+                else:
+                    # map roughly ±3σ → [0,1]
+                    vis = 0.5 + d0 / (6.0 * sigma)
+
+                self._preview_img = np.clip(vis, 0.0, 1.0).astype(np.float32, copy=False)
+            else:
+                # Normal final image with residual
+                self._preview_img = out
+
         elif sel == "residual":
             self._preview_img = np.clip(residual, 0, 1)
+
         else:
             # sel is int index of detail layer
             w = tuned[int(sel)]
             # visualize detail layer: map around 0.5
             vis = np.clip(0.5 + (w * 4.0), 0.0, 1.0)  # gain for visibility
-            self._preview_img = vis
+            self._preview_img = vis.astype(np.float32, copy=False)
 
         self._refresh_pix()
+
 
     def _np_to_qpix(self, img: np.ndarray) -> QPixmap:
         arr = np.ascontiguousarray(np.clip(img * 255.0, 0, 255).astype(np.uint8))
@@ -423,7 +498,8 @@ class MultiscaleDecompDialog(QDialog):
                 self.table.setItem(i, 3, QTableWidgetItem(f"{cfg.bias_gain:.2f}"))
                 self.table.setItem(i, 4, QTableWidgetItem(f"{cfg.thr:.4f}"))
                 self.table.setItem(i, 5, QTableWidgetItem(f"{cfg.amount:.2f}"))
-                self.table.setItem(i, 6, QTableWidgetItem("D"))
+                self.table.setItem(i, 6, QTableWidgetItem(f"{cfg.denoise:.2f}"))
+                self.table.setItem(i, 7, QTableWidgetItem("D"))
 
             # residual row
             r = self.layers
@@ -439,7 +515,8 @@ class MultiscaleDecompDialog(QDialog):
             self.table.setItem(r, 3, QTableWidgetItem("1.00"))
             self.table.setItem(r, 4, QTableWidgetItem("0.0000"))
             self.table.setItem(r, 5, QTableWidgetItem("0.00"))
-            self.table.setItem(r, 6, QTableWidgetItem("R"))
+            self.table.setItem(r, 6, QTableWidgetItem("0.00"))
+            self.table.setItem(r, 7, QTableWidgetItem("R"))
 
         finally:
             self.table.blockSignals(False)
@@ -486,11 +563,11 @@ class MultiscaleDecompDialog(QDialog):
 
         if idx == self.layers:
             self.lbl_sel.setText("Layer: R (Residual)")
-            for w in (self.spin_gain, self.spin_thr, self.spin_amt):
+            for w in (self.spin_gain, self.spin_thr, self.spin_amt, self.spin_denoise):
                 w.setEnabled(False)
             return
 
-        for w in (self.spin_gain, self.spin_thr, self.spin_amt):
+        for w in (self.spin_gain, self.spin_thr, self.spin_amt, self.spin_denoise):
             w.setEnabled(True)
 
         cfg = self.cfgs[idx]
@@ -498,14 +575,18 @@ class MultiscaleDecompDialog(QDialog):
         self.spin_gain.blockSignals(True)
         self.spin_thr.blockSignals(True)
         self.spin_amt.blockSignals(True)
+        self.spin_denoise.blockSignals(True)
         try:
             self.spin_gain.setValue(cfg.bias_gain)
             self.spin_thr.setValue(cfg.thr)
             self.spin_amt.setValue(cfg.amount)
+            self.spin_denoise.setValue(cfg.denoise)
         finally:
             self.spin_gain.blockSignals(False)
             self.spin_thr.blockSignals(False)
             self.spin_amt.blockSignals(False)
+            self.spin_denoise.blockSignals(False)
+
 
     def _on_layer_editor_changed(self):
         idx = getattr(self, "_selected_layer", None)
@@ -515,6 +596,7 @@ class MultiscaleDecompDialog(QDialog):
         cfg.bias_gain = float(self.spin_gain.value())
         cfg.thr = float(self.spin_thr.value())
         cfg.amount = float(self.spin_amt.value())
+        cfg.denoise = float(self.spin_denoise.value())
 
         # keep table in sync
         self.table.blockSignals(True)
@@ -522,6 +604,7 @@ class MultiscaleDecompDialog(QDialog):
             self.table.item(idx, 3).setText(f"{cfg.bias_gain:.2f}")
             self.table.item(idx, 4).setText(f"{cfg.thr:.4f}")
             self.table.item(idx, 5).setText(f"{cfg.amount:.2f}")
+            self.table.item(idx, 6).setText(f"{cfg.denoise:.2f}")
         finally:
             self.table.blockSignals(False)
 
@@ -561,7 +644,19 @@ class MultiscaleDecompDialog(QDialog):
             if not cfg.enabled:
                 tuned.append(np.zeros_like(w))
             else:
-                tuned.append(apply_layer_ops(w, cfg.bias_gain, cfg.thr, cfg.amount))
+                sigma = None
+                if self._layer_noise is not None and i < len(self._layer_noise):
+                    sigma = self._layer_noise[i]
+                tuned.append(
+                    apply_layer_ops(
+                        w,
+                        cfg.bias_gain,
+                        cfg.thr,
+                        cfg.amount,
+                        cfg.denoise,
+                        sigma,
+                    )
+                )
 
         res = residual if self.residual_enabled else np.zeros_like(residual)
         out = multiscale_reconstruct(tuned, res)
@@ -635,8 +730,9 @@ class _MultiScaleDecompPresetDialog(QDialog):
         gb_layers = QGroupBox("Per-Layer Settings")
         lv = QVBoxLayout(gb_layers)
 
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["On", "Layer", "Gain", "Threshold", "Amount"])
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(["On", "Layer", "Gain", "Threshold", "Amount", "Denoise"])
+
         self.table.verticalHeader().setVisible(False)
         lv.addWidget(self.table)
 
@@ -678,6 +774,8 @@ class _MultiScaleDecompPresetDialog(QDialog):
             self.table.setItem(i, 2, QTableWidgetItem(f"{float(cfg.get('gain', 1.0)):.2f}"))
             self.table.setItem(i, 3, QTableWidgetItem(f"{float(cfg.get('thr', 0.0)):.4f}"))
             self.table.setItem(i, 4, QTableWidgetItem(f"{float(cfg.get('amount', 0.0)):.2f}"))
+            self.table.setItem(i, 5, QTableWidgetItem(f"{float(cfg.get('denoise', 0.0)):.2f}"))
+
 
     def result_dict(self) -> dict:
         layers = int(self.sp_layers.value())
@@ -688,13 +786,19 @@ class _MultiScaleDecompPresetDialog(QDialog):
             gain = float(self.table.item(r, 2).text())
             thr = float(self.table.item(r, 3).text())
             amt = float(self.table.item(r, 4).text())
+            try:
+                dn = float(self.table.item(r, 5).text())
+            except Exception:
+                dn = 0.0
 
             out_layers.append({
                 "enabled": enabled,
                 "gain": gain,
                 "thr": thr,
                 "amount": amt,
+                "denoise": dn,
             })
+
 
         return {
             "layers": layers,
