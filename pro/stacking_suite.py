@@ -2728,33 +2728,117 @@ def _median_fast_sample(img: np.ndarray, stride: int = 8) -> float:
     return float(np.median(v - vmin)) if v.size else 0.0
 
 
-def _compute_scale(ref_target_median: float, preview_median: float, img: np.ndarray,
-                   refine_stride: int = 8, refine_if_rel_err: float = 0.10) -> float:
+def _compute_scale(ref_target_median: float,
+                   preview_median: float,
+                   img: np.ndarray,
+                   refine_stride: int = 8,
+                   refine_if_rel_err: float = 0.10,
+                   return_offset: bool = False):
     """
     Start from preview-based scale, optionally refine once on a tiny decimated sample.
+
+    If return_offset is False (default), behaves like before and returns just the scale.
+
+    If return_offset is True, returns (scale, offset) where:
+        img_out = (img + offset) * scale
+
+    The (scale, offset) pair is chosen so that:
+        - median ≈ ref_target_median
+        - extreme values are tamed into a reasonable range (≈ [-0.5, 2])
+          without clipping: pure linear transform.
     """
     eps = 1e-6
+
+    # --- 1) Original behavior: preview-based scale with optional refinement ---
     s0 = ref_target_median / max(preview_median, eps)  # first guess (from preview)
-    # quick refinement only if we're likely off by >10%
+
     m_post = _median_fast_sample(img, stride=refine_stride)
     if m_post > eps:
         s1 = ref_target_median / m_post
         # if preview and refined differ a lot, trust refined; otherwise keep s0 (avoids jitter)
         if abs(s1 - s0) / max(s0, eps) >= refine_if_rel_err:
-            return float(s1)
-    return float(s0)
+            s = float(s1)
+        else:
+            s = float(s0)
+    else:
+        s = float(s0)
+
+    if not return_offset:
+        # Backwards-compatible path: just return the scale
+        return s
+
+    # --- 2) Range-aware tweak: compute offset + possible rescale ---
+    # We want a gentle "standardized" range AFTER applying s:
+    #   min' ≳ -0.5, max' ≲ 2.0
+    # but ONLY by linear offset+scale, no clipping.
+    try:
+        img_min = float(np.nanmin(img))
+        img_max = float(np.nanmax(img))
+    except Exception:
+        # If something goes weird, just fall back to scale-only
+        return s, 0.0
+
+    # First compute what the extremes would be after basic scaling
+    scaled_min = img_min * s
+    scaled_max = img_max * s
+
+    offset = 0.0
+
+    # --- Step A: if max is too big, compress range so max ≈ 2.0 ---
+    MAX_TARGET = 2.0
+    MIN_TARGET = -0.5
+
+    if scaled_max > MAX_TARGET:
+        k = MAX_TARGET / max(scaled_max, eps)
+        s *= k
+        scaled_min *= k
+        scaled_max = MAX_TARGET  # by construction
+
+    # --- Step B: if min is too negative, add a pedestal so min ≈ -0.5 ---
+    if scaled_min < MIN_TARGET:
+        # We want: scaled_min + offset = MIN_TARGET  → offset = MIN_TARGET - scaled_min
+        offset = MIN_TARGET - scaled_min
+        scaled_max = scaled_max + offset  # track it in case you want to reason about it
+
+        # Optional: if the pedestal pushed max slightly over MAX_TARGET, 
+        # we can re-compress again. Usually won’t be huge, but this keeps it bounded.
+        if scaled_max > MAX_TARGET:
+            k2 = MAX_TARGET / max(scaled_max, eps)
+            s *= k2
+            offset *= k2
+            # scaled_min would now be ~= MIN_TARGET * k2, but that’s okay;
+            # we care more about taming extremes than hitting exact numbers.
+
+    return float(s), float(offset)
 
 
-def _apply_scale_inplace(img: np.ndarray, s: float) -> np.ndarray:
+
+def _apply_scale_inplace(img: np.ndarray, scale: float, offset: float = 0.0) -> np.ndarray:
     """
-    Scale in-place when safe (saves alloc), else returns a new float32 array.
+    Apply a simple linear transform in-place when safe:
+
+        img_out = (img + offset) * scale
+
+    Keeps everything in float32 for consistency with stacking.
     """
     # ensure float32 for consistent stack later; try in-place if possible
     if img.dtype != np.float32:
         img = img.astype(np.float32, copy=False)
-    # numpy multiply is already vectorized/SIMD
-    img *= np.float32(s)
+
+    scale32 = np.float32(scale)
+    offset32 = np.float32(offset)
+
+    # Fast paths / no-ops
+    if offset32 == 0.0 and scale32 == 1.0:
+        return img
+
+    if offset32 != 0.0:
+        img += offset32
+    if scale32 != 1.0:
+        img *= scale32
+
     return img
+
 
 def _fits_first_image_hdu(hdul):
     """
@@ -3770,6 +3854,40 @@ def _enrich_header_from_exif(header: fits.Header, file_path: str) -> fits.Header
         header.setdefault("CAMERA", camera_str)    # custom keyword
 
     return header
+
+def _bias_to_match_light(light_data, master_bias):
+    """
+    light_data is either:
+      - mono: (H,W)
+      - color: (3,H,W)  [your working layout]
+    master_bias can be (H,W), (H,W,3), (3,H,W), or (1,H,W).
+    Returns an array broadcastable to light_data for safe subtraction.
+    """
+    b = master_bias
+
+    # If light is mono, bias should be 2D
+    if light_data.ndim == 2:
+        if b.ndim == 3:
+            # (H,W,1) or (1,H,W) -> squeeze to (H,W)
+            if b.shape[-1] == 1:
+                b = b[:, :, 0]
+            elif b.shape[0] == 1:
+                b = b[0]
+        return b  # (H,W)
+
+    # Light is color CHW (3,H,W)
+    if b.ndim == 2:
+        return b[None, :, :]          # (1,H,W) -> broadcasts to (3,H,W)
+    if b.ndim == 3:
+        if b.shape[0] == 3:
+            return b                  # already CHW
+        if b.shape[-1] == 3:
+            return b.transpose(2,0,1) # HWC -> CHW
+        if b.shape[0] == 1:
+            return b                  # (1,H,W) broadcasts to (3,H,W)
+        if b.shape[-1] == 1:
+            return b[:, :, 0][None, :, :]  # (H,W,1) -> (1,H,W)
+    return b
 
 
 class StackingSuiteDialog(QDialog):
@@ -11996,10 +12114,15 @@ class StackingSuiteDialog(QDialog):
 
                     # ---------- APPLY BIAS (optional) ----------
                     if master_bias is not None:
-                        if is_mono:
-                            light_data -= master_bias
-                        else:
-                            light_data -= master_bias[np.newaxis, :, :]
+                        b = _bias_to_match_light(light_data, master_bias)
+
+                        # (Optional but recommended) ensure float for subtraction safety
+                        if light_data.dtype != np.float32:
+                            light_data = light_data.astype(np.float32, copy=False)
+                        if isinstance(b, np.ndarray) and b.dtype != np.float32:
+                            b = b.astype(np.float32, copy=False)
+
+                        light_data -= b
                         self.update_status("Bias Subtracted")
                         QApplication.processEvents()
 
@@ -13120,10 +13243,13 @@ class StackingSuiteDialog(QDialog):
             for it in self.reg_tree.selectedItems():
                 top = it if it.parent() is None else it.parent()
                 selected_groups.add(top.text(0))
-            if self.split_dualband_cb.isChecked():
-                self.update_status("🌈 Splitting dual-band OSC frames into Ha / SII / OIII...")
-                self._split_dual_band_osc(selected_groups=selected_groups)
-                self._refresh_reg_tree_from_light_files()
+
+            # Remember which groups user had selected – used for drizzle seeding
+            self._reg_selected_groups = set(selected_groups)
+            #if self.split_dualband_cb.isChecked():
+            #    self.update_status("🌈 Splitting dual-band OSC frames into Ha / SII / OIII...")
+            #    self._split_dual_band_osc(selected_groups=selected_groups)
+            #    self._refresh_reg_tree_from_light_files()
 
             self._maybe_warn_cfa_low_frames()
 
@@ -13768,9 +13894,15 @@ class StackingSuiteDialog(QDialog):
 
                             # 3) Brightness normalization / scale refine
                             pm = float(preview_medians.get(fp, 0.0))
-                            s = _compute_scale(ref_target_median, pm if pm > 0 else 1.0,
-                                            img, refine_stride=8, refine_if_rel_err=0.10)
-                            img = _apply_scale_inplace(img, s)
+                            s, offset = _compute_scale(
+                                ref_target_median,
+                                pm if pm > 0 else 1.0,
+                                img,
+                                refine_stride=8,
+                                refine_if_rel_err=0.10,
+                                return_offset=True,
+                            )
+                            img = _apply_scale_inplace(img, s, offset=offset)
 
                             # 🔒 4) Enforce canonical geometry BEFORE ABE / writing
                             if hasattr(self, "_norm_target_hw") and self._norm_target_hw:
@@ -14269,6 +14401,221 @@ class StackingSuiteDialog(QDialog):
             hist[iy, ix] += 1
         return float(np.count_nonzero(hist)) / float(hist.size)
 
+    def _split_dual_band_after_align(
+        self,
+        aligned_light_files: dict[str, list[str]]
+    ) -> dict[str, list[str]]:
+        """
+        Take aligned OSC frames and produce per-band aligned mono FITS.
+
+        Uses the same classifier and grouping behavior as _split_dual_band_osc,
+        but operates on the *aligned* frames.
+
+        Returns a new light_files-style dict:
+            { "Ha - ...":   [aligned_Ha_*.fit...],
+            "SII - ...":  [...],
+            "OIII - ...": [...],
+            "Hb - ...":   [...] }
+        """
+        import os
+        import numpy as np
+        from astropy.io import fits
+
+        out_dir = os.path.join(self.stacking_directory, "DualBand_Split")
+        os.makedirs(out_dir, exist_ok=True)
+
+        # Collect per-band file lists (some may already be mono NB)
+        ha_files, sii_files, oiii_files, hb_files = [], [], [], []
+        inherit_map: dict[str, set[str]] = {}   # new_group_key -> set(parent_group)
+        parent_of: dict[str, str] = {}          # new_path_or_existing -> parent_group
+
+        # Snapshot old drizzle configs so we can inherit to the new NB groups
+        old_drizzle = dict(getattr(self, "per_group_drizzle", {}))
+        selected_groups = set(getattr(self, "_reg_selected_groups", set()))
+
+        # --- Pass 1: classify + split each aligned frame ---
+        for group, files in aligned_light_files.items():
+            for fp in files:
+                try:
+                    with fits.open(fp, memmap=False) as hdul:
+                        data = hdul[0].data
+                        hdr  = hdul[0].header
+                except Exception as e:
+                    self.update_status(
+                        f"⚠️ Cannot load aligned frame {os.path.basename(fp)} for dual-band split: {e}"
+                    )
+                    continue
+
+                if data is None:
+                    continue
+
+                arr = np.asarray(data)
+                filt = self._get_filter_name(fp)
+                cls  = self._classify_filter(filt)
+
+                # ----------------------------------------
+                # Detect layout: mono vs RGB, CHW vs HWC
+                # ----------------------------------------
+                layout = None
+
+                if arr.ndim == 2:
+                    layout = "MONO"
+                elif arr.ndim == 3:
+                    c0, c1, c2 = arr.shape
+                    # channels-first (C, H, W)
+                    if c0 in (1, 3) and c1 > 8 and c2 > 8:
+                        layout = "CHW"
+                    # channels-last (H, W, C)
+                    elif c2 in (1, 3) and c0 > 8 and c1 > 8:
+                        layout = "HWC"
+                    else:
+                        layout = "UNKNOWN"
+                else:
+                    layout = "UNKNOWN"
+
+                # ---- MONO narrowband frames (Ha/SII/OIII/Hb) ----
+                if layout == "MONO" or (layout == "CHW" and arr.shape[0] == 1) or (layout == "HWC" and arr.shape[-1] == 1):
+                    # Treat as mono NB based on classifier
+                    if cls == "MONO_HA":
+                        ha_files.append(fp);   parent_of[fp] = group
+                    elif cls == "MONO_SII":
+                        sii_files.append(fp);  parent_of[fp] = group
+                    elif cls == "MONO_OIII":
+                        oiii_files.append(fp); parent_of[fp] = group
+                    elif cls == "MONO_HB":
+                        hb_files.append(fp);   parent_of[fp] = group
+                    # UNKNOWN mono: ignore for NB split
+                    continue
+
+                # ---- RGB / OSC case (what we expect for dual-band) ----
+                if layout not in ("CHW", "HWC"):
+                    self.update_status(
+                        f"ℹ️ Skipping non-RGB frame in dual-band split: "
+                        f"{os.path.basename(fp)} shape={arr.shape}"
+                    )
+                    continue
+
+                # Extract R, G as 2D H×W planes
+                if layout == "HWC":
+                    # (H, W, C)
+                    R = arr[..., 0]
+                    G = arr[..., 1]
+                else:
+                    # layout == "CHW" → (C, H, W)
+                    # C should be 3
+                    R = arr[0, ...]
+                    G = arr[1, ...]
+
+                base = os.path.splitext(os.path.basename(fp))[0]
+
+                if cls == "DUAL_HA_OIII":
+                    ha_path   = os.path.join(out_dir, f"{base}_Ha.fit")
+                    oiii_path = os.path.join(out_dir, f"{base}_OIII.fit")
+                    self._write_band_fit(ha_path,  R, hdr, "Ha",  src_filter=filt)
+                    self._write_band_fit(oiii_path, G, hdr, "OIII", src_filter=filt)
+                    ha_files.append(ha_path);     parent_of[ha_path]   = group
+                    oiii_files.append(oiii_path); parent_of[oiii_path] = group
+
+                elif cls == "DUAL_SII_OIII":
+                    sii_path  = os.path.join(out_dir, f"{base}_SII.fit")
+                    oiii_path = os.path.join(out_dir, f"{base}_OIII.fit")
+                    self._write_band_fit(sii_path, R, hdr, "SII",  src_filter=filt)
+                    self._write_band_fit(oiii_path, G, hdr, "OIII", src_filter=filt)
+                    sii_files.append(sii_path);    parent_of[sii_path]  = group
+                    oiii_files.append(oiii_path);  parent_of[oiii_path] = group
+
+                elif cls == "DUAL_SII_HB":
+                    sii_path = os.path.join(out_dir, f"{base}_SII.fit")
+                    hb_path  = os.path.join(out_dir, f"{base}_Hb.fit")
+                    self._write_band_fit(sii_path, R, hdr, "SII", src_filter=filt)
+                    self._write_band_fit(hb_path,  G, hdr, "Hb",  src_filter=filt)
+                    sii_files.append(sii_path); parent_of[sii_path] = group
+                    hb_files.append(hb_path);   parent_of[hb_path]  = group
+
+                else:
+                    # UNKNOWN dual → ignore, they won't show up in NB groups
+                    continue
+
+        # --- Pass 2: group the new files (band + exposure + size), same as before ---
+
+        def _group_key(band: str, path: str) -> str:
+            try:
+                h = fits.getheader(path, ext=0)
+                exp = h.get("EXPTIME") or h.get("EXPOSURE") or ""
+                w   = h.get("NAXIS1", "?"); hgt = h.get("NAXIS2", "?")
+                exp_str = f"{float(exp):.1f}s" if isinstance(exp, (int, float)) else str(exp)
+                return f"{band} - {exp_str} - {w}x{hgt}"
+            except Exception:
+                return f"{band} - ? - ?x?"
+
+        new_groups: dict[str, list[str]] = {}
+        inherit_map = {}
+
+        for band, flist in (
+            ("Ha",   ha_files),
+            ("SII",  sii_files),
+            ("OIII", oiii_files),
+            ("Hb",   hb_files),
+        ):
+            for p in flist:
+                gk = _group_key(band, p)
+                new_groups.setdefault(gk, []).append(p)
+                parent = parent_of.get(p)
+                if parent:
+                    inherit_map.setdefault(gk, set()).add(parent)
+
+        if not new_groups:
+            self.update_status(
+                "ℹ️ No dual-band / mono narrowband frames detected in aligned set; "
+                "leaving groups unchanged."
+            )
+            return aligned_light_files
+
+        # --- Replace light_files with NB groups & seed drizzle configs ---
+
+        self.light_files = new_groups
+
+        self.per_group_drizzle = {}
+        seeded = 0
+        global_template = (
+            self._current_global_drizzle() if hasattr(self, "_current_global_drizzle") else {}
+        )
+
+        for gk, parents in inherit_map.items():
+            parent_cfgs = [old_drizzle.get(pg) for pg in parents if old_drizzle.get(pg)]
+            chosen = None
+
+            # Prefer any enabled parent config
+            for cfg in parent_cfgs:
+                if cfg.get("enabled"):
+                    chosen = cfg
+                    break
+            if not chosen and parent_cfgs:
+                chosen = parent_cfgs[0]
+
+            # Fallback: if any parents were in the originally-selected groups and
+            # global drizzle is enabled, seed from the global template
+            if (
+                not chosen
+                and selected_groups
+                and (parents & selected_groups)
+                and global_template.get("enabled")
+            ):
+                chosen = global_template
+
+            if chosen:
+                self.per_group_drizzle[gk] = dict(chosen)
+                seeded += 1
+
+        self.update_status(
+            f"✅ Dual-band split (post-align) complete: "
+            f"Ha={len(ha_files)}, SII={len(sii_files)}, "
+            f"OIII={len(oiii_files)}, Hb={len(hb_files)} "
+            f"(drizzle seeded on {seeded} new group(s))"
+        )
+
+        return new_groups
+
 
     def on_registration_complete(self, success, msg):
        
@@ -14434,6 +14781,11 @@ class StackingSuiteDialog(QDialog):
                 else:
                     self.update_status(f"DEBUG: File '{aligned}' does not exist on disk.")
             aligned_light_files[group] = new_list
+
+        # ----Split dual-band if requested----
+        if self.split_dualband_cb.isChecked():
+            self.update_status("🌈 Splitting aligned dual-band OSC frames into Ha / OIII…")
+            aligned_light_files = self._split_dual_band_after_align(aligned_light_files)
 
         def _start_after_align_worker(aligned_light_files: dict[str, list[str]]):
             # ----------------------------
@@ -16641,8 +16993,20 @@ class StackingSuiteDialog(QDialog):
             # 5) Clear transforms; not needed for already aligned frames
             self.valid_transforms = {}
 
-            # 6) Hand off to your unified pipeline (this will stack without re-alignment)
+            # 6) Build aligned file groups from tree (they're already aligned/normalized)
             aligned_light_files = {g: lst for g, lst in self.light_files.items() if lst}
+
+            # 7) Optional: split dual-band OSC into Ha / SII / OIII / Hb
+            if getattr(self, "split_dualband_cb", None) and self.split_dualband_cb.isChecked():
+                self.update_status(
+                    "🌈 Splitting registered dual-band OSC frames into Ha / SII / OIII / Hb…"
+                )
+                aligned_light_files = self._split_dual_band_after_align(aligned_light_files)
+
+            # Keep light_files in sync with whatever we're about to integrate
+            self.light_files = aligned_light_files
+
+            # 8) Hand off to unified MFDeconv + integration pipeline
             self._run_mfdeconv_then_continue(aligned_light_files)
             return
 
