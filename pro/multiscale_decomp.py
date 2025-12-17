@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGroupBox, QFormLayout,
     QPushButton, QComboBox, QSpinBox, QDoubleSpinBox, QCheckBox,
     QTableWidget, QTableWidgetItem, QWidget, QLabel, QGraphicsView,
-    QGraphicsScene, QGraphicsPixmapItem, QMessageBox, QToolButton
+    QGraphicsScene, QGraphicsPixmapItem, QMessageBox, QToolButton, QSlider, QSplitter,
 )
 
 
@@ -205,8 +205,14 @@ class MultiscaleDecompDialog(QDialog):
     def _build_ui(self):
         root = QHBoxLayout(self)
 
-        # LEFT: preview
-        left = QVBoxLayout()
+        # Splitter between preview (left) and controls (right)
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        root.addWidget(splitter)
+
+        # ----- LEFT: preview -----
+        left_widget = QWidget(self)
+        left = QVBoxLayout(left_widget)
+
         self.scene = QGraphicsScene(self)
         self.view = _ZoomPanView(self.scene)
         self.view.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -248,8 +254,9 @@ class MultiscaleDecompDialog(QDialog):
 
         left.addLayout(zoom_row)
 
-        # RIGHT: controls
-        right = QVBoxLayout()
+        # ----- RIGHT: controls -----
+        right_widget = QWidget(self)
+        right = QVBoxLayout(right_widget)
 
         gb_global = QGroupBox("Global")
         form = QFormLayout(gb_global)
@@ -290,11 +297,12 @@ class MultiscaleDecompDialog(QDialog):
         v.addWidget(self.table)
         right.addWidget(gb_layers, stretch=1)
 
-        # Per-layer editor
+        # Per-layer editor (now with sliders)
         gb_edit = QGroupBox("Selected Layer")
         ef = QFormLayout(gb_edit)
         self.lbl_sel = QLabel("Layer: —")
 
+        # --- Spin boxes ---
         self.spin_gain = QDoubleSpinBox()
         self.spin_gain.setRange(0.0, 3.0)
         self.spin_gain.setSingleStep(0.05)
@@ -314,11 +322,39 @@ class MultiscaleDecompDialog(QDialog):
         self.spin_denoise.setSingleStep(0.05)
         self.spin_denoise.setValue(0.0)
 
+        # --- Sliders (int ranges, mapped to spins) ---
+        self.slider_gain = QSlider(Qt.Orientation.Horizontal)
+        self.slider_gain.setRange(0, 300)         # 0..3.00
+        self.slider_thr = QSlider(Qt.Orientation.Horizontal)
+        self.slider_thr.setRange(0, 100)          # 0..0.10 (×0.001)
+        self.slider_amt = QSlider(Qt.Orientation.Horizontal)
+        self.slider_amt.setRange(0, 100)          # 0..1.00
+        self.slider_denoise = QSlider(Qt.Orientation.Horizontal)
+        self.slider_denoise.setRange(0, 100)      # 0..1.00
+
+        # Layout rows: label -> [slider | spinbox]
         ef.addRow(self.lbl_sel)
-        ef.addRow("Gain:", self.spin_gain)
-        ef.addRow("Threshold:", self.spin_thr)
-        ef.addRow("Amount:", self.spin_amt)
-        ef.addRow("Denoise:", self.spin_denoise)
+
+        gain_row = QHBoxLayout()
+        gain_row.addWidget(self.slider_gain)
+        gain_row.addWidget(self.spin_gain)
+        ef.addRow("Gain:", gain_row)
+
+        thr_row = QHBoxLayout()
+        thr_row.addWidget(self.slider_thr)
+        thr_row.addWidget(self.spin_thr)
+        ef.addRow("Threshold:", thr_row)
+
+        amt_row = QHBoxLayout()
+        amt_row.addWidget(self.slider_amt)
+        amt_row.addWidget(self.spin_amt)
+        ef.addRow("Amount:", amt_row)
+
+        dn_row = QHBoxLayout()
+        dn_row.addWidget(self.slider_denoise)
+        dn_row.addWidget(self.spin_denoise)
+        ef.addRow("Denoise:", dn_row)
+
         right.addWidget(gb_edit)
 
         # Buttons
@@ -330,8 +366,33 @@ class MultiscaleDecompDialog(QDialog):
         btn_row.addWidget(self.btn_close)
         right.addLayout(btn_row)
 
-        root.addLayout(left, stretch=2)
-        root.addLayout(right, stretch=1)
+        # Add widgets to splitter
+        splitter.addWidget(left_widget)
+        splitter.addWidget(right_widget)
+        splitter.setStretchFactor(0, 2)
+        splitter.setStretchFactor(1, 1)
+
+        # ----- Signals -----
+        self.spin_layers.valueChanged.connect(self._on_layers_changed)
+        self.spin_sigma.valueChanged.connect(self._on_global_changed)
+        self.combo_preview.currentIndexChanged.connect(self._schedule_preview)
+
+        self.table.itemSelectionChanged.connect(self._on_table_select)
+
+        # spinboxes -> layer cfg
+        self.spin_gain.valueChanged.connect(self._on_layer_editor_changed)
+        self.spin_thr.valueChanged.connect(self._on_layer_editor_changed)
+        self.spin_amt.valueChanged.connect(self._on_layer_editor_changed)
+        self.spin_denoise.valueChanged.connect(self._on_layer_editor_changed)
+
+        # sliders -> spinboxes
+        self.slider_gain.valueChanged.connect(self._on_gain_slider_changed)
+        self.slider_thr.valueChanged.connect(self._on_thr_slider_changed)
+        self.slider_amt.valueChanged.connect(self._on_amt_slider_changed)
+        self.slider_denoise.valueChanged.connect(self._on_dn_slider_changed)
+
+        self.btn_apply.clicked.connect(self._commit_to_doc)
+        self.btn_close.clicked.connect(self.reject)
 
         # Signals
         self.spin_layers.valueChanged.connect(self._on_layers_changed)
@@ -418,29 +479,14 @@ class MultiscaleDecompDialog(QDialog):
         out_raw = multiscale_reconstruct(tuned, res)
         out = np.clip(out_raw, 0.0, 1.0).astype(np.float32, copy=False)
 
-        # layer preview mode
         sel = self.combo_preview.currentData()
         if sel is None or sel == "final":
             if not self.residual_enabled:
-                # Detail-only visualization: center around mid-gray, scale by sigma
+                # Detail-only visualization: SAME style as detail-layer preview
                 d = out_raw.astype(np.float32, copy=False)
-
-                if d.ndim == 3:
-                    med = np.median(d, axis=(0, 1), keepdims=True)
-                else:
-                    med = np.median(d)
-                d0 = d - med
-
-                sigma = float(np.std(d0))
-                if sigma <= 1e-8:
-                    vis = np.full_like(d0, 0.5, dtype=np.float32)
-                else:
-                    # map roughly ±3σ → [0,1]
-                    vis = 0.5 + d0 / (6.0 * sigma)
-
+                vis = 0.5 + d * 4.0      # same gain as single-layer view
                 self._preview_img = np.clip(vis, 0.0, 1.0).astype(np.float32, copy=False)
             else:
-                # Normal final image with residual
                 self._preview_img = out
 
         elif sel == "residual":
@@ -449,11 +495,11 @@ class MultiscaleDecompDialog(QDialog):
         else:
             # sel is int index of detail layer
             w = tuned[int(sel)]
-            # visualize detail layer: map around 0.5
-            vis = np.clip(0.5 + (w * 4.0), 0.0, 1.0)  # gain for visibility
+            vis = np.clip(0.5 + (w * 4.0), 0.0, 1.0)
             self._preview_img = vis.astype(np.float32, copy=False)
 
         self._refresh_pix()
+
 
 
     def _np_to_qpix(self, img: np.ndarray) -> QPixmap:
@@ -478,6 +524,39 @@ class MultiscaleDecompDialog(QDialog):
         self.view.resetTransform()
 
     # ---------- Table / layer editing ----------
+    def _on_gain_slider_changed(self, v: int):
+        # 0..300 -> 0.00..3.00
+        val = v / 100.0
+        self.spin_gain.blockSignals(True)
+        self.spin_gain.setValue(val)
+        self.spin_gain.blockSignals(False)
+        self._on_layer_editor_changed()
+
+    def _on_thr_slider_changed(self, v: int):
+        # 0..100 -> 0.000..0.100
+        val = v / 1000.0
+        self.spin_thr.blockSignals(True)
+        self.spin_thr.setValue(val)
+        self.spin_thr.blockSignals(False)
+        self._on_layer_editor_changed()
+
+    def _on_amt_slider_changed(self, v: int):
+        # 0..100 -> 0.00..1.00
+        val = v / 100.0
+        self.spin_amt.blockSignals(True)
+        self.spin_amt.setValue(val)
+        self.spin_amt.blockSignals(False)
+        self._on_layer_editor_changed()
+
+    def _on_dn_slider_changed(self, v: int):
+        # 0..100 -> 0.00..1.00
+        val = v / 100.0
+        self.spin_denoise.blockSignals(True)
+        self.spin_denoise.setValue(val)
+        self.spin_denoise.blockSignals(False)
+        self._on_layer_editor_changed()
+
+
     def _rebuild_table(self):
         self.table.blockSignals(True)
         try:
@@ -532,23 +611,52 @@ class MultiscaleDecompDialog(QDialog):
             self.table.selectRow(0)
             self._load_layer_into_editor(0)
 
-
     def _on_table_item_changed(self, item: QTableWidgetItem):
         r, c = item.row(), item.column()
 
         # Residual row
-        if r == self.layers and c == 0:
-            self.residual_enabled = (item.checkState() == Qt.CheckState.Checked)
-            self._schedule_preview()
+        if r == self.layers:
+            if c == 0:
+                self.residual_enabled = (item.checkState() == Qt.CheckState.Checked)
+                self._schedule_preview()
+            # ignore other edits for residual
             return
 
         if not (0 <= r < len(self.cfgs)):
             return
 
         cfg = self.cfgs[r]
+
         if c == 0:
+            # On/off
             cfg.enabled = (item.checkState() == Qt.CheckState.Checked)
             self._schedule_preview()
+            return
+
+        # numeric columns: Gain(3), Thr(4), Amt(5), NR(6)
+        try:
+            text = item.text().strip()
+            val = float(text) if text else 0.0
+        except Exception:
+            return
+
+        if c == 3:
+            cfg.bias_gain = val
+        elif c == 4:
+            cfg.thr = val
+        elif c == 5:
+            cfg.amount = val
+        elif c == 6:
+            cfg.denoise = val
+        else:
+            return
+
+        # If this row is currently selected, update editor widgets too
+        if getattr(self, "_selected_layer", None) == r:
+            self._load_layer_into_editor(r)
+
+        self._schedule_preview()
+
 
 
     def _on_table_select(self):
@@ -563,29 +671,48 @@ class MultiscaleDecompDialog(QDialog):
 
         if idx == self.layers:
             self.lbl_sel.setText("Layer: R (Residual)")
-            for w in (self.spin_gain, self.spin_thr, self.spin_amt, self.spin_denoise):
+            for w in (self.spin_gain, self.spin_thr, self.spin_amt, self.spin_denoise,
+                    self.slider_gain, self.slider_thr, self.slider_amt, self.slider_denoise):
                 w.setEnabled(False)
             return
 
-        for w in (self.spin_gain, self.spin_thr, self.spin_amt, self.spin_denoise):
+        for w in (self.spin_gain, self.spin_thr, self.spin_amt, self.spin_denoise,
+                self.slider_gain, self.slider_thr, self.slider_amt, self.slider_denoise):
             w.setEnabled(True)
 
         cfg = self.cfgs[idx]
         self.lbl_sel.setText(f"Layer: {idx+1} / {self.layers}")
+
+        # spins + sliders in sync
         self.spin_gain.blockSignals(True)
         self.spin_thr.blockSignals(True)
         self.spin_amt.blockSignals(True)
         self.spin_denoise.blockSignals(True)
+
+        self.slider_gain.blockSignals(True)
+        self.slider_thr.blockSignals(True)
+        self.slider_amt.blockSignals(True)
+        self.slider_denoise.blockSignals(True)
         try:
             self.spin_gain.setValue(cfg.bias_gain)
             self.spin_thr.setValue(cfg.thr)
             self.spin_amt.setValue(cfg.amount)
             self.spin_denoise.setValue(cfg.denoise)
+
+            self.slider_gain.setValue(int(round(cfg.bias_gain * 100.0)))
+            self.slider_thr.setValue(int(round(cfg.thr * 1000.0)))
+            self.slider_amt.setValue(int(round(cfg.amount * 100.0)))
+            self.slider_denoise.setValue(int(round(cfg.denoise * 100.0)))
         finally:
             self.spin_gain.blockSignals(False)
             self.spin_thr.blockSignals(False)
             self.spin_amt.blockSignals(False)
             self.spin_denoise.blockSignals(False)
+            self.slider_gain.blockSignals(False)
+            self.slider_thr.blockSignals(False)
+            self.slider_amt.blockSignals(False)
+            self.slider_denoise.blockSignals(False)
+
 
 
     def _on_layer_editor_changed(self):
