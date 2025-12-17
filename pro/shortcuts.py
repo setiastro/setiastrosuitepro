@@ -300,11 +300,10 @@ class DraggableToolBar(QToolBar):
         return None
 
     def dragEnterEvent(self, e):
-        # Accept our own reorder drags; pass everything else through
+        # Accept toolbar-reorder drags from any DraggableToolBar
         if e.mimeData().hasFormat(TOOLBAR_REORDER_MIME):
             src = e.source()
-            # Only allow reordering within the *same* toolbar
-            if isinstance(src, QToolButton) and src.parent() is self:
+            if isinstance(src, QToolButton) and isinstance(src.parent(), DraggableToolBar):
                 e.acceptProposedAction()
                 return
         super().dragEnterEvent(e)
@@ -312,37 +311,72 @@ class DraggableToolBar(QToolBar):
     def dragMoveEvent(self, e):
         if e.mimeData().hasFormat(TOOLBAR_REORDER_MIME):
             src = e.source()
-            if isinstance(src, QToolButton) and src.parent() is self:
+            if isinstance(src, QToolButton) and isinstance(src.parent(), DraggableToolBar):
                 e.acceptProposedAction()
                 return
         super().dragMoveEvent(e)
 
     def dropEvent(self, e):
         if e.mimeData().hasFormat(TOOLBAR_REORDER_MIME):
-            src = e.source()
-            if isinstance(src, QToolButton) and src.parent() is self:
-                src_act = self._find_action_for_button(src)
-                if src_act is None:
-                    e.ignore()
+            src_btn = e.source()
+            if isinstance(src_btn, QToolButton):
+                src_tb = src_btn.parent()
+                if isinstance(src_tb, DraggableToolBar):
+                    # Find the QAction that belongs to the dragged button
+                    src_act = src_tb._find_action_for_button(src_btn)
+                    if src_act is None:
+                        e.ignore()
+                        return
+
+                    pos = e.position().toPoint()
+                    target_act = self.actionAt(pos)
+
+                    # Remove from source toolbar and insert into this one
+                    src_tb.removeAction(src_act)
+                    if target_act is None:
+                        self.addAction(src_act)
+                    else:
+                        self.insertAction(target_act, src_act)
+
+                    # Persist order for both toolbars
+                    self._persist_order()
+                    if src_tb is not self:
+                        src_tb._persist_order()
+                        # Also persist the cross-toolbar assignment
+                        self._update_assignment_for_action(src_act)
+
+                    e.acceptProposedAction()
                     return
 
-                pos = e.position().toPoint()
-                target_act = self.actionAt(pos)
-
-                # physically reorder actions
-                self.removeAction(src_act)
-                if target_act is None:
-                    self.addAction(src_act)
-                else:
-                    self.insertAction(target_act, src_act)
-
-                # persist updated order
-                self._persist_order()
-
-                e.acceptProposedAction()
-                return
-
         super().dropEvent(e)
+
+
+    def _update_assignment_for_action(self, act: QAction):
+        """
+        Persist that this action now belongs to this toolbar (cross-toolbar move).
+        Stored as: Toolbar/Assignments → JSON {command_id: settings_key}.
+        """
+        if not self._settings_key:
+            return
+
+        cid = act.property("command_id") or act.objectName()
+        if not cid:
+            return
+
+        mw = self.window()
+        s = getattr(mw, "settings", None)
+        if s is None:
+            s = QSettings()
+
+        raw = s.value("Toolbar/Assignments", "", type=str) or ""
+        try:
+            mapping = json.loads(raw) if raw else {}
+        except Exception:
+            mapping = {}
+
+        mapping[str(cid)] = self._settings_key
+        s.setValue("Toolbar/Assignments", json.dumps(mapping))
+
 
     def _add_shortcut_for_action(self, act: QAction):
         # Resolve command id

@@ -3,6 +3,7 @@
 Toolbar and action management mixin for AstroSuiteProMainWindow.
 """
 from __future__ import annotations
+import json
 from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import Qt, QTimer, QUrl
@@ -285,6 +286,7 @@ class ToolbarMixin:
         tb_bundle.addAction(self.act_view_bundles)
         tb_bundle.addAction(self.act_function_bundles)
         self._restore_toolbar_order(tb_bundle, "Toolbar/Bundles")
+        self._restore_toolbar_memberships()
 
     def _create_actions(self):
         # File actions
@@ -1065,6 +1067,76 @@ class ToolbarMixin:
         tb.clear()
         for _, act in indexed:
             tb.addAction(act)
+
+    def _restore_toolbar_memberships(self):
+        """
+        Restore which toolbar each action belongs to, based on Toolbar/Assignments.
+
+        We:
+          - Read JSON {command_id: settings_key}.
+          - Collect all DraggableToolBar instances and their settings keys.
+          - Collect all QActions by command_id/objectName.
+          - Move each assigned action to its target toolbar.
+          - Re-apply per-toolbar ordering via _restore_toolbar_order.
+        """
+        if not hasattr(self, "settings"):
+            return
+
+        try:
+            raw = self.settings.value("Toolbar/Assignments", "", type=str) or ""
+        except Exception:
+            return
+
+        try:
+            mapping = json.loads(raw) if raw else {}
+        except Exception:
+            return
+
+        if not mapping:
+            return
+
+        # Gather all DraggableToolBar instances
+        from pro.shortcuts import DraggableToolBar
+        toolbars: list[DraggableToolBar] = [
+            tb for tb in self.findChildren(DraggableToolBar)
+        ]
+
+        tb_by_key: dict[str, DraggableToolBar] = {}
+        for tb in toolbars:
+            key = getattr(tb, "_settings_key", None)
+            if key:
+                tb_by_key[str(key)] = tb
+
+        if not tb_by_key:
+            return
+
+        # Map command_id → QAction
+        from PyQt6.QtGui import QAction
+        acts_by_id: dict[str, QAction] = {}
+        for act in self.findChildren(QAction):
+            cid = act.property("command_id") or act.objectName()
+            if cid:
+                acts_by_id[str(cid)] = act
+
+        # Move actions to their assigned toolbars
+        for cid, key in mapping.items():
+            act = acts_by_id.get(str(cid))
+            tb  = tb_by_key.get(str(key))
+            if not act or not tb:
+                continue
+
+            # Remove from any toolbar that currently contains it
+            for t in toolbars:
+                if act in t.actions():
+                    t.removeAction(act)
+            # Add to the desired toolbar
+            tb.addAction(act)
+
+        # Re-apply per-toolbar order now that memberships are correct
+        for tb in toolbars:
+            key = getattr(tb, "_settings_key", None)
+            if key:
+                self._restore_toolbar_order(tb, str(key))
 
 
     def update_undo_redo_action_labels(self):
