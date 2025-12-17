@@ -21,7 +21,7 @@ import webbrowser
 import warnings
 import shutil
 import subprocess
-from xisf import XISF
+from setiastro.saspro.xisf import XISF
 import requests
 import csv
 import lz4.block
@@ -152,7 +152,7 @@ from matplotlib.ticker import MaxNLocator
 from matplotlib.patches import Circle
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from pro.plate_solver import plate_solve_doc_inplace, _active_doc_from_parent, _get_seed_mode, _set_seed_mode, _as_header
+from setiastro.saspro.plate_solver import plate_solve_doc_inplace, _active_doc_from_parent, _get_seed_mode, _set_seed_mode, _as_header
 
 #################################
 # PyQt6 Imports
@@ -185,8 +185,8 @@ from PyQt6.QtCore import (    Qt,    QRectF,    QLineF,    QPointF,    QThread, 
 from math import sqrt
 import math
 
-from legacy.image_manager import load_image, save_image
-from imageops.stretch import stretch_color_image, stretch_mono_image
+from setiastro.saspro.legacy.image_manager import load_image, save_image
+from setiastro.saspro.imageops.stretch import stretch_color_image, stretch_mono_image
 from pro import minorbodycatalog as mbc
 
 
@@ -2371,7 +2371,7 @@ def resource_path(relative_path):
     return os.path.join(base_path, relative_path)
 
 # Import centralized widgets
-from pro.widgets.spinboxes import CustomSpinBox, CustomDoubleSpinBox
+from setiastro.saspro.widgets.spinboxes import CustomSpinBox, CustomDoubleSpinBox
 
 
 class _NoopSignal:

@@ -99,5 +99,10 @@ def export_requirements():
         return 1
 
 
+def main():
+    """Entry point for the export-requirements script."""
+    sys.exit(export_requirements())
+
+
 if __name__ == "__main__":
     sys.exit(export_requirements())

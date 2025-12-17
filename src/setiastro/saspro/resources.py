@@ -1,0 +1,397 @@
+# pro/resources.py
+"""
+Centralized resource paths for Seti Astro Suite Pro.
+
+This module provides a single source of truth for all icon and resource paths,
+handling both PyInstaller frozen builds and development environments.
+
+Usage:
+    from setiastro.saspro.resources import Icons, Resources
+    
+    icon = QIcon(Icons.WRENCH)
+    data_path = Resources.SASP_DATA
+"""
+from __future__ import annotations
+import os
+import sys
+from functools import lru_cache
+
+
+def _get_base_path() -> str:
+    """Get base path for resources (PyInstaller or development)."""
+    if hasattr(sys, '_MEIPASS'):
+        return sys._MEIPASS
+    # Development: resources are in project root
+    # File is at: src/setiastro/saspro/resources.py
+    # Need to go up 4 levels to reach project root
+    current_file = os.path.abspath(__file__)
+    # Go up from resources.py -> saspro -> setiastro -> src -> project root
+    base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(current_file))))
+    
+    # Verify we found the right directory by checking for images/ folder
+    images_dir = os.path.join(base, 'images')
+    if os.path.exists(images_dir):
+        return base
+    
+    # Fallback: try going up one more level (in case structure is different)
+    base = os.path.dirname(base)
+    if os.path.exists(os.path.join(base, 'images')):
+        return base
+    
+    # Last resort: return the calculated path anyway
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(current_file))))
+
+
+def _resource_path(filename: str) -> str:
+    """Get full path to a resource file."""
+    base = _get_base_path()
+    
+    # Check if it's an image file - look in images/ subdirectory
+    if filename.endswith(('.png', '.ico', '.gif', '.icns', '.svg')):
+        images_path = os.path.join(base, 'images', filename)
+        if os.path.exists(images_path):
+            return images_path
+    
+    # Fallback to root directory (for data files like .csv, .fits, etc.)
+    return os.path.join(base, filename)
+
+
+class Icons:
+    """
+    Centralized icon paths.
+    
+    All paths are computed lazily and cached.
+    Access via class attributes: Icons.WRENCH, Icons.HISTOGRAM, etc.
+    """
+    
+    # Application
+    APP = property(lambda self: _resource_path('astrosuitepro.png'))
+    APP_ICO = property(lambda self: _resource_path('astrosuitepro.ico'))
+    BACKGROUND = property(lambda self: _resource_path('background.png')) 
+    
+    # Processing tools
+    GREEN = property(lambda self: _resource_path('green.png'))
+    NEUTRAL = property(lambda self: _resource_path('neutral.png'))
+    WHITE_BALANCE = property(lambda self: _resource_path('whitebalance.png'))
+    MORPHOLOGY = property(lambda self: _resource_path('morpho.png'))
+    CLAHE = property(lambda self: _resource_path('clahe.png'))
+    HDR = property(lambda self: _resource_path('hdr.png'))
+    INVERT = property(lambda self: _resource_path('invert.png'))
+    
+    # Star operations
+    STARNET = property(lambda self: _resource_path('starnet.png'))
+    STAR_ADD = property(lambda self: _resource_path('staradd.png'))
+    STAR_ALIGN = property(lambda self: _resource_path('staralign.png'))
+    STAR_REGISTRATION = property(lambda self: _resource_path('starregistration.png'))
+    STAR_SPIKE = property(lambda self: _resource_path('starspike.png'))
+    ASTRO_SPIKE = property(lambda self: _resource_path('Astro_Spikes.png'))
+    STAR_STRETCH = property(lambda self: _resource_path('starstretch.png'))
+    
+    # Luminance
+    L_EXTRACT = property(lambda self: _resource_path('LExtract.png'))
+    L_INSERT = property(lambda self: _resource_path('LInsert.png'))
+    
+    # Slots (0-9)
+    SLOT_0 = property(lambda self: _resource_path('slot0.png'))
+    SLOT_1 = property(lambda self: _resource_path('slot1.png'))
+    SLOT_2 = property(lambda self: _resource_path('slot2.png'))
+    SLOT_3 = property(lambda self: _resource_path('slot3.png'))
+    SLOT_4 = property(lambda self: _resource_path('slot4.png'))
+    SLOT_5 = property(lambda self: _resource_path('slot5.png'))
+    SLOT_6 = property(lambda self: _resource_path('slot6.png'))
+    SLOT_7 = property(lambda self: _resource_path('slot7.png'))
+    SLOT_8 = property(lambda self: _resource_path('slot8.png'))
+    SLOT_9 = property(lambda self: _resource_path('slot9.png'))
+    
+    # RGB operations
+    RGB_COMBO = property(lambda self: _resource_path('rgbcombo.png'))
+    RGB_EXTRACT = property(lambda self: _resource_path('rgbextract.png'))
+    RGB_ALIGN = property(lambda self: _resource_path('rgbalign.png'))
+    COPY_SLOT = property(lambda self: _resource_path('copyslot.png'))
+    
+    # External tools
+    GRAXPERT = property(lambda self: _resource_path('graxpert.png'))
+    COSMIC = property(lambda self: _resource_path('cosmic.png'))
+    COSMIC_SAT = property(lambda self: _resource_path('cosmicsat.png'))
+    
+    # Image operations
+    CROP = property(lambda self: _resource_path('cropicon.png'))
+    OPEN_FILE = property(lambda self: _resource_path('openfile.png'))
+    ABE = property(lambda self: _resource_path('abeicon.png'))
+    BLASTER = property(lambda self: _resource_path('blaster.png'))
+    
+    # Undo/Redo
+    UNDO = property(lambda self: _resource_path('undoicon.png'))
+    REDO = property(lambda self: _resource_path('redoicon.png'))
+    
+    # Transformations
+    FLIP_HORIZONTAL = property(lambda self: _resource_path('fliphorizontal.png'))
+    FLIP_VERTICAL = property(lambda self: _resource_path('flipvertical.png'))
+    ROTATE_CW = property(lambda self: _resource_path('rotateclockwise.png'))
+    ROTATE_CCW = property(lambda self: _resource_path('rotatecounterclockwise.png'))
+    ROTATE_180 = property(lambda self: _resource_path('rotate180.png'))
+    RESCALE = property(lambda self: _resource_path('rescale.png'))
+    
+    # Masks
+    MASK_CREATE = property(lambda self: _resource_path('maskcreate.png'))
+    MASK_APPLY = property(lambda self: _resource_path('maskapply.png'))
+    MASK_REMOVE = property(lambda self: _resource_path('maskremove.png'))
+    
+    # Analysis
+    PIXEL_MATH = property(lambda self: _resource_path('pixelmath.png'))
+    HISTOGRAM = property(lambda self: _resource_path('histogram.png'))
+    MOSAIC = property(lambda self: _resource_path('mosaic.png'))
+    PLATE_SOLVE = property(lambda self: _resource_path('platesolve.png'))
+    PSF = property(lambda self: _resource_path('psf.png'))
+    ISOPHOTE = property(lambda self: _resource_path('isophote.png'))
+    
+    # Stacking
+    STACKING = property(lambda self: _resource_path('stacking.png'))
+    LIVE_STACKING = property(lambda self: _resource_path('livestacking.png'))
+    IMAGE_COMBINE = property(lambda self: _resource_path('imagecombine.png'))
+    
+    # Special features
+    SUPERNOVA = property(lambda self: _resource_path('supernova.png'))
+    PEDESTAL = property(lambda self: _resource_path('pedestal.png'))
+    APERTURE = property(lambda self: _resource_path('aperture.png'))
+    JWST_PUPIL = property(lambda self: _resource_path('jwstpupil.png'))
+    SIGNATURE = property(lambda self: _resource_path('pen.png'))
+    HR_DIAGRAM = property(lambda self: _resource_path('HRDiagram.png'))
+    EXOPLANET = property(lambda self: _resource_path('exoicon.png'))
+    
+    # Deconvolution & filters
+    CONVO = property(lambda self: _resource_path('convo.png'))
+    FREQ_SEP = property(lambda self: _resource_path('freqsep.png'))
+    MULTISCALE_DECOMP = property(lambda self: _resource_path('multiscale_decomp.png'))
+    CONT_SUB = property(lambda self: _resource_path('contsub.png'))
+    HALO = property(lambda self: _resource_path('halo.png'))
+    ABERRATION = property(lambda self: _resource_path('aberration.png'))
+    
+    # Color
+    SPCC = property(lambda self: _resource_path('spcc.png'))
+    DSE = property(lambda self: _resource_path('dse.png'))
+    COLOR_WHEEL = property(lambda self: _resource_path('colorwheel.png'))
+    SELECTIVE_COLOR = property(lambda self: _resource_path('selectivecolor.png'))
+    NB_TO_RGB = property(lambda self: _resource_path('nbtorgb.png'))
+    
+    # Stretching
+    STAT_STRETCH = property(lambda self: _resource_path('statstretch.png'))
+    CURVES = property(lambda self: _resource_path('curves.png'))
+    UHS = property(lambda self: _resource_path('uhs.png'))
+    
+    # UI elements
+    WRENCH = property(lambda self: _resource_path('wrench_icon.png'))
+    EYE = property(lambda self: _resource_path('eye.png'))
+    DISK = property(lambda self: _resource_path('disk.png'))
+    NUKE = property(lambda self: _resource_path('nuke.png'))
+    GRID = property(lambda self: _resource_path('gridicon.png'))
+    FONT = property(lambda self: _resource_path('font.png'))
+    CSV = property(lambda self: _resource_path('cvs.png'))
+    PPP = property(lambda self: _resource_path('ppp.png'))
+    SCRIPT = property(lambda self: _resource_path('script.png'))
+    
+    # Blink & comparison
+    BLINK = property(lambda self: _resource_path('blink.png'))
+    HUBBLE = property(lambda self: _resource_path('hubble.png'))
+    COLLAGE = property(lambda self: _resource_path('collage.png'))
+    ANNOTATED = property(lambda self: _resource_path('annotated.png'))
+    
+    # WIMS/WIMI
+    WIMS = property(lambda self: _resource_path('wims.png'))
+    WIMI = property(lambda self: _resource_path('wimi_icon_256x256.png'))
+    
+    # Other
+    LINEAR_FIT = property(lambda self: _resource_path('linearfit.png'))
+    DEBAYER = property(lambda self: _resource_path('debayer.png'))
+    FUNCTION_BUNDLES = property(lambda self: _resource_path('functionbundle.png'))
+    VIEW_BUNDLES = property(lambda self: _resource_path('viewbundle.png'))
+
+
+class Resources:
+    """
+    Centralized data resource paths.
+    """
+    SASP_DATA = property(lambda self: _resource_path('data/SASP_data.fits'))
+    ASTROBIN_FILTERS_CSV = property(lambda self: _resource_path('data/catalogs/astrobin_filters.csv'))
+    SPINNER_GIF = property(lambda self: _resource_path('spinner.gif'))
+
+
+# Singleton instances for easy access
+_icons_instance = None
+_resources_instance = None
+
+
+def get_icons() -> Icons:
+    """Get the Icons singleton instance."""
+    global _icons_instance
+    if _icons_instance is None:
+        _icons_instance = Icons()
+    return _icons_instance
+
+
+def get_resources() -> Resources:
+    """Get the Resources singleton instance."""
+    global _resources_instance
+    if _resources_instance is None:
+        _resources_instance = Resources()
+    return _resources_instance
+
+
+# Convenience functions for direct path access
+@lru_cache(maxsize=128)
+def get_icon_path(name: str) -> str:
+    """
+    Get icon path by name.
+    
+    Args:
+        name: Icon filename (with or without extension)
+        
+    Returns:
+        Full path to icon file
+        
+    Example:
+        path = get_icon_path('wrench_icon.png')
+        path = get_icon_path('histogram')  # .png added automatically
+    """
+    if not name.endswith(('.png', '.ico', '.gif', '.svg')):
+        name = f"{name}.png"
+    return _resource_path(name)
+
+
+@lru_cache(maxsize=32)
+def get_data_path(name: str) -> str:
+    """
+    Get data file path by name.
+    
+    Args:
+        name: Data filename
+        
+    Returns:
+        Full path to data file
+    """
+    return _resource_path(name)
+
+
+# Legacy compatibility: export paths as module-level variables
+# These match the original variable names in setiastrosuitepro.py
+def _init_legacy_paths():
+    """Initialize legacy path variables for backward compatibility."""
+    return {
+        'icon_path': get_icon_path('astrosuitepro.png'),
+        'windowslogo_path': get_icon_path('astrosuitepro.ico'),
+        'green_path': get_icon_path('green.png'),
+        'neutral_path': get_icon_path('neutral.png'),
+        'whitebalance_path': get_icon_path('whitebalance.png'),
+        'morpho_path': get_icon_path('morpho.png'),
+        'clahe_path': get_icon_path('clahe.png'),
+        'starnet_path': get_icon_path('starnet.png'),
+        'staradd_path': get_icon_path('staradd.png'),
+        'LExtract_path': get_icon_path('LExtract.png'),
+        'LInsert_path': get_icon_path('LInsert.png'),
+        'slot0_path': get_icon_path('slot0.png'),
+        'slot1_path': get_icon_path('slot1.png'),
+        'slot2_path': get_icon_path('slot2.png'),
+        'slot3_path': get_icon_path('slot3.png'),
+        'slot4_path': get_icon_path('slot4.png'),
+        'slot5_path': get_icon_path('slot5.png'),
+        'slot6_path': get_icon_path('slot6.png'),
+        'slot7_path': get_icon_path('slot7.png'),
+        'slot8_path': get_icon_path('slot8.png'),
+        'slot9_path': get_icon_path('slot9.png'),
+        'rgbcombo_path': get_icon_path('rgbcombo.png'),
+        'rgbextract_path': get_icon_path('rgbextract.png'),
+        'copyslot_path': get_icon_path('copyslot.png'),
+        'graxperticon_path': get_icon_path('graxpert.png'),
+        'cropicon_path': get_icon_path('cropicon.png'),
+        'openfile_path': get_icon_path('openfile.png'),
+        'abeicon_path': get_icon_path('abeicon.png'),
+        'undoicon_path': get_icon_path('undoicon.png'),
+        'redoicon_path': get_icon_path('redoicon.png'),
+        'blastericon_path': get_icon_path('blaster.png'),
+        'hdr_path': get_icon_path('hdr.png'),
+        'invert_path': get_icon_path('invert.png'),
+        'fliphorizontal_path': get_icon_path('fliphorizontal.png'),
+        'flipvertical_path': get_icon_path('flipvertical.png'),
+        'rotateclockwise_path': get_icon_path('rotateclockwise.png'),
+        'rotatecounterclockwise_path': get_icon_path('rotatecounterclockwise.png'),
+        'rotate180_path': get_icon_path('rotate180.png'),
+        'maskcreate_path': get_icon_path('maskcreate.png'),
+        'maskapply_path': get_icon_path('maskapply.png'),
+        'maskremove_path': get_icon_path('maskremove.png'),
+        'pixelmath_path': get_icon_path('pixelmath.png'),
+        'histogram_path': get_icon_path('histogram.png'),
+        'mosaic_path': get_icon_path('mosaic.png'),
+        'rescale_path': get_icon_path('rescale.png'),
+        'staralign_path': get_icon_path('staralign.png'),
+        'mask_path': get_icon_path('maskapply.png'),
+        'platesolve_path': get_icon_path('platesolve.png'),
+        'psf_path': get_icon_path('psf.png'),
+        'supernova_path': get_icon_path('supernova.png'),
+        'starregistration_path': get_icon_path('starregistration.png'),
+        'stacking_path': get_icon_path('stacking.png'),
+        'pedestal_icon_path': get_icon_path('pedestal.png'),
+        'starspike_path': get_icon_path('starspike.png'),
+        'astrospike_path': get_icon_path('Astro_Spikes.png'),
+        'aperture_path': get_icon_path('aperture.png'),
+        'jwstpupil_path': get_icon_path('jwstpupil.png'),
+        'signature_icon_path': get_icon_path('pen.png'),
+        'livestacking_path': get_icon_path('livestacking.png'),
+        'hrdiagram_path': get_icon_path('HRDiagram.png'),
+        'convoicon_path': get_icon_path('convo.png'),
+        'spcc_icon_path': get_icon_path('spcc.png'),
+        'sasp_data_path': get_data_path('data/SASP_data.fits'),
+        'exoicon_path': get_icon_path('exoicon.png'),
+        'peeker_icon': get_icon_path('gridicon.png'),
+        'dse_icon_path': get_icon_path('dse.png'),
+        'astrobin_filters_csv_path': get_data_path('data/catalogs/astrobin_filters.csv'),
+        'isophote_path': get_icon_path('isophote.png'),
+        'statstretch_path': get_icon_path('statstretch.png'),
+        'starstretch_path': get_icon_path('starstretch.png'),
+        'curves_path': get_icon_path('curves.png'),
+        'disk_path': get_icon_path('disk.png'),
+        'uhs_path': get_icon_path('uhs.png'),
+        'blink_path': get_icon_path('blink.png'),
+        'ppp_path': get_icon_path('ppp.png'),
+        'nbtorgb_path': get_icon_path('nbtorgb.png'),
+        'freqsep_path': get_icon_path('freqsep.png'),
+        'multiscale_decomp_path': get_icon_path('multiscale_decomp.png'),
+        'contsub_path': get_icon_path('contsub.png'),
+        'halo_path': get_icon_path('halo.png'),
+        'cosmic_path': get_icon_path('cosmic.png'),
+        'satellite_path': get_icon_path('cosmicsat.png'),
+        'imagecombine_path': get_icon_path('imagecombine.png'),
+        'wrench_path': get_icon_path('wrench_icon.png'),
+        'eye_icon_path': get_icon_path('eye.png'),
+        'disk_icon_path': get_icon_path('disk.png'),
+        'nuke_path': get_icon_path('nuke.png'),
+        'hubble_path': get_icon_path('hubble.png'),
+        'collage_path': get_icon_path('collage.png'),
+        'annotated_path': get_icon_path('annotated.png'),
+        'colorwheel_path': get_icon_path('colorwheel.png'),
+        'font_path': get_icon_path('font.png'),
+        'csv_icon_path': get_icon_path('cvs.png'),
+        'spinner_path': get_data_path('spinner.gif'),
+        'wims_path': get_icon_path('wims.png'),
+        'wimi_path': get_icon_path('wimi_icon_256x256.png'),
+        'linearfit_path': get_icon_path('linearfit.png'),
+        'debayer_path': get_icon_path('debayer.png'),
+        'aberration_path': get_icon_path('aberration.png'),
+        'functionbundles_path': get_icon_path('functionbundle.png'),
+        'viewbundles_path': get_icon_path('viewbundle.png'),
+        'selectivecolor_path': get_icon_path('selectivecolor.png'),
+        'rgbalign_path': get_icon_path('rgbalign.png'),
+        'background_path': get_icon_path('background.png'), 
+        'script_icon_path': get_icon_path('script.png'),
+    }
+
+
+# Export all legacy paths as module-level variables
+_legacy = _init_legacy_paths()
+globals().update(_legacy)
+
+# Export list for `from setiastro.saspro.resources import *`
+__all__ = [
+    'Icons', 'Resources', 
+    'get_icons', 'get_resources',
+    'get_icon_path', 'get_data_path',
+] + list(_legacy.keys())

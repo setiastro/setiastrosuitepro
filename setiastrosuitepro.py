@@ -38,6 +38,7 @@ if __name__ == "__main__":
         if hasattr(sys, '_MEIPASS'):
             base = sys._MEIPASS
         else:
+            # When running from setiastrosuitepro.py at project root, base is the project root
             base = os.path.dirname(os.path.abspath(__file__))
         
         candidates = [
@@ -246,7 +247,7 @@ def _update_splash(msg: str, progress: int):
 
 _update_splash("Loading PyTorch runtime...", 5)
 
-from pro.runtime_torch import (
+from setiastro.saspro.runtime_torch import (
     add_runtime_to_sys_path,
     _ban_shadow_torch_paths,
     _purge_bad_torch_from_sysmodules,
@@ -294,14 +295,14 @@ import numpy as np
 
 _update_splash("Loading image libraries...", 20)
 from tifffile import imwrite
-from xisf import XISF
+from setiastro.saspro.xisf import XISF
 
 _update_splash("Configuring matplotlib...", 25)
-from pro.config_bootstrap import ensure_mpl_config_dir
+from setiastro.saspro.config_bootstrap import ensure_mpl_config_dir
 _MPL_CFG_DIR = ensure_mpl_config_dir()
 
 # Apply metadata patches for frozen builds
-from pro.metadata_patcher import apply_metadata_patches
+from setiastro.saspro.metadata_patcher import apply_metadata_patches
 apply_metadata_patches()
 # ----------------------------------------
 
@@ -370,7 +371,7 @@ def get_lightkurve():
 _update_splash("Loading UI utilities...", 30)
 
 # Shared UI utilities (avoiding code duplication)
-from pro.widgets.common_utilities import (
+from setiastro.saspro.widgets.common_utilities import (
     AboutDialog,
     ProjectSaveWorker as _ProjectSaveWorker,
     DECOR_GLYPHS,
@@ -421,7 +422,7 @@ from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkRepl
 
 
 try:
-    from pro._generated.build_info import BUILD_TIMESTAMP
+    from setiastro.saspro._generated.build_info import BUILD_TIMESTAMP
 except Exception:
     # No generated build info → running from local source checkout
     BUILD_TIMESTAMP = "dev"
@@ -431,8 +432,8 @@ VERSION = "1.5.13"
 
 _update_splash("Loading resources...", 50)
 
-# Icon paths are now centralized in pro.resources module
-from pro.resources import (
+# Icon paths are now centralized in setiastro.saspro.resources module
+from setiastro.saspro.resources import (
     icon_path, windowslogo_path, green_path, neutral_path, whitebalance_path,
     morpho_path, clahe_path, starnet_path, staradd_path, LExtract_path,
     LInsert_path, slot0_path, slot1_path, slot2_path, slot3_path, slot4_path,
@@ -476,14 +477,14 @@ qInstallMessageHandler(_qt_msg_handler)
 
 _update_splash("Loading MDI widgets...", 60)
 
-# MDI widgets imported from pro.mdi_widgets
-from pro.mdi_widgets import (
+# MDI widgets imported from setiastro.saspro.mdi_widgets
+from setiastro.saspro.mdi_widgets import (
     MdiArea, ViewLinkController, ConsoleListWidget, QtLogStream, _DocProxy,
     ROLE_ACTION as _ROLE_ACTION,
 )
 
-# Helper functions imported from pro.main_helpers
-from pro.main_helpers import (
+# Helper functions imported from setiastro.saspro.main_helpers
+from setiastro.saspro.main_helpers import (
     safe_join_dir_and_name as _safe_join_dir_and_name,
     normalize_save_path_chosen_filter as _normalize_save_path_chosen_filter,
     display_name as _display_name,
@@ -493,10 +494,10 @@ from pro.main_helpers import (
     safe_widget as _safe_widget,
 )
 
-# AboutDialog, DECOR_GLYPHS, _strip_ui_decorations imported from pro.widgets.common_utilities
+# AboutDialog, DECOR_GLYPHS, _strip_ui_decorations imported from setiastro.saspro.widgets.common_utilities
 
-# File utilities imported from pro.file_utils
-from pro.file_utils import (
+# File utilities imported from setiastro.saspro.file_utils
+from setiastro.saspro.file_utils import (
     _normalize_ext,
     _sanitize_filename,
     _exts_from_filter,
@@ -506,7 +507,7 @@ from pro.file_utils import (
 
 _update_splash("Loading main window module...", 65)
 
-from pro.gui.main_window import AstroSuiteProMainWindow
+from setiastro.saspro.gui.main_window import AstroSuiteProMainWindow
 
 _update_splash("Modules loaded, finalizing...", 70)
 
@@ -600,7 +601,7 @@ if __name__ == "__main__":
     try:
         _splash.setMessage("Loading image manager...")
         _splash.setProgress(80)
-        from legacy.image_manager import ImageManager
+        from setiastro.saspro.legacy.image_manager import ImageManager
         
         _splash.setMessage("Suppressing warnings...")
         _splash.setProgress(82)
@@ -625,7 +626,7 @@ if __name__ == "__main__":
 
         # Start background Numba warmup after UI is visible
         try:
-            from pro.numba_warmup import start_background_warmup
+            from setiastro.saspro.numba_warmup import start_background_warmup
             start_background_warmup()
         except Exception:
             pass  # Non-critical if warmup fails
@@ -676,5 +677,39 @@ if __name__ == "__main__":
         sys.exit(1)
 
 
+def main():
+    """
+    Entry point for the setiastrosuitepro console script.
+    
+    This function is called when the package is installed via pip and the
+    user runs the 'setiastrosuitepro' command.
+    
+    Note: The main application logic is in the 'if __name__ == "__main__"' block
+    above. When running as a script directly (python setiastrosuitepro.py),
+    that block executes. When called as an entry point, this function
+    should execute the same logic, but the splash screen initialization
+    happens at module import time when __name__ == "__main__".
+    
+    For proper entry point support, the splash screen initialization would
+    need to be refactored, but for now the script works when run directly.
+    """
+    # Execute the main application
+    # Since the splash screen is initialized conditionally, we need to
+    # ensure the application can run. The actual execution happens in the
+    # __main__ block above, so we'll just trigger it by executing the file.
+    import subprocess
+    import sys
+    import os
+    
+    # Get the path to this script
+    script_path = os.path.abspath(__file__)
+    
+    # Execute it as a script
+    # This ensures all the initialization code runs properly
+    try:
+        subprocess.run([sys.executable, script_path] + sys.argv[1:], check=False)
+    except Exception as e:
+        print(f"Error running Seti Astro Suite Pro: {e}")
+        sys.exit(1)
 
 
