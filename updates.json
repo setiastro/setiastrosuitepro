@@ -1,9 +1,9 @@
 {
-  "version": "1.5.12",
+  "version": "1.5.13",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.5.12/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.5.12/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.5.12/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.5.13/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.5.13/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.5.13/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.5.12 Script Shortcuts, better starnet removal, and loads of other fixes and niceties."
+  "notes": "Seti Astro Suite Pro V1.5.13 New tool: Multi Scale Decomposition (commonly called MultiscaleMedianTransformation) Standardized many items across all tools, keyword grouping in stacking suite, re-orderable toolbar icons. Many optimizations, fixes, and niceties."
 }
