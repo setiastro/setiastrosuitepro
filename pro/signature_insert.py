@@ -508,12 +508,23 @@ class SignatureInsertDialogPro(QDialog):
         sg.addWidget(s("bottom_right"),  3, 2)
         col.addWidget(snap_grp)
 
-        # Zoom
+        # Zoom (themed)
         row_zoom = QHBoxLayout()
-        b_zo  = QPushButton("–"); b_zo.clicked.connect(self.view.zoom_out)
-        b_zi  = QPushButton("+"); b_zi.clicked.connect(self.view.zoom_in)
-        b_fit = QPushButton("Fit"); b_fit.clicked.connect(self.view.fit_to_view)
-        row_zoom.addWidget(QLabel("Zoom (Ctrl+Wheel):")); row_zoom.addWidget(b_zo); row_zoom.addWidget(b_zi); row_zoom.addWidget(b_fit); row_zoom.addStretch(1)
+
+        btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
+        btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
+        btn_fit      = themed_toolbtn("zoom-fit-best", "Fit")
+
+        btn_zoom_out.clicked.connect(self.view.zoom_out)
+        btn_zoom_in.clicked.connect(self.view.zoom_in)
+        btn_fit.clicked.connect(self.view.fit_to_view)
+
+        row_zoom.addWidget(QLabel("Zoom (Ctrl+Wheel):"))
+        row_zoom.addWidget(btn_zoom_out)
+        row_zoom.addWidget(btn_zoom_in)
+        row_zoom.addWidget(btn_fit)
+        row_zoom.addStretch(1)
+
         col.addLayout(row_zoom)
 
         col.addStretch(1)
