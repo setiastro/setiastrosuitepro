@@ -456,7 +456,7 @@ class MultiscaleDecompDialog(QDialog):
         # Buttons
         btn_row = QHBoxLayout()
         self.btn_apply = QPushButton("Apply to Document")
-        self.btn_detail_new = QPushButton("Send Detail to New Document")
+        self.btn_detail_new = QPushButton("Send to New Document")
         self.btn_split_layers = QPushButton("Split Layers to Documents")
         self.btn_close = QPushButton("Close")
 
@@ -941,11 +941,18 @@ class MultiscaleDecompDialog(QDialog):
 
     def _send_detail_to_new_doc(self):
         """
-        Reconstruct detail-only result (no residual), apply the same
-        mid-gray scaling hack, and send it to DocManager as a new document.
+        Send the *final* multiscale result (same as Apply to Document)
+        to a brand-new document via DocManager.
+
+        - If residual is enabled: standard 0..1 clipped composite.
+        - If residual is disabled: uses the mid-gray detail-only hack
+          (0.5 + d*4.0), just like the preview/commit path.
         """
-        tuned, residual = self._build_tuned_layers()
-        if tuned is None or residual is None:
+        self._recompute_decomp(force=False)
+
+        details = self._cached_layers
+        residual = self._cached_residual
+        if details is None or residual is None:
             return
 
         dm = self._get_doc_manager()
@@ -957,15 +964,42 @@ class MultiscaleDecompDialog(QDialog):
             )
             return
 
-        # Detail-only: residual forced to zero
-        res_zero = np.zeros_like(residual)
-        out_raw = multiscale_reconstruct(tuned, res_zero)
+        # --- Same tuned-layer logic as _commit_to_doc -------------------
+        mode = self.combo_mode.currentText()   # "μ–σ Thresholding" or "Linear"
 
-        # Same gray hack as preview / no-residual commit
-        d = out_raw.astype(np.float32, copy=False)
-        out = np.clip(0.5 + d * 4.0, 0.0, 1.0).astype(np.float32, copy=False)
+        tuned = []
+        for i, w in enumerate(details):
+            cfg = self.cfgs[i]
+            if not cfg.enabled:
+                tuned.append(np.zeros_like(w))
+            else:
+                sigma = None
+                if self._layer_noise is not None and i < len(self._layer_noise):
+                    sigma = self._layer_noise[i]
+                tuned.append(
+                    apply_layer_ops(
+                        w,
+                        cfg.bias_gain,
+                        cfg.thr,
+                        cfg.amount,
+                        cfg.denoise,
+                        sigma,
+                        mode=mode,
+                    )
+                )
 
-        # Back to original mono/color shape
+        # --- Reconstruction (match Apply-to-Document behavior) ----------
+        res = residual if self.residual_enabled else np.zeros_like(residual)
+        out_raw = multiscale_reconstruct(tuned, res)
+
+        if not self.residual_enabled:
+            # Detail-only flavor: mid-gray + gain hack
+            d = out_raw.astype(np.float32, copy=False)
+            out = np.clip(0.5 + d * 4.0, 0.0, 1.0).astype(np.float32, copy=False)
+        else:
+            out = np.clip(out_raw, 0.0, 1.0).astype(np.float32, copy=False)
+
+        # --- Back to original mono/color layout -------------------------
         if self._orig_mono:
             mono = out[..., 0]
             if len(self._orig_shape) == 3 and self._orig_shape[2] == 1:
@@ -974,7 +1008,7 @@ class MultiscaleDecompDialog(QDialog):
         else:
             out_final = out
 
-        title = "Multiscale Detail"
+        title = "Multiscale Result"
         meta = self._build_new_doc_metadata(title, out_final)
 
         try:
@@ -986,14 +1020,19 @@ class MultiscaleDecompDialog(QDialog):
                 f"Failed to create new document:\n{e}"
             )
 
-
     def _split_layers_to_docs(self):
         """
-        Create a new document for each tuned detail layer, using
-        the same mid-gray visualization hack (0.5 + w*4), via DocManager.
+        Create a new document for each tuned detail layer *and* the residual.
+
+        - Detail layers use the same mid-gray visualization as the per-layer preview:
+              vis = 0.5 + layer*4.0
+        - Residual layer is just the residual itself (0..1 clipped).
         """
-        tuned, residual = self._build_tuned_layers()
-        if tuned is None or residual is None:
+        self._recompute_decomp(force=False)
+
+        details = self._cached_layers
+        residual = self._cached_residual
+        if details is None or residual is None:
             return
 
         dm = self._get_doc_manager()
@@ -1005,6 +1044,30 @@ class MultiscaleDecompDialog(QDialog):
             )
             return
 
+        mode = self.combo_mode.currentText()
+        # Build tuned layers just like everywhere else
+        tuned = []
+        for i, w in enumerate(details):
+            cfg = self.cfgs[i]
+            if not cfg.enabled:
+                tuned.append(np.zeros_like(w))
+            else:
+                sigma = None
+                if self._layer_noise is not None and i < len(self._layer_noise):
+                    sigma = self._layer_noise[i]
+                tuned.append(
+                    apply_layer_ops(
+                        w,
+                        cfg.bias_gain,
+                        cfg.thr,
+                        cfg.amount,
+                        cfg.denoise,
+                        sigma,
+                        mode=mode,
+                    )
+                )
+
+        # ---- 1) Detail layers ------------------------------------------
         for i, layer in enumerate(tuned):
             d = layer.astype(np.float32, copy=False)
             vis = np.clip(0.5 + d * 4.0, 0.0, 1.0).astype(np.float32, copy=False)
@@ -1028,7 +1091,34 @@ class MultiscaleDecompDialog(QDialog):
                     "Multiscale Decomposition",
                     f"Failed to create document for layer {i+1}:\n{e}"
                 )
-                break
+                # Don’t bail entirely on first error if you’d rather continue;
+                # right now we stop on first hard failure.
+                return
+
+        # ---- 2) Residual layer -----------------------------------------
+        try:
+            res = residual.astype(np.float32, copy=False)
+            res_img = np.clip(res, 0.0, 1.0)
+
+            if self._orig_mono:
+                mono = res_img[..., 0]
+                if len(self._orig_shape) == 3 and self._orig_shape[2] == 1:
+                    mono = mono[:, :, None]
+                res_final = mono.astype(np.float32, copy=False)
+            else:
+                res_final = res_img
+
+            r_title = "Multiscale Residual Layer"
+            r_meta = self._build_new_doc_metadata(r_title, res_final)
+
+            dm.create_document(res_final, metadata=r_meta, name=r_title)
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Multiscale Decomposition",
+                f"Failed to create residual-layer document:\n{e}"
+            )
+
 
 
     def _get_doc_manager(self):
