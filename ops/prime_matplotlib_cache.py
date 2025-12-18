@@ -4,11 +4,11 @@ import sys
 from pathlib import Path
 
 def resolve_mpl_cfg():
-    """
+    r"""
     Decide where to put the Matplotlib cache:
     - If running from a frozen app:
         * macOS:   <App>.app/Contents/Resources/mpl_config
-        * Windows: <dist>\setiastrosuitepro\mpl_config (next to exe)
+        * Windows: <dist>\\setiastrosuitepro\\mpl_config (next to exe)
         * Linux:   <dist>/setiastrosuitepro/mpl_config (next to exe)
     - If running from repo (not frozen), try common post-PyInstaller outputs:
         * macOS:   dist/SetiAstroSuitePro.app/Contents/Resources/mpl_config
@@ -67,4 +67,34 @@ try:
 except TypeError:
     _ = font_manager.FontManager()  # older MPL fallback
 
-print("Matplotlib font cache primed into:", mpl_cfg)
+def main():
+    """Entry point for the prime-matplotlib-cache script."""
+    mpl_cfg = resolve_mpl_cfg()
+    mpl_cfg.mkdir(parents=True, exist_ok=True)
+    os.environ["MPLCONFIGDIR"] = str(mpl_cfg)
+    
+    # Use a non-GUI backend while priming
+    import matplotlib
+    matplotlib.use("Agg", force=True)
+    
+    from matplotlib import font_manager
+    
+    # Build/refresh the cache using public APIs across MPL versions
+    try:
+        fm = font_manager.get_font_manager()  # MPL >= 3.6
+    except AttributeError:
+        fm = font_manager.FontManager()       # older MPL
+    
+    # Resolve a common font; on newer MPL this can rebuild if missing
+    try:
+        font_manager.findfont("DejaVu Sans", rebuild_if_missing=True)
+    except TypeError:
+        _ = font_manager.FontManager()  # older MPL fallback
+    
+    print("Matplotlib font cache primed into:", mpl_cfg)
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(main())

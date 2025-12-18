@@ -1,0 +1,69 @@
+# Auto detect text files and perform normalization
+# Git will store files with LF line endings in the repository,
+# but convert to native line endings (CRLF on Windows, LF on Linux/Mac) in working directory
+* text=auto
+
+# Explicitly declare text files - stored as LF in repo, converted to native on checkout
+*.py text
+*.pyw text
+*.sh text eol=lf
+*.bash text eol=lf
+*.yml text
+*.yaml text
+*.json text
+*.md text
+*.txt text
+*.toml text
+*.cfg text
+*.ini text
+*.conf text
+*.xml text
+*.html text
+*.css text
+*.js text
+*.ts text
+*.tsx text
+*.jsx text
+*.vue text
+*.sql text
+*.c text
+*.h text
+*.cpp text
+*.hpp text
+*.java text
+*.rs text
+*.go text
+
+# Denote all files that are truly binary and should not be modified.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.svg binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary
+*.otf binary
+*.pdf binary
+*.zip binary
+*.tar binary
+*.gz binary
+*.7z binary
+*.exe binary
+*.dll binary
+*.so binary
+*.dylib binary
+*.pyc binary
+*.pyo binary
+*.pyd binary
+*.egg binary
+*.whl binary
+*.xisf binary
+
+# Files that should keep their original line endings
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+

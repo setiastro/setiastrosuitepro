@@ -21,7 +21,7 @@ from PyQt6.QtGui import QPixmap, QImage
 
 # Preview helpers
 try:
-    from pro.curve_editor_pro import _float_to_qimage_rgb8, _downsample_for_preview, ImageLabel
+    from setiastro.saspro.curve_editor_pro import _float_to_qimage_rgb8, _downsample_for_preview, ImageLabel
 except Exception:
     from PyQt6.QtWidgets import QLabel as _QLabel
     from PyQt6.QtCore import pyqtSignal

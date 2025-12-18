@@ -15,6 +15,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Topic :: Scientific/Engineering :: Astronomy",
 ]
+packages = [{include = "setiastro", from = "src"}]
 
 [tool.poetry.dependencies]
 python = "^3.10"
@@ -86,4 +87,10 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.extras]
 # Optional extras can be added here if needed in the future
+
+[tool.poetry.scripts]
+setiastrosuitepro = "setiastrosuitepro:main"
+saspro-export-requirements = "ops.export_requirements:main"
+saspro-write-build-info = "ops.write_build_info:main"
+saspro-prime-matplotlib-cache = "ops.prime_matplotlib_cache:main"
 
