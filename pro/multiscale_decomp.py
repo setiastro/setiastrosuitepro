@@ -477,21 +477,6 @@ class MultiscaleDecompDialog(QDialog):
         self.btn_apply.clicked.connect(self._commit_to_doc)
         self.btn_close.clicked.connect(self.reject)
 
-        # Signals
-        self.spin_layers.valueChanged.connect(self._on_layers_changed)
-        self.spin_sigma.valueChanged.connect(self._on_global_changed)
-        self.combo_preview.currentIndexChanged.connect(self._schedule_preview)
-
-        self.table.itemSelectionChanged.connect(self._on_table_select)
-
-        self.spin_gain.valueChanged.connect(self._on_layer_editor_changed)
-        self.spin_thr.valueChanged.connect(self._on_layer_editor_changed)
-        self.spin_amt.valueChanged.connect(self._on_layer_editor_changed)
-        self.spin_denoise.valueChanged.connect(self._on_layer_editor_changed)
-
-        self.btn_apply.clicked.connect(self._commit_to_doc)
-        self.btn_close.clicked.connect(self.reject)
-
     # ---------- Preview plumbing ----------
     def _on_mode_changed(self, idx: int):
         # Re-enable/disable controls as needed
