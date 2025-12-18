@@ -16,6 +16,12 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Astronomy",
 ]
 packages = [{include = "setiastro", from = "src"}]
+include = [
+    {path = "images", format = "sdist"},
+    {path = "data", format = "sdist"},
+    {path = "images/**/*", format = "sdist"},
+    {path = "data/**/*", format = "sdist"},
+]
 
 [tool.poetry.dependencies]
 python = "^3.10"
