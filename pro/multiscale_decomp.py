@@ -456,9 +456,14 @@ class MultiscaleDecompDialog(QDialog):
         # Buttons
         btn_row = QHBoxLayout()
         self.btn_apply = QPushButton("Apply to Document")
+        self.btn_detail_new = QPushButton("Send Detail to New Document")
+        self.btn_split_layers = QPushButton("Split Layers to Documents")
         self.btn_close = QPushButton("Close")
+
         btn_row.addStretch(1)
         btn_row.addWidget(self.btn_apply)
+        btn_row.addWidget(self.btn_detail_new)
+        btn_row.addWidget(self.btn_split_layers)
         btn_row.addWidget(self.btn_close)
         right.addLayout(btn_row)
 
@@ -489,6 +494,8 @@ class MultiscaleDecompDialog(QDialog):
         self.slider_denoise.valueChanged.connect(self._on_dn_slider_changed)
 
         self.btn_apply.clicked.connect(self._commit_to_doc)
+        self.btn_detail_new.clicked.connect(self._send_detail_to_new_doc)
+        self.btn_split_layers.clicked.connect(self._split_layers_to_docs)
         self.btn_close.clicked.connect(self.reject)
 
     # ---------- Preview plumbing ----------
@@ -531,16 +538,22 @@ class MultiscaleDecompDialog(QDialog):
         self._rebuild_table()
         self._refresh_preview_combo()
 
-    def _rebuild_preview(self):
+    def _build_tuned_layers(self):
+        """
+        Ensure decomposition is current and apply per-layer ops
+        using the current mode and layer configs.
+
+        Returns (tuned_layers, residual) or (None, None) on failure.
+        """
         self._recompute_decomp(force=False)
+
         details = self._cached_layers
         residual = self._cached_residual
         if details is None or residual is None:
-            return
+            return None, None
 
         mode = self.combo_mode.currentText()  # "μ–σ Thresholding" or "Linear"
 
-        # apply per-layer ops
         tuned = []
         for i, w in enumerate(details):
             cfg = self.cfgs[i]
@@ -558,10 +571,17 @@ class MultiscaleDecompDialog(QDialog):
                         cfg.amount,
                         cfg.denoise,
                         sigma,
-                        mode=mode,          # <── NEW
+                        mode=mode,
                     )
                 )
 
+        return tuned, residual
+
+
+    def _rebuild_preview(self):
+        tuned, residual = self._build_tuned_layers()
+        if tuned is None or residual is None:
+            return
 
         # reconstruction (keep raw version for visualization)
         res = residual if self.residual_enabled else np.zeros_like(residual)
@@ -876,35 +896,9 @@ class MultiscaleDecompDialog(QDialog):
 
     # ---------- Apply to doc ----------
     def _commit_to_doc(self):
-        self._recompute_decomp(force=False)
-
-        details = self._cached_layers
-        residual = self._cached_residual
-        if details is None or residual is None:
+        tuned, residual = self._build_tuned_layers()
+        if tuned is None or residual is None:
             return
-
-        mode = self.combo_mode.currentText()   # "μ–σ Thresholding" or "Linear"
-
-        tuned = []
-        for i, w in enumerate(details):
-            cfg = self.cfgs[i]
-            if not cfg.enabled:
-                tuned.append(np.zeros_like(w))
-            else:
-                sigma = None
-                if self._layer_noise is not None and i < len(self._layer_noise):
-                    sigma = self._layer_noise[i]
-                tuned.append(
-                    apply_layer_ops(
-                        w,
-                        cfg.bias_gain,
-                        cfg.thr,
-                        cfg.amount,
-                        cfg.denoise,
-                        sigma,
-                        mode=mode,
-                    )
-                )
 
         # --- Reconstruction (match preview behavior) ---
         res = residual if self.residual_enabled else np.zeros_like(residual)
@@ -944,6 +938,93 @@ class MultiscaleDecompDialog(QDialog):
                 pass
 
         self.accept()
+
+    def _send_detail_to_new_doc(self):
+        """
+        Reconstruct detail-only result (no residual), apply the same
+        mid-gray scaling hack, and open it as a new document.
+        """
+        tuned, residual = self._build_tuned_layers()
+        if tuned is None or residual is None:
+            return
+
+        # Detail-only: residual forced to zero
+        res_zero = np.zeros_like(residual)
+        out_raw = multiscale_reconstruct(tuned, res_zero)
+
+        # Same gray hack as preview / no-residual commit
+        d = out_raw.astype(np.float32, copy=False)
+        out = np.clip(0.5 + d * 4.0, 0.0, 1.0).astype(np.float32, copy=False)
+
+        # Back to original mono/color shape
+        if self._orig_mono:
+            mono = out[..., 0]
+            if len(self._orig_shape) == 3 and self._orig_shape[2] == 1:
+                mono = mono[:, :, None]
+            out_final = mono.astype(np.float32, copy=False)
+        else:
+            out_final = out
+
+        parent = self.parent()
+        if parent is None or not hasattr(parent, "open_numpy_as_new_document"):
+            QMessageBox.warning(
+                self,
+                "Multiscale Decomposition",
+                "Parent window cannot create a new document from an array.\n"
+                "Implement 'open_numpy_as_new_document(img, title)' on the main window."
+            )
+            return
+
+        try:
+            parent.open_numpy_as_new_document(out_final, title="Multiscale Detail")
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Multiscale Decomposition",
+                f"Failed to create new document:\n{e}"
+            )
+
+    def _split_layers_to_docs(self):
+        """
+        Create a new document for each tuned detail layer, using
+        the same mid-gray visualization hack (0.5 + w*4).
+        """
+        tuned, residual = self._build_tuned_layers()
+        if tuned is None or residual is None:
+            return
+
+        parent = self.parent()
+        if parent is None or not hasattr(parent, "open_numpy_as_new_document"):
+            QMessageBox.warning(
+                self,
+                "Multiscale Decomposition",
+                "Parent window cannot create new documents from arrays.\n"
+                "Implement 'open_numpy_as_new_document(img, title)' on the main window."
+            )
+            return
+
+        for i, layer in enumerate(tuned):
+            d = layer.astype(np.float32, copy=False)
+            vis = np.clip(0.5 + d * 4.0, 0.0, 1.0).astype(np.float32, copy=False)
+
+            if self._orig_mono:
+                mono = vis[..., 0]
+                if len(self._orig_shape) == 3 and self._orig_shape[2] == 1:
+                    mono = mono[:, :, None]
+                out_final = mono.astype(np.float32, copy=False)
+            else:
+                out_final = vis
+
+            title = f"Multiscale Detail Layer {i+1}"
+            try:
+                parent.open_numpy_as_new_document(out_final, title=title)
+            except Exception as e:
+                QMessageBox.critical(
+                    self,
+                    "Multiscale Decomposition",
+                    f"Failed to create document for layer {i+1}:\n{e}"
+                )
+                break
 
 
 class _MultiScaleDecompPresetDialog(QDialog):

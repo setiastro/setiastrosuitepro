@@ -9,6 +9,18 @@ Seti Astro Suite Pro - Main Entry Point
 import sys
 import os
 
+# ---- Linux Qt stability guard (must run BEFORE any PyQt6 import) ----
+if sys.platform.startswith("linux"):
+    # If they're on Wayland, many Qt6 + GL stacks can segfault on certain UI ops.
+    # Prefer X11/xcb unless the user explicitly set something else.
+    if os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland":
+        os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
+
+        # Extra safety: force software OpenGL on fragile driver/EGL stacks.
+        # (Users can override by exporting their own values.)
+        os.environ.setdefault("QT_OPENGL", "software")
+        os.environ.setdefault("LIBGL_ALWAYS_SOFTWARE", "1")
+
 # Only run splash logic when executed as main script
 if __name__ == "__main__":
     # Minimal imports for splash screen
@@ -16,6 +28,15 @@ if __name__ == "__main__":
     from PyQt6.QtCore import Qt, QCoreApplication, QRect
     from PyQt6.QtGui import QGuiApplication, QIcon, QPixmap, QColor, QPainter, QFont, QLinearGradient
     
+
+    # If we're forcing software OpenGL, do it *before* QApplication is created.
+    if sys.platform.startswith("linux"):
+        if os.environ.get("QT_OPENGL", "").lower() == "software":
+            try:
+                QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_UseSoftwareOpenGL, True)
+            except Exception:
+                pass
+
     # Set application attributes before creating QApplication
     try:
         QGuiApplication.setHighDpiScaleFactorRoundingPolicy(
@@ -23,15 +44,24 @@ if __name__ == "__main__":
         )
     except Exception:
         pass
-    
+
     QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_DontShowIconsInMenus, False)
     QCoreApplication.setOrganizationName("SetiAstro")
     QCoreApplication.setOrganizationDomain("setiastrosuite.pro")
     QCoreApplication.setApplicationName("Seti Astro Suite Pro")
-    
-    # Create QApplication FIRST
+
+    # Create QApplication
     _app = QApplication(sys.argv)
     
+    if sys.platform.startswith("linux"):
+        try:
+            print("Qt platform:", _app.platformName())
+            print("XDG_SESSION_TYPE:", os.environ.get("XDG_SESSION_TYPE"))
+            print("QT_QPA_PLATFORM:", os.environ.get("QT_QPA_PLATFORM"))
+            print("QT_OPENGL:", os.environ.get("QT_OPENGL"))
+        except Exception:
+            pass
+
     # Determine icon paths early
     def _find_icon_path():
         """Find the best available icon path."""
