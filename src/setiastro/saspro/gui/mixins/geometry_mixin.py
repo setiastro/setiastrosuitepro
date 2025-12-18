@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import QMessageBox, QInputDialog, QDialog
 
 # Import numba-accelerated functions
 try:
-    from numba_utils import (
+    from setiastro.saspro.legacy.numba_utils import (
         invert_image_numba,
         flip_horizontal_numba,
         flip_vertical_numba,

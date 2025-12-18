@@ -28,7 +28,7 @@ def _do_warmup():
     """
     try:
         # Import numba functions - expanded set
-        from numba_utils import (
+        from setiastro.saspro.legacy.numba_utils import (
             # Blending operations (7)
             blend_add_numba,
             blend_subtract_numba,

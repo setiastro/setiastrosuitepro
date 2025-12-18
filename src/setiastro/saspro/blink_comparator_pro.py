@@ -31,7 +31,7 @@ from setiastro.saspro.legacy.image_manager import load_image
 
 from setiastro.saspro.imageops.stretch import stretch_color_image, stretch_mono_image, siril_style_autostretch
 
-from numba_utils import debayer_fits_fast, debayer_raw_fast
+from setiastro.saspro.legacy.numba_utils import debayer_fits_fast, debayer_raw_fast
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 
 

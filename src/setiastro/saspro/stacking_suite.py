@@ -83,7 +83,7 @@ from setiastro.saspro.legacy.numba_utils import (
     finalize_drizzle_2d,
     finalize_drizzle_3d,
 )
-from numba_utils import (
+from setiastro.saspro.legacy.numba_utils import (
     bulk_cosmetic_correction_numba,
     drizzle_deposit_numba_naive,
     drizzle_deposit_color_naive,
