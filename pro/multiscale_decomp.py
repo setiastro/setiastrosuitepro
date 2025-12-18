@@ -98,31 +98,49 @@ def soft_threshold(x: np.ndarray, t: float):
 def apply_layer_ops(
     w: np.ndarray,
     bias_gain: float,
-    thr: float,
+    thr_sigma: float,                 # threshold in units of σ
     amount: float,
     denoise_strength: float = 0.0,
     sigma: float | np.ndarray | None = None,
+    *,
+    mode: str = "Mean",
 ):
     w2 = w
+
+    # --- Linear mode: strictly linear multiscale transform ---
+    if mode == "Linear":
+        # Ignore thresholding and denoise; just apply gain
+        if abs(bias_gain - 1.0) > 1e-6:
+            return w * bias_gain
+        return w
+
 
     # 1) Noise reduction step (MMT-style NR)
     if denoise_strength > 0.0:
         if sigma is None:
             sigma = float(np.std(w2))
+        sigma_f = float(sigma)
         # 3σ at denoise=1, scaled linearly
-        t_dn = max(0.0, denoise_strength * 3.0 * float(sigma))
+        t_dn = max(0.0, denoise_strength * 3.0 * sigma_f)
         if t_dn > 0.0:
             w_dn = soft_threshold(w2, t_dn)
             # Blend original vs denoised based on denoise_strength
             w2 = (1.0 - denoise_strength) * w2 + denoise_strength * w_dn
 
-    # 2) Existing threshold + bias shaping (can act as detail shaping / extra NR)
-    if thr > 0:
-        wt = soft_threshold(w2, thr)
-        w2 = (1.0 - amount) * w2 + amount * wt
+    # 2) Threshold in σ units + bias shaping
+    if thr_sigma > 0.0:
+        if sigma is None:
+            sigma = float(np.std(w2))
+        sigma_f = float(sigma)
+        t = thr_sigma * sigma_f         # convert N·σ → absolute threshold
+        if t > 0.0:
+            wt = soft_threshold(w2, t)
+            w2 = (1.0 - amount) * w2 + amount * wt
+
     if abs(bias_gain - 1.0) > 1e-6:
         w2 = w2 * bias_gain
     return w2
+
 
 # ─────────────────────────────────────────────
 # Layer config
@@ -273,12 +291,23 @@ class MultiscaleDecompDialog(QDialog):
         self.cb_linked_rgb = QCheckBox("Linked RGB (apply same params to all channels)")
         self.cb_linked_rgb.setChecked(True)
 
+        # New: Mode combo (Mean vs Linear)
+        self.combo_mode = QComboBox()
+        self.combo_mode.addItems(["Mean", "Linear"])
+        self.combo_mode.setCurrentText("Mean")
+        self.combo_mode.setToolTip(
+            "Multiscale mode:\n"
+            "• Mean: σ-based thresholding + denoise and gain (nonlinear).\n"
+            "• Linear: strictly linear multiscale transform; only Gain is applied."
+        )
+
         self.combo_preview = QComboBox()
         self._refresh_preview_combo()
 
         form.addRow("Layers:", self.spin_layers)
         form.addRow("Base sigma:", self.spin_sigma)
         form.addRow(self.cb_linked_rgb)
+        form.addRow("Mode:", self.combo_mode)          # <── NEW ROW
         form.addRow("Layer preview:", self.combo_preview)
 
         right.addWidget(gb_global)
@@ -288,7 +317,7 @@ class MultiscaleDecompDialog(QDialog):
         v = QVBoxLayout(gb_layers)
         self.table = QTableWidget(0, 8)
         self.table.setHorizontalHeaderLabels(
-            ["On", "Layer", "Scale", "Gain", "Thr", "Amt", "NR", "Type"]
+            ["On", "Layer", "Scale", "Gain", "Thr (σ)", "Amt", "NR", "Type"]
         )
 
         self.table.verticalHeader().setVisible(False)
@@ -307,30 +336,53 @@ class MultiscaleDecompDialog(QDialog):
         self.spin_gain.setRange(0.0, 3.0)
         self.spin_gain.setSingleStep(0.05)
         self.spin_gain.setValue(1.0)
+        self.spin_gain.setToolTip(
+            "Gain: multiplies the detail coefficients on this layer.\n"
+            "1.0 = unchanged, >1.0 boosts detail, <1.0 reduces it."
+        )
 
         self.spin_thr = QDoubleSpinBox()
-        self.spin_thr.setRange(0.0, 0.10)
-        self.spin_thr.setSingleStep(0.001)
-        self.spin_thr.setDecimals(4)
+        self.spin_thr.setRange(0.0, 10.0)       # N·σ
+        self.spin_thr.setSingleStep(0.1)
+        self.spin_thr.setDecimals(2)
+        self.spin_thr.setToolTip(
+            "Threshold (σ): soft threshold level in units of this layer's noise σ.\n"
+            "0 = no thresholding; 1–3 ≈ mild to strong suppression of small coefficients."
+        )
 
         self.spin_amt = QDoubleSpinBox()
         self.spin_amt.setRange(0.0, 1.0)
         self.spin_amt.setSingleStep(0.05)
+        self.spin_amt.setToolTip(
+            "Amount: blend factor toward the thresholded version of the layer.\n"
+            "0 = ignore thresholding, 1 = fully use the thresholded layer."
+        )
 
         self.spin_denoise = QDoubleSpinBox()
         self.spin_denoise.setRange(0.0, 1.0)
         self.spin_denoise.setSingleStep(0.05)
         self.spin_denoise.setValue(0.0)
+        self.spin_denoise.setToolTip(
+            "Denoise: extra multiscale noise reduction on this layer.\n"
+            "0 = off, 1 = strong NR (≈3σ soft threshold blended in)."
+        )
 
         # --- Sliders (int ranges, mapped to spins) ---
         self.slider_gain = QSlider(Qt.Orientation.Horizontal)
         self.slider_gain.setRange(0, 300)         # 0..3.00
+        self.slider_gain.setToolTip(self.spin_gain.toolTip())
+
         self.slider_thr = QSlider(Qt.Orientation.Horizontal)
-        self.slider_thr.setRange(0, 100)          # 0..0.10 (×0.001)
+        self.slider_thr.setRange(0, 1000)         # 0..10.00 σ (×0.01)
+        self.slider_thr.setToolTip(self.spin_thr.toolTip())
+
         self.slider_amt = QSlider(Qt.Orientation.Horizontal)
         self.slider_amt.setRange(0, 100)          # 0..1.00
+        self.slider_amt.setToolTip(self.spin_amt.toolTip())
+
         self.slider_denoise = QSlider(Qt.Orientation.Horizontal)
         self.slider_denoise.setRange(0, 100)      # 0..1.00
+        self.slider_denoise.setToolTip(self.spin_denoise.toolTip())
 
         # Layout rows: label -> [slider | spinbox]
         ef.addRow(self.lbl_sel)
@@ -343,7 +395,7 @@ class MultiscaleDecompDialog(QDialog):
         thr_row = QHBoxLayout()
         thr_row.addWidget(self.slider_thr)
         thr_row.addWidget(self.spin_thr)
-        ef.addRow("Threshold:", thr_row)
+        ef.addRow("Threshold (σ):", thr_row)
 
         amt_row = QHBoxLayout()
         amt_row.addWidget(self.slider_amt)
@@ -375,6 +427,7 @@ class MultiscaleDecompDialog(QDialog):
         # ----- Signals -----
         self.spin_layers.valueChanged.connect(self._on_layers_changed)
         self.spin_sigma.valueChanged.connect(self._on_global_changed)
+        self.combo_mode.currentIndexChanged.connect(self._on_mode_changed) 
         self.combo_preview.currentIndexChanged.connect(self._schedule_preview)
 
         self.table.itemSelectionChanged.connect(self._on_table_select)
@@ -410,6 +463,10 @@ class MultiscaleDecompDialog(QDialog):
         self.btn_close.clicked.connect(self.reject)
 
     # ---------- Preview plumbing ----------
+    def _on_mode_changed(self, idx: int):
+        # Mode affects how layer ops are applied; just rebuild preview.
+        self._schedule_preview()
+
     def _schedule_preview(self):
         self._preview_timer.start(60)
 
@@ -453,6 +510,8 @@ class MultiscaleDecompDialog(QDialog):
         if details is None or residual is None:
             return
 
+        mode = self.combo_mode.currentText()  # "Mean" or "Linear"
+
         # apply per-layer ops
         tuned = []
         for i, w in enumerate(details):
@@ -471,8 +530,10 @@ class MultiscaleDecompDialog(QDialog):
                         cfg.amount,
                         cfg.denoise,
                         sigma,
+                        mode=mode,          # <── NEW
                     )
                 )
+
 
         # reconstruction (keep raw version for visualization)
         res = residual if self.residual_enabled else np.zeros_like(residual)
@@ -533,12 +594,13 @@ class MultiscaleDecompDialog(QDialog):
         self._on_layer_editor_changed()
 
     def _on_thr_slider_changed(self, v: int):
-        # 0..100 -> 0.000..0.100
-        val = v / 1000.0
+        # 0..1000 -> 0.00..10.00 σ
+        val = v / 100.0
         self.spin_thr.blockSignals(True)
         self.spin_thr.setValue(val)
         self.spin_thr.blockSignals(False)
         self._on_layer_editor_changed()
+
 
     def _on_amt_slider_changed(self, v: int):
         # 0..100 -> 0.00..1.00
@@ -575,9 +637,10 @@ class MultiscaleDecompDialog(QDialog):
                 self.table.setItem(i, 1, QTableWidgetItem(str(i + 1)))
                 self.table.setItem(i, 2, QTableWidgetItem(f"{self.base_sigma * (2**i):.2f}"))
                 self.table.setItem(i, 3, QTableWidgetItem(f"{cfg.bias_gain:.2f}"))
-                self.table.setItem(i, 4, QTableWidgetItem(f"{cfg.thr:.4f}"))
+                self.table.setItem(i, 4, QTableWidgetItem(f"{cfg.thr:.2f}"))   # N·σ
                 self.table.setItem(i, 5, QTableWidgetItem(f"{cfg.amount:.2f}"))
                 self.table.setItem(i, 6, QTableWidgetItem(f"{cfg.denoise:.2f}"))
+
                 self.table.setItem(i, 7, QTableWidgetItem("D"))
 
             # residual row
@@ -695,12 +758,12 @@ class MultiscaleDecompDialog(QDialog):
         self.slider_denoise.blockSignals(True)
         try:
             self.spin_gain.setValue(cfg.bias_gain)
-            self.spin_thr.setValue(cfg.thr)
+            self.spin_thr.setValue(cfg.thr)           # thr is N·σ now
             self.spin_amt.setValue(cfg.amount)
             self.spin_denoise.setValue(cfg.denoise)
 
             self.slider_gain.setValue(int(round(cfg.bias_gain * 100.0)))
-            self.slider_thr.setValue(int(round(cfg.thr * 1000.0)))
+            self.slider_thr.setValue(int(round(cfg.thr * 100.0)))   # N·σ → 0..1000
             self.slider_amt.setValue(int(round(cfg.amount * 100.0)))
             self.slider_denoise.setValue(int(round(cfg.denoise * 100.0)))
         finally:
@@ -729,9 +792,10 @@ class MultiscaleDecompDialog(QDialog):
         self.table.blockSignals(True)
         try:
             self.table.item(idx, 3).setText(f"{cfg.bias_gain:.2f}")
-            self.table.item(idx, 4).setText(f"{cfg.thr:.4f}")
+            self.table.item(idx, 4).setText(f"{cfg.thr:.2f}")      # N·σ
             self.table.item(idx, 5).setText(f"{cfg.amount:.2f}")
             self.table.item(idx, 6).setText(f"{cfg.denoise:.2f}")
+
         finally:
             self.table.blockSignals(False)
 
@@ -765,6 +829,8 @@ class MultiscaleDecompDialog(QDialog):
         if details is None or residual is None:
             return
 
+        mode = self.combo_mode.currentText()   # "Mean" or "Linear"
+
         tuned = []
         for i, w in enumerate(details):
             cfg = self.cfgs[i]
@@ -782,6 +848,7 @@ class MultiscaleDecompDialog(QDialog):
                         cfg.amount,
                         cfg.denoise,
                         sigma,
+                        mode=mode,          # <── NEW
                     )
                 )
 
@@ -858,7 +925,9 @@ class _MultiScaleDecompPresetDialog(QDialog):
         lv = QVBoxLayout(gb_layers)
 
         self.table = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(["On", "Layer", "Gain", "Threshold", "Amount", "Denoise"])
+        self.table.setHorizontalHeaderLabels(
+            ["On", "Layer", "Gain", "Thr (σ)", "Amount", "Denoise"]
+        )
 
         self.table.verticalHeader().setVisible(False)
         lv.addWidget(self.table)
@@ -898,10 +967,11 @@ class _MultiScaleDecompPresetDialog(QDialog):
             self.table.setItem(i, 0, chk)
 
             self.table.setItem(i, 1, QTableWidgetItem(str(i + 1)))
-            self.table.setItem(i, 2, QTableWidgetItem(f"{float(cfg.get('gain', 1.0)):.2f}"))
-            self.table.setItem(i, 3, QTableWidgetItem(f"{float(cfg.get('thr', 0.0)):.4f}"))
+            self.table.setItem(i, 2, QTableWidgetItem(f"{float(cfg.get('gain',   1.0)):.2f}"))
+            self.table.setItem(i, 3, QTableWidgetItem(f"{float(cfg.get('thr',    0.0)):.2f}"))  # N·σ
             self.table.setItem(i, 4, QTableWidgetItem(f"{float(cfg.get('amount', 0.0)):.2f}"))
-            self.table.setItem(i, 5, QTableWidgetItem(f"{float(cfg.get('denoise', 0.0)):.2f}"))
+            self.table.setItem(i, 5, QTableWidgetItem(f"{float(cfg.get('denoise',0.0)):.2f}"))
+
 
 
     def result_dict(self) -> dict:
