@@ -14,3 +14,7 @@ except ImportError:
     # During initial setup, some modules may not be available
     __all__ = []
 
+# Expose main entry point for package script
+from .__main__ import main
+__all__.append("main")
+
