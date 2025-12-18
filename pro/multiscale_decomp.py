@@ -11,7 +11,9 @@ from PyQt6.QtWidgets import (
     QPushButton, QComboBox, QSpinBox, QDoubleSpinBox, QCheckBox,
     QTableWidget, QTableWidgetItem, QWidget, QLabel, QGraphicsView,
     QGraphicsScene, QGraphicsPixmapItem, QMessageBox, QToolButton, QSlider, QSplitter,
+    QProgressDialog, QApplication
 )
+
 
 
 class _ZoomPanView(QGraphicsView):
@@ -191,10 +193,6 @@ class LayerCfg:
 # ─────────────────────────────────────────────
 
 class MultiscaleDecompDialog(QDialog):
-    """
-    PI-style multiscale decomposition (MMT-like) dialog.
-    Decompose into detail layers + residual, let user tune per-layer ops, preview, apply to doc.
-    """
     def __init__(self, parent, doc):
         super().__init__(parent)
         self.setWindowTitle("Multiscale Decomposition")
@@ -207,7 +205,7 @@ class MultiscaleDecompDialog(QDialog):
         if base is None:
             raise RuntimeError("Document has no image.")
 
-        # normalize to float32 [0..1] (match your other tools’ convention)
+        # normalize to float32 [0..1] ...
         img = np.asarray(base)
         img = img.astype(np.float32, copy=False)
         if img.dtype.kind in "ui":
@@ -218,7 +216,7 @@ class MultiscaleDecompDialog(QDialog):
         self._orig_shape = img.shape
         self._orig_mono = (img.ndim == 2) or (img.ndim == 3 and img.shape[2] == 1)
 
-        # force display buffer to 3ch (like your other dialogs)
+        # force display buffer to 3ch ...
         if img.ndim == 2:
             img3 = np.repeat(img[:, :, None], 3, axis=2)
         elif img.ndim == 3 and img.shape[2] == 1:
@@ -230,9 +228,9 @@ class MultiscaleDecompDialog(QDialog):
         self._preview_img = img3.copy()
 
         # decomposition cache
-        self._cached_layers = None     # list[np.ndarray]
+        self._cached_layers = None
         self._cached_residual = None
-        self._cached_key = None        # (layers, base_sigma)
+        self._cached_key = None
 
         # per-layer configs
         self.layers = 4
@@ -245,9 +243,25 @@ class MultiscaleDecompDialog(QDialog):
         self._preview_timer.timeout.connect(self._rebuild_preview)
 
         self._build_ui()
+
+        # ───── NEW: initialization busy dialog ─────
+        prog = QProgressDialog("Initializing multiscale decomposition…", "", 0, 0, self)
+        prog.setWindowTitle("Multiscale Decomposition")
+        prog.setWindowModality(Qt.WindowModality.ApplicationModal)
+        prog.setCancelButton(None)          # no cancel button, just a busy indicator
+        prog.setMinimumDuration(0)          # show immediately
+        prog.show()
+        QApplication.processEvents()
+
+        # heavy work (MADs, blurs, etc.)
         self._recompute_decomp(force=True)
         self._rebuild_preview()
+
+        prog.close()
+        # ─────────────── END NEW ───────────────
+
         QTimer.singleShot(0, self._fit_view)
+
 
     # ---------- UI ----------
     def _build_ui(self):
@@ -869,7 +883,7 @@ class MultiscaleDecompDialog(QDialog):
         if details is None or residual is None:
             return
 
-        mode = self.combo_mode.currentText()   # "Mean" or "Linear"
+        mode = self.combo_mode.currentText()   # "μ–σ Thresholding" or "Linear"
 
         tuned = []
         for i, w in enumerate(details):
@@ -888,13 +902,20 @@ class MultiscaleDecompDialog(QDialog):
                         cfg.amount,
                         cfg.denoise,
                         sigma,
-                        mode=mode,          # <── NEW
+                        mode=mode,
                     )
                 )
 
+        # --- Reconstruction (match preview behavior) ---
         res = residual if self.residual_enabled else np.zeros_like(residual)
-        out = multiscale_reconstruct(tuned, res)
-        out = np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
+        out_raw = multiscale_reconstruct(tuned, res)
+
+        if not self.residual_enabled:
+            # Detail-only result: same “mid-gray + gain” hack as preview
+            d = out_raw.astype(np.float32, copy=False)
+            out = np.clip(0.5 + d * 4.0, 0.0, 1.0).astype(np.float32, copy=False)
+        else:
+            out = np.clip(out_raw, 0.0, 1.0).astype(np.float32, copy=False)
 
         # convert back to mono if original was mono
         if self._orig_mono:
@@ -916,7 +937,6 @@ class MultiscaleDecompDialog(QDialog):
             QMessageBox.critical(self, "Multiscale Decomposition", f"Failed to write to document:\n{e}")
             return
 
-        # refresh active view if main window has hook
         if hasattr(self.parent(), "_refresh_active_view"):
             try:
                 self.parent()._refresh_active_view()
