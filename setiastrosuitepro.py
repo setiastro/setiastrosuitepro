@@ -3,7 +3,8 @@
 """
 Seti Astro Suite Pro - Main Entry Point
 """
-
+import sys
+import os
 # Show splash screen IMMEDIATELY before any heavy imports
 
 # ---- Linux Qt stability guard (must run BEFORE any PyQt6 import) ----
