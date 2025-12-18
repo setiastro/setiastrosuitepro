@@ -73,7 +73,22 @@ if __name__ == "__main__":
             base = sys._MEIPASS
         else:
             # When running from setiastrosuitepro.py at project root, base is the project root
+            # This takes priority - if this file exists, use its directory
             base = os.path.dirname(os.path.abspath(__file__))
+            images_dir = os.path.join(base, 'images')
+            
+            # If images don't exist here, check installed package location
+            if not os.path.exists(images_dir):
+                try:
+                    import setiastro
+                    package_dir = os.path.dirname(os.path.abspath(setiastro.__file__))
+                    # Check if images/ exists at package root level (for pip-installed packages)
+                    package_parent = os.path.dirname(package_dir)
+                    images_dir_installed = os.path.join(package_parent, 'images')
+                    if os.path.exists(images_dir_installed):
+                        base = package_parent
+                except (ImportError, AttributeError):
+                    pass
         
         candidates = [
             os.path.join(base, "images", "astrosuitepro.png"),
