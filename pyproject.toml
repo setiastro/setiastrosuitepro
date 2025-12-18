@@ -95,7 +95,7 @@ build-backend = "poetry.core.masonry.api"
 # Optional extras can be added here if needed in the future
 
 [tool.poetry.scripts]
-setiastrosuitepro = "setiastrosuitepro:main"
+setiastrosuitepro = "setiastro.saspro:main"
 saspro-export-requirements = "ops.export_requirements:main"
 saspro-write-build-info = "ops.write_build_info:main"
 saspro-prime-matplotlib-cache = "ops.prime_matplotlib_cache:main"

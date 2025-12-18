@@ -30,11 +30,28 @@ def _get_base_path() -> str:
             main_module = sys.modules['__main__']
             if hasattr(main_module, '__file__') and main_module.__file__:
                 main_file = main_module.__file__
+                main_dir = os.path.dirname(os.path.abspath(main_file))
+                
+                # Case 1: Running setiastrosuitepro.py directly
                 if os.path.basename(main_file) == 'setiastrosuitepro.py':
-                    main_dir = os.path.dirname(os.path.abspath(main_file))
                     images_dir = os.path.join(main_dir, 'images')
                     if os.path.exists(images_dir):
                         return main_dir
+                
+                # Case 2: Running as module (python -m setiastro.saspro)
+                # __main__.py is at src/setiastro/saspro/__main__.py
+                # Need to go up 4 levels to reach project root
+                if os.path.basename(main_file) == '__main__.py':
+                    # Walk up from __main__.py to find project root with images/
+                    search_dir = main_dir
+                    for _ in range(6):  # Don't go too far up
+                        images_dir = os.path.join(search_dir, 'images')
+                        if os.path.exists(images_dir):
+                            return search_dir
+                        parent = os.path.dirname(search_dir)
+                        if parent == search_dir:  # Reached filesystem root
+                            break
+                        search_dir = parent
         
         # Check current working directory for setiastrosuitepro.py
         # This handles the case where user runs: python setiastrosuitepro.py
@@ -46,13 +63,12 @@ def _get_base_path() -> str:
                 return cwd
         
         # Also check parent directories (in case we're in a subdirectory)
-        # Walk up from current file location looking for setiastrosuitepro.py
+        # Walk up from current file location looking for images/ directory
         current_file = os.path.abspath(__file__)
         search_dir = os.path.dirname(current_file)
         for _ in range(6):  # Don't go too far up
-            main_script = os.path.join(search_dir, 'setiastrosuitepro.py')
             images_dir = os.path.join(search_dir, 'images')
-            if os.path.exists(main_script) and os.path.exists(images_dir):
+            if os.path.exists(images_dir):
                 return search_dir
             parent = os.path.dirname(search_dir)
             if parent == search_dir:  # Reached filesystem root
