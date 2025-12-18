@@ -942,10 +942,19 @@ class MultiscaleDecompDialog(QDialog):
     def _send_detail_to_new_doc(self):
         """
         Reconstruct detail-only result (no residual), apply the same
-        mid-gray scaling hack, and open it as a new document.
+        mid-gray scaling hack, and send it to DocManager as a new document.
         """
         tuned, residual = self._build_tuned_layers()
         if tuned is None or residual is None:
+            return
+
+        dm = self._get_doc_manager()
+        if dm is None:
+            QMessageBox.warning(
+                self,
+                "Multiscale Decomposition",
+                "No DocManager available to create a new document."
+            )
             return
 
         # Detail-only: residual forced to zero
@@ -965,18 +974,11 @@ class MultiscaleDecompDialog(QDialog):
         else:
             out_final = out
 
-        parent = self.parent()
-        if parent is None or not hasattr(parent, "open_numpy_as_new_document"):
-            QMessageBox.warning(
-                self,
-                "Multiscale Decomposition",
-                "Parent window cannot create a new document from an array.\n"
-                "Implement 'open_numpy_as_new_document(img, title)' on the main window."
-            )
-            return
+        title = "Multiscale Detail"
+        meta = self._build_new_doc_metadata(title, out_final)
 
         try:
-            parent.open_numpy_as_new_document(out_final, title="Multiscale Detail")
+            dm.create_document(out_final, metadata=meta, name=title)
         except Exception as e:
             QMessageBox.critical(
                 self,
@@ -984,22 +986,22 @@ class MultiscaleDecompDialog(QDialog):
                 f"Failed to create new document:\n{e}"
             )
 
+
     def _split_layers_to_docs(self):
         """
         Create a new document for each tuned detail layer, using
-        the same mid-gray visualization hack (0.5 + w*4).
+        the same mid-gray visualization hack (0.5 + w*4), via DocManager.
         """
         tuned, residual = self._build_tuned_layers()
         if tuned is None or residual is None:
             return
 
-        parent = self.parent()
-        if parent is None or not hasattr(parent, "open_numpy_as_new_document"):
+        dm = self._get_doc_manager()
+        if dm is None:
             QMessageBox.warning(
                 self,
                 "Multiscale Decomposition",
-                "Parent window cannot create new documents from arrays.\n"
-                "Implement 'open_numpy_as_new_document(img, title)' on the main window."
+                "No DocManager available to create new documents."
             )
             return
 
@@ -1016,8 +1018,10 @@ class MultiscaleDecompDialog(QDialog):
                 out_final = vis
 
             title = f"Multiscale Detail Layer {i+1}"
+            meta = self._build_new_doc_metadata(title, out_final)
+
             try:
-                parent.open_numpy_as_new_document(out_final, title=title)
+                dm.create_document(out_final, metadata=meta, name=title)
             except Exception as e:
                 QMessageBox.critical(
                     self,
@@ -1025,6 +1029,56 @@ class MultiscaleDecompDialog(QDialog):
                     f"Failed to create document for layer {i+1}:\n{e}"
                 )
                 break
+
+
+    def _get_doc_manager(self):
+        """
+        Best-effort: find the DocManager that owns the source document.
+        Prefer the doc's own _doc_manager; fall back to parent.doc_manager.
+        """
+        doc = getattr(self, "_doc", None)
+        dm = getattr(doc, "_doc_manager", None) if doc is not None else None
+
+        if dm is None:
+            parent = self.parent()
+            dm = getattr(parent, "doc_manager", None) if parent is not None else None
+
+        return dm
+
+    def _build_new_doc_metadata(self, title: str, img: np.ndarray) -> dict:
+        """
+        Clone the source document's metadata and sanitize it for a brand-new doc.
+        """
+        base_doc = getattr(self, "_doc", None)
+        base_meta = getattr(base_doc, "metadata", {}) or {}
+        meta = dict(base_meta)
+
+        # New display name
+        if title:
+            meta["display_name"] = title
+
+        # Drop things that make it look linked/preview/ROI
+        imi = dict(meta.get("image_meta") or {})
+        for k in ("readonly", "view_kind", "derived_from", "layer", "layer_index", "linked"):
+            imi.pop(k, None)
+        meta["image_meta"] = imi
+
+        # Remove any ROI-ish keys
+        for k in list(meta.keys()):
+            if k.startswith("_roi_") or k.endswith("_roi") or k == "roi":
+                meta.pop(k, None)
+
+        # For a brand-new doc, don't keep the original file_path
+        meta.pop("file_path", None)
+
+        # Normalize mono flag
+        if isinstance(img, np.ndarray):
+            meta["is_mono"] = (img.ndim == 2 or (img.ndim == 3 and img.shape[2] == 1))
+
+        # Keep bit depth / headers / WCS as-is; DocManager.open_array() will
+        # ensure bit_depth etc. are sane.
+        return meta
+
 
 
 class _MultiScaleDecompPresetDialog(QDialog):
