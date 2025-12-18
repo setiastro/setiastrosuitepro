@@ -190,7 +190,7 @@ from setiastro.saspro.resources import (
     dse_icon_path, astrobin_filters_csv_path, isophote_path, statstretch_path,
     starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path,
     nbtorgb_path, freqsep_path, contsub_path, halo_path, cosmic_path,
-    satellite_path, imagecombine_path, wrench_path, eye_icon_path,
+    satellite_path, imagecombine_path, wrench_path, eye_icon_path,multiscale_decomp_path,
     disk_icon_path, nuke_path, hubble_path, collage_path, annotated_path,
     colorwheel_path, font_path, csv_icon_path, spinner_path, wims_path,
     wimi_path, linearfit_path, debayer_path, aberration_path,
@@ -1566,11 +1566,11 @@ class AstroSuiteProMainWindow(
         shortcuts_menu = None
         for act in self.menuBar().actions():
             m = act.menu()
-            if m and (m.title().replace("&", "").strip().lower() == "shortcuts"):
+            if m and (m.title().replace("&", "").strip().lower() == "view"):
                 shortcuts_menu = m
                 break
         if shortcuts_menu is None:
-            shortcuts_menu = self.menuBar().addMenu("&Shortcuts")
+            shortcuts_menu = self.menuBar().addMenu("&View")
 
         self._menu_view_panels = shortcuts_menu.addMenu("View Panels")
         self._view_panels_actions = {}
@@ -3751,7 +3751,14 @@ class AstroSuiteProMainWindow(
             return
         from setiastro.saspro.multiscale_decomp import MultiscaleDecompDialog
         dlg = MultiscaleDecompDialog(self, doc)
-        dlg.exec()
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        dlg.setWindowTitle("Multiscale Decomposition")
+        try:
+            dlg.setWindowIcon(QIcon(multiscale_decomp_path))
+        except Exception:
+            pass
+
+        dlg.show()  
 
     def _open_contsub_tool(self):
         from setiastro.saspro.continuum_subtract import ContinuumSubtractTab

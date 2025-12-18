@@ -114,6 +114,12 @@ class DraggableToolBar(QToolBar):
         self._dragging_from: QToolButton | None = None
         self._press_had_mod: dict[QToolButton, bool] = {}
         self._suppress_release: set[QToolButton] = set()
+        self._settings_key: str | None = None
+
+    # NEW: called by main window / mixin
+    def setSettingsKey(self, key: str):
+        """Set the settings key for persisting toolbar state."""
+        self._settings_key = str(key)
 
     def _mods_ok(self, mods: Qt.KeyboardModifiers) -> bool:
         return bool(mods & (
