@@ -129,6 +129,65 @@ class DraggableToolBar(QToolBar):
     def setSettingsKey(self, key: str):
         self._settings_key = str(key)
 
+    def _settings(self):
+        mw = self.window()
+        s = getattr(mw, "settings", None)
+        if s is None:
+            from PyQt6.QtCore import QSettings
+            s = QSettings()
+        return s
+
+    def _action_id(self, act: QAction) -> str | None:
+        cid = act.property("command_id") or act.objectName()
+        return str(cid) if cid else None
+
+    def _hidden_key(self) -> str | None:
+        if not self._settings_key:
+            return None
+        return f"{self._settings_key}/Hidden"
+
+    def _load_hidden_set(self) -> set[str]:
+        k = self._hidden_key()
+        if not k:
+            return set()
+        s = self._settings()
+        raw = s.value(k, [], type=list)
+        # QSettings sometimes returns strings instead of list depending on backend
+        if isinstance(raw, str):
+            return {raw}
+        return {str(x) for x in (raw or [])}
+
+    def _save_hidden_set(self, hidden: set[str]):
+        k = self._hidden_key()
+        if not k:
+            return
+        s = self._settings()
+        s.setValue(k, sorted(hidden))
+
+    def _set_action_hidden(self, act: QAction, hide: bool):
+        cid = self._action_id(act)
+        if not cid:
+            return
+        hidden = self._load_hidden_set()
+        if hide:
+            hidden.add(cid)
+            act.setVisible(False)
+        else:
+            hidden.discard(cid)
+            act.setVisible(True)
+        self._save_hidden_set(hidden)
+
+    def apply_hidden_state(self):
+        """Call after toolbar is populated / order restored."""
+        hidden = self._load_hidden_set()
+        if not hidden:
+            return
+        for act in self.actions():
+            cid = self._action_id(act)
+            if cid and cid in hidden:
+                act.setVisible(False)
+
+
     def _persist_order(self):
         """Persist current action order (by command_id/objectName) to QSettings."""
         if not self._settings_key:
@@ -401,11 +460,52 @@ class DraggableToolBar(QToolBar):
 
     def _show_toolbutton_context_menu(self, btn: QToolButton, act: QAction, gpos: QPoint):
         m = QMenu(btn)
+
         m.addAction("Create Desktop Shortcut", lambda: self._add_shortcut_for_action(act))
+
+        # Hide this icon
+        cid = self._action_id(act)
+        if cid:
+            m.addSeparator()
+            m.addAction("Hide this icon", lambda: self._set_action_hidden(act, True))
+
         # (Optional) teach users about Alt+Drag:
         m.addSeparator()
-        m.addAction("Tip: Alt+Drag to create", lambda: None).setEnabled(False)
+        tip = m.addAction("Tip: Alt+Drag to create")
+        tip.setEnabled(False)
+
         m.exec(gpos)
+
+    def contextMenuEvent(self, ev):
+        # Right-click on empty toolbar area
+        m = QMenu(self)
+
+        # Submenu listing hidden actions for this toolbar
+        hidden = self._load_hidden_set()
+        sub = m.addMenu("Show hidden…")
+
+        # Build list from actions that are currently invisible
+        any_hidden = False
+        for act in self.actions():
+            cid = self._action_id(act)
+            if cid and (cid in hidden) and (not act.isVisible()):
+                any_hidden = True
+                sub.addAction(act.text() or cid, lambda a=act: self._set_action_hidden(a, False))
+
+        if not any_hidden:
+            sub.setEnabled(False)
+
+        m.addSeparator()
+        m.addAction("Reset hidden icons", self._reset_hidden_icons)
+
+        m.exec(ev.globalPos())
+
+    def _reset_hidden_icons(self):
+        # Show everything and clear hidden list
+        for act in self.actions():
+            act.setVisible(True)
+        self._save_hidden_set(set())
+
 
 _PRESET_UI_IDS = {
     "stat_stretch","star_stretch","crop","curves","ghs","abe","graxpert",

@@ -288,6 +288,13 @@ class ToolbarMixin:
         self._restore_toolbar_order(tb_bundle, "Toolbar/Bundles")
         self._restore_toolbar_memberships()
 
+        # Apply persisted "hidden icons" state to all draggable toolbars
+        for _tb in self.findChildren(DraggableToolBar):
+            try:
+                _tb.apply_hidden_state()
+            except Exception:
+                pass
+
     def _create_actions(self):
         # File actions
         self.act_open = QAction(QIcon(openfile_path), "Open...", self)
