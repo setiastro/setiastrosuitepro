@@ -152,7 +152,7 @@ def run_star_alignment_via_preset(app, preset: dict, target_doc) -> None:
     target_doc: document object for the drop target
     Behavior mirrors other *_via_preset helpers: overwrite or create new view.
     """
-    from legacy.image_manager import load_image  # for file ref
+    from setiastro.saspro.legacy.image_manager import load_image  # for file ref
 
     # ---- resolve target image ----
     if target_doc is None or getattr(target_doc, "image", None) is None:

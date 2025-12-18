@@ -4,7 +4,7 @@ import numpy as np
 
 # ---- Try Numba kernels from legacy ----
 try:
-    from legacy.numba_utils import (
+    from setiastro.saspro.legacy.numba_utils import (
         numba_mono_final_formula,
         numba_color_final_formula_linked,
         numba_color_final_formula_unlinked,

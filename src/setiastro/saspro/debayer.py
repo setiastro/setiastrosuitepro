@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
 
 # fast kernels you already have
 try:
-    from legacy.numba_utils import debayer_fits_fast
+    from setiastro.saspro.legacy.numba_utils import debayer_fits_fast
 except Exception as e:  # very unlikely in your env
     debayer_fits_fast = None
 

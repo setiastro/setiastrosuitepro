@@ -22,7 +22,7 @@ from scipy.interpolate import PchipInterpolator
 from setiastro.saspro.curves_preset import _sanitize_scene_points, _norm_mode
 
 try:
-    from legacy.numba_utils import (
+    from setiastro.saspro.legacy.numba_utils import (
         apply_lut_gray          as _nb_apply_lut_gray,
         apply_lut_color         as _nb_apply_lut_color,
         apply_lut_mono_inplace  as _nb_apply_lut_mono_inplace,

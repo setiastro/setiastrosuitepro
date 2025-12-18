@@ -92,7 +92,7 @@ from numba_utils import (
 from setiastro.saspro.legacy.image_manager import load_image, save_image, get_valid_header
 from setiastro.saspro.star_alignment import StarRegistrationWorker, StarRegistrationThread, IDENTITY_2x3
 from setiastro.saspro.log_bus import LogBus
-from pro import comet_stacking as CS
+from setiastro.saspro import comet_stacking as CS
 #from setiastro.saspro.remove_stars import starnet_starless_from_array, darkstar_starless_from_array
 from setiastro.saspro.mfdeconv import MultiFrameDeconvWorker
 from setiastro.saspro.mfdeconvcudnn import MultiFrameDeconvWorkercuDNN
@@ -613,7 +613,7 @@ def _apply_master_dark_light(light: np.ndarray, dark: np.ndarray, is_mono: bool,
     - dark:  HxW or CHW/HWC; automatically matched
     Uses your numba kernel for exact behavior.
     """
-    from legacy.numba_utils import subtract_dark_with_pedestal as _sub
+    from setiastro.saspro.legacy.numba_utils import subtract_dark_with_pedestal as _sub
 
     if is_mono or light.ndim == 2:
         # mono path
@@ -4474,7 +4474,7 @@ class StackingSuiteDialog(QDialog):
                                 import logging
                                 logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
                             try:
-                                from legacy.numba_utils import debayer_raw_fast
+                                from setiastro.saspro.legacy.numba_utils import debayer_raw_fast
                                 return debayer_raw_fast(image, bayer_pattern=token, cfa_drizzle=cfa, method="edge")
                             except Exception:
                                 
@@ -4510,7 +4510,7 @@ class StackingSuiteDialog(QDialog):
                             import logging
                             logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
                         try:
-                            from legacy.numba_utils import debayer_raw_fast
+                            from setiastro.saspro.legacy.numba_utils import debayer_raw_fast
                             return debayer_raw_fast(image, bayer_pattern=token, cfa_drizzle=cfa, method="edge")
                         except Exception:
                             return debayer_fits_fast(image, token, cfa_drizzle=cfa)
@@ -4525,7 +4525,7 @@ class StackingSuiteDialog(QDialog):
             bp = (str(header.get('BAYERPAT') or header.get('BAYERPATN') or header.get('CFA_PATTERN') or "")).upper()
             if bp in {"RGGB","BGGR","GRBG","GBRG"}:
                 try:
-                    from legacy.numba_utils import debayer_raw_fast
+                    from setiastro.saspro.legacy.numba_utils import debayer_raw_fast
                     return debayer_raw_fast(image, bayer_pattern=bp, cfa_drizzle=cfa, method="edge")
                 except Exception:
                     return debayer_fits_fast(image, bp, cfa_drizzle=cfa)
@@ -12799,7 +12799,7 @@ class StackingSuiteDialog(QDialog):
         # XISF path
         if ext == ".xisf":
             try:
-                from legacy.xisf import XISF
+                from setiastro.saspro.legacy.xisf import XISF
                 x = XISF(fp)
                 ims = x.get_images_metadata()
                 if not ims:
@@ -12845,7 +12845,7 @@ class StackingSuiteDialog(QDialog):
                 hdr  = fits.getheader(fp, ext=0)
                 img = np.asanyarray(data)
             elif ext == ".xisf":
-                from legacy.xisf import XISF
+                from setiastro.saspro.legacy.xisf import XISF
                 x = XISF(fp)
                 ims = x.get_images_metadata()
                 if not ims:
@@ -12892,11 +12892,11 @@ class StackingSuiteDialog(QDialog):
         ext = os.path.splitext(fp)[1].lower()
         try:
             if ext in (".fits", ".fit", ".fz"):
-                from legacy.image_manager import load_image as legacy_load_image
+                from setiastro.saspro.legacy.image_manager import load_image as legacy_load_image
                 img, hdr, _, _ = legacy_load_image(fp)
                 return img, (hdr or fits.Header())
             if ext == ".xisf":
-                from legacy.xisf import XISF
+                from setiastro.saspro.legacy.xisf import XISF
                 x = XISF(fp)
                 ims = x.get_images_metadata()
                 if not ims:
@@ -12913,7 +12913,7 @@ class StackingSuiteDialog(QDialog):
                 hdr_like = ims[0]  # carry XISF image metadata dict
                 return a, hdr_like
             # generic images (TIFF/PNG/JPEG)
-            from legacy.image_manager import load_image as legacy_load_image
+            from setiastro.saspro.legacy.image_manager import load_image as legacy_load_image
             img, hdr, _, _ = legacy_load_image(fp)
             return img, (hdr or {})
         except Exception:

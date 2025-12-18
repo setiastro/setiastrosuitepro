@@ -181,7 +181,7 @@ def atrous_reconstruct(planes: list[np.ndarray]) -> np.ndarray:
 # ─────────────────────────────────────────────────────────────────────────────
 
 try:
-    from legacy.numba_utils import (
+    from setiastro.saspro.legacy.numba_utils import (
         rgb_to_xyz_numba, xyz_to_lab_numba,
         lab_to_xyz_numba, xyz_to_rgb_numba,
     )

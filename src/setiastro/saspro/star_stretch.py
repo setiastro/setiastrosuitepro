@@ -16,7 +16,7 @@ from setiastro.saspro.widgets.image_utils import to_float01 as _to_float01
 
 # --- use your Numba kernels; fall back to pure numpy SCNR if needed ----
 try:
-    from legacy.numba_utils import applyPixelMath_numba, applySCNR_numba
+    from setiastro.saspro.legacy.numba_utils import applyPixelMath_numba, applySCNR_numba
     _HAS_NUMBA = True
 except Exception:
     _HAS_NUMBA = False

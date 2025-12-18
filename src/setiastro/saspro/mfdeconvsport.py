@@ -27,7 +27,7 @@ NO_GRAD = contextlib.nullcontext  # fallback
 _XISF_READERS = []
 try:
     # e.g. your legacy module
-    from legacy import xisf as _legacy_xisf
+    from setiastro.saspro.legacy import xisf as _legacy_xisf
     if hasattr(_legacy_xisf, "read"):
         _XISF_READERS.append(lambda p: _legacy_xisf.read(p))
     elif hasattr(_legacy_xisf, "open"):
@@ -36,7 +36,7 @@ except Exception:
     pass
 try:
     # sometimes projects expose a generic load_image
-    from legacy.image_manager import load_image as _generic_load_image  # adjust if needed
+    from setiastro.saspro.legacy.image_manager import load_image as _generic_load_image  # adjust if needed
     _XISF_READERS.append(lambda p: _generic_load_image(p)[0])
 except Exception:
     pass

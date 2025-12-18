@@ -140,7 +140,7 @@ import math
 
 
 #from setiastro.saspro.subwindow import ImageSubWindow, TableSubWindow
-#from legacy.image_manager import ImageManager
+#from setiastro.saspro.legacy.image_manager import ImageManager
 
 
 from setiastro.saspro.autostretch import autostretch
@@ -3581,7 +3581,7 @@ class AstroSuiteProMainWindow(
     def _open_cosmic_clarity_ui(self):
         print("Opening Cosmic Clarity UI...")
         try:
-            from pro import cosmicclarity as cc
+            from setiastro.saspro import cosmicclarity as cc
             CosmicClarityDialogPro = cc.CosmicClarityDialogPro
         except Exception as e:
             import traceback
@@ -7095,7 +7095,7 @@ class AstroSuiteProMainWindow(
         """
         import numpy as np
         try:
-            from legacy.numba_utils import applyPixelMath_numba, applySCNR_numba
+            from setiastro.saspro.legacy.numba_utils import applyPixelMath_numba, applySCNR_numba
             _has_numba = True
         except Exception:
             _has_numba = False

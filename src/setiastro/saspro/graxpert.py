@@ -20,7 +20,7 @@ from setiastro.saspro.config import Config
 # Prefer the exact loader you used in SASv2
 try:
     # adjust this import path if your loader lives elsewhere
-    from legacy.image_manager import load_image as _legacy_load_image
+    from setiastro.saspro.legacy.image_manager import load_image as _legacy_load_image
 except Exception:
     _legacy_load_image = None
 

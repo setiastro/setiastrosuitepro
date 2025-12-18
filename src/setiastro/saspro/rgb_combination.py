@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 
 try:
-    from legacy.image_manager import load_image
+    from setiastro.saspro.legacy.image_manager import load_image
 except Exception:
     load_image = None
 

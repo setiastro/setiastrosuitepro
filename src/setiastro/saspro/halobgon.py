@@ -14,8 +14,8 @@ from PyQt6.QtWidgets import (
 
 # -------- Optional numba utils (LUT in-place speedups) --------------------
 try:
-    from legacy.numba_utils import apply_lut_mono_inplace as _lut_mono_inplace
-    from legacy.numba_utils import apply_lut_color_inplace as _lut_color_inplace
+    from setiastro.saspro.legacy.numba_utils import apply_lut_mono_inplace as _lut_mono_inplace
+    from setiastro.saspro.legacy.numba_utils import apply_lut_color_inplace as _lut_color_inplace
 except Exception:
     _lut_mono_inplace = None
     _lut_color_inplace = None

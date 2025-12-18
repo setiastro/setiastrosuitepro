@@ -187,7 +187,7 @@ import math
 
 from setiastro.saspro.legacy.image_manager import load_image, save_image
 from setiastro.saspro.imageops.stretch import stretch_color_image, stretch_mono_image
-from pro import minorbodycatalog as mbc
+from setiastro.saspro import minorbodycatalog as mbc
 
 
 # Determine if running inside a PyInstaller bundle
@@ -2423,7 +2423,7 @@ class MinorBodyDownloadWorker(QThread):
 
     def run(self):
         try:
-            from pro import minorbodycatalog as mbc
+            from setiastro.saspro import minorbodycatalog as mbc
             db_path, manifest = mbc.ensure_minor_body_db(
                 data_dir=self.data_dir,
                 manifest_url=mbc.MANIFEST_URL,
@@ -5603,7 +5603,7 @@ class WIMIDialog(QDialog):
     def _load_minor_db_path(self) -> str:
         """Load cached DB path from QSettings and update the label."""
         from pathlib import Path
-        from pro import minorbodycatalog as mbc
+        from setiastro.saspro import minorbodycatalog as mbc
 
         path = self.settings.value("wimi/minorbody_db_path", "", type=str)
         self.minor_db_path = path or ""
@@ -5650,7 +5650,7 @@ class WIMIDialog(QDialog):
         Shift-clicking the button sets force=True (handled in the click slot).
         """
         from PyQt6.QtCore import QEventLoop
-        from pro import minorbodycatalog as mbc
+        from setiastro.saspro import minorbodycatalog as mbc
 
         data_dir = self._minorbody_data_dir()
 
@@ -6264,7 +6264,7 @@ class WIMIDialog(QDialog):
         from astropy.time import Time
         import pandas as pd
         import sqlite3
-        from pro import minorbodycatalog as mbc
+        from setiastro.saspro import minorbodycatalog as mbc
 
         db_path = Path(db_path)
         if not db_path.is_file():

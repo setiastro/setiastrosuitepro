@@ -67,7 +67,7 @@ class XISF:
 
     Usage example:
     ```
-    from xisf import XISF
+    from setiastro.saspro.xisf import XISF
     import matplotlib.pyplot as plt
     xisf = XISF("file.xisf")
     file_meta = xisf.get_file_metadata()
@@ -87,7 +87,7 @@ class XISF:
     If the file is not huge and it contains only an image (or you're interested just in one of the
     images inside the file), there is a convenience method for reading the data and the metadata:
     ```
-    from xisf import XISF
+    from setiastro.saspro.xisf import XISF
     import matplotlib.pyplot as plt
     im_data = XISF.read("file.xisf")
     plt.imshow(im_data)

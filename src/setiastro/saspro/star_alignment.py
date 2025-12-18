@@ -98,7 +98,7 @@ except Exception:
 
 # Optional fast star detector; fall back gracefully if not present
 try:
-    from legacy.numba_utils import fast_star_detect  # your optimized detector, if available
+    from setiastro.saspro.legacy.numba_utils import fast_star_detect  # your optimized detector, if available
 except Exception:
     fast_star_detect = None
 
@@ -2325,7 +2325,7 @@ def _finalize_write_job(args):
 
         out_path = os.path.join(output_directory, f"{name}.fit")
 
-        from legacy.image_manager import save_image as _legacy_save
+        from setiastro.saspro.legacy.image_manager import save_image as _legacy_save
         _legacy_save(img_array=aligned, filename=out_path, original_format="fit",
                      bit_depth=None, original_header=hdr, is_mono=is_mono)
 
@@ -4467,7 +4467,7 @@ class PolyGradientRemoval:
             mono_array = image_3ch[..., 0]  # shape (H,W)
             cmed = medians_after_sub[0]     # The median for that channel
             # We call the numba function
-            from legacy.numba_utils import numba_mono_final_formula
+            from setiastro.saspro.legacy.numba_utils import numba_mono_final_formula
             stretched_mono = numba_mono_final_formula(mono_array, cmed, target_median)
 
             # Now place it back into image_3ch for consistency
@@ -4477,7 +4477,7 @@ class PolyGradientRemoval:
             # 3-channel unlinked
             medians_rescaled = np.array(medians_after_sub, dtype=np.float32)
             # 'image_3ch' is our 'rescaled'
-            from legacy.numba_utils import numba_color_final_formula_unlinked
+            from setiastro.saspro.legacy.numba_utils import numba_color_final_formula_unlinked
             stretched_3ch = numba_color_final_formula_unlinked(
                 image_3ch, medians_rescaled, target_median
             )
@@ -4500,7 +4500,7 @@ class PolyGradientRemoval:
         stretch_original_mins = np.array(self.stretch_original_mins, dtype=np.float32)
 
         # Call the Numba function
-        from legacy.numba_utils import numba_unstretch
+        from setiastro.saspro.legacy.numba_utils import numba_unstretch
         unstretched = numba_unstretch(image, stretch_original_medians, stretch_original_mins)
 
         if self.was_single_channel:
@@ -4544,7 +4544,7 @@ class PolyGradientRemoval:
         x_coords, y_coords = sample_points[:, 0], sample_points[:, 1]
 
         # Precompute polynomial design matrix
-        from legacy.numba_utils import build_poly_terms, evaluate_polynomial
+        from setiastro.saspro.legacy.numba_utils import build_poly_terms, evaluate_polynomial
         A = build_poly_terms(x_coords, y_coords, degree)
 
         # Extract sample values efficiently
@@ -5587,7 +5587,7 @@ class MosaicMasterDialog(QDialog):
       
 
     def debayer_image(self, image, file_path, header):
-        from legacy.numba_utils import debayer_raw_fast, debayer_fits_fast  
+        from setiastro.saspro.legacy.numba_utils import debayer_raw_fast, debayer_fits_fast  
         if file_path.lower().endswith(('.cr2', '.cr3', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2', '.pef')):
             print(f"Debayering RAW image: {file_path}")
             return debayer_raw_fast(image)

@@ -20,9 +20,9 @@ from setiastro.saspro.widgets.image_utils import nearest_resize_2d as _nearest_r
 from setiastro.saspro.widgets.image_utils import float_to_qimage_rgb8 as _float_to_qimage_rgb8
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 
-# ---- Optional accelerators from legacy.numba_utils -------------------------
+# ---- Optional accelerators from setiastro.saspro.legacy.numba_utils -------------------------
 try:
-    from legacy.numba_utils import fast_mad as _fast_mad
+    from setiastro.saspro.legacy.numba_utils import fast_mad as _fast_mad
 except Exception:
     _fast_mad = None
 

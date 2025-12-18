@@ -30,7 +30,7 @@ from PyQt6.QtGui import QGuiApplication
 
 # Optional XISF support (skip .xisf if not importable)
 try:
-    from legacy.xisf import XISF
+    from setiastro.saspro.legacy.xisf import XISF
 except Exception:
     XISF = None  # handled gracefully below
 

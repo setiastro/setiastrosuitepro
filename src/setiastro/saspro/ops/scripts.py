@@ -136,7 +136,7 @@ class ScriptContext:
                 whatever legacy.image_manager.load_image returns in metadata mode
                 (typically includes image_meta/file_meta)
         """
-        from legacy import image_manager  # canonical route
+        from setiastro.saspro.legacy import image_manager  # canonical route
         return image_manager.load_image(
             filename,
             max_retries=max_retries,
@@ -167,7 +167,7 @@ class ScriptContext:
         Returns:
             Whatever legacy.image_manager.save_image returns (often None or success flag).
         """
-        from legacy import image_manager  # canonical route
+        from setiastro.saspro.legacy import image_manager  # canonical route
         from pathlib import Path
 
         p = Path(filename)
@@ -805,7 +805,7 @@ class ScriptManager(QObject):
                 target_menu = menu_scripts
 
             from PyQt6.QtGui import QIcon
-            from pro.resources import get_icons
+            from setiastro.saspro.resources import get_icons
 
             icons = get_icons()
 
