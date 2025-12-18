@@ -103,22 +103,26 @@ def apply_layer_ops(
     denoise_strength: float = 0.0,
     sigma: float | np.ndarray | None = None,
     *,
-    mode: str = "Mean",
+    mode: str = "μ–σ Thresholding",
 ):
     w2 = w
 
+    # Normalize mode to something robust to label wording
+    m = (mode or "").strip().lower()
+    is_linear = m.startswith("linear")
+
     # --- Linear mode: strictly linear multiscale transform ---
-    if mode == "Linear":
+    if is_linear:
         # Ignore thresholding and denoise; just apply gain
         if abs(bias_gain - 1.0) > 1e-6:
             return w * bias_gain
         return w
 
-
+    # --- μ–σ Thresholding mode (robust nonlinear) ---
     # 1) Noise reduction step (MMT-style NR)
     if denoise_strength > 0.0:
         if sigma is None:
-            sigma = float(np.std(w2))
+            sigma = _robust_sigma(w2)
         sigma_f = float(sigma)
         # 3σ at denoise=1, scaled linearly
         t_dn = max(0.0, denoise_strength * 3.0 * sigma_f)
@@ -130,7 +134,7 @@ def apply_layer_ops(
     # 2) Threshold in σ units + bias shaping
     if thr_sigma > 0.0:
         if sigma is None:
-            sigma = float(np.std(w2))
+            sigma = _robust_sigma(w2)
         sigma_f = float(sigma)
         t = thr_sigma * sigma_f         # convert N·σ → absolute threshold
         if t > 0.0:
@@ -140,6 +144,32 @@ def apply_layer_ops(
     if abs(bias_gain - 1.0) > 1e-6:
         w2 = w2 * bias_gain
     return w2
+
+
+def _robust_sigma(arr: np.ndarray) -> float:
+    """
+    Robust per-layer sigma estimate using MAD, fallback to std if needed.
+    Ignores NaN/Inf and uses a subset if very large.
+    """
+    a = np.asarray(arr, dtype=np.float32)
+    a = a[np.isfinite(a)]
+    if a.size == 0:
+        return 1e-6
+
+    # Optional: subsample for speed on huge arrays
+    if a.size > 500_000:
+        idx = np.random.choice(a.size, 500_000, replace=False)
+        a = a[idx]
+
+    med = np.median(a)
+    mad = np.median(np.abs(a - med))
+    if mad <= 0:
+        # fallback to plain std if MAD degenerates
+        s = float(np.std(a))
+        return s if s > 0 else 1e-6
+
+    sigma = 1.4826 * mad  # MAD → σ for Gaussian
+    return sigma if sigma > 0 else 1e-6
 
 
 # ─────────────────────────────────────────────
@@ -293,11 +323,11 @@ class MultiscaleDecompDialog(QDialog):
 
         # New: Mode combo (Mean vs Linear)
         self.combo_mode = QComboBox()
-        self.combo_mode.addItems(["Mean", "Linear"])
-        self.combo_mode.setCurrentText("Mean")
+        self.combo_mode.addItems(["μ–σ Thresholding", "Linear"])
+        self.combo_mode.setCurrentText("μ–σ Thresholding")
         self.combo_mode.setToolTip(
             "Multiscale mode:\n"
-            "• Mean: σ-based thresholding + denoise and gain (nonlinear).\n"
+            "• μ–σ Thresholding: σ-based thresholding + denoise and gain (nonlinear).\n"
             "• Linear: strictly linear multiscale transform; only Gain is applied."
         )
 
@@ -464,7 +494,8 @@ class MultiscaleDecompDialog(QDialog):
 
     # ---------- Preview plumbing ----------
     def _on_mode_changed(self, idx: int):
-        # Mode affects how layer ops are applied; just rebuild preview.
+        # Re-enable/disable controls as needed
+        self._update_param_widgets_for_mode()
         self._schedule_preview()
 
     def _schedule_preview(self):
@@ -488,9 +519,7 @@ class MultiscaleDecompDialog(QDialog):
 
         self._layer_noise = []
         for w in self._cached_layers:
-            sigma = float(np.std(w)) if w.size else 0.0
-            if sigma <= 0.0:
-                sigma = 1e-6
+            sigma = _robust_sigma(w) if w.size else 1e-6
             self._layer_noise.append(sigma)
 
         # ensure cfg list matches layer count
@@ -510,7 +539,7 @@ class MultiscaleDecompDialog(QDialog):
         if details is None or residual is None:
             return
 
-        mode = self.combo_mode.currentText()  # "Mean" or "Linear"
+        mode = self.combo_mode.currentText()  # "μ–σ Thresholding" or "Linear"
 
         # apply per-layer ops
         tuned = []
@@ -561,6 +590,31 @@ class MultiscaleDecompDialog(QDialog):
 
         self._refresh_pix()
 
+    def _update_param_widgets_for_mode(self):
+        linear = (self.combo_mode.currentText() == "Linear")
+
+        # Always allow Gain in both modes
+        gain_widgets = (self.spin_gain, self.slider_gain)
+
+        # These are only meaningful in Mean mode
+        nonlin_widgets = (
+            self.spin_thr, self.slider_thr,
+            self.spin_amt, self.slider_amt,
+            self.spin_denoise, self.slider_denoise,
+        )
+
+        # For residual row we already disable everything in _load_layer_into_editor,
+        # so here we just respect the current selection.
+        idx = getattr(self, "_selected_layer", None)
+        if idx is None or idx == self.layers:
+            # Residual – handled in _load_layer_into_editor
+            return
+
+        for w in gain_widgets:
+            w.setEnabled(True)
+
+        for w in nonlin_widgets:
+            w.setEnabled(not linear)
 
 
     def _np_to_qpix(self, img: np.ndarray) -> QPixmap:
@@ -775,6 +829,7 @@ class MultiscaleDecompDialog(QDialog):
             self.slider_thr.blockSignals(False)
             self.slider_amt.blockSignals(False)
             self.slider_denoise.blockSignals(False)
+            self._update_param_widgets_for_mode()
 
 
 
