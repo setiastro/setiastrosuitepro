@@ -10,14 +10,17 @@ import sys
 import os
 
 # ---- Linux Qt stability guard (must run BEFORE any PyQt6 import) ----
+# Default behavior: DO NOT override Wayland.
+# If a user needs the "safe" path, they can opt-in by setting:
+#   SASPRO_QT_SAFE=1
+#
+# This avoids punishing all Wayland users for one bad driver/Qt stack.
 if sys.platform.startswith("linux"):
-    # If they're on Wayland, many Qt6 + GL stacks can segfault on certain UI ops.
-    # Prefer X11/xcb unless the user explicitly set something else.
-    if os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland":
+    if os.environ.get("SASPRO_QT_SAFE", "").strip() in ("1", "true", "yes", "on"):
+        # Prefer X11/xcb unless user explicitly set a platform plugin
         os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
 
-        # Extra safety: force software OpenGL on fragile driver/EGL stacks.
-        # (Users can override by exporting their own values.)
+        # Prefer software GL unless user explicitly set something else
         os.environ.setdefault("QT_OPENGL", "software")
         os.environ.setdefault("LIBGL_ALWAYS_SOFTWARE", "1")
 
@@ -31,11 +34,12 @@ if __name__ == "__main__":
 
     # If we're forcing software OpenGL, do it *before* QApplication is created.
     if sys.platform.startswith("linux"):
-        if os.environ.get("QT_OPENGL", "").lower() == "software":
-            try:
-                QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_UseSoftwareOpenGL, True)
-            except Exception:
-                pass
+        if os.environ.get("SASPRO_QT_SAFE", "").strip() in ("1", "true", "yes", "on"):
+            if os.environ.get("QT_OPENGL", "").lower() == "software":
+                try:
+                    QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_UseSoftwareOpenGL, True)
+                except Exception:
+                    pass
 
     # Set application attributes before creating QApplication
     try:
