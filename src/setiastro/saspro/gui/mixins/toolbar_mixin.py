@@ -1103,7 +1103,7 @@ class ToolbarMixin:
             return
 
         # Gather all DraggableToolBar instances
-        from pro.shortcuts import DraggableToolBar
+        from setiastro.saspro.shortcuts import DraggableToolBar
         toolbars: list[DraggableToolBar] = [
             tb for tb in self.findChildren(DraggableToolBar)
         ]
