@@ -74,7 +74,7 @@ class ToolbarMixin:
     def _init_toolbar(self):
         # View toolbar (Undo / Redo / Display-Stretch)
         tb = DraggableToolBar("View", self)
-        tb.setSettingsKey("Toolbar/View") 
+        tb.setSettingsKey("Toolbar/View")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb)
 
         tb.addAction(self.act_open)
@@ -87,7 +87,7 @@ class ToolbarMixin:
         # Put Display-Stretch on the bar first so we can attach a menu to its button
         tb.addAction(self.act_autostretch)
         tb.addAction(self.act_zoom_out)
-        tb.addAction(self.act_zoom_in)        
+        tb.addAction(self.act_zoom_in)
         tb.addAction(self.act_zoom_1_1)
         tb.addAction(self.act_zoom_fit)
 
@@ -110,6 +110,7 @@ class ToolbarMixin:
             menu.addMenu(presets)
             menu.addSeparator()
             menu.addAction(self.act_bake_display_stretch)
+
             # push numbers to the active view and (optionally) turn on autostretch
             def _apply_preset(t, s, also_enable=True):
                 self.settings.setValue("display/target", float(t))
@@ -139,7 +140,6 @@ class ToolbarMixin:
                 QToolButton:checked { color: #DAA520; font-weight: 600; }
             """)
 
-
         btn_fit = tb.widgetForAction(self.act_zoom_fit)
         if isinstance(btn_fit, QToolButton):
             fit_menu = QMenu(btn_fit)
@@ -161,13 +161,19 @@ class ToolbarMixin:
         # Make sure the visual state matches the flag at startup
         self._sync_fit_auto_visual()
         self._restore_toolbar_order(tb, "Toolbar/View")
+        # Apply hidden state immediately after order restore (prevents flash)
+        try:
+            tb.apply_hidden_state()
+        except Exception:
+            pass
 
         # Functions toolbar
         tb_fn = DraggableToolBar("Functions", self)
-        tb_fn.setSettingsKey("Toolbar/Functions") 
+        tb_fn.setSettingsKey("Toolbar/Functions")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_fn)
-        tb_fn.addAction(self.act_crop) 
-        tb_fn.addAction(self.act_histogram) 
+
+        tb_fn.addAction(self.act_crop)
+        tb_fn.addAction(self.act_histogram)
         tb_fn.addAction(self.act_pedestal)
         tb_fn.addAction(self.act_linear_fit)
         tb_fn.addAction(self.act_stat_stretch)
@@ -184,6 +190,7 @@ class ToolbarMixin:
         tb_fn.addAction(self.act_remove_green)
         tb_fn.addAction(self.act_convo)
         tb_fn.addAction(self.act_extract_luma)
+
         btn_luma = tb_fn.widgetForAction(self.act_extract_luma)
         if isinstance(btn_luma, QToolButton):
             luma_menu = QMenu(btn_luma)
@@ -193,7 +200,8 @@ class ToolbarMixin:
             btn_luma.setStyleSheet("""
                 QToolButton { color: #dcdcdc; }
                 QToolButton:pressed, QToolButton:checked { color: #DAA520; font-weight: 600; }
-            """)        
+            """)
+
         tb_fn.addAction(self.act_recombine_luma)
         tb_fn.addAction(self.act_rgb_extract)
         tb_fn.addAction(self.act_rgb_combine)
@@ -203,35 +211,52 @@ class ToolbarMixin:
         tb_fn.addAction(self.act_clahe)
         tb_fn.addAction(self.act_morphology)
         tb_fn.addAction(self.act_pixelmath)
-        tb_fn.addAction(self.act_signature) 
+        tb_fn.addAction(self.act_signature)
         tb_fn.addAction(self.act_halobgon)
+
         self._restore_toolbar_order(tb_fn, "Toolbar/Functions")
+        try:
+            tb_fn.apply_hidden_state()
+        except Exception:
+            pass
 
         tbCosmic = DraggableToolBar("Cosmic Clarity", self)
         tbCosmic.setSettingsKey("Toolbar/Cosmic")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tbCosmic)
-        tbCosmic.addAction(self.actAberrationAI)        
+
+        tbCosmic.addAction(self.actAberrationAI)
         tbCosmic.addAction(self.actCosmicUI)
         tbCosmic.addAction(self.actCosmicSat)
-        self._restore_toolbar_order(tbCosmic, "Toolbar/Cosmic") 
 
+        self._restore_toolbar_order(tbCosmic, "Toolbar/Cosmic")
+        try:
+            tbCosmic.apply_hidden_state()
+        except Exception:
+            pass
 
         tb_tl = DraggableToolBar("Tools", self)
-        tb_tl.setSettingsKey("Toolbar/Tools") 
+        tb_tl.setSettingsKey("Toolbar/Tools")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_tl)
-        tb_tl.addAction(self.act_blink) # Tools start here; Blink shows with QIcon(blink_path)
-        tb_tl.addAction(self.act_ppp)   # Perfect Palette Picker
+
+        tb_tl.addAction(self.act_blink)  # Tools start here; Blink shows with QIcon(blink_path)
+        tb_tl.addAction(self.act_ppp)    # Perfect Palette Picker
         tb_tl.addAction(self.act_nbtorgb)
         tb_tl.addAction(self.act_selective_color)
         tb_tl.addAction(self.act_freqsep)
         tb_tl.addAction(self.act_multiscale_decomp)
         tb_tl.addAction(self.act_contsub)
         tb_tl.addAction(self.act_image_combine)
+
         self._restore_toolbar_order(tb_tl, "Toolbar/Tools")
+        try:
+            tb_tl.apply_hidden_state()
+        except Exception:
+            pass
 
         tb_geom = DraggableToolBar("Geometry", self)
         tb_geom.setSettingsKey("Toolbar/Geometry")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_geom)
+
         tb_geom.addAction(self.act_geom_invert)
         tb_geom.addSeparator()
         tb_geom.addAction(self.act_geom_flip_h)
@@ -239,16 +264,22 @@ class ToolbarMixin:
         tb_geom.addSeparator()
         tb_geom.addAction(self.act_geom_rot_cw)
         tb_geom.addAction(self.act_geom_rot_ccw)
-        tb_geom.addAction(self.act_geom_rot_180)  
+        tb_geom.addAction(self.act_geom_rot_180)
         tb_geom.addSeparator()
         tb_geom.addAction(self.act_geom_rescale)
         tb_geom.addSeparator()
         tb_geom.addAction(self.act_debayer)
+
         self._restore_toolbar_order(tb_geom, "Toolbar/Geometry")
+        try:
+            tb_geom.apply_hidden_state()
+        except Exception:
+            pass
 
         tb_star = DraggableToolBar("Star Stuff", self)
         tb_star.setSettingsKey("Toolbar/StarStuff")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_star)
+
         tb_star.addAction(self.act_image_peeker)
         tb_star.addAction(self.act_psf_viewer)
         tb_star.addAction(self.act_stacking_suite)
@@ -262,38 +293,65 @@ class ToolbarMixin:
         tb_star.addAction(self.act_star_spikes)
         tb_star.addAction(self.act_astrospike)
         tb_star.addAction(self.act_exo_detector)
-        tb_star.addAction(self.act_isophote)  
+        tb_star.addAction(self.act_isophote)
+
         self._restore_toolbar_order(tb_star, "Toolbar/StarStuff")
+        try:
+            tb_star.apply_hidden_state()
+        except Exception:
+            pass
 
         tb_msk = DraggableToolBar("Masks", self)
         tb_msk.setSettingsKey("Toolbar/Masks")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_msk)
+
         tb_msk.addAction(self.act_create_mask)
         tb_msk.addAction(self.act_apply_mask)
         tb_msk.addAction(self.act_remove_mask)
+
         self._restore_toolbar_order(tb_msk, "Toolbar/Masks")
+        try:
+            tb_msk.apply_hidden_state()
+        except Exception:
+            pass
 
         tb_wim = DraggableToolBar("What's In My...", self)
         tb_wim.setSettingsKey("Toolbar/WhatsInMy")
-        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_wim)   
-        tb_wim.addAction(self.act_whats_in_my_sky)     
+        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_wim)
+
+        tb_wim.addAction(self.act_whats_in_my_sky)
         tb_wim.addAction(self.act_wimi)
+
         self._restore_toolbar_order(tb_wim, "Toolbar/WhatsInMy")
+        try:
+            tb_wim.apply_hidden_state()
+        except Exception:
+            pass
 
         tb_bundle = DraggableToolBar("Bundles", self)
         tb_bundle.setSettingsKey("Toolbar/Bundles")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_bundle)
+
         tb_bundle.addAction(self.act_view_bundles)
         tb_bundle.addAction(self.act_function_bundles)
+
         self._restore_toolbar_order(tb_bundle, "Toolbar/Bundles")
+        try:
+            tb_bundle.apply_hidden_state()
+        except Exception:
+            pass
+
+        # This can move actions between toolbars, so do it after each toolbar has its base order restored.
         self._restore_toolbar_memberships()
 
-        # Apply persisted "hidden icons" state to all draggable toolbars
+        # Re-apply hidden state AFTER memberships (actions may have moved toolbars).
+        # This also guarantees correctness even if any toolbar was rebuilt/adjusted internally.
         for _tb in self.findChildren(DraggableToolBar):
             try:
                 _tb.apply_hidden_state()
             except Exception:
                 pass
+
 
     def _create_actions(self):
         # File actions
