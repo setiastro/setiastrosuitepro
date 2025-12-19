@@ -53,10 +53,21 @@ class PaletteAdjustDialog(QDialog):
 
         # Zoom controls
         zoom_layout = QHBoxLayout()
-        btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
-        btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
-        btn_fit      = themed_toolbtn("zoom-fit-best", "Fit to Preview")
-        zoom_layout.addWidget(btn_zoom_in); zoom_layout.addWidget(btn_zoom_out); zoom_layout.addWidget(btn_fit)
+
+        self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
+        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
+        self.btn_fit      = themed_toolbtn("zoom-fit-best", "Fit to Preview")
+
+        self.btn_zoom_in.clicked.connect(lambda: self._change_zoom(1.25))
+        self.btn_zoom_out.clicked.connect(lambda: self._change_zoom(0.8))
+        self.btn_fit.clicked.connect(self._fit_to_preview)
+
+        zoom_layout.addStretch(1)
+        zoom_layout.addWidget(self.btn_zoom_out)
+        zoom_layout.addWidget(self.btn_zoom_in)
+        zoom_layout.addWidget(self.btn_fit)
+        zoom_layout.addStretch(1)
+
         vlayout.addLayout(zoom_layout)
 
         # Preview
@@ -136,10 +147,16 @@ class PaletteAdjustDialog(QDialog):
         self._rescale_pixmap()
 
     def _fit_to_preview(self):
-        if not hasattr(self, "_base_pixmap"): return
-        vp_w = self.preview_area.viewport().width()
-        self.zoom_factor = vp_w / max(1, self._base_pixmap.width())
+        if not hasattr(self, "_base_pixmap"):
+            return
+        vp = self.preview_area.viewport().size()
+        pm = self._base_pixmap.size()
+        if pm.width() <= 0 or pm.height() <= 0:
+            return
+        k = min(vp.width() / pm.width(), vp.height() / pm.height())
+        self.zoom_factor = max(0.1, min(10.0, k))
         self._rescale_pixmap()
+
 
     def _on_reset(self):
         for s in (self._ha_slider, self._oiii_slider, self._sii_slider):
