@@ -4,8 +4,8 @@
 #### Website: [www.setiastro.com](http://www.setiastro.com)
 
 ### Other big contributors:
-- Fabio Tempera: https://github.com/Ft2801
-- https://github.com/jrhuerta
+- [Fabio Tempera](https://github.com/Ft2801)
+- [Joaquin Rodriguez](https://github.com/jrhuerta)
 
 ---
 
