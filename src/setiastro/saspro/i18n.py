@@ -22,6 +22,9 @@ AVAILABLE_LANGUAGES: Dict[str, str] = {
     "fr": "Français",
     "es": "Español",
     "zh": "简体中文",
+    "de": "Deutsch",
+    "pt": "Português",
+    "ja": "日本語",
 }
 
 
