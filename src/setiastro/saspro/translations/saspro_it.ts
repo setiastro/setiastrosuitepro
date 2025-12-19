@@ -6213,7 +6213,7 @@ Impostalo in Preferenze → Eseguibile ASTAP.</translation>
         <source>Updates JSON URL:</source>
         <translation>URL JSON aggiornamenti:</translation>
     </message>
-</context><context>
+<message><source>English</source><translation>Inglese</translation></message><message><source>French</source><translation>Francese</translation></message><message><source>Italian</source><translation>Italiano</translation></message><message><source>Spanish</source><translation>Spagnolo</translation></message><message><source>Chinese</source><translation>Cinese</translation></message><message><source>Restart required</source><translation>Riavvio richiesto</translation></message><message><source>The application will now restart to apply the language change.</source><translation>L'applicazione verrà riavviata per applicare il cambio di lingua.</translation></message></context><context>
     <name>SignatureInsertDialogPro</name>
     <message>
         <location filename="..\signature_insert.py" line="365" />

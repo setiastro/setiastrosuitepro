@@ -1715,6 +1715,13 @@ TRANSLATIONS_ZH = {
         "Run an update check immediately": "立即运行更新检查",
         "Save desktop shortcuts on exit": "退出时保存桌面快捷方式",
         "StarNet executable:": "StarNet 可执行文件：",
+        "English": "英语",
+        "French": "法语",
+        "Italian": "意大利语",
+        "Spanish": "西班牙语",
+        "Chinese": "简体中文",
+        "Restart required": "需要重启",
+        "The application will now restart to apply the language change.": "应用程序现在将重新启动以应用语言更改。",
     },
     "SignatureInsertDialogPro": {
         "Signature / Insert": "签名 / 插入",

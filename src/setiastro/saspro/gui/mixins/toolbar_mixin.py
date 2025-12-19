@@ -74,6 +74,7 @@ class ToolbarMixin:
     def _init_toolbar(self):
         # View toolbar (Undo / Redo / Display-Stretch)
         tb = DraggableToolBar("View", self)
+        tb.setObjectName("Toolbar_View")
         tb.setSettingsKey("Toolbar/View")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb)
 
@@ -169,6 +170,7 @@ class ToolbarMixin:
 
         # Functions toolbar
         tb_fn = DraggableToolBar(self.tr("Functions"), self)
+        tb_fn.setObjectName("Toolbar_Functions")
         tb_fn.setSettingsKey("Toolbar/Functions")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_fn)
 
@@ -221,6 +223,7 @@ class ToolbarMixin:
             pass
 
         tbCosmic = DraggableToolBar(self.tr("Cosmic Clarity"), self)
+        tbCosmic.setObjectName("Toolbar_Cosmic")
         tbCosmic.setSettingsKey("Toolbar/Cosmic")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tbCosmic)
 
@@ -235,6 +238,7 @@ class ToolbarMixin:
             pass
 
         tb_tl = DraggableToolBar(self.tr("Tools"), self)
+        tb_tl.setObjectName("Toolbar_Tools")
         tb_tl.setSettingsKey("Toolbar/Tools")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_tl)
 
@@ -254,6 +258,7 @@ class ToolbarMixin:
             pass
 
         tb_geom = DraggableToolBar(self.tr("Geometry"), self)
+        tb_geom.setObjectName("Toolbar_Geometry")
         tb_geom.setSettingsKey("Toolbar/Geometry")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_geom)
 
@@ -277,6 +282,7 @@ class ToolbarMixin:
             pass
 
         tb_star = DraggableToolBar(self.tr("Star Stuff"), self)
+        tb_star.setObjectName("Toolbar_StarStuff")
         tb_star.setSettingsKey("Toolbar/StarStuff")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_star)
 
@@ -302,6 +308,7 @@ class ToolbarMixin:
             pass
 
         tb_msk = DraggableToolBar(self.tr("Masks"), self)
+        tb_msk.setObjectName("Toolbar_Masks")
         tb_msk.setSettingsKey("Toolbar/Masks")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_msk)
 
@@ -316,6 +323,7 @@ class ToolbarMixin:
             pass
 
         tb_wim = DraggableToolBar(self.tr("What's In My..."), self)
+        tb_wim.setObjectName("Toolbar_WhatsInMy")
         tb_wim.setSettingsKey("Toolbar/WhatsInMy")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_wim)
 
@@ -329,6 +337,7 @@ class ToolbarMixin:
             pass
 
         tb_bundle = DraggableToolBar(self.tr("Bundles"), self)
+        tb_bundle.setObjectName("Toolbar_Bundles")
         tb_bundle.setSettingsKey("Toolbar/Bundles")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_bundle)
 

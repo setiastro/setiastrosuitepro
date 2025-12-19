@@ -8399,6 +8399,35 @@ class AstroSuiteProMainWindow(
         if self._suspend_dock_sync:
             QTimer.singleShot(0, lambda: self.changeEvent(QEvent(QEvent.Type.WindowStateChange)))
 
+    def save_ui_state(self):
+        """Save window geometry, state, and shortcuts to settings."""
+        self._ensure_persistent_names()
+        try:
+            if self.isMaximized():
+                self.settings.setValue("ui/main/maximized", True)
+                # To get accurate geometry for non-maximized state, we'd need to showNormal()
+                # but that causes flicker. For a restart, we'll just save what we have.
+            else:
+                self.settings.setValue("ui/main/maximized", False)
+                self.settings.setValue("ui/main/geometry", self.saveGeometry())
+
+            self.settings.setValue("ui/main/state", self.saveState(version=1))
+        except Exception:
+            pass
+
+        # save shortcuts
+        try:
+            save_on_exit = self.settings.value("shortcuts/save_on_exit", True, type=bool)
+        except Exception:
+            save_on_exit = True
+        if save_on_exit and hasattr(self, "shortcuts"):
+            try:
+                self.shortcuts.save_shortcuts()
+            except Exception:
+                pass
+        
+        self.settings.sync()
+
     def closeEvent(self, e):
 
         try:
@@ -8451,31 +8480,7 @@ class AstroSuiteProMainWindow(
         self._shutting_down = True
 
         # Save UI layout/placement
-        self._ensure_persistent_names()
-        try:
-            if self.isMaximized():
-                self.settings.setValue("ui/main/maximized", True)
-                self.showNormal()
-                self.settings.setValue("ui/main/geometry", self.saveGeometry())
-                self.showMaximized()
-            else:
-                self.settings.setValue("ui/main/maximized", False)
-                self.settings.setValue("ui/main/geometry", self.saveGeometry())
-
-            self.settings.setValue("ui/main/state", self.saveState(version=1))
-        except Exception:
-            pass
-
-        # save shortcuts
-        try:
-            save_on_exit = self.settings.value("shortcuts/save_on_exit", True, type=bool)
-        except Exception:
-            save_on_exit = True
-        if save_on_exit and hasattr(self, "shortcuts"):
-            try:
-                self.shortcuts.save_shortcuts()
-            except Exception:
-                pass
+        self.save_ui_state()
 
         # wait on bg threads
         try:

@@ -1718,6 +1718,13 @@ TRANSLATIONS_IT = {
         "Run an update check immediately": "Esegui controllo aggiornamenti immediatamente",
         "Save desktop shortcuts on exit": "Salva scorciatoie desktop all'uscita",
         "StarNet executable:": "Eseguibile StarNet:",
+        "English": "Inglese",
+        "French": "Francese",
+        "Italian": "Italiano",
+        "Spanish": "Spagnolo",
+        "Chinese": "Cinese",
+        "Restart required": "Riavvio richiesto",
+        "The application will now restart to apply the language change.": "L'applicazione verrà riavviata per applicare il cambio di lingua.",
     },
     "SignatureInsertDialogPro": {
         "Signature / Insert": "Firma / Inserisci",

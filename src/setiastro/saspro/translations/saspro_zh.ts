@@ -6213,7 +6213,7 @@ Set it in Preferences → ASTAP executable.</source>
         <source>Updates JSON URL:</source>
         <translation>URL JSON aggiornamenti:</translation>
     </message>
-</context><context>
+<message><source>English</source><translation>英语</translation></message><message><source>French</source><translation>法语</translation></message><message><source>Italian</source><translation>意大利语</translation></message><message><source>Spanish</source><translation>西班牙语</translation></message><message><source>Chinese</source><translation>简体中文</translation></message><message><source>Restart required</source><translation>需要重启</translation></message><message><source>The application will now restart to apply the language change.</source><translation>应用程序现在将重新启动以应用语言更改。</translation></message></context><context>
     <name>SignatureInsertDialogPro</name>
     <message>
         <location filename="..\signature_insert.py" line="365" />
