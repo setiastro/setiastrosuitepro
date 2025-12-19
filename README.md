@@ -3,8 +3,9 @@
 ### Author: Franklin Marek
 #### Website: [www.setiastro.com](http://www.setiastro.com)
 
-### Other contributors:
+### Other big contributors:
 - Fabio Tempera: https://github.com/Ft2801
+- https://github.com/jrhuerta
 
 ---
 
