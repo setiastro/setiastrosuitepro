@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional, List
 from collections import defaultdict
 # Qt
-from PyQt6.QtCore import Qt, QTimer, QEvent, QPointF, QRectF, pyqtSignal, QSettings, QPoint
+from PyQt6.QtCore import Qt, QTimer, QEvent, QPointF, QRectF, pyqtSignal, QSettings, QPoint, QCoreApplication
 from PyQt6.QtGui import (QAction, QIcon, QImage, QPixmap, QBrush, QColor, QPalette,
                          QKeySequence, QWheelEvent, QShortcut, QDoubleValidator, QIntValidator)
 from PyQt6.QtWidgets import (
@@ -1656,31 +1656,27 @@ class BlinkTab(QWidget):
         # 1) load
         image, header, bit_depth, is_mono = load_image(file_path)
         if image is None or image.size == 0:
-            raise ValueError(self.tr("Empty image"))
+            msg = QCoreApplication.translate("BlinkTab", "Empty image")
+            raise ValueError(msg)
 
         # 2) optional debayer
         if is_mono:
-            # adjust this call to match your debayer signature
             image = BlinkTab.debayer_image(image, file_path, header)
 
-        # ✅ NEW: force 0..1 range BEFORE SEP + stretch
         image = BlinkTab._ensure_float01(image)
 
-        # 3) SEP background on mono float32
         data = np.asarray(image, dtype=np.float32, order='C')
         if data.ndim == 3:
             data = data.mean(axis=2)
         bkg = sep.Background(data)
         global_back = bkg.globalback
 
-        # 4) stretch
         target_med = 0.25
         if image.ndim == 2:
             stretched = stretch_mono_image(image, target_med)
         else:
             stretched = stretch_color_image(image, target_med, linked=False)
 
-        # 5) cast to target_dtype
         clipped = np.clip(stretched, 0.0, 1.0)
         if target_dtype is np.uint8:
             stored = (clipped * 255).astype(np.uint8)
