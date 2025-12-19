@@ -1276,7 +1276,10 @@ class SFCCDialog(QDialog):
         })
 
         self.doc_manager.update_active_document(
-            calibrated, metadata=new_meta, step_name="SFCC Calibrated"
+            calibrated,
+            metadata=new_meta,
+            step_name="SFCC Calibrated",
+            doc=doc,   # 👈 pin to the document we started from
         )
 
         self.count_label.setText(f"Applied SFCC color calibration using {n_stars} stars")
@@ -1384,8 +1387,10 @@ class SFCCDialog(QDialog):
         new_meta["ColourGradRemoved"] = True
 
         self.doc_manager.update_active_document(
-            corrected, metadata=new_meta,
-            step_name="Colour-Gradient (star spectra, ¼-res fit)"
+            corrected,
+            metadata=new_meta,
+            step_name="Colour-Gradient (star spectra, ¼-res fit)",
+            doc=doc,   # 👈 same idea
         )
         self.count_label.setText("Chromatic gradient removed ✓")
         QApplication.processEvents()

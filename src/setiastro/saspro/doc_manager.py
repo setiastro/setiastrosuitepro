@@ -2514,9 +2514,16 @@ class DocManager(QObject):
 
 
 
-    def update_active_document(self, updated_image, metadata=None, step_name: str = "Edit"):
+    def update_active_document(
+        self,
+        updated_image,
+        metadata=None,
+        step_name: str = "Edit",
+        doc=None,   # 👈 NEW optional parameter
+    ):
 
-        view_doc = self.get_active_document()
+        # Prefer explicit doc if given; otherwise fall back to "active"
+        view_doc = doc or self.get_active_document()
         if view_doc is None:
             raise RuntimeError("No active document")
 

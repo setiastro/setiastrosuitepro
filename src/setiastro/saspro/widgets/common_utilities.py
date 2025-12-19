@@ -21,7 +21,7 @@ import logging
 import atexit
 from typing import TYPE_CHECKING, Optional, List, Any
 
-from PyQt6.QtCore import QThread, pyqtSignal, QTimer, Qt
+from PyQt6.QtCore import QThread, pyqtSignal, QTimer, Qt, QCoreApplication
 from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QMessageBox
 
 if TYPE_CHECKING:

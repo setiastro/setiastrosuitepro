@@ -83,27 +83,36 @@ def _init_splash():
             pass
 
     # Determine icon paths early
+    # Determine icon paths early
     def _find_icon_path():
-        """Find the best available icon path."""
+        """Legacy fallback if resources import fails."""
         if hasattr(sys, '_MEIPASS'):
             base = sys._MEIPASS
         else:
-            # When running from package, try to find images directory
             try:
                 import setiastro
                 package_dir = os.path.dirname(os.path.abspath(setiastro.__file__))
-                # Check if images/ exists at package root level (for pip-installed packages)
                 package_parent = os.path.dirname(package_dir)
                 images_dir_installed = os.path.join(package_parent, 'images')
                 if os.path.exists(images_dir_installed):
                     base = package_parent
                 else:
-                    # Try project root (for development)
-                    base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+                    base = os.path.dirname(
+                        os.path.dirname(
+                            os.path.dirname(
+                                os.path.dirname(os.path.abspath(__file__))
+                            )
+                        )
+                    )
             except (ImportError, AttributeError):
-                # Fallback to project root relative to this file
-                base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-        
+                base = os.path.dirname(
+                    os.path.dirname(
+                        os.path.dirname(
+                            os.path.dirname(os.path.abspath(__file__))
+                        )
+                    )
+                )
+
         candidates = [
             os.path.join(base, "images", "astrosuitepro.png"),
             os.path.join(base, "images", "astrosuitepro.ico"),
@@ -113,9 +122,18 @@ def _init_splash():
         for p in candidates:
             if os.path.exists(p):
                 return p
-        return candidates[0]  # fallback
-    
-    _early_icon_path = _find_icon_path()
+        return ""  # nothing found
+
+    # NEW: Prefer centralized resources resolver
+    try:
+        from setiastro.saspro.resources import icon_path
+        _early_icon_path = icon_path
+        if not os.path.exists(_early_icon_path):
+            # fall back to legacy search if for some reason this is missing
+            _early_icon_path = _find_icon_path()
+    except Exception:
+        _early_icon_path = _find_icon_path()
+
     
     # =========================================================================
     # PhotoshopStyleSplash - Custom splash screen widget
