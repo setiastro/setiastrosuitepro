@@ -49,24 +49,34 @@ def _where_for_action(act: QAction) -> str:
     if act.parent():
         pn = act.parent().__class__.__name__
         if pn.startswith("QMenu") or pn.startswith("QToolBar"):
-            return "Menus/Toolbar"
-    return "Window"
+            from PyQt6.QtCore import QCoreApplication
+            return QCoreApplication.translate("CheatSheet", "Menus/Toolbar")
+    return QCoreApplication.translate("CheatSheet", "Window")
 
 
 def _describe_action(act: QAction) -> str:
     """Get a human-readable description for an action."""
-    return _clean_text(act.statusTip() or act.toolTip() or act.text() or act.objectName() or "Action")
+    desc = _clean_text(act.statusTip() or act.toolTip() or act.text() or act.objectName() or "Action")
+    if desc == "Action":
+        from PyQt6.QtCore import QCoreApplication
+        desc = QCoreApplication.translate("CheatSheet", "Action")
+    return desc
 
 
 def _describe_shortcut(sc: QShortcut) -> str:
     """Get a human-readable description for a shortcut."""
-    return _clean_text(sc.property("hint") or sc.whatsThis() or sc.objectName() or "Shortcut")
+    desc = _clean_text(sc.property("hint") or sc.whatsThis() or sc.objectName() or "Shortcut")
+    if desc == "Shortcut":
+        from PyQt6.QtCore import QCoreApplication
+        desc = QCoreApplication.translate("CheatSheet", "Shortcut")
+    return desc
 
 
 def _where_for_shortcut(sc: QShortcut) -> str:
     """Determine where a shortcut is available."""
     par = sc.parent()
-    return par.__class__.__name__ if par is not None else "Window"
+    from PyQt6.QtCore import QCoreApplication
+    return par.__class__.__name__ if par is not None else QCoreApplication.translate("CheatSheet", "Window")
 
 
 class CheatSheetDialog(QDialog):
@@ -80,7 +90,7 @@ class CheatSheetDialog(QDialog):
     
     def __init__(self, parent, keyboard_rows, gesture_rows):
         super().__init__(parent)
-        self.setWindowTitle("Keyboard Shortcut Cheat Sheet")
+        self.setWindowTitle(self.tr("Keyboard Shortcut Cheat Sheet"))
         self.resize(780, 520)
         
         self._keyboard_rows = keyboard_rows
@@ -92,7 +102,7 @@ class CheatSheetDialog(QDialog):
         pg_keys = QWidget(tabs)
         v1 = QVBoxLayout(pg_keys)
         tbl_keys = QTableWidget(0, 3, pg_keys)
-        tbl_keys.setHorizontalHeaderLabels(["Shortcut", "Action", "Where"])
+        tbl_keys.setHorizontalHeaderLabels([self.tr("Shortcut"), self.tr("Action"), self.tr("Where")])
         tbl_keys.verticalHeader().setVisible(False)
         tbl_keys.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         tbl_keys.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -114,7 +124,7 @@ class CheatSheetDialog(QDialog):
         pg_mouse = QWidget(tabs)
         v2 = QVBoxLayout(pg_mouse)
         tbl_mouse = QTableWidget(0, 3, pg_mouse)
-        tbl_mouse.setHorizontalHeaderLabels(["Gesture", "Context", "Effect"])
+        tbl_mouse.setHorizontalHeaderLabels([self.tr("Gesture"), self.tr("Context"), self.tr("Effect")])
         tbl_mouse.verticalHeader().setVisible(False)
         tbl_mouse.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         tbl_mouse.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -132,16 +142,16 @@ class CheatSheetDialog(QDialog):
             tbl_mouse.setItem(r, 1, QTableWidgetItem(context))
             tbl_mouse.setItem(r, 2, QTableWidgetItem(effect))
 
-        tabs.addTab(pg_keys, "Base Keyboard")
-        tabs.addTab(pg_mouse, "Additional & Mouse & Drag")
+        tabs.addTab(pg_keys, self.tr("Base Keyboard"))
+        tabs.addTab(pg_mouse, self.tr("Additional & Mouse & Drag"))
 
         # Buttons
         btns = QHBoxLayout()
         btns.addStretch(1)
 
-        b_copy = QPushButton("Copy")
+        b_copy = QPushButton(self.tr("Copy"))
         b_copy.clicked.connect(self._copy_all)
-        b_close = QPushButton("Close")
+        b_close = QPushButton(self.tr("Close"))
         b_close.clicked.connect(self.accept)
         btns.addWidget(b_copy)
         btns.addWidget(b_close)
@@ -161,7 +171,7 @@ class CheatSheetDialog(QDialog):
         for g, c, e in self._gesture_rows:
             lines.append(f"{g:24}  {c:18}  {e}")
         QApplication.clipboard().setText("\n".join(lines))
-        QMessageBox.information(self, "Copied", "Cheat sheet copied to clipboard.")
+        QMessageBox.information(self, self.tr("Copied"), self.tr("Cheat sheet copied to clipboard."))
 
 
 # Legacy alias for backward compatibility

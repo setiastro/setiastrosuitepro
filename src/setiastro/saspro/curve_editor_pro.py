@@ -176,7 +176,7 @@ class CurveEditor(QGraphicsView):
     def _on_symmetry_pick(self, u: float, _v: float):
         # editor already drew the yellow line; now redistribute handles
         self.redistributeHandlesByPivot(u)
-        self._set_status(f"Inflection @ K={u:.3f}")
+        self._set_status(self.tr("Inflection @ K={0:.3f}").format(u))
         self._quick_preview()
 
     def initGrid(self):
@@ -1015,7 +1015,7 @@ class CurvesDialogPro(QDialog):
     """
     def __init__(self, parent, document):
         super().__init__(parent)
-        self.setWindowTitle("Curves Editor")
+        self.setWindowTitle(self.tr("Curves Editor"))
         self.doc = document
         self._preview_img = None     # downsampled float01
         self._full_img = None        # full-res float01
@@ -1085,12 +1085,12 @@ class CurvesDialogPro(QDialog):
 
         rowp = QHBoxLayout()
         self.btn_presets = QToolButton(self)
-        self.btn_presets.setText("Presets")
+        self.btn_presets.setText(self.tr("Presets"))
         self.btn_presets.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         rowp.addWidget(self.btn_presets)
 
         self.btn_save_preset = QToolButton(self)
-        self.btn_save_preset.setText("Save as Preset…")
+        self.btn_save_preset.setText(self.tr("Save as Preset..."))
         self.btn_save_preset.clicked.connect(self._save_current_as_preset)
         rowp.addWidget(self.btn_save_preset)
         left.addLayout(rowp)
@@ -1103,10 +1103,10 @@ class CurvesDialogPro(QDialog):
         # buttons
         rowb = QHBoxLayout()
         self.btn_preview = QToolButton(self)
-        self.btn_preview.setText("Toggle Preview")
+        self.btn_preview.setText(self.tr("Toggle Preview"))
         self.btn_preview.setCheckable(True)                  # ⬅️ toggle
-        self.btn_apply   = QPushButton("Apply to Document")
-        self.btn_reset   = QToolButton(); self.btn_reset.setText("Reset")
+        self.btn_apply   = QPushButton(self.tr("Apply to Document"))
+        self.btn_reset   = QToolButton(); self.btn_reset.setText(self.tr("Reset"))
         rowb.addWidget(self.btn_preview); rowb.addWidget(self.btn_apply); rowb.addWidget(self.btn_reset)
         left.addLayout(rowb)
         left.addStretch(1)
@@ -1117,9 +1117,9 @@ class CurvesDialogPro(QDialog):
         zoombar = QHBoxLayout()
         zoombar.addStretch(1)
 
-        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
-        self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
-        self.btn_zoom_fit = themed_toolbtn("zoom-fit-best", "Fit to Preview")
+        self.btn_zoom_out = themed_toolbtn("zoom-out", self.tr("Zoom Out"))
+        self.btn_zoom_in  = themed_toolbtn("zoom-in", self.tr("Zoom In"))
+        self.btn_zoom_fit = themed_toolbtn("zoom-fit-best", self.tr("Fit to Preview"))
 
         zoombar.addWidget(self.btn_zoom_out)
         zoombar.addWidget(self.btn_zoom_in)
@@ -1601,7 +1601,7 @@ class CurvesDialogPro(QDialog):
 
     def _on_symmetry_pick(self, u: float, _v: float):
         self.editor.redistributeHandlesByPivot(u)
-        self._set_status(f"Inflection @ K={u:.3f}")
+        self._set_status(self.tr("Inflection @ K={0:.3f}").format(u))
         self._quick_preview()
 
     def _fit_once(self):
@@ -1641,7 +1641,7 @@ class CurvesDialogPro(QDialog):
             v = float(img[iy, ix] if img.ndim == 2 else img[iy, ix, 0])
             v = 0.0 if not np.isfinite(v) else float(np.clip(v, 0.0, 1.0))
             self.editor.updateValueLines(v, 0.0, 0.0, grayscale=True)
-            self._set_status(f"Cursor ({ix}, {iy})  K: {v:.3f}")
+            self._set_status(self.tr("Cursor ({0}, {1})  K: {2:.3f}").format(ix, iy, v))
         else:
             C = img.shape[2]
             if C >= 3:
@@ -1656,7 +1656,7 @@ class CurvesDialogPro(QDialog):
             g = 0.0 if not np.isfinite(g) else float(np.clip(g, 0.0, 1.0))
             b = 0.0 if not np.isfinite(b) else float(np.clip(b, 0.0, 1.0))
             self.editor.updateValueLines(r, g, b, grayscale=False)
-            self._set_status(f"Cursor ({ix}, {iy})  R: {r:.3f}  G: {g:.3f}  B: {b:.3f}")
+            self._set_status(self.tr("Cursor ({0}, {1})  R: {2:.3f}  G: {3:.3f}  B: {4:.3f}").format(ix, iy, r, g, b))
 
 
     # 1) Put this helper inside CurvesDialogPro (near other helpers)
@@ -1728,16 +1728,16 @@ class CurvesDialogPro(QDialog):
 
     def _save_current_as_preset(self):
         # get name
-        name, ok = QInputDialog.getText(self, "Save Curves Preset", "Preset name:")
+        name, ok = QInputDialog.getText(self, self.tr("Save Curves Preset"), self.tr("Preset name:"))
         if not ok or not name.strip():
             return
         pts_norm = self._collect_points_norm_from_editor()
         mode = self._current_mode()
         if save_custom_preset(name.strip(), mode, pts_norm):
-            self._set_status(f"Saved preset “{name.strip()}”.")
+            self._set_status(self.tr("Saved preset “{0}”.").format(name.strip()))
             self._rebuild_presets_menu()
         else:
-            QMessageBox.warning(self, "Save failed", "Could not save preset.")
+            QMessageBox.warning(self, self.tr("Save failed"), self.tr("Could not save preset."))
 
     def _rebuild_presets_menu(self):
         m = QMenu(self)
@@ -1754,7 +1754,7 @@ class CurvesDialogPro(QDialog):
             ("Flatten",             {"mode": "K (Brightness)", "shape": "flatten", "amount": 1.0}),
         ]
         if builtins:
-            mb = m.addMenu("Built-ins")
+            mb = m.addMenu(self.tr("Built-ins"))
             for label, preset in builtins:
                 act = mb.addAction(label)
                 act.triggered.connect(lambda _=False, p=preset: self._apply_preset_dict(p))
@@ -1762,15 +1762,15 @@ class CurvesDialogPro(QDialog):
         # Custom presets (from QSettings)
         customs = list_custom_presets()
         if customs:
-            mc = m.addMenu("Custom")
+            mc = m.addMenu(self.tr("Custom"))
             for p in sorted(customs, key=lambda d: d.get("name","").lower()):
                 act = mc.addAction(p.get("name","(unnamed)"))
                 act.triggered.connect(lambda _=False, pp=p: self._apply_preset_dict(pp))
             mc.addSeparator()
-            act_manage = mc.addAction("Manage…")
+            act_manage = mc.addAction(self.tr("Manage…"))
             act_manage.triggered.connect(self._open_manage_customs_dialog)  # optional (see below)
         else:
-            m.addAction("(No custom presets yet)").setEnabled(False)
+            m.addAction(self.tr("(No custom presets yet)")).setEnabled(False)
 
         self.btn_presets.setMenu(m)
 
@@ -1778,10 +1778,10 @@ class CurvesDialogPro(QDialog):
         # optional: quick-and-dirty remover
         customs = list_custom_presets()
         if not customs:
-            QMessageBox.information(self, "Manage Presets", "No custom presets.")
+            QMessageBox.information(self, self.tr("Manage Presets"), self.tr("No custom presets."))
             return
         names = [p.get("name","") for p in customs]
-        name, ok = QInputDialog.getItem(self, "Delete Preset", "Choose preset to delete:", names, 0, False)
+        name, ok = QInputDialog.getItem(self, self.tr("Delete Preset"), self.tr("Choose preset to delete:"), names, 0, False)
         if ok and name:
             from setiastro.saspro.curves_preset import delete_custom_preset
             if delete_custom_preset(name):
@@ -1792,7 +1792,7 @@ class CurvesDialogPro(QDialog):
     def _load_from_doc(self):
         img = self.doc.image
         if img is None:
-            QMessageBox.information(self, "No image", "Open an image first.")
+            QMessageBox.information(self, self.tr("No image"), self.tr("Open an image first."))
             return
         arr = np.asarray(img)
         # normalize to float01 gently
@@ -1837,7 +1837,7 @@ class CurvesDialogPro(QDialog):
         # Pick which buffer to show (both are downsampled)
         img = self._preview_proc if (self._show_proc and self._preview_proc is not None) else self._preview_orig
         self._update_preview_pix(img)
-        self._set_status("Preview ON" if self._show_proc else "Preview OFF")
+        self._set_status(self.tr("Preview ON") if self._show_proc else self.tr("Preview OFF"))
 
 
     # ----- quick (in-UI) preview on downsample -----
@@ -1858,15 +1858,15 @@ class CurvesDialogPro(QDialog):
                 rgb = self._clip_counts_rgb_from_thresholds(bt, wt)
                 def _fmt(pair):
                     cnt_b, cnt_w, fb, fw = pair
-                    return f"Bk {cnt_b:,} ({fb*100:.2f}%)  Wt {cnt_w:,} ({fw*100:.2f}%)"
+                    return self.tr("Bk {0:,} ({1:.2f}%)  Wt {2:,} ({3:.2f}%)").format(cnt_b, fb*100, cnt_w, fw*100)
                 self._set_status(
-                    f"Clipping —  R: {_fmt(rgb['r'])}   G: {_fmt(rgb['g'])}   B: {_fmt(rgb['b'])}"
+                    self.tr("Clipping —  R: {0}   G: {1}   B: {2}").format(_fmt(rgb['r']), _fmt(rgb['g']), _fmt(rgb['b']))
                 )
             else:
                 # Grayscale/mono → K summary (unchanged behavior)
                 below, above, f_below, f_above = self._clip_counts_from_thresholds(bt, wt)
                 self._set_status(
-                    f"Clipping —  Bk {below:,} ({f_below*100:.2f}%)   Wt {above:,} ({f_above*100:.2f}%)"
+                    self.tr("Clipping —  Bk {0:,} ({1:.2f}%)   Wt {2:,} ({3:.2f}%)").format(below, f_below*100, above, f_above*100)
                 )
         except Exception:
             pass
@@ -1887,7 +1887,7 @@ class CurvesDialogPro(QDialog):
         # NOTE: do not push full-res into the label
         out_masked = self._blend_with_mask(out01)
         self._last_preview = out_masked         # cache for Apply
-        self._set_status("Full-res ready (not shown).")
+        self._set_status(self.tr("Full-res ready (not shown)."))
 
     def _clip_counts_from_thresholds(self, black_t: float | None, white_t: float | None):
         """
@@ -2066,12 +2066,12 @@ class CurvesDialogPro(QDialog):
 
             self._refresh_overlays()
             self._quick_preview()
-            self._set_status("Applied. Image reloaded. All curves reset — keep tweaking.")
+            self._set_status(self.tr("Applied. Image reloaded. All curves reset — keep tweaking."))
 
 
 
         except Exception as e:
-            QMessageBox.critical(self, "Apply failed", str(e))
+            QMessageBox.critical(self, self.tr("Apply failed"), str(e))
 
 
     # ----- helpers -----
@@ -2288,7 +2288,7 @@ class CurvesDialogPro(QDialog):
                     break
 
             self.editor.addControlPoint(x, y)
-            self._set_status(f"Added point at x={v:.3f}")
+            self._set_status(self.tr("Added point at x={0:.3f}").format(v))
             ev.accept()
             return True
 
@@ -2304,7 +2304,7 @@ class CurvesDialogPro(QDialog):
         # 3) refresh overlays & preview
         self._refresh_overlays()
         self._quick_preview()
-        self._set_status("All curves reset.")
+        self._set_status(self.tr("All curves reset."))
 
     def _find_main_window(self):
         p = self.parent()
@@ -2351,7 +2351,7 @@ class CurvesDialogPro(QDialog):
 
         # 4) status: don’t assume shape exists
         shape_tag = f"[{shape}]" if shape else "[custom]"
-        self._set_status(f"Preset: {preset.get('name', '(built-in)')}  {shape_tag}")
+        self._set_status(self.tr("Preset: {0}  {1}").format(preset.get('name', self.tr('(built-in)')), shape_tag))
 
 
 def apply_curves_ops(doc, op: dict):

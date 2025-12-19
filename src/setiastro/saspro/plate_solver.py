@@ -68,7 +68,7 @@ class _SolveStatusPopup(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent, Qt.WindowType.Tool)
         self.setObjectName("plate_solve_status_popup")
-        self.setWindowTitle("Plate Solving")
+        self.setWindowTitle(self.tr("Plate Solving"))
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
         self.setMinimumWidth(420)
@@ -77,7 +77,7 @@ class _SolveStatusPopup(QDialog):
         lay.setContentsMargins(12, 12, 12, 12)
         lay.setSpacing(10)
 
-        self.label = QLabel("Starting…", self)
+        self.label = QLabel(self.tr("Starting…"), self)
         self.label.setWordWrap(True)
         lay.addWidget(self.label)
 
@@ -87,7 +87,7 @@ class _SolveStatusPopup(QDialog):
 
         row = QHBoxLayout()
         row.addStretch(1)
-        hide_btn = QPushButton("Hide", self)
+        hide_btn = QPushButton(self.tr("Hide"), self)
         hide_btn.clicked.connect(self.hide)
         row.addWidget(hide_btn)
         lay.addLayout(row)
@@ -160,7 +160,8 @@ def _set_status_ui(parent, text: str):
             # Batch log?
             logw = getattr(parent, "log", None)
             if logw and hasattr(logw, "append"):
-                if text and (text.startswith("Status:") or text.startswith("▶") or text.startswith("✔") or text.startswith("❌")):
+                tr_status = QCoreApplication.translate("PlateSolver", "Status:")
+                if text and (text.startswith("Status:") or text.startswith(tr_status) or text.startswith("▶") or text.startswith("✔") or text.startswith("❌")):
                     logw.append(text)
                     updated_any = True
 
@@ -206,11 +207,11 @@ def _wait_process(proc: QProcess, timeout_ms: int, parent=None) -> bool:
                 proc.waitForFinished(2000)
         except Exception:
             pass
-        _set_status_ui(parent, "Status: process timed out.")
+        _set_status_ui(parent, QCoreApplication.translate("PlateSolver", "Status: process timed out."))
         return False
 
     if proc.exitStatus() != QProcess.ExitStatus.NormalExit:
-        _set_status_ui(parent, "Status: process did not exit normally.")
+        _set_status_ui(parent, QCoreApplication.translate("PlateSolver", "Status: process did not exit normally."))
         return False
 
     return True
@@ -385,7 +386,8 @@ def _astrometry_api_request(method: str, url: str, *, data=None, files=None,
             if attempt >= max_retries:
                 break
             delay = min(8.0, 0.5 * (2 ** (attempt - 1))) + random.random() * 0.2
-            _set_status_ui(parent, f"Status: {stage or 'request'} retry {attempt}/{max_retries}…")
+            msg = QCoreApplication.translate("PlateSolver", "Status: {0} retry {1}/{2}…").format(stage or 'request', attempt, max_retries)
+            _set_status_ui(parent, msg)
             _sleep_ui(int(delay * 1000))
     return None
 
@@ -621,7 +623,7 @@ def _astrometry_download_wcs_file(settings, job_id: int, parent=None) -> Header 
     base_site = _get_astrometry_api_url(settings).split("/api/")[0].rstrip("/") + "/"
     url = base_site + f"wcs_file/{int(job_id)}"
 
-    _set_status_ui(parent, "Status: Downloading WCS file (with SIP) from Astrometry.net…")
+    _set_status_ui(parent, QCoreApplication.translate("PlateSolver", "Status: Downloading WCS file (with SIP) from Astrometry.net…"))
     try:
         r = requests.get(url, timeout=(10, 60))
         if r.status_code != 200 or len(r.content) < 2000:
@@ -903,13 +905,13 @@ def _build_astap_seed(h: Header) -> Tuple[list[str], str]:
 
 
 def _astrometry_login(settings, parent=None) -> str | None:
-    _set_status_ui(parent, "Status: Logging in to Astrometry.net…")
+    _set_status_ui(parent, QCoreApplication.translate("PlateSolver", "Status: Logging in to Astrometry.net…"))
     api_key = _get_astrometry_api_key(settings)
     if not api_key:
         from PyQt6.QtWidgets import QInputDialog
-        key, ok = QInputDialog.getText(None, "Astrometry.net API Key", "Enter your Astrometry.net API key:")
+        key, ok = QInputDialog.getText(None, QCoreApplication.translate("PlateSolver", "Astrometry.net API Key"), QCoreApplication.translate("PlateSolver", "Enter your Astrometry.net API key:"))
         if not ok or not key:
-            _set_status_ui(parent, "Status: Login canceled (no API key).")
+            _set_status_ui(parent, QCoreApplication.translate("PlateSolver", "Status: Login canceled (no API key)."))
             return None
         _set_astrometry_api_key(settings, key)
         api_key = key
@@ -921,20 +923,20 @@ def _astrometry_login(settings, parent=None) -> str | None:
         parent=parent, stage="login"
     )
     if resp and resp.get("status") == "success":
-        _set_status_ui(parent, "Status: Login successful.")
+        _set_status_ui(parent, QCoreApplication.translate("PlateSolver", "Status: Login successful."))
         return resp.get("session")
-    _set_status_ui(parent, "Status: Login failed.")
+    _set_status_ui(parent, QCoreApplication.translate("PlateSolver", "Status: Login failed."))
     return None
 
 def _astrometry_upload(settings, session: str, image_path: str, parent=None) -> int | None:
-    _set_status_ui(parent, "Status: Uploading image to Astrometry.net…")
+    _set_status_ui(parent, QCoreApplication.translate("PlateSolver", "Status: Uploading image to Astrometry.net…"))
     base = _get_astrometry_api_url(settings)
 
     try:
         sz = os.path.getsize(image_path)
         if sz < 1024:  # fits headers alone are ~2880 bytes
             print(f"[Astrometry] temp FITS too small ({sz} bytes): {image_path}")
-            _set_status_ui(parent, "Status: Upload failed (temp FITS empty).")
+            _set_status_ui(parent, QCoreApplication.translate("PlateSolver", "Status: Upload failed (temp FITS empty)."))
             return None
     except Exception:
         pass
@@ -955,12 +957,12 @@ def _astrometry_upload(settings, session: str, image_path: str, parent=None) -> 
                 parent=parent, stage="upload"
             )
         if resp and resp.get("status") == "success":
-            _set_status_ui(parent, "Status: Upload complete.")
+            _set_status_ui(parent, QCoreApplication.translate("PlateSolver", "Status: Upload complete."))
             return int(resp["subid"])
     except Exception as e:
         print("Upload error:", e)
 
-    _set_status_ui(parent, "Status: Upload failed.")
+    _set_status_ui(parent, QCoreApplication.translate("PlateSolver", "Status: Upload failed."))
     return None
 
 
@@ -968,7 +970,7 @@ def _astrometry_upload(settings, session: str, image_path: str, parent=None) -> 
 def _solve_with_local_solvefield(parent, settings, tmp_fit_path: str) -> tuple[bool, Header | str]:
     solvefield = _get_solvefield_exe(settings)
     if not solvefield or not os.path.exists(solvefield):
-        return False, "solve-field not configured."
+        return False, QCoreApplication.translate("PlateSolver", "solve-field not configured.")
 
     args = [
         "--overwrite",
@@ -978,22 +980,22 @@ def _solve_with_local_solvefield(parent, settings, tmp_fit_path: str) -> tuple[b
         "--write-wcs", "wcs",
         tmp_fit_path
     ]
-    _set_status_ui(parent, "Status: Running local solve-field…")
+    _set_status_ui(parent, QCoreApplication.translate("PlateSolver", "Status: Running local solve-field…"))
     print("Running solve-field:", solvefield, " ".join(args))
     p = QProcess(parent)
     p.start(solvefield, args)
     if not p.waitForStarted(5000):
-        _set_status_ui(parent, "Status: solve-field failed to start.")
+        _set_status_ui(parent, QCoreApplication.translate("PlateSolver", "Status: solve-field failed to start."))
         return False, f"Failed to start solve-field: {p.errorString()}"
 
     if not _wait_process(p, 300000, parent=parent):
-        _set_status_ui(parent, "Status: solve-field timed out.")
+        _set_status_ui(parent, QCoreApplication.translate("PlateSolver", "Status: solve-field timed out."))
         return False, "solve-field timed out."
 
     if p.exitCode() != 0:
         out = bytes(p.readAllStandardOutput()).decode(errors="ignore")
         err = bytes(p.readAllStandardError()).decode(errors="ignore")
-        _set_status_ui(parent, "Status: solve-field failed.")
+        _set_status_ui(parent, QCoreApplication.translate("PlateSolver", "Status: solve-field failed."))
         print("solve-field failed.\nSTDOUT:\n", out, "\nSTDERR:\n", err)
         return False, "solve-field returned non-zero exit."
 
@@ -1021,7 +1023,7 @@ def _solve_with_local_solvefield(parent, settings, tmp_fit_path: str) -> tuple[b
 
 
 def _astrometry_poll_job(settings, subid: int, *, max_wait_s=900, parent=None) -> int | None:
-    _set_status_ui(parent, "Status: Waiting for job assignment…")
+    _set_status_ui(parent, QCoreApplication.translate("PlateSolver", "Status: Waiting for job assignment…"))
     base = _get_astrometry_api_url(settings)
     t0 = time.time()
     while time.time() - t0 < max_wait_s:
@@ -1030,7 +1032,7 @@ def _astrometry_poll_job(settings, subid: int, *, max_wait_s=900, parent=None) -
         if resp:
             jobs = resp.get("jobs", [])
             if jobs and jobs[0] is not None:
-                _set_status_ui(parent, f"Status: Job assigned (ID {jobs[0]}).")
+                _set_status_ui(parent, QCoreApplication.translate("PlateSolver", "Status: Job assigned (ID {0}).").format(jobs[0]))
                 try: return int(jobs[0])
                 except Exception as e:
                     import logging
@@ -1039,14 +1041,14 @@ def _astrometry_poll_job(settings, subid: int, *, max_wait_s=900, parent=None) -
     return None
 
 def _astrometry_poll_calib(settings, job_id: int, *, max_wait_s=900, parent=None) -> dict | None:
-    _set_status_ui(parent, "Status: Waiting for solution…")
+    _set_status_ui(parent, QCoreApplication.translate("PlateSolver", "Status: Waiting for solution…"))
     base = _get_astrometry_api_url(settings)
     t0 = time.time()
     while time.time() - t0 < max_wait_s:
         resp = _astrometry_api_request("GET", base + f"jobs/{job_id}/calibration/",
                                        parent=parent, stage="poll calib")
         if resp and all(k in resp for k in ("ra","dec","pixscale")):
-            _set_status_ui(parent, "Status: Solution received.")
+            _set_status_ui(parent, QCoreApplication.translate("PlateSolver", "Status: Solution received."))
             return resp
         _sleep_ui(1500)
     return None
@@ -1403,13 +1405,13 @@ def _solve_numpy_with_astrometry(
                         import logging
                         logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
                 return True, hh
-            return False, "solve-field returned no header."
+            return False, QCoreApplication.translate("PlateSolver", "solve-field returned no header.")
 
         # 2) web API fallback (full-res, 16-bit upload)
         if requests is None:
-            return False, "requests not available for astrometry.net API."
+            return False, QCoreApplication.translate("PlateSolver", "requests not available for astrometry.net API.")
 
-        _set_status_ui(parent, "Status: Preparing full-res 16-bit FITS for web solve…")
+        _set_status_ui(parent, QCoreApplication.translate("PlateSolver", "Status: Preparing full-res 16-bit FITS for web solve…"))
 
         tmp_fit_web = _write_temp_fit_web_16bit(gray_full)
 
@@ -1417,21 +1419,21 @@ def _solve_numpy_with_astrometry(
         try:
             sz = os.path.getsize(tmp_fit_web)
             if sz < 3000:
-                return False, f"Temp FITS for web upload is empty/tiny ({sz} bytes)."
+                return False, QCoreApplication.translate("PlateSolver", "Temp FITS for web upload is empty/tiny ({0} bytes).").format(sz)
         except Exception:
             pass
 
         session = _astrometry_login(settings, parent=parent)
         if not session:
-            return False, "Astrometry.net login failed."
+            return False, QCoreApplication.translate("PlateSolver", "Astrometry.net login failed.")
 
         subid = _astrometry_upload(settings, session, tmp_fit_web, parent=parent)
         if not subid:
-            return False, "Astrometry.net upload failed."
+            return False, QCoreApplication.translate("PlateSolver", "Astrometry.net upload failed.")
 
         job_id = _astrometry_poll_job(settings, subid, parent=parent)
         if not job_id:
-            return False, "Astrometry.net job ID not received in time."
+            return False, QCoreApplication.translate("PlateSolver", "Astrometry.net job ID not received in time.")
 
         # Prefer full WCS file (includes SIP)
         hdr_wcs = _astrometry_download_wcs_file(settings, job_id, parent=parent)
@@ -1440,9 +1442,9 @@ def _solve_numpy_with_astrometry(
             # fallback to calibration (no SIP)
             calib = _astrometry_poll_calib(settings, job_id, parent=parent)
             if not calib:
-                return False, "Astrometry.net calibration not received in time."
+                return False, QCoreApplication.translate("PlateSolver", "Astrometry.net calibration not received in time.")
 
-            _set_status_ui(parent, "Status: Building WCS header from calibration…")
+            _set_status_ui(parent, QCoreApplication.translate("PlateSolver", "Status: Building WCS header from calibration…"))
             hdr_wcs = _wcs_header_from_astrometry_calib(calib, (Hfull, Wfull))
 
         # Coerce & ensure TAN-SIP if SIP terms exist
@@ -1487,24 +1489,24 @@ def _solve_numpy_with_astrometry(
 
 def _solve_numpy_with_fallback(parent, settings, image: np.ndarray, seed_header: Header | None) -> tuple[bool, Header | str]:
     # Try ASTAP first
-    _set_status_ui(parent, "Status: Solving with ASTAP…")
+    _set_status_ui(parent, QCoreApplication.translate("PlateSolver", "Status: Solving with ASTAP…"))
     ok, res = _solve_numpy_with_astap(parent, settings, image, seed_header)
     if ok:
-        _set_status_ui(parent, "Status: Solved with ASTAP.")
+        _set_status_ui(parent, QCoreApplication.translate("PlateSolver", "Status: Solved with ASTAP."))
         return True, res
 
     # ASTAP failed → tell the user and fall back
     err_msg = str(res) if res is not None else "unknown error"
     print("ASTAP failed:", err_msg)
-    _set_status_ui(parent, f"Status: ASTAP failed ({err_msg}). Falling back to Astrometry.net…")
+    _set_status_ui(parent, QCoreApplication.translate("PlateSolver", "Status: ASTAP failed ({0}). Falling back to Astrometry.net…").format(err_msg))
     QApplication.processEvents()
 
     # Fallback: astrometry.net (local solve-field first, then web API inside)
     ok2, res2 = _solve_numpy_with_astrometry(parent, settings, image, seed_header)
     if ok2:
-        _set_status_ui(parent, "Status: Solved via Astrometry.net.")
+        _set_status_ui(parent, QCoreApplication.translate("PlateSolver", "Status: Solved via Astrometry.net."))
     else:
-        _set_status_ui(parent, f"Status: Astrometry.net failed ({res2}).")
+        _set_status_ui(parent, QCoreApplication.translate("PlateSolver", "Status: Astrometry.net failed ({0}).").format(res2))
 
     return ok2, res2
 
@@ -1626,7 +1628,7 @@ def _solve_numpy_with_astap(parent, settings, image: np.ndarray, seed_header: He
     """
     astap_exe = _get_astap_exe(settings)
     if not astap_exe or not os.path.exists(astap_exe):
-        return False, "ASTAP path is not set (see Preferences) or file not found."
+        return False, QCoreApplication.translate("PlateSolver", "ASTAP path is not set (see Preferences) or file not found.")
 
     # normalize and force 2-D luminance in [0,1]
     norm = _normalize_for_astap(image)
@@ -1696,13 +1698,13 @@ def _solve_numpy_with_astap(parent, settings, image: np.ndarray, seed_header: He
     proc = QProcess(parent)
     proc.start(astap_exe, args)
     if not proc.waitForStarted(5000):
-        _set_status_ui(parent, "Status: ASTAP failed to start.")
-        return False, f"Failed to start ASTAP: {proc.errorString()}"
+        _set_status_ui(parent, QCoreApplication.translate("PlateSolver", "Status: ASTAP failed to start."))
+        return False, QCoreApplication.translate("PlateSolver", "Failed to start ASTAP: {0}").format(proc.errorString())
 
-    _set_status_ui(parent, "Status: ASTAP solving…")
+    _set_status_ui(parent, QCoreApplication.translate("PlateSolver", "Status: ASTAP solving…"))
     if not _wait_process(proc, 300000, parent=parent):
-        _set_status_ui(parent, "Status: ASTAP timed out.")
-        return False, "ASTAP timed out."
+        _set_status_ui(parent, QCoreApplication.translate("PlateSolver", "Status: ASTAP timed out."))
+        return False, QCoreApplication.translate("PlateSolver", "ASTAP timed out.")
 
     if proc.exitCode() != 0:
         out = bytes(proc.readAllStandardOutput()).decode(errors="ignore")
@@ -1717,7 +1719,7 @@ def _solve_numpy_with_astap(parent, settings, image: np.ndarray, seed_header: He
         except Exception as e:
             import logging
             logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
-        return False, "ASTAP returned a non-zero exit code."
+        return False, QCoreApplication.translate("PlateSolver", "ASTAP returned a non-zero exit code.")
 
     # >>> THIS is the key change: read the header **directly** from the FITS ASTAP wrote
     try:
@@ -1777,7 +1779,7 @@ def _debug_dump_meta(label: str, meta: dict):
 def plate_solve_doc_inplace(parent, doc, settings) -> Tuple[bool, Header | str]:
     img = getattr(doc, "image", None)
     if img is None:
-        return False, "Active document has no image data."
+        return False, QCoreApplication.translate("PlateSolver", "Active document has no image data.")
 
     # Make sure metadata is a dict we can mutate
     meta = getattr(doc, "metadata", {}) or {}
@@ -1829,7 +1831,7 @@ def plate_solve_doc_inplace(parent, doc, settings) -> Tuple[bool, Header | str]:
         (hasattr(parent, "findChild") and parent.findChild(QLabel, "status_label") is not None)
     )
     if headless:
-        _status_popup_open(parent, "Status: Preparing plate solve…")
+        _status_popup_open(parent, QCoreApplication.translate("PlateSolver", "Status: Preparing plate solve…"))
 
     try:
         ok, res = _solve_numpy_with_fallback(parent, settings, img, seed_h)
@@ -1884,7 +1886,7 @@ def plate_solve_doc_inplace(parent, doc, settings) -> Tuple[bool, Header | str]:
         if hasattr(parent, "currentDocumentChanged"):
             QTimer.singleShot(0, lambda: parent.currentDocumentChanged.emit(doc))
 
-        _set_status_ui(parent, "Status: Plate solve completed.")
+        _set_status_ui(parent, QCoreApplication.translate("PlateSolver", "Status: Plate solve completed."))
         _status_popup_close()
         return True, hdr
     finally:
@@ -2035,7 +2037,7 @@ def plate_solve_active_document(parent, settings) -> tuple[bool, Header | str]:
     """
     doc = _active_doc_from_parent(parent)
     if doc is None:
-        return False, "No active document to plate-solve."
+        return False, QCoreApplication.translate("PlateSolver", "No active document to plate-solve.")
 
     return plate_solve_doc_inplace(parent, doc, settings)
 
@@ -2054,7 +2056,7 @@ class PlateSolverDialog(QDialog):
     def __init__(self, settings, parent=None, icon: QIcon | None = None):
         super().__init__(parent)
         self.settings = settings
-        self.setWindowTitle("Plate Solver")
+        self.setWindowTitle(self.tr("Plate Solver"))
         self.setMinimumWidth(560)
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.setModal(False)
@@ -2067,16 +2069,18 @@ class PlateSolverDialog(QDialog):
 
         # ---- Top row: Mode selector ----
         top = QHBoxLayout()
-        top.addWidget(QLabel("Mode:", self))
+        top.addWidget(QLabel(self.tr("Mode:"), self))
         self.mode_combo = QComboBox(self)
-        self.mode_combo.addItems(["Active View", "File", "Batch"])
+        self.mode_combo.addItem(self.tr("Active View"), "Active View")
+        self.mode_combo.addItem(self.tr("File"), "File")
+        self.mode_combo.addItem(self.tr("Batch"), "Batch")
         top.addWidget(self.mode_combo, 1)
         top.addStretch(1)
         main.addLayout(top)
 
         # ---- Seeding group (shared) ----
         from PyQt6.QtWidgets import QGroupBox, QFormLayout
-        seed_box = QGroupBox("Seeding & Constraints", self)
+        seed_box = QGroupBox(self.tr("Seeding & Constraints"), self)
         seed_form = QFormLayout(seed_box)
         seed_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
         seed_form.setHorizontalSpacing(8)
@@ -2084,46 +2088,51 @@ class PlateSolverDialog(QDialog):
 
         # Seed mode
         self.cb_seed_mode = QComboBox(seed_box)
-        self.cb_seed_mode.addItems(["Auto (from header)", "Manual", "None (blind)"])
-        seed_form.addRow("Seed mode:", self.cb_seed_mode)
+        self.cb_seed_mode.addItem(self.tr("Auto (from header)"), "Auto (from header)")
+        self.cb_seed_mode.addItem(self.tr("Manual"), "Manual")
+        self.cb_seed_mode.addItem(self.tr("None (blind)"), "None (blind)")
+        seed_form.addRow(self.tr("Seed mode:"), self.cb_seed_mode)
 
         # Manual RA/Dec/Scale row
         manual_row = QHBoxLayout()
-        self.le_ra = QLineEdit(seed_box);   self.le_ra.setPlaceholderText("RA (e.g. 22:32:14 or 338.1385)")
-        self.le_dec = QLineEdit(seed_box);  self.le_dec.setPlaceholderText("Dec (e.g. +40:42:43 or 40.7123)")
-        self.le_scale = QLineEdit(seed_box); self.le_scale.setPlaceholderText('Scale [" / px] (e.g. 1.46)')
+        self.le_ra = QLineEdit(seed_box);   self.le_ra.setPlaceholderText(self.tr("RA (e.g. 22:32:14 or 338.1385)"))
+        self.le_dec = QLineEdit(seed_box);  self.le_dec.setPlaceholderText(self.tr("Dec (e.g. +40:42:43 or 40.7123)"))
+        self.le_scale = QLineEdit(seed_box); self.le_scale.setPlaceholderText(self.tr('Scale [" / px] (e.g. 1.46)'))
         manual_row.addWidget(self.le_ra, 1)
         manual_row.addWidget(self.le_dec, 1)
         manual_row.addWidget(self.le_scale, 1)
-        seed_form.addRow("Manual RA/Dec/Scale:", manual_row)
+        seed_form.addRow(self.tr("Manual RA/Dec/Scale:"), manual_row)
 
         # Search radius (-r)
         rad_row = QHBoxLayout()
         self.cb_radius_mode = QComboBox(seed_box)
-        self.cb_radius_mode.addItems(["Auto (-r 0)", "Value (deg)"])
-        self.le_radius_val = QLineEdit(seed_box); self.le_radius_val.setPlaceholderText("e.g. 5.0")
+        self.cb_radius_mode.addItem(self.tr("Auto (-r 0)"), "Auto (-r 0)")
+        self.cb_radius_mode.addItem(self.tr("Value (deg)"), "Value (deg)")
+        self.le_radius_val = QLineEdit(seed_box); self.le_radius_val.setPlaceholderText(self.tr("e.g. 5.0"))
         self.le_radius_val.setFixedWidth(120)
         rad_row.addWidget(self.cb_radius_mode)
         rad_row.addWidget(self.le_radius_val)
         rad_row.addStretch(1)
-        seed_form.addRow("Search radius:", rad_row)
+        seed_form.addRow(self.tr("Search radius:"), rad_row)
 
         # FOV (-fov)
         fov_row = QHBoxLayout()
         self.cb_fov_mode = QComboBox(seed_box)
-        self.cb_fov_mode.addItems(["Compute from scale", "Auto (-fov 0)", "Value (deg)"])
-        self.le_fov_val = QLineEdit(seed_box); self.le_fov_val.setPlaceholderText("e.g. 1.80")
+        self.cb_fov_mode.addItem(self.tr("Compute from scale"), "Compute from scale")
+        self.cb_fov_mode.addItem(self.tr("Auto (-fov 0)"), "Auto (-fov 0)")
+        self.cb_fov_mode.addItem(self.tr("Value (deg)"), "Value (deg)")
+        self.le_fov_val = QLineEdit(seed_box); self.le_fov_val.setPlaceholderText(self.tr("e.g. 1.80"))
         self.le_fov_val.setFixedWidth(120)
         fov_row.addWidget(self.cb_fov_mode)
         fov_row.addWidget(self.le_fov_val)
         fov_row.addStretch(1)
-        seed_form.addRow("FOV:", fov_row)
+        seed_form.addRow(self.tr("FOV:"), fov_row)
 
         # Tooltips
-        self.cb_seed_mode.setToolTip("Use FITS header, your manual RA/Dec/scale, or blind solve.")
-        self.le_scale.setToolTip('Pixel scale in arcseconds/pixel (e.g., 1.46).')
-        self.cb_radius_mode.setToolTip("ASTAP -r. Auto lets ASTAP choose; Value forces a cone radius.")
-        self.cb_fov_mode.setToolTip("ASTAP -fov. Compute uses image height × scale; Auto lets ASTAP infer.")
+        self.cb_seed_mode.setToolTip(self.tr("Use FITS header, your manual RA/Dec/scale, or blind solve."))
+        self.le_scale.setToolTip(self.tr('Pixel scale in arcseconds/pixel (e.g., 1.46).'))
+        self.cb_radius_mode.setToolTip(self.tr("ASTAP -r. Auto lets ASTAP choose; Value forces a cone radius."))
+        self.cb_fov_mode.setToolTip(self.tr("ASTAP -fov. Compute uses image height × scale; Auto lets ASTAP infer."))
 
         main.addWidget(seed_box)
 
@@ -2133,15 +2142,15 @@ class PlateSolverDialog(QDialog):
 
         # Page 0: Active View
         p0 = QWidget(self); l0 = QVBoxLayout(p0)
-        l0.addWidget(QLabel("Solve the currently active image view.", p0))
+        l0.addWidget(QLabel(self.tr("Solve the currently active image view."), p0))
         l0.addStretch(1)
         self.stack.addWidget(p0)
 
         # Page 1: File picker
         p1 = QWidget(self); l1 = QVBoxLayout(p1)
         file_row = QHBoxLayout()
-        self.le_path = QLineEdit(p1); self.le_path.setPlaceholderText("Choose an image…")
-        btn_browse = QPushButton("Browse…", p1)
+        self.le_path = QLineEdit(p1); self.le_path.setPlaceholderText(self.tr("Choose an image…"))
+        btn_browse = QPushButton(self.tr("Browse…"), p1)
         file_row.addWidget(self.le_path, 1); file_row.addWidget(btn_browse)
         l1.addLayout(file_row); l1.addStretch(1)
         self.stack.addWidget(p1)
@@ -2149,14 +2158,14 @@ class PlateSolverDialog(QDialog):
         # Page 2: Batch
         p2 = QWidget(self); l2 = QVBoxLayout(p2)
         in_row  = QHBoxLayout(); out_row = QHBoxLayout()
-        self.le_in  = QLineEdit(p2);  self.le_in.setPlaceholderText("Input directory")
-        self.le_out = QLineEdit(p2);  self.le_out.setPlaceholderText("Output directory")
-        b_in  = QPushButton("Browse Input…", p2)
-        b_out = QPushButton("Browse Output…", p2)
+        self.le_in  = QLineEdit(p2);  self.le_in.setPlaceholderText(self.tr("Input directory"))
+        self.le_out = QLineEdit(p2);  self.le_out.setPlaceholderText(self.tr("Output directory"))
+        b_in  = QPushButton(self.tr("Browse Input…"), p2)
+        b_out = QPushButton(self.tr("Browse Output…"), p2)
         in_row.addWidget(self.le_in, 1);   in_row.addWidget(b_in)
         out_row.addWidget(self.le_out, 1); out_row.addWidget(b_out)
         self.log = QTextEdit(p2); self.log.setReadOnly(True); self.log.setMinimumHeight(160)
-        l2.addLayout(in_row); l2.addLayout(out_row); l2.addWidget(QLabel("Status:", p2)); l2.addWidget(self.log, 1)
+        l2.addLayout(in_row); l2.addLayout(out_row); l2.addWidget(QLabel(self.tr("Status:"), p2)); l2.addWidget(self.log, 1)
         self.stack.addWidget(p2)
 
         # ---------------- Status + buttons ----------------
@@ -2166,8 +2175,8 @@ class PlateSolverDialog(QDialog):
 
         btn_row = QHBoxLayout()
         btn_row.addStretch(1)
-        self.btn_go = QPushButton("Start", self)
-        self.btn_close = QPushButton("Close", self)
+        self.btn_go = QPushButton(self.tr("Start"), self)
+        self.btn_close = QPushButton(self.tr("Close"), self)
         btn_row.addWidget(self.btn_go)
         btn_row.addWidget(self.btn_close)
         main.addLayout(btn_row)
@@ -2218,26 +2227,26 @@ class PlateSolverDialog(QDialog):
     # ---------- file/batch pickers ----------
     def _browse_file(self):
         f, _ = QFileDialog.getOpenFileName(
-            self, "Choose Image",
-            "", "Images (*.fits *.fit *.xisf *.tif *.tiff *.png *.jpg *.jpeg);;All files (*)"
+            self, self.tr("Choose Image"),
+            "", self.tr("Images (*.fits *.fit *.xisf *.tif *.tiff *.png *.jpg *.jpeg);;All files (*)")
         )
         if f:
             self.le_path.setText(f)
 
     def _browse_in(self):
-        d = QFileDialog.getExistingDirectory(self, "Choose input directory")
+        d = QFileDialog.getExistingDirectory(self, self.tr("Choose input directory"))
         if d: self.le_in.setText(d)
 
     def _browse_out(self):
-        d = QFileDialog.getExistingDirectory(self, "Choose output directory")
+        d = QFileDialog.getExistingDirectory(self, self.tr("Choose output directory"))
         if d: self.le_out.setText(d)
 
     # ---------- actions ----------
     def _run(self):
         astap_exe = _get_astap_exe(self.settings)
         if not astap_exe or not os.path.exists(astap_exe):
-            self.status.setText("ASTAP path missing. Set Preferences → ASTAP executable.")
-            QMessageBox.warning(self, "Plate Solver", "ASTAP path missing.\nSet it in Preferences → ASTAP executable.")
+            self.status.setText(self.tr("ASTAP path missing. Set Preferences → ASTAP executable."))
+            QMessageBox.warning(self, self.tr("Plate Solver"), self.tr("ASTAP path missing.\nSet it in Preferences → ASTAP executable."))
             return
 
         idx = self.cb_seed_mode.currentIndex()
@@ -2267,11 +2276,11 @@ class PlateSolverDialog(QDialog):
             # Active view
             doc = _active_doc_from_parent(self.parent())
             if not doc:
-                QMessageBox.information(self, "Plate Solver", "No active image view.")
+                QMessageBox.information(self, self.tr("Plate Solver"), self.tr("No active image view."))
                 return
             ok, res = plate_solve_doc_inplace(self, doc, self.settings)
             if ok:
-                self.status.setText("Solved with ASTAP (WCS + SIP applied to active doc).")
+                self.status.setText(self.tr("Solved with ASTAP (WCS + SIP applied to active doc)."))
                 QTimer.singleShot(0, self.accept)  # close when done
             else:
                 self.status.setText(str(res))
@@ -2279,10 +2288,10 @@ class PlateSolverDialog(QDialog):
             # Single file
             path = self.le_path.text().strip()
             if not path:
-                QMessageBox.information(self, "Plate Solver", "Choose a file to solve.")
+                QMessageBox.information(self, self.tr("Plate Solver"), self.tr("Choose a file to solve."))
                 return
             if not os.path.exists(path):
-                QMessageBox.warning(self, "Plate Solver", "Selected file does not exist.")
+                QMessageBox.warning(self, self.tr("Plate Solver"), self.tr("Selected file does not exist."))
                 return
             self._solve_file(path)
         else:
@@ -2293,10 +2302,10 @@ class PlateSolverDialog(QDialog):
         try:
             image_data, original_header, bit_depth, is_mono = load_image(path)
         except Exception as e:
-            QMessageBox.warning(self, "Plate Solver", f"Cannot read image:\n{e}")
+            QMessageBox.warning(self, self.tr("Plate Solver"), self.tr("Cannot read image:\n{0}").format(e))
             return
         if image_data is None:
-            QMessageBox.warning(self, "Plate Solver", "Unsupported or unreadable image.")
+            QMessageBox.warning(self, self.tr("Plate Solver"), self.tr("Unsupported or unreadable image."))
             return
 
         # Seed header from original_header
@@ -2323,9 +2332,9 @@ class PlateSolverDialog(QDialog):
         # Save-as using legacy.save_image() with ORIGINAL pixels (not normalized)
         save_path, _ = QFileDialog.getSaveFileName(
             self,
-            "Save Plate-Solved FITS",
+            self.tr("Save Plate-Solved FITS"),
             "",
-            "FITS files (*.fits *.fit)"
+            self.tr("FITS files (*.fits *.fit)")
         )
         if save_path:
             try:
@@ -2343,22 +2352,22 @@ class PlateSolverDialog(QDialog):
                     original_header=h2,
                     is_mono=is_mono
                 )
-                self.status.setText(f"Solved FITS saved:\n{save_path}")
+                self.status.setText(self.tr("Solved FITS saved:\n{0}").format(save_path))
                 QTimer.singleShot(0, self.accept)
             except Exception as e:
-                QMessageBox.critical(self, "Save Error", f"Failed to save: {e}")
+                QMessageBox.critical(self, self.tr("Save Error"), self.tr("Failed to save: {0}").format(e))
         else:
-            self.status.setText("Solved (not saved).")
+            self.status.setText(self.tr("Solved (not saved)."))
 
 
     def _run_batch(self):
         in_dir  = self.le_in.text().strip()
         out_dir = self.le_out.text().strip()
         if not in_dir or not os.path.isdir(in_dir):
-            QMessageBox.warning(self, "Batch", "Please choose a valid input directory.")
+            QMessageBox.warning(self, self.tr("Batch"), self.tr("Please choose a valid input directory."))
             return
         if not out_dir or not os.path.isdir(out_dir):
-            QMessageBox.warning(self, "Batch", "Please choose a valid output directory.")
+            QMessageBox.warning(self, self.tr("Batch"), self.tr("Please choose a valid output directory."))
             return
 
         exts = {".xisf", ".fits", ".fit", ".tif", ".tiff", ".png", ".jpg", ".jpeg"}
@@ -2368,24 +2377,24 @@ class PlateSolverDialog(QDialog):
             if os.path.splitext(f)[1].lower() in exts
         ]
         if not files:
-            QMessageBox.information(self, "Batch", "No acceptable image files found.")
+            QMessageBox.information(self, self.tr("Batch"), self.tr("No acceptable image files found."))
             return
 
         self.log.clear()
-        self.log.append(f"Found {len(files)} files. Starting batch…")
+        self.log.append(self.tr("Found {0} files. Starting batch…").format(len(files)))
         QApplication.processEvents()
 
         for path in files:
             base = os.path.splitext(os.path.basename(path))[0]
             out  = os.path.join(out_dir, base + "_plate_solved.fits")
-            self.log.append(f"▶ {path}")
+            self.log.append(f"▶ {path}") # Symbol, no need to translate
             QApplication.processEvents()
 
             try:
                 # Load using legacy.load_image()
                 image_data, original_header, bit_depth, is_mono = load_image(path)
                 if image_data is None:
-                    self.log.append("  ❌ Failed to load")
+                    self.log.append(self.tr("  ❌ Failed to load"))
                     continue
 
                 # Seed header from original_header
@@ -2424,12 +2433,12 @@ class PlateSolverDialog(QDialog):
                     original_header=h2,
                     is_mono=is_mono
                 )
-                self.log.append("  ✔ saved: " + out)
+                self.log.append(self.tr("  ✔ saved: ") + out)
 
             except Exception as e:
-                self.log.append("  ❌ error: " + str(e))
+                self.log.append(self.tr("  ❌ error: ") + str(e))
 
             QApplication.processEvents()
 
-        self.log.append("Batch plate solving completed.")
+        self.log.append(self.tr("Batch plate solving completed."))
 

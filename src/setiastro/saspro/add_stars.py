@@ -224,7 +224,7 @@ class AddStarsDialog(QDialog):
     stars_added = pyqtSignal(object, object)
     def __init__(self, main, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Add Stars to Image")
+        self.setWindowTitle(self.tr("Add Stars to Image"))
 
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.setWindowModality(Qt.WindowModality.ApplicationModal)
@@ -277,27 +277,27 @@ class AddStarsDialog(QDialog):
         grid = QGridLayout()
 
         # Blend type
-        grid.addWidget(QLabel("Blend Type:"), 0, 0)
+        grid.addWidget(QLabel(self.tr("Blend Type:")), 0, 0)
         self.cmb_blend = QComboBox(); self.cmb_blend.addItems(["Screen", "Add"])
         self.cmb_blend.currentIndexChanged.connect(self.update_preview)
         grid.addWidget(self.cmb_blend, 0, 1)
 
         # Starless source
-        grid.addWidget(QLabel("Starless View:"), 1, 0)
+        grid.addWidget(QLabel(self.tr("Starless View:")), 1, 0)
         self.cmb_starless = QComboBox(); grid.addWidget(self.cmb_starless, 1, 1)
-        btn_sless_file = QPushButton("Load from File"); btn_sless_file.clicked.connect(lambda: self._load_from_file('starless'))
+        btn_sless_file = QPushButton(self.tr("Load from File")); btn_sless_file.clicked.connect(lambda: self._load_from_file('starless'))
         grid.addWidget(btn_sless_file, 1, 2)
 
         # Stars-only source
-        grid.addWidget(QLabel("Stars-Only View:"), 2, 0)
+        grid.addWidget(QLabel(self.tr("Stars-Only View:")), 2, 0)
         self.cmb_stars   = QComboBox(); grid.addWidget(self.cmb_stars, 2, 1)
-        btn_stars_file = QPushButton("Load from File"); btn_stars_file.clicked.connect(lambda: self._load_from_file('stars'))
+        btn_stars_file = QPushButton(self.tr("Load from File")); btn_stars_file.clicked.connect(lambda: self._load_from_file('stars'))
         grid.addWidget(btn_stars_file, 2, 2)
 
         layout.addLayout(grid)
 
         refresh_row = QHBoxLayout()
-        btn_refresh = QPushButton("Refresh Views")
+        btn_refresh = QPushButton(self.tr("Refresh Views"))
         btn_refresh.clicked.connect(self._populate_doc_combos)
         refresh_row.addStretch(1)
         refresh_row.addWidget(btn_refresh)
@@ -305,7 +305,7 @@ class AddStarsDialog(QDialog):
 
         # Ratio slider
         row = QHBoxLayout()
-        row.addWidget(QLabel("Blend Ratio (Screen/Add Intensity):"))
+        row.addWidget(QLabel(self.tr("Blend Ratio (Screen/Add Intensity):")))
         self.slider_ratio = QSlider(Qt.Orientation.Horizontal)
         self.slider_ratio.setRange(0, 100); self.slider_ratio.setValue(100)
         self.slider_ratio.setTickInterval(10); self.slider_ratio.setTickPosition(QSlider.TickPosition.TicksBelow)
@@ -315,8 +315,8 @@ class AddStarsDialog(QDialog):
 
         # Buttons
         brow = QHBoxLayout(); brow.addStretch(1)
-        btn_apply = QPushButton("Apply"); btn_apply.clicked.connect(self._apply)
-        btn_cancel= QPushButton("Cancel"); btn_cancel.clicked.connect(self.reject)
+        btn_apply = QPushButton(self.tr("Apply")); btn_apply.clicked.connect(self._apply)
+        btn_cancel= QPushButton(self.tr("Cancel")); btn_cancel.clicked.connect(self.reject)
         brow.addWidget(btn_apply); brow.addWidget(btn_cancel)
         layout.addLayout(brow)
 

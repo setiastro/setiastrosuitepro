@@ -61,7 +61,7 @@ class ImagePreviewDialog(QDialog):
     
     def __init__(self, np_image: np.ndarray, is_mono: bool = False, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Image Preview")
+        self.setWindowTitle(self.tr("Image Preview"))
         self.resize(640, 480)
         
         self.autostretch_enabled = False
@@ -84,18 +84,18 @@ class ImagePreviewDialog(QDialog):
         bar = QHBoxLayout()
 
         self.autostretch_button = QToolButton()
-        self.autostretch_button.setText("AutoStretch (Off)")
-        self.autostretch_button.setToolTip("Toggle AutoStretch")
+        self.autostretch_button.setText(self.tr("AutoStretch (Off)"))
+        self.autostretch_button.setToolTip(self.tr("Toggle AutoStretch"))
         self.autostretch_button.setCheckable(True)
         self.autostretch_button.toggled.connect(self._toggle_autostretch)
         bar.addWidget(self.autostretch_button)
 
         bar.addStretch(1)
 
-        self.zoom_in_button = themed_toolbtn("zoom-in", "Zoom In")
-        self.zoom_out_button = themed_toolbtn("zoom-out", "Zoom Out")
-        self.zoom_1to1_button = themed_toolbtn("zoom-original", "1:1 (100%)")
-        self.fit_button = themed_toolbtn("zoom-fit-best", "Fit to Preview")
+        self.zoom_in_button = themed_toolbtn("zoom-in", self.tr("Zoom In"))
+        self.zoom_out_button = themed_toolbtn("zoom-out", self.tr("Zoom Out"))
+        self.zoom_1to1_button = themed_toolbtn("zoom-original", self.tr("1:1 (100%)"))
+        self.fit_button = themed_toolbtn("zoom-fit-best", self.tr("Fit to Preview"))
 
         self.zoom_in_button.clicked.connect(self._zoom_in)
         self.zoom_out_button.clicked.connect(self._zoom_out)
@@ -164,7 +164,7 @@ class ImagePreviewDialog(QDialog):
         """Toggle autostretch on/off."""
         self.autostretch_enabled = checked
         self.autostretch_button.setText(
-            "AutoStretch (On)" if checked else "AutoStretch (Off)"
+            self.tr("AutoStretch (On)") if checked else self.tr("AutoStretch (Off)")
         )
         self._apply_display()
     

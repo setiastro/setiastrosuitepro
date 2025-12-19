@@ -29,7 +29,7 @@ class HistogramDialog(QDialog):
     pivotPicked = pyqtSignal(float)  # normalized [0..1] x position for GHS pivot
     def __init__(self, parent, document):
         super().__init__(parent)
-        self.setWindowTitle("Histogram")
+        self.setWindowTitle(self.tr("Histogram"))
         self.doc = document
         self.image = _to_float_preserve(document.image)
 
@@ -110,10 +110,10 @@ class HistogramDialog(QDialog):
         self.hist_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.scroll_area.setWidget(self.hist_label)
         self.hist_label.installEventFilter(self)
-        self.hist_label.setToolTip(
+        self.hist_label.setToolTip(self.tr(
             "Ctrl+Click on the histogram to send that intensity as the "
             "pivot to Hyperbolic Stretch (if open)."
-        )
+        ))
         self.scroll_area.viewport().installEventFilter(self)
 
         splitter.addWidget(self.scroll_area)
@@ -123,8 +123,8 @@ class HistogramDialog(QDialog):
         self.stats_table.setRowCount(7)
         self.stats_table.setColumnCount(1)
         self.stats_table.setVerticalHeaderLabels([
-            "Min", "Max", "Median", "StdDev",
-            "MAD", "Low Clipped", "High Clipped"
+            self.tr("Min"), self.tr("Max"), self.tr("Median"), self.tr("StdDev"),
+            self.tr("MAD"), self.tr("Low Clipped"), self.tr("High Clipped")
         ])
 
         # Let it grow/shrink with the splitter
@@ -159,31 +159,31 @@ class HistogramDialog(QDialog):
         self.zoom_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.zoom_slider.valueChanged.connect(self._on_zoom_changed)
 
-        ctl.addWidget(QLabel("Zoom:"))
+        ctl.addWidget(QLabel(self.tr("Zoom:")))
         ctl.addWidget(self.zoom_slider)
 
-        self.btn_logx = QPushButton("Toggle Log X-Axis", self)
+        self.btn_logx = QPushButton(self.tr("Toggle Log X-Axis"), self)
         self.btn_logx.setCheckable(True)
         self.btn_logx.toggled.connect(self._toggle_log_x)
         ctl.addWidget(self.btn_logx)
 
-        self.btn_logy = QPushButton("Toggle Log Y-Axis", self)
+        self.btn_logy = QPushButton(self.tr("Toggle Log Y-Axis"), self)
         self.btn_logy.setCheckable(True)
         self.btn_logy.toggled.connect(self._toggle_log_y)
         ctl.addWidget(self.btn_logy)
 
         self.btn_sensor_max = QToolButton(self)
         self.btn_sensor_max.setText("?")
-        self.btn_sensor_max.setToolTip(
+        self.btn_sensor_max.setToolTip(self.tr(
             "Set your camera's true saturation level for clipping warnings.\n"
             "Tip: take an overexposed frame and see its max ADU."
-        )
+        ))
         self.btn_sensor_max.clicked.connect(self._prompt_sensor_max)
         ctl.addWidget(self.btn_sensor_max)
 
         main_layout.addLayout(ctl)
 
-        btn_close = QPushButton("Close", self)
+        btn_close = QPushButton(self.tr("Close"), self)
         btn_close.clicked.connect(self.accept)
         main_layout.addWidget(btn_close)
 
@@ -408,7 +408,7 @@ class HistogramDialog(QDialog):
             p.setPen(QPen(QColor(220, 0, 0), 2, Qt.PenStyle.DashLine))
             p.drawLine(x, top_margin, x, axis_y)
             p.drawText(min(x + 4, width - 80), top_margin + 12,
-                       f"True Max {self.sensor_max01:.4f}")
+                       self.tr("True Max {0:.4f}").format(self.sensor_max01))
         # store mapping info for Ctrl+click → normalized x
         try:
             self._click_mapping = {
@@ -567,13 +567,13 @@ class HistogramDialog(QDialog):
         eps = 1e-6  # tolerance for "exactly 0/1" after float ops
 
         row_defs = [
-            ("Min",          lambda c: float(np.min(c)),                "{:.4f}"),
-            ("Max",          lambda c: float(np.max(c)),                "{:.4f}"),
-            ("Median",       lambda c: float(np.median(c)),             "{:.4f}"),
-            ("StdDev",       lambda c: float(np.std(c)),                "{:.4f}"),
-            ("MAD",          lambda c: float(np.median(np.abs(c - np.median(c)))), "{:.4f}"),
-            ("Low Clipped",  lambda c: _clip_fmt(c, low=True,  eps=eps), "{}"),
-            ("High Clipped", lambda c: _clip_fmt(c, low=False, eps=eps), "{}"),
+            (self.tr("Min"),          lambda c: float(np.min(c)),                "{:.4f}"),
+            (self.tr("Max"),          lambda c: float(np.max(c)),                "{:.4f}"),
+            (self.tr("Median"),       lambda c: float(np.median(c)),             "{:.4f}"),
+            (self.tr("StdDev"),       lambda c: float(np.std(c)),                "{:.4f}"),
+            (self.tr("MAD"),          lambda c: float(np.median(np.abs(c - np.median(c)))), "{:.4f}"),
+            (self.tr("Low Clipped"),  lambda c: _clip_fmt(c, low=True,  eps=eps), "{}"),
+            (self.tr("High Clipped"), lambda c: _clip_fmt(c, low=False, eps=eps), "{}"),
         ]
 
         def _clip_fmt(c, low: bool, eps: float):
@@ -600,7 +600,7 @@ class HistogramDialog(QDialog):
                 it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
 
                 # --- visual pop for non-trivial clipping ---
-                if lab in ("Low Clipped", "High Clipped"):
+                if lab in (self.tr("Low Clipped"), self.tr("High Clipped")):
                     # text looks like: "123 (0.456%)"
                     try:
                         pct_str = text.split("(")[1].split("%")[0]
@@ -674,11 +674,11 @@ class HistogramDialog(QDialog):
 
             val, ok = QInputDialog.getInt(
                 self,
-                "Sensor True Max (ADU)",
-                f"Enter your sensor's true saturation value in native ADU.\n"
-                f"(Typical max for this file type is {self.native_theoretical_max})\n\n"
+                self.tr("Sensor True Max (ADU)"),
+                self.tr("Enter your sensor's true saturation value in native ADU.\n"
+                "(Typical max for this file type is {0})\n\n"
                 "You can measure this by taking a deliberately overexposed frame\n"
-                "and reading its maximum pixel value.",
+                "and reading its maximum pixel value.").format(self.native_theoretical_max),
                 int(current),
                 1,
                 int(self.native_theoretical_max)
@@ -690,8 +690,8 @@ class HistogramDialog(QDialog):
             # float images / unknown depth: allow normalized max
             val, ok = QInputDialog.getDouble(
                 self,
-                "Histogram Effective Max",
-                "Enter effective maximum for clipping (normalized units).",
+                self.tr("Histogram Effective Max"),
+                self.tr("Enter effective maximum for clipping (normalized units)."),
                 float(self.sensor_max01),
                 1e-6,
                 1.0,

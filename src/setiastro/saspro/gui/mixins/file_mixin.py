@@ -104,7 +104,7 @@ class FileMixin:
         if last_dir and not os.path.isdir(last_dir):
             last_dir = ""
 
-        paths, _ = QFileDialog.getOpenFileNames(self, "Open Images", last_dir, filters)
+        paths, _ = QFileDialog.getOpenFileNames(self, self.tr("Open Images"), last_dir, filters)
         if not paths:
             return
 
@@ -121,7 +121,7 @@ class FileMixin:
                 self._log(f"Opened: {p}")
                 self._add_recent_image(p)        # âœ... track in MRU
             except Exception as e:
-                QMessageBox.warning(self, "Open failed", f"{p}\n\n{e}")
+                QMessageBox.warning(self, self.tr("Open failed"), f"{p}\n\n{e}")
 
     def save_active(self):
         from setiastro.saspro.main_helpers import (
@@ -176,7 +176,7 @@ class FileMixin:
         suggested_path = os.path.join(candidate_dir, suggested_safe)
 
         # --- Open dialog ----------------------------------------
-        path, selected_filter = QFileDialog.getSaveFileName(self, "Save As", suggested_path, filters)
+        path, selected_filter = QFileDialog.getSaveFileName(self, self.tr("Save As"), suggested_path, filters)
         if not path:
             return
 
@@ -201,7 +201,7 @@ class FileMixin:
             self._log(f"Saved: {path} ({chosen_bd})")
             self.settings.setValue("paths/last_save_dir", os.path.dirname(path))
         except Exception as e:
-            QMessageBox.critical(self, "Save failed", str(e))
+            QMessageBox.critical(self, self.tr("Save failed"), str(e))
 
     def _load_recent_lists(self):
         """Load MRU lists from QSettings."""
@@ -251,9 +251,8 @@ class FileMixin:
         if not os.path.exists(path):
             if QMessageBox.question(
                 self,
-                "File not found",
-                f"The file does not exist:\n{path}\n\n"
-                "Remove it from the recent images list?",
+                self.tr("File not found"),
+                self.tr("The file does not exist:\n{path}\n\nRemove it from the recent images list?").replace("{path}", path),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             ) == QMessageBox.StandardButton.Yes:
                 self._recent_image_paths = [p for p in self._recent_image_paths if p != path]
@@ -267,7 +266,7 @@ class FileMixin:
             # bump to front
             self._add_recent_image(path)
         except Exception as e:
-            QMessageBox.warning(self, "Open failed", f"{path}\n\n{e}")
+            QMessageBox.warning(self, self.tr("Open failed"), f"{path}\n\n{e}")
 
     def _open_recent_project(self, path: str):
         if not path:
@@ -275,9 +274,8 @@ class FileMixin:
         if not os.path.exists(path):
             if QMessageBox.question(
                 self,
-                "Project not found",
-                f"The project file does not exist:\n{path}\n\n"
-                "Remove it from the recent projects list?",
+                self.tr("Project not found"),
+                self.tr("The project file does not exist:\n{path}\n\nRemove it from the recent projects list?").replace("{path}", path),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             ) == QMessageBox.StandardButton.Yes:
                 self._recent_project_paths = [p for p in self._recent_project_paths if p != path]
@@ -310,7 +308,7 @@ class FileMixin:
 
     def _save_project(self):
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save Project", "", "SetiAstro Project (*.sas)"
+            self, self.tr("Save Project"), "", "SetiAstro Project (*.sas)"
         )
         if not path:
             return
@@ -319,15 +317,15 @@ class FileMixin:
 
         docs = self._collect_open_documents()
         if not docs:
-            QMessageBox.warning(self, "Save Project", "No documents to save.")
+            QMessageBox.warning(self, self.tr("Save Project"), self.tr("No documents to save."))
             return
 
         try:
             compress = self._ask_project_compress()  # your existing yes/no dialog
 
             # Busy dialog (indeterminate)
-            dlg = QProgressDialog("Saving project...", "", 0, 0, self)
-            dlg.setWindowTitle("Saving")
+            dlg = QProgressDialog(self.tr("Saving project..."), "", 0, 0, self)
+            dlg.setWindowTitle(self.tr("Saving"))
             # PyQt6 (with PyQt5 fallback if you ever run it there)
             try:
                 dlg.setWindowModality(Qt.WindowModality.ApplicationModal)
@@ -365,7 +363,7 @@ class FileMixin:
             self._proj_save_worker.error.connect(
                 lambda msg: (
                     dlg.close(),
-                    QMessageBox.critical(self, "Save Project", f"Failed to save:\n{msg}"),
+                    QMessageBox.critical(self, self.tr("Save Project"), self.tr("Failed to save:\n{msg}").replace("{msg}", msg)),
                 )
             )
             self._proj_save_worker.finished.connect(
@@ -374,7 +372,7 @@ class FileMixin:
             self._proj_save_worker.start()
 
         except Exception as e:
-            QMessageBox.critical(self, "Save Project", f"Failed to save:\n{e}")
+            QMessageBox.critical(self, self.tr("Save Project"), self.tr("Failed to save:\n{e}").replace("{e}", str(e)))
 
     def _load_project(self):
         # warn / clear current desktop
@@ -382,7 +380,7 @@ class FileMixin:
             return
 
         path, _ = QFileDialog.getOpenFileName(
-            self, "Load Project", "", "SetiAstro Project (*.sas)"
+            self, self.tr("Load Project"), "", "SetiAstro Project (*.sas)"
         )
         if not path:
             return
@@ -390,8 +388,8 @@ class FileMixin:
         self._do_load_project_path(path)
 
     def _new_project(self):
-        if not self._confirm_discard(title="New Project",
-                                    msg="Start a new project? This closes all views and clears desktop shortcuts."):
+        if not self._confirm_discard(title=self.tr("New Project"),
+                                    msg=self.tr("Start a new project? This closes all views and clears desktop shortcuts.")):
             return
 
         # Close views + docs + shelf

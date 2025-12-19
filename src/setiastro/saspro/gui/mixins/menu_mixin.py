@@ -73,7 +73,7 @@ class MenuMixin:
         mb = self.menuBar()
 
         # File
-        m_file = mb.addMenu("&File")
+        m_file = mb.addMenu(self.tr("&File"))
         m_file.addAction(self.act_open)
         m_file.addSeparator()
         m_file.addAction(self.act_save)
@@ -85,8 +85,8 @@ class MenuMixin:
         m_file.addAction(self.act_project_load)
         # --- Recent submenus ----------------------------------------
         m_file.addSeparator()
-        self.m_recent_images_menu = m_file.addMenu("Open Recent Images")
-        self.m_recent_projects_menu = m_file.addMenu("Open Recent Projects")
+        self.m_recent_images_menu = m_file.addMenu(self.tr("Open Recent Images"))
+        self.m_recent_projects_menu = m_file.addMenu(self.tr("Open Recent Projects"))
 
         m_file.addSeparator()
         m_file.addAction(self.act_exit)
@@ -95,12 +95,12 @@ class MenuMixin:
         self._rebuild_recent_menus()
 
         # Edit (with icons)
-        m_edit = mb.addMenu("&Edit")
+        m_edit = mb.addMenu(self.tr("&Edit"))
         m_edit.addAction(self.act_undo)
         m_edit.addAction(self.act_redo)
 
         # Functions
-        m_fn = mb.addMenu("&Functions")
+        m_fn = mb.addMenu(self.tr("&Functions"))
 
         m_fn.addAction(self.act_abe)
         m_fn.addAction(self.act_add_stars)
@@ -133,14 +133,14 @@ class MenuMixin:
         m_fn.addAction(self.act_white_balance)
 
 
-        mCosmic = mb.addMenu("&Smart Tools")
+        mCosmic = mb.addMenu(self.tr("&Smart Tools"))
         mCosmic.addAction(self.actAberrationAI)
         mCosmic.addAction(self.actCosmicUI)
         mCosmic.addAction(self.actCosmicSat)
         mCosmic.addAction(self.act_graxpert)
         mCosmic.addAction(self.act_remove_stars)
 
-        m_tools = mb.addMenu("&Tools")
+        m_tools = mb.addMenu(self.tr("&Tools"))
 
         m_tools.addAction(self.act_blink)
         m_tools.addAction(self.act_contsub)
@@ -154,7 +154,7 @@ class MenuMixin:
         m_tools.addAction(self.act_view_bundles) 
         m_tools.addAction(self.act_function_bundles)
 
-        m_geom = mb.addMenu("&Geometry")
+        m_geom = mb.addMenu(self.tr("&Geometry"))
         m_geom.addAction(self.act_geom_invert)
         m_geom.addSeparator()
         m_geom.addAction(self.act_geom_flip_h)
@@ -168,7 +168,7 @@ class MenuMixin:
         m_geom.addSeparator()
         m_geom.addAction(self.act_debayer)
 
-        m_star = mb.addMenu("&Star Stuff")
+        m_star = mb.addMenu(self.tr("&Star Stuff"))
 
         m_star.addAction(self.act_astrospike)
         m_star.addAction(self.act_exo_detector)
@@ -185,7 +185,7 @@ class MenuMixin:
         m_star.addAction(self.act_stacking_suite)
         m_star.addAction(self.act_supernova_hunter)
 
-        m_masks = mb.addMenu("&Masks")
+        m_masks = mb.addMenu(self.tr("&Masks"))
         m_masks.addAction(self.act_create_mask)
         m_masks.addSeparator()
         m_masks.addAction(self.act_apply_mask)
@@ -196,16 +196,16 @@ class MenuMixin:
         m_masks.addSeparator()
         m_masks.addAction(self.act_invert_mask)
 
-        m_wim = mb.addMenu("&What's In My...")
+        m_wim = mb.addMenu(self.tr("&What's In My..."))
         m_wim.addAction(self.act_whats_in_my_sky)
         m_wim.addAction(self.act_wimi)
 
-        m_scripts = mb.addMenu("&Scripts")
+        m_scripts = mb.addMenu(self.tr("&Scripts"))
         self.menu_scripts = m_scripts
         self.scriptman.rebuild_menu(m_scripts)
 
 
-        m_header = mb.addMenu("&Header Mods && Misc")
+        m_header = mb.addMenu(self.tr("&Header Mods && Misc"))
         m_header.addAction(self.act_astrobin_exporter)
         m_header.addAction(self.act_batch_convert)
         m_header.addAction(self.act_batch_renamer)
@@ -214,20 +214,20 @@ class MenuMixin:
         m_header.addAction(self.act_fits_modifier)
 
 
-        m_hist = mb.addMenu("&History")
+        m_hist = mb.addMenu(self.tr("&History"))
         m_hist.addAction(self.act_history_explorer)
 
-        m_short = mb.addMenu("&Shortcuts")
+        m_short = mb.addMenu(self.tr("&Shortcuts"))
 
-        act_cheats = QAction("Keyboard Shortcut Cheat Sheet...", self)
+        act_cheats = QAction(self.tr("Keyboard Shortcut Cheat Sheet..."), self)
         act_cheats.triggered.connect(self._show_cheat_sheet)
         m_short.addAction(act_cheats)
 
         # act_save_sc = QAction("Save Shortcuts Now", self, triggered=self.shortcuts.save_shortcuts)
         # Keep it if you like, but add explicit export/import:
-        act_export_sc = QAction("Export Shortcuts...", self, triggered=self._export_shortcuts_dialog)
-        act_import_sc = QAction("Import Shortcuts...", self, triggered=self._import_shortcuts_dialog)
-        act_clear_sc  = QAction("Clear All Shortcuts", self, triggered=self.shortcuts.clear)
+        act_export_sc = QAction(self.tr("Export Shortcuts..."), self, triggered=self._export_shortcuts_dialog)
+        act_import_sc = QAction(self.tr("Import Shortcuts..."), self, triggered=self._import_shortcuts_dialog)
+        act_clear_sc  = QAction(self.tr("Clear All Shortcuts"), self, triggered=self.shortcuts.clear)
 
         m_short.addAction(act_export_sc)
         m_short.addAction(act_import_sc)
@@ -235,7 +235,7 @@ class MenuMixin:
         # m_short.addAction(act_save_sc)   # optional: keep
         m_short.addAction(act_clear_sc)
 
-        m_view = mb.addMenu("&View")
+        m_view = mb.addMenu(self.tr("&View"))
         m_view.addAction(self.act_cascade)
         m_view.addAction(self.act_tile)
         m_view.addAction(self.act_tile_vert)
@@ -250,11 +250,11 @@ class MenuMixin:
         self._link_btn.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
 
         link_menu = QMenu(self._link_btn)
-        a_none = link_menu.addAction("None")
-        a_A = link_menu.addAction("Group A")
-        a_B = link_menu.addAction("Group B")
-        a_C = link_menu.addAction("Group C")
-        a_D = link_menu.addAction("Group D")
+        a_none = link_menu.addAction(self.tr("None"))
+        a_A = link_menu.addAction(self.tr("Group A"))
+        a_B = link_menu.addAction(self.tr("Group B"))
+        a_C = link_menu.addAction(self.tr("Group C"))
+        a_D = link_menu.addAction(self.tr("Group D"))
         self._link_btn.setMenu(link_menu)
 
         a_none.setCheckable(True)
@@ -288,13 +288,13 @@ class MenuMixin:
         # first-time sync of label/checked state
         self._sync_link_action_state()
 
-        m_settings = mb.addMenu("&Settings")
-        m_settings.addAction("Preferences...", self._open_settings)
+        m_settings = mb.addMenu(self.tr("&Settings"))
+        m_settings.addAction(self.tr("Preferences..."), self._open_settings)
 
-        m_about = mb.addMenu("&About")
+        m_about = mb.addMenu(self.tr("&About"))
         m_about.addAction(self.act_docs)  
         m_about.addSeparator()
-        m_about.addAction("About...", self._about)
+        m_about.addAction(self.tr("About..."), self._about)
         m_about.addAction(self.act_check_updates)
 
 
@@ -320,7 +320,7 @@ class MenuMixin:
         # ---- Images ----------------------------------------
         self.m_recent_images_menu.clear()
         if not self._recent_image_paths:
-            act = self.m_recent_images_menu.addAction("No recent images")
+            act = self.m_recent_images_menu.addAction(self.tr("No recent images"))
             act.setEnabled(False)
         else:
             for path in self._recent_image_paths:
@@ -331,13 +331,13 @@ class MenuMixin:
                     lambda checked=False, p=path: self._open_recent_image(p)
                 )
             self.m_recent_images_menu.addSeparator()
-            clear_act = self.m_recent_images_menu.addAction("Clear List")
+            clear_act = self.m_recent_images_menu.addAction(self.tr("Clear List"))
             clear_act.triggered.connect(self._clear_recent_images)
 
         # ---- Projects ----------------------------------------
         self.m_recent_projects_menu.clear()
         if not self._recent_project_paths:
-            act = self.m_recent_projects_menu.addAction("No recent projects")
+            act = self.m_recent_projects_menu.addAction(self.tr("No recent projects"))
             act.setEnabled(False)
         else:
             for path in self._recent_project_paths:
@@ -348,7 +348,7 @@ class MenuMixin:
                     lambda checked=False, p=path: self._open_recent_project(p)
                 )
             self.m_recent_projects_menu.addSeparator()
-            clear_act = self.m_recent_projects_menu.addAction("Clear List")
+            clear_act = self.m_recent_projects_menu.addAction(self.tr("Clear List"))
             clear_act.triggered.connect(self._clear_recent_projects)
 
     def _iter_menu_actions(self, menu: QMenu):

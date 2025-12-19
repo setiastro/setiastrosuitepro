@@ -349,7 +349,7 @@ class RGBAlignWorker(QThread):
 class RGBAlignDialog(QDialog):
     def __init__(self, parent=None, document=None):
         super().__init__(parent)
-        self.setWindowTitle("RGB Align")
+        self.setWindowTitle(self.tr("RGB Align"))
         self.parent = parent
         # document could be a view; try to unwrap
         self.doc_view = document
@@ -361,7 +361,7 @@ class RGBAlignDialog(QDialog):
                              "Select model and run."))
 
         hl = QHBoxLayout()
-        hl.addWidget(QLabel("Alignment model:"))
+        hl.addWidget(QLabel(self.tr("Alignment model:")))
         self.model_combo = QComboBox()
         self.model_combo.addItems([
             "EDGE",           # ← first, new default
@@ -410,7 +410,7 @@ class RGBAlignDialog(QDialog):
 
         # ── SEP controls ─────────────────────────
         sep_row = QHBoxLayout()
-        sep_row.addWidget(QLabel("SEP sigma:"))
+        sep_row.addWidget(QLabel(self.tr("SEP sigma:")))
 
         self.sep_spin = QSpinBox()
         self.sep_spin.setRange(1, 100)
@@ -419,7 +419,7 @@ class RGBAlignDialog(QDialog):
                                  "Higher = fewer stars, lower = more stars.")
         sep_row.addWidget(self.sep_spin)
 
-        self.btn_trial_sep = QPushButton("Trial detect stars")
+        self.btn_trial_sep = QPushButton(self.tr("Trial detect stars"))
         self.btn_trial_sep.setToolTip("Run SEP on the green channel with this sigma and report how many "
                                       "stars it finds and how many are in the EDGE ring.")
         self.btn_trial_sep.clicked.connect(self._trial_sep_detect)
@@ -428,7 +428,7 @@ class RGBAlignDialog(QDialog):
         lay.addLayout(sep_row)
 
 
-        self.chk_new_doc = QCheckBox("Create new document (keep original)")
+        self.chk_new_doc = QCheckBox(self.tr("Create new document (keep original)"))
         self.chk_new_doc.setChecked(True)
         lay.addWidget(self.chk_new_doc)
 
@@ -449,8 +449,8 @@ class RGBAlignDialog(QDialog):
         lay.addWidget(self.summary_box)
 
         btns = QHBoxLayout()
-        self.btn_run = QPushButton("Align")
-        self.btn_close = QPushButton("Close")
+        self.btn_run = QPushButton(self.tr("Align"))
+        self.btn_close = QPushButton(self.tr("Close"))
         btns.addWidget(self.btn_run)
         btns.addWidget(self.btn_close)
         lay.addLayout(btns)

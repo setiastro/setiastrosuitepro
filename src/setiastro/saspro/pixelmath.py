@@ -755,7 +755,7 @@ class PixelMathDialogPro(QDialog):
     """
     def __init__(self, parent, doc, icon: QIcon | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Pixel Math")
+        self.setWindowTitle(self.tr("Pixel Math"))
         if icon:
             try:
                 self.setWindowIcon(icon)
@@ -805,7 +805,7 @@ class PixelMathDialogPro(QDialog):
         # ──────────────────────────────────────────────────────────────────────────
         # Variables mapping (raw title → identifier)
         # ──────────────────────────────────────────────────────────────────────────
-        vars_grp = QGroupBox("Variables")
+        vars_grp = QGroupBox(self.tr("Variables"))
         vars_layout = QVBoxLayout(vars_grp)
 
         self.vars_list = QListWidget()
@@ -832,7 +832,7 @@ class PixelMathDialogPro(QDialog):
         # First item = active view
         active_item = QListWidgetItem("img (active)")
         active_item.setData(Qt.ItemDataRole.UserRole, "img")   # ← stash the real name
-        active_item.setToolTip("img (active)")
+        active_item.setToolTip(self.tr("img (active)"))
         self.vars_list.addItem(active_item)
 
         # Other open views
@@ -847,7 +847,7 @@ class PixelMathDialogPro(QDialog):
         self.vars_list.setMinimumHeight(120)
         self.vars_list.setMaximumHeight(180)
 
-        hint = QLabel("Tip: double-click to insert the identifier at the cursor")
+        hint = QLabel(self.tr("Tip: double-click to insert the identifier at the cursor"))
         hint.setStyleSheet("color: gray; font-size: 11px;")
 
         vars_layout.addWidget(self.vars_list)
@@ -873,10 +873,10 @@ class PixelMathDialogPro(QDialog):
         # ──────────────────────────────────────────────────────────────────────────
         # Output group
         # ──────────────────────────────────────────────────────────────────────────
-        out_grp = QGroupBox("Output")
+        out_grp = QGroupBox(self.tr("Output"))
         out_row = QHBoxLayout(out_grp)
-        self.rb_out_overwrite = QRadioButton("Overwrite active"); self.rb_out_overwrite.setChecked(True)
-        self.rb_out_new       = QRadioButton("Create new view")
+        self.rb_out_overwrite = QRadioButton(self.tr("Overwrite active")); self.rb_out_overwrite.setChecked(True)
+        self.rb_out_new       = QRadioButton(self.tr("Create new view"))
         out_row.addWidget(self.rb_out_overwrite)
         out_row.addWidget(self.rb_out_new)
         out_row.addStretch(1)
@@ -886,8 +886,8 @@ class PixelMathDialogPro(QDialog):
         # Mode (single expression vs per-channel)
         # ──────────────────────────────────────────────────────────────────────────
         mode_row = QHBoxLayout()
-        self.rb_single = QRadioButton("Single Expression"); self.rb_single.setChecked(True)
-        self.rb_sep    = QRadioButton("Separate (R / G / B)")
+        self.rb_single = QRadioButton(self.tr("Single Expression")); self.rb_single.setChecked(True)
+        self.rb_sep    = QRadioButton(self.tr("Separate (R / G / B)"))
         mode_row.addWidget(self.rb_single)
         mode_row.addWidget(self.rb_sep)
         mode_row.addStretch(1)
@@ -900,48 +900,48 @@ class PixelMathDialogPro(QDialog):
 
         # Editors
         self.ed_single = QPlainTextEdit()
-        self.ed_single.setPlaceholderText("e.g. (img + otherView) / 2")
+        self.ed_single.setPlaceholderText(self.tr("e.g. (img + otherView) / 2"))
         left_col.addWidget(self.ed_single)
 
         self.tabs = QTabWidget(); self.tabs.setVisible(False)
         self.ed_r, self.ed_g, self.ed_b = QPlainTextEdit(), QPlainTextEdit(), QPlainTextEdit()
-        for ed, name in ((self.ed_r, "Red"), (self.ed_g, "Green"), (self.ed_b, "Blue")):
+        for ed, name in ((self.ed_r, self.tr("Red")), (self.ed_g, self.tr("Green")), (self.ed_b, self.tr("Blue"))):
             w = QWidget(); lay = QVBoxLayout(w); lay.addWidget(ed); self.tabs.addTab(w, name)
         left_col.addWidget(self.tabs)
 
         self.rb_single.toggled.connect(lambda on: self._mode(on))
 
-        glossary_btn = QPushButton("Glossary…")
+        glossary_btn = QPushButton(self.tr("Glossary…"))
         glossary_btn.clicked.connect(self._open_glossary)
         left_col.addWidget(glossary_btn)
 
         # ──────────────────────────────────────────────────────────────────────────
         # Preview (right side)
         # ──────────────────────────────────────────────────────────────────────────
-        preview_grp = QGroupBox("Preview")
+        preview_grp = QGroupBox(self.tr("Preview"))
         pv_lay = QVBoxLayout(preview_grp)
 
         # Toolbar
         tb = QHBoxLayout()
-        self.btn_preview  = QPushButton("Preview")
-        self.btn_preview.setToolTip("Compute Pixel Math and show the result here without committing.")
+        self.btn_preview  = QPushButton(self.tr("Preview"))
+        self.btn_preview.setToolTip(self.tr("Compute Pixel Math and show the result here without committing."))
 
         # NEW: Auto-stretch toggle with a dropdown menu
         self.btn_autostretch = QToolButton()
-        self.btn_autostretch.setText("Auto-stretch")
+        self.btn_autostretch.setText(self.tr("Auto-stretch"))
         self.btn_autostretch.setCheckable(True)
         self.btn_autostretch.setChecked(self._as_enabled)
         self.btn_autostretch.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
 
         as_menu = QMenu(self)
-        act_toggle = as_menu.addAction("Enable Auto-stretch")
+        act_toggle = as_menu.addAction(self.tr("Enable Auto-stretch"))
         act_toggle.setCheckable(True); act_toggle.setChecked(self._as_enabled)
         as_menu.addSeparator()
 
         # Target presets
-        tgt_menu = as_menu.addMenu("Target median")
+        tgt_menu = as_menu.addMenu(self.tr("Target median"))
         self._tgt_group = QActionGroup(self); self._tgt_group.setExclusive(True)
-        for label, val in (("0.18 (soft)", 0.18), ("0.25 (default)", 0.25), ("0.35 (brighter)", 0.35)):
+        for label, val in ((self.tr("0.18 (soft)"), 0.18), (self.tr("0.25 (default)"), 0.25), (self.tr("0.35 (brighter)"), 0.35)):
             a = tgt_menu.addAction(label)
             a.setCheckable(True)
             a.setChecked(abs(self._as_target - val) < 1e-6)
@@ -949,9 +949,9 @@ class PixelMathDialogPro(QDialog):
             a.triggered.connect(lambda _=False, v=val: self._set_as_target(v))
 
         # Sigma presets
-        sig_menu = as_menu.addMenu("Black-point sigma")
+        sig_menu = as_menu.addMenu(self.tr("Black-point sigma"))
         self._sig_group = QActionGroup(self); self._sig_group.setExclusive(True)
-        for label, val in (("σ=2.5", 2.5), ("σ=3 (default)", 3.0), ("σ=4 (deeper black)", 4.0)):
+        for label, val in ((self.tr("σ=2.5"), 2.5), (self.tr("σ=3 (default)"), 3.0), (self.tr("σ=4 (deeper black)"), 4.0)):
             a = sig_menu.addAction(label)
             a.setCheckable(True)
             a.setChecked(abs(self._as_sigma - val) < 1e-6)
@@ -959,12 +959,12 @@ class PixelMathDialogPro(QDialog):
             a.triggered.connect(lambda _=False, v=val: self._set_as_sigma(v))
 
         # Linked channels
-        act_linked = as_menu.addAction("Linked channels (use luminance)")
+        act_linked = as_menu.addAction(self.tr("Linked channels (use luminance)"))
         act_linked.setCheckable(True); act_linked.setChecked(self._as_linked)
         as_menu.addSeparator()
 
         # Output precision
-        act_16 = as_menu.addAction("Use 16-bit stats")
+        act_16 = as_menu.addAction(self.tr("Use 16-bit stats"))
         act_16.setCheckable(True); act_16.setChecked(self._as_16bit)
 
         self.btn_autostretch.setMenu(as_menu)
@@ -1021,10 +1021,10 @@ class PixelMathDialogPro(QDialog):
         self._set_as_sigma  = _set_sigma
 
         # existing zoom buttons
-        self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
-        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
-        self.btn_zoom_1_1 = themed_toolbtn("zoom-original", "1:1")
-        self.btn_fit      = themed_toolbtn("zoom-fit-best", "Fit to Preview")
+        self.btn_zoom_in  = themed_toolbtn("zoom-in", self.tr("Zoom In"))
+        self.btn_zoom_out = themed_toolbtn("zoom-out", self.tr("Zoom Out"))
+        self.btn_zoom_1_1 = themed_toolbtn("zoom-original", self.tr("1:1"))
+        self.btn_fit      = themed_toolbtn("zoom-fit-best", self.tr("Fit to Preview"))
 
         tb.addWidget(self.btn_preview)
         tb.addWidget(self.btn_autostretch)          # ← NEW
@@ -1056,9 +1056,9 @@ class PixelMathDialogPro(QDialog):
         # Examples (insertable templates)
         # ──────────────────────────────────────────────────────────────────────────
         ex_row = QHBoxLayout()
-        ex_row.addWidget(QLabel("Examples:"))
+        ex_row.addWidget(QLabel(self.tr("Examples:")))
         self.cb_examples = QComboBox()
-        self.cb_examples.addItem("Insert example…")
+        self.cb_examples.addItem(self.tr("Insert example…"))
         for title, kind, payload in self._examples_list():
             self.cb_examples.addItem(title, (kind, payload))
         self.cb_examples.currentIndexChanged.connect(self._apply_example_from_combo)
@@ -1069,12 +1069,12 @@ class PixelMathDialogPro(QDialog):
         # Favorites
         # ──────────────────────────────────────────────────────────────────────────
         fav_row = QHBoxLayout()
-        self.cb_fav = QComboBox(); self.cb_fav.addItem("Select a favorite expression")
+        self.cb_fav = QComboBox(); self.cb_fav.addItem(self.tr("Select a favorite expression"))
         self._load_favorites()
         self.cb_fav.currentTextChanged.connect(self._pick_favorite)
 
-        b_save = QPushButton("Save as Favorite")
-        b_del  = QPushButton("Delete Favorite")
+        b_save = QPushButton(self.tr("Save as Favorite"))
+        b_del  = QPushButton(self.tr("Delete Favorite"))
 
         b_save.clicked.connect(self._save_favorite)
         b_del.clicked.connect(self._delete_favorite)
@@ -1088,7 +1088,7 @@ class PixelMathDialogPro(QDialog):
             if self.cb_fav.currentIndex() <= 0:
                 return
             menu = QMenu(self)
-            act_del = menu.addAction("Delete this favorite")
+            act_del = menu.addAction(self.tr("Delete this favorite"))
             act = menu.exec(self.cb_fav.mapToGlobal(point))
             if act == act_del:
                 self._delete_favorite()
@@ -1102,7 +1102,7 @@ class PixelMathDialogPro(QDialog):
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self)
         btns.accepted.connect(self._apply)
         btns.rejected.connect(self.reject)
-        b_help = btns.addButton("Help", QDialogButtonBox.ButtonRole.HelpRole)
+        b_help = btns.addButton(self.tr("Help"), QDialogButtonBox.ButtonRole.HelpRole)
         b_help.clicked.connect(self._help)
         left_col.addWidget(btns)
 
@@ -1184,8 +1184,8 @@ class PixelMathDialogPro(QDialog):
         except Exception as e:
             msg = str(e)
             if "name '" in msg and "' is not defined" in msg:
-                msg += "\n\nTip: use the identifier listed in Variables (or the raw title; it’s auto-mapped)."
-            QMessageBox.critical(self, "Pixel Math Preview", f"Failed:\n{msg}")
+                msg += self.tr("\n\nTip: use the identifier listed in Variables (or the raw title; it’s auto-mapped).")
+            QMessageBox.critical(self, self.tr("Pixel Math Preview"), self.tr("Failed:\n{0}").format(msg))
         finally:
             QApplication.restoreOverrideCursor()
 
@@ -1256,93 +1256,93 @@ class PixelMathDialogPro(QDialog):
 
         return [
             # --- existing basics ---
-            ("Average two views", "single", f"({a} + {b}) / 2"),
-            ("Difference (A - B)", "single", f"{a} - {b}"),
-            ("Invert active", "single", f"~{a}"),
-            ("Subtract median (bias remove)", "single", f"{a} - med({a})"),
-            ("Zero-center by mean", "single", f"{a} - mean({a})"),
-            ("Min + Max combine", "single", f"min({a}) + max({a})"),
-            ("Log transform", "single", f"log({a} + 1e-6)"),
-            ("Midtones transform m=0.25", "single", f"mtf({a}, 0.25)"),
-            ("If darker than median → 0 else 1", "single", f"iff({a} < med({a}), 0, 1)"),
+            (self.tr("Average two views"), "single", f"({a} + {b}) / 2"),
+            (self.tr("Difference (A - B)"), "single", f"{a} - {b}"),
+            (self.tr("Invert active"), "single", f"~{a}"),
+            (self.tr("Subtract median (bias remove)"), "single", f"{a} - med({a})"),
+            (self.tr("Zero-center by mean"), "single", f"{a} - mean({a})"),
+            (self.tr("Min + Max combine"), "single", f"min({a}) + max({a})"),
+            (self.tr("Log transform"), "single", f"log({a} + 1e-6)"),
+            (self.tr("Midtones transform m=0.25"), "single", f"mtf({a}, 0.25)"),
+            (self.tr("If darker than median → 0 else 1"), "single", f"iff({a} < med({a}), 0, 1)"),
 
-            ("Per-channel: swap R↔B", "rgb", (f"{a}[2]", f"{a}[1]", f"{a}[0]")),
-            ("Per-channel: avg A & B", "rgb", (f"({a}[0]+{b}[0])/2", f"({a}[1]+{b}[1])/2", f"({a}[2]+{b}[2])/2")),
-            ("Per-channel: build RGB from A,B,C", "rgb", (f"{a}[0]", f"{b}[1]", f"{c}[2]")),
+            (self.tr("Per-channel: swap R↔B"), "rgb", (f"{a}[2]", f"{a}[1]", f"{a}[0]")),
+            (self.tr("Per-channel: avg A & B"), "rgb", (f"({a}[0]+{b}[0])/2", f"({a}[1]+{b}[1])/2", f"({a}[2]+{b}[2])/2")),
+            (self.tr("Per-channel: build RGB from A,B,C"), "rgb", (f"{a}[0]", f"{b}[1]", f"{c}[2]")),
 
             # --- new, single-expression tone/normalization ---
-            ("Normalize to 0–1 (per-channel)", "single", f"normalize01({a})"),
-            ("Sigmoid contrast (k=12, mid=0.4)", "single", f"sigmoid({a}, k=12, mid=0.4)"),
-            ("Gamma 0.6 (brighten midtones)", "single", f"gamma({a}, 0.6)"),
-            ("Percentile stretch 0.5–99.5%", "single",
+            (self.tr("Normalize to 0–1 (per-channel)"), "single", f"normalize01({a})"),
+            (self.tr("Sigmoid contrast (k=12, mid=0.4)"), "single", f"sigmoid({a}, k=12, mid=0.4)"),
+            (self.tr("Gamma 0.6 (brighten midtones)"), "single", f"gamma({a}, 0.6)"),
+            (self.tr("Percentile stretch 0.5–99.5%"), "single",
             f"lo = percentile({a}, 0.5)\nhi = percentile({a}, 99.5)\nclamp(({a} - lo) / (hi - lo), 0, 1)"),
 
             # --- blending & masking ---
-            ("Blend A→B by horizontal gradient X", "single", f"t = X\nlerp({a}, {b}, t)"),
-            ("Apply active mask to blend A→B", "single", f"m = mask()\napply_mask({a}, {b}, m)"),
+            (self.tr("Blend A→B by horizontal gradient X"), "single", f"t = X\nlerp({a}, {b}, t)"),
+            (self.tr("Apply active mask to blend A→B"), "single", f"m = mask()\napply_mask({a}, {b}, m)"),
 
             # --- sharpening with mask (multiline) ---
-            ("Masked unsharp (luma-based)", "single",
+            (self.tr("Masked unsharp (luma-based)"), "single",
             f"base = {a}\nsh = unsharp({a}, sigma=1.2, amount=0.8)\n"
             f"m = smoothstep(0.10, 0.60, luma({a}))\napply_mask(base, sh, m)"),
 
             # --- view matching / calibration ---
-            ("Match medians of A to B", "single", f"{a} * (med({b}) / med({a}))"),
+            (self.tr("Match medians of A to B"), "single", f"{a} * (med({b}) / med({a}))"),
 
             # --- small filters ---
-            ("Gaussian blur σ=2", "single", f"gauss({a}, sigma=2.0)"),
-            ("Median filter k=3", "single", f"median({a}, k=3)"),
+            (self.tr("Gaussian blur σ=2"), "single", f"gauss({a}, sigma=2.0)"),
+            (self.tr("Median filter k=3"), "single", f"median({a}, k=3)"),
 
             # --- per-channel examples using new helpers ---
-            ("Per-channel: luma to all channels", "rgb", (f"luma({a})", f"luma({a})", f"luma({a})")),
-            ("Per-channel: A’s R, B’s G, C’s B (normed)", "rgb",
+            (self.tr("Per-channel: luma to all channels"), "rgb", (f"luma({a})", f"luma({a})", f"luma({a})")),
+            (self.tr("Per-channel: A’s R, B’s G, C’s B (normed)"), "rgb",
             (f"normalize01({a}[0])", f"normalize01({b}[1])", f"normalize01({c}[2])")),
         ]
 
     def _function_glossary(self):
         # name -> (signature / template, short description)
         return {
-            "clamp": ("clamp(x, lo=0, hi=1)", "Limit values to [lo..hi]."),
-            "rescale": ("rescale(x, a, b, lo=0, hi=1)", "Map range [a..b] to [lo..hi]."),
-            "gamma": ("gamma(x, g)", "Apply gamma curve."),
-            "pow_safe": ("pow_safe(x, p)", "Power with EPS floor."),
-            "absf": ("absf(x)", "Absolute value."),
-            "expf": ("expf(x)", "Exponential."),
-            "sqrtf": ("sqrtf(x)", "Square root (clamped to ≥0)."),
-            "arcsin": ("arcsin(x)", "Inverse sine (radians), input clipped to [-1,1]."),
-            "sigmoid": ("sigmoid(x, k=10, mid=0.5)", "S-shaped tone curve."),
-            "smoothstep": ("smoothstep(e0, e1, x)", "Cubic smooth ramp."),
-            "lerp/mix": ("lerp(a, b, t)", "Linear blend."),
-            "percentile": ("percentile(x, p)", "Per-channel percentile image."),
-            "normalize01": ("normalize01(x)", "Per-channel [0..1] normalization."),
-            "zscore": ("zscore(x)", "Per-channel (x-mean)/std."),
-            "ch": ("ch(x, i)", "Extract channel i (0/1/2) as 2-D."),
-            "luma": ("luma(x)", "Rec.709 luminance as 2-D."),
-            "compose": ("compose(R, G, B)", "Stack three planes to RGB."),
-            "mask": ("m = mask()", "Active mask (2-D, [0..1])."),
-            "apply_mask": ("apply_mask(base, out, m)", "Blend by mask."),
-            "boxblur": ("boxblur(x, k=3)", "Box blur (cv2 if available)."),
-            "gauss": ("gauss(x, sigma=1.0)", "Gaussian blur."),
-            "median": ("median(x, k=3)", "Median filter (cv2 if avail)."),
-            "unsharp": ("unsharp(x, sigma=1.5, amount=1.0)", "Unsharp mask."),
-            "mtf": ("mtf(x, m)", "Midtones transfer (existing)."),
-            "iff": ("iff(cond, a, b)", "Conditional (existing)."),
-            "X / Y": ("X, Y", "Normalized coordinates in [0..1]."),
-            "H/W/C": ("H, W, C, shape", "Image dimensions."),
+            "clamp": ("clamp(x, lo=0, hi=1)", self.tr("Limit values to [lo..hi].")),
+            "rescale": ("rescale(x, a, b, lo=0, hi=1)", self.tr("Map range [a..b] to [lo..hi].")),
+            "gamma": ("gamma(x, g)", self.tr("Apply gamma curve.")),
+            "pow_safe": ("pow_safe(x, p)", self.tr("Power with EPS floor.")),
+            "absf": ("absf(x)", self.tr("Absolute value.")),
+            "expf": ("expf(x)", self.tr("Exponential.")),
+            "sqrtf": ("sqrtf(x)", self.tr("Square root (clamped to ≥0).")),
+            "arcsin": ("arcsin(x)", self.tr("Inverse sine (radians), input clipped to [-1,1].")),
+            "sigmoid": ("sigmoid(x, k=10, mid=0.5)", self.tr("S-shaped tone curve.")),
+            "smoothstep": ("smoothstep(e0, e1, x)", self.tr("Cubic smooth ramp.")),
+            "lerp/mix": ("lerp(a, b, t)", self.tr("Linear blend.")),
+            "percentile": ("percentile(x, p)", self.tr("Per-channel percentile image.")),
+            "normalize01": ("normalize01(x)", self.tr("Per-channel [0..1] normalization.")),
+            "zscore": ("zscore(x)", self.tr("Per-channel (x-mean)/std.")),
+            "ch": ("ch(x, i)", self.tr("Extract channel i (0/1/2) as 2-D.")),
+            "luma": ("luma(x)", self.tr("Rec.709 luminance as 2-D.")),
+            "compose": ("compose(R, G, B)", self.tr("Stack three planes to RGB.")),
+            "mask": ("m = mask()", self.tr("Active mask (2-D, [0..1]).")),
+            "apply_mask": ("apply_mask(base, out, m)", self.tr("Blend by mask.")),
+            "boxblur": ("boxblur(x, k=3)", self.tr("Box blur (cv2 if available).")),
+            "gauss": ("gauss(x, sigma=1.0)", self.tr("Gaussian blur.")),
+            "median": ("median(x, k=3)", self.tr("Median filter (cv2 if avail).")),
+            "unsharp": ("unsharp(x, sigma=1.5, amount=1.0)", self.tr("Unsharp mask.")),
+            "mtf": ("mtf(x, m)", self.tr("Midtones transfer (existing).")),
+            "iff": ("iff(cond, a, b)", self.tr("Conditional (existing).")),
+            "X / Y": ("X, Y", self.tr("Normalized coordinates in [0..1].")),
+            "H/W/C": ("H, W, C, shape", self.tr("Image dimensions.")),
         }
 
     def _open_glossary(self):
         dlg = QDialog(self)
-        dlg.setWindowTitle("Pixel Math Glossary")
+        dlg.setWindowTitle(self.tr("Pixel Math Glossary"))
         lay = QVBoxLayout(dlg)
 
-        info = QLabel("Double-click to insert a template at the cursor.")
+        info = QLabel(self.tr("Double-click to insert a template at the cursor."))
         info.setStyleSheet("color: gray;")
         lay.addWidget(info)
 
         from PyQt6.QtWidgets import QLineEdit, QListWidget, QListWidgetItem, QHBoxLayout, QPushButton
         search = QLineEdit()
-        search.setPlaceholderText("Search…")
+        search.setPlaceholderText(self.tr("Search…"))
         lay.addWidget(search)
 
         lst = QListWidget()
@@ -1372,7 +1372,7 @@ class PixelMathDialogPro(QDialog):
         search.textChanged.connect(lambda *_: _refill())
 
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        insert_btn = QPushButton("Insert")
+        insert_btn = QPushButton(self.tr("Insert"))
         btns.addButton(insert_btn, QDialogButtonBox.ButtonRole.ApplyRole)
         insert_btn.clicked.connect(_insert_current)
         btns.rejected.connect(dlg.reject)
@@ -1384,7 +1384,7 @@ class PixelMathDialogPro(QDialog):
 
     def _delete_favorite(self):
         text = self.cb_fav.currentText()
-        if text == "Select a favorite expression":
+        if text == self.tr("Select a favorite expression"):
             return
         # Remove from in-memory list
         try:
@@ -1397,7 +1397,7 @@ class PixelMathDialogPro(QDialog):
         # Rebuild combo to keep indices clean
         self.cb_fav.blockSignals(True)
         self.cb_fav.clear()
-        self.cb_fav.addItem("Select a favorite expression")
+        self.cb_fav.addItem(self.tr("Select a favorite expression"))
         for f in self._favs:
             self.cb_fav.addItem(f)
         self.cb_fav.setCurrentIndex(0)
@@ -1456,7 +1456,7 @@ class PixelMathDialogPro(QDialog):
         if s: s.setValue("pixelmath_favorites", json.dumps(self._favs))
 
     def _pick_favorite(self, text):
-        if text == "Select a favorite expression": return
+        if text == self.tr("Select a favorite expression"): return
         if "[R]" in text or "[G]" in text or "[B]" in text:
             self.rb_sep.setChecked(True); self._mode(False)
             parts = {}
@@ -1502,24 +1502,24 @@ class PixelMathDialogPro(QDialog):
     def _help(self):
         gl = self._function_glossary()
         lines = [
-            "Operators: +  -  *  /   ^(power)   ~(invert)",
-            "Comparisons: <, ==   (use inside iff)",
+            self.tr("Operators: +  -  *  /   ^(power)   ~(invert)"),
+            self.tr("Comparisons: <, ==   (use inside iff)"),
             "",
-            "Variables:",
-            "  • img (active) and one per open view (by window title, auto-mapped).",
-            "  • Coordinates: X, Y in [0..1].",
-            "  • Sizes: H, W, C, shape.",
+            self.tr("Variables:"),
+            self.tr("  • img (active) and one per open view (by window title, auto-mapped)."),
+            self.tr("  • Coordinates: X, Y in [0..1]."),
+            self.tr("  • Sizes: H, W, C, shape."),
             "",
-            "Per-channel indexing: view[0], view[1], view[2].",
-            "Multiline: last line is the result.",
-            "Output: Overwrite active or Create new view.",
+            self.tr("Per-channel indexing: view[0], view[1], view[2]."),
+            self.tr("Multiline: last line is the result."),
+            self.tr("Output: Overwrite active or Create new view."),
             "",
-            "Functions:"
+            self.tr("Functions:")
         ]
         # Pretty column-ish dump
         for name, (sig, desc) in gl.items():
             lines.append(f"  {sig}\n    {desc}")
-        QMessageBox.information(self, "Pixel Math Help", "\n".join(lines))
+        QMessageBox.information(self, self.tr("Pixel Math Help"), "\n".join(lines))
 
     # ---------- Apply ----------------------------------------------------------
     # ---------- Apply ----------------------------------------------------------
@@ -1595,6 +1595,6 @@ class PixelMathDialogPro(QDialog):
         except Exception as e:
             msg = str(e)
             if "name '" in msg and "' is not defined" in msg:
-                msg += "\n\nTip: use the identifier shown beside Variables (e.g. 'andromeda_png'), "
-                msg += "or just type the raw title; it will be auto-mapped."
+                msg += self.tr("\n\nTip: use the identifier shown beside Variables (e.g. 'andromeda_png'), ")
+                msg += self.tr("or just type the raw title; it will be auto-mapped.")
             QMessageBox.critical(self, "Pixel Math", f"Failed:\n{msg}")

@@ -103,10 +103,10 @@ class ToolbarMixin:
             menu.addAction(self.act_display_target)
             menu.addAction(self.act_display_sigma)
 
-            presets = QMenu("Presets", menu)
-            a_norm = presets.addAction("Normal (target 0.30, Ïƒ 5)")
-            a_midy = presets.addAction("Mid (target 0.40, Ïƒ 3)")
-            a_hard = presets.addAction("Hard (target 0.50, Ïƒ 2)")
+            presets = QMenu(self.tr("Presets"), menu)
+            a_norm = presets.addAction(self.tr("Normal (target 0.30, σ 5)"))
+            a_midy = presets.addAction(self.tr("Mid (target 0.40, σ 3)"))
+            a_hard = presets.addAction(self.tr("Hard (target 0.50, σ 2)"))
             menu.addMenu(presets)
             menu.addSeparator()
             menu.addAction(self.act_bake_display_stretch)
@@ -144,7 +144,7 @@ class ToolbarMixin:
         if isinstance(btn_fit, QToolButton):
             fit_menu = QMenu(btn_fit)
 
-            self.act_auto_fit = fit_menu.addAction("Auto-fit on Resize")
+            self.act_auto_fit = fit_menu.addAction(self.tr("Auto-fit on Resize"))
             self.act_auto_fit.setCheckable(True)
             self.act_auto_fit.setChecked(self._auto_fit_on_resize)
             self.act_auto_fit.toggled.connect(self._toggle_auto_fit_on_resize)
@@ -168,7 +168,7 @@ class ToolbarMixin:
             pass
 
         # Functions toolbar
-        tb_fn = DraggableToolBar("Functions", self)
+        tb_fn = DraggableToolBar(self.tr("Functions"), self)
         tb_fn.setSettingsKey("Toolbar/Functions")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_fn)
 
@@ -220,7 +220,7 @@ class ToolbarMixin:
         except Exception:
             pass
 
-        tbCosmic = DraggableToolBar("Cosmic Clarity", self)
+        tbCosmic = DraggableToolBar(self.tr("Cosmic Clarity"), self)
         tbCosmic.setSettingsKey("Toolbar/Cosmic")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tbCosmic)
 
@@ -234,7 +234,7 @@ class ToolbarMixin:
         except Exception:
             pass
 
-        tb_tl = DraggableToolBar("Tools", self)
+        tb_tl = DraggableToolBar(self.tr("Tools"), self)
         tb_tl.setSettingsKey("Toolbar/Tools")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_tl)
 
@@ -253,7 +253,7 @@ class ToolbarMixin:
         except Exception:
             pass
 
-        tb_geom = DraggableToolBar("Geometry", self)
+        tb_geom = DraggableToolBar(self.tr("Geometry"), self)
         tb_geom.setSettingsKey("Toolbar/Geometry")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_geom)
 
@@ -276,7 +276,7 @@ class ToolbarMixin:
         except Exception:
             pass
 
-        tb_star = DraggableToolBar("Star Stuff", self)
+        tb_star = DraggableToolBar(self.tr("Star Stuff"), self)
         tb_star.setSettingsKey("Toolbar/StarStuff")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_star)
 
@@ -301,7 +301,7 @@ class ToolbarMixin:
         except Exception:
             pass
 
-        tb_msk = DraggableToolBar("Masks", self)
+        tb_msk = DraggableToolBar(self.tr("Masks"), self)
         tb_msk.setSettingsKey("Toolbar/Masks")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_msk)
 
@@ -315,7 +315,7 @@ class ToolbarMixin:
         except Exception:
             pass
 
-        tb_wim = DraggableToolBar("What's In My...", self)
+        tb_wim = DraggableToolBar(self.tr("What's In My..."), self)
         tb_wim.setSettingsKey("Toolbar/WhatsInMy")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_wim)
 
@@ -328,7 +328,7 @@ class ToolbarMixin:
         except Exception:
             pass
 
-        tb_bundle = DraggableToolBar("Bundles", self)
+        tb_bundle = DraggableToolBar(self.tr("Bundles"), self)
         tb_bundle.setSettingsKey("Toolbar/Bundles")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_bundle)
 
@@ -355,71 +355,71 @@ class ToolbarMixin:
 
     def _create_actions(self):
         # File actions
-        self.act_open = QAction(QIcon(openfile_path), "Open...", self)
+        self.act_open = QAction(QIcon(openfile_path), self.tr("Open..."), self)
         self.act_open.setIconVisibleInMenu(True)
         self.act_open.setShortcut(QKeySequence.StandardKey.Open)
-        self.act_open.setStatusTip("Open image(s)")
+        self.act_open.setStatusTip(self.tr("Open image(s)"))
         self.act_open.triggered.connect(self.open_files)
 
 
-        self.act_project_new  = QAction("New Project", self)
-        self.act_project_save = QAction("Save Project...", self)
-        self.act_project_load = QAction("Load Project...", self)
+        self.act_project_new  = QAction(self.tr("New Project"), self)
+        self.act_project_save = QAction(self.tr("Save Project..."), self)
+        self.act_project_load = QAction(self.tr("Load Project..."), self)
 
-        self.act_project_new.setStatusTip("Close all views and clear shortcuts")
-        self.act_project_save.setStatusTip("Save all views, histories, and shortcuts to a .sas file")
-        self.act_project_load.setStatusTip("Load a .sas project (views, histories, shortcuts)")
+        self.act_project_new.setStatusTip(self.tr("Close all views and clear shortcuts"))
+        self.act_project_save.setStatusTip(self.tr("Save all views, histories, and shortcuts to a .sas file"))
+        self.act_project_load.setStatusTip(self.tr("Load a .sas project (views, histories, shortcuts)"))
 
         self.act_project_new.triggered.connect(self._new_project)
         self.act_project_save.triggered.connect(self._save_project)
         self.act_project_load.triggered.connect(self._load_project)
 
-        self.act_clear_views = QAction("Clear All Views", self)
-        self.act_clear_views.setStatusTip("Close all views and documents, keep desktop shortcuts")
+        self.act_clear_views = QAction(self.tr("Clear All Views"), self)
+        self.act_clear_views.setStatusTip(self.tr("Close all views and documents, keep desktop shortcuts"))
         # optional shortcut (pick anything you like or omit)
         # self.act_clear_views.setShortcut(QKeySequence("Ctrl+Shift+W"))
         self.act_clear_views.triggered.connect(self._clear_views_keep_shortcuts)
 
-        self.act_save = QAction(QIcon(disk_path), "Save As...", self)
+        self.act_save = QAction(QIcon(disk_path), self.tr("Save As..."), self)
         self.act_save.setIconVisibleInMenu(True)
         self.act_save.setShortcut(QKeySequence.StandardKey.SaveAs)
-        self.act_save.setStatusTip("Save the active image")
+        self.act_save.setStatusTip(self.tr("Save the active image"))
         self.act_save.triggered.connect(self.save_active)
 
-        self.act_exit = QAction("&Exit", self)
+        self.act_exit = QAction(self.tr("&Exit"), self)
         self.act_exit.setShortcut(QKeySequence.StandardKey.Quit)  # Cmd+Q / Ctrl+Q
         # Make it appear under the app menu on macOS automatically:
         self.act_exit.setMenuRole(QAction.MenuRole.QuitRole)
         self.act_exit.triggered.connect(self._on_exit)
 
-        self.act_cascade = QAction("Cascade Views", self)
-        self.act_cascade.setStatusTip("Cascade all subwindows")
+        self.act_cascade = QAction(self.tr("Cascade Views"), self)
+        self.act_cascade.setStatusTip(self.tr("Cascade all subwindows"))
         self.act_cascade.setShortcut(QKeySequence("Ctrl+Shift+C"))
         self.act_cascade.triggered.connect(self._cascade_views)
 
-        self.act_tile = QAction("Tile Views", self)
-        self.act_tile.setStatusTip("Tile all subwindows")
+        self.act_tile = QAction(self.tr("Tile Views"), self)
+        self.act_tile.setStatusTip(self.tr("Tile all subwindows"))
         self.act_tile.setShortcut(QKeySequence("Ctrl+Shift+T"))
         self.act_tile.triggered.connect(self._tile_views)
 
-        self.act_tile_vert = QAction("Tile Vertically", self)
-        self.act_tile_vert.setStatusTip("Split the workspace into equal vertical columns")
+        self.act_tile_vert = QAction(self.tr("Tile Vertically"), self)
+        self.act_tile_vert.setStatusTip(self.tr("Split the workspace into equal vertical columns"))
         self.act_tile_vert.triggered.connect(lambda: self._tile_views_direction("v"))
 
-        self.act_tile_horiz = QAction("Tile Horizontally", self)
-        self.act_tile_horiz.setStatusTip("Split the workspace into equal horizontal rows")
+        self.act_tile_horiz = QAction(self.tr("Tile Horizontally"), self)
+        self.act_tile_horiz.setStatusTip(self.tr("Split the workspace into equal horizontal rows"))
         self.act_tile_horiz.triggered.connect(lambda: self._tile_views_direction("h"))
 
-        self.act_tile_grid = QAction("Smart Grid", self)
-        self.act_tile_grid.setStatusTip("Arrange subwindows in a near-square grid")
+        self.act_tile_grid = QAction(self.tr("Smart Grid"), self)
+        self.act_tile_grid.setStatusTip(self.tr("Arrange subwindows in a near-square grid"))
         self.act_tile_grid.triggered.connect(self._tile_views_grid)
 
-        self.act_link_group = QAction("Link Pan/Zoom", self)
+        self.act_link_group = QAction(self.tr("Link Pan/Zoom"), self)
         self.act_link_group.setCheckable(True)  # checked when in any group
         self.act_link_group.triggered.connect(self._cycle_group_for_active)  # << add
 
-        self.act_undo = QAction(QIcon(undoicon_path), "Undo", self)
-        self.act_redo = QAction(QIcon(redoicon_path), "Redo", self)
+        self.act_undo = QAction(QIcon(undoicon_path), self.tr("Undo"), self)
+        self.act_redo = QAction(QIcon(redoicon_path), self.tr("Redo"), self)
         self.act_undo.setShortcut(QKeySequence.StandardKey.Undo)               # Ctrl+Z
         self.act_redo.setShortcuts([QKeySequence.StandardKey.Redo, "Ctrl+Y"])  # Shift+Ctrl+Z / Ctrl+Y
         self.act_undo.setIconVisibleInMenu(True)
@@ -428,34 +428,34 @@ class ToolbarMixin:
         self.act_redo.triggered.connect(self._redo_active)
 
         # View-ish action (toolbar toggle)
-        self.act_autostretch = QAction("Display-Stretch", self, checkable=True)
-        self.act_autostretch.setStatusTip("Toggle display auto-stretch for the active window")
+        self.act_autostretch = QAction(self.tr("Display-Stretch"), self, checkable=True)
+        self.act_autostretch.setStatusTip(self.tr("Toggle display auto-stretch for the active window"))
         self.act_autostretch.setShortcut(QKeySequence("A"))  # optional: mirror the view shortcut
         self.act_autostretch.toggled.connect(self._toggle_autostretch)
 
-        self.act_hardstretch = QAction("Hard-Display-Stretch", self, checkable=True)
+        self.act_hardstretch = QAction(self.tr("Hard-Display-Stretch"), self, checkable=True)
         self.addAction(self.act_hardstretch)
         self.act_hardstretch.setShortcut(QKeySequence("H"))
-        self.act_hardstretch.setStatusTip("Toggle hard profile for Display-Stretch (H)")
+        self.act_hardstretch.setStatusTip(self.tr("Toggle hard profile for Display-Stretch (H)"))
 
         # use toggled(bool), not triggered()
         self.act_hardstretch.toggled.connect(self._set_hard_autostretch_from_action)
 
         # NEW: Linked/Unlinked toggle (global default via QSettings, per-view runtime)
-        self.act_stretch_linked = QAction("Link RGB channels", self, checkable=True)
-        self.act_stretch_linked.setStatusTip("Apply the same stretch to all RGB channels")
+        self.act_stretch_linked = QAction(self.tr("Link RGB channels"), self, checkable=True)
+        self.act_stretch_linked.setStatusTip(self.tr("Apply the same stretch to all RGB channels"))
         self.act_stretch_linked.setShortcut(QKeySequence("Ctrl+Shift+L"))
         self.act_stretch_linked.setChecked(
             self.settings.value("display/stretch_linked", False, type=bool)
         )
         self.act_stretch_linked.toggled.connect(self._set_linked_stretch_from_action)
 
-        self.act_display_target = QAction("Set Target Median...", self)
-        self.act_display_target.setStatusTip("Set the target median for Display-Stretch (e.g., 0.30)")
+        self.act_display_target = QAction(self.tr("Set Target Median..."), self)
+        self.act_display_target.setStatusTip(self.tr("Set the target median for Display-Stretch (e.g., 0.30)"))
         self.act_display_target.triggered.connect(self._edit_display_target)
 
-        self.act_display_sigma = QAction("Set Sigma...", self)
-        self.act_display_sigma.setStatusTip("Set the sigma for Display-Stretch (e.g., 5.0)")
+        self.act_display_sigma = QAction(self.tr("Set Sigma..."), self)
+        self.act_display_sigma.setStatusTip(self.tr("Set the sigma for Display-Stretch (e.g., 5.0)"))
         self.act_display_sigma.triggered.connect(self._edit_display_sigma)
 
         # Defaults if not already present
@@ -464,9 +464,9 @@ class ToolbarMixin:
         if self.settings.value("display/sigma", None) is None:
             self.settings.setValue("display/sigma", 5.0)
 
-        self.act_bake_display_stretch = QAction("Make Display-Stretch Permanent", self)
+        self.act_bake_display_stretch = QAction(self.tr("Make Display-Stretch Permanent"), self)
         self.act_bake_display_stretch.setStatusTip(
-            "Apply the current Display-Stretch to the image and add an undo step"
+            self.tr("Apply the current Display-Stretch to the image and add an undo step")
         )
         # choose any shortcut you like; avoid Ctrl+A etc
         self.act_bake_display_stretch.setShortcut(QKeySequence("Shift+A"))
@@ -474,31 +474,31 @@ class ToolbarMixin:
 
         # --- Zoom controls ---
         # --- Zoom controls (themed icons) ---
-        self.act_zoom_out = QAction(QIcon.fromTheme("zoom-out"), "Zoom Out", self)
-        self.act_zoom_out.setStatusTip("Zoom out")
+        self.act_zoom_out = QAction(QIcon.fromTheme("zoom-out"), self.tr("Zoom Out"), self)
+        self.act_zoom_out.setStatusTip(self.tr("Zoom out"))
         self.act_zoom_out.setShortcuts([QKeySequence("Ctrl+-")])
         self.act_zoom_out.triggered.connect(lambda: self._zoom_step_active(-1))
 
-        self.act_zoom_in = QAction(QIcon.fromTheme("zoom-in"), "Zoom In", self)
-        self.act_zoom_in.setStatusTip("Zoom in")
+        self.act_zoom_in = QAction(QIcon.fromTheme("zoom-in"), self.tr("Zoom In"), self)
+        self.act_zoom_in.setStatusTip(self.tr("Zoom in"))
         self.act_zoom_in.setShortcuts([
             QKeySequence("Ctrl++"),   # Ctrl + (Shift + = on many keyboards)
             QKeySequence("Ctrl+="),   # fallback
         ])
         self.act_zoom_in.triggered.connect(lambda: self._zoom_step_active(+1))
 
-        self.act_zoom_1_1 = QAction(QIcon.fromTheme("zoom-original"), "1:1", self)
-        self.act_zoom_1_1.setStatusTip("Zoom to 100% (pixel-for-pixel)")
+        self.act_zoom_1_1 = QAction(QIcon.fromTheme("zoom-original"), self.tr("1:1"), self)
+        self.act_zoom_1_1.setStatusTip(self.tr("Zoom to 100% (pixel-for-pixel)"))
         self.act_zoom_1_1.setShortcut(QKeySequence("Ctrl+1"))
         self.act_zoom_1_1.triggered.connect(self._zoom_active_1_1)
 
-        self.act_zoom_fit = QAction(QIcon.fromTheme("zoom-fit-best"), "Fit", self)
-        self.act_zoom_fit.setStatusTip("Fit image to current window")
+        self.act_zoom_fit = QAction(QIcon.fromTheme("zoom-fit-best"), self.tr("Fit"), self)
+        self.act_zoom_fit.setStatusTip(self.tr("Fit image to current window"))
         self.act_zoom_fit.setShortcut(QKeySequence("Ctrl+0"))
         self.act_zoom_fit.triggered.connect(self._zoom_active_fit)
         self.act_zoom_fit.setCheckable(True)
 
-        self.act_auto_fit_resize = QAction("Auto-fit on Resize", self)
+        self.act_auto_fit_resize = QAction(self.tr("Auto-fit on Resize"), self)
         self.act_auto_fit_resize.setCheckable(True)
 
         auto_on = self.settings.value("view/auto_fit_on_resize", False, type=bool)
@@ -509,102 +509,102 @@ class ToolbarMixin:
 
         # View state copy/paste (optional quick commands)
         self._copied_view_state = None
-        self.act_copy_view = QAction("Copy View (zoom/pan)", self)
-        self.act_paste_view = QAction("Paste View", self)
+        self.act_copy_view = QAction(self.tr("Copy View (zoom/pan)"), self)
+        self.act_paste_view = QAction(self.tr("Paste View"), self)
         self.act_copy_view.setShortcut("Ctrl+Shift+C")
         self.act_paste_view.setShortcut("Ctrl+Shift+V")
         self.act_copy_view.triggered.connect(self._copy_active_view)
         self.act_paste_view.triggered.connect(self._paste_active_view)
 
         # Functions
-        self.act_crop = QAction(QIcon(cropicon_path), "Crop...", self)
-        self.act_crop.setStatusTip("Crop / rotate with handles")
+        self.act_crop = QAction(QIcon(cropicon_path), self.tr("Crop..."), self)
+        self.act_crop.setStatusTip(self.tr("Crop / rotate with handles"))
         self.act_crop.setIconVisibleInMenu(True)
         self.act_crop.triggered.connect(self._open_crop_dialog)
 
-        self.act_histogram = QAction(QIcon(histogram_path), "Histogram...", self)
-        self.act_histogram.setStatusTip("View histogram and basic stats for the active image")
+        self.act_histogram = QAction(QIcon(histogram_path), self.tr("Histogram..."), self)
+        self.act_histogram.setStatusTip(self.tr("View histogram and basic stats for the active image"))
         self.act_histogram.setIconVisibleInMenu(True)
         self.act_histogram.triggered.connect(self._open_histogram)
 
-        self.act_stat_stretch = QAction(QIcon(statstretch_path), "Statistical Stretch...", self)
-        self.act_stat_stretch.setStatusTip("Stretch the image using median/SD statistics")
+        self.act_stat_stretch = QAction(QIcon(statstretch_path), self.tr("Statistical Stretch..."), self)
+        self.act_stat_stretch.setStatusTip(self.tr("Stretch the image using median/SD statistics"))
         self.act_stat_stretch.setIconVisibleInMenu(True)
         self.act_stat_stretch.triggered.connect(self._open_statistical_stretch)
 
-        self.act_star_stretch = QAction(QIcon(starstretch_path), "Star Stretch...", self)
-        self.act_star_stretch.setStatusTip("Arcsinh star stretch with optional SCNR and color boost")
+        self.act_star_stretch = QAction(QIcon(starstretch_path), self.tr("Star Stretch..."), self)
+        self.act_star_stretch.setStatusTip(self.tr("Arcsinh star stretch with optional SCNR and color boost"))
         self.act_star_stretch.setIconVisibleInMenu(True)
         self.act_star_stretch.triggered.connect(self._open_star_stretch)
 
-        self.act_curves = QAction(QIcon(curves_path), "Curves Editor...", self)  # add an icon later if you want
-        self.act_curves.setStatusTip("Open the Curves Editor for the active image")
+        self.act_curves = QAction(QIcon(curves_path), self.tr("Curves Editor..."), self)
+        self.act_curves.setStatusTip(self.tr("Open the Curves Editor for the active image"))
         self.act_curves.setIconVisibleInMenu(True)
         self.act_curves.triggered.connect(self._open_curves_editor)
 
-        self.act_ghs = QAction(QIcon(uhs_path), "Hyperbolic Stretch...", self)
-        self.act_ghs.setStatusTip("Generalized hyperbolic stretch (Î±/beta/gamma, LP/HP, pivot)")
+        self.act_ghs = QAction(QIcon(uhs_path), self.tr("Hyperbolic Stretch..."), self)
+        self.act_ghs.setStatusTip(self.tr("Generalized hyperbolic stretch (α/beta/gamma, LP/HP, pivot)"))
         self.act_ghs.setIconVisibleInMenu(True)
         self.act_ghs.triggered.connect(self._open_hyperbolic)
 
-        self.act_abe = QAction(QIcon(abeicon_path), "ABE...", self)
-        self.act_abe.setStatusTip("Automatic Background Extraction")
+        self.act_abe = QAction(QIcon(abeicon_path), self.tr("ABE..."), self)
+        self.act_abe.setStatusTip(self.tr("Automatic Background Extraction"))
         self.act_abe.setIconVisibleInMenu(True)
         self.act_abe.triggered.connect(self._open_abe_tool)
 
-        self.act_graxpert = QAction(QIcon(graxperticon_path), "Remove Gradient (GraXpert)...", self)
+        self.act_graxpert = QAction(QIcon(graxperticon_path), self.tr("Remove Gradient (GraXpert)..."), self)
         self.act_graxpert.setIconVisibleInMenu(True)
-        self.act_graxpert.setStatusTip("Run GraXpert background extraction on the active image")
+        self.act_graxpert.setStatusTip(self.tr("Run GraXpert background extraction on the active image"))
         self.act_graxpert.triggered.connect(self._open_graxpert)
 
-        self.act_remove_stars = QAction(QIcon(starnet_path), "Remove Stars...", self)
+        self.act_remove_stars = QAction(QIcon(starnet_path), self.tr("Remove Stars..."), self)
         self.act_remove_stars.setIconVisibleInMenu(True)
-        self.act_remove_stars.setStatusTip("Run star removal on the active image")
+        self.act_remove_stars.setStatusTip(self.tr("Run star removal on the active image"))
         self.act_remove_stars.triggered.connect(lambda: self._remove_stars())
 
-        self.act_add_stars = QAction(QIcon(staradd_path), "Add Stars...", self)
-        self.act_add_stars.setStatusTip("Blend a starless view with a stars-only view")
+        self.act_add_stars = QAction(QIcon(staradd_path), self.tr("Add Stars..."), self)
+        self.act_add_stars.setStatusTip(self.tr("Blend a starless view with a stars-only view"))
         self.act_add_stars.setIconVisibleInMenu(True)
         self.act_add_stars.triggered.connect(lambda: self._add_stars())
 
-        self.act_pedestal = QAction(QIcon(pedestal_icon_path), "Remove Pedestal", self)
-        self.act_pedestal.setToolTip("Subtract per-channel minimum.\nClick: active view\nAlt+Drag: drop onto a view")
+        self.act_pedestal = QAction(QIcon(pedestal_icon_path), self.tr("Remove Pedestal"), self)
+        self.act_pedestal.setToolTip(self.tr("Subtract per-channel minimum.\nClick: active view\nAlt+Drag: drop onto a view"))
         self.act_pedestal.setShortcut("Ctrl+P")
         self.act_pedestal.triggered.connect(self._on_remove_pedestal)
 
-        self.act_linear_fit = QAction(QIcon(linearfit_path),"Linear Fit...", self)
+        self.act_linear_fit = QAction(QIcon(linearfit_path), self.tr("Linear Fit..."), self)
         self.act_linear_fit.setIconVisibleInMenu(True)
-        self.act_linear_fit.setStatusTip("Match image levels using Linear Fit")
+        self.act_linear_fit.setStatusTip(self.tr("Match image levels using Linear Fit"))
         # optional shortcut; change if you already use it elsewhere
         self.act_linear_fit.setShortcut("Ctrl+L")
         self.act_linear_fit.triggered.connect(self._open_linear_fit)
 
-        self.act_remove_green = QAction(QIcon(green_path), "Remove Green...", self)
-        self.act_remove_green.setToolTip("SCNR-style green channel removal.")
+        self.act_remove_green = QAction(QIcon(green_path), self.tr("Remove Green..."), self)
+        self.act_remove_green.setToolTip(self.tr("SCNR-style green channel removal."))
         self.act_remove_green.setIconVisibleInMenu(True)
         self.act_remove_green.triggered.connect(self._open_remove_green)
 
-        self.act_background_neutral = QAction(QIcon(neutral_path), "Background Neutralization...", self)
-        self.act_background_neutral.setStatusTip("Neutralize background color balance using a sampled region")
+        self.act_background_neutral = QAction(QIcon(neutral_path), self.tr("Background Neutralization..."), self)
+        self.act_background_neutral.setStatusTip(self.tr("Neutralize background color balance using a sampled region"))
         self.act_background_neutral.setIconVisibleInMenu(True)
         self.act_background_neutral.triggered.connect(self._open_background_neutral)
 
-        self.act_white_balance = QAction(QIcon(whitebalance_path), "White Balance...", self)
-        self.act_white_balance.setStatusTip("Apply white balance (Star-Based, Manual, or Auto)")
+        self.act_white_balance = QAction(QIcon(whitebalance_path), self.tr("White Balance..."), self)
+        self.act_white_balance.setStatusTip(self.tr("Apply white balance (Star-Based, Manual, or Auto)"))
         self.act_white_balance.triggered.connect(self._open_white_balance)
 
-        self.act_sfcc = QAction(QIcon(spcc_icon_path), "Spectral Flux Color Calibration...", self)
+        self.act_sfcc = QAction(QIcon(spcc_icon_path), self.tr("Spectral Flux Color Calibration..."), self)
         self.act_sfcc.setObjectName("sfcc")
-        self.act_sfcc.setToolTip("Open SFCC (Pickles + Filters + Sensor QE)")
+        self.act_sfcc.setToolTip(self.tr("Open SFCC (Pickles + Filters + Sensor QE)"))
         self.act_sfcc.triggered.connect(self.SFCC_show)
 
-        self.act_convo = QAction(QIcon(convoicon_path), "Convolution / Deconvolution...", self)
+        self.act_convo = QAction(QIcon(convoicon_path), self.tr("Convolution / Deconvolution..."), self)
         self.act_convo.setObjectName("convo_deconvo")
-        self.act_convo.setToolTip("Open Convolution / Deconvolution")
+        self.act_convo.setToolTip(self.tr("Open Convolution / Deconvolution"))
         self.act_convo.triggered.connect(self.show_convo_deconvo)
 
-        self.act_multiscale_decomp = QAction(QIcon(multiscale_decomp_path), "Multiscale Decomposition...", self)
-        self.act_multiscale_decomp.setStatusTip("Multiscale detail/residual decomposition with per-layer controls")
+        self.act_multiscale_decomp = QAction(QIcon(multiscale_decomp_path), self.tr("Multiscale Decomposition..."), self)
+        self.act_multiscale_decomp.setStatusTip(self.tr("Multiscale detail/residual decomposition with per-layer controls"))
         self.act_multiscale_decomp.setIconVisibleInMenu(True)
         self.act_multiscale_decomp.triggered.connect(self._open_multiscale_decomp)
 
@@ -612,8 +612,8 @@ class ToolbarMixin:
 
 
         # --- Extract Luminance main action ---
-        self.act_extract_luma = QAction(QIcon(LExtract_path), "Extract Luminance", self)
-        self.act_extract_luma.setStatusTip("Create a new mono document using the selected luminance method")
+        self.act_extract_luma = QAction(QIcon(LExtract_path), self.tr("Extract Luminance"), self)
+        self.act_extract_luma.setStatusTip(self.tr("Create a new mono document using the selected luminance method"))
         self.act_extract_luma.setIconVisibleInMenu(True)
         self.act_extract_luma.triggered.connect(lambda: self._extract_luminance(doc=None))
 
@@ -649,106 +649,106 @@ class ToolbarMixin:
 
         self._luma_group.triggered.connect(_on_luma_pick)
 
-        self.act_recombine_luma = QAction(QIcon(LInsert_path), "Recombine Luminance...", self)
-        self.act_recombine_luma.setStatusTip("Replace the active image's luminance from another view")
+        self.act_recombine_luma = QAction(QIcon(LInsert_path), self.tr("Recombine Luminance..."), self)
+        self.act_recombine_luma.setStatusTip(self.tr("Replace the active image's luminance from another view"))
         self.act_recombine_luma.setIconVisibleInMenu(True)
         self.act_recombine_luma.triggered.connect(lambda: self._recombine_luminance_ui(target_doc=None))
 
-        self.act_rgb_extract = QAction(QIcon(rgbextract_path), "RGB Extract", self)
+        self.act_rgb_extract = QAction(QIcon(rgbextract_path), self.tr("RGB Extract"), self)
         self.act_rgb_extract.setIconVisibleInMenu(True)
-        self.act_rgb_extract.setStatusTip("Extract R/G/B as three mono documents")
+        self.act_rgb_extract.setStatusTip(self.tr("Extract R/G/B as three mono documents"))
         self.act_rgb_extract.triggered.connect(self._rgb_extract_active)
 
-        self.act_rgb_combine = QAction(QIcon(rgbcombo_path), "RGB Combination...", self)
+        self.act_rgb_combine = QAction(QIcon(rgbcombo_path), self.tr("RGB Combination..."), self)
         self.act_rgb_combine.setIconVisibleInMenu(True)
-        self.act_rgb_combine.setStatusTip("Combine three mono images into RGB")
+        self.act_rgb_combine.setStatusTip(self.tr("Combine three mono images into RGB"))
         self.act_rgb_combine.triggered.connect(self._open_rgb_combination)
 
-        self.act_blemish = QAction(QIcon(blastericon_path), "Blemish Blaster...", self)
+        self.act_blemish = QAction(QIcon(blastericon_path), self.tr("Blemish Blaster..."), self)
         self.act_blemish.setIconVisibleInMenu(True)
-        self.act_blemish.setStatusTip("Interactive blemish removal on the active view")
+        self.act_blemish.setStatusTip(self.tr("Interactive blemish removal on the active view"))
         self.act_blemish.triggered.connect(self._open_blemish_blaster)
 
-        self.act_wavescale_hdr = QAction(QIcon(hdr_path), "WaveScale HDR...", self)
-        self.act_wavescale_hdr.setStatusTip("Wave-scale HDR with luminance-masked starlet")
+        self.act_wavescale_hdr = QAction(QIcon(hdr_path), self.tr("WaveScale HDR..."), self)
+        self.act_wavescale_hdr.setStatusTip(self.tr("Wave-scale HDR with luminance-masked starlet"))
         self.act_wavescale_hdr.setIconVisibleInMenu(True)
         self.act_wavescale_hdr.triggered.connect(self._open_wavescale_hdr)
 
-        self.act_wavescale_de = QAction(QIcon(dse_icon_path), "WaveScale Dark Enhancer...", self)
-        self.act_wavescale_de.setStatusTip("Enhance faint/dark structures with wavelet-guided masking")
+        self.act_wavescale_de = QAction(QIcon(dse_icon_path), self.tr("WaveScale Dark Enhancer..."), self)
+        self.act_wavescale_de.setStatusTip(self.tr("Enhance faint/dark structures with wavelet-guided masking"))
         self.act_wavescale_de.setIconVisibleInMenu(True)
         self.act_wavescale_de.triggered.connect(self._open_wavescale_dark_enhance)
 
-        self.act_clahe = QAction(QIcon(clahe_path), "CLAHE...", self)
-        self.act_clahe.setStatusTip("Contrast Limited Adaptive Histogram Equalization")
+        self.act_clahe = QAction(QIcon(clahe_path), self.tr("CLAHE..."), self)
+        self.act_clahe.setStatusTip(self.tr("Contrast Limited Adaptive Histogram Equalization"))
         self.act_clahe.setIconVisibleInMenu(True)
         self.act_clahe.triggered.connect(self._open_clahe)
 
-        self.act_morphology = QAction(QIcon(morpho_path), "Morphological Operations...", self)
-        self.act_morphology.setStatusTip("Erosion, dilation, opening, and closing.")
+        self.act_morphology = QAction(QIcon(morpho_path), self.tr("Morphological Operations..."), self)
+        self.act_morphology.setStatusTip(self.tr("Erosion, dilation, opening, and closing."))
         self.act_morphology.setIconVisibleInMenu(True)
         self.act_morphology.triggered.connect(self._open_morphology)
 
-        self.act_pixelmath = QAction(QIcon(pixelmath_path), "Pixel Math...", self)
-        self.act_pixelmath.setStatusTip("Evaluate expressions using open view names")
+        self.act_pixelmath = QAction(QIcon(pixelmath_path), self.tr("Pixel Math..."), self)
+        self.act_pixelmath.setStatusTip(self.tr("Evaluate expressions using open view names"))
         self.act_pixelmath.setIconVisibleInMenu(True)
         self.act_pixelmath.triggered.connect(self._open_pixel_math)
 
-        self.act_signature = QAction(QIcon(signature_icon_path), "Signature / Insert...", self)
+        self.act_signature = QAction(QIcon(signature_icon_path), self.tr("Signature / Insert..."), self)
         self.act_signature.setIconVisibleInMenu(True)
-        self.act_signature.setStatusTip("Add signatures/overlays and bake them into the active image")
+        self.act_signature.setStatusTip(self.tr("Add signatures/overlays and bake them into the active image"))
         self.act_signature.triggered.connect(self._open_signature_insert)
 
-        self.act_halobgon = QAction(QIcon(halo_path), "Halo-B-Gon...", self)
+        self.act_halobgon = QAction(QIcon(halo_path), self.tr("Halo-B-Gon..."), self)
         self.act_halobgon.setIconVisibleInMenu(True)
-        self.act_halobgon.setStatusTip("Remove those pesky halos around your stars")
+        self.act_halobgon.setStatusTip(self.tr("Remove those pesky halos around your stars"))
         self.act_halobgon.triggered.connect(self._open_halo_b_gon)
 
-        self.act_image_combine = QAction(QIcon(imagecombine_path), "Image Combine...", self)
+        self.act_image_combine = QAction(QIcon(imagecombine_path), self.tr("Image Combine..."), self)
         self.act_image_combine.setIconVisibleInMenu(True)
-        self.act_image_combine.setStatusTip("Blend two open images (replace A or create new)")
+        self.act_image_combine.setStatusTip(self.tr("Blend two open images (replace A or create new)"))
         self.act_image_combine.triggered.connect(self._open_image_combine)
 
         # --- Geometry ---
-        self.act_geom_invert = QAction(QIcon(invert_path), "Invert", self)
+        self.act_geom_invert = QAction(QIcon(invert_path), self.tr("Invert"), self)
         self.act_geom_invert.setIconVisibleInMenu(True)
-        self.act_geom_invert.setStatusTip("Invert image colors")
+        self.act_geom_invert.setStatusTip(self.tr("Invert image colors"))
         self.act_geom_invert.triggered.connect(self._exec_geom_invert)
 
-        self.act_geom_flip_h = QAction(QIcon(fliphorizontal_path), "Flip Horizontal", self)
+        self.act_geom_flip_h = QAction(QIcon(fliphorizontal_path), self.tr("Flip Horizontal"), self)
         self.act_geom_flip_h.setIconVisibleInMenu(True)
-        self.act_geom_flip_h.setStatusTip("Flip image left<->right")
+        self.act_geom_flip_h.setStatusTip(self.tr("Flip image left<->right"))
         self.act_geom_flip_h.triggered.connect(self._exec_geom_flip_h)
 
-        self.act_geom_flip_v = QAction(QIcon(flipvertical_path), "Flip Vertical", self)
+        self.act_geom_flip_v = QAction(QIcon(flipvertical_path), self.tr("Flip Vertical"), self)
         self.act_geom_flip_v.setIconVisibleInMenu(True)
-        self.act_geom_flip_v.setStatusTip("Flip image top<->bottom")
+        self.act_geom_flip_v.setStatusTip(self.tr("Flip image top<->bottom"))
         self.act_geom_flip_v.triggered.connect(self._exec_geom_flip_v)
 
-        self.act_geom_rot_cw = QAction(QIcon(rotateclockwise_path), "Rotate 90Â deg Clockwise", self)
+        self.act_geom_rot_cw = QAction(QIcon(rotateclockwise_path), self.tr("Rotate 90° Clockwise"), self)
         self.act_geom_rot_cw.setIconVisibleInMenu(True)
-        self.act_geom_rot_cw.setStatusTip("Rotate image 90Â deg clockwise")
+        self.act_geom_rot_cw.setStatusTip(self.tr("Rotate image 90° clockwise"))
         self.act_geom_rot_cw.triggered.connect(self._exec_geom_rot_cw)
 
-        self.act_geom_rot_ccw = QAction(QIcon(rotatecounterclockwise_path), "Rotate 90Â deg Counterclockwise", self)
+        self.act_geom_rot_ccw = QAction(QIcon(rotatecounterclockwise_path), self.tr("Rotate 90° Counterclockwise"), self)
         self.act_geom_rot_ccw.setIconVisibleInMenu(True)
-        self.act_geom_rot_ccw.setStatusTip("Rotate image 90Â deg counterclockwise")
+        self.act_geom_rot_ccw.setStatusTip(self.tr("Rotate image 90° counterclockwise"))
         self.act_geom_rot_ccw.triggered.connect(self._exec_geom_rot_ccw)
 
-        self.act_geom_rot_180 = QAction(QIcon(rotate180_path), "Rotate 180Â deg", self)
+        self.act_geom_rot_180 = QAction(QIcon(rotate180_path), self.tr("Rotate 180°"), self)
         self.act_geom_rot_180.setIconVisibleInMenu(True)
-        self.act_geom_rot_180.setStatusTip("Rotate image 180Â deg")
+        self.act_geom_rot_180.setStatusTip(self.tr("Rotate image 180°"))
         self.act_geom_rot_180.triggered.connect(self._exec_geom_rot_180)
 
-        self.act_geom_rescale = QAction(QIcon(rescale_path), "Rescale...", self)
+        self.act_geom_rescale = QAction(QIcon(rescale_path), self.tr("Rescale..."), self)
         self.act_geom_rescale.setIconVisibleInMenu(True)
-        self.act_geom_rescale.setStatusTip("Rescale image by a factor")
+        self.act_geom_rescale.setStatusTip(self.tr("Rescale image by a factor"))
         self.act_geom_rescale.triggered.connect(self._exec_geom_rescale)
 
-        self.act_debayer = QAction(QIcon(debayer_path), "Debayer...", self)
+        self.act_debayer = QAction(QIcon(debayer_path), self.tr("Debayer..."), self)
         self.act_debayer.setObjectName("debayer")
         self.act_debayer.setProperty("command_id", "debayer")
-        self.act_debayer.setStatusTip("Demosaic a Bayer-mosaic mono image to RGB")
+        self.act_debayer.setStatusTip(self.tr("Demosaic a Bayer-mosaic mono image to RGB"))
         self.act_debayer.triggered.connect(self._open_debayer)
 
         # (Optional example shortcuts; uncomment if you want)
@@ -772,8 +772,8 @@ class ToolbarMixin:
         except Exception:
             sat_icon = QIcon()
 
-        self.actCosmicUI  = QAction(cosmic_icon, "Cosmic Clarity UI...", self)
-        self.actCosmicSat = QAction(sat_icon,    "Cosmic Clarity Satellite...", self)
+        self.actCosmicUI  = QAction(cosmic_icon, self.tr("Cosmic Clarity UI..."), self)
+        self.actCosmicSat = QAction(sat_icon, self.tr("Cosmic Clarity Satellite..."), self)
 
         self.actCosmicUI.triggered.connect(self._open_cosmic_clarity_ui)
         self.actCosmicSat.triggered.connect(self._open_cosmic_clarity_satellite)
@@ -781,207 +781,207 @@ class ToolbarMixin:
 
         ab_icon = QIcon(aberration_path)  # falls back if file missing
 
-        self.actAberrationAI = QAction(ab_icon, "Aberration Correction (AI)...", self)
+        self.actAberrationAI = QAction(ab_icon, self.tr("Aberration Correction (AI)..."), self)
         self.actAberrationAI.triggered.connect(self._open_aberration_ai)
 
 
 
         #Tools
-        self.act_blink = QAction(QIcon(blink_path), "Blink Comparator...", self)
-        self.act_blink.setStatusTip("Compare a stack of images by blinking")
+        self.act_blink = QAction(QIcon(blink_path), self.tr("Blink Comparator..."), self)
+        self.act_blink.setStatusTip(self.tr("Compare a stack of images by blinking"))
         self.act_blink.triggered.connect(self._open_blink_tool)        
 
-        self.act_ppp = QAction(QIcon(ppp_path), "Perfect Palette Picker...", self)
-        self.act_ppp.setStatusTip("Pick the perfect palette for your image")
+        self.act_ppp = QAction(QIcon(ppp_path), self.tr("Perfect Palette Picker..."), self)
+        self.act_ppp.setStatusTip(self.tr("Pick the perfect palette for your image"))
         self.act_ppp.triggered.connect(self._open_ppp_tool) 
 
-        self.act_nbtorgb = QAction(QIcon(nbtorgb_path), "NB->RGB Stars...", self)
-        self.act_nbtorgb.setStatusTip("Combine narrowband to RGB with optional OSC stars")
+        self.act_nbtorgb = QAction(QIcon(nbtorgb_path), self.tr("NB->RGB Stars..."), self)
+        self.act_nbtorgb.setStatusTip(self.tr("Combine narrowband to RGB with optional OSC stars"))
         self.act_nbtorgb.setIconVisibleInMenu(True)
         self.act_nbtorgb.triggered.connect(self._open_nbtorgb_tool)
 
-        self.act_selective_color = QAction(QIcon(selectivecolor_path), "Selective Color Correction...", self)
-        self.act_selective_color.setStatusTip("Adjust specific hue ranges with CMY/RGB controls")
+        self.act_selective_color = QAction(QIcon(selectivecolor_path), self.tr("Selective Color Correction..."), self)
+        self.act_selective_color.setStatusTip(self.tr("Adjust specific hue ranges with CMY/RGB controls"))
         self.act_selective_color.triggered.connect(self._open_selective_color_tool)
 
         # NEW: Frequency Separation
-        self.act_freqsep = QAction(QIcon(freqsep_path), "Frequency Separation...", self)
-        self.act_freqsep.setStatusTip("Split into LF/HF and enhance HF (scale, wavelet, denoise)")
+        self.act_freqsep = QAction(QIcon(freqsep_path), self.tr("Frequency Separation..."), self)
+        self.act_freqsep.setStatusTip(self.tr("Split into LF/HF and enhance HF (scale, wavelet, denoise)"))
         self.act_freqsep.setIconVisibleInMenu(True)
         self.act_freqsep.triggered.connect(self._open_freqsep_tool)
 
-        self.act_contsub = QAction(QIcon(contsub_path), "Continuum Subtract...", self)
-        self.act_contsub.setStatusTip("Continuum subtract (NB - scaled broadband)")
+        self.act_contsub = QAction(QIcon(contsub_path), self.tr("Continuum Subtract..."), self)
+        self.act_contsub.setStatusTip(self.tr("Continuum Subtract (NB - scaled broadband)"))
         self.act_contsub.setIconVisibleInMenu(True)
         self.act_contsub.triggered.connect(self._open_contsub_tool)
 
         # History
-        self.act_history_explorer = QAction("History Explorer...", self)
-        self.act_history_explorer.setStatusTip("Inspect and restore from the slot's history")
+        self.act_history_explorer = QAction(self.tr("History Explorer..."), self)
+        self.act_history_explorer.setStatusTip(self.tr("Inspect and restore from the slot's history"))
         self.act_history_explorer.triggered.connect(self._open_history_explorer)
 
 
         #STAR STUFF
-        self.act_image_peeker = QAction(QIcon(peeker_icon), "Image Peeker...", self)
+        self.act_image_peeker = QAction(QIcon(peeker_icon), self.tr("Image Peeker..."), self)
         self.act_image_peeker.setIconVisibleInMenu(True)
-        self.act_image_peeker.setStatusTip("Image Inspector and Focal Plane Analysis")
+        self.act_image_peeker.setStatusTip(self.tr("Image Inspector and Focal Plane Analysis"))
         self.act_image_peeker.triggered.connect(self._open_image_peeker)
 
-        self.act_psf_viewer = QAction(QIcon(psf_path), "PSF Viewer...", self)
+        self.act_psf_viewer = QAction(QIcon(psf_path), self.tr("PSF Viewer..."), self)
         self.act_psf_viewer.setIconVisibleInMenu(True)
-        self.act_psf_viewer.setStatusTip("Inspect star PSF/HFR and flux histograms (SEP)")
+        self.act_psf_viewer.setStatusTip(self.tr("Inspect star PSF/HFR and flux histograms (SEP)"))
         self.act_psf_viewer.triggered.connect(self._open_psf_viewer)        
 
-        self.act_stacking_suite = QAction(QIcon(stacking_path), "Stacking Suite...", self)
+        self.act_stacking_suite = QAction(QIcon(stacking_path), self.tr("Stacking Suite..."), self)
         self.act_stacking_suite.setIconVisibleInMenu(True)
-        self.act_stacking_suite.setStatusTip("Stacking! Darks, Flats, Lights, Calibration, Drizzle, and more!!")
+        self.act_stacking_suite.setStatusTip(self.tr("Stacking! Darks, Flats, Lights, Calibration, Drizzle, and more!!"))
         self.act_stacking_suite.triggered.connect(self._open_stacking_suite)
 
-        self.act_live_stacking = QAction(QIcon(livestacking_path), "Live Stacking...", self)
+        self.act_live_stacking = QAction(QIcon(livestacking_path), self.tr("Live Stacking..."), self)
         self.act_live_stacking.setIconVisibleInMenu(True)
-        self.act_live_stacking.setStatusTip("Live monitor and stack incoming frames")
+        self.act_live_stacking.setStatusTip(self.tr("Live monitor and stack incoming frames"))
         self.act_live_stacking.triggered.connect(self._open_live_stacking)
 
-        self.act_plate_solve = QAction(QIcon(platesolve_path), "Plate Solver...", self)
+        self.act_plate_solve = QAction(QIcon(platesolve_path), self.tr("Plate Solver..."), self)
         self.act_plate_solve.setIconVisibleInMenu(True)
-        self.act_plate_solve.setStatusTip("Solve WCS/SIP for the active image or a file")
+        self.act_plate_solve.setStatusTip(self.tr("Solve WCS/SIP for the active image or a file"))
         self.act_plate_solve.triggered.connect(self._open_plate_solver)
 
-        self.act_star_align = QAction(QIcon(staralign_path), "Stellar Alignment...", self)
+        self.act_star_align = QAction(QIcon(staralign_path), self.tr("Stellar Alignment..."), self)
         self.act_star_align.setIconVisibleInMenu(True)
-        self.act_star_align.setStatusTip("Align images via astroalign / triangles")
+        self.act_star_align.setStatusTip(self.tr("Align images via astroalign / triangles"))
         self.act_star_align.triggered.connect(self._open_stellar_alignment)
 
-        self.act_star_register = QAction(QIcon(starregistration_path), "Stellar Register...", self)
+        self.act_star_register = QAction(QIcon(starregistration_path), self.tr("Stellar Register..."), self)
         self.act_star_register.setIconVisibleInMenu(True)
-        self.act_star_register.setStatusTip("Batch-align frames to a reference")
+        self.act_star_register.setStatusTip(self.tr("Batch-align frames to a reference"))
         self.act_star_register.triggered.connect(self._open_stellar_registration)
 
-        self.act_mosaic_master = QAction(QIcon(mosaic_path), "Mosaic Master...", self)
+        self.act_mosaic_master = QAction(QIcon(mosaic_path), self.tr("Mosaic Master..."), self)
         self.act_mosaic_master.setIconVisibleInMenu(True)
-        self.act_mosaic_master.setStatusTip("Build mosaics from overlapping frames")
+        self.act_mosaic_master.setStatusTip(self.tr("Build mosaics from overlapping frames"))
         self.act_mosaic_master.triggered.connect(self._open_mosaic_master)
 
-        self.act_supernova_hunter = QAction(QIcon(supernova_path), "Supernova / Asteroid Hunter...", self)
+        self.act_supernova_hunter = QAction(QIcon(supernova_path), self.tr("Supernova / Asteroid Hunter..."), self)
         self.act_supernova_hunter.setIconVisibleInMenu(True)
-        self.act_supernova_hunter.setStatusTip("Find transients/anomalies across frames")
+        self.act_supernova_hunter.setStatusTip(self.tr("Find transients/anomalies across frames"))
         self.act_supernova_hunter.triggered.connect(self._open_supernova_hunter)
 
-        self.act_star_spikes = QAction(QIcon(starspike_path), "Diffraction Spikes...", self)
+        self.act_star_spikes = QAction(QIcon(starspike_path), self.tr("Diffraction Spikes..."), self)
         self.act_star_spikes.setIconVisibleInMenu(True)
-        self.act_star_spikes.setStatusTip("Add diffraction spikes to detected stars")
+        self.act_star_spikes.setStatusTip(self.tr("Add diffraction spikes to detected stars"))
         self.act_star_spikes.triggered.connect(self._open_star_spikes)
 
-        self.act_astrospike = QAction(QIcon(astrospike_path), "AstroSpike...", self)
+        self.act_astrospike = QAction(QIcon(astrospike_path), self.tr("AstroSpike..."), self)
         self.act_astrospike.setIconVisibleInMenu(True)
-        self.act_astrospike.setStatusTip("Advanced diffraction spikes with halos, flares and rainbow effects")
+        self.act_astrospike.setStatusTip(self.tr("Advanced diffraction spikes with halos, flares and rainbow effects"))
         self.act_astrospike.triggered.connect(self._open_astrospike)
 
-        self.act_exo_detector = QAction(QIcon(exoicon_path), "Exoplanet Detector...", self)
+        self.act_exo_detector = QAction(QIcon(exoicon_path), self.tr("Exoplanet Detector..."), self)
         self.act_exo_detector.setIconVisibleInMenu(True)
-        self.act_exo_detector.setStatusTip("Detect exoplanet transits from time-series subs")
+        self.act_exo_detector.setStatusTip(self.tr("Detect exoplanet transits from time-series subs"))
         self.act_exo_detector.triggered.connect(self._open_exo_detector)
 
-        self.act_isophote = QAction(QIcon(isophote_path), "GLIMR -- Isophote Modeler...", self)
+        self.act_isophote = QAction(QIcon(isophote_path), self.tr("GLIMR -- Isophote Modeler..."), self)
         self.act_isophote.setIconVisibleInMenu(True)
-        self.act_isophote.setStatusTip("Fit galaxy isophotes and reveal residuals")
+        self.act_isophote.setStatusTip(self.tr("Fit galaxy isophotes and reveal residuals"))
         self.act_isophote.triggered.connect(self._open_isophote)
 
-        self.act_rgb_align = QAction(QIcon(rgbalign_path), "RGB Align...", self)
+        self.act_rgb_align = QAction(QIcon(rgbalign_path), self.tr("RGB Align..."), self)
         self.act_rgb_align.setIconVisibleInMenu(True)
-        self.act_rgb_align.setStatusTip("Align R and B channels to G using astroalign (affine/homography/poly)")
+        self.act_rgb_align.setStatusTip(self.tr("Align R and B channels to G using astroalign (affine/homography/poly)"))
         self.act_rgb_align.triggered.connect(self._open_rgb_align)
 
-        self.act_whats_in_my_sky = QAction(QIcon(wims_path), "What's In My Sky...", self)
+        self.act_whats_in_my_sky = QAction(QIcon(wims_path), self.tr("What's In My Sky..."), self)
         self.act_whats_in_my_sky.setIconVisibleInMenu(True)
-        self.act_whats_in_my_sky.setStatusTip("Plan targets by altitude, transit time, and lunar separation")
+        self.act_whats_in_my_sky.setStatusTip(self.tr("Plan targets by altitude, transit time, and lunar separation"))
         self.act_whats_in_my_sky.triggered.connect(self._open_whats_in_my_sky)
 
-        self.act_wimi = QAction(QIcon(wimi_path), "What's In My Image...", self)
+        self.act_wimi = QAction(QIcon(wimi_path), self.tr("What's In My Image..."), self)
         self.act_wimi.setIconVisibleInMenu(True)
-        self.act_wimi.setStatusTip("Identify objects in a plate-solved frame")
+        self.act_wimi.setStatusTip(self.tr("Identify objects in a plate-solved frame"))
         self.act_wimi.triggered.connect(self._open_wimi)
 
         # --- Scripts actions ---
-        self.act_open_scripts_folder = QAction("Open Scripts Folder...", self)
-        self.act_open_scripts_folder.setStatusTip("Open the SASpro user scripts folder")
+        self.act_open_scripts_folder = QAction(self.tr("Open Scripts Folder..."), self)
+        self.act_open_scripts_folder.setStatusTip(self.tr("Open the SASpro user scripts folder"))
         self.act_open_scripts_folder.triggered.connect(self._open_scripts_folder)
 
-        self.act_reload_scripts = QAction("Reload Scripts", self)
-        self.act_reload_scripts.setStatusTip("Rescan the scripts folder and reload .py files")
+        self.act_reload_scripts = QAction(self.tr("Reload Scripts"), self)
+        self.act_reload_scripts.setStatusTip(self.tr("Rescan the scripts folder and reload .py files"))
         self.act_reload_scripts.triggered.connect(self._reload_scripts)
 
-        self.act_create_sample_script = QAction("Create Sample Scripts...", self)
-        self.act_create_sample_script.setStatusTip("Write a ready-to-edit sample script into the scripts folder")
+        self.act_create_sample_script = QAction(self.tr("Create Sample Scripts..."), self)
+        self.act_create_sample_script.setStatusTip(self.tr("Write a ready-to-edit sample script into the scripts folder"))
         self.act_create_sample_script.triggered.connect(self._create_sample_script)
 
-        self.act_script_editor = QAction("Script Editor...", self)
-        self.act_script_editor.setStatusTip("Open the built-in script editor")
+        self.act_script_editor = QAction(self.tr("Script Editor..."), self)
+        self.act_script_editor.setStatusTip(self.tr("Open the built-in script editor"))
         self.act_script_editor.triggered.connect(self._show_script_editor)
 
-        self.act_open_user_scripts_github = QAction("Open User Scripts (GitHub)...", self)
+        self.act_open_user_scripts_github = QAction(self.tr("Open User Scripts (GitHub)..."), self)
         self.act_open_user_scripts_github.triggered.connect(self._open_user_scripts_github)
 
-        self.act_open_scripts_discord = QAction("Open Scripts Forum (Discord)...", self)
+        self.act_open_scripts_discord = QAction(self.tr("Open Scripts Forum (Discord)..."), self)
         self.act_open_scripts_discord.triggered.connect(self._open_scripts_discord_forum)
 
         # --- FITS Header Modifier action ---
-        self.act_fits_modifier = QAction("FITS Header Modifier...", self)
+        self.act_fits_modifier = QAction(self.tr("FITS Header Modifier..."), self)
         # self.act_fits_modifier.setIcon(QIcon(path_to_icon))  # (optional) icon goes here later
         self.act_fits_modifier.setIconVisibleInMenu(True)
-        self.act_fits_modifier.setStatusTip("View/Edit FITS headers")
+        self.act_fits_modifier.setStatusTip(self.tr("View/Edit FITS headers"))
         self.act_fits_modifier.triggered.connect(self._open_fits_modifier)
 
-        self.act_fits_batch_modifier = QAction("FITS Header Batch Modifier...", self)
+        self.act_fits_batch_modifier = QAction(self.tr("FITS Header Batch Modifier..."), self)
         # self.act_fits_modifier.setIcon(QIcon(path_to_icon))  # (optional) icon goes here later
         self.act_fits_batch_modifier.setIconVisibleInMenu(True)
-        self.act_fits_batch_modifier.setStatusTip("Batch Modify FITS Headers")
+        self.act_fits_batch_modifier.setStatusTip(self.tr("Batch Modify FITS Headers"))
         self.act_fits_batch_modifier.triggered.connect(self._open_fits_batch_modifier)
 
-        self.act_batch_renamer = QAction("Batch Rename from FITS...", self)
+        self.act_batch_renamer = QAction(self.tr("Batch Rename from FITS..."), self)
         # self.act_batch_renamer.setIcon(QIcon(batch_renamer_icon_path))  # (optional icon)
         self.act_batch_renamer.triggered.connect(self._open_batch_renamer)
 
-        self.act_astrobin_exporter = QAction("AstroBin Exporter...", self)
+        self.act_astrobin_exporter = QAction(self.tr("AstroBin Exporter..."), self)
         # self.act_astrobin_exporter.setIcon(QIcon(astrobin_icon_path))  # optional icon
         self.act_astrobin_exporter.triggered.connect(self._open_astrobin_exporter)
 
-        self.act_batch_convert = QAction("Batch Converter...", self)
+        self.act_batch_convert = QAction(self.tr("Batch Converter..."), self)
         # self.act_batch_convert.setIcon(QIcon("path/to/icon.svg"))  # optional later
         self.act_batch_convert.triggered.connect(self._open_batch_convert)
 
-        self.act_copy_astrometry = QAction("Copy Astrometric Solution...", self)
+        self.act_copy_astrometry = QAction(self.tr("Copy Astrometric Solution..."), self)
         self.act_copy_astrometry.triggered.connect(self._open_copy_astrometry)
 
         # Create Mask
-        self.act_create_mask = QAction(QIcon(maskcreate_path), "Create Mask...", self)
+        self.act_create_mask = QAction(QIcon(maskcreate_path), self.tr("Create Mask..."), self)
         self.act_create_mask.setIconVisibleInMenu(True)
-        self.act_create_mask.setStatusTip("Create a mask from the active image")
+        self.act_create_mask.setStatusTip(self.tr("Create a mask from the active image"))
         self.act_create_mask.triggered.connect(self._action_create_mask)
 
         # --- Masks ---
-        self.act_apply_mask = QAction(QIcon(maskapply_path), "Apply Mask", self)
-        self.act_apply_mask.setStatusTip("Apply a mask document to the active image")
+        self.act_apply_mask = QAction(QIcon(maskapply_path), self.tr("Apply Mask"), self)
+        self.act_apply_mask.setStatusTip(self.tr("Apply a mask document to the active image"))
         self.act_apply_mask.triggered.connect(self._apply_mask_menu)
 
-        self.act_remove_mask = QAction(QIcon(maskremove_path), "Remove Active Mask", self)
-        self.act_remove_mask.setStatusTip("Remove the active mask from the active image")
+        self.act_remove_mask = QAction(QIcon(maskremove_path), self.tr("Remove Active Mask"), self)
+        self.act_remove_mask.setStatusTip(self.tr("Remove the active mask from the active image"))
         self.act_remove_mask.triggered.connect(self._remove_mask_menu)
 
-        self.act_show_mask = QAction("Show Mask Overlay", self)
-        self.act_hide_mask = QAction("Hide Mask Overlay", self)
+        self.act_show_mask = QAction(self.tr("Show Mask Overlay"), self)
+        self.act_hide_mask = QAction(self.tr("Hide Mask Overlay"), self)
         self.act_show_mask.triggered.connect(self._show_mask_overlay)
         self.act_hide_mask.triggered.connect(self._hide_mask_overlay)
 
-        self.act_invert_mask = QAction("Invert Mask", self)
+        self.act_invert_mask = QAction(self.tr("Invert Mask"), self)
         self.act_invert_mask.triggered.connect(self._invert_mask)
         self.act_invert_mask.setShortcut("Ctrl+Shift+I")
 
-        self.act_check_updates = QAction("Check for Updates...", self)
+        self.act_check_updates = QAction(self.tr("Check for Updates..."), self)
         self.act_check_updates.triggered.connect(self.check_for_updates_now)
 
-        self.act_docs = QAction("Documentation...", self)
-        self.act_docs.setStatusTip("Open the Seti Astro Suite Pro online documentation")
+        self.act_docs = QAction(self.tr("Documentation..."), self)
+        self.act_docs.setStatusTip(self.tr("Open the Seti Astro Suite Pro online documentation"))
         self.act_docs.triggered.connect(
             lambda: QDesktopServices.openUrl(QUrl("https://github.com/setiastro/setiastrosuitepro/wiki"))
         )
@@ -994,12 +994,12 @@ class ToolbarMixin:
             # Fallback works everywhere
             self.act_docs.setShortcut(QKeySequence("F1"))
 
-        self.act_view_bundles = QAction(QIcon(viewbundles_path), "View Bundles...", self)
-        self.act_view_bundles.setStatusTip("Create bundles of views; drop shortcuts to apply to all")
+        self.act_view_bundles = QAction(QIcon(viewbundles_path), self.tr("View Bundles..."), self)
+        self.act_view_bundles.setStatusTip(self.tr("Create bundles of views; drop shortcuts to apply to all"))
         self.act_view_bundles.triggered.connect(self._open_view_bundles)
 
-        self.act_function_bundles = QAction(QIcon(functionbundles_path), "Function Bundles...", self)
-        self.act_function_bundles.setStatusTip("Create and run bundles of functions/shortcuts")
+        self.act_function_bundles = QAction(QIcon(functionbundles_path), self.tr("Function Bundles..."), self)
+        self.act_function_bundles.setStatusTip(self.tr("Create and run bundles of functions/shortcuts"))
         self.act_function_bundles.triggered.connect(self._open_function_bundles)
 
         # give each action a stable id and register

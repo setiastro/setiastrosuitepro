@@ -65,7 +65,7 @@ class MetricsPanel(QWidget):
         self._open_previews = []
 
         self.plots, self.scats, self.lines = [], [], []
-        titles = ["FWHM (px)", "Eccentricity", "Background", "Star Count"]
+        titles = [self.tr("FWHM (px)"), self.tr("Eccentricity"), self.tr("Background"), self.tr("Star Count")]
         for idx, title in enumerate(titles):
             pw = pg.PlotWidget()
             pw.setTitle(title)
@@ -167,14 +167,14 @@ class MetricsPanel(QWidget):
         show = settings.value("metrics/showWarning", True, type=bool)
         if show:
             msg = QMessageBox(self)
-            msg.setWindowTitle("Heads-up")
-            msg.setText(
+            msg.setWindowTitle(self.tr("Heads-up"))
+            msg.setText(self.tr(
                 "This is going to use ALL your CPU cores and the UI may lock up until it finishes.\n\n"
                 "Continue?"
-            )
+            ))
             msg.setStandardButtons(QMessageBox.StandardButton.Yes |
                                 QMessageBox.StandardButton.No)
-            cb = QCheckBox("Don't show again", msg)
+            cb = QCheckBox(self.tr("Don't show again"), msg)
             msg.setCheckBox(cb)
             if msg.exec() != QMessageBox.StandardButton.Yes:
                 return
@@ -189,7 +189,7 @@ class MetricsPanel(QWidget):
         flags = [e.get('flagged', False) for e in loaded_images]
 
         # progress dialog
-        prog = QProgressDialog("Computing frame metrics…", "Cancel", 0, n, self)
+        prog = QProgressDialog(self.tr("Computing frame metrics…"), self.tr("Cancel"), 0, n, self)
         prog.setWindowModality(Qt.WindowModality.WindowModal)
         prog.setMinimumDuration(0)
         prog.setValue(0)
@@ -343,18 +343,19 @@ class MetricsWindow(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent, Qt.WindowType.Window)
         self._thresholds_per_group: dict[str, List[float|None]] = {}
-        self.setWindowTitle("Frame Metrics")
+        self.setWindowTitle(self.tr("Frame Metrics"))
         self.resize(800, 600)
 
         vbox = QVBoxLayout(self)
 
         # ← **new** instructions label
-        instr = QLabel(
+        instr = QLabel(self.tr(
             "Instructions:\n"
             " • Use the filter dropdown to restrict by FILTER.\n"
             " • Click a dot to flag/unflag a frame.\n"
             " • Shift-click a dot to preview the image.\n"
-            " • Drag the red lines to set thresholds.",
+            " • Drag the red lines to set thresholds."
+        ),
             self
         )
         instr.setWordWrap(True)
@@ -363,7 +364,7 @@ class MetricsWindow(QWidget):
 
         # → filter selector
         self.group_combo = QComboBox(self)
-        self.group_combo.addItem("All")
+        self.group_combo.addItem(self.tr("All"))
         self.group_combo.currentTextChanged.connect(self._on_group_change)
         vbox.addWidget(self.group_combo)
 
@@ -407,7 +408,7 @@ class MetricsWindow(QWidget):
                 continue
 
         pct = (flagged_cnt / total * 100.0) if total else 0.0
-        self.status_label.setText(f"Flagged Items {flagged_cnt}/{total}  ({pct:.1f}%)")
+        self.status_label.setText(self.tr("Flagged Items {0}/{1}  ({2:.1f}%)").format(flagged_cnt, total, pct))
 
 
     def set_images(self, loaded_images, order=None):
@@ -417,7 +418,7 @@ class MetricsWindow(QWidget):
         # ─── rebuild the combo-list of FILTER groups ─────────────
         self.group_combo.blockSignals(True)
         self.group_combo.clear()
-        self.group_combo.addItem("All")
+        self.group_combo.addItem(self.tr("All"))
         seen = set()
         for entry in loaded_images:
             filt = entry.get('header', {}).get('FILTER', 'Unknown')
@@ -459,7 +460,7 @@ class MetricsWindow(QWidget):
         cur = self.group_combo.currentText()
         self.group_combo.blockSignals(True)
         self.group_combo.clear()
-        self.group_combo.addItem("All")
+        self.group_combo.addItem(self.tr("All"))
         seen = set()
         for entry in self._all_images:
             filt = (entry.get('header', {}) or {}).get('FILTER', 'Unknown')
@@ -503,7 +504,7 @@ class MetricsWindow(QWidget):
         self._update_status()
 
     def _on_group_change(self, name: str):
-        if name == "All":
+        if name == self.tr("All"):
             self._current_indices = self._order_all
         else:
             # preserve Tree order inside the chosen FILTER
@@ -538,7 +539,7 @@ class MetricsWindow(QWidget):
         else:
             if order is not None:
                 self._order_all = list(order)
-            # re-plot the current group with the new ordering
+    # re-plot the current group with the new ordering
             self._on_group_change(self.group_combo.currentText())
 
 class BlinkComparatorPro(QDialog):
@@ -547,7 +548,7 @@ class BlinkComparatorPro(QDialog):
     def __init__(self, doc_manager=None, parent=None):
         super().__init__(parent)
         self.doc_manager = doc_manager
-        self.setWindowTitle("Blink Comparator")
+        self.setWindowTitle(self.tr("Blink Comparator"))
         self.resize(1200, 700)
 
         self.tab = BlinkTab(doc_manager=self.doc_manager, parent=self)
@@ -603,7 +604,7 @@ class BlinkTab(QWidget):
         # --------------------
         # Instruction Label
         # --------------------
-        instruction_text = "Press 'F' to flag/unflag an image.\nRight-click on an image for more options."
+        instruction_text = self.tr("Press 'F' to flag/unflag an image.\nRight-click on an image for more options.")
         self.instruction_label = QLabel(instruction_text, self)
         self.instruction_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.instruction_label.setWordWrap(True)
@@ -622,33 +623,33 @@ class BlinkTab(QWidget):
         button_layout = QHBoxLayout()
 
         # "Select Images" Button
-        self.fileButton = QPushButton('Select Images', self)
+        self.fileButton = QPushButton(self.tr('Select Images'), self)
         self.fileButton.clicked.connect(self.openFileDialog)
         button_layout.addWidget(self.fileButton)
 
         # "Select Directory" Button
-        self.dirButton = QPushButton('Select Directory', self)
+        self.dirButton = QPushButton(self.tr('Select Directory'), self)
         self.dirButton.clicked.connect(self.openDirectoryDialog)
         button_layout.addWidget(self.dirButton)
 
-        self.addButton = QPushButton("Add Additional", self)
+        self.addButton = QPushButton(self.tr("Add Additional"), self)
         self.addButton.clicked.connect(self.addAdditionalImages)
         button_layout.addWidget(self.addButton)
 
         left_layout.addLayout(button_layout)
 
-        self.metrics_button = QPushButton("Show Metrics", self)
+        self.metrics_button = QPushButton(self.tr("Show Metrics"), self)
         self.metrics_button.clicked.connect(self.show_metrics)
         left_layout.addWidget(self.metrics_button)
 
         push_row = QHBoxLayout()
-        self.send_lights_btn = QPushButton("→ Stacking: Lights", self)
-        self.send_lights_btn.setToolTip("Send selected (or all) blink files to the Stacking Suite → Light tab")
+        self.send_lights_btn = QPushButton(self.tr("→ Stacking: Lights"), self)
+        self.send_lights_btn.setToolTip(self.tr("Send selected (or all) blink files to the Stacking Suite → Light tab"))
         self.send_lights_btn.clicked.connect(self._send_to_stacking_lights)
         push_row.addWidget(self.send_lights_btn)
 
-        self.send_integ_btn = QPushButton("→ Stacking: Integration", self)
-        self.send_integ_btn.setToolTip("Send selected (or all) blink files to the Stacking Suite → Image Integration tab")
+        self.send_integ_btn = QPushButton(self.tr("→ Stacking: Integration"), self)
+        self.send_integ_btn.setToolTip(self.tr("Send selected (or all) blink files to the Stacking Suite → Image Integration tab"))
         self.send_integ_btn.clicked.connect(self._send_to_stacking_integration)
         push_row.addWidget(self.send_integ_btn)
 
@@ -687,7 +688,7 @@ class BlinkTab(QWidget):
         # ----- Playback speed controls (0.1–10.0 fps) -----
         speed_layout = QHBoxLayout()
 
-        speed_label = QLabel("Speed:", self)
+        speed_label = QLabel(self.tr("Speed:"), self)
         speed_layout.addWidget(speed_label)
 
         # Slider maps 1..100 -> 0.1..10.0 fps
@@ -695,7 +696,7 @@ class BlinkTab(QWidget):
         self.speed_slider.setRange(1, 100)
         self.speed_slider.setValue(int(round(self.play_fps * 10)))  # play_fps is float
         self.speed_slider.setTickPosition(QSlider.TickPosition.NoTicks)
-        self.speed_slider.setToolTip("Playback speed (0.1–10.0 fps)")
+        self.speed_slider.setToolTip(self.tr("Playback speed (0.1–10.0 fps)"))
         speed_layout.addWidget(self.speed_slider, 1)
 
         # Custom float spin (your class)
@@ -717,7 +718,7 @@ class BlinkTab(QWidget):
 
         left_layout.addLayout(speed_layout)
 
-        self.export_button = QPushButton("Export Video…", self)
+        self.export_button = QPushButton(self.tr("Export Video…"), self)
         self.export_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton))
         self.export_button.clicked.connect(self.export_blink_video)
         left_layout.addWidget(self.export_button)
@@ -725,7 +726,7 @@ class BlinkTab(QWidget):
         # Tree view for file names
         self.fileTree = QTreeWidget(self)
         self.fileTree.setColumnCount(1)
-        self.fileTree.setHeaderLabels(["Image Files"])
+        self.fileTree.setHeaderLabels([self.tr("Image Files")])
         self.fileTree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)  # Allow multiple selections
         #self.fileTree.itemClicked.connect(self.on_item_clicked)
         self.fileTree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -740,12 +741,12 @@ class BlinkTab(QWidget):
         left_layout.addWidget(self.fileTree)
 
         # "Clear Flags" Button
-        self.clearFlagsButton = QPushButton('Clear Flags', self)
+        self.clearFlagsButton = QPushButton(self.tr('Clear Flags'), self)
         self.clearFlagsButton.clicked.connect(self.clearFlags)
         left_layout.addWidget(self.clearFlagsButton)
 
         # "Clear Images" Button
-        self.clearButton = QPushButton('Clear Images', self)
+        self.clearButton = QPushButton(self.tr('Clear Images'), self)
         self.clearButton.clicked.connect(self.clearImages)
         left_layout.addWidget(self.clearButton)
 
@@ -755,7 +756,7 @@ class BlinkTab(QWidget):
         left_layout.addWidget(self.progress_bar)
 
         # Add loading message label
-        self.loading_label = QLabel("Loading images...", self)
+        self.loading_label = QLabel(self.tr("Loading images..."), self)
         left_layout.addWidget(self.loading_label)
         self.imagesChanged.emit(len(self.loaded_images)) 
 
@@ -772,9 +773,9 @@ class BlinkTab(QWidget):
         # Zoom / preview toolbar (standardized)
         zoom_controls_layout = QHBoxLayout()
 
-        self.zoom_in_btn  = themed_toolbtn("zoom-in", "Zoom In")
-        self.zoom_out_btn = themed_toolbtn("zoom-out", "Zoom Out")
-        self.fit_btn      = themed_toolbtn("zoom-fit-best", "Fit to Preview")
+        self.zoom_in_btn  = themed_toolbtn("zoom-in", self.tr("Zoom In"))
+        self.zoom_out_btn = themed_toolbtn("zoom-out", self.tr("Zoom Out"))
+        self.fit_btn      = themed_toolbtn("zoom-fit-best", self.tr("Fit to Preview"))
 
         self.zoom_in_btn.clicked.connect(self.zoom_in)
         self.zoom_out_btn.clicked.connect(self.zoom_out)
@@ -787,7 +788,7 @@ class BlinkTab(QWidget):
         zoom_controls_layout.addStretch(1)
 
         # Keep Aggressive Stretch as a text toggle (it’s not really a zoom action)
-        self.aggressive_button = QPushButton("Aggressive Stretch", self)
+        self.aggressive_button = QPushButton(self.tr("Aggressive Stretch"), self)
         self.aggressive_button.setCheckable(True)
         self.aggressive_button.clicked.connect(self.toggle_aggressive)
         zoom_controls_layout.addWidget(self.aggressive_button)
@@ -928,14 +929,14 @@ class BlinkTab(QWidget):
     def _send_to_stacking_lights(self):
         paths = self._collect_paths_for_stacking()
         if not paths:
-            QMessageBox.information(self, "No images", "There are no images to send.")
+            QMessageBox.information(self, self.tr("No images"), self.tr("There are no images to send."))
             return
         self.sendToStacking.emit(paths, "lights")
 
     def _send_to_stacking_integration(self):
         paths = self._collect_paths_for_stacking()
         if not paths:
-            QMessageBox.information(self, "No images", "There are no images to send.")
+            QMessageBox.information(self, self.tr("No images"), self.tr("There are no images to send."))
             return
         self.sendToStacking.emit(paths, "integration")
 
@@ -945,7 +946,7 @@ class BlinkTab(QWidget):
         # Ensure we have frames
         leaves = self.get_all_leaf_items()
         if not leaves:
-            QMessageBox.information(self, "No Images", "Load images before exporting.")
+            QMessageBox.information(self, self.tr("No Images"), self.tr("Load images before exporting."))
             return
 
         # Ask options first (size, fps, selection scope)
@@ -960,7 +961,7 @@ class BlinkTab(QWidget):
         if only_selected:
             sel_leaves = [it for it in self.fileTree.selectedItems() if it.childCount() == 0]
             if not sel_leaves:
-                QMessageBox.information(self, "No Selection", "No individual frames selected.")
+                QMessageBox.information(self, self.tr("No Selection"), self.tr("No individual frames selected."))
                 return
             names = {it.text(0).lstrip("⚠️ ").strip() for it in sel_leaves}
             order = [i for i in self._tree_order_indices()
@@ -969,13 +970,13 @@ class BlinkTab(QWidget):
             order = self._tree_order_indices()
 
         if not order:
-            QMessageBox.information(self, "No Frames", "Nothing to export.")
+            QMessageBox.information(self, self.tr("No Frames"), self.tr("Nothing to export."))
             return
 
         if len(order) < 2:
             ret = QMessageBox.question(
-                self, "Only one frame",
-                "You're about to export a video with a single frame. Continue?",
+                self, self.tr("Only one frame"),
+                self.tr("You're about to export a video with a single frame. Continue?"),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
@@ -984,22 +985,22 @@ class BlinkTab(QWidget):
 
         # Ask where to save
         out_path, _ = QFileDialog.getSaveFileName(
-            self, "Export Blink Video", "blink.mp4", "Video (*.mp4 *.avi)"
+            self, self.tr("Export Blink Video"), "blink.mp4", self.tr("Video (*.mp4 *.avi)")
         )
         if not out_path:
             return
         # Let _open_video_writer_portable decide the real extension; we pass requested
         writer, out_path, backend = self._open_video_writer_portable(out_path, (target_w, target_h), fps)
         if writer is None:
-            QMessageBox.critical(self, "Export",
-                "No compatible video codec found.\n\n"
-                "Tip: install FFmpeg or `pip install imageio[ffmpeg]` for a portable fallback."
+            QMessageBox.critical(self, self.tr("Export"),
+                self.tr("No compatible video codec found.\n\n"
+                "Tip: install FFmpeg or `pip install imageio[ffmpeg]` for a portable fallback.")
             )
             return
 
         # Progress UI
-        prog = QProgressDialog("Rendering video…", "Cancel", 0, len(order), self)
-        prog.setWindowTitle("Export Blink Video")
+        prog = QProgressDialog(self.tr("Rendering video…"), self.tr("Cancel"), 0, len(order), self)
+        prog.setWindowTitle(self.tr("Export Blink Video"))
         prog.setAutoClose(True)
         prog.setMinimumDuration(300)
 
@@ -1047,25 +1048,25 @@ class BlinkTab(QWidget):
                 os.remove(out_path)
             except Exception:
                 pass
-            QMessageBox.information(self, "Export", "Export canceled.")
+            QMessageBox.information(self, self.tr("Export"), self.tr("Export canceled."))
             return
 
         if frames_written == 0:
-            QMessageBox.critical(self, "Export", "No frames were written (codec/back-end issue?).")
+            QMessageBox.critical(self, self.tr("Export"), self.tr("No frames were written (codec/back-end issue?)."))
             return
 
-        QMessageBox.information(self, "Export", f"Saved: {out_path}\nFrames: {frames_written} @ {fps} fps")
+        QMessageBox.information(self, self.tr("Export"), self.tr("Saved: {0}\nFrames: {1} @ {2} fps").format(out_path, frames_written, fps))
 
 
 
     def _ask_video_options(self, default_fps: float):
         """Options dialog for size, fps, and whether to limit to current selection."""
         dlg = QDialog(self)
-        dlg.setWindowTitle("Video Options")
+        dlg.setWindowTitle(self.tr("Video Options"))
         layout = QGridLayout(dlg)
 
         # Size
-        layout.addWidget(QLabel("Size:"), 0, 0)
+        layout.addWidget(QLabel(self.tr("Size:")), 0, 0)
         size_combo = QComboBox(dlg)
         size_combo.addItem("HD 1280×720", (1280, 720))
         size_combo.addItem("Full HD 1920×1080", (1920, 1080))
@@ -1074,7 +1075,7 @@ class BlinkTab(QWidget):
         layout.addWidget(size_combo, 0, 1)
 
         # FPS
-        layout.addWidget(QLabel("FPS:"), 1, 0)
+        layout.addWidget(QLabel(self.tr("FPS:")), 1, 0)
         fps_edit = QDoubleSpinBox(dlg)
         fps_edit.setRange(0.1, 60.0)
         fps_edit.setDecimals(2)
@@ -1083,13 +1084,13 @@ class BlinkTab(QWidget):
         layout.addWidget(fps_edit, 1, 1)
 
         # Only selected?
-        only_selected = QCheckBox("Export only selected frames", dlg)
+        only_selected = QCheckBox(self.tr("Export only selected frames"), dlg)
         only_selected.setChecked(False)  # default: export everything in tree order
         layout.addWidget(only_selected, 2, 0, 1, 2)
 
         # Buttons
         btns = QHBoxLayout()
-        ok = QPushButton("OK", dlg); cancel = QPushButton("Cancel", dlg)
+        ok = QPushButton(self.tr("OK"), dlg); cancel = QPushButton(self.tr("Cancel"), dlg)
         ok.clicked.connect(dlg.accept); cancel.clicked.connect(dlg.reject)
         btns.addWidget(ok); btns.addWidget(cancel)
         layout.addLayout(btns, 3, 0, 1, 2)
@@ -1206,7 +1207,7 @@ class BlinkTab(QWidget):
 
     def _update_loaded_count_label(self, n: int):
         # pluralize nicely
-        self.loading_label.setText(f"Loaded {n} image{'s' if n != 1 else ''}.")
+        self.loading_label.setText(self.tr("Loaded {0} image{1}.").format(n, 's' if n != 1 else ''))
 
     def _apply_playback_interval(self, *_):
         # read from custom spin if present
@@ -1280,14 +1281,14 @@ class BlinkTab(QWidget):
         """Let the user pick more images to append to the blink list."""
         file_paths, _ = QFileDialog.getOpenFileNames(
             self,
-            "Add Additional Images",
+            self.tr("Add Additional Images"),
             "",
-            "Images (*.png *.tif *.tiff *.fits *.fit *.xisf *.cr2 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef);;All Files (*)"
+            self.tr("Images (*.png *.tif *.tiff *.fits *.fit *.xisf *.cr2 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef);;All Files (*)")
         )
         # filter out duplicates
         new_paths = [p for p in file_paths if p not in self.image_paths]
         if not new_paths:
-            QMessageBox.information(self, "No New Images", "No new images selected or already loaded.")
+            QMessageBox.information(self, self.tr("No New Images"), self.tr("No new images selected or already loaded."))
             return
         self._appendImages(new_paths)
 
@@ -1335,7 +1336,7 @@ class BlinkTab(QWidget):
             self.add_item_to_tree(path)
 
         # update status
-        self.loading_label.setText(f"Loaded {len(self.loaded_images)} images.")
+        self.loading_label.setText(self.tr("Loaded {0} images.").format(len(self.loaded_images)))
         if self.metrics_window and self.metrics_window.isVisible():
             self.metrics_window.update_metrics(self.loaded_images, order=self._tree_order_indices())
 
@@ -1351,7 +1352,7 @@ class BlinkTab(QWidget):
         order = self._tree_order_indices()
         self.metrics_window.set_images(self.loaded_images, order=order)
         panel = self.metrics_window.metrics_panel
-        self.thresholds_by_group["All"] = [line.value() for line in panel.lines]
+        self.thresholds_by_group[self.tr("All")] = [line.value() for line in panel.lines]
         self.metrics_window.show()
         self.metrics_window.raise_()
 
@@ -1405,7 +1406,7 @@ class BlinkTab(QWidget):
         thr_list[metric_idx] = threshold
 
         # build the list of indices to re-evaluate
-        if group == "All":
+        if group == self.tr("All"):
             indices = range(len(self.loaded_images))
         else:
             indices = [
@@ -1467,15 +1468,15 @@ class BlinkTab(QWidget):
             by_object[obj][fil][exp] = paths
 
         for obj in sorted(by_object, key=lambda o: o.lower()):
-            obj_item = QTreeWidgetItem([f"Object: {obj}"])
+            obj_item = QTreeWidgetItem([self.tr("Object: {0}").format(obj)])
             self.fileTree.addTopLevelItem(obj_item)
             obj_item.setExpanded(True)
             for fil in sorted(by_object[obj], key=lambda f: f.lower()):
-                fil_item = QTreeWidgetItem([f"Filter: {fil}"])
+                filt_item = QTreeWidgetItem([self.tr("Filter: {0}").format(fil)])
                 obj_item.addChild(fil_item)
                 fil_item.setExpanded(True)
                 for exp in sorted(by_object[obj][fil], key=lambda e: str(e).lower()):
-                    exp_item = QTreeWidgetItem([f"Exposure: {exp}"])
+                    exp_item = QTreeWidgetItem([self.tr("Exposure: {0}").format(exp)])
                     fil_item.addChild(exp_item)
                     exp_item.setExpanded(True)
                     for p in by_object[obj][fil][exp]:
@@ -1573,7 +1574,7 @@ class BlinkTab(QWidget):
 
     def openDirectoryDialog(self):
         """Allow users to select a directory and load all images within it recursively."""
-        directory = QFileDialog.getExistingDirectory(self, "Select Directory", "")
+        directory = QFileDialog.getExistingDirectory(self, self.tr("Select Directory"), "")
         if directory:
             # Supported image extensions
             supported_extensions = (
@@ -1594,15 +1595,15 @@ class BlinkTab(QWidget):
             if new_file_paths:
                 self.loadImages(new_file_paths)
             else:
-                QMessageBox.information(self, "No Images Found", "No supported image files were found in the selected directory.")
+                QMessageBox.information(self, self.tr("No Images Found"), self.tr("No supported image files were found in the selected directory."))
 
 
     def clearImages(self):
         """Clear all loaded images and reset the tree view."""
         confirmation = QMessageBox.question(
             self,
-            "Clear All Images",
-            "Are you sure you want to clear all loaded images?",
+            self.tr("Clear All Images"),
+            self.tr("Are you sure you want to clear all loaded images?"),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No
         )
@@ -1613,10 +1614,10 @@ class BlinkTab(QWidget):
             self.image_labels.clear()
             self.fileTree.clear()
             self.preview_label.clear()
-            self.preview_label.setText('No image selected.')
+            self.preview_label.setText(self.tr('No image selected.'))
             self.current_pixmap = None
             self.progress_bar.setValue(0)
-            self.loading_label.setText("Loading images...")
+            self.loading_label.setText(self.tr("Loading images..."))
             self.imagesChanged.emit(len(self.loaded_images)) 
 
             # (legacy) if you still have this, you can delete it:
@@ -1649,7 +1650,7 @@ class BlinkTab(QWidget):
         # 1) load
         image, header, bit_depth, is_mono = load_image(file_path)
         if image is None or image.size == 0:
-            raise ValueError("Empty image")
+            raise ValueError(self.tr("Empty image"))
 
         # 2) optional debayer
         if is_mono:
@@ -1823,7 +1824,7 @@ class BlinkTab(QWidget):
                         leaf.setData(0, Qt.ItemDataRole.UserRole, p)  
                         exp_item.addChild(leaf)
 
-        self.loading_label.setText(f"Loaded {len(self.loaded_images)} images.")
+        self.loading_label.setText(self.tr("Loaded {0} images.").format(len(self.loaded_images)))
         self.progress_bar.setValue(100)
         self.imagesChanged.emit(len(self.loaded_images))
         if self.metrics_window and self.metrics_window.isVisible():
@@ -1874,7 +1875,7 @@ class BlinkTab(QWidget):
     def flag_current_image(self):
         item = self.fileTree.currentItem()
         if not item:
-            QMessageBox.warning(self, "No Selection", "No image is currently selected to flag.")
+            QMessageBox.warning(self, self.tr("No Selection"), self.tr("No image is currently selected to flag."))
             return
         self._toggle_flag_on_item(item)   # ← this now updates the metrics panel too
         self.next_item()
@@ -1950,7 +1951,7 @@ class BlinkTab(QWidget):
 
         leaves = self.get_all_leaf_items()
         if not leaves:
-            QMessageBox.information(self, "No Images", "Load some images first.")
+            QMessageBox.information(self, self.tr("No Images"), self.tr("Load some images first."))
             return
 
         # Ensure a current leaf item is selected
@@ -1972,9 +1973,9 @@ class BlinkTab(QWidget):
         """Allow users to select multiple images and add them to the existing list."""
         file_paths, _ = QFileDialog.getOpenFileNames(
             self,
-            "Open Images",
+            self.tr("Open Images"),
             "",
-            "Images (*.png *.tif *.tiff *.fits *.fit *.xisf *.cr2 *.cr3 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef);;All Files (*)"
+            self.tr("Images (*.png *.tif *.tiff *.fits *.fit *.xisf *.cr2 *.cr3 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef);;All Files (*)")
         )
         
         # Filter out already loaded images to prevent duplicates
@@ -1983,7 +1984,7 @@ class BlinkTab(QWidget):
         if new_file_paths:
             self.loadImages(new_file_paths)
         else:
-            QMessageBox.information(self, "No New Images", "No new images were selected or all selected images are already loaded.")
+            QMessageBox.information(self, self.tr("No New Images"), self.tr("No new images were selected or all selected images are already loaded."))
 
 
     def debayer_fits(self, image_data, bayer_pattern):
@@ -2033,7 +2034,7 @@ class BlinkTab(QWidget):
             return np.stack([r, g, b], axis=-1)
 
         else:
-            raise ValueError(f"Unsupported Bayer pattern: {bayer_pattern}")
+            raise ValueError(self.tr("Unsupported Bayer pattern: {0}").format(bayer_pattern))
 
     def remove_item_from_tree(self, file_path):
         """Remove a specific item from the tree view based on file path."""
@@ -2150,7 +2151,7 @@ class BlinkTab(QWidget):
             g = (g1 + g2) / 2
             return np.stack([r, g, b], axis=-1)
         else:
-            raise ValueError(f"Unsupported Bayer pattern: {bayer_pattern}")
+            raise ValueError(self.tr("Unsupported Bayer pattern: {0}").format(bayer_pattern))
 
     
 
@@ -2305,7 +2306,7 @@ class BlinkTab(QWidget):
             self.apply_zoom()
         else:
             print("No image loaded. Cannot fit to preview.")
-            QMessageBox.warning(self, "Warning", "No image loaded. Cannot fit to preview.")
+            QMessageBox.warning(self, self.tr("Warning"), self.tr("No image loaded. Cannot fit to preview."))
 
     def _is_leaf(self, item: Optional[QTreeWidgetItem]) -> bool:
         return bool(item and item.childCount() == 0)
@@ -2318,49 +2319,49 @@ class BlinkTab(QWidget):
 
         menu = QMenu(self)
 
-        push_action = QAction("Open in Document Window", self)
+        push_action = QAction(self.tr("Open in Document Window"), self)
         push_action.triggered.connect(lambda: self.push_to_docs(item))
         menu.addAction(push_action)
 
-        rename_action = QAction("Rename", self)
+        rename_action = QAction(self.tr("Rename"), self)
         rename_action.triggered.connect(lambda: self.rename_item(item))
         menu.addAction(rename_action)
 
         # 🔹 NEW: batch rename selected
-        batch_rename_action = QAction("Batch Rename Selected…", self)
+        batch_rename_action = QAction(self.tr("Batch Rename Selected…"), self)
         batch_rename_action.triggered.connect(self.batch_rename_items)
         menu.addAction(batch_rename_action)
 
-        move_action = QAction("Move Selected Items", self)
+        move_action = QAction(self.tr("Move Selected Items"), self)
         move_action.triggered.connect(self.move_items)
         menu.addAction(move_action)
 
-        delete_action = QAction("Delete Selected Items", self)
+        delete_action = QAction(self.tr("Delete Selected Items"), self)
         delete_action.triggered.connect(self.delete_items)
         menu.addAction(delete_action)
 
         menu.addSeparator()
 
-        batch_delete_action = QAction("Delete All Flagged Images", self)
+        batch_delete_action = QAction(self.tr("Delete All Flagged Images"), self)
         batch_delete_action.triggered.connect(self.batch_delete_flagged_images)
         menu.addAction(batch_delete_action)
 
-        batch_move_action = QAction("Move All Flagged Images", self)
+        batch_move_action = QAction(self.tr("Move All Flagged Images"), self)
         batch_move_action.triggered.connect(self.batch_move_flagged_images)
         menu.addAction(batch_move_action)
 
         # 🔹 NEW: rename all flagged images
-        rename_flagged_action = QAction("Rename Flagged Images…", self)
+        rename_flagged_action = QAction(self.tr("Rename Flagged Images…"), self)
         rename_flagged_action.triggered.connect(self.rename_flagged_images)
         menu.addAction(rename_flagged_action)
 
         menu.addSeparator()
 
-        send_lights_act = QAction("Send to Stacking → Lights", self)
+        send_lights_act = QAction(self.tr("Send to Stacking → Lights"), self)
         send_lights_act.triggered.connect(self._send_to_stacking_lights)
         menu.addAction(send_lights_act)
 
-        send_integ_act = QAction("Send to Stacking → Integration", self)
+        send_integ_act = QAction(self.tr("Send to Stacking → Integration"), self)
         send_integ_act.triggered.connect(self._send_to_stacking_integration)
         menu.addAction(send_integ_act)
 
@@ -2380,7 +2381,7 @@ class BlinkTab(QWidget):
         mw = self._main_window()
         dm = self.doc_manager or (getattr(mw, "docman", None) if mw else None)
         if not mw or not dm:
-            QMessageBox.warning(self, "Document Manager", "Main window or DocManager not available.")
+            QMessageBox.warning(self, self.tr("Document Manager"), self.tr("Main window or DocManager not available."))
             return
 
         # Prepare image + metadata for a real document
@@ -2404,13 +2405,13 @@ class BlinkTab(QWidget):
             elif hasattr(dm, "create_document"):
                 doc = dm.create_document(image=np_image_f01, metadata=metadata, name=title)
             else:
-                raise AttributeError("DocManager lacks open_array/open_numpy/create_document")
+                raise AttributeError(self.tr("DocManager lacks open_array/open_numpy/create_document"))
         except Exception as e:
-            QMessageBox.critical(self, "Doc Manager", f"Failed to create document:\n{e}")
+            QMessageBox.critical(self, self.tr("Doc Manager"), self.tr("Failed to create document:\n{0}").format(e))
             return
 
         if doc is None:
-            QMessageBox.critical(self, "Doc Manager", "DocManager returned no document.")
+            QMessageBox.critical(self, self.tr("Doc Manager"), self.tr("DocManager returned no document."))
             return
 
         # SHOW it: ask the main window to spawn an MDI subwindow
@@ -2419,7 +2420,7 @@ class BlinkTab(QWidget):
             if hasattr(mw, "_log"):
                 mw._log(f"Blink → opened '{title}' as new document")
         except Exception as e:
-            QMessageBox.critical(self, "UI", f"Failed to open subwindow:\n{e}")
+            QMessageBox.critical(self, self.tr("UI"), self.tr("Failed to open subwindow:\n{0}").format(e))
 
 
     # optional shim to keep any old calls working
@@ -2431,7 +2432,7 @@ class BlinkTab(QWidget):
     def rename_item(self, item):
         """Allow the user to rename the selected image."""
         current_name = item.text(0).lstrip("⚠️ ")
-        new_name, ok = QInputDialog.getText(self, "Rename Image", "Enter new name:", text=current_name)
+        new_name, ok = QInputDialog.getText(self, self.tr("Rename Image"), self.tr("Enter new name:"), text=current_name)
 
         if ok and new_name:
             file_path = next((path for path in self.image_paths if os.path.basename(path) == current_name), None)
@@ -2448,7 +2449,7 @@ class BlinkTab(QWidget):
                     self.image_paths[self.image_paths.index(file_path)] = new_file_path
                     item.setText(0, new_name)
                 except Exception as e:
-                    QMessageBox.critical(self, "Error", f"Failed to rename the file: {e}")
+                    QMessageBox.critical(self, self.tr("Error"), self.tr("Failed to rename the file: {0}").format(e))
 
     def rename_flagged_images(self):
         """Prefix all *flagged* images on disk and in the tree."""
@@ -2459,17 +2460,17 @@ class BlinkTab(QWidget):
         if not flagged_indices:
             QMessageBox.information(
                 self,
-                "Rename Flagged Images",
-                "There are no flagged images to rename."
+                self.tr("Rename Flagged Images"),
+                self.tr("There are no flagged images to rename.")
             )
             return
 
         # Small dialog like in your mockup: just a prefix field
         dlg = QDialog(self)
-        dlg.setWindowTitle("Rename flagged images")
+        dlg.setWindowTitle(self.tr("Rename flagged images"))
         layout = QVBoxLayout(dlg)
 
-        layout.addWidget(QLabel("Prefix to add to flagged image filenames:", dlg))
+        layout.addWidget(QLabel(self.tr("Prefix to add to flagged image filenames:"), dlg))
 
         prefix_edit = QLineEdit(dlg)
         prefix_edit.setText("Bad_")  # sensible default
@@ -2494,9 +2495,9 @@ class BlinkTab(QWidget):
             # Allow empty but warn – otherwise user may be confused
             ret = QMessageBox.question(
                 self,
-                "No Prefix",
-                "No prefix entered. This will not change any filenames.\n\n"
-                "Continue anyway?",
+                self.tr("No Prefix"),
+                self.tr("No prefix entered. This will not change any filenames.\n\n"
+                "Continue anyway?"),
                 QMessageBox.StandardButton.Yes | QDialogButtonBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
@@ -2549,13 +2550,13 @@ class BlinkTab(QWidget):
         # Also sync the metrics panel flags/colors
         self._sync_metrics_flags()
 
-        msg = f"Renamed {successes} flagged image{'s' if successes != 1 else ''}."
+        msg = self.tr("Renamed {0} flagged image{1}.").format(successes, 's' if successes != 1 else '')
         if failures:
-            msg += f"\n\n{len(failures)} file(s) could not be renamed:"
+            msg += self.tr("\n\n{0} file(s) could not be renamed:").format(len(failures))
             for old, err in failures[:10]:  # don’t spam too hard
                 msg += f"\n• {os.path.basename(old)} – {err}"
 
-        QMessageBox.information(self, "Rename Flagged Images", msg)
+        QMessageBox.information(self, self.tr("Rename Flagged Images"), msg)
 
 
     def batch_rename_items(self):
@@ -2563,40 +2564,40 @@ class BlinkTab(QWidget):
         selected_items = self.fileTree.selectedItems()
 
         if not selected_items:
-            QMessageBox.warning(self, "Warning", "No items selected for renaming.")
+            QMessageBox.warning(self, self.tr("Warning"), self.tr("No items selected for renaming."))
             return
 
         # Create a custom dialog for entering the prefix and suffix
         dialog = QDialog(self)
-        dialog.setWindowTitle("Batch Rename")
+        dialog.setWindowTitle(self.tr("Batch Rename"))
         dialog_layout = QVBoxLayout(dialog)
 
-        instruction_label = QLabel("Enter a prefix or suffix to rename selected files:")
+        instruction_label = QLabel(self.tr("Enter a prefix or suffix to rename selected files:"))
         dialog_layout.addWidget(instruction_label)
 
         # Create fields for prefix and suffix
         form_layout = QHBoxLayout()
 
         prefix_field = QLineEdit(dialog)
-        prefix_field.setPlaceholderText("Prefix")
+        prefix_field.setPlaceholderText(self.tr("Prefix"))
         form_layout.addWidget(prefix_field)
 
         current_filename_label = QLabel("currentfilename", dialog)
         form_layout.addWidget(current_filename_label)
 
         suffix_field = QLineEdit(dialog)
-        suffix_field.setPlaceholderText("Suffix")
+        suffix_field.setPlaceholderText(self.tr("Suffix"))
         form_layout.addWidget(suffix_field)
 
         dialog_layout.addLayout(form_layout)
 
         # Add OK and Cancel buttons
         button_layout = QHBoxLayout()
-        ok_button = QPushButton("OK", dialog)
+        ok_button = QPushButton(self.tr("OK"), dialog)
         ok_button.clicked.connect(dialog.accept)
         button_layout.addWidget(ok_button)
 
-        cancel_button = QPushButton("Cancel", dialog)
+        cancel_button = QPushButton(self.tr("Cancel"), dialog)
         cancel_button.clicked.connect(dialog.reject)
         button_layout.addWidget(cancel_button)
 
@@ -2629,7 +2630,7 @@ class BlinkTab(QWidget):
 
                     except Exception as e:
                         print(f"Failed to rename {file_path}: {e}")
-                        QMessageBox.critical(self, "Error", f"Failed to rename the file: {e}")
+                        QMessageBox.critical(self, self.tr("Error"), self.tr("Failed to rename the file: {0}").format(e))
 
             print(f"Batch renamed {len(selected_items)} items.")
 
@@ -2638,13 +2639,13 @@ class BlinkTab(QWidget):
         flagged_images = [img for img in self.loaded_images if img['flagged']]
         
         if not flagged_images:
-            QMessageBox.information(self, "No Flagged Images", "There are no flagged images to delete.")
+            QMessageBox.information(self, self.tr("No Flagged Images"), self.tr("There are no flagged images to delete."))
             return
 
         confirmation = QMessageBox.question(
             self,
-            "Confirm Batch Deletion",
-            f"Are you sure you want to permanently delete {len(flagged_images)} flagged images? This action is irreversible.",
+            self.tr("Confirm Batch Deletion"),
+            self.tr("Are you sure you want to permanently delete {0} flagged images? This action is irreversible.").format(len(flagged_images)),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No
         )
@@ -2672,7 +2673,7 @@ class BlinkTab(QWidget):
                     self.loaded_images.remove(img)
                 self.remove_item_from_tree(file_path)
 
-            QMessageBox.information(self, "Batch Deletion", f"Deleted {len(removed_indices)} flagged images.")
+            QMessageBox.information(self, self.tr("Batch Deletion"), self.tr("Deleted {0} flagged images.").format(len(removed_indices)))
 
             # 🔁 refresh tree + metrics (no recompute)
             self._after_list_changed(removed_indices)
@@ -2682,11 +2683,11 @@ class BlinkTab(QWidget):
         flagged_images = [img for img in self.loaded_images if img['flagged']]
         
         if not flagged_images:
-            QMessageBox.information(self, "No Flagged Images", "There are no flagged images to move.")
+            QMessageBox.information(self, self.tr("No Flagged Images"), self.tr("There are no flagged images to move."))
             return
 
         # Select destination directory
-        destination_dir = QFileDialog.getExistingDirectory(self, "Select Destination Folder", "")
+        destination_dir = QFileDialog.getExistingDirectory(self, self.tr("Select Destination Folder"), "")
         if not destination_dir:
             return  # User canceled
 
@@ -2700,7 +2701,7 @@ class BlinkTab(QWidget):
                 print(f"Moved flagged image from {src_path} to {dest_path}")
             except Exception as e:
                 print(f"Failed to move {src_path}: {e}")
-                QMessageBox.critical(self, "Error", f"Failed to move {src_path}: {e}")
+                QMessageBox.critical(self, self.tr("Error"), self.tr("Failed to move {0}: {1}").format(src_path, e))
                 continue
 
             # Update data structures
@@ -2713,19 +2714,19 @@ class BlinkTab(QWidget):
             self.remove_item_from_tree(src_path)
             self.add_item_to_tree(dest_path)
 
-        QMessageBox.information(self, "Batch Move", f"Moved {len(flagged_images)} flagged images.")
+        QMessageBox.information(self, self.tr("Batch Move"), self.tr("Moved {0} flagged images.").format(len(flagged_images)))
         self._after_list_changed(removed_indices=None)
 
     def move_items(self):
         """Move selected images *and* remove them from the tree+metrics."""
         selected_items = self.fileTree.selectedItems()
         if not selected_items:
-            QMessageBox.warning(self, "Warning", "No items selected for moving.")
+            QMessageBox.warning(self, self.tr("Warning"), self.tr("No items selected for moving."))
             return
 
         # Ask where to move
         new_dir = QFileDialog.getExistingDirectory(self,
-                                                "Select Destination Folder",
+                                                self.tr("Select Destination Folder"),
                                                 "")
         if not new_dir:
             return
@@ -2746,7 +2747,7 @@ class BlinkTab(QWidget):
             try:
                 os.rename(old_path, new_path)
             except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to move {old_path}: {e}")
+                QMessageBox.critical(self, self.tr("Error"), self.tr("Failed to move {0}: {1}").format(old_path, e))
                 continue
 
             moved_old_paths.append(old_path)
@@ -2770,14 +2771,14 @@ class BlinkTab(QWidget):
         selected_items = self.fileTree.selectedItems()
 
         if not selected_items:
-            QMessageBox.warning(self, "Warning", "No items selected for deletion.")
+            QMessageBox.warning(self, self.tr("Warning"), self.tr("No items selected for deletion."))
             return
 
         # Confirmation dialog
         reply = QMessageBox.question(
             self,
-            'Confirm Deletion',
-            f"Are you sure you want to permanently delete {len(selected_items)} selected images? This action is irreversible.",
+            self.tr('Confirm Deletion'),
+            self.tr("Are you sure you want to permanently delete {0} selected images? This action is irreversible.").format(len(selected_items)),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No
         )
@@ -2807,7 +2808,7 @@ class BlinkTab(QWidget):
 
             # Clear preview
             self.preview_label.clear()
-            self.preview_label.setText('No image selected.')
+            self.preview_label.setText(self.tr('No image selected.'))
             self.current_image = None
 
             # 🔁 refresh tree + metrics (no recompute)

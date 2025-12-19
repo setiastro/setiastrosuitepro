@@ -30,7 +30,7 @@ class FITSModifier(QDialog):
                  doc_manager=None, active_document=None,   # <— rename param
                  parent=None):
         super().__init__(parent)
-        self.setWindowTitle("FITS Header Editor")
+        self.setWindowTitle(self.tr("FITS Header Editor"))
         self.resize(800, 600)
 
         self._doc_manager = doc_manager
@@ -48,17 +48,17 @@ class FITSModifier(QDialog):
 
         # UI
         top = QHBoxLayout()
-        self.path_label = QLabel(self.file_path or "(no file)")
-        self.open_btn = QPushButton("Open FITS…")
-        self.reload_btn = QPushButton("Reload")
+        self.path_label = QLabel(self.file_path or self.tr("(no file)"))
+        self.open_btn = QPushButton(self.tr("Open FITS…"))
+        self.reload_btn = QPushButton(self.tr("Reload"))
         self.hdu_combo = QComboBox()
-        self.save_btn = QPushButton("Save")
-        self.saveas_btn = QPushButton("Save a Copy As…")
+        self.save_btn = QPushButton(self.tr("Save"))
+        self.saveas_btn = QPushButton(self.tr("Save a Copy As…"))
         # self.apply_to_slot_btn = QPushButton("Apply to Slot Metadata")  # optional
 
-        top.addWidget(QLabel("File:"))
+        top.addWidget(QLabel(self.tr("File:")))
         top.addWidget(self.path_label, 1)
-        top.addWidget(QLabel("HDU:"))
+        top.addWidget(QLabel(self.tr("HDU:")))
         top.addWidget(self.hdu_combo)
         top.addWidget(self.open_btn)
         top.addWidget(self.reload_btn)
@@ -67,14 +67,14 @@ class FITSModifier(QDialog):
         # top.addWidget(self.apply_to_slot_btn)
 
         batch = QHBoxLayout()
-        self.batch_btn = QPushButton("Batch Modify...")
+        self.batch_btn = QPushButton(self.tr("Batch Modify..."))
         batch.addStretch()
         batch.addWidget(self.batch_btn)
         batch.addStretch()
 
         self.tree = QTreeWidget()
         self.tree.setColumnCount(3)
-        self.tree.setHeaderLabels(["Keyword", "Value", "Comment"])
+        self.tree.setHeaderLabels([self.tr("Keyword"), self.tr("Value"), self.tr("Comment")])
         self.tree.setAlternatingRowColors(True)
         self.tree.setRootIsDecorated(False)
         self.tree.setEditTriggers(QTreeWidget.EditTrigger.DoubleClicked | QTreeWidget.EditTrigger.SelectedClicked)
@@ -89,12 +89,12 @@ class FITSModifier(QDialog):
         """)
 
         bottom = QHBoxLayout()
-        self.add_key_edit = QLineEdit(); self.add_key_edit.setPlaceholderText("KEYWORD")
-        self.add_val_edit = QLineEdit(); self.add_val_edit.setPlaceholderText("Value")
-        self.add_com_edit = QLineEdit(); self.add_com_edit.setPlaceholderText("Comment (optional)")
-        self.add_btn = QPushButton("Add/Update")
-        self.del_btn = QPushButton("Delete Selected")
-        self.all_hdus_chk = QCheckBox("Apply add/update/delete to all HDUs")
+        self.add_key_edit = QLineEdit(); self.add_key_edit.setPlaceholderText(self.tr("KEYWORD"))
+        self.add_val_edit = QLineEdit(); self.add_val_edit.setPlaceholderText(self.tr("Value"))
+        self.add_com_edit = QLineEdit(); self.add_com_edit.setPlaceholderText(self.tr("Comment (optional)"))
+        self.add_btn = QPushButton(self.tr("Add/Update"))
+        self.del_btn = QPushButton(self.tr("Delete Selected"))
+        self.all_hdus_chk = QCheckBox(self.tr("Apply add/update/delete to all HDUs"))
         bottom.addWidget(self.add_key_edit)
         bottom.addWidget(self.add_val_edit)
         bottom.addWidget(self.add_com_edit)
@@ -210,7 +210,7 @@ class FITSModifier(QDialog):
 
     def _set_dirty(self, dirty=True):
         self._dirty = dirty
-        self.setWindowTitle("FITS Header Editor" + (" *" if dirty else ""))
+        self.setWindowTitle(self.tr("FITS Header Editor") + (" *" if dirty else ""))
 
     def _sync_tree_to_header(self):
         if not self.hdul:
@@ -219,7 +219,7 @@ class FITSModifier(QDialog):
         self._collect_tree_into_header(hdr)
 
     def _choose_file(self):
-        fn, _ = QFileDialog.getOpenFileName(self, "Open FITS", self._last_dir(), "FITS files (*.fits *.fit *.fts *.fz)")
+        fn, _ = QFileDialog.getOpenFileName(self, self.tr("Open FITS"), self._last_dir(), self.tr("FITS files (*.fits *.fit *.fts *.fz)"))
         if not fn:
             return
         self._load_file(fn)
@@ -233,12 +233,12 @@ class FITSModifier(QDialog):
         try:
             self.hdul = fits.open(path, mode='update', memmap=False)
         except Exception as e:
-            QMessageBox.warning(self, "Invalid FITS",
-                                f"This file does not appear to be a valid FITS:\n\n{path}\n\n{e}\n\n"
-                                "Tip: Choose a FITS file via 'Open FITS…' or edit an in-memory header.")
+            QMessageBox.warning(self, self.tr("Invalid FITS"),
+                                self.tr("This file does not appear to be a valid FITS:\n\n{0}\n\n{1}\n\n"
+                                "Tip: Choose a FITS file via 'Open FITS…' or edit an in-memory header.").format(path, e))
             self.hdul = None
             self.file_path = None
-            self.path_label.setText("(no file)")
+            self.path_label.setText(self.tr("(no file)"))
             self.hdu_combo.clear()
             self._update_multi_hdu_ui()
             return False
@@ -373,7 +373,7 @@ class FITSModifier(QDialog):
         """
         doc = self._active_doc()
         if doc is None or doc.image is None:
-            QMessageBox.warning(self, "No Image", "No active image/document to save.")
+            QMessageBox.warning(self, self.tr("No Image"), self.tr("No active image/document to save."))
             return False
 
         edited_hdr = self._edited_primary_header()
@@ -401,7 +401,7 @@ class FITSModifier(QDialog):
                 file_meta=file_meta,
             )
         except Exception as e:
-            QMessageBox.critical(self, "Save Error", f"Could not save:\n{e}")
+            QMessageBox.critical(self, self.tr("Save Error"), self.tr("Could not save:\n{0}").format(e))
             return False
 
         if update_doc_metadata:
@@ -436,9 +436,9 @@ class FITSModifier(QDialog):
         self._sync_tree_to_header()
         last = self._settings().value("fits_modifier/last_dir", "", type=str) or ""
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save Image As",
+            self, self.tr("Save Image As"),
             last,
-            "FITS (*.fits *.fit);;TIFF (*.tif *.tiff);;PNG (*.png);;JPEG (*.jpg *.jpeg);;XISF (*.xisf)"
+            self.tr("FITS (*.fits *.fit);;TIFF (*.tif *.tiff);;PNG (*.png);;JPEG (*.jpg *.jpeg);;XISF (*.xisf)")
         )
         if not path:
             return
@@ -446,7 +446,7 @@ class FITSModifier(QDialog):
         if ok:
             self._save_last_dir(os.path.dirname(path))
             # Optional: toast confirmation only
-            QMessageBox.information(self, "Saved Copy", f"Saved a copy to:\n{path}")
+            QMessageBox.information(self, self.tr("Saved Copy"), self.tr("Saved a copy to:\n{0}").format(path))
 
 
     def _save_to_path(self, path: str) -> bool:
@@ -605,27 +605,28 @@ class FITSModifier(QDialog):
 class BatchFITSHeaderDialog(QDialog):
     def __init__(self, parent=None, preset_keyword: str = "", preset_value: str = "", preset_comment: str = ""):
         super().__init__(parent)
-        self.setWindowTitle("Batch Modify FITS Headers")
+        self.setWindowTitle(self.tr("Batch Modify FITS Headers"))
         self.resize(520, 220)
 
         v = QVBoxLayout(self)
 
         row1 = QHBoxLayout()
-        self.files_edit = QLineEdit(); self.files_edit.setPlaceholderText("No files selected")
-        self.pick_btn = QPushButton("Choose FITS Files…")
+        self.files_edit = QLineEdit(); self.files_edit.setPlaceholderText(self.tr("No files selected"))
+        self.pick_btn = QPushButton(self.tr("Choose FITS Files…"))
         row1.addWidget(self.files_edit, 1); row1.addWidget(self.pick_btn)
 
         row2 = QHBoxLayout()
-        self.key_edit = QLineEdit(); self.key_edit.setPlaceholderText("KEYWORD")
-        self.val_edit = QLineEdit(); self.val_edit.setPlaceholderText("Value (leave blank for delete)")
-        self.com_edit = QLineEdit(); self.com_edit.setPlaceholderText("Comment (optional)")
+        self.key_edit = QLineEdit(); self.key_edit.setPlaceholderText(self.tr("KEYWORD"))
+        self.val_edit = QLineEdit(); self.val_edit.setPlaceholderText(self.tr("Value (leave blank for delete)"))
+        self.com_edit = QLineEdit(); self.com_edit.setPlaceholderText(self.tr("Comment (optional)"))
         row2.addWidget(self.key_edit); row2.addWidget(self.val_edit); row2.addWidget(self.com_edit)
 
         row3 = QHBoxLayout()
         self.mode_combo = QComboBox()
-        self.mode_combo.addItems(["Add/Update", "Delete"])
-        self.all_hdus_chk = QCheckBox("Apply to all HDUs")
-        self.add_if_missing_chk = QCheckBox("Add if missing (for Add/Update)")
+        self.mode_combo.addItem(self.tr("Add/Update"), "Add/Update")
+        self.mode_combo.addItem(self.tr("Delete"), "Delete")
+        self.all_hdus_chk = QCheckBox(self.tr("Apply to all HDUs"))
+        self.add_if_missing_chk = QCheckBox(self.tr("Add if missing (for Add/Update)"))
         self.add_if_missing_chk.setChecked(True)
         row3.addWidget(self.mode_combo)
         row3.addWidget(self.all_hdus_chk)
@@ -633,8 +634,8 @@ class BatchFITSHeaderDialog(QDialog):
         row3.addStretch()
 
         row4 = QHBoxLayout()
-        self.run_btn = QPushButton("Run")
-        self.close_btn = QPushButton("Close")
+        self.run_btn = QPushButton(self.tr("Run"))
+        self.close_btn = QPushButton(self.tr("Close"))
         row4.addStretch(); row4.addWidget(self.run_btn); row4.addWidget(self.close_btn)
 
         v.addLayout(row1)
@@ -660,11 +661,11 @@ class BatchFITSHeaderDialog(QDialog):
 
     def _pick_files(self):
         last = self._settings().value("fits_modifier/batch_dir", "", type=str) or ""
-        files, _ = QFileDialog.getOpenFileNames(self, "Select FITS files", last, "FITS files (*.fits *.fit *.fts *.fz)")
+        files, _ = QFileDialog.getOpenFileNames(self, self.tr("Select FITS files"), last, self.tr("FITS files (*.fits *.fit *.fts *.fz)"))
         if not files:
             return
         self.files = files
-        self.files_edit.setText(f"{len(files)} files selected")
+        self.files_edit.setText(self.tr("{0} files selected").format(len(files)))
         self._settings().setValue("fits_modifier/batch_dir", os.path.dirname(files[0]))
 
     def _parse_val(self, s: str):
@@ -689,14 +690,14 @@ class BatchFITSHeaderDialog(QDialog):
 
     def _run(self):
         if not self.files:
-            QMessageBox.warning(self, "No files", "Please choose one or more FITS files.")
+            QMessageBox.warning(self, self.tr("No files"), self.tr("Please choose one or more FITS files."))
             return
         key = self.key_edit.text().strip()
         if not key:
-            QMessageBox.warning(self, "Missing keyword", "Please enter a FITS keyword.")
+            QMessageBox.warning(self, self.tr("Missing keyword"), self.tr("Please enter a FITS keyword."))
             return
 
-        mode = self.mode_combo.currentText()
+        mode = self.mode_combo.currentData()
         apply_all_hdus = self.all_hdus_chk.isChecked()
         add_if_missing = self.add_if_missing_chk.isChecked()
         com = self.com_edit.text().strip()
@@ -741,4 +742,4 @@ class BatchFITSHeaderDialog(QDialog):
                 print(f"[Batch FITS] Error on {fp}: {e}")
                 n_err += 1
 
-        QMessageBox.information(self, "Batch Complete", f"Updated {n_ok} file(s); {n_err} error(s).")
+        QMessageBox.information(self, self.tr("Batch Complete"), self.tr("Updated {0} file(s); {1} error(s).").format(n_ok, n_err))

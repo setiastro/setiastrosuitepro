@@ -132,14 +132,14 @@ class HDRWorker(QObject):
 
     def run(self):
         try:
-            self.progress_update.emit("Converting to Lab color space…", 10)
+            self.progress_update.emit(self.tr("Converting to Lab color space…"), 10)
             # progress checkpoints inline here are cosmetic
-            self.progress_update.emit("Decomposing luminance with starlet…", 20)
+            self.progress_update.emit(self.tr("Decomposing luminance with starlet…"), 20)
             # full compute
             transformed, mask = compute_wavescale_hdr(
                 self.rgb_image, self.n_scales, self.compression_factor, self.mask_gamma, self.base_kernel
             )
-            self.progress_update.emit("Finalizing…", 95)
+            self.progress_update.emit(self.tr("Finalizing…"), 95)
             self.finished.emit(transformed, mask)
         except Exception as e:
             print("WaveScale HDR error:", e)
@@ -152,7 +152,7 @@ class HDRWorker(QObject):
 class MaskDisplayWindow(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("HDR Mask (L-based)")
+        self.setWindowTitle(self.tr("HDR Mask (L-based)"))
         self.lbl = QLabel(alignment=Qt.AlignmentFlag.AlignCenter)
         self.lbl.setFixedSize(400, 400)  # keep it small
         lay = QVBoxLayout(self)
@@ -184,7 +184,7 @@ class WaveScaleHDRDialogPro(QDialog):
 
     def __init__(self, parent, doc, icon_path: str | None = None, *, headless: bool=False, bypass_guard: bool=False):
         super().__init__(parent)
-        self.setWindowTitle("WaveScale HDR")
+        self.setWindowTitle(self.tr("WaveScale HDR"))
         self._headless = bool(headless)
         self._bypass_guard = bool(bypass_guard)
         if self._headless:
@@ -241,45 +241,45 @@ class WaveScaleHDRDialogPro(QDialog):
         self.scroll.setWidget(self.view)
 
         # controls (add zoom row)
-        self.grp = QGroupBox("HDR Controls")
+        self.grp = QGroupBox(self.tr("HDR Controls"))
         form = QFormLayout(self.grp)
 
         self.s_scales = QSlider(Qt.Orientation.Horizontal); self.s_scales.setRange(2, 10); self.s_scales.setValue(5)
         self.s_comp   = QSlider(Qt.Orientation.Horizontal); self.s_comp.setRange(10, 500); self.s_comp.setValue(150)
         self.s_gamma  = QSlider(Qt.Orientation.Horizontal); self.s_gamma.setRange(10, 1000); self.s_gamma.setValue(500)
 
-        form.addRow("Number of Scales:", self.s_scales)
-        form.addRow("Coarse Compression:", self.s_comp)
-        form.addRow("Mask Gamma:", self.s_gamma)
+        form.addRow(self.tr("Number of Scales:"), self.s_scales)
+        form.addRow(self.tr("Coarse Compression:"), self.s_comp)
+        form.addRow(self.tr("Mask Gamma:"), self.s_gamma)
 
         row = QHBoxLayout()
-        self.btn_preview = QPushButton("Preview")
-        self.btn_toggle  = QPushButton("Show Original"); self.btn_toggle.setCheckable(True)
+        self.btn_preview = QPushButton(self.tr("Preview"))
+        self.btn_toggle  = QPushButton(self.tr("Show Original")); self.btn_toggle.setCheckable(True)
         row.addWidget(self.btn_preview); row.addWidget(self.btn_toggle)
         form.addRow(row)
 
         # ↓ NEW: zoom controls
         zoom_row = QHBoxLayout()
-        self.btn_zoom_in  = QPushButton("Zoom In")
-        self.btn_zoom_out = QPushButton("Zoom Out")
-        self.btn_fit      = QPushButton("Fit to Preview")
+        self.btn_zoom_in  = QPushButton(self.tr("Zoom In"))
+        self.btn_zoom_out = QPushButton(self.tr("Zoom Out"))
+        self.btn_fit      = QPushButton(self.tr("Fit to Preview"))
         zoom_row.addWidget(self.btn_zoom_in)
         zoom_row.addWidget(self.btn_zoom_out)
         zoom_row.addWidget(self.btn_fit)
         form.addRow(zoom_row)
 
         # progress group (unchanged)
-        self.prog_grp = QGroupBox("Processing Progress")
+        self.prog_grp = QGroupBox(self.tr("Processing Progress"))
         vprog = QVBoxLayout(self.prog_grp)
-        self.lbl_step = QLabel("Idle")
+        self.lbl_step = QLabel(self.tr("Idle"))
         self.bar = QProgressBar(); self.bar.setRange(0, 100); self.bar.setValue(0)
         vprog.addWidget(self.lbl_step); vprog.addWidget(self.bar)
 
         # bottom buttons (unchanged)
         bot = QHBoxLayout()
-        self.btn_apply = QPushButton("Apply to Document"); self.btn_apply.setEnabled(False)
-        self.btn_reset = QPushButton("Reset")
-        self.btn_close = QPushButton("Close")
+        self.btn_apply = QPushButton(self.tr("Apply to Document")); self.btn_apply.setEnabled(False)
+        self.btn_reset = QPushButton(self.tr("Reset"))
+        self.btn_close = QPushButton(self.tr("Close"))
         bot.addStretch(1); bot.addWidget(self.btn_apply); bot.addWidget(self.btn_reset); bot.addWidget(self.btn_close)
 
         # layout (unchanged)
@@ -381,9 +381,9 @@ class WaveScaleHDRDialogPro(QDialog):
             # Soft warning instead of rejecting the dialog
             try:
                 QMessageBox.information(
-                    self, "WaveScale HDR",
-                    "A headless HDR run appears to be in progress. "
-                    "This window will remain open; you can still preview safely."
+                    self, self.tr("WaveScale HDR"),
+                    self.tr("A headless HDR run appears to be in progress. "
+                            "This window will remain open; you can still preview safely.")
                 )
             except Exception:
                 pass
@@ -480,10 +480,10 @@ class WaveScaleHDRDialogPro(QDialog):
 
     def _toggle(self):
         if self.btn_toggle.isChecked():
-            self.btn_toggle.setText("Show Preview")
+            self.btn_toggle.setText(self.tr("Show Preview"))
             self._set_pix(self.original_rgb)
         else:
-            self.btn_toggle.setText("Show Original")
+            self.btn_toggle.setText(self.tr("Show Original"))
             self._set_pix(self.preview_rgb)
 
     def _reset(self):
@@ -492,9 +492,9 @@ class WaveScaleHDRDialogPro(QDialog):
         self.s_gamma.setValue(500)
         self.preview_rgb = self.original_rgb.copy()
         self._set_pix(self.preview_rgb)
-        self.lbl_step.setText("Idle"); self.bar.setValue(0)
+        self.lbl_step.setText(self.tr("Idle")); self.bar.setValue(0)
         self.btn_apply.setEnabled(False)
-        self.btn_toggle.setChecked(False); self.btn_toggle.setText("Show Original")
+        self.btn_toggle.setChecked(False); self.btn_toggle.setText(self.tr("Show Original"))
 
     def _start_preview(self):
         self.btn_preview.setEnabled(False); self.btn_apply.setEnabled(False)
@@ -519,7 +519,7 @@ class WaveScaleHDRDialogPro(QDialog):
     def _on_finished(self, transformed_rgb: np.ndarray, mask: np.ndarray):
         self.btn_preview.setEnabled(True)
         if transformed_rgb is None:
-            QMessageBox.critical(self, "WaveScale HDR", "Processing failed.")
+            QMessageBox.critical(self, self.tr("WaveScale HDR"), self.tr("Processing failed."))
             return
 
         # ← NEW: combine HDR's luminance mask with the doc's active mask (if present)
@@ -532,13 +532,13 @@ class WaveScaleHDRDialogPro(QDialog):
 
         # show the *combined* mask in the little window
         self.mask_win.setWindowTitle(
-            "HDR Mask (L × Active Mask)" if self._get_doc_active_mask_2d() is not None else "HDR Mask (L-based)"
+            self.tr("HDR Mask (L × Active Mask)") if self._get_doc_active_mask_2d() is not None else self.tr("HDR Mask (L-based)")
         )
         self.mask_win.update_mask(mask_comb)
 
         self.btn_apply.setEnabled(True)
-        self.btn_toggle.setChecked(False); self.btn_toggle.setText("Show Original")
-        self.lbl_step.setText("Preview ready"); self.bar.setValue(100)
+        self.btn_toggle.setChecked(False); self.btn_toggle.setText(self.tr("Show Original"))
+        self.lbl_step.setText(self.tr("Preview ready")); self.bar.setValue(100)
         # Headless: apply immediately (exactly like clicking "Apply to Document")
         if self._headless:
             QTimer.singleShot(0, self._apply_to_doc)
@@ -561,7 +561,7 @@ class WaveScaleHDRDialogPro(QDialog):
             else:
                 self._doc.image = out
         except Exception as e:
-            QMessageBox.critical(self, "WaveScale HDR", f"Failed to write to document:\n{e}")
+            QMessageBox.critical(self, self.tr("WaveScale HDR"), self.tr("Failed to write to document:\n{0}").format(e))
             return
 
         # ── Build preset from current sliders ─────────────────────────
@@ -619,6 +619,6 @@ class WaveScaleHDRDialogPro(QDialog):
         hdr_mask = _mask_from_L(self._L_original, gamma=gamma)
         mask_comb = self._combine_with_doc_mask(hdr_mask)
         self.mask_win.setWindowTitle(
-            "HDR Mask (L × Active Mask)" if self._get_doc_active_mask_2d() is not None else "HDR Mask (L-based)"
+            self.tr("HDR Mask (L × Active Mask)") if self._get_doc_active_mask_2d() is not None else self.tr("HDR Mask (L-based)")
         )
         self.mask_win.update_mask(mask_comb)     

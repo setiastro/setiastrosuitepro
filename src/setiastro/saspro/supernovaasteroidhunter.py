@@ -159,7 +159,7 @@ class MinorBodyWorker(QObject):
     def run(self):
         try:
             # Kick off with a low percentage
-            self.progress.emit(0, "Minor-body search: preparing catalog query...")
+            self.progress.emit(0, self.tr("Minor-body search: preparing catalog query..."))
             bodies = self._owner._get_predicted_minor_bodies_for_field(
                 H_ast_max=self._owner.minor_H_ast_max,
                 H_com_max=self._owner.minor_H_com_max,
@@ -292,11 +292,11 @@ class ImagePreviewWindow(QDialog):
 
         # toolbar
         tb = QToolBar(self)
-        self.act_fit = QAction("Fit", self)
-        self.act_1to1 = QAction("1:1", self)
-        self.act_zoom_in = QAction("Zoom In", self)
-        self.act_zoom_out = QAction("Zoom Out", self)
-        self.act_push = QAction("Push to New View", self)
+        self.act_fit = QAction(self.tr("Fit"), self)
+        self.act_1to1 = QAction(self.tr("1:1"), self)
+        self.act_zoom_in = QAction(self.tr("Zoom In"), self)
+        self.act_zoom_out = QAction(self.tr("Zoom Out"), self)
+        self.act_push = QAction(self.tr("Push to New View"), self)
         # self.act_minor = QAction("Check Catalogued Minor Bodies in Field", self)
 
         self.act_zoom_in.setShortcut("Ctrl++")
@@ -343,7 +343,7 @@ class ImagePreviewWindow(QDialog):
     def _on_push(self):
         # Emit the anomaly-marked image
         self.pushed.emit(self._original, self.windowTitle())
-        QMessageBox.information(self, "Pushed", "New View Created.")
+        QMessageBox.information(self, self.tr("Pushed"), self.tr("New View Created."))
 
 
     def _on_minor_body_search(self):
@@ -361,7 +361,7 @@ class SupernovaAsteroidHunterDialog(QDialog):
                  image_manager=None, doc_manager=None,
                  supernova_path=None, wrench_path=None, spinner_path=None):
         super().__init__(parent)
-        self.setWindowTitle("Supernova / Asteroid Hunter")
+        self.setWindowTitle(self.tr("Supernova / Asteroid Hunter"))
         if supernova_path:
             self.setWindowIcon(QIcon(supernova_path))
         # keep icon path for previews
@@ -404,17 +404,17 @@ class SupernovaAsteroidHunterDialog(QDialog):
         layout = self.layout()
 
         # Instruction Label
-        instructions = QLabel(
+        instructions = QLabel(self.tr(
             "Select the reference image and search images. "
             "Then click Process to hunt for anomalies."
-        )
+        ))
         layout.addWidget(instructions)
 
         # --- Reference Image Selection ---
         ref_layout = QHBoxLayout()
         self.ref_line_edit = QLineEdit(self)
-        self.ref_line_edit.setPlaceholderText("No reference image selected")
-        self.ref_button = QPushButton("Select Reference Image", self)
+        self.ref_line_edit.setPlaceholderText(self.tr("No reference image selected"))
+        self.ref_button = QPushButton(self.tr("Select Reference Image"), self)
         self.ref_button.clicked.connect(self.selectReferenceImage)
         ref_layout.addWidget(self.ref_line_edit)
         ref_layout.addWidget(self.ref_button)
@@ -423,7 +423,7 @@ class SupernovaAsteroidHunterDialog(QDialog):
         # --- Search Images Selection ---
         search_layout = QHBoxLayout()
         self.search_list = QListWidget(self)
-        self.search_button = QPushButton("Select Search Images", self)
+        self.search_button = QPushButton(self.tr("Select Search Images"), self)
         self.search_button.clicked.connect(self.selectSearchImages)
         search_layout.addWidget(self.search_list)
         search_layout.addWidget(self.search_button)
@@ -431,13 +431,13 @@ class SupernovaAsteroidHunterDialog(QDialog):
 
         # --- Cosmetic Correction Checkbox ---
         self.cosmetic_checkbox = QCheckBox(
-            "Apply Cosmetic Correction before Preprocessing", self
+            self.tr("Apply Cosmetic Correction before Preprocessing"), self
         )
         layout.addWidget(self.cosmetic_checkbox)
 
         # --- Threshold Slider ---
         thresh_layout = QHBoxLayout()
-        self.thresh_label = QLabel("Anomaly Detection Threshold: 0.10", self)
+        self.thresh_label = QLabel(self.tr("Anomaly Detection Threshold: 0.10"), self)
         self.thresh_slider = QSlider(Qt.Orientation.Horizontal, self)
         self.thresh_slider.setMinimum(1)
         self.thresh_slider.setMaximum(50)    # Represents 0.01 to 0.50
@@ -449,19 +449,19 @@ class SupernovaAsteroidHunterDialog(QDialog):
 
         # --- Process Button ---
         self.process_button = QPushButton(
-            "Process (Cosmetic Correction, Preprocess, and Search)", self
+            self.tr("Process (Cosmetic Correction, Preprocess, and Search)"), self
         )
         self.process_button.clicked.connect(self.process)
         layout.addWidget(self.process_button)
 
         # --- Progress Labels ---
-        self.preprocess_progress_label = QLabel("Preprocessing progress: 0 / 0", self)
-        self.search_progress_label = QLabel("Processing progress: 0 / 0", self)
+        self.preprocess_progress_label = QLabel(self.tr("Preprocessing progress: 0 / 0"), self)
+        self.search_progress_label = QLabel(self.tr("Processing progress: 0 / 0"), self)
         layout.addWidget(self.preprocess_progress_label)
         layout.addWidget(self.search_progress_label)
 
         # -- Status label --
-        self.status_label = QLabel("Status: Idle", self)
+        self.status_label = QLabel(self.tr("Status: Idle"), self)
         layout.addWidget(self.status_label)
 
         # Minor-body progress bar (hidden by default)
@@ -472,7 +472,7 @@ class SupernovaAsteroidHunterDialog(QDialog):
         layout.addWidget(self.minor_progress)
 
         # --- New Instance Button ---
-        self.new_instance_button = QPushButton("New Instance", self)
+        self.new_instance_button = QPushButton(self.tr("New Instance"), self)
         self.new_instance_button.clicked.connect(self.newInstance)
         layout.addWidget(self.new_instance_button)
 
@@ -484,18 +484,18 @@ class SupernovaAsteroidHunterDialog(QDialog):
     def updateThreshold(self, value):
         threshold = value / 100.0  # e.g. slider value 10 becomes 0.10
         self.parameters["threshold"] = threshold
-        self.thresh_label.setText(f"Anomaly Detection Threshold: {threshold:.2f}")
+        self.thresh_label.setText(self.tr("Anomaly Detection Threshold: {0:.2f}").format(threshold))
 
     def selectReferenceImage(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, "Select Reference Image", "",
-                                                   "Images (*.png *.tif *.tiff *.fits *.fit *.xisf)")
+        file_path, _ = QFileDialog.getOpenFileName(self, self.tr("Select Reference Image"), "",
+                                                   self.tr("Images (*.png *.tif *.tiff *.fits *.fit *.xisf)"))
         if file_path:
             self.parameters["referenceImagePath"] = file_path
             self.ref_line_edit.setText(os.path.basename(file_path))
 
     def selectSearchImages(self):
-        file_paths, _ = QFileDialog.getOpenFileNames(self, "Select Search Images", "",
-                                                     "Images (*.png *.tif *.tiff *.fits *.fit *.xisf)")
+        file_paths, _ = QFileDialog.getOpenFileNames(self, self.tr("Select Search Images"), "",
+                                                     self.tr("Images (*.png *.tif *.tiff *.fits *.fit *.xisf)"))
         if file_paths:
             self.parameters["searchImagePaths"] = file_paths
             self.search_list.clear()
@@ -503,24 +503,24 @@ class SupernovaAsteroidHunterDialog(QDialog):
                 self.search_list.addItem(os.path.basename(path))
 
     def process(self):
-        self.status_label.setText("Process started...")
+        self.status_label.setText(self.tr("Process started..."))
         QApplication.processEvents()
 
         # If cosmetic correction is enabled, run it first
         if self.cosmetic_checkbox.isChecked():
-            self.status_label.setText("Running Cosmetic Correction...")
+            self.status_label.setText(self.tr("Running Cosmetic Correction..."))
             QApplication.processEvents()
             self.runCosmeticCorrectionIfNeeded()
 
-        self.status_label.setText("Preprocessing images...")
+        self.status_label.setText(self.tr("Preprocessing images..."))
         QApplication.processEvents()
         self.preprocessImages()
 
-        self.status_label.setText("Analyzing anomalies...")
+        self.status_label.setText(self.tr("Analyzing anomalies..."))
         QApplication.processEvents()
         self.runSearch()
 
-        self.status_label.setText("Process complete.")
+        self.status_label.setText(self.tr("Process complete."))
         QApplication.processEvents()
 
 
@@ -534,7 +534,9 @@ class SupernovaAsteroidHunterDialog(QDialog):
         for idx, image_path in enumerate(self.parameters["searchImagePaths"]):
             try:
                 # Update status label to show which image is being handled
-                self.status_label.setText(f"Cosmetic Correction: {idx+1}/{len(self.parameters['searchImagePaths'])} => {os.path.basename(image_path)}")
+                self.status_label.setText(self.tr("Cosmetic Correction: {0}/{1} => {2}").format(
+                    idx+1, len(self.parameters['searchImagePaths']), os.path.basename(image_path)
+                ))
                 QApplication.processEvents()
 
                 img, header, bit_depth, is_mono = load_image(image_path)
@@ -558,13 +560,13 @@ class SupernovaAsteroidHunterDialog(QDialog):
 
     def preprocessImages(self):
         # Update status label for reference image
-        self.status_label.setText("Preprocessing reference image...")
+        self.status_label.setText(self.tr("Preprocessing reference image..."))
         print("[Preprocessing] Preprocessing reference image...")
         QApplication.processEvents()
 
         ref_path = self.parameters["referenceImagePath"]
         if not ref_path:
-            QMessageBox.warning(self, "Error", "No reference image selected.")
+            QMessageBox.warning(self, self.tr("Error"), self.tr("No reference image selected."))
             return
 
         try:
@@ -623,11 +625,11 @@ class SupernovaAsteroidHunterDialog(QDialog):
             ref_processed = self.preprocessImage(ref_img, debug_prefix=debug_prefix_ref)
             self.preprocessed_reference = ref_processed
             self.preprocess_progress_label.setText(
-                "Preprocessing reference image... Done."
+                self.tr("Preprocessing reference image... Done.")
             )
 
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to preprocess reference image: {e}")
+            QMessageBox.critical(self, self.tr("Error"), self.tr("Failed to preprocess reference image: {0}").format(e))
             return
 
         # --- Preprocess search images ---
@@ -638,7 +640,9 @@ class SupernovaAsteroidHunterDialog(QDialog):
         for i, path in enumerate(search_paths):
             try:
                 self.status_label.setText(
-                    f"Preprocessing search image {i+1}/{total} => {os.path.basename(path)}"
+                    self.tr("Preprocessing search image {0}/{1} => {2}").format(
+                        i+1, total, os.path.basename(path)
+                    )
                 )
                 QApplication.processEvents()
 
@@ -653,14 +657,14 @@ class SupernovaAsteroidHunterDialog(QDialog):
                 self.preprocessed_search.append({"path": path, "image": processed})
 
                 self.preprocess_progress_label.setText(
-                    f"Preprocessing image {i+1} of {total}... Done."
+                    self.tr("Preprocessing image {0} of {1}... Done.").format(i+1, total)
                 )
                 QApplication.processEvents()
 
             except Exception as e:
                 print(f"Failed to preprocess {path}: {e}")
 
-        self.status_label.setText("All search images preprocessed.")
+        self.status_label.setText(self.tr("All search images preprocessed."))
         QApplication.processEvents()
 
     def _ensure_wcs(self, ref_path: str):
@@ -736,7 +740,7 @@ class SupernovaAsteroidHunterDialog(QDialog):
         False if they cancelled.
         """
         dlg = QDialog(self)
-        dlg.setWindowTitle("Minor-body Search Limits")
+        dlg.setWindowTitle(self.tr("Minor-body Search Limits"))
         layout = QVBoxLayout(dlg)
 
         row_layout = QGridLayout()
@@ -837,29 +841,29 @@ class SupernovaAsteroidHunterDialog(QDialog):
             print("[MinorBodies] prediction failed:", error)
             QMessageBox.critical(
                 self,
-                "Minor-body Search",
-                f"Minor-body prediction failed:\n{error}"
+                self.tr("Minor-body Search"),
+                self.tr("Minor-body prediction failed:\n{0}").format(error)
             )
-            self.status_label.setText("Minor-body search failed.")
+            self.status_label.setText(self.tr("Minor-body search failed."))
             return
 
         self.predicted_minor_bodies = bodies or []
 
         if not self.predicted_minor_bodies:
             self.status_label.setText(
-                "Minor-body search complete: no catalogued objects in this field "
-                "for the current magnitude limits."
+                self.tr("Minor-body search complete: no catalogued objects in this field "
+                        "for the current magnitude limits.")
             )
             QMessageBox.information(
                 self,
-                "Minor-body Search",
-                "No catalogued minor bodies (within the configured magnitude limits) "
-                "were found in this field."
+                self.tr("Minor-body Search"),
+                self.tr("No catalogued minor bodies (within the configured magnitude limits) "
+                        "were found in this field.")
             )
             return
 
         self.status_label.setText(
-            f"Minor-body search complete: {len(self.predicted_minor_bodies)} objects in field."
+            self.tr("Minor-body search complete: {0} objects in field.").format(len(self.predicted_minor_bodies))
         )
         QApplication.processEvents()
 
@@ -876,10 +880,10 @@ class SupernovaAsteroidHunterDialog(QDialog):
             else:
                 QMessageBox.information(
                     self,
-                    "Minor-body Search",
-                    "Minor bodies in field have been computed.\n\n"
-                    "Run the anomaly search (Process) to cross-match detections "
-                    "against the predicted objects."
+                    self.tr("Minor-body Search"),
+                    self.tr("Minor bodies in field have been computed.\n\n"
+                            "Run the anomaly search (Process) to cross-match detections "
+                            "against the predicted objects.")
                 )
         except Exception as e:
             print("[MinorBodies] cross-match failed:", e)
@@ -897,26 +901,26 @@ class SupernovaAsteroidHunterDialog(QDialog):
         if not ref_path:
             QMessageBox.warning(
                 self,
-                "Minor-body Search",
-                "No reference image selected.\n\n"
-                "Please select a reference image and run Process first."
+                self.tr("Minor-body Search"),
+                self.tr("No reference image selected.\n\n"
+                        "Please select a reference image and run Process first.")
             )
             return
 
         if self.preprocessed_reference is None:
             QMessageBox.warning(
                 self,
-                "Minor-body Search",
-                "Reference image has not been preprocessed yet.\n\n"
-                "Please click 'Process' before running the minor-body search."
+                self.tr("Minor-body Search"),
+                self.tr("Reference image has not been preprocessed yet.\n\n"
+                        "Please click 'Process' before running the minor-body search.")
             )
             return
 
         if self.settings is None:
             QMessageBox.warning(
                 self,
-                "Minor-body Search",
-                "Settings object is not available; cannot locate the minor-body database path."
+                self.tr("Minor-body Search"),
+                self.tr("Settings object is not available; cannot locate the minor-body database path.")
             )
             return
 

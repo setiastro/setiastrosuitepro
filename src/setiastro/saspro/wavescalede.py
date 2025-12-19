@@ -149,13 +149,13 @@ class DSEWorker(QObject):
 
     def run(self):
         try:
-            self.progress_update.emit("Analyzing dark structure…", 20)
+            self.progress_update.emit(self.tr("Analyzing dark structure…"), 20)
             out, mask = compute_wavescale_dse(
                 self.image, self.n_scales, self.boost, self.gamma,
                 self.iterations, self.base_kernel,
                 external_mask=self.external_mask             # ← NEW
             )
-            self.progress_update.emit("Finalizing…", 95)
+            self.progress_update.emit(self.tr("Finalizing…"), 95)
             self.finished.emit(out, mask)
         except Exception as e:
             print("WaveScale DSE error:", e)
@@ -167,7 +167,7 @@ class DSEWorker(QObject):
 class _MaskWindow(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Dark Mask")
+        self.setWindowTitle(self.tr("Dark Mask"))
         self.setMinimumSize(300, 300)
         self.resize(400, 400)
         v = QVBoxLayout(self)
@@ -194,7 +194,7 @@ class _MaskWindow(QDialog):
 class WaveScaleDarkEnhancerDialogPro(QDialog):
     def __init__(self, parent, doc, icon_path: str | None = None):
         super().__init__(parent)
-        self.setWindowTitle("WaveScale Dark Enhancer")
+        self.setWindowTitle(self.tr("WaveScale Dark Enhancer"))
         if icon_path:
             try: self.setWindowIcon(QIcon(icon_path))
             except Exception as e:
@@ -243,7 +243,7 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
         self.zoom_max    = 5.0
 
         # controls
-        self.grp = QGroupBox("Dark Enhancer Controls")
+        self.grp = QGroupBox(self.tr("Dark Enhancer Controls"))
         form = QFormLayout(self.grp)
 
         self.s_scales = QSlider(Qt.Orientation.Horizontal); self.s_scales.setRange(2, 10);  self.s_scales.setValue(6)
@@ -251,40 +251,40 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
         self.s_gamma  = QSlider(Qt.Orientation.Horizontal); self.s_gamma.setRange(10, 1000); self.s_gamma.setValue(100)  # 0.10..10.00
         self.s_iters  = QSlider(Qt.Orientation.Horizontal); self.s_iters.setRange(1, 10);   self.s_iters.setValue(2)
 
-        form.addRow("Number of Scales:", self.s_scales)
-        form.addRow("Boost Factor:", self.s_boost)
-        form.addRow("Mask Gamma:", self.s_gamma)
-        form.addRow("Iterations:", self.s_iters)
+        form.addRow(self.tr("Number of Scales:"), self.s_scales)
+        form.addRow(self.tr("Boost Factor:"), self.s_boost)
+        form.addRow(self.tr("Mask Gamma:"), self.s_gamma)
+        form.addRow(self.tr("Iterations:"), self.s_iters)
 
         row = QHBoxLayout()
-        self.btn_preview = QPushButton("Preview")
-        self.btn_toggle  = QPushButton("Show Original"); self.btn_toggle.setCheckable(True)
+        self.btn_preview = QPushButton(self.tr("Preview"))
+        self.btn_toggle  = QPushButton(self.tr("Show Original")); self.btn_toggle.setCheckable(True)
         row.addWidget(self.btn_preview); row.addWidget(self.btn_toggle)
         form.addRow(row)
 
         # progress
-        self.prog_grp = QGroupBox("Progress")
+        self.prog_grp = QGroupBox(self.tr("Progress"))
         vprog = QVBoxLayout(self.prog_grp)
-        self.lbl_step = QLabel("Idle")
+        self.lbl_step = QLabel(self.tr("Idle"))
         self.bar = QProgressBar(); self.bar.setRange(0, 100); self.bar.setValue(0)
         vprog.addWidget(self.lbl_step); vprog.addWidget(self.bar)
 
         # bottom
         bot = QHBoxLayout()
-        self.btn_apply = QPushButton("Apply to Document"); self.btn_apply.setEnabled(False)
-        self.btn_reset = QPushButton("Reset")
-        self.btn_close = QPushButton("Close")
+        self.btn_apply = QPushButton(self.tr("Apply to Document")); self.btn_apply.setEnabled(False)
+        self.btn_reset = QPushButton(self.tr("Reset"))
+        self.btn_close = QPushButton(self.tr("Close"))
         bot.addStretch(1); bot.addWidget(self.btn_apply); bot.addWidget(self.btn_reset); bot.addWidget(self.btn_close)
 
         # layout
         main = QVBoxLayout(self)
         main.addWidget(self.scroll)
 
-        zoom_box = QGroupBox("Zoom Controls")
+        zoom_box = QGroupBox(self.tr("Zoom Controls"))
         zr = QHBoxLayout(zoom_box)
-        self.btn_zin  = QPushButton("Zoom In")
-        self.btn_zout = QPushButton("Zoom Out")
-        self.btn_fit  = QPushButton("Fit to Preview")
+        self.btn_zin  = QPushButton(self.tr("Zoom In"))
+        self.btn_zout = QPushButton(self.tr("Zoom Out"))
+        self.btn_fit  = QPushButton(self.tr("Fit to Preview"))
         zr.addWidget(self.btn_zin); zr.addWidget(self.btn_zout); zr.addWidget(self.btn_fit)
         main.addWidget(zoom_box)
 
@@ -408,10 +408,10 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
     # --- toggle ---
     def _toggle(self):
         if self.btn_toggle.isChecked():
-            self.btn_toggle.setText("Show Preview")
+            self.btn_toggle.setText(self.tr("Show Preview"))
             self._set_pix(self.original)
         else:
-            self.btn_toggle.setText("Show Original")
+            self.btn_toggle.setText(self.tr("Show Original"))
             self._set_pix(self.preview)
 
     # --- reset ---
@@ -422,9 +422,9 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
         self.s_iters.setValue(2)
         self.preview = self.original.copy()
         self._set_pix(self.preview)
-        self.lbl_step.setText("Idle"); self.bar.setValue(0)
+        self.lbl_step.setText(self.tr("Idle")); self.bar.setValue(0)
         self.btn_apply.setEnabled(False)
-        self.btn_toggle.setChecked(False); self.btn_toggle.setText("Show Original")
+        self.btn_toggle.setChecked(False); self.btn_toggle.setText(self.tr("Show Original"))
         self._update_mask_only()
 
     # --- zoom + Ctrl+Wheel ---
@@ -467,7 +467,7 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
                                 self.base_kernel, mgamma)
         mask_comb = self._combine_with_doc_mask(algo_mask)
         self.mask_win.setWindowTitle(
-            "Dark Mask (Algo × Active Mask)" if self._get_doc_active_mask_2d() is not None else "Dark Mask"
+            self.tr("Dark Mask (Algo × Active Mask)") if self._get_doc_active_mask_2d() is not None else self.tr("Dark Mask")
         )
         self.mask_win.set_mask(mask_comb)
     # --- threaded preview ---
@@ -498,7 +498,7 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
     def _on_finished(self, out: np.ndarray, mask: np.ndarray):
         self.btn_preview.setEnabled(True)
         if out is None:
-            QMessageBox.critical(self, "WaveScale Dark Enhancer", "Processing failed.")
+            QMessageBox.critical(self, self.tr("WaveScale Dark Enhancer"), self.tr("Processing failed."))
             return
 
         # Respect the document mask
@@ -520,8 +520,8 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
         self._set_pix(self.preview)
         self.mask_win.set_mask(mask)
         self.btn_apply.setEnabled(True)
-        self.btn_toggle.setChecked(False); self.btn_toggle.setText("Show Original")
-        self.lbl_step.setText("Preview ready"); self.bar.setValue(100)
+        self.btn_toggle.setChecked(False); self.btn_toggle.setText(self.tr("Show Original"))
+        self.lbl_step.setText(self.tr("Preview ready")); self.bar.setValue(100)
 
     # --- apply back to doc ---
     # --- apply back to doc ---
@@ -541,7 +541,7 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
             else:
                 self._doc.image = out
         except Exception as e:
-            QMessageBox.critical(self, "WaveScale Dark Enhancer", f"Failed to write to document:\n{e}")
+            QMessageBox.critical(self, self.tr("WaveScale Dark Enhancer"), self.tr("Failed to write to document:\n{0}").format(e))
             return
 
         # ── Build preset from current sliders ─────────────────────────
@@ -615,7 +615,8 @@ def install_wavescale_dark_enhancer(main_window: QMainWindow,
             if docman and hasattr(docman, "current_document"):
                 doc = docman.current_document()
             if doc is None or getattr(doc, "image", None) is None:
-                QMessageBox.warning(main_window, "WaveScale Dark Enhancer", "No active image.")
+                from PyQt6.QtCore import QCoreApplication
+                QMessageBox.warning(main_window, QCoreApplication.translate("WaveScaleDarkEnhancerDialogPro", "WaveScale Dark Enhancer"), QCoreApplication.translate("WaveScaleDarkEnhancerDialogPro", "No active image."))
                 return
             dlg = WaveScaleDarkEnhancerDialogPro(main_window, doc, icon_path=dse_icon_path)
             dlg.exec()

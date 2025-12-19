@@ -9,7 +9,7 @@ from .wavescalede import compute_wavescale_dse
 class WaveScaleDSEPresetDialog(QDialog):
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("WaveScale Dark Enhancer — Preset")
+        self.setWindowTitle(self.tr("WaveScale Dark Enhancer — Preset"))
         p = dict(initial or {})
         f = QFormLayout(self)
 
@@ -33,10 +33,10 @@ class WaveScaleDSEPresetDialog(QDialog):
         self.iters.setRange(1, 10)
         self.iters.setValue(int(p.get("iterations", 2)))
 
-        f.addRow("Number of Scales:", self.n_scales)
-        f.addRow("Boost Factor:", self.boost)
-        f.addRow("Mask Gamma:", self.gamma)
-        f.addRow("Iterations:", self.iters)
+        f.addRow(self.tr("Number of Scales:"), self.n_scales)
+        f.addRow(self.tr("Boost Factor:"), self.boost)
+        f.addRow(self.tr("Mask Gamma:"), self.gamma)
+        f.addRow(self.tr("Iterations:"), self.iters)
 
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self)
         btns.accepted.connect(self.accept); btns.rejected.connect(self.reject)
@@ -101,7 +101,8 @@ def run_wavescalede_via_preset(main, preset: dict | None = None, target_doc=None
 
     main, doc, _dm = normalize_headless_main(main, target_doc)
     if doc is None or getattr(doc, "image", None) is None:
-        QMessageBox.warning(main or None, "...", "Load an image first.")
+        from PyQt6.QtCore import QCoreApplication
+        QMessageBox.warning(main or None, QCoreApplication.translate("WaveScaleDSEPresetDialog", "WaveScale Dark Enhancer"), QCoreApplication.translate("WaveScaleDSEPresetDialog", "Load an image first."))
         return
 
     # pull & normalize image like the dialog
@@ -174,7 +175,8 @@ def run_wavescalede_via_preset(main, preset: dict | None = None, target_doc=None
         else:
             doc.image = result
     except Exception as e:
-        QMessageBox.critical(main, "WaveScale Dark Enhancer", f"Failed to write to document:\n{e}")
+        from PyQt6.QtCore import QCoreApplication
+        QMessageBox.critical(main, QCoreApplication.translate("WaveScaleDSEPresetDialog", "WaveScale Dark Enhancer"), QCoreApplication.translate("WaveScaleDSEPresetDialog", "Failed to write to document:\n{0}").format(e))
         return
 
 

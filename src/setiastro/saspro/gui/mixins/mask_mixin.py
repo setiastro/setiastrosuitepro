@@ -32,7 +32,7 @@ class MaskMixin:
         doc = getattr(vw, "document", None)
         has_mask = bool(doc and getattr(doc, "active_mask_id", None))
         if not has_mask:
-            QMessageBox.information(self, "Mask Overlay", "No active mask on this image.")
+            QMessageBox.information(self, self.tr("Mask Overlay"), self.tr("No active mask on this image."))
             return
         vw.show_mask_overlay = True
         # ensure visuals are up-to-date immediately
@@ -94,7 +94,7 @@ class MaskMixin:
         
         doc = self._current_document()
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.information(self, "No image", "Open an image first.")
+            QMessageBox.information(self, self.tr("No image"), self.tr("Open an image first."))
             return
         created = create_mask_and_attach(self, doc)
         # Optional toast/log
@@ -200,12 +200,12 @@ class MaskMixin:
         """Show dialog to apply a mask from another document."""
         target_doc = self._active_doc()
         if not target_doc:
-            QMessageBox.information(self, "Mask", "No active document.")
+            QMessageBox.information(self, self.tr("Mask"), self.tr("No active document."))
             return
 
         candidates = self._list_candidate_mask_sources(exclude_doc=target_doc)
         if not candidates:
-            QMessageBox.information(self, "Mask", "Open another image to use as a mask.")
+            QMessageBox.information(self, self.tr("Mask"), self.tr("Open another image to use as a mask."))
             return
 
         # If there are multiple, ask which one to use
@@ -215,8 +215,8 @@ class MaskMixin:
         else:
             from PyQt6.QtWidgets import QInputDialog
             names = [f"{i + 1}. {d.display_name()}" for i, d in enumerate(candidates)]
-            choice, ok = QInputDialog.getItem(self, "Choose Mask Image",
-                                              "Use this image as mask:", names, 0, False)
+            choice, ok = QInputDialog.getItem(self, self.tr("Choose Mask Image"),
+                                              self.tr("Use this image as mask:"), names, 0, False)
             if not ok:
                 return
             idx = names.index(choice)
@@ -286,7 +286,7 @@ class MaskMixin:
             return
         mid = getattr(doc, "active_mask_id", None)
         if not mid:
-            QMessageBox.information(self, "Mask", "No active mask to remove.")
+            QMessageBox.information(self, self.tr("Mask"), self.tr("No active mask to remove."))
             return
         try:
             doc.remove_mask(mid)
@@ -347,7 +347,7 @@ class MaskMixin:
 
         if src_doc is None:
             print(f"[MainWindow] _handle_mask_drop: no src_doc for ptr={src_ptr}")
-            QMessageBox.warning(self, "Mask", "Could not resolve mask document.")
+            QMessageBox.warning(self, self.tr("Mask"), self.tr("Could not resolve mask document."))
             return
 
         # --- 2) Resolve target view / doc ----------------------------------

@@ -91,7 +91,7 @@ class MorphologyDialogPro(QDialog):
 
     def __init__(self, parent, doc, icon: QIcon | None = None, initial: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Morphological Operations")
+        self.setWindowTitle(self.tr("Morphological Operations"))
         if icon:
             try: self.setWindowIcon(icon)
             except Exception as e:
@@ -109,7 +109,7 @@ class MorphologyDialogPro(QDialog):
         v = QVBoxLayout(self)
 
         # ---- Params (unchanged) ----
-        grp = QGroupBox("Morphological Parameters")
+        grp = QGroupBox(self.tr("Morphological Parameters"))
         grid = QGridLayout(grp)
         self.cb_op = QComboBox(); self.cb_op.addItems(self.OPS)
         self.sp_kernel = QSpinBox(); self.sp_kernel.setRange(1, 31); self.sp_kernel.setSingleStep(2)
@@ -125,9 +125,9 @@ class MorphologyDialogPro(QDialog):
         self.sp_kernel.valueChanged.connect(self._debounce)
         self.sp_iter.valueChanged.connect(self._debounce)
 
-        grid.addWidget(QLabel("Operation:"), 0, 0); grid.addWidget(self.cb_op, 0, 1, 1, 2)
-        grid.addWidget(QLabel("Kernel size:"), 1, 0); grid.addWidget(self.sp_kernel, 1, 1)
-        grid.addWidget(QLabel("Iterations:"), 2, 0); grid.addWidget(self.sp_iter, 2, 1)
+        grid.addWidget(QLabel(self.tr("Operation:")), 0, 0); grid.addWidget(self.cb_op, 0, 1, 1, 2)
+        grid.addWidget(QLabel(self.tr("Kernel size:")), 1, 0); grid.addWidget(self.sp_kernel, 1, 1)
+        grid.addWidget(QLabel(self.tr("Iterations:")), 2, 0); grid.addWidget(self.sp_iter, 2, 1)
         v.addWidget(grp)
 
         # ---- Preview with zoom/pan ----
@@ -158,9 +158,9 @@ class MorphologyDialogPro(QDialog):
 
         # ---- Buttons (unchanged) ----
         row = QHBoxLayout()
-        btn_apply = QPushButton("Apply");  btn_apply.clicked.connect(self._apply)
-        btn_reset = QPushButton("Reset");  btn_reset.clicked.connect(self._reset)
-        btn_cancel= QPushButton("Cancel"); btn_cancel.clicked.connect(self.reject)
+        btn_apply = QPushButton(self.tr("Apply"));  btn_apply.clicked.connect(self._apply)
+        btn_reset = QPushButton(self.tr("Reset"));  btn_reset.clicked.connect(self._reset)
+        btn_cancel= QPushButton(self.tr("Cancel")); btn_cancel.clicked.connect(self.reject)
         row.addStretch(1); row.addWidget(btn_apply); row.addWidget(btn_reset); row.addWidget(btn_cancel)
         v.addLayout(row)
 

@@ -94,14 +94,14 @@ class PreviewPane(QWidget):
         self.zoom_slider.setValue(100)
         self.zoom_slider.valueChanged.connect(self.on_zoom_changed)
 
-        self.zoom_in_btn  = themed_toolbtn("zoom-in", "Zoom In")
-        self.zoom_out_btn = themed_toolbtn("zoom-out", "Zoom Out")
-        self.fit_btn      = themed_toolbtn("zoom-fit-best", "Fit to Preview")
+        self.zoom_in_btn  = themed_toolbtn("zoom-in", self.tr("Zoom In"))
+        self.zoom_out_btn = themed_toolbtn("zoom-out", self.tr("Zoom Out"))
+        self.fit_btn      = themed_toolbtn("zoom-fit-best", self.tr("Fit to Preview"))
         self.zoom_in_btn.clicked .connect(lambda: self.adjust_zoom(10))
         self.zoom_out_btn.clicked.connect(lambda: self.adjust_zoom(-10))
         self.fit_btn.clicked .connect(self.fit_to_view)        
 
-        self.stretch_btn  = QPushButton("AutoStretch")
+        self.stretch_btn  = QPushButton(self.tr("AutoStretch"))
         self.stretch_btn.clicked.connect(self.toggle_stretch)
 
         zl = QHBoxLayout()
@@ -632,14 +632,14 @@ class TiltDialog(QDialog):
             min_d, max_d = min(corner_deltas), max(corner_deltas)
 
             # 2) now build a more meaningful label:
-            range_label = QLabel(f"Tilt span: {min_d:.1f} µm … {max_d:.1f} µm")            
+            range_label = QLabel(self.tr("Tilt span: {0:.1f} µm … {1:.1f} µm").format(min_d, max_d))            
             for name, (x, y) in corners.items():
                 # how far above/below the center plane
                 delta = a*(x - cx) + b*(y - cy)
                 rows.append((name, f"{delta:.1f}"))
 
             table = QTableWidget(len(rows), 2, self)
-            table.setHorizontalHeaderLabels(["Corner", "Δ µm"])
+            table.setHorizontalHeaderLabels([self.tr("Corner"), self.tr("Δ µm")])
             # hide the vertical header
             table.verticalHeader().setVisible(False)
             for i, (name, val) in enumerate(rows):
@@ -653,7 +653,7 @@ class TiltDialog(QDialog):
         layout.addWidget(range_label,     0)  # stretch = 0
         if table:
             layout.addWidget(table,       0)
-        close_btn = QPushButton("Close", self)
+        close_btn = QPushButton(self.tr("Close"), self)
         close_btn.clicked.connect(self.accept)
         layout.addWidget(close_btn,       0)
 
@@ -897,9 +897,9 @@ class SurfaceDialog(QDialog):
         h.addWidget(view, 1)
         h.addWidget(lbl_cb, 0)
 
-        btn = QPushButton("Close")
+        btn = QPushButton(self.tr("Close"))
         btn.clicked.connect(self.accept)
-        lbl_span = QLabel(f"Span: {vmin:.2f} … {vmax:.2f} {units}")
+        lbl_span = QLabel(self.tr("Span: {0:.2f} … {1:.2f} {2}").format(vmin, vmax, units))
 
         v = QVBoxLayout(self)
         v.addLayout(h)
@@ -1057,7 +1057,7 @@ class DistortionGridDialog(QDialog):
                 amplify: float    = 20.0,
                 parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Astrometric Distortion & Histogram")
+        self.setWindowTitle(self.tr("Astrometric Distortion & Histogram"))
 
         # — 1) detect stars —
         gray = img.mean(-1).astype(np.float32) if img.ndim==3 else img.astype(np.float32)
@@ -1065,7 +1065,7 @@ class DistortionGridDialog(QDialog):
         bkg  = sep.Background(data)
         stars = sep.extract(data - bkg.back(), thresh=5.0, err=bkg.globalrms)
         if stars is None or len(stars) < 10:
-            QMessageBox.warning(self, "Distortion", "Not enough stars found.")
+            QMessageBox.warning(self, self.tr("Distortion"), self.tr("Not enough stars found."))
             self.reject()
             return
 
@@ -1098,7 +1098,7 @@ class DistortionGridDialog(QDialog):
         label_font = QFont("Arial", 12, QFont.Weight.Bold)
 
         # title above the grid
-        title = QLabel("Astrometric Distortion Grid")
+        title = QLabel(self.tr("Astrometric Distortion Grid"))
         title.setFont(QFont("Arial", 16, QFont.Weight.Bold))
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setStyleSheet("color: white;")
@@ -1163,9 +1163,9 @@ class DistortionGridDialog(QDialog):
         canvas = FigureCanvas(fig)
         ax     = fig.add_subplot(111)
         ax.hist(disp_star_arcsec, bins=30, edgecolor='black')
-        ax.set_xlabel("Distortion (″)")
-        ax.set_ylabel("Number of stars")
-        ax.set_title("Residual histogram")
+        ax.set_xlabel(self.tr("Distortion (″)"))
+        ax.set_ylabel(self.tr("Number of stars"))
+        ax.set_title(self.tr("Residual histogram"))
         fig.tight_layout()
 
         # side-by-side layout
@@ -1174,7 +1174,7 @@ class DistortionGridDialog(QDialog):
         hl.addWidget(canvas, 1)
 
         # close button
-        btn = QPushButton("Close")
+        btn = QPushButton(self.tr("Close"))
         btn.clicked.connect(self.accept)
 
         # final
@@ -1313,7 +1313,7 @@ def _arcsec_per_pix_from_header(hdr: fits.Header, fallback_px_um: float|None=Non
 class ImagePeekerDialogPro(QDialog):
     def __init__(self, parent, document, settings):
         super().__init__(parent)
-        self.setWindowTitle("Image Peeker")
+        self.setWindowTitle(self.tr("Image Peeker"))
         self.document = self._coerce_doc(document)   # <- ensure we hold a real doc
         self.settings = settings
         # status / progress line
@@ -1321,7 +1321,7 @@ class ImagePeekerDialogPro(QDialog):
         self.status_lbl.setStyleSheet("color:#bbb;")
 
 
-        self.params = QGroupBox("Grid parameters")
+        self.params = QGroupBox(self.tr("Grid parameters"))
         self.params.setMinimumWidth(180)
         self.params.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
         gl = QGridLayout(self.params)
@@ -1343,28 +1343,31 @@ class ImagePeekerDialogPro(QDialog):
         self.pixel_size_input.setValue(px); self.focal_length_input.setValue(fl); self.aperture_input.setValue(ap)
 
         row = 0
-        gl.addWidget(QLabel("Grid size:"), row, 0); gl.addWidget(self.grid_spin, row, 1); row += 1
-        gl.addWidget(QLabel("Panel size:"), row, 0)
+        gl.addWidget(QLabel(self.tr("Grid size:")), row, 0); gl.addWidget(self.grid_spin, row, 1); row += 1
+        gl.addWidget(QLabel(self.tr("Panel size:")), row, 0)
         pr = QHBoxLayout(); pr.addWidget(self.panel_slider, 1); pr.addWidget(self.panel_value_label)
         gl.addLayout(pr, row, 1); row += 1
-        gl.addWidget(QLabel("Separation:"), row, 0)
+        gl.addWidget(QLabel(self.tr("Separation:")), row, 0)
         sr = QHBoxLayout(); sr.addWidget(self.sep_slider, 1); sr.addWidget(self.sep_value_label)
         gl.addLayout(sr, row, 1); row += 1
-        gl.addWidget(QLabel("Pixel size (µm):"), row, 0); gl.addWidget(self.pixel_size_input, row, 1); row += 1
-        gl.addWidget(QLabel("Focal length (mm):"), row, 0); gl.addWidget(self.focal_length_input, row, 1); row += 1
-        gl.addWidget(QLabel("Aperture (mm):"), row, 0); gl.addWidget(self.aperture_input, row, 1); row += 1
+        gl.addWidget(QLabel(self.tr("Pixel size (µm):")), row, 0); gl.addWidget(self.pixel_size_input, row, 1); row += 1
+        gl.addWidget(QLabel(self.tr("Focal length (mm):")), row, 0); gl.addWidget(self.focal_length_input, row, 1); row += 1
+        gl.addWidget(QLabel(self.tr("Aperture (mm):")), row, 0); gl.addWidget(self.aperture_input, row, 1); row += 1
 
         # Right side
         from PyQt6.QtWidgets import QTabWidget
         self.preview_pane = PreviewPane()
         analysis_row = QHBoxLayout()
-        analysis_row.addWidget(QLabel("Analysis:"))
+        analysis_row.addWidget(QLabel(self.tr("Analysis:")))
         self.analysis_combo = QComboBox()
-        self.analysis_combo.addItems(["None", "Tilt Analysis", "Focal Plane Analysis", "Astrometric Distortion Analysis"])
+        self.analysis_combo.addItem(self.tr("None"), "None")
+        self.analysis_combo.addItem(self.tr("Tilt Analysis"), "Tilt Analysis")
+        self.analysis_combo.addItem(self.tr("Focal Plane Analysis"), "Focal Plane Analysis")
+        self.analysis_combo.addItem(self.tr("Astrometric Distortion Analysis"), "Astrometric Distortion Analysis")
         analysis_row.addWidget(self.analysis_combo); analysis_row.addStretch(1)
 
         btns = QHBoxLayout(); btns.addStretch(1)
-        ok_btn = QPushButton("Save Settings && Exit"); cancel_btn = QPushButton("Exit without Saving")
+        ok_btn = QPushButton(self.tr("Save Settings && Exit")); cancel_btn = QPushButton(self.tr("Exit without Saving"))
         btns.addWidget(ok_btn); btns.addWidget(cancel_btn)
 
         main = QHBoxLayout(self)
@@ -1381,7 +1384,8 @@ class ImagePeekerDialogPro(QDialog):
 
         QTimer.singleShot(0, self._refresh_mosaic)
 
-    def _set_busy(self, on: bool, text: str = "Processing…"):
+    def _set_busy(self, on: bool, text: str = ""):
+        if not text: text = self.tr("Processing…")
         self.status_lbl.setText(text if on else "")
         for w in (self.params, self.analysis_combo):
             w.setEnabled(not on)
@@ -1404,13 +1408,14 @@ class ImagePeekerDialogPro(QDialog):
 
 
     def _run_analysis(self, *_):
-        mode = self.analysis_combo.currentText()
-        if mode == "None":
+        mode_key = self.analysis_combo.currentData()
+        mode_disp = self.analysis_combo.currentText()
+        if mode_key == "None":
             self._set_busy(False, "")
             self._refresh_mosaic()
             return
-        self._set_busy(True, f"Running {mode}…")
-        QTimer.singleShot(0, lambda: self._run_analysis_dispatch(mode))
+        self._set_busy(True, self.tr("Running {0}…").format(mode_disp))
+        QTimer.singleShot(0, lambda: self._run_analysis_dispatch(mode_key))
 
     def _run_analysis_dispatch(self, mode: str):
         try:
@@ -1427,15 +1432,15 @@ class ImagePeekerDialogPro(QDialog):
                     arr, pixel_size_um=ps_um, focal_length_mm=fl_mm, aperture_mm=ap_mm,
                     sigma_clip=2.5, thresh_sigma=snr_th
                 )
-                TiltDialog("Sensor Tilt (µm)", norm_plane, (a,b,c), (H,W), ps_um, parent=self).show()
+                TiltDialog(self.tr("Sensor Tilt (µm)"), norm_plane, (a,b,c), (H,W), ps_um, parent=self).show()
 
             elif mode == "Focal Plane Analysis":
                 fwhm_heat, (mn_f, mx_f) = compute_fwhm_surface(arr, ps_um, thresh_sigma=snr_th, deg=3)
-                SurfaceDialog("FWHM Heatmap", fwhm_heat, mn_f, mx_f, "µm", "viridis", parent=self).show()
+                SurfaceDialog(self.tr("FWHM Heatmap"), fwhm_heat, mn_f, mx_f, "µm", "viridis", parent=self).show()
                 ecc_heat, (mn_e, mx_e) = compute_eccentricity_surface(arr, ps_um, thresh_sigma=snr_th, deg=3)
-                SurfaceDialog("Eccentricity Map", ecc_heat, mn_e, mx_e, "e = 1−b/a", "magma", parent=self).show()
+                SurfaceDialog(self.tr("Eccentricity Map"), ecc_heat, mn_e, mx_e, "e = 1−b/a", "magma", parent=self).show()
                 ori_heat, (mn_o, mx_o) = compute_orientation_surface(arr, thresh_sigma=snr_th, deg=3)
-                SurfaceDialog("Orientation Map", ori_heat, mn_o, mx_o, "rad", "hsv", parent=self).show()
+                SurfaceDialog(self.tr("Orientation Map"), ori_heat, mn_o, mx_o, "rad", "hsv", parent=self).show()
 
             elif mode == "Astrometric Distortion Analysis":
                 hdr = _header_from_meta(meta)
@@ -1446,7 +1451,7 @@ class ImagePeekerDialogPro(QDialog):
                         parent=self, doc=self._coerce_doc(self.document), settings=self.settings
                     )
                     if not ok:
-                        QMessageBox.warning(self, "Plate Solve", f"ASTAP/Astrometry failed:\n{hdr_or_err}")
+                        QMessageBox.warning(self, self.tr("Plate Solve"), self.tr("ASTAP/Astrometry failed:\n{0}").format(hdr_or_err))
                         return
 
                     # IMPORTANT: if solver returned a Header, store it
@@ -1465,22 +1470,22 @@ class ImagePeekerDialogPro(QDialog):
 
                 # Now WCS exists, but do we have SIP?
                 if hdr is None:
-                    QMessageBox.critical(self, "WCS Error", "Plate solve did not produce a readable WCS header.")
+                    QMessageBox.critical(self, self.tr("WCS Error"), self.tr("Plate solve did not produce a readable WCS header."))
                     return
 
                 has_sip = any(k.startswith("A_") for k in hdr.keys()) and any(k.startswith("B_") for k in hdr.keys())
                 if not has_sip:
                     QMessageBox.warning(
-                        self, "No Distortion Model",
-                        "This image has a valid WCS, but no SIP distortion terms (A_*, B_*).\n"
+                        self, self.tr("No Distortion Model"),
+                        self.tr("This image has a valid WCS, but no SIP distortion terms (A_*, B_*).\n"
                         "Astrometric distortion analysis requires a SIP-enabled solve.\n\n"
-                        "Re-solve with distortion fitting enabled in ASTAP."
+                        "Re-solve with distortion fitting enabled in ASTAP.")
                     )
                     return
 
                 asp = _arcsec_per_pix_from_header(hdr, fallback_px_um=ps_um, fallback_fl_mm=fl_mm)
                 if asp is None:
-                    QMessageBox.critical(self, "WCS Error", "Cannot determine pixel scale.")
+                    QMessageBox.critical(self, self.tr("WCS Error"), self.tr("Cannot determine pixel scale."))
                     return
 
                 DistortionGridDialog(
@@ -1526,7 +1531,7 @@ class ImagePeekerDialogPro(QDialog):
         self.sep_color_btn.setIcon(QIcon(pix))
 
     def _choose_sep_color(self):
-        col = QColorDialog.getColor(self._sep_color, self, "Choose separation color")
+        col = QColorDialog.getColor(self._sep_color, self, self.tr("Choose separation color"))
         if col.isValid():
             self._sep_color = col
             self._update_sep_color_button()
@@ -1554,7 +1559,7 @@ class ImagePeekerDialogPro(QDialog):
         # fetch the currently loaded image (you’ll adapt to your image_manager API)
         img = self.image_manager.current_qimage()
         if img is None:
-            QMessageBox.warning(self, "No image", "No image loaded to peek at!")
+            QMessageBox.warning(self, self.tr("No image"), self.tr("No image loaded to peek at!"))
             return
 
         mosaic = self._build_mosaic(img, n, panel_sz, sep, sep_col)

@@ -71,7 +71,7 @@ class UpdateMixin:
     def check_for_updates_now(self):
         """Check for updates interactively (show result to user)."""
         if self.statusBar():
-            self.statusBar().showMessage("Checking for updates...")
+            self.statusBar().showMessage(self.tr("Checking for updates..."))
         self._kick_update_check(interactive=True)
 
     def check_for_updates_startup(self):
@@ -109,8 +109,8 @@ class UpdateMixin:
                 if self.statusBar():
                     self.statusBar().showMessage("Update check failed.", 5000)
                 if interactive:
-                    QMessageBox.warning(self, "Update Check Failed",
-                                        f"Unable to check for updates.\n\n{err}")
+                    QMessageBox.warning(self, self.tr("Update Check Failed"),
+                                        self.tr("Unable to check for updates.\n\n{err}").replace("{err}", err))
                 else:
                     print(f"[updates] check failed: {err}")
                 return
@@ -122,8 +122,8 @@ class UpdateMixin:
                 if self.statusBar():
                     self.statusBar().showMessage("Update check failed (bad JSON).", 5000)
                 if interactive:
-                    QMessageBox.warning(self, "Update Check Failed",
-                                        f"Update JSON is invalid.\n\n{je}")
+                    QMessageBox.warning(self, self.tr("Update Check Failed"),
+                                        self.tr("Update JSON is invalid.\n\n{je}").replace("{je}", str(je)))
                 else:
                     print(f"[updates] bad JSON: {je}")
                 return
@@ -136,8 +136,8 @@ class UpdateMixin:
                 if self.statusBar():
                     self.statusBar().showMessage("Update check failed (no 'version').", 5000)
                 if interactive:
-                    QMessageBox.warning(self, "Update Check Failed",
-                                        "Update JSON missing the 'version' field.")
+                    QMessageBox.warning(self, self.tr("Update Check Failed"),
+                                        self.tr("Update JSON missing the 'version' field."))
                 else:
                     print("[updates] JSON missing 'version'")
                 return
@@ -148,13 +148,13 @@ class UpdateMixin:
 
             if available:
                 if self.statusBar():
-                    self.statusBar().showMessage(f"Update available: {latest_str}", 5000)
+                    self.statusBar().showMessage(self.tr("Update available: {0}").format(latest_str), 5000)
                 msg_box = QMessageBox(self)
                 msg_box.setIcon(QMessageBox.Icon.Information)
-                msg_box.setWindowTitle("Update Available")
-                msg_box.setText(f"A new version ({latest_str}) is available!")
+                msg_box.setWindowTitle(self.tr("Update Available"))
+                msg_box.setText(self.tr("A new version ({0}) is available!").format(latest_str))
                 if notes:
-                    msg_box.setInformativeText(f"Release Notes:\n{notes}")
+                    msg_box.setInformativeText(self.tr("Release Notes:\n{0}").format(notes))
                 msg_box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
                 msg_box.setDefaultButton(QMessageBox.StandardButton.Yes)
 
@@ -170,7 +170,7 @@ class UpdateMixin:
                         "Linux" if plat.startswith("linux") else "", ""
                     )
                     if not link:
-                        QMessageBox.warning(self, "Download", "No download link available for this platform.")
+                        QMessageBox.warning(self, self.tr("Download"), self.tr("No download link available for this platform."))
                         return
 
                     if plat.startswith("win"):
@@ -183,8 +183,8 @@ class UpdateMixin:
                 if self.statusBar():
                     self.statusBar().showMessage("You're up to date.", 3000)
                 if interactive:
-                    QMessageBox.information(self, "Up to Date",
-                                            "You're already running the latest version.")
+                    QMessageBox.information(self, self.tr("Up to Date"),
+                                            self.tr("You're already running the latest version."))
         finally:
             reply.deleteLater()
 
@@ -229,7 +229,7 @@ class UpdateMixin:
 
         reply.downloadProgress.connect(
             lambda rec, tot: self.statusBar().showMessage(
-                f"Downloading update... {rec / 1024:.1f} KB / {tot / 1024:.1f} KB" if tot > 0 else "Downloading update..."
+                self.tr("Downloading update... {0:.1f} KB / {1:.1f} KB").format(rec / 1024, tot / 1024) if tot > 0 else self.tr("Downloading update...")
             )
         )
 
@@ -244,8 +244,8 @@ class UpdateMixin:
         target_path = Path(reply.property("target_path"))
 
         if reply.error() != QNetworkReply.NetworkError.NoError:
-            QMessageBox.warning(self, "Update Failed",
-                                f"Could not download update:\n{reply.errorString()}")
+            QMessageBox.warning(self, self.tr("Update Failed"),
+                                self.tr("Could not download update:\n{0}").format(reply.errorString()))
             return
 
         # Write the .zip
@@ -254,8 +254,8 @@ class UpdateMixin:
             with open(target_path, "wb") as f:
                 f.write(data)
         except Exception as e:
-            QMessageBox.warning(self, "Update Failed",
-                                f"Could not save update to disk:\n{e}")
+            QMessageBox.warning(self, self.tr("Update Failed"),
+                                self.tr("Could not save update to disk:\n{0}").format(e))
             return
 
         self.statusBar().showMessage(f"Update downloaded to {target_path}", 5000)
@@ -267,8 +267,8 @@ class UpdateMixin:
                 with zipfile.ZipFile(target_path, "r") as zf:
                     zf.extractall(extract_dir)
             except Exception as e:
-                QMessageBox.warning(self, "Update Failed",
-                                    f"Could not extract update zip:\n{e}")
+                QMessageBox.warning(self, self.tr("Update Failed"),
+                                    self.tr("Could not extract update zip:\n{0}").format(e))
                 return
 
             # Look recursively for an .exe
@@ -277,7 +277,7 @@ class UpdateMixin:
                 QMessageBox.warning(
                     self,
                     "Update Failed",
-                    f"Downloaded ZIP did not contain an .exe installer.\nFolder: {extract_dir}"
+                    self.tr("Downloaded ZIP did not contain an .exe installer.\nFolder: {0}").format(extract_dir)
                 )
                 return
 
@@ -289,8 +289,8 @@ class UpdateMixin:
         # Ask to run
         ok = QMessageBox.question(
             self,
-            "Run Installer",
-            "The update has been downloaded.\n\nRun the installer now? (SAS will close.)",
+            self.tr("Run Installer"),
+            self.tr("The update has been downloaded.\n\nRun the installer now? (SAS will close.)"),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.Yes,
         )
@@ -301,8 +301,8 @@ class UpdateMixin:
         try:
             subprocess.Popen([str(installer_path)], shell=False)
         except Exception as e:
-            QMessageBox.warning(self, "Update Failed",
-                                f"Could not start installer:\n{e}")
+            QMessageBox.warning(self, self.tr("Update Failed"),
+                                self.tr("Could not start installer:\n{0}").format(e))
             return
 
         # Close app so the installer can overwrite files

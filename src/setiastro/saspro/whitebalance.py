@@ -194,7 +194,7 @@ class WhiteBalanceDialog(QDialog):
         self.doc = doc
         if icon:
             self.setWindowIcon(icon)
-        self.setWindowTitle("White Balance")
+        self.setWindowTitle(self.tr("White Balance"))
         self.resize(900, 600)
 
         self._build_ui()
@@ -212,29 +212,29 @@ class WhiteBalanceDialog(QDialog):
 
         # Type selector
         row = QHBoxLayout()
-        row.addWidget(QLabel("White Balance Type:"))
+        row.addWidget(QLabel(self.tr("White Balance Type:")))
         self.type_combo = QComboBox()
-        self.type_combo.addItems(["Star-Based", "Manual", "Auto"])
+        self.type_combo.addItems([self.tr("Star-Based"), self.tr("Manual"), self.tr("Auto")])
         row.addWidget(self.type_combo); row.addStretch()
         self.main_layout.addLayout(row)
 
         # Manual group
-        self.manual_group = QGroupBox("Manual Gains")
+        self.manual_group = QGroupBox(self.tr("Manual Gains"))
         g = QGridLayout(self.manual_group)
         self.r_spin = QDoubleSpinBox(); self._cfg_gain(self.r_spin, 1.0)
         self.g_spin = QDoubleSpinBox(); self._cfg_gain(self.g_spin, 1.0)
         self.b_spin = QDoubleSpinBox(); self._cfg_gain(self.b_spin, 1.0)
-        g.addWidget(QLabel("Red gain:"),   0, 0); g.addWidget(self.r_spin, 0, 1)
-        g.addWidget(QLabel("Green gain:"), 1, 0); g.addWidget(self.g_spin, 1, 1)
-        g.addWidget(QLabel("Blue gain:"),  2, 0); g.addWidget(self.b_spin, 2, 1)
+        g.addWidget(QLabel(self.tr("Red gain:")),   0, 0); g.addWidget(self.r_spin, 0, 1)
+        g.addWidget(QLabel(self.tr("Green gain:")), 1, 0); g.addWidget(self.g_spin, 1, 1)
+        g.addWidget(QLabel(self.tr("Blue gain:")),  2, 0); g.addWidget(self.b_spin, 2, 1)
         self.main_layout.addWidget(self.manual_group)
 
         # Star-based controls + preview
-        self.star_group = QGroupBox("Star-Based Settings")
+        self.star_group = QGroupBox(self.tr("Star-Based Settings"))
         sg = QVBoxLayout(self.star_group)
         # threshold slider
         thr_row = QHBoxLayout()
-        thr_row.addWidget(QLabel("Detection threshold (σ):"))
+        thr_row.addWidget(QLabel(self.tr("Detection threshold (σ):")))
         self.thr_slider = QSlider(Qt.Orientation.Horizontal)
         self.thr_slider.setMinimum(1); self.thr_slider.setMaximum(100)
         self.thr_slider.setValue(50); self.thr_slider.setTickInterval(10)
@@ -243,14 +243,14 @@ class WhiteBalanceDialog(QDialog):
         thr_row.addWidget(self.thr_slider); thr_row.addWidget(self.thr_label)
         sg.addLayout(thr_row)
 
-        self.chk_reuse = QCheckBox("Reuse cached star detections"); self.chk_reuse.setChecked(True)
+        self.chk_reuse = QCheckBox(self.tr("Reuse cached star detections")); self.chk_reuse.setChecked(True)
         sg.addWidget(self.chk_reuse)
 
-        self.chk_autostretch_overlay = QCheckBox("Autostretch overlay preview"); self.chk_autostretch_overlay.setChecked(True)
+        self.chk_autostretch_overlay = QCheckBox(self.tr("Autostretch overlay preview")); self.chk_autostretch_overlay.setChecked(True)
         sg.addWidget(self.chk_autostretch_overlay)
 
         # star count + image preview
-        self.star_count = QLabel("Detecting stars…")
+        self.star_count = QLabel(self.tr("Detecting stars..."))
         sg.addWidget(self.star_count)
 
         self.preview = QLabel(); self.preview.setMinimumSize(640, 360)
@@ -261,8 +261,8 @@ class WhiteBalanceDialog(QDialog):
         # Buttons
         btn_row = QHBoxLayout()
         btn_row.addStretch()
-        self.btn_apply = QPushButton("Apply")
-        self.btn_cancel = QPushButton("Cancel")
+        self.btn_apply = QPushButton(self.tr("Apply"))
+        self.btn_cancel = QPushButton(self.tr("Cancel"))
         btn_row.addWidget(self.btn_apply)
         btn_row.addWidget(self.btn_cancel)
         self.main_layout.addLayout(btn_row)
@@ -305,7 +305,7 @@ class WhiteBalanceDialog(QDialog):
                 img, threshold=thr, autostretch=auto,
                 reuse_cached_sources=reuse, return_star_colors=False
             )
-            self.star_count.setText(f"Detected {count} stars.")
+            self.star_count.setText(self.tr("Detected {0} stars.").format(count))
             # to pixmap
             h, w, _ = overlay.shape
             qimg = QImage((overlay * 255).astype(np.uint8).data, w, h, 3 * w, QImage.Format.Format_RGB888)
@@ -314,7 +314,7 @@ class WhiteBalanceDialog(QDialog):
                                                 Qt.TransformationMode.SmoothTransformation)
             self.preview.setPixmap(pm)
         except Exception as e:
-            self.star_count.setText("Detection failed.")
+            self.star_count.setText(self.tr("Detection failed."))
             self.preview.clear()
 
     # ---- apply ----------------------------------------------------------
@@ -446,11 +446,11 @@ class WhiteBalanceDialog(QDialog):
 
                 QMessageBox.information(
                     self,
-                    "White Balance",
-                    f"Star-Based WB applied.\nDetected {int(star_count)} stars.",
+                    self.tr("White Balance"),
+                    self.tr("Star-Based WB applied.\nDetected {0} stars.").format(int(star_count)),
                 )
                 self.accept()
 
         except Exception as e:
-            QMessageBox.critical(self, "White Balance", f"Failed to apply White Balance:\n{e}")
+            QMessageBox.critical(self, self.tr("White Balance"), self.tr("Failed to apply White Balance:\n{0}").format(e))
 

@@ -362,7 +362,7 @@ class SignatureInsertDialogPro(QDialog):
     """
     def __init__(self, parent, doc, icon: QIcon | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Signature / Insert")
+        self.setWindowTitle(self.tr("Signature / Insert"))
         if icon:
             try: self.setWindowIcon(icon)
             except Exception as e:

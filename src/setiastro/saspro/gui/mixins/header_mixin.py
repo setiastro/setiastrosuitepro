@@ -199,7 +199,7 @@ class HeaderMixin:
             # Fallback path: extract -> populate, all guarded.
             rows = self._extract_header_pairs(doc)
             if not rows:
-                self._clear_header_viewer("No header" if doc else "No image")
+                self._clear_header_viewer(self.tr("No header") if doc else self.tr("No image"))
             else:
                 self._populate_header_viewer(rows)
         except Exception as e:
@@ -245,7 +245,7 @@ class HeaderMixin:
                             out.append((str(k), str(v), ""))
                     return out
                 if fmt == "repr":
-                    return [("Header", str(snap.get("text", "")), "")]
+                    return [(self.tr("Header"), str(snap.get("text", "")), "")]
 
             # 2) Live header object(s) (can be astropy, dict, or random).
             hdr = (meta.get("original_header")
@@ -297,7 +297,7 @@ class HeaderMixin:
                 return out
 
             # Fallback: string repr
-            return [("Header", str(hdr), "")]
+            return [(self.tr("Header"), str(hdr), "")]
         except Exception as e:
             print("[header] extract suppressed:", e)
             return []
@@ -319,7 +319,7 @@ class HeaderMixin:
                 try:
                     w.setRowCount(0)
                     w.setColumnCount(3)
-                    w.setHorizontalHeaderLabels(["Key", "Value", "Comment"])
+                    w.setHorizontalHeaderLabels([self.tr("Key"), self.tr("Value"), self.tr("Comment")])
                     for r, (k, v, c) in enumerate(rows):
                         w.insertRow(r)
                         w.setItem(r, 0, QTableWidgetItem(k))
@@ -370,7 +370,7 @@ class HeaderMixin:
             if isinstance(w, QTableWidget):
                 w.setRowCount(0)
                 w.setColumnCount(3)
-                w.setHorizontalHeaderLabels(["Key", "Value", "Comment"])
+                w.setHorizontalHeaderLabels([self.tr("Key"), self.tr("Value"), self.tr("Comment")])
                 return
         except Exception:
             pass
@@ -421,7 +421,7 @@ class HeaderMixin:
     def _on_doc_removed_for_header_sync(self, doc):
         """If the removed doc was the active one, clear header."""
         if doc is self._active_doc():
-            self._clear_header_viewer("No image")
+            self._clear_header_viewer(self.tr("No image"))
             hv = getattr(self, "header_viewer", None)
             if hv and hasattr(hv, "set_document"):
                 try:

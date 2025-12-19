@@ -60,7 +60,7 @@ class _AstrobinIdDelegate(QStyledItemDelegate):
 
     def createEditor(self, parent, option, index):
         editor = QLineEdit(parent)
-        editor.setPlaceholderText("e.g. 4408")
+        editor.setPlaceholderText(self.tr("e.g. 4408"))
         editor.setValidator(QIntValidator(1, 999_999_999, editor))
         if self._completer is not None:
             editor.setCompleter(self._completer)
@@ -83,7 +83,7 @@ class FilterIdDialog(QDialog):
                  current_map: Optional[Dict[str, str]] = None,
                  offline_csv_default: Optional[str] = None):
         super().__init__(parent)
-        self.setWindowTitle("AstroBin Filter IDs")
+        self.setWindowTitle(self.tr("AstroBin Filter IDs"))
         self.settings = settings
         self._offline_csv_default = offline_csv_default
         base_names = sorted({f for f in (filters_in_data or []) if f and f != "Unknown"}, key=str.lower)
@@ -96,14 +96,14 @@ class FilterIdDialog(QDialog):
 
         # Help row
         help_row = QHBoxLayout()
-        help_label = QLabel("Edit filter names and their AstroBin numeric IDs.")
+        help_label = QLabel(self.tr("Edit filter names and their AstroBin numeric IDs."))
         help_btn = QToolButton(self)
         help_btn.setText("?")
-        help_btn.setToolTip("Open AstroBin Equipment Explorer (Filters)")
+        help_btn.setToolTip(self.tr("Open AstroBin Equipment Explorer (Filters)"))
         help_btn.clicked.connect(lambda: webbrowser.open(ASTROBIN_FILTER_URL))
 
         self.load_db_btn = QPushButton(self)
-        self.load_db_btn.setToolTip("Search or load the offline filters database.")
+        self.load_db_btn.setToolTip(self.tr("Search or load the offline filters database."))
         self.load_db_btn.clicked.connect(self._on_offline_action)
 
         help_row.addWidget(help_label)
@@ -115,7 +115,7 @@ class FilterIdDialog(QDialog):
         # Table
         self.table = QTableWidget(self)
         self.table.setColumnCount(2)
-        self.table.setHorizontalHeaderLabels(["Filter name", "AstroBin ID"])
+        self.table.setHorizontalHeaderLabels([self.tr("Filter name"), self.tr("AstroBin ID")])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -154,8 +154,8 @@ class FilterIdDialog(QDialog):
 
         # Row actions
         row_actions = QHBoxLayout()
-        self.btn_add = QPushButton("Add row");    self.btn_add.clicked.connect(self._add_row)
-        self.btn_del = QPushButton("Delete selected"); self.btn_del.clicked.connect(self._delete_selected_rows)
+        self.btn_add = QPushButton(self.tr("Add row"));    self.btn_add.clicked.connect(self._add_row)
+        self.btn_del = QPushButton(self.tr("Delete selected")); self.btn_del.clicked.connect(self._delete_selected_rows)
         row_actions.addWidget(self.btn_add); row_actions.addWidget(self.btn_del); row_actions.addStretch(1)
         root.addLayout(row_actions)
 
@@ -238,7 +238,7 @@ class FilterIdDialog(QDialog):
         return None
 
     def _update_offline_button_text(self):
-        self.load_db_btn.setText("Search offline DB…" if getattr(self, "_offline_rows", None) else "Load offline DB…")
+        self.load_db_btn.setText(self.tr("Search offline DB…") if getattr(self, "_offline_rows", None) else self.tr("Load offline DB…"))
 
     def _on_offline_action(self):
         if getattr(self, "_offline_rows", None):
@@ -250,7 +250,7 @@ class FilterIdDialog(QDialog):
             self._update_offline_button_text()
 
     def _browse_offline_db(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Select AstroBin Filters CSV", "", "CSV files (*.csv);;All files (*)")
+        path, _ = QFileDialog.getOpenFileName(self, self.tr("Select AstroBin Filters CSV"), "", self.tr("CSV files (*.csv);;All files (*)"))
         if not path:
             return
         self._load_offline_db(path)
@@ -302,16 +302,16 @@ class FilterIdDialog(QDialog):
 
     def _open_offline_search(self):
         if not getattr(self, "_offline_rows", None):
-            QMessageBox.information(self, "No DB", "Offline filters database not loaded yet.")
+            QMessageBox.information(self, self.tr("No DB"), self.tr("Offline filters database not loaded yet."))
             return
 
-        dlg = QDialog(self); dlg.setWindowTitle("Search AstroBin Filters (offline)")
+        dlg = QDialog(self); dlg.setWindowTitle(self.tr("Search AstroBin Filters (offline)"))
         v = QVBoxLayout(dlg)
-        q = QLineEdit(dlg); q.setPlaceholderText("Search ID, brand, or name…")
+        q = QLineEdit(dlg); q.setPlaceholderText(self.tr("Search ID, brand, or name…"))
         v.addWidget(q)
 
         tbl = QTableWidget(dlg); tbl.setColumnCount(3)
-        tbl.setHorizontalHeaderLabels(["ID", "Brand", "Name"])
+        tbl.setHorizontalHeaderLabels([self.tr("ID"), self.tr("Brand"), self.tr("Name")])
         hdr = tbl.horizontalHeader()
         hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
@@ -386,20 +386,20 @@ class AstrobinExportTab(QWidget):
 
         # LEFT
         left = QWidget(self); lyt = QVBoxLayout(left)
-        self.info_lbl = QLabel("Load FITS via 'Select Folder…' or 'Add Files…' to begin.")
+        self.info_lbl = QLabel(self.tr("Load FITS via 'Select Folder…' or 'Add Files…' to begin."))
         lyt.addWidget(self.info_lbl)
 
         btn_row = QHBoxLayout()
-        self.btn_open = QPushButton("Select Folder…"); self.btn_open.clicked.connect(self.open_directory)
-        self.btn_add_files = QPushButton("Add Files…"); self.btn_add_files.clicked.connect(self.open_files)
-        self.btn_clear = QPushButton("Clear"); self.btn_clear.clicked.connect(self.clear_images)
+        self.btn_open = QPushButton(self.tr("Select Folder…")); self.btn_open.clicked.connect(self.open_directory)
+        self.btn_add_files = QPushButton(self.tr("Add Files…")); self.btn_add_files.clicked.connect(self.open_files)
+        self.btn_clear = QPushButton(self.tr("Clear")); self.btn_clear.clicked.connect(self.clear_images)
         btn_row.addWidget(self.btn_open); btn_row.addWidget(self.btn_add_files); btn_row.addWidget(self.btn_clear)
         btn_row.addStretch(1)
         lyt.addLayout(btn_row)
 
         self.tree = QTreeWidget(self)
         self.tree.setColumnCount(1)
-        self.tree.setHeaderLabels(["Files (Object → Filter → Exposure)"])
+        self.tree.setHeaderLabels([self.tr("Files (Object → Filter → Exposure)")])
         hdr = self.tree.header()
         hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
         hdr.setStretchLastSection(False)
@@ -415,50 +415,50 @@ class AstrobinExportTab(QWidget):
         # RIGHT
         right = QWidget(self); rlyt = QVBoxLayout(right)
 
-        form_box = QGroupBox("Global inputs (used if FITS headers are missing/zero)")
+        form_box = QGroupBox(self.tr("Global inputs (used if FITS headers are missing/zero)"))
         grid = QGridLayout(form_box)
 
         # row 0
-        grid.addWidget(QLabel("f/number"), 0, 0)
-        self.fnum_edit = QLineEdit(self); self.fnum_edit.setPlaceholderText("e.g. 4.0")
+        grid.addWidget(QLabel(self.tr("f/number")), 0, 0)
+        self.fnum_edit = QLineEdit(self); self.fnum_edit.setPlaceholderText(self.tr("e.g. 4.0"))
         self.fnum_edit.setValidator(QDoubleValidator(0.0, 999.0, 2, self)); self.fnum_edit.textChanged.connect(self._recompute)
         grid.addWidget(self.fnum_edit, 0, 1)
 
-        grid.addWidget(QLabel("Darks (#)"), 0, 2)
+        grid.addWidget(QLabel(self.tr("Darks (#)")), 0, 2)
         self.darks_edit = QLineEdit(self); self._setup_int_line(self.darks_edit, 0, 999999)
         grid.addWidget(self.darks_edit, 0, 3)
 
-        grid.addWidget(QLabel("Flats (#)"), 0, 4)
+        grid.addWidget(QLabel(self.tr("Flats (#)")), 0, 4)
         self.flats_edit = QLineEdit(self); self._setup_int_line(self.flats_edit, 0, 999999)
         grid.addWidget(self.flats_edit, 0, 5)
 
         # row 1
-        grid.addWidget(QLabel("Flat-darks (#)"), 1, 0)
+        grid.addWidget(QLabel(self.tr("Flat-darks (#)")), 1, 0)
         self.flatdarks_edit = QLineEdit(self); self._setup_int_line(self.flatdarks_edit, 0, 999999)
         grid.addWidget(self.flatdarks_edit, 1, 1)
 
-        grid.addWidget(QLabel("Bias (#)"), 1, 2)
+        grid.addWidget(QLabel(self.tr("Bias (#)")), 1, 2)
         self.bias_edit = QLineEdit(self); self._setup_int_line(self.bias_edit, 0, 999999)
         grid.addWidget(self.bias_edit, 1, 3)
 
-        grid.addWidget(QLabel("Bortle"), 1, 4)
-        self.bortle_edit = QLineEdit(self); self.bortle_edit.setPlaceholderText("0–9")
+        grid.addWidget(QLabel(self.tr("Bortle")), 1, 4)
+        self.bortle_edit = QLineEdit(self); self.bortle_edit.setPlaceholderText(self.tr("0–9"))
         self.bortle_edit.setValidator(QIntValidator(0, 9, self)); self.bortle_edit.textChanged.connect(self._recompute)
         grid.addWidget(self.bortle_edit, 1, 5)
 
         # row 2
-        grid.addWidget(QLabel("Mean SQM"), 2, 0)
-        self.mean_sqm_edit = QLineEdit(self); self.mean_sqm_edit.setPlaceholderText("e.g. 21.30")
+        grid.addWidget(QLabel(self.tr("Mean SQM")), 2, 0)
+        self.mean_sqm_edit = QLineEdit(self); self.mean_sqm_edit.setPlaceholderText(self.tr("e.g. 21.30"))
         self.mean_sqm_edit.setValidator(QDoubleValidator(0.0, 25.0, 2, self)); self.mean_sqm_edit.textChanged.connect(self._recompute)
         grid.addWidget(self.mean_sqm_edit, 2, 1)
 
-        grid.addWidget(QLabel("Mean FWHM"), 2, 2)
-        self.mean_fwhm_edit = QLineEdit(self); self.mean_fwhm_edit.setPlaceholderText("e.g. 2.10")
+        grid.addWidget(QLabel(self.tr("Mean FWHM")), 2, 2)
+        self.mean_fwhm_edit = QLineEdit(self); self.mean_fwhm_edit.setPlaceholderText(self.tr("e.g. 2.10"))
         self.mean_fwhm_edit.setValidator(QDoubleValidator(0.0, 50.0, 2, self)); self.mean_fwhm_edit.textChanged.connect(self._recompute)
         grid.addWidget(self.mean_fwhm_edit, 2, 3)
 
-        self.noon_cb = QCheckBox("Group nights noon → noon (local time)")
-        self.noon_cb.setToolTip("Prevents splitting a single observing night at midnight.")
+        self.noon_cb = QCheckBox(self.tr("Group nights noon → noon (local time)"))
+        self.noon_cb.setToolTip(self.tr("Prevents splitting a single observing night at midnight."))
         self.noon_cb.setChecked(self.settings.value("astrobin_exporter/noon_to_noon", True, type=bool))
         self.noon_cb.toggled.connect(self._recompute)
         grid.addWidget(self.noon_cb, 2, 4, 1, 2)
@@ -468,10 +468,10 @@ class AstrobinExportTab(QWidget):
         # Filter mapping row
         map_row = QHBoxLayout()
         self.filter_summary = QLabel(self._filters_summary_text()); map_row.addWidget(self.filter_summary)
-        self.btn_edit_filters = QPushButton("Manage Filter IDs…"); self.btn_edit_filters.clicked.connect(self._edit_filters)
+        self.btn_edit_filters = QPushButton(self.tr("Manage Filter IDs…")); self.btn_edit_filters.clicked.connect(self._edit_filters)
         map_row.addWidget(self.btn_edit_filters)
         qmark = QToolButton(self); qmark.setText("?")
-        qmark.setToolTip("Open AstroBin Equipment Explorer (Filters)")
+        qmark.setToolTip(self.tr("Open AstroBin Equipment Explorer (Filters)"))
         qmark.clicked.connect(lambda: webbrowser.open(ASTROBIN_FILTER_URL))
         map_row.addWidget(qmark); map_row.addStretch(1)
         map_wrap = QWidget(self); map_wrap.setLayout(map_row)
@@ -481,8 +481,8 @@ class AstrobinExportTab(QWidget):
 
         # Aggregated table
         self.table = QTableWidget(self)
-        cols = ['date','filter','number','duration','gain','iso','binning','sensorCooling',
-                'fNumber','darks','flats','flatDarks','bias','bortle','meanSqm','meanFwhm','temperature']
+        cols = [self.tr('date'), self.tr('filter'), self.tr('number'), self.tr('duration'), self.tr('gain'), self.tr('iso'), self.tr('binning'), self.tr('sensorCooling'),
+                self.tr('fNumber'), self.tr('darks'), self.tr('flats'), self.tr('flatDarks'), self.tr('bias'), self.tr('bortle'), self.tr('meanSqm'), self.tr('meanFwhm'), self.tr('temperature')]
         self.table.setColumnCount(len(cols)); self.table.setHorizontalHeaderLabels(cols)
         hdr_tbl = self.table.horizontalHeader()
         hdr_tbl.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
@@ -499,8 +499,8 @@ class AstrobinExportTab(QWidget):
 
         # Actions
         act_row = QHBoxLayout()
-        self.btn_refresh = QPushButton("Recompute"); self.btn_refresh.clicked.connect(self._recompute)
-        self.btn_copy_csv = QPushButton("Copy CSV"); self.btn_copy_csv.clicked.connect(self._copy_csv_to_clipboard)
+        self.btn_refresh = QPushButton(self.tr("Recompute")); self.btn_refresh.clicked.connect(self._recompute)
+        self.btn_copy_csv = QPushButton(self.tr("Copy CSV")); self.btn_copy_csv.clicked.connect(self._copy_csv_to_clipboard)
         act_row.addWidget(self.btn_refresh); act_row.addWidget(self.btn_copy_csv); act_row.addStretch(1)
         rlyt.addLayout(act_row)
 
@@ -508,7 +508,7 @@ class AstrobinExportTab(QWidget):
         splitter.setSizes([360, 680])
         self.setLayout(root)
 
-        self.info_lbl.setText("Load FITS/XISF via 'Select Folder…' or 'Add Files…' to begin.")
+        self.info_lbl.setText(self.tr("Load FITS/XISF via 'Select Folder…' or 'Add Files…' to begin."))
 
     def _setup_int_line(self, line: QLineEdit, lo: int, hi: int):
         line.setValidator(QIntValidator(lo, hi, self))
@@ -558,11 +558,11 @@ class AstrobinExportTab(QWidget):
         self.file_paths.clear(); self.records.clear(); self.rows.clear()
         self.tree.blockSignals(True); self.tree.clear(); self.tree.blockSignals(False)
         self.table.setRowCount(0); self.csv_view.clear()
-        self.info_lbl.setText("Cleared. Load FITS via 'Select Folder…' or 'Add Files…' to begin.")
+        self.info_lbl.setText(self.tr("Cleared. Load FITS via 'Select Folder…' or 'Add Files…' to begin."))
 
     def open_directory(self):
         start = self._get_last_dir() or ""
-        directory = QFileDialog.getExistingDirectory(self, "Select Folder Containing FITS/XISF Files", start)
+        directory = QFileDialog.getExistingDirectory(self, self.tr("Select Folder Containing FITS/XISF Files"), start)
         if not directory: return
         self._save_last_dir(directory)
 
@@ -573,7 +573,7 @@ class AstrobinExportTab(QWidget):
                     paths.append(os.path.join(root, fn))
         paths.sort(key=self._natural_key)
         if not paths:
-            QMessageBox.information(self, "No Images", "No .fit/.fits/.xisf files found.")
+            QMessageBox.information(self, self.tr("No Images"), self.tr("No .fit/.fits/.xisf files found."))
             return
         self.file_paths = paths
         self._read_headers(); self._build_tree(); self._recompute()
@@ -581,14 +581,14 @@ class AstrobinExportTab(QWidget):
     def open_files(self):
         start = self._get_last_dir() or ""
         paths, _ = QFileDialog.getOpenFileNames(
-            self, "Select FITS/XISF Files", start, "FITS/XISF (*.fit *.fits *.xisf);;All Files (*)"
+            self, self.tr("Select FITS/XISF Files"), start, self.tr("FITS/XISF (*.fit *.fits *.xisf);;All Files (*)")
         )
         if not paths: return
         self._save_last_dir(os.path.dirname(paths[0]))
 
         new_paths = [p for p in paths if p not in self.file_paths]
         if not new_paths:
-            QMessageBox.information(self, "No New Files", "All selected files are already in the list.")
+            QMessageBox.information(self, self.tr("No New Files"), self.tr("All selected files are already in the list."))
             return
 
         self.file_paths = sorted(set(self.file_paths + new_paths), key=self._natural_key)
@@ -709,9 +709,9 @@ class AstrobinExportTab(QWidget):
                 print(f"[WARN] Failed to read {fp}: {e}")
                 bad += 1
 
-        msg = f"Loaded {ok} file(s)"
-        if bad: msg += f" ({bad} failed)"
-        if skipped_xisf: msg += f" — skipped {skipped_xisf} XISF (reader unavailable)"
+        msg = self.tr("Loaded {0} file(s)").format(ok)
+        if bad: msg += self.tr(" ({0} failed)").format(bad)
+        if skipped_xisf: msg += self.tr(" — skipped {0} XISF (reader unavailable)").format(skipped_xisf)
         self.info_lbl.setText(msg + ".")
 
     # ---------- helpers ----------
@@ -775,19 +775,19 @@ class AstrobinExportTab(QWidget):
             by_obj[obj][filt][exp] = lst
 
         for obj in sorted(by_obj, key=str.lower):
-            obj_item = QTreeWidgetItem([f"Object: {obj}"])
+            obj_item = QTreeWidgetItem([self.tr("Object: {0}").format(obj)])
             obj_item.setFlags(obj_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             obj_item.setCheckState(0, Qt.CheckState.Checked)
             self.tree.addTopLevelItem(obj_item); obj_item.setExpanded(True)
 
             for filt in sorted(by_obj[obj], key=str.lower):
-                filt_item = QTreeWidgetItem([f"Filter: {filt}"])
+                filt_item = QTreeWidgetItem([self.tr("Filter: {0}").format(filt)])
                 filt_item.setFlags(filt_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                 filt_item.setCheckState(0, Qt.CheckState.Checked)
                 obj_item.addChild(filt_item); filt_item.setExpanded(True)
 
                 for exp in sorted(by_obj[obj][filt].keys(), key=lambda e: str(e)):
-                    exp_item = QTreeWidgetItem([f"Exposure: {exp}"])
+                    exp_item = QTreeWidgetItem([self.tr("Exposure: {0}").format(exp)])
                     exp_item.setData(0, Qt.ItemDataRole.UserRole, float(exp))
                     exp_item.setFlags(exp_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                     exp_item.setCheckState(0, Qt.CheckState.Checked)
@@ -915,8 +915,8 @@ class AstrobinExportTab(QWidget):
         self._refresh_table(); self._refresh_csv_text()
 
     def _refresh_table(self):
-        cols = ['date','filter','number','duration','gain','iso','binning','sensorCooling',
-                'fNumber','darks','flats','flatDarks','bias','bortle','meanSqm','meanFwhm','temperature']
+        cols = [self.tr('date'), self.tr('filter'), self.tr('number'), self.tr('duration'), self.tr('gain'), self.tr('iso'), self.tr('binning'), self.tr('sensorCooling'),
+                self.tr('fNumber'), self.tr('darks'), self.tr('flats'), self.tr('flatDarks'), self.tr('bias'), self.tr('bortle'), self.tr('meanSqm'), self.tr('meanFwhm'), self.tr('temperature')]
         self.table.setRowCount(len(self.rows))
         self.table.setColumnCount(len(cols))
         self.table.setHorizontalHeaderLabels(cols)
@@ -945,10 +945,10 @@ class AstrobinExportTab(QWidget):
     def _copy_csv_to_clipboard(self):
         txt = self._rows_to_csv_str()
         if not txt.strip():
-            QMessageBox.information(self, "Nothing to copy", "There is no CSV content yet.")
+            QMessageBox.information(self, self.tr("Nothing to copy"), self.tr("There is no CSV content yet."))
             return
         QGuiApplication.clipboard().setText(txt)
-        QMessageBox.information(self, "Copied", "CSV copied to clipboard.")
+        QMessageBox.information(self, self.tr("Copied"), self.tr("CSV copied to clipboard."))
 
     # ---------- filter map ----------
     def _load_filter_map(self) -> Dict[str, str]:
@@ -972,7 +972,7 @@ class AstrobinExportTab(QWidget):
         return mapping
 
     def _filters_summary_text(self) -> str:
-        if not self._filter_map: return "No mappings set"
+        if not self._filter_map: return self.tr("No mappings set")
         pairs = sorted(self._filter_map.items(), key=lambda kv: kv[0].lower())
         return ", ".join(f"{k}→{v}" for k, v in pairs)
 
@@ -996,7 +996,7 @@ class AstrobinExportTab(QWidget):
 class AstrobinExporterDialog(QDialog):
     def __init__(self, parent=None, offline_filters_csv: Optional[str] = None):
         super().__init__(parent)
-        self.setWindowTitle("AstroBin Exporter")
+        self.setWindowTitle(self.tr("AstroBin Exporter"))
         self.resize(980, 640)
         v = QVBoxLayout(self)
         self.tab = AstrobinExportTab(self, offline_filters_csv=offline_filters_csv)

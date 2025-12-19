@@ -270,7 +270,7 @@ class CropDialogPro(QDialog):
 
     def __init__(self, parent, document):
         super().__init__(parent)
-        self.setWindowTitle("Crop Tool")
+        self.setWindowTitle(self.tr("Crop Tool"))
         self.doc = document
         self._rect_item: Optional[ResizableRotatableRectItem] = None
         self._pix_item: Optional[QGraphicsPixmapItem] = None
@@ -281,19 +281,19 @@ class CropDialogPro(QDialog):
         # ---------- layout ----------
         main = QVBoxLayout(self)
 
-        info = QLabel(
+        info = QLabel(self.tr(
             "• Click–drag to draw a crop\n"
             "• Drag corner handles to resize\n"
             "• Shift + drag on box to rotate"
-        ); info.setStyleSheet("color: gray; font-style: italic;")
+        )); info.setStyleSheet("color: gray; font-style: italic;")
         main.addWidget(info)
 
         # aspect row
         row = QHBoxLayout()
         row.addStretch(1)
-        row.addWidget(QLabel("Aspect Ratio:"))
+        row.addWidget(QLabel(self.tr("Aspect Ratio:")))
         self.cmb_ar = QComboBox()
-        self.cmb_ar.addItems(["Free", "Original", "1:1", "16:9", "9:16", "4:3"])
+        self.cmb_ar.addItems([self.tr("Free"), self.tr("Original"), "1:1", "16:9", "9:16", "4:3"])
         row.addWidget(self.cmb_ar)
         row.addStretch(1)
         main.addLayout(row)
@@ -301,7 +301,7 @@ class CropDialogPro(QDialog):
         # typed margins (pixels): Top, Right, Bottom, Left
         margins_row = QHBoxLayout()
         margins_row.addStretch(1)
-        margins_row.addWidget(QLabel("Margins (px):"))
+        margins_row.addWidget(QLabel(self.tr("Margins (px):")))
         self.sb_top    = QSpinBox(); self.sb_top.setSuffix(" px")
         self.sb_right  = QSpinBox(); self.sb_right.setSuffix(" px")
         self.sb_bottom = QSpinBox(); self.sb_bottom.setSuffix(" px")
@@ -312,16 +312,16 @@ class CropDialogPro(QDialog):
             sb.setRange(0, 1_000_000)
 
         # labels inline for clarity
-        margins_row.addWidget(QLabel("Top"))
+        margins_row.addWidget(QLabel(self.tr("Top")))
         margins_row.addWidget(self.sb_top)
         margins_row.addSpacing(8)
-        margins_row.addWidget(QLabel("Right"))
+        margins_row.addWidget(QLabel(self.tr("Right")))
         margins_row.addWidget(self.sb_right)
         margins_row.addSpacing(8)
-        margins_row.addWidget(QLabel("Bottom"))
+        margins_row.addWidget(QLabel(self.tr("Bottom")))
         margins_row.addWidget(self.sb_bottom)
         margins_row.addSpacing(8)
-        margins_row.addWidget(QLabel("Left"))
+        margins_row.addWidget(QLabel(self.tr("Left")))
         margins_row.addWidget(self.sb_left)
         margins_row.addStretch(1)
         main.addLayout(margins_row)
@@ -354,10 +354,10 @@ class CropDialogPro(QDialog):
         zoom_row = QHBoxLayout()
         zoom_row.addStretch(1)
 
-        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
-        self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
-        self.btn_zoom_100 = themed_toolbtn("zoom-original", "Zoom 100%")
-        self.btn_zoom_fit = themed_toolbtn("zoom-fit-best", "Fit to View")
+        self.btn_zoom_out = themed_toolbtn("zoom-out", self.tr("Zoom Out"))
+        self.btn_zoom_in  = themed_toolbtn("zoom-in", self.tr("Zoom In"))
+        self.btn_zoom_100 = themed_toolbtn("zoom-original", self.tr("Zoom 100%"))
+        self.btn_zoom_fit = themed_toolbtn("zoom-fit-best", self.tr("Fit to View"))
 
         for b in (self.btn_zoom_out, self.btn_zoom_in, self.btn_zoom_100, self.btn_zoom_fit):
             zoom_row.addWidget(b)
@@ -367,7 +367,7 @@ class CropDialogPro(QDialog):
 
         dim_row = QHBoxLayout()
         dim_row.addStretch(1)
-        self.lbl_dims = QLabel("Selection: —")
+        self.lbl_dims = QLabel(self.tr("Selection: —"))
         self.lbl_dims.setStyleSheet("color: gray;")
         dim_row.addWidget(self.lbl_dims)
         dim_row.addStretch(1)
@@ -381,11 +381,11 @@ class CropDialogPro(QDialog):
 
         # buttons
         btn_row = QHBoxLayout()
-        self.btn_autostretch = QPushButton("Toggle Autostretch")
-        self.btn_prev = QPushButton("Load Previous Crop")
-        self.btn_apply = QPushButton("Apply")
-        self.btn_batch = QPushButton("Batch Crop (all open)")
-        self.btn_close = QToolButton(); self.btn_close.setText("Close")
+        self.btn_autostretch = QPushButton(self.tr("Toggle Autostretch"))
+        self.btn_prev = QPushButton(self.tr("Load Previous Crop"))
+        self.btn_apply = QPushButton(self.tr("Apply"))
+        self.btn_batch = QPushButton(self.tr("Batch Crop (all open)"))
+        self.btn_close = QToolButton(); self.btn_close.setText(self.tr("Close"))
         for b in (self.btn_autostretch, self.btn_prev, self.btn_apply, self.btn_batch, self.btn_close):
             btn_row.addWidget(b)
         main.addLayout(btn_row)
@@ -487,7 +487,7 @@ class CropDialogPro(QDialog):
 
     def _set_dim_label_none(self):
         if hasattr(self, "lbl_dims"):
-            self.lbl_dims.setText("Selection: —")
+            self.lbl_dims.setText(self.tr("Selection: —"))
 
     def _update_dim_label_from_corners(self, corners_scene):
         """
@@ -509,7 +509,7 @@ class CropDialogPro(QDialog):
         height = float(np.linalg.norm(src[3] - src[0]))
 
         self.lbl_dims.setText(
-            f"Selection: {int(round(height))}×{int(round(width))} px"
+            self.tr("Selection: {0}×{1} px").format(int(round(height)), int(round(width)))
         )
 
     def _update_dim_label_from_rect_item(self):
@@ -691,15 +691,16 @@ class CropDialogPro(QDialog):
 
     def _current_ar_value(self) -> Optional[float]:
         txt = self.cmb_ar.currentText()
-        if txt == "Free": return None
-        if txt == "Original": return self._orig_w / self._orig_h
+        if txt == self.tr("Free"): return None
+        if txt == self.tr("Original"): return self._orig_w / self._orig_h
         a, b = map(float, txt.split(":")); return a / b
 
     def _apply_ar_to_rect(self, r: QRectF, live: bool, scene_pt: QPointF) -> QRectF:
         txt = self.cmb_ar.currentText()
-        if txt == "Free": return r
-        ar = self._orig_w / self._orig_h if txt == "Original" else (lambda a,b: a/b)(*map(float, txt.split(":")))
-        w = r.width(); h = w / ar
+        if txt == self.tr("Free"):
+            ar = None
+        elif txt == self.tr("Original"):
+            ar = self._orig_w / self._orig_h
         if scene_pt.y() < self._origin.y(): r.setTop(r.bottom() - h)
         else:                                 r.setBottom(r.top() + h)
         return r.normalized()
@@ -743,7 +744,7 @@ class CropDialogPro(QDialog):
 
     def _load_previous(self):
         if CropDialogPro._prev_rect is None:
-            QMessageBox.information(self, "No Previous", "No previous crop stored.")
+            QMessageBox.information(self, self.tr("No Previous"), self.tr("No previous crop stored."))
             return
         if self._rect_item:
             self.scene.removeItem(self._rect_item)
@@ -770,7 +771,7 @@ class CropDialogPro(QDialog):
 
     def _apply_one(self):
         if not self._rect_item:
-            QMessageBox.warning(self, "No Selection", "Draw & finalize a crop first.")
+            QMessageBox.warning(self, self.tr("No Selection"), self.tr("Draw & finalize a crop first."))
             return
 
         corners = self._corners_scene()
@@ -789,7 +790,7 @@ class CropDialogPro(QDialog):
             # Pixel-perfect slice
             bounds = self._int_bounds_from_quad(src, W_img, H_img)
             if bounds is None:
-                QMessageBox.critical(self, "Apply failed", "Invalid crop bounds.")
+                QMessageBox.critical(self, self.tr("Apply failed"), self.tr("Invalid crop bounds."))
                 return
             x0, x1, y0, y1 = bounds
             out = self._full01[y0:y1, x0:x1].copy()
@@ -806,7 +807,7 @@ class CropDialogPro(QDialog):
             w_out = int(round(width))
             h_out = int(round(height))
             if w_out <= 0 or h_out <= 0:
-                QMessageBox.critical(self, "Apply failed", "Invalid crop size.")
+                QMessageBox.critical(self, self.tr("Apply failed"), self.tr("Invalid crop size."))
                 return
 
             out = cv2.warpPerspective(
@@ -832,11 +833,11 @@ class CropDialogPro(QDialog):
             self.crop_applied.emit(out)
             self.accept()
         except Exception as e:
-            QMessageBox.critical(self, "Apply failed", str(e))
+            QMessageBox.critical(self, self.tr("Apply failed"), str(e))
 
     def _apply_batch(self):
         if not self._rect_item:
-            QMessageBox.warning(self, "No Selection", "Draw & finalize a crop first.")
+            QMessageBox.warning(self, self.tr("No Selection"), self.tr("Draw & finalize a crop first."))
             return
 
         # Normalize the crop polygon to THIS image size
@@ -855,12 +856,12 @@ class CropDialogPro(QDialog):
                 docs.append(d)
 
         if not docs:
-            QMessageBox.information(self, "No Images", "No open images to crop.")
+            QMessageBox.information(self, self.tr("No Images"), self.tr("No open images to crop."))
             return
 
         ok = QMessageBox.question(
-            self, "Confirm Batch",
-            f"Apply this crop to {len(docs)} open image(s)?",
+            self, self.tr("Confirm Batch"),
+            self.tr("Apply this crop to {0} open image(s)?").format(len(docs)),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No
         )
@@ -913,7 +914,7 @@ class CropDialogPro(QDialog):
             except Exception:
                 pass
 
-        QMessageBox.information(self, "Batch Crop", "Applied crop to all open images. Any Astrometric Solutions has been updated.")
+        QMessageBox.information(self, self.tr("Batch Crop"), self.tr("Applied crop to all open images. Any Astrometric Solutions has been updated."))
         if last_cropped is not None:
             self.crop_applied.emit(last_cropped)
         self.accept()
@@ -936,13 +937,13 @@ class CropDialogPro(QDialog):
             size_txt = f"{size[0]}×{size[1]}" if size else "?"
             extra = f"\n{batch_note}" if batch_note else ""
             msg = (
-                "Astrometric solution updated ✔️\n\n"
-                f"Model: {sip_txt}   Image: {size_txt}\n"
-                f"CRVAL: ({b_ra:.6f}, {b_dec:.6f}) → ({a_ra:.6f}, {a_dec:.6f})\n"
-                f"Fit residuals: RMS {rms:.3f}\"  (p95 {p95:.3f}\")"
+                self.tr("Astrometric solution updated ✔️\n\n") +
+                self.tr("Model: {0}   Image: {1}\n").format(sip_txt, size_txt) +
+                self.tr("CRVAL: ({0:.6f}, {1:.6f}) → ({2:.6f}, {3:.6f})\n").format(b_ra, b_dec, a_ra, a_dec) +
+                self.tr("Fit residuals: RMS {0:.3f}\"  (p95 {1:.3f}\")").format(rms, p95) +
                 f"{extra}"
             )
-            QMessageBox.information(self, "WCS Updated", msg)
+            QMessageBox.information(self, self.tr("WCS Updated"), msg)
         except Exception:
             # Be quiet if formatting fails
             pass

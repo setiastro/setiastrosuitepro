@@ -156,12 +156,12 @@ class RemoveGreenDialog(QDialog):
         super().__init__(parent)
         self.main = main
         self.doc = doc
-        self.setWindowTitle("Remove Green (SCNR)")
+        self.setWindowTitle(self.tr("Remove Green (SCNR)"))
         self._build_ui()
 
     def _build_ui(self):
         lay = QVBoxLayout(self)
-        lay.addWidget(QLabel("Select the amount to remove green noise:"))
+        lay.addWidget(QLabel(self.tr("Select the amount to remove green noise:")))
 
         # amount
         self.slider = QSlider(Qt.Orientation.Horizontal)
@@ -176,7 +176,7 @@ class RemoveGreenDialog(QDialog):
 
         # mode dropdown
         row_mode = QHBoxLayout()
-        row_mode.addWidget(QLabel("Neutral mode:"))
+        row_mode.addWidget(QLabel(self.tr("Neutral mode:")))
         self.mode_box = QComboBox()
         # order: avg (default), max, min
         self.mode_box.addItem(_SCNR_MODE_LABELS["avg"], userData="avg")
@@ -188,14 +188,14 @@ class RemoveGreenDialog(QDialog):
         lay.addLayout(row_mode)
 
         # preserve lightness
-        self.cb_preserve = QCheckBox("Preserve lightness")
+        self.cb_preserve = QCheckBox(self.tr("Preserve lightness"))
         self.cb_preserve.setChecked(True)
         lay.addWidget(self.cb_preserve)
 
         # buttons
         row = QHBoxLayout()
-        btn_apply = QPushButton("Apply"); btn_apply.clicked.connect(self._apply)
-        btn_cancel= QPushButton("Cancel"); btn_cancel.clicked.connect(self.reject)
+        btn_apply = QPushButton(self.tr("Apply")); btn_apply.clicked.connect(self._apply)
+        btn_cancel= QPushButton(self.tr("Cancel")); btn_cancel.clicked.connect(self.reject)
         row.addStretch(1); row.addWidget(btn_apply); row.addWidget(btn_cancel)
         lay.addLayout(row)
 

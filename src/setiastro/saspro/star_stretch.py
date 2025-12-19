@@ -126,7 +126,7 @@ class StarStretchDialog(QDialog):
     """
     def __init__(self, parent, document):
         super().__init__(parent)
-        self.setWindowTitle("Star Stretch")
+        self.setWindowTitle(self.tr("Star Stretch"))
         self.doc = document
         self._preview: np.ndarray | None = None
         self._pix: QPixmap | None = None
@@ -150,7 +150,7 @@ class StarStretchDialog(QDialog):
         left.addWidget(info)
 
         # Stretch slider (0..8.00)
-        self.lbl_st = QLabel("Stretch Amount: 5.00")
+        self.lbl_st = QLabel(self.tr("Stretch Amount:") + " 5.00")
         self.sld_st = QSlider(Qt.Orientation.Horizontal)
         self.sld_st.setRange(0, 800)
         self.sld_st.setValue(500)
@@ -159,7 +159,7 @@ class StarStretchDialog(QDialog):
         left.addWidget(self.sld_st)
 
         # Saturation slider (0..2.00)
-        self.lbl_sat = QLabel("Color Boost: 1.00")
+        self.lbl_sat = QLabel(self.tr("Color Boost:") + " 1.00")
         self.sld_sat = QSlider(Qt.Orientation.Horizontal)
         self.sld_sat.setRange(0, 200)
         self.sld_sat.setValue(100)
@@ -168,13 +168,13 @@ class StarStretchDialog(QDialog):
         left.addWidget(self.sld_sat)
 
         # SCNR checkbox
-        self.chk_scnr = QCheckBox("Remove Green via SCNR (Optional)")
+        self.chk_scnr = QCheckBox(self.tr("Remove Green via SCNR (Optional)"))
         left.addWidget(self.chk_scnr)
 
         # Buttons row
         rowb = QHBoxLayout()
-        self.btn_preview = QPushButton("Preview")
-        self.btn_apply = QPushButton("Apply to Document")
+        self.btn_preview = QPushButton(self.tr("Preview"))
+        self.btn_apply = QPushButton(self.tr("Apply to Document"))
         rowb.addWidget(self.btn_preview)
         rowb.addWidget(self.btn_apply)
         left.addLayout(rowb)
@@ -198,9 +198,9 @@ class StarStretchDialog(QDialog):
         # Right column (preview with zoom/pan)
         right = QVBoxLayout()
         zoombar = QHBoxLayout()
-        b_out = QPushButton("Zoom Out")
-        b_in  = QPushButton("Zoom In")
-        b_fit = QPushButton("Fit to Preview")
+        b_out = QPushButton(self.tr("Zoom Out"))
+        b_in  = QPushButton(self.tr("Zoom In"))
+        b_fit = QPushButton(self.tr("Fit to Preview"))
         b_out.clicked.connect(self._zoom_out)
         b_in.clicked.connect(self._zoom_in)
         b_fit.clicked.connect(self._fit)

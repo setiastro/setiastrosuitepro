@@ -18,7 +18,7 @@ _BIT_DEPTHS = {
 class SaveOptionsDialog(QDialog):
     def __init__(self, parent, target_ext: str, current_bit_depth: str | None):
         super().__init__(parent)
-        self.setWindowTitle("Save Options")
+        self.setWindowTitle(self.tr("Save Options"))
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.setModal(False)
         #self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
@@ -48,11 +48,11 @@ class SaveOptionsDialog(QDialog):
         if current_bit_depth in allowed:
             self.combo.setCurrentText(current_bit_depth)
 
-        lbl = QLabel(f"Choose bit depth for *.{self._ext}* export:")
+        lbl = QLabel(self.tr("Choose bit depth for export:"))
         lbl.setWordWrap(True)
 
-        btn_ok = QPushButton("OK")
-        btn_cancel = QPushButton("Cancel")
+        btn_ok = QPushButton(self.tr("OK"))
+        btn_cancel = QPushButton(self.tr("Cancel"))
         btn_ok.clicked.connect(self.accept)
         btn_cancel.clicked.connect(self.reject)
 

@@ -237,7 +237,7 @@ class FrequencySeperationTab(QWidget):
         left.addWidget(self.fileLabel)
 
         # Method
-        left.addWidget(QLabel("Method:", self))
+        left.addWidget(QLabel(self.tr("Method:"), self))
         self.method_combo = QComboBox(self)
         self.method_combo.addItems(['Gaussian', 'Median', 'Bilateral'])
         self.method_combo.currentTextChanged.connect(self._on_method_changed)
@@ -259,14 +259,14 @@ class FrequencySeperationTab(QWidget):
         self._toggle_tol_enabled(False)
 
         # Apply separation
-        btn_apply = QPushButton("Apply – Split HF & LF", self)
+        btn_apply = QPushButton(self.tr("Apply - Split HF & LF"), self)
         btn_apply.clicked.connect(self._apply_separation)
         left.addWidget(btn_apply)
 
-        left.addWidget(QLabel("<b>HF Enhancements</b>", self))
+        left.addWidget(QLabel(self.tr("<b>HF Enhancements</b>"), self))
 
         # Sharpen scale
-        self.cb_scale = QCheckBox("Enable Sharpen Scale", self)
+        self.cb_scale = QCheckBox(self.tr("Enable Sharpen Scale"), self)
         self.cb_scale.setChecked(True); left.addWidget(self.cb_scale)
         self.scale_label = QLabel("Sharpen Scale: 1.00", self); left.addWidget(self.scale_label)
         self.scale_slider = QSlider(Qt.Orientation.Horizontal, self)
@@ -275,7 +275,7 @@ class FrequencySeperationTab(QWidget):
         left.addWidget(self.scale_slider)
 
         # Wavelet
-        self.cb_wavelet = QCheckBox("Enable Wavelet Sharpening", self)
+        self.cb_wavelet = QCheckBox(self.tr("Enable Wavelet Sharpening"), self)
         self.cb_wavelet.setChecked(True); left.addWidget(self.cb_wavelet)
         self.wavelet_level_label = QLabel("Wavelet Level: 2", self); left.addWidget(self.wavelet_level_label)
         self.wavelet_level_slider = QSlider(Qt.Orientation.Horizontal, self)
@@ -290,7 +290,7 @@ class FrequencySeperationTab(QWidget):
         left.addWidget(self.wavelet_boost_slider)
 
         # Denoise
-        self.cb_denoise = QCheckBox("Enable HF Denoise", self)
+        self.cb_denoise = QCheckBox(self.tr("Enable HF Denoise"), self)
         self.cb_denoise.setChecked(False); left.addWidget(self.cb_denoise)
         self.denoise_label = QLabel("Denoise Strength: 3.00", self); left.addWidget(self.denoise_label)
         self.denoise_slider = QSlider(Qt.Orientation.Horizontal, self)
@@ -300,7 +300,7 @@ class FrequencySeperationTab(QWidget):
 
         # HF actions row
         row = QHBoxLayout()
-        self.btn_apply_hf = QPushButton("Apply HF Enhancements", self)
+        self.btn_apply_hf = QPushButton(self.tr("Apply HF Enhancements"), self)
         self.btn_apply_hf.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton))
         self.btn_apply_hf.clicked.connect(self._apply_hf_enhancements)
         row.addWidget(self.btn_apply_hf)
@@ -315,8 +315,8 @@ class FrequencySeperationTab(QWidget):
 
         # Push buttons
         push_row = QHBoxLayout()
-        self.btn_push_lf = QPushButton("Push LF", self); self.btn_push_lf.clicked.connect(lambda: self._push_array(self.low_freq_image, "LF"))
-        self.btn_push_hf = QPushButton("Push HF", self); self.btn_push_hf.clicked.connect(lambda: self._push_array(self._hf_display_for_push(), "HF"))
+        self.btn_push_lf = QPushButton(self.tr("Push LF"), self); self.btn_push_lf.clicked.connect(lambda: self._push_array(self.low_freq_image, "LF"))
+        self.btn_push_hf = QPushButton(self.tr("Push HF"), self); self.btn_push_hf.clicked.connect(lambda: self._push_array(self._hf_display_for_push(), "HF"))
         push_row.addWidget(self.btn_push_lf); push_row.addWidget(self.btn_push_hf)
         left.addLayout(push_row)
 
@@ -342,7 +342,7 @@ class FrequencySeperationTab(QWidget):
 
         left.addLayout(load_row)
 
-        btn_combine_push = QPushButton("Combine HF+LF → Push", self)
+        btn_combine_push = QPushButton(self.tr("Combine HF+LF -> Push"), self)
         btn_combine_push.clicked.connect(self._combine_and_push)
         left.addWidget(btn_combine_push)
 

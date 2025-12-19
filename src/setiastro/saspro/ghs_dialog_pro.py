@@ -23,7 +23,7 @@ class GhsDialogPro(QDialog):
     """
     def __init__(self, parent, document):
         super().__init__(parent)
-        self.setWindowTitle("Hyperbolic Stretch")
+        self.setWindowTitle(self.tr("Hyperbolic Stretch"))
         self.doc = document
         self._preview_img = None
         self._full_img = None
@@ -41,14 +41,14 @@ class GhsDialogPro(QDialog):
         self.editor = CurveEditor(self)
         left.addWidget(self.editor)
 
-        hint = QLabel("Tip: Ctrl+Click (or double-click) the image to set the symmetry pivot")
+        hint = QLabel(self.tr("Tip: Ctrl+Click (or double-click) the image to set the symmetry pivot"))
         hint.setStyleSheet("color: #888; font-size: 11px;")
         left.addWidget(hint)
-        self.editor.setToolTip("Ctrl+Click (or double-click) the image to set the symmetry pivot")
+        self.editor.setToolTip(self.tr("Ctrl+Click (or double-click) the image to set the symmetry pivot"))
 
         # channel selector
         ch_row = QHBoxLayout()
-        ch_row.addWidget(QLabel("Channel:"))
+        ch_row.addWidget(QLabel(self.tr("Channel:")))
         self.cmb_ch = QComboBox(self)
         self.cmb_ch.addItems(["K (Brightness)", "R", "G", "B"])
         ch_row.addWidget(self.cmb_ch)
@@ -75,11 +75,11 @@ class GhsDialogPro(QDialog):
 
         # Buttons
         rowb = QHBoxLayout()
-        self.btn_apply = QPushButton("Apply")
-        self.btn_reset = QToolButton(); self.btn_reset.setText("Reset")
-        self.btn_hist = QToolButton(); self.btn_hist.setText("Histogram")
-        self.btn_hist.setToolTip("Open a Histogram for this image.\n"
-                                 "Ctrl+Click on the histogram to set the GHS pivot.")
+        self.btn_apply = QPushButton(self.tr("Apply"))
+        self.btn_reset = QToolButton(); self.btn_reset.setText(self.tr("Reset"))
+        self.btn_hist = QToolButton(); self.btn_hist.setText(self.tr("Histogram"))
+        self.btn_hist.setToolTip(self.tr("Open a Histogram for this image.\n"
+                                 "Ctrl+Click on the histogram to set the GHS pivot."))
         rowb.addWidget(self.btn_apply)
         rowb.addWidget(self.btn_reset)
         rowb.addWidget(self.btn_hist)
@@ -93,9 +93,9 @@ class GhsDialogPro(QDialog):
         zoombar = QHBoxLayout()
         zoombar.addStretch(1)
 
-        b_out = themed_toolbtn("zoom-out", "Zoom Out")
-        b_in  = themed_toolbtn("zoom-in", "Zoom In")
-        b_fit = themed_toolbtn("zoom-fit-best", "Fit to Preview")
+        b_out = themed_toolbtn("zoom-out", self.tr("Zoom Out"))
+        b_in  = themed_toolbtn("zoom-in", self.tr("Zoom In"))
+        b_fit = themed_toolbtn("zoom-fit-best", self.tr("Fit to Preview"))
 
         zoombar.addWidget(b_out)
         zoombar.addWidget(b_in)
@@ -156,8 +156,8 @@ class GhsDialogPro(QDialog):
         try:
             from .histogram import HistogramDialog
         except Exception as e:
-            QMessageBox.warning(self, "Histogram",
-                                f"Could not import histogram module:\n{e}")
+            QMessageBox.warning(self, self.tr("Histogram"),
+                                self.tr("Could not import histogram module:\n{0}").format(e))
             return
 
         # If we already created one and it's still alive, just bring it forward.
@@ -464,14 +464,14 @@ class GhsDialogPro(QDialog):
             QTimer.singleShot(0, self._fit)
 
         except Exception as e:
-            QMessageBox.critical(self, "Apply failed", str(e))
+            QMessageBox.critical(self, self.tr("Apply failed"), str(e))
 
 
     # ---------- image plumbing / zoom/pan ----------
     def _load_from_doc(self):
         img = self.doc.image
         if img is None:
-            QMessageBox.information(self, "No image", "Open an image first.")
+            QMessageBox.information(self, self.tr("No image"), self.tr("Open an image first."))
             return
         arr = np.asarray(img).astype(np.float32)
         if arr.dtype.kind in "ui":

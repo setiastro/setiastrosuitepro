@@ -471,7 +471,7 @@ class ABEDialog(QDialog):
     """
     def __init__(self, parent, document: ImageDocument):
         super().__init__(parent)
-        self.setWindowTitle("Automatic Background Extraction (ABE)")
+        self.setWindowTitle(self.tr("Automatic Background Extraction (ABE)"))
 
         # IMPORTANT: avoid “attached modal sheet” behavior on some Linux WMs
         self.setWindowFlag(Qt.WindowType.Window, True)
@@ -500,10 +500,10 @@ class ABEDialog(QDialog):
         self.sp_samples = QSpinBox(); self.sp_samples.setRange(20, 10000); self.sp_samples.setSingleStep(20); self.sp_samples.setValue(120)
         self.sp_down = QSpinBox(); self.sp_down.setRange(1, 32); self.sp_down.setValue(4)
         self.sp_patch = QSpinBox(); self.sp_patch.setRange(5, 151); self.sp_patch.setSingleStep(2); self.sp_patch.setValue(15)
-        self.chk_use_rbf = QCheckBox("Enable RBF refinement (after polynomial)"); self.chk_use_rbf.setChecked(True)
+        self.chk_use_rbf = QCheckBox(self.tr("Enable RBF refinement (after polynomial)")); self.chk_use_rbf.setChecked(True)
         self.sp_rbf = QSpinBox(); self.sp_rbf.setRange(0, 1000); self.sp_rbf.setValue(100)  # shown as ×0.01 below
-        self.chk_make_bg_doc = QCheckBox("Create background document"); self.chk_make_bg_doc.setChecked(False)
-        self.chk_preview_bg   = QCheckBox("Preview background instead of corrected"); self.chk_preview_bg.setChecked(False)
+        self.chk_make_bg_doc = QCheckBox(self.tr("Create background document")); self.chk_make_bg_doc.setChecked(False)
+        self.chk_preview_bg   = QCheckBox(self.tr("Preview background instead of corrected")); self.chk_preview_bg.setChecked(False)
 
         # Preview area
         self.preview_label = QLabel(alignment=Qt.AlignmentFlag.AlignCenter)
@@ -516,10 +516,10 @@ class ABEDialog(QDialog):
         self.preview_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
         # Buttons
-        self.btn_preview = QPushButton("Preview")
-        self.btn_apply   = QPushButton("Apply")
-        self.btn_close   = QPushButton("Close")
-        self.btn_clear   = QPushButton("Clear Exclusions")
+        self.btn_preview = QPushButton(self.tr("Preview"))
+        self.btn_apply   = QPushButton(self.tr("Apply"))
+        self.btn_close   = QPushButton(self.tr("Close"))
+        self.btn_clear   = QPushButton(self.tr("Clear Exclusions"))
         self.btn_preview.clicked.connect(self._do_preview)
         self.btn_apply.clicked.connect(self._do_apply)
         self.btn_close.clicked.connect(self.close)
@@ -527,15 +527,15 @@ class ABEDialog(QDialog):
 
         # Layout
         params = QFormLayout()
-        params.addRow("Polynomial degree:", self.sp_degree)
-        params.addRow("# sample points:",   self.sp_samples)
-        params.addRow("Downsample factor:", self.sp_down)
-        params.addRow("Patch size (px):",   self.sp_patch)
+        params.addRow(self.tr("Polynomial degree:"), self.sp_degree)
+        params.addRow(self.tr("# sample points:"),   self.sp_samples)
+        params.addRow(self.tr("Downsample factor:"), self.sp_down)
+        params.addRow(self.tr("Patch size (px):"),   self.sp_patch)
 
-        rbf_box = QGroupBox("RBF Refinement")
+        rbf_box = QGroupBox(self.tr("RBF Refinement"))
         rbf_form = QFormLayout()
         rbf_form.addRow(self.chk_use_rbf)
-        rbf_form.addRow("Smooth (×0.01):", self.sp_rbf)
+        rbf_form.addRow(self.tr("Smooth (x0.01):"), self.sp_rbf)
         rbf_box.setLayout(rbf_form)
 
         opts = QVBoxLayout()

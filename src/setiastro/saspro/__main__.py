@@ -11,6 +11,7 @@ called via the `main()` function when invoked as an entry point.
 
 import sys
 import os
+from PyQt6.QtCore import QCoreApplication
 
 # ---- Linux Qt stability guard (must run BEFORE any PyQt6 import) ----
 # Default behavior: DO NOT override Wayland.
@@ -127,7 +128,7 @@ def _init_splash():
             super().__init__()
             self._version = "1.6.0"  # Hardcoded for early display
             self._build = ""
-            self.current_message = "Starting..."
+            self.current_message = QCoreApplication.translate("Splash", "Starting...")
             self.progress_value = 0
             
             # Window setup
@@ -239,14 +240,14 @@ def _init_splash():
             # --- Subtitle with version ---
             painter.setFont(self.subtitle_font)
             painter.setPen(QColor(180, 180, 200))
-            subtitle_text = f"Version {self._version}"
+            subtitle_text = QCoreApplication.translate("Splash", "Version {0}").format(self._version)
 
             if self._build:
                 if self._build == "dev":
                     # No build_info → running from source checkout
-                    subtitle_text += "  •  Running locally from source code"
+                    subtitle_text += QCoreApplication.translate("Splash", "  •  Running locally from source code")
                 else:
-                    subtitle_text += f"  •  Build {self._build}"
+                    subtitle_text += QCoreApplication.translate("Splash", "  •  Build {0}").format(self._build)
 
             subtitle_rect = QRect(0, 270, w, 25)
             painter.drawText(subtitle_rect, Qt.AlignmentFlag.AlignCenter, subtitle_text)
@@ -294,16 +295,23 @@ def _init_splash():
     # --- Show splash IMMEDIATELY ---
     _splash = _EarlySplash(_early_icon_path)
     _splash.show()
-    _splash.setMessage("Initializing Python runtime...")
+    _splash.setMessage(QCoreApplication.translate("Splash", "Initializing Python runtime..."))
     _splash.setProgress(2)
     _app.processEvents()
+    
+    # Load translation BEFORE any other widgets are created
+    try:
+        from setiastro.saspro.i18n import load_language
+        load_language(app=_app)
+    except Exception:
+        pass  # Translations not critical - continue without them
     
     _splash_initialized = True
 
 
-# Initialize splash if running as main module
-if __name__ == "__main__":
-    _init_splash()
+# Initialize splash immediately before any heavy imports
+# This ensures the splash is visible while PyTorch, NumPy, etc. are loading
+_init_splash()
 
 
 # =============================================================================
@@ -317,7 +325,7 @@ def _update_splash(msg: str, progress: int):
         _splash.setMessage(msg)
         _splash.setProgress(progress)
 
-_update_splash("Loading PyTorch runtime...", 5)
+_update_splash(QCoreApplication.translate("Splash", "Loading PyTorch runtime..."), 5)
 
 from setiastro.saspro.runtime_torch import (
     add_runtime_to_sys_path,
@@ -329,7 +337,7 @@ add_runtime_to_sys_path(status_cb=lambda *_: None)
 _ban_shadow_torch_paths(status_cb=lambda *_: None)
 _purge_bad_torch_from_sysmodules(status_cb=lambda *_: None)
 
-_update_splash("Loading standard libraries...", 10)
+_update_splash(QCoreApplication.translate("Splash", "Loading standard libraries..."), 10)
 
 # ----------------------------------------
 # Standard library imports (consolidated)
@@ -358,18 +366,18 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 from urllib.parse import quote, quote_plus
 
-_update_splash("Loading NumPy...", 15)
+_update_splash(QCoreApplication.translate("Splash", "Loading NumPy..."), 15)
 
 # ----------------------------------------
 # Third-party imports
 # ----------------------------------------
 import numpy as np
 
-_update_splash("Loading image libraries...", 20)
+_update_splash(QCoreApplication.translate("Splash", "Loading image libraries..."), 20)
 from tifffile import imwrite
 from setiastro.saspro.xisf import XISF
 
-_update_splash("Configuring matplotlib...", 25)
+_update_splash(QCoreApplication.translate("Splash", "Configuring matplotlib..."), 25)
 from setiastro.saspro.config_bootstrap import ensure_mpl_config_dir
 _MPL_CFG_DIR = ensure_mpl_config_dir()
 
@@ -440,7 +448,7 @@ def get_lightkurve():
     return _lightkurve_module if _lightkurve_module else None
 # --- End lazy imports ---
 
-_update_splash("Loading UI utilities...", 30)
+_update_splash(QCoreApplication.translate("Splash", "Loading UI utilities..."), 30)
 
 # Shared UI utilities (avoiding code duplication)
 from setiastro.saspro.widgets.common_utilities import (
@@ -451,7 +459,7 @@ from setiastro.saspro.widgets.common_utilities import (
     install_crash_handlers,
 )
 
-_update_splash("Loading reproject library...", 35)
+_update_splash(QCoreApplication.translate("Splash", "Loading reproject library..."), 35)
 
 # Reproject for WCS-based alignment
 try:
@@ -459,7 +467,7 @@ try:
 except ImportError:
     reproject_interp = None  # fallback if not installed
 
-_update_splash("Loading OpenCV...", 40)
+_update_splash(QCoreApplication.translate("Splash", "Loading OpenCV..."), 40)
 
 # OpenCV for transform estimation & warping
 try:
@@ -469,7 +477,7 @@ except ImportError:
     OPENCV_AVAILABLE = False
 
 
-_update_splash("Loading PyQt6 components...", 45)
+_update_splash(QCoreApplication.translate("Splash", "Loading PyQt6 components..."), 45)
 
 #################################
 # PyQt6 Imports
@@ -500,9 +508,14 @@ except Exception:
     BUILD_TIMESTAMP = "dev"
 
 
-VERSION = "1.6.0"
+try:
+    from importlib.metadata import version as _get_version
+    VERSION = _get_version("setiastrosuitepro")
+except Exception:
+    # Fallback if package not installed (e.g. running from source without install)
+    VERSION = "1.6.0-dev"
 
-_update_splash("Loading resources...", 50)
+_update_splash(QCoreApplication.translate("Splash", "Loading resources..."), 50)
 
 # Icon paths are now centralized in setiastro.saspro.resources module
 from setiastro.saspro.resources import (
@@ -531,7 +544,7 @@ from setiastro.saspro.resources import (
 )
 
 
-_update_splash("Configuring Qt message handler...", 55)
+_update_splash(QCoreApplication.translate("Splash", "Configuring Qt message handler..."), 55)
 
 from PyQt6.QtCore import qInstallMessageHandler, QtMsgType
 
@@ -547,7 +560,7 @@ def _qt_msg_handler(mode, ctx, msg):
 
 qInstallMessageHandler(_qt_msg_handler)
 
-_update_splash("Loading MDI widgets...", 60)
+_update_splash(QCoreApplication.translate("Splash", "Loading MDI widgets..."), 60)
 
 # MDI widgets imported from setiastro.saspro.mdi_widgets
 from setiastro.saspro.mdi_widgets import (
@@ -577,11 +590,11 @@ from setiastro.saspro.file_utils import (
     WIN_RESERVED_NAMES as _WIN_RESERVED,
 )
 
-_update_splash("Loading main window module...", 65)
+_update_splash(QCoreApplication.translate("Splash", "Loading main window module..."), 65)
 
 from setiastro.saspro.gui.main_window import AstroSuiteProMainWindow
 
-_update_splash("Modules loaded, finalizing...", 70)
+_update_splash(QCoreApplication.translate("Splash", "Modules loaded, finalizing..."), 70)
 
 
 def main():
@@ -602,7 +615,7 @@ def main():
     # Update splash with build info now that we have VERSION and BUILD_TIMESTAMP
     if _splash:
         _splash.setBuildInfo(VERSION, BUILD_TIMESTAMP)
-        _splash.setMessage("Setting up logging...")
+        _splash.setMessage(QCoreApplication.translate("Splash", "Setting up logging..."))
         _splash.setProgress(72)
     
     # --- Logging (catch unhandled exceptions to a file) ---
@@ -669,14 +682,14 @@ def main():
 
     # Setup crash handlers and app icon
     if _splash:
-        _splash.setMessage("Installing crash handlers...")
+        _splash.setMessage(QCoreApplication.translate("Splash", "Installing crash handlers..."))
         _splash.setProgress(75)
     install_crash_handlers(_app) 
     _app.setWindowIcon(QIcon(windowslogo_path if os.path.exists(windowslogo_path) else icon_path))
 
     # --- Windows exe / multiprocessing friendly ---
     if _splash:
-        _splash.setMessage("Configuring multiprocessing...")
+        _splash.setMessage(QCoreApplication.translate("Splash", "Configuring multiprocessing..."))
         _splash.setProgress(78)
     try:
         multiprocessing.freeze_support()
@@ -690,23 +703,23 @@ def main():
 
     try:
         if _splash:
-            _splash.setMessage("Loading image manager...")
+            _splash.setMessage(QCoreApplication.translate("Splash", "Loading image manager..."))
             _splash.setProgress(80)
         from setiastro.saspro.legacy.image_manager import ImageManager
         
         if _splash:
-            _splash.setMessage("Suppressing warnings...")
+            _splash.setMessage(QCoreApplication.translate("Splash", "Suppressing warnings..."))
             _splash.setProgress(82)
         from matplotlib import MatplotlibDeprecationWarning
         warnings.filterwarnings("ignore", category=MatplotlibDeprecationWarning)
 
         if _splash:
-            _splash.setMessage("Creating image manager...")
+            _splash.setMessage(QCoreApplication.translate("Splash", "Creating image manager..."))
             _splash.setProgress(85)
         imgr = ImageManager(max_slots=100)
         
         if _splash:
-            _splash.setMessage("Building main window...")
+            _splash.setMessage(QCoreApplication.translate("Splash", "Building main window..."))
             _splash.setProgress(90)
         win = AstroSuiteProMainWindow(
             image_manager=imgr,
@@ -715,7 +728,7 @@ def main():
         )
         
         if _splash:
-            _splash.setMessage("Showing main window...")
+            _splash.setMessage(QCoreApplication.translate("Splash", "Showing main window..."))
             _splash.setProgress(95)
         win.show()
 
@@ -727,7 +740,7 @@ def main():
             pass  # Non-critical if warmup fails
 
         if _splash:
-            _splash.setMessage("Ready!")
+            _splash.setMessage(QCoreApplication.translate("Splash", "Ready!"))
             _splash.setProgress(100)
             _app.processEvents()
             
@@ -765,8 +778,8 @@ def main():
         logging.error("Unhandled exception occurred\n%s", tb)
         msg = QMessageBox(None)
         msg.setIcon(QMessageBox.Icon.Critical)
-        msg.setWindowTitle("Application Error")
-        msg.setText("An unexpected error occurred.")
+        msg.setWindowTitle(QCoreApplication.translate("Main", "Application Error"))
+        msg.setText(QCoreApplication.translate("Main", "An unexpected error occurred."))
         msg.setInformativeText(tb.splitlines()[-1] if tb else "See details.")
         msg.setDetailedText(tb)
         msg.setStandardButtons(QMessageBox.StandardButton.Ok)

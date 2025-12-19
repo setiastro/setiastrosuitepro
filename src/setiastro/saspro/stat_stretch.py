@@ -20,7 +20,7 @@ class StatisticalStretchDialog(QDialog):
     """
     def __init__(self, parent, document: ImageDocument):
         super().__init__(parent)
-        self.setWindowTitle("Statistical Stretch")
+        self.setWindowTitle(self.tr("Statistical Stretch"))
 
         # --- IMPORTANT: avoid “attached modal” behavior on some Linux WMs ---
         # Make this a proper top-level window (tool-style) rather than an attached sheet.
@@ -45,20 +45,20 @@ class StatisticalStretchDialog(QDialog):
         self.spin_target.setValue(0.25)
         self.spin_target.setDecimals(3)
 
-        self.chk_linked = QCheckBox("Linked channels")
+        self.chk_linked = QCheckBox(self.tr("Linked channels"))
         self.chk_linked.setChecked(False)
 
-        self.chk_normalize = QCheckBox("Normalize to [0..1]")
+        self.chk_normalize = QCheckBox(self.tr("Normalize to [0..1]"))
         self.chk_normalize.setChecked(False)
 
         # NEW: Curves boost
-        self.chk_curves = QCheckBox("Curves boost")
+        self.chk_curves = QCheckBox(self.tr("Curves boost"))
         self.chk_curves.setChecked(False)
 
         self.curves_row = QWidget()
         cr_lay = QHBoxLayout(self.curves_row); cr_lay.setContentsMargins(0,0,0,0)
         cr_lay.setSpacing(8)
-        cr_lay.addWidget(QLabel("Strength:"))
+        cr_lay.addWidget(QLabel(self.tr("Strength:")))
         self.sld_curves = QSlider(Qt.Orientation.Horizontal)
         self.sld_curves.setRange(0, 100)           # 0.00 … 1.00 mapped to 0…100
         self.sld_curves.setSingleStep(1)
@@ -96,9 +96,9 @@ class StatisticalStretchDialog(QDialog):
         zoom_row.addStretch(1)
 
         # Buttons
-        self.btn_preview = QPushButton("Preview")
-        self.btn_apply   = QPushButton("Apply")
-        self.btn_close   = QPushButton("Close")
+        self.btn_preview = QPushButton(self.tr("Preview"))
+        self.btn_apply   = QPushButton(self.tr("Apply"))
+        self.btn_close   = QPushButton(self.tr("Close"))
 
         self.btn_preview.clicked.connect(self._do_preview)
         self.btn_apply.clicked.connect(self._do_apply)
@@ -106,7 +106,7 @@ class StatisticalStretchDialog(QDialog):
 
         # --- Layout ---
         form = QFormLayout()
-        form.addRow("Target median:", self.spin_target)
+        form.addRow(self.tr("Target median:"), self.spin_target)
         form.addRow("", self.chk_linked)
         form.addRow("", self.chk_normalize)
         form.addRow("", self.chk_curves)

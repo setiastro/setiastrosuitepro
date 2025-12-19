@@ -113,7 +113,7 @@ def apply_clahe_to_doc(doc, preset: dict | None):
 class CLAHEDialogPro(QDialog):
     def __init__(self, parent, doc, icon: QIcon | None = None):
         super().__init__(parent)
-        self.setWindowTitle("CLAHE")
+        self.setWindowTitle(self.tr("CLAHE"))
         if icon:
             try: self.setWindowIcon(icon)
             except Exception as e:
@@ -130,7 +130,7 @@ class CLAHEDialogPro(QDialog):
         v = QVBoxLayout(self)
 
         # ---- Params (unchanged) ----
-        grp = QGroupBox("CLAHE Parameters"); grid = QGridLayout(grp)
+        grp = QGroupBox(self.tr("CLAHE Parameters")); grid = QGridLayout(grp)
         self.s_clip = QSlider(Qt.Orientation.Horizontal); self.s_clip.setRange(1, 40); self.s_clip.setValue(20)
         self.lbl_clip = QLabel("2.0")
         self.s_clip.valueChanged.connect(lambda val: self.lbl_clip.setText(f"{val/10.0:.1f}"))
@@ -150,13 +150,13 @@ class CLAHEDialogPro(QDialog):
         self.s_tile.valueChanged.connect(lambda v: self.lbl_tile.setText(f"{v} px"))
         self.s_tile.valueChanged.connect(self._debounce_preview)
 
-        grid.addWidget(QLabel("Tile Size (px):"), 1, 0)
+        grid.addWidget(QLabel(self.tr("Tile Size (px):")), 1, 0)
         grid.addWidget(self.s_tile, 1, 1)
         grid.addWidget(self.lbl_tile, 1, 2)
 
 
 
-        grid.addWidget(QLabel("Clip Limit:"), 0, 0); grid.addWidget(self.s_clip, 0, 1); grid.addWidget(self.lbl_clip, 0, 2)
+        grid.addWidget(QLabel(self.tr("Clip Limit:")), 0, 0); grid.addWidget(self.s_clip, 0, 1); grid.addWidget(self.lbl_clip, 0, 2)
 
         v.addWidget(grp)
 
@@ -190,9 +190,9 @@ class CLAHEDialogPro(QDialog):
 
         # ---- Buttons (unchanged) ----
         row = QHBoxLayout()
-        self.btn_apply = QPushButton("Apply");  self.btn_apply.clicked.connect(self._apply)
-        self.btn_reset = QPushButton("Reset");  self.btn_reset.clicked.connect(self._reset)
-        self.btn_close = QPushButton("Cancel"); self.btn_close.clicked.connect(self.reject)
+        self.btn_apply = QPushButton(self.tr("Apply"));  self.btn_apply.clicked.connect(self._apply)
+        self.btn_reset = QPushButton(self.tr("Reset"));  self.btn_reset.clicked.connect(self._reset)
+        self.btn_close = QPushButton(self.tr("Cancel")); self.btn_close.clicked.connect(self.reject)
         row.addStretch(1); row.addWidget(self.btn_apply); row.addWidget(self.btn_reset); row.addWidget(self.btn_close)
         v.addLayout(row)
 

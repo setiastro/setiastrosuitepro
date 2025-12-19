@@ -529,6 +529,16 @@ class AstroSuiteProMainWindow(
 
     # _init_log_dock, _hook_stdout_stderr, and _append_log_text are now in DockMixin
 
+    def _rebuild_menus_for_language(self):
+        """Rebuild menus after language change to apply new translations."""
+        try:
+            # Clear the menubar and rebuild it
+            mb = self.menuBar()
+            mb.clear()
+            self._init_menubar()
+        except Exception:
+            pass
+
 
     def _on_sw_activated(self, sw):
         if not sw:
@@ -1886,7 +1896,11 @@ class AstroSuiteProMainWindow(
         except Exception:
             pass
 
-    def _confirm_discard(self, title="New Project", msg="This will close all views and clear desktop shortcuts. Continue?"):
+    def _confirm_discard(self, title=None, msg=None):
+        if title is None:
+            title = self.tr("New Project")
+        if msg is None:
+            msg = self.tr("This will close all views and clear desktop shortcuts. Continue?")
         btn = QMessageBox.question(self, title, msg,
                                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                                 QMessageBox.StandardButton.No)
@@ -1894,8 +1908,8 @@ class AstroSuiteProMainWindow(
 
     def _clear_views_keep_shortcuts(self):
         if not self._confirm_discard(
-            title="Clear All Views",
-            msg="Close all views and documents? Desktop shortcuts will be preserved."
+            title=self.tr("Clear All Views"),
+            msg=self.tr("Close all views and documents? Desktop shortcuts will be preserved.")
         ):
             return
 
@@ -8404,19 +8418,19 @@ class AstroSuiteProMainWindow(
                 docs.append(d)
 
         edited = [d for d in docs if self._document_has_edits(d)]
-        msg = "Exit Seti Astro Suite Pro?"
+        msg = self.tr("Exit Seti Astro Suite Pro?")
         detail = []
         if docs:
-            detail.append(f"Open images: {len(docs)}")
+            detail.append(self.tr("Open images:") + f" {len(docs)}")
         if edited:
-            detail.append(f"Edited since open: {len(edited)}")
+            detail.append(self.tr("Edited since open:") + f" {len(edited)}")
         if detail:
             msg += "\n\n" + "\n".join(detail)
 
         # --- stay-on-top message box ---
         mbox = QMessageBox(self)
         mbox.setIcon(QMessageBox.Icon.Question)
-        mbox.setWindowTitle("Confirm Exit")
+        mbox.setWindowTitle(self.tr("Confirm Exit"))
         mbox.setText(msg)
         mbox.setStandardButtons(
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No

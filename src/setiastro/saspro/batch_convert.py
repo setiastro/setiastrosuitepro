@@ -168,7 +168,7 @@ class _BatchWorker(QThread):
 class BatchConvertDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Batch Convert")
+        self.setWindowTitle(self.tr("Batch Convert"))
         self.setMinimumWidth(560)
         self.worker: _BatchWorker | None = None
 
@@ -208,10 +208,10 @@ class BatchConvertDialog(QDialog):
         self.depth.addItem("Auto")  # always first
         # choices will be populated based on fmt
 
-        fmt_row.addWidget(QLabel("Output format:"))
+        fmt_row.addWidget(QLabel(self.tr("Output format:")))
         fmt_row.addWidget(self.fmt)
         fmt_row.addSpacing(16)
-        fmt_row.addWidget(QLabel("Bit depth:"))
+        fmt_row.addWidget(QLabel(self.tr("Bit depth:")))
         fmt_row.addWidget(self.depth)
         fmt_row.addStretch(1)
         lay.addLayout(fmt_row)
@@ -222,8 +222,8 @@ class BatchConvertDialog(QDialog):
         self.bar.setRange(0, 100)
 
         # buttons
-        self.start_btn = QPushButton("Start")
-        self.cancel_btn = QPushButton("Cancel")
+        self.start_btn = QPushButton(self.tr("Start"))
+        self.cancel_btn = QPushButton(self.tr("Cancel"))
         self.cancel_btn.setEnabled(False)
         btns = QHBoxLayout()
         btns.addStretch(1)

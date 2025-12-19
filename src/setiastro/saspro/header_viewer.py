@@ -30,15 +30,15 @@ class HeaderViewerDock(QDockWidget):
     Supports FITS headers and XISF file & image metadata.
     """
     def __init__(self, parent=None):
-        super().__init__("Header Viewer", parent)
+        super().__init__(self.tr("Header Viewer"), parent)
         self._doc: Optional[ImageDocument] = None
         self._doc_conn = False
 
         self._tree = QTreeWidget()
-        self._tree.setHeaderLabels(["Key", "Value"])
+        self._tree.setHeaderLabels([self.tr("Key"), self.tr("Value")])
         self._tree.setColumnWidth(0, 220)
 
-        self._save_btn = QPushButton("Save Metadata…")
+        self._save_btn = QPushButton(self.tr("Save Metadata…"))
         self._save_btn.clicked.connect(self._save_metadata)
         self._dm = None              # <-- NEW: DocManager to query "active"
         self._follow_hover = False   # <-- optional toggle if you ever want hover-follow
@@ -174,6 +174,9 @@ class HeaderViewerDock(QDockWidget):
 
     # --- helpers ---------------------------------------------------------
     def _populate_header_dict(self, d: dict, title="Header (dict)"):
+        # We translate the default title if it's the default, but often title is passed in.
+        # If title is passed in English from other methods, we should translate it at the call site or here if possible.
+        # Since title is variable, we'll leave it as is, but ensure call sites pass translated strings.
         root = QTreeWidgetItem([title])
         self._tree.addTopLevelItem(root)
         for k, v in d.items():
@@ -196,11 +199,11 @@ class HeaderViewerDock(QDockWidget):
                 pass
             self._populate_fits_header(hdr)
         elif fmt == "dict":
-            self._populate_header_dict(snap.get("items") or {}, "Header (snapshot)")
+            self._populate_header_dict(snap.get("items") or {}, self.tr("Header (snapshot)"))
         else:
             # generic repr fallback
             txt = (snap or {}).get("text", "")
-            node = QTreeWidgetItem(["Header (snapshot)"])
+            node = QTreeWidgetItem([self.tr("Header (snapshot)")])
             self._tree.addTopLevelItem(node)
             node.addChild(QTreeWidgetItem(["repr", str(txt)]))
 
@@ -219,7 +222,7 @@ class HeaderViewerDock(QDockWidget):
 
         # 2) dict-style header (e.g., XISF-style properties captured as dict)
         if isinstance(hdr, dict):
-            self._populate_header_dict(hdr, "Header (dict from document)")
+            self._populate_header_dict(hdr, self.tr("Header (dict from document)"))
             return True
 
         # 3) JSON-safe snapshot captured by DocManager
@@ -231,7 +234,7 @@ class HeaderViewerDock(QDockWidget):
         # 4) XISF properties stored in metadata (common keys)
         for k in ("xisf_header", "xisf_properties"):
             if isinstance(meta.get(k), dict):
-                self._populate_header_dict(meta[k], "XISF Properties (document)")
+                self._populate_header_dict(meta[k], self.tr("XISF Properties (document)"))
                 return True
 
         return False
@@ -264,7 +267,7 @@ class HeaderViewerDock(QDockWidget):
                 xisf = XISF(path)
                 props = getattr(xisf, "properties", None)
                 if isinstance(props, dict):
-                    self._populate_header_dict(props, "XISF Properties")
+                    self._populate_header_dict(props, self.tr("XISF Properties"))
                     return True
             except Exception:
                 pass
@@ -277,14 +280,14 @@ class HeaderViewerDock(QDockWidget):
         self._tree.clear()
         base_doc = self._unwrap_base_doc(self._doc)
         if not base_doc:
-            self.setWindowTitle("Header Viewer")
+            self.setWindowTitle(self.tr("Header Viewer"))
             return
         self._doc = base_doc
 
         meta = self._doc.metadata or {}
         path = (meta.get("file_path") or "") if isinstance(meta.get("file_path"), str) else ""
-        base = os.path.basename(path) if path else (meta.get("display_name") or "Untitled")
-        self.setWindowTitle(f"Header: {base}")
+        base = os.path.basename(path) if path else (meta.get("display_name") or self.tr("Untitled"))
+        self.setWindowTitle(self.tr("Header: {0}").format(base))
 
         try:
             # 1) Prefer header data already stored with the document
@@ -304,7 +307,7 @@ class HeaderViewerDock(QDockWidget):
                 pass
 
             # 4) Always show remaining lightweight metadata (skip heavy blobs we already rendered)
-            info_root = QTreeWidgetItem(["Metadata"])
+            info_root = QTreeWidgetItem([self.tr("Metadata")])
             self._tree.addTopLevelItem(info_root)
             for k, v in meta.items():
                 if k in ("original_header", "fits_header", "header", "wcs", "__header_snapshot__", "xisf_header", "xisf_properties"):
@@ -320,7 +323,7 @@ class HeaderViewerDock(QDockWidget):
 
     # ---- population helpers ----
     def _populate_fits_header(self, header: Any):
-        root = QTreeWidgetItem(["FITS Header"])
+        root = QTreeWidgetItem([self.tr("FITS Header")])
         self._tree.addTopLevelItem(root)
 
         # FITS Header: sanitize and iterate cards defensively
@@ -354,7 +357,7 @@ class HeaderViewerDock(QDockWidget):
 
     def _populate_wcs(self, wcs_obj):
         """Show a real astropy.wcs.WCS as header-like key/values."""
-        root = QTreeWidgetItem(["WCS"])
+        root = QTreeWidgetItem([self.tr("WCS")])
         self._tree.addTopLevelItem(root)
         try:
             # Use relax=True so SIP/etc. are included if present.
@@ -381,14 +384,14 @@ class HeaderViewerDock(QDockWidget):
         img_meta: Dict[str, Any] = img_meta_list[0] if img_meta_list else {}
 
         # File-level metadata
-        froot = QTreeWidgetItem(["XISF File Metadata"])
+        froot = QTreeWidgetItem([self.tr("XISF File Metadata")])
         self._tree.addTopLevelItem(froot)
         for k, v in file_meta.items():
             vstr = v.get("value", "") if isinstance(v, dict) else v
             froot.addChild(QTreeWidgetItem([str(k), str(vstr)]))
 
         # Image-level metadata
-        iroot = QTreeWidgetItem(["XISF Image Metadata"])
+        iroot = QTreeWidgetItem([self.tr("XISF Image Metadata")])
         self._tree.addTopLevelItem(iroot)
 
         # FITS-like keywords (nested)
@@ -418,7 +421,7 @@ class HeaderViewerDock(QDockWidget):
     def _save_metadata(self):
         if not self._doc:
             return
-        path, _ = QFileDialog.getSaveFileName(self, "Save Metadata", "", "CSV (*.csv)")
+        path, _ = QFileDialog.getSaveFileName(self, self.tr("Save Metadata"), "", self.tr("CSV (*.csv)"))
         if not path:
             return
 
@@ -442,4 +445,4 @@ class HeaderViewerDock(QDockWidget):
                 w.writerow(["Key", "Value"])
                 w.writerows(rows)
         except Exception as e:
-            QMessageBox.critical(self, "Save Metadata", f"Failed to save:\n{e}")
+            QMessageBox.critical(self, self.tr("Save Metadata"), self.tr("Failed to save:\n{0}").format(e))

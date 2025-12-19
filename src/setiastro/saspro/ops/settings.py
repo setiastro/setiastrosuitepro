@@ -5,6 +5,9 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import QSettings, Qt
 import pytz  # for timezone list
 
+# i18n support
+from setiastro.saspro.i18n import get_available_languages, get_saved_language, save_language
+
 
 class SettingsDialog(QDialog):
     """
@@ -13,7 +16,7 @@ class SettingsDialog(QDialog):
     """
     def __init__(self, parent, settings: QSettings):
         super().__init__(parent)
-        self.setWindowTitle("Preferences")
+        self.setWindowTitle(self.tr("Preferences"))
         self.settings = settings
 
         # ---- Existing fields (paths, checkboxes, etc.) ----
@@ -22,7 +25,7 @@ class SettingsDialog(QDialog):
         self.le_starnet  = QLineEdit()
         self.le_astap    = QLineEdit()
 
-        self.chk_updates_startup = QCheckBox("Check for updates on startup")
+        self.chk_updates_startup = QCheckBox(self.tr("Check for updates on startup"))
         self.chk_updates_startup.setChecked(
             self.settings.value("updates/check_on_startup", True, type=bool)
         )
@@ -37,8 +40,8 @@ class SettingsDialog(QDialog):
             )
         )
 
-        btn_reset_updates_url = QPushButton("Reset")
-        btn_reset_updates_url.setToolTip("Restore default updates URL")
+        btn_reset_updates_url = QPushButton(self.tr("Reset"))
+        btn_reset_updates_url.setToolTip(self.tr("Restore default updates URL"))
         btn_reset_updates_url.clicked.connect(
             lambda: self.le_updates_url.setText(
                 "https://raw.githubusercontent.com/setiastro/setiastrosuitepro/main/updates.json"
@@ -46,8 +49,8 @@ class SettingsDialog(QDialog):
         )
 
         # Optional: “Check Now…” button
-        self.btn_check_now = QPushButton("Check Now…")
-        self.btn_check_now.setToolTip("Run an update check immediately")
+        self.btn_check_now = QPushButton(self.tr("Check Now…"))
+        self.btn_check_now.setToolTip(self.tr("Run an update check immediately"))
         self.btn_check_now.setVisible(hasattr(parent, "_check_for_updates_async"))
         self.btn_check_now.clicked.connect(self._check_updates_now_clicked)
 
@@ -57,7 +60,7 @@ class SettingsDialog(QDialog):
         row_updates_url.addWidget(btn_reset_updates_url)
         row_updates_url.addWidget(self.btn_check_now)
 
-        self.chk_save_shortcuts = QCheckBox("Save desktop shortcuts on exit")
+        self.chk_save_shortcuts = QCheckBox(self.tr("Save desktop shortcuts on exit"))
         self.chk_save_shortcuts.setChecked(
             self.settings.value("shortcuts/save_on_exit", True, type=bool)
         )
@@ -71,23 +74,36 @@ class SettingsDialog(QDialog):
         self.cb_theme.setCurrentIndex(index_map.get(theme_val, 2))
 
         # "Customize…" button for custom theme
-        self.btn_theme_custom = QPushButton("Customize…")
-        self.btn_theme_custom.setToolTip("Edit custom colors and font")
+        self.btn_theme_custom = QPushButton(self.tr("Customize…"))
+        self.btn_theme_custom.setToolTip(self.tr("Edit custom colors and font"))
         self.btn_theme_custom.setEnabled(theme_val == "custom")
         self.btn_theme_custom.clicked.connect(self._open_theme_editor)
 
         # Keep button enabled state in sync with combo
         self.cb_theme.currentIndexChanged.connect(self._on_theme_changed)
 
+        # ---- Language selector ----
+        self.cb_language = QComboBox()
+        self._lang_codes = list(get_available_languages().keys())  # ["en", "it", "fr", "es"]
+        self._lang_names = list(get_available_languages().values())  # ["English", "Italiano", ...]
+        self.cb_language.addItems(self._lang_names)
+        current_lang = get_saved_language()
+        try:
+            lang_idx = self._lang_codes.index(current_lang)
+        except ValueError:
+            lang_idx = 0
+        self.cb_language.setCurrentIndex(lang_idx)
+        self._initial_language = current_lang  # Track for restart notification
+
         self.le_graxpert.setText(self.settings.value("paths/graxpert", "", type=str))
         self.le_cosmic.setText(self.settings.value("paths/cosmic_clarity", "", type=str))
         self.le_starnet.setText(self.settings.value("paths/starnet", "", type=str))
         self.le_astap.setText(self.settings.value("paths/astap", "", type=str))
 
-        btn_grax  = QPushButton("Browse…"); btn_grax.clicked.connect(lambda: self._browse_into(self.le_graxpert))
-        btn_ccl   = QPushButton("Browse…"); btn_ccl.clicked.connect(lambda: self._browse_dir(self.le_cosmic))
-        btn_star  = QPushButton("Browse…"); btn_star.clicked.connect(lambda: self._browse_into(self.le_starnet))
-        btn_astap = QPushButton("Browse…"); btn_astap.clicked.connect(lambda: self._browse_into(self.le_astap))
+        btn_grax  = QPushButton(self.tr("Browse…")); btn_grax.clicked.connect(lambda: self._browse_into(self.le_graxpert))
+        btn_ccl   = QPushButton(self.tr("Browse…")); btn_ccl.clicked.connect(lambda: self._browse_dir(self.le_cosmic))
+        btn_star  = QPushButton(self.tr("Browse…")); btn_star.clicked.connect(lambda: self._browse_into(self.le_starnet))
+        btn_astap = QPushButton(self.tr("Browse…")); btn_astap.clicked.connect(lambda: self._browse_into(self.le_astap))
 
         row_grax  = QHBoxLayout(); row_grax.addWidget(self.le_graxpert); row_grax.addWidget(btn_grax)
         row_ccl   = QHBoxLayout(); row_ccl.addWidget(self.le_cosmic);   row_ccl.addWidget(btn_ccl)
@@ -116,8 +132,8 @@ class SettingsDialog(QDialog):
         self.sp_min_alt.setValue(self.settings.value("min_altitude", 0.0, type=float))
         self.sp_obj_limit.setValue(self.settings.value("object_limit", 100, type=int))
 
-        self.chk_autostretch_16bit = QCheckBox("High-quality autostretch (16-bit; better gradients)")
-        self.chk_autostretch_16bit.setToolTip("Compute autostretch on a 16-bit histogram (smoother gradients).")
+        self.chk_autostretch_16bit = QCheckBox(self.tr("High-quality autostretch (16-bit; better gradients)"))
+        self.chk_autostretch_16bit.setToolTip(self.tr("Compute autostretch on a 16-bit histogram (smoother gradients)."))
         self.chk_autostretch_16bit.setChecked(
             self.settings.value("display/autostretch_16bit", True, type=bool)
         )
@@ -156,11 +172,11 @@ class SettingsDialog(QDialog):
         # remember initial custom background so Cancel can restore it
         self._initial_bg_path = self.settings.value("ui/custom_background", "", type=str) or ""
         self.le_bg_path.setText(self._initial_bg_path)
-        btn_choose_bg = QPushButton("Choose Background…")
-        btn_choose_bg.setToolTip("Pick a PNG or JPG to use as the application background")
+        btn_choose_bg = QPushButton(self.tr("Choose Background…"))
+        btn_choose_bg.setToolTip(self.tr("Pick a PNG or JPG to use as the application background"))
         btn_choose_bg.clicked.connect(self._choose_background_clicked)
-        btn_clear_bg = QPushButton("Clear")
-        btn_clear_bg.setToolTip("Remove custom background and restore default")
+        btn_clear_bg = QPushButton(self.tr("Clear"))
+        btn_clear_bg.setToolTip(self.tr("Remove custom background and restore default"))
         btn_clear_bg.clicked.connect(self._clear_background_clicked)
 
         row_bg_image = QHBoxLayout()
@@ -188,39 +204,40 @@ class SettingsDialog(QDialog):
         cols.addLayout(right_col, 1)
 
         # ---- Left column: Paths & Integrations ----
-        left_col.addRow(QLabel("<b>Paths & Integrations</b>"))
-        w = QWidget(); w.setLayout(row_grax);  left_col.addRow("GraXpert executable:", w)
-        w = QWidget(); w.setLayout(row_ccl);   left_col.addRow("Cosmic Clarity folder:", w)
-        w = QWidget(); w.setLayout(row_star);  left_col.addRow("StarNet executable:", w)
-        w = QWidget(); w.setLayout(row_astap); left_col.addRow("ASTAP executable:", w)
-        left_col.addRow("Astrometry.net API key:", self.le_astrometry)
+        left_col.addRow(QLabel(self.tr("<b>Paths & Integrations</b>")))
+        w = QWidget(); w.setLayout(row_grax);  left_col.addRow(self.tr("GraXpert executable:"), w)
+        w = QWidget(); w.setLayout(row_ccl);   left_col.addRow(self.tr("Cosmic Clarity folder:"), w)
+        w = QWidget(); w.setLayout(row_star);  left_col.addRow(self.tr("StarNet executable:"), w)
+        w = QWidget(); w.setLayout(row_astap); left_col.addRow(self.tr("ASTAP executable:"), w)
+        left_col.addRow(self.tr("Astrometry.net API key:"), self.le_astrometry)
         left_col.addRow(self.chk_save_shortcuts)
         row_theme = QHBoxLayout()
         row_theme.addWidget(self.cb_theme, 1)
         row_theme.addWidget(self.btn_theme_custom)
         w_theme = QWidget()
         w_theme.setLayout(row_theme)
-        left_col.addRow("Theme:", w_theme)
+        left_col.addRow(self.tr("Theme:"), w_theme)
+        left_col.addRow(self.tr("Language:"), self.cb_language)
 
         # ---- Display (moved under Theme) ----
-        left_col.addRow(QLabel("<b>Display</b>"))
+        left_col.addRow(QLabel(self.tr("<b>Display</b>")))
         left_col.addRow(self.chk_autostretch_16bit)
-        left_col.addRow("Background Opacity:", w_bg_opacity)
-        left_col.addRow("Background Image:", w_bg_image)
+        left_col.addRow(self.tr("Background Opacity:"), w_bg_opacity)
+        left_col.addRow(self.tr("Background Image:"), w_bg_image)
 
         # ---- Right column: WIMS + RA/Dec + Updates + Display ----
-        right_col.addRow(QLabel("<b>What's In My Sky — Defaults</b>"))
-        right_col.addRow("Latitude (°):", self.sp_lat)
-        right_col.addRow("Longitude (°):", self.sp_lon)
-        right_col.addRow("Date (YYYY-MM-DD):", self.le_date)
-        right_col.addRow("Time (HH:MM):", self.le_time)
-        right_col.addRow("Time Zone:", self.cb_tz)
-        right_col.addRow("Min Altitude (°):", self.sp_min_alt)
-        right_col.addRow("Object Limit:", self.sp_obj_limit)
+        right_col.addRow(QLabel(self.tr("<b>What's In My Sky — Defaults</b>")))
+        right_col.addRow(self.tr("Latitude (°):"), self.sp_lat)
+        right_col.addRow(self.tr("Longitude (°):"), self.sp_lon)
+        right_col.addRow(self.tr("Date (YYYY-MM-DD):"), self.le_date)
+        right_col.addRow(self.tr("Time (HH:MM):"), self.le_time)
+        right_col.addRow(self.tr("Time Zone:"), self.cb_tz)
+        right_col.addRow(self.tr("Min Altitude (°):"), self.sp_min_alt)
+        right_col.addRow(self.tr("Object Limit:"), self.sp_obj_limit)
 
         # ---- RA/Dec Overlay ----
-        right_col.addRow(QLabel("<b>RA/Dec Overlay</b>"))
-        self.chk_wcs_enabled = QCheckBox("Show RA/Dec grid")
+        right_col.addRow(QLabel(self.tr("<b>RA/Dec Overlay</b>")))
+        self.chk_wcs_enabled = QCheckBox(self.tr("Show RA/Dec grid"))
         self.chk_wcs_enabled.setChecked(self.settings.value("wcs_grid/enabled", True, type=bool))
         right_col.addRow(self.chk_wcs_enabled)
 
@@ -246,17 +263,17 @@ class SettingsDialog(QDialog):
         self.cb_wcs_mode.currentIndexChanged.connect(lambda i: self.sp_wcs_step.setEnabled(i == 1))
 
         row_wcs = QHBoxLayout()
-        row_wcs.addWidget(QLabel("Mode:")); row_wcs.addWidget(self.cb_wcs_mode)
+        row_wcs.addWidget(QLabel(self.tr("Mode:"))); row_wcs.addWidget(self.cb_wcs_mode)
         row_wcs.addSpacing(8)
-        row_wcs.addWidget(QLabel("Step:")); row_wcs.addWidget(self.sp_wcs_step, 1); row_wcs.addWidget(self.cb_wcs_unit)
+        row_wcs.addWidget(QLabel(self.tr("Step:"))); row_wcs.addWidget(self.sp_wcs_step, 1); row_wcs.addWidget(self.cb_wcs_unit)
         _w = QWidget(); _w.setLayout(row_wcs)
         right_col.addRow(_w)
 
         # ---- Updates ----
-        right_col.addRow(QLabel("<b>Updates</b>"))
+        right_col.addRow(QLabel(self.tr("<b>Updates</b>")))
         right_col.addRow(self.chk_updates_startup)
         w = QWidget(); w.setLayout(row_updates_url)
-        right_col.addRow("Updates JSON URL:", w)
+        right_col.addRow(self.tr("Updates JSON URL:"), w)
 
         
         
@@ -429,6 +446,23 @@ class SettingsDialog(QDialog):
         else:
             theme_val = "custom"
         self.settings.setValue("ui/theme", theme_val)
+
+        # Language
+        lang_idx = self.cb_language.currentIndex()
+        new_lang = self._lang_codes[lang_idx] if 0 <= lang_idx < len(self._lang_codes) else "en"
+        save_language(new_lang)
+        
+        # Apply language change immediately if changed
+        if new_lang != self._initial_language:
+            from setiastro.saspro.i18n import load_language
+            load_language(new_lang)
+            # Notify parent to refresh UI
+            p = self.parent()
+            if p and hasattr(p, "_rebuild_menus_for_language"):
+                try:
+                    p._rebuild_menus_for_language()
+                except Exception:
+                    pass
 
         self.settings.sync()
 

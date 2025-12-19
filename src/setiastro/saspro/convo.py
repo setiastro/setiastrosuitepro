@@ -152,7 +152,7 @@ class ConvoDeconvoDialog(QDialog):
         if hasattr(self._main, "currentDocumentChanged") and self._doc_override is None:
             self._main.currentDocumentChanged.connect(self._on_active_doc_changed)
 
-        self.setWindowTitle("Convolution / Deconvolution")
+        self.setWindowTitle(self.tr("Convolution / Deconvolution"))
         self.resize(1000, 650)
         self._use_custom_psf = False
         self._custom_psf: Optional[np.ndarray] = None
@@ -190,14 +190,14 @@ class ConvoDeconvoDialog(QDialog):
 
         # Buttons
         row1 = QHBoxLayout()
-        self.preview_btn = QPushButton("Preview")
-        self.undo_btn    = QPushButton("Undo")
-        self.close_btn   = QPushButton("Close")
+        self.preview_btn = QPushButton(self.tr("Preview"))
+        self.undo_btn    = QPushButton(self.tr("Undo"))
+        self.close_btn   = QPushButton(self.tr("Close"))
         row1.addWidget(self.preview_btn); row1.addWidget(self.undo_btn)
         left_layout.addLayout(row1)
 
         row2 = QHBoxLayout()
-        self.push_btn    = QPushButton("Push")
+        self.push_btn    = QPushButton(self.tr("Push"))
         row2.addWidget(self.push_btn); row2.addWidget(self.close_btn)
         left_layout.addLayout(row2)
 
@@ -333,7 +333,7 @@ class ConvoDeconvoDialog(QDialog):
         form.addRow("Rotation:", self.conv_rotation_slider)
 
         layout.addLayout(form); layout.addStretch()
-        self.tabs.addTab(conv_tab, "Convolution")
+        self.tabs.addTab(conv_tab, self.tr("Convolution"))
 
     def _build_deconvolution_tab(self):
         deconv_tab = QWidget()
@@ -445,7 +445,7 @@ class ConvoDeconvoDialog(QDialog):
 
         outer_layout.addWidget(self.deconv_stack_container)
         outer_layout.addStretch()
-        self.tabs.addTab(deconv_tab, "Deconvolution")
+        self.tabs.addTab(deconv_tab, self.tr("Deconvolution"))
 
         # Clear “custom PSF” if sliders change
         for s in (self.rl_psf_radius_slider, self.rl_psf_shape_slider, self.rl_psf_aspect_slider, self.rl_psf_rotation_slider):
@@ -486,7 +486,7 @@ class ConvoDeconvoDialog(QDialog):
         layout.addWidget(self.sep_psf_preview, alignment=Qt.AlignmentFlag.AlignHCenter)
 
         layout.addStretch()
-        self.tabs.addTab(psf_tab, "PSF Estimator")
+        self.tabs.addTab(psf_tab, self.tr("PSF Estimator"))
 
     def _build_tv_denoise_tab(self):
         tvd_tab = QWidget(); layout = QVBoxLayout(tvd_tab)
@@ -499,7 +499,7 @@ class ConvoDeconvoDialog(QDialog):
         self.tv_multichannel_checkbox.setToolTip("If checked and the image is color, run TV on all channels jointly")
         form.addRow("", self.tv_multichannel_checkbox)
         layout.addLayout(form); layout.addStretch()
-        self.tabs.addTab(tvd_tab, "TV Denoise")
+        self.tabs.addTab(tvd_tab, self.tr("TV Denoise"))
 
     # ---------------- UI reactions ----------------
     def _on_deconv_algo_changed(self, selected: str):

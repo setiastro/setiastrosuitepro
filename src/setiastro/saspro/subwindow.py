@@ -83,12 +83,12 @@ class _DragTab(QLabel):
         self.owner = owner
         self._press_pos = None
         self.setText("⧉")
-        self.setToolTip(
+        self.setToolTip(self.tr(
             "Drag to duplicate/copy view.\n"
             "Hold Alt while dragging to LINK this view with another (live pan/zoom sync).\n"
             "Hold Shift while dragging to drop this image as a mask onto another view.\n"
             "Hold Ctrl while dragging to copy the astrometric solution (WCS) to another view."
-        )
+        ))
 
         self.setFixedSize(22, 18)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -414,31 +414,31 @@ class ImageSubWindow(QWidget):
 
         self._preview_btn = QToolButton(self)
         self._preview_btn.setText("⟂")  # crosshair glyph
-        self._preview_btn.setToolTip("Create Preview: click, then drag on the image to define a preview rectangle.")
+        self._preview_btn.setToolTip(self.tr("Create Preview: click, then drag on the image to define a preview rectangle."))
         self._preview_btn.setCheckable(True)
         self._preview_btn.clicked.connect(self._toggle_preview_select_mode)
         row.addWidget(self._preview_btn, 0, Qt.AlignmentFlag.AlignLeft)
         # — Undo / Redo just for this subwindow —
         self._btn_undo = QToolButton(self)
         self._btn_undo.setText("↶")  # or use an icon
-        self._btn_undo.setToolTip("Undo (this view)")
+        self._btn_undo.setToolTip(self.tr("Undo (this view)"))
         self._btn_undo.setEnabled(False)
         self._btn_undo.clicked.connect(self._on_local_undo)
         row.addWidget(self._btn_undo, 0, Qt.AlignmentFlag.AlignLeft)
 
         self._btn_redo = QToolButton(self)
         self._btn_redo.setText("↷")
-        self._btn_redo.setToolTip("Redo (this view)")
+        self._btn_redo.setToolTip(self.tr("Redo (this view)"))
         self._btn_redo.setEnabled(False)
         self._btn_redo.clicked.connect(self._on_local_redo)
         row.addWidget(self._btn_redo, 0, Qt.AlignmentFlag.AlignLeft)
 
         self._btn_replay_main = QToolButton(self)
         self._btn_replay_main.setText("⟳")  # pick any glyph you like
-        self._btn_replay_main.setToolTip(
+        self._btn_replay_main.setToolTip(self.tr(
             "Click: replay the last action on the base image.\n"
             "Arrow: pick a specific past action to replay on the base image."
-        )
+        ))
         self._btn_replay_main.setEnabled(False)  # enabled only when preview + history
 
         # Left-click = your existing 'replay last on base'
@@ -457,7 +457,7 @@ class ImageSubWindow(QWidget):
         # ── NEW: WCS grid toggle ─────────────────────────────────────────
         self._btn_wcs = QToolButton(self)
         self._btn_wcs.setText("⌗")
-        self._btn_wcs.setToolTip("Toggle WCS grid overlay (if WCS exists)")
+        self._btn_wcs.setToolTip(self.tr("Toggle WCS grid overlay (if WCS exists)"))
         self._btn_wcs.setCheckable(True)
 
         # Start OFF on every new view, regardless of WCS presence or past sessions
@@ -498,7 +498,7 @@ class ImageSubWindow(QWidget):
             bar.actionTriggered.connect(self._on_scroll_changed)
 
         # IMPORTANT: add the tab BEFORE connecting signals so currentChanged can't fire early
-        self._full_tab_idx = self._tabs.addTab(full_host, "Full")
+        self._full_tab_idx = self._tabs.addTab(full_host, self.tr("Full"))
         self._full_host = full_host
         self._tabs.tabBar().setVisible(False)  # hidden until a preview exists
         lyt.addWidget(self._tabs)
@@ -1029,7 +1029,7 @@ class ImageSubWindow(QWidget):
         self.label = QLabel(alignment=Qt.AlignmentFlag.AlignCenter)
         self.scroll.setWidget(self.label)
         v.addWidget(self.scroll)
-        self._full_tab_idx = self._tabs.addTab(full_host, "Full")
+        self._full_tab_idx = self._tabs.addTab(full_host, self.tr("Full"))
         self._full_host = full_host    
         self._tabs.tabBar().setVisible(False)  # hidden until a first preview exists
 
@@ -1090,7 +1090,7 @@ class ImageSubWindow(QWidget):
         if self._preview_select_mode:
             mw = self._find_main_window()
             if mw and hasattr(mw, "statusBar"):
-                mw.statusBar().showMessage("Preview mode: drag a rectangle on the image to create a preview.", 6000)
+                mw.statusBar().showMessage(self.tr("Preview mode: drag a rectangle on the image to create a preview."), 6000)
         else:
             self._cancel_rubber()
 
@@ -1165,7 +1165,7 @@ class ImageSubWindow(QWidget):
         if mw and hasattr(mw, "statusBar"):
             sb = mw.statusBar()
             if sb:
-                sb.showMessage("Press Space + Click/Drag to probe pixels (WCS shown if available)", 8000)
+                sb.showMessage(self.tr("Press Space + Click/Drag to probe pixels (WCS shown if available)"), 8000)
 
 
       
@@ -1344,7 +1344,7 @@ class ImageSubWindow(QWidget):
         sub = self._mdi_subwindow()
         if not sub: return
         if base is None:
-            base = self._effective_title() or "Untitled"
+            base = self._effective_title() or self.tr("Untitled")
 
         # ✅ strip any carried-over glyphs (🔗, ■, “Active View: ”) from overrides/doc names
         core, _ = self._strip_decorations(base)
@@ -1420,7 +1420,7 @@ class ImageSubWindow(QWidget):
 
     def base_doc_title(self) -> str:
         """The clean, base title (document display name), no prefixes/suffixes."""
-        return self.document.display_name() or "Untitled"
+        return self.document.display_name() or self.tr("Untitled")
 
     def _active_mask_array(self):
         """Return the active mask ndarray (H,W) or None."""
@@ -1526,17 +1526,17 @@ class ImageSubWindow(QWidget):
 
     def _show_ctx_menu(self, pos):
         menu = QMenu(self)
-        a_view = menu.addAction("Rename View… (F2)")
-        a_doc  = menu.addAction("Rename Document…")
+        a_view = menu.addAction(self.tr("Rename View… (F2)"))
+        a_doc  = menu.addAction(self.tr("Rename Document…"))
         menu.addSeparator()
-        a_min  = menu.addAction("Send to Shelf")
-        a_clear = menu.addAction("Clear View Name (use doc name)")
+        a_min  = menu.addAction(self.tr("Send to Shelf"))
+        a_clear = menu.addAction(self.tr("Clear View Name (use doc name)"))
         menu.addSeparator()
-        a_unlink = menu.addAction("Unlink from Linked Views")   # ← NEW
+        a_unlink = menu.addAction(self.tr("Unlink from Linked Views"))   # ← NEW
         menu.addSeparator()
-        a_help = menu.addAction("Show pixel/WCS readout hint")
+        a_help = menu.addAction(self.tr("Show pixel/WCS readout hint"))
         menu.addSeparator()
-        a_prev = menu.addAction("Create Preview (drag rectangle)")
+        a_prev = menu.addAction(self.tr("Create Preview (drag rectangle)"))
 
         act = menu.exec(self.mapToGlobal(pos))
 
@@ -1569,7 +1569,7 @@ class ImageSubWindow(QWidget):
 
     def _rename_view(self):
         current = self._view_title_override or self.document.display_name()
-        new, ok = QInputDialog.getText(self, "Rename View", "New view name:", text=current)
+        new, ok = QInputDialog.getText(self, self.tr("Rename View"), self.tr("New view name:"), text=current)
         if ok and new.strip():
             self._view_title_override = new.strip()
             self._sync_host_title()  # calls _rebuild_title → emits viewTitleChanged
@@ -1584,7 +1584,7 @@ class ImageSubWindow(QWidget):
 
     def _rename_document(self):
         current = self.document.display_name()
-        new, ok = QInputDialog.getText(self, "Rename Document", "New document name:", text=current)
+        new, ok = QInputDialog.getText(self, self.tr("Rename Document"), self.tr("New document name:"), text=current)
         if ok and new.strip():
             # store on the doc so Explorer + other views update too
             self.document.metadata["display_name"] = new.strip()
@@ -1775,9 +1775,9 @@ class ImageSubWindow(QWidget):
     # ---- DnD 'view tab' -------------------------------------------------
     def _install_view_tab(self):
         self._view_tab = QToolButton(self)
-        self._view_tab.setText("View")
-        self._view_tab.setToolTip("Drag onto another window to copy zoom/pan.\n"
-                                  "Double-click to duplicate this view.")
+        self._view_tab.setText(self.tr("View"))
+        self._view_tab.setToolTip(self.tr("Drag onto another window to copy zoom/pan.\n"
+                                  "Double-click to duplicate this view."))
         self._view_tab.setCursor(Qt.CursorShape.OpenHandCursor)
         self._view_tab.setAutoRaise(True)
         self._view_tab.move(8, 8)     # pinned near top-left of the subwindow
@@ -2642,7 +2642,7 @@ class ImageSubWindow(QWidget):
 
         pid = self._next_preview_id
         self._next_preview_id += 1
-        name = f"Preview {pid} ({w}×{h})"
+        name = self.tr("Preview {0} ({1}×{2})").format(pid, w, h)
 
         self._previews.append({"id": pid, "name": name, "roi": (x, y, w, h), "arr": crop})
 
@@ -3062,8 +3062,8 @@ class ImageSubWindow(QWidget):
 
             if should_warn:
                 r = QMessageBox.question(
-                    self, "Close Image?",
-                    "This image has edits that aren’t applied/saved.\nClose anyway?",
+                    self, self.tr("Close Image?"),
+                    self.tr("This image has edits that aren’t applied/saved.\nClose anyway?"),
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                     QMessageBox.StandardButton.No
                 )
@@ -3180,7 +3180,7 @@ class TableSubWindow(QWidget):
         title_row.addWidget(self.title_lbl)
         title_row.addStretch(1)
 
-        self.export_btn = QPushButton("Export CSV…")
+        self.export_btn = QPushButton(self.tr("Export CSV…"))
         self.export_btn.clicked.connect(self._export_csv)
         title_row.addWidget(self.export_btn)
         lyt.addLayout(title_row)
@@ -3238,17 +3238,17 @@ class TableSubWindow(QWidget):
         existing = self.document.metadata.get("table_csv")
         if existing and os.path.exists(existing):
             # Offer to open/save-as that CSV
-            dst, ok = QFileDialog.getSaveFileName(self, "Save CSV As…", os.path.basename(existing), "CSV Files (*.csv)")
+            dst, ok = QFileDialog.getSaveFileName(self, self.tr("Save CSV As…"), os.path.basename(existing), self.tr("CSV Files (*.csv)"))
             if ok and dst:
                 try:
                     import shutil
                     shutil.copyfile(existing, dst)
                 except Exception as e:
-                    QMessageBox.warning(self, "Export CSV", f"Failed to copy CSV:\n{e}")
+                    QMessageBox.warning(self, self.tr("Export CSV"), self.tr("Failed to copy CSV:\n{0}").format(e))
             return
 
         # No pre-export → write one from the model
-        dst, ok = QFileDialog.getSaveFileName(self, "Export CSV…", "table.csv", "CSV Files (*.csv)")
+        dst, ok = QFileDialog.getSaveFileName(self, self.tr("Export CSV…"), "table.csv", self.tr("CSV Files (*.csv)"))
         if not ok or not dst:
             return
         try:
@@ -3264,4 +3264,4 @@ class TableSubWindow(QWidget):
                 for r in range(rows):
                     w.writerow([self._model.data(self._model.index(r, c), Qt.ItemDataRole.DisplayRole) for c in range(cols)])
         except Exception as e:
-            QMessageBox.warning(self, "Export CSV", f"Failed to export CSV:\n{e}")
+            QMessageBox.warning(self, self.tr("Export CSV"), self.tr("Failed to export CSV:\n{0}").format(e))

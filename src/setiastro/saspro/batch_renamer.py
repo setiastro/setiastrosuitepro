@@ -35,7 +35,7 @@ class BatchRenamerDialog(QDialog):
     """
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Batch Rename from FITS")
+        self.setWindowTitle(self.tr("Batch Rename from FITS"))
         self.settings = QSettings()
         self.files: list[str] = []
         self.headers: dict[str, fits.Header] = {}
@@ -58,37 +58,37 @@ class BatchRenamerDialog(QDialog):
         # Top: source and destination
         io_row = QHBoxLayout()
         self.src_edit = QLineEdit(self)
-        self.src_edit.setPlaceholderText("Select a folder or add files…")
-        btn_scan = QPushButton("Scan Folder…", self); btn_scan.clicked.connect(self._scan_folder)
-        btn_add = QPushButton("Add Files…", self); btn_add.clicked.connect(self._add_files)
-        btn_clear = QPushButton("Clear Selections", self); btn_clear.clicked.connect(self._clear_selection)
-        io_row.addWidget(QLabel("Source:"))
+        self.src_edit.setPlaceholderText(self.tr("Select a folder or add files…"))
+        btn_scan = QPushButton(self.tr("Scan Folder…"), self); btn_scan.clicked.connect(self._scan_folder)
+        btn_add = QPushButton(self.tr("Add Files…"), self); btn_add.clicked.connect(self._add_files)
+        btn_clear = QPushButton(self.tr("Clear Selections"), self); btn_clear.clicked.connect(self._clear_selection)
+        io_row.addWidget(QLabel(self.tr("Source:")))
         io_row.addWidget(self.src_edit, 1)
         io_row.addWidget(btn_scan)
         io_row.addWidget(btn_add)
         io_row.addWidget(btn_clear)
 
         self.dest_edit = QLineEdit(self)
-        self.dest_edit.setPlaceholderText("(optional) Rename into this folder; leave empty to rename in place")
-        btn_dest = QPushButton("Browse…", self); btn_dest.clicked.connect(self._pick_dest)
+        self.dest_edit.setPlaceholderText(self.tr("(optional) Rename into this folder; leave empty to rename in place"))
+        btn_dest = QPushButton(self.tr("Browse…"), self); btn_dest.clicked.connect(self._pick_dest)
         io_row2 = QHBoxLayout()
-        io_row2.addWidget(QLabel("Destination:"))
+        io_row2.addWidget(QLabel(self.tr("Destination:")))
         io_row2.addWidget(self.dest_edit, 1)
         io_row2.addWidget(btn_dest)
 
         root.addLayout(io_row); root.addLayout(io_row2)
 
         # Middle: template & options
-        pat_box = QGroupBox("Filename pattern")
+        pat_box = QGroupBox(self.tr("Filename pattern"))
         pat_lay = QHBoxLayout(pat_box)
 
         self.pattern_edit = QLineEdit(self)
-        self.pattern_edit.setPlaceholderText("e.g. LIGHT_{FILTER}_{EXPOSURE:.0f}s_{DATE-OBS:%Y%m%d}_{#03}.{ext}")
+        self.pattern_edit.setPlaceholderText(self.tr("e.g. LIGHT_{FILTER}_{EXPOSURE:.0f}s_{DATE-OBS:%Y%m%d}_{#03}.{ext}"))
         self.pattern_edit.textChanged.connect(self._refresh_preview)
 
-        self.lower_cb = QCheckBox("lowercase", self);     self.lower_cb.toggled.connect(self._refresh_preview)
-        self.slug_cb  = QCheckBox("spaces→_", self);      self.slug_cb.toggled.connect(self._refresh_preview)
-        self.keep_ext_cb = QCheckBox("append .{ext} if missing", self); self.keep_ext_cb.setChecked(True)
+        self.lower_cb = QCheckBox(self.tr("lowercase"), self);     self.lower_cb.toggled.connect(self._refresh_preview)
+        self.slug_cb  = QCheckBox(self.tr("spaces→_"), self);      self.slug_cb.toggled.connect(self._refresh_preview)
+        self.keep_ext_cb = QCheckBox(self.tr("append .{ext} if missing"), self); self.keep_ext_cb.setChecked(True)
         self.index_start = QSpinBox(self); self.index_start.setRange(0, 999999); self.index_start.setValue(1)
         self.index_start.valueChanged.connect(self._refresh_preview)
 
@@ -96,18 +96,18 @@ class BatchRenamerDialog(QDialog):
         self.token_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         self.token_combo.setMinimumContentsLength(12)
         self.token_combo.setEditable(False)
-        self.token_combo.setToolTip("Insert token")
+        self.token_combo.setToolTip(self.tr("Insert token"))
         self.token_combo.activated.connect(
             lambda idx: self._insert_token(self.token_combo.itemText(idx))
         )
 
-        insert_btn = QPushButton("Insert", self)
+        insert_btn = QPushButton(self.tr("Insert"), self)
         insert_btn.clicked.connect(lambda: self._insert_token(self.token_combo.currentText()))
 
-        pat_lay.addWidget(QLabel("Template:")); pat_lay.addWidget(self.pattern_edit, 1)
+        pat_lay.addWidget(QLabel(self.tr("Template:"))); pat_lay.addWidget(self.pattern_edit, 1)
         pat_lay.addWidget(self.token_combo); pat_lay.addWidget(insert_btn)
         pat_lay.addWidget(self.lower_cb); pat_lay.addWidget(self.slug_cb)
-        pat_lay.addWidget(QLabel("Index start:")); pat_lay.addWidget(self.index_start)
+        pat_lay.addWidget(QLabel(self.tr("Index start:"))); pat_lay.addWidget(self.index_start)
         pat_lay.addWidget(self.keep_ext_cb)
 
         root.addWidget(pat_box)
@@ -120,14 +120,14 @@ class BatchRenamerDialog(QDialog):
         left.setFixedWidth(180)
         self.keys_list = QListWidget(self)
         self.keys_list.itemDoubleClicked.connect(self._insert_key_from_list)
-        lyt.addWidget(QLabel("Available FITS keywords (double-click to insert):"))
+        lyt.addWidget(QLabel(self.tr("Available FITS keywords (double-click to insert):")))
         lyt.addWidget(self.keys_list, 1)
         split.addWidget(left)
 
         # Table
         right = QWidget(self); rlyt = QVBoxLayout(right)
         self.table = QTableWidget(self); self.table.setColumnCount(4)
-        self.table.setHorizontalHeaderLabels(["Old path", "→", "New name", "Status"])
+        self.table.setHorizontalHeaderLabels([self.tr("Old path"), "→", self.tr("New name"), self.tr("Status")])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
@@ -138,7 +138,7 @@ class BatchRenamerDialog(QDialog):
             self.table.setTextElideMode(Qt.TextElideMode.ElideMiddle)  # PyQt6
         except AttributeError:
             pass
-        rlyt.addWidget(QLabel("Preview"))
+        rlyt.addWidget(QLabel(self.tr("Preview")))
         rlyt.addWidget(self.table, 1)
         split.addWidget(right)
         split.setSizes([250, 700])
@@ -150,8 +150,8 @@ class BatchRenamerDialog(QDialog):
 
         # Buttons
         btns = QDialogButtonBox(self)
-        self.btn_preview = btns.addButton("Preview", QDialogButtonBox.ButtonRole.ActionRole)
-        self.btn_rename  = btns.addButton("Rename", QDialogButtonBox.ButtonRole.AcceptRole)
+        self.btn_preview = btns.addButton(self.tr("Preview"), QDialogButtonBox.ButtonRole.ActionRole)
+        self.btn_rename  = btns.addButton(self.tr("Rename"), QDialogButtonBox.ButtonRole.AcceptRole)
         self.btn_close   = btns.addButton(QDialogButtonBox.StandardButton.Close)
         self.btn_preview.clicked.connect(self._refresh_preview)
         self.btn_rename.clicked.connect(self._do_rename)
@@ -189,7 +189,7 @@ class BatchRenamerDialog(QDialog):
     # ---------- file loading ----------
     def _scan_folder(self):
         start = self.src_edit.text().strip()
-        path = QFileDialog.getExistingDirectory(self, "Select Folder", start or "")
+        path = QFileDialog.getExistingDirectory(self, self.tr("Select Folder"), start or "")
         if not path: return
         self.src_edit.setText(path)
         self._scan_existing(path)
@@ -207,7 +207,7 @@ class BatchRenamerDialog(QDialog):
     def _add_files(self):
         start = self.src_edit.text().strip() or ""
         files, _ = QFileDialog.getOpenFileNames(
-            self, "Add FITS files", start, "FITS files (*.fit *.fits *.fts *.fz);;All files (*)"
+            self, self.tr("Add FITS files"), start, self.tr("FITS files (*.fit *.fits *.fts *.fz);;All files (*)")
         )
         if not files: return
         new = sorted(set(self.files) | set(files))
@@ -237,7 +237,7 @@ class BatchRenamerDialog(QDialog):
 
     def _pick_dest(self):
         start = self.dest_edit.text().strip() or self.src_edit.text().strip()
-        d = QFileDialog.getExistingDirectory(self, "Choose Destination Folder", start or "")
+        d = QFileDialog.getExistingDirectory(self, self.tr("Choose Destination Folder"), start or "")
         if not d: return
         self.dest_edit.setText(d)
         self._save_settings()
@@ -342,9 +342,9 @@ class BatchRenamerDialog(QDialog):
         self.table.item(r, 2).setText(new)
         status = ""
         conflict = (count > 1)
-        if conflict: status = "name collision"
-        elif os.path.exists(new): status = "will overwrite"
-        else: status = "ok"
+        if conflict: status = self.tr("name collision")
+        elif os.path.exists(new): status = self.tr("will overwrite")
+        else: status = self.tr("ok")
         it = QTableWidgetItem(status)
         if conflict or status == "will overwrite":
             it.setForeground(Qt.GlobalColor.red)
@@ -361,8 +361,8 @@ class BatchRenamerDialog(QDialog):
         for t in targets: counts[t] += 1
         collisions = [t for t,c in counts.items() if c > 1]
         if collisions:
-            QMessageBox.warning(self, "Collisions",
-                "Two or more files would map to the same name. Adjust your pattern.")
+            QMessageBox.warning(self, self.tr("Collisions"),
+                self.tr("Two or more files would map to the same name. Adjust your pattern."))
             return
 
         failures = []
@@ -374,17 +374,17 @@ class BatchRenamerDialog(QDialog):
             os.makedirs(os.path.dirname(newp), exist_ok=True)
             try:
                 shutil.move(oldp, newp)
-                self.table.item(r, 3).setText("renamed")
+                self.table.item(r, 3).setText(self.tr("renamed"))
             except Exception as e:
-                self.table.item(r, 3).setText(f"ERROR: {e}")
+                self.table.item(r, 3).setText(self.tr("ERROR: {0}").format(e))
                 self.table.item(r, 3).setForeground(Qt.GlobalColor.red)
                 failures.append((oldp, str(e)))
 
         if failures:
-            QMessageBox.warning(self, "Done with errors",
-                f"Some files could not be renamed ({len(failures)} errors).")
+            QMessageBox.warning(self, self.tr("Done with errors"),
+                self.tr("Some files could not be renamed ({0} errors).").format(len(failures)))
         else:
-            QMessageBox.information(self, "Done", "All files renamed.")
+            QMessageBox.information(self, self.tr("Done"), self.tr("All files renamed."))
         self._save_settings()
         src = self.src_edit.text().strip()
         if src and not self.dest_edit.text().strip():

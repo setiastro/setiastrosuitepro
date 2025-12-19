@@ -129,7 +129,7 @@ class ContinuumSubtractTab(QWidget):
         columns_layout = QHBoxLayout()        # holds the three groups
 
         # — NB group —
-        nb_group = QGroupBox("Narrowband Filters")
+        nb_group = QGroupBox(self.tr("Narrowband Filters"))
         nb_l = QVBoxLayout()
         for name, attr in [("Ha","ha"), ("SII","sii"), ("OIII","oiii")]:
             # starry
@@ -166,9 +166,9 @@ class ContinuumSubtractTab(QWidget):
             nb_l.addWidget(btn_sl); nb_l.addWidget(lbl_sl)
 
         # user controls
-        self.linear_output_checkbox = QCheckBox("Output Linear Image Only")
+        self.linear_output_checkbox = QCheckBox(self.tr("Output Linear Image Only"))
         nb_l.addWidget(self.linear_output_checkbox)
-        self.denoise_checkbox = QCheckBox("Denoise continuum result with Cosmic Clarity (0.9)")  # NEW
+        self.denoise_checkbox = QCheckBox(self.tr("Denoise continuum result with Cosmic Clarity (0.9)"))  # NEW
         self.denoise_checkbox.setToolTip(
             "Runs Cosmic Clarity denoise on the linear continuum-subtracted image "
             "before any non-linear stretch."
@@ -221,13 +221,13 @@ class ContinuumSubtractTab(QWidget):
 
         nb_l.addStretch(1)
 
-        self.clear_button = QPushButton("Clear Loaded Images")
+        self.clear_button = QPushButton(self.tr("Clear Loaded Images"))
         self.clear_button.clicked.connect(self.clear_loaded_images)
         nb_l.addWidget(self.clear_button)
         nb_group.setLayout(nb_l)
 
         # — Continuum group —
-        cont_group = QGroupBox("Continuum Sources")
+        cont_group = QGroupBox(self.tr("Continuum Sources"))
         cont_l = QVBoxLayout()
         for name, attr in [("Red","red"), ("Green","green"), ("OSC","osc")]:
             btn = QPushButton(f"Load {name}")
@@ -248,7 +248,7 @@ class ContinuumSubtractTab(QWidget):
         cont_group.setLayout(cont_l)
 
         # — White balance diagnostics —
-        wb_group   = QGroupBox("Star-Based WB")
+        wb_group   = QGroupBox(self.tr("Star-Based WB"))
         self.wb_l  = QVBoxLayout()
         self.wb_l.setAlignment(Qt.AlignmentFlag.AlignTop)
         wb_group.setLayout(self.wb_l)
@@ -267,7 +267,7 @@ class ContinuumSubtractTab(QWidget):
 
         # — Bottom row: Execute & status —
         bottom_layout = QHBoxLayout()
-        self.execute_button = QPushButton("Execute")
+        self.execute_button = QPushButton(self.tr("Execute"))
         self.execute_button.clicked.connect(self.startContinuumSubtraction)
         bottom_layout.addWidget(self.execute_button, stretch=1)
         bottom_layout.addWidget(self.spinnerLabel,   stretch=1)

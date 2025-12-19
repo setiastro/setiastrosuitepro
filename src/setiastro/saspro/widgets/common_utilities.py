@@ -65,7 +65,7 @@ class AboutDialog(QDialog):
 
     def __init__(self, parent: Optional[Any] = None, version: str = "", build_timestamp: str = ""):
         super().__init__(parent)
-        self.setWindowTitle("About Seti Astro Suite")
+        self.setWindowTitle(self.tr("About Seti Astro Suite"))
 
         # Get version info if not provided
         if not version:
@@ -84,17 +84,17 @@ class AboutDialog(QDialog):
         # Build about text with optional build timestamp
         about_lines = [
             f"<h2>Seti Astro's Suite Pro {version}</h2>",
-            "<p>Written by Franklin Marek</p>",
-            "<p>Collaborators: Fabio Tempera</p>",
-            "<p>Copyright © 2025 Seti Astro</p>",
+            f"<p>{self.tr('Written by Franklin Marek')}</p>",
+            f"<p>{self.tr('Collaborators: Fabio Tempera')}</p>",
+            f"<p>{self.tr('Copyright © 2025 Seti Astro')}</p>",
         ]
 
         if build_timestamp and build_timestamp != "Unknown":
-            about_lines.append(f"<p><b>Build:</b> {build_timestamp}</p>")
+            about_lines.append(f"<p><b>{self.tr('Build:')}</b> {build_timestamp}</p>")
 
         about_lines.extend([
-            "<p>Website: <a href='http://www.setiastro.com'>www.setiastro.com</a></p>",
-            "<p>Donations: <a href='https://www.setiastro.com/checkout/donate?donatePageId=65ae7e7bac20370d8c04c1ab'>Click here to donate</a></p>",
+            f"<p>{self.tr('Website:')} <a href='http://www.setiastro.com'>www.setiastro.com</a></p>",
+            f"<p>{self.tr('Donations:')} <a href='https://www.setiastro.com/checkout/donate?donatePageId=65ae7e7bac20370d8c04c1ab'>{self.tr('Click here to donate')}</a></p>",
         ])
 
         about_text = "".join(about_lines)
@@ -254,7 +254,8 @@ def install_crash_handlers(app: 'QApplication') -> None:
             m.setIcon(QMessageBox.Icon.Critical)
             m.setWindowTitle(title)
             m.setText(head)
-            m.setInformativeText("Details are available below and in saspro.log.")
+            from PyQt6.QtCore import QCoreApplication
+            m.setInformativeText(QCoreApplication.translate("CrashHandler", "Details are available below and in saspro.log."))
             if details:
                 m.setDetailedText(details)
             m.setStandardButtons(QMessageBox.StandardButton.Ok)
@@ -266,7 +267,7 @@ def install_crash_handlers(app: 'QApplication') -> None:
         tb = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
         logging.error("Uncaught exception:\n%s", tb)
         _show_dialog(
-            "Unhandled Exception",
+            QCoreApplication.translate("CrashHandler", "Unhandled Exception"),
             f"{exc_type.__name__}: {exc_value}",
             tb
         )
@@ -278,7 +279,7 @@ def install_crash_handlers(app: 'QApplication') -> None:
         tb = "".join(traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback))
         logging.error("Uncaught thread exception (%s):\n%s", args.thread.name, tb)
         _show_dialog(
-            "Unhandled Thread Exception",
+            QCoreApplication.translate("CrashHandler", "Unhandled Thread Exception"),
             f"{args.exc_type.__name__}: {args.exc_value}",
             tb
         )

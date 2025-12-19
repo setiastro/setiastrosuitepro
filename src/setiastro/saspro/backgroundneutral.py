@@ -240,7 +240,7 @@ class BackgroundNeutralizationDialog(QDialog):
         self.doc = doc
         if icon:
             self.setWindowIcon(icon)
-        self.setWindowTitle("Background Neutralization")
+        self.setWindowTitle(self.tr("Background Neutralization"))
         self.resize(900, 600)
 
         self.setWindowFlag(Qt.WindowType.Window, True)
@@ -271,10 +271,10 @@ class BackgroundNeutralizationDialog(QDialog):
 
         # Buttons row
         btn_row = QHBoxLayout()
-        self.btn_apply = QPushButton("Apply Neutralization")
-        self.btn_cancel = QPushButton("Cancel")
-        self.btn_toggle_stretch = QPushButton("Enable Auto-Stretch")
-        self.btn_find_bg = QPushButton("Find Background")
+        self.btn_apply = QPushButton(self.tr("Apply Neutralization"))
+        self.btn_cancel = QPushButton(self.tr("Cancel"))
+        self.btn_toggle_stretch = QPushButton(self.tr("Enable Auto-Stretch"))
+        self.btn_find_bg = QPushButton(self.tr("Find Background"))
         btn_row.addWidget(self.btn_apply)
         btn_row.addWidget(self.btn_cancel)
         btn_row.addWidget(self.btn_toggle_stretch)

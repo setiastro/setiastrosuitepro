@@ -270,7 +270,7 @@ class CosmicClarityDialogPro(QDialog):
                 logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
             QTimer.singleShot(0, self.reject)
             return        
-        self.setWindowTitle("Cosmic Clarity")
+        self.setWindowTitle(self.tr("Cosmic Clarity"))
         if icon: 
             try: self.setWindowIcon(icon)
             except Exception as e:
@@ -285,19 +285,19 @@ class CosmicClarityDialogPro(QDialog):
         v = QVBoxLayout(self)
 
         # ---------------- Controls ----------------
-        grp = QGroupBox("Parameters")
+        grp = QGroupBox(self.tr("Parameters"))
         grid = QGridLayout(grp)
 
         # Mode
-        grid.addWidget(QLabel("Mode:"), 0, 0)
+        grid.addWidget(QLabel(self.tr("Mode:")), 0, 0)
         self.cmb_mode = QComboBox()
         self.cmb_mode.addItems(["Sharpen", "Denoise", "Both", "Super Resolution"])
         self.cmb_mode.currentIndexChanged.connect(self._mode_changed)
         grid.addWidget(self.cmb_mode, 0, 1, 1, 2)
 
         # GPU
-        grid.addWidget(QLabel("Use GPU:"), 1, 0)
-        self.cmb_gpu = QComboBox(); self.cmb_gpu.addItems(["Yes", "No"])
+        grid.addWidget(QLabel(self.tr("Use GPU:")), 1, 0)
+        self.cmb_gpu = QComboBox(); self.cmb_gpu.addItems([self.tr("Yes"), self.tr("No")])
         grid.addWidget(self.cmb_gpu, 1, 1)
 
         # Sharpen block
@@ -364,8 +364,8 @@ class CosmicClarityDialogPro(QDialog):
 
         # Buttons
         row = QHBoxLayout()
-        b_run   = QPushButton("Execute"); b_run.clicked.connect(self._run_main)
-        b_close = QPushButton("Close");   b_close.clicked.connect(self.reject)
+        b_run   = QPushButton(self.tr("Execute")); b_run.clicked.connect(self._run_main)
+        b_close = QPushButton(self.tr("Close"));   b_close.clicked.connect(self.reject)
         row.addStretch(1); row.addWidget(b_run); row.addWidget(b_close)
         v.addLayout(row)
 

@@ -455,7 +455,7 @@ class SelectiveColorCorrection(QDialog):
     """
     def __init__(self, doc_manager=None, document=None, parent=None, window_icon: QIcon | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Selective Color Correction")
+        self.setWindowTitle(self.tr("Selective Color Correction"))
         if window_icon:
             self.setWindowIcon(window_icon)
 
@@ -536,7 +536,7 @@ class SelectiveColorCorrection(QDialog):
         left.setSpacing(8)
 
         # ===== Mask group
-        gb_mask = QGroupBox("Mask")
+        gb_mask = QGroupBox(self.tr("Mask"))
         gl = QGridLayout(gb_mask)
         gl.setContentsMargins(8, 8, 8, 8)
         gl.setHorizontalSpacing(10)
@@ -652,7 +652,7 @@ class SelectiveColorCorrection(QDialog):
 
         # ===== Adjustments
         # CMY
-        gb_cmy = QGroupBox("Complementary colors (CMY)")
+        gb_cmy = QGroupBox(self.tr("Complementary colors (CMY)"))
         glc = QGridLayout(gb_cmy)
         self.sl_c, self.ds_c = self._slider_pair(glc, "Cyan:",    0)
         self.sl_m, self.ds_m = self._slider_pair(glc, "Magenta:", 1)
@@ -660,7 +660,7 @@ class SelectiveColorCorrection(QDialog):
         left.addWidget(gb_cmy)
 
         # RGB
-        gb_rgb = QGroupBox("RGB Colors")
+        gb_rgb = QGroupBox(self.tr("RGB Colors"))
         glr = QGridLayout(gb_rgb)
         self.sl_r, self.ds_r = self._slider_pair(glr, "Red:",   0)
         self.sl_g, self.ds_g = self._slider_pair(glr, "Green:", 1)
@@ -668,7 +668,7 @@ class SelectiveColorCorrection(QDialog):
         left.addWidget(gb_rgb)
 
         # LSC
-        gb_lsc = QGroupBox("Luminance, Chroma/Saturation, Contrast")
+        gb_lsc = QGroupBox(self.tr("Luminance, Chroma/Saturation, Contrast"))
         gll = QGridLayout(gb_lsc)
         self.sl_l, self.ds_l           = self._slider_pair(gll, "Luminance:",  0)
         self.sl_chroma, self.ds_chroma = self._slider_pair(gll, "Chroma (L-preserving):", 1)

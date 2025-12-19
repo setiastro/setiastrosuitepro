@@ -42,7 +42,7 @@ class RGBCombinationDialogPro(QDialog):
     """
     def __init__(self, parent, list_open_docs_fn=None, doc_manager=None):
         super().__init__(parent)
-        self.setWindowTitle("RGB Combination")
+        self.setWindowTitle(self.tr("RGB Combination"))
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.setModal(False)
         #self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
@@ -55,28 +55,28 @@ class RGBCombinationDialogPro(QDialog):
         self.b_path = None
 
         # ── mode choose
-        self.load_files_radio = QRadioButton("Load Individual Files")
-        self.use_views_radio  = QRadioButton("Use Open Views")
+        self.load_files_radio = QRadioButton(self.tr("Load Individual Files"))
+        self.use_views_radio  = QRadioButton(self.tr("Use Open Views"))
         self.use_views_radio.setChecked(True)
 
         self.mode_group = QButtonGroup(self)
         self.mode_group.addButton(self.load_files_radio)
         self.mode_group.addButton(self.use_views_radio)
 
-        mode_box = QGroupBox("Select RGB Combination Mode")
+        mode_box = QGroupBox(self.tr("Select RGB Combination Mode"))
         ml = QVBoxLayout(mode_box)
         ml.addWidget(self.use_views_radio)
         ml.addWidget(self.load_files_radio)
 
         # ── file mode widgets
-        self.r_label = QLabel("Red: Not selected")
-        self.g_label = QLabel("Green: Not selected")
-        self.b_label = QLabel("Blue: Not selected")
-        self.btn_load_r = QPushButton("Load Red…");   self.btn_load_r.clicked.connect(lambda: self._pick_file("R"))
-        self.btn_load_g = QPushButton("Load Green…"); self.btn_load_g.clicked.connect(lambda: self._pick_file("G"))
-        self.btn_load_b = QPushButton("Load Blue…");  self.btn_load_b.clicked.connect(lambda: self._pick_file("B"))
+        self.r_label = QLabel(self.tr("Red: Not selected"))
+        self.g_label = QLabel(self.tr("Green: Not selected"))
+        self.b_label = QLabel(self.tr("Blue: Not selected"))
+        self.btn_load_r = QPushButton(self.tr("Load Red…"));   self.btn_load_r.clicked.connect(lambda: self._pick_file("R"))
+        self.btn_load_g = QPushButton(self.tr("Load Green…")); self.btn_load_g.clicked.connect(lambda: self._pick_file("G"))
+        self.btn_load_b = QPushButton(self.tr("Load Blue…"));  self.btn_load_b.clicked.connect(lambda: self._pick_file("B"))
 
-        file_box = QGroupBox("Files")
+        file_box = QGroupBox(self.tr("Files"))
         fl = QVBoxLayout(file_box)
         for lab, btn in [(self.r_label, self.btn_load_r),
                          (self.g_label, self.btn_load_g),
@@ -85,16 +85,16 @@ class RGBCombinationDialogPro(QDialog):
             fl.addLayout(row)
 
         # ── open-views widgets
-        views_box = QGroupBox("Select Open Views for R / G / B")
+        views_box = QGroupBox(self.tr("Select Open Views for R / G / B"))
         vl = QHBoxLayout(views_box)
         self.cmb_r = QComboBox(); self.cmb_g = QComboBox(); self.cmb_b = QComboBox()
-        vl.addLayout(self._labeled("Red:",   self.cmb_r))
-        vl.addLayout(self._labeled("Green:", self.cmb_g))
-        vl.addLayout(self._labeled("Blue:",  self.cmb_b))
+        vl.addLayout(self._labeled(self.tr("Red:"),   self.cmb_r))
+        vl.addLayout(self._labeled(self.tr("Green:"), self.cmb_g))
+        vl.addLayout(self._labeled(self.tr("Blue:"),  self.cmb_b))
 
         # ── buttons
-        self.btn_combine = QPushButton("Combine")
-        self.btn_cancel  = QPushButton("Cancel")
+        self.btn_combine = QPushButton(self.tr("Combine"))
+        self.btn_cancel  = QPushButton(self.tr("Cancel"))
         self.btn_cancel.clicked.connect(self.reject)
         self.btn_combine.clicked.connect(self._combine)
 

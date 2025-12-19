@@ -154,7 +154,7 @@ class BlemishBlasterDialogPro(QDialog):
     """
     def __init__(self, parent, doc):
         super().__init__(parent)
-        self.setWindowTitle("Blemish Blaster")
+        self.setWindowTitle(self.tr("Blemish Blaster"))
         self.setMinimumSize(900, 650)
 
         self._doc = doc
@@ -214,19 +214,19 @@ class BlemishBlasterDialogPro(QDialog):
 
 
         # ── Controls
-        ctrls = QGroupBox("Controls")
+        ctrls = QGroupBox(self.tr("Controls"))
         form  = QFormLayout(ctrls)
 
         # existing sliders
         self.s_radius  = QSlider(Qt.Orientation.Horizontal); self.s_radius.setRange(1, 900); self.s_radius.setValue(12)
         self.s_feather = QSlider(Qt.Orientation.Horizontal); self.s_feather.setRange(0, 100); self.s_feather.setValue(50)
         self.s_opacity = QSlider(Qt.Orientation.Horizontal); self.s_opacity.setRange(0, 100); self.s_opacity.setValue(100)
-        form.addRow("Radius:",  self.s_radius)
-        form.addRow("Feather:", self.s_feather)
-        form.addRow("Opacity:", self.s_opacity)
+        form.addRow(self.tr("Radius:"),  self.s_radius)
+        form.addRow(self.tr("Feather:"), self.s_feather)
+        form.addRow(self.tr("Opacity:"), self.s_opacity)
 
         # --- PREVIEW AUTOSTRETCH (display only) ---
-        self.cb_autostretch = QCheckBox("Auto-stretch preview")
+        self.cb_autostretch = QCheckBox(self.tr("Auto-stretch preview"))
         self.cb_autostretch.setChecked(True)
         form.addRow(self.cb_autostretch)
 
@@ -235,9 +235,9 @@ class BlemishBlasterDialogPro(QDialog):
         self.s_target_median.setSingleStep(0.01)
         self.s_target_median.setDecimals(3)
         self.s_target_median.setValue(0.25)
-        form.addRow("Target median:", self.s_target_median)
+        form.addRow(self.tr("Target median:"), self.s_target_median)
 
-        self.cb_linked = QCheckBox("Linked color channels")
+        self.cb_linked = QCheckBox(self.tr("Linked color channels"))
         self.cb_linked.setChecked(True)
         form.addRow(self.cb_linked)
 
@@ -252,10 +252,10 @@ class BlemishBlasterDialogPro(QDialog):
         # buttons / layout (unchanged)
         bb = QHBoxLayout()
 
-        self.btn_undo  = QPushButton("Undo")
-        self.btn_redo  = QPushButton("Redo")
-        self.btn_apply = QPushButton("Apply to Document")
-        self.btn_close = QPushButton("Close")
+        self.btn_undo  = QPushButton(self.tr("Undo"))
+        self.btn_redo  = QPushButton(self.tr("Redo"))
+        self.btn_apply = QPushButton(self.tr("Apply to Document"))
+        self.btn_close = QPushButton(self.tr("Close"))
 
         self.btn_undo.setEnabled(False)
         self.btn_redo.setEnabled(False)

@@ -401,7 +401,7 @@ class DebayerDialog(QDialog):
     """
     def __init__(self, parent, doc_manager, active_doc):
         super().__init__(parent)
-        self.setWindowTitle("Debayer")
+        self.setWindowTitle(self.tr("Debayer"))
         self.dm = doc_manager
         self.doc = active_doc
         self.worker: Optional[_DebayerWorker] = None
@@ -435,7 +435,7 @@ class DebayerDialog(QDialog):
         detected = _detect_bayer_from_header(active_doc)
         self._detected_pattern = detected  # store for later
 
-        gb = QGroupBox("Bayer pattern", self)
+        gb = QGroupBox(self.tr("Bayer pattern"), self)
         h = QHBoxLayout(gb)
         self.combo_pattern = QComboBox(self)
         self.combo_pattern.addItems([
@@ -455,7 +455,7 @@ class DebayerDialog(QDialog):
             norm = _normalize_bayer_token(self._detected_pattern or "")
             self.lbl_detect.setText(f"Detected: {norm or '(unknown)'}")
 
-        self.method_group = QGroupBox("Method", self)
+        self.method_group = QGroupBox(self.tr("Method"), self)
         hm = QHBoxLayout(self.method_group)
         self.combo_method = QComboBox(self)
 

@@ -49,7 +49,7 @@ class StarSpikesDialogPro(QDialog):
                  aperture_help_path: str | None = None,
                  spinner_path: str | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Diffraction Spikes")
+        self.setWindowTitle(self.tr("Diffraction Spikes"))
         self.docman = doc_manager
         self.doc = initial_doc or (self.docman.get_active_document() if self.docman else None)
         self.jwstpupil_path = jwstpupil_path
@@ -97,7 +97,7 @@ class StarSpikesDialogPro(QDialog):
             return sp
 
         # --- Group: Star Detection ---
-        grp_detect = QGroupBox("Star Detection")
+        grp_detect = QGroupBox(self.tr("Star Detection"))
         f_detect = QFormLayout(grp_detect)
         f_detect.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         f_detect.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
@@ -108,11 +108,11 @@ class StarSpikesDialogPro(QDialog):
         # keep self.advanced in sync if user edits
         self.detect_thresh.valueChanged.connect(lambda v: self.advanced.__setitem__("detect_thresh", float(v)))
 
-        f_detect.addRow("Flux Min:", self.flux_min)
-        f_detect.addRow("Detection Threshold (σ):", self.detect_thresh)
+        f_detect.addRow(self.tr("Flux Min:"), self.flux_min)
+        f_detect.addRow(self.tr("Detection Threshold (σ):"), self.detect_thresh)
 
         # --- Group: Aperture (Geometry) ---
-        grp_ap = QGroupBox("Aperture")
+        grp_ap = QGroupBox(self.tr("Aperture"))
         f_ap = QFormLayout(grp_ap)
         f_ap.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         f_ap.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
@@ -127,7 +127,7 @@ class StarSpikesDialogPro(QDialog):
                           border-radius: 14px; background:#ccc; border:1px solid #999;}
             QPushButton:checked { background:#66bb6a; }
         """)
-        f_ap.addRow("Aperture Type:", self.pupil_jwst)
+        f_ap.addRow(self.tr("Aperture Type:"), self.pupil_jwst)
 
         self.radius      = dspin(1.0, 512.0, 1.0, 128.0, decimals=1)
         self.obstruction = dspin(0.0, 0.99, 0.01, 0.2, decimals=2)
@@ -135,14 +135,14 @@ class StarSpikesDialogPro(QDialog):
         self.vane_width  = dspin(0.0, 50.0, 0.5, 4.0, decimals=2)
         self.rotation    = dspin(0.0, 360.0, 1.0, 0.0, decimals=1)
 
-        f_ap.addRow("Pupil Radius:", self.radius)
-        f_ap.addRow("Obstruction:", self.obstruction)
-        f_ap.addRow("Number of Vanes:", self.num_vanes)
-        f_ap.addRow("Vane Width:", self.vane_width)
-        f_ap.addRow("Rotation (deg):", self.rotation)
+        f_ap.addRow(self.tr("Pupil Radius:"), self.radius)
+        f_ap.addRow(self.tr("Obstruction:"), self.obstruction)
+        f_ap.addRow(self.tr("Number of Vanes:"), self.num_vanes)
+        f_ap.addRow(self.tr("Vane Width:"), self.vane_width)
+        f_ap.addRow(self.tr("Rotation (deg):"), self.rotation)
 
         # --- Group: PSF & Synthesis ---
-        grp_psf = QGroupBox("PSF & Synthesis")
+        grp_psf = QGroupBox(self.tr("PSF & Synthesis"))
         f_psf = QFormLayout(grp_psf)
         f_psf.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         f_psf.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
@@ -150,18 +150,18 @@ class StarSpikesDialogPro(QDialog):
         self.color_boost = dspin(0.1, 10.0, 0.1, 1.5, decimals=2)
         self.blur_sigma  = dspin(0.1, 10.0, 0.1, 2.0, decimals=2)
 
-        f_psf.addRow("Spike Boost:", self.color_boost)
-        f_psf.addRow("PSF Blur Sigma:", self.blur_sigma)
+        f_psf.addRow(self.tr("Spike Boost:"), self.color_boost)
+        f_psf.addRow(self.tr("PSF Blur Sigma:"), self.blur_sigma)
 
         # --- Actions ---
         row_actions = QHBoxLayout()
         row_actions.setSpacing(8)
-        self.btn_run = QPushButton("Generate Spikes")
+        self.btn_run = QPushButton(self.tr("Generate Spikes"))
         self.btn_run.clicked.connect(self._run)
-        self.btn_apply = QPushButton("Apply to Active Document")
+        self.btn_apply = QPushButton(self.tr("Apply to Active Document"))
         self.btn_apply.clicked.connect(self._apply_to_doc)
         self.btn_apply.setEnabled(False)
-        self.btn_help = QPushButton("Aperture Help")
+        self.btn_help = QPushButton(self.tr("Aperture Help"))
         self.btn_help.clicked.connect(self._show_help)
         row_actions.addWidget(self.btn_run)
         row_actions.addWidget(self.btn_apply)
@@ -169,7 +169,7 @@ class StarSpikesDialogPro(QDialog):
         row_actions.addStretch(1)
 
         # --- Status ---
-        self.status = QLabel("Ready")
+        self.status = QLabel(self.tr("Ready"))
         self.status.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.status.setWordWrap(True)
 
@@ -189,9 +189,9 @@ class StarSpikesDialogPro(QDialog):
 
         # zoom toolbar
         zrow = QHBoxLayout()
-        self.btn_zoom_in = QPushButton("Zoom In")
-        self.btn_zoom_out = QPushButton("Zoom Out")
-        self.btn_fit = QPushButton("Fit to Preview")
+        self.btn_zoom_in = QPushButton(self.tr("Zoom In"))
+        self.btn_zoom_out = QPushButton(self.tr("Zoom Out"))
+        self.btn_fit = QPushButton(self.tr("Fit to Preview"))
         self.btn_zoom_in.clicked.connect(self._zoom_in)
         self.btn_zoom_out.clicked.connect(self._zoom_out)
         self.btn_fit.clicked.connect(self._fit_to_preview)

@@ -195,7 +195,7 @@ def compute_gradient_map(sources, delta_flux, shape, method="poly2"):
 class SaspViewer(QMainWindow):
     def __init__(self, sasp_data_path: str, user_custom_path: str):
         super().__init__()
-        self.setWindowTitle("SASP Viewer (Pickles + RGB Responses)")
+        self.setWindowTitle(self.tr("SASP Viewer (Pickles + RGB Responses)"))
 
         self.base_hdul   = fits.open(sasp_data_path,   mode="readonly", memmap=False)
         self.custom_hdul = fits.open(user_custom_path, mode="readonly", memmap=False)
@@ -220,24 +220,24 @@ class SaspViewer(QMainWindow):
         vbox = QVBoxLayout(); central.setLayout(vbox)
 
         row = QHBoxLayout(); vbox.addLayout(row)
-        row.addWidget(QLabel("Star Template:"))
+        row.addWidget(QLabel(self.tr("Star Template:")))
         self.star_combo = QComboBox(); self.star_combo.addItems(self.pickles_templates); row.addWidget(self.star_combo)
-        row.addWidget(QLabel("R-Filter:"))
+        row.addWidget(QLabel(self.tr("R-Filter:")))
         self.r_filter_combo = QComboBox(); self.r_filter_combo.addItems(self.rgb_filter_choices); row.addWidget(self.r_filter_combo)
-        row.addWidget(QLabel("G-Filter:"))
+        row.addWidget(QLabel(self.tr("G-Filter:")))
         self.g_filter_combo = QComboBox(); self.g_filter_combo.addItems(self.rgb_filter_choices); row.addWidget(self.g_filter_combo)
-        row.addWidget(QLabel("B-Filter:"))
+        row.addWidget(QLabel(self.tr("B-Filter:")))
         self.b_filter_combo = QComboBox(); self.b_filter_combo.addItems(self.rgb_filter_choices); row.addWidget(self.b_filter_combo)
 
         row2 = QHBoxLayout(); vbox.addLayout(row2)
-        row2.addWidget(QLabel("LP/Cut Filter1:"))
+        row2.addWidget(QLabel(self.tr("LP/Cut Filter1:")))
         self.lp_filter_combo = QComboBox(); self.lp_filter_combo.addItems(self.rgb_filter_choices); row2.addWidget(self.lp_filter_combo)
-        row2.addWidget(QLabel("LP/Cut Filter2:"))
+        row2.addWidget(QLabel(self.tr("LP/Cut Filter2:")))
         self.lp_filter_combo2 = QComboBox(); self.lp_filter_combo2.addItems(self.rgb_filter_choices); row2.addWidget(self.lp_filter_combo2)
-        row2.addSpacing(20); row2.addWidget(QLabel("Sensor (QE):"))
+        row2.addSpacing(20); row2.addWidget(QLabel(self.tr("Sensor (QE):")))
         self.sens_combo = QComboBox(); self.sens_combo.addItems(self.sensor_list); row2.addWidget(self.sens_combo)
 
-        self.plot_btn = QPushButton("Plot"); self.plot_btn.clicked.connect(self.update_plot); row.addWidget(self.plot_btn)
+        self.plot_btn = QPushButton(self.tr("Plot")); self.plot_btn.clicked.connect(self.update_plot); row.addWidget(self.plot_btn)
 
         self.figure = Figure(figsize=(9, 6)); self.canvas = FigureCanvas(self.figure); vbox.addWidget(self.canvas)
         self.update_plot()
@@ -309,22 +309,22 @@ class SaspViewer(QMainWindow):
                         mag_texts.append(f"{color[0].upper()}→{data['filter_name']}: {mag:.2f}")
                     else:
                         mag_texts.append(f"{color[0].upper()}→{data['filter_name']}: N/A")
-        title_text = " | ".join(mag_texts) if mag_texts else "No channels selected"
+        title_text = " | ".join(mag_texts) if mag_texts else self.tr("No channels selected")
 
         self.figure.clf()
         ax1 = self.figure.add_subplot(111)
         ax1.plot(common_wl, fl_common, color="black", linewidth=1, label=f"{star_ext} SED")
         for color, data in rgb_data.items():
             if data is not None:
-                ax1.plot(common_wl, data["response"], color="gold", linewidth=1.5, label=f"{color.upper()} Response")
-        ax1.set_xlim(wl_min, wl_max); ax1.set_xlabel("Wavelength (Å)")
-        ax1.set_ylabel("Flux (erg s⁻¹ cm⁻² Å⁻¹)", color="black"); ax1.tick_params(axis="y", labelcolor="black")
+                ax1.plot(common_wl, data["response"], color="gold", linewidth=1.5, label=self.tr("{0} Response").format(color.upper()))
+        ax1.set_xlim(wl_min, wl_max); ax1.set_xlabel(self.tr("Wavelength (Å)"))
+        ax1.set_ylabel(self.tr("Flux (erg s⁻¹ cm⁻² Å⁻¹)"), color="black"); ax1.tick_params(axis="y", labelcolor="black")
 
         ax2 = ax1.twinx()
-        ax2.set_ylabel("Relative Throughput", color="red"); ax2.tick_params(axis="y", labelcolor="red"); ax2.set_ylim(0.0, 1.0)
-        if rgb_data["red"] is not None:   ax2.plot(common_wl, rgb_data["red"]["T_sys"],   color="red",   linestyle="--", linewidth=1, label="R filter×QE")
-        if rgb_data["green"] is not None: ax2.plot(common_wl, rgb_data["green"]["T_sys"], color="green", linestyle="--", linewidth=1, label="G filter×QE")
-        if rgb_data["blue"] is not None:  ax2.plot(common_wl, rgb_data["blue"]["T_sys"],  color="blue",  linestyle="--", linewidth=1, label="B filter×QE")
+        ax2.set_ylabel(self.tr("Relative Throughput"), color="red"); ax2.tick_params(axis="y", labelcolor="red"); ax2.set_ylim(0.0, 1.0)
+        if rgb_data["red"] is not None:   ax2.plot(common_wl, rgb_data["red"]["T_sys"],   color="red",   linestyle="--", linewidth=1, label=self.tr("R filter×QE"))
+        if rgb_data["green"] is not None: ax2.plot(common_wl, rgb_data["green"]["T_sys"], color="green", linestyle="--", linewidth=1, label=self.tr("G filter×QE"))
+        if rgb_data["blue"] is not None:  ax2.plot(common_wl, rgb_data["blue"]["T_sys"],  color="blue",  linestyle="--", linewidth=1, label=self.tr("B filter×QE"))
 
         ax1.grid(True, which="both", linestyle="--", alpha=0.3); self.figure.suptitle(title_text, fontsize=10)
         lines1, labels1 = ax1.get_legend_handles_labels(); lines2, labels2 = ax2.get_legend_handles_labels()
@@ -345,7 +345,7 @@ class SFCCDialog(QDialog):
     """
     def __init__(self, doc_manager, sasp_data_path, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Spectral Flux Color Calibration")
+        self.setWindowTitle(self.tr("Spectral Flux Color Calibration"))
         self.setMinimumSize(800, 600)
 
         self.doc_manager = doc_manager
@@ -353,7 +353,7 @@ class SFCCDialog(QDialog):
         self.user_custom_path = self._ensure_user_custom_fits()
         self.current_image = None
         self.current_header = None
-        self.orientation_label = QLabel("Orientation: N/A")
+        self.orientation_label = QLabel(self.tr("Orientation: N/A"))
         self.sasp_viewer_window = None
         self.main_win = parent
 
@@ -457,19 +457,19 @@ class SFCCDialog(QDialog):
         layout = QVBoxLayout(self)
 
         row1 = QHBoxLayout(); layout.addLayout(row1)
-        self.fetch_stars_btn = QPushButton("Step 1: Fetch Stars from Current View")
+        self.fetch_stars_btn = QPushButton(self.tr("Step 1: Fetch Stars from Current View"))
         f = self.fetch_stars_btn.font(); f.setBold(True); self.fetch_stars_btn.setFont(f)
         self.fetch_stars_btn.clicked.connect(self.fetch_stars)
         row1.addWidget(self.fetch_stars_btn)
 
-        self.open_sasp_btn = QPushButton("Open SASP Viewer")
+        self.open_sasp_btn = QPushButton(self.tr("Open SASP Viewer"))
         self.open_sasp_btn.clicked.connect(self.open_sasp_viewer)
         row1.addWidget(self.open_sasp_btn)
 
         row1.addSpacing(20)
-        row1.addWidget(QLabel("Select White Reference:"))
+        row1.addWidget(QLabel(self.tr("Select White Reference:")))
         self.star_combo = QComboBox()
-        self.star_combo.addItem("Vega (A0V)", userData="A0V")
+        self.star_combo.addItem(self.tr("Vega (A0V)"), userData="A0V")
         for sed in getattr(self, "sed_list", []):
             if sed.upper() == "A0V": continue
             self.star_combo.addItem(sed, userData=sed)
@@ -478,32 +478,32 @@ class SFCCDialog(QDialog):
         if idx_g2v >= 0: self.star_combo.setCurrentIndex(idx_g2v)
 
         row2 = QHBoxLayout(); layout.addLayout(row2)
-        row2.addWidget(QLabel("R Filter:"))
+        row2.addWidget(QLabel(self.tr("R Filter:")))
         self.r_filter_combo = QComboBox(); self.r_filter_combo.addItem("(None)"); self.r_filter_combo.addItems(self.filter_list); row2.addWidget(self.r_filter_combo)
-        row2.addSpacing(20); row2.addWidget(QLabel("G Filter:"))
+        row2.addSpacing(20); row2.addWidget(QLabel(self.tr("G Filter:")))
         self.g_filter_combo = QComboBox(); self.g_filter_combo.addItem("(None)"); self.g_filter_combo.addItems(self.filter_list); row2.addWidget(self.g_filter_combo)
-        row2.addSpacing(20); row2.addWidget(QLabel("B Filter:"))
+        row2.addSpacing(20); row2.addWidget(QLabel(self.tr("B Filter:")))
         self.b_filter_combo = QComboBox(); self.b_filter_combo.addItem("(None)"); self.b_filter_combo.addItems(self.filter_list); row2.addWidget(self.b_filter_combo)
 
         row3 = QHBoxLayout(); layout.addLayout(row3)
         row3.addStretch()
-        row3.addWidget(QLabel("Sensor (QE):"))
+        row3.addWidget(QLabel(self.tr("Sensor (QE):")))
         self.sens_combo = QComboBox(); self.sens_combo.addItem("(None)"); self.sens_combo.addItems(self.sensor_list); row3.addWidget(self.sens_combo)
-        row3.addSpacing(20); row3.addWidget(QLabel("LP/Cut Filter1:"))
+        row3.addSpacing(20); row3.addWidget(QLabel(self.tr("LP/Cut Filter1:")))
         self.lp_filter_combo = QComboBox(); self.lp_filter_combo.addItem("(None)"); self.lp_filter_combo.addItems(self.filter_list); row3.addWidget(self.lp_filter_combo)
-        row3.addSpacing(20); row3.addWidget(QLabel("LP/Cut Filter2:"))
+        row3.addSpacing(20); row3.addWidget(QLabel(self.tr("LP/Cut Filter2:")))
         self.lp_filter_combo2 = QComboBox(); self.lp_filter_combo2.addItem("(None)"); self.lp_filter_combo2.addItems(self.filter_list); row3.addWidget(self.lp_filter_combo2)
         row3.addStretch()
 
         row4 = QHBoxLayout(); layout.addLayout(row4)
-        self.run_spcc_btn = QPushButton("Step 2: Run Color Calibration")
+        self.run_spcc_btn = QPushButton(self.tr("Step 2: Run Color Calibration"))
         f2 = self.run_spcc_btn.font(); f2.setBold(True); self.run_spcc_btn.setFont(f2)
         self.run_spcc_btn.clicked.connect(self.run_spcc)
         row4.addWidget(self.run_spcc_btn)
 
-        self.neutralize_chk = QCheckBox("Background Neutralization"); self.neutralize_chk.setChecked(True); row4.addWidget(self.neutralize_chk)
+        self.neutralize_chk = QCheckBox(self.tr("Background Neutralization")); self.neutralize_chk.setChecked(True); row4.addWidget(self.neutralize_chk)
 
-        self.run_grad_btn = QPushButton("Run Gradient Extraction (Beta)")
+        self.run_grad_btn = QPushButton(self.tr("Run Gradient Extraction (Beta)"))
         f3 = self.run_grad_btn.font(); f3.setBold(True); self.run_grad_btn.setFont(f3)
         self.run_grad_btn.clicked.connect(self.run_gradient_extraction)
         row4.addWidget(self.run_grad_btn)
@@ -512,7 +512,7 @@ class SFCCDialog(QDialog):
         row4.addWidget(self.grad_method_combo)
 
         row4.addSpacing(15)
-        row4.addWidget(QLabel("Star detect σ:"))
+        row4.addWidget(QLabel(self.tr("Star detect σ:")))
         self.sep_thr_spin = QSpinBox()
         self.sep_thr_spin.setRange(2, 50)        # should be enough
         self.sep_thr_spin.setValue(5)            # our current hardcoded value
@@ -520,17 +520,17 @@ class SFCCDialog(QDialog):
         row4.addWidget(self.sep_thr_spin)
 
         row4.addStretch()
-        self.add_curve_btn = QPushButton("Add Custom Filter/Sensor Curve…")
+        self.add_curve_btn = QPushButton(self.tr("Add Custom Filter/Sensor Curve…"))
         self.add_curve_btn.clicked.connect(self.add_custom_curve); row4.addWidget(self.add_curve_btn)
-        self.remove_curve_btn = QPushButton("Remove Filter/Sensor Curve…")
+        self.remove_curve_btn = QPushButton(self.tr("Remove Filter/Sensor Curve…"))
         self.remove_curve_btn.clicked.connect(self.remove_custom_curve); row4.addWidget(self.remove_curve_btn)
         row4.addStretch()
-        self.close_btn = QPushButton("Close"); self.close_btn.clicked.connect(self.close); row4.addWidget(self.close_btn)
+        self.close_btn = QPushButton(self.tr("Close")); self.close_btn.clicked.connect(self.close); row4.addWidget(self.close_btn)
 
         self.count_label = QLabel(""); layout.addWidget(self.count_label)
 
         self.figure = Figure(figsize=(6, 4)); self.canvas = FigureCanvas(self.figure); self.canvas.setVisible(False); layout.addWidget(self.canvas, stretch=1)
-        self.reset_btn = QPushButton("Reset View/Close"); self.reset_btn.clicked.connect(self.close); layout.addWidget(self.reset_btn)
+        self.reset_btn = QPushButton(self.tr("Reset View/Close")); self.reset_btn.clicked.connect(self.close); layout.addWidget(self.reset_btn)
 
         # hide gradient controls by default (enable if you like)
         self.run_grad_btn.hide(); self.grad_method_combo.hide()
@@ -610,9 +610,9 @@ class SFCCDialog(QDialog):
 
     def get_calibration_points(self, rgb_img: np.ndarray):
         print("\nClick three calibration points: BL (λmin,0), BR (λmax,0), TL (λmin,1)")
-        fig, ax = plt.subplots(figsize=(8, 5)); ax.imshow(rgb_img); ax.set_title("Click 3 points, then close")
+        fig, ax = plt.subplots(figsize=(8, 5)); ax.imshow(rgb_img); ax.set_title(self.tr("Click 3 points, then close"))
         pts = plt.ginput(3, timeout=-1); plt.close(fig)
-        if len(pts) != 3: raise RuntimeError("Need exactly three clicks for calibration.")
+        if len(pts) != 3: raise RuntimeError(self.tr("Need exactly three clicks for calibration."))
         return pts[0], pts[1], pts[2]
 
     def build_transforms(self, px_bl, py_bl, px_br, py_br, px_tl, py_tl, λ_min, λ_max, resp_min, resp_max):
@@ -644,10 +644,10 @@ class SFCCDialog(QDialog):
         return df.sort_values("wavelength_nm").reset_index(drop=True)
 
     def _query_name_channel(self):
-        name_str, ok1 = QInputDialog.getText(self, "Curve Name", "Enter curve name (EXTNAME):")
+        name_str, ok1 = QInputDialog.getText(self, self.tr("Curve Name"), self.tr("Enter curve name (EXTNAME):"))
         if not (ok1 and name_str.strip()): return False, None, None
         extname = name_str.strip().upper().replace(" ", "_")
-        ch_str, ok2 = QInputDialog.getText(self, "Channel", "Enter channel (R,G,B or Q for sensor):")
+        ch_str, ok2 = QInputDialog.getText(self, self.tr("Channel"), self.tr("Enter channel (R,G,B or Q for sensor):"))
         if not (ok2 and ch_str.strip()): return False, None, None
         return True, extname, ch_str.strip().upper()
 
@@ -662,16 +662,16 @@ class SFCCDialog(QDialog):
             hdul.append(new_hdu); hdul.flush()
 
     def add_custom_curve(self):
-        msg = QMessageBox(self); msg.setWindowTitle("Add Custom Curve"); msg.setText("Choose how to add the curve:")
-        csv_btn = msg.addButton("Import CSV", QMessageBox.ButtonRole.AcceptRole)
-        img_btn = msg.addButton("Digitize Image", QMessageBox.ButtonRole.AcceptRole)
+        msg = QMessageBox(self); msg.setWindowTitle(self.tr("Add Custom Curve")); msg.setText(self.tr("Choose how to add the curve:"))
+        csv_btn = msg.addButton(self.tr("Import CSV"), QMessageBox.ButtonRole.AcceptRole)
+        img_btn = msg.addButton(self.tr("Digitize Image"), QMessageBox.ButtonRole.AcceptRole)
         cancel_btn = msg.addButton(QMessageBox.StandardButton.Cancel)
         msg.exec()
         if msg.clickedButton() == csv_btn: self._import_curve_from_csv()
         elif msg.clickedButton() == img_btn: self._digitize_curve_from_image()
 
     def _import_curve_from_csv(self):
-        csv_path, _ = QFileDialog.getOpenFileName(self, "Select 2-column CSV (λ_nm, response)", "", "CSV Files (*.csv);;All Files (*)")
+        csv_path, _ = QFileDialog.getOpenFileName(self, self.tr("Select 2-column CSV (λ_nm, response)"), "", "CSV Files (*.csv);;All Files (*)")
         if not csv_path: return
         try:
             df = (pd.read_csv(csv_path, comment="#", header=None).iloc[:, :2].dropna())
@@ -683,19 +683,19 @@ class SFCCDialog(QDialog):
                 df.columns = ["wavelength_nm","response"]
                 wl_nm = df["wavelength_nm"].astype(float).to_numpy(); tp = df["response"].astype(float).to_numpy()
             except Exception as e2:
-                QMessageBox.critical(self, "CSV Error", f"Could not read CSV:\n{e2}"); return
+                QMessageBox.critical(self, self.tr("CSV Error"), self.tr("Could not read CSV:\n{0}").format(e2)); return
         except Exception as e:
-            QMessageBox.critical(self, "CSV Error", f"Could not read CSV:\n{e}"); return
+            QMessageBox.critical(self, self.tr("CSV Error"), self.tr("Could not read CSV:\n{0}").format(e)); return
 
         ok, extname_base, channel_val = self._query_name_channel()
         if not ok: return
         wl_ang = (wl_nm * 10.0).astype(np.float32); tr_final = tp.astype(np.float32)
         self._append_curve_hdu(wl_ang, tr_final, extname_base, "SENSOR" if channel_val=="Q" else "FILTER", f"CSV:{os.path.basename(csv_path)}")
         self._reload_hdu_lists(); self.refresh_filter_sensor_lists()
-        QMessageBox.information(self, "Done", f"CSV curve '{extname_base}' added.")
+        QMessageBox.information(self, self.tr("Done"), self.tr("CSV curve '{0}' added.").format(extname_base))
 
     def _digitize_curve_from_image(self):
-        img_path_str, _ = QFileDialog.getOpenFileName(self, "Select Curve Image to Digitize", "", "Images (*.png *.jpg *.jpeg *.bmp);;All Files (*)")
+        img_path_str, _ = QFileDialog.getOpenFileName(self, self.tr("Select Curve Image to Digitize"), "", "Images (*.png *.jpg *.jpeg *.bmp);;All Files (*)")
         if not img_path_str: return
         img_filename = os.path.basename(img_path_str)
         try:
@@ -703,20 +703,20 @@ class SFCCDialog(QDialog):
             if bgr is None: raise RuntimeError(f"cv2.imread returned None for '{img_path_str}'")
             rgb_img = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB); gray_img = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Could not load image:\n{e}"); return
+            QMessageBox.critical(self, self.tr("Error"), self.tr("Could not load image:\n{0}").format(e)); return
 
         try:
             (px_bl, py_bl), (px_br, py_br), (px_tl, py_tl) = self.get_calibration_points(rgb_img)
         except Exception as e:
-            QMessageBox.critical(self, "Digitization Error", str(e)); return
+            QMessageBox.critical(self, self.tr("Digitization Error"), str(e)); return
 
-        λ_min_str, ok1 = QInputDialog.getText(self, "λ_min", "Enter λ_min (in nm):")
-        λ_max_str, ok2 = QInputDialog.getText(self, "λ_max", "Enter λ_max (in nm):")
+        λ_min_str, ok1 = QInputDialog.getText(self, self.tr("λ_min"), self.tr("Enter λ_min (in nm):"))
+        λ_max_str, ok2 = QInputDialog.getText(self, self.tr("λ_max"), self.tr("Enter λ_max (in nm):"))
         if not (ok1 and ok2 and λ_min_str.strip() and λ_max_str.strip()): return
         try:
             λ_min = float(λ_min_str); λ_max = float(λ_max_str)
         except ValueError:
-            QMessageBox.critical(self, "Input Error", "λ_min and λ_max must be numbers."); return
+            QMessageBox.critical(self, self.tr("Input Error"), self.tr("λ_min and λ_max must be numbers.")); return
 
         ok, extname_base, channel_val = self._query_name_channel()
         if not ok: return
@@ -725,7 +725,7 @@ class SFCCDialog(QDialog):
         try:
             df_curve = self.extract_curve(gray_img, px_to_λ, py_to_resp, λ_min, λ_max, threshold=50)
         except Exception as e:
-            QMessageBox.critical(self, "Extraction Error", str(e)); return
+            QMessageBox.critical(self, self.tr("Extraction Error"), str(e)); return
 
         df_curve["wl_int"] = df_curve["wavelength_nm"].round().astype(int)
         grp = (df_curve.groupby("wl_int")["response"].median().reset_index().sort_values("wl_int"))
@@ -734,21 +734,21 @@ class SFCCDialog(QDialog):
         try:
             tr_corr, _ = self.interpolate_bad_points(wl, tr)
         except Exception as e:
-            QMessageBox.critical(self, "Interpolation Error", str(e)); return
+            QMessageBox.critical(self, self.tr("Interpolation Error"), str(e)); return
 
         tr_smoothed = self.smooth_curve(tr_corr, window_size=5)
         wl_ang = (wl.astype(float) * 10.0).astype(np.float32); tr_final = tr_smoothed.astype(np.float32)
         self._append_curve_hdu(wl_ang, tr_final, extname_base, "SENSOR" if channel_val=="Q" else "FILTER", f"UserDefined:{img_filename}")
         self._reload_hdu_lists(); self.refresh_filter_sensor_lists()
-        QMessageBox.information(self, "Done", f"Added curve '{extname_base}'.")
+        QMessageBox.information(self, self.tr("Done"), self.tr("Added curve '{0}'.").format(extname_base))
 
     def remove_custom_curve(self):
         all_curves = self.filter_list + self.sensor_list
         if not all_curves:
-            QMessageBox.information(self, "Remove Curve", "No custom curves to remove."); return
-        curve, ok = QInputDialog.getItem(self, "Remove Curve", "Select a FILTER or SENSOR curve to delete:", all_curves, 0, False)
+            QMessageBox.information(self, self.tr("Remove Curve"), self.tr("No custom curves to remove.")); return
+        curve, ok = QInputDialog.getItem(self, self.tr("Remove Curve"), self.tr("Select a FILTER or SENSOR curve to delete:"), all_curves, 0, False)
         if not ok or not curve: return
-        reply = QMessageBox.question(self, "Confirm Deletion", f"Delete '{curve}'?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        reply = QMessageBox.question(self, self.tr("Confirm Deletion"), self.tr("Delete '{0}'?").format(curve), QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         if reply != QMessageBox.StandardButton.Yes: return
 
         temp_path = self.user_custom_path + ".tmp"
@@ -768,7 +768,7 @@ class SFCCDialog(QDialog):
             QMessageBox.critical(self, "Write Error", f"Could not remove curve:\n{e}"); return
 
         self._reload_hdu_lists(); self.refresh_filter_sensor_lists()
-        QMessageBox.information(self, "Removed", f"Deleted curve '{curve}'.")
+        QMessageBox.information(self, self.tr("Removed"), self.tr("Deleted curve '{0}'.").format(curve))
 
     def refresh_filter_sensor_lists(self):
         self._reload_hdu_lists()

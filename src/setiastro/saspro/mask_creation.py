@@ -432,7 +432,7 @@ class MaskCanvas(QGraphicsView):
 class LivePreviewDialog(QDialog):
     def __init__(self, original_image01: np.ndarray, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Live Mask Preview")
+        self.setWindowTitle(self.tr("Live Mask Preview"))
         self.label = QLabel(alignment=Qt.AlignmentFlag.AlignCenter)
         lay = QVBoxLayout(self); lay.addWidget(self.label)
         self.resize(300, 300)
@@ -460,7 +460,7 @@ class MaskPreviewDialog(QDialog):
     """Scrollable preview + 'Push as New Document…'."""
     def __init__(self, mask01: np.ndarray, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Mask Preview")
+        self.setWindowTitle(self.tr("Mask Preview"))
         self.mask = np.clip(mask01, 0, 1).astype(np.float32)
 
         self.scroll = QScrollArea(self); self.scroll.setWidgetResizable(False)
@@ -476,7 +476,7 @@ class MaskPreviewDialog(QDialog):
         b_fit  = themed_toolbtn("zoom-fit-best", "Fit to Preview")
 
 
-        b_push = QPushButton("Push as New Document…")
+        b_push = QPushButton(self.tr("Push as New Document…"))
         b_in.clicked.connect(lambda: self._zoom(1.2))
         b_out.clicked.connect(lambda: self._zoom(1/1.2))
         b_fit.clicked.connect(self._fit)
@@ -554,7 +554,7 @@ class MaskCreationDialog(QDialog):
     """Mask creation UI for SASpro documents (returns a np mask on OK)."""
     def __init__(self, image01: np.ndarray, parent=None, auto_push_on_ok: bool = True):
         super().__init__(parent)
-        self.setWindowTitle("Mask Creation")
+        self.setWindowTitle(self.tr("Mask Creation"))
         self.image = np.asarray(image01, dtype=np.float32).copy()
         self.mask: np.ndarray | None = None
         self.live_preview = LivePreviewDialog(self.image, parent=self)
@@ -572,9 +572,9 @@ class MaskCreationDialog(QDialog):
 
         # Mode toolbar
         mode_bar = QHBoxLayout()
-        self.free_btn = QPushButton("Freehand"); self.free_btn.setCheckable(True)
-        self.ellipse_btn = QPushButton("Ellipse"); self.ellipse_btn.setCheckable(True)
-        self.select_btn = QPushButton("Select Entire Image"); self.select_btn.setCheckable(True)
+        self.free_btn = QPushButton(self.tr("Freehand")); self.free_btn.setCheckable(True)
+        self.ellipse_btn = QPushButton(self.tr("Ellipse")); self.ellipse_btn.setCheckable(True)
+        self.select_btn = QPushButton(self.tr("Select Entire Image")); self.select_btn.setCheckable(True)
         group = QButtonGroup(self); group.setExclusive(True)
         for b in (self.free_btn, self.ellipse_btn, self.select_btn):
             b.setAutoExclusive(True); group.addButton(b)
@@ -614,7 +614,7 @@ class MaskCreationDialog(QDialog):
         self.type_dd.currentTextChanged.connect(lambda t: setattr(self, 'mask_type', t))
         controls.addWidget(self.type_dd)
 
-        controls.addWidget(QLabel("Edge Blur (px):"))
+        controls.addWidget(QLabel(self.tr("Edge Blur (px):")))
         self.blur_slider = QSlider(Qt.Orientation.Horizontal); self.blur_slider.setRange(0, 300)
         self.blur_slider.valueChanged.connect(lambda v: setattr(self, 'blur_amount', int(v)))
         controls.addWidget(self.blur_slider)

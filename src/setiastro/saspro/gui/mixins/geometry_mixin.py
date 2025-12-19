@@ -131,7 +131,7 @@ class GeometryMixin:
         view = sw.widget() if sw else None
         doc = getattr(view, "document", None)
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.information(self, "Invert", "Active view has no image.")
+            QMessageBox.information(self, self.tr("Invert"), self.tr("Active view has no image."))
             return
         try:
             self._apply_geom_invert_to_doc(doc)
@@ -145,7 +145,7 @@ class GeometryMixin:
         view = sw.widget() if sw else None
         doc = getattr(view, "document", None)
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.information(self, "Flip Horizontal", "Active view has no image.")
+            QMessageBox.information(self, self.tr("Flip Horizontal"), self.tr("Active view has no image."))
             return
         try:
             self._apply_geom_flip_h_to_doc(doc)
@@ -159,7 +159,7 @@ class GeometryMixin:
         view = sw.widget() if sw else None
         doc = getattr(view, "document", None)
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.information(self, "Flip Vertical", "Active view has no image.")
+            QMessageBox.information(self, self.tr("Flip Vertical"), self.tr("Active view has no image."))
             return
         try:
             self._apply_geom_flip_v_to_doc(doc)
@@ -173,7 +173,7 @@ class GeometryMixin:
         view = sw.widget() if sw else None
         doc = getattr(view, "document", None)
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.information(self, "Rotate 90° CW", "Active view has no image.")
+            QMessageBox.information(self, self.tr("Rotate 90° CW"), self.tr("Active view has no image."))
             return
         try:
             self._apply_geom_rot_cw_to_doc(doc)
@@ -187,7 +187,7 @@ class GeometryMixin:
         view = sw.widget() if sw else None
         doc = getattr(view, "document", None)
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.information(self, "Rotate 90° CCW", "Active view has no image.")
+            QMessageBox.information(self, self.tr("Rotate 90° CCW"), self.tr("Active view has no image."))
             return
         try:
             self._apply_geom_rot_ccw_to_doc(doc)
@@ -201,7 +201,7 @@ class GeometryMixin:
         view = sw.widget() if sw else None
         doc = getattr(view, "document", None)
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.information(self, "Rotate 180°", "Active view has no image.")
+            QMessageBox.information(self, self.tr("Rotate 180°"), self.tr("Active view has no image."))
             return
         try:
             self._apply_geom_rot_180_to_doc(doc)
@@ -215,7 +215,7 @@ class GeometryMixin:
         view = sw.widget() if sw else None
         doc = getattr(view, "document", None)
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.information(self, "Rescale Image", "Active view has no image.")
+            QMessageBox.information(self, self.tr("Rescale Image"), self.tr("Active view has no image."))
             return
 
         # remember last value
@@ -223,8 +223,8 @@ class GeometryMixin:
             self._last_rescale_factor = 1.0
 
         dlg = QInputDialog(self)
-        dlg.setWindowTitle("Rescale Image")
-        dlg.setLabelText("Enter scaling factor (e.g., 0.5 for 50%, 2 for 200%):")
+        dlg.setWindowTitle(self.tr("Rescale Image"))
+        dlg.setLabelText(self.tr("Enter scaling factor (e.g., 0.5 for 50%, 2 for 200%):"))
         dlg.setInputMode(QInputDialog.InputMode.DoubleInput)
         dlg.setDoubleRange(0.1, 10.0)
         dlg.setDoubleDecimals(2)
@@ -249,7 +249,7 @@ class GeometryMixin:
             self._last_rescale_factor = factor
             self._log(f"Rescale ({factor:g}×) applied to active view")
         except Exception as e:
-            QMessageBox.critical(self, "Rescale Image", str(e))
+            QMessageBox.critical(self, self.tr("Rescale Image"), str(e))
 
     # --- Geometry: headless apply-to-doc helpers ---
 

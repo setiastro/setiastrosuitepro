@@ -6,7 +6,7 @@ from .wavescale_hdr import WaveScaleHDRDialogPro
 class WaveScaleHDRPresetDialog(QDialog):
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("WaveScale HDR — Preset")
+        self.setWindowTitle(self.tr("WaveScale HDR — Preset"))
         p = dict(initial or {})
         f = QFormLayout(self)
 
@@ -26,9 +26,9 @@ class WaveScaleHDRPresetDialog(QDialog):
         self.gamma.setDecimals(2)
         self.gamma.setValue(float(p.get("mask_gamma", 5.0)))
 
-        f.addRow("Number of Scales:", self.n_scales)
-        f.addRow("Coarse Compression:", self.comp)
-        f.addRow("Mask Gamma:", self.gamma)
+        f.addRow(self.tr("Number of Scales:"), self.n_scales)
+        f.addRow(self.tr("Coarse Compression:"), self.comp)
+        f.addRow(self.tr("Mask Gamma:"), self.gamma)
 
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self)
         btns.accepted.connect(self.accept); btns.rejected.connect(self.reject)
@@ -73,7 +73,8 @@ def run_wavescale_hdr_via_preset(main, preset: dict | None = None, target_doc=No
 
     main, doc, _dm = normalize_headless_main(main, target_doc)
     if doc is None or getattr(doc, "image", None) is None:
-        QMessageBox.warning(main or None, "...", "Load an image first.")
+        from PyQt6.QtCore import QCoreApplication
+        QMessageBox.warning(main or None, "...", QCoreApplication.translate("WaveScaleHDRPresetDialog", "Load an image first."))
         return
 
     # Build headless dialog and apply preset

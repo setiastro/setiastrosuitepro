@@ -253,7 +253,7 @@ class ClickableEllipseItem(QGraphicsEllipseItem):
 class ReferenceOverlayDialog(QDialog):
     def __init__(self, plane: np.ndarray, positions: List[Tuple], target_median: float, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Reference Frame: Stars Overlay")
+        self.setWindowTitle(self.tr("Reference Frame: Stars Overlay"))
         self.plane = plane.astype(np.float32)
         self.positions = positions
         self.target_median = target_median
@@ -388,7 +388,7 @@ class ReferenceOverlayDialog(QDialog):
 class ExoPlanetWindow(QDialog):
     def __init__(self, parent=None, wrench_path=None):
         super().__init__(parent)
-        self.setWindowTitle("Exoplanet Transit Detector")
+        self.setWindowTitle(self.tr("Exoplanet Transit Detector"))
 
         self.resize(900, 600)
         self.wrench_path = wrench_path
@@ -430,9 +430,9 @@ class ExoPlanetWindow(QDialog):
 
         # — Mode selector —
         mode_layout = QHBoxLayout()
-        mode_layout.addWidget(QLabel("Mode:"))
-        self.aligned_mode_rb = QRadioButton("Aligned Subs")
-        self.raw_mode_rb     = QRadioButton("Raw Subs")
+        mode_layout.addWidget(QLabel(self.tr("Mode:")))
+        self.aligned_mode_rb = QRadioButton(self.tr("Aligned Subs"))
+        self.raw_mode_rb     = QRadioButton(self.tr("Raw Subs"))
         self.aligned_mode_rb.setChecked(True)
         mg = QButtonGroup(self)
         mg.addButton(self.aligned_mode_rb); mg.addButton(self.raw_mode_rb)
@@ -459,8 +459,8 @@ class ExoPlanetWindow(QDialog):
 
         # — Calibration controls (hidden in Aligned) —
         cal_layout = QHBoxLayout()
-        self.load_darks_btn = QPushButton("Load Master Dark…")
-        self.load_flats_btn = QPushButton("Load Master Flat…")
+        self.load_darks_btn = QPushButton(self.tr("Load Master Dark…"))
+        self.load_flats_btn = QPushButton(self.tr("Load Master Flat…"))
         for w in (self.load_darks_btn, self.load_flats_btn):
             w.clicked.connect(self.load_masters)
             w.hide()
@@ -478,10 +478,10 @@ class ExoPlanetWindow(QDialog):
 
         # — Top controls —
         top_layout = QHBoxLayout()
-        self.load_raw_btn     = QPushButton("1: Load Raw Subs…")
-        self.load_aligned_btn = QPushButton("Load, Measure && Photometry…")
-        self.calibrate_btn    = QPushButton("1a: Calibrate && Align Subs")
-        self.measure_btn      = QPushButton("2: Measure && Photometry")
+        self.load_raw_btn     = QPushButton(self.tr("1: Load Raw Subs…"))
+        self.load_aligned_btn = QPushButton(self.tr("Load, Measure && Photometry…"))
+        self.calibrate_btn    = QPushButton(self.tr("1a: Calibrate && Align Subs"))
+        self.measure_btn      = QPushButton(self.tr("2: Measure && Photometry"))
         self.load_raw_btn.    clicked.connect(self.load_raw_subs)
         self.load_aligned_btn.clicked.connect(self.load_and_measure_subs)
         self.calibrate_btn.clicked.connect(self.calibrate_and_align)

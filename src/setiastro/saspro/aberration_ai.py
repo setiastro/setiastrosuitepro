@@ -292,7 +292,7 @@ class _ONNXWorker(QThread):
 class AberrationAIDialog(QDialog):
     def __init__(self, parent, docman, get_active_doc_callable, icon: QIcon | None = None):
         super().__init__(parent)
-        self.setWindowTitle("R.A.'s Aberration Correction (AI)")
+        self.setWindowTitle(self.tr("R.A.'s Aberration Correction (AI)"))
         if icon is not None:
             self.setWindowIcon(icon)
 
@@ -312,40 +312,40 @@ class AberrationAIDialog(QDialog):
 
         # Model row
         row = QHBoxLayout()
-        row.addWidget(QLabel("Model:"))
+        row.addWidget(QLabel(self.tr("Model:")))
         self.model_label = QLabel("—")
         self.model_label.setToolTip("")
-        btn_browse = QPushButton("Browse…"); btn_browse.clicked.connect(self._browse_model)
+        btn_browse = QPushButton(self.tr("Browse…")); btn_browse.clicked.connect(self._browse_model)
         row.addWidget(self.model_label, 1)
         row.addWidget(btn_browse)
         v.addLayout(row)
 
         # Providers row
         row2 = QHBoxLayout()
-        self.chk_auto = QCheckBox("Auto GPU (if available)")
+        self.chk_auto = QCheckBox(self.tr("Auto GPU (if available)"))
         self.chk_auto.setChecked(True)
         row2.addWidget(self.chk_auto)
         self.cmb_provider = QComboBox()
-        row2.addWidget(QLabel("Provider:"))
+        row2.addWidget(QLabel(self.tr("Provider:")))
         row2.addWidget(self.cmb_provider, 1)
         v.addLayout(row2)
 
         # Params row
         row3 = QHBoxLayout()
-        row3.addWidget(QLabel("Patch"))
+        row3.addWidget(QLabel(self.tr("Patch")))
         self.spin_patch = QSpinBox(minimum=128, maximum=2048); self.spin_patch.setValue(512)
         row3.addWidget(self.spin_patch)
-        row3.addWidget(QLabel("Overlap"))
+        row3.addWidget(QLabel(self.tr("Overlap")))
         self.spin_overlap = QSpinBox(minimum=16, maximum=512); self.spin_overlap.setValue(64)
         row3.addWidget(self.spin_overlap)
         v.addLayout(row3)
 
         # Download / Open folder
         row4 = QHBoxLayout()
-        btn_latest = QPushButton("Download latest model…")
+        btn_latest = QPushButton(self.tr("Download latest model…"))
         btn_latest.clicked.connect(self._download_latest_model)
         row4.addWidget(btn_latest)
-        btn_openfolder = QPushButton("Open model folder")
+        btn_openfolder = QPushButton(self.tr("Open model folder"))
         btn_openfolder.clicked.connect(self._open_model_folder)
         row4.addWidget(btn_openfolder)
         row4.addStretch(1)
@@ -354,8 +354,8 @@ class AberrationAIDialog(QDialog):
         # Progress + actions
         self.progress = QProgressBar(); self.progress.setRange(0, 100); v.addWidget(self.progress)
         row5 = QHBoxLayout()
-        self.btn_run = QPushButton("Run"); self.btn_run.clicked.connect(self._run)
-        btn_close = QPushButton("Close"); btn_close.clicked.connect(self.reject)
+        self.btn_run = QPushButton(self.tr("Run")); self.btn_run.clicked.connect(self._run)
+        btn_close = QPushButton(self.tr("Close")); btn_close.clicked.connect(self.reject)
         row5.addStretch(1); row5.addWidget(self.btn_run); row5.addWidget(btn_close)
         v.addLayout(row5)
 

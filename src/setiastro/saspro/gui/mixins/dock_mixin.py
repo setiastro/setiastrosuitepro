@@ -30,7 +30,7 @@ class DockMixin:
     
     def _init_log_dock(self):
         """Initialize the system log dock widget."""
-        self.log_dock = QDockWidget("System Log", self)
+        self.log_dock = QDockWidget(self.tr("System Log"), self)
         self.log_dock.setObjectName("LogDock")
         self.log_dock.setAllowedAreas(
             Qt.DockWidgetArea.BottomDockWidgetArea
@@ -45,7 +45,7 @@ class DockMixin:
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.log_dock)
 
         self.act_toggle_log = self.log_dock.toggleViewAction()
-        self.act_toggle_log.setText("Show System Log Panel")
+        self.act_toggle_log.setText(self.tr("Show System Log Panel"))
     
     def _append_log_text(self, text: str):
         """Append text to the system log dock."""
@@ -111,7 +111,7 @@ class DockMixin:
         # Double-click: same behavior
         self.explorer.itemDoubleClicked.connect(self._activate_or_open_from_explorer)
 
-        dock = QDockWidget("Explorer", self)
+        dock = QDockWidget(self.tr("Explorer"), self)
         dock.setWidget(self.explorer)
         dock.setObjectName("ExplorerDock")
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
@@ -126,7 +126,7 @@ class DockMixin:
         self.console.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.console.customContextMenuRequested.connect(self._on_console_context_menu)
 
-        dock = QDockWidget("Console / Status", self)
+        dock = QDockWidget(self.tr("Console / Status"), self)
         dock.setWidget(self.console)
         dock.setObjectName("ConsoleDock")
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, dock)
