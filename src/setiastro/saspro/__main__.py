@@ -35,6 +35,9 @@ _app = None
 # Flag to track if splash was initialized
 _splash_initialized = False
 
+from setiastro.saspro.versioning import get_app_version
+_EARLY_VERSION = get_app_version("setiastrosuitepro")
+
 def _init_splash():
     """Initialize the splash screen. Safe to call multiple times."""
     global _splash, _app, _splash_initialized
@@ -144,7 +147,7 @@ def _init_splash():
         """
         def __init__(self, logo_path: str):
             super().__init__()
-            self._version = "1.6.0"  # Hardcoded for early display
+            self._version = _EARLY_VERSION
             self._build = ""
             self.current_message = QCoreApplication.translate("Splash", "Starting...")
             self.progress_value = 0
@@ -526,12 +529,8 @@ except Exception:
     BUILD_TIMESTAMP = "dev"
 
 
-try:
-    from importlib.metadata import version as _get_version
-    VERSION = _get_version("setiastrosuitepro")
-except Exception:
-    # Fallback if package not installed (e.g. running from source without install)
-    VERSION = "1.6.0-dev"
+from setiastro.saspro.versioning import get_app_version
+VERSION = get_app_version("setiastrosuitepro")
 
 _update_splash(QCoreApplication.translate("Splash", "Loading resources..."), 50)
 
