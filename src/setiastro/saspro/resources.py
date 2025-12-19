@@ -77,14 +77,19 @@ def _get_base_path() -> str:
     except Exception:
         pass
     
-    # Development: resources are in project root
+    # Development: resources are in package directory (src/setiastro/images/)
     # File is at: src/setiastro/saspro/resources.py
-    # Need to go up 4 levels to reach project root
+    # Check if images/ exists in the setiastro package directory
     current_file = os.path.abspath(__file__)
-    # Go up from resources.py -> saspro -> setiastro -> src -> project root
-    base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(current_file))))
+    # Go up from resources.py -> saspro -> setiastro (package directory)
+    package_dir = os.path.dirname(os.path.dirname(current_file))
+    images_dir = os.path.join(package_dir, 'images')
+    if os.path.exists(images_dir):
+        return package_dir
     
-    # Verify we found the right directory by checking for images/ folder
+    # Fallback: try project root (for backward compatibility)
+    # Go up from resources.py -> saspro -> setiastro -> src -> project root
+    base = os.path.dirname(os.path.dirname(package_dir))
     images_dir = os.path.join(base, 'images')
     if os.path.exists(images_dir):
         return base
