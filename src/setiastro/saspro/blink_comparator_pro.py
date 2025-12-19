@@ -1451,6 +1451,7 @@ class BlinkTab(QWidget):
         """Rebuild the left tree from self.loaded_images without reloading or recomputing."""
         self.fileTree.clear()
         from collections import defaultdict
+
         grouped = defaultdict(list)
         for entry in self.loaded_images:
             hdr = entry.get('header', {}) or {}
@@ -1471,22 +1472,26 @@ class BlinkTab(QWidget):
             obj_item = QTreeWidgetItem([self.tr("Object: {0}").format(obj)])
             self.fileTree.addTopLevelItem(obj_item)
             obj_item.setExpanded(True)
+
             for fil in sorted(by_object[obj], key=lambda f: f.lower()):
                 filt_item = QTreeWidgetItem([self.tr("Filter: {0}").format(fil)])
-                obj_item.addChild(fil_item)
-                fil_item.setExpanded(True)
+                obj_item.addChild(filt_item)
+                filt_item.setExpanded(True)
+
                 for exp in sorted(by_object[obj][fil], key=lambda e: str(e).lower()):
                     exp_item = QTreeWidgetItem([self.tr("Exposure: {0}").format(exp)])
-                    fil_item.addChild(exp_item)
+                    filt_item.addChild(exp_item)
                     exp_item.setExpanded(True)
+
                     for p in by_object[obj][fil][exp]:
                         leaf = QTreeWidgetItem([os.path.basename(p)])
                         leaf.setData(0, Qt.ItemDataRole.UserRole, p)
                         exp_item.addChild(leaf)
 
-        # 🔹 NEW: re-apply flagged styling
+        # 🔹 Re-apply flagged styling
         RED = Qt.GlobalColor.red
         normal = self.fileTree.palette().color(QPalette.ColorRole.WindowText)
+
         for idx, entry in enumerate(self.loaded_images):
             item = self.get_tree_item_for_index(idx)
             if not item:
@@ -1498,6 +1503,7 @@ class BlinkTab(QWidget):
             else:
                 item.setText(0, base)
                 item.setForeground(0, QBrush(normal))
+
 
 
     def _after_list_changed(self, removed_indices: List[int] | None = None):
