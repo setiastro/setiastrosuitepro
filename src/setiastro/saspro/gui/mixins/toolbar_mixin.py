@@ -144,23 +144,30 @@ class ToolbarMixin:
         if isinstance(btn_fit, QToolButton):
             fit_menu = QMenu(btn_fit)
 
-            self.act_auto_fit = fit_menu.addAction("Auto-fit on Resize")
-            self.act_auto_fit.setCheckable(True)
-            self.act_auto_fit.setChecked(self._auto_fit_on_resize)
-            self.act_auto_fit.toggled.connect(self._toggle_auto_fit_on_resize)
+            # Use the existing action created in _create_actions()
+            fit_menu.addAction(self.act_auto_fit_resize)
+
+            # (Optional) make sure it reflects current flag at startup
+            self.act_auto_fit_resize.blockSignals(True)
+            try:
+                self.act_auto_fit_resize.setChecked(bool(self._auto_fit_on_resize))
+            finally:
+                self.act_auto_fit_resize.blockSignals(False)
 
             btn_fit.setMenu(fit_menu)
             btn_fit.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
 
-            # Same style concept as Display-Stretch
             btn_fit.setStyleSheet("""
                 QToolButton { color: #dcdcdc; }
                 QToolButton:checked { color: #DAA520; font-weight: 600; }
             """)
 
+
         # Make sure the visual state matches the flag at startup
-        self._sync_fit_auto_visual()
         self._restore_toolbar_order(tb, "Toolbar/View")
+        self._restore_toolbar_memberships()   # (or keep your existing placement, but the bind must be AFTER it)
+        self._bind_view_toolbar_menus(tb)
+        self._sync_fit_auto_visual()
         # Apply hidden state immediately after order restore (prevents flash)
         try:
             tb.apply_hidden_state()
@@ -351,6 +358,134 @@ class ToolbarMixin:
                 _tb.apply_hidden_state()
             except Exception:
                 pass
+
+        self._rebind_view_dropdowns()
+
+    def _toolbar_containing_action(self, action: QAction):
+        from setiastro.saspro.shortcuts import DraggableToolBar
+        for tb in self.findChildren(DraggableToolBar):
+            if action in tb.actions():
+                return tb
+        return None
+
+
+    def _rebind_view_dropdowns(self):
+        """
+        Rebind dropdown menus for Display-Stretch + Fit buttons
+        on whatever toolbar those actions currently live in.
+        Call this AFTER all restore/reorder/membership moves.
+        """
+        # ---- Display-Stretch dropdown ----
+        tb = self._toolbar_containing_action(self.act_autostretch)
+        if tb:
+            btn = tb.widgetForAction(self.act_autostretch)
+            if isinstance(btn, QToolButton):
+                menu = QMenu(btn)
+                menu.addAction(self.act_stretch_linked)
+                menu.addAction(self.act_hardstretch)
+
+                menu.addSeparator()
+                menu.addAction(self.act_display_target)
+                menu.addAction(self.act_display_sigma)
+
+                presets = QMenu(self.tr("Presets"), menu)
+                a_norm = presets.addAction(self.tr("Normal (target 0.30, σ 5)"))
+                a_midy = presets.addAction(self.tr("Mid (target 0.40, σ 3)"))
+                a_hard = presets.addAction(self.tr("Hard (target 0.50, σ 2)"))
+                menu.addMenu(presets)
+
+                menu.addSeparator()
+                menu.addAction(self.act_bake_display_stretch)
+
+                def _apply_preset(t, s, also_enable=True):
+                    self.settings.setValue("display/target", float(t))
+                    self.settings.setValue("display/sigma", float(s))
+                    sw = self.mdi.activeSubWindow()
+                    if not sw:
+                        return
+                    view = sw.widget()
+                    if hasattr(view, "set_autostretch_target"):
+                        view.set_autostretch_target(float(t))
+                    if hasattr(view, "set_autostretch_sigma"):
+                        view.set_autostretch_sigma(float(s))
+                    if also_enable and not getattr(view, "autostretch_enabled", False):
+                        if hasattr(view, "set_autostretch"):
+                            view.set_autostretch(True)
+                        self._sync_autostretch_action(True)
+
+                a_norm.triggered.connect(lambda: _apply_preset(0.30, 5.0))
+                a_midy.triggered.connect(lambda: _apply_preset(0.40, 3.0))
+                a_hard.triggered.connect(lambda: _apply_preset(0.50, 2.0))
+
+                btn.setMenu(menu)
+                btn.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+
+        # ---- Fit dropdown ----
+        tb_fit = self._toolbar_containing_action(self.act_zoom_fit)
+        if tb_fit:
+            btn_fit = tb_fit.widgetForAction(self.act_zoom_fit)
+            if isinstance(btn_fit, QToolButton):
+                fit_menu = QMenu(btn_fit)
+                fit_menu.addAction(self.act_auto_fit_resize)  # use the real action
+                btn_fit.setMenu(fit_menu)
+                btn_fit.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+
+
+    def _bind_view_toolbar_menus(self, tb: DraggableToolBar):
+        # --- Display-Stretch menu ---
+        btn = tb.widgetForAction(self.act_autostretch)
+        if isinstance(btn, QToolButton):
+            menu = QMenu(btn)
+            menu.addAction(self.act_stretch_linked)
+            menu.addAction(self.act_hardstretch)
+
+            menu.addSeparator()
+            menu.addAction(self.act_display_target)
+            menu.addAction(self.act_display_sigma)
+
+            presets = QMenu(self.tr("Presets"), menu)
+            a_norm = presets.addAction(self.tr("Normal (target 0.30, σ 5)"))
+            a_midy = presets.addAction(self.tr("Mid (target 0.40, σ 3)"))
+            a_hard = presets.addAction(self.tr("Hard (target 0.50, σ 2)"))
+            menu.addMenu(presets)
+            menu.addSeparator()
+            menu.addAction(self.act_bake_display_stretch)
+
+            def _apply_preset(t, s, also_enable=True):
+                self.settings.setValue("display/target", float(t))
+                self.settings.setValue("display/sigma", float(s))
+                sw = self.mdi.activeSubWindow()
+                if not sw:
+                    return
+                view = sw.widget()
+                if hasattr(view, "set_autostretch_target"):
+                    view.set_autostretch_target(float(t))
+                if hasattr(view, "set_autostretch_sigma"):
+                    view.set_autostretch_sigma(float(s))
+                if also_enable and not getattr(view, "autostretch_enabled", False):
+                    if hasattr(view, "set_autostretch"):
+                        view.set_autostretch(True)
+                    self._sync_autostretch_action(True)
+
+            a_norm.triggered.connect(lambda: _apply_preset(0.30, 5.0))
+            a_midy.triggered.connect(lambda: _apply_preset(0.40, 3.0))
+            a_hard.triggered.connect(lambda: _apply_preset(0.50, 2.0))
+
+            btn.setMenu(menu)
+            btn.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+
+        # --- Fit menu (Auto-fit checkbox) ---
+        btn_fit = tb.widgetForAction(self.act_zoom_fit)
+        if isinstance(btn_fit, QToolButton):
+            fit_menu = QMenu(btn_fit)
+
+            # IMPORTANT: use your existing action (don’t create a new one)
+            fit_menu.addAction(self.act_auto_fit_resize)
+
+            btn_fit.setMenu(fit_menu)
+            btn_fit.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+
+
     def _create_actions(self):
         # File actions
         self.act_open = QAction(QIcon(openfile_path), self.tr("Open..."), self)
