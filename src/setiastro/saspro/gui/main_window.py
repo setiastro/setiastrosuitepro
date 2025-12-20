@@ -2606,8 +2606,8 @@ class AstroSuiteProMainWindow(
         except Exception:
             pass
 
-        # ðŸ'‡ this is the key: stay on top
-        dlg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        # this is the key: stay on top
+        # dlg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
 
         dlg.show()
         dlg.raise_()

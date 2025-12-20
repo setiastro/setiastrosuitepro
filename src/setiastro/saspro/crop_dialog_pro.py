@@ -696,13 +696,20 @@ class CropDialogPro(QDialog):
         a, b = map(float, txt.split(":")); return a / b
 
     def _apply_ar_to_rect(self, r: QRectF, live: bool, scene_pt: QPointF) -> QRectF:
-        txt = self.cmb_ar.currentText()
-        if txt == self.tr("Free"):
-            ar = None
-        elif txt == self.tr("Original"):
-            ar = self._orig_w / self._orig_h
-        if scene_pt.y() < self._origin.y(): r.setTop(r.bottom() - h)
-        else:                                 r.setBottom(r.top() + h)
+        ar = self._current_ar_value()
+        if ar is None:
+            return r
+
+        # Calculate height from width using current aspect ratio
+        w = r.width()
+        h = w / ar
+
+        # Anchor to the click origin, adjust height based on drag direction
+        if scene_pt.y() < self._origin.y():
+            r.setTop(r.bottom() - h)
+        else:
+            r.setBottom(r.top() + h)
+
         return r.normalized()
 
     def _draw_live_rect(self, r: QRectF):
