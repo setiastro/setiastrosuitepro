@@ -74,7 +74,6 @@ class ToolbarMixin:
     def _init_toolbar(self):
         # View toolbar (Undo / Redo / Display-Stretch)
         tb = DraggableToolBar("View", self)
-        tb.setObjectName("Toolbar_View")
         tb.setSettingsKey("Toolbar/View")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb)
 
@@ -104,10 +103,10 @@ class ToolbarMixin:
             menu.addAction(self.act_display_target)
             menu.addAction(self.act_display_sigma)
 
-            presets = QMenu(self.tr("Presets"), menu)
-            a_norm = presets.addAction(self.tr("Normal (target 0.30, σ 5)"))
-            a_midy = presets.addAction(self.tr("Mid (target 0.40, σ 3)"))
-            a_hard = presets.addAction(self.tr("Hard (target 0.50, σ 2)"))
+            presets = QMenu("Presets", menu)
+            a_norm = presets.addAction("Normal (target 0.30, Ïƒ 5)")
+            a_midy = presets.addAction("Mid (target 0.40, Ïƒ 3)")
+            a_hard = presets.addAction("Hard (target 0.50, Ïƒ 2)")
             menu.addMenu(presets)
             menu.addSeparator()
             menu.addAction(self.act_bake_display_stretch)
@@ -145,7 +144,7 @@ class ToolbarMixin:
         if isinstance(btn_fit, QToolButton):
             fit_menu = QMenu(btn_fit)
 
-            self.act_auto_fit = fit_menu.addAction(self.tr("Auto-fit on Resize"))
+            self.act_auto_fit = fit_menu.addAction("Auto-fit on Resize")
             self.act_auto_fit.setCheckable(True)
             self.act_auto_fit.setChecked(self._auto_fit_on_resize)
             self.act_auto_fit.toggled.connect(self._toggle_auto_fit_on_resize)
@@ -169,8 +168,7 @@ class ToolbarMixin:
             pass
 
         # Functions toolbar
-        tb_fn = DraggableToolBar(self.tr("Functions"), self)
-        tb_fn.setObjectName("Toolbar_Functions")
+        tb_fn = DraggableToolBar("Functions", self)
         tb_fn.setSettingsKey("Toolbar/Functions")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_fn)
 
@@ -222,8 +220,7 @@ class ToolbarMixin:
         except Exception:
             pass
 
-        tbCosmic = DraggableToolBar(self.tr("Cosmic Clarity"), self)
-        tbCosmic.setObjectName("Toolbar_Cosmic")
+        tbCosmic = DraggableToolBar("Cosmic Clarity", self)
         tbCosmic.setSettingsKey("Toolbar/Cosmic")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tbCosmic)
 
@@ -237,8 +234,7 @@ class ToolbarMixin:
         except Exception:
             pass
 
-        tb_tl = DraggableToolBar(self.tr("Tools"), self)
-        tb_tl.setObjectName("Toolbar_Tools")
+        tb_tl = DraggableToolBar("Tools", self)
         tb_tl.setSettingsKey("Toolbar/Tools")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_tl)
 
@@ -257,8 +253,7 @@ class ToolbarMixin:
         except Exception:
             pass
 
-        tb_geom = DraggableToolBar(self.tr("Geometry"), self)
-        tb_geom.setObjectName("Toolbar_Geometry")
+        tb_geom = DraggableToolBar("Geometry", self)
         tb_geom.setSettingsKey("Toolbar/Geometry")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_geom)
 
@@ -281,8 +276,7 @@ class ToolbarMixin:
         except Exception:
             pass
 
-        tb_star = DraggableToolBar(self.tr("Star Stuff"), self)
-        tb_star.setObjectName("Toolbar_StarStuff")
+        tb_star = DraggableToolBar("Star Stuff", self)
         tb_star.setSettingsKey("Toolbar/StarStuff")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_star)
 
@@ -307,8 +301,7 @@ class ToolbarMixin:
         except Exception:
             pass
 
-        tb_msk = DraggableToolBar(self.tr("Masks"), self)
-        tb_msk.setObjectName("Toolbar_Masks")
+        tb_msk = DraggableToolBar("Masks", self)
         tb_msk.setSettingsKey("Toolbar/Masks")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_msk)
 
@@ -322,8 +315,7 @@ class ToolbarMixin:
         except Exception:
             pass
 
-        tb_wim = DraggableToolBar(self.tr("What's In My..."), self)
-        tb_wim.setObjectName("Toolbar_WhatsInMy")
+        tb_wim = DraggableToolBar("What's In My...", self)
         tb_wim.setSettingsKey("Toolbar/WhatsInMy")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_wim)
 
@@ -336,8 +328,7 @@ class ToolbarMixin:
         except Exception:
             pass
 
-        tb_bundle = DraggableToolBar(self.tr("Bundles"), self)
-        tb_bundle.setObjectName("Toolbar_Bundles")
+        tb_bundle = DraggableToolBar("Bundles", self)
         tb_bundle.setSettingsKey("Toolbar/Bundles")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_bundle)
 
@@ -360,8 +351,6 @@ class ToolbarMixin:
                 _tb.apply_hidden_state()
             except Exception:
                 pass
-
-
     def _create_actions(self):
         # File actions
         self.act_open = QAction(QIcon(openfile_path), self.tr("Open..."), self)
