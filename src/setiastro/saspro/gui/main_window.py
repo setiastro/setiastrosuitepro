@@ -201,9 +201,32 @@ from setiastro.saspro.resources import (
 import faulthandler
 
 def _install_crash_logging():
-    faulthandler.enable(all_threads=True)
+    # Ensure logging is configured before we try to use it
+    if not logging.getLogger().hasHandlers():
+        logging.basicConfig(
+            level=logging.WARNING,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            handlers=[logging.StreamHandler(sys.stderr)]
+        )
+    
+    try:
+        faulthandler.enable(all_threads=True)
+    except (PermissionError, OSError) as e:
+        # On macOS, faulthandler.enable() might fail due to security restrictions
+        # We can still continue without it as it's primarily for debugging
+        try:
+            logging.warning(f"Could not enable faulthandler: {e}")
+        except Exception:
+            # Fallback if logging isn't configured yet
+            print(f"WARNING: Could not enable faulthandler: {e}")
+    
     def _excepthook(t, v, tb):
-        logging.critical("Uncaught exception", exc_info=(t, v, tb))
+        try:
+            logging.critical("Uncaught exception", exc_info=(t, v, tb))
+        except Exception:
+            # Fallback if logging fails
+            print(f"CRITICAL: Uncaught exception: {t.__name__}: {v}")
+            traceback.print_tb(tb)
         try:
             faulthandler.dump_traceback(file=sys.stderr)
         except Exception:
