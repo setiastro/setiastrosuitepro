@@ -4404,11 +4404,11 @@ class StackingSuiteDialog(QDialog):
         directory = QFileDialog.getExistingDirectory(self, "Select Conversion Output Directory")
         if directory:
             self.conversion_output_directory = directory
-            self.update_status(f"Conversion output directory set to: {directory}")
+            self.update_status(self.tr(f"Conversion output directory set to: {directory}"))
 
     def clear_conversion_list(self):
         self.conversion_tree.clear()
-        self.update_status("Conversion list cleared.")
+        self.update_status(self.tr("Conversion list cleared."))
 
     def convert_all_files(self):
         # If no output directory is set, ask the user if they want to set it now.
@@ -4450,14 +4450,14 @@ class StackingSuiteDialog(QDialog):
             result = load_image(file_path)
             if result[0] is None:
                 item.setText(1, "Failed to load")
-                self.update_status(f"Failed to load {os.path.basename(file_path)}")
+                self.update_status(self.tr(f"Failed to load {os.path.basename(file_path)}"))
                 continue
 
             image, header, bit_depth, is_mono = result
 
             if image is None:
                 item.setText(1, "Failed to load")
-                self.update_status(f"Failed to load {os.path.basename(file_path)}")
+                self.update_status(self.tr(f"Failed to load {os.path.basename(file_path)}"))
                 continue
 
             # 🔹 Always ensure we have a basic FITS header for non-FITS sources
@@ -4554,11 +4554,11 @@ class StackingSuiteDialog(QDialog):
                 )
             except Exception as e:
                 item.setText(1, f"Error: {e}")
-                self.update_status(f"Error converting {os.path.basename(file_path)}: {e}")
+                self.update_status(self.tr(f"Error converting {os.path.basename(file_path)}: {e}"))
 
             QApplication.processEvents()
 
-        self.update_status("Conversion complete.")
+        self.update_status(self.tr("Conversion complete."))
 
 
 
@@ -4987,7 +4987,7 @@ class StackingSuiteDialog(QDialog):
             # Copy profile → stacking/* and restart
             self._load_profile_into_settings(name)
             dialog.accept()
-            self.update_status(f"📂 Loaded stacking profile: {name}")
+            self.update_status(self.tr(f"📂 Loaded stacking profile: {name}"))
             self._restart_self()
 
         def _on_delete_profile():
@@ -5947,9 +5947,9 @@ class StackingSuiteDialog(QDialog):
         self.settings.sync()
 
         # Logging
-        self.update_status("✅ Saved stacking settings.")
-        self.update_status(f"• Internal precision: {new_dtype_str}")
-        self.update_status(f"• Hardware acceleration: {'ON' if self.use_gpu_integration else 'OFF'}")
+        self.update_status(self.tr("✅ Saved stacking settings."))
+        self.update_status(self.tr(f"• Internal precision: {new_dtype_str}"))
+        self.update_status(self.tr(f"• Hardware acceleration: {'ON' if self.use_gpu_integration else 'OFF'}"))
         self._update_stacking_path_display()
 
         # --- restart if needed ---
@@ -5960,7 +5960,7 @@ class StackingSuiteDialog(QDialog):
                 reasons.append("folder change")
             if dtype_changed:
                 reasons.append(f"precision → {new_dtype_str}")
-            self.update_status(f"🔁 Restarting Stacking Suite to apply {', '.join(reasons)}…")
+            self.update_status(self.tr(f"🔁 Restarting Stacking Suite to apply {', '.join(reasons)}…"))
             dialog.accept()
             self._restart_self()
             return
@@ -6101,7 +6101,7 @@ class StackingSuiteDialog(QDialog):
         except Exception:
             pass
 
-        self.update_status(f"📂 Stacking directory changed:\n    {old_dir or '(none)'} → {new_dir}")
+        self.update_status(self.tr(f"📂 Stacking directory changed:\n    {old_dir or '(none)'} → {new_dir}"))
 
     def _reload_lists_for_new_dir(self):
         """
@@ -6142,7 +6142,7 @@ class StackingSuiteDialog(QDialog):
         if hasattr(self, "refresh_integration_tab"):
             self.refresh_integration_tab()
 
-        self.update_status(f"🔄 Re-scanned calibrated sets in: {base}")
+        self.update_status(self.tr(f"🔄 Re-scanned calibrated sets in: {base}"))
 
     def _discover_grouped(self, root_dir: str) -> dict:
         """
@@ -6191,7 +6191,7 @@ class StackingSuiteDialog(QDialog):
             ):
                 os.makedirs(os.path.join(base_dir, sub), exist_ok=True)
         except Exception as e:
-            self.update_status(f"⚠️ Could not ensure subfolders in '{base_dir}': {e}")
+            self.update_status(self.tr(f"⚠️ Could not ensure subfolders in '{base_dir}': {e}"))
 
     def _clear_integration_state(self):
         # wipe per-run state so we don't “blend” two directories
@@ -6442,7 +6442,7 @@ class StackingSuiteDialog(QDialog):
         if t == "LIGHT":
             store = getattr(self, "light_files", {})
             # store keys: (group_key, session_tag)
-            self.update_status("📈 Light groups summary:")
+            self.update_status(self.tr("📈 Light groups summary:"))
             seen = set()
             for (gkey, sess), paths in store.items():
                 if not paths: continue
@@ -6454,7 +6454,7 @@ class StackingSuiteDialog(QDialog):
                     seen.add((gkey, sess))
         elif t == "FLAT":
             store = getattr(self, "flat_files", {})
-            self.update_status("📈 Flat groups summary:")
+            self.update_status(self.tr("📈 Flat groups summary:"))
             seen = set()
             for (gkey, sess), paths in store.items():
                 if not paths: continue
@@ -6466,12 +6466,12 @@ class StackingSuiteDialog(QDialog):
                     seen.add((gkey, sess))
         elif t == "DARK":
             store = getattr(self, "dark_files", {})
-            self.update_status("📈 Dark groups summary:")
+            self.update_status(self.tr("📈 Dark groups summary:"))
             for gkey, paths in store.items():
                 if not paths: continue
                 exp = self._parse_exposure_from_groupkey(gkey) or 0.0
                 tot = exp * len(paths)
-                self.update_status(f"• {gkey}  →  {len(paths)} files, {self._fmt_hms(tot)}")
+                self.update_status(self.tr(f"• {gkey}  →  {len(paths)} files, {self._fmt_hms(tot)}"))
 
 
     def create_flat_tab(self):
@@ -7184,7 +7184,7 @@ class StackingSuiteDialog(QDialog):
         leaves = uniq
 
         if not leaves:
-            self.update_status("⚠️ No leaf files selected to retag.")
+            self.update_status(self.tr("⚠️ No leaf files selected to retag."))
             return
 
         changed = 0
@@ -7229,7 +7229,7 @@ class StackingSuiteDialog(QDialog):
                 pass
 
         tree.viewport().update()
-        self.update_status(f"🟢 Assigned session '{session_name}' to {changed} file(s).")
+        self.update_status(self.tr(f"🟢 Assigned session '{session_name}' to {changed} file(s)."))
 
 
     def _quad_coverage_add(self, cov: np.ndarray, quad: np.ndarray):
@@ -7499,14 +7499,14 @@ class StackingSuiteDialog(QDialog):
         # Canvas from first aligned image
         ref_img, _, _, _ = load_image(file_list[0])
         if ref_img is None:
-            self.update_status("✂️ Auto-crop: could not load first aligned ref.")
+            self.update_status(self.tr("✂️ Auto-crop: could not load first aligned ref."))
             return None
         H, W = (ref_img.shape if ref_img.ndim == 2 else ref_img.shape[:2])
 
         if not os.path.exists(transforms_path):
-            self.update_status(f"✂️ Auto-crop: no transforms file at {transforms_path}")
+            self.update_status(self.tr(f"✂️ Auto-crop: no transforms file at {transforms_path}"))
             return None
-        self.update_status(f"✂️ Auto-crop: Loading transforms...")
+        self.update_status(self.tr(f"✂️ Auto-crop: Loading transforms..."))
         QApplication.processEvents()
         transforms = self.load_alignment_matrices_custom(transforms_path)
 
@@ -7572,10 +7572,10 @@ class StackingSuiteDialog(QDialog):
 
         need = int(np.ceil((coverage_pct / 100.0) * used))
         mask = (cov >= need)
-        self.update_status(f"✂️ Auto-crop: rasterized {used}/{len(file_list)} frames; need {need} per-pixel.")
+        self.update_status(self.tr(f"✂️ Auto-crop: rasterized {used}/{len(file_list)} frames; need {need} per-pixel."))
         QApplication.processEvents()
         if not mask.any():
-            self.update_status("✂️ Auto-crop: threshold produced empty mask.")
+            self.update_status(self.tr("✂️ Auto-crop: threshold produced empty mask."))
             return None
         return mask
 
@@ -8379,7 +8379,7 @@ class StackingSuiteDialog(QDialog):
         # store the seed in ORIGINAL file space (or the path we used)
         self._comet_seed = {"path": os.path.normpath(src_path), "xy": (float(x), float(y))}
         self._comet_ref_xy = None  # will be resolved post-align
-        self.update_status(f"🌠 Comet seed set on {os.path.basename(src_path)} at ({x:.1f}, {y:.1f}).")
+        self.update_status(self.tr(f"🌠 Comet seed set on {os.path.basename(src_path)} at ({x:.1f}, {y:.1f})."))
 
 
     def _on_cfa_drizzle_toggled(self, checked: bool):
@@ -8696,7 +8696,7 @@ class StackingSuiteDialog(QDialog):
                 m = re.match(r"([\d.]+)", exposure_str)
                 exposure = float(m.group(1)) if m else 0.0
             except Exception as e:
-                self.update_status(f"⚠️ rebuild_flat_tree: could not parse key '{filter_exp_size}': {e}")
+                self.update_status(self.tr(f"⚠️ rebuild_flat_tree: could not parse key '{filter_exp_size}': {e}"))
                 continue
 
             # find compatible bucket (by filter+size+exp within tol)
@@ -9781,7 +9781,7 @@ class StackingSuiteDialog(QDialog):
                 height = int(header.get("NAXIS2", 0))
                 image_size = f"{width}x{height}" if (width > 0 and height > 0) else "Unknown"
             except Exception as e:
-                self.update_status(f"Warning: Could not read dimensions for {os.path.basename(path)}: {e}")
+                self.update_status(self.tr(f"Warning: Could not read dimensions for {os.path.basename(path)}: {e}"))
                 width = height = None
                 image_size = "Unknown"
 
@@ -9956,11 +9956,11 @@ class StackingSuiteDialog(QDialog):
                 leaf.setData(0, Qt.ItemDataRole.UserRole + 1, session_tag)
                 exposure_item.addChild(leaf)
 
-            self.update_status(f"✅ Added {os.path.basename(path)} as {expected_type_u}")
+            self.update_status(self.tr(f"✅ Added {os.path.basename(path)} as {expected_type_u}"))
             QApplication.processEvents()
 
         except Exception as e:
-            self.update_status(f"❌ ERROR: Could not read FITS header for {os.path.basename(path)} - {e}")
+            self.update_status(self.tr(f"❌ ERROR: Could not read FITS header for {os.path.basename(path)} - {e}"))
             QApplication.processEvents()
 
 
@@ -10021,22 +10021,22 @@ class StackingSuiteDialog(QDialog):
                 item.addChild(QTreeWidgetItem([os.path.basename(file_path), metadata]))
 
                 print(f"✅ DEBUG: Added Master {file_type} -> {file_path} under {key} with metadata: {metadata}")
-                self.update_status(f"✅ Added Master {file_type} -> {file_path} under {key} with metadata: {metadata}")
+                self.update_status(self.tr(f"✅ Added Master {file_type} -> {file_path} under {key} with metadata: {metadata}"))
                 print(f"📂 DEBUG: Master Files Stored: {self.master_files}")
-                self.update_status(f"📂 DEBUG: Master Files Stored: {self.master_files}")
+                self.update_status(self.tr(f"📂 DEBUG: Master Files Stored: {self.master_files}"))
                 QApplication.processEvents()
                 self.assign_best_master_files()
 
             except Exception as e:
                 print(f"❌ ERROR: Failed to load master file {file_path} - {e}")
-                self.update_status(f"❌ ERROR: Failed to load master file {file_path} - {e}")
+                self.update_status(self.tr(f"❌ ERROR: Failed to load master file {file_path} - {e}"))
                 QApplication.processEvents()
 
     def create_master_dark(self):
         """Creates master darks with minimal RAM usage by loading frames in small tiles
         (GPU-accelerated if available), with adaptive reducers, using a memmap-based
         tile reader (each source file opened once per group)."""
-        self.update_status("Starting Master Dark Creation...")
+        self.update_status(self.tr("Starting Master Dark Creation..."))
         if not self.stacking_directory:
             self.select_stacking_directory()
             if not self.stacking_directory:
@@ -10122,7 +10122,7 @@ class StackingSuiteDialog(QDialog):
             total_tiles += _count_tiles(H, W, chunk_h, chunk_w)
 
         if total_tiles == 0:
-            self.update_status("⚠️ No eligible dark groups found to stack.")
+            self.update_status(self.tr("⚠️ No eligible dark groups found to stack."))
             return
 
         self.update_status(
@@ -10186,7 +10186,7 @@ class StackingSuiteDialog(QDialog):
                     continue
 
                 if pd.cancelled:
-                    self.update_status("⛔ Master Dark creation cancelled.")
+                    self.update_status(self.tr("⛔ Master Dark creation cancelled."))
                     break
 
                 self.update_status(
@@ -10242,7 +10242,7 @@ class StackingSuiteDialog(QDialog):
                             s.close()
                         except Exception:
                             pass
-                    self.update_status(f"❌ Failed to memmap dark frames: {e}")
+                    self.update_status(self.tr(f"❌ Failed to memmap dark frames: {e}"))
                     QApplication.processEvents()
                     continue
 
@@ -10450,7 +10450,7 @@ class StackingSuiteDialog(QDialog):
                 self.add_master_dark_to_tree(
                     f"{exposure_time}s ({image_size})", master_dark_path
                 )
-                self.update_status(f"✅ Master Dark saved: {master_dark_path}")
+                self.update_status(self.tr(f"✅ Master Dark saved: {master_dark_path}"))
                 QApplication.processEvents()
                 self.assign_best_master_files()
                 self.save_master_paths_to_settings()
@@ -10524,7 +10524,7 @@ class StackingSuiteDialog(QDialog):
         # ✅ Refresh UI bits that depend on master darks
         self.update_override_dark_combo()
         self.assign_best_master_dark()  # auto-select
-        self.update_status(f"✅ Master Dark saved and added to UI: {master_dark_path}")
+        self.update_status(self.tr(f"✅ Master Dark saved and added to UI: {master_dark_path}"))
         print(f"📝 DEBUG: Stored Master Dark -> {exposure_key}: {master_dark_path}")
 
 
@@ -10536,7 +10536,7 @@ class StackingSuiteDialog(QDialog):
 
         if not self.master_files:
             print("⚠️ WARNING: No Master Darks available.")
-            self.update_status("⚠️ WARNING: No Master Darks available.")
+            self.update_status(self.tr("⚠️ WARNING: No Master Darks available."))
             return  # Exit early if there are no master darks
 
         print(f"📂 Loaded Master Darks ({len(self.master_files)} total):")
@@ -10667,7 +10667,7 @@ class StackingSuiteDialog(QDialog):
     def create_master_flat(self):
         """Creates master flats using per-frame dark subtraction before stacking (GPU-accelerated if available),
         with adaptive reducers, fast per-frame normalization, and memmapped tile reads (each flat opened once per group)."""
-        self.update_status("Starting Master Flat Creation...")
+        self.update_status(self.tr("Starting Master Flat Creation..."))
         if not self.stacking_directory:
             QMessageBox.warning(self, "Error", "Please set the stacking directory first using the wrench button.")
             return
@@ -10689,7 +10689,7 @@ class StackingSuiteDialog(QDialog):
                 exposure_time_str, image_size = exposure_size.split(" (")
                 image_size = image_size.rstrip(")")
             except ValueError:
-                self.update_status(f"⚠️ ERROR: Could not parse {filter_exposure}")
+                self.update_status(self.tr(f"⚠️ ERROR: Could not parse {filter_exposure}"))
                 continue
 
             match = re.match(r"([\d.]+)s?", exposure_time_str)
@@ -10744,9 +10744,9 @@ class StackingSuiteDialog(QDialog):
                     if master_bias.ndim == 3 and master_bias.shape[0] in (1, 3):
                         master_bias = master_bias.transpose(1, 2, 0)[:, :, 0]
                     master_bias = master_bias.astype(np.float32, copy=False)
-                    self.update_status(f"Using Master Bias (for flats when needed): {os.path.basename(bias_path)}")
+                    self.update_status(self.tr(f"Using Master Bias (for flats when needed): {os.path.basename(bias_path)}"))
             except Exception as e:
-                self.update_status(f"⚠️ Could not load Master Bias: {e}")
+                self.update_status(self.tr(f"⚠️ Could not load Master Bias: {e}"))
                 master_bias = None
 
         # -------------------------------------------------------------------------
@@ -10780,7 +10780,7 @@ class StackingSuiteDialog(QDialog):
             total_tiles += _count_tiles(H, W, chunk_h, chunk_w)
 
         if total_tiles == 0:
-            self.update_status("⚠️ No eligible flat groups found to stack.")
+            self.update_status(self.tr("⚠️ No eligible flat groups found to stack."))
             return
 
         self.update_status(
@@ -11005,7 +11005,7 @@ class StackingSuiteDialog(QDialog):
                     ts_np[:, ys, xs, 0] /= scales4[:, idx].reshape(-1, 1, 1)
 
         pd = _Progress(self, "Create Master Flats", total_tiles)
-        self.update_status(f"Progress initialized: {total_tiles} tiles across groups.")
+        self.update_status(self.tr(f"Progress initialized: {total_tiles} tiles across groups."))
         QApplication.processEvents()
 
         from concurrent.futures import ThreadPoolExecutor
@@ -11021,7 +11021,7 @@ class StackingSuiteDialog(QDialog):
                     )
                     continue
                 if pd.cancelled:
-                    self.update_status("⛔ Master Flat creation cancelled.")
+                    self.update_status(self.tr("⛔ Master Flat creation cancelled."))
                     break
 
                 exp_label = f"{exposure_time}s" if exposure_time >= 0 else "Unknown"
@@ -11064,7 +11064,7 @@ class StackingSuiteDialog(QDialog):
                         break
 
                 if override_val == "__NO_DARK__":
-                    self.update_status("ℹ️ This flat group: override = No Calibration.")
+                    self.update_status(self.tr("ℹ️ This flat group: override = No Calibration."))
                 elif isinstance(override_val, str):
                     if os.path.exists(override_val):
                         selected_master_dark = override_val
@@ -11072,7 +11072,7 @@ class StackingSuiteDialog(QDialog):
                             f"🌓 This flat group: using OVERRIDE dark → {os.path.basename(selected_master_dark)}"
                         )
                     else:
-                        self.update_status("⚠️ Override dark missing on disk; falling back to Auto/None.")
+                        self.update_status(self.tr("⚠️ Override dark missing on disk; falling back to Auto/None."))
                         override_val = None
 
                 # AUTO-SELECT when no override
@@ -11173,7 +11173,7 @@ class StackingSuiteDialog(QDialog):
                 if is_bayer_group:
                     if bayerpat not in ("RGGB", "BGGR", "GRBG", "GBRG"):
                         bayerpat = "RGGB"
-                    self.update_status(f"🧩 Bayer flat group detected: {bayerpat}")
+                    self.update_status(self.tr(f"🧩 Bayer flat group detected: {bayerpat}"))
                     QApplication.processEvents()
 
                 # -----------------------------------------------------------------
@@ -11188,7 +11188,7 @@ class StackingSuiteDialog(QDialog):
                     # only use bias this way for mono/bayer flats
                     scale_subtractor = master_bias
 
-                self.update_status(f"⚙️ Normalizing {N} flats by per-frame medians (central patch).")
+                self.update_status(self.tr(f"⚙️ Normalizing {N} flats by per-frame medians (central patch)."))
                 QApplication.processEvents()
 
                 if is_bayer_group:
@@ -11215,7 +11215,7 @@ class StackingSuiteDialog(QDialog):
                             s.close()
                         except Exception:
                             pass
-                    self.update_status(f"❌ Failed to memmap flat frames: {e}")
+                    self.update_status(self.tr(f"❌ Failed to memmap flat frames: {e}"))
                     QApplication.processEvents()
                     continue
 
@@ -11389,7 +11389,7 @@ class StackingSuiteDialog(QDialog):
                         pass
 
                 if cancelled_group:
-                    self.update_status("⛔ Master Flat creation cancelled; cleaning up temporary files.")
+                    self.update_status(self.tr("⛔ Master Flat creation cancelled; cleaning up temporary files."))
                     try:
                         del final_stacked
                     except Exception:
@@ -11445,7 +11445,7 @@ class StackingSuiteDialog(QDialog):
                 self.master_files[key] = master_flat_path
                 self.master_sizes[master_flat_path] = image_size
                 self.add_master_flat_to_tree(filter_name, master_flat_path)
-                self.update_status(f"✅ Master Flat saved: {master_flat_path}")
+                self.update_status(self.tr(f"✅ Master Flat saved: {master_flat_path}"))
                 QApplication.processEvents()
                 self.save_master_paths_to_settings()
 
@@ -11489,7 +11489,7 @@ class StackingSuiteDialog(QDialog):
 
         if not getattr(self, "master_files", None):
             print("⚠️ WARNING: No Master Calibration Files available.")
-            self.update_status("⚠️ WARNING: No Master Calibration Files available.")
+            self.update_status(self.tr("⚠️ WARNING: No Master Calibration Files available."))
             return
 
         # Ensure override dicts exist
@@ -11695,7 +11695,7 @@ class StackingSuiteDialog(QDialog):
                 for path in self.light_files[composite_key]:
                     self.session_tags[path] = session_name
 
-        self.update_status(f"🟢 Assigned session '{session_name}' to group '{filter_name}'")
+        self.update_status(self.tr(f"🟢 Assigned session '{session_name}' to group '{filter_name}'"))
 
 
     def override_selected_master_dark(self):
@@ -12006,9 +12006,9 @@ class StackingSuiteDialog(QDialog):
                     # ensure H,W (mono) or CHW (color) to match your subtract
                     if (not bias_is_mono) and master_bias.ndim == 3 and master_bias.shape[-1] == 3:
                         master_bias = master_bias.transpose(2,0,1)  # HWC -> CHW
-                    self.update_status(f"Using Master Bias: {os.path.basename(bias_path)}")
+                    self.update_status(self.tr(f"Using Master Bias: {os.path.basename(bias_path)}"))
             except Exception as e:
-                self.update_status(f"⚠️ Could not load Master Bias: {e}")
+                self.update_status(self.tr(f"⚠️ Could not load Master Bias: {e}"))
                 master_bias = None
 
         for i in range(self.light_tree.topLevelItemCount()):
@@ -12116,7 +12116,7 @@ class StackingSuiteDialog(QDialog):
                     # ---------- LOAD LIGHT ----------
                     light_data, hdr, bit_depth, is_mono = load_image(light_file)
                     if light_data is None or hdr is None:
-                        self.update_status(f"❌ ERROR: Failed to load {os.path.basename(light_file)}")
+                        self.update_status(self.tr(f"❌ ERROR: Failed to load {os.path.basename(light_file)}"))
                         continue
 
                     # Work in CHW for color; leave mono as H,W
@@ -12134,7 +12134,7 @@ class StackingSuiteDialog(QDialog):
                             b = b.astype(np.float32, copy=False)
 
                         light_data -= b
-                        self.update_status("Bias Subtracted")
+                        self.update_status(self.tr("Bias Subtracted"))
                         QApplication.processEvents()
 
                     # ---------- APPLY DARK (if resolved) ----------
@@ -12150,7 +12150,7 @@ class StackingSuiteDialog(QDialog):
                             else:                      # CHW
                                 tmp = subtract_dark_with_pedestal(light_data[np.newaxis, :, :], dark_data, pedestal_value)
                                 light_data = tmp[0]
-                            self.update_status(f"Dark Subtracted: {os.path.basename(master_dark_path)}")
+                            self.update_status(self.tr(f"Dark Subtracted: {os.path.basename(master_dark_path)}"))
                             QApplication.processEvents()
 
                     # ---------- APPLY FLAT (if resolved) ----------
@@ -12211,7 +12211,7 @@ class StackingSuiteDialog(QDialog):
 
                                 light_data = apply_flat_division_numba(light_data, flat_data)
 
-                            self.update_status(f"Flat Applied: {os.path.basename(master_flat_path)}")
+                            self.update_status(self.tr(f"Flat Applied: {os.path.basename(master_flat_path)}"))
                             QApplication.processEvents()
 
                     # ---------- COSMETIC (optional) ----------
@@ -12246,14 +12246,14 @@ class StackingSuiteDialog(QDialog):
                                 hot_sigma=hot_sigma,
                                 cold_sigma=cold_sigma
                             )
-                            self.update_status(f"Cosmetic Correction Applied for Bayer Pattern ({pattern})")
+                            self.update_status(self.tr(f"Cosmetic Correction Applied for Bayer Pattern ({pattern})"))
                         else:
                             light_data = bulk_cosmetic_correction_numba(
                                 light_data,
                                 hot_sigma=hot_sigma,
                                 cold_sigma=cold_sigma
                             )
-                            self.update_status("Cosmetic Correction Applied (debayered/mono)")
+                            self.update_status(self.tr("Cosmetic Correction Applied (debayered/mono)"))
 
                         QApplication.processEvents()
 
@@ -12267,7 +12267,7 @@ class StackingSuiteDialog(QDialog):
 
                     min_val = float(np.min(light_data))
                     max_val = float(np.max(light_data))
-                    self.update_status(f"Before saving: min = {min_val:.4f}, max = {max_val:.4f}")
+                    self.update_status(self.tr(f"Before saving: min = {min_val:.4f}, max = {max_val:.4f}"))
                     print(f"Before saving: min = {min_val:.4f}, max = {max_val:.4f}")
                     QApplication.processEvents()
 
@@ -12300,10 +12300,10 @@ class StackingSuiteDialog(QDialog):
                     )
 
                     processed_files += 1
-                    self.update_status(f"Saved: {os.path.basename(calibrated_filename)} ({processed_files}/{total_files})")
+                    self.update_status(self.tr(f"Saved: {os.path.basename(calibrated_filename)} ({processed_files}/{total_files})"))
                     QApplication.processEvents()
 
-        self.update_status("✅ Calibration Complete!")
+        self.update_status(self.tr("✅ Calibration Complete!"))
         QApplication.processEvents()
         self.populate_calibrated_lights()
 
@@ -12322,7 +12322,7 @@ class StackingSuiteDialog(QDialog):
                     except Exception:
                         pass  # harmless if tab text lookup fails
 
-                self.update_status("⚙️ Auto: starting registration & integration…")
+                self.update_status(self.tr("⚙️ Auto: starting registration & integration…"))
                 QApplication.processEvents()
 
                 # Prefer button .click() (preserves any guard/flags)
@@ -12331,15 +12331,15 @@ class StackingSuiteDialog(QDialog):
                     if not getattr(self, "_registration_busy", False):
                         self.register_images_btn.click()
                     else:
-                        self.update_status("ℹ️ Registration already in progress; auto-run skipped.")
+                        self.update_status(self.tr("ℹ️ Registration already in progress; auto-run skipped."))
                 # Fallback: call the method directly
                 elif hasattr(self, "register_images"):
                     if not getattr(self, "_registration_busy", False):
                         self.register_images()
                     else:
-                        self.update_status("ℹ️ Registration already in progress; auto-run skipped.")
+                        self.update_status(self.tr("ℹ️ Registration already in progress; auto-run skipped."))
         except Exception as e:
-            self.update_status(f"⚠️ Auto register/integrate failed: {e}")
+            self.update_status(self.tr(f"⚠️ Auto register/integrate failed: {e}"))
 
 
     def select_reference_frame_robust(self, frame_weights, sigma_threshold=1.0):
@@ -12434,7 +12434,7 @@ class StackingSuiteDialog(QDialog):
 
         self.light_files = light_files
         if debug:
-            self.update_status(f"🧭 Tree snapshot → groups: {len(light_files)}, leaves seen: {total_leafs}, paths kept: {total_paths}")
+            self.update_status(self.tr(f"🧭 Tree snapshot → groups: {len(light_files)}, leaves seen: {total_leafs}, paths kept: {total_paths}"))
         return light_files
 
     def _norm_filter_key(self, s: str) -> str:
@@ -12537,7 +12537,7 @@ class StackingSuiteDialog(QDialog):
                 try:
                     img, hdr, _, _ = load_image(fp)
                     if img is None:
-                        self.update_status(f"⚠️ Cannot load {fp}; skipping.")
+                        self.update_status(self.tr(f"⚠️ Cannot load {fp}; skipping."))
                         continue
 
                     if hdr and hdr.get("BAYERPAT"):
@@ -12591,7 +12591,7 @@ class StackingSuiteDialog(QDialog):
                         pass
 
                 except Exception as e:
-                    self.update_status(f"⚠️ Split error on {os.path.basename(fp)}: {e}")
+                    self.update_status(self.tr(f"⚠️ Split error on {os.path.basename(fp)}: {e}"))
 
         # Group the new files
         def _group_key(band: str, path: str) -> str:
@@ -12644,7 +12644,7 @@ class StackingSuiteDialog(QDialog):
                 f"OIII={len(oiii_files)}, Hb={len(hb_files)} (drizzle seeded on {seeded} new group(s))"
             )
         else:
-            self.update_status("ℹ️ No dual-band frames detected or split.")
+            self.update_status(self.tr("ℹ️ No dual-band frames detected or split."))
 
     def _write_band_fit(self, out_path: str, data: np.ndarray, src_header: Optional[fits.Header],
                         band: str, src_filter: str):
@@ -12805,7 +12805,7 @@ class StackingSuiteDialog(QDialog):
         if abs(d - 180.0) <= tol_deg:
             # 180° is just two 90° rotations; cheap & exact
             # np.rot90 returns a view, make contiguous for downstream processing
-            self.update_status(f"Flipping Image")
+            self.update_status(self.tr(f"Flipping Image"))
             QApplication.processEvents()
             return np.ascontiguousarray(np.rot90(img, 2)), True
         return img, False
@@ -12853,10 +12853,10 @@ class StackingSuiteDialog(QDialog):
         if ret == QMessageBox.StandardButton.Yes:
             # Disable raw CFA just for this run
             self._cfa_for_this_run = False
-            self.update_status("⚠️ CFA Drizzle: low-count fallback → using Edge-Aware Interpolation for this run.")
+            self.update_status(self.tr("⚠️ CFA Drizzle: low-count fallback → using Edge-Aware Interpolation for this run."))
         else:
             self._cfa_for_this_run = True
-            self.update_status("ℹ️ CFA Drizzle kept despite low frame count (you chose No).")
+            self.update_status(self.tr("ℹ️ CFA Drizzle kept despite low frame count (you chose No)."))
 
     def _ensure_comet_seed_now(self) -> bool:
         """If no comet seed exists, open the picker. Return True IFF we have a seed after."""
@@ -13117,7 +13117,7 @@ class StackingSuiteDialog(QDialog):
                 self.ref_frame_path.setText("Auto (not set)")
         except Exception:
             pass
-        self.update_status("🔓 Reference unlocked. Next run will auto-select the best reference.")
+        self.update_status(self.tr("🔓 Reference unlocked. Next run will auto-select the best reference."))
 
     def _on_auto_accept_toggled(self, v: bool):
         # Persist the checkbox state
@@ -13242,9 +13242,9 @@ class StackingSuiteDialog(QDialog):
 
 
         if getattr(self, "_registration_busy", False):
-            self.update_status("⏸ Registration already running; ignoring extra click.")
+            self.update_status(self.tr("⏸ Registration already running; ignoring extra click."))
             return
-        self.update_status("🧹 Doing a little tidying up...")
+        self.update_status(self.tr("🧹 Doing a little tidying up..."))
         user_ref_locked = bool(getattr(self, "_user_ref_locked", False))
 
         # Only clear derived geometry/maps when NOT locked
@@ -13271,30 +13271,30 @@ class StackingSuiteDialog(QDialog):
 
         try:
             if self.star_trail_mode:
-                self.update_status("🌠 Star-Trail Mode enabled: skipping registration & using max-value stack")
+                self.update_status(self.tr("🌠 Star-Trail Mode enabled: skipping registration & using max-value stack"))
                 QApplication.processEvents()
                 return self._make_star_trail()
 
-            self.update_status("🔄 Image Registration Started...")
+            self.update_status(self.tr("🔄 Image Registration Started..."))
             self.extract_light_files_from_tree(debug=True)
 
             comet_mode = bool(getattr(self, "comet_cb", None) and self.comet_cb.isChecked())
             if comet_mode:
-                self.update_status("🌠 Comet mode: please click the comet center to continue…")
+                self.update_status(self.tr("🌠 Comet mode: please click the comet center to continue…"))
                 QApplication.processEvents()
                 ok = self._ensure_comet_seed_now()
                 if not ok:
                     QMessageBox.information(self, "Comet Mode",
                         "No comet center was selected. Registration has been cancelled so you can try again.")
-                    self.update_status("❌ Registration cancelled (no comet seed).")
+                    self.update_status(self.tr("❌ Registration cancelled (no comet seed)."))
                     return
                 else:
                     self._comet_ref_xy = None
-                    self.update_status("✅ Comet seed set. Proceeding with registration…")
+                    self.update_status(self.tr("✅ Comet seed set. Proceeding with registration…"))
                     QApplication.processEvents()
 
             if not self.light_files:
-                self.update_status("⚠️ No light files to register!")
+                self.update_status(self.tr("⚠️ No light files to register!"))
                 return
 
             # dual-band split unchanged...
@@ -13313,7 +13313,7 @@ class StackingSuiteDialog(QDialog):
             self._maybe_warn_cfa_low_frames()
 
             all_files = [f for lst in self.light_files.values() for f in lst]
-            self.update_status(f"📊 Found {len(all_files)} total frames. Now measuring in parallel batches...")
+            self.update_status(self.tr(f"📊 Found {len(all_files)} total frames. Now measuring in parallel batches..."))
 
             # ── binning (FITS/XISF aware) ─────────────────────────────
             bin_map = {}
@@ -13471,11 +13471,11 @@ class StackingSuiteDialog(QDialog):
             from concurrent.futures import ThreadPoolExecutor, as_completed
 
             for idx, chunk in enumerate(chunks, 1):
-                self.update_status(f"📦 Measuring chunk {idx}/{total_chunks} ({len(chunk)} frames)")
+                self.update_status(self.tr(f"📦 Measuring chunk {idx}/{total_chunks} ({len(chunk)} frames)"))
                 chunk_images = []
                 chunk_valid_files = []
 
-                self.update_status(f"🌍 Loading {len(chunk)} previews in parallel (up to {max_workers} threads)...")
+                self.update_status(self.tr(f"🌍 Loading {len(chunk)} previews in parallel (up to {max_workers} threads)..."))
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
                     futs = {executor.submit(self._quick_preview_any, fp, target_xbin, target_ybin): fp
                             for fp in chunk}
@@ -13488,11 +13488,11 @@ class StackingSuiteDialog(QDialog):
                             chunk_images.append(preview)
                             chunk_valid_files.append(fp)
                         except Exception as e:
-                            self.update_status(f"⚠️ Error previewing {fp}: {e}")
+                            self.update_status(self.tr(f"⚠️ Error previewing {fp}: {e}"))
                         QApplication.processEvents()
 
                 if not chunk_images:
-                    self.update_status("⚠️ No valid previews in this chunk (couldn’t find image data in any HDU).")
+                    self.update_status(self.tr("⚠️ No valid previews in this chunk (couldn’t find image data in any HDU)."))
                     continue
 
                 # size align (crop) before stats
@@ -13501,7 +13501,7 @@ class StackingSuiteDialog(QDialog):
                 if any((im.shape[0] != min_h or im.shape[1] != min_w) for im in chunk_images):
                     chunk_images = [_center_crop_2d(im, min_h, min_w) for im in chunk_images]
 
-                self.update_status("🌍 Measuring global means in parallel...")
+                self.update_status(self.tr("🌍 Measuring global means in parallel..."))
                 QApplication.processEvents()
                 means = np.array([float(np.mean(ci)) for ci in chunk_images], dtype=np.float32)
                 mean_values.update({fp: float(means[i]) for i, fp in enumerate(chunk_valid_files)})
@@ -13525,15 +13525,15 @@ class StackingSuiteDialog(QDialog):
                 gc.collect()  # Free memory after processing each chunk
 
             if not measured_frames:
-                self.update_status("⚠️ No frames could be measured!")
+                self.update_status(self.tr("⚠️ No frames could be measured!"))
                 return
 
-            self.update_status(f"✅ All chunks complete! Measured {len(measured_frames)} frames total.")
+            self.update_status(self.tr(f"✅ All chunks complete! Measured {len(measured_frames)} frames total."))
             # ─────────────────────────────────────────────────────────────────────
             # FAST reference selection: score = starcount / (median * ecc)
             # uses stats we ALREADY measured → good for 100s of frames
             # ─────────────────────────────────────────────────────────────────────
-            self.update_status("🧠 Selecting reference optimized for AstroAlign (starcount/(median*ecc))…")
+            self.update_status(self.tr("🧠 Selecting reference optimized for AstroAlign (starcount/(median*ecc))…"))
             QApplication.processEvents()
 
             def _dominant_pa_cluster_simple(fps, get_pa, tol=12.0):
@@ -13572,7 +13572,7 @@ class StackingSuiteDialog(QDialog):
             user_ref = getattr(self, "reference_frame", None)
 
             if user_ref_locked and user_ref:
-                self.update_status(f"📌 Using user-specified reference (locked): {user_ref}")
+                self.update_status(self.tr(f"📌 Using user-specified reference (locked): {user_ref}"))
                 self.reference_frame = user_ref
                 self.reference_frame = os.path.normpath(self.reference_frame)
             else:
@@ -13615,13 +13615,13 @@ class StackingSuiteDialog(QDialog):
             # ─────────────────────────────────────────────────────────────────────
             ref_img_raw, ref_hdr = self._load_image_any(self.reference_frame)
             if ref_img_raw is None:
-                self.update_status(f"🚨 Could not load reference {self.reference_frame}. Aborting.")
+                self.update_status(self.tr(f"🚨 Could not load reference {self.reference_frame}. Aborting."))
                 return
 
             bayer = self._hdr_get(ref_hdr, 'BAYERPAT')
             splitdb = bool(self._hdr_get(ref_hdr, 'SPLITDB', False))
             if bayer and not splitdb and (ref_img_raw.ndim == 2 or (ref_img_raw.ndim == 3 and ref_img_raw.shape[-1] == 1)):
-                self.update_status("📦 Debayering reference frame…")
+                self.update_status(self.tr("📦 Debayering reference frame…"))
                 ref_img = self.debayer_image(ref_img_raw, self.reference_frame, ref_hdr)
             else:
                 ref_img = ref_img_raw
@@ -13636,20 +13636,20 @@ class StackingSuiteDialog(QDialog):
             else:
                 ref_median = float(np.median(ref_img))
 
-            self.update_status(f"📊 Reference (debayered) median: {ref_median:.4f}")
+            self.update_status(self.tr(f"📊 Reference (debayered) median: {ref_median:.4f}"))
             QApplication.processEvents()
 
             # Modeless ref review (unchanged)
             stats_payload = {"star_count": ref_count, "eccentricity": ref_ecc, "mean": ref_median}
 
             if user_ref_locked:
-                self.update_status("✅ User reference is locked; skipping reference review dialog.")
+                self.update_status(self.tr("✅ User reference is locked; skipping reference review dialog."))
                 try:
                     self.ref_frame_path.setText(os.path.basename(self.reference_frame or "") or "No file selected")
                 except Exception:
                     pass
             elif self.auto_accept_ref_cb.isChecked():
-                self.update_status("✅ Auto-accept measured reference is enabled; using the measured best frame.")
+                self.update_status(self.tr("✅ Auto-accept measured reference is enabled; using the measured best frame."))
                 try:
                     self.ref_frame_path.setText(os.path.basename(self.reference_frame or "") or "No file selected")
                 except Exception:
@@ -13665,13 +13665,13 @@ class StackingSuiteDialog(QDialog):
                     new_ref = self.prompt_for_reference_frame()
                     if new_ref:
                         self._set_user_reference(new_ref)  # sets lock + updates UI/settings
-                        self.update_status(f"User selected a new reference frame: {new_ref}")
+                        self.update_status(self.tr(f"User selected a new reference frame: {new_ref}"))
                         ref_img_raw, ref_hdr = self._load_image_any(self.reference_frame)
                         if ref_img_raw is None:
-                            self.update_status(f"🚨 Could not load reference {self.reference_frame}. Aborting.")
+                            self.update_status(self.tr(f"🚨 Could not load reference {self.reference_frame}. Aborting."))
                             return
                         if ref_hdr and ref_hdr.get('BAYERPAT') and not ref_hdr.get('SPLITDB', False) and (ref_img_raw.ndim == 2 or (ref_img_raw.ndim == 3 and ref_img_raw.shape[-1] == 1)):
-                            self.update_status("📦 Debayering reference frame…")
+                            self.update_status(self.tr("📦 Debayering reference frame…"))
                             ref_img = self.debayer_image(ref_img_raw, self.reference_frame, ref_hdr)
                         else:
                             ref_img = ref_img_raw
@@ -13683,19 +13683,19 @@ class StackingSuiteDialog(QDialog):
                             ref_median = float(np.median(ref_Luma))
                         else:
                             ref_median = float(np.median(ref_img))
-                        self.update_status(f"📊 (New) reference median: {ref_median:.4f}")
+                        self.update_status(self.tr(f"📊 (New) reference median: {ref_median:.4f}"))
                     else:
-                        self.update_status("No new reference selected; using previous reference.")
+                        self.update_status(self.tr("No new reference selected; using previous reference."))
 
             ref_L = _Luma(ref_img)
             ref_min = float(np.nanmin(ref_L))
             ref_target_median = float(np.nanmedian(ref_L - ref_min))
-            self.update_status(f"📊 Reference min={ref_min:.6f}, normalized-median={ref_target_median:.6f}")
+            self.update_status(self.tr(f"📊 Reference min={ref_min:.6f}, normalized-median={ref_target_median:.6f}"))
             QApplication.processEvents()
 
             auto_thresh = bool(self.settings.value("stacking/align/auto_threshold", False, type=bool))
             if auto_thresh:
-                self.update_status("🎯 Auto detecting threshold on reference")
+                self.update_status(self.tr("🎯 Auto detecting threshold on reference"))
                 QApplication.processEvents()
 
                 max_stars = int(self.settings.value("stacking/align/limit_stars", 100, type=int))
@@ -13727,11 +13727,11 @@ class StackingSuiteDialog(QDialog):
                     self.settings.setValue("stacking/align/limit_stars", int(max_stars))
                     self.settings.setValue("stacking/align/minarea", int(minarea))
 
-                    self.update_status(f"🎯 Auto threshold: writing {picked:g}σ to settings (> {max_stars} stars).")
+                    self.update_status(self.tr(f"🎯 Auto threshold: writing {picked:g}σ to settings (> {max_stars} stars)."))
 
                 else:
                     self._align_det_sigma_effective = None
-                    self.update_status("ℹ️ Auto threshold enabled, but SEP unavailable/failed; using configured Star detect σ.")
+                    self.update_status(self.tr("ℹ️ Auto threshold enabled, but SEP unavailable/failed; using configured Star detect σ."))
             else:
                 self._align_det_sigma_effective = None
                 self._align_det_sigma_prev = None
@@ -13748,13 +13748,13 @@ class StackingSuiteDialog(QDialog):
                     m = 1.0
                 scale_guess[fp] = ref_target_median / max(m, eps)
             if missing:
-                self.update_status(f"ℹ️ {len(missing)} frame(s) had zero/NaN preview medians; using neutral scale for those.")
+                self.update_status(self.tr(f"ℹ️ {len(missing)} frame(s) had zero/NaN preview medians; using neutral scale for those."))
 
             # ─────────────────────────────────────────────────────────────────────
             # PHASE 1b: Meridian flips
             # ─────────────────────────────────────────────────────────────────────
             ref_pa = self._extract_pa_deg(ref_hdr)
-            self.update_status(f"🧭 Reference PA: {ref_pa:.2f}°" if ref_pa is not None else "🧭 Reference PA: (unknown)")
+            self.update_status(self.tr(f"🧭 Reference PA: {ref_pa:.2f}°" if ref_pa is not None else "🧭 Reference PA: (unknown)"))
             QApplication.processEvents()
 
             # ─────────────────────────────────────────────────────────────────────
@@ -13828,7 +13828,7 @@ class StackingSuiteDialog(QDialog):
             if groups_count == 1 and skip_single:
                 target_sx = target_sy = None
                 skip_scale_norm = True
-                self.update_status("⏭️ Pixel-scale normalize skipped: single-group policy (no header reads).")
+                self.update_status(self.tr("⏭️ Pixel-scale normalize skipped: single-group policy (no header reads)."))
             else:
                 # --- multi-group (or policy off): compute target from medians ---
                 # Build per-file raw header scale (arcsec/px)
@@ -13857,10 +13857,10 @@ class StackingSuiteDialog(QDialog):
                     # pick the *smallest* arcsec/px (best resolution) so we never downsample the hi-res set
                     target_sx = float(min(eff_sx_list))
                     target_sy = float(min(eff_sy_list))
-                    self.update_status(f"🎯 Target pixel scale (hi-res): {target_sx:.3f}\"/px × {target_sy:.3f}\"/px")
+                    self.update_status(self.tr(f"🎯 Target pixel scale (hi-res): {target_sx:.3f}\"/px × {target_sy:.3f}\"/px"))
                 else:
                     target_sx = target_sy = None
-                    self.update_status("🎯 Target pixel scale unknown (no WCS/pixel size). Will skip scale normalization.")
+                    self.update_status(self.tr("🎯 Target pixel scale unknown (no WCS/pixel size). Will skip scale normalization."))
 
 
                 # Decide skip for single-group+uniform bin case (only reached if policy didn't auto-skip)
@@ -13874,9 +13874,9 @@ class StackingSuiteDialog(QDialog):
                                 max(_rel_delta(y, med_sy) for y in eff_sy_list))
                     if max_dev <= tol:
                         skip_scale_norm = True
-                        self.update_status(f"⏭️ Pixel-scale normalize skipped: spread ≤ {tol_pct:.2f}% (single group).")
+                        self.update_status(self.tr(f"⏭️ Pixel-scale normalize skipped: spread ≤ {tol_pct:.2f}% (single group)."))
                     else:
-                        self.update_status(f"ℹ️ Single group spread {max_dev*100:.3f}% > tol {tol_pct:.2f}% → will normalize.")
+                        self.update_status(self.tr(f"ℹ️ Single group spread {max_dev*100:.3f}% > tol {tol_pct:.2f}% → will normalize."))
 
             do_scale_norm = (not skip_scale_norm) and (target_sx is not None) and (target_sy is not None)
 
@@ -13904,7 +13904,7 @@ class StackingSuiteDialog(QDialog):
             self._norm_target_hw = (int(ref_H), int(ref_W))
 
             for idx, chunk in enumerate(chunks, 1):
-                self.update_status(f"🌀 Normalizing chunk {idx}/{total_chunks} ({len(chunk)} frames)…")
+                self.update_status(self.tr(f"🌀 Normalizing chunk {idx}/{total_chunks} ({len(chunk)} frames)…"))
                 QApplication.processEvents()
 
                 abe_enabled = bool(self.settings.value("stacking/grad_poly2/enabled", False, type=bool))
@@ -13920,7 +13920,7 @@ class StackingSuiteDialog(QDialog):
                 scaled_images = []; scaled_paths = []; scaled_hdrs = []
 
                 from concurrent.futures import ThreadPoolExecutor, as_completed
-                self.update_status(f"🌍 Loading {len(chunk)} images in parallel for normalization (up to {io_workers} threads)…")
+                self.update_status(self.tr(f"🌍 Loading {len(chunk)} images in parallel for normalization (up to {io_workers} threads)…"))
                 with ThreadPoolExecutor(max_workers=io_workers) as ex:
                     futs = {ex.submit(self._load_image_any, fp): fp for fp in chunk}
                     for fut in as_completed(futs):
@@ -13928,7 +13928,7 @@ class StackingSuiteDialog(QDialog):
                         try:
                             img, hdr = fut.result()
                             if img is None:
-                                self.update_status(f"⚠️ No data for {fp}")
+                                self.update_status(self.tr(f"⚠️ No data for {fp}"))
                                 continue
 
                             img = _to_writable_f32(img)
@@ -13936,7 +13936,7 @@ class StackingSuiteDialog(QDialog):
                             bayer = self._hdr_get(hdr, 'BAYERPAT')
                             splitdb = bool(self._hdr_get(hdr, 'SPLITDB', False))
                             if bayer and not splitdb and (img.ndim == 2 or (img.ndim == 3 and img.shape[-1] == 1)):
-                                self.update_status(f"📦 Debayering {os.path.basename(fp)}…")
+                                self.update_status(self.tr(f"📦 Debayering {os.path.basename(fp)}…"))
                                 img = self.debayer_image(img, fp, hdr)  # HxWx3
                             else:
                                 if img.ndim == 3 and img.shape[-1] == 1:
@@ -13947,7 +13947,7 @@ class StackingSuiteDialog(QDialog):
                                 pa = self._extract_pa_deg(hdr)
                                 img, did = self._maybe_rot180(img, pa, ref_pa, self.auto_rot180_tol_deg)
                                 if did:
-                                    self.update_status(f"↻ 180° rotate (PA Δ≈180°): {os.path.basename(fp)}")
+                                    self.update_status(self.tr(f"↻ 180° rotate (PA Δ≈180°): {os.path.basename(fp)}"))
                                     try:
                                         if hasattr(hdr, "__setitem__"):
                                             hdr['ROT180'] = (True, 'Rotated 180° pre-align by SAS')
@@ -14049,7 +14049,7 @@ class StackingSuiteDialog(QDialog):
                                 normalized_files.append(out_path)
 
                         except Exception as e:
-                            self.update_status(f"⚠️ Error normalizing {fp}: {e}")
+                            self.update_status(self.tr(f"⚠️ Error normalizing {fp}: {e}"))
                         finally:
                             QApplication.processEvents()
 
@@ -14130,13 +14130,13 @@ class StackingSuiteDialog(QDialog):
                         new_list.append(os.path.join(norm_dir, n_name))
                 self.light_files[group] = new_list
 
-            self.update_status("✅ Updated self.light_files to use debayered, normalized *_n.fit frames.")
+            self.update_status(self.tr("✅ Updated self.light_files to use debayered, normalized *_n.fit frames."))
 
             from os import path
             ref_path = path.normpath(self.reference_frame)
-            self.update_status(f"📌 Reference for alignment (verbatim): {ref_path}")
+            self.update_status(self.tr(f"📌 Reference for alignment (verbatim): {ref_path}"))
             if not path.exists(ref_path):
-                self.update_status(f"🚨 Reference file does not exist: {ref_path}")
+                self.update_status(self.tr(f"🚨 Reference file does not exist: {ref_path}"))
                 return
 
             # ─────────────────────────────────────────────────────────────────────
@@ -14269,9 +14269,9 @@ class StackingSuiteDialog(QDialog):
                     f.write(f"{a:.4f}, {b:.4f}, {tx:.4f}\n")
                     f.write(f"{c:.4f}, {d:.4f}, {ty:.4f}\n")
                     f.write("\n")  # blank line
-            self.update_status(f"✅ Transform file saved as {os.path.basename(out_path)}")
+            self.update_status(self.tr(f"✅ Transform file saved as {os.path.basename(out_path)}"))
         except Exception as e:
-            self.update_status(f"⚠️ Failed to save transform file: {e}")
+            self.update_status(self.tr(f"⚠️ Failed to save transform file: {e}"))
 
 
 
@@ -14316,7 +14316,7 @@ class StackingSuiteDialog(QDialog):
         all_files = [f for flist in self.light_files.values() for f in flist]
         n_frames = len(all_files)
         if not all_files:
-            self.update_status("⚠️ No calibrated lights available for star trails.")
+            self.update_status(self.tr("⚠️ No calibrated lights available for star trails."))
             return
 
         # 2) load every frame (once), compute its median, and remember its header
@@ -14326,7 +14326,7 @@ class StackingSuiteDialog(QDialog):
         for fn in all_files:
             img, hdr, _, _ = load_image(fn)
             if img is None:
-                self.update_status(f"⚠️ Failed to load {os.path.basename(fn)}; skipping")
+                self.update_status(self.tr(f"⚠️ Failed to load {os.path.basename(fn)}; skipping"))
                 QApplication.processEvents()
                 continue
 
@@ -14335,7 +14335,7 @@ class StackingSuiteDialog(QDialog):
             frames.append((arr, hdr))
 
         if not frames:
-            self.update_status("⚠️ No valid frames to compute reference median; aborting star-trail.")
+            self.update_status(self.tr("⚠️ No valid frames to compute reference median; aborting star-trail."))
             return
 
         # reference median is the median of per-frame medians
@@ -14355,7 +14355,7 @@ class StackingSuiteDialog(QDialog):
         with tempfile.TemporaryDirectory(prefix="startrail_norm_") as norm_dir:
             normalized_paths = []
             for idx, (arr, hdr) in enumerate(frames, start=1):
-                self.update_status(f"🔄 Normalizing frame {idx}/{len(frames)}")
+                self.update_status(self.tr(f"🔄 Normalizing frame {idx}/{len(frames)}"))
                 QApplication.processEvents()
 
                 # guard against divide-by-zero
@@ -14369,7 +14369,7 @@ class StackingSuiteDialog(QDialog):
                 normalized_paths.append(out_path)
 
             # 4) stack and do max-value projection
-            self.update_status(f"📊 Stacking {len(normalized_paths)} frames")
+            self.update_status(self.tr(f"📊 Stacking {len(normalized_paths)} frames"))
             QApplication.processEvents()
             stack = np.stack([fits.getdata(p).astype(np.float32) for p in normalized_paths], axis=0)
             trail_img, _ = max_value_stack(stack)
@@ -14388,7 +14388,7 @@ class StackingSuiteDialog(QDialog):
                 "TIFF (*.tif);;PNG (*.png);;JPEG (*.jpg *.jpeg);;FITS (*.fits);;XISF (*.xisf)"
             )
             if not path:
-                self.update_status("✖ Star-trail save cancelled.")
+                self.update_status(self.tr("✖ Star-trail save cancelled."))
                 return
 
             # figure out extension
@@ -14411,7 +14411,7 @@ class StackingSuiteDialog(QDialog):
             )
 
         # once we exit the with-block, all the _st.fit files are deleted
-        self.update_status(f"✅ Star‐Trail image written to {path}")
+        self.update_status(self.tr(f"✅ Star‐Trail image written to {path}"))
         return
 
 
@@ -14435,7 +14435,7 @@ class StackingSuiteDialog(QDialog):
             rect = self._compute_autocrop_rect(file_list, transforms_path, pct)
 
         if not rect:
-            self.update_status("✂️ Auto-crop: no common area found; skipping.")
+            self.update_status(self.tr("✂️ Auto-crop: no common area found; skipping."))
             return arr, header
 
         x0, y0, x1, y1 = rect
@@ -14483,7 +14483,7 @@ class StackingSuiteDialog(QDialog):
         if "CRPIX2" in header:
             header["CRPIX2"] = float(header["CRPIX2"]) - y0
 
-        self.update_status(f"✂️ Auto-cropped to [{x0}:{x1}]×[{y0}:{y1}] (scale {scale}×)")
+        self.update_status(self.tr(f"✂️ Auto-cropped to [{x0}:{x1}]×[{y0}:{y1}] (scale {scale}×)"))
         return arr, header
 
     def _dither_phase_fill(self, matrices: dict[str, np.ndarray], bins=8) -> float:
@@ -14729,7 +14729,7 @@ class StackingSuiteDialog(QDialog):
 
         alignment_thread = self.alignment_thread
         if alignment_thread is None:
-            self.update_status("⚠️ Error: No alignment data available.")
+            self.update_status(self.tr("⚠️ Error: No alignment data available."))
             self._set_registration_busy(False) 
             return
 
@@ -14793,9 +14793,9 @@ class StackingSuiteDialog(QDialog):
                 drizzle_xforms=self.drizzle_xforms,
                 fallback_affine=self.valid_matrices,  # in case a few files missed model-aware
             )
-            self.update_status("✅ Transform file saved as alignment_transforms.sasd (v2)")
+            self.update_status(self.tr("✅ Transform file saved as alignment_transforms.sasd (v2)"))
         except Exception as e:
-            self.update_status(f"⚠️ Failed to write SASD v2 ({e}); writing affine-only fallback.")
+            self.update_status(self.tr(f"⚠️ Failed to write SASD v2 ({e}); writing affine-only fallback."))
             self.save_alignment_matrices_sasd(valid_matrices)  # old writer as last resort
 
 
@@ -14817,11 +14817,11 @@ class StackingSuiteDialog(QDialog):
                     X = float(M[0,0]*x + M[0,1]*y + M[0,2])
                     Y = float(M[1,0]*x + M[1,1]*y + M[1,2])
                     self._comet_ref_xy = (X, Y)
-                    self.update_status(f"🌠 Comet anchor in reference frame: ({X:.1f}, {Y:.1f})")
+                    self.update_status(self.tr(f"🌠 Comet anchor in reference frame: ({X:.1f}, {Y:.1f})"))
                 else:
-                    self.update_status("ℹ️ Could not resolve comet seed to reference (no matrix for that frame).")
+                    self.update_status(self.tr("ℹ️ Could not resolve comet seed to reference (no matrix for that frame)."))
         except Exception as e:
-            self.update_status(f"⚠️ Comet seed resolve failed: {e}")
+            self.update_status(self.tr(f"⚠️ Comet seed resolve failed: {e}"))
 
         # ----------------------------
         # Build mapping from normalized -> aligned paths
@@ -14851,15 +14851,15 @@ class StackingSuiteDialog(QDialog):
 
         # Status
         prefix = "⚡ Fast mode: " if fast_mode else ""
-        self.update_status(f"{prefix}Alignment summary: {len(accepted)} succeeded, {len(rejected)} rejected.")
+        self.update_status(self.tr(f"{prefix}Alignment summary: {len(accepted)} succeeded, {len(rejected)} rejected."))
         QApplication.processEvents()
         if (not fast_mode) and rejected:
-            self.update_status(f"🚨 Rejected {len(rejected)} frame(s) due to shift > {accept_thresh}px.")
+            self.update_status(self.tr(f"🚨 Rejected {len(rejected)} frame(s) due to shift > {accept_thresh}px."))
             for rf in rejected:
-                self.update_status(f"  ❌ {os.path.basename(rf)}")
+                self.update_status(self.tr(f"  ❌ {os.path.basename(rf)}"))
 
         if not self.valid_transforms:
-            self.update_status("⚠️ No frames to stack; aborting.")
+            self.update_status(self.tr("⚠️ No frames to stack; aborting."))
             self._set_registration_busy(False)
             return
 
@@ -14870,7 +14870,7 @@ class StackingSuiteDialog(QDialog):
         for group, file_list in self.light_files.items():
             filtered = [f for f in file_list if os.path.normpath(f) in self.valid_transforms]
             filtered_light_files[group] = filtered
-            self.update_status(f"Group '{group}' has {len(filtered)} file(s) after filtering.")
+            self.update_status(self.tr(f"Group '{group}' has {len(filtered)} file(s) after filtering."))
             QApplication.processEvents()
 
         aligned_light_files = {}
@@ -14882,12 +14882,12 @@ class StackingSuiteDialog(QDialog):
                 if aligned and os.path.exists(aligned):
                     new_list.append(aligned)
                 else:
-                    self.update_status(f"DEBUG: File '{aligned}' does not exist on disk.")
+                    self.update_status(self.tr(f"DEBUG: File '{aligned}' does not exist on disk."))
             aligned_light_files[group] = new_list
 
         # ----Split dual-band if requested----
         if self.split_dualband_cb.isChecked():
-            self.update_status("🌈 Splitting aligned dual-band OSC frames into Ha / OIII…")
+            self.update_status(self.tr("🌈 Splitting aligned dual-band OSC frames into Ha / OIII…"))
             aligned_light_files = self._split_dual_band_after_align(aligned_light_files)
 
         def _start_after_align_worker(aligned_light_files: dict[str, list[str]]):
@@ -14909,10 +14909,10 @@ class StackingSuiteDialog(QDialog):
             )
             if cfa_effective and getattr(self, "valid_matrices", None):
                 fill = self._dither_phase_fill(self.valid_matrices, bins=8)
-                self.update_status(f"🔎 CFA drizzle sub-pixel phase fill (8×8): {fill*100:.1f}%")
+                self.update_status(self.tr(f"🔎 CFA drizzle sub-pixel phase fill (8×8): {fill*100:.1f}%"))
                 if fill < 0.65:
-                    self.update_status("💡 For best results with CFA drizzle, aim for >65% fill.")
-                    self.update_status("   With <~40–55% fill, expect visible patching even with many frames)")
+                    self.update_status(self.tr("💡 For best results with CFA drizzle, aim for >65% fill."))
+                    self.update_status(self.tr("   With <~40–55% fill, expect visible patching even with many frames)"))
             QApplication.processEvents()
 
             # ----------------------------
@@ -14966,7 +14966,7 @@ class StackingSuiteDialog(QDialog):
             QApplication.processEvents()
 
             try:
-                self.update_status("✂️ (MF) Auto Crop: using transform footprints…")
+                self.update_status(self.tr("✂️ (MF) Auto Crop: using transform footprints…"))
                 QApplication.processEvents()
 
                 # Prefer model-aware (drizzle) transforms, else affine fallback
@@ -14990,9 +14990,9 @@ class StackingSuiteDialog(QDialog):
                             f"({x1-x0}×{y1-y0})"
                         )
                     else:
-                        self.update_status("✂️ (MF) Transform crop yielded no valid rect; falling back to mask-based method…")
+                        self.update_status(self.tr("✂️ (MF) Transform crop yielded no valid rect; falling back to mask-based method…"))
                 else:
-                    self.update_status("✂️ (MF) No transforms/geometry available; falling back to mask-based method…")
+                    self.update_status(self.tr("✂️ (MF) No transforms/geometry available; falling back to mask-based method…"))
 
                 # Fallback to existing (mask-based) method if needed
                 if _mf_global_rect is None:
@@ -15008,11 +15008,11 @@ class StackingSuiteDialog(QDialog):
                             f"({x1-x0}×{y1-y0})"
                         )
                     else:
-                        self.update_status("✂️ (MF) Auto-crop disabled (no common region).")
+                        self.update_status(self.tr("✂️ (MF) Auto-crop disabled (no common region)."))
 
                 QApplication.processEvents()
             except Exception as e:
-                self.update_status(f"⚠️ (MF) Global crop failed: {e}")
+                self.update_status(self.tr(f"⚠️ (MF) Global crop failed: {e}"))
                 _mf_global_rect = None
             finally:
                 try:
@@ -15029,11 +15029,11 @@ class StackingSuiteDialog(QDialog):
         mf_enabled = self.settings.value("stacking/mfdeconv/enabled", False, type=bool)
 
         if mf_enabled:
-            self.update_status("🧪 Multi-frame PSF-aware deconvolution path enabled.")
+            self.update_status(self.tr("🧪 Multi-frame PSF-aware deconvolution path enabled."))
 
             mf_groups = [(g, lst) for g, lst in aligned_light_files.items() if lst]
             if not mf_groups:
-                self.update_status("⚠️ No aligned frames available for MF deconvolution.")
+                self.update_status(self.tr("⚠️ No aligned frames available for MF deconvolution."))
             else:
                 self._mf_pd = QProgressDialog("Multi-frame deconvolving…", "Cancel", 0, len(mf_groups), self)
                 # self._mf_pd.setWindowModality(Qt.WindowModality.ApplicationModal)
@@ -15083,7 +15083,7 @@ class StackingSuiteDialog(QDialog):
                     if run_after:
                         _start_after_align_worker(aligned_light_files)
                     else:
-                        self.update_status("✅ MFDeconv complete for all groups. Skipping normal integration as requested.")
+                        self.update_status(self.tr("✅ MFDeconv complete for all groups. Skipping normal integration as requested."))
                         self._set_registration_busy(False)
 
                 def _start_next_mf_job():
@@ -15149,11 +15149,11 @@ class StackingSuiteDialog(QDialog):
                             eng_name = "Normal"
                     except Exception as e:
                         # if an import fails, fall back to the safe Normal path
-                        self.update_status(f"⚠️ MFDeconv engine import failed ({e}); falling back to Normal.")
+                        self.update_status(self.tr(f"⚠️ MFDeconv engine import failed ({e}); falling back to Normal."))
                         from setiastro.saspro.mfdeconv import MultiFrameDeconvWorker as MFCls
                         eng_name = "Normal (fallback)"
 
-                    self.update_status(f"⚙️ MFDeconv engine: {eng_name}")
+                    self.update_status(self.tr(f"⚙️ MFDeconv engine: {eng_name}"))
 
                     # ── build worker exactly the same in all modes ────────────────────────────
                     self._mf_worker = MFCls(
@@ -15207,9 +15207,9 @@ class StackingSuiteDialog(QDialog):
                                                 else img[y1:y2, x1:x2, :])
                                     out_crop = out.replace(".fit", "_autocrop.fit").replace(".fits", "_autocrop.fits")
                                     fits.PrimaryHDU(data=crop.astype(np.float32, copy=False), header=hdr).writeto(out_crop, overwrite=True)
-                                    self.update_status(f"✂️ (MF) Saved auto-cropped copy → {out_crop}")
+                                    self.update_status(self.tr(f"✂️ (MF) Saved auto-cropped copy → {out_crop}"))
                                 except Exception as e:
-                                    self.update_status(f"⚠️ (MF) Auto-crop of output failed: {e}")
+                                    self.update_status(self.tr(f"⚠️ (MF) Auto-crop of output failed: {e}"))
 
                         # advance progress segment
                         if getattr(self, "_mf_pd", None):
@@ -15270,10 +15270,10 @@ class StackingSuiteDialog(QDialog):
 
         if cfa_effective and getattr(self, "valid_matrices", None):
             fill = self._dither_phase_fill(self.valid_matrices, bins=8)
-            self.update_status(f"🔎 CFA drizzle sub-pixel phase fill (8×8): {fill*100:.1f}%")
+            self.update_status(self.tr(f"🔎 CFA drizzle sub-pixel phase fill (8×8): {fill*100:.1f}%"))
             if fill < 0.65:
-                self.update_status("💡 For best results with CFA drizzle, aim for >65% fill.")
-                self.update_status("   With <~40–55% fill, expect visible patching even with many frames.")
+                self.update_status(self.tr("💡 For best results with CFA drizzle, aim for >65% fill."))
+                self.update_status(self.tr("   With <~40–55% fill, expect visible patching even with many frames."))
         QApplication.processEvents()
 
         # ----------------------------
@@ -16345,18 +16345,18 @@ class StackingSuiteDialog(QDialog):
 
     def save_registered_images(self, success, msg, frame_weights):
         if not success:
-            self.update_status(f"⚠️ Image registration failed: {msg}")
+            self.update_status(self.tr(f"⚠️ Image registration failed: {msg}"))
             return
 
-        self.update_status("✅ All frames registered successfully!")
+        self.update_status(self.tr("✅ All frames registered successfully!"))
         QApplication.processEvents()
         
         # Use the grouped files already stored from the tree view.
         if not self.light_files:
-            self.update_status("⚠️ No light frames available for stacking!")
+            self.update_status(self.tr("⚠️ No light frames available for stacking!"))
             return
         
-        self.update_status(f"📂 Preparing to stack {sum(len(v) for v in self.light_files.values())} frames in {len(self.light_files)} groups.")
+        self.update_status(self.tr(f"📂 Preparing to stack {sum(len(v) for v in self.light_files.values())} frames in {len(self.light_files)} groups."))
         QApplication.processEvents()
         
         # Pass the dictionary (grouped by filter, exposure, dimensions) to the stacking function.
@@ -16427,28 +16427,28 @@ class StackingSuiteDialog(QDialog):
         chunk_height=2048,
         chunk_width=2048
     ):
-        self.update_status(f"✅ Chunked stacking {len(grouped_files)} group(s)...")
+        self.update_status(self.tr(f"✅ Chunked stacking {len(grouped_files)} group(s)..."))
         QApplication.processEvents()
 
         all_rejection_coords = []
 
         for group_key, file_list in grouped_files.items():
             num_files = len(file_list)
-            self.update_status(f"📊 Group '{group_key}' has {num_files} aligned file(s).")
+            self.update_status(self.tr(f"📊 Group '{group_key}' has {num_files} aligned file(s)."))
             QApplication.processEvents()
             if num_files < 2:
-                self.update_status(f"⚠️ Group '{group_key}' does not have enough frames to stack.")
+                self.update_status(self.tr(f"⚠️ Group '{group_key}' does not have enough frames to stack."))
                 continue
 
             # Reference shape/header (unchanged)
             ref_file = file_list[0]
             if not os.path.exists(ref_file):
-                self.update_status(f"⚠️ Reference file '{ref_file}' not found, skipping group.")
+                self.update_status(self.tr(f"⚠️ Reference file '{ref_file}' not found, skipping group."))
                 continue
 
             ref_data, ref_header, _, _ = load_image(ref_file)
             if ref_data is None:
-                self.update_status(f"⚠️ Could not load reference '{ref_file}', skipping group.")
+                self.update_status(self.tr(f"⚠️ Could not load reference '{ref_file}', skipping group."))
                 continue
 
             is_color = (ref_data.ndim == 3 and ref_data.shape[2] == 3)
@@ -16466,9 +16466,9 @@ class StackingSuiteDialog(QDialog):
                     aligned_paths.append(fpath)
                     weights_list.append(frame_weights.get(fpath, 1.0))
                 else:
-                    self.update_status(f"⚠️ File not found: {fpath}, skipping.")
+                    self.update_status(self.tr(f"⚠️ File not found: {fpath}, skipping."))
             if len(aligned_paths) < 2:
-                self.update_status(f"⚠️ Not enough valid frames in group '{group_key}' to stack.")
+                self.update_status(self.tr(f"⚠️ Not enough valid frames in group '{group_key}' to stack."))
                 continue
 
             weights_list = np.array(weights_list, dtype=np.float32)
@@ -16476,7 +16476,7 @@ class StackingSuiteDialog(QDialog):
             # ⬇️ NEW: open read-only memmaps for all aligned frames (float32 [0..1], HxWxC)
             mm_views = self._open_memmaps_readonly(aligned_paths)
 
-            self.update_status(f"📊 Stacking group '{group_key}' with {self.rejection_algorithm}")
+            self.update_status(self.tr(f"📊 Stacking group '{group_key}' with {self.rejection_algorithm}"))
             QApplication.processEvents()
 
             rejection_coords = []
@@ -16487,9 +16487,9 @@ class StackingSuiteDialog(QDialog):
 
             try:
                 chunk_h, chunk_w = compute_safe_chunk(height, width, N, channels, DTYPE, pref_h, pref_w)
-                self.update_status(f"🔧 Using chunk size {chunk_h}×{chunk_w} for {self._dtype()}")
+                self.update_status(self.tr(f"🔧 Using chunk size {chunk_h}×{chunk_w} for {self._dtype()}"))
             except MemoryError as e:
-                self.update_status(f"⚠️ {e}")
+                self.update_status(self.tr(f"⚠️ {e}"))
                 return None, {}, None
 
             # Tile loop (same structure, but tile loading reads from memmaps)
@@ -16635,7 +16635,7 @@ class StackingSuiteDialog(QDialog):
                 is_mono=is_mono
             )
 
-            self.update_status(f"✅ Group '{group_key}' stacked {len(aligned_paths)} frame(s)! Saved: {output_path}")
+            self.update_status(self.tr(f"✅ Group '{group_key}' stacked {len(aligned_paths)} frame(s)! Saved: {output_path}"))
 
             print(f"✅ Master Light saved for group '{group_key}': {output_path}")
 
@@ -16663,7 +16663,7 @@ class StackingSuiteDialog(QDialog):
         # Snapshot UI settings
         if getattr(self, "_suppress_normal_integration_once", False):
             self._suppress_normal_integration_once = False
-            self.update_status("⏭️ Normal integration suppressed (MFDeconv-only run).")
+            self.update_status(self.tr("⏭️ Normal integration suppressed (MFDeconv-only run)."))
             self._set_registration_busy(False)
             return        
         drizzle_dict = self.gather_drizzle_settings_from_tree()
@@ -16684,7 +16684,7 @@ class StackingSuiteDialog(QDialog):
                 )
                 if cfa_effective:
                     fill = self._dither_phase_fill(self.valid_matrices, bins=8)
-                    self.update_status(f"🔎 CFA drizzle sub-pixel phase fill (8×8): {fill*100:.1f}%")
+                    self.update_status(self.tr(f"🔎 CFA drizzle sub-pixel phase fill (8×8): {fill*100:.1f}%"))
             except Exception:
                 pass
 
@@ -16740,7 +16740,7 @@ class StackingSuiteDialog(QDialog):
         # Build list of non-empty groups
         mf_groups = [(g, lst) for g, lst in aligned_light_files.items() if lst]
         if not mf_groups:
-            self.update_status("⚠️ No aligned frames available for MF deconvolution.")
+            self.update_status(self.tr("⚠️ No aligned frames available for MF deconvolution."))
             self._start_after_align_worker(aligned_light_files)
             return
 
@@ -16786,7 +16786,7 @@ class StackingSuiteDialog(QDialog):
 
                 # Continue the normal pipeline for ALL groups
                 self._suppress_normal_integration_once = True
-                self.update_status("✅ MFDeconv complete for all groups. Skipping normal integration.")
+                self.update_status(self.tr("✅ MFDeconv complete for all groups. Skipping normal integration."))
                 self._set_registration_busy(False)
                 return
 
@@ -16850,11 +16850,11 @@ class StackingSuiteDialog(QDialog):
                     eng_name = "Normal"
             except Exception as e:
                 # if an import fails, fall back to the safe Normal path
-                self.update_status(f"⚠️ MFDeconv engine import failed ({e}); falling back to Normal.")
+                self.update_status(self.tr(f"⚠️ MFDeconv engine import failed ({e}); falling back to Normal."))
                 from setiastro.saspro.mfdeconv import MultiFrameDeconvWorker as MFCls
                 eng_name = "Normal (fallback)"
 
-            self.update_status(f"⚙️ MFDeconv engine: {eng_name}")
+            self.update_status(self.tr(f"⚙️ MFDeconv engine: {eng_name}"))
 
             # ── build worker exactly the same in all modes ────────────────────────────
             self._mf_worker = MFCls(
@@ -16899,7 +16899,7 @@ class StackingSuiteDialog(QDialog):
                 if ok and out:
                     self._mf_results[group_key] = out
                 else:
-                    self.update_status(f"❌ MFDeconv failed for '{group_key}': {message}")
+                    self.update_status(self.tr(f"❌ MFDeconv failed for '{group_key}': {message}"))
 
                 try:
                     self._mf_thread.quit()
@@ -16930,24 +16930,24 @@ class StackingSuiteDialog(QDialog):
         We only do fast measurements for weights; no re-normalization, no re-alignment.
         """
         if getattr(self, "_registration_busy", False):
-            self.update_status("⏸ Another job is running; ignoring extra click.")
+            self.update_status(self.tr("⏸ Another job is running; ignoring extra click."))
             return
         self._set_registration_busy(True)
 
         try:
-            self.update_status("🔄 Integrating Previously Registered Images…")
+            self.update_status(self.tr("🔄 Integrating Previously Registered Images…"))
 
             # 1) Pull files from the tree
             self.extract_light_files_from_tree()
             if not self.light_files:
-                self.update_status("⚠️ No registered images found!")
+                self.update_status(self.tr("⚠️ No registered images found!"))
                 self._set_registration_busy(False)
                 return
 
             # Flatten
             all_files = [p for lst in self.light_files.values() for p in lst]
             if not all_files:
-                self.update_status("⚠️ No frames found in the registration tree!")
+                self.update_status(self.tr("⚠️ No frames found in the registration tree!"))
                 self._set_registration_busy(False)
                 return
 
@@ -16975,7 +16975,7 @@ class StackingSuiteDialog(QDialog):
                 # fall back to everything, but we still won't normalize here
                 cand = all_files[:]
 
-            self.update_status(f"📊 Found {len(cand)} aligned/normalized frames. Measuring in parallel previews…")
+            self.update_status(self.tr(f"📊 Found {len(cand)} aligned/normalized frames. Measuring in parallel previews…"))
 
             # 2) Chunked preview measurement (mean + star count/ecc)
             self.frame_weights = {}
@@ -16998,7 +16998,7 @@ class StackingSuiteDialog(QDialog):
             from concurrent.futures import ThreadPoolExecutor, as_completed
 
             for idx, chunk in enumerate(chunks, 1):
-                self.update_status(f"📦 Measuring chunk {idx}/{total_chunks} ({len(chunk)} frames)")
+                self.update_status(self.tr(f"📦 Measuring chunk {idx}/{total_chunks} ({len(chunk)} frames)"))
                 QApplication.processEvents()
 
                 # Load tiny previews in parallel
@@ -17019,11 +17019,11 @@ class StackingSuiteDialog(QDialog):
                             previews.append(p)
                             paths_ok.append(fp)
                         except Exception as e:
-                            self.update_status(f"⚠️ Preview error for {fp}: {e}")
+                            self.update_status(self.tr(f"⚠️ Preview error for {fp}: {e}"))
                         QApplication.processEvents()
 
                 if not previews:
-                    self.update_status("⚠️ No valid previews in this chunk.")
+                    self.update_status(self.tr("⚠️ No valid previews in this chunk."))
                     continue
 
                 # Crop all previews in this chunk to a common min size (cheap)
@@ -17056,14 +17056,14 @@ class StackingSuiteDialog(QDialog):
                 del previews
 
             if not measured_frames:
-                self.update_status("⚠️ No frames could be measured!")
+                self.update_status(self.tr("⚠️ No frames could be measured!"))
                 return
 
-            self.update_status(f"✅ All chunks complete! Measured {len(measured_frames)} frames total.")
+            self.update_status(self.tr(f"✅ All chunks complete! Measured {len(measured_frames)} frames total."))
             QApplication.processEvents()
 
             # 3) Weights — keep your current logic (fast & good)
-            self.update_status("⚖️ Computing frame weights…")
+            self.update_status(self.tr("⚖️ Computing frame weights…"))
             dbg = ["\n📊 **Frame Weights Debug Log:**"]
             max_w = 0.0
             for fp in measured_frames:
@@ -17083,15 +17083,15 @@ class StackingSuiteDialog(QDialog):
                     self.frame_weights[k] /= max_w
 
             self.update_status("\n".join(dbg))
-            self.update_status("✅ Frame weights computed!")
+            self.update_status(self.tr("✅ Frame weights computed!"))
             QApplication.processEvents()
 
             # 4) Choose reference (optional for visual/log purposes)
             if getattr(self, "reference_frame", None):
-                self.update_status(f"📌 Using user-specified reference: {self.reference_frame}")
+                self.update_status(self.tr(f"📌 Using user-specified reference: {self.reference_frame}"))
             else:
                 self.reference_frame = max(self.frame_weights, key=self.frame_weights.get)
-                self.update_status(f"📌 Auto-selected reference: {self.reference_frame}")
+                self.update_status(self.tr(f"📌 Auto-selected reference: {self.reference_frame}"))
 
             # 5) Clear transforms; not needed for already aligned frames
             self.valid_transforms = {}
