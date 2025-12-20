@@ -18,6 +18,9 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(self.tr("Preferences"))
         self.settings = settings
+        
+        # Ensure we don't delete on close, so we can cache it
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
 
         # ---- Existing fields (paths, checkboxes, etc.) ----
         self.le_graxpert = QLineEdit()
@@ -26,19 +29,9 @@ class SettingsDialog(QDialog):
         self.le_astap    = QLineEdit()
 
         self.chk_updates_startup = QCheckBox(self.tr("Check for updates on startup"))
-        self.chk_updates_startup.setChecked(
-            self.settings.value("updates/check_on_startup", True, type=bool)
-        )
 
         self.le_updates_url = QLineEdit()
         self.le_updates_url.setPlaceholderText("Raw JSON URL (advanced)")
-        self.le_updates_url.setText(
-            self.settings.value(
-                "updates/url",
-                "https://raw.githubusercontent.com/setiastro/setiastrosuitepro/main/updates.json",
-                type=str
-            )
-        )
 
         btn_reset_updates_url = QPushButton(self.tr("Reset"))
         btn_reset_updates_url.setToolTip(self.tr("Restore default updates URL"))
@@ -61,22 +54,14 @@ class SettingsDialog(QDialog):
         row_updates_url.addWidget(self.btn_check_now)
 
         self.chk_save_shortcuts = QCheckBox(self.tr("Save desktop shortcuts on exit"))
-        self.chk_save_shortcuts.setChecked(
-            self.settings.value("shortcuts/save_on_exit", True, type=bool)
-        )
 
         self.cb_theme = QComboBox()
         # Order: Dark, Gray, Light, System, Custom
         self.cb_theme.addItems(["Dark", "Gray", "Light", "System", "Custom"])
 
-        theme_val = (self.settings.value("ui/theme", "system", type=str) or "system").lower()
-        index_map = {"dark": 0, "gray": 1, "light": 2, "system": 3, "custom": 4}
-        self.cb_theme.setCurrentIndex(index_map.get(theme_val, 2))
-
         # "Customize…" button for custom theme
         self.btn_theme_custom = QPushButton(self.tr("Customize…"))
         self.btn_theme_custom.setToolTip(self.tr("Edit custom colors and font"))
-        self.btn_theme_custom.setEnabled(theme_val == "custom")
         self.btn_theme_custom.clicked.connect(self._open_theme_editor)
 
         # Keep button enabled state in sync with combo
@@ -87,18 +72,7 @@ class SettingsDialog(QDialog):
         self._lang_codes = list(get_available_languages().keys())  # ["en", "it", "fr", "es"]
         self._lang_names = list(get_available_languages().values())  # ["English", "Italiano", ...]
         self.cb_language.addItems(self._lang_names)
-        current_lang = get_saved_language()
-        try:
-            lang_idx = self._lang_codes.index(current_lang)
-        except ValueError:
-            lang_idx = 0
-        self.cb_language.setCurrentIndex(lang_idx)
-        self._initial_language = current_lang  # Track for restart notification
-
-        self.le_graxpert.setText(self.settings.value("paths/graxpert", "", type=str))
-        self.le_cosmic.setText(self.settings.value("paths/cosmic_clarity", "", type=str))
-        self.le_starnet.setText(self.settings.value("paths/starnet", "", type=str))
-        self.le_astap.setText(self.settings.value("paths/astap", "", type=str))
+        self._initial_language = "en" # placeholder, set in refresh_ui
 
         btn_grax  = QPushButton(self.tr("Browse…")); btn_grax.clicked.connect(lambda: self._browse_into(self.le_graxpert))
         btn_ccl   = QPushButton(self.tr("Browse…")); btn_ccl.clicked.connect(lambda: self._browse_dir(self.le_cosmic))
@@ -112,7 +86,6 @@ class SettingsDialog(QDialog):
 
         self.le_astrometry = QLineEdit()
         self.le_astrometry.setEchoMode(QLineEdit.EchoMode.Password)
-        self.le_astrometry.setText(self.settings.value("api/astrometry_key", "", type=str))
 
         # ---- WIMS defaults ----
         self.sp_lat = QDoubleSpinBox();  self.sp_lat.setRange(-90.0, 90.0);       self.sp_lat.setDecimals(6)
@@ -123,29 +96,14 @@ class SettingsDialog(QDialog):
         self.sp_min_alt = QDoubleSpinBox(); self.sp_min_alt.setRange(0.0, 90.0);  self.sp_min_alt.setDecimals(1)
         self.sp_obj_limit = QSpinBox(); self.sp_obj_limit.setRange(1, 1000)
 
-        self.sp_lat.setValue(self.settings.value("latitude", 0.0, type=float))
-        self.sp_lon.setValue(self.settings.value("longitude", 0.0, type=float))
-        self.le_date.setText(self.settings.value("date", "", type=str) or "")
-        self.le_time.setText(self.settings.value("time", "", type=str) or "")
-        tz_val = self.settings.value("timezone", "UTC", type=str) or "UTC"
-        idx = max(0, self.cb_tz.findText(tz_val)); self.cb_tz.setCurrentIndex(idx)
-        self.sp_min_alt.setValue(self.settings.value("min_altitude", 0.0, type=float))
-        self.sp_obj_limit.setValue(self.settings.value("object_limit", 100, type=int))
-
         self.chk_autostretch_16bit = QCheckBox(self.tr("High-quality autostretch (16-bit; better gradients)"))
         self.chk_autostretch_16bit.setToolTip(self.tr("Compute autostretch on a 16-bit histogram (smoother gradients)."))
-        self.chk_autostretch_16bit.setChecked(
-            self.settings.value("display/autostretch_16bit", True, type=bool)
-        )
 
         self.slider_bg_opacity = QSlider(Qt.Orientation.Horizontal)
         self.slider_bg_opacity.setRange(0, 100)
-        current_opacity = self.settings.value("display/bg_opacity", 50, type=int)
-        self.slider_bg_opacity.setValue(current_opacity)
-        # Keep a copy of the original opacity so we can restore it if the user cancels
-        self._initial_bg_opacity = int(current_opacity)
+        self._initial_bg_opacity = 50
 
-        self.lbl_bg_opacity_val = QLabel(f"{current_opacity}%")
+        self.lbl_bg_opacity_val = QLabel("50%")
         self.lbl_bg_opacity_val.setFixedWidth(40)
 
         def _on_opacity_changed(val):
@@ -169,9 +127,8 @@ class SettingsDialog(QDialog):
         # ---- Custom background: choose/clear preview ----
         self.le_bg_path = QLineEdit()
         self.le_bg_path.setReadOnly(True)
-        # remember initial custom background so Cancel can restore it
-        self._initial_bg_path = self.settings.value("ui/custom_background", "", type=str) or ""
-        self.le_bg_path.setText(self._initial_bg_path)
+        self._initial_bg_path = ""
+        
         btn_choose_bg = QPushButton(self.tr("Choose Background…"))
         btn_choose_bg.setToolTip(self.tr("Pick a PNG or JPG to use as the application background"))
         btn_choose_bg.clicked.connect(self._choose_background_clicked)
@@ -238,24 +195,15 @@ class SettingsDialog(QDialog):
         # ---- RA/Dec Overlay ----
         right_col.addRow(QLabel(self.tr("<b>RA/Dec Overlay</b>")))
         self.chk_wcs_enabled = QCheckBox(self.tr("Show RA/Dec grid"))
-        self.chk_wcs_enabled.setChecked(self.settings.value("wcs_grid/enabled", True, type=bool))
+        
         right_col.addRow(self.chk_wcs_enabled)
 
         self.cb_wcs_mode = QComboBox(); self.cb_wcs_mode.addItems(["Auto", "Fixed spacing"])
-        self.cb_wcs_mode.setCurrentIndex(
-            0 if (self.settings.value("wcs_grid/mode", "auto", type=str) == "auto") else 1
-        )
-
         self.cb_wcs_unit = QComboBox(); self.cb_wcs_unit.addItems(["deg", "arcmin"])
-        self.cb_wcs_unit.setCurrentIndex(
-            0 if (self.settings.value("wcs_grid/step_unit", "deg", type=str) == "deg") else 1
-        )
-
+        
         self.sp_wcs_step = QDoubleSpinBox()
         self.sp_wcs_step.setDecimals(3); self.sp_wcs_step.setRange(0.001, 90.0)
-        self.sp_wcs_step.setValue(self.settings.value("wcs_grid/step_value", 1.0, type=float))
-        self.sp_wcs_step.setEnabled(self.cb_wcs_mode.currentIndex() == 1)
-
+        
         def _sync_suffix():
             self.sp_wcs_step.setSuffix(" °" if self.cb_wcs_unit.currentIndex() == 0 else " arcmin")
         _sync_suffix()
@@ -275,8 +223,6 @@ class SettingsDialog(QDialog):
         w = QWidget(); w.setLayout(row_updates_url)
         right_col.addRow(self.tr("Updates JSON URL:"), w)
 
-        
-        
         # ---- Buttons ----
         btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self
@@ -284,6 +230,105 @@ class SettingsDialog(QDialog):
         btns.accepted.connect(self._save_and_accept)
         btns.rejected.connect(self.reject)
         root.addWidget(btns)
+
+        # Initial Load:
+        self.refresh_ui()
+
+    def refresh_ui(self):
+        """
+        Reloads all settings from self.settings and updates the UI widgets.
+        Call this before showing the cached dialog to ensure it matches current state.
+        """
+        # Updates
+        self.chk_updates_startup.setChecked(
+            self.settings.value("updates/check_on_startup", True, type=bool)
+        )
+        self.le_updates_url.setText(
+            self.settings.value(
+                "updates/url",
+                "https://raw.githubusercontent.com/setiastro/setiastrosuitepro/main/updates.json",
+                type=str
+            )
+        )
+        
+        # Shortcuts
+        self.chk_save_shortcuts.setChecked(
+            self.settings.value("shortcuts/save_on_exit", True, type=bool)
+        )
+        
+        # Theme
+        theme_val = (self.settings.value("ui/theme", "system", type=str) or "system").lower()
+        index_map = {"dark": 0, "gray": 1, "light": 2, "system": 3, "custom": 4}
+        self.cb_theme.setCurrentIndex(index_map.get(theme_val, 2))
+        self.btn_theme_custom.setEnabled(theme_val == "custom")
+        
+        # Language
+        current_lang = get_saved_language()
+        try:
+            lang_idx = self._lang_codes.index(current_lang)
+        except ValueError:
+            lang_idx = 0
+            # fallback to whatever is first or default
+            if "en" in self._lang_codes:
+                lang_idx = self._lang_codes.index("en")
+        
+        self.cb_language.blockSignals(True)
+        self.cb_language.setCurrentIndex(lang_idx)
+        self.cb_language.blockSignals(False)
+        self._initial_language = current_lang  # Track for restart notification
+        
+        # Path fields
+        self.le_graxpert.setText(self.settings.value("paths/graxpert", "", type=str))
+        self.le_cosmic.setText(self.settings.value("paths/cosmic_clarity", "", type=str))
+        self.le_starnet.setText(self.settings.value("paths/starnet", "", type=str))
+        self.le_astap.setText(self.settings.value("paths/astap", "", type=str))
+        self.le_astrometry.setText(self.settings.value("api/astrometry_key", "", type=str))
+
+        # WIMS
+        self.sp_lat.setValue(self.settings.value("latitude", 0.0, type=float))
+        self.sp_lon.setValue(self.settings.value("longitude", 0.0, type=float))
+        self.le_date.setText(self.settings.value("date", "", type=str) or "")
+        self.le_time.setText(self.settings.value("time", "", type=str) or "")
+        tz_val = self.settings.value("timezone", "UTC", type=str) or "UTC"
+        idx = max(0, self.cb_tz.findText(tz_val))
+        self.cb_tz.setCurrentIndex(idx)
+        self.sp_min_alt.setValue(self.settings.value("min_altitude", 0.0, type=float))
+        self.sp_obj_limit.setValue(self.settings.value("object_limit", 100, type=int))
+        
+        # Display
+        self.chk_autostretch_16bit.setChecked(
+            self.settings.value("display/autostretch_16bit", True, type=bool)
+        )
+        
+        current_opacity = self.settings.value("display/bg_opacity", 50, type=int)
+        self.slider_bg_opacity.blockSignals(True)
+        self.slider_bg_opacity.setValue(current_opacity)
+        self.slider_bg_opacity.blockSignals(False)
+        self.lbl_bg_opacity_val.setText(f"{current_opacity}%")
+        self._initial_bg_opacity = int(current_opacity) # For cancel/revert
+        
+        # Custom background
+        self._initial_bg_path = self.settings.value("ui/custom_background", "", type=str) or ""
+        self.le_bg_path.setText(self._initial_bg_path)
+        
+        # RA/Dec Overlay
+        self.chk_wcs_enabled.setChecked(self.settings.value("wcs_grid/enabled", True, type=bool))
+        
+        self.cb_wcs_mode.blockSignals(True)
+        self.cb_wcs_mode.setCurrentIndex(
+            0 if (self.settings.value("wcs_grid/mode", "auto", type=str) == "auto") else 1
+        )
+        self.cb_wcs_mode.blockSignals(False)
+        
+        self.cb_wcs_unit.blockSignals(True)
+        self.cb_wcs_unit.setCurrentIndex(
+            0 if (self.settings.value("wcs_grid/step_unit", "deg", type=str) == "deg") else 1
+        )
+        self.cb_wcs_unit.blockSignals(False)
+        
+        self.sp_wcs_step.setValue(self.settings.value("wcs_grid/step_value", 1.0, type=float))
+        self.sp_wcs_step.setEnabled(self.cb_wcs_mode.currentIndex() == 1)
+        self.sp_wcs_step.setSuffix(" °" if self.cb_wcs_unit.currentIndex() == 0 else " arcmin")
 
     def reject(self):
         """User cancelled: restore the original background opacity (revert live changes)."""
@@ -465,6 +510,10 @@ class SettingsDialog(QDialog):
                     p.save_ui_state()
                 except Exception:
                     pass
+            
+            # Set restart flag on parent to bypass exit confirmation
+            if p:
+                p._is_restarting = True
             
             self.settings.sync()
             

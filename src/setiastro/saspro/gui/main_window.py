@@ -285,7 +285,13 @@ class AstroSuiteProMainWindow(
         self.setWindowIcon(self.app_icon)
         self._doc = None
         self._force_close_all = False
-        self.settings = QSettings()  # reuse everywhere
+        self._is_restarting = False  # Flag to bypass exit confirmation on restart
+        self.settings = QSettings("SetiAstro", "SetiAstroSuitePro")
+        
+        # Optimization: Cache the settings dialog for instant opening
+        self._settings_dlg_cache = None
+        # Pre-load settings dialog after 2.5 seconds (background)
+        QTimer.singleShot(1000, self._preload_settings)
         self._last_active_view = None
         self._current_active_sw = None
         self._last_active_sw = None
@@ -2086,9 +2092,30 @@ class AstroSuiteProMainWindow(
             self._refresh_mask_action_states()
 
 
+    # ---------------- Settings Caching ----------------
+    def _preload_settings(self):
+        """Build the SettingsDialog in the background so it opens instantly."""
+        if getattr(self, "_settings_dlg_cache", None) is None:
+            from setiastro.saspro.ops.settings import SettingsDialog
+            try:
+                self._settings_dlg_cache = SettingsDialog(self, self.settings)
+            except Exception as e:
+                # Log error but don't crash if preload fails
+                print(f"Error preloading settings: {e}")
+
     def _open_settings(self):
         from setiastro.saspro.ops.settings import SettingsDialog
-        dlg = SettingsDialog(self, self.settings)
+        
+        # Create cache if it doesn't exist (e.g. opened before preload timer fired)
+        if getattr(self, "_settings_dlg_cache", None) is None:
+            self._settings_dlg_cache = SettingsDialog(self, self.settings)
+
+        dlg = self._settings_dlg_cache
+        
+        # Refresh UI from current settings before showing
+        if hasattr(dlg, "refresh_ui"):
+            dlg.refresh_ui()
+            
         if dlg.exec():
             # (Optional) react to changes if needed
             pass
@@ -8429,7 +8456,11 @@ class AstroSuiteProMainWindow(
         self.settings.sync()
 
     def closeEvent(self, e):
-
+        # Optimization: If restarting (e.g. language change), bypass confirmation and close immediately
+        if getattr(self, "_is_restarting", False):
+            e.accept()
+            return
+            
         try:
             if hasattr(self, "_orig_stdout") and self._orig_stdout is not None:
                 sys.stdout = self._orig_stdout
