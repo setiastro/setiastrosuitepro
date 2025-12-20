@@ -2932,7 +2932,15 @@ def _fits_read_any_hdu_noscale(path: str, memmap: bool) -> tuple[np.ndarray | No
 class _Progress:
     def __init__(self, owner, title: str, maximum: int):
         self._owner = owner
-        self._pd = QProgressDialog(title, self.tr("Cancel"), 0, max(1, int(maximum)), owner)
+        cancel_text = QCoreApplication.translate("_Progress", "Cancel")
+
+        self._pd = QProgressDialog(
+            title,
+            cancel_text,
+            0,
+            max(1, int(maximum)),
+            owner
+        )
         self._pd.setWindowModality(Qt.WindowModality.ApplicationModal)
         self._pd.setMinimumDuration(0)
         self._pd.setAutoClose(False)
