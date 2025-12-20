@@ -31,6 +31,7 @@ import os  # ← NEW
 SASS_KIND   = "sas.shortcuts"
 SASS_VER    = 1
 
+TOOLBAR_REORDER_MIME = "application/x-saspro-toolbar-reorder"
 # Accept these endings (case-insensitive)
 OPENABLE_ENDINGS = (
     ".png", ".jpg", ".jpeg",
@@ -115,11 +116,7 @@ class DraggableToolBar(QToolBar):
         self._press_had_mod: dict[QToolButton, bool] = {}
         self._suppress_release: set[QToolButton] = set()
         self._settings_key: str | None = None
-
-    # NEW: called by main window / mixin
-    def setSettingsKey(self, key: str):
-        """Set the settings key for persisting toolbar state."""
-        self._settings_key = str(key)
+        self.setAcceptDrops(True)
 
     def _mods_ok(self, mods: Qt.KeyboardModifiers) -> bool:
         return bool(mods & (
@@ -127,6 +124,90 @@ class DraggableToolBar(QToolBar):
             Qt.KeyboardModifier.ControlModifier |
             Qt.KeyboardModifier.ShiftModifier
         ))
+
+    # NEW: called by main window / mixin
+    def setSettingsKey(self, key: str):
+        self._settings_key = str(key)
+
+    def _settings(self):
+        mw = self.window()
+        s = getattr(mw, "settings", None)
+        if s is None:
+            from PyQt6.QtCore import QSettings
+            s = QSettings()
+        return s
+
+    def _action_id(self, act: QAction) -> str | None:
+        cid = act.property("command_id") or act.objectName()
+        return str(cid) if cid else None
+
+    def _hidden_key(self) -> str | None:
+        if not self._settings_key:
+            return None
+        return f"{self._settings_key}/Hidden"
+
+    def _load_hidden_set(self) -> set[str]:
+        k = self._hidden_key()
+        if not k:
+            return set()
+        s = self._settings()
+        raw = s.value(k, [], type=list)
+        # QSettings sometimes returns strings instead of list depending on backend
+        if isinstance(raw, str):
+            return {raw}
+        return {str(x) for x in (raw or [])}
+
+    def _save_hidden_set(self, hidden: set[str]):
+        k = self._hidden_key()
+        if not k:
+            return
+        s = self._settings()
+        s.setValue(k, sorted(hidden))
+
+    def _set_action_hidden(self, act: QAction, hide: bool):
+        cid = self._action_id(act)
+        if not cid:
+            return
+        hidden = self._load_hidden_set()
+        if hide:
+            hidden.add(cid)
+            act.setVisible(False)
+        else:
+            hidden.discard(cid)
+            act.setVisible(True)
+        self._save_hidden_set(hidden)
+
+    def apply_hidden_state(self):
+        """Call after toolbar is populated / order restored."""
+        hidden = self._load_hidden_set()
+        if not hidden:
+            return
+        for act in self.actions():
+            cid = self._action_id(act)
+            if cid and cid in hidden:
+                act.setVisible(False)
+
+
+    def _persist_order(self):
+        """Persist current action order (by command_id/objectName) to QSettings."""
+        if not self._settings_key:
+            return
+
+        # Prefer main-window settings if available
+        mw = self.window()
+        s = getattr(mw, "settings", None)
+        if s is None:
+            from PyQt6.QtCore import QSettings
+            s = QSettings()
+
+        ids: list[str] = []
+        for act in self.actions():
+            cid = act.property("command_id") or act.objectName()
+            if cid:
+                ids.append(str(cid))
+
+        s.setValue(self._settings_key, ids)
+
 
     # install/remove our event filter when actions are added/removed
     def actionEvent(self, e):
@@ -163,32 +244,41 @@ class DraggableToolBar(QToolBar):
                     self._show_toolbutton_context_menu(obj, act, ev.globalPos())
                     return True
                 return False            
+
             # L-press: remember start + whether a drag-modifier was held
             if ev.type() == QEvent.Type.MouseButtonPress and ev.button() == Qt.MouseButton.LeftButton:
                 self._press_pos[obj] = ev.globalPosition().toPoint()
                 self._press_had_mod[obj] = self._mods_ok(QApplication.keyboardModifiers())
                 return False  # allow normal press visuals
 
-            # Move with L held: if (had-mod at press OR has-mod now) AND moved enough → start drag
+            # Move with L held:
             if ev.type() == QEvent.Type.MouseMove and (ev.buttons() & Qt.MouseButton.LeftButton):
                 start = self._press_pos.get(obj)
                 if start is not None:
                     delta = ev.globalPosition().toPoint() - start
-                    if ((self._press_had_mod.get(obj, False) or self._mods_ok(QApplication.keyboardModifiers()))
-                        and delta.manhattanLength() > QApplication.startDragDistance()):
-                        # find the QAction backing this button
-                        act = next((a for a in self.actions() if self.widgetForAction(a) is obj), None)
-                        if act:
-                            self._start_drag_for_action(act)
-                            # eat subsequent release so the action doesn't trigger
+                    if delta.manhattanLength() > QApplication.startDragDistance():
+                        mods_now = QApplication.keyboardModifiers()
+                        had_mod  = self._press_had_mod.get(obj, False)
+                        # CASE 1: had/has modifiers → create desktop shortcut / function-bundle drag (existing behavior)
+                        if had_mod or self._mods_ok(mods_now):
+                            act = self._find_action_for_button(obj)
+                            if act:
+                                self._start_drag_for_action(act)
+                                self._suppress_release.add(obj)
+                            self._press_pos.pop(obj, None)
+                            self._press_had_mod.pop(obj, None)
+                            return True  # consume
+                        else:
+                            # CASE 2: plain drag (no modifiers) → reorder within this toolbar
+                            self._start_reorder_drag_for_button(obj)
                             self._suppress_release.add(obj)
-                        # clear press tracking
-                        self._press_pos.pop(obj, None)
-                        self._press_had_mod.pop(obj, None)
-                        return True  # consume the move (prevents click)
+                            self._press_pos.pop(obj, None)
+                            self._press_had_mod.pop(obj, None)
+                            return True  # consume
+
                 return False
 
-            # Release: if we started a drag, swallow the release so click won't fire
+            # Release: if we started any drag, swallow the release so click won't fire
             if ev.type() == QEvent.Type.MouseButtonRelease and ev.button() == Qt.MouseButton.LeftButton:
                 self._press_pos.pop(obj, None)
                 self._press_had_mod.pop(obj, None)
@@ -198,6 +288,7 @@ class DraggableToolBar(QToolBar):
                 return False
 
         return super().eventFilter(obj, ev)
+
 
     def _start_drag_for_action(self, act: QAction):
         act_id = act.property("command_id") or act.objectName()
@@ -235,12 +326,116 @@ class DraggableToolBar(QToolBar):
         drag.setHotSpot(pm.rect().center())
         drag.exec(Qt.DropAction.CopyAction)
 
+    def _start_reorder_drag_for_button(self, btn: QToolButton):
+        """
+        Start a drag whose only purpose is to reorder actions within THIS toolbar.
+        No presets, no desktop shortcuts.
+        """
+        act = self._find_action_for_button(btn)
+        if act is None:
+            return
+
+        md = QMimeData()
+        # Tag this as an internal toolbar-reorder drag
+        md.setData(TOOLBAR_REORDER_MIME, b"1")
+
+        drag = QDrag(btn)
+        drag.setMimeData(md)
+
+        pm = act.icon().pixmap(32, 32) if not act.icon().isNull() else QPixmap(32, 32)
+        if pm.isNull():
+            pm = QPixmap(32, 32)
+            pm.fill(Qt.GlobalColor.darkGray)
+        drag.setPixmap(pm)
+        drag.setHotSpot(pm.rect().center())
+        drag.exec(Qt.DropAction.MoveAction)
+
+
     def _find_action_for_button(self, btn: QToolButton) -> QAction | None:
         # Find the QAction that owns this toolbutton
         for a in self.actions():
             if self.widgetForAction(a) is btn:
                 return a
         return None
+
+    def dragEnterEvent(self, e):
+        # Accept toolbar-reorder drags from any DraggableToolBar
+        if e.mimeData().hasFormat(TOOLBAR_REORDER_MIME):
+            src = e.source()
+            if isinstance(src, QToolButton) and isinstance(src.parent(), DraggableToolBar):
+                e.acceptProposedAction()
+                return
+        super().dragEnterEvent(e)
+
+    def dragMoveEvent(self, e):
+        if e.mimeData().hasFormat(TOOLBAR_REORDER_MIME):
+            src = e.source()
+            if isinstance(src, QToolButton) and isinstance(src.parent(), DraggableToolBar):
+                e.acceptProposedAction()
+                return
+        super().dragMoveEvent(e)
+
+    def dropEvent(self, e):
+        if e.mimeData().hasFormat(TOOLBAR_REORDER_MIME):
+            src_btn = e.source()
+            if isinstance(src_btn, QToolButton):
+                src_tb = src_btn.parent()
+                if isinstance(src_tb, DraggableToolBar):
+                    # Find the QAction that belongs to the dragged button
+                    src_act = src_tb._find_action_for_button(src_btn)
+                    if src_act is None:
+                        e.ignore()
+                        return
+
+                    pos = e.position().toPoint()
+                    target_act = self.actionAt(pos)
+
+                    # Remove from source toolbar and insert into this one
+                    src_tb.removeAction(src_act)
+                    if target_act is None:
+                        self.addAction(src_act)
+                    else:
+                        self.insertAction(target_act, src_act)
+
+                    # Persist order for both toolbars
+                    self._persist_order()
+                    if src_tb is not self:
+                        src_tb._persist_order()
+                        # Also persist the cross-toolbar assignment
+                        self._update_assignment_for_action(src_act)
+
+                    e.acceptProposedAction()
+                    return
+
+        super().dropEvent(e)
+
+
+    def _update_assignment_for_action(self, act: QAction):
+        """
+        Persist that this action now belongs to this toolbar (cross-toolbar move).
+        Stored as: Toolbar/Assignments → JSON {command_id: settings_key}.
+        """
+        if not self._settings_key:
+            return
+
+        cid = act.property("command_id") or act.objectName()
+        if not cid:
+            return
+
+        mw = self.window()
+        s = getattr(mw, "settings", None)
+        if s is None:
+            s = QSettings()
+
+        raw = s.value("Toolbar/Assignments", "", type=str) or ""
+        try:
+            mapping = json.loads(raw) if raw else {}
+        except Exception:
+            mapping = {}
+
+        mapping[str(cid)] = self._settings_key
+        s.setValue("Toolbar/Assignments", json.dumps(mapping))
+
 
     def _add_shortcut_for_action(self, act: QAction):
         # Resolve command id
@@ -265,11 +460,52 @@ class DraggableToolBar(QToolBar):
 
     def _show_toolbutton_context_menu(self, btn: QToolButton, act: QAction, gpos: QPoint):
         m = QMenu(btn)
+
         m.addAction("Create Desktop Shortcut", lambda: self._add_shortcut_for_action(act))
+
+        # Hide this icon
+        cid = self._action_id(act)
+        if cid:
+            m.addSeparator()
+            m.addAction("Hide this icon", lambda: self._set_action_hidden(act, True))
+
         # (Optional) teach users about Alt+Drag:
         m.addSeparator()
-        m.addAction("Tip: Alt+Drag to create", lambda: None).setEnabled(False)
+        tip = m.addAction("Tip: Alt+Drag to create")
+        tip.setEnabled(False)
+
         m.exec(gpos)
+
+    def contextMenuEvent(self, ev):
+        # Right-click on empty toolbar area
+        m = QMenu(self)
+
+        # Submenu listing hidden actions for this toolbar
+        hidden = self._load_hidden_set()
+        sub = m.addMenu("Show hidden…")
+
+        # Build list from actions that are currently invisible
+        any_hidden = False
+        for act in self.actions():
+            cid = self._action_id(act)
+            if cid and (cid in hidden) and (not act.isVisible()):
+                any_hidden = True
+                sub.addAction(act.text() or cid, lambda a=act: self._set_action_hidden(a, False))
+
+        if not any_hidden:
+            sub.setEnabled(False)
+
+        m.addSeparator()
+        m.addAction("Reset hidden icons", self._reset_hidden_icons)
+
+        m.exec(ev.globalPos())
+
+    def _reset_hidden_icons(self):
+        # Show everything and clear hidden list
+        for act in self.actions():
+            act.setVisible(True)
+        self._save_hidden_set(set())
+
 
 _PRESET_UI_IDS = {
     "stat_stretch","star_stretch","crop","curves","ghs","abe","graxpert",
