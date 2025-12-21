@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout, QWidget, QTextEdit, QListWidget, QListWidgetItem,
     QAbstractItemView, QApplication
 )
-from PyQt6.QtGui import QTextCursor
+from PyQt6.QtGui import QTextCursor, QAction
 
 if TYPE_CHECKING:
     from PyQt6.QtWidgets import QAction
@@ -194,6 +194,82 @@ class DockMixin:
         except Exception:
             pass
 
+    def _init_resource_monitor_overlay(self):
+        """Initialize the QML System Resource Monitor as a floating overlay."""
+        from setiastro.saspro.widgets.resource_monitor import SystemMonitorWidget
+        
+        # Create as a child of the central widget or self to sit on top
+        # Using self (QMainWindow) allows it to float over everything including status bar if we want,
+        # but usually we want it over MDI area. Let's try self first for "floating" feel.
+        self.resource_monitor = SystemMonitorWidget(self)
+        self.resource_monitor.setObjectName("ResourceMonitorOverlay")
+        
+        # Make it a proper independent window to allow true transparency (translucent background)
+        # without black artifacts from parent composition.
+        # Fixed: Removed WindowStaysOnTopHint to allow it to be obscured by other apps (Alt-Tab support)
+        self.resource_monitor.setWindowFlags(
+            Qt.WindowType.Window |
+            Qt.WindowType.FramelessWindowHint |
+            Qt.WindowType.Tool
+        )
+        
+        # Sizing and Transparency
+        self.resource_monitor.setFixedSize(200, 60)
+        # self.resource_monitor.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True) # Optional: if we want click-through
+        
+        
+        # Initial placement (will be updated by resizeEvent)
+        self._update_monitor_position()
+        
+        # Defer visibility to MainWindow.showEvent to prevent appearing before main window
+        # visible = self.settings.value("ui/resource_monitor_visible", True, type=bool)
+        # if visible:
+        #    self.resource_monitor.show()
+        # else:
+        #    self.resource_monitor.hide()
+
+    def _toggle_resource_monitor(self, checked: bool):
+        """Toggle floating monitor visibility."""
+        if hasattr(self, 'resource_monitor') and self.resource_monitor:
+            if checked:
+                self.resource_monitor.show()
+                self._update_monitor_position()
+            else:
+                self.resource_monitor.hide()
+            self.settings.setValue("ui/resource_monitor_visible", checked)
+
+    def _update_monitor_position(self):
+        """Snap monitor to bottom-right corner."""
+        if hasattr(self, 'resource_monitor') and self.resource_monitor:
+            from PyQt6.QtCore import QPoint
+            m = 5 # margin
+            # Position relative to the main window geometry
+            w = self.resource_monitor.width()
+            h = self.resource_monitor.height()
+            
+            # Anchor to bottom-right of the window
+            x = self.width() - w - m
+            y = self.height() - h - m
+            
+            # Map local MainWindow coordinates to Global Screen coordinates
+            # This is required because resource_monitor is a Top-Level Window (for transparency)
+            global_pos = self.mapToGlobal(QPoint(x, y))
+            self.resource_monitor.move(global_pos)
+            self.resource_monitor.raise_()
+
+    # We need to hook resizeEvent to call _update_monitor_position.
+    # Since this is a mixin, we can't easily override resizeEvent of the MainWindow without being careful.
+    # Best way: install an event filter on self, or since we are a mixin mixed into MainWindow, 
+    # we can rely on MainWindow calling a specific method or we can patch it... 
+    # Actually, MainWindow likely has resizeEvent. 
+    # simpler: QTimer check? No.
+    # Correct way for Mixin: The MainWindow class should call something. 
+    # BUT, I can just installEventFilter(self) ? No, infinite loop risk.
+    # 
+    # Let's use the 'GeometryMixin' or just add a standard method `_on_resize_for_monitor` 
+    # and assume I can hook it in MainWindow.py.
+
+
         # âŒ Remove this old line; it let random mouse-over updates hijack the dock:
         # self.currentDocumentChanged.disconnect(self.header_viewer.set_document)  # if previously connected
         # (If you prefer to keep the signal for explicit tab switches, it's fine to leave
@@ -217,6 +293,21 @@ class DockMixin:
             "Window Shelf": 50,
             "Command Search": 60,
         }
+        
+        # Add special action for overlay monitor
+        mon_act = QAction(self.tr("System Monitor"), self)
+        mon_act.setCheckable(True)
+        mon_act.setChecked(self.settings.value("ui/resource_monitor_visible", True, type=bool))
+        mon_act.triggered.connect(self._toggle_resource_monitor)
+        
+        # We need to insert it into the logic that populates the menu.
+        # But 'dock_mixin' automates menu from self.findChildren(QDockWidget).
+        # So we have to manually inject this action into the "Panels" menu if possible
+        # or expose it such that main_window can add it.
+        # 
+        # Easier: allow main_window to add it, or ...
+        # If I can't easily see where menu is built, I'll bind it to self.act_toggle_monitor = mon_act
+        self.act_toggle_monitor = mon_act
 
         def key_fn(d: QDockWidget):
             t = d.windowTitle()
@@ -224,6 +315,10 @@ class DockMixin:
 
         for dock in sorted(docks, key=key_fn):
             self._register_dock_in_view_menu(dock)
+            
+        if hasattr(self, "act_toggle_monitor"):
+             menu.addSeparator()
+             menu.addAction(self.act_toggle_monitor)
 
     def _add_doc_to_explorer(self, doc):
         base = self._normalize_base_doc(doc)

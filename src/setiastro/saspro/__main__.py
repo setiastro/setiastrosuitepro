@@ -880,6 +880,8 @@ def main():
         # Cleanup temp stylesheet upon completion to avoid interfering with ThemeMixin
         def _on_fade_in_finished():
             win.setStyleSheet("")
+            if hasattr(win, "on_fade_in_complete"):
+                win.on_fade_in_complete()
             
         anim_app.finished.connect(_on_fade_in_finished)
         anim_app.start()
