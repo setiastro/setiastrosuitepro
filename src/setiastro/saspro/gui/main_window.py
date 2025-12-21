@@ -128,7 +128,8 @@ from PyQt6.QtGui import (QPixmap, QColor, QIcon, QKeySequence, QShortcut,
 )
 
 # ----- QtCore -----
-from PyQt6.QtCore import (Qt, pyqtSignal, QCoreApplication, QTimer, QSize, QSignalBlocker,  QModelIndex, QThread, QUrl, QSettings, QEvent, QByteArray, QObject
+from PyQt6.QtCore import (Qt, pyqtSignal, QCoreApplication, QTimer, QSize, QSignalBlocker,  QModelIndex, QThread, QUrl, QSettings, QEvent, QByteArray, QObject,
+    QPropertyAnimation, QEasingCurve
 )
 
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
@@ -295,6 +296,10 @@ class AstroSuiteProMainWindow(
     def __init__(self, image_manager=None, parent=None,
                  version: str = "dev", build_timestamp: str = "dev"):
         super().__init__(parent)
+        # Prevent white flash: start strictly transparent and force dark bg
+        self.setWindowOpacity(0.0)
+        self.setStyleSheet("QMainWindow { background-color: #0F0F19; }")
+        
         from setiastro.saspro.doc_manager import DocManager
         from setiastro.saspro.window_shelf import WindowShelf, MinimizeInterceptor
         from setiastro.saspro.imageops.mdi_snap import MdiSnapController
@@ -8483,7 +8488,13 @@ class AstroSuiteProMainWindow(
         if getattr(self, "_is_restarting", False):
             e.accept()
             return
-            
+        
+        # Check if we have already faded out
+        if getattr(self, "_fade_out_complete", False):
+            # Proceed with shutdown
+            self._do_shutdown_steps(e)
+            return
+
         try:
             if hasattr(self, "_orig_stdout") and self._orig_stdout is not None:
                 sys.stdout = self._orig_stdout
@@ -8491,6 +8502,8 @@ class AstroSuiteProMainWindow(
                 sys.stderr = self._orig_stderr
         except Exception:
             pass        
+
+        # --- Confirmation Logic ---
         self._shutting_down = True
         # Gather open docs
         docs = []
@@ -8501,35 +8514,58 @@ class AstroSuiteProMainWindow(
                 docs.append(d)
 
         edited = [d for d in docs if self._document_has_edits(d)]
-        msg = self.tr("Exit Seti Astro Suite Pro?")
-        detail = []
-        if docs:
-            detail.append(self.tr("Open images:") + f" {len(docs)}")
-        if edited:
-            detail.append(self.tr("Edited since open:") + f" {len(edited)}")
-        if detail:
-            msg += "\n\n" + "\n".join(detail)
+        # If user has disabled exit confirmation (optional setting, but default is confirm)
+        confirm = True 
+        
+        if confirm:
+            msg = self.tr("Exit Seti Astro Suite Pro?")
+            detail = []
+            if docs:
+                detail.append(self.tr("Open images:") + f" {len(docs)}")
+            if edited:
+                detail.append(self.tr("Edited since open:") + f" {len(edited)}")
+            if detail:
+                msg += "\n\n" + "\n".join(detail)
 
-        # --- stay-on-top message box ---
-        mbox = QMessageBox(self)
-        mbox.setIcon(QMessageBox.Icon.Question)
-        mbox.setWindowTitle(self.tr("Confirm Exit"))
-        mbox.setText(msg)
-        mbox.setStandardButtons(
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        )
-        mbox.setDefaultButton(QMessageBox.StandardButton.No)
-        # ðŸ'‡ key line
-        mbox.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
-        mbox.raise_()
-        mbox.activateWindow()
-        btn = mbox.exec()
+            # --- stay-on-top message box ---
+            mbox = QMessageBox(self)
+            mbox.setIcon(QMessageBox.Icon.Question)
+            mbox.setWindowTitle(self.tr("Confirm Exit"))
+            mbox.setText(msg)
+            mbox.setStandardButtons(
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            mbox.setDefaultButton(QMessageBox.StandardButton.No)
+            mbox.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+            mbox.raise_()
+            mbox.activateWindow()
+            btn = mbox.exec()
 
-        if btn != QMessageBox.StandardButton.Yes:
-            e.ignore()
-            return
+            if btn != QMessageBox.StandardButton.Yes:
+                e.ignore()
+                self._shutting_down = False
+                return
 
-        # User confirmed: prevent per-subwindow prompts and proceed
+        # --- User confirmed (or no confirm needed) ---
+        # Start Fade Out Animation
+        e.ignore() # Defer close until animation completes
+        self.setEnabled(False) # Prevent further interaction
+        
+        self._anim_close = QPropertyAnimation(self, b"windowOpacity")
+        self._anim_close.setDuration(800)
+        self._anim_close.setStartValue(1.0)
+        self._anim_close.setEndValue(0.0)
+        self._anim_close.setEasingCurve(QEasingCurve.Type.OutQuad)
+        self._anim_close.finished.connect(self._on_fade_out_finished)
+        self._anim_close.start()
+
+    def _on_fade_out_finished(self):
+        """Called when close animation completes."""
+        self._fade_out_complete = True
+        self.close()
+
+    def _do_shutdown_steps(self, e):
+        """Actual shutdown logic after verification and animation."""
         self._force_close_all = True
         self._shutting_down = True
 

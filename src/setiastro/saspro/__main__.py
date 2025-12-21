@@ -47,7 +47,8 @@ def _init_splash():
     
     # Minimal imports for splash screen
     from PyQt6.QtWidgets import QApplication, QWidget
-    from PyQt6.QtCore import Qt, QCoreApplication, QRect
+    from PyQt6.QtCore import Qt, QCoreApplication, QRect, QPropertyAnimation, QEasingCurve
+    import time
     from PyQt6.QtGui import QGuiApplication, QIcon, QPixmap, QColor, QPainter, QFont, QLinearGradient
     
 
@@ -312,10 +313,41 @@ def _init_splash():
             self.hide()
             self.close()
             self.deleteLater()
+
+        def start_fade_out(self):
+            """Smoothly fade out the splash screen."""
+            self._anim = QPropertyAnimation(self, b"windowOpacity")
+            self._anim.setDuration(1000)
+            self._anim.setStartValue(1.0)
+            self._anim.setEndValue(0.0)
+            self._anim.setEasingCurve(QEasingCurve.Type.OutQuad)
+            self._anim.finished.connect(self.finish)
+            self._anim.start()
     
+        def start_fade_in(self):
+            """Smoothly fade in the splash screen."""
+            self.setWindowOpacity(0.0)
+            self._anim = QPropertyAnimation(self, b"windowOpacity")
+            self._anim.setDuration(800)
+            self._anim.setStartValue(0.0)
+            self._anim.setEndValue(1.0)
+            self._anim.setEasingCurve(QEasingCurve.Type.InQuad)
+            self._anim.start()
+
     # --- Show splash IMMEDIATELY ---
     _splash = _EarlySplash(_early_icon_path)
+    _splash.start_fade_in()
     _splash.show()
+    
+    # Block briefly to allow fade-in to progress smoothly before heavy imports start
+    # We use a busy loop with processEvents to keep the UI responsive during fade
+    t_start = time.time()
+    while time.time() - t_start < 0.85:  # slightly longer than animation
+        _app.processEvents()
+        if _splash.windowOpacity() >= 0.99:
+            break
+        time.sleep(0.01)
+
     _splash.setMessage(QCoreApplication.translate("Splash", "Initializing Python runtime..."))
     _splash.setProgress(2)
     _app.processEvents()
@@ -516,7 +548,8 @@ from PyQt6.QtGui import (QPixmap, QColor, QIcon, QKeySequence, QShortcut, QGuiAp
 )
 
 # ----- QtCore -----
-from PyQt6.QtCore import (Qt, pyqtSignal, QCoreApplication, QTimer, QSize, QSignalBlocker, QModelIndex, QThread, QUrl, QSettings, QEvent, QByteArray, QObject
+from PyQt6.QtCore import (Qt, pyqtSignal, QCoreApplication, QTimer, QSize, QSignalBlocker, QModelIndex, QThread, QUrl, QSettings, QEvent, QByteArray, QObject,
+    QPropertyAnimation, QEasingCurve
 )
 
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
@@ -747,7 +780,31 @@ def main():
         if _splash:
             _splash.setMessage(QCoreApplication.translate("Splash", "Showing main window..."))
             _splash.setProgress(95)
+        
+        # --- Smooth Transition: App Fade In + Splash Fade Out ---
+        # MITIGATION: Prevent "White Flash" on startup
+        # 1. Force a dark background immediately so if opacity lags, it's dark not white
+        win.setStyleSheet("QMainWindow { background-color: #0F0F19; }") 
+        # 2. Ensure native window handle exists so setWindowOpacity works immediately
+        win.winId()
+        # 3. Set opacity to 0
+        win.setWindowOpacity(0.0)
+        
         win.show()
+        
+        # 1. Animate Main Window Fade In
+        anim_app = QPropertyAnimation(win, b"windowOpacity")
+        anim_app.setDuration(1200)
+        anim_app.setStartValue(0.0)
+        anim_app.setEndValue(1.0)
+        anim_app.setEasingCurve(QEasingCurve.Type.OutQuad)
+        
+        # Cleanup temp stylesheet upon completion to avoid interfering with ThemeMixin
+        def _on_fade_in_finished():
+            win.setStyleSheet("")
+            
+        anim_app.finished.connect(_on_fade_in_finished)
+        anim_app.start()
 
         # Start background Numba warmup after UI is visible
         try:
@@ -761,18 +818,16 @@ def main():
             _splash.setProgress(100)
             _app.processEvents()
             
-            # Small delay to show "Ready!" before closing
+            # Small delay to ensure "Ready!" is seen briefly before fade starts
             import time
-            time.sleep(0.3)
-            _app.processEvents()
-
-            # Ensure the splash cannot resurrect later:
-            try:
-                _splash.finish()
-            finally:
-                _splash.hide()
-                _splash.close()
-                _splash.deleteLater()
+            time.sleep(0.1)
+            
+            # 2. Animate Splash Fade Out
+            # Note: We do NOT use finish() directly here. The animation calls it when done.
+            _splash.start_fade_out()
+            
+            # NOTE: We keep a reference to _splash (global) so it doesn't get GC'd during animation.
+            # It will deleteLater() itself.
         
         if BUILD_TIMESTAMP == "dev":
             build_label = "running from local source code"
