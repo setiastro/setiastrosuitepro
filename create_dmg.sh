@@ -32,7 +32,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-gen_dir = Path('pro/_generated')
+gen_dir = Path('src/setiastro/saspro/_generated')
 gen_dir.mkdir(exist_ok=True)
 
 # __init__.py
