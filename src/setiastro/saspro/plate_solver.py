@@ -16,7 +16,7 @@ from astropy.io import fits
 from astropy.io.fits import Header
 from astropy.wcs import WCS
 
-from PyQt6.QtCore import QProcess, QTimer, QEventLoop, Qt
+from PyQt6.QtCore import QProcess, QTimer, QEventLoop, Qt, QCoreApplication
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import (
     QDialog, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
