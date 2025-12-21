@@ -130,13 +130,20 @@ def _init_splash():
 
     # NEW: Prefer centralized resources resolver
     try:
-        from setiastro.saspro.resources import icon_path
+        from setiastro.saspro.resources import icon_path, background_startup_path
         _early_icon_path = icon_path
         if not os.path.exists(_early_icon_path):
             # fall back to legacy search if for some reason this is missing
             _early_icon_path = _find_icon_path()
+        
+        # Load startup background path
+        _startup_bg_path = background_startup_path
+        if not os.path.exists(_startup_bg_path):
+             _startup_bg_path = None
+             
     except Exception:
         _early_icon_path = _find_icon_path()
+        _startup_bg_path = None
 
     
     # =========================================================================
@@ -178,6 +185,11 @@ def _init_splash():
             # Load and scale logo
             self.logo_pixmap = self._load_logo(logo_path)
             
+            # Load background image
+            self.bg_image_pixmap = QPixmap()
+            if _startup_bg_path:
+                self.bg_image_pixmap = QPixmap(_startup_bg_path)
+
             # Fonts
             self.title_font = QFont("Segoe UI", 28, QFont.Weight.Bold)
             self.subtitle_font = QFont("Segoe UI", 11)
@@ -243,6 +255,45 @@ def _init_splash():
             gradient.setColorAt(1.0, QColor(10, 10, 20))
             painter.fillRect(0, 0, w, h, gradient)
             
+            # --- Background Image (Centered with Fade Out) ---
+            if not self.bg_image_pixmap.isNull():
+                # Create a temporary pixmap to handle the masking
+                temp = QPixmap(w, h)
+                temp.fill(Qt.GlobalColor.transparent)
+                
+                ptmp = QPainter(temp)
+                ptmp.setRenderHint(QPainter.RenderHint.Antialiasing)
+                ptmp.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+                
+                # Scale image to cover the entire splash screen
+                scaled = self.bg_image_pixmap.scaled(
+                    w, h, 
+                    Qt.AspectRatioMode.KeepAspectRatioByExpanding, 
+                    Qt.TransformationMode.SmoothTransformation
+                )
+                
+                # Center the image
+                sx = (w - scaled.width()) // 2
+                sy = (h - scaled.height()) // 2
+                ptmp.drawPixmap(sx, sy, scaled)
+                
+                # Apply Fade Out Mask (Gradient Alpha)
+                ptmp.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
+                fade_gradient = QLinearGradient(0, 0, 0, h)
+                # Keep top half fully visible (subject to global opacity)
+                fade_gradient.setColorAt(0.0, QColor(0, 0, 0, 255)) 
+                fade_gradient.setColorAt(0.5, QColor(0, 0, 0, 255)) 
+                # Fade out completely at the bottom
+                fade_gradient.setColorAt(1.0, QColor(0, 0, 0, 0))   
+                ptmp.fillRect(0, 0, w, h, fade_gradient)
+                ptmp.end()
+                
+                # Draw combined result with 50% opacity
+                painter.save()
+                painter.setOpacity(0.25)
+                painter.drawPixmap(0, 0, temp)
+                painter.restore()
+
             # --- Subtle border ---
             painter.setPen(QColor(60, 60, 80))
             painter.drawRect(0, 0, w - 1, h - 1)
