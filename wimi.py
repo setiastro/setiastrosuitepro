@@ -21,7 +21,7 @@ import webbrowser
 import warnings
 import shutil
 import subprocess
-from xisf import XISF
+from setiastro.saspro.xisf import XISF
 import requests
 import csv
 import lz4.block
@@ -152,7 +152,7 @@ from matplotlib.ticker import MaxNLocator
 from matplotlib.patches import Circle
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from pro.plate_solver import plate_solve_doc_inplace, _active_doc_from_parent, _get_seed_mode, _set_seed_mode, _as_header
+from setiastro.saspro.plate_solver import plate_solve_doc_inplace, _active_doc_from_parent, _get_seed_mode, _set_seed_mode, _as_header
 
 #################################
 # PyQt6 Imports
@@ -185,9 +185,9 @@ from PyQt6.QtCore import (    Qt,    QRectF,    QLineF,    QPointF,    QThread, 
 from math import sqrt
 import math
 
-from legacy.image_manager import load_image, save_image
-from imageops.stretch import stretch_color_image, stretch_mono_image
-from pro import minorbodycatalog as mbc
+from setiastro.saspro.legacy.image_manager import load_image, save_image
+from setiastro.saspro.imageops.stretch import stretch_color_image, stretch_mono_image
+from setiastro.saspro import minorbodycatalog as mbc
 
 
 # Determine if running inside a PyInstaller bundle
@@ -217,38 +217,21 @@ if 'data/data' in data_path:
 if data_path:
     conf.dataurl = f'file://{data_path}/'
 
-from pathlib import Path
-import os, sys
 
-def resource_path(*parts: str) -> str:
-    """
-    Returns an absolute path to a bundled or source-tree resource.
-    Assumes resources are shipped under an 'images/' folder.
-    """
-    if hasattr(sys, "_MEIPASS"):
-        base = Path(sys._MEIPASS)          # PyInstaller temp dir
-    else:
-        base = Path(__file__).resolve().parent  # folder containing wimi.py
-    return str(base.joinpath(*parts))
+from setiastro.saspro.resources import (
+    wrench_path,
+    eye_icon_path,
+    disk_icon_path,
+    nuke_path,
+    hubble_path,
+    collage_path,
+    annotated_path,
+    colorwheel_path,
+    font_path,
+    csv_icon_path,
+    hrdiagram_path,
+)
 
-# Prefer 'images/<file>' for BOTH bundled and source runs
-wrench_path     = resource_path("images", "wrench_icon.png")
-eye_icon_path   = resource_path("images", "eye.png")
-disk_icon_path  = resource_path("images", "disk.png")
-nuke_path       = resource_path("images", "nuke.png")
-hubble_path     = resource_path("images", "hubble.png")
-collage_path    = resource_path("images", "collage.png")
-annotated_path  = resource_path("images", "annotated.png")
-colorwheel_path = resource_path("images", "colorwheel.png")
-font_path       = resource_path("images", "font.png")
-csv_icon_path   = resource_path("images", "cvs.png")          # <- double-check name (you had 'cvs.png')
-hrdiagram_path  = resource_path("images", "HRDiagram.png")
-
-# Optional: loud warning if something is missing (helps catch packaging mistakes)
-for p in (wrench_path, eye_icon_path, disk_icon_path, nuke_path, hubble_path,
-          collage_path, annotated_path, colorwheel_path, font_path, csv_icon_path, hrdiagram_path):
-    if not os.path.exists(p):
-        print(f"[WIMI] Missing resource: {p}") 
 
 # Constants for comoving radial distance calculation
 H0 = 69.6  # Hubble constant in km/s/Mpc
@@ -2371,7 +2354,7 @@ def resource_path(relative_path):
     return os.path.join(base_path, relative_path)
 
 # Import centralized widgets
-from pro.widgets.spinboxes import CustomSpinBox, CustomDoubleSpinBox
+from setiastro.saspro.widgets.spinboxes import CustomSpinBox, CustomDoubleSpinBox
 
 
 class _NoopSignal:
@@ -2423,7 +2406,7 @@ class MinorBodyDownloadWorker(QThread):
 
     def run(self):
         try:
-            from pro import minorbodycatalog as mbc
+            from setiastro.saspro import minorbodycatalog as mbc
             db_path, manifest = mbc.ensure_minor_body_db(
                 data_dir=self.data_dir,
                 manifest_url=mbc.MANIFEST_URL,
@@ -5603,7 +5586,7 @@ class WIMIDialog(QDialog):
     def _load_minor_db_path(self) -> str:
         """Load cached DB path from QSettings and update the label."""
         from pathlib import Path
-        from pro import minorbodycatalog as mbc
+        from setiastro.saspro import minorbodycatalog as mbc
 
         path = self.settings.value("wimi/minorbody_db_path", "", type=str)
         self.minor_db_path = path or ""
@@ -5650,7 +5633,7 @@ class WIMIDialog(QDialog):
         Shift-clicking the button sets force=True (handled in the click slot).
         """
         from PyQt6.QtCore import QEventLoop
-        from pro import minorbodycatalog as mbc
+        from setiastro.saspro import minorbodycatalog as mbc
 
         data_dir = self._minorbody_data_dir()
 
@@ -6264,7 +6247,7 @@ class WIMIDialog(QDialog):
         from astropy.time import Time
         import pandas as pd
         import sqlite3
-        from pro import minorbodycatalog as mbc
+        from setiastro.saspro import minorbodycatalog as mbc
 
         db_path = Path(db_path)
         if not db_path.is_file():
