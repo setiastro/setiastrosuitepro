@@ -228,8 +228,35 @@ def _init_splash():
                 _app.processEvents()
         
         def setProgress(self, value: int):
-            """Update progress (0-100)."""
-            self.progress_value = max(0, min(100, value))
+            """Update progress (0-100) with smooth animation."""
+            target = max(0, min(100, value))
+            start = self.progress_value
+            
+            # If jumping backwards or small change, just set it
+            if target <= start or (target - start) < 1:
+                self.progress_value = target
+                self.repaint()
+                if _app: _app.processEvents()
+                return
+
+            # Animate forward
+            steps = 15  # number of frames for the slide
+            # We want the total slide to take ~100-150ms max to feel responsive but smooth
+            dt = 0.005  # 5ms per frame
+            
+            for i in range(1, steps + 1):
+                # Ease out interpolator
+                t = i / steps
+                # Quadratic ease out: f(t) = -t*(t-2)
+                factor = -t * (t - 2)
+                
+                cur = start + (target - start) * factor
+                self.progress_value = cur
+                self.repaint()
+                if _app: _app.processEvents()
+                time.sleep(dt)
+
+            self.progress_value = target
             self.repaint()
             if _app:
                 _app.processEvents()
