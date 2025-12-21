@@ -1,9 +1,9 @@
 {
-  "version": "1.5.13",
+  "version": "1.6.1",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.5.13/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.5.13/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.5.13/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.6.1/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.6.1/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.6.1/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.5.13 New tool: Multi Scale Decomposition (commonly called MultiscaleMedianTransformation) Standardized many items across all tools, keyword grouping in stacking suite, re-orderable toolbar icons. Many optimizations, fixes, and niceties."
+  "notes": "Seti Astro Suite Pro V1.6.1 RELEASE of Version 1.6! This is a complete and major overhaul of SASpro. Complete with pip installation (pip install setiastrosuitepro), poetry supported for library registration, multilanguage support, icon movability, improved optimizations, and more!!"
 }
