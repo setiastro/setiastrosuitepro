@@ -2531,9 +2531,21 @@ class DocManager(QObject):
         # Prefer explicit doc if given; otherwise fall back to "active"
         view_doc = doc or self.get_active_document()
 
-        # NEW: Unwrap LiveViewDocument proxy if present so we get the real ImageDocument/_RoiViewDocument
-        if isinstance(view_doc, LiveViewDocument):
-            view_doc = view_doc._current()
+        # DEBUG: Trace why LinearFit might fail
+        # print(f"[DocManager] update_active_document target: {view_doc}, type: {type(view_doc).__name__}")
+
+        # NEW: Unwrap proxy objects (_DocProxy / LiveViewDocument)
+        tname = type(view_doc).__name__
+        if "LiveViewDocument" in tname:
+            try:
+                view_doc = view_doc._current()
+            except Exception:
+                pass
+        elif "_DocProxy" in tname:
+            try:
+                view_doc = view_doc._target()
+            except Exception:
+                pass
 
         if view_doc is None:
             raise RuntimeError("No active document")
