@@ -2530,6 +2530,11 @@ class DocManager(QObject):
 
         # Prefer explicit doc if given; otherwise fall back to "active"
         view_doc = doc or self.get_active_document()
+
+        # NEW: Unwrap LiveViewDocument proxy if present so we get the real ImageDocument/_RoiViewDocument
+        if isinstance(view_doc, LiveViewDocument):
+            view_doc = view_doc._current()
+
         if view_doc is None:
             raise RuntimeError("No active document")
 
