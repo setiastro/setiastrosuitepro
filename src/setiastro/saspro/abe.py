@@ -475,12 +475,17 @@ class ABEDialog(QDialog):
 
         # IMPORTANT: avoid “attached modal sheet” behavior on some Linux WMs
         self.setWindowFlag(Qt.WindowType.Window, True)
-        # keep it blocking if you want, but as a top-level window
-        self.setWindowModality(Qt.WindowModality.ApplicationModal)
+        # Non-modal: allow user to switch between images while dialog is open
+        self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         #self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
 
+        self._main = parent
         self.doc = document
+
+        # Connect to active document change signal
+        if hasattr(self._main, "currentDocumentChanged"):
+            self._main.currentDocumentChanged.connect(self._on_active_doc_changed)
 
         self._preview_scale = 1.0
         self._preview_qimg = None
@@ -611,6 +616,17 @@ class ABEDialog(QDialog):
         bar.addStretch(1)
         bar.addWidget(self.btn_autostr)
         return bar
+
+    # ----- active document change -----
+    def _on_active_doc_changed(self, doc):
+        """Called when user clicks a different image window."""
+        if doc is None or getattr(doc, "image", None) is None:
+            return
+        self.doc = doc
+        self._polygons.clear()
+        self._drawing_poly = None
+        self._preview_source_f01 = None
+        self._populate_initial_preview()
 
     # ----- data helpers -----
     def _get_source_float(self) -> np.ndarray | None:
@@ -813,11 +829,33 @@ class ABEDialog(QDialog):
                 pass
 
             self._set_status("Done")
-            self.accept()
+            # Dialog stays open so user can apply to other images
+            # Refresh to use the now-active document for next operation
+            self._refresh_document_from_active()
 
         except Exception as e:
             self._set_status("Error")
             QMessageBox.critical(self, "Apply failed", str(e))
+
+    def _refresh_document_from_active(self):
+        """
+        Refresh the dialog's document reference to the currently active document.
+        This allows reusing the same dialog on different images.
+        """
+        try:
+            main = self.parent()
+            if main and hasattr(main, "_active_doc"):
+                new_doc = main._active_doc()
+                if new_doc is not None and new_doc is not self.doc:
+                    self.doc = new_doc
+                    # Reset preview state for new document
+                    self._preview_source_f01 = None
+                    self._last_preview = None
+                    self._preview_qimg = None
+                    # Clear polygons since they were for old image
+                    self._clear_polys()
+        except Exception:
+            pass
 
 
     # ----- exclusion polygons & mask -----

@@ -237,14 +237,21 @@ def apply_background_neutral_to_doc(doc, preset: dict | None = None):
 class BackgroundNeutralizationDialog(QDialog):
     def __init__(self, parent, doc, icon: QIcon | None = None):
         super().__init__(parent)
+        self._main = parent
         self.doc = doc
+
+        # Connect to active document change signal
+        if hasattr(self._main, "currentDocumentChanged"):
+            self._main.currentDocumentChanged.connect(self._on_active_doc_changed)
+
         if icon:
             self.setWindowIcon(icon)
         self.setWindowTitle(self.tr("Background Neutralization"))
         self.resize(900, 600)
 
         self.setWindowFlag(Qt.WindowType.Window, True)
-        self.setWindowModality(Qt.WindowModality.ApplicationModal)
+        # Non-modal: allow user to switch between images while dialog is open
+        self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         #self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
 
@@ -313,7 +320,14 @@ class BackgroundNeutralizationDialog(QDialog):
 
         self._load_image()
 
-
+    # ---- active document change ------------------------------------
+    def _on_active_doc_changed(self, doc):
+        """Called when user clicks a different image window."""
+        if doc is None or getattr(doc, "image", None) is None:
+            return
+        self.doc = doc
+        self.selection_item = None
+        self._load_image()
 
     # ---------- image display ----------
     def _doc_image_normalized(self) -> np.ndarray:
@@ -509,8 +523,25 @@ class BackgroundNeutralizationDialog(QDialog):
             metadata=meta,
             step_name="Background Neutralization",
         )
-        self.accept()
+        # Dialog stays open so user can apply to other images
+        # Refresh to use the now-active document for next operation
+        self._refresh_document_from_active()
 
+    def _refresh_document_from_active(self):
+        """
+        Refresh the dialog's document reference to the currently active document.
+        This allows reusing the same dialog on different images.
+        """
+        try:
+            main = self.parent()
+            if main and hasattr(main, "_active_doc"):
+                new_doc = main._active_doc()
+                if new_doc is not None and new_doc is not self.doc:
+                    self.doc = new_doc
+                    # Refresh the preview image
+                    self._load_preview()
+        except Exception:
+            pass
 
     def _zoom(self, factor: float):
         self._user_zoomed = True

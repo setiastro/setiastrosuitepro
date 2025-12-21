@@ -227,7 +227,8 @@ class AddStarsDialog(QDialog):
         self.setWindowTitle(self.tr("Add Stars to Image"))
 
         self.setWindowFlag(Qt.WindowType.Window, True)
-        self.setWindowModality(Qt.WindowModality.ApplicationModal)
+        # Non-modal: allow user to switch between images while dialog is open
+        self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         #self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
 
@@ -574,7 +575,9 @@ class AddStarsDialog(QDialog):
 
         # Emit (target_doc, blended_image)
         self.stars_added.emit(target_doc, self.blended_image.astype(np.float32, copy=False))
-        self.accept()
+        # Dialog stays open so user can apply to other images
+        # Refresh combo boxes for next operation
+        self._populate_doc_combos()
 
 
     # Ensure initial fit once shown

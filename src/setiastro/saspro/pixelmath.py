@@ -756,6 +756,9 @@ class PixelMathDialogPro(QDialog):
     def __init__(self, parent, doc, icon: QIcon | None = None):
         super().__init__(parent)
         self.setWindowTitle(self.tr("Pixel Math"))
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
         if icon:
             try:
                 self.setWindowIcon(icon)

@@ -350,6 +350,9 @@ class RGBAlignDialog(QDialog):
     def __init__(self, parent=None, document=None):
         super().__init__(parent)
         self.setWindowTitle(self.tr("RGB Align"))
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
         self.parent = parent
         # document could be a view; try to unwrap
         self.doc_view = document

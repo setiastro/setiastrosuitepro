@@ -618,6 +618,7 @@ class StellarAlignmentDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Stellar Alignment")
         self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         #self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
 
@@ -4639,6 +4640,9 @@ class MosaicMasterDialog(QDialog):
             self._list_open_docs_fn = list_open_docs_fn
 
         self.setWindowTitle("Mosaic Master")
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
         self.wrench_path = wrench_path
         self.spinner_path = spinner_path
 

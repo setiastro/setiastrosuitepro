@@ -24,6 +24,9 @@ class GhsDialogPro(QDialog):
     def __init__(self, parent, document):
         super().__init__(parent)
         self.setWindowTitle(self.tr("Hyperbolic Stretch"))
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
         self.doc = document
         self._preview_img = None
         self._full_img = None

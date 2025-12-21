@@ -50,6 +50,9 @@ class StarSpikesDialogPro(QDialog):
                  spinner_path: str | None = None):
         super().__init__(parent)
         self.setWindowTitle(self.tr("Diffraction Spikes"))
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
         self.docman = doc_manager
         self.doc = initial_doc or (self.docman.get_active_document() if self.docman else None)
         self.jwstpupil_path = jwstpupil_path

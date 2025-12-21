@@ -155,6 +155,9 @@ class BlemishBlasterDialogPro(QDialog):
     def __init__(self, parent, doc):
         super().__init__(parent)
         self.setWindowTitle(self.tr("Blemish Blaster"))
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
         self.setMinimumSize(900, 650)
 
         self._doc = doc

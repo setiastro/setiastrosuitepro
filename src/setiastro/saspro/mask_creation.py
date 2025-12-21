@@ -555,6 +555,9 @@ class MaskCreationDialog(QDialog):
     def __init__(self, image01: np.ndarray, parent=None, auto_push_on_ok: bool = True):
         super().__init__(parent)
         self.setWindowTitle(self.tr("Mask Creation"))
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
         self.image = np.asarray(image01, dtype=np.float32).copy()
         self.mask: np.ndarray | None = None
         self.live_preview = LivePreviewDialog(self.image, parent=self)

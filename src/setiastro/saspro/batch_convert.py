@@ -169,6 +169,9 @@ class BatchConvertDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle(self.tr("Batch Convert"))
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
         self.setMinimumWidth(560)
         self.worker: _BatchWorker | None = None
 

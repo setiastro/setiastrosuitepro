@@ -271,6 +271,9 @@ class CosmicClarityDialogPro(QDialog):
             QTimer.singleShot(0, self.reject)
             return        
         self.setWindowTitle(self.tr("Cosmic Clarity"))
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
         if icon: 
             try: self.setWindowIcon(icon)
             except Exception as e:
@@ -1009,6 +1012,9 @@ class CosmicClaritySatelliteDialogPro(QDialog):
     def __init__(self, parent, doc=None, icon: QIcon | None = None):
         super().__init__(parent)
         self.setWindowTitle("Cosmic Clarity – Satellite Removal")
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
         if icon:
             try: self.setWindowIcon(icon)
             except Exception as e:

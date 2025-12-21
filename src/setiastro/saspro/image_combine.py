@@ -91,6 +91,9 @@ class ImageCombineDialog(QDialog):
     def __init__(self, main_window):
         super().__init__(main_window)
         self.setWindowTitle("Image Combine")
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
         self.mw = main_window
         self.dm = getattr(main_window, "doc_manager", None) or getattr(main_window, "dm", None)
         self.zoom = 1.0

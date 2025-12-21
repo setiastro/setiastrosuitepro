@@ -30,6 +30,9 @@ class HistogramDialog(QDialog):
     def __init__(self, parent, document):
         super().__init__(parent)
         self.setWindowTitle(self.tr("Histogram"))
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
         self.doc = document
         self.image = _to_float_preserve(document.image)
 

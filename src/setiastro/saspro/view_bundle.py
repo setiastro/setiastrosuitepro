@@ -378,6 +378,7 @@ class SelectViewsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Add Views to Bundle")
         self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         #self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self._boxes: list[QCheckBox] = []
@@ -510,6 +511,8 @@ class ViewBundleDialog(QDialog):
         super().__init__(parent)
         _pin_on_top_mac(self)
         self.setWindowTitle("View Bundles")
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         self.resize(900, 540)
         self.setAcceptDrops(True)

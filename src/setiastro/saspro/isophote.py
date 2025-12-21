@@ -360,6 +360,9 @@ class IsophoteModelerDialog(QDialog):
     def __init__(self, mono_image: np.ndarray, parent: Optional[QWidget] = None,
                  title_hint: Optional[str] = None, image_manager=None, doc_manager=None):
         super().__init__(parent)
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
         self.image_manager = image_manager
         self.doc_manager   = doc_manager
 

@@ -997,6 +997,9 @@ class AstrobinExporterDialog(QDialog):
     def __init__(self, parent=None, offline_filters_csv: Optional[str] = None):
         super().__init__(parent)
         self.setWindowTitle(self.tr("AstroBin Exporter"))
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
         self.resize(980, 640)
         v = QVBoxLayout(self)
         self.tab = AstrobinExportTab(self, offline_filters_csv=offline_filters_csv)

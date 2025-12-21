@@ -48,6 +48,9 @@ class LiveStackSettingsDialog(QDialog):
     def __init__(self, parent):
         super().__init__(parent)
         self.setWindowTitle("Live Stack & Culling Settings")
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
 
         # — Live Stack Settings —
         # Bootstrap frames (int)

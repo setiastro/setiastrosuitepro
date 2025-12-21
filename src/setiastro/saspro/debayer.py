@@ -402,6 +402,9 @@ class DebayerDialog(QDialog):
     def __init__(self, parent, doc_manager, active_doc):
         super().__init__(parent)
         self.setWindowTitle(self.tr("Debayer"))
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
         self.dm = doc_manager
         self.doc = active_doc
         self.worker: Optional[_DebayerWorker] = None

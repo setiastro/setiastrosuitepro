@@ -91,6 +91,9 @@ class CheatSheetDialog(QDialog):
     def __init__(self, parent, keyboard_rows, gesture_rows):
         super().__init__(parent)
         self.setWindowTitle(self.tr("Keyboard Shortcut Cheat Sheet"))
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
         self.resize(780, 520)
         
         self._keyboard_rows = keyboard_rows

@@ -362,6 +362,9 @@ class SupernovaAsteroidHunterDialog(QDialog):
                  supernova_path=None, wrench_path=None, spinner_path=None):
         super().__init__(parent)
         self.setWindowTitle(self.tr("Supernova / Asteroid Hunter"))
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
         if supernova_path:
             self.setWindowIcon(QIcon(supernova_path))
         # keep icon path for previews

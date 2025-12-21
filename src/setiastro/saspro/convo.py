@@ -153,6 +153,9 @@ class ConvoDeconvoDialog(QDialog):
             self._main.currentDocumentChanged.connect(self._on_active_doc_changed)
 
         self.setWindowTitle(self.tr("Convolution / Deconvolution"))
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
         self.resize(1000, 650)
         self._use_custom_psf = False
         self._custom_psf: Optional[np.ndarray] = None

@@ -334,6 +334,8 @@ class FunctionBundleDialog(QDialog):
         super().__init__(parent)
         _pin_on_top_mac(self)
         self.setWindowTitle("Function Bundles")
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         self.resize(920, 560)
         self.setAcceptDrops(True)

@@ -31,6 +31,9 @@ class GraXpertOperationDialog(QDialog):
         super().__init__(parent)
 
         self.setWindowTitle("GraXpert")
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
         root = QVBoxLayout(self)
 
         # radios

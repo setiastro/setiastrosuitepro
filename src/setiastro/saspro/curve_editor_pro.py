@@ -1016,7 +1016,16 @@ class CurvesDialogPro(QDialog):
     def __init__(self, parent, document):
         super().__init__(parent)
         self.setWindowTitle(self.tr("Curves Editor"))
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
+        self._main = parent
         self.doc = document
+
+        # Connect to active document change signal
+        if hasattr(self._main, "currentDocumentChanged"):
+            self._main.currentDocumentChanged.connect(self._on_active_doc_changed)
+
         self._preview_img = None     # downsampled float01
         self._full_img = None        # full-res float01
         self._pix = None
@@ -1787,6 +1796,15 @@ class CurvesDialogPro(QDialog):
             if delete_custom_preset(name):
                 self._rebuild_presets_menu()
 
+
+    # ----- active document change -----
+    def _on_active_doc_changed(self, doc):
+        """Called when user clicks a different image window."""
+        if doc is None or getattr(doc, "image", None) is None:
+            return
+        self.doc = doc
+        self._load_from_doc()
+        QTimer.singleShot(0, self._fit_after_load)
 
     # ----- data -----
     def _load_from_doc(self):

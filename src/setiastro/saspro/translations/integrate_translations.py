@@ -62,6 +62,30 @@ except ImportError:
     print("Warning: Could not import Japanese translations (ja_translations.py)")
     TRANSLATIONS_JA = {}
 
+try:
+    from hi_translations import TRANSLATIONS_HI
+except ImportError:
+    print("Warning: Could not import Hindi translations (hi_translations.py)")
+    TRANSLATIONS_HI = {}
+
+try:
+    from sw_translations import TRANSLATIONS_SW
+except ImportError:
+    print("Warning: Could not import Swahili translations (sw_translations.py)")
+    TRANSLATIONS_SW = {}
+
+try:
+    from ru_translations import TRANSLATIONS_RU
+except ImportError:
+    print("Warning: Could not import Russian translations (ru_translations.py)")
+    TRANSLATIONS_RU = {}
+
+try:
+    from ar_translations import TRANSLATIONS_AR
+except ImportError:
+    print("Warning: Could not import Arabic translations (ar_translations.py)")
+    TRANSLATIONS_AR = {}
+
 
 def inject_translations_into_ts(ts_file: Path, translations: dict, lang: str):
     """
@@ -192,7 +216,12 @@ def main():
         'zh': TRANSLATIONS_ZH,
         'de': TRANSLATIONS_DE,
         'pt': TRANSLATIONS_PT,
+        'pt': TRANSLATIONS_PT,
         'ja': TRANSLATIONS_JA,
+        'hi': TRANSLATIONS_HI,
+        'sw': TRANSLATIONS_SW,
+        'ru': TRANSLATIONS_RU,
+        'ar': TRANSLATIONS_AR,
     }
     
     # Print summary
