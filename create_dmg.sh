@@ -1,150 +1,399 @@
-#!/bin/bash
-
-# SetiAstroSuitePro DMG Creation Script
-set -e  # Exit on any error
-
-PROJECT_NAME="SetiAstroSuitePro"
-APP_NAME="SetiAstroSuitePro.app"
-
-# Architecture detection and naming
-ARCH=$(uname -m)
-case "$ARCH" in
-    "arm64")
-        ARCH_SUFFIX="AppleSilicon"
-        ARCH_DISPLAY="Apple Silicon"
-        ;;
-    "x86_64")
-        ARCH_SUFFIX="Intel"
-        ARCH_DISPLAY="Intel"
-        ;;
-    *)
-        ARCH_SUFFIX="_${ARCH}"
-        ARCH_DISPLAY="$ARCH"
-        ;;
-esac
-
-DMG_NAME="${PROJECT_NAME}_${ARCH_SUFFIX}"
-echo "🚀 Creating DMG for ${PROJECT_NAME} (${ARCH_DISPLAY})"
-
-echo "🔧 Generating build info..."
-python3 -c "
-import os
-from datetime import datetime
+# -*- mode: python ; coding: utf-8 -*-
+import sys, os
+sys.setrecursionlimit(sys.getrecursionlimit() * 10)
 from pathlib import Path
 
-gen_dir = Path('src/setiastro/saspro/_generated')
-gen_dir.mkdir(exist_ok=True)
-
-# __init__.py
-(gen_dir / '__init__.py').write_text('# Generated\\n')
-
-# build_info.py
-timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-content = f'BUILD_TIMESTAMP = \"{timestamp}\"\\n'
-(gen_dir / 'build_info.py').write_text(content)
-print(f'Build timestamp: {timestamp}')
-"
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Matplotlib pre-warm (font cache + backend import) BEFORE build
-# This avoids first-run stalls on user machines.
-# Also optionally call your helper if present (e.g., scripts/matplotlib.py).
-# ──────────────────────────────────────────────────────────────────────────────
-echo "🎨 Pre-warming Matplotlib cache (headless)…"
-python3 - <<'PY'
-import os, sys
-# Force non-GUI backend to avoid any Qt issues during cache build
-import matplotlib
-matplotlib.use("Agg", force=True)
-
-# Trigger font manager cache build
-from matplotlib import font_manager
-# Newer MPL uses this; for older, this still refreshes the cache files.
-font_manager.get_font_names()  # touches cache
+# ---------------------------------------------------------------------
+# Project root (works whether __file__ is defined or not)
+# ---------------------------------------------------------------------
 try:
-    # Force rebuild path if needed
-    font_manager._load_fontmanager(try_read_cache=False)
+    SPEC_DIR = Path(__file__).resolve().parent
+except NameError:
+    SPEC_DIR = Path.cwd()
+
+PROJECT_ROOT = SPEC_DIR
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+# Package root for bundled assets
+PKG_ROOT = PROJECT_ROOT / "src" / "setiastro"
+
+
+# ---------------------------------------------------------------------
+# PyInstaller helpers
+# ---------------------------------------------------------------------
+from PyInstaller.utils.hooks import (
+    collect_all,
+    collect_data_files,
+    collect_dynamic_libs,
+    collect_submodules,
+)
+
+def try_collect_data(pkg, **kwargs):
+    try:
+        return collect_data_files(pkg, **kwargs)
+    except Exception as e:
+        print(f"[spec] WARN: skipping data for '{pkg}': {e}")
+        return []
+
+def try_collect_submodules(pkg):
+    try:
+        return collect_submodules(pkg)
+    except Exception as e:
+        print(f"[spec] WARN: skipping submodules for '{pkg}': {e}")
+        return []
+
+def try_collect_binaries(pkg):
+    try:
+        return collect_dynamic_libs(pkg)
+    except Exception as e:
+        print(f"[spec] WARN: skipping binaries for '{pkg}': {e}")
+        return []
+
+def try_collect_all(pkg):
+    try:
+        return collect_all(pkg)
+    except Exception as e:
+        print(f"[spec] WARN: skipping collect_all('{pkg}'): {e}")
+        return ([], [], [])
+
+def maybe_add_file(relpath, dest='.'):
+    """Return (src, dest) if file/dir exists (relative to project root), else None."""
+    p = PROJECT_ROOT / relpath
+    if p.exists():
+        return (str(p), dest)
+    else:
+        print(f"[spec] WARN missing asset: {p}")
+        return None
+
+def maybe_add_pkg_file(relpath, dest='.'):
+    """
+    Return (src, dest) for files that live under the package tree
+    src/setiastro/<relpath>, else None.
+    """
+    p = PKG_ROOT / relpath
+    if p.exists():
+        return (str(p), dest)
+    else:
+        print(f"[spec] WARN missing pkg asset: {p}")
+        return None
+
+
+# ---------------------------------------------------------------------
+# 3rd-party package collections (guarded so build doesn't crash)
+# ---------------------------------------------------------------------
+# Kaleido (Plotly static image engine) – optional
+kaleido_datas, kaleido_bins, kaleido_hidden = try_collect_all('kaleido')
+
+# photutils
+photutils_datas = try_collect_data('photutils')
+photutils_bins  = try_collect_binaries('photutils')
+photutils_mods  = try_collect_submodules('photutils')
+
+# astropy, astroalign, skimage, cv2, sep_pjw, imagecodecs
+astropy_mods     = try_collect_submodules('astropy')
+astroalign_mods  = try_collect_submodules('astroalign')
+skimage_mods     = try_collect_submodules('skimage')
+cv2_mods         = try_collect_submodules('cv2')
+cv2_bins         = try_collect_binaries('cv2')
+sep_pjw_mods     = try_collect_submodules('sep_pjw')          # some builds alias sep to sep_pjw
+sep_pjw_bins     = try_collect_binaries('sep_pjw')
+imagecodecs_mods = try_collect_submodules('imagecodecs')
+imagecodecs_bins = try_collect_binaries('imagecodecs')
+
+# Dask data (templates, etc.) – optional
+dask_datas       = try_collect_data('dask', include_py_files=False)
+
+# sklearn array_api compat – optional (present on some scikit-learn builds)
+sklearn_api_mods = try_collect_submodules('sklearn.externals.array_api_compat.numpy')
+
+# certifi (SSL root certs)
+certifi_datas    = try_collect_data('certifi')
+
+# astroquery bits (CITATION + simbad data) – optional
+astroquery_datas = try_collect_data('astroquery', includes=['CITATION', 'simbad/data/*'])
+
+# Optional: lightkurve style (kept from SASv2)
+lightkurve_datas = try_collect_data('lightkurve', includes=['data/lightkurve.mplstyle'])
+
+# ---------------------------------------------------------------------
+# Your own packages (force-include submodules for any lazy/dynamic imports)
+# ---------------------------------------------------------------------
+pro_mods       = try_collect_submodules('pro')
+ops_mods       = try_collect_submodules('ops')
+legacy_mods    = try_collect_submodules('legacy')
+imageops_mods  = try_collect_submodules('imageops')
+
+# ---------------------------------------------------------------------
+# Hidden imports & binaries
+# ---------------------------------------------------------------------
+hiddenimports = [
+    'lz4.block',
+    'zstandard',
+    'base64',
+    'ast',
+    'cv2',
+    'astropy.io.fits',
+    'astropy.wcs',
+    'skimage.transform',
+    'skimage.feature',
+    'scipy.spatial',
+
+    'sklearn._cyutility',
+    'sklearn.utils._cython_blas',
+    'sklearn.utils._fast_dict',
+    'sklearn.utils._isfinite',
+    'sklearn.utils._openmp_helpers',
+    'scipy._cyutility',
+    'scipy._lib.messagestream',
+    'scipy.sparse._csparsetools',
+
+    'astroalign',
+    'sep',
+    'sep_pjw',
+    'sep_pjw._version',
+    '_version',
+
+    *photutils_mods,
+    *astropy_mods,
+    *astroalign_mods,
+    *skimage_mods,
+    *cv2_mods,
+    *sep_pjw_mods,
+    *imagecodecs_mods,
+    *kaleido_hidden,
+    *sklearn_api_mods,
+
+    *pro_mods,
+    *ops_mods,
+    *legacy_mods,
+    *imageops_mods,
+]
+
+binaries = []
+binaries += photutils_bins
+binaries += cv2_bins
+binaries += sep_pjw_bins
+binaries += kaleido_bins
+binaries += imagecodecs_bins
+
+# ---------------------------------------------------------------------
+# Data files (icons, CSV, FITS, folders)
+# ---------------------------------------------------------------------
+_ICON_BASENAMES = [
+    'astrosuitepro.png',
+    'astrosuitepro.ico',
+    'green.png', 'neutral.png', 'whitebalance.png', 'morpho.png', 'clahe.png',
+    'starnet.png', 'staradd.png',
+    'LExtract.png', 'LInsert.png',
+    'slot0.png','slot1.png','slot2.png','slot3.png','slot4.png','slot5.png','slot6.png','slot7.png','slot8.png','slot9.png',
+    'rgbcombo.png','rgbextract.png','copyslot.png',
+    'graxpert.png','cropicon.png','openfile.png','abeicon.png','selectivecolor.png',
+    'undoicon.png','redoicon.png','blaster.png','hdr.png','script.png',
+    'invert.png','fliphorizontal.png','flipvertical.png','Astro_Spikes.png',
+    'rotateclockwise.png','rotatecounterclockwise.png',
+    'maskcreate.png','maskapply.png','maskremove.png',
+    'pixelmath.png','histogram.png','mosaic.png','rescale.png',
+    'staralign.png','platesolve.png','psf.png','supernova.png', 'rotate180.png',
+    'starregistration.png','stacking.png','pedestal.png',
+    'starspike.png','aperture.png','jwstpupil.png','multiscale_decomp.png',
+    'pen.png','livestacking.png','HRDiagram.png','convo.png',
+    'spcc.png','SASP_data.fits','exoicon.png','gridicon.png', 'rgbalign.png',
+    'dse.png','astrobin_filters.csv','isophote.png', 'background.png','background2.png',
+    'statstretch.png','starstretch.png','curves.png','disk.png',
+    'uhs.png','blink.png','ppp.png','nbtorgb.png','freqsep.png', 'viewbundle.png','functionbundle.png',
+    'contsub.png','halo.png','cosmic.png','cosmicsat.png',
+    'imagecombine.png','wrench_icon.png','eye.png','nuke.png',
+    'hubble.png','collage.png','annotated.png','colorwheel.png',
+    'font.png','cvs.png','spinner.gif','wims.png',
+    'linearfit.png','debayer.png',
+    'celestial_catalog.csv',
+    'aberration.png',
+    # ambiguous name + explicit extensions
+    'wimi_icon_256x256', 'wimi_icon_256x256.png', 'wimi_icon_256x256.ico',
+]
+
+datas = []
+
+# imgs/ folder as a whole → keep under 'imgs' in dist
+imgs_pair = maybe_add_file('imgs', dest='imgs')
+if imgs_pair:
+    datas.append(imgs_pair)
+
+# Route individual assets:
+# - Images/icons      → images/
+# - SASP_data.fits    → data/
+# - All *.csv         → data/catalogs/
+# - Anything else     → root (.)
+for name in _ICON_BASENAMES:
+    clean_name = name.strip()
+    low = clean_name.lower()
+
+    if low.endswith(('.png', '.ico', '.gif', '.icns', '.svg')):
+        pair = maybe_add_pkg_file(os.path.join('images', clean_name), dest='images')
+
+    elif low == 'sasp_data.fits':
+        pair = maybe_add_pkg_file(os.path.join('data', 'SASP_data.fits'), dest='data')
+
+    elif low.endswith('.csv'):
+        pair = maybe_add_pkg_file(os.path.join('data', 'catalogs', clean_name),
+                                  dest='data/catalogs')
+
+    else:
+        pair = maybe_add_file(clean_name, dest='.')
+
+    if pair:
+        datas.append(pair)
+
+        
+license_pair = maybe_add_file('license.txt', dest='.')
+if license_pair:
+    datas.append(license_pair)
+
+pyproject_pair = maybe_add_file('pyproject.toml', dest='.')
+if pyproject_pair:
+    datas.append(pyproject_pair)
+
+# stand-alone helpers that you previously carried as data
+for rel in ['xisf.py', 'numba_utils.py', 'wimi.py', 'wims.py']:
+    pair = maybe_add_file(rel, dest='.')
+    if pair:
+        datas.append(pair)
+
+# package data (3rd party)
+datas += dask_datas
+datas += photutils_datas
+datas += kaleido_datas
+datas += certifi_datas
+datas += astroquery_datas
+datas += try_collect_data('astropy', includes=['CITATION'])
+datas += lightkurve_datas
+
+# If a top-level _version.py exists in site-packages, include it (back-compat)
+import importlib.util
+try:
+    spec = importlib.util.find_spec('_version')
+    if spec and spec.origin and os.path.exists(spec.origin):
+        datas.append((spec.origin, '.'))
 except Exception:
     pass
 
-# Touch pyplot once to ensure everything is importable
-from matplotlib import pyplot as plt
-plt.figure(); plt.plot([0,1],[0,1]); plt.close()
+# ---------------------------------------------------------------------
+# Runtime hooks — build the list BEFORE Analysis, include only files
+# ---------------------------------------------------------------------
+RUNTIME_HOOKS = []
+for fname in ('minimize_console.py', 'disable_zfpy.py', 'fix_importlib_metadata.py', 'pyi_rthook_astroquery.py'):
+    p = PROJECT_ROOT / fname
+    if p.is_file():
+        RUNTIME_HOOKS.append(str(p))
 
-print("Matplotlib cache pre-warmed ✅")
-PY
+# ---------------------------------------------------------------------
+# Analysis
+# ---------------------------------------------------------------------
+a = Analysis(
+    ['setiastrosuitepro.py'],
+    pathex=[str(PROJECT_ROOT)],
+    binaries=binaries,
+    datas=datas,
+    hiddenimports=hiddenimports,
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=RUNTIME_HOOKS,  # important: pass here; don't mutate later
+    excludes=['torch', 'torchvision', 'PyQt5', 'PySide6', 'shiboken6', 'zfpy', 'numcodecs.zfpy'],
+    noarchive=False,
+    optimize=0,
+)
 
-# If you keep a helper to bundle/patch MPL at build-time, call it here:
-# e.g. scripts/matplotlib.py (optional)
-if [ -f "scripts/matplotlib.py" ]; then
-  echo "🧩 Running project Matplotlib helper…"
-  python3 scripts/matplotlib.py || echo "ℹ️ matplotlib.py helper returned non-zero; continuing."
-fi
+pyz = PYZ(a.pure)
 
-# Clean previous builds
-echo "🧹 Cleaning previous builds..."
-rm -rf build/ dist/
-rm -f "${DMG_NAME}.dmg"
+# EXE: turn off PyInstaller signing
+exe = EXE(
+    pyz,
+    a.scripts,
+    a.zipfiles,
+    [],
+    exclude_binaries=True,
+    name='SetiAstroSuitePro',
+    debug=False,
+    console=True,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=False,
+    upx_exclude=[],
+    runtime_tmpdir=None,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
 
-# Build the app
-echo "🔨 Building application..."
-pyinstaller --clean --noconfirm setiastrosuitepro_mac.spec
+    # ↓↓↓ IMPORTANT: disable built-in signing here
+    codesign_identity=None,
+    entitlements_file=None,
+)
 
-# Verify the app was built
-if [ ! -d "dist/${APP_NAME}" ]; then  # -d for directory, not -f for file
-    echo "❌ Build failed - app bundle not found!"
-    exit 1
-fi
+# COLLECT: disable UPX here too (you currently have upx=True)
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    strip=False,
+    upx=False,        # keep False
+    upx_exclude=[],
+    name='SetiAstroSuitePro',
+)
 
-echo "✅ Build successful!"
+# Add BUNDLE step to create .app with icon
+app = BUNDLE(
+    coll,
+    name="SetiAstroSuitePro.app",
+    icon=str(PROJECT_ROOT / "astrosuitepro.icns") if (PROJECT_ROOT / "astrosuitepro.icns").exists() else None,
+    bundle_identifier="com.seti.astrosuitepro",
+    info_plist={
+        # --- Required / good-to-have bundle keys ---
+        "CFBundleName": "Seti Astro Suite Pro",
+        "CFBundleDisplayName": "Seti Astro Suite Pro",
+        "CFBundleShortVersionString": "5.1",   # marketing version
+        "CFBundleVersion": "5.1",              # build version
+        "NSPrincipalClass": "NSApplication",
+        "LSMinimumSystemVersion": "12.0",
 
-# (Optional) sanity: ensure mpl-data exists in bundle (PyInstaller usually includes it)
-# If you want to be extra safe, uncomment this block to copy mpl-data explicitly.
-#: <<'MPL_COPY'
-#echo "🔎 Ensuring mpl-data is present in app bundle…"
-#MPL_DATA=$(python3 -c "import matplotlib, sys; print(matplotlib.get_data_path())" 2>/dev/null || true)
-#if [ -n "$MPL_DATA" ] && [ -d "$MPL_DATA" ]; then
-#  APP_RESOURCES="dist/${APP_NAME}/Contents/Resources"
-#  mkdir -p "${APP_RESOURCES}/mpl-data"
-#  rsync -a --delete "${MPL_DATA}/" "${APP_RESOURCES}/mpl-data/"
-#  echo "📦 mpl-data copied into app Resources."
-#else
-#  echo "ℹ️ Could not resolve matplotlib data path; skipping explicit copy."
-#fi
-#MPL_COPY
+        # --- App behavior ---
+        "NSAppleScriptEnabled": False,
+        "LSBackgroundOnly": False,
+        "LSUIElement": False,
+        "NSHighResolutionCapable": True,
 
-# Create DMG staging directory
-STAGING_DIR="dmg_staging"
-rm -rf "${STAGING_DIR}"
-mkdir -p "${STAGING_DIR}"
+        # --- Location ---
+        "NSLocationWhenInUseUsageDescription": (
+            "Seti Astro Suite uses your location to compute local sidereal time and sky visibility."
+        ),
+        "NSLocationAlwaysAndWhenInUseUsageDescription": (
+            "Seti Astro Suite uses your location to compute local sidereal time and sky visibility."
+        ),
+        "NSLocationUsageDescription": (
+            "Seti Astro Suite uses your location to compute local sidereal time and sky visibility."
+        ),
 
-# Copy the app to staging
-echo "📦 Preparing DMG contents..."
-cp -R "dist/${APP_NAME}" "${STAGING_DIR}/"
+        # --- Other privacy you already had ---
+        "NSCameraUsageDescription": "This app may access the camera for astronomical imaging.",
+        "NSMicrophoneUsageDescription": "This app does not use the microphone.",
 
-# Create an alias to Applications folder
-ln -s /Applications "${STAGING_DIR}/Applications"
+        # --- Export/comms (helps with notarization) ---
+        "ITSAppUsesNonExemptEncryption": False,
 
-# Copy additional files if they exist
-[ -f "README.md" ] && cp "README.md" "${STAGING_DIR}/"
-[ -f "LICENSE" ]  && cp "LICENSE"  "${STAGING_DIR}/"
+        # --- Doc types (FITS etc.) ---
+        "CFBundleDocumentTypes": [
+            {
+                "CFBundleTypeName": "FITS Image",
+                "CFBundleTypeExtensions": ["fits", "fit", "fts"],
+                "CFBundleTypeRole": "Editor",
+                "CFBundleTypeIconFile": "astrosuitepro.icns",
+            }
+        ],
 
-# Create DMG using hdiutil
-echo "💿 Creating DMG..."
-hdiutil create -volname "${PROJECT_NAME}" \
-    -srcfolder "${STAGING_DIR}" \
-    -ov -format UDZO \
-    -imagekey zlib-level=9 \
-    "${DMG_NAME}.dmg"
-
-# Clean up staging
-rm -rf "${STAGING_DIR}"
-
-echo "✅ DMG created successfully: ${DMG_NAME}.dmg"
-
-# Show DMG info
-echo "📊 DMG Information:"
-ls -lh "${DMG_NAME}.dmg"
-hdiutil imageinfo "${DMG_NAME}.dmg" | grep -E "(Format|Size|Compressed|Checksum)"
-
-echo "🎉 Done! Your DMG is ready for distribution."
+        # --- Environment tweaks ---
+        "LSEnvironment": {
+            "PYTHONOPTIMIZE": "1"
+        },
+    },
+)
