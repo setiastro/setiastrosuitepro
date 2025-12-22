@@ -4346,7 +4346,7 @@ class AstroSuiteProMainWindow(
         dlg.show()
 
     def _open_whats_in_my_sky(self):
-        from wims import WhatsInMySkyDialog
+        from setiastro.saspro.wims import WhatsInMySkyDialog
         dlg = WhatsInMySkyDialog(
             parent=self,
             wims_path=wims_path,          # window icon
@@ -4358,7 +4358,7 @@ class AstroSuiteProMainWindow(
 
     def _open_wimi(self):
         # Lazy import to avoid loading lightkurve at startup (~12s)
-        from wimi import WIMIDialog
+        from setiastro.saspro.wimi import WIMIDialog
         dlg = WIMIDialog(
             parent=self,
             settings=getattr(self, "settings", None),
