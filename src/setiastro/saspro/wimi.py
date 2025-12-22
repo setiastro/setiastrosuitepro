@@ -40,10 +40,9 @@ import io
 import re
 from collections import defaultdict
 from scipy.spatial import Delaunay, KDTree
-from scipy.ndimage import gaussian_filter, laplace
-import scipy.ndimage as ndi
-import plotly.graph_objects as go
-from scipy.ndimage import zoom
+# from scipy.ndimage import gaussian_filter, laplace  <-- Removed unused
+# import scipy.ndimage as ndi                         <-- Removed unused
+# from scipy.ndimage import zoom                      <-- Removed unused (replaced by cv2.resize)
 import multiprocessing
 import matplotlib
 matplotlib.use("QtAgg") 
@@ -139,9 +138,9 @@ from astropy.utils.data import conf
 
 from scipy.interpolate import PchipInterpolator
 from scipy.interpolate import Rbf
-from scipy.ndimage import median_filter
-from scipy.ndimage import convolve
-from scipy.signal import fftconvolve
+# from scipy.ndimage import median_filter  <-- Removed unused
+# from scipy.ndimage import convolve       <-- Removed unused
+# from scipy.signal import fftconvolve     <-- Removed unused
 from scipy.interpolate import interp1d
 
 
@@ -3654,9 +3653,10 @@ class WIMIDialog(QDialog):
 
         # Ensure the image has 3 channels (RGB)
         if stretched_image.ndim == 2:
-            stretched_image = np.stack((stretched_image,) * 3, axis=-1)
+            # OPTIMIZATION: Use cv2.cvtColor instead of np.stack/repeat
+            stretched_image = cv2.cvtColor(stretched_image, cv2.COLOR_GRAY2RGB)
         elif stretched_image.shape[2] == 1:
-            stretched_image = np.repeat(stretched_image, 3, axis=2)
+            stretched_image = cv2.cvtColor(stretched_image, cv2.COLOR_GRAY2RGB)
 
 
 
@@ -4063,11 +4063,25 @@ class WIMIDialog(QDialog):
         # ─── 3) Normalize & downsample image ──────────────────────────
         img = self.image_data
         if img.ndim == 2:
-            img = np.stack([img]*3, axis=-1)
+            # OPTIMIZATION: Use cv2.cvtColor
+            img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
         img_norm = np.clip((img - img.min())/(np.ptp(img)+1e-8), 0, 1)
         full_h, full_w = img.shape[:2]
         scale = min(max_res/full_h, max_res/full_w, 1.0)
-        img_ds = np.stack([zoom(img_norm[..., i], scale, order=1) for i in range(3)], axis=-1)
+        
+        # OPTIMIZATION: Use cv2.resize instead of scipy.ndimage.zoom
+        # zoom(img, scale) equivalent to resize(img, None, fx=scale, fy=scale)
+        # cv2.resize expects (width, height)
+        if scale < 1.0:
+            new_w = int(full_w * scale)
+            new_h = int(full_h * scale)
+            img_ds = cv2.resize(img_norm, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+        else:
+            img_ds = img_norm
+            
+        # Ensure 3D dimensionality if it somehow got flattened (cv2.resize keeps channels usually)
+        if img_ds.ndim == 2:
+             img_ds = cv2.cvtColor(img_ds, cv2.COLOR_GRAY2RGB)
         h_ds, w_ds, _ = img_ds.shape
 
         # ─── 4) Build plane coordinates ───────────────────────────────
@@ -5079,10 +5093,10 @@ class WIMIDialog(QDialog):
         if img.dtype != np.uint8:
             img = np.clip(img, 0.0, 1.0)
             if img.ndim == 2:
-                img = np.stack([img] * 3, axis=-1)
+                img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
             img = (img * 255.0).astype(np.uint8)
         elif img.ndim == 2:
-            img = np.stack([img] * 3, axis=-1)
+            img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
 
         h, w = img.shape[:2]
         bytes_per_line = 3 * w

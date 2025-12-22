@@ -75,15 +75,28 @@ def _fit_poly_on_small(small: np.ndarray, points: np.ndarray, degree: int, patch
 
     if small.ndim == 3 and small.shape[2] == 3:
         bg_small = np.zeros_like(small, dtype=np.float32)
+        
+        # Batch collect samples: (num_samples, 3)
+        # We need N samples. z will be list of (3,) arrays
+        
+        # Pre-allocate Z: (N, 3)
+        Z = np.zeros((len(xs), 3), dtype=np.float32)
+        
+        for k, (x, y) in enumerate(zip(xs, ys)):
+            x0, x1 = max(0, x - half), min(W, x + half + 1)
+            y0, y1 = max(0, y - half), min(H, y + half + 1)
+            # Efficiently compute median for all channels in this patch
+            patch = small[y0:y1, x0:x1, :]
+            Z[k] = np.median(patch, axis=(0, 1))
+
+        # Solve once: A is (N, terms), Z is (N, 3) -> coeffs is (terms, 3)
+        coeffs_all, *_ = np.linalg.lstsq(A, Z, rcond=None)
+        
+        # Evaluate per channel
         for c in range(3):
-            z = []
-            for x, y in zip(xs, ys):
-                x0, x1 = max(0, x - half), min(W, x + half + 1)
-                y0, y1 = max(0, y - half), min(H, y + half + 1)
-                z.append(np.median(small[y0:y1, x0:x1, c]))
-            z = np.asarray(z, dtype=np.float32)
-            coeffs, *_ = np.linalg.lstsq(A, z, rcond=None)
-            bg_small[..., c] = evaluate_polynomial(H, W, coeffs.astype(np.float32), degree)
+            # coeffs_all[:, c] gives the terms for channel c
+            bg_small[..., c] = evaluate_polynomial(H, W, coeffs_all[:, c].astype(np.float32), degree)
+            
         return bg_small
     else:
         z = []

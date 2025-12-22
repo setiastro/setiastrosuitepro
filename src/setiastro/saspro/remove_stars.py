@@ -136,153 +136,221 @@ def _mtf_params_unlinked(img_rgb01: np.ndarray,
     Works on float32 data assumed in [0,1].
     Returns dict with arrays: {'s': (C,), 'm': (C,), 'h': (C,)}.
     """
+    """
+    Siril-style per-channel MTF parameter estimation, matching
+    find_unlinked_midtones_balance_default() / find_unlinked_midtones_balance().
+
+    Works on float32 data assumed in [0,1].
+    Returns dict with arrays: {'s': (C,), 'm': (C,), 'h': (C,)}.
+    """
     x = np.asarray(img_rgb01, dtype=np.float32)
-    # Force 3 channels internally (Siril expects 1 or 3; we always give it 3 here)
+    
+    # Analyze input shape to handle mono efficiently
     if x.ndim == 2:
-        x = np.stack([x] * 3, axis=-1)
+        # (H, W) -> treat as single channel
+        x_in = x[..., None] # Virtual 3D (H,W,1)
+        C_in = 1
     elif x.ndim == 3 and x.shape[2] == 1:
-        x = np.repeat(x, 3, axis=2)
-
-    C = x.shape[2]
-    s = np.zeros(C, dtype=np.float32)
-    m = np.zeros(C, dtype=np.float32)
-    h = np.zeros(C, dtype=np.float32)
-
-    med = np.zeros(C, dtype=np.float32)
-    mad = np.zeros(C, dtype=np.float32)
-    inverted_flags = np.zeros(C, dtype=bool)
-
-    # --- stats per channel (Siril: median / normValue, mad / normValue * MAD_NORM) ---
-    # Here normValue == 1.0 because we're already in [0,1]
-    for c in range(C):
-        ch = x[..., c].astype(np.float32, copy=False)
-        med_c = float(np.median(ch))
-        mad_raw = float(np.median(np.abs(ch - med_c)))
-        mad_c = mad_raw * _MAD_NORM
-        if mad_c == 0.0:
-            mad_c = 0.001
-
-        med[c] = med_c
-        mad[c] = mad_c
-        if med_c > 0.5:
-            inverted_flags[c] = True
-
-    inverted_channels = int(inverted_flags.sum())
-
-    # --- Main branch (non-inverted dominant) ---
-    if inverted_channels < C:
-        for c in range(C):
-            median = float(med[c])
-            mad_c = float(mad[c])
-
-            c0 = median + shadows_clipping * mad_c
-            if c0 < 0.0:
-                c0 = 0.0
-            # Siril: m2 = median - c0; midtones = MTF(m2, target_bg, 0,1)
-            m2 = median - c0
-            mid = float(_mtf_scalar(m2, targetbg, 0.0, 1.0))
-
-            s[c] = c0
-            m[c] = mid
-            h[c] = 1.0
-
-    # --- Inverted channel branch ---
+        x_in = x
+        C_in = 1
     else:
-        for c in range(C):
-            median = float(med[c])
-            mad_c = float(mad[c])
+        x_in = x
+        C_in = x.shape[2]
 
-            c1 = median - shadows_clipping * mad_c
-            if c1 > 1.0:
-                c1 = 1.0
-            m2 = c1 - median
-            mid = 1.0 - float(_mtf_scalar(m2, targetbg, 0.0, 1.0))
+    # Vectorized stats calculation on actual data only
+    med = np.median(x_in, axis=(0, 1)).astype(np.float32) # shape (C_in,)
+    
+    # MAD requires centered abs diff
+    diff = np.abs(x_in - med.reshape(1, 1, C_in))
+    mad_raw = np.median(diff, axis=(0, 1)).astype(np.float32) # shape (C_in,)
+    
+    mad = mad_raw * _MAD_NORM
+    mad[mad == 0] = 0.001
 
-            s[c] = 0.0
-            m[c] = mid
-            h[c] = c1
+    inverted_flags = (med > 0.5)
+    # If mono, we just check the one channel. If RGB, we check all.
+    # Logic below assumes we return 3-channel params s,m,h even for mono input (broadcasted).
+    
+    # To match original behavior which always returned 3-element arrays for s,m,h:
+    # We will compute s_in, m_in, h_in for the input channels, then broadcast to 3.
+    
+    s_in = np.zeros(C_in, dtype=np.float32)
+    m_in = np.zeros(C_in, dtype=np.float32)
+    h_in = np.zeros(C_in, dtype=np.float32)
+
+    # We iterate C_in times (1 or 3)
+    for c in range(C_in):
+        is_inv = inverted_flags[c]
+        md = med[c]
+        md_dev = mad[c]
+        
+        if not is_inv:
+            # Normal
+            c0 = max(md + shadows_clipping * md_dev, 0.0)
+            m2 = md - c0
+            
+            s_in[c] = c0
+            m_in[c] = float(_mtf_scalar(m2, targetbg, 0.0, 1.0))
+            h_in[c] = 1.0
+        else:
+            # Inverted
+            c1 = min(md - shadows_clipping * md_dev, 1.0)
+            m2 = c1 - md
+            
+            s_in[c] = 0.0
+            m_in[c] = 1.0 - float(_mtf_scalar(m2, targetbg, 0.0, 1.0))
+            h_in[c] = c1
+
+    # Broadcast to 3 channels if needed
+    if C_in == 1:
+        s = np.repeat(s_in, 3)
+        m = np.repeat(m_in, 3)
+        h = np.repeat(h_in, 3)
+    else:
+        s = s_in
+        m = m_in
+        h = h_in
 
     return {"s": s, "m": m, "h": h}
 
 
-def _apply_mtf_unlinked_rgb(img_rgb01: np.ndarray, p: dict) -> np.ndarray:
     """
     Apply per-channel MTF exactly. p from _mtf_params_unlinked.
     """
     x = np.asarray(img_rgb01, dtype=np.float32)
+    h_dim, w_dim = x.shape[:2]
+    
+    # Output is always 3-channel to satisfy pipeline expectations
+    out = np.empty((h_dim, w_dim, 3), dtype=np.float32)
+    
     if x.ndim == 2:
-        x = np.stack([x]*3, axis=-1)
+        # 1 source channel -> 3 output channels (using per-channel p)
+        for c in range(3):
+            out[..., c] = _mtf_apply(x, float(p["s"][c]), float(p["m"][c]), float(p["h"][c]))
     elif x.ndim == 3 and x.shape[2] == 1:
-        x = np.repeat(x, 3, axis=2)
-
-    out = np.empty_like(x, dtype=np.float32)
-    for c in range(x.shape[2]):
-        out[..., c] = _mtf_apply(x[..., c], float(p["s"][c]), float(p["m"][c]), float(p["h"][c]))
+        # 1 source channel (3D) -> 3 output channels
+        src = x[..., 0]
+        for c in range(3):
+            out[..., c] = _mtf_apply(src, float(p["s"][c]), float(p["m"][c]), float(p["h"][c]))
+    else:
+        # 3 source channels -> 3 output channels
+        # (Assuming input matches p dimension, i.e., 3)
+        for c in range(3):
+            out[..., c] = _mtf_apply(x[..., c], float(p["s"][c]), float(p["m"][c]), float(p["h"][c]))
+            
     return np.clip(out, 0.0, 1.0)
 
 
-def _invert_mtf_unlinked_rgb(img_rgb01: np.ndarray, p: dict) -> np.ndarray:
     """
     Exact analytic inverse per channel (uses same s/m/h arrays).
     """
     y = np.asarray(img_rgb01, dtype=np.float32)
-    if y.ndim == 2:
-        y = np.stack([y]*3, axis=-1)
-    elif y.ndim == 3 and y.shape[2] == 1:
-        y = np.repeat(y, 3, axis=2)
+    h_dim, w_dim = y.shape[:2]
+    
+    # Output follows input structure logic: return 3-channel
+    out = np.empty((h_dim, w_dim, 3), dtype=np.float32)
 
-    out = np.empty_like(y, dtype=np.float32)
-    for c in range(y.shape[2]):
-        out[..., c] = _mtf_inverse(y[..., c], float(p["s"][c]), float(p["m"][c]), float(p["h"][c]))
+    if y.ndim == 2:
+        for c in range(3):
+            out[..., c] = _mtf_inverse(y, float(p["s"][c]), float(p["m"][c]), float(p["h"][c]))
+    elif y.ndim == 3 and y.shape[2] == 1:
+        src = y[..., 0]
+        for c in range(3):
+            out[..., c] = _mtf_inverse(src, float(p["s"][c]), float(p["m"][c]), float(p["h"][c]))
+    else:
+        for c in range(3):
+            out[..., c] = _mtf_inverse(y[..., c], float(p["s"][c]), float(p["m"][c]), float(p["h"][c]))
+            
     return np.clip(out, 0.0, 1.0)
 
-def _stat_stretch_rgb(img: np.ndarray,
-                      lo_pct: float = 0.25,
-                      hi_pct: float = 99.75) -> tuple[np.ndarray, dict]:
     """
     Make sure img is RGB float32 in [0,1], stretch each channel to [0,1]
     using percentiles. Returns (stretched_img, params) where params can be
     fed to _stat_unstretch_rgb() to invert exactly.
     """
-    was_single = (img.ndim == 2) or (img.ndim == 3 and img.shape[2] == 1)
-    if was_single:
-        img = np.stack([img] * 3, axis=-1)
-
     x = img.astype(np.float32, copy=False)
-    out = np.empty_like(x, dtype=np.float32)
+    was_single = (x.ndim == 2) or (x.ndim == 3 and x.shape[2] == 1)
+    
+    # Determine dims
+    h_dim, w_dim = x.shape[:2]
+    out = np.empty((h_dim, w_dim, 3), dtype=np.float32)
     lo_vals, hi_vals = [], []
-
-    for c in range(3):
-        ch = x[..., c]
-        lo = float(np.percentile(ch, lo_pct))
-        hi = float(np.percentile(ch, hi_pct))
+    
+    # If mono, we compute stats once but apply them conceptually to 3 channels (params replicated)
+    # OR we just compute stats once and return replicated params.
+    
+    if was_single:
+        # Use single source for stats
+        if x.ndim == 2:
+             src = x
+        else:
+             src = x[..., 0]
+             
+        lo = float(np.percentile(src, lo_pct))
+        hi = float(np.percentile(src, hi_pct))
         if not np.isfinite(lo): lo = 0.0
         if not np.isfinite(hi): hi = 1.0
-        if hi - lo < 1e-6:
-            hi = lo + 1e-6
-        lo_vals.append(lo); hi_vals.append(hi)
-        out[..., c] = (ch - lo) / (hi - lo)
+        if hi - lo < 1e-6: hi = lo + 1e-6
+        
+        # Fill all 3 channels
+        val = (src - lo) / (hi - lo)
+        for c in range(3):
+            out[..., c] = val
+            lo_vals.append(lo)
+            hi_vals.append(hi)
+            
+    else:
+        # RGB input
+        for c in range(3):
+            ch = x[..., c]
+            lo = float(np.percentile(ch, lo_pct))
+            hi = float(np.percentile(ch, hi_pct))
+            if not np.isfinite(lo): lo = 0.0
+            if not np.isfinite(hi): hi = 1.0
+            if hi - lo < 1e-6: hi = lo + 1e-6
+            
+            lo_vals.append(lo)
+            hi_vals.append(hi)
+            out[..., c] = (ch - lo) / (hi - lo)
 
     out = np.clip(out, 0.0, 1.0)
     params = {"lo": lo_vals, "hi": hi_vals, "was_single": was_single}
     return out, params
 
 
-def _stat_unstretch_rgb(img: np.ndarray, params: dict) -> np.ndarray:
     """
     Inverse of _stat_stretch_rgb. Expects img RGB float32 [0,1].
     """
     lo = np.asarray(params["lo"], dtype=np.float32)
     hi = np.asarray(params["hi"], dtype=np.float32)
+    
+    # Just work on input directly; if it matches params length (3), good.
     out = img.astype(np.float32, copy=True)
-    for c in range(3):
-        out[..., c] = out[..., c] * (hi[c] - lo[c]) + lo[c]
+    if out.ndim == 2:
+        # Should not typically happen if we maintain RGB pipeline, but safety:
+        # We can't apply 3 diff lo/hi to 1 channel unambiguously. 
+        # Assume channel 0 params.
+        out = out * (hi[0] - lo[0]) + lo[0]
+    else:
+        # 3D
+        range_c = min(3, out.shape[2])
+        for c in range(range_c):
+            out[..., c] = out[..., c] * (hi[c] - lo[c]) + lo[c]
+            
     out = np.clip(out, 0.0, 1.0)
+    
+    # Handle the mono-restoration flag
     if params.get("was_single", False):
-        out = out.mean(axis=2, keepdims=False)  # back to single channel if needed
-        # StarNet needs RGB during processing; we keep RGB after removal for consistency.
-        # If you want to return mono to the doc when the source was mono, do it at the very end.
-        out = np.stack([out] * 3, axis=-1)
+        if out.ndim == 3 and out.shape[2] >= 3:
+            # Average to mono
+            mono = out.mean(axis=2, keepdims=False)
+            # Re-stack primarily because the StarNet pipeline assumes RGB passing
+            # This 'repeat' is unfortunately needed if the pipeline demands 3-channel return 
+            # BUT we can check if the caller actually needs it.
+            # The original code did: out = np.stack([out] * 3, axis=-1)
+            # We will keep this behavior for safety but it's at the very end.
+            out = np.stack([mono] * 3, axis=-1)
+            
     return out
 
 def _mtf_scalar(x: float, m: float, lo: float = 0.0, hi: float = 1.0) -> float:
@@ -370,17 +438,21 @@ def starnet_starless_from_array(arr_rgb01: np.ndarray, settings, *, tmp_prefix="
     in_path  = os.path.join(workdir, f"{tmp_prefix}_in.tif")
     out_path = os.path.join(workdir, f"{tmp_prefix}_out.tif")
 
-    # --- Normalize input shape and safe values ---
-    x = arr
-    if x.ndim == 2:
-        x = np.stack([x] * 3, axis=-1)
-    elif x.ndim == 3 and x.shape[2] == 1:
-        x = np.repeat(x, 3, axis=2)
-    x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
+    # --- Normalize input shape (virtual) and safe values ---
+    x_in = arr
+    if x_in.ndim == 3 and x_in.shape[2] == 1:
+        # Treat (H,W,1) as (H,W) to avoid complications, or keep it.
+        # But we DO NOT expand to 3 channels here.
+        pass
+    
+    # We work with x_in directly; _mtf_* functions now handle mono/2d.
+    x_in = np.nan_to_num(x_in, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
 
     # Preserve original numeric scale if users pass >1.0
-    xmax = float(np.max(x)) if x.size else 1.0
+    xmax = float(np.max(x_in)) if x_in.size else 1.0
     scale_factor = xmax if xmax > 1.01 else 1.0
+    xin = (x_in / scale_factor) if scale_factor > 1.0 else x_in
+    xin = np.clip(xin, 0.0, 1.0)
     xin = (x / scale_factor) if scale_factor > 1.0 else x
     xin = np.clip(xin, 0.0, 1.0)
 
@@ -662,18 +734,19 @@ def _run_starnet(main, doc):
             )
     except Exception:
         pass    
-    # --- Ensure RGB float32 in safe range
+    # --- Ensure RGB float32 in safe range (without expanding yet)
+    # Starnet needs RGB eventually, but we can compute stats/normalization on mono
     src = np.asarray(doc.image)
-    if src.ndim == 2:
-        processing_image = np.stack([src]*3, axis=-1)
-    elif src.ndim == 3 and src.shape[2] == 1:
-        processing_image = np.repeat(src, 3, axis=2)
+    if src.ndim == 3 and src.shape[2] == 1:
+        # standardizing shape is cheap
+        processing_image = src[..., 0]
     else:
         processing_image = src
+        
     processing_image = np.nan_to_num(processing_image.astype(np.float32, copy=False),
                                      nan=0.0, posinf=0.0, neginf=0.0)
 
-    # --- Scale normalization if >1.0 (same reason as before: 16-bit export safety)
+    # --- Scale normalization if >1.0
     scale_factor = float(np.max(processing_image))
     if scale_factor > 1.0:
         processing_norm = processing_image / scale_factor
@@ -1027,11 +1100,10 @@ def _run_darkstar(main, doc):
         pass
 
     # --- Build processing image (RGB float32, normalized) ---
+    # DarkStar needs RGB, but we can delay expansion until save
     src = np.asarray(doc.image)
-    if src.ndim == 2:
-        processing_image = np.stack([src] * 3, axis=-1)
-    elif src.ndim == 3 and src.shape[2] == 1:
-        processing_image = np.repeat(src, 3, axis=2)
+    if src.ndim == 3 and src.shape[2] == 1:
+        processing_image = src[..., 0]
     else:
         processing_image = src
 
@@ -1088,8 +1160,20 @@ def _run_darkstar(main, doc):
     # --- Save pre-stretched image as 32-bit float TIFF for DarkStar ---
     in_path = os.path.join(input_dir, "imagetoremovestars.tif")
     try:
+        # Check if we need to expand on-the-fly for DarkStar (it expects RGB input)
+        # If img_for_darkstar is mono, save_image might save mono.
+        # "is_mono=False" flag to save_image hints we want RGB.
+        # If the array is 2D, save_image might still save mono unless we feed it 3D.
+        # For safety with DarkStar, we create the 3D view now if needed.
+        
+        to_save = img_for_darkstar
+        if to_save.ndim == 2:
+            to_save = np.stack([to_save]*3, axis=-1)
+        elif to_save.ndim == 3 and to_save.shape[2] == 1:
+            to_save = np.repeat(to_save, 3, axis=2)
+            
         save_image(
-            img_for_darkstar,
+            to_save,
             in_path,
             original_format="tif",
             bit_depth="32-bit floating point",

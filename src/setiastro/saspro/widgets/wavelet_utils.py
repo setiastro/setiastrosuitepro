@@ -39,26 +39,44 @@ def conv_sep_reflect(image2d: np.ndarray, k1d: np.ndarray, axis: int) -> np.ndar
     """
     if _HAVE_SCIPY:
         if axis == 1:  # x
+            # Use 'reflect' mode to match original behavior
             return _nd_convolve(image2d, k1d.reshape(1, -1), mode="reflect")
         else:          # y
             return _nd_convolve(image2d, k1d.reshape(-1, 1), mode="reflect")
     else:
-        # Fallback numpy implementation
-        image2d = np.asarray(image2d, dtype=np.float32)
-        k1d = np.asarray(k1d, dtype=np.float32)
-        r = len(k1d) // 2
-        if axis == 1:  # horizontal
-            pad = np.pad(image2d, ((0, 0), (r, r)), mode="reflect")
-            out = np.empty_like(image2d, dtype=np.float32)
-            for i in range(image2d.shape[0]):
-                out[i] = np.convolve(pad[i], k1d, mode="valid")
-            return out
-        else:          # vertical
-            pad = np.pad(image2d, ((r, r), (0, 0)), mode="reflect")
-            out = np.empty_like(image2d, dtype=np.float32)
-            for j in range(image2d.shape[1]):
-                out[:, j] = np.convolve(pad[:, j], k1d, mode="valid")
-            return out
+        # Optimization: Use OpenCV if available, falling back to NumPy only if strictly necessary.
+        # cv2.sepFilter2D can tackle 1D separable/separable passes easily, 
+        # but here we need a specific generic 1D convolution.
+        # cv2.filter2D is generic 2D but fast.
+        try:
+            import cv2
+            # cv2.filter2D(src, ddepth, kernel, anchor, delta, borderType)
+            # kernel needs to be created correctly.
+            if axis == 1: # horizontal
+                k = k1d.reshape(1, -1)
+            else: # vertical
+                k = k1d.reshape(-1, 1)
+            
+            # Using ddepth=-1 to keep input depth (float32)
+            # borderType=cv2.BORDER_REFLECT to match mode="reflect"
+            return cv2.filter2D(image2d, -1, k, borderType=cv2.BORDER_REFLECT)
+        except ImportError:
+            # Fallback numpy implementation (slow!)
+            image2d = np.asarray(image2d, dtype=np.float32)
+            k1d = np.asarray(k1d, dtype=np.float32)
+            r = len(k1d) // 2
+            if axis == 1:  # horizontal
+                pad = np.pad(image2d, ((0, 0), (r, r)), mode="reflect")
+                out = np.empty_like(image2d, dtype=np.float32)
+                for i in range(image2d.shape[0]):
+                    out[i] = np.convolve(pad[i], k1d, mode="valid")
+                return out
+            else:          # vertical
+                pad = np.pad(image2d, ((r, r), (0, 0)), mode="reflect")
+                out = np.empty_like(image2d, dtype=np.float32)
+                for j in range(image2d.shape[1]):
+                    out[:, j] = np.convolve(pad[:, j], k1d, mode="valid")
+                return out
 
 
 def gauss1d(sigma: float) -> np.ndarray:
@@ -95,10 +113,24 @@ def gauss_blur(image2d: np.ndarray, sigma: float) -> np.ndarray:
     """
     if _HAVE_SCIPY and _nd_gauss is not None:
         return _nd_gauss(image2d, sigma=sigma, mode="reflect")
-    else:
-        k = gauss1d(float(sigma))
-        tmp = conv_sep_reflect(image2d, k, axis=1)
-        return conv_sep_reflect(tmp, k, axis=0)
+    
+    # Try OpenCV GaussianBlur first -> much faster
+    try:
+        import cv2
+        # kernel size: sigma*3 or auto (0)
+        # cv2 uses (ksize_w, ksize_h), ksize must be odd.
+        # To strictly match sigma, simple let cv2 compute it with ksize=(0,0)
+        # BUT 'reflect' border is not default (BORDER_DEFAULT is Reflect_101).
+        # mode="reflect" in scipy is usually dcb a | abcd | dc
+        # cv2.BORDER_REFLECT is fedcba | abcdef | gfedcb
+        # They are compatible enough for this application.
+        return cv2.GaussianBlur(image2d, (0, 0), sigmaX=sigma, sigmaY=sigma, borderType=cv2.BORDER_REFLECT)
+    except ImportError:
+        pass
+        
+    k = gauss1d(float(sigma))
+    tmp = conv_sep_reflect(image2d, k, axis=1)
+    return conv_sep_reflect(tmp, k, axis=0)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

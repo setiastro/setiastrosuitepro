@@ -180,8 +180,10 @@ def autostretch(
         lut = _compute_lut_from_sample(lum, target_median, sigma, maxv)
 
         out = np.empty_like(u, dtype=np.float32)
-        for c in range(min(3, C)):
-            out[..., c] = lut[u[..., c]]
+        # Vectorized LUT application: apply to all RGB channels at once
+        # lut is 1D array of float32; u[..., :3] selects RGB indices
+        out[..., :3] = lut[u[..., :3]]       
+        
         if C > 3:  # pass-through non-RGB channels
             out[..., 3:] = u[..., 3:] / float(maxv)
         return out

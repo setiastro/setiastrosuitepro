@@ -87,7 +87,8 @@ from setiastro.saspro.legacy.numba_utils import (
     bulk_cosmetic_correction_numba,
     drizzle_deposit_numba_naive,
     drizzle_deposit_color_naive,
-    bulk_cosmetic_correction_bayer
+    bulk_cosmetic_correction_bayer,
+    gradient_descent_to_dim_spot_numba
 )
 from setiastro.saspro.legacy.image_manager import load_image, save_image, get_valid_header
 from setiastro.saspro.star_alignment import StarRegistrationWorker, StarRegistrationThread, IDENTITY_2x3
@@ -704,12 +705,33 @@ def normalize_images(stack: np.ndarray,
         print(f"Normalizing {i}")
         f = stack[i].astype(np.float32, copy=False)
         L = _L(f)
+        
+        # Optimization: Don't allocate f0 and L0. Use math properties.
+        # fmin = min(L)
+        # f0 = f - fmin
+        # L0 = L(f0) = L(f - fmin) = L(f) - fmin (since L is linear sum of channels)
+        # median(L0) = median(L - fmin) = median(L) - fmin
+        
+        # Calculate stats on original L
+        # Note: nanmin/nanmedian are used to be safe against bad pixels
         fmin = float(np.nanmin(L))
-        f0 = f - fmin
-        L0 = _L(f0)
-        fmed = float(np.nanmedian(L0))
+        lmed_original = float(np.nanmedian(L))
+        
+        # The median of the zero-shifted image
+        fmed = lmed_original - fmin
+        
         gain = (target_median / max(fmed, eps)) if target_median > 0 else 1.0
-        out[i] = f0 * gain
+        
+        # Combine subtraction and multiplication into one operation for 'out'
+        # out = (f - fmin) * gain
+        # This avoids creating the large temporary array 'f0'
+        
+        # We can implement this as: out[i] = f * gain - (fmin * gain)
+        # But we must be careful with precision. Typically fine.
+        # Or just: np.subtract(f, fmin, out=out[i]); np.multiply(out[i], gain, out=out[i])
+        
+        # Using direct assignment is cleaner and numpy optimizes it well enough
+        out[i] = (f - fmin) * gain
 
     return np.ascontiguousarray(out, dtype=np.float32)
 
@@ -864,6 +886,11 @@ def _to_Luma(img: np.ndarray) -> np.ndarray:
     if img.ndim == 2:
         return img.astype(np.float32, copy=False)
     # HWC RGB
+    if img.shape[2] == 3:
+        try:
+            return cv2.cvtColor(img, cv2.COLOR_RGB2GRAY).astype(np.float32, copy=False)
+        except Exception:
+            pass # fallback
     r, g, b = img[..., 0].astype(np.float32), img[..., 1].astype(np.float32), img[..., 2].astype(np.float32)
     return 0.2989 * r + 0.5870 * g + 0.1140 * b
 
@@ -898,27 +925,8 @@ def _exclude_bright_regions(gray_small: np.ndarray, exclusion_fraction: float = 
 
 
 def _gradient_descent_to_dim_spot(gray_small: np.ndarray, x: int, y: int, patch: int) -> tuple[int, int]:
-    H, W = gray_small.shape[:2]
-    half = patch // 2
-    def patch_median(px, py):
-        x0, x1 = max(0, px - half), min(W, px + half + 1)
-        y0, y1 = max(0, py - half), min(H, py + half + 1)
-        return float(np.median(gray_small[y0:y1, x0:x1]))
-    cx, cy = int(np.clip(x, 0, W-1)), int(np.clip(y, 0, H-1))
-    for _ in range(60):
-        cur = patch_median(cx, cy)
-        best = (cx, cy); best_val = cur
-        for nx in (cx-1, cx, cx+1):
-            for ny in (cy-1, cy, cy+1):
-                if nx == cx and ny == cy: continue
-                if nx < 0 or ny < 0 or nx >= W or ny >= H: continue
-                val = patch_median(nx, ny)
-                if val < best_val:
-                    best_val = val; best = (nx, ny)
-        if best == (cx, cy):
-            break
-        cx, cy = best
-    return cx, cy
+    # Delegate to Numba optimized version
+    return gradient_descent_to_dim_spot_numba(gray_small, int(x), int(y), int(patch))
 
 def _generate_sample_points_small(
     img_small: np.ndarray,

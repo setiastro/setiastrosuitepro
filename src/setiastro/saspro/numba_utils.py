@@ -584,39 +584,55 @@ def kappa_sigma_clip_weighted_3d(stack, weights, kappa=2.5, iterations=3):
                 pixel_weights = weights[:]
             else:
                 pixel_weights = weights[:, i, j].copy()
-            # Initialize tracking of indices
-            current_idx = np.empty(num_frames, dtype=np.int64)
-            for f in range(num_frames):
-                current_idx[f] = f
-            current_vals = pixel_values
-            current_w = pixel_weights
-            current_indices = current_idx
+                
+            # Use boolean mask instead of tracking indices
+            valid_mask = pixel_values != 0
+            
             med = 0.0
             for _ in range(iterations):
-                if current_vals.size == 0:
+                # Count valid pixels
+                count = 0
+                for k in range(num_frames):
+                    if valid_mask[k]:
+                        count += 1
+                
+                if count == 0:
                     break
+                    
+                # Extract valid values for stats (this allocation is unavoidable but smaller/temp)
+                # In numba this usually lowers to efficient code if we avoid 'np.empty' overhead inside loops
+                # but pure mask operations are often faster.
+                # However, for median/std we need the compacted array.
+                current_vals = pixel_values[valid_mask]
+                
                 med = np.median(current_vals)
                 std = np.std(current_vals)
                 lower_bound = med - kappa * std
                 upper_bound = med + kappa * std
-                valid = (current_vals != 0) & (current_vals >= lower_bound) & (current_vals <= upper_bound)
-                current_vals = current_vals[valid]
-                current_w = current_w[valid]
-                current_indices = current_indices[valid]
-            # Mark rejected: frames not in current_indices are rejected.
+                
+                # Update mask: must be valid AND within bounds
+                for k in range(num_frames):
+                    if valid_mask[k]:
+                        val = pixel_values[k]
+                        if val < lower_bound or val > upper_bound:
+                            valid_mask[k] = False
+
+            # Fill rejection mask
             for f in range(num_frames):
-                # Check if f is in current_indices
-                found = False
-                for k in range(current_indices.size):
-                    if current_indices[k] == f:
-                        found = True
-                        break
-                if not found:
-                    rej_mask[f, i, j] = True
-                else:
-                    rej_mask[f, i, j] = False
-            if current_w.size > 0 and current_w.sum() > 0:
-                clipped[i, j] = np.sum(current_vals * current_w) / current_w.sum()
+                rej_mask[f, i, j] = not valid_mask[f]
+                
+            # Compute weighted mean of final valid pixels
+            wsum = 0.0
+            vsum = 0.0
+            for k in range(num_frames):
+                if valid_mask[k]:
+                    w = pixel_weights[k]
+                    v = pixel_values[k]
+                    wsum += w
+                    vsum += v * w
+            
+            if wsum > 0:
+                clipped[i, j] = vsum / wsum
             else:
                 clipped[i, j] = med
     return clipped, rej_mask
@@ -641,36 +657,46 @@ def kappa_sigma_clip_weighted_4d(stack, weights, kappa=2.5, iterations=3):
                     pixel_weights = weights[:]
                 else:
                     pixel_weights = weights[:, i, j, c].copy()
-                current_idx = np.empty(num_frames, dtype=np.int64)
-                for f in range(num_frames):
-                    current_idx[f] = f
-                current_vals = pixel_values
-                current_w = pixel_weights
-                current_indices = current_idx
+                
+                valid_mask = pixel_values != 0
+                
                 med = 0.0
                 for _ in range(iterations):
-                    if current_vals.size == 0:
+                    count = 0
+                    for k in range(num_frames):
+                        if valid_mask[k]:
+                            count += 1
+                    
+                    if count == 0:
                         break
+                    
+                    current_vals = pixel_values[valid_mask]
+                    
                     med = np.median(current_vals)
                     std = np.std(current_vals)
                     lower_bound = med - kappa * std
                     upper_bound = med + kappa * std
-                    valid = (current_vals != 0) & (current_vals >= lower_bound) & (current_vals <= upper_bound)
-                    current_vals = current_vals[valid]
-                    current_w = current_w[valid]
-                    current_indices = current_indices[valid]
+                    
+                    for k in range(num_frames):
+                        if valid_mask[k]:
+                            val = pixel_values[k]
+                            if val < lower_bound or val > upper_bound:
+                                valid_mask[k] = False
+
                 for f in range(num_frames):
-                    found = False
-                    for k in range(current_indices.size):
-                        if current_indices[k] == f:
-                            found = True
-                            break
-                    if not found:
-                        rej_mask[f, i, j, c] = True
-                    else:
-                        rej_mask[f, i, j, c] = False
-                if current_w.size > 0 and current_w.sum() > 0:
-                    clipped[i, j, c] = np.sum(current_vals * current_w) / current_w.sum()
+                    rej_mask[f, i, j, c] = not valid_mask[f]
+                
+                wsum = 0.0
+                vsum = 0.0
+                for k in range(num_frames):
+                    if valid_mask[k]:
+                        w = pixel_weights[k]
+                        v = pixel_values[k]
+                        wsum += w
+                        vsum += v * w
+
+                if wsum > 0:
+                    clipped[i, j, c] = vsum / wsum
                 else:
                     clipped[i, j, c] = med
     return clipped, rej_mask
@@ -3042,3 +3068,78 @@ def fast_star_detect(image,
         return np.empty((0,2), dtype=np.float32)
     else:
         return np.array(star_positions, dtype=np.float32)
+
+
+@njit(fastmath=True, cache=True)
+def gradient_descent_to_dim_spot_numba(gray_small, start_x, start_y, patch_size):
+    """
+    Numba implementation of _gradient_descent_to_dim_spot.
+    Walks to the local minimum (median-of-patch) around (start_x, start_y).
+    gray_small: 2D float32 array
+    """
+    H, W = gray_small.shape
+    half = patch_size // 2
+    
+    cx = int(min(max(start_x, 0), W - 1))
+    cy = int(min(max(start_y, 0), H - 1))
+
+    # Helper to compute patch median manually or efficiently
+    # Numba supports np.median on arrays, but slicing inside a loop can be costly.
+    # However, for small patches (e.g. 15x15), it should be okay.
+    
+    for _ in range(60):
+        # Current value
+        x0 = max(0, cx - half)
+        x1 = min(W, cx + half + 1)
+        y0 = max(0, cy - half)
+        y1 = min(H, cy + half + 1)
+        sub = gray_small[y0:y1, x0:x1].flatten()
+        if sub.size == 0:
+            cur_val = 1e9 # Should not happen
+        else:
+            cur_val = np.median(sub)
+
+        best_x, best_y = cx, cy
+        best_val = cur_val
+        
+        # 3x3 search
+        changed = False
+        
+        # Unroll for strict 3x3 neighborhood
+        for dy in range(-1, 2):
+            for dx in range(-1, 2):
+                if dx == 0 and dy == 0:
+                    continue
+                
+                nx = cx + dx
+                ny = cy + dy
+                
+                if nx < 0 or ny < 0 or nx >= W or ny >= H:
+                    continue
+                
+                # Compute median for neighbor
+                nx0 = max(0, nx - half)
+                nx1 = min(W, nx + half + 1)
+                ny0 = max(0, ny - half)
+                ny1 = min(H, ny + half + 1)
+                
+                # In Numba, median on a slice creates a copy.
+                # For small patches this is acceptable given the huge speedup vs Python interpreter overhead.
+                n_sub = gray_small[ny0:ny1, nx0:nx1].flatten()
+                if n_sub.size == 0:
+                    val = 1e9
+                else:
+                    val = np.median(n_sub)
+                
+                if val < best_val:
+                    best_val = val
+                    best_x = nx
+                    best_y = ny
+                    changed = True
+        
+        if not changed:
+            break
+            
+        cx, cy = best_x, best_y
+        
+    return cx, cy

@@ -220,7 +220,10 @@ class NBtoRGBStars(QWidget):
             if img.ndim == 3: img = img[...,0]
             setattr(self, which.lower(), self._as_float01(img))
         else:  # OSC
-            if img.ndim == 2: img = np.stack([img]*3, axis=-1)
+            # Optimization: Store mono OSC as-is (2D) to save memory
+            # The combine step will handle expansion.
+            if img.ndim == 3 and img.shape[2] == 1:
+                img = img[..., 0]
             setattr(self, which.lower(), self._as_float01(img))
 
         setattr(self, f"_file_{which.lower()}", path)
@@ -309,7 +312,14 @@ class NBtoRGBStars(QWidget):
             raise ValueError(f"Channel sizes differ: {set(shapes)}")
 
         if self.osc is not None:
-            r = self.osc[...,0]; g = self.osc[...,1]; b = self.osc[...,2]
+            if self.osc.ndim == 2:
+                r = self.osc; g = self.osc; b = self.osc
+            elif self.osc.ndim == 3 and self.osc.shape[2] >= 3:
+                r = self.osc[...,0]; g = self.osc[...,1]; b = self.osc[...,2]
+            else:
+                 # fallback for unexpected shapes (e.g. 3D but 1-channel)
+                 r = self.osc.squeeze(); g = r; b = r
+
             sii = self.sii if self.sii is not None else r
             ha  = self.ha  if self.ha  is not None else r
             oiii= self.oiii if self.oiii is not None else b
