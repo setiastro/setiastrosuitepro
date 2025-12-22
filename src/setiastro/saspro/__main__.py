@@ -38,6 +38,8 @@ _splash_initialized = False
 from setiastro.saspro.versioning import get_app_version
 _EARLY_VERSION = get_app_version("setiastrosuitepro")
 
+VERSION = _EARLY_VERSION
+
 def _init_splash():
     """Initialize the splash screen. Safe to call multiple times."""
     global _splash, _app, _splash_initialized
@@ -640,7 +642,6 @@ except Exception:
     BUILD_TIMESTAMP = "dev"
 
 
-VERSION = _EARLY_VERSION
 
 _update_splash(QCoreApplication.translate("Splash", "Loading resources..."), 50)
 
