@@ -30,17 +30,23 @@ AVAILABLE_LANGUAGES: Dict[str, str] = {
 
 def get_translations_dir() -> str:
     """Get the path to the translations directory."""
-    # When running from source or installed package
+    # Source / installed package location
     module_dir = os.path.dirname(os.path.abspath(__file__))
-    translations_dir = os.path.join(module_dir, "translations")
-    
-    # Fallback for PyInstaller frozen builds
-    if hasattr(os.sys, '_MEIPASS'):
-        frozen_dir = os.path.join(os.sys._MEIPASS, "translations")
-        if os.path.exists(frozen_dir):
-            return frozen_dir
-    
-    return translations_dir
+    pkg_dir = os.path.join(module_dir, "translations")
+
+    # PyInstaller frozen builds
+    if hasattr(os.sys, "_MEIPASS"):
+        # New bundle layout (preferred)
+        frozen_internal = os.path.join(os.sys._MEIPASS, "_internal", "translations")
+        if os.path.exists(frozen_internal):
+            return frozen_internal
+
+        # Legacy bundle layout fallback
+        frozen_legacy = os.path.join(os.sys._MEIPASS, "translations")
+        if os.path.exists(frozen_legacy):
+            return frozen_legacy
+
+    return pkg_dir
 
 
 def get_available_languages() -> Dict[str, str]:
