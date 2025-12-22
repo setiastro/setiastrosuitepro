@@ -42,28 +42,5 @@ def _read_pyproject_version(start: Path) -> str | None:
 
 
 def get_app_version(dist_name: str = "setiastrosuitepro") -> str:
-    """
-    Single source of truth for SASpro version.
 
-    Order:
-      1) pyproject.toml (developer/source checkouts)
-      2) installed distribution metadata (pip-installed wheel/sdist)
-      3) safe fallback
-    """
-    # 1) Source tree pyproject.toml (walk from this file upward)
-    here = Path(__file__).resolve()
-    v_src = _read_pyproject_version(here.parent)
-    if v_src:
-        return v_src
-
-    # 2) Installed package metadata
-    try:
-        from importlib.metadata import version as _dist_version
-        v = _dist_version(dist_name)
-        if v and v != "0.1.0":
-            return v
-    except Exception:
-        pass
-
-    # 3) Frozen / unknown: fallback
-    return "0.0.0"
+    return "1.6.1"
