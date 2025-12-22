@@ -46,26 +46,32 @@ def get_app_version(dist_name: str = "setiastrosuitepro") -> str:
     Single source of truth for SASpro version.
 
     Order:
-      1) installed distribution metadata (best for packaged installs)
+      0) build_info.py (best for PyInstaller frozen builds)
+      1) installed distribution metadata (best for pip installs)
       2) pyproject.toml (best for running from source checkout)
       3) safe fallback
     """
-    # 1) Installed package metadata (when it matches)
+    # 0) build_info (PyInstaller-friendly)
+    try:
+        from setiastro.saspro._generated.build_info import APP_VERSION  # type: ignore
+        if isinstance(APP_VERSION, str) and APP_VERSION.strip() and APP_VERSION.strip() != "0.0.0":
+            return APP_VERSION.strip()
+    except Exception:
+        pass
+
+    # 1) Installed package metadata
     try:
         from importlib.metadata import version as _dist_version
         v = _dist_version(dist_name)
-        # If you want to *avoid* accidentally picking up a stale installed 0.1.0,
-        # you can reject that known-bad default:
         if v and v != "0.1.0":
             return v
     except Exception:
         pass
 
-    # 2) Source tree pyproject.toml (walk from this file upward)
+    # 2) Source tree pyproject.toml
     here = Path(__file__).resolve()
     v2 = _read_pyproject_version(here.parent)
     if v2:
         return v2
 
-    # 3) Frozen / unknown: fallback
     return "0.0.0"
