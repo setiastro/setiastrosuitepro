@@ -196,37 +196,41 @@ class DockMixin:
 
     def _init_resource_monitor_overlay(self):
         """Initialize the QML System Resource Monitor as a floating overlay."""
-        from setiastro.saspro.widgets.resource_monitor import SystemMonitorWidget
-        
-        # Create as a child of the central widget or self to sit on top
-        # Using self (QMainWindow) allows it to float over everything including status bar if we want,
-        # but usually we want it over MDI area. Let's try self first for "floating" feel.
-        self.resource_monitor = SystemMonitorWidget(self)
-        self.resource_monitor.setObjectName("ResourceMonitorOverlay")
-        
-        # Make it a proper independent window to allow true transparency (translucent background)
-        # without black artifacts from parent composition.
-        # Fixed: Removed WindowStaysOnTopHint to allow it to be obscured by other apps (Alt-Tab support)
-        self.resource_monitor.setWindowFlags(
-            Qt.WindowType.Window |
-            Qt.WindowType.FramelessWindowHint |
-            Qt.WindowType.Tool
-        )
-        
-        # Sizing and Transparency
-        self.resource_monitor.setFixedSize(200, 60)
-        # self.resource_monitor.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True) # Optional: if we want click-through
-        
-        
-        # Initial placement (will be updated by resizeEvent)
-        self._update_monitor_position()
-        
-        # Defer visibility to MainWindow.showEvent to prevent appearing before main window
-        # visible = self.settings.value("ui/resource_monitor_visible", True, type=bool)
-        # if visible:
-        #    self.resource_monitor.show()
-        # else:
-        #    self.resource_monitor.hide()
+        try:
+            from setiastro.saspro.widgets.resource_monitor import SystemMonitorWidget
+            
+            # Create as a child of the central widget or self to sit on top
+            # Using self (QMainWindow) allows it to float over everything including status bar if we want,
+            # but usually we want it over MDI area. Let's try self first for "floating" feel.
+            self.resource_monitor = SystemMonitorWidget(self)
+            self.resource_monitor.setObjectName("ResourceMonitorOverlay")
+            
+            # Make it a proper independent window to allow true transparency (translucent background)
+            # without black artifacts from parent composition.
+            # Fixed: Removed WindowStaysOnTopHint to allow it to be obscured by other apps (Alt-Tab support)
+            self.resource_monitor.setWindowFlags(
+                Qt.WindowType.Window |
+                Qt.WindowType.FramelessWindowHint |
+                Qt.WindowType.Tool
+            )
+            
+            # Sizing and Transparency
+            self.resource_monitor.setFixedSize(200, 60)
+            # self.resource_monitor.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True) # Optional: if we want click-through
+            
+            
+            # Initial placement (will be updated by resizeEvent)
+            self._update_monitor_position()
+            
+            # Defer visibility to MainWindow.showEvent to prevent appearing before main window
+            # visible = self.settings.value("ui/resource_monitor_visible", True, type=bool)
+            # if visible:
+            #    self.resource_monitor.show()
+            # else:
+            #    self.resource_monitor.hide()
+        except Exception as e:
+            print(f"WARNING: Could not initialize System Monitor overlay: {e}")
+            self.resource_monitor = None
 
     def _toggle_resource_monitor(self, checked: bool):
         """Toggle floating monitor visibility."""
