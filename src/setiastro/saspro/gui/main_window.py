@@ -574,6 +574,19 @@ class AstroSuiteProMainWindow(
         except Exception:
             pass
 
+    def createPopupMenu(self):
+        """Override to add System Monitor to the toolbar/dock context menu."""
+        # Get the default popup menu from QMainWindow
+        menu = super().createPopupMenu()
+        if menu is None:
+            menu = QMenu(self)
+        
+        # Add System Monitor toggle if available
+        if hasattr(self, "act_toggle_monitor") and self.act_toggle_monitor is not None:
+            menu.addSeparator()
+            menu.addAction(self.act_toggle_monitor)
+        
+        return menu
 
     def _on_sw_activated(self, sw):
         if not sw:
