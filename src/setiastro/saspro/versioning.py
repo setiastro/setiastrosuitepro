@@ -53,7 +53,7 @@ def get_app_version(dist_name: str = "setiastrosuitepro") -> str:
     """
     # 0) build_info (PyInstaller-friendly)
     try:
-        from setiastro.saspro._generated.build_info import APP_VERSION  # type: ignore
+        from ._generated.build_info import APP_VERSION
         if isinstance(APP_VERSION, str) and APP_VERSION.strip() and APP_VERSION.strip() != "0.0.0":
             return APP_VERSION.strip()
     except Exception:
