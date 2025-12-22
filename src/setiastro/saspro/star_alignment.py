@@ -14,11 +14,16 @@ def _make_executor(max_workers: int):
     """
     Return an appropriate executor.
 
-    Uses ProcessPoolExecutor for true multi-core parallelism.
-    For frozen builds (PyInstaller), ensure multiprocessing.freeze_support()
-    is called in the main entry point.
+    - In frozen builds (PyInstaller), we MUST avoid ProcessPoolExecutor
+      because each worker spawns a full copy of the EXE (extra SASpro windows).
+    - In dev (non-frozen), you can still use processes if you want. For
+      now we keep it simple and always use threads – safer everywhere.
     """
-    return ProcessPoolExecutor(max_workers=max_workers)
+    # If you want to keep processes in dev, uncomment the if-block:
+    # if not _IS_FROZEN:
+    #     return ProcessPoolExecutor(max_workers=max_workers)
+    return ThreadPoolExecutor(max_workers=max_workers)
+
 
 import gc  # For explicit memory cleanup after heavy operations
 import os as _os
