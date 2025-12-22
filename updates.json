@@ -5,5 +5,5 @@
     "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.6.1/setiastrosuitepro_mac.tar.gz",
     "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.6.1/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.6.1 RELEASE of Version 1.6! This is a complete and major overhaul of SASpro. Complete with pip installation (pip install setiastrosuitepro), poetry supported for library registration, multilanguage support, icon movability, improved optimizations, and more!!"
+  "notes": "Seti Astro Suite Pro V1.6.1 RELEASE of Version 1.6! Uninstall V1.5 FIRST. This is a complete and major overhaul of SASpro. Complete with pip installation (pip install setiastrosuitepro), poetry supported for library registration, multilanguage support, icon movability, improved optimizations, and more!!"
 }
