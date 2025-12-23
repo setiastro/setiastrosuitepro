@@ -75,10 +75,10 @@ except ImportError:
     TRANSLATIONS_SW = {}
 
 try:
-    from ua_translations import TRANSLATIONS_UA
+    from uk_translations import TRANSLATIONS_UK
 except ImportError:
-    print("Warning: Could not import Russian translations (ua_translations.py)")
-    TRANSLATIONS_RU = {}
+    print("Warning: Could not import Russian translations (uk_translations.py)")
+    TRANSLATIONS_UK = {}
 
 try:
     from ru_translations import TRANSLATIONS_RU
@@ -226,7 +226,7 @@ def main():
         'ja': TRANSLATIONS_JA,
         'hi': TRANSLATIONS_HI,
         'sw': TRANSLATIONS_SW,
-        'ua': TRANSLATIONS_UA,
+        'uk': TRANSLATIONS_UK,
         'ru': TRANSLATIONS_RU,
         'ar': TRANSLATIONS_AR,
     }
