@@ -648,9 +648,16 @@ class ScriptManager(QObject):
         scripts_dir = get_scripts_dir()
         self.registry = []
 
-        for path in sorted(scripts_dir.glob("*.py")):
+        for path in sorted(scripts_dir.rglob("*.py")):
+            # skip __pycache__ and private/dunder scripts
+            parts = {p.lower() for p in path.parts}
+            if "__pycache__" in parts:
+                continue
+            if path.name.startswith(("_", ".")) or path.name == "__init__.py":
+                continue
+
             try:
-                entry = self._load_one_script(path)
+                entry = self._load_one_script(path, scripts_root=scripts_dir)  # updated signature below
                 if entry:
                     self.registry.append(entry)
             except Exception:
