@@ -8626,6 +8626,24 @@ class AstroSuiteProMainWindow(
                 # Ensure position
                 QTimer.singleShot(600, self._update_monitor_position)
 
+    def keyPressEvent(self, event):
+        """Handle key press events for secret shortcuts."""
+        if (event.modifiers() == (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier) and 
+            event.key() == Qt.Key.Key_M):
+            
+            # Secret minigame launcher
+            # __file__ is in .../saspro/gui/main_window.py
+            # We want to go up to .../saspro/
+            base_pkg = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            minigame_path = os.path.join(base_pkg, "widgets", "minigame", "index.html")
+            
+            if os.path.exists(minigame_path):
+                QDesktopServices.openUrl(QUrl.fromLocalFile(minigame_path))
+                event.accept()
+                return
+
+        super().keyPressEvent(event)
+
     def closeEvent(self, e):
 
         # Optimization: If restarting (e.g. language change), bypass confirmation and close immediately
