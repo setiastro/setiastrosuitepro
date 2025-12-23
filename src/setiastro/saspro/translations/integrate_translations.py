@@ -77,7 +77,7 @@ except ImportError:
 try:
     from uk_translations import TRANSLATIONS_UK
 except ImportError:
-    print("Warning: Could not import Russian translations (uk_translations.py)")
+    print("Warning: Could not import Ukrainian translations (uk_translations.py)")
     TRANSLATIONS_UK = {}
 
 try:
