@@ -1949,7 +1949,8 @@ class CustomGraphicsView(QGraphicsView):
                 self.parent.main_scene.addItem(rect_item)
             elif item[0] == 'line':
                 line = item[1]
-                color = item[2]
+                # Safely get color or default to green if missing
+                color = item[2] if len(item) > 2 else QColor(0, 255, 0)
                 line_item = QGraphicsLineItem(line)
                 line_item.setPen(QPen(color, 2))
                 self.parent.main_scene.addItem(line_item)
@@ -3989,7 +3990,11 @@ class WIMIDialog(QDialog):
                     elif field == "Long Type" and obj.get("long_type") != "N/A":
                         text = f"{obj['long_type']}"
                     elif field == "Redshift" and obj.get("redshift") != "N/A":
-                        text = f"Redshift: {float(obj['redshift']):.5f}"  # Limit redshift to 5 decimal places
+                        try:
+                            val_float = float(obj['redshift'])
+                            text = f"Redshift: {val_float:.5f}"
+                        except ValueError:
+                            text = f"Redshift: {obj['redshift']}"
                     elif field == "Comoving Distance" and obj.get("comoving_distance") != "N/A":
                         text = f"Distance: {obj['comoving_distance']} GLy"
                     else:
