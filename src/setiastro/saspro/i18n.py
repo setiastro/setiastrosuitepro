@@ -27,6 +27,7 @@ AVAILABLE_LANGUAGES: Dict[str, str] = {
     "ja": "日本語",
     "hi": "हिन्दी",
     "sw": "Kiswahili",
+    "ua": "Українська",
     "ru": "Русский",
     "ar": "العربية",
 }
