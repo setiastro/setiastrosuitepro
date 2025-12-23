@@ -435,9 +435,7 @@ def _init_splash():
     # Load translation BEFORE any other widgets are created
     try:
         from setiastro.saspro.i18n import load_language, get_translations_dir
-        print("i18n translations dir:", get_translations_dir())
         ok = load_language(app=_app)
-        print("i18n load ok:", ok)
     except Exception as e:
         print("i18n load failed:", repr(e))
 
