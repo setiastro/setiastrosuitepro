@@ -6421,6 +6421,9 @@ class StackingSuiteDialog(QDialog):
         )        
         main_layout.addWidget(self.clear_master_dark_selection_btn)
 
+        self.dark_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.dark_tree.customContextMenuRequested.connect(self.dark_tree_context_menu)
+
         return tab
     
     def _tree_for_type(self, t: str):
@@ -6652,6 +6655,23 @@ class StackingSuiteDialog(QDialog):
     
         return tab
 
+    def dark_tree_context_menu(self, pos):
+        item = self.dark_tree.itemAt(pos)
+        if not item:
+            return
+
+        # ✅ same selection behavior
+        if not item.isSelected():
+            if not (QApplication.keyboardModifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier)):
+                self.dark_tree.clearSelection()
+            item.setSelected(True)
+
+        menu = QMenu(self.dark_tree)
+        set_session_action = menu.addAction(self.tr("Set Session Tag..."))
+
+        action = menu.exec(self.dark_tree.viewport().mapToGlobal(pos))
+        if action == set_session_action:
+            self.prompt_set_session(item, "DARK")
 
 
     def flat_tree_context_menu(self, pos):
@@ -6947,26 +6967,23 @@ class StackingSuiteDialog(QDialog):
         return name or "Default"
 
     def _is_leaf_item(self, it: QTreeWidgetItem) -> bool:
-        return bool(it) and it.childCount() == 0 and it.parent() and it.parent().parent()
+        if not it or it.childCount() != 0:
+            return False
+        fp = it.data(0, Qt.ItemDataRole.UserRole)
+        return isinstance(fp, str) and bool(fp.strip())
 
     def _iter_leaf_descendants(self, it: QTreeWidgetItem):
-        """Yield all leaf grandchildren under a filter row or exposure row."""
         if not it:
             return
-        # filter row (top-level): children are exposure rows
-        if it.parent() is None:
-            for j in range(it.childCount()):
-                exp = it.child(j)
-                for k in range(exp.childCount()):
-                    leaf = exp.child(k)
-                    if self._is_leaf_item(leaf):
-                        yield leaf
-        # exposure row: children are leaves
-        elif it.parent() and it.parent().parent() is None and it.childCount() > 0:
-            for k in range(it.childCount()):
-                leaf = it.child(k)
-                if self._is_leaf_item(leaf):
-                    yield leaf
+        stack = [it]
+        while stack:
+            cur = stack.pop()
+            if self._is_leaf_item(cur):
+                yield cur
+                continue
+            for i in range(cur.childCount()):
+                stack.append(cur.child(i))
+
 
     def _collect_target_leaves(self, tree: QTreeWidget, clicked_item: QTreeWidgetItem | None = None) -> list[QTreeWidgetItem]:
         """
@@ -7082,40 +7099,57 @@ class StackingSuiteDialog(QDialog):
         return kw
 
     def prompt_set_session(self, item, frame_type):
-        text, ok = QInputDialog.getText(self, self.tr("Set Session Tag"), self.tr("Enter session name:"))
+        text, ok = QInputDialog.getText(
+            self,
+            self.tr("Set Session Tag"),
+            self.tr("Enter session name:")
+        )
         if not (ok and (text or "").strip()):
             return
         session_name = text.strip()
 
-        is_flat = (frame_type or "").upper() == "FLAT"
-        tree = self.flat_tree if is_flat else self.light_tree
-        target_dict = self.flat_files if is_flat else self.light_files
+        ft = (frame_type or "").upper()
+        is_flat = (ft == "FLAT")
+        is_light = (ft == "LIGHT")
+        is_dark = (ft == "DARK")
+
+        if is_flat:
+            tree = self.flat_tree
+            target_dict = self.flat_files
+        elif is_light:
+            tree = self.light_tree
+            target_dict = self.light_files
+        elif is_dark:
+            tree = self.dark_tree
+            target_dict = self.dark_files
+        else:
+            return
 
         if not hasattr(self, "session_tags") or self.session_tags is None:
             self.session_tags = {}
 
         # --- helper: identify a "leaf" row in your tree (file row) ---
+        # Robust across FLAT/DARK (often 2-level) and LIGHT (often 3-level):
+        # leaf == no children AND has a filepath stored in UserRole
         def _is_leaf(it):
-            return bool(it) and it.childCount() == 0 and it.parent() and it.parent().parent()
+            if not it or it.childCount() != 0:
+                return False
+            fp = it.data(0, Qt.ItemDataRole.UserRole)
+            return isinstance(fp, str) and bool(fp.strip())
 
+        # Depth-agnostic: yield all descendant leaves under any node
         def _iter_leaf_descendants(parent_item):
-            """Yield all leaf file rows under a filter row or exposure row."""
+            """Yield all leaf file rows under any parent row (any depth)."""
             if not parent_item:
                 return
-            # top-level filter row
-            if parent_item.parent() is None:
-                for j in range(parent_item.childCount()):
-                    exp = parent_item.child(j)
-                    for k in range(exp.childCount()):
-                        leaf = exp.child(k)
-                        if _is_leaf(leaf):
-                            yield leaf
-            # exposure row
-            elif parent_item.parent() and parent_item.parent().parent() is None and parent_item.childCount() > 0:
-                for k in range(parent_item.childCount()):
-                    leaf = parent_item.child(k)
-                    if _is_leaf(leaf):
-                        yield leaf
+            stack = [parent_item]
+            while stack:
+                cur = stack.pop()
+                if _is_leaf(cur):
+                    yield cur
+                    continue
+                for j in range(cur.childCount()):
+                    stack.append(cur.child(j))
 
         def _session_from_leaf(leaf):
             # Prefer cached value (we’ll set it during ingest/retag)
@@ -7145,8 +7179,46 @@ class StackingSuiteDialog(QDialog):
         def _rekey_session_for_path(group_key, fpath, old_session, new_session):
             """
             Move fpath from (group_key, old_session) to (group_key, new_session).
-            Includes a fallback search if old_session is stale.
+
+            Supports two possible dict shapes:
+            A) {(group_key, session): [paths]}   (session-aware)
+            B) {group_key: [paths]}             (legacy, no sessions)
+
+            If legacy shape is detected, we upgrade it to session-aware using 'Default'.
             """
+            nonlocal target_dict
+
+            # --- detect legacy shape (string keys) and upgrade once ---
+            # If ANY key is not a tuple, treat as legacy.
+            try:
+                keys = list(target_dict.keys())
+            except Exception:
+                keys = []
+
+            legacy = False
+            for k in keys[:10]:  # sample is enough
+                if not (isinstance(k, tuple) and len(k) >= 2):
+                    legacy = True
+                    break
+
+            if legacy:
+                upgraded = {}
+                for k, lst in list(target_dict.items()):
+                    gk = str(k)
+                    sess = "Default"
+                    upgraded[(gk, sess)] = list(lst or [])
+                target_dict.clear()
+                target_dict.update(upgraded)
+
+                # Also update the backing attribute so later code sees the new shape
+                # (important for DARKS)
+                if is_dark:
+                    self.dark_files = target_dict
+                elif is_flat:
+                    self.flat_files = target_dict
+                elif is_light:
+                    self.light_files = target_dict
+
             old_ck = (group_key, old_session)
             new_ck = (group_key, new_session)
 
@@ -7159,20 +7231,28 @@ class StackingSuiteDialog(QDialog):
 
             # fallback: find actual composite key containing this path for this group_key
             if not removed:
-                found = None
-                for (gk, sess), lst in list(target_dict.items()):
-                    if gk == group_key and fpath in lst:
-                        found = (gk, sess)
+                found_key = None
+                for key, lst in list(target_dict.items()):
+                    if isinstance(key, tuple) and len(key) >= 2:
+                        gk, sess = key[0], key[1]
+                    else:
+                        # shouldn't happen after upgrade, but keep it safe
+                        gk, sess = str(key), "Default"
+
+                    if gk == group_key and fpath in (lst or []):
+                        found_key = key
                         break
-                if found:
-                    target_dict[found] = [p for p in target_dict[found] if p != fpath]
-                    if not target_dict[found]:
-                        del target_dict[found]
+
+                if found_key is not None:
+                    target_dict[found_key] = [p for p in target_dict[found_key] if p != fpath]
+                    if not target_dict[found_key]:
+                        del target_dict[found_key]
 
             # add to new key (avoid dupes)
             target_dict.setdefault(new_ck, [])
             if fpath not in target_dict[new_ck]:
                 target_dict[new_ck].append(fpath)
+
 
         # --- Build the set of leaf rows to retag ---
         selected = list(tree.selectedItems() or [])
@@ -7222,13 +7302,19 @@ class StackingSuiteDialog(QDialog):
             if not fpath:
                 continue
 
-            # group_key MUST match your ingest keys: f"{filter} - {exposure_label}"
-            exposure_item = leaf.parent()
-            filter_item = exposure_item.parent() if exposure_item else None
-            if not (exposure_item and filter_item):
-                continue
+            # --- derive group_key robustly for LIGHT (3-level) and FLAT/DARK (2-level) ---
+            parent = leaf.parent()
+            grand = parent.parent() if parent else None
 
-            group_key = f"{filter_item.text(0)} - {exposure_item.text(0)}"
+            if parent is None:
+                continue
+            elif grand is None:
+                # 2-level tree (likely FLATS or DARKS): parent is the group key row
+                group_key = parent.text(0)
+            else:
+                # 3-level tree (likely LIGHTS): grand=filter row, parent=exposure row
+                group_key = f"{grand.text(0)} - {parent.text(0)}"
+
             old_session = _session_from_leaf(leaf)
 
             if old_session != session_name:
@@ -7239,7 +7325,7 @@ class StackingSuiteDialog(QDialog):
             changed += 1
 
         # ✅ Only LIGHT needs reassignment of best master files (session affects flat matching)
-        if not is_flat:
+        if is_light:
             try:
                 self.assign_best_master_files(fill_only=True)
             except Exception:
@@ -7247,7 +7333,6 @@ class StackingSuiteDialog(QDialog):
 
         tree.viewport().update()
         self.update_status(self.tr(f"🟢 Assigned session '{session_name}' to {changed} file(s)."))
-
 
     def _quad_coverage_add(self, cov: np.ndarray, quad: np.ndarray):
         """
@@ -17817,12 +17902,7 @@ class StackingSuiteDialog(QDialog):
         # --- reusable C-order tile buffers (avoid copies before GPU) ---
         def _mk_buf():
             buf = np.empty((N, chunk_h, chunk_w, channels), dtype=np.float32, order='C')
-            if use_gpu:
-                # We'll pin tensors inside _torch_reduce_tile; nothing to do here.
-                try:
-                    import torch  # noqa: F401
-                except Exception:
-                    pass
+
             return buf
 
         buf0 = _mk_buf()
