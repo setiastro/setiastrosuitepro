@@ -3,10 +3,15 @@
 ### Author: Franklin Marek
 #### Website: [www.setiastro.com](http://www.setiastro.com)
 
-### Other big contributors:
-- [Fabio Tempera](https://github.com/Ft2801)
-- [Joaquin Rodriguez](https://github.com/jrhuerta)
-
+### Other contributors:
+- 🥇 [Fabio Tempera](https://github.com/Ft2801)
+  - Complete code refactoring of `setiastrosuitepro.py` (20,000+ lines)
+  - Addition of AstroSpikes tool and 10+ language translations
+  - Implementation of UI elements, startup window, caching methods, lazy imports, utils functions, and other code optimizations across the entire project
+- 🥈 [Joaquin Rodriguez](https://github.com/jrhuerta)
+  - Project migration to Poetry and other small optimizations
+- 🥉 [Orionyde]()
+  - Addition of hebrew language
 ---
 
 ## Overview
