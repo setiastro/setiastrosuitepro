@@ -372,6 +372,9 @@ class ImageSubWindow(QWidget):
         self._space_down = False
         self._readout_dragging = False
         self._last_readout = None
+
+        # Pinch gesture state (macOS trackpad)
+        self._gesture_zoom_start = None
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
         # Title (doc/view) sync
@@ -484,6 +487,7 @@ class ImageSubWindow(QWidget):
 
         self.scroll = QScrollArea(full_host)
         self.scroll.setWidgetResizable(False)
+        self.scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.label = QLabel(alignment=Qt.AlignmentFlag.AlignCenter)
         self.scroll.setWidget(self.label)
         self.scroll.viewport().setMouseTracking(True)
@@ -2526,6 +2530,41 @@ class ImageSubWindow(QWidget):
             p = p.parent()
         return p
 
+    def event(self, e):
+        """Override event() to handle native macOS gestures (pinch zoom)."""
+        # Handle native gestures (macOS trackpad pinch zoom)
+        if e.type() == QEvent.Type.NativeGesture:
+            gesture_type = e.gestureType()
+
+            if gesture_type == Qt.NativeGestureType.BeginNativeGesture:
+                # Start of pinch gesture - store initial scale
+                self._gesture_zoom_start = self.scale
+                e.accept()
+                return True
+
+            elif gesture_type == Qt.NativeGestureType.ZoomNativeGesture:
+                # Ongoing pinch zoom - value() is cumulative scale factor
+                # Typical values: -0.5 to +0.5 for moderate pinches
+                zoom_delta = e.value()
+
+                # Convert delta to zoom factor
+                # Use smaller multiplier for smoother feel (0.5x damping)
+                factor = 1.0 + (zoom_delta * 0.5)
+
+                # Apply incremental zoom
+                self._zoom_at_anchor(factor)
+                e.accept()
+                return True
+
+            elif gesture_type == Qt.NativeGestureType.EndNativeGesture:
+                # End of pinch gesture - cleanup
+                self._gesture_zoom_start = None
+                e.accept()
+                return True
+
+        # Let parent handle all other events
+        return super().event(e)
+
     def eventFilter(self, obj, ev):
         is_on_view = (obj is self.label) or (obj is self.scroll.viewport())
 
@@ -2557,7 +2596,30 @@ class ImageSubWindow(QWidget):
         # 1) Ctrl + wheel → zoom
         if ev.type() == QEvent.Type.Wheel:
             if ev.modifiers() & Qt.KeyboardModifier.ControlModifier:
-                factor = 1.25 if ev.angleDelta().y() > 0 else 1/1.25
+                # Try pixelDelta first (macOS trackpad gives smooth values)
+                dy = ev.pixelDelta().y()
+
+                if dy != 0:
+                    # Smooth trackpad scrolling: use smaller base factor
+                    # Scale proportionally to delta magnitude for natural feel
+                    # Typical trackpad deltas are 1-10 pixels per event
+                    abs_dy = abs(dy)
+                    if abs_dy <= 3:
+                        base_factor = 1.01  # Very gentle for tiny movements
+                    elif abs_dy <= 10:
+                        base_factor = 1.02  # Gentle for small movements
+                    else:
+                        base_factor = 1.03  # Moderate for larger gestures
+
+                    factor = base_factor if dy > 0 else 1/base_factor
+                else:
+                    # Traditional mouse wheel: use angleDelta with moderate factor
+                    dy = ev.angleDelta().y()
+                    if dy == 0:
+                        return True
+                    # Use 1.15 for mouse wheel (gentler than original 1.25)
+                    factor = 1.15 if dy > 0 else 1/1.15
+
                 self._zoom_at_anchor(factor)
                 return True
             return False
