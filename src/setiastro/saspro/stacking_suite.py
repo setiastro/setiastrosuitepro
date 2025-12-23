@@ -7088,21 +7088,33 @@ class StackingSuiteDialog(QDialog):
 
         # --- helper: identify a "leaf" row in your tree (file row) ---
         def _is_leaf(it):
-            return bool(it) and it.childCount() == 0 and it.parent() and it.parent().parent()
+            # A leaf is any row with no children that has a parent.
+            # Support both the 3-level tree used by lights (filter->exposure->file)
+            # and the 2-level tree used by flats (group->file).
+            return bool(it) and it.childCount() == 0 and it.parent() is not None
 
         def _iter_leaf_descendants(parent_item):
-            """Yield all leaf file rows under a filter row or exposure row."""
+            """Yield all leaf file rows under a filter/group or exposure row.
+
+            Handles both 2-level (group->file) and 3-level (filter->exposure->file)
+            tree structures.
+            """
             if not parent_item:
                 return
-            # top-level filter row
+
+            # top-level group (parent is None)
             if parent_item.parent() is None:
                 for j in range(parent_item.childCount()):
-                    exp = parent_item.child(j)
-                    for k in range(exp.childCount()):
-                        leaf = exp.child(k)
-                        if _is_leaf(leaf):
-                            yield leaf
-            # exposure row
+                    child = parent_item.child(j)
+                    if _is_leaf(child):
+                        yield child
+                    else:
+                        for k in range(child.childCount()):
+                            leaf = child.child(k)
+                            if _is_leaf(leaf):
+                                yield leaf
+
+            # exposure row (parent exists and is top-level)
             elif parent_item.parent() and parent_item.parent().parent() is None and parent_item.childCount() > 0:
                 for k in range(parent_item.childCount()):
                     leaf = parent_item.child(k)
@@ -7214,13 +7226,21 @@ class StackingSuiteDialog(QDialog):
             if not fpath:
                 continue
 
-            # group_key MUST match your ingest keys: f"{filter} - {exposure_label}"
+            # group_key MUST match your ingest keys. Support both:
+            # - Lights: filter -> exposure -> file (3-level)
+            # - Flats: group -> file (2-level)
             exposure_item = leaf.parent()
             filter_item = exposure_item.parent() if exposure_item else None
-            if not (exposure_item and filter_item):
+
+            if exposure_item is None:
                 continue
 
-            group_key = f"{filter_item.text(0)} - {exposure_item.text(0)}"
+            if filter_item is None:
+                # 2-level tree (flats): the parent is the group label already
+                group_key = exposure_item.text(0)
+            else:
+                # 3-level tree (lights): compose filter - exposure
+                group_key = f"{filter_item.text(0)} - {exposure_item.text(0)}"
             old_session = _session_from_leaf(leaf)
 
             if old_session != session_name:
