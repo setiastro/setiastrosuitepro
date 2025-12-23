@@ -7809,6 +7809,90 @@ class AstroSuiteProMainWindow(
         flags |= Qt.WindowType.WindowMaximizeButtonHint
         sw.setWindowFlags(flags)
 
+        # -------------------------------------------------------------------------
+        # Explicitly size the window to valid dimensions so it doesn't default
+        # to "maximized" or "full MDI area" if the previous window was large.
+        # We target ~60% of the viewport height, clamped to sane bounds.
+        # -------------------------------------------------------------------------
+        vp = self.mdi.viewport()
+        area = vp.rect() if vp else self.mdi.rect()
+        
+        # Determine aspect ratio
+        img_w = img_h = None
+        try:
+            img_w, img_h = self._infer_image_size(view)
+        except Exception:
+            pass
+
+        if not img_w or not img_h:
+            aspect = 1.0
+        else:
+            aspect = float(img_w) / float(img_h)
+
+        # Clamp aspect
+        aspect = max(0.3, min(aspect, 4.0))
+
+        target_h = int(area.height() * 0.6)
+        target_w = int(target_h * aspect)
+        
+        # Ensure it fits within the area (with some margin)
+        max_w = int(area.width() * 0.9)
+        max_h = int(area.height() * 0.9)
+        
+        if target_w > max_w:
+            target_w = max_w
+            # Recalculate height to preserve aspect, if possible
+            target_h = int(target_w / aspect)
+        
+        if target_h > max_h:
+            target_h = max_h
+
+        # Enforce minimums
+        target_w = max(200, target_w)
+        target_h = max(200, target_h)
+
+        sw.resize(target_w, target_h)
+        sw.showNormal()  # CRITICAL: clears any "maximized" flag from previous active window
+
+        # -------------------------------------------------------------------------
+        # Smart Cascade: Position relative to the *currently active* window
+        # (before we make the new one active).
+        # -------------------------------------------------------------------------
+        new_x, new_y = 0, 0
+        
+        # Get dominant/active window *before* we activate the new one
+        active = self.mdi.activeSubWindow()
+        if active and active.isVisible() and not (active.windowState() & Qt.WindowState.WindowMinimized):
+            # Cascade from the active window
+            geo = active.geometry()
+            new_x = geo.x() + 30
+            new_y = geo.y() + 30
+        else:
+            # Fallback: try to find the "last added" visible window to cascade from
+            # (useful if active is None but windows exist)
+            try:
+                subs = [s for s in self.mdi.subWindowList() if s.isVisible() and s is not sw]
+                if subs:
+                    # simplistic "last created" might be at end of list
+                    last = subs[-1]
+                    geo = last.geometry()
+                    new_x = geo.x() + 30
+                    new_y = geo.y() + 30
+            except Exception:
+                pass
+
+        # Bounds check: don't let it drift completely off-screen
+        # (allow valid title bar to be visible at least)
+        if (new_x + target_w > area.width() + 50) or (new_y + 50 > area.height()):
+            new_x = 0
+            new_y = 0
+        
+        # Clamp to 0 if negative for some reason
+        new_x = max(0, new_x)
+        new_y = max(0, new_y)
+
+        sw.move(new_x, new_y)
+
         # âŒ removed the "fill MDI viewport" block - we *don't* want full-monitor first window
 
         # Show / activate
