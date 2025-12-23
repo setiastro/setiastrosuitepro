@@ -10,7 +10,7 @@
   - Implementation of UI elements, startup window, caching methods, lazy imports, utils functions, and other code optimizations across the entire project
 - 🥈 [Joaquin Rodriguez](https://github.com/jrhuerta)
   - Project migration to Poetry and other small optimizations
-- 🥉 [Orionyde]()
+- 🥉 [Michael Lev](https://github.com/MichaelLevAstro)
   - Addition of hebrew language
 ---
 
