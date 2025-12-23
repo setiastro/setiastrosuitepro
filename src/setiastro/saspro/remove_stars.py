@@ -213,146 +213,6 @@ def _mtf_params_unlinked(img_rgb01: np.ndarray,
 
     return {"s": s, "m": m, "h": h}
 
-
-    """
-    Apply per-channel MTF exactly. p from _mtf_params_unlinked.
-    """
-    x = np.asarray(img_rgb01, dtype=np.float32)
-    h_dim, w_dim = x.shape[:2]
-    
-    # Output is always 3-channel to satisfy pipeline expectations
-    out = np.empty((h_dim, w_dim, 3), dtype=np.float32)
-    
-    if x.ndim == 2:
-        # 1 source channel -> 3 output channels (using per-channel p)
-        for c in range(3):
-            out[..., c] = _mtf_apply(x, float(p["s"][c]), float(p["m"][c]), float(p["h"][c]))
-    elif x.ndim == 3 and x.shape[2] == 1:
-        # 1 source channel (3D) -> 3 output channels
-        src = x[..., 0]
-        for c in range(3):
-            out[..., c] = _mtf_apply(src, float(p["s"][c]), float(p["m"][c]), float(p["h"][c]))
-    else:
-        # 3 source channels -> 3 output channels
-        # (Assuming input matches p dimension, i.e., 3)
-        for c in range(3):
-            out[..., c] = _mtf_apply(x[..., c], float(p["s"][c]), float(p["m"][c]), float(p["h"][c]))
-            
-    return np.clip(out, 0.0, 1.0)
-
-
-    """
-    Exact analytic inverse per channel (uses same s/m/h arrays).
-    """
-    y = np.asarray(img_rgb01, dtype=np.float32)
-    h_dim, w_dim = y.shape[:2]
-    
-    # Output follows input structure logic: return 3-channel
-    out = np.empty((h_dim, w_dim, 3), dtype=np.float32)
-
-    if y.ndim == 2:
-        for c in range(3):
-            out[..., c] = _mtf_inverse(y, float(p["s"][c]), float(p["m"][c]), float(p["h"][c]))
-    elif y.ndim == 3 and y.shape[2] == 1:
-        src = y[..., 0]
-        for c in range(3):
-            out[..., c] = _mtf_inverse(src, float(p["s"][c]), float(p["m"][c]), float(p["h"][c]))
-    else:
-        for c in range(3):
-            out[..., c] = _mtf_inverse(y[..., c], float(p["s"][c]), float(p["m"][c]), float(p["h"][c]))
-            
-    return np.clip(out, 0.0, 1.0)
-
-    """
-    Make sure img is RGB float32 in [0,1], stretch each channel to [0,1]
-    using percentiles. Returns (stretched_img, params) where params can be
-    fed to _stat_unstretch_rgb() to invert exactly.
-    """
-    x = img.astype(np.float32, copy=False)
-    was_single = (x.ndim == 2) or (x.ndim == 3 and x.shape[2] == 1)
-    
-    # Determine dims
-    h_dim, w_dim = x.shape[:2]
-    out = np.empty((h_dim, w_dim, 3), dtype=np.float32)
-    lo_vals, hi_vals = [], []
-    
-    # If mono, we compute stats once but apply them conceptually to 3 channels (params replicated)
-    # OR we just compute stats once and return replicated params.
-    
-    if was_single:
-        # Use single source for stats
-        if x.ndim == 2:
-             src = x
-        else:
-             src = x[..., 0]
-             
-        lo = float(np.percentile(src, lo_pct))
-        hi = float(np.percentile(src, hi_pct))
-        if not np.isfinite(lo): lo = 0.0
-        if not np.isfinite(hi): hi = 1.0
-        if hi - lo < 1e-6: hi = lo + 1e-6
-        
-        # Fill all 3 channels
-        val = (src - lo) / (hi - lo)
-        for c in range(3):
-            out[..., c] = val
-            lo_vals.append(lo)
-            hi_vals.append(hi)
-            
-    else:
-        # RGB input
-        for c in range(3):
-            ch = x[..., c]
-            lo = float(np.percentile(ch, lo_pct))
-            hi = float(np.percentile(ch, hi_pct))
-            if not np.isfinite(lo): lo = 0.0
-            if not np.isfinite(hi): hi = 1.0
-            if hi - lo < 1e-6: hi = lo + 1e-6
-            
-            lo_vals.append(lo)
-            hi_vals.append(hi)
-            out[..., c] = (ch - lo) / (hi - lo)
-
-    out = np.clip(out, 0.0, 1.0)
-    params = {"lo": lo_vals, "hi": hi_vals, "was_single": was_single}
-    return out, params
-
-
-    """
-    Inverse of _stat_stretch_rgb. Expects img RGB float32 [0,1].
-    """
-    lo = np.asarray(params["lo"], dtype=np.float32)
-    hi = np.asarray(params["hi"], dtype=np.float32)
-    
-    # Just work on input directly; if it matches params length (3), good.
-    out = img.astype(np.float32, copy=True)
-    if out.ndim == 2:
-        # Should not typically happen if we maintain RGB pipeline, but safety:
-        # We can't apply 3 diff lo/hi to 1 channel unambiguously. 
-        # Assume channel 0 params.
-        out = out * (hi[0] - lo[0]) + lo[0]
-    else:
-        # 3D
-        range_c = min(3, out.shape[2])
-        for c in range(range_c):
-            out[..., c] = out[..., c] * (hi[c] - lo[c]) + lo[c]
-            
-    out = np.clip(out, 0.0, 1.0)
-    
-    # Handle the mono-restoration flag
-    if params.get("was_single", False):
-        if out.ndim == 3 and out.shape[2] >= 3:
-            # Average to mono
-            mono = out.mean(axis=2, keepdims=False)
-            # Re-stack primarily because the StarNet pipeline assumes RGB passing
-            # This 'repeat' is unfortunately needed if the pipeline demands 3-channel return 
-            # BUT we can check if the caller actually needs it.
-            # The original code did: out = np.stack([out] * 3, axis=-1)
-            # We will keep this behavior for safety but it's at the very end.
-            out = np.stack([mono] * 3, axis=-1)
-            
-    return out
-
 def _mtf_scalar(x: float, m: float, lo: float = 0.0, hi: float = 1.0) -> float:
     """
     Scalar midtones transfer function matching the PixInsight / Siril spec.
@@ -392,6 +252,36 @@ def _mtf_scalar(x: float, m: float, lo: float = 0.0, hi: float = 1.0) -> float:
     return float(y)
 
 
+def _apply_mtf_unlinked_rgb(img_rgb01: np.ndarray, p: dict) -> np.ndarray:
+    """
+    Apply per-channel MTF exactly. p from _mtf_params_unlinked.
+    """
+    x = np.asarray(img_rgb01, dtype=np.float32)
+    if x.ndim == 2:
+        x = np.stack([x]*3, axis=-1)
+    elif x.ndim == 3 and x.shape[2] == 1:
+        x = np.repeat(x, 3, axis=2)
+
+    out = np.empty_like(x, dtype=np.float32)
+    for c in range(x.shape[2]):
+        out[..., c] = _mtf_apply(x[..., c], float(p["s"][c]), float(p["m"][c]), float(p["h"][c]))
+    return np.clip(out, 0.0, 1.0)
+
+
+def _invert_mtf_unlinked_rgb(img_rgb01: np.ndarray, p: dict) -> np.ndarray:
+    """
+    Exact analytic inverse per channel (uses same s/m/h arrays).
+    """
+    y = np.asarray(img_rgb01, dtype=np.float32)
+    if y.ndim == 2:
+        y = np.stack([y]*3, axis=-1)
+    elif y.ndim == 3 and y.shape[2] == 1:
+        y = np.repeat(y, 3, axis=2)
+
+    out = np.empty_like(y, dtype=np.float32)
+    for c in range(y.shape[2]):
+        out[..., c] = _mtf_inverse(y[..., c], float(p["s"][c]), float(p["m"][c]), float(p["h"][c]))
+    return np.clip(out, 0.0, 1.0)
 # ------------------------------------------------------------
 # Settings helper
 # ------------------------------------------------------------
@@ -439,26 +329,26 @@ def starnet_starless_from_array(arr_rgb01: np.ndarray, settings, *, tmp_prefix="
     out_path = os.path.join(workdir, f"{tmp_prefix}_out.tif")
 
     # --- Normalize input shape (virtual) and safe values ---
-    x_in = arr
+    x_in = np.asarray(arr, dtype=np.float32)
+
+    # If (H,W,1), collapse to (H,W) so mono flows cleanly
     if x_in.ndim == 3 and x_in.shape[2] == 1:
-        # Treat (H,W,1) as (H,W) to avoid complications, or keep it.
-        # But we DO NOT expand to 3 channels here.
-        pass
-    
-    # We work with x_in directly; _mtf_* functions now handle mono/2d.
+        x_in = x_in[..., 0]
+
+    # sanitize
     x_in = np.nan_to_num(x_in, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
 
     # Preserve original numeric scale if users pass >1.0
     xmax = float(np.max(x_in)) if x_in.size else 1.0
     scale_factor = xmax if xmax > 1.01 else 1.0
+
     xin = (x_in / scale_factor) if scale_factor > 1.0 else x_in
-    xin = np.clip(xin, 0.0, 1.0)
-    xin = (x / scale_factor) if scale_factor > 1.0 else x
     xin = np.clip(xin, 0.0, 1.0)
 
     # --- Siril-style unlinked MTF params + pre-stretch ---
     mtf_params = _mtf_params_unlinked(xin, shadows_clipping=-2.8, targetbg=0.25)
     x_for_starnet = _apply_mtf_unlinked_rgb(xin, mtf_params).astype(np.float32, copy=False)
+
 
     # --- Write 16-bit TIFF for StarNet ---
     save_image(
