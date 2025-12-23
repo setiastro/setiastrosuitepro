@@ -805,6 +805,7 @@ TRANSLATIONS_JA = {
         "Value": "値",
     },
     "FileMixin": {
+        "Start a new project? This closes all views and clears desktop shortcuts.": "新しいプロジェクトを開始しますか？これにより、すべてのビューが閉じられ、デスクトップのショートカットがクリアされます。",
         "Failed to save:\n{e}": "保存に失敗しました:\n{e}",
         "Failed to save:\n{msg}": "保存に失敗しました:\n{msg}",
         "File not found": "ファイルが見つかりません",
@@ -1076,6 +1077,7 @@ TRANSLATIONS_JA = {
     },
     "MenuMixin": {
         "&About": "ヘルプ(&H)",
+        "Statistics...": "統計...",
         "&Edit": "編集(&E)",
         "&File": "ファイル(&F)",
         "&Functions": "機能(&U)",
@@ -3070,6 +3072,7 @@ TRANSLATIONS_JA = {
         "Zoom to 100% (pixel-for-pixel)": "100% にズーム (等倍)",
     },
     "AstroSuiteProMainWindow": {
+        "Start a new project? This closes all views and clears desktop shortcuts.": "新しいプロジェクトを開始しますか？これにより、すべてのビューが閉じられ、デスクトップのショートカットがクリアされます。",
         # Menu strings (from MenuMixin)
         "&About": "&情報",
         "&Edit": "&編集",
@@ -3552,6 +3555,8 @@ TRANSLATIONS_JA = {
         "View in Aladin": "Aladin で表示",
     },
     "SettingsDialog": {
+        "Restart required": "再起動が必要です",
+        "Language changed. Please manually restart the application to apply the new language.": "言語が変更されました。新しい言語を適用するには、アプリを手動で再起動してください。",
         "ASTAP executable:": "ASTAP 実行ファイル:",
         "Astrometry.net API key:": "Astrometry.net API キー:",
         "Check Now…": "今すぐ確認…",
@@ -3581,5 +3586,16 @@ TRANSLATIONS_JA = {
         "Theme:": "テーマ：",
         "Restart required": "再起動が必要です",
         "The application will now restart to apply the language change.": "言語の変更を適用するために、アプリケーションを再起動します。",
+    },
+
+    "StatisticsDialog": {
+        "App Statistics": "アプリ統計",
+        "Time Spent:": "経過時間:",
+        "Images Opened:": "開いた画像:",
+        "Tools Opened:": "開いたツール:",
+        "Days": "日",
+        "Hours": "時間",
+        "Minutes": "分",
+        "Close": "閉じる",
     },
 }

@@ -299,6 +299,12 @@ class AstroSuiteProMainWindow(
         # Prevent white flash: start strictly transparent and force dark bg
         self.setWindowOpacity(0.0)
         self.setStyleSheet("QMainWindow { background-color: #0F0F19; }")
+
+        # --- Usage Stats ---
+        self._session_start_time = time.time()
+        self._stats_timer = QTimer(self)
+        self._stats_timer.timeout.connect(self._update_usage_stats)
+        self._stats_timer.start(60000)  # Update every minute
         
         from setiastro.saspro.doc_manager import DocManager
         from setiastro.saspro.window_shelf import WindowShelf, MinimizeInterceptor
@@ -8644,7 +8650,28 @@ class AstroSuiteProMainWindow(
 
         super().keyPressEvent(event)
 
+    def _update_usage_stats(self):
+        try:
+            now = time.time()
+            elapsed = now - self._session_start_time
+            self._session_start_time = now  # Reset session start to avoid double counting
+            
+            total = self.settings.value("stats/total_time_seconds", 0.0, type=float)
+            self.settings.setValue("stats/total_time_seconds", total + elapsed)
+        except Exception:
+            pass
+
+    def _on_tool_triggered(self):
+        """Slot to track tool usage count."""
+        try:
+            count = self.settings.value("stats/opened_tools_count", 0, type=int)
+            self.settings.setValue("stats/opened_tools_count", count + 1)
+        except Exception:
+            pass
+
     def closeEvent(self, e):
+        self._update_usage_stats()
+
 
         # Optimization: If restarting (e.g. language change), bypass confirmation and close immediately
         if getattr(self, "_is_restarting", False):

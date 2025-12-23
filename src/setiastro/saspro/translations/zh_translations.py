@@ -59,7 +59,9 @@ TRANSLATIONS_ZH = {
         "Post-alignment failed: {0}": "后对齐失败：{0}",
     },
     "AstroSuiteProMainWindow": {
+        "Start a new project? This closes all views and clears desktop shortcuts.": "开始新项目？这将关闭所有视图并清除桌面快捷方式。",
         "&About": "关于(&A)",
+        "Statistics...": "统计...",
         "&Edit": "编辑(&E)",
         "&File": "文件(&F)",
         "&Functions": "功能(&U)",
@@ -1135,6 +1137,7 @@ TRANSLATIONS_ZH = {
         "Value": "值",
     },
     "FileMixin": {
+        "Start a new project? This closes all views and clears desktop shortcuts.": "开始新项目？这将关闭所有视图并清除桌面快捷方式。",
         "Failed to save:\n{e}": "保存失败：\n{e}",
         "Failed to save:\n{msg}": "保存失败：\n{msg}",
         "File not found": "未找到文件",
@@ -1698,6 +1701,8 @@ TRANSLATIONS_ZH = {
         "Selective Color Correction": "选择性颜色校正",
     },
     "SettingsDialog": {
+        "Restart required": "需要重启",
+        "Language changed. Please manually restart the application to apply the new language.": "语言已更改。请手动重启应用以应用新语言。",
         "ASTAP executable:": "ASTAP 可执行文件：",
         "Astrometry.net API key:": "Astrometry.net API 密钥：",
         "Check Now…": "立即检查…",
@@ -3655,5 +3660,16 @@ TRANSLATIONS_ZH = {
         "Starting…": "正在启动...",
         "Success": "成功",
         "View in Aladin": "在 Aladin 中查看",
+    },
+
+    "StatisticsDialog": {
+        "App Statistics": "应用统计",
+        "Time Spent:": "花费时间：",
+        "Images Opened:": "打开的图像：",
+        "Tools Opened:": "打开的工具：",
+        "Days": "天",
+        "Hours": "小时",
+        "Minutes": "分钟",
+        "Close": "关闭",
     },
 }

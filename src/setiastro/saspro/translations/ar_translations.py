@@ -60,7 +60,9 @@ TRANSLATIONS_AR = {
         "Post-alignment failed: {0}": "فشل ما بعد المحاذاة: {0}"
     },
     "AstroSuiteProMainWindow": {
+        "Start a new project? This closes all views and clears desktop shortcuts.": "هل تريد بدء مشروع جديد؟ سيؤدي هذا إلى إغلاق جميع العروض ومسح اختصارات سطح المكتب.",
         "&About": "&حول",
+        "Statistics...": "إحصائيات...",
         "&Edit": "&تحرير",
         "&File": "&ملف",
         "&Functions": "&وظائف",
@@ -1054,6 +1056,7 @@ TRANSLATIONS_AR = {
         "Value": "قيمة"
     },
     "FileMixin": {
+        "Start a new project? This closes all views and clears desktop shortcuts.": "هل تريد بدء مشروع جديد؟ سيؤدي هذا إلى إغلاق جميع العروض ومسح اختصارات سطح المكتب.",
         "Failed to save:\n{e}": "فشل الحفظ:\n{e}",
         "Failed to save:\n{msg}": "فشل الحفظ:\n{msg}",
         "File not found": "لم يتم العثور على الملف",
@@ -1618,6 +1621,8 @@ TRANSLATIONS_AR = {
         "Selective Color Correction": "تصحيح الألوان الانتقائي",
     },
     "SettingsDialog": {
+        "Restart required": "إعادة التشغيل مطلوبة",
+        "Language changed. Please manually restart the application to apply the new language.": "تم تغيير اللغة. يرجى إعادة تشغيل التطبيق يدويًا لتطبيق اللغة الجديدة.",
         "ASTAP executable:": "ملف ASTAP التنفيذي:",
         "Astrometry.net API key:": "مفتاح API لـ Astrometry.net:",
         "Check Now…": "تحقق الآن...",
@@ -3846,4 +3851,15 @@ TRANSLATIONS_AR = {
         "View in Aladin": "عرض في Aladin",
     },
 
+
+    "StatisticsDialog": {
+        "App Statistics": "إحصائيات التطبيق",
+        "Time Spent:": "الوقت المستغرق:",
+        "Images Opened:": "الصور المفتوحة:",
+        "Tools Opened:": "الأدوات المفتوحة:",
+        "Days": "أيام",
+        "Hours": "ساعات",
+        "Minutes": "دقائق",
+        "Close": "إغلاق",
+    },
 }

@@ -60,7 +60,9 @@ TRANSLATIONS_SW = {
         "Post-alignment failed: {0}": "Mpangilio wa baada ya umeshindwa: {0}",
     },
     "AstroSuiteProMainWindow": {
+        "Start a new project? This closes all views and clears desktop shortcuts.": "Anzisha mradi mpya? Hii itafunga maoni yote na kufuta njia za mkato za desktop.",
         "&About": "&Kuhusu",
+        "Statistics...": "Takwimu...",
         "&Edit": "&Hariri",
         "&Exit": "&Toka",
         "&File": "&Faili",
@@ -1124,6 +1126,7 @@ TRANSLATIONS_SW = {
         "Value": "Thamani",
     },
     "FileMixin": {
+        "Start a new project? This closes all views and clears desktop shortcuts.": "Anzisha mradi mpya? Hii itafunga maoni yote na kufuta njia za mkato za desktop.",
         "Failed to save:\n{e}": "Imeshindwa kuhifadhi:\n{e}",
         "Failed to save:\n{msg}": "Imeshindwa kuhifadhi:\n{msg}",
         "File not found": "Faili haijapatikana",
@@ -1687,6 +1690,8 @@ TRANSLATIONS_SW = {
         "Selective Color Correction": "Marekebisho ya Rangi ya Kuchagua",
     },
     "SettingsDialog": {
+        "Restart required": "Kuanzisha upya kunahitajika",
+        "Language changed. Please manually restart the application to apply the new language.": "Lugha imebadilishwa. Tafadhali anzisha upya programu wewe mwenyewe ili kutumia lugha mpya.",
         "ASTAP executable:": "ASTAP inayoweza kutekelezwa:",
         "Astrometry.net API key:": "Ufunguo wa API wa Astrometry.net:",
         "Check Now…": "Angalia Sasa…",
@@ -3651,5 +3656,16 @@ TRANSLATIONS_SW = {
         "Starting…": "Inaanza…",
         "Success": "Mafanikio",
         "View in Aladin": "Angalia katika Aladin",
+    },
+
+    "StatisticsDialog": {
+        "App Statistics": "Takwimu za Programu",
+        "Time Spent:": "Muda uliotumiwa:",
+        "Images Opened:": "Picha zilizofunguliwa:",
+        "Tools Opened:": "Zana zilizofunguliwa:",
+        "Days": "Siku",
+        "Hours": "Masaa",
+        "Minutes": "Dakika",
+        "Close": "Funga",
     },
 }

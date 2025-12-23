@@ -60,7 +60,9 @@ TRANSLATIONS_RU = {
         "Post-alignment failed: {0}": "Пост-выравнивание не удалось: {0}"
     },
     "AstroSuiteProMainWindow": {
+        "Start a new project? This closes all views and clears desktop shortcuts.": "Начать новый проект? Это закроет все окна и удалит ярлыки рабочего стола.",
         "&About": "&О программе",
+        "Statistics...": "Статистика...",
         "&Edit": "&Правка",
         "&File": "&Файл",
         "&Functions": "&Функции",
@@ -880,6 +882,7 @@ TRANSLATIONS_RU = {
         "Value": "Значение",
     },
     "FileMixin": {
+        "Start a new project? This closes all views and clears desktop shortcuts.": "Начать новый проект? Это закроет все окна и удалит ярлыки рабочего стола.",
         "Failed to save:\n{e}": "Ошибка сохранения:\n{e}",
         "Failed to save:\n{msg}": "Ошибка сохранения:\n{msg}",
         "File not found": "Файл не найден",
@@ -1296,6 +1299,8 @@ TRANSLATIONS_RU = {
         "Selective Color Correction": "Выборочная цветокоррекция",
     },
     "SettingsDialog": {
+        "Restart required": "Требуется перезагрузка",
+        "Language changed. Please manually restart the application to apply the new language.": "Язык изменен. Пожалуйста, перезапустите приложение вручную, чтобы применить новый язык.",
         "ASTAP executable:": "Исполняемый файл ASTAP:",
         "Astrometry.net API key:": "API ключ Astrometry.net:",
         "Check Now…": "Проверить сейчас…",
@@ -2828,5 +2833,16 @@ TRANSLATIONS_RU = {
         "Starting…": "Запуск…",
         "Success": "Успех",
         "View in Aladin": "Открыть в Aladin",
+    },
+
+    "StatisticsDialog": {
+        "App Statistics": "Статистика приложения",
+        "Time Spent:": "Проведенное время:",
+        "Images Opened:": "Открытые изображения:",
+        "Tools Opened:": "Открытые инструменты:",
+        "Days": "Дни",
+        "Hours": "Часы",
+        "Minutes": "Минуты",
+        "Close": "Закрыть",
     },
 }

@@ -60,7 +60,9 @@ TRANSLATIONS_HI = {
         "Post-alignment failed: {0}": "संरेखण के बाद का कार्य विफल: {0}",
     },
     "AstroSuiteProMainWindow": {
+        "Start a new project? This closes all views and clears desktop shortcuts.": "नया प्रोजेक्ट शुरू करें? यह सभी दृश्यों को बंद कर देगा और डेस्कटॉप शॉर्टकट्स को साफ़ कर देगा।",
         "&About": "&बारे में",
+        "Statistics...": "आंकड़े...",
         "&Edit": "&संपादन",
         "&Exit": "&निकास",
         "&File": "&फ़ाइल",
@@ -1133,6 +1135,7 @@ TRANSLATIONS_HI = {
         "Value": "मान",
     },
     "FileMixin": {
+        "Start a new project? This closes all views and clears desktop shortcuts.": "नया प्रोजेक्ट शुरू करें? यह सभी दृश्यों को बंद कर देगा और डेस्कटॉप शॉर्टकट्स को साफ़ कर देगा।",
         "Failed to save:\n{e}": "सहेजने में विफल:\n{e}",
         "Failed to save:\n{msg}": "सहेजने में विफल:\n{msg}",
         "File not found": "फ़ाइल नहीं मिली",
@@ -1696,6 +1699,8 @@ TRANSLATIONS_HI = {
         "Selective Color Correction": "चयनात्मक रंग सुधार (Selective Color Correction)",
     },
     "SettingsDialog": {
+        "Restart required": "पुनः आरंभ आवश्यक",
+        "Language changed. Please manually restart the application to apply the new language.": "भाषा बदल गई है। नई भाषा लागू करने के लिए कृपया एप्लिकेशन को मैन्युअल रूप से पुनरारंभ करें।",
         "ASTAP executable:": "ASTAP निष्पादन योग्य (executable):",
         "Astrometry.net API key:": "Astrometry.net API कुंजी:",
         "Check Now…": "अभी जाँचें…",
@@ -3551,5 +3556,16 @@ TRANSLATIONS_HI = {
         "Starting…": "शुरू हो रहा है…",
         "Success": "सफलता",
         "View in Aladin": "Aladin में देखें",
+    },
+
+    "StatisticsDialog": {
+        "App Statistics": "ऐप के आंकड़े",
+        "Time Spent:": "बिताया गया समय:",
+        "Images Opened:": "खोली गई छवियां:",
+        "Tools Opened:": "खोले गए उपकरण:",
+        "Days": "दिन",
+        "Hours": "घंटे",
+        "Minutes": "मिनट",
+        "Close": "बंद करें",
     },
 }

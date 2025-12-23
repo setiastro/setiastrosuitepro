@@ -25,6 +25,28 @@ class MenuMixin:
         # This method will be implemented as part of the main window
         # For now, this is a placeholder showing the mixin pattern
         pass
+
+    def _show_statistics(self):
+        from setiastro.saspro.gui.statistics_dialog import StatisticsDialog
+        dlg = StatisticsDialog(self)
+        dlg.exec()
+
+    def _hook_tool_stats(self, menus):
+        if not hasattr(self, "_on_tool_triggered"):
+            return
+        
+        seen = set()
+        for menu in menus:
+            for action in self._iter_menu_actions(menu):
+                if action in seen: continue
+                seen.add(action)
+                if action.isSeparator(): continue
+                
+                try:
+                    action.triggered.connect(self._on_tool_triggered)
+                except Exception:
+                    pass
+
     
     def _rebuild_recent_menus(self):
         """Rebuild the recent files and projects menus."""
@@ -297,6 +319,12 @@ class MenuMixin:
         m_about.addAction(self.tr("About..."), self._about)
         m_about.addAction(self.act_check_updates)
 
+
+        m_about.addSeparator()
+        m_about.addAction(self.tr("Statistics..."), self._show_statistics)
+
+        # Connect tool stats
+        self._hook_tool_stats([m_fn, m_tools, mCosmic, m_geom, m_star, m_masks, m_header, m_scripts])
 
         # initialize enabled state + names
         self.update_undo_redo_action_labels()
