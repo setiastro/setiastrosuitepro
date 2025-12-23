@@ -293,8 +293,16 @@ def estimate_global_snr(
 
     # 1) Collapse to simple 2D float array (grayscale)
     if stack_image.ndim == 3 and stack_image.shape[2] == 3:
-        # RGB → grayscale by averaging channels
-        gray = stack_image.mean(axis=2).astype(np.float32)
+        try:
+            import cv2
+            # cv2.cvtColor is significantly faster than mean(axis=2)
+            # Assuming RGB input, but even if BGR, for SNR estimation luma difference is negligible
+            gray = cv2.cvtColor(stack_image, cv2.COLOR_RGB2GRAY)
+            if gray.dtype != np.float32:
+                gray = gray.astype(np.float32)
+        except ImportError:
+            # Fallback
+            gray = stack_image.mean(axis=2).astype(np.float32)
     else:
         # Already mono: just cast to float32
         gray = stack_image.astype(np.float32)

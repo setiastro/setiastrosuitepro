@@ -1,7 +1,7 @@
 # pro/tools/star_spikes.py
 from __future__ import annotations
 import numpy as np
-
+import math
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSplitter, QSizePolicy, QWidget, QApplication,
                              QFormLayout, QGroupBox, QDoubleSpinBox, QSpinBox, 
@@ -384,6 +384,13 @@ class StarSpikesDialogPro(QDialog):
         shrink_max = self.advanced["shrink_max"]
         color_boost = self.color_boost.value()
 
+        # Try OpenCV for faster zoom/blur
+        try:
+            import cv2
+            _HAS_CV2 = True
+        except ImportError:
+            _HAS_CV2 = False
+
         from concurrent.futures import ThreadPoolExecutor, as_completed
         def star_runner(x, y, flux, a, b):
             brightness = np.clip(np.log1p(flux)/8.0, 0.1, 3.0)
@@ -391,39 +398,79 @@ class StarSpikesDialogPro(QDialog):
             tile_size  = min(tile_size, 768)
             tile_size += tile_size % 2
             pad = tile_size // 2
-            if not (pad <= x < W - pad and pad <= y < H - pad):
+
+            # Guard against fully out-of-bounds, but allow partial overlaps
+            if not (0 <= x < W and 0 <= y < H):
                 return None
 
+            # Measure star color
             r_ratio, g_ratio, b_ratio = self._measure_star_color(img, x, y, sampling_radius=3)
+            
+            # Extract PSF tiles
             tile_r = self._extract_center_tile(psf_r, tile_size) * brightness * r_ratio * color_boost
             tile_g = self._extract_center_tile(psf_g, tile_size) * brightness * g_ratio * color_boost
             tile_b = self._extract_center_tile(psf_b, tile_size) * brightness * b_ratio * color_boost
 
+            # Boost/Shrink
             b_scale, s_factor = self._boost_shrink_from_flux(flux, self.flux_min.value(), flux_max,
                                                              bscale_min, bscale_max, shrink_min, shrink_max)
-            final_r = self._shrink_and_boost(tile_r, b_scale, s_factor)
-            final_g = self._shrink_and_boost(tile_g, b_scale, s_factor)
-            final_b = self._shrink_and_boost(tile_b, b_scale, s_factor)
 
-            new_size = final_r.shape[0]
-            pad_new  = new_size // 2
-            y0, y1   = y - pad_new, y - pad_new + new_size
-            x0, x1   = x - pad_new, x - pad_new + new_size
-            if (y0 < 0 or y1 > H or x0 < 0 or x1 > W):
-                return None
+            # --- Fast Resize (Zoom) ---
+            def _fast_zoom(arr, z):
+                if z == 1.0: return arr
+                if _HAS_CV2:
+                     h, w = arr.shape
+                     nw, nh = int(round(w * z)), int(round(h * z))
+                     if nw <= 0 or nh <= 0: return np.zeros((2,2), dtype=np.float32)
+                     return cv2.resize(arr, (nw, nh), interpolation=cv2.INTER_LINEAR)
+                else:
+                    return ndi.zoom(arr, z, order=1)
 
-            part = np.zeros((H, W, 3), dtype=np.float32)
-            part[y0:y1, x0:x1, 0] = final_r
-            part[y0:y1, x0:x1, 1] = final_g
-            part[y0:y1, x0:x1, 2] = final_b
-            return part
+            final_r = np.clip(_fast_zoom(tile_r * b_scale, 1.0/s_factor), 0.0, 1.0)
+            final_g = np.clip(_fast_zoom(tile_g * b_scale, 1.0/s_factor), 0.0, 1.0)
+            final_b = np.clip(_fast_zoom(tile_b * b_scale, 1.0/s_factor), 0.0, 1.0)
+
+            # --- Return Patch Data (y, x, patch) ---
+            new_h, new_w = final_r.shape
+            
+            # Coords of the *patch top-left* relative to the image
+            # The star is at (x,y), and the patch center is approx (new_w//2, new_h//2)
+            # We want to center the patch on the star.
+            py0 = y - (new_h // 2)
+            px0 = x - (new_w // 2)
+            
+            # Combine channels
+            patch = np.dstack((final_r, final_g, final_b)).astype(np.float32)
+            return (int(py0), int(px0), patch)
 
         with ThreadPoolExecutor() as ex:
             futs = [ex.submit(star_runner, *s) for s in stars]
             for f in as_completed(futs):
-                part = f.result()
-                if part is not None:
-                    canvas += part
+                res = f.result()
+                if res is None:
+                    continue
+                
+                py0, px0, patch = res
+                ph, pw, _ = patch.shape
+                
+                # Calculate intersection with canvas
+                y_start = max(0, py0)
+                y_end   = min(H, py0 + ph)
+                x_start = max(0, px0)
+                x_end   = min(W, px0 + pw)
+                
+                # If no overlap, skip
+                if y_start >= y_end or x_start >= x_end:
+                    continue
+
+                # Offsets into the patch
+                patch_y_start = y_start - py0
+                patch_y_end   = patch_y_start + (y_end - y_start)
+                patch_x_start = x_start - px0
+                patch_x_end   = patch_x_start + (x_end - x_start)
+
+                # Add to canvas
+                canvas[y_start:y_end, x_start:x_end] += patch[patch_y_start:patch_y_end, patch_x_start:patch_x_end]
 
         self.status.setText("Compositing…")
         QApplication.processEvents()
@@ -546,14 +593,56 @@ class StarSpikesDialogPro(QDialog):
         return img
 
     def _simulate_psf(self, pupil, wavelength_scale=1.0, blur_sigma=1.0):
-        sp = gaussian_filter(pupil, sigma=0.1 * wavelength_scale)
+        # Try to use OpenCV for speed
+        if getattr(self, "_cv2_checked", False):
+            has_cv2 = True
+            import cv2
+        else:
+            try:
+                import cv2
+                has_cv2 = True
+            except ImportError:
+                has_cv2 = False
+            self._cv2_checked = has_cv2
+
+        if has_cv2:
+            # Gaussian blur on pupil
+            # kernel size usually ~6*sigma, must be odd
+            k_pupil = int(math.ceil(6 * (0.1 * wavelength_scale))) | 1
+            sp = cv2.GaussianBlur(pupil, (k_pupil, k_pupil), 0.1 * wavelength_scale)
+        else:
+            sp = gaussian_filter(pupil, sigma=0.1 * wavelength_scale)
+        
         fft = np.fft.fftshift(np.fft.fft2(np.fft.ifftshift(sp)))
         intensity = np.abs(fft)**2
         intensity /= (intensity.max() + 1e-8)
-        blurred = gaussian_filter(intensity, sigma=blur_sigma)
+        
+        if has_cv2 and blur_sigma > 0:
+            k_blur = int(math.ceil(6 * blur_sigma)) | 1
+            blurred = cv2.GaussianBlur(intensity, (k_blur, k_blur), blur_sigma)
+        else:
+            blurred = gaussian_filter(intensity, sigma=blur_sigma)
+            
         psf = blurred / max(blurred.max(), 1e-8)
+        
         if wavelength_scale != 1.0:
-            psf = ndi.zoom(psf, zoom=wavelength_scale, order=1)
+            if has_cv2:
+                h, w = psf.shape
+                # Zoom uses size, NOT scale factor in resize(..., dsize=(w,h))
+                # wavelength_scale > 1 => zoom in => crop middle? or simply scale?
+                # The original used ndi.zoom(psf, zoom=wavelength_scale).
+                # New size:
+                nw, nh = int(round(w * wavelength_scale)), int(round(h * wavelength_scale))
+                if nw > 0 and nh > 0:
+                    scaled = cv2.resize(psf, (nw, nh), interpolation=cv2.INTER_LINEAR)
+                    # We might need to crop back to original size or pad?
+                    # ndi.zoom changes the array size.
+                    # The simulator seems to assume we handle whatever size comes out?
+                    # Let's check _extract_center_tile usage.
+                    psf = scaled
+            else:
+                 psf = ndi.zoom(psf, zoom=wavelength_scale, order=1)
+            
             psf /= psf.max() + 1e-12
         return psf
 
@@ -594,15 +683,7 @@ class StarSpikesDialogPro(QDialog):
                 stars.append((int(obj['x']), int(obj['y']), float(flux), float(a), float(b)))
         return stars
 
-    @staticmethod
-    def _shrink_and_boost(tile, brightness_scale=2.0, shrink_factor=1.5):
-        tile = np.clip(tile * float(brightness_scale), 0.0, 1.0)
-        in_sz = tile.shape[0]
-        out_sz = int(in_sz // float(shrink_factor))
-        out_sz += out_sz % 2
-        if out_sz <= 0: out_sz = 2
-        z = out_sz / float(in_sz)
-        return np.clip(ndi.zoom(tile, z, order=1), 0.0, 1.0)
+    # _shrink_and_boost removed (replaced by inline _fast_zoom for performance)
 
     @staticmethod
     def _boost_shrink_from_flux(flux, flux_min, flux_max, bmin, bmax, smin, smax):

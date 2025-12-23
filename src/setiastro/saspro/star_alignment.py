@@ -287,8 +287,18 @@ def _warp_like_ref(target_img: np.ndarray, M_2x3: np.ndarray, ref_shape_hw: tupl
         return cv2.warpAffine(target_img, M_2x3, (W, H),
                                flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
     
+    # Optimization: If standard RGB/BGR (3 channels) or 4 channels, OpenCV handles it natively.
+    # Note: OpenCV warpAffine support n-channel images, but typically 1, 3, or 4.
+    C = target_img.shape[2]
+    if C <= 4:
+         if not target_img.flags['C_CONTIGUOUS']:
+             target_img = np.ascontiguousarray(target_img)
+         return cv2.warpAffine(target_img, M_2x3, (W, H),
+                               flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+
+    # Fallback for >4 channels (e.g. hyperspectral or special stacks)
     chs = []
-    for i in range(target_img.shape[2]):
+    for i in range(C):
         ch = target_img[..., i]
         if not ch.flags['C_CONTIGUOUS']:
             ch = np.ascontiguousarray(ch)

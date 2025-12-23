@@ -802,39 +802,46 @@ def kappa_sigma_clip_weighted_3d(stack, weights, kappa=2.5, iterations=3):
                 pixel_weights = weights[:]
             else:
                 pixel_weights = weights[:, i, j].copy()
-            # Initialize tracking of indices
-            current_idx = np.empty(num_frames, dtype=np.int64)
-            for f in range(num_frames):
-                current_idx[f] = f
-            current_vals = pixel_values
-            current_w = pixel_weights
-            current_indices = current_idx
+                
+            valid_mask = pixel_values != 0
+            
             med = 0.0
             for _ in range(iterations):
-                if current_vals.size == 0:
+                count = 0
+                for k in range(num_frames):
+                    if valid_mask[k]:
+                        count += 1
+                
+                if count == 0:
                     break
+                    
+                current_vals = pixel_values[valid_mask]
+                
                 med = np.median(current_vals)
                 std = np.std(current_vals)
                 lower_bound = med - kappa * std
                 upper_bound = med + kappa * std
-                valid = (current_vals != 0) & (current_vals >= lower_bound) & (current_vals <= upper_bound)
-                current_vals = current_vals[valid]
-                current_w = current_w[valid]
-                current_indices = current_indices[valid]
-            # Mark rejected: frames not in current_indices are rejected.
+                
+                for k in range(num_frames):
+                    if valid_mask[k]:
+                        val = pixel_values[k]
+                        if val < lower_bound or val > upper_bound:
+                            valid_mask[k] = False
+
             for f in range(num_frames):
-                # Check if f is in current_indices
-                found = False
-                for k in range(current_indices.size):
-                    if current_indices[k] == f:
-                        found = True
-                        break
-                if not found:
-                    rej_mask[f, i, j] = True
-                else:
-                    rej_mask[f, i, j] = False
-            if current_w.size > 0 and current_w.sum() > 0:
-                clipped[i, j] = np.sum(current_vals * current_w) / current_w.sum()
+                rej_mask[f, i, j] = not valid_mask[f]
+                
+            wsum = 0.0
+            vsum = 0.0
+            for k in range(num_frames):
+                if valid_mask[k]:
+                    w = pixel_weights[k]
+                    v = pixel_values[k]
+                    wsum += w
+                    vsum += v * w
+            
+            if wsum > 0:
+                clipped[i, j] = vsum / wsum
             else:
                 clipped[i, j] = med
     return clipped, rej_mask
@@ -859,36 +866,46 @@ def kappa_sigma_clip_weighted_4d(stack, weights, kappa=2.5, iterations=3):
                     pixel_weights = weights[:]
                 else:
                     pixel_weights = weights[:, i, j, c].copy()
-                current_idx = np.empty(num_frames, dtype=np.int64)
-                for f in range(num_frames):
-                    current_idx[f] = f
-                current_vals = pixel_values
-                current_w = pixel_weights
-                current_indices = current_idx
+                
+                valid_mask = pixel_values != 0
+                
                 med = 0.0
                 for _ in range(iterations):
-                    if current_vals.size == 0:
+                    count = 0
+                    for k in range(num_frames):
+                        if valid_mask[k]:
+                            count += 1
+                            
+                    if count == 0:
                         break
+                        
+                    current_vals = pixel_values[valid_mask]
+                    
                     med = np.median(current_vals)
                     std = np.std(current_vals)
                     lower_bound = med - kappa * std
                     upper_bound = med + kappa * std
-                    valid = (current_vals != 0) & (current_vals >= lower_bound) & (current_vals <= upper_bound)
-                    current_vals = current_vals[valid]
-                    current_w = current_w[valid]
-                    current_indices = current_indices[valid]
+                    
+                    for k in range(num_frames):
+                        if valid_mask[k]:
+                            val = pixel_values[k]
+                            if val < lower_bound or val > upper_bound:
+                                valid_mask[k] = False
+
                 for f in range(num_frames):
-                    found = False
-                    for k in range(current_indices.size):
-                        if current_indices[k] == f:
-                            found = True
-                            break
-                    if not found:
-                        rej_mask[f, i, j, c] = True
-                    else:
-                        rej_mask[f, i, j, c] = False
-                if current_w.size > 0 and current_w.sum() > 0:
-                    clipped[i, j, c] = np.sum(current_vals * current_w) / current_w.sum()
+                    rej_mask[f, i, j, c] = not valid_mask[f]
+                
+                wsum = 0.0
+                vsum = 0.0
+                for k in range(num_frames):
+                    if valid_mask[k]:
+                        w = pixel_weights[k]
+                        v = pixel_values[k]
+                        wsum += w
+                        vsum += v * w
+                
+                if wsum > 0:
+                    clipped[i, j, c] = vsum / wsum
                 else:
                     clipped[i, j, c] = med
     return clipped, rej_mask

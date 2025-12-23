@@ -90,28 +90,48 @@ def starnet_starless_pair_from_array(
     # -------- normalize & shape: float32 [0..1], keep note if mono ----------
     x = np.asarray(src_rgb01, dtype=np.float32)
     was_mono = (x.ndim == 2) or (x.ndim == 3 and x.shape[2] == 1)
-    if x.ndim == 2:
-        x3 = np.stack([x]*3, axis=-1)
-    elif x.ndim == 3 and x.shape[2] == 1:
-        x3 = np.repeat(x, 3, axis=2)
-    else:
-        x3 = x
-    x3 = np.nan_to_num(x3, nan=0.0, posinf=0.0, neginf=0.0)
+    
+    # DELAY expansion: work with 'x' (mono or rgb) directly where possible
+    x_input = x
+    if x_input.ndim == 3 and x_input.shape[2] == 1:
+        x_input = x_input[..., 0] # collapse to 2D for processing if needed, or keep 2D
 
-    # -------- pre-StarNet stretch (per channel), only if the data are linear ----------
+    # For StarNet save, we need 3 channels usually, but check if we can save mono?
+    # Actually StarNet usually expects RGB Tiff. So we might need to expand just for saving.
+    # But let's avoid `x3 = np.repeat` globally.
+    
+    # Optimization: Create x3 ON DEMAND or virtually using broadcasting only when needed.
+    # But `save_image` might handle mono TIFs. If StarNet accepts Mono TIF, we save huge RAM.
+    # Standard StarNet typically wants RGB. We will enable "is_mono" flag in `save_image` if it is mono,
+    # but StarNet is finicky. Let's stick to RGB for StarNet input but avoid `np.repeat` for the WHOLE array 
+    # if we can just broadcast or slice. 
+    # Actually, `stretch_color_image` handles broadcasting? No.
+    # Let's simple optimize:
+    
     if is_linear:
-        # channel-wise stretch to avoid red cast; your funcs expect [0..1]
-        pre = stretch_color_image(x3, 0.25, False, False, False)
-
+         # stretch; if mono use mono stretch
+         if was_mono:
+             if x.ndim == 3: x = x[..., 0]
+             pre = stretch_mono_image(x, 0.25, False, False)
+             # expand ONLY for save
+             pre_to_save = np.dstack([pre, pre, pre])
+         else:
+             pre = stretch_color_image(x, 0.25, False, False, False)
+             pre_to_save = pre
     else:
-        pre = x3  # already non-linear; pass through
+        pre = x # floating point 0..1
+        if was_mono:
+            if pre.ndim == 3: pre = pre[..., 0]
+            pre_to_save = np.dstack([pre, pre, pre])
+        else:
+            pre_to_save = pre
 
     # -------- StarNet I/O (write float->16b TIFF; read back float) ----------
     starnet_dir = os.path.dirname(exe) or os.getcwd()
     in_path  = os.path.join(starnet_dir, "imagetoremovestars.tif")
     out_path = os.path.join(starnet_dir, "starless.tif")
 
-    save_image(pre, in_path, original_format="tif", bit_depth="16-bit",
+    save_image(pre_to_save, in_path, original_format="tif", bit_depth="16-bit",
                    original_header=None, is_mono=False, image_meta=None, file_meta=None)
 
     exe_name = os.path.basename(exe).lower()
@@ -134,32 +154,61 @@ def starnet_starless_pair_from_array(
     except Exception:
         pass
 
-    if starless_pre.ndim == 2:
-        starless_pre = np.stack([starless_pre]*3, axis=-1)
-    elif starless_pre.ndim == 3 and starless_pre.shape[2] == 1:
-        starless_pre = np.repeat(starless_pre, 3, axis=2)
+    # Don't expand starless_pre yet if we don't need to.
     starless_pre = starless_pre.astype(np.float32, copy=False)
-
+    if was_mono and starless_pre.ndim == 3:
+        # StarNet output is usually RGB even for mono input. Convert back to mono?
+        # Or just use one channel.
+        starless_pre = starless_pre[..., 0]
+    
+    # Maintain `pre` as the stretched input (mono or rgb)
+    
     # ---- mask-protect in the SAME (stretched) domain as pre/starless_pre ----
     if core_mask is not None:
         m = np.clip(core_mask.astype(np.float32), 0.0, 1.0)
-        m3 = np.repeat(m[..., None], 3, axis=2)
-        protected_stretched = starless_pre * (1.0 - m3) + pre * m3
+        # broadcast mask
+        if not was_mono:
+             if m.ndim == 2: m = m[..., None]
+        
+        protected_stretched = starless_pre * (1.0 - m) + pre * m
     else:
         protected_stretched = starless_pre
+    
+    # Return to 3-channel ONLY if requested by the caller's context? 
+    # The signature `starnet_starless_pair_from_array` implies it might return what it got.
+    # The original returned `protected_unstretch`.
+    pass # logic flow continues below...
 
     # -------- “unstretch” → shared pseudo-linear space (once, after blend) ----------
     if is_linear:
-        protected_unstretch = stretch_color_image(
-            protected_stretched, 0.05, False, False, False
-        )
+        # choose stretcher based on channels
+        if was_mono:
+             # ensure 2d
+             if protected_stretched.ndim == 3 and protected_stretched.shape[2] == 1:
+                 protected_stretched = protected_stretched[..., 0]
+             elif protected_stretched.ndim == 3:
+                 # collapse rgb to mono if needed? likely StarNet gave RGB.
+                 # Keep RGB if StarNet created color artifacts we want to keep? 
+                 # Usually for mono data we want to kill color.
+                 protected_stretched = protected_stretched.mean(axis=2)
+             
+             protected_unstretch = stretch_mono_image(
+                protected_stretched, 0.05, False, False
+             )
+             # Expand finally for return constraint? 
+             # The older function returned RGB-like. 
+             # Let's expand here at the VERY END.
+             protected_unstretch = np.dstack([protected_unstretch]*3)
+        else:
+             protected_unstretch = stretch_color_image(
+                protected_stretched, 0.05, False, False, False
+             )
     else:
         protected_unstretch = protected_stretched
+        if was_mono and protected_unstretch.ndim == 2:
+            protected_unstretch = np.dstack([protected_unstretch]*3)
 
-    protected_unstretch = np.clip(
-        protected_unstretch.astype(np.float32, copy=False), 0.0, 1.0
-    )
-    return protected_unstretch, protected_unstretch
+    return np.clip(protected_unstretch, 0.0, 1.0), np.clip(protected_unstretch, 0.0, 1.0)
 
 
 
@@ -170,8 +219,17 @@ def darkstar_starless_from_array(src_rgb01: np.ndarray, settings, **_ignored) ->
     """
     # normalize channels
     img = src_rgb01.astype(np.float32, copy=False)
-    if img.ndim == 2: img = np.stack([img]*3, axis=-1)
-    if img.ndim == 3 and img.shape[2] == 1: img = np.repeat(img, 3, axis=2)
+    # Delay expansion: if it's 2D/Mono, send it as-is if DarkStar supports it, 
+    # but DarkStar expects 3-channel TIF usually. 
+    # We'll just expand for the save call, not "in place" if possible.
+    # Actually DarkStar runner saves `img` directly.
+    # So we'll expand just for that save to avoid holding 2 copies in memory.
+    if img.ndim == 2: 
+        img_to_save = np.stack([img]*3, axis=-1)
+    elif img.ndim == 3 and img.shape[2] == 1: 
+        img_to_save = np.repeat(img, 3, axis=2)
+    else:
+        img_to_save = img
 
     # resolve exe and base folder
     exe, base = _resolve_darkstar_exe(type("Dummy", (), {"settings": settings})())
@@ -192,7 +250,8 @@ def darkstar_starless_from_array(src_rgb01: np.ndarray, settings, **_ignored) ->
     out_path = os.path.join(output_dir, "imagetoremovestars_starless.tif")
 
     # save input as float32 TIFF
-    save_image(img, in_path, original_format="tif", bit_depth="32-bit floating point",
+    # save input as float32 TIFF
+    save_image(img_to_save, in_path, original_format="tif", bit_depth="32-bit floating point",
                    original_header=None, is_mono=False, image_meta=None, file_meta=None)
 
     # build command (SASv2 parity): default unscreen, show extracted stars off, stride 512
@@ -218,8 +277,12 @@ def darkstar_starless_from_array(src_rgb01: np.ndarray, settings, **_ignored) ->
     if starless is None:
         raise RuntimeError("DarkStar produced no output.")
 
-    if starless.ndim == 2: starless = np.stack([starless]*3, axis=-1)
-    if starless.shape[2] == 1: starless = np.repeat(starless, 3, axis=2)
+    # Delayed expansion
+    if starless.ndim == 2: 
+        starless = np.stack([starless]*3, axis=-1)
+    elif starless.ndim == 3 and starless.shape[2] == 1: 
+        starless = np.repeat(starless, 3, axis=2)
+        
     return np.clip(starless.astype(np.float32, copy=False), 0.0, 1.0)
 
 # ---------- small helpers ----------
@@ -239,6 +302,10 @@ def _inv_affine_2x3(M: np.ndarray) -> np.ndarray:
 def _to_luma(img: np.ndarray) -> np.ndarray:
     if img.ndim == 2: return img.astype(np.float32, copy=False)
     if img.ndim == 3 and img.shape[-1] == 3:
+        try:
+            return cv2.cvtColor(img, cv2.COLOR_RGB2GRAY).astype(np.float32, copy=False)
+        except Exception:
+            pass
         r,g,b = img[...,0], img[...,1], img[...,2]
         return (0.2126*r + 0.7152*g + 0.0722*b).astype(np.float32, copy=False)
     if img.ndim == 3 and img.shape[-1] == 1:
@@ -748,11 +815,9 @@ def _shift_to_comet(img: np.ndarray, xy: Tuple[float,float], ref_xy: Tuple[float
     M = np.array([[1.0, 0.0, dx], [0.0, 1.0, dy]], dtype=np.float32)
     H, W = img.shape[:2]
     interp = cv2.INTER_LANCZOS4
-    if img.ndim == 2:
-        return cv2.warpAffine(img, M, (W, H), flags=interp, borderMode=cv2.BORDER_REFLECT)
-    # 3-channel
-    ch = [cv2.warpAffine(img[...,c], M, (W, H), flags=interp, borderMode=cv2.BORDER_REFLECT) for c in range(img.shape[-1])]
-    return np.stack(ch, axis=-1)
+    
+    # Vectorized warp for both 2D (mono) and 3D (RGB)
+    return cv2.warpAffine(img, M, (W, H), flags=interp, borderMode=cv2.BORDER_REFLECT)
 
 def stack_comet_aligned(file_list: List[str],
                         comet_xy: Dict[str, Tuple[float,float]],

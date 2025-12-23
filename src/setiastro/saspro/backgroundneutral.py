@@ -42,12 +42,23 @@ def background_neutralize_rgb(img: np.ndarray, rect_xywh: tuple[int, int, int, i
 
     out = img.copy()
     eps = 1e-8
-    for c in range(3):
-        diff = float(medians[c] - avg_med)
-        denom = 1.0 - diff
-        if abs(denom) < eps:
-            denom = eps if denom >= 0 else -eps
-        out[..., c] = np.clip((out[..., c] - diff) / denom, 0.0, 1.0)
+    
+    # Vectorized neutralization
+    # diff shape: (3,) -> (1, 1, 3) 
+    diffs = (medians - avg_med).reshape(1, 1, 3)
+    
+    # denom shape: (1, 1, 3)
+    denoms = 1.0 - diffs
+    
+    # Avoid div-by-zero (vectorized)
+    # logic: if abs(denom) < eps, set to eps (sign matched)
+    # We can do this efficiently:
+    small_mask = np.abs(denoms) < eps
+    denoms[small_mask] = np.where(denoms[small_mask] >= 0, eps, -eps)
+    
+    # Apply formula: (pixel - diff) / denom
+    out = (out - diffs) / denoms
+    out = np.clip(out, 0.0, 1.0)
 
     return out.astype(np.float32, copy=False)
 

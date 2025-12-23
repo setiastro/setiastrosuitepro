@@ -95,19 +95,11 @@ def apply_curves_adjustment(image: np.ndarray,
     xvals, yvals = _calculate_curve_points(target_median, curves_boost)
 
     # Apply the 1D LUT per channel using np.interp (piecewise linear)
-    if img.ndim == 2:
-        flat = img.ravel()
-        out = np.interp(flat, xvals, yvals).reshape(img.shape).astype(np.float32)
-    elif img.ndim == 3 and img.shape[2] in (3, 4):
-        h, w, c = img.shape
-        out = np.empty_like(img, dtype=np.float32)
-        # Apply same curve to each color channel
-        for ch in range(c):
-            flat = img[..., ch].ravel()
-            out[..., ch] = np.interp(flat, xvals, yvals).reshape(h, w)
-    else:
-        # Fallback: just return clamped image
-        out = img
+    # Apply the 1D LUT per channel using np.interp (piecewise linear)
+    # Optimization: np.interp can handle N-D 'x' array directly.
+    # No need to loop over channels or flatten/reshape if we pass the whole array.
+    
+    out = np.interp(img, xvals, yvals).astype(np.float32, copy=False)
 
     return np.clip(out, 0.0, 1.0)
 

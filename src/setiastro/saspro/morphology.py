@@ -46,10 +46,9 @@ def apply_morphology(image: np.ndarray, *, operation: str = "erosion",
 
     if img.ndim == 3 and img.shape[2] == 3:
         u8 = (img * 255.0).astype(np.uint8)
-        ch = cv2.split(u8)
-        ch = [_do(c) for c in ch]
-        out = cv2.merge(ch).astype(np.float32) / 255.0
-        return np.clip(out, 0.0, 1.0)
+        # OpenCV morphology functions handle multi-channel images natively (independent channels)
+        out_u8 = _do(u8)
+        return (out_u8.astype(np.float32) / 255.0).clip(0.0, 1.0)
 
     raise ValueError("Input image must be mono (H,W)/(H,W,1) or RGB (H,W,3).")
 
