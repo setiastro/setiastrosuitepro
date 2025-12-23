@@ -1,7 +1,7 @@
 # pro/tools/star_spikes.py
 from __future__ import annotations
 import numpy as np
-
+import math
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSplitter, QSizePolicy, QWidget, QApplication,
                              QFormLayout, QGroupBox, QDoubleSpinBox, QSpinBox, 
