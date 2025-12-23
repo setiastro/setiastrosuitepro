@@ -100,6 +100,7 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_compl
 from astropy.wcs.utils import skycoord_to_pixel
 from astropy.coordinates import SkyCoord
 from astropy import units as u
+import plotly.graph_objects as go
 
 from astropy.io.fits import Header
 from pyvo.dal.exceptions import DALServiceError
