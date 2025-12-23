@@ -10,8 +10,9 @@
   - Implementation of UI elements, startup window, caching methods, lazy imports, utils functions, and other code optimizations across the entire project
 - 🥈 [Joaquin Rodriguez](https://github.com/jrhuerta)
   - Project migration to Poetry and other small optimizations
-- 🥉 [Michael Lev](https://github.com/MichaelLevAstro)
+- [Michael Lev](https://github.com/MichaelLevAstro)
   - Addition of hebrew language
+- [Tim Dicke](https://github.com/dickett)
 ---
 
 ## Overview
