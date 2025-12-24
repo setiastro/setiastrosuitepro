@@ -16,7 +16,7 @@
   - App testing
 - [Michael Lev](https://github.com/MichaelLevAstro)
   - Addition of hebrew language
-- [awitwicki]()
+- [Andrew Witwicki](https://github.com/awitwicki)
   - Addition of ukrainian language
 ---
 
