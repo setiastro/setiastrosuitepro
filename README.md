@@ -6,14 +6,14 @@
 ### Other contributors:
 - [Fabio Tempera](https://github.com/Ft2801) 🥇
   - Complete code refactoring of `setiastrosuitepro.py` (20,000+ lines)
-  - Addition of AstroSpikes tool and 10+ language translations
-  - Implementation of UI elements, startup window, caching methods, lazy imports, utils functions, app statistics, and other important code optimizations across the entire project
+  - Addition of AstroSpikes tool, secret minigame, and 10+ language translations
+  - Implementation of UI elements, startup window, caching methods, lazy imports, utils functions, better memory management, system resources monitor, app statistics, and other important code optimizations across the entire project
 - [Joaquin Rodriguez](https://github.com/jrhuerta)
-  - Project migration to Poetry and other small optimizations
+  - Project migration to Poetry
 - [Tim Dicke](https://github.com/dickett)
   - Windows and MacOS installer development
   - MacOS Wiki instructions maintenance
-  - App testing
+  - App testing and small bugfixes
 - [Michael Lev](https://github.com/MichaelLevAstro)
   - Addition of hebrew language
 - [Andrew Witwicki](https://github.com/awitwicki)
