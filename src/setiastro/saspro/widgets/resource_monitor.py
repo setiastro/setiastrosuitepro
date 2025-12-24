@@ -251,3 +251,13 @@ class SystemMonitorWidget(QQuickWidget):
                 event.accept()
         else:
             super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            from PyQt6.QtCore import QSettings
+            settings = QSettings("SetiAstro", "SetiAstroSuitePro")
+            pos = self.pos()
+            settings.setValue("ui/resource_monitor_pos_x", pos.x())
+            settings.setValue("ui/resource_monitor_pos_y", pos.y())
+            event.accept()
+        super().mouseReleaseEvent(event)
