@@ -235,3 +235,19 @@ class SystemMonitorWidget(QQuickWidget):
             root.setProperty("ramUsage", self.backend.ramUsage)
             root.setProperty("gpuUsage", self.backend.gpuUsage)
             root.setProperty("appRamString", self.backend.appRamString)
+
+    # --- Drag & Drop Support ---
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if event.buttons() & Qt.MouseButton.LeftButton:
+            if hasattr(self, "_drag_start_pos"):
+                self.move(event.globalPosition().toPoint() - self._drag_start_pos)
+                event.accept()
+        else:
+            super().mouseMoveEvent(event)
