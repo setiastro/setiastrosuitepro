@@ -58,6 +58,122 @@
       <source>Smooth (x0.01):</source>
       <translation>Levigatura (x0.01):</translation>
     </message>
+    <message>
+      <source>ABE</source>
+      <translation>ABE</translation>
+    </message>
+    <message>
+      <source>Add Sample</source>
+      <translation>Aggiungi campione</translation>
+    </message>
+    <message>
+      <source>Auto Generate Samples</source>
+      <translation>Genera campioni automaticamente</translation>
+    </message>
+    <message>
+      <source>Automatic Background Extraction</source>
+      <translation>Estrazione sfondo automatica</translation>
+    </message>
+    <message>
+      <source>Background Model</source>
+      <translation>Modello sfondo</translation>
+    </message>
+    <message>
+      <source>Clear Samples</source>
+      <translation>Cancella campioni</translation>
+    </message>
+    <message>
+      <source>Correction</source>
+      <translation>Correzione</translation>
+    </message>
+    <message>
+      <source>Divide</source>
+      <translation>Dividi</translation>
+    </message>
+    <message>
+      <source>Done</source>
+      <translation>Fatto</translation>
+    </message>
+    <message>
+      <source>Error</source>
+      <translation>Errore</translation>
+    </message>
+    <message>
+      <source>Generate Background Model</source>
+      <translation>Genera modello sfondo</translation>
+    </message>
+    <message>
+      <source>Grid Size</source>
+      <translation>Dimensione griglia</translation>
+    </message>
+    <message>
+      <source>Iterations</source>
+      <translation>Iterazioni</translation>
+    </message>
+    <message>
+      <source>Polynomial Degree</source>
+      <translation>Grado polinomiale</translation>
+    </message>
+    <message>
+      <source>Processing...</source>
+      <translation>Elaborazione...</translation>
+    </message>
+    <message>
+      <source>Protect Stars</source>
+      <translation>Proteggi stelle</translation>
+    </message>
+    <message>
+      <source>Remove Sample</source>
+      <translation>Rimuovi campione</translation>
+    </message>
+    <message>
+      <source>Reset</source>
+      <translation>Ripristina</translation>
+    </message>
+    <message>
+      <source>Sample Points</source>
+      <translation>Punti campione</translation>
+    </message>
+    <message>
+      <source>Sample Radius</source>
+      <translation>Raggio campione</translation>
+    </message>
+    <message>
+      <source>Samples</source>
+      <translation>Campioni</translation>
+    </message>
+    <message>
+      <source>Show Grid</source>
+      <translation>Mostra griglia</translation>
+    </message>
+    <message>
+      <source>Show Samples</source>
+      <translation>Mostra campioni</translation>
+    </message>
+    <message>
+      <source>Smoothness</source>
+      <translation>Morbidezza</translation>
+    </message>
+    <message>
+      <source>Star Detection</source>
+      <translation>Rilevamento stelle</translation>
+    </message>
+    <message>
+      <source>Subtract</source>
+      <translation>Sottrai</translation>
+    </message>
+    <message>
+      <source>Threshold</source>
+      <translation>Soglia</translation>
+    </message>
+    <message>
+      <source>Tolerance</source>
+      <translation>Tolleranza</translation>
+    </message>
+    <message>
+      <source>Warning</source>
+      <translation>Avviso</translation>
+    </message>
   </context>
   <context>
     <name>AberrationAIDialog</name>
@@ -140,6 +256,54 @@
       <source>Written by Franklin Marek</source>
       <translation>Scritto da Franklin Marek</translation>
     </message>
+    <message>
+      <source>About</source>
+      <translation>Informazioni</translation>
+    </message>
+    <message>
+      <source>All rights reserved</source>
+      <translation>Tutti i diritti riservati</translation>
+    </message>
+    <message>
+      <source>Build</source>
+      <translation>Build</translation>
+    </message>
+    <message>
+      <source>Check for Updates</source>
+      <translation>Controlla aggiornamenti</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Chiudi</translation>
+    </message>
+    <message>
+      <source>Copyright</source>
+      <translation>Copyright</translation>
+    </message>
+    <message>
+      <source>Credits</source>
+      <translation>Crediti</translation>
+    </message>
+    <message>
+      <source>Documentation</source>
+      <translation>Documentazione</translation>
+    </message>
+    <message>
+      <source>License</source>
+      <translation>Licenza</translation>
+    </message>
+    <message>
+      <source>Support</source>
+      <translation>Supporto</translation>
+    </message>
+    <message>
+      <source>Version</source>
+      <translation>Versione</translation>
+    </message>
+    <message>
+      <source>Website</source>
+      <translation>Sito web</translation>
+    </message>
   </context>
   <context>
     <name>AddStarsDialog</name>
@@ -178,6 +342,82 @@
     <message>
       <source>Stars-Only View:</source>
       <translation>Vista solo stelle:</translation>
+    </message>
+    <message>
+      <source>Add</source>
+      <translation>Aggiungi</translation>
+    </message>
+    <message>
+      <source>Add Stars</source>
+      <translation>Aggiungi stelle</translation>
+    </message>
+    <message>
+      <source>Blend Mode</source>
+      <translation>Modalità fusione</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Chiudi</translation>
+    </message>
+    <message>
+      <source>Create new image</source>
+      <translation>Crea nuova immagine</translation>
+    </message>
+    <message>
+      <source>Lighten</source>
+      <translation>Schiarisci</translation>
+    </message>
+    <message>
+      <source>Linear Dodge</source>
+      <translation>Dodge lineare</translation>
+    </message>
+    <message>
+      <source>Preview</source>
+      <translation>Anteprima</translation>
+    </message>
+    <message>
+      <source>Processing...</source>
+      <translation>Elaborazione...</translation>
+    </message>
+    <message>
+      <source>Replace active image</source>
+      <translation>Sostituisci immagine attiva</translation>
+    </message>
+    <message>
+      <source>Reset</source>
+      <translation>Ripristina</translation>
+    </message>
+    <message>
+      <source>Screen</source>
+      <translation>Schermo</translation>
+    </message>
+    <message>
+      <source>Select starless view</source>
+      <translation>Seleziona vista senza stelle</translation>
+    </message>
+    <message>
+      <source>Select stars view</source>
+      <translation>Seleziona vista solo stelle</translation>
+    </message>
+    <message>
+      <source>Star Brightness</source>
+      <translation>Luminosità stelle</translation>
+    </message>
+    <message>
+      <source>Star Saturation</source>
+      <translation>Saturazione stelle</translation>
+    </message>
+    <message>
+      <source>Star Size</source>
+      <translation>Dimensione stelle</translation>
+    </message>
+    <message>
+      <source>Starless Image</source>
+      <translation>Immagine senza stelle</translation>
+    </message>
+    <message>
+      <source>Stars-Only Image</source>
+      <translation>Immagine solo stelle</translation>
     </message>
   </context>
   <context>
@@ -2108,6 +2348,70 @@ Continuare?</translation>
       <source>Find Background</source>
       <translation>Trova sfondo</translation>
     </message>
+    <message>
+      <source>Apply</source>
+      <translation>Applica</translation>
+    </message>
+    <message>
+      <source>Blue</source>
+      <translation>Blu</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Chiudi</translation>
+    </message>
+    <message>
+      <source>Current Background</source>
+      <translation>Sfondo attuale</translation>
+    </message>
+    <message>
+      <source>Custom</source>
+      <translation>Personalizzato</translation>
+    </message>
+    <message>
+      <source>Green</source>
+      <translation>Verde</translation>
+    </message>
+    <message>
+      <source>Neutral Gray</source>
+      <translation>Grigio neutro</translation>
+    </message>
+    <message>
+      <source>Pick Region</source>
+      <translation>Seleziona regione</translation>
+    </message>
+    <message>
+      <source>Preview</source>
+      <translation>Anteprima</translation>
+    </message>
+    <message>
+      <source>Processing...</source>
+      <translation>Elaborazione...</translation>
+    </message>
+    <message>
+      <source>Red</source>
+      <translation>Rosso</translation>
+    </message>
+    <message>
+      <source>Region Size</source>
+      <translation>Dimensione regione</translation>
+    </message>
+    <message>
+      <source>Reset</source>
+      <translation>Ripristina</translation>
+    </message>
+    <message>
+      <source>Sample Region</source>
+      <translation>Regione campione</translation>
+    </message>
+    <message>
+      <source>Target Background</source>
+      <translation>Sfondo target</translation>
+    </message>
+    <message>
+      <source>Target Color</source>
+      <translation>Colore target</translation>
+    </message>
   </context>
   <context>
     <name>BatchConvertDialog</name>
@@ -2130,6 +2434,90 @@ Continuare?</translation>
     <message>
       <source>Start</source>
       <translation>Avvia</translation>
+    </message>
+    <message>
+      <source>16-bit</source>
+      <translation>16-bit</translation>
+    </message>
+    <message>
+      <source>32-bit float</source>
+      <translation>32-bit float</translation>
+    </message>
+    <message>
+      <source>8-bit</source>
+      <translation>8-bit</translation>
+    </message>
+    <message>
+      <source>Add Files...</source>
+      <translation>Aggiungi file...</translation>
+    </message>
+    <message>
+      <source>Add Folder...</source>
+      <translation>Aggiungi cartella...</translation>
+    </message>
+    <message>
+      <source>Bit Depth</source>
+      <translation>Profondità bit</translation>
+    </message>
+    <message>
+      <source>Browse...</source>
+      <translation>Sfoglia...</translation>
+    </message>
+    <message>
+      <source>Clear All</source>
+      <translation>Cancella tutto</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Chiudi</translation>
+    </message>
+    <message>
+      <source>Complete</source>
+      <translation>Completo</translation>
+    </message>
+    <message>
+      <source>Convert</source>
+      <translation>Converti</translation>
+    </message>
+    <message>
+      <source>Converted {0} files</source>
+      <translation>Convertiti {0} file</translation>
+    </message>
+    <message>
+      <source>Converting file {0} of {1}</source>
+      <translation>Conversione file {0} di {1}</translation>
+    </message>
+    <message>
+      <source>Custom directory</source>
+      <translation>Cartella personalizzata</translation>
+    </message>
+    <message>
+      <source>Input Files</source>
+      <translation>File di input</translation>
+    </message>
+    <message>
+      <source>Output Directory</source>
+      <translation>Cartella di output</translation>
+    </message>
+    <message>
+      <source>Output Format</source>
+      <translation>Formato output</translation>
+    </message>
+    <message>
+      <source>Output Settings</source>
+      <translation>Impostazioni output</translation>
+    </message>
+    <message>
+      <source>Processing...</source>
+      <translation>Elaborazione...</translation>
+    </message>
+    <message>
+      <source>Remove Selected</source>
+      <translation>Rimuovi selezionati</translation>
+    </message>
+    <message>
+      <source>Same as input</source>
+      <translation>Come input</translation>
     </message>
   </context>
   <context>
@@ -3982,6 +4370,50 @@ Frame: {1} @ {2} fps</translation>
       <source>Where</source>
       <translation>Dove</translation>
     </message>
+    <message>
+      <source>All</source>
+      <translation>Tutto</translation>
+    </message>
+    <message>
+      <source>Category</source>
+      <translation>Categoria</translation>
+    </message>
+    <message>
+      <source>Cheat Sheet</source>
+      <translation>Foglio riassuntivo</translation>
+    </message>
+    <message>
+      <source>Edit</source>
+      <translation>Modifica</translation>
+    </message>
+    <message>
+      <source>File</source>
+      <translation>File</translation>
+    </message>
+    <message>
+      <source>Image</source>
+      <translation>Immagine</translation>
+    </message>
+    <message>
+      <source>Keyboard Shortcuts</source>
+      <translation>Scorciatoie tastiera</translation>
+    </message>
+    <message>
+      <source>Print</source>
+      <translation>Stampa</translation>
+    </message>
+    <message>
+      <source>Search</source>
+      <translation>Cerca</translation>
+    </message>
+    <message>
+      <source>Tools</source>
+      <translation>Strumenti</translation>
+    </message>
+    <message>
+      <source>View</source>
+      <translation>Vista</translation>
+    </message>
   </context>
   <context>
     <name>ContinuumSubtractTab</name>
@@ -4336,6 +4768,70 @@ Frame: {1} @ {2} fps</translation>
     <message>
       <source>Method</source>
       <translation>Metodo</translation>
+    </message>
+    <message>
+      <source>AHD</source>
+      <translation>AHD</translation>
+    </message>
+    <message>
+      <source>Apply</source>
+      <translation>Applica</translation>
+    </message>
+    <message>
+      <source>Auto-detect</source>
+      <translation>Rilevamento auto</translation>
+    </message>
+    <message>
+      <source>BGGR</source>
+      <translation>BGGR</translation>
+    </message>
+    <message>
+      <source>Bayer Pattern</source>
+      <translation>Pattern Bayer</translation>
+    </message>
+    <message>
+      <source>Bilinear</source>
+      <translation>Bilineare</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Chiudi</translation>
+    </message>
+    <message>
+      <source>DCB</source>
+      <translation>DCB</translation>
+    </message>
+    <message>
+      <source>GBRG</source>
+      <translation>GBRG</translation>
+    </message>
+    <message>
+      <source>GRBG</source>
+      <translation>GRBG</translation>
+    </message>
+    <message>
+      <source>Preview</source>
+      <translation>Anteprima</translation>
+    </message>
+    <message>
+      <source>Processing...</source>
+      <translation>Elaborazione...</translation>
+    </message>
+    <message>
+      <source>RGGB</source>
+      <translation>RGGB</translation>
+    </message>
+    <message>
+      <source>Reset</source>
+      <translation>Ripristina</translation>
+    </message>
+    <message>
+      <source>Super Pixel</source>
+      <translation>Super Pixel</translation>
+    </message>
+    <message>
+      <source>VNG</source>
+      <translation>VNG</translation>
     </message>
   </context>
   <context>
@@ -4698,6 +5194,94 @@ Remove it from the recent projects list?</source>
 {path}
 
 Rimuoverlo dalla lista progetti recenti?</translation>
+    </message>
+    <message>
+      <source>All Files</source>
+      <translation>Tutti i file</translation>
+    </message>
+    <message>
+      <source>Cancel</source>
+      <translation>Annulla</translation>
+    </message>
+    <message>
+      <source>Clear Recent</source>
+      <translation>Cancella recenti</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Chiudi</translation>
+    </message>
+    <message>
+      <source>Close All</source>
+      <translation>Chiudi tutti</translation>
+    </message>
+    <message>
+      <source>Don't Save</source>
+      <translation>Non salvare</translation>
+    </message>
+    <message>
+      <source>Exit</source>
+      <translation>Esci</translation>
+    </message>
+    <message>
+      <source>Export As...</source>
+      <translation>Esporta come...</translation>
+    </message>
+    <message>
+      <source>Export...</source>
+      <translation>Esporta...</translation>
+    </message>
+    <message>
+      <source>Image Files</source>
+      <translation>File immagine</translation>
+    </message>
+    <message>
+      <source>New</source>
+      <translation>Nuovo</translation>
+    </message>
+    <message>
+      <source>Open Recent</source>
+      <translation>Apri recenti</translation>
+    </message>
+    <message>
+      <source>Open...</source>
+      <translation>Apri...</translation>
+    </message>
+    <message>
+      <source>Print...</source>
+      <translation>Stampa...</translation>
+    </message>
+    <message>
+      <source>Save</source>
+      <translation>Salva</translation>
+    </message>
+    <message>
+      <source>Save All</source>
+      <translation>Salva tutti</translation>
+    </message>
+    <message>
+      <source>Save As...</source>
+      <translation>Salva come...</translation>
+    </message>
+    <message>
+      <source>Save Image</source>
+      <translation>Salva immagine</translation>
+    </message>
+    <message>
+      <source>Save changes before closing?</source>
+      <translation>Salvare le modifiche prima di chiudere?</translation>
+    </message>
+    <message>
+      <source>Select Image File</source>
+      <translation>Seleziona file immagine</translation>
+    </message>
+    <message>
+      <source>Unsaved Changes</source>
+      <translation>Modifiche non salvate</translation>
+    </message>
+    <message>
+      <source>Untitled</source>
+      <translation>Senza titolo</translation>
     </message>
   </context>
   <context>
@@ -5489,6 +6073,30 @@ Risolvi di nuovo con il fitting della distorsione abilitato in ASTAP.</translati
       <source>Zoom Out</source>
       <translation>Riduci</translation>
     </message>
+    <message>
+      <source>Actual Size</source>
+      <translation>Dimensione reale</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Chiudi</translation>
+    </message>
+    <message>
+      <source>Fit to Window</source>
+      <translation>Adatta alla finestra</translation>
+    </message>
+    <message>
+      <source>Info</source>
+      <translation>Info</translation>
+    </message>
+    <message>
+      <source>Open</source>
+      <translation>Apri</translation>
+    </message>
+    <message>
+      <source>Pan</source>
+      <translation>Panoramica</translation>
+    </message>
   </context>
   <context>
     <name>ImageSubWindow</name>
@@ -5604,6 +6212,66 @@ Chiudere comunque?</translation>
       <source>View</source>
       <translation>Vista</translation>
     </message>
+    <message>
+      <source>100%</source>
+      <translation>100%</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Chiudi</translation>
+    </message>
+    <message>
+      <source>Fit</source>
+      <translation>Adatta</translation>
+    </message>
+    <message>
+      <source>Maximize</source>
+      <translation>Massimizza</translation>
+    </message>
+    <message>
+      <source>Minimize</source>
+      <translation>Riduci a icona</translation>
+    </message>
+    <message>
+      <source>Modified</source>
+      <translation>Modificato</translation>
+    </message>
+    <message>
+      <source>Read-only</source>
+      <translation>Sola lettura</translation>
+    </message>
+    <message>
+      <source>Redo</source>
+      <translation>Ripeti</translation>
+    </message>
+    <message>
+      <source>Restore</source>
+      <translation>Ripristina</translation>
+    </message>
+    <message>
+      <source>Save</source>
+      <translation>Salva</translation>
+    </message>
+    <message>
+      <source>Save As...</source>
+      <translation>Salva come...</translation>
+    </message>
+    <message>
+      <source>Undo</source>
+      <translation>Annulla</translation>
+    </message>
+    <message>
+      <source>Unsaved changes</source>
+      <translation>Modifiche non salvate</translation>
+    </message>
+    <message>
+      <source>Zoom In</source>
+      <translation>Ingrandisci</translation>
+    </message>
+    <message>
+      <source>Zoom Out</source>
+      <translation>Riduci</translation>
+    </message>
   </context>
   <context>
     <name>LivePreviewDialog</name>
@@ -5644,6 +6312,138 @@ Chiudere comunque?</translation>
     <message>
       <source>Select Entire Image</source>
       <translation>Seleziona intera immagine</translation>
+    </message>
+    <message>
+      <source>Apply</source>
+      <translation>Applica</translation>
+    </message>
+    <message>
+      <source>Center</source>
+      <translation>Centro</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Chiudi</translation>
+    </message>
+    <message>
+      <source>Create Mask</source>
+      <translation>Crea maschera</translation>
+    </message>
+    <message>
+      <source>Custom Mask</source>
+      <translation>Maschera personalizzata</translation>
+    </message>
+    <message>
+      <source>Detection Threshold</source>
+      <translation>Soglia rilevamento</translation>
+    </message>
+    <message>
+      <source>End Point</source>
+      <translation>Punto finale</translation>
+    </message>
+    <message>
+      <source>Feather</source>
+      <translation>Sfumatura</translation>
+    </message>
+    <message>
+      <source>Gradient</source>
+      <translation>Gradiente</translation>
+    </message>
+    <message>
+      <source>Gradient Mask</source>
+      <translation>Maschera gradiente</translation>
+    </message>
+    <message>
+      <source>Grow Radius</source>
+      <translation>Raggio crescita</translation>
+    </message>
+    <message>
+      <source>High</source>
+      <translation>Alto</translation>
+    </message>
+    <message>
+      <source>Invert</source>
+      <translation>Inverti</translation>
+    </message>
+    <message>
+      <source>Linear</source>
+      <translation>Lineare</translation>
+    </message>
+    <message>
+      <source>Load Mask...</source>
+      <translation>Carica maschera...</translation>
+    </message>
+    <message>
+      <source>Low</source>
+      <translation>Basso</translation>
+    </message>
+    <message>
+      <source>Luminance Mask</source>
+      <translation>Maschera luminanza</translation>
+    </message>
+    <message>
+      <source>Mask Type</source>
+      <translation>Tipo maschera</translation>
+    </message>
+    <message>
+      <source>Preview</source>
+      <translation>Anteprima</translation>
+    </message>
+    <message>
+      <source>Processing...</source>
+      <translation>Elaborazione...</translation>
+    </message>
+    <message>
+      <source>Radial</source>
+      <translation>Radiale</translation>
+    </message>
+    <message>
+      <source>Radial Mask</source>
+      <translation>Maschera radiale</translation>
+    </message>
+    <message>
+      <source>Radius</source>
+      <translation>Raggio</translation>
+    </message>
+    <message>
+      <source>Range</source>
+      <translation>Intervallo</translation>
+    </message>
+    <message>
+      <source>Range Mask</source>
+      <translation>Maschera intervallo</translation>
+    </message>
+    <message>
+      <source>Reset</source>
+      <translation>Ripristina</translation>
+    </message>
+    <message>
+      <source>Save Mask...</source>
+      <translation>Salva maschera...</translation>
+    </message>
+    <message>
+      <source>Settings</source>
+      <translation>Impostazioni</translation>
+    </message>
+    <message>
+      <source>Smoothness</source>
+      <translation>Morbidezza</translation>
+    </message>
+    <message>
+      <source>Star Detection</source>
+      <translation>Rilevamento stelle</translation>
+    </message>
+    <message>
+      <source>Star Mask</source>
+      <translation>Maschera stelle</translation>
+    </message>
+    <message>
+      <source>Star Size</source>
+      <translation>Dimensione stelle</translation>
+    </message>
+    <message>
+      <source>Start Point</source>
+      <translation>Punto iniziale</translation>
     </message>
   </context>
   <context>
@@ -5692,6 +6492,46 @@ Chiudere comunque?</translation>
       <source>Use this image as mask:</source>
       <translation>Usa questa immagine come maschera:</translation>
     </message>
+    <message>
+      <source>Apply Mask</source>
+      <translation>Applica maschera</translation>
+    </message>
+    <message>
+      <source>Create Mask</source>
+      <translation>Crea maschera</translation>
+    </message>
+    <message>
+      <source>Hide Mask</source>
+      <translation>Nascondi maschera</translation>
+    </message>
+    <message>
+      <source>Invert Mask</source>
+      <translation>Inverti maschera</translation>
+    </message>
+    <message>
+      <source>Load Mask...</source>
+      <translation>Carica maschera...</translation>
+    </message>
+    <message>
+      <source>Mask Active</source>
+      <translation>Maschera attiva</translation>
+    </message>
+    <message>
+      <source>No Mask</source>
+      <translation>Nessuna maschera</translation>
+    </message>
+    <message>
+      <source>Remove Mask</source>
+      <translation>Rimuovi maschera</translation>
+    </message>
+    <message>
+      <source>Save Mask...</source>
+      <translation>Salva maschera...</translation>
+    </message>
+    <message>
+      <source>Show Mask</source>
+      <translation>Mostra maschera</translation>
+    </message>
   </context>
   <context>
     <name>MaskPreviewDialog</name>
@@ -5702,6 +6542,38 @@ Chiudere comunque?</translation>
     <message>
       <source>Push as New Document…</source>
       <translation>Applica come nuovo documento…</translation>
+    </message>
+    <message>
+      <source>Apply</source>
+      <translation>Applica</translation>
+    </message>
+    <message>
+      <source>Blue</source>
+      <translation>Blu</translation>
+    </message>
+    <message>
+      <source>Cancel</source>
+      <translation>Annulla</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Chiudi</translation>
+    </message>
+    <message>
+      <source>Color</source>
+      <translation>Colore</translation>
+    </message>
+    <message>
+      <source>Green</source>
+      <translation>Verde</translation>
+    </message>
+    <message>
+      <source>Opacity</source>
+      <translation>Opacità</translation>
+    </message>
+    <message>
+      <source>Red</source>
+      <translation>Rosso</translation>
     </message>
   </context>
   <context>
@@ -6300,6 +7172,166 @@ Continuare?</translation>
       <source>solve-field returned no header.</source>
       <translation>solve-field non ha restituito header.</translation>
     </message>
+    <message>
+      <source>Active Image</source>
+      <translation>Immagine attiva</translation>
+    </message>
+    <message>
+      <source>Apply WCS</source>
+      <translation>Applica WCS</translation>
+    </message>
+    <message>
+      <source>Auto-detect</source>
+      <translation>Rilevamento auto</translation>
+    </message>
+    <message>
+      <source>Cancel</source>
+      <translation>Annulla</translation>
+    </message>
+    <message>
+      <source>Center Dec</source>
+      <translation>Dec centrale</translation>
+    </message>
+    <message>
+      <source>Center RA</source>
+      <translation>AR centrale</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Chiudi</translation>
+    </message>
+    <message>
+      <source>Copy to Clipboard</source>
+      <translation>Copia negli appunti</translation>
+    </message>
+    <message>
+      <source>Dec (J2000)</source>
+      <translation>Dec (J2000)</translation>
+    </message>
+    <message>
+      <source>Failed</source>
+      <translation>Fallito</translation>
+    </message>
+    <message>
+      <source>Field Height</source>
+      <translation>Altezza campo</translation>
+    </message>
+    <message>
+      <source>Field Width</source>
+      <translation>Larghezza campo</translation>
+    </message>
+    <message>
+      <source>From File...</source>
+      <translation>Da file...</translation>
+    </message>
+    <message>
+      <source>Hints</source>
+      <translation>Suggerimenti</translation>
+    </message>
+    <message>
+      <source>Image</source>
+      <translation>Immagine</translation>
+    </message>
+    <message>
+      <source>Local</source>
+      <translation>Locale</translation>
+    </message>
+    <message>
+      <source>No solution found</source>
+      <translation>Nessuna soluzione trovata</translation>
+    </message>
+    <message>
+      <source>Online</source>
+      <translation>Online</translation>
+    </message>
+    <message>
+      <source>Pixel Scale</source>
+      <translation>Scala pixel</translation>
+    </message>
+    <message>
+      <source>Plate Solver</source>
+      <translation>Plate Solver</translation>
+    </message>
+    <message>
+      <source>Processing...</source>
+      <translation>Elaborazione...</translation>
+    </message>
+    <message>
+      <source>RA (J2000)</source>
+      <translation>AR (J2000)</translation>
+    </message>
+    <message>
+      <source>RMS Error</source>
+      <translation>Errore RMS</translation>
+    </message>
+    <message>
+      <source>Radius</source>
+      <translation>Raggio</translation>
+    </message>
+    <message>
+      <source>Ready</source>
+      <translation>Pronto</translation>
+    </message>
+    <message>
+      <source>Results</source>
+      <translation>Risultati</translation>
+    </message>
+    <message>
+      <source>Rotation</source>
+      <translation>Rotazione</translation>
+    </message>
+    <message>
+      <source>Scale</source>
+      <translation>Scala</translation>
+    </message>
+    <message>
+      <source>Solution found!</source>
+      <translation>Soluzione trovata!</translation>
+    </message>
+    <message>
+      <source>Solve</source>
+      <translation>Risolvi</translation>
+    </message>
+    <message>
+      <source>Solver</source>
+      <translation>Risolutore</translation>
+    </message>
+    <message>
+      <source>Solver Settings</source>
+      <translation>Impostazioni risolutore</translation>
+    </message>
+    <message>
+      <source>Solving...</source>
+      <translation>Risoluzione...</translation>
+    </message>
+    <message>
+      <source>Stars Matched</source>
+      <translation>Stelle abbinate</translation>
+    </message>
+    <message>
+      <source>Status</source>
+      <translation>Stato</translation>
+    </message>
+    <message>
+      <source>Success</source>
+      <translation>Successo</translation>
+    </message>
+    <message>
+      <source>Timeout</source>
+      <translation>Timeout</translation>
+    </message>
+    <message>
+      <source>View in Aladin</source>
+      <translation>Visualizza in Aladin</translation>
+    </message>
+    <message>
+      <source>arcsec/pixel</source>
+      <translation>arcsec/pixel</translation>
+    </message>
+    <message>
+      <source>deg</source>
+      <translation>gradi</translation>
+    </message>
   </context>
   <context>
     <name>PlateSolverDialog</name>
@@ -6557,6 +7589,102 @@ Impostalo in Preferenze → Eseguibile ASTAP.</translation>
       <source>e.g. 5.0</source>
       <translation>es. 5.0</translation>
     </message>
+    <message>
+      <source>Advanced Options</source>
+      <translation>Opzioni avanzate</translation>
+    </message>
+    <message>
+      <source>Apply to Image</source>
+      <translation>Applica a immagine</translation>
+    </message>
+    <message>
+      <source>Browse...</source>
+      <translation>Sfoglia...</translation>
+    </message>
+    <message>
+      <source>Cancel</source>
+      <translation>Annulla</translation>
+    </message>
+    <message>
+      <source>Center Dec</source>
+      <translation>Dec centrale</translation>
+    </message>
+    <message>
+      <source>Center RA</source>
+      <translation>AR centrale</translation>
+    </message>
+    <message>
+      <source>Downsample</source>
+      <translation>Sottocampiona</translation>
+    </message>
+    <message>
+      <source>Export Annotation</source>
+      <translation>Esporta annotazione</translation>
+    </message>
+    <message>
+      <source>Image Source</source>
+      <translation>Sorgente immagine</translation>
+    </message>
+    <message>
+      <source>Load from file</source>
+      <translation>Carica da file</translation>
+    </message>
+    <message>
+      <source>Max</source>
+      <translation>Max</translation>
+    </message>
+    <message>
+      <source>Max Stars</source>
+      <translation>Stelle max</translation>
+    </message>
+    <message>
+      <source>Min</source>
+      <translation>Min</translation>
+    </message>
+    <message>
+      <source>Pixel Scale Range</source>
+      <translation>Intervallo scala pixel</translation>
+    </message>
+    <message>
+      <source>Plate Solve</source>
+      <translation>Plate Solve</translation>
+    </message>
+    <message>
+      <source>Save WCS</source>
+      <translation>Salva WCS</translation>
+    </message>
+    <message>
+      <source>Search Parameters</source>
+      <translation>Parametri ricerca</translation>
+    </message>
+    <message>
+      <source>Search Radius</source>
+      <translation>Raggio ricerca</translation>
+    </message>
+    <message>
+      <source>Solution</source>
+      <translation>Soluzione</translation>
+    </message>
+    <message>
+      <source>Solve</source>
+      <translation>Risolvi</translation>
+    </message>
+    <message>
+      <source>Solver Configuration</source>
+      <translation>Configurazione risolutore</translation>
+    </message>
+    <message>
+      <source>Solver Type</source>
+      <translation>Tipo risolutore</translation>
+    </message>
+    <message>
+      <source>Use active view</source>
+      <translation>Usa vista attiva</translation>
+    </message>
+    <message>
+      <source>Use image hints</source>
+      <translation>Usa suggerimenti immagine</translation>
+    </message>
   </context>
   <context>
     <name>PreviewPane</name>
@@ -6606,6 +7734,74 @@ Impostalo in Preferenze → Eseguibile ASTAP.</translation>
     <message>
       <source>Trial detect stars</source>
       <translation>Test rilevamento stelle</translation>
+    </message>
+    <message>
+      <source>Affine</source>
+      <translation>Affine</translation>
+    </message>
+    <message>
+      <source>Align B to G</source>
+      <translation>Allinea B a G</translation>
+    </message>
+    <message>
+      <source>Align R to G</source>
+      <translation>Allinea R a G</translation>
+    </message>
+    <message>
+      <source>Apply</source>
+      <translation>Applica</translation>
+    </message>
+    <message>
+      <source>Blue</source>
+      <translation>Blu</translation>
+    </message>
+    <message>
+      <source>Green</source>
+      <translation>Verde</translation>
+    </message>
+    <message>
+      <source>Homography</source>
+      <translation>Omografia</translation>
+    </message>
+    <message>
+      <source>Method</source>
+      <translation>Metodo</translation>
+    </message>
+    <message>
+      <source>Polynomial</source>
+      <translation>Polinomiale</translation>
+    </message>
+    <message>
+      <source>Polynomial Order</source>
+      <translation>Ordine polinomiale</translation>
+    </message>
+    <message>
+      <source>Preview</source>
+      <translation>Anteprima</translation>
+    </message>
+    <message>
+      <source>Processing...</source>
+      <translation>Elaborazione...</translation>
+    </message>
+    <message>
+      <source>RGB Alignment</source>
+      <translation>Allineamento RGB</translation>
+    </message>
+    <message>
+      <source>Red</source>
+      <translation>Rosso</translation>
+    </message>
+    <message>
+      <source>Reference Channel</source>
+      <translation>Canale riferimento</translation>
+    </message>
+    <message>
+      <source>Reset</source>
+      <translation>Ripristina</translation>
+    </message>
+    <message>
+      <source>Show before/after</source>
+      <translation>Mostra prima/dopo</translation>
     </message>
   </context>
   <context>
@@ -6936,6 +8132,500 @@ Impostalo in Preferenze → Eseguibile ASTAP.</translation>
       <source>Theme:</source>
       <translation>Tema:</translation>
     </message>
+    <message>
+      <source>(Not required) Additional Model Paths for Denoise and Satellites</source>
+      <translation>(Non richiesto) Percorsi modelli aggiuntivi per Denoise e Satelliti</translation>
+    </message>
+    <message>
+      <source>AHD (default)</source>
+      <translation>AHD (predefinito)</translation>
+    </message>
+    <message>
+      <source>About</source>
+      <translation>Informazioni</translation>
+    </message>
+    <message>
+      <source>Adobe DNG demosaic:</source>
+      <translation>Demosaic Adobe DNG:</translation>
+    </message>
+    <message>
+      <source>Apply</source>
+      <translation>Applica</translation>
+    </message>
+    <message>
+      <source>Astrometry.net API key</source>
+      <translation>Chiave API Astrometry.net</translation>
+    </message>
+    <message>
+      <source>Astrometry.net Fallback:</source>
+      <translation>Fallback Astrometry.net:</translation>
+    </message>
+    <message>
+      <source>Auto</source>
+      <translation>Auto</translation>
+    </message>
+    <message>
+      <source>Auto (system)</source>
+      <translation>Auto (sistema)</translation>
+    </message>
+    <message>
+      <source>Auto-detect (use FITS header)</source>
+      <translation>Rileva automaticamente (usa header FITS)</translation>
+    </message>
+    <message>
+      <source>Auto-save</source>
+      <translation>Auto-save</translation>
+    </message>
+    <message>
+      <source>Best (bilinear, slower)</source>
+      <translation>Best (bilinear, slower)</translation>
+    </message>
+    <message>
+      <source>Browse...</source>
+      <translation>Sfoglia...</translation>
+    </message>
+    <message>
+      <source>Browse…</source>
+      <translation>Sfoglia…</translation>
+    </message>
+    <message>
+      <source>Bundle folder is stored under the SASP data folder</source>
+      <translation>Bundle folder is stored under the SASP data folder</translation>
+    </message>
+    <message>
+      <source>Bundles folder</source>
+      <translation>Bundles folder</translation>
+    </message>
+    <message>
+      <source>CPU</source>
+      <translation>CPU</translation>
+    </message>
+    <message>
+      <source>Cancel</source>
+      <translation>Annulla</translation>
+    </message>
+    <message>
+      <source>Check this if your mono camera produces FITS that look like color mosaics</source>
+      <translation>Check this if your mono camera produces FITS that look like color mosaics</translation>
+    </message>
+    <message>
+      <source>Choose SASP Data Folder</source>
+      <translation>Choose SASP Data Folder</translation>
+    </message>
+    <message>
+      <source>Choose…</source>
+      <translation>Choose…</translation>
+    </message>
+    <message>
+      <source>Cosmic Clarity</source>
+      <translation>Cosmic Clarity</translation>
+    </message>
+    <message>
+      <source>Cosmic Clarity Denoise Path:</source>
+      <translation>Cosmic Clarity Denoise Path:</translation>
+    </message>
+    <message>
+      <source>Cosmic Clarity Executable Path (XL model included)</source>
+      <translation>Cosmic Clarity Executable Path (XL model included)</translation>
+    </message>
+    <message>
+      <source>Cosmic Clarity Path:</source>
+      <translation>Cosmic Clarity Path:</translation>
+    </message>
+    <message>
+      <source>Cosmic Clarity Satellite Path:</source>
+      <translation>Cosmic Clarity Satellite Path:</translation>
+    </message>
+    <message>
+      <source>Cosmic Clarity Settings</source>
+      <translation>Cosmic Clarity Settings</translation>
+    </message>
+    <message>
+      <source>Cosmic Clarity Stellar Path:</source>
+      <translation>Cosmic Clarity Stellar Path:</translation>
+    </message>
+    <message>
+      <source>DHT (high quality)</source>
+      <translation>DHT (high quality)</translation>
+    </message>
+    <message>
+      <source>Dark</source>
+      <translation>Scuro</translation>
+    </message>
+    <message>
+      <source>Dark (default)</source>
+      <translation>Dark (default)</translation>
+    </message>
+    <message>
+      <source>Debayer Mono FITS</source>
+      <translation>Debayer Mono FITS</translation>
+    </message>
+    <message>
+      <source>Debayer Pattern</source>
+      <translation>Debayer Pattern</translation>
+    </message>
+    <message>
+      <source>Debayer mono files using FITS header BAYERPAT/COLORTYP</source>
+      <translation>Debayer mono files using FITS header BAYERPAT/COLORTYP</translation>
+    </message>
+    <message>
+      <source>Default Image Directory</source>
+      <translation>Default Image Directory</translation>
+    </message>
+    <message>
+      <source>Default: 128. Smaller tiles use less memory but may be slower.</source>
+      <translation>Default: 128. Smaller tiles use less memory but may be slower.</translation>
+    </message>
+    <message>
+      <source>Default: 2048. Smaller = less memory but slower preview renders.</source>
+      <translation>Default: 2048. Smaller = less memory but slower preview renders.</translation>
+    </message>
+    <message>
+      <source>Default: 2048. Smaller = less memory, slower.</source>
+      <translation>Default: 2048. Smaller = less memory, slower.</translation>
+    </message>
+    <message>
+      <source>Default: 256. Larger can be faster but uses more memory.</source>
+      <translation>Default: 256. Larger can be faster but uses more memory.</translation>
+    </message>
+    <message>
+      <source>Default: 3. Number of images to keep in memory.</source>
+      <translation>Default: 3. Number of images to keep in memory.</translation>
+    </message>
+    <message>
+      <source>Default: 4 (or half your CPU cores).</source>
+      <translation>Default: 4 (or half your CPU cores).</translation>
+    </message>
+    <message>
+      <source>Default: 4. Too many workers can exceed GPU memory.</source>
+      <translation>Default: 4. Too many workers can exceed GPU memory.</translation>
+    </message>
+    <message>
+      <source>Default: Half your CPU cores (min 2).</source>
+      <translation>Default: Half your CPU cores (min 2).</translation>
+    </message>
+    <message>
+      <source>Denoise Model Downloaded</source>
+      <translation>Denoise Model Downloaded</translation>
+    </message>
+    <message>
+      <source>Display</source>
+      <translation>Display</translation>
+    </message>
+    <message>
+      <source>Display-Stretch: Soft/Hard Profile</source>
+      <translation>Display-Stretch: Soft/Hard Profile</translation>
+    </message>
+    <message>
+      <source>Download Denoise Model</source>
+      <translation>Download Denoise Model</translation>
+    </message>
+    <message>
+      <source>Download Error</source>
+      <translation>Download Error</translation>
+    </message>
+    <message>
+      <source>Download Satellite Model</source>
+      <translation>Download Satellite Model</translation>
+    </message>
+    <message>
+      <source>Downloading Denoise Model…</source>
+      <translation>Downloading Denoise Model…</translation>
+    </message>
+    <message>
+      <source>Downloading Satellite Model…</source>
+      <translation>Downloading Satellite Model…</translation>
+    </message>
+    <message>
+      <source>Draft</source>
+      <translation>Draft</translation>
+    </message>
+    <message>
+      <source>Enable GPU</source>
+      <translation>Abilita GPU</translation>
+    </message>
+    <message>
+      <source>Enable auto-save</source>
+      <translation>Enable auto-save</translation>
+    </message>
+    <message>
+      <source>Failed to download model:
+{0}</source>
+      <translation>Failed to download model:
+{0}</translation>
+    </message>
+    <message>
+      <source>Fast (nearest, pixelated)</source>
+      <translation>Fast (nearest, pixelated)</translation>
+    </message>
+    <message>
+      <source>Files</source>
+      <translation>Files</translation>
+    </message>
+    <message>
+      <source>GPU Acceleration</source>
+      <translation>Accelerazione GPU</translation>
+    </message>
+    <message>
+      <source>GPU Device</source>
+      <translation>GPU Device</translation>
+    </message>
+    <message>
+      <source>General</source>
+      <translation>Generale</translation>
+    </message>
+    <message>
+      <source>GraXpert</source>
+      <translation>GraXpert</translation>
+    </message>
+    <message>
+      <source>GraXpert Executable Path</source>
+      <translation>GraXpert Executable Path</translation>
+    </message>
+    <message>
+      <source>GraXpert Path:</source>
+      <translation>GraXpert Path:</translation>
+    </message>
+    <message>
+      <source>GraXpert Settings</source>
+      <translation>GraXpert Settings</translation>
+    </message>
+    <message>
+      <source>Grid Overlay</source>
+      <translation>Grid Overlay</translation>
+    </message>
+    <message>
+      <source>Grid line color:</source>
+      <translation>Grid line color:</translation>
+    </message>
+    <message>
+      <source>Hard</source>
+      <translation>Hard</translation>
+    </message>
+    <message>
+      <source>High</source>
+      <translation>Alto</translation>
+    </message>
+    <message>
+      <source>Image Quality</source>
+      <translation>Image Quality</translation>
+    </message>
+    <message>
+      <source>Image Viewer</source>
+      <translation>Image Viewer</translation>
+    </message>
+    <message>
+      <source>Image cache size (slots):</source>
+      <translation>Image cache size (slots):</translation>
+    </message>
+    <message>
+      <source>Inference Device:</source>
+      <translation>Inference Device:</translation>
+    </message>
+    <message>
+      <source>Interface</source>
+      <translation>Interfaccia</translation>
+    </message>
+    <message>
+      <source>Interval (minutes)</source>
+      <translation>Interval (minutes)</translation>
+    </message>
+    <message>
+      <source>Language</source>
+      <translation>Lingua</translation>
+    </message>
+    <message>
+      <source>Light</source>
+      <translation>Chiaro</translation>
+    </message>
+    <message>
+      <source>Local Astrometry.net (solve-field):</source>
+      <translation>Local Astrometry.net (solve-field):</translation>
+    </message>
+    <message>
+      <source>MB</source>
+      <translation>MB</translation>
+    </message>
+    <message>
+      <source>MF Deconvolution Tile size (px):</source>
+      <translation>MF Deconvolution Tile size (px):</translation>
+    </message>
+    <message>
+      <source>MF Parallel workers:</source>
+      <translation>MF Parallel workers:</translation>
+    </message>
+    <message>
+      <source>Maximum steps</source>
+      <translation>Maximum steps</translation>
+    </message>
+    <message>
+      <source>Memory Limit</source>
+      <translation>Memory Limit</translation>
+    </message>
+    <message>
+      <source>Memory settings</source>
+      <translation>Memory settings</translation>
+    </message>
+    <message>
+      <source>Multi-Frame Deconvolution</source>
+      <translation>Multi-Frame Deconvolution</translation>
+    </message>
+    <message>
+      <source>None (skip fallback)</source>
+      <translation>None (skip fallback)</translation>
+    </message>
+    <message>
+      <source>Normal</source>
+      <translation>Normal</translation>
+    </message>
+    <message>
+      <source>Note: Some settings require restarting SASpro to take effect.</source>
+      <translation>Note: Some settings require restarting SASpro to take effect.</translation>
+    </message>
+    <message>
+      <source>Number of parallel image workers:</source>
+      <translation>Number of parallel image workers:</translation>
+    </message>
+    <message>
+      <source>Number of parallel stacking workers:</source>
+      <translation>Number of parallel stacking workers:</translation>
+    </message>
+    <message>
+      <source>OK</source>
+      <translation>OK</translation>
+    </message>
+    <message>
+      <source>PPG (fast)</source>
+      <translation>PPG (fast)</translation>
+    </message>
+    <message>
+      <source>Performance</source>
+      <translation>Prestazioni</translation>
+    </message>
+    <message>
+      <source>Plate Solving</source>
+      <translation>Plate Solving</translation>
+    </message>
+    <message>
+      <source>Plate-Solve Engine</source>
+      <translation>Plate-Solve Engine</translation>
+    </message>
+    <message>
+      <source>Preferences</source>
+      <translation>Preferenze</translation>
+    </message>
+    <message>
+      <source>Preview Quality</source>
+      <translation>Preview Quality</translation>
+    </message>
+    <message>
+      <source>Preview Tile size (px):</source>
+      <translation>Preview Tile size (px):</translation>
+    </message>
+    <message>
+      <source>Processing</source>
+      <translation>Elaborazione</translation>
+    </message>
+    <message>
+      <source>RAW Handling</source>
+      <translation>RAW Handling</translation>
+    </message>
+    <message>
+      <source>Rendering Quality:</source>
+      <translation>Rendering Quality:</translation>
+    </message>
+    <message>
+      <source>Restore Defaults</source>
+      <translation>Restore Defaults</translation>
+    </message>
+    <message>
+      <source>SASP Data Folder:</source>
+      <translation>SASP Data Folder:</translation>
+    </message>
+    <message>
+      <source>Satellite Model Downloaded</source>
+      <translation>Satellite Model Downloaded</translation>
+    </message>
+    <message>
+      <source>Seti Astro Suite Pro</source>
+      <translation>Seti Astro Suite Pro</translation>
+    </message>
+    <message>
+      <source>Seti Astro User ID</source>
+      <translation>Seti Astro User ID</translation>
+    </message>
+    <message>
+      <source>Settings</source>
+      <translation>Impostazioni</translation>
+    </message>
+    <message>
+      <source>Show grid overlay in image views</source>
+      <translation>Show grid overlay in image views</translation>
+    </message>
+    <message>
+      <source>Soft (default)</source>
+      <translation>Soft (default)</translation>
+    </message>
+    <message>
+      <source>Some changes require a restart to take effect.</source>
+      <translation>Some changes require a restart to take effect.</translation>
+    </message>
+    <message>
+      <source>Stacking Suite</source>
+      <translation>Stacking Suite</translation>
+    </message>
+    <message>
+      <source>Stacking Suite Tile size (px):</source>
+      <translation>Stacking Suite Tile size (px):</translation>
+    </message>
+    <message>
+      <source>System</source>
+      <translation>System</translation>
+    </message>
+    <message>
+      <source>The Denoise model has been downloaded to:
+{0}</source>
+      <translation>The Denoise model has been downloaded to:
+{0}</translation>
+    </message>
+    <message>
+      <source>The Satellite model has been downloaded to:
+{0}</source>
+      <translation>The Satellite model has been downloaded to:
+{0}</translation>
+    </message>
+    <message>
+      <source>Theme</source>
+      <translation>Tema</translation>
+    </message>
+    <message>
+      <source>Threads</source>
+      <translation>Threads</translation>
+    </message>
+    <message>
+      <source>Tile size (px):</source>
+      <translation>Tile size (px):</translation>
+    </message>
+    <message>
+      <source>Undo History</source>
+      <translation>Undo History</translation>
+    </message>
+    <message>
+      <source>Use Astrometry.net (web) as fallback</source>
+      <translation>Use Astrometry.net (web) as fallback</translation>
+    </message>
+    <message>
+      <source>Web fallback (free quota)</source>
+      <translation>Web fallback (free quota)</translation>
+    </message>
+    <message>
+      <source>Your numeric user ID from setiastrophotography.com:</source>
+      <translation>Your numeric user ID from setiastrophotography.com:</translation>
+    </message>
+    <message>
+      <source>rawpy extra args (advanced, JSON list):</source>
+      <translation>rawpy extra args (advanced, JSON list):</translation>
+    </message>
   </context>
   <context>
     <name>ShortcutButton</name>
@@ -6997,6 +8687,206 @@ Impostalo in Preferenze → Eseguibile ASTAP.</translation>
     <message>
       <source>Signature / Insert</source>
       <translation>Firma / Inserisci</translation>
+    </message>
+    <message>
+      <source>Add Image</source>
+      <translation>Aggiungi immagine</translation>
+    </message>
+    <message>
+      <source>Add Shape</source>
+      <translation>Aggiungi forma</translation>
+    </message>
+    <message>
+      <source>Add Text</source>
+      <translation>Aggiungi testo</translation>
+    </message>
+    <message>
+      <source>Apply to Active Document</source>
+      <translation>Applica a documento attivo</translation>
+    </message>
+    <message>
+      <source>Arrow (down)</source>
+      <translation>Freccia (giù)</translation>
+    </message>
+    <message>
+      <source>Arrow (left)</source>
+      <translation>Freccia (sinistra)</translation>
+    </message>
+    <message>
+      <source>Arrow (poly)</source>
+      <translation>Freccia (poli)</translation>
+    </message>
+    <message>
+      <source>Arrow (right)</source>
+      <translation>Freccia (destra)</translation>
+    </message>
+    <message>
+      <source>Arrow (up)</source>
+      <translation>Freccia (su)</translation>
+    </message>
+    <message>
+      <source>Bold</source>
+      <translation>Grassetto</translation>
+    </message>
+    <message>
+      <source>Border:</source>
+      <translation>Border:</translation>
+    </message>
+    <message>
+      <source>Choose Image</source>
+      <translation>Choose Image</translation>
+    </message>
+    <message>
+      <source>Choose…</source>
+      <translation>Choose…</translation>
+    </message>
+    <message>
+      <source>Color:</source>
+      <translation>Color:</translation>
+    </message>
+    <message>
+      <source>Delete Overlay</source>
+      <translation>Delete Overlay</translation>
+    </message>
+    <message>
+      <source>Ellipse</source>
+      <translation>Ellisse</translation>
+    </message>
+    <message>
+      <source>Enter text:</source>
+      <translation>Enter text:</translation>
+    </message>
+    <message>
+      <source>Failed to read the active view; cannot apply overlays.</source>
+      <translation>Failed to read the active view; cannot apply overlays.</translation>
+    </message>
+    <message>
+      <source>Fill:</source>
+      <translation>Fill:</translation>
+    </message>
+    <message>
+      <source>Fit to Preview</source>
+      <translation>Fit to Preview</translation>
+    </message>
+    <message>
+      <source>Font size:</source>
+      <translation>Font size:</translation>
+    </message>
+    <message>
+      <source>Font:</source>
+      <translation>Font:</translation>
+    </message>
+    <message>
+      <source>Height:</source>
+      <translation>Height:</translation>
+    </message>
+    <message>
+      <source>Image</source>
+      <translation>Immagine</translation>
+    </message>
+    <message>
+      <source>Image Files (*.png *.jpg *.jpeg *.bmp *.gif *.tif *.tiff);;All Files (*)</source>
+      <translation>Image Files (*.png *.jpg *.jpeg *.bmp *.gif *.tif *.tiff);;All Files (*)</translation>
+    </message>
+    <message>
+      <source>Italic</source>
+      <translation>Corsivo</translation>
+    </message>
+    <message>
+      <source>Line</source>
+      <translation>Linea</translation>
+    </message>
+    <message>
+      <source>Move Down</source>
+      <translation>Sposta giù</translation>
+    </message>
+    <message>
+      <source>Move Up</source>
+      <translation>Sposta su</translation>
+    </message>
+    <message>
+      <source>No active document to apply overlays.</source>
+      <translation>No active document to apply overlays.</translation>
+    </message>
+    <message>
+      <source>None</source>
+      <translation>None</translation>
+    </message>
+    <message>
+      <source>Outline:</source>
+      <translation>Outline:</translation>
+    </message>
+    <message>
+      <source>Overlays (text, images, shapes)</source>
+      <translation>Overlays (text, images, shapes)</translation>
+    </message>
+    <message>
+      <source>Overlays applied to active document.</source>
+      <translation>Overlays applied to active document.</translation>
+    </message>
+    <message>
+      <source>Processing...</source>
+      <translation>Elaborazione...</translation>
+    </message>
+    <message>
+      <source>Ready</source>
+      <translation>Pronto</translation>
+    </message>
+    <message>
+      <source>Rectangle</source>
+      <translation>Rettangolo</translation>
+    </message>
+    <message>
+      <source>Render at full resolution</source>
+      <translation>Render at full resolution</translation>
+    </message>
+    <message>
+      <source>Selected overlay</source>
+      <translation>Selected overlay</translation>
+    </message>
+    <message>
+      <source>Select…</source>
+      <translation>Select…</translation>
+    </message>
+    <message>
+      <source>Shape</source>
+      <translation>Forma</translation>
+    </message>
+    <message>
+      <source>Signature Insert</source>
+      <translation>Inserisci firma</translation>
+    </message>
+    <message>
+      <source>Size:</source>
+      <translation>Size:</translation>
+    </message>
+    <message>
+      <source>Text</source>
+      <translation>Testo</translation>
+    </message>
+    <message>
+      <source>Triangle</source>
+      <translation>Triangle</translation>
+    </message>
+    <message>
+      <source>Type:</source>
+      <translation>Type:</translation>
+    </message>
+    <message>
+      <source>Width:</source>
+      <translation>Width:</translation>
+    </message>
+    <message>
+      <source>Zoom In</source>
+      <translation>Ingrandisci</translation>
+    </message>
+    <message>
+      <source>Zoom Out</source>
+      <translation>Riduci</translation>
+    </message>
+    <message>
+      <source>px</source>
+      <translation>px</translation>
     </message>
   </context>
   <context>
@@ -7112,6 +9002,14 @@ Impostalo in Preferenze → Eseguibile ASTAP.</translation>
     <message>
       <source>Version {0}</source>
       <translation>Versione {0}</translation>
+    </message>
+    <message>
+      <source>Initializing GPU…</source>
+      <translation>Inizializzazione GPU…</translation>
+    </message>
+    <message>
+      <source>Splash</source>
+      <translation>Splash</translation>
     </message>
   </context>
   <context>
@@ -15327,6 +17225,1822 @@ Tieni Ctrl mentre trascini per copiare la soluzione astrometrica (WCS) su un'alt
     <message>
       <source>Status: {}</source>
       <translation>Stato: {}</translation>
+    </message>
+  </context>
+  <context>
+    <name>AberrationCorrectionDialog</name>
+    <message>
+      <source>Aberration Correction</source>
+      <translation>Correzione aberrazione</translation>
+    </message>
+    <message>
+      <source>Analyzing stars...</source>
+      <translation>Analisi stelle...</translation>
+    </message>
+    <message>
+      <source>Apply</source>
+      <translation>Applica</translation>
+    </message>
+    <message>
+      <source>Applying correction...</source>
+      <translation>Applicazione correzione...</translation>
+    </message>
+    <message>
+      <source>Astigmatism Correction</source>
+      <translation>Correzione astigmatismo</translation>
+    </message>
+    <message>
+      <source>Chromatic Aberration</source>
+      <translation>Aberrazione cromatica</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Chiudi</translation>
+    </message>
+    <message>
+      <source>Coma Correction</source>
+      <translation>Correzione coma</translation>
+    </message>
+    <message>
+      <source>Distortion</source>
+      <translation>Distorsione</translation>
+    </message>
+    <message>
+      <source>Enable AI Correction</source>
+      <translation>Abilita correzione AI</translation>
+    </message>
+    <message>
+      <source>Field Curvature</source>
+      <translation>Curvatura di campo</translation>
+    </message>
+    <message>
+      <source>Load Model</source>
+      <translation>Carica modello</translation>
+    </message>
+    <message>
+      <source>Model</source>
+      <translation>Modello</translation>
+    </message>
+    <message>
+      <source>Preview</source>
+      <translation>Anteprima</translation>
+    </message>
+    <message>
+      <source>Processing...</source>
+      <translation>Elaborazione...</translation>
+    </message>
+    <message>
+      <source>Radius</source>
+      <translation>Raggio</translation>
+    </message>
+    <message>
+      <source>Reset</source>
+      <translation>Ripristina</translation>
+    </message>
+    <message>
+      <source>Strength</source>
+      <translation>Intensità</translation>
+    </message>
+  </context>
+  <context>
+    <name>BatchFITSDialog</name>
+    <message>
+      <source>Action</source>
+      <translation>Azione</translation>
+    </message>
+    <message>
+      <source>Add Files...</source>
+      <translation>Aggiungi file...</translation>
+    </message>
+    <message>
+      <source>Add Folder...</source>
+      <translation>Aggiungi cartella...</translation>
+    </message>
+    <message>
+      <source>Add Keyword</source>
+      <translation>Aggiungi parola chiave</translation>
+    </message>
+    <message>
+      <source>Apply</source>
+      <translation>Applica</translation>
+    </message>
+    <message>
+      <source>Batch FITS Header Modifier</source>
+      <translation>Modificatore header FITS batch</translation>
+    </message>
+    <message>
+      <source>Cancel</source>
+      <translation>Annulla</translation>
+    </message>
+    <message>
+      <source>Clear All</source>
+      <translation>Cancella tutto</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Chiudi</translation>
+    </message>
+    <message>
+      <source>Comment</source>
+      <translation>Commento</translation>
+    </message>
+    <message>
+      <source>Delete</source>
+      <translation>Elimina</translation>
+    </message>
+    <message>
+      <source>Header Keywords</source>
+      <translation>Parole chiave header</translation>
+    </message>
+    <message>
+      <source>Input Files</source>
+      <translation>File di input</translation>
+    </message>
+    <message>
+      <source>Keyword</source>
+      <translation>Parola chiave</translation>
+    </message>
+    <message>
+      <source>Modified {0} files</source>
+      <translation>Modificati {0} file</translation>
+    </message>
+    <message>
+      <source>Processing...</source>
+      <translation>Elaborazione...</translation>
+    </message>
+    <message>
+      <source>Remove Keyword</source>
+      <translation>Rimuovi parola chiave</translation>
+    </message>
+    <message>
+      <source>Remove Selected</source>
+      <translation>Rimuovi selezionati</translation>
+    </message>
+    <message>
+      <source>Set</source>
+      <translation>Imposta</translation>
+    </message>
+    <message>
+      <source>Value</source>
+      <translation>Valore</translation>
+    </message>
+  </context>
+  <context>
+    <name>BlemishBlasterDialog</name>
+    <message>
+      <source>Apply</source>
+      <translation>Applica</translation>
+    </message>
+    <message>
+      <source>Blemish Blaster</source>
+      <translation>Blemish Blaster</translation>
+    </message>
+    <message>
+      <source>Brush Hardness</source>
+      <translation>Durezza pennello</translation>
+    </message>
+    <message>
+      <source>Brush Size</source>
+      <translation>Dimensione pennello</translation>
+    </message>
+    <message>
+      <source>Clone</source>
+      <translation>Clona</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Chiudi</translation>
+    </message>
+    <message>
+      <source>Heal</source>
+      <translation>Guarisci</translation>
+    </message>
+    <message>
+      <source>Mode</source>
+      <translation>Modo</translation>
+    </message>
+    <message>
+      <source>Opacity</source>
+      <translation>Opacità</translation>
+    </message>
+    <message>
+      <source>Pan</source>
+      <translation>Panoramica</translation>
+    </message>
+    <message>
+      <source>Patch</source>
+      <translation>Patch</translation>
+    </message>
+    <message>
+      <source>Preview</source>
+      <translation>Anteprima</translation>
+    </message>
+    <message>
+      <source>Redo</source>
+      <translation>Ripeti</translation>
+    </message>
+    <message>
+      <source>Reset</source>
+      <translation>Ripristina</translation>
+    </message>
+    <message>
+      <source>Set Source Point</source>
+      <translation>Imposta punto sorgente</translation>
+    </message>
+    <message>
+      <source>Show source overlay</source>
+      <translation>Mostra sovrapposizione sorgente</translation>
+    </message>
+    <message>
+      <source>Source</source>
+      <translation>Sorgente</translation>
+    </message>
+    <message>
+      <source>Undo</source>
+      <translation>Annulla</translation>
+    </message>
+    <message>
+      <source>Zoom</source>
+      <translation>Zoom</translation>
+    </message>
+  </context>
+  <context>
+    <name>BlinkComparatorDialog</name>
+    <message>
+      <source>Add Images</source>
+      <translation>Aggiungi immagini</translation>
+    </message>
+    <message>
+      <source>Align Images</source>
+      <translation>Allinea immagini</translation>
+    </message>
+    <message>
+      <source>Blink Comparator</source>
+      <translation>Comparatore blink</translation>
+    </message>
+    <message>
+      <source>Clear All</source>
+      <translation>Cancella tutto</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Chiudi</translation>
+    </message>
+    <message>
+      <source>Delay (ms)</source>
+      <translation>Ritardo (ms)</translation>
+    </message>
+    <message>
+      <source>Loop</source>
+      <translation>Ripeti</translation>
+    </message>
+    <message>
+      <source>Pause</source>
+      <translation>Pausa</translation>
+    </message>
+    <message>
+      <source>Play</source>
+      <translation>Riproduci</translation>
+    </message>
+    <message>
+      <source>Remove Image</source>
+      <translation>Rimuovi immagine</translation>
+    </message>
+    <message>
+      <source>Speed</source>
+      <translation>Velocità</translation>
+    </message>
+    <message>
+      <source>Stop</source>
+      <translation>Ferma</translation>
+    </message>
+  </context>
+  <context>
+    <name>CLAHEDialog</name>
+    <message>
+      <source>Apply</source>
+      <translation>Applica</translation>
+    </message>
+    <message>
+      <source>Apply to Luminance only</source>
+      <translation>Applica solo alla luminanza</translation>
+    </message>
+    <message>
+      <source>CLAHE</source>
+      <translation>CLAHE</translation>
+    </message>
+    <message>
+      <source>Clip Limit</source>
+      <translation>Limite clip</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Chiudi</translation>
+    </message>
+    <message>
+      <source>Grid Size</source>
+      <translation>Dimensione griglia</translation>
+    </message>
+    <message>
+      <source>Preview</source>
+      <translation>Anteprima</translation>
+    </message>
+    <message>
+      <source>Processing...</source>
+      <translation>Elaborazione...</translation>
+    </message>
+    <message>
+      <source>Reset</source>
+      <translation>Ripristina</translation>
+    </message>
+  </context>
+  <context>
+    <name>ContinuumSubtractDialog</name>
+    <message>
+      <source>Apply</source>
+      <translation>Applica</translation>
+    </message>
+    <message>
+      <source>Auto Calculate</source>
+      <translation>Calcola automaticamente</translation>
+    </message>
+    <message>
+      <source>Broadband Image</source>
+      <translation>Immagine banda larga</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Chiudi</translation>
+    </message>
+    <message>
+      <source>Continuum Subtract</source>
+      <translation>Sottrazione continuum</translation>
+    </message>
+    <message>
+      <source>Create new image</source>
+      <translation>Crea nuova immagine</translation>
+    </message>
+    <message>
+      <source>Narrowband Image</source>
+      <translation>Immagine banda stretta</translation>
+    </message>
+    <message>
+      <source>Output</source>
+      <translation>Output</translation>
+    </message>
+    <message>
+      <source>Preview</source>
+      <translation>Anteprima</translation>
+    </message>
+    <message>
+      <source>Processing...</source>
+      <translation>Elaborazione...</translation>
+    </message>
+    <message>
+      <source>Replace active image</source>
+      <translation>Sostituisci immagine attiva</translation>
+    </message>
+    <message>
+      <source>Reset</source>
+      <translation>Ripristina</translation>
+    </message>
+    <message>
+      <source>Scale Factor</source>
+      <translation>Fattore scala</translation>
+    </message>
+    <message>
+      <source>Select broadband view</source>
+      <translation>Seleziona vista banda larga</translation>
+    </message>
+    <message>
+      <source>Select narrowband view</source>
+      <translation>Seleziona vista banda stretta</translation>
+    </message>
+  </context>
+  <context>
+    <name>ConvoDialog</name>
+    <message>
+      <source>Apply</source>
+      <translation>Applica</translation>
+    </message>
+    <message>
+      <source>Box</source>
+      <translation>Box</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Chiudi</translation>
+    </message>
+    <message>
+      <source>Convolution</source>
+      <translation>Convoluzione</translation>
+    </message>
+    <message>
+      <source>Convolution / Deconvolution</source>
+      <translation>Convoluzione / Deconvoluzione</translation>
+    </message>
+    <message>
+      <source>Custom</source>
+      <translation>Personalizzato</translation>
+    </message>
+    <message>
+      <source>Deconvolution</source>
+      <translation>Deconvoluzione</translation>
+    </message>
+    <message>
+      <source>Gaussian</source>
+      <translation>Gaussiano</translation>
+    </message>
+    <message>
+      <source>Generate PSF</source>
+      <translation>Genera PSF</translation>
+    </message>
+    <message>
+      <source>Iterations</source>
+      <translation>Iterazioni</translation>
+    </message>
+    <message>
+      <source>Kernel</source>
+      <translation>Kernel</translation>
+    </message>
+    <message>
+      <source>Load PSF</source>
+      <translation>Carica PSF</translation>
+    </message>
+    <message>
+      <source>Mode</source>
+      <translation>Modo</translation>
+    </message>
+    <message>
+      <source>PSF</source>
+      <translation>PSF</translation>
+    </message>
+    <message>
+      <source>Preview</source>
+      <translation>Anteprima</translation>
+    </message>
+    <message>
+      <source>Processing...</source>
+      <translation>Elaborazione...</translation>
+    </message>
+    <message>
+      <source>Regularization</source>
+      <translation>Regolarizzazione</translation>
+    </message>
+    <message>
+      <source>Reset</source>
+      <translation>Ripristina</translation>
+    </message>
+    <message>
+      <source>Sigma</source>
+      <translation>Sigma</translation>
+    </message>
+    <message>
+      <source>Size</source>
+      <translation>Dimensione</translation>
+    </message>
+  </context>
+  <context>
+    <name>CosmicClarityDialog</name>
+    <message>
+      <source>Apply</source>
+      <translation>Applica</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Chiudi</translation>
+    </message>
+    <message>
+      <source>Cosmic Clarity</source>
+      <translation>Cosmic Clarity</translation>
+    </message>
+    <message>
+      <source>Denoise</source>
+      <translation>Riduci rumore</translation>
+    </message>
+    <message>
+      <source>Detail</source>
+      <translation>Dettaglio</translation>
+    </message>
+    <message>
+      <source>Detect Trails</source>
+      <translation>Rileva scie</translation>
+    </message>
+    <message>
+      <source>GPU Acceleration</source>
+      <translation>Accelerazione GPU</translation>
+    </message>
+    <message>
+      <source>Load Model</source>
+      <translation>Carica modello</translation>
+    </message>
+    <message>
+      <source>Model</source>
+      <translation>Modello</translation>
+    </message>
+    <message>
+      <source>Preview</source>
+      <translation>Anteprima</translation>
+    </message>
+    <message>
+      <source>Processing...</source>
+      <translation>Elaborazione...</translation>
+    </message>
+    <message>
+      <source>Remove Trails</source>
+      <translation>Rimuovi scie</translation>
+    </message>
+    <message>
+      <source>Reset</source>
+      <translation>Ripristina</translation>
+    </message>
+    <message>
+      <source>Satellite Trail Removal</source>
+      <translation>Rimozione scie satellite</translation>
+    </message>
+    <message>
+      <source>Sharpen</source>
+      <translation>Nitidezza</translation>
+    </message>
+    <message>
+      <source>Strength</source>
+      <translation>Intensità</translation>
+    </message>
+  </context>
+  <context>
+    <name>CrashDialog</name>
+    <message>
+      <source>An error has occurred</source>
+      <translation>Si è verificato un errore</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Chiudi</translation>
+    </message>
+    <message>
+      <source>Copy to Clipboard</source>
+      <translation>Copia negli appunti</translation>
+    </message>
+    <message>
+      <source>Crash Report</source>
+      <translation>Rapporto crash</translation>
+    </message>
+    <message>
+      <source>Don't Send</source>
+      <translation>Non inviare</translation>
+    </message>
+    <message>
+      <source>Error Details</source>
+      <translation>Dettagli errore</translation>
+    </message>
+    <message>
+      <source>Restart Application</source>
+      <translation>Riavvia applicazione</translation>
+    </message>
+    <message>
+      <source>Send Report</source>
+      <translation>Invia rapporto</translation>
+    </message>
+  </context>
+  <context>
+    <name>CropDialog</name>
+    <message>
+      <source>16:9</source>
+      <translation>16:9</translation>
+    </message>
+    <message>
+      <source>3:2</source>
+      <translation>3:2</translation>
+    </message>
+    <message>
+      <source>4:3</source>
+      <translation>4:3</translation>
+    </message>
+    <message>
+      <source>Angle</source>
+      <translation>Angolo</translation>
+    </message>
+    <message>
+      <source>Apply</source>
+      <translation>Applica</translation>
+    </message>
+    <message>
+      <source>Aspect Ratio</source>
+      <translation>Proporzioni</translation>
+    </message>
+    <message>
+      <source>Center</source>
+      <translation>Centro</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Chiudi</translation>
+    </message>
+    <message>
+      <source>Crop</source>
+      <translation>Ritaglia</translation>
+    </message>
+    <message>
+      <source>Custom</source>
+      <translation>Personalizzato</translation>
+    </message>
+    <message>
+      <source>Fill</source>
+      <translation>Riempi</translation>
+    </message>
+    <message>
+      <source>Fit</source>
+      <translation>Adatta</translation>
+    </message>
+    <message>
+      <source>Height</source>
+      <translation>Altezza</translation>
+    </message>
+    <message>
+      <source>Lock Aspect Ratio</source>
+      <translation>Blocca proporzioni</translation>
+    </message>
+    <message>
+      <source>Original</source>
+      <translation>Originale</translation>
+    </message>
+    <message>
+      <source>Preview</source>
+      <translation>Anteprima</translation>
+    </message>
+    <message>
+      <source>Reset</source>
+      <translation>Ripristina</translation>
+    </message>
+    <message>
+      <source>Rotation</source>
+      <translation>Rotazione</translation>
+    </message>
+    <message>
+      <source>Square (1:1)</source>
+      <translation>Quadrato (1:1)</translation>
+    </message>
+    <message>
+      <source>Width</source>
+      <translation>Larghezza</translation>
+    </message>
+    <message>
+      <source>X Offset</source>
+      <translation>Offset X</translation>
+    </message>
+    <message>
+      <source>Y Offset</source>
+      <translation>Offset Y</translation>
+    </message>
+  </context>
+  <context>
+    <name>CurveEditorDialog</name>
+    <message>
+      <source>Add Point</source>
+      <translation>Aggiungi punto</translation>
+    </message>
+    <message>
+      <source>Apply</source>
+      <translation>Applica</translation>
+    </message>
+    <message>
+      <source>Blue</source>
+      <translation>Blu</translation>
+    </message>
+    <message>
+      <source>Channel</source>
+      <translation>Canale</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Chiudi</translation>
+    </message>
+    <message>
+      <source>Curve Editor</source>
+      <translation>Editor curve</translation>
+    </message>
+    <message>
+      <source>Delete Preset</source>
+      <translation>Elimina preset</translation>
+    </message>
+    <message>
+      <source>Green</source>
+      <translation>Verde</translation>
+    </message>
+    <message>
+      <source>Input</source>
+      <translation>Input</translation>
+    </message>
+    <message>
+      <source>Linear Interpolation</source>
+      <translation>Interpolazione lineare</translation>
+    </message>
+    <message>
+      <source>Load Preset</source>
+      <translation>Carica preset</translation>
+    </message>
+    <message>
+      <source>Luminance</source>
+      <translation>Luminanza</translation>
+    </message>
+    <message>
+      <source>Output</source>
+      <translation>Output</translation>
+    </message>
+    <message>
+      <source>Presets</source>
+      <translation>Preset</translation>
+    </message>
+    <message>
+      <source>Preview</source>
+      <translation>Anteprima</translation>
+    </message>
+    <message>
+      <source>RGB</source>
+      <translation>RGB</translation>
+    </message>
+    <message>
+      <source>Red</source>
+      <translation>Rosso</translation>
+    </message>
+    <message>
+      <source>Remove Point</source>
+      <translation>Rimuovi punto</translation>
+    </message>
+    <message>
+      <source>Reset All</source>
+      <translation>Ripristina tutto</translation>
+    </message>
+    <message>
+      <source>Reset Channel</source>
+      <translation>Ripristina canale</translation>
+    </message>
+    <message>
+      <source>Save Preset</source>
+      <translation>Salva preset</translation>
+    </message>
+    <message>
+      <source>Show Histogram</source>
+      <translation>Mostra istogramma</translation>
+    </message>
+    <message>
+      <source>Smooth Curve</source>
+      <translation>Curva morbida</translation>
+    </message>
+  </context>
+  <context>
+    <name>DistortionCorrectionDialog</name>
+    <message>
+      <source>Apply</source>
+      <translation>Applica</translation>
+    </message>
+    <message>
+      <source>Barrel</source>
+      <translation>Barilotto</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Chiudi</translation>
+    </message>
+    <message>
+      <source>Distortion Correction</source>
+      <translation>Correzione distorsione</translation>
+    </message>
+    <message>
+      <source>Load Profile</source>
+      <translation>Carica profilo</translation>
+    </message>
+    <message>
+      <source>Mode</source>
+      <translation>Modo</translation>
+    </message>
+    <message>
+      <source>Pincushion</source>
+      <translation>Cuscinetto</translation>
+    </message>
+    <message>
+      <source>Polynomial</source>
+      <translation>Polinomiale</translation>
+    </message>
+    <message>
+      <source>Preview</source>
+      <translation>Anteprima</translation>
+    </message>
+    <message>
+      <source>Processing...</source>
+      <translation>Elaborazione...</translation>
+    </message>
+    <message>
+      <source>Reset</source>
+      <translation>Ripristina</translation>
+    </message>
+    <message>
+      <source>Save Profile</source>
+      <translation>Salva profilo</translation>
+    </message>
+    <message>
+      <source>Strength</source>
+      <translation>Intensità</translation>
+    </message>
+  </context>
+  <context>
+    <name>ExoPlanetDialog</name>
+    <message>
+      <source>Add Files...</source>
+      <translation>Aggiungi file...</translation>
+    </message>
+    <message>
+      <source>Add Reference</source>
+      <translation>Aggiungi riferimento</translation>
+    </message>
+    <message>
+      <source>Analysis</source>
+      <translation>Analisi</translation>
+    </message>
+    <message>
+      <source>Aperture Radius</source>
+      <translation>Raggio apertura</translation>
+    </message>
+    <message>
+      <source>Clear All</source>
+      <translation>Cancella tutto</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Chiudi</translation>
+    </message>
+    <message>
+      <source>Detect Transit</source>
+      <translation>Rileva transito</translation>
+    </message>
+    <message>
+      <source>Exoplanet Detector</source>
+      <translation>Rilevatore esopianeti</translation>
+    </message>
+    <message>
+      <source>Export Data</source>
+      <translation>Esporta dati</translation>
+    </message>
+    <message>
+      <source>Light Curve</source>
+      <translation>Curva di luce</translation>
+    </message>
+    <message>
+      <source>Load Data</source>
+      <translation>Carica dati</translation>
+    </message>
+    <message>
+      <source>No transit detected</source>
+      <translation>Nessun transito rilevato</translation>
+    </message>
+    <message>
+      <source>Processing...</source>
+      <translation>Elaborazione...</translation>
+    </message>
+    <message>
+      <source>Reference Stars</source>
+      <translation>Stelle di riferimento</translation>
+    </message>
+    <message>
+      <source>Remove Reference</source>
+      <translation>Rimuovi riferimento</translation>
+    </message>
+    <message>
+      <source>Results</source>
+      <translation>Risultati</translation>
+    </message>
+    <message>
+      <source>Save Plot</source>
+      <translation>Salva grafico</translation>
+    </message>
+    <message>
+      <source>Select on Image</source>
+      <translation>Seleziona su immagine</translation>
+    </message>
+    <message>
+      <source>Target Star</source>
+      <translation>Stella target</translation>
+    </message>
+    <message>
+      <source>Transit Depth</source>
+      <translation>Profondità transito</translation>
+    </message>
+    <message>
+      <source>Transit Detection</source>
+      <translation>Rilevamento transito</translation>
+    </message>
+    <message>
+      <source>Transit Duration</source>
+      <translation>Durata transito</translation>
+    </message>
+    <message>
+      <source>Transit detected!</source>
+      <translation>Transito rilevato!</translation>
+    </message>
+  </context>
+  <context>
+    <name>FITSModifierDialog</name>
+    <message>
+      <source>Add Keyword</source>
+      <translation>Aggiungi parola chiave</translation>
+    </message>
+    <message>
+      <source>Apply</source>
+      <translation>Applica</translation>
+    </message>
+    <message>
+      <source>Boolean</source>
+      <translation>Booleano</translation>
+    </message>
+    <message>
+      <source>Cancel</source>
+      <translation>Annulla</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Chiudi</translation>
+    </message>
+    <message>
+      <source>Comment</source>
+      <translation>Commento</translation>
+    </message>
+    <message>
+      <source>FITS Header Modifier</source>
+      <translation>Modificatore header FITS</translation>
+    </message>
+    <message>
+      <source>Float</source>
+      <translation>Float</translation>
+    </message>
+    <message>
+      <source>Integer</source>
+      <translation>Intero</translation>
+    </message>
+    <message>
+      <source>Keyword</source>
+      <translation>Parola chiave</translation>
+    </message>
+    <message>
+      <source>Keywords</source>
+      <translation>Parole chiave</translation>
+    </message>
+    <message>
+      <source>Modified</source>
+      <translation>Modificato</translation>
+    </message>
+    <message>
+      <source>Reload</source>
+      <translation>Ricarica</translation>
+    </message>
+    <message>
+      <source>Remove Keyword</source>
+      <translation>Rimuovi parola chiave</translation>
+    </message>
+    <message>
+      <source>Save</source>
+      <translation>Salva</translation>
+    </message>
+    <message>
+      <source>Save As...</source>
+      <translation>Salva come...</translation>
+    </message>
+    <message>
+      <source>String</source>
+      <translation>Stringa</translation>
+    </message>
+    <message>
+      <source>Type</source>
+      <translation>Tipo</translation>
+    </message>
+    <message>
+      <source>Value</source>
+      <translation>Valore</translation>
+    </message>
+  </context>
+  <context>
+    <name>FreqSepDialog</name>
+    <message>
+      <source>Add</source>
+      <translation>Aggiungi</translation>
+    </message>
+    <message>
+      <source>Apply</source>
+      <translation>Applica</translation>
+    </message>
+    <message>
+      <source>Apply enhancement</source>
+      <translation>Applica miglioramento</translation>
+    </message>
+    <message>
+      <source>Blend Mode</source>
+      <translation>Modalità fusione</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Chiudi</translation>
+    </message>
+    <message>
+      <source>Create HF/LF layers</source>
+      <translation>Crea livelli AF/BF</translation>
+    </message>
+    <message>
+      <source>Denoise LF</source>
+      <translation>Riduz. rumore BF</translation>
+    </message>
+    <message>
+      <source>Frequency Separation</source>
+      <translation>Separazione frequenze</translation>
+    </message>
+    <message>
+      <source>HF Scale</source>
+      <translation>Scala AF</translation>
+    </message>
+    <message>
+      <source>High Frequency</source>
+      <translation>Alta frequenza</translation>
+    </message>
+    <message>
+      <source>Linear Light</source>
+      <translation>Luce lineare</translation>
+    </message>
+    <message>
+      <source>Low Frequency</source>
+      <translation>Bassa frequenza</translation>
+    </message>
+    <message>
+      <source>Output</source>
+      <translation>Output</translation>
+    </message>
+    <message>
+      <source>Preview</source>
+      <translation>Anteprima</translation>
+    </message>
+    <message>
+      <source>Processing...</source>
+      <translation>Elaborazione...</translation>
+    </message>
+    <message>
+      <source>Radius</source>
+      <translation>Raggio</translation>
+    </message>
+    <message>
+      <source>Reset</source>
+      <translation>Ripristina</translation>
+    </message>
+  </context>
+  <context>
+    <name>GHSDialog</name>
+    <message>
+      <source>Apply</source>
+      <translation>Applica</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Chiudi</translation>
+    </message>
+    <message>
+      <source>Color Preservation</source>
+      <translation>Preservazione colore</translation>
+    </message>
+    <message>
+      <source>GHS</source>
+      <translation>GHS</translation>
+    </message>
+    <message>
+      <source>Generalized Hyperbolic Stretch</source>
+      <translation>Stretch iperbolico generalizzato</translation>
+    </message>
+    <message>
+      <source>Highlight Protection (HP)</source>
+      <translation>Protezione luci (HP)</translation>
+    </message>
+    <message>
+      <source>Inverse</source>
+      <translation>Inverso</translation>
+    </message>
+    <message>
+      <source>Load Preset</source>
+      <translation>Carica preset</translation>
+    </message>
+    <message>
+      <source>Local Intensity (b)</source>
+      <translation>Intensità locale (b)</translation>
+    </message>
+    <message>
+      <source>Luminance Mask</source>
+      <translation>Maschera luminanza</translation>
+    </message>
+    <message>
+      <source>Presets</source>
+      <translation>Preset</translation>
+    </message>
+    <message>
+      <source>Preview</source>
+      <translation>Anteprima</translation>
+    </message>
+    <message>
+      <source>Processing...</source>
+      <translation>Elaborazione...</translation>
+    </message>
+    <message>
+      <source>Reset</source>
+      <translation>Ripristina</translation>
+    </message>
+    <message>
+      <source>Save Preset</source>
+      <translation>Salva preset</translation>
+    </message>
+    <message>
+      <source>Shadow Protection (LP)</source>
+      <translation>Protezione ombre (LP)</translation>
+    </message>
+    <message>
+      <source>Stretch Factor (D)</source>
+      <translation>Fattore stretch (D)</translation>
+    </message>
+    <message>
+      <source>Symmetry Point (SP)</source>
+      <translation>Punto simmetria (SP)</translation>
+    </message>
+  </context>
+  <context>
+    <name>GeometryDialog</name>
+    <message>
+      <source>Angle</source>
+      <translation>Angolo</translation>
+    </message>
+    <message>
+      <source>Apply</source>
+      <translation>Applica</translation>
+    </message>
+    <message>
+      <source>Bicubic</source>
+      <translation>Bicubica</translation>
+    </message>
+    <message>
+      <source>Bilinear</source>
+      <translation>Bilineare</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Chiudi</translation>
+    </message>
+    <message>
+      <source>Flip Horizontal</source>
+      <translation>Capovolgi orizzontale</translation>
+    </message>
+    <message>
+      <source>Flip Vertical</source>
+      <translation>Capovolgi verticale</translation>
+    </message>
+    <message>
+      <source>Geometry</source>
+      <translation>Geometria</translation>
+    </message>
+    <message>
+      <source>Height</source>
+      <translation>Altezza</translation>
+    </message>
+    <message>
+      <source>Interpolation</source>
+      <translation>Interpolazione</translation>
+    </message>
+    <message>
+      <source>Lanczos</source>
+      <translation>Lanczos</translation>
+    </message>
+    <message>
+      <source>Lock Aspect Ratio</source>
+      <translation>Blocca proporzioni</translation>
+    </message>
+    <message>
+      <source>Nearest</source>
+      <translation>Più vicino</translation>
+    </message>
+    <message>
+      <source>Preview</source>
+      <translation>Anteprima</translation>
+    </message>
+    <message>
+      <source>Processing...</source>
+      <translation>Elaborazione...</translation>
+    </message>
+    <message>
+      <source>Reset</source>
+      <translation>Ripristina</translation>
+    </message>
+    <message>
+      <source>Resize</source>
+      <translation>Ridimensiona</translation>
+    </message>
+    <message>
+      <source>Rotation</source>
+      <translation>Rotazione</translation>
+    </message>
+    <message>
+      <source>Scale</source>
+      <translation>Scala</translation>
+    </message>
+    <message>
+      <source>Width</source>
+      <translation>Larghezza</translation>
+    </message>
+  </context>
+  <context>
+    <name>HeaderViewerDialog</name>
+    <message>
+      <source>Close</source>
+      <translation>Chiudi</translation>
+    </message>
+    <message>
+      <source>Comment</source>
+      <translation>Commento</translation>
+    </message>
+    <message>
+      <source>Copy</source>
+      <translation>Copia</translation>
+    </message>
+    <message>
+      <source>Copy All</source>
+      <translation>Copia tutto</translation>
+    </message>
+    <message>
+      <source>Export...</source>
+      <translation>Esporta...</translation>
+    </message>
+    <message>
+      <source>FITS Header Viewer</source>
+      <translation>Visualizzatore header FITS</translation>
+    </message>
+    <message>
+      <source>Keyword</source>
+      <translation>Parola chiave</translation>
+    </message>
+    <message>
+      <source>Refresh</source>
+      <translation>Aggiorna</translation>
+    </message>
+    <message>
+      <source>Search</source>
+      <translation>Cerca</translation>
+    </message>
+    <message>
+      <source>Value</source>
+      <translation>Valore</translation>
+    </message>
+  </context>
+  <context>
+    <name>ImagePeeker</name>
+    <message>
+      <source>Blue</source>
+      <translation>Blu</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Chiudi</translation>
+    </message>
+    <message>
+      <source>Curvature Map</source>
+      <translation>Mappa curvatura</translation>
+    </message>
+    <message>
+      <source>FWHM Map</source>
+      <translation>Mappa FWHM</translation>
+    </message>
+    <message>
+      <source>Focal Plane Analysis</source>
+      <translation>Analisi piano focale</translation>
+    </message>
+    <message>
+      <source>Generate Report</source>
+      <translation>Genera rapporto</translation>
+    </message>
+    <message>
+      <source>Green</source>
+      <translation>Verde</translation>
+    </message>
+    <message>
+      <source>Histogram</source>
+      <translation>Istogramma</translation>
+    </message>
+    <message>
+      <source>Image Peeker</source>
+      <translation>Image Peeker</translation>
+    </message>
+    <message>
+      <source>Luminance</source>
+      <translation>Luminanza</translation>
+    </message>
+    <message>
+      <source>Max</source>
+      <translation>Max</translation>
+    </message>
+    <message>
+      <source>Mean</source>
+      <translation>Media</translation>
+    </message>
+    <message>
+      <source>Median</source>
+      <translation>Mediana</translation>
+    </message>
+    <message>
+      <source>Min</source>
+      <translation>Min</translation>
+    </message>
+    <message>
+      <source>Pan</source>
+      <translation>Panoramica</translation>
+    </message>
+    <message>
+      <source>Pixel Info</source>
+      <translation>Info pixel</translation>
+    </message>
+    <message>
+      <source>Red</source>
+      <translation>Rosso</translation>
+    </message>
+    <message>
+      <source>Statistics</source>
+      <translation>Statistiche</translation>
+    </message>
+    <message>
+      <source>Std Dev</source>
+      <translation>Dev Std</translation>
+    </message>
+    <message>
+      <source>Tilt Analysis</source>
+      <translation>Analisi inclinazione</translation>
+    </message>
+    <message>
+      <source>Value</source>
+      <translation>Valore</translation>
+    </message>
+    <message>
+      <source>X</source>
+      <translation>X</translation>
+    </message>
+    <message>
+      <source>Y</source>
+      <translation>Y</translation>
+    </message>
+    <message>
+      <source>Zoom</source>
+      <translation>Zoom</translation>
+    </message>
+  </context>
+  <context>
+    <name>MainWindow</name>
+    <message>
+      <source>About</source>
+      <translation>Informazioni</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Chiudi</translation>
+    </message>
+    <message>
+      <source>Copy</source>
+      <translation>Copia</translation>
+    </message>
+    <message>
+      <source>Cut</source>
+      <translation>Taglia</translation>
+    </message>
+    <message>
+      <source>Delete</source>
+      <translation>Elimina</translation>
+    </message>
+    <message>
+      <source>Documentation</source>
+      <translation>Documentazione</translation>
+    </message>
+    <message>
+      <source>Edit</source>
+      <translation>Modifica</translation>
+    </message>
+    <message>
+      <source>Exit</source>
+      <translation>Esci</translation>
+    </message>
+    <message>
+      <source>File</source>
+      <translation>File</translation>
+    </message>
+    <message>
+      <source>Help</source>
+      <translation>Aiuto</translation>
+    </message>
+    <message>
+      <source>Image</source>
+      <translation>Immagine</translation>
+    </message>
+    <message>
+      <source>New</source>
+      <translation>Nuovo</translation>
+    </message>
+    <message>
+      <source>Open</source>
+      <translation>Apri</translation>
+    </message>
+    <message>
+      <source>Paste</source>
+      <translation>Incolla</translation>
+    </message>
+    <message>
+      <source>Preferences</source>
+      <translation>Preferenze</translation>
+    </message>
+    <message>
+      <source>Process</source>
+      <translation>Elabora</translation>
+    </message>
+    <message>
+      <source>Processing</source>
+      <translation>Elaborazione</translation>
+    </message>
+    <message>
+      <source>Ready</source>
+      <translation>Pronto</translation>
+    </message>
+    <message>
+      <source>Redo</source>
+      <translation>Ripeti</translation>
+    </message>
+    <message>
+      <source>Save</source>
+      <translation>Salva</translation>
+    </message>
+    <message>
+      <source>Save As</source>
+      <translation>Save As</translation>
+    </message>
+    <message>
+      <source>Select All</source>
+      <translation>Seleziona tutto</translation>
+    </message>
+    <message>
+      <source>Tools</source>
+      <translation>Strumenti</translation>
+    </message>
+    <message>
+      <source>Undo</source>
+      <translation>Annulla</translation>
+    </message>
+    <message>
+      <source>View</source>
+      <translation>Vista</translation>
+    </message>
+    <message>
+      <source>Welcome to SetiAstro Suite Pro</source>
+      <translation>Benvenuto in SetiAstro Suite Pro</translation>
+    </message>
+    <message>
+      <source>Window</source>
+      <translation>Finestra</translation>
+    </message>
+  </context>
+  <context>
+    <name>MetricsDialog</name>
+    <message>
+      <source>Bit Depth</source>
+      <translation>Profondità bit</translation>
+    </message>
+    <message>
+      <source>Blue</source>
+      <translation>Blu</translation>
+    </message>
+    <message>
+      <source>Channel</source>
+      <translation>Canale</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Chiudi</translation>
+    </message>
+    <message>
+      <source>Color Space</source>
+      <translation>Spazio colore</translation>
+    </message>
+    <message>
+      <source>Copy</source>
+      <translation>Copia</translation>
+    </message>
+    <message>
+      <source>Export...</source>
+      <translation>Esporta...</translation>
+    </message>
+    <message>
+      <source>Green</source>
+      <translation>Verde</translation>
+    </message>
+    <message>
+      <source>Height</source>
+      <translation>Altezza</translation>
+    </message>
+    <message>
+      <source>Histogram</source>
+      <translation>Istogramma</translation>
+    </message>
+    <message>
+      <source>Image Metrics</source>
+      <translation>Metriche immagine</translation>
+    </message>
+    <message>
+      <source>Image Size</source>
+      <translation>Dimensione immagine</translation>
+    </message>
+    <message>
+      <source>Luminance</source>
+      <translation>Luminanza</translation>
+    </message>
+    <message>
+      <source>MAD</source>
+      <translation>MAD</translation>
+    </message>
+    <message>
+      <source>Maximum</source>
+      <translation>Massimo</translation>
+    </message>
+    <message>
+      <source>Mean</source>
+      <translation>Media</translation>
+    </message>
+    <message>
+      <source>Median</source>
+      <translation>Mediana</translation>
+    </message>
+    <message>
+      <source>Minimum</source>
+      <translation>Minimo</translation>
+    </message>
+    <message>
+      <source>RGB</source>
+      <translation>RGB</translation>
+    </message>
+    <message>
+      <source>Red</source>
+      <translation>Rosso</translation>
+    </message>
+    <message>
+      <source>Refresh</source>
+      <translation>Aggiorna</translation>
+    </message>
+    <message>
+      <source>Show Histogram</source>
+      <translation>Mostra istogramma</translation>
+    </message>
+    <message>
+      <source>Standard Deviation</source>
+      <translation>Deviazione standard</translation>
+    </message>
+    <message>
+      <source>Statistics</source>
+      <translation>Statistiche</translation>
+    </message>
+    <message>
+      <source>Width</source>
+      <translation>Larghezza</translation>
+    </message>
+  </context>
+  <context>
+    <name>MinorBodyDialog</name>
+    <message>
+      <source>Altitude</source>
+      <translation>Altitudine</translation>
+    </message>
+    <message>
+      <source>Asteroid</source>
+      <translation>Asteroide</translation>
+    </message>
+    <message>
+      <source>Calculate</source>
+      <translation>Calcola</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Chiudi</translation>
+    </message>
+    <message>
+      <source>Comet</source>
+      <translation>Cometa</translation>
+    </message>
+    <message>
+      <source>Date/Time</source>
+      <translation>Data/Ora</translation>
+    </message>
+    <message>
+      <source>Dec</source>
+      <translation>Dec</translation>
+    </message>
+    <message>
+      <source>Distance</source>
+      <translation>Distanza</translation>
+    </message>
+    <message>
+      <source>Elongation</source>
+      <translation>Elongazione</translation>
+    </message>
+    <message>
+      <source>Export Path</source>
+      <translation>Esporta percorso</translation>
+    </message>
+    <message>
+      <source>Latitude</source>
+      <translation>Latitudine</translation>
+    </message>
+    <message>
+      <source>Location</source>
+      <translation>Posizione</translation>
+    </message>
+    <message>
+      <source>Longitude</source>
+      <translation>Longitudine</translation>
+    </message>
+    <message>
+      <source>Magnitude</source>
+      <translation>Magnitudine</translation>
+    </message>
+    <message>
+      <source>Minor Body Ephemeris</source>
+      <translation>Effemeridi corpo minore</translation>
+    </message>
+    <message>
+      <source>Object Name</source>
+      <translation>Nome oggetto</translation>
+    </message>
+    <message>
+      <source>Phase Angle</source>
+      <translation>Angolo fase</translation>
+    </message>
+    <message>
+      <source>Plot on Image</source>
+      <translation>Traccia su immagine</translation>
+    </message>
+    <message>
+      <source>RA</source>
+      <translation>AR</translation>
+    </message>
+    <message>
+      <source>Results</source>
+      <translation>Risultati</translation>
+    </message>
+    <message>
+      <source>Search</source>
+      <translation>Cerca</translation>
+    </message>
+  </context>
+  <context>
+    <name>MorphologyDialog</name>
+    <message>
+      <source>Apply</source>
+      <translation>Applica</translation>
+    </message>
+    <message>
+      <source>Black Hat</source>
+      <translation>Black Hat</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Chiudi</translation>
+    </message>
+    <message>
+      <source>Closing</source>
+      <translation>Chiusura</translation>
+    </message>
+    <message>
+      <source>Cross</source>
+      <translation>Croce</translation>
+    </message>
+    <message>
+      <source>Dilation</source>
+      <translation>Dilatazione</translation>
+    </message>
+    <message>
+      <source>Ellipse</source>
+      <translation>Ellisse</translation>
+    </message>
+    <message>
+      <source>Erosion</source>
+      <translation>Erosione</translation>
+    </message>
+    <message>
+      <source>Gradient</source>
+      <translation>Gradiente</translation>
+    </message>
+    <message>
+      <source>Iterations</source>
+      <translation>Iterazioni</translation>
+    </message>
+    <message>
+      <source>Morphological Operations</source>
+      <translation>Operazioni morfologiche</translation>
+    </message>
+    <message>
+      <source>Opening</source>
+      <translation>Apertura</translation>
+    </message>
+    <message>
+      <source>Operation</source>
+      <translation>Operazione</translation>
+    </message>
+    <message>
+      <source>Preview</source>
+      <translation>Anteprima</translation>
+    </message>
+    <message>
+      <source>Processing...</source>
+      <translation>Elaborazione...</translation>
+    </message>
+    <message>
+      <source>Rectangle</source>
+      <translation>Rettangolo</translation>
+    </message>
+    <message>
+      <source>Reset</source>
+      <translation>Ripristina</translation>
+    </message>
+    <message>
+      <source>Size</source>
+      <translation>Dimensione</translation>
+    </message>
+    <message>
+      <source>Structure Element</source>
+      <translation>Elemento struttura</translation>
+    </message>
+    <message>
+      <source>Top Hat</source>
+      <translation>Top Hat</translation>
+    </message>
+  </context>
+  <context>
+    <name>RGBCombineDialog</name>
+    <message>
+      <source>Add luminance</source>
+      <translation>Aggiungi luminanza</translation>
+    </message>
+    <message>
+      <source>Apply</source>
+      <translation>Applica</translation>
+    </message>
+    <message>
+      <source>Blue Channel</source>
+      <translation>Canale blu</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Chiudi</translation>
+    </message>
+    <message>
+      <source>Create new image</source>
+      <translation>Crea nuova immagine</translation>
+    </message>
+    <message>
+      <source>Green Channel</source>
+      <translation>Canale verde</translation>
+    </message>
+    <message>
+      <source>Luminance</source>
+      <translation>Luminanza</translation>
+    </message>
+    <message>
+      <source>Output</source>
+      <translation>Output</translation>
+    </message>
+    <message>
+      <source>Preview</source>
+      <translation>Anteprima</translation>
+    </message>
+    <message>
+      <source>Processing...</source>
+      <translation>Elaborazione...</translation>
+    </message>
+    <message>
+      <source>RGB Combination</source>
+      <translation>RGB Combination</translation>
+    </message>
+    <message>
+      <source>Red Channel</source>
+      <translation>Canale rosso</translation>
+    </message>
+    <message>
+      <source>Reset</source>
+      <translation>Ripristina</translation>
+    </message>
+    <message>
+      <source>Select blue view</source>
+      <translation>Select blue view</translation>
+    </message>
+    <message>
+      <source>Select green view</source>
+      <translation>Select green view</translation>
+    </message>
+    <message>
+      <source>Select luminance view</source>
+      <translation>Select luminance view</translation>
+    </message>
+    <message>
+      <source>Select red view</source>
+      <translation>Select red view</translation>
     </message>
   </context>
 </TS>
