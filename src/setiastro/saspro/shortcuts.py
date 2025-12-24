@@ -209,6 +209,17 @@ class DraggableToolBar(QToolBar):
         s.setValue(self._settings_key, ids)
 
 
+    def _is_locked(self) -> bool:
+        """Check if toolbar icon movement is locked globally."""
+        s = self._settings()
+        # Default to False (unlocked)
+        return s.value("UI/ToolbarLocked", False, type=bool)
+
+    def _set_locked(self, locked: bool):
+        """Set the global lock state."""
+        s = self._settings()
+        s.setValue("UI/ToolbarLocked", locked)
+
     # install/remove our event filter when actions are added/removed
     def actionEvent(self, e):
         super().actionEvent(e)
@@ -259,6 +270,7 @@ class DraggableToolBar(QToolBar):
                     if delta.manhattanLength() > QApplication.startDragDistance():
                         mods_now = QApplication.keyboardModifiers()
                         had_mod  = self._press_had_mod.get(obj, False)
+                        
                         # CASE 1: had/has modifiers → create desktop shortcut / function-bundle drag (existing behavior)
                         if had_mod or self._mods_ok(mods_now):
                             act = self._find_action_for_button(obj)
@@ -270,6 +282,20 @@ class DraggableToolBar(QToolBar):
                             return True  # consume
                         else:
                             # CASE 2: plain drag (no modifiers) → reorder within this toolbar
+                            # CHECK LOCK STATE FIRST
+                            if self._is_locked():
+                                # Lock is active: DO NOT start drag.
+                                # Should we consume the event? 
+                                # If we consume it, the button won't feel "pressed" anymore if the user keeps dragging?
+                                # Actually, if we just return False, standard QToolButton behavior applies (it might think it's being pressed).
+                                # However, we want to prevent the *reorder* logic.
+                                # So simply doing nothing here is enough to prevent the reorder drag from starting.
+                                
+                                # But we might want to let the user know, or just silently fail distinctively?
+                                # Silently failing distinctively is what the user asked for (prevent involuntary move).
+                                # If we return False, the button keeps tracking the mouse, which is fine (it won't click unless released inside).
+                                return False 
+
                             self._start_reorder_drag_for_button(obj)
                             self._suppress_release.add(obj)
                             self._press_pos.pop(obj, None)
@@ -476,9 +502,23 @@ class DraggableToolBar(QToolBar):
 
         m.exec(gpos)
 
+
     def contextMenuEvent(self, ev):
         # Right-click on empty toolbar area
         m = QMenu(self)
+
+        # 1. Lock/Unlock Action
+        is_locked = self._is_locked()
+        act_lock = m.addAction(self.tr("Lock Toolbar Icons"))
+        act_lock.setCheckable(True)
+        act_lock.setChecked(is_locked)
+        
+        def _toggle_lock(checked):
+            self._set_locked(checked)
+            
+        act_lock.triggered.connect(_toggle_lock)
+        
+        m.addSeparator()
 
         # Submenu listing hidden actions for this toolbar
         hidden = self._load_hidden_set()
