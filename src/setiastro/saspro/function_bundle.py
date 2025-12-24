@@ -372,18 +372,18 @@ class FunctionBundleDialog(QDialog):
         self.add_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.add_hint.setStyleSheet("color:#aaa; padding:6px; border:1px dashed #666; border-radius:6px;")
 
-        self.btn_edit_preset = QPushButton("Edit Preset…")
+        self.btn_edit_preset = QPushButton(self.tr("Edit Preset…"))
         self.btn_edit_preset.setEnabled(False)  # enabled when exactly one step is selected
 
-        self.btn_remove = QPushButton("Remove Selected")
-        self.btn_clear  = QPushButton("Clear Steps")
-        self.btn_up     = QPushButton("▲ Move Up")
-        self.btn_down   = QPushButton("▼ Move Down")
+        self.btn_remove = QPushButton(self.tr("Remove Selected"))
+        self.btn_clear  = QPushButton(self.tr("Clear Steps"))
+        self.btn_up     = QPushButton(self.tr("▲ Move Up"))
+        self.btn_down   = QPushButton(self.tr("▼ Move Down"))
 
-        self.btn_drag_bundle = QPushButton("Drag Bundle")
-        self.btn_run_active  = QPushButton("Apply to Active View")
-        self.btn_apply_to_vbundle = QPushButton("Apply to View Bundle…")
-        self.btn_chip   = QPushButton("Compress to Chip")
+        self.btn_drag_bundle = QPushButton(self.tr("Drag Bundle"))
+        self.btn_run_active  = QPushButton(self.tr("Apply to Active View"))
+        self.btn_apply_to_vbundle = QPushButton(self.tr("Apply to View Bundle…"))
+        self.btn_chip   = QPushButton(self.tr("Compress to Chip"))
 
         # layout
         left = QVBoxLayout()

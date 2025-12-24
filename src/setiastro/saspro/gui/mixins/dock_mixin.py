@@ -290,12 +290,12 @@ class DockMixin:
 
         # Friendly ordering for common ones; others follow alphabetically.
         order_hint = {
-            "Explorer": 10,
-            "Console / Status": 20,
-            "Header Viewer": 30,
-            "Layers": 40,
-            "Window Shelf": 50,
-            "Command Search": 60,
+            self.tr("Explorer"): 10,
+            self.tr("Console / Status"): 20,
+            self.tr("Header Viewer"): 30,
+            self.tr("Layers"): 40,
+            self.tr("Window Shelf"): 50,
+            self.tr("Command Search"): 60,
         }
         
         # Add special action for overlay monitor

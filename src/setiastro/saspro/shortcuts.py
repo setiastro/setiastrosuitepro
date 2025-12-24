@@ -1106,11 +1106,11 @@ class ShortcutCanvas(QWidget):
     def contextMenuEvent(self, e):
         menu = QMenu(self)
         has_sel = bool(self._mgr.selected)
-        a_del = menu.addAction("Delete Selected", self._mgr.delete_selected); a_del.setEnabled(has_sel)
-        a_clr = menu.addAction("Clear Selection", self._mgr.clear_selection); a_clr.setEnabled(has_sel)
+        a_del = menu.addAction(self.tr("Delete Selected"), self._mgr.delete_selected); a_del.setEnabled(has_sel)
+        a_clr = menu.addAction(self.tr("Clear Selection"), self._mgr.clear_selection); a_clr.setEnabled(has_sel)
         menu.addSeparator()
-        a_vb = menu.addAction("View Bundles…", lambda: _open_view_bundles_from_canvas(self))
-        a_fb = menu.addAction("Function Bundles…", lambda: _open_function_bundles_from_canvas(self))
+        a_vb = menu.addAction(self.tr("View Bundles…"), lambda: _open_view_bundles_from_canvas(self))
+        a_fb = menu.addAction(self.tr("Function Bundles…"), lambda: _open_function_bundles_from_canvas(self))
         menu.exec(e.globalPos())
 
 

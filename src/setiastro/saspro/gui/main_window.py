@@ -1206,11 +1206,11 @@ class AstroSuiteProMainWindow(
         global_pos = lw.viewport().mapToGlobal(pos)
 
         menu = QMenu(lw)
-        act_copy_selected = menu.addAction("Copy Selected")
-        act_copy_all      = menu.addAction("Copy All")
+        act_copy_selected = menu.addAction(self.tr("Copy Selected"))
+        act_copy_all      = menu.addAction(self.tr("Copy All"))
         menu.addSeparator()
-        act_select_all    = menu.addAction("Select All Lines")
-        act_clear         = menu.addAction("Clear Console")
+        act_select_all    = menu.addAction(self.tr("Select All Lines"))
+        act_clear         = menu.addAction(self.tr("Clear Console"))
 
         action = menu.exec(global_pos)
         if action is None:
@@ -7347,7 +7347,7 @@ class AstroSuiteProMainWindow(
             self._search_dock = None
 
         # --- Right-side mini dock with the search box ---
-        self._search_dock = QDockWidget("Command Search", self)
+        self._search_dock = QDockWidget(self.tr("Command Search"), self)
         self._search_dock.setObjectName("CommandSearchDock")
         # âœ... Allow moving/closing like other panels
         self._search_dock.setAllowedAreas(

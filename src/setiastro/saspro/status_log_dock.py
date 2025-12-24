@@ -9,7 +9,7 @@ class StatusLogDock(QDockWidget):
     MAX_BLOCKS = 2000
 
     def __init__(self, parent=None):
-        super().__init__("Stacking Log", parent)
+        super().__init__(self.tr("Stacking Log"), parent)
         self.setObjectName("StackingLogDock")
         self.setAllowedAreas(
             Qt.DockWidgetArea.BottomDockWidgetArea

@@ -73,7 +73,8 @@ class ToolbarMixin:
 
     def _init_toolbar(self):
         # View toolbar (Undo / Redo / Display-Stretch)
-        tb = DraggableToolBar("View", self)
+        tb = DraggableToolBar(self.tr("View"), self)
+        tb.setObjectName("View")
         tb.setSettingsKey("Toolbar/View")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb)
 
@@ -175,7 +176,8 @@ class ToolbarMixin:
             pass
 
         # Functions toolbar
-        tb_fn = DraggableToolBar("Functions", self)
+        tb_fn = DraggableToolBar(self.tr("Functions"), self)
+        tb_fn.setObjectName("Functions")
         tb_fn.setSettingsKey("Toolbar/Functions")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_fn)
 
@@ -227,7 +229,8 @@ class ToolbarMixin:
         except Exception:
             pass
 
-        tbCosmic = DraggableToolBar("Cosmic Clarity", self)
+        tbCosmic = DraggableToolBar(self.tr("Cosmic Clarity"), self)
+        tbCosmic.setObjectName("Cosmic Clarity")
         tbCosmic.setSettingsKey("Toolbar/Cosmic")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tbCosmic)
 
@@ -241,7 +244,8 @@ class ToolbarMixin:
         except Exception:
             pass
 
-        tb_tl = DraggableToolBar("Tools", self)
+        tb_tl = DraggableToolBar(self.tr("Tools"), self)
+        tb_tl.setObjectName("Tools")
         tb_tl.setSettingsKey("Toolbar/Tools")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_tl)
 
@@ -260,7 +264,8 @@ class ToolbarMixin:
         except Exception:
             pass
 
-        tb_geom = DraggableToolBar("Geometry", self)
+        tb_geom = DraggableToolBar(self.tr("Geometry"), self)
+        tb_geom.setObjectName("Geometry")
         tb_geom.setSettingsKey("Toolbar/Geometry")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_geom)
 
@@ -283,7 +288,8 @@ class ToolbarMixin:
         except Exception:
             pass
 
-        tb_star = DraggableToolBar("Star Stuff", self)
+        tb_star = DraggableToolBar(self.tr("Star Stuff"), self)
+        tb_star.setObjectName("Star Stuff")
         tb_star.setSettingsKey("Toolbar/StarStuff")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_star)
 
@@ -308,7 +314,8 @@ class ToolbarMixin:
         except Exception:
             pass
 
-        tb_msk = DraggableToolBar("Masks", self)
+        tb_msk = DraggableToolBar(self.tr("Masks"), self)
+        tb_msk.setObjectName("Masks")
         tb_msk.setSettingsKey("Toolbar/Masks")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_msk)
 
@@ -322,7 +329,8 @@ class ToolbarMixin:
         except Exception:
             pass
 
-        tb_wim = DraggableToolBar("What's In My...", self)
+        tb_wim = DraggableToolBar(self.tr("What's In My..."), self)
+        tb_wim.setObjectName("What's In My...")
         tb_wim.setSettingsKey("Toolbar/WhatsInMy")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_wim)
 
@@ -335,7 +343,8 @@ class ToolbarMixin:
         except Exception:
             pass
 
-        tb_bundle = DraggableToolBar("Bundles", self)
+        tb_bundle = DraggableToolBar(self.tr("Bundles"), self)
+        tb_bundle.setObjectName("Bundles")
         tb_bundle.setSettingsKey("Toolbar/Bundles")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_bundle)
 
