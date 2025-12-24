@@ -1253,6 +1253,104 @@ Alt+ड्रैग: एक दृश्य पर छोड़ें</translati
       <source>Zoom to 100% (pixel-for-pixel)</source>
       <translation>100% पर ज़ूम करें (पिक्सेल-दर-पिक्सेल)</translation>
     </message>
+    <message>
+      <source>View Bundles</source>
+      <translation>बंडल देखें</translation>
+    </message>
+    <message>
+      <source>Function Bundles</source>
+      <translation>फंक्शन बंडल</translation>
+    </message>
+    <message>
+      <source>Delete selected shortcut buttons</source>
+      <translation>चयनित शॉर्टकट बटन हटाएं</translation>
+    </message>
+    <message>
+      <source>Toggle Display Auto-Stretch</source>
+      <translation>डिस्प्ले ऑटो-स्ट्रेच टॉगल करें</translation>
+    </message>
+    <message>
+      <source>Invert the Image</source>
+      <translation>छवि को उलटें</translation>
+    </message>
+    <message>
+      <source>Focus the command search bar; Enter runs first match</source>
+      <translation>कमांड खोज पट्टी पर ध्यान दें; एंटर पहले मिलान को चलाता है</translation>
+    </message>
+    <message>
+      <source>Duplicate Image</source>
+      <translation>छवि डुप्लिकेट करें</translation>
+    </message>
+    <message>
+      <source>Copy Zoom and Pan</source>
+      <translation>ज़ूम और पैन कॉपी करें</translation>
+    </message>
+    <message>
+      <source>Apply that image to the other as a mask</source>
+      <translation>उस छवि को दूसरे पर मास्क के रूप में लागू करें</translation>
+    </message>
+    <message>
+      <source>Zoom to 100% (1:1)</source>
+      <translation>100% तक ज़ूम करें (1:1)</translation>
+    </message>
+    <message>
+      <source>Switch to previously active view</source>
+      <translation>पहले सक्रिय दृश्य पर स्विच करें</translation>
+    </message>
+    <message>
+      <source>Switch to next active view</source>
+      <translation>अगले सक्रिय दृश्य पर स्विच करें</translation>
+    </message>
+    <message>
+      <source>Create a desktop shortcut for that action</source>
+      <translation>उस कार्रवाई के लिए एक डेस्कटॉप शॉर्टकट बनाएँ</translation>
+    </message>
+    <message>
+      <source>Headless apply the shortcut's command/preset to a view</source>
+      <translation>बिना सिर के शॉर्टकट के कमांड/प्रीसेट को दृश्य पर लागू करें</translation>
+    </message>
+    <message>
+      <source>Multi-select shortcut buttons</source>
+      <translation>मल्टी-सेलेक्ट शॉर्टकट बटन</translation>
+    </message>
+    <message>
+      <source>Move selected shortcut buttons</source>
+      <translation>चयनित शॉर्टकट बटन ले जाएं</translation>
+    </message>
+    <message>
+      <source>Select all shortcut buttons</source>
+      <translation>सभी शॉर्टकट बटन चुनें</translation>
+    </message>
+    <message>
+      <source>Open files dialog</source>
+      <translation>फ़ाइलें संवाद खोलें</translation>
+    </message>
+    <message>
+      <source>Add dragged view as a new layer (on top)</source>
+      <translation>खींचे गए दृश्य को एक नई परत के रूप में जोड़ें (शीर्ष पर)</translation>
+    </message>
+    <message>
+      <source>Attach dragged image as mask to the selected layer</source>
+      <translation>चयनित परत में मास्क के रूप में खींची गई छवि संलग्न करें</translation>
+    </message>
+    <message>
+      <source>Draw a crop rectangle</source>
+      <translation>एक फसल आयत बनाएं</translation>
+    </message>
+    <message>
+      <source>Resize crop rectangle</source>
+      <translation>फसल आयत का आकार बदलें</translation>
+    </message>
+    <message>
+      <source>Rotate crop rectangle</source>
+      <translation>फसल आयत घुमाएं</translation>
+    </message>
+    <message>
+      <source>Loading a project will close current views and replace desktop shortcuts.
+Continue?</source>
+      <translation>प्रोजेक्ट लोड करने से वर्तमान दृश्य बंद हो जाएंगे और डेस्कटॉप शॉर्टकट बदल जाएंगे।
+जारी रखें?</translation>
+    </message>
   </context>
   <context>
     <name>AstrobinExportTab</name>

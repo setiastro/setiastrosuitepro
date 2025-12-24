@@ -1568,6 +1568,104 @@ Alt+Glisser: déposer sur une vue</translation>
       <source>Zoom to 100% (pixel-for-pixel)</source>
       <translation>Zoom à 100% (pixel par pixel)</translation>
     </message>
+    <message>
+      <source>View Bundles</source>
+      <translation>Voir les Lots</translation>
+    </message>
+    <message>
+      <source>Function Bundles</source>
+      <translation>Lots de Fonctions</translation>
+    </message>
+    <message>
+      <source>Delete selected shortcut buttons</source>
+      <translation>Supprimer les boutons de raccourci sélectionnés</translation>
+    </message>
+    <message>
+      <source>Toggle Display Auto-Stretch</source>
+      <translation>Basculer l'étirement automatique de l'affichage</translation>
+    </message>
+    <message>
+      <source>Invert the Image</source>
+      <translation>Inverser l'image</translation>
+    </message>
+    <message>
+      <source>Focus the command search bar; Enter runs first match</source>
+      <translation>Focus barre de recherche; Entrée exécute le 1er choix</translation>
+    </message>
+    <message>
+      <source>Duplicate Image</source>
+      <translation>Dupliquer l'image</translation>
+    </message>
+    <message>
+      <source>Copy Zoom and Pan</source>
+      <translation>Copier Zoom et Pan</translation>
+    </message>
+    <message>
+      <source>Apply that image to the other as a mask</source>
+      <translation>Appliquer cette image à l'autre comme masque</translation>
+    </message>
+    <message>
+      <source>Zoom to 100% (1:1)</source>
+      <translation>Zoom à 100% (1:1)</translation>
+    </message>
+    <message>
+      <source>Switch to previously active view</source>
+      <translation>Passer à la vue active précédente</translation>
+    </message>
+    <message>
+      <source>Switch to next active view</source>
+      <translation>Passer à la vue active suivante</translation>
+    </message>
+    <message>
+      <source>Create a desktop shortcut for that action</source>
+      <translation>Créer un raccourci bureau pour cette action</translation>
+    </message>
+    <message>
+      <source>Headless apply the shortcut's command/preset to a view</source>
+      <translation>Appliquer sans tête la commande/préréglage à une vue</translation>
+    </message>
+    <message>
+      <source>Multi-select shortcut buttons</source>
+      <translation>Sélection multiple boutons raccourci</translation>
+    </message>
+    <message>
+      <source>Move selected shortcut buttons</source>
+      <translation>Déplacer les boutons raccourci sélectionnés</translation>
+    </message>
+    <message>
+      <source>Select all shortcut buttons</source>
+      <translation>Sélectionner tous les boutons raccourci</translation>
+    </message>
+    <message>
+      <source>Open files dialog</source>
+      <translation>Ouvrir dialogue fichiers</translation>
+    </message>
+    <message>
+      <source>Add dragged view as a new layer (on top)</source>
+      <translation>Ajouter vue glissée comme nouvelle couche (dessus)</translation>
+    </message>
+    <message>
+      <source>Attach dragged image as mask to the selected layer</source>
+      <translation>Attacher image glissée comme masque au calque</translation>
+    </message>
+    <message>
+      <source>Draw a crop rectangle</source>
+      <translation>Dessiner un rectangle de recadrage</translation>
+    </message>
+    <message>
+      <source>Resize crop rectangle</source>
+      <translation>Redimensionner le rectangle de recadrage</translation>
+    </message>
+    <message>
+      <source>Rotate crop rectangle</source>
+      <translation>Pivoter le rectangle de recadrage</translation>
+    </message>
+    <message>
+      <source>Loading a project will close current views and replace desktop shortcuts.
+Continue?</source>
+      <translation>Le chargement d'un projet fermera les vues actuelles et remplacera les raccourcis.
+Continuer?</translation>
+    </message>
   </context>
   <context>
     <name>AstrobinExportTab</name>

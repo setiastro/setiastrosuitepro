@@ -1245,6 +1245,104 @@ Alt+Arrastar: soltar em uma visualização</translation>
       <source>Zoom to 100% (pixel-for-pixel)</source>
       <translation>Zoom para 100% (pixel por pixel)</translation>
     </message>
+    <message>
+      <source>View Bundles</source>
+      <translation>Ver Pacotes</translation>
+    </message>
+    <message>
+      <source>Function Bundles</source>
+      <translation>Pacotes de Funções</translation>
+    </message>
+    <message>
+      <source>Delete selected shortcut buttons</source>
+      <translation>Excluir botões de atalho selecionados</translation>
+    </message>
+    <message>
+      <source>Toggle Display Auto-Stretch</source>
+      <translation>Alternar estiramento automático de exibição</translation>
+    </message>
+    <message>
+      <source>Invert the Image</source>
+      <translation>Inverter a imagem</translation>
+    </message>
+    <message>
+      <source>Focus the command search bar; Enter runs first match</source>
+      <translation>Focar barra de comando; Enter executa 1ª correspondência</translation>
+    </message>
+    <message>
+      <source>Duplicate Image</source>
+      <translation>Duplicar imagem</translation>
+    </message>
+    <message>
+      <source>Copy Zoom and Pan</source>
+      <translation>Copiar Zoom e Pan</translation>
+    </message>
+    <message>
+      <source>Apply that image to the other as a mask</source>
+      <translation>Aplicar essa imagem à outra como máscara</translation>
+    </message>
+    <message>
+      <source>Zoom to 100% (1:1)</source>
+      <translation>Zoom para 100% (1:1)</translation>
+    </message>
+    <message>
+      <source>Switch to previously active view</source>
+      <translation>Mudar para vista ativa anterior</translation>
+    </message>
+    <message>
+      <source>Switch to next active view</source>
+      <translation>Mudar para próxima vista ativa</translation>
+    </message>
+    <message>
+      <source>Create a desktop shortcut for that action</source>
+      <translation>Criar atalho na área de trabalho para essa ação</translation>
+    </message>
+    <message>
+      <source>Headless apply the shortcut's command/preset to a view</source>
+      <translation>Aplicação headless do comando/predefinição a uma vista</translation>
+    </message>
+    <message>
+      <source>Multi-select shortcut buttons</source>
+      <translation>Seleção múltipla botões atalho</translation>
+    </message>
+    <message>
+      <source>Move selected shortcut buttons</source>
+      <translation>Mover botões atalho selecionados</translation>
+    </message>
+    <message>
+      <source>Select all shortcut buttons</source>
+      <translation>Selecionar todos os botões de atalho</translation>
+    </message>
+    <message>
+      <source>Open files dialog</source>
+      <translation>Abrir diálogo de arquivos</translation>
+    </message>
+    <message>
+      <source>Add dragged view as a new layer (on top)</source>
+      <translation>Adicionar vista arrastada como nova camada (topo)</translation>
+    </message>
+    <message>
+      <source>Attach dragged image as mask to the selected layer</source>
+      <translation>Anexar imagem arrastada como máscara à camada</translation>
+    </message>
+    <message>
+      <source>Draw a crop rectangle</source>
+      <translation>Desenhar retângulo de corte</translation>
+    </message>
+    <message>
+      <source>Resize crop rectangle</source>
+      <translation>Redimensionar retângulo de corte</translation>
+    </message>
+    <message>
+      <source>Rotate crop rectangle</source>
+      <translation>Girar retângulo de corte</translation>
+    </message>
+    <message>
+      <source>Loading a project will close current views and replace desktop shortcuts.
+Continue?</source>
+      <translation>Carregar um projeto fechará as vistas atuais e substituirá os atalhos.
+Continuar?</translation>
+    </message>
   </context>
   <context>
     <name>AstrobinExportTab</name>

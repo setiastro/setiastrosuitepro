@@ -1251,6 +1251,104 @@ Alt+Drag: drop onto a view</source>
       <source>Zoom to 100% (pixel-for-pixel)</source>
       <translation>تكبير إلى 100% (بكسل لبكسل)</translation>
     </message>
+    <message>
+      <source>View Bundles</source>
+      <translation>عرض الحزم</translation>
+    </message>
+    <message>
+      <source>Function Bundles</source>
+      <translation>حزم الوظائف</translation>
+    </message>
+    <message>
+      <source>Delete selected shortcut buttons</source>
+      <translation>حذف أزرار الاختصار المحددة</translation>
+    </message>
+    <message>
+      <source>Toggle Display Auto-Stretch</source>
+      <translation>تبديل التمدد التلقائي للعرض</translation>
+    </message>
+    <message>
+      <source>Invert the Image</source>
+      <translation>عكس الصورة</translation>
+    </message>
+    <message>
+      <source>Focus the command search bar; Enter runs first match</source>
+      <translation>التركيز على شريط البحث عن الأوامر ؛ تشغيل الإدخال أول مباراة</translation>
+    </message>
+    <message>
+      <source>Duplicate Image</source>
+      <translation>تكرار الصورة</translation>
+    </message>
+    <message>
+      <source>Copy Zoom and Pan</source>
+      <translation>نسخ التكبير والتحريك</translation>
+    </message>
+    <message>
+      <source>Apply that image to the other as a mask</source>
+      <translation>تطبيق تلك الصورة على الأخرى كقناع</translation>
+    </message>
+    <message>
+      <source>Zoom to 100% (1:1)</source>
+      <translation>تكبير إلى 100٪ (1: 1)</translation>
+    </message>
+    <message>
+      <source>Switch to previously active view</source>
+      <translation>التبديل إلى العرض النشط السابق</translation>
+    </message>
+    <message>
+      <source>Switch to next active view</source>
+      <translation>التبديل إلى العرض النشط التالي</translation>
+    </message>
+    <message>
+      <source>Create a desktop shortcut for that action</source>
+      <translation>إنشاء اختصار لسطح المكتب لهذا الإجراء</translation>
+    </message>
+    <message>
+      <source>Headless apply the shortcut's command/preset to a view</source>
+      <translation>تطبيق أمر / إعداد مسبق للاختصار بلا رأس على عرض</translation>
+    </message>
+    <message>
+      <source>Multi-select shortcut buttons</source>
+      <translation>أزرار اختصار التحديد المتعدد</translation>
+    </message>
+    <message>
+      <source>Move selected shortcut buttons</source>
+      <translation>نقل أزرار الاختصار المحددة</translation>
+    </message>
+    <message>
+      <source>Select all shortcut buttons</source>
+      <translation>تحديد كافة أزرار الاختصار</translation>
+    </message>
+    <message>
+      <source>Open files dialog</source>
+      <translation>فتح مربع حوار الملفات</translation>
+    </message>
+    <message>
+      <source>Add dragged view as a new layer (on top)</source>
+      <translation>إضافة عرض مسحوب كطبقة جديدة (في الأعلى)</translation>
+    </message>
+    <message>
+      <source>Attach dragged image as mask to the selected layer</source>
+      <translation>إرفاق الصورة المسحوبة كقناع بالطبقة المحددة</translation>
+    </message>
+    <message>
+      <source>Draw a crop rectangle</source>
+      <translation>رسم مستطيل اقتصاص</translation>
+    </message>
+    <message>
+      <source>Resize crop rectangle</source>
+      <translation>تغيير حجم مستطيل الاقتصاص</translation>
+    </message>
+    <message>
+      <source>Rotate crop rectangle</source>
+      <translation>تدوير مستطيل الاقتصاص</translation>
+    </message>
+    <message>
+      <source>Loading a project will close current views and replace desktop shortcuts.
+Continue?</source>
+      <translation>سيؤدي تحميل المشروع إلى إغلاق طرق العرض الحالية واستبدال اختصارات سطح المكتب.
+استمرار؟</translation>
+    </message>
   </context>
   <context>
     <name>AstrobinExportTab</name>

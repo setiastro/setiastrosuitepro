@@ -781,6 +781,104 @@
       <source>View Bundles...</source>
       <translation>Pakete anzeigen...</translation>
     </message>
+    <message>
+      <source>View Bundles</source>
+      <translation>Bündel anzeigen</translation>
+    </message>
+    <message>
+      <source>Function Bundles</source>
+      <translation>Funktionsbündel</translation>
+    </message>
+    <message>
+      <source>Delete selected shortcut buttons</source>
+      <translation>Ausgewählte Verknüpfungsschaltflächen löschen</translation>
+    </message>
+    <message>
+      <source>Toggle Display Auto-Stretch</source>
+      <translation>Automatische Anzeige-Streckung umschalten</translation>
+    </message>
+    <message>
+      <source>Invert the Image</source>
+      <translation>Bild invertieren</translation>
+    </message>
+    <message>
+      <source>Focus the command search bar; Enter runs first match</source>
+      <translation>Befehlssuche fokussieren; Enter führt ersten Treffer aus</translation>
+    </message>
+    <message>
+      <source>Duplicate Image</source>
+      <translation>Bild duplizieren</translation>
+    </message>
+    <message>
+      <source>Copy Zoom and Pan</source>
+      <translation>Zoom und Pan kopieren</translation>
+    </message>
+    <message>
+      <source>Apply that image to the other as a mask</source>
+      <translation>Dieses Bild als Maske auf das andere anwenden</translation>
+    </message>
+    <message>
+      <source>Zoom to 100% (1:1)</source>
+      <translation>Zoom auf 100% (1:1)</translation>
+    </message>
+    <message>
+      <source>Switch to previously active view</source>
+      <translation>Zur vorherigen aktiven Ansicht wechseln</translation>
+    </message>
+    <message>
+      <source>Switch to next active view</source>
+      <translation>Zur nächsten aktiven Ansicht wechseln</translation>
+    </message>
+    <message>
+      <source>Create a desktop shortcut for that action</source>
+      <translation>Desktop-Verknüpfung für diese Aktion erstellen</translation>
+    </message>
+    <message>
+      <source>Headless apply the shortcut's command/preset to a view</source>
+      <translation>Headless-Anwendung des Befehls/Presets auf Ansicht</translation>
+    </message>
+    <message>
+      <source>Multi-select shortcut buttons</source>
+      <translation>Mehrfachauswahl Verknüpfungsschaltflächen</translation>
+    </message>
+    <message>
+      <source>Move selected shortcut buttons</source>
+      <translation>Ausgewählte Verknüpfungsschaltflächen verschieben</translation>
+    </message>
+    <message>
+      <source>Select all shortcut buttons</source>
+      <translation>Alle Verknüpfungsschaltflächen auswählen</translation>
+    </message>
+    <message>
+      <source>Open files dialog</source>
+      <translation>Dateidialog öffnen</translation>
+    </message>
+    <message>
+      <source>Add dragged view as a new layer (on top)</source>
+      <translation>Gezogene Ansicht als neue Ebene hinzufügen (oben)</translation>
+    </message>
+    <message>
+      <source>Attach dragged image as mask to the selected layer</source>
+      <translation>Gezogenes Bild als Maske an ausgewählte Ebene anhängen</translation>
+    </message>
+    <message>
+      <source>Draw a crop rectangle</source>
+      <translation>Zuschneiderechteck zeichnen</translation>
+    </message>
+    <message>
+      <source>Resize crop rectangle</source>
+      <translation>Zuschneiderechteck ändern</translation>
+    </message>
+    <message>
+      <source>Rotate crop rectangle</source>
+      <translation>Zuschneiderechteck drehen</translation>
+    </message>
+    <message>
+      <source>Loading a project will close current views and replace desktop shortcuts.
+Continue?</source>
+      <translation>Das Laden eines Projekts schließt alle Ansichten und ersetzt Desktop-Verknüpfungen.
+Fortfahren?</translation>
+    </message>
   </context>
   <context>
     <name>AstrobinExportTab</name>

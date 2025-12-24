@@ -1249,6 +1249,104 @@ Alt+ドラッグ: ビューにドロップ</translation>
       <source>Zoom to 100% (pixel-for-pixel)</source>
       <translation>100% にズーム (等倍)</translation>
     </message>
+    <message>
+      <source>View Bundles</source>
+      <translation>バンドルを表示</translation>
+    </message>
+    <message>
+      <source>Function Bundles</source>
+      <translation>機能バンドル</translation>
+    </message>
+    <message>
+      <source>Delete selected shortcut buttons</source>
+      <translation>選択したショートカットボタンを削除</translation>
+    </message>
+    <message>
+      <source>Toggle Display Auto-Stretch</source>
+      <translation>表示の自動ストレッチを切り替え</translation>
+    </message>
+    <message>
+      <source>Invert the Image</source>
+      <translation>画像を反転</translation>
+    </message>
+    <message>
+      <source>Focus the command search bar; Enter runs first match</source>
+      <translation>コマンド検索バーにフォーカス。Enterで最初の一致を実行</translation>
+    </message>
+    <message>
+      <source>Duplicate Image</source>
+      <translation>画像を複製</translation>
+    </message>
+    <message>
+      <source>Copy Zoom and Pan</source>
+      <translation>ズームとパンをコピー</translation>
+    </message>
+    <message>
+      <source>Apply that image to the other as a mask</source>
+      <translation>その画像をマスクとして他に適用</translation>
+    </message>
+    <message>
+      <source>Zoom to 100% (1:1)</source>
+      <translation>100%にズーム (1:1)</translation>
+    </message>
+    <message>
+      <source>Switch to previously active view</source>
+      <translation>前の用語のアクティブビューに切り替え</translation>
+    </message>
+    <message>
+      <source>Switch to next active view</source>
+      <translation>次のアクティブビューに切り替え</translation>
+    </message>
+    <message>
+      <source>Create a desktop shortcut for that action</source>
+      <translation>そのアクションのデスクトップショートカットを作成</translation>
+    </message>
+    <message>
+      <source>Headless apply the shortcut's command/preset to a view</source>
+      <translation>ショートカットのコマンド/プリセットをビューにヘッドレス適用</translation>
+    </message>
+    <message>
+      <source>Multi-select shortcut buttons</source>
+      <translation>ショートカットボタンの複数選択</translation>
+    </message>
+    <message>
+      <source>Move selected shortcut buttons</source>
+      <translation>選択したショートカットボタンを移動</translation>
+    </message>
+    <message>
+      <source>Select all shortcut buttons</source>
+      <translation>すべてのショートカットボタンを選択</translation>
+    </message>
+    <message>
+      <source>Open files dialog</source>
+      <translation>ファイルダイアログを開く</translation>
+    </message>
+    <message>
+      <source>Add dragged view as a new layer (on top)</source>
+      <translation>ドラッグしたビューを新しいレイヤーとして追加（最上部）</translation>
+    </message>
+    <message>
+      <source>Attach dragged image as mask to the selected layer</source>
+      <translation>ドラッグした画像をマスクとして選択したレイヤーに添付</translation>
+    </message>
+    <message>
+      <source>Draw a crop rectangle</source>
+      <translation>切り抜き長方形を描画</translation>
+    </message>
+    <message>
+      <source>Resize crop rectangle</source>
+      <translation>切り抜き長方形のサイズを変更</translation>
+    </message>
+    <message>
+      <source>Rotate crop rectangle</source>
+      <translation>切り抜き長方形を回転</translation>
+    </message>
+    <message>
+      <source>Loading a project will close current views and replace desktop shortcuts.
+Continue?</source>
+      <translation>プロジェクトを読み込むと、現在のビューが閉じられ、デスクトップショートカットが置き換えられます。
+続行しますか？</translation>
+    </message>
   </context>
   <context>
     <name>AstrobinExportTab</name>

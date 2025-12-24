@@ -1253,6 +1253,104 @@ Alt+Buruta: dondosha kwenye mtazamo</translation>
       <source>Zoom to 100% (pixel-for-pixel)</source>
       <translation>Kuza hadi 100% (pikseli-kwa-pikseli)</translation>
     </message>
+    <message>
+      <source>View Bundles</source>
+      <translation>Angalia Vifurushi</translation>
+    </message>
+    <message>
+      <source>Function Bundles</source>
+      <translation>Vifurushi vya Kazi</translation>
+    </message>
+    <message>
+      <source>Delete selected shortcut buttons</source>
+      <translation>Futa vibonye vya njia za mkato vilivyochaguliwa</translation>
+    </message>
+    <message>
+      <source>Toggle Display Auto-Stretch</source>
+      <translation>Badilisha Urefushaji wa Otomatiki wa Onyesho</translation>
+    </message>
+    <message>
+      <source>Invert the Image</source>
+      <translation>Pindua Picha</translation>
+    </message>
+    <message>
+      <source>Focus the command search bar; Enter runs first match</source>
+      <translation>Focus bar ya utafutaji wa amri; Ingiza inaendesha mechi ya kwanza</translation>
+    </message>
+    <message>
+      <source>Duplicate Image</source>
+      <translation>Rudufu Picha</translation>
+    </message>
+    <message>
+      <source>Copy Zoom and Pan</source>
+      <translation>Nakili Zoom na Pan</translation>
+    </message>
+    <message>
+      <source>Apply that image to the other as a mask</source>
+      <translation>Tumia picha hiyo kwa nyingine kama kinyago</translation>
+    </message>
+    <message>
+      <source>Zoom to 100% (1:1)</source>
+      <translation>Kuza hadi 100% (1:1)</translation>
+    </message>
+    <message>
+      <source>Switch to previously active view</source>
+      <translation>Badilisha hadi mwonekano amilifu wa awali</translation>
+    </message>
+    <message>
+      <source>Switch to next active view</source>
+      <translation>Badilisha hadi mwonekano amilifu unaofuata</translation>
+    </message>
+    <message>
+      <source>Create a desktop shortcut for that action</source>
+      <translation>Unda njia ya mkato ya desktop kwa hatua hiyo</translation>
+    </message>
+    <message>
+      <source>Headless apply the shortcut's command/preset to a view</source>
+      <translation>Headless tumia amri/preset ya njia ya mkato kwa mtazamo</translation>
+    </message>
+    <message>
+      <source>Multi-select shortcut buttons</source>
+      <translation>Vifungo vya mkato vya kuchagua vingi</translation>
+    </message>
+    <message>
+      <source>Move selected shortcut buttons</source>
+      <translation>Sogeza vibonye vya mkato vilivyochaguliwa</translation>
+    </message>
+    <message>
+      <source>Select all shortcut buttons</source>
+      <translation>Chagua vibonye vyote vya njia za mkato</translation>
+    </message>
+    <message>
+      <source>Open files dialog</source>
+      <translation>Fungua mazungumzo ya faili</translation>
+    </message>
+    <message>
+      <source>Add dragged view as a new layer (on top)</source>
+      <translation>Ongeza mtazamo uliokokotwa kama safu mpya (juu)</translation>
+    </message>
+    <message>
+      <source>Attach dragged image as mask to the selected layer</source>
+      <translation>Ambatisha picha iliyokokotwa kama kinyago kwa safu iliyochaguliwa</translation>
+    </message>
+    <message>
+      <source>Draw a crop rectangle</source>
+      <translation>Chora mstatili wa mazao</translation>
+    </message>
+    <message>
+      <source>Resize crop rectangle</source>
+      <translation>Badilisha ukubwa wa mstatili wa mazao</translation>
+    </message>
+    <message>
+      <source>Rotate crop rectangle</source>
+      <translation>Zungusha mstatili wa mazao</translation>
+    </message>
+    <message>
+      <source>Loading a project will close current views and replace desktop shortcuts.
+Continue?</source>
+      <translation>Kupakia mradi kutafunga maoni ya sasa na kubadilisha njia za mkato za desktop.
+Endelea?</translation>
+    </message>
   </context>
   <context>
     <name>AstrobinExportTab</name>

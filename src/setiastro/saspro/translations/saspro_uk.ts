@@ -1560,6 +1560,104 @@ Alt+Drag: перетягнути на вікно</translation>
       <source>Zoom to 100% (pixel-for-pixel)</source>
       <translation>Масштаб 100% (піксель у піксель)</translation>
     </message>
+    <message>
+      <source>View Bundles</source>
+      <translation>Переглянути пакети</translation>
+    </message>
+    <message>
+      <source>Function Bundles</source>
+      <translation>Пакети функцій</translation>
+    </message>
+    <message>
+      <source>Delete selected shortcut buttons</source>
+      <translation>Видалити вибрані кнопки швидкого доступу</translation>
+    </message>
+    <message>
+      <source>Toggle Display Auto-Stretch</source>
+      <translation>Перемкнути авто-roztyahuvannya дисплея</translation>
+    </message>
+    <message>
+      <source>Invert the Image</source>
+      <translation>Інвертувати зображення</translation>
+    </message>
+    <message>
+      <source>Focus the command search bar; Enter runs first match</source>
+      <translation>Фокус на рядку пошуку; Enter запускає перше співпадіння</translation>
+    </message>
+    <message>
+      <source>Duplicate Image</source>
+      <translation>Дублювати зображення</translation>
+    </message>
+    <message>
+      <source>Copy Zoom and Pan</source>
+      <translation>Копіювати масштаб і панорамування</translation>
+    </message>
+    <message>
+      <source>Apply that image to the other as a mask</source>
+      <translation>Застосувати це зображення до іншого як маску</translation>
+    </message>
+    <message>
+      <source>Zoom to 100% (1:1)</source>
+      <translation>Масштаб 100% (1:1)</translation>
+    </message>
+    <message>
+      <source>Switch to previously active view</source>
+      <translation>Перейти до попереднього активного вигляду</translation>
+    </message>
+    <message>
+      <source>Switch to next active view</source>
+      <translation>Перейти до наступного активного вигляду</translation>
+    </message>
+    <message>
+      <source>Create a desktop shortcut for that action</source>
+      <translation>Створити ярлик на робочому столі для цієї дії</translation>
+    </message>
+    <message>
+      <source>Headless apply the shortcut's command/preset to a view</source>
+      <translation>Безголове застосування команди/пресета ярлика до вигляду</translation>
+    </message>
+    <message>
+      <source>Multi-select shortcut buttons</source>
+      <translation>Мульти-вибір кнопок швидкого доступу</translation>
+    </message>
+    <message>
+      <source>Move selected shortcut buttons</source>
+      <translation>Перемістити вибрані кнопки швидкого доступу</translation>
+    </message>
+    <message>
+      <source>Select all shortcut buttons</source>
+      <translation>Вибрати всі кнопки швидкого доступу</translation>
+    </message>
+    <message>
+      <source>Open files dialog</source>
+      <translation>Відкрити діалог файлів</translation>
+    </message>
+    <message>
+      <source>Add dragged view as a new layer (on top)</source>
+      <translation>Додати перетягнутий вигляд як новий шар (зверху)</translation>
+    </message>
+    <message>
+      <source>Attach dragged image as mask to the selected layer</source>
+      <translation>Прикріпити перетягнуте зображення як маску до шару</translation>
+    </message>
+    <message>
+      <source>Draw a crop rectangle</source>
+      <translation>Намалювати прямокутник обрізки</translation>
+    </message>
+    <message>
+      <source>Resize crop rectangle</source>
+      <translation>Змінити розмір прямокутника обрізки</translation>
+    </message>
+    <message>
+      <source>Rotate crop rectangle</source>
+      <translation>Повернути прямокутник обрізки</translation>
+    </message>
+    <message>
+      <source>Loading a project will close current views and replace desktop shortcuts.
+Continue?</source>
+      <translation>Завантаження проекту закриє поточні види та замінить ярлики робочого столу.
+Продовжити?</translation>
+    </message>
   </context>
   <context>
     <name>AstrobinExportTab</name>

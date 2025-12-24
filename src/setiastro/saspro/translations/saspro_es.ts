@@ -1568,6 +1568,104 @@ Alt+Arrastrar: soltar sobre una vista</translation>
       <source>Zoom to 100% (pixel-for-pixel)</source>
       <translation>Zoom a 100% (píxel por píxel)</translation>
     </message>
+    <message>
+      <source>View Bundles</source>
+      <translation>Ver Paquetes</translation>
+    </message>
+    <message>
+      <source>Function Bundles</source>
+      <translation>Paquetes de Funciones</translation>
+    </message>
+    <message>
+      <source>Delete selected shortcut buttons</source>
+      <translation>Eliminar botones de acceso directo seleccionados</translation>
+    </message>
+    <message>
+      <source>Toggle Display Auto-Stretch</source>
+      <translation>Alternar estiramiento automático de pantalla</translation>
+    </message>
+    <message>
+      <source>Invert the Image</source>
+      <translation>Invertir la imagen</translation>
+    </message>
+    <message>
+      <source>Focus the command search bar; Enter runs first match</source>
+      <translation>Enfocar barra de búsqueda; Enter ejecuta 1ra coincidencia</translation>
+    </message>
+    <message>
+      <source>Duplicate Image</source>
+      <translation>Duplicar imagen</translation>
+    </message>
+    <message>
+      <source>Copy Zoom and Pan</source>
+      <translation>Copiar Zoom y Pan</translation>
+    </message>
+    <message>
+      <source>Apply that image to the other as a mask</source>
+      <translation>Aplicar esa imagen a la otra como máscara</translation>
+    </message>
+    <message>
+      <source>Zoom to 100% (1:1)</source>
+      <translation>Zoom al 100% (1:1)</translation>
+    </message>
+    <message>
+      <source>Switch to previously active view</source>
+      <translation>Cambiar a vista activa anterior</translation>
+    </message>
+    <message>
+      <source>Switch to next active view</source>
+      <translation>Cambiar a vista activa siguiente</translation>
+    </message>
+    <message>
+      <source>Create a desktop shortcut for that action</source>
+      <translation>Crear acceso directo de escritorio para esa acción</translation>
+    </message>
+    <message>
+      <source>Headless apply the shortcut's command/preset to a view</source>
+      <translation>Aplicar sin interfaz comando/preset a una vista</translation>
+    </message>
+    <message>
+      <source>Multi-select shortcut buttons</source>
+      <translation>Selección múltiple botones acceso directo</translation>
+    </message>
+    <message>
+      <source>Move selected shortcut buttons</source>
+      <translation>Mover botones acceso directo seleccionados</translation>
+    </message>
+    <message>
+      <source>Select all shortcut buttons</source>
+      <translation>Seleccionar todos los botones de acceso directo</translation>
+    </message>
+    <message>
+      <source>Open files dialog</source>
+      <translation>Abrir diálogo de archivos</translation>
+    </message>
+    <message>
+      <source>Add dragged view as a new layer (on top)</source>
+      <translation>Añadir vista arrastrada como nueva capa (arriba)</translation>
+    </message>
+    <message>
+      <source>Attach dragged image as mask to the selected layer</source>
+      <translation>Adjuntar imagen arrastrada como máscara a capa</translation>
+    </message>
+    <message>
+      <source>Draw a crop rectangle</source>
+      <translation>Dibujar rectángulo de recorte</translation>
+    </message>
+    <message>
+      <source>Resize crop rectangle</source>
+      <translation>Redimensionar rectángulo de recorte</translation>
+    </message>
+    <message>
+      <source>Rotate crop rectangle</source>
+      <translation>Rotar rectángulo de recorte</translation>
+    </message>
+    <message>
+      <source>Loading a project will close current views and replace desktop shortcuts.
+Continue?</source>
+      <translation>Cargar un proyecto cerrará las vistas actuales y reemplazará los accesos directos.
+¿Continuar?</translation>
+    </message>
   </context>
   <context>
     <name>AstrobinExportTab</name>

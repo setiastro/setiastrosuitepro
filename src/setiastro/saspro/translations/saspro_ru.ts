@@ -1251,6 +1251,104 @@ Alt+Drag: drop onto a view</source>
       <source>Zoom to 100% (pixel-for-pixel)</source>
       <translation>Масштаб 100%</translation>
     </message>
+    <message>
+      <source>View Bundles</source>
+      <translation>Посмотреть пакеты</translation>
+    </message>
+    <message>
+      <source>Function Bundles</source>
+      <translation>Пакеты функций</translation>
+    </message>
+    <message>
+      <source>Delete selected shortcut buttons</source>
+      <translation>Удалить выбранные кнопки ярлыков</translation>
+    </message>
+    <message>
+      <source>Toggle Display Auto-Stretch</source>
+      <translation>Переключить авто-растяжение дисплея</translation>
+    </message>
+    <message>
+      <source>Invert the Image</source>
+      <translation>Инвертировать изображение</translation>
+    </message>
+    <message>
+      <source>Focus the command search bar; Enter runs first match</source>
+      <translation>Фокус на строке поиска; Enter запускает первое совпадение</translation>
+    </message>
+    <message>
+      <source>Duplicate Image</source>
+      <translation>Дублировать изображение</translation>
+    </message>
+    <message>
+      <source>Copy Zoom and Pan</source>
+      <translation>Копировать зум и панорамирование</translation>
+    </message>
+    <message>
+      <source>Apply that image to the other as a mask</source>
+      <translation>Применить это изображение к другому как маску</translation>
+    </message>
+    <message>
+      <source>Zoom to 100% (1:1)</source>
+      <translation>Масштаб 100% (1:1)</translation>
+    </message>
+    <message>
+      <source>Switch to previously active view</source>
+      <translation>Переключиться на предыдущий активный вид</translation>
+    </message>
+    <message>
+      <source>Switch to next active view</source>
+      <translation>Переключиться на следующий активный вид</translation>
+    </message>
+    <message>
+      <source>Create a desktop shortcut for that action</source>
+      <translation>Создать ярлык на рабочем столе для этого действия</translation>
+    </message>
+    <message>
+      <source>Headless apply the shortcut's command/preset to a view</source>
+      <translation>Безголовое применение команды/пресета ярлыка к виду</translation>
+    </message>
+    <message>
+      <source>Multi-select shortcut buttons</source>
+      <translation>Мульти-выбор кнопок ярлыков</translation>
+    </message>
+    <message>
+      <source>Move selected shortcut buttons</source>
+      <translation>Переместить выбранные кнопки ярлыков</translation>
+    </message>
+    <message>
+      <source>Select all shortcut buttons</source>
+      <translation>Выбрать все кнопки ярлыков</translation>
+    </message>
+    <message>
+      <source>Open files dialog</source>
+      <translation>Открыть диалог файлов</translation>
+    </message>
+    <message>
+      <source>Add dragged view as a new layer (on top)</source>
+      <translation>Добавить перетаскиваемый вид как новый слой (сверху)</translation>
+    </message>
+    <message>
+      <source>Attach dragged image as mask to the selected layer</source>
+      <translation>Прикрепить перетаскиваемое изображение как маску к слою</translation>
+    </message>
+    <message>
+      <source>Draw a crop rectangle</source>
+      <translation>Нарисовать прямоугольник обрезки</translation>
+    </message>
+    <message>
+      <source>Resize crop rectangle</source>
+      <translation>Изменить размер прямоугольника обрезки</translation>
+    </message>
+    <message>
+      <source>Rotate crop rectangle</source>
+      <translation>Повернуть прямоугольник обрезки</translation>
+    </message>
+    <message>
+      <source>Loading a project will close current views and replace desktop shortcuts.
+Continue?</source>
+      <translation>Загрузка проекта закроет текущие виды и заменит ярлыки рабочего стола.
+Продолжить?</translation>
+    </message>
   </context>
   <context>
     <name>AstrobinExportTab</name>

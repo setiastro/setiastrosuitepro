@@ -1253,6 +1253,104 @@ Alt+拖动：放置到视图上</translation>
       <source>Zoom to 100% (pixel-for-pixel)</source>
       <translation>缩放到100%（像素对像素）</translation>
     </message>
+    <message>
+      <source>View Bundles</source>
+      <translation>查看捆绑包</translation>
+    </message>
+    <message>
+      <source>Function Bundles</source>
+      <translation>功能捆绑包</translation>
+    </message>
+    <message>
+      <source>Delete selected shortcut buttons</source>
+      <translation>删除选定的快捷按钮</translation>
+    </message>
+    <message>
+      <source>Toggle Display Auto-Stretch</source>
+      <translation>切换显示自动拉伸</translation>
+    </message>
+    <message>
+      <source>Invert the Image</source>
+      <translation>反转图像</translation>
+    </message>
+    <message>
+      <source>Focus the command search bar; Enter runs first match</source>
+      <translation>聚焦命令搜索栏；Enter运行首个匹配</translation>
+    </message>
+    <message>
+      <source>Duplicate Image</source>
+      <translation>复制图像</translation>
+    </message>
+    <message>
+      <source>Copy Zoom and Pan</source>
+      <translation>复制缩放和平移</translation>
+    </message>
+    <message>
+      <source>Apply that image to the other as a mask</source>
+      <translation>将该图像作为蒙版应用于另一图像</translation>
+    </message>
+    <message>
+      <source>Zoom to 100% (1:1)</source>
+      <translation>缩放至100% (1:1)</translation>
+    </message>
+    <message>
+      <source>Switch to previously active view</source>
+      <translation>切换到上一个活动视图</translation>
+    </message>
+    <message>
+      <source>Switch to next active view</source>
+      <translation>切换到下一个活动视图</translation>
+    </message>
+    <message>
+      <source>Create a desktop shortcut for that action</source>
+      <translation>为此操作创建桌面快捷方式</translation>
+    </message>
+    <message>
+      <source>Headless apply the shortcut's command/preset to a view</source>
+      <translation>无头应用快捷方式的命令/预设到视图</translation>
+    </message>
+    <message>
+      <source>Multi-select shortcut buttons</source>
+      <translation>多选快捷按钮</translation>
+    </message>
+    <message>
+      <source>Move selected shortcut buttons</source>
+      <translation>移动选定的快捷按钮</translation>
+    </message>
+    <message>
+      <source>Select all shortcut buttons</source>
+      <translation>选择所有快捷按钮</translation>
+    </message>
+    <message>
+      <source>Open files dialog</source>
+      <translation>打开文件对话框</translation>
+    </message>
+    <message>
+      <source>Add dragged view as a new layer (on top)</source>
+      <translation>将拖动的视图添加为新图层（顶部）</translation>
+    </message>
+    <message>
+      <source>Attach dragged image as mask to the selected layer</source>
+      <translation>将拖动的图像作为蒙版附加到选定图层</translation>
+    </message>
+    <message>
+      <source>Draw a crop rectangle</source>
+      <translation>绘制裁剪矩形</translation>
+    </message>
+    <message>
+      <source>Resize crop rectangle</source>
+      <translation>调整裁剪矩形大小</translation>
+    </message>
+    <message>
+      <source>Rotate crop rectangle</source>
+      <translation>旋转裁剪矩形</translation>
+    </message>
+    <message>
+      <source>Loading a project will close current views and replace desktop shortcuts.
+Continue?</source>
+      <translation>加载项目将关闭当前视图并替换桌面快捷方式。
+继续吗？</translation>
+    </message>
   </context>
   <context>
     <name>AstrobinExportTab</name>

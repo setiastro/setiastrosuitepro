@@ -1273,6 +1273,104 @@ Alt+Trascina: rilascia su una vista</translation>
       <source>Zoom to 100% (pixel-for-pixel)</source>
       <translation>Zoom al 100% (pixel per pixel)</translation>
     </message>
+    <message>
+      <source>View Bundles</source>
+      <translation>Visualizza Combinazioni</translation>
+    </message>
+    <message>
+      <source>Function Bundles</source>
+      <translation>Combinazioni di Funzioni</translation>
+    </message>
+    <message>
+      <source>Delete selected shortcut buttons</source>
+      <translation>Elimina i pulsanti di scelta rapida selezionati</translation>
+    </message>
+    <message>
+      <source>Toggle Display Auto-Stretch</source>
+      <translation>Attiva/Disattiva Auto-Stretch Display</translation>
+    </message>
+    <message>
+      <source>Invert the Image</source>
+      <translation>Inverti l'immagine</translation>
+    </message>
+    <message>
+      <source>Focus the command search bar; Enter runs first match</source>
+      <translation>Focus barra ricerca comandi; Invio esegue primo match</translation>
+    </message>
+    <message>
+      <source>Duplicate Image</source>
+      <translation>Duplica immagine</translation>
+    </message>
+    <message>
+      <source>Copy Zoom and Pan</source>
+      <translation>Copia Zoom e Pan</translation>
+    </message>
+    <message>
+      <source>Apply that image to the other as a mask</source>
+      <translation>Applica immagine all'altra come maschera</translation>
+    </message>
+    <message>
+      <source>Zoom to 100% (1:1)</source>
+      <translation>Zoom al 100% (1:1)</translation>
+    </message>
+    <message>
+      <source>Switch to previously active view</source>
+      <translation>Passa alla vista attiva precedente</translation>
+    </message>
+    <message>
+      <source>Switch to next active view</source>
+      <translation>Passa alla vista attiva successiva</translation>
+    </message>
+    <message>
+      <source>Create a desktop shortcut for that action</source>
+      <translation>Crea una scorciatoia sul desktop per questa azione</translation>
+    </message>
+    <message>
+      <source>Headless apply the shortcut's command/preset to a view</source>
+      <translation>Applica comando/preset scorciatoia a vista (senza GUI)</translation>
+    </message>
+    <message>
+      <source>Multi-select shortcut buttons</source>
+      <translation>Selezione multipla pulsanti scorciatoia</translation>
+    </message>
+    <message>
+      <source>Move selected shortcut buttons</source>
+      <translation>Sposta pulsanti scorciatoia selezionati</translation>
+    </message>
+    <message>
+      <source>Select all shortcut buttons</source>
+      <translation>Seleziona tutti i pulsanti scorciatoia</translation>
+    </message>
+    <message>
+      <source>Open files dialog</source>
+      <translation>Apri finestra file</translation>
+    </message>
+    <message>
+      <source>Add dragged view as a new layer (on top)</source>
+      <translation>Aggiungi vista trascinata come nuovo livello (in alto)</translation>
+    </message>
+    <message>
+      <source>Attach dragged image as mask to the selected layer</source>
+      <translation>Allega immagine trascinata come maschera al livello</translation>
+    </message>
+    <message>
+      <source>Draw a crop rectangle</source>
+      <translation>Disegna rettangolo ritaglio</translation>
+    </message>
+    <message>
+      <source>Resize crop rectangle</source>
+      <translation>Ridimensiona rettangolo ritaglio</translation>
+    </message>
+    <message>
+      <source>Rotate crop rectangle</source>
+      <translation>Ruota rettangolo ritaglio</translation>
+    </message>
+    <message>
+      <source>Loading a project will close current views and replace desktop shortcuts.
+Continue?</source>
+      <translation>Il caricamento di un progetto chiuderà le viste correnti e sostituirà le scorciatoie sul desktop.
+Continuare?</translation>
+    </message>
   </context>
   <context>
     <name>AstrobinExportTab</name>
