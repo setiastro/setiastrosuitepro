@@ -15648,5 +15648,222 @@ Hold Ctrl while dragging to copy the astrometric solution (WCS) to another view.
       <source>Search M.A.S.T Database</source>
       <translation>بحث في قاعدة بيانات M.A.S.T</translation>
     </message>
+    <message>
+      <source>Load Image File</source>
+      <translation>Load Image File</translation>
+    </message>
+    <message>
+      <source>Load from View</source>
+      <translation>Load from View</translation>
+    </message>
+    <message>
+      <source>AutoStretch</source>
+      <translation>AutoStretch</translation>
+    </message>
+    <message>
+      <source>Shift+Click to define a search region</source>
+      <translation>Shift+Click to define a search region</translation>
+    </message>
+    <message>
+      <source>Query Simbad</source>
+      <translation>Query Simbad</translation>
+    </message>
+    <message>
+      <source>Save CSV</source>
+      <translation>Save CSV</translation>
+    </message>
+    <message>
+      <source>Advanced Search</source>
+      <translation>Advanced Search</translation>
+    </message>
+    <message>
+      <source>Status: Ready</source>
+      <translation>Status: Ready</translation>
+    </message>
+  </context>
+  <context>
+    <name>WhatsInMySkyDialog</name>
+    <message>
+      <source>What's In My Sky</source>
+      <translation>What's In My Sky</translation>
+    </message>
+    <message>
+      <source>Latitude:</source>
+      <translation>Latitude:</translation>
+    </message>
+    <message>
+      <source>Longitude (E+, W−):</source>
+      <translation>Longitude (E+, W−):</translation>
+    </message>
+    <message>
+      <source>Date (YYYY-MM-DD):</source>
+      <translation>Date (YYYY-MM-DD):</translation>
+    </message>
+    <message>
+      <source>Time (HH:MM):</source>
+      <translation>Time (HH:MM):</translation>
+    </message>
+    <message>
+      <source>Time Zone:</source>
+      <translation>Time Zone:</translation>
+    </message>
+    <message>
+      <source>Min Altitude (0–90°):</source>
+      <translation>Min Altitude (0–90°):</translation>
+    </message>
+    <message>
+      <source>Catalog Filters:</source>
+      <translation>Catalog Filters:</translation>
+    </message>
+    <message>
+      <source>Degrees</source>
+      <translation>Degrees</translation>
+    </message>
+    <message>
+      <source>H:M:S / D:M:S</source>
+      <translation>H:M:S / D:M:S</translation>
+    </message>
+    <message>
+      <source>RA/Dec Format:</source>
+      <translation>RA/Dec Format:</translation>
+    </message>
+    <message>
+      <source>Calculate</source>
+      <translation>Calculate</translation>
+    </message>
+    <message>
+      <source>Status: Idle</source>
+      <translation>Status: Idle</translation>
+    </message>
+    <message>
+      <source>Local Sidereal Time: 0.000</source>
+      <translation>Local Sidereal Time: 0.000</translation>
+    </message>
+    <message>
+      <source>Lunar Phase: N/A</source>
+      <translation>Lunar Phase: N/A</translation>
+    </message>
+    <message>
+      <source>Name</source>
+      <translation>Name</translation>
+    </message>
+    <message>
+      <source>RA</source>
+      <translation>RA</translation>
+    </message>
+    <message>
+      <source>Dec</source>
+      <translation>Dec</translation>
+    </message>
+    <message>
+      <source>Altitude</source>
+      <translation>Altitude</translation>
+    </message>
+    <message>
+      <source>Azimuth</source>
+      <translation>Azimuth</translation>
+    </message>
+    <message>
+      <source>Minutes to Transit</source>
+      <translation>Minutes to Transit</translation>
+    </message>
+    <message>
+      <source>Before/After Transit</source>
+      <translation>Before/After Transit</translation>
+    </message>
+    <message>
+      <source>Degrees from Moon</source>
+      <translation>Degrees from Moon</translation>
+    </message>
+    <message>
+      <source>Alt Name</source>
+      <translation>Alt Name</translation>
+    </message>
+    <message>
+      <source>Type</source>
+      <translation>Type</translation>
+    </message>
+    <message>
+      <source>Magnitude</source>
+      <translation>Magnitude</translation>
+    </message>
+    <message>
+      <source>Size (arcmin)</source>
+      <translation>Size (arcmin)</translation>
+    </message>
+    <message>
+      <source>Add Custom Object</source>
+      <translation>Add Custom Object</translation>
+    </message>
+    <message>
+      <source>Save to CSV</source>
+      <translation>Save to CSV</translation>
+    </message>
+    <message>
+      <source>Settings</source>
+      <translation>Settings</translation>
+    </message>
+    <message>
+      <source>Enter number of objects to display:</source>
+      <translation>Enter number of objects to display:</translation>
+    </message>
+    <message>
+      <source>Enter object name:</source>
+      <translation>Enter object name:</translation>
+    </message>
+    <message>
+      <source>Enter RA (deg):</source>
+      <translation>Enter RA (deg):</translation>
+    </message>
+    <message>
+      <source>Enter Dec (deg):</source>
+      <translation>Enter Dec (deg):</translation>
+    </message>
+    <message>
+      <source>Added custom object: {}</source>
+      <translation>Added custom object: {}</translation>
+    </message>
+    <message>
+      <source>Could not update catalog:
+{}</source>
+      <translation>Could not update catalog:
+{}</translation>
+    </message>
+    <message>
+      <source>Save CSV File</source>
+      <translation>Save CSV File</translation>
+    </message>
+    <message>
+      <source>CSV files (*.csv);;All Files (*)</source>
+      <translation>CSV files (*.csv);;All Files (*)</translation>
+    </message>
+    <message>
+      <source>Data saved to {}</source>
+      <translation>Data saved to {}</translation>
+    </message>
+    <message>
+      <source>Invalid input: {}</source>
+      <translation>Invalid input: {}</translation>
+    </message>
+    <message>
+      <source> Please verify your longitude/timezone.</source>
+      <translation> Please verify your longitude/timezone.</translation>
+    </message>
+    <message>
+      <source>Inputs look consistent.</source>
+      <translation>Inputs look consistent.</translation>
+    </message>
+    <message>
+      <source>Calculating…</source>
+      <translation>Calculating…</translation>
+    </message>
+    <message>
+      <source>Lunar Phase: {}% illuminated</source>
+      <translation>Lunar Phase: {}% illuminated</translation>
+    </message>
+    <message>
+      <source>Status: {}</source>
+      <translation>Status: {}</translation>
+    </message>
   </context>
 </TS>

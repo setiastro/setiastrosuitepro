@@ -2596,12 +2596,12 @@ class WIMIDialog(QDialog):
         button_layout = QHBoxLayout()
         
         # Load button
-        self.load_button = QPushButton("Load Image File")
+        self.load_button = QPushButton(self.tr("Load Image File"))
         self.load_button.setIcon(QApplication.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogStart))
         self.load_button.clicked.connect(self.open_image)
 
         self.load_from_view_btn = QToolButton()
-        self.load_from_view_btn.setText("Load from View")
+        self.load_from_view_btn.setText(self.tr("Load from View"))
         self.load_from_view_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.load_from_view_btn.setIcon(QApplication.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon))
         self.load_from_view_menu = QMenu(self)
@@ -2611,7 +2611,7 @@ class WIMIDialog(QDialog):
         button_layout.addWidget(self.load_from_view_btn)
 
         # AutoStretch button
-        self.auto_stretch_button = QPushButton("AutoStretch")
+        self.auto_stretch_button = QPushButton(self.tr("AutoStretch"))
         self.auto_stretch_button.clicked.connect(self.toggle_autostretch)
 
         # Add both buttons to the horizontal layout
@@ -2622,7 +2622,7 @@ class WIMIDialog(QDialog):
         left_panel.addLayout(button_layout)
 
         # Create the instruction QLabel for search region
-        search_region_instruction_label = QLabel("Shift+Click to define a search region")
+        search_region_instruction_label = QLabel(self.tr("Shift+Click to define a search region"))
         search_region_instruction_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         search_region_instruction_label.setStyleSheet("font-size: 15px; color: gray;")
 
@@ -2632,12 +2632,12 @@ class WIMIDialog(QDialog):
 
 
         # Query Simbad button
-        self.query_button = QPushButton("Query Simbad")
+        self.query_button = QPushButton(self.tr("Query Simbad"))
         self.query_button.setIcon(QApplication.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton))
         left_panel.addWidget(self.query_button)
         self.query_button.clicked.connect(lambda: self.query_simbad(self.get_defined_radius()))
 
-        self.legend_button = QPushButton("Legend")
+        self.legend_button = QPushButton(self.tr("Legend"))
         self.legend_button.clicked.connect(self.show_legend)
         left_panel.addWidget(self.legend_button)
 
@@ -2645,12 +2645,12 @@ class WIMIDialog(QDialog):
         show_clear_layout = QHBoxLayout()
 
         # Create the Show Object Names checkbox
-        self.show_names_checkbox = QCheckBox("Show Object Names")
+        self.show_names_checkbox = QCheckBox(self.tr("Show Object Names"))
         self.show_names_checkbox.stateChanged.connect(self.toggle_object_names)  # Connect to a function to toggle names
         show_clear_layout.addWidget(self.show_names_checkbox)
 
         # Create the Clear Results button
-        self.clear_results_button = QPushButton("Clear Results")
+        self.clear_results_button = QPushButton(self.tr("Clear Results"))
         self.clear_results_button.setIcon(QApplication.style().standardIcon(QStyle.StandardPixmap.SP_DialogCloseButton))
         self.clear_results_button.clicked.connect(self.clear_search_results)  # Connect to a function to clear results
         show_clear_layout.addWidget(self.clear_results_button)
@@ -2662,7 +2662,7 @@ class WIMIDialog(QDialog):
         button_layout = QHBoxLayout()
 
         # Show Visible Objects Only button
-        self.toggle_visible_objects_button = QPushButton("Show Visible Objects Only")
+        self.toggle_visible_objects_button = QPushButton(self.tr("Show Visible Objects Only"))
         self.toggle_visible_objects_button.setCheckable(True)  # Toggle button state
         self.toggle_visible_objects_button.setIcon(QIcon(eye_icon_path))
         self.toggle_visible_objects_button.clicked.connect(self.filter_visible_objects)
@@ -2670,7 +2670,7 @@ class WIMIDialog(QDialog):
         button_layout.addWidget(self.toggle_visible_objects_button)
 
         # Save CSV button
-        self.save_csv_button = QPushButton("Save CSV")
+        self.save_csv_button = QPushButton(self.tr("Save CSV"))
         self.save_csv_button.setIcon(QIcon(csv_icon_path))
         self.save_csv_button.clicked.connect(self.save_results_as_csv)
         button_layout.addWidget(self.save_csv_button)
@@ -2679,7 +2679,7 @@ class WIMIDialog(QDialog):
         left_panel.addLayout(button_layout)  
 
         # Advanced Search Button
-        self.advanced_search_button = QPushButton("Advanced Search")
+        self.advanced_search_button = QPushButton(self.tr("Advanced Search"))
         self.advanced_search_button.setIcon(QApplication.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView))
         self.advanced_search_button.setCheckable(True)
         self.advanced_search_button.clicked.connect(self.toggle_advanced_search)
@@ -2693,7 +2693,7 @@ class WIMIDialog(QDialog):
         self.advanced_search_panel_widget.setVisible(False)  # Hide initially        
 
         # Status label
-        self.status_label = QLabel("Status: Ready")
+        self.status_label = QLabel(self.tr("Status: Ready"))
         left_panel.addWidget(self.status_label)
 
         # Create a horizontal layout
