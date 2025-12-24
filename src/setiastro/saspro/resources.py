@@ -123,17 +123,31 @@ def _get_base_path() -> str:
 
 
 def _resource_path(filename: str) -> str:
-    """Get full path to a resource file."""
     base = _get_base_path()
-    
-    # Check if it's an image file - look in images/ subdirectory
-    if filename.endswith(('.png', '.ico', '.gif', '.icns', '.svg')):
-        images_path = os.path.join(base, 'images', filename)
-        if os.path.exists(images_path):
-            return images_path
-    
-    # Fallback to root directory (for data files like .csv, .fits, etc.)
-    return os.path.join(base, filename)
+    fn = filename
+
+    is_img = fn.lower().endswith(('.png','.ico','.gif','.icns','.svg','.jpg','.jpeg','.bmp'))
+    if is_img:
+        candidates = [
+            os.path.join(base, 'images', fn),
+            os.path.join(base, 'setiastro', 'images', fn),
+            os.path.join(base, 'setiastro', 'saspro', 'images', fn),
+        ]
+        for p in candidates:
+            if os.path.exists(p):
+                return p
+
+    # data / other files
+    candidates = [
+        os.path.join(base, fn),
+        os.path.join(base, 'setiastro', fn),
+        os.path.join(base, 'setiastro', 'saspro', fn),
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            return p
+
+    return os.path.join(base, fn)
 
 
 class Icons:
@@ -471,8 +485,11 @@ globals().update(_legacy)
 
 
 # Background for startup
-background_startup_path = os.path.join(_get_base_path(), 'images', 'Background_startup.jpg')
+background_startup_path = _resource_path('Background_startup.jpg')
 _legacy['background_startup_path'] = background_startup_path
+
+# QML helper
+resource_monitor_qml = _resource_path(os.path.join("qml", "ResourceMonitor.qml"))
 
 # Export list for `from setiastro.saspro.resources import *`
 __all__ = [
