@@ -310,7 +310,7 @@ class AstroSuiteProMainWindow(
         from setiastro.saspro.window_shelf import WindowShelf, MinimizeInterceptor
         from setiastro.saspro.imageops.mdi_snap import MdiSnapController
         from setiastro.saspro.ops.scripts import ScriptManager
-        self._version = "1.6.1"
+        self._version = version
         self._build_timestamp = build_timestamp
         self.setWindowTitle(f"Seti Astro Suite Pro v{self._version}")
         self.resize(1400, 900)
