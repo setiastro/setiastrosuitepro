@@ -644,13 +644,33 @@ class ScriptManager(QObject):
 
     # ---- loading ----
     def load_registry(self):
-        migrate_old_scripts_if_needed() 
+        """
+        Discover scripts recursively under SASpro/scripts, load them, and build registry.
+        Skips __pycache__, hidden/underscore-prefixed files, and __init__.py.
+        """
+        migrate_old_scripts_if_needed()
         scripts_dir = get_scripts_dir()
         self.registry = []
 
-        for path in sorted(scripts_dir.glob("*.py")):
+        try:
+            candidates = sorted(scripts_dir.rglob("*.py"))
+        except Exception:
+            candidates = []
+
+        for path in candidates:
+            # Skip pycache anywhere in path
+            parts_l = {p.lower() for p in path.parts}
+            if "__pycache__" in parts_l:
+                continue
+
+            # Skip hidden/private python files and package init
+            if path.name == "__init__.py":
+                continue
+            if path.name.startswith((".", "_")):
+                continue
+
             try:
-                entry = self._load_one_script(path)
+                entry = self._load_one_script(path, scripts_dir)
                 if entry:
                     self.registry.append(entry)
             except Exception:
@@ -658,8 +678,18 @@ class ScriptManager(QObject):
 
         self._log(f"[Scripts] Loaded {len(self.registry)} script(s) from {scripts_dir}")
 
-    def _load_one_script(self, path: Path) -> ScriptEntry | None:
-        # Make a unique module name so reload actually reloads
+
+    def _load_one_script(self, path: Path, scripts_root: Path) -> ScriptEntry | None:
+        """
+        Load a single user script from disk.
+
+        - Creates a unique module name based on mtime so reload picks up changes.
+        - Imports module.
+        - Determines stable script_id (prefer SCRIPT_ID in module, else persisted id).
+        - Pulls metadata: SCRIPT_NAME/GROUP/SHORTCUT.
+        Group defaults to relative folder under scripts_root.
+        """
+        # Unique module name so reloading actually re-imports
         try:
             mtime_ns = path.stat().st_mtime_ns
         except Exception:
@@ -671,7 +701,8 @@ class ScriptManager(QObject):
             return None
 
         mod = importlib.util.module_from_spec(spec)
-        script_id = self._script_id_for_path(path, mod)
+
+        # Import module first (so SCRIPT_ID / metadata exists)
         try:
             spec.loader.exec_module(mod)  # type: ignore
         except Exception:
@@ -687,7 +718,7 @@ class ScriptManager(QObject):
             self._log(f"[Scripts] {path.name} has no run(ctx) or main(ctx); skipping.")
             return None
 
-        # ---- metadata: allow CAPS or lowercase ----
+        # ---- helper: allow CAPS or lowercase ----
         def _pick(*names, default=None):
             for n in names:
                 if hasattr(mod, n):
@@ -695,11 +726,23 @@ class ScriptManager(QObject):
             return default
 
         name = _pick("SCRIPT_NAME", "script_name", default=path.stem)
-        group = _pick("SCRIPT_GROUP", "script_group", default="")
+
+        # Prefer explicit group; else derive group from relative folder
+        group = _pick("SCRIPT_GROUP", "script_group", default=None)
+        if group is None or not str(group).strip():
+            try:
+                rel_parent = path.parent.relative_to(scripts_root)
+                group = "" if str(rel_parent) in ("", ".") else rel_parent.as_posix()
+            except Exception:
+                group = ""
+
         shortcut = _pick("SCRIPT_SHORTCUT", "script_shortcut", default=None)
 
+        # Stable script id (prefer explicit SCRIPT_ID; else persisted by rel-path)
+        script_id = self._script_id_for_path(path, scripts_root, mod)
+
         entry = ScriptEntry(
-            script_id=script_id,
+            script_id=str(script_id),
             path=path,
             name=str(name),
             group=str(group or ""),
@@ -708,6 +751,7 @@ class ScriptManager(QObject):
             run=run_func,
         )
         return entry
+
 
 
     # ---- menu wiring ----
@@ -1394,15 +1438,31 @@ def run(ctx):
             self._log(f"[Scripts] Failed to write sample script:\n{traceback.format_exc()}")
 
 
-    def _script_id_for_path(self, path: Path, mod) -> str:
-        # 1) Prefer explicit SCRIPT_ID in the script file (best, survives renames)
-        sid = getattr(mod, "SCRIPT_ID", None) or getattr(mod, "script_id", None)
-        if isinstance(sid, str) and sid.strip():
-            return sid.strip()
+    def _script_id_for_path(self, path: Path, scripts_root: Path, mod=None) -> str:
+        """
+        Determine a stable script_id.
 
-        # 2) Fallback: persist per-path in QSettings (ok for existing scripts)
+        Priority:
+        1) SCRIPT_ID / script_id defined in the script (best; survives renames/moves)
+        2) Persisted id in QSettings keyed by *relative path inside scripts_root*
+            (stable across machines if folder structure is same)
+
+        NOTE: We intentionally DO NOT key by absolute path.
+        """
+        # 1) Prefer explicit SCRIPT_ID in the script file (best)
+        if mod is not None:
+            sid = getattr(mod, "SCRIPT_ID", None) or getattr(mod, "script_id", None)
+            if isinstance(sid, str) and sid.strip():
+                return sid.strip()
+
+        # 2) Persist per-relative-path (not absolute)
+        try:
+            rel = path.relative_to(scripts_root).as_posix()
+        except Exception:
+            rel = path.as_posix()
+
         s = QSettings()
-        key = f"Scripts/ids/{str(path)}"
+        key = f"Scripts/ids_rel/{rel}"
         sid = s.value(key, "", type=str) or ""
         if sid:
             return sid

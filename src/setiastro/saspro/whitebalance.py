@@ -191,10 +191,18 @@ def apply_white_balance_to_doc(doc, preset: Optional[Dict] = None):
 class WhiteBalanceDialog(QDialog):
     def __init__(self, parent, doc, icon: QIcon | None = None):
         super().__init__(parent)
+        self._main = parent
         self.doc = doc
+
+        # Connect to active document change signal
+        if hasattr(self._main, "currentDocumentChanged"):
+            self._main.currentDocumentChanged.connect(self._on_active_doc_changed)
         if icon:
             self.setWindowIcon(icon)
         self.setWindowTitle(self.tr("White Balance"))
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
         self.resize(900, 600)
 
         self._build_ui()
@@ -291,6 +299,18 @@ class WhiteBalanceDialog(QDialog):
         self.manual_group.setVisible(t == "Manual")
         self.star_group.setVisible(t == "Star-Based")
 
+    # ---- active document change ------------------------------------
+    def _on_active_doc_changed(self, doc):
+        """Called when user clicks a different image window."""
+        if doc is None or getattr(doc, "image", None) is None:
+            return
+        self.doc = doc
+        # Force fresh star detection by temporarily disabling cache
+        old_reuse = self.chk_reuse.isChecked()
+        self.chk_reuse.setChecked(False)
+        self._update_star_preview()
+        self.chk_reuse.setChecked(old_reuse)
+
     # ---- preview --------------------------------------------------------
     def _update_star_preview(self):
         if self.type_combo.currentText() != "Star-Based":
@@ -373,7 +393,8 @@ class WhiteBalanceDialog(QDialog):
 
                 # Use the headless helper so doc metadata is consistent
                 apply_white_balance_to_doc(self.doc, preset)
-                self.accept()
+                # Dialog stays open - refresh document for next operation
+                self._refresh_document_from_active()
 
             elif mode == "Auto":
                 preset = {"mode": "auto"}
@@ -382,7 +403,8 @@ class WhiteBalanceDialog(QDialog):
                 _record_preset_for_replay(preset)
 
                 apply_white_balance_to_doc(self.doc, preset)
-                self.accept()
+                # Dialog stays open - refresh document for next operation
+                self._refresh_document_from_active()
 
             else:  # --- Star-Based: compute here so we can plot like SASv2 ---
                 thr   = float(self.thr_slider.value())
@@ -449,8 +471,22 @@ class WhiteBalanceDialog(QDialog):
                     self.tr("White Balance"),
                     self.tr("Star-Based WB applied.\nDetected {0} stars.").format(int(star_count)),
                 )
-                self.accept()
+                # Dialog stays open - refresh document for next operation
+                self._refresh_document_from_active()
 
         except Exception as e:
             QMessageBox.critical(self, self.tr("White Balance"), self.tr("Failed to apply White Balance:\n{0}").format(e))
 
+    def _refresh_document_from_active(self):
+        """
+        Refresh the dialog's document reference to the currently active document.
+        This allows reusing the same dialog on different images.
+        """
+        try:
+            main = self.parent()
+            if main and hasattr(main, "_active_doc"):
+                new_doc = main._active_doc()
+                if new_doc is not None and new_doc is not self.doc:
+                    self.doc = new_doc
+        except Exception:
+            pass

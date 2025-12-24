@@ -140,8 +140,10 @@ TRANSLATIONS_FR = {
         "Post-alignment failed: {0}": "Échec post-alignement: {0}",
     },
     "AstroSuiteProMainWindow": {
+        "Start a new project? This closes all views and clears desktop shortcuts.": "Commencer un nouveau projet ? Cela fermera toutes les vues et effacera les raccourcis du bureau.",
         # Menu strings (from MenuMixin)
         "&About": "&À propos",
+        "Statistics...": "Statistiques...",
         "&Edit": "&Édition",
         "&File": "&Fichier",
         "&Functions": "&Fonctions",
@@ -1465,6 +1467,7 @@ TRANSLATIONS_FR = {
         "Value": "Valeur",
     },
     "FileMixin": {
+        "Start a new project? This closes all views and clears desktop shortcuts.": "Commencer un nouveau projet ? Cela fermera toutes les vues et effacera les raccourcis du bureau.",
         "All Files": "Tous les fichiers",
         "Cancel": "Annuler",
         "Clear Recent": "Effacer récents",
@@ -2377,6 +2380,8 @@ TRANSLATIONS_FR = {
         "Selective Color Correction": "Correction Sélective des Couleurs",
     },
     "SettingsDialog": {
+        "Restart required": "Redémarrage requis",
+        "Language changed. Please manually restart the application to apply the new language.": "Langue modifiée. Veuillez redémarrer manuellement l'application pour appliquer la nouvelle langue.",
         "ASTAP executable:": "Exécutable ASTAP:",
         "Apply": "Appliquer",
         "Astrometry.net API key:": "Clé API Astrometry.net:",
@@ -3838,5 +3843,16 @@ TRANSLATIONS_FR = {
         "Hide": "Masquer",
         "Plate Solving": "Résolution de Plaque",
         "Starting…": "Démarrage…",
+    },
+
+    "StatisticsDialog": {
+        "App Statistics": "Statistiques de l'application",
+        "Time Spent:": "Temps passé :",
+        "Images Opened:": "Images ouvertes :",
+        "Tools Opened:": "Outils ouverts :",
+        "Days": "Jours",
+        "Hours": "Heures",
+        "Minutes": "Minutes",
+        "Close": "Fermer",
     },
 }

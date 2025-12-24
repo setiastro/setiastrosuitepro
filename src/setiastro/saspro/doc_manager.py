@@ -2472,23 +2472,29 @@ class DocManager(QObject):
         If a Preview tab is selected on the active ImageSubWindow, return a cached
         _RoiViewDocument so tools and the Preview tab share the same instance.
         Otherwise return the real ImageDocument.
+        
+        IMPORTANT: Always check the currently active MDI subwindow first,
+        as that's what the user expects to be the "active" document.
         """
-        # Prefer cached (if set and still valid)
-        if self._active_doc is not None and self._active_doc in self._docs:
-            base_doc = self._active_doc
-        else:
-            base_doc = None
-            try:
-                if self._mdi is not None:
-                    sw = self._mdi.activeSubWindow()
-                    if sw is not None:
-                        w = sw.widget()
-                        base_doc = getattr(w, "document", None) or getattr(sw, "document", None)
-                        if base_doc is not None:
-                            self._active_doc = base_doc
-            except Exception:
-                pass
-            if base_doc is None:
+        base_doc = None
+        
+        # ALWAYS check the MDI active subwindow first - this is the source of truth
+        try:
+            if self._mdi is not None:
+                sw = self._mdi.activeSubWindow()
+                if sw is not None:
+                    w = sw.widget()
+                    base_doc = getattr(w, "document", None) or getattr(sw, "document", None)
+                    if base_doc is not None:
+                        self._active_doc = base_doc
+        except Exception:
+            pass
+        
+        # Fallback to cached value only if MDI lookup failed
+        if base_doc is None:
+            if self._active_doc is not None and self._active_doc in self._docs:
+                base_doc = self._active_doc
+            else:
                 base_doc = self._docs[-1] if self._docs else None
 
         # Non-image docs just pass through
@@ -2524,6 +2530,23 @@ class DocManager(QObject):
 
         # Prefer explicit doc if given; otherwise fall back to "active"
         view_doc = doc or self.get_active_document()
+
+        # DEBUG: Trace why LinearFit might fail
+        # print(f"[DocManager] update_active_document target: {view_doc}, type: {type(view_doc).__name__}")
+
+        # NEW: Unwrap proxy objects (_DocProxy / LiveViewDocument)
+        tname = type(view_doc).__name__
+        if "LiveViewDocument" in tname:
+            try:
+                view_doc = view_doc._current()
+            except Exception:
+                pass
+        elif "_DocProxy" in tname:
+            try:
+                view_doc = view_doc._target()
+            except Exception:
+                pass
+
         if view_doc is None:
             raise RuntimeError("No active document")
 

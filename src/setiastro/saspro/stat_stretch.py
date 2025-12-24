@@ -25,13 +25,18 @@ class StatisticalStretchDialog(QDialog):
         # --- IMPORTANT: avoid “attached modal” behavior on some Linux WMs ---
         # Make this a proper top-level window (tool-style) rather than an attached sheet.
         self.setWindowFlag(Qt.WindowType.Window, True)
-        # Block the app if you want, but don't use WindowModal
-        self.setWindowModality(Qt.WindowModality.ApplicationModal)
+        # Non-modal: allow user to switch between images while dialog is open
+        self.setWindowModality(Qt.WindowModality.NonModal)
         # Don’t let the generic modal flag override the explicit modality
         self.setModal(False)
 
+        self._main = parent
         self.doc = document
         self._last_preview = None
+
+        # Connect to active document change signal
+        if hasattr(self._main, "currentDocumentChanged"):
+            self._main.currentDocumentChanged.connect(self._on_active_doc_changed)
         self._panning = False
         self._pan_last = None  # QPoint
         self._preview_scale = 1.0       # NEW: zoom factor for preview
@@ -329,6 +334,14 @@ class StatisticalStretchDialog(QDialog):
         self._preview_qimg = qimg
         self._apply_current_zoom() 
 
+    # ----- active document change -----
+    def _on_active_doc_changed(self, doc):
+        """Called when user clicks a different image window."""
+        if doc is None or getattr(doc, "image", None) is None:
+            return
+        self.doc = doc
+        self._populate_initial_preview()
+
     # ----- slots -----
     def _populate_initial_preview(self):
         # show the current (unstretched) image as baseline
@@ -433,11 +446,30 @@ class StatisticalStretchDialog(QDialog):
                 # optional debug
                 print("Statistical Stretch: replay recording suppressed for this apply()")
 
-            self.accept()
+            # Dialog stays open so user can apply to other images
+            # Update the document reference to reflect the now-active document
+            self._refresh_document_from_active()
 
 
         except Exception as e:
             QMessageBox.critical(self, "Apply failed", str(e))
+
+    def _refresh_document_from_active(self):
+        """
+        Refresh the dialog's document reference to the currently active document.
+        This allows reusing the same dialog on different images.
+        """
+        try:
+            main = self.parent()
+            if main and hasattr(main, "_active_doc"):
+                new_doc = main._active_doc()
+                if new_doc is not None and new_doc is not self.doc:
+                    self.doc = new_doc
+                    # Reset preview state for new document
+                    self._last_preview = None
+                    self._preview_qimg = None
+        except Exception:
+            pass
 
 
     def _update_preview_scaled(self):

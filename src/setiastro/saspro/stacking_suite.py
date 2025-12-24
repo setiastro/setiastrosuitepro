@@ -83,11 +83,12 @@ from setiastro.saspro.legacy.numba_utils import (
     finalize_drizzle_2d,
     finalize_drizzle_3d,
 )
-from setiastro.saspro.legacy.numba_utils import (
+from setiastro.saspro.numba_utils import (
     bulk_cosmetic_correction_numba,
     drizzle_deposit_numba_naive,
     drizzle_deposit_color_naive,
-    bulk_cosmetic_correction_bayer
+    bulk_cosmetic_correction_bayer,
+    gradient_descent_to_dim_spot_numba
 )
 from setiastro.saspro.legacy.image_manager import load_image, save_image, get_valid_header
 from setiastro.saspro.star_alignment import StarRegistrationWorker, StarRegistrationThread, IDENTITY_2x3
@@ -704,12 +705,33 @@ def normalize_images(stack: np.ndarray,
         print(f"Normalizing {i}")
         f = stack[i].astype(np.float32, copy=False)
         L = _L(f)
+        
+        # Optimization: Don't allocate f0 and L0. Use math properties.
+        # fmin = min(L)
+        # f0 = f - fmin
+        # L0 = L(f0) = L(f - fmin) = L(f) - fmin (since L is linear sum of channels)
+        # median(L0) = median(L - fmin) = median(L) - fmin
+        
+        # Calculate stats on original L
+        # Note: nanmin/nanmedian are used to be safe against bad pixels
         fmin = float(np.nanmin(L))
-        f0 = f - fmin
-        L0 = _L(f0)
-        fmed = float(np.nanmedian(L0))
+        lmed_original = float(np.nanmedian(L))
+        
+        # The median of the zero-shifted image
+        fmed = lmed_original - fmin
+        
         gain = (target_median / max(fmed, eps)) if target_median > 0 else 1.0
-        out[i] = f0 * gain
+        
+        # Combine subtraction and multiplication into one operation for 'out'
+        # out = (f - fmin) * gain
+        # This avoids creating the large temporary array 'f0'
+        
+        # We can implement this as: out[i] = f * gain - (fmin * gain)
+        # But we must be careful with precision. Typically fine.
+        # Or just: np.subtract(f, fmin, out=out[i]); np.multiply(out[i], gain, out=out[i])
+        
+        # Using direct assignment is cleaner and numpy optimizes it well enough
+        out[i] = (f - fmin) * gain
 
     return np.ascontiguousarray(out, dtype=np.float32)
 
@@ -864,6 +886,11 @@ def _to_Luma(img: np.ndarray) -> np.ndarray:
     if img.ndim == 2:
         return img.astype(np.float32, copy=False)
     # HWC RGB
+    if img.shape[2] == 3:
+        try:
+            return cv2.cvtColor(img, cv2.COLOR_RGB2GRAY).astype(np.float32, copy=False)
+        except Exception:
+            pass # fallback
     r, g, b = img[..., 0].astype(np.float32), img[..., 1].astype(np.float32), img[..., 2].astype(np.float32)
     return 0.2989 * r + 0.5870 * g + 0.1140 * b
 
@@ -898,27 +925,8 @@ def _exclude_bright_regions(gray_small: np.ndarray, exclusion_fraction: float = 
 
 
 def _gradient_descent_to_dim_spot(gray_small: np.ndarray, x: int, y: int, patch: int) -> tuple[int, int]:
-    H, W = gray_small.shape[:2]
-    half = patch // 2
-    def patch_median(px, py):
-        x0, x1 = max(0, px - half), min(W, px + half + 1)
-        y0, y1 = max(0, py - half), min(H, py + half + 1)
-        return float(np.median(gray_small[y0:y1, x0:x1]))
-    cx, cy = int(np.clip(x, 0, W-1)), int(np.clip(y, 0, H-1))
-    for _ in range(60):
-        cur = patch_median(cx, cy)
-        best = (cx, cy); best_val = cur
-        for nx in (cx-1, cx, cx+1):
-            for ny in (cy-1, cy, cy+1):
-                if nx == cx and ny == cy: continue
-                if nx < 0 or ny < 0 or nx >= W or ny >= H: continue
-                val = patch_median(nx, ny)
-                if val < best_val:
-                    best_val = val; best = (nx, ny)
-        if best == (cx, cy):
-            break
-        cx, cy = best
-    return cx, cy
+    # Delegate to Numba optimized version
+    return gradient_descent_to_dim_spot_numba(gray_small, int(x), int(y), int(patch))
 
 def _generate_sample_points_small(
     img_small: np.ndarray,
@@ -6340,7 +6348,7 @@ class StackingSuiteDialog(QDialog):
         dark_frames_layout.addLayout(btn_layout)
 
         self.clear_dark_selection_btn = QPushButton(self.tr("Clear Selection"))
-        self.clear_dark_selection_btn.clicked.connect(lambda: self.clear_tree_selection(self.dark_tree, self.dark_files))
+        self.clear_dark_selection_btn.clicked.connect(lambda: self.clear_tree_selection_dark(self.dark_tree, self.dark_files))
         dark_frames_layout.addWidget(self.clear_dark_selection_btn)
 
         darks_layout.addLayout(dark_frames_layout, 2)  # Dark Frames Tree takes more space
@@ -6412,6 +6420,9 @@ class StackingSuiteDialog(QDialog):
                     self.save_master_paths_to_settings())
         )        
         main_layout.addWidget(self.clear_master_dark_selection_btn)
+
+        self.dark_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.dark_tree.customContextMenuRequested.connect(self.dark_tree_context_menu)
 
         return tab
     
@@ -6644,6 +6655,23 @@ class StackingSuiteDialog(QDialog):
     
         return tab
 
+    def dark_tree_context_menu(self, pos):
+        item = self.dark_tree.itemAt(pos)
+        if not item:
+            return
+
+        # ✅ same selection behavior
+        if not item.isSelected():
+            if not (QApplication.keyboardModifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier)):
+                self.dark_tree.clearSelection()
+            item.setSelected(True)
+
+        menu = QMenu(self.dark_tree)
+        set_session_action = menu.addAction(self.tr("Set Session Tag..."))
+
+        action = menu.exec(self.dark_tree.viewport().mapToGlobal(pos))
+        if action == set_session_action:
+            self.prompt_set_session(item, "DARK")
 
 
     def flat_tree_context_menu(self, pos):
@@ -6938,27 +6966,27 @@ class StackingSuiteDialog(QDialog):
         name = (self.settings.value("stacking/session_keyword", "Default", type=str) or "").strip()
         return name or "Default"
 
-    def _is_leaf_item(self, it: QTreeWidgetItem) -> bool:
-        return bool(it) and it.childCount() == 0 and it.parent() and it.parent().parent()
+    def _is_leaf(it):
+        # leaf == no children AND looks like a file row (has a filename)
+        if not it or it.childCount() != 0:
+            return False
+        name = (it.text(0) or "").strip()
+        # file rows in your UI are actual filenames
+        return bool(name) and "." in name
+
 
     def _iter_leaf_descendants(self, it: QTreeWidgetItem):
-        """Yield all leaf grandchildren under a filter row or exposure row."""
         if not it:
             return
-        # filter row (top-level): children are exposure rows
-        if it.parent() is None:
-            for j in range(it.childCount()):
-                exp = it.child(j)
-                for k in range(exp.childCount()):
-                    leaf = exp.child(k)
-                    if self._is_leaf_item(leaf):
-                        yield leaf
-        # exposure row: children are leaves
-        elif it.parent() and it.parent().parent() is None and it.childCount() > 0:
-            for k in range(it.childCount()):
-                leaf = it.child(k)
-                if self._is_leaf_item(leaf):
-                    yield leaf
+        stack = [it]
+        while stack:
+            cur = stack.pop()
+            if self._is_leaf_item(cur):
+                yield cur
+                continue
+            for i in range(cur.childCount()):
+                stack.append(cur.child(i))
+
 
     def _collect_target_leaves(self, tree: QTreeWidget, clicked_item: QTreeWidgetItem | None = None) -> list[QTreeWidgetItem]:
         """
@@ -7074,43 +7102,59 @@ class StackingSuiteDialog(QDialog):
         return kw
 
     def prompt_set_session(self, item, frame_type):
-        text, ok = QInputDialog.getText(self, self.tr("Set Session Tag"), self.tr("Enter session name:"))
+        text, ok = QInputDialog.getText(
+            self,
+            self.tr("Set Session Tag"),
+            self.tr("Enter session name:")
+        )
         if not (ok and (text or "").strip()):
             return
         session_name = text.strip()
 
-        is_flat = (frame_type or "").upper() == "FLAT"
-        tree = self.flat_tree if is_flat else self.light_tree
-        target_dict = self.flat_files if is_flat else self.light_files
+        ft = (frame_type or "").upper()
+        is_flat = (ft == "FLAT")
+        is_light = (ft == "LIGHT")
+        is_dark = (ft == "DARK")
+
+        if is_flat:
+            tree = self.flat_tree
+            target_dict = self.flat_files
+        elif is_light:
+            tree = self.light_tree
+            target_dict = self.light_files
+        elif is_dark:
+            tree = self.dark_tree
+            target_dict = self.dark_files
+        else:
+            return
 
         if not hasattr(self, "session_tags") or self.session_tags is None:
             self.session_tags = {}
 
         # --- helper: identify a "leaf" row in your tree (file row) ---
         def _is_leaf(it):
-            return bool(it) and it.childCount() == 0 and it.parent() and it.parent().parent()
+            # leaf == no children AND looks like a file row (has a filename)
+            if not it or it.childCount() != 0:
+                return False
+            name = (it.text(0) or "").strip()
+            # file rows in your UI are actual filenames
+            return bool(name) and "." in name
+
 
         def _iter_leaf_descendants(parent_item):
-            """Yield all leaf file rows under a filter row or exposure row."""
+            """Yield all leaf file rows under any parent row (any depth)."""
             if not parent_item:
                 return
-            # top-level filter row
-            if parent_item.parent() is None:
-                for j in range(parent_item.childCount()):
-                    exp = parent_item.child(j)
-                    for k in range(exp.childCount()):
-                        leaf = exp.child(k)
-                        if _is_leaf(leaf):
-                            yield leaf
-            # exposure row
-            elif parent_item.parent() and parent_item.parent().parent() is None and parent_item.childCount() > 0:
-                for k in range(parent_item.childCount()):
-                    leaf = parent_item.child(k)
-                    if _is_leaf(leaf):
-                        yield leaf
+            stack = [parent_item]
+            while stack:
+                cur = stack.pop()
+                if _is_leaf(cur):
+                    yield cur
+                    continue
+                for j in range(cur.childCount()):
+                    stack.append(cur.child(j))
 
         def _session_from_leaf(leaf):
-            # Prefer cached value (we’ll set it during ingest/retag)
             try:
                 s = leaf.data(0, Qt.ItemDataRole.UserRole + 1)
                 if isinstance(s, str) and s.strip():
@@ -7134,42 +7178,65 @@ class StackingSuiteDialog(QDialog):
             except Exception:
                 pass
 
-        def _rekey_session_for_path(group_key, fpath, old_session, new_session):
+        def _rekey_session_for_path(target_dict: dict, fpath: str, new_session: str, *, group_key_hint: str | None = None):
             """
-            Move fpath from (group_key, old_session) to (group_key, new_session).
-            Includes a fallback search if old_session is stale.
+            Move fpath from whatever (group_key, old_session) bucket(s) it's currently in
+            to (same_group_key, new_session).
+
+            This is robust even if the tree-derived group_key string doesn't exactly match
+            the dict key[0] that was used when the file was added.
             """
-            old_ck = (group_key, old_session)
-            new_ck = (group_key, new_session)
+            new_session = (new_session or "Default").strip() or "Default"
+            f_norm = os.path.normcase(os.path.abspath(fpath))
 
-            removed = False
-            if old_ck in target_dict and fpath in target_dict[old_ck]:
-                target_dict[old_ck] = [p for p in target_dict[old_ck] if p != fpath]
-                removed = True
-                if not target_dict[old_ck]:
-                    del target_dict[old_ck]
+            # 1) Find all tuple-keys containing this file, regardless of session
+            found_group_keys: list[str] = []
+            keys_to_delete = []
 
-            # fallback: find actual composite key containing this path for this group_key
-            if not removed:
-                found = None
-                for (gk, sess), lst in list(target_dict.items()):
-                    if gk == group_key and fpath in lst:
-                        found = (gk, sess)
-                        break
-                if found:
-                    target_dict[found] = [p for p in target_dict[found] if p != fpath]
-                    if not target_dict[found]:
-                        del target_dict[found]
+            for key, lst in list(target_dict.items()):
+                if not (isinstance(key, tuple) and len(key) >= 2):
+                    continue
 
-            # add to new key (avoid dupes)
-            target_dict.setdefault(new_ck, [])
-            if fpath not in target_dict[new_ck]:
-                target_dict[new_ck].append(fpath)
+                # check if file exists in this bucket
+                keep = []
+                removed_here = False
+                for p in (lst or []):
+                    if os.path.normcase(os.path.abspath(p)) == f_norm:
+                        removed_here = True
+                    else:
+                        keep.append(p)
+
+                if removed_here:
+                    gk = str(key[0])
+                    if gk not in found_group_keys:
+                        found_group_keys.append(gk)
+
+                # write back / delete empty
+                if removed_here:
+                    if keep:
+                        target_dict[key] = keep
+                    else:
+                        keys_to_delete.append(key)
+
+            for k in keys_to_delete:
+                target_dict.pop(k, None)
+
+            # If not found anywhere (rare), fall back to hint so at least it gets added
+            if not found_group_keys and group_key_hint:
+                found_group_keys = [group_key_hint]
+
+            # 2) Add to new-session bucket(s)
+            for gk in found_group_keys:
+                new_key = (gk, new_session)
+                cur = list(target_dict.get(new_key, []) or [])
+                cur_norms = {os.path.normcase(os.path.abspath(p)) for p in cur}
+                if f_norm not in cur_norms:
+                    cur.append(fpath)
+                    target_dict[new_key] = cur
+
 
         # --- Build the set of leaf rows to retag ---
         selected = list(tree.selectedItems() or [])
-
-        # Include the right-clicked item even if it wasn’t selected
         if item and item not in selected:
             selected.append(item)
 
@@ -7203,35 +7270,64 @@ class StackingSuiteDialog(QDialog):
             # fallback once for legacy rows missing UserRole
             if not fpath:
                 filename = leaf.text(0).lstrip("⚠️ ").strip()
-                fpath = next(
-                    (p for (gk, sess), lst in target_dict.items() for p in lst
-                    if os.path.basename(p) == filename),
-                    None
-                )
+                # NOTE: this only works for tuple-keyed dicts; that's fine for flats/lights
+                try:
+                    fpath = next(
+                        (p for (gk, sess), lst in target_dict.items() for p in (lst or [])
+                        if os.path.basename(p) == filename),
+                        None
+                    )
+                except Exception:
+                    fpath = None
                 if fpath:
                     leaf.setData(0, Qt.ItemDataRole.UserRole, fpath)
 
             if not fpath:
                 continue
 
-            # group_key MUST match your ingest keys: f"{filter} - {exposure_label}"
-            exposure_item = leaf.parent()
-            filter_item = exposure_item.parent() if exposure_item else None
-            if not (exposure_item and filter_item):
+            parent = leaf.parent()
+            grand = parent.parent() if parent else None
+
+            if parent is None:
                 continue
 
-            group_key = f"{filter_item.text(0)} - {exposure_item.text(0)}"
-            old_session = _session_from_leaf(leaf)
+            if is_dark:
+                # DARK tree is 2-level: group -> file
+                group_key = parent.text(0)
 
-            if old_session != session_name:
-                _rekey_session_for_path(group_key, fpath, old_session, session_name)
+            elif is_flat:
+                # FLAT tree is (typically) 3-level: filter -> group -> file
+                # Your create_master_flat groups by EXACT string: "{filter} - {group}"
+                # where group is like "Unknown (4096x4096)" (what the middle node shows).
+                if grand is None:
+                    # If your flat tree is actually 2-level in some configs, fall back safely
+                    group_key = parent.text(0)
+                else:
+                    group_key = f"{grand.text(0)} - {parent.text(0)}"
 
+            elif is_light:
+                # LIGHT is 3-level: filter -> exposure -> file
+                if grand is None:
+                    continue
+                group_key = f"{grand.text(0)} - {parent.text(0)}"
+            else:
+                continue
+
+
+            # We still compute group_key for a fallback hint, but removal is now bucket-scan based.
+            if _session_from_leaf(leaf) != session_name:
+                _rekey_session_for_path(target_dict, fpath, session_name, group_key_hint=group_key)
+
+
+            # Tag always updates UI + cache
             self.session_tags[fpath] = session_name
             _set_leaf_session_text(leaf, session_name)
             changed += 1
 
-        # ✅ Only LIGHT needs reassignment of best master files (session affects flat matching)
-        if not is_flat:
+        self._normalize_sessioned_files_map(target_dict)
+
+        # Only LIGHT needs reassignment of best master files
+        if is_light:
             try:
                 self.assign_best_master_files(fill_only=True)
             except Exception:
@@ -7239,7 +7335,6 @@ class StackingSuiteDialog(QDialog):
 
         tree.viewport().update()
         self.update_status(self.tr(f"🟢 Assigned session '{session_name}' to {changed} file(s)."))
-
 
     def _quad_coverage_add(self, cov: np.ndarray, quad: np.ndarray):
         """
@@ -8467,6 +8562,28 @@ class StackingSuiteDialog(QDialog):
         self.settings.setValue("stacking/master_darks", dark_paths)
         self.settings.setValue("stacking/master_flats", flat_paths)
 
+    def _purge_removed_paths(self, removed_paths: list[str]):
+        if not removed_paths:
+            return
+        # purge session override cache
+        if hasattr(self, "session_tags") and isinstance(self.session_tags, dict):
+            for p in removed_paths:
+                self.session_tags.pop(p, None)
+
+        # If you have any "ingested" caches, clear those too:
+        if hasattr(self, "_ingested_paths") and isinstance(self._ingested_paths, set):
+            for p in removed_paths:
+                self._ingested_paths.discard(p)
+
+        if hasattr(self, "manual_flat_files") and isinstance(self.manual_flat_files, list):
+            dead = {os.path.normcase(os.path.abspath(p)) for p in removed_paths if isinstance(p, str)}
+            self.manual_flat_files = [p for p in self.manual_flat_files if os.path.normcase(os.path.abspath(p)) not in dead]
+
+        if hasattr(self, "manual_light_files") and isinstance(self.manual_light_files, list):
+            dead = {os.path.normcase(os.path.abspath(p)) for p in removed_paths if isinstance(p, str)}
+            self.manual_light_files = [p for p in self.manual_light_files if os.path.normcase(os.path.abspath(p)) not in dead]
+
+
     def clear_tree_selection(self, tree, file_dict):
         """Clears selected items from a simple (non-tuple-keyed) tree like Master Darks or Darks tab."""
         selected_items = tree.selectedItems()
@@ -8491,96 +8608,249 @@ class StackingSuiteDialog(QDialog):
                         del file_dict[key]
                 parent.removeChild(item)
 
+    def clear_tree_selection_dark(self, tree, file_dict):
+        selected_items = tree.selectedItems()
+        if not selected_items:
+            return
+
+        removed_paths = []
+
+        for item in selected_items:
+            parent = item.parent()
+
+            if parent is None:
+                # top-level exposure group
+                gk = item.text(0)
+
+                # remove ALL sessions for this exposure group
+                keys_to_remove = []
+                for k in list(file_dict.keys()):
+                    if isinstance(k, tuple) and len(k) >= 2:
+                        if str(k[0]) == gk:
+                            keys_to_remove.append(k)
+                    else:
+                        if str(k) == gk:
+                            keys_to_remove.append(k)
+
+                for k in keys_to_remove:
+                    for p in file_dict.get(k, []) or []:
+                        removed_paths.append(p)
+                    del file_dict[k]
+
+                tree.takeTopLevelItem(tree.indexOfTopLevelItem(item))
+                continue
+
+            # leaf file node under exposure group
+            gk = parent.text(0)
+            fpath = item.data(0, Qt.ItemDataRole.UserRole)
+            filename = item.text(0).lstrip("⚠️ ").strip()
+
+            keys_to_check = []
+            for k in list(file_dict.keys()):
+                if isinstance(k, tuple) and len(k) >= 2:
+                    if str(k[0]) == gk:
+                        keys_to_check.append(k)
+                else:
+                    if str(k) == gk:
+                        keys_to_check.append(k)
+
+            for k in keys_to_check:
+                lst = file_dict.get(k, []) or []
+                new_lst = []
+                for p in lst:
+                    if fpath and p == fpath:
+                        removed_paths.append(p)
+                        continue
+                    if (not fpath) and os.path.basename(p) == filename:
+                        removed_paths.append(p)
+                        continue
+                    new_lst.append(p)
+                if new_lst:
+                    file_dict[k] = new_lst
+                else:
+                    del file_dict[k]
+
+            parent.removeChild(item)
+
+        self._purge_removed_paths(removed_paths)
+
+        # normalize if sessioned (or if legacy)
+        self._normalize_sessioned_files_map(file_dict)
 
     def clear_tree_selection_light(self, tree):
-        """Clears the selection in the light tree and updates self.light_files accordingly."""
         selected_items = tree.selectedItems()
         if not selected_items:
             return
 
+        removed_paths = []
+
+        def _norm(p: str) -> str:
+            return os.path.normcase(os.path.abspath(p))
+
+        def _remove_path_everywhere(fpath: str):
+            if not fpath:
+                return
+            f_norm = _norm(fpath)
+            keys_to_delete = []
+            for k, lst in list(self.light_files.items()):
+                if not (isinstance(k, tuple) and len(k) >= 2):
+                    continue
+                keep = []
+                removed = False
+                for p in (lst or []):
+                    if _norm(p) == f_norm:
+                        removed = True
+                    else:
+                        keep.append(p)
+                if removed:
+                    removed_paths.append(fpath)
+                    if keep:
+                        self.light_files[k] = keep
+                    else:
+                        keys_to_delete.append(k)
+            for k in keys_to_delete:
+                self.light_files.pop(k, None)
+
+        def _collect_leaf_paths_under(node):
+            out = []
+            stack = [node]
+            while stack:
+                cur = stack.pop()
+                if cur.childCount() == 0:
+                    fp = cur.data(0, Qt.ItemDataRole.UserRole)
+                    if isinstance(fp, str) and fp.strip():
+                        out.append(fp)
+                    continue
+                for j in range(cur.childCount()):
+                    stack.append(cur.child(j))
+            return out
+
         for item in selected_items:
             parent = item.parent()
+
             if parent is None:
-                # Top-level filter node selected
-                filter_name = item.text(0)
-                # Remove all composite keys whose group_key starts with filter_name
-                keys_to_remove = [key for key in list(self.light_files.keys())
-                                if isinstance(key, tuple) and key[0].startswith(f"{filter_name} - ")]
-                for key in keys_to_remove:
-                    del self.light_files[key]
-                tree.takeTopLevelItem(tree.indexOfTopLevelItem(item))
-            else:
-                if parent.parent() is None:
-                    # Exposure node selected (child)
-                    filter_name = parent.text(0)
-                    exposure_text = item.text(0)
-                    group_key = f"{filter_name} - {exposure_text}"
-                    keys_to_remove = [key for key in list(self.light_files.keys())
-                                    if isinstance(key, tuple) and key[0] == group_key]
-                    for key in keys_to_remove:
-                        del self.light_files[key]
-                    parent.removeChild(item)
-                else:
-                    # Grandchild file node selected
-                    filter_name = parent.parent().text(0)
-                    exposure_text = parent.text(0)
-                    group_key = f"{filter_name} - {exposure_text}"
-                    filename = item.text(0)
+                for fp in _collect_leaf_paths_under(item):
+                    _remove_path_everywhere(fp)
+                idx = tree.indexOfTopLevelItem(item)
+                if idx >= 0:
+                    tree.takeTopLevelItem(idx)
+                continue
 
-                    keys_to_check = [key for key in list(self.light_files.keys())
-                                    if isinstance(key, tuple) and key[0] == group_key]
+            for fp in _collect_leaf_paths_under(item):
+                _remove_path_everywhere(fp)
 
-                    for key in keys_to_check:
-                        self.light_files[key] = [
-                            f for f in self.light_files[key] if os.path.basename(f) != filename
-                        ]
-                        if not self.light_files[key]:
-                            del self.light_files[key]
-                    parent.removeChild(item)
+            parent.removeChild(item)
 
-        self._refresh_light_tree_summaries()            
+        self._purge_removed_paths(removed_paths)
+        self._normalize_sessioned_files_map(self.light_files)
+
+        try:
+            self.rebuild_light_tree()
+        except Exception:
+            try:
+                self._refresh_light_tree_summaries()
+            except Exception:
+                pass
+            
 
     def clear_tree_selection_flat(self, tree, file_dict):
-        """Clears the selection in the given tree widget and removes items from the corresponding dictionary."""
+        """
+        Clears selection in FLATS tree and removes from (group_key, session)->[paths].
+
+        Works for BOTH layouts:
+        - 2-level: group -> file leaves (current rebuild_flat_tree)
+        - 3-level: filter -> exposure -> file leaves (older layout)
+        """
         selected_items = tree.selectedItems()
         if not selected_items:
             return
 
+        removed_paths = []
+
+        def _norm(p: str) -> str:
+            return os.path.normcase(os.path.abspath(p))
+
+        def _remove_path_everywhere(fpath: str):
+            """Remove fpath from ALL buckets in file_dict (robust against group_key mismatches)."""
+            if not fpath:
+                return
+            f_norm = _norm(fpath)
+
+            keys_to_delete = []
+            for k, lst in list(file_dict.items()):
+                if not (isinstance(k, tuple) and len(k) >= 2):
+                    continue
+                keep = []
+                removed = False
+                for p in (lst or []):
+                    if _norm(p) == f_norm:
+                        removed = True
+                    else:
+                        keep.append(p)
+
+                if removed:
+                    removed_paths.append(fpath)
+                    if keep:
+                        file_dict[k] = keep
+                    else:
+                        keys_to_delete.append(k)
+
+            for k in keys_to_delete:
+                file_dict.pop(k, None)
+
+        def _collect_leaf_paths_under(node):
+            """Return all descendant leaf file paths under a node (supports group nodes)."""
+            out = []
+            stack = [node]
+            while stack:
+                cur = stack.pop()
+                if cur.childCount() == 0:
+                    fp = cur.data(0, Qt.ItemDataRole.UserRole)
+                    if isinstance(fp, str) and fp.strip():
+                        out.append(fp)
+                    continue
+                for j in range(cur.childCount()):
+                    stack.append(cur.child(j))
+            return out
+
+        # We’ll delete dict entries by file paths (most robust), then rebuild UI.
         for item in selected_items:
             parent = item.parent()
 
-            if parent:
-                # Grandchild level (actual file)
-                if parent.parent() is not None:
-                    filter_name = parent.parent().text(0)
-                    exposure_text = parent.text(0)
-                    group_key = f"{filter_name} - {exposure_text}"
-                else:
-                    # Exposure level
-                    filter_name = parent.text(0)
-                    exposure_text = item.text(0)
-                    group_key = f"{filter_name} - {exposure_text}"
+            if parent is None:
+                # Selected a top-level node (either "group" in 2-level, or "filter" in 3-level).
+                # Remove every leaf path under it from the dict.
+                for fp in _collect_leaf_paths_under(item):
+                    _remove_path_everywhere(fp)
 
-                filename = item.text(0)
+                # Remove UI node
+                idx = tree.indexOfTopLevelItem(item)
+                if idx >= 0:
+                    tree.takeTopLevelItem(idx)
+                continue
 
-                # Remove from all matching (group_key, session) tuples
-                keys_to_check = [key for key in list(file_dict.keys())
-                                if isinstance(key, tuple) and key[0] == group_key]
+            # Selected a leaf or mid-level node; remove all descendant leaf paths
+            for fp in _collect_leaf_paths_under(item):
+                _remove_path_everywhere(fp)
 
-                for key in keys_to_check:
-                    file_dict[key] = [f for f in file_dict[key] if os.path.basename(f) != filename]
-                    if not file_dict[key]:
-                        del file_dict[key]
+            # Remove UI node
+            parent.removeChild(item)
 
-                parent.removeChild(item)
-            else:
-                # Top-level (filter group) selected
-                filter_name = item.text(0)
-                keys_to_remove = [key for key in list(file_dict.keys())
-                                if isinstance(key, tuple) and key[0].startswith(f"{filter_name} - ")]
-                for key in keys_to_remove:
-                    del file_dict[key]
-                tree.takeTopLevelItem(tree.indexOfTopLevelItem(item))
+        # purge caches + normalize
+        self._purge_removed_paths(removed_paths)
+        self._normalize_sessioned_files_map(file_dict)
+
+        # Rebuild from dict (this ensures UI reflects the dict truth)
+        try:
+            self.rebuild_flat_tree()
+        except Exception:
+            # If you really don't want rebuild here, at least:
+            try:
+                self._refresh_flat_tree_summaries()
+            except Exception:
+                pass
+
+
 
     def _sync_group_userrole(self, top_item: QTreeWidgetItem):
         paths = []
@@ -8657,19 +8927,19 @@ class StackingSuiteDialog(QDialog):
                 # Keep parent's stored list in sync (your helper)
                 self._sync_group_userrole(parent)
 
-        # Persist the exclusions so they won't reappear on refresh
-        self._reg_excluded_files.update(p for p in removed_paths if isinstance(p, str))
+        # --- DO NOT persist exclusions for manual removals in reg tab ---
+        # If you want a separate "Exclude" feature later, keep _reg_excluded_files for that.
+        # For now, removing should be reversible via "Add Light Files".
 
-        # Maintain your legacy list too (if you still use it elsewhere)
-        for p in removed_paths:
-            if p not in self.deleted_calibrated_files:
-                self.deleted_calibrated_files.append(p)
-
-        # Also prune manual list so it doesn't re-inject removed files
+        # Also prune manual list so it doesn't re-inject removed files *in this session*
         if hasattr(self, "manual_light_files") and self.manual_light_files:
-            self.manual_light_files = [p for p in self.manual_light_files if p not in self._reg_excluded_files]
+            dead = {os.path.normcase(os.path.abspath(p)) for p in removed_paths if isinstance(p, str)}
+            self.manual_light_files = [
+                p for p in self.manual_light_files
+                if os.path.normcase(os.path.abspath(p)) not in dead
+            ]
 
-        # Optional but helpful: rebuild so empty groups disappear cleanly
+        # refresh UI
         self.populate_calibrated_lights()
         self._refresh_reg_tree_summaries()
 
@@ -9185,6 +9455,58 @@ class StackingSuiteDialog(QDialog):
         auto = bool(self.light_auto_session_cb.isChecked())  # ✅ use UI state
         self.add_directory(self.light_tree, "Select Light Directory", "LIGHT")
         self.assign_best_master_files()
+
+    def _normalize_sessioned_files_map(self, files_map: dict):
+        """
+        Canonicalize dict that should be keyed like: (group_key, session) -> [paths]
+
+        - Drops empty lists
+        - Dedupe paths
+        - Coerces keys to (str, str)
+        """
+        if not isinstance(files_map, dict):
+            return
+
+        new_map = {}
+        for k, lst in list(files_map.items()):
+            if not lst:
+                continue
+
+            # Coerce key to (group_key, session)
+            if isinstance(k, tuple) and len(k) >= 2:
+                gk = str(k[0])
+                sess = str(k[1])
+            else:
+                # legacy/no-session dict; keep but force Default
+                gk = str(k)
+                sess = "Default"
+
+            # Deduplicate paths while preserving order
+            seen = set()
+            out = []
+            for p in lst:
+                if not p:
+                    continue
+                p = str(p)
+                if p in seen:
+                    continue
+                seen.add(p)
+                out.append(p)
+
+            if not out:
+                continue
+
+            ck = (gk, sess)
+            if ck not in new_map:
+                new_map[ck] = out
+            else:
+                # merge
+                for p in out:
+                    if p not in new_map[ck]:
+                        new_map[ck].append(p)
+
+        files_map.clear()
+        files_map.update(new_map)
 
 
     def prompt_session_before_adding(self, frame_type, directory_mode=False):
@@ -10051,32 +10373,58 @@ class StackingSuiteDialog(QDialog):
                 QMessageBox.warning(self, "Error", "Output directory is not set.")
                 return
 
-        # Keep both paths available; we'll override algo selection per group.
         ui_algo = getattr(self, "calib_rejection_algorithm", "Windsorized Sigma Clipping")
         if ui_algo == "Weighted Windsorized Sigma Clipping":
             ui_algo = "Windsorized Sigma Clipping"
 
         exposure_tolerance = self.exposure_tolerance_spinbox.value()
-        dark_files_by_group: dict[tuple[float, str], list[str]] = {}
 
         # -------------------------------------------------------------------------
-        # Group darks by (exposure +/- tolerance, image size string)
+        # Group darks by (exposure +/- tolerance, image size string, session)
+        # self.dark_files can be either:
+        #   legacy:  exposure_key -> [paths]
+        #   session: (exposure_key, session) -> [paths]
         # -------------------------------------------------------------------------
-        for exposure_key, file_list in self.dark_files.items():
-            # exposure_key is like "300.0s (4144x2822)"
-            exposure_time_str, image_size = exposure_key.split(" (")
-            image_size = image_size.rstrip(")")
-            exposure_time = float(exposure_time_str.replace("s", "")) if "Unknown" not in exposure_time_str else 0.0
+        dark_files_by_group: dict[tuple[float, str, str], list[str]] = {}  # (exp, size, session)->list
+
+        for key, file_list in (self.dark_files or {}).items():
+            if isinstance(key, tuple) and len(key) >= 2:
+                exposure_key = str(key[0])
+                session = str(key[1]) if str(key[1]).strip() else "Default"
+            else:
+                exposure_key = str(key)
+                session = "Default"
+
+            try:
+                exposure_time_str, image_size = exposure_key.split(" (", 1)
+                image_size = image_size.rstrip(")")
+            except ValueError:
+                # If some malformed key got in, skip safely
+                continue
+
+            if "Unknown" in exposure_time_str:
+                exposure_time = 0.0
+            else:
+                try:
+                    exposure_time = float(exposure_time_str.replace("s", "").strip())
+                except Exception:
+                    exposure_time = 0.0
 
             matched_group = None
-            for (existing_exposure, existing_size) in dark_files_by_group.keys():
-                if abs(existing_exposure - exposure_time) <= exposure_tolerance and existing_size == image_size:
-                    matched_group = (existing_exposure, existing_size)
+            for (existing_exposure, existing_size, existing_session) in list(dark_files_by_group.keys()):
+                if (
+                    existing_session == session
+                    and existing_size == image_size
+                    and abs(existing_exposure - exposure_time) <= exposure_tolerance
+                ):
+                    matched_group = (existing_exposure, existing_size, existing_session)
                     break
+
             if matched_group is None:
-                matched_group = (exposure_time, image_size)
+                matched_group = (exposure_time, image_size, session)
                 dark_files_by_group[matched_group] = []
-            dark_files_by_group[matched_group].extend(file_list)
+
+            dark_files_by_group[matched_group].extend(file_list or [])
 
         master_dir = os.path.join(self.stacking_directory, "Master_Calibration_Files")
         os.makedirs(master_dir, exist_ok=True)
@@ -10085,7 +10433,7 @@ class StackingSuiteDialog(QDialog):
         # Informative status about discovery
         # -------------------------------------------------------------------------
         try:
-            n_groups = sum(1 for k, v in dark_files_by_group.items() if len(v) >= 2)
+            n_groups = sum(1 for _, v in dark_files_by_group.items() if len(v) >= 2)
             total_files = sum(len(v) for v in dark_files_by_group.values())
             self.update_status(self.tr(
                 f"🔎 Discovered {len(dark_files_by_group)} grouped exposures "
@@ -10096,15 +10444,15 @@ class StackingSuiteDialog(QDialog):
         QApplication.processEvents()
 
         # -------------------------------------------------------------------------
-        # Pre-count tiles for progress bar (using per-group safe chunk sizes)
+        # Pre-count tiles for progress bar (per-group safe chunk sizes)
         # -------------------------------------------------------------------------
         total_tiles = 0
-        group_shapes: dict[tuple[float, str], tuple[int, int, int, int, int]] = {}
+        group_shapes: dict[tuple[float, str, str], tuple[int, int, int, int, int]] = {}  # (exp,size,session)->(H,W,C,ch,cw)
         pref_chunk_h = self.chunk_height
         pref_chunk_w = self.chunk_width
-        DTYPE = np.float32  # master darks are always 32-bit float internally
+        DTYPE = np.float32
 
-        for (exposure_time, image_size), file_list in dark_files_by_group.items():
+        for (exposure_time, image_size, session), file_list in dark_files_by_group.items():
             if len(file_list) < 2:
                 continue
 
@@ -10117,16 +10465,12 @@ class StackingSuiteDialog(QDialog):
             C = max(1, C)
             N = len(file_list)
 
-            # Use the same safe-chunk logic as normal integration
             try:
-                chunk_h, chunk_w = compute_safe_chunk(
-                    H, W, N, C, DTYPE, pref_chunk_h, pref_chunk_w
-                )
+                chunk_h, chunk_w = compute_safe_chunk(H, W, N, C, DTYPE, pref_chunk_h, pref_chunk_w)
             except MemoryError:
-                # Fall back to user chunk config if memory check failed
                 chunk_h, chunk_w = pref_chunk_h, pref_chunk_w
 
-            group_shapes[(exposure_time, image_size)] = (H, W, C, chunk_h, chunk_w)
+            group_shapes[(exposure_time, image_size, session)] = (H, W, C, chunk_h, chunk_w)
             total_tiles += _count_tiles(H, W, chunk_h, chunk_w)
 
         if total_tiles == 0:
@@ -10139,7 +10483,7 @@ class StackingSuiteDialog(QDialog):
         QApplication.processEvents()
 
         # -------------------------------------------------------------------------
-        # Local CPU reducers for fallback (same behavior as before)
+        # Local CPU reducers (unchanged)
         # -------------------------------------------------------------------------
         def _select_reducer(kind: str, N: int):
             if kind == "dark":
@@ -10149,8 +10493,7 @@ class StackingSuiteDialog(QDialog):
                     return ("Simple Median (No Rejection)", {}, "median")
                 else:
                     return ("Trimmed Mean", {"trim_fraction": 0.05}, "trimmed")
-            else:
-                raise ValueError("wrong kind")
+            raise ValueError("wrong kind")
 
         def _cpu_tile_median(ts4: np.ndarray) -> np.ndarray:
             return np.median(ts4, axis=0).astype(np.float32, copy=False)
@@ -10178,17 +10521,16 @@ class StackingSuiteDialog(QDialog):
             return out.astype(np.float32, copy=False)
 
         pd = _Progress(self, "Create Master Darks", total_tiles)
-
         from concurrent.futures import ThreadPoolExecutor
 
         try:
             # ---------------------------------------------------------------------
             # Per-group stacking loop
             # ---------------------------------------------------------------------
-            for (exposure_time, image_size), file_list in dark_files_by_group.items():
+            for (exposure_time, image_size, session), file_list in dark_files_by_group.items():
                 if len(file_list) < 2:
                     self.update_status(self.tr(
-                        f"⚠️ Skipping {exposure_time}s ({image_size}) - Not enough frames to stack."
+                        f"⚠️ Skipping {exposure_time}s ({image_size}) [{session}] - Not enough frames to stack."
                     ))
                     QApplication.processEvents()
                     continue
@@ -10198,21 +10540,17 @@ class StackingSuiteDialog(QDialog):
                     break
 
                 self.update_status(self.tr(
-                    f"🟢 Processing {len(file_list)} darks for {exposure_time}s ({image_size}) exposure…"
+                    f"🟢 Processing {len(file_list)} darks for {exposure_time}s ({image_size}) in session '{session}'…"
                 ))
                 QApplication.processEvents()
 
                 # --- reference shape and per-group chunk size ---
-                if (exposure_time, image_size) in group_shapes:
-                    height, width, channels, chunk_height, chunk_width = group_shapes[
-                        (exposure_time, image_size)
-                    ]
+                if (exposure_time, image_size, session) in group_shapes:
+                    height, width, channels, chunk_height, chunk_width = group_shapes[(exposure_time, image_size, session)]
                 else:
                     ref_data, _, _, _ = load_image(file_list[0])
                     if ref_data is None:
-                        self.update_status(self.tr(
-                            f"❌ Failed to load reference {os.path.basename(file_list[0])}"
-                        ))
+                        self.update_status(self.tr(f"❌ Failed to load reference {os.path.basename(file_list[0])}"))
                         continue
                     height, width = ref_data.shape[:2]
                     channels = 1 if ref_data.ndim == 2 else 3
@@ -10220,31 +10558,25 @@ class StackingSuiteDialog(QDialog):
                     N_tmp = len(file_list)
                     try:
                         chunk_height, chunk_width = compute_safe_chunk(
-                            height, width, N_tmp, channels, DTYPE,
-                            pref_chunk_h, pref_chunk_w
+                            height, width, N_tmp, channels, DTYPE, pref_chunk_h, pref_chunk_w
                         )
                     except MemoryError:
                         chunk_height, chunk_width = pref_chunk_h, pref_chunk_w
 
-                channels = max(1, channels)
                 N = len(file_list)
 
-                # --- choose reducer adaptively ---
                 algo_name, params, cpu_label = _select_reducer("dark", N)
                 use_gpu = bool(self._hw_accel_enabled()) and _torch_ok() and _gpu_algo_supported(algo_name)
                 algo_brief = ("GPU" if use_gpu else "CPU") + " " + algo_name
-                self.update_status(self.tr(
-                    f"⚙️ {algo_brief} selected for {N} frames (channels={channels})"
-                ))
+                self.update_status(self.tr(f"⚙️ {algo_brief} selected for {N} frames (channels={channels})"))
                 QApplication.processEvents()
 
-                # --- open all dark frames as memmapped sources (once per group) ---
+                # --- open sources ---
                 sources = []
                 try:
                     for p in file_list:
-                        sources.append(_MMImage(p))  # same class used in normal integration
+                        sources.append(_MMImage(p))
                 except Exception as e:
-                    # Clean up any partially opened sources
                     for s in sources:
                         try:
                             s.close()
@@ -10254,93 +10586,64 @@ class StackingSuiteDialog(QDialog):
                     QApplication.processEvents()
                     continue
 
-                # Temporary memmap for the master stack
-                memmap_path = os.path.join(
-                    master_dir, f"temp_dark_{exposure_time}_{image_size}.dat"
-                )
+                # Include session to prevent collisions
+                memmap_path = os.path.join(master_dir, f"temp_dark_{session}_{exposure_time}_{image_size}.dat")
+
                 self.update_status(self.tr(
                     f"🗂️ Creating temp memmap: {os.path.basename(memmap_path)} "
                     f"(shape={height}×{width}×{channels}, dtype=float32)"
                 ))
                 QApplication.processEvents()
-                final_stacked = np.memmap(
-                    memmap_path,
-                    dtype=np.float32,
-                    mode="w+",
-                    shape=(height, width, channels),
-                )
 
-                # Tile grid for this group
+                final_stacked = np.memmap(memmap_path, dtype=np.float32, mode="w+", shape=(height, width, channels))
+
                 tiles = _tile_grid(height, width, chunk_height, chunk_width)
                 total_tiles_group = len(tiles)
                 self.update_status(self.tr(
-                    f"📦 {total_tiles_group} tiles to process for this group "
-                    f"(chunk {chunk_height}×{chunk_width})."
+                    f"📦 {total_tiles_group} tiles to process for this group (chunk {chunk_height}×{chunk_width})."
                 ))
                 QApplication.processEvents()
 
-                # --- reusable double-buffer tile storage ---
-                buf0 = np.empty(
-                    (N, chunk_height, chunk_width, channels),
-                    dtype=np.float32,
-                    order="C",
-                )
+                buf0 = np.empty((N, chunk_height, chunk_width, channels), dtype=np.float32, order="C")
                 buf1 = np.empty_like(buf0)
 
-                # Helper: read one tile into the given buffer from all memmapped sources
                 def _read_tile_into(buf, y0, y1, x0, x1):
                     th = y1 - y0
                     tw = x1 - x0
                     ts = buf[:N, :th, :tw, :channels]
                     for i, src in enumerate(sources):
-                        sub = src.read_tile(y0, y1, x0, x1)  # float32, (th,tw) or (th,tw,3)
+                        sub = src.read_tile(y0, y1, x0, x1)
                         if sub.ndim == 2:
-                            if channels == 3:
-                                sub = sub[:, :, None].repeat(3, axis=2)
-                            else:
-                                sub = sub[:, :, None]
+                            sub = sub[:, :, None] if channels == 1 else sub[:, :, None].repeat(3, axis=2)
                         ts[i, :, :, :] = sub
-                    return th, tw  # actual extents for edge tiles
+                    return th, tw
 
                 tp = ThreadPoolExecutor(max_workers=1)
 
-                # Prime first read
                 (y0, y1, x0, x1) = tiles[0]
                 fut = tp.submit(_read_tile_into, buf0, y0, y1, x0, x1)
                 use0 = True
-
-                # Uniform weights for darks (no quality weighting)
                 weights_np = np.ones((N,), dtype=np.float32)
 
-                # --- per-tile loop ---
                 cancelled_group = False
                 for t_idx, (y0, y1, x0, x1) in enumerate(tiles, start=1):
                     if pd.cancelled:
                         cancelled_group = True
-                        self.update_status(self.tr(
-                            "⛔ Master Dark creation cancelled during tile processing."
-                        ))
+                        self.update_status(self.tr("⛔ Master Dark creation cancelled during tile processing."))
                         break
 
                     th, tw = fut.result()
                     ts_np = (buf0 if use0 else buf1)[:N, :th, :tw, :channels]
 
-                    # Prefetch next tile
                     if t_idx < total_tiles_group:
                         ny0, ny1, nx0, nx1 = tiles[t_idx]
-                        fut = tp.submit(
-                            _read_tile_into,
-                            (buf1 if use0 else buf0),
-                            ny0, ny1, nx0, nx1,
-                        )
+                        fut = tp.submit(_read_tile_into, (buf1 if use0 else buf0), ny0, ny1, nx0, nx1)
 
                     pd.set_label(
-                        f"{int(exposure_time)}s ({image_size}) — "
-                        f"tile {t_idx}/{total_tiles_group} "
-                        f"y:{y0}-{y1} x:{x0}-{x1}"
+                        f"{int(exposure_time)}s ({image_size}) [{session}] — "
+                        f"tile {t_idx}/{total_tiles_group} y:{y0}-{y1} x:{x0}-{x1}"
                     )
 
-                    # ---- reduction (GPU or CPU) ----
                     if use_gpu:
                         tile_result, _ = _torch_reduce_tile(
                             ts_np,
@@ -10350,59 +10653,39 @@ class StackingSuiteDialog(QDialog):
                             iterations=int(params.get("iterations", getattr(self, "iterations", 1))),
                             sigma_low=float(getattr(self, "sigma_low", 2.5)),
                             sigma_high=float(getattr(self, "sigma_high", 2.5)),
-                            trim_fraction=float(
-                                params.get("trim_fraction", getattr(self, "trim_fraction", 0.05))
-                            ),
+                            trim_fraction=float(params.get("trim_fraction", getattr(self, "trim_fraction", 0.05))),
                             esd_threshold=float(getattr(self, "esd_threshold", 3.0)),
-                            biweight_constant=float(
-                                getattr(self, "biweight_constant", 6.0)
-                            ),
+                            biweight_constant=float(getattr(self, "biweight_constant", 6.0)),
                             modz_threshold=float(getattr(self, "modz_threshold", 3.5)),
-                            comet_hclip_k=float(
-                                self.settings.value("stacking/comet_hclip_k", 1.30, type=float)
-                            ),
-                            comet_hclip_p=float(
-                                self.settings.value("stacking/comet_hclip_p", 25.0, type=float)
-                            ),
+                            comet_hclip_k=float(self.settings.value("stacking/comet_hclip_k", 1.30, type=float)),
+                            comet_hclip_p=float(self.settings.value("stacking/comet_hclip_p", 25.0, type=float)),
                         )
                     else:
                         if cpu_label == "median":
                             tile_result = _cpu_tile_median(ts_np)
                         elif cpu_label == "trimmed":
-                            tile_result = _cpu_tile_trimmed_mean(
-                                ts_np,
-                                float(params.get("trim_fraction", 0.05)),
-                            )
-                        else:  # 'kappa1'
-                            tile_result = _cpu_tile_kappa_sigma_1iter(
-                                ts_np,
-                                float(params.get("kappa", 3.0)),
-                            )
+                            tile_result = _cpu_tile_trimmed_mean(ts_np, float(params.get("trim_fraction", 0.05)))
+                        else:
+                            tile_result = _cpu_tile_kappa_sigma_1iter(ts_np, float(params.get("kappa", 3.0)))
 
-                    # Ensure tile_result has correct shape (th, tw, channels)
                     if tile_result.ndim == 2:
                         tile_result = tile_result[:, :, None]
                     expected_shape = (th, tw, channels)
                     if tile_result.shape != expected_shape:
-                        if tile_result.shape[2] == 0:
-                            tile_result = np.zeros(expected_shape, dtype=np.float32)
-                        elif tile_result.shape[:2] == (th, tw):
+                        if tile_result.shape[:2] == (th, tw):
                             if tile_result.shape[2] > channels:
                                 tile_result = tile_result[:, :, :channels]
                             else:
-                                tile_result = np.repeat(
-                                    tile_result, channels, axis=2
-                                )[:, :, :channels]
+                                tile_result = np.repeat(tile_result, channels, axis=2)[:, :, :channels]
+                        else:
+                            tile_result = np.zeros(expected_shape, dtype=np.float32)
 
-                    # Commit tile result into final memmap
                     final_stacked[y0:y1, x0:x1, :] = tile_result
-
                     pd.step()
                     use0 = not use0
 
                 tp.shutdown(wait=True)
 
-                # Close memmapped sources for this group
                 for s in sources:
                     try:
                         s.close()
@@ -10410,9 +10693,7 @@ class StackingSuiteDialog(QDialog):
                         pass
 
                 if cancelled_group:
-                    self.update_status(self.tr(
-                        "⛔ Master Dark creation cancelled; cleaning up temporary files."
-                    ))
+                    self.update_status(self.tr("⛔ Master Dark creation cancelled; cleaning up temporary files."))
                     try:
                         del final_stacked
                     except Exception:
@@ -10423,7 +10704,6 @@ class StackingSuiteDialog(QDialog):
                         pass
                     break
 
-                # Convert memmap to regular array and free the file
                 master_dark_data = np.asarray(final_stacked, dtype=np.float32)
                 del final_stacked
                 gc.collect()
@@ -10432,38 +10712,29 @@ class StackingSuiteDialog(QDialog):
                 except Exception:
                     pass
 
-                master_dark_stem = f"MasterDark_{int(exposure_time)}s_{image_size}"
+                # Include session in output name
+                master_dark_stem = f"MasterDark_{session}_{int(exposure_time)}s_{image_size}"
                 master_dark_path = self._build_out(master_dir, master_dark_stem, "fit")
 
                 master_header = fits.Header()
                 master_header["IMAGETYP"] = "DARK"
-                master_header["EXPTIME"] = (
-                    exposure_time,
-                    "User-specified or from grouping",
-                )
+                master_header["EXPTIME"] = (exposure_time, "User-specified or from grouping")
+                master_header["SESSION"] = (session, "User session tag")  # optional but useful
                 master_header["NAXIS"] = 3 if channels == 3 else 2
                 master_header["NAXIS1"] = master_dark_data.shape[1]
                 master_header["NAXIS2"] = master_dark_data.shape[0]
                 if channels == 3:
                     master_header["NAXIS3"] = 3
 
-                save_image(
-                    master_dark_data,
-                    master_dark_path,
-                    "fit",
-                    "32-bit floating point",
-                    master_header,
-                    is_mono=(channels == 1),
-                )
-                self.add_master_dark_to_tree(
-                    f"{exposure_time}s ({image_size})", master_dark_path
-                )
+                save_image(master_dark_data, master_dark_path, "fit", "32-bit floating point", master_header, is_mono=(channels == 1))
+
+                self.add_master_dark_to_tree(f"{exposure_time}s ({image_size}) [{session}]", master_dark_path)
                 self.update_status(self.tr(f"✅ Master Dark saved: {master_dark_path}"))
                 QApplication.processEvents()
+
                 self.assign_best_master_files()
                 self.save_master_paths_to_settings()
 
-            # wrap-up
             self.assign_best_master_dark()
             self.update_override_dark_combo()
             self.assign_best_master_files()
@@ -10475,6 +10746,7 @@ class StackingSuiteDialog(QDialog):
                 import logging
                 logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
             pd.close()
+
       
     def add_master_dark_to_tree(self, exposure_label: str, master_dark_path: str):
         """
@@ -10691,7 +10963,15 @@ class StackingSuiteDialog(QDialog):
         # -------------------------------------------------------------------------
         # Group flats exactly as before
         # -------------------------------------------------------------------------
-        for (filter_exposure, session), file_list in self.flat_files.items():
+        for key, file_list in (self.flat_files or {}).items():
+            # Support both legacy and new key formats
+            if isinstance(key, tuple) and len(key) >= 2:
+                filter_exposure = str(key[0])
+                session = str(key[1] or "Default").strip() or "Default"
+            else:
+                filter_exposure = str(key)
+                session = "Default"
+
             try:
                 filter_name, exposure_size = filter_exposure.split(" - ")
                 exposure_time_str, image_size = exposure_size.split(" (")
@@ -10704,21 +10984,35 @@ class StackingSuiteDialog(QDialog):
             exposure_time = float(match.group(1)) if match else -10.0
 
             matched_group = None
-            for key in flat_files_by_group:
-                existing_exposure, existing_size, existing_filter, existing_session = key
+            for k in flat_files_by_group:
+                existing_exposure, existing_size, existing_filter, existing_session = k
                 if (
                     abs(existing_exposure - exposure_time) <= exposure_tolerance
                     and existing_size == image_size
                     and existing_filter == filter_name
                     and existing_session == session
                 ):
-                    matched_group = key
+                    matched_group = k
                     break
 
             if matched_group is None:
                 matched_group = (exposure_time, image_size, filter_name, session)
                 flat_files_by_group[matched_group] = []
-            flat_files_by_group[matched_group].extend(file_list)
+
+            flat_files_by_group[matched_group].extend(file_list or [])
+
+        # Dedupe paths within each group (prevents accidental double-counts)
+        for k, lst in list(flat_files_by_group.items()):
+            seen = set()
+            out = []
+            for p in (lst or []):
+                pn = os.path.normcase(os.path.abspath(p))
+                if pn in seen:
+                    continue
+                seen.add(pn)
+                out.append(p)
+            flat_files_by_group[k] = out
+
 
         # Discovery summary
         try:
@@ -17809,12 +18103,7 @@ class StackingSuiteDialog(QDialog):
         # --- reusable C-order tile buffers (avoid copies before GPU) ---
         def _mk_buf():
             buf = np.empty((N, chunk_h, chunk_w, channels), dtype=np.float32, order='C')
-            if use_gpu:
-                # We'll pin tensors inside _torch_reduce_tile; nothing to do here.
-                try:
-                    import torch  # noqa: F401
-                except Exception:
-                    pass
+
             return buf
 
         buf0 = _mk_buf()

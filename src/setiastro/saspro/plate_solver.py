@@ -2059,6 +2059,7 @@ class PlateSolverDialog(QDialog):
         self.setWindowTitle(self.tr("Plate Solver"))
         self.setMinimumWidth(560)
         self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         #self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
 

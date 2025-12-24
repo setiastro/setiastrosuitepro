@@ -822,6 +822,11 @@ def _to_luma_local(a: np.ndarray) -> np.ndarray:
         return a
     # (H,W,3) or (3,H,W)
     if a.ndim == 3 and a.shape[-1] == 3:
+        try:
+            import cv2
+            return cv2.cvtColor(a, cv2.COLOR_RGB2GRAY).astype(np.float32, copy=False)
+        except Exception:
+            pass
         r, g, b = a[..., 0], a[..., 1], a[..., 2]
         return (0.2126*r + 0.7152*g + 0.0722*b).astype(np.float32, copy=False)
     if a.ndim == 3 and a.shape[0] == 3:

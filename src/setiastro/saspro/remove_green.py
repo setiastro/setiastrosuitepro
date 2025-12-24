@@ -157,6 +157,9 @@ class RemoveGreenDialog(QDialog):
         self.main = main
         self.doc = doc
         self.setWindowTitle(self.tr("Remove Green (SCNR)"))
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
         self._build_ui()
 
     def _build_ui(self):
@@ -263,8 +266,22 @@ class RemoveGreenDialog(QDialog):
             # Never let replay bookkeeping kill the dialog
             pass
 
-        self.accept()
+        # Dialog stays open so user can apply to other images
+        # Refresh document reference for next operation
+        self._refresh_document_from_active()
 
+    def _refresh_document_from_active(self):
+        """
+        Refresh the dialog's document reference to the currently active document.
+        This allows reusing the same dialog on different images.
+        """
+        try:
+            if self.main and hasattr(self.main, "_active_doc"):
+                new_doc = self.main._active_doc()
+                if new_doc is not None and new_doc is not self.doc:
+                    self.doc = new_doc
+        except Exception:
+            pass
 
 
 # ---------- entry points used by main ----------

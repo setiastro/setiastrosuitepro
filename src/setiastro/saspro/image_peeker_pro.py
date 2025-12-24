@@ -1314,6 +1314,9 @@ class ImagePeekerDialogPro(QDialog):
     def __init__(self, parent, document, settings):
         super().__init__(parent)
         self.setWindowTitle(self.tr("Image Peeker"))
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
         self.document = self._coerce_doc(document)   # <- ensure we hold a real doc
         self.settings = settings
         # status / progress line

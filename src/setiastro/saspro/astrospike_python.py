@@ -1040,7 +1040,9 @@ class AstroSpikeWindow(QDialog):
     def __init__(self, image_data_255: np.ndarray, image_data_float: np.ndarray, ctx):
         super().__init__()
         self.setWindowTitle("AstroSpike - Star Diffraction Spikes")
-        self.setModal(True)
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
         
         self.ctx = ctx
         self.image_data = image_data_255  # uint8 for detection

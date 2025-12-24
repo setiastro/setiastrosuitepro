@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Neon Invaders: Hyperdrive</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="game-container">
+        <canvas id="gameCanvas"></canvas>
+        <div id="ui-layer">
+            <div id="hud" class="hidden">
+                <div class="hud-item">SCORE: <span id="score">0</span></div>
+                <div class="hud-item center">LEVEL: <span id="level">1</span></div>
+                <div class="hud-item right">HP: <div id="hp-bar"><div id="hp-fill"></div></div></div>
+            </div>
+            
+            <div id="main-menu" class="screen">
+                <h1 class="glow-text">NEON INVADERS<br><span class="subtitle">HYPERDRIVE</span></h1>
+                <div class="menu-options">
+                    <button id="btn-start" class="menu-btn">START GAME</button>
+                    <button id="btn-levels" class="menu-btn">SELECT LEVEL</button>
+                    <div id="controls-hint">ARROWS to Move • SPACE to Shoot</div>
+                </div>
+            </div>
+
+            <div id="level-select" class="screen hidden">
+                <h2>SELECT LEVEL</h2>
+                <div class="level-grid" id="level-grid">
+                    <!-- Populated by JS -->
+                </div>
+                <button id="btn-back" class="menu-btn">BACK</button>
+            </div>
+
+            <div id="game-over" class="screen hidden">
+                <h1 class="danger-text">GAME OVER</h1>
+                <p>FINAL SCORE: <span id="final-score">0</span></p>
+                <button id="btn-retry" class="menu-btn">RETRY</button>
+                <button id="btn-menu" class="menu-btn">MAIN MENU</button>
+            </div>
+            
+            <div id="victory" class="screen hidden">
+                <h1 class="victory-text">MISSION COMPLETE</h1>
+                <p>YOU SAVED THE GALAXY!</p>
+                <p>FINAL SCORE: <span id="victory-score">0</span></p>
+                <button id="btn-menu-win" class="menu-btn">MAIN MENU</button>
+            </div>
+        </div>
+    </div>
+    <script src="game.js"></script>
+</body>
+</html>

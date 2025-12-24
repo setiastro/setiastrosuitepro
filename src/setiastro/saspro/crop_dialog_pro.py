@@ -271,7 +271,16 @@ class CropDialogPro(QDialog):
     def __init__(self, parent, document):
         super().__init__(parent)
         self.setWindowTitle(self.tr("Crop Tool"))
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
+        self._main = parent
         self.doc = document
+
+        # Connect to active document change signal
+        if hasattr(self._main, "currentDocumentChanged"):
+            self._main.currentDocumentChanged.connect(self._on_active_doc_changed)
+
         self._rect_item: Optional[ResizableRotatableRectItem] = None
         self._pix_item: Optional[QGraphicsPixmapItem] = None
         self._drawing = False
@@ -462,6 +471,14 @@ class CropDialogPro(QDialog):
         if arr.ndim == 3 and arr.shape[2] == 1:
             arr = arr[..., 0]
         return np.clip(arr, 0.0, 1.0)
+
+    def _on_active_doc_changed(self, doc):
+        """Called when user clicks a different image window."""
+        if doc is None or getattr(doc, "image", None) is None:
+            return
+        self.doc = doc
+        self._rect_item = None
+        self._load_from_doc()
 
     def _load_from_doc(self):
         self._full01 = self._img01_from_doc()

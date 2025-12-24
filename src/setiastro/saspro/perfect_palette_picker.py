@@ -28,6 +28,7 @@ class PaletteAdjustDialog(QDialog):
         super().__init__(owner)
         self.setWindowTitle("Adjust Palette Intensities")
         self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         #self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
 

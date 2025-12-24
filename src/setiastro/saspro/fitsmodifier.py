@@ -606,6 +606,9 @@ class BatchFITSHeaderDialog(QDialog):
     def __init__(self, parent=None, preset_keyword: str = "", preset_value: str = "", preset_comment: str = ""):
         super().__init__(parent)
         self.setWindowTitle(self.tr("Batch Modify FITS Headers"))
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
         self.resize(520, 220)
 
         v = QVBoxLayout(self)

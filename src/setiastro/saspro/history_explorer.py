@@ -436,6 +436,8 @@ class HistoryExplorerDialog(QDialog):
     def __init__(self, document, parent=None):
         super().__init__(parent)
         self.setWindowTitle("History Explorer")
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         self.doc = document
 

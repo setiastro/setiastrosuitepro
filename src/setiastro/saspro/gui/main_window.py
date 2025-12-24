@@ -128,7 +128,8 @@ from PyQt6.QtGui import (QPixmap, QColor, QIcon, QKeySequence, QShortcut,
 )
 
 # ----- QtCore -----
-from PyQt6.QtCore import (Qt, pyqtSignal, QCoreApplication, QTimer, QSize, QSignalBlocker,  QModelIndex, QThread, QUrl, QSettings, QEvent, QByteArray, QObject
+from PyQt6.QtCore import (Qt, pyqtSignal, QCoreApplication, QTimer, QSize, QSignalBlocker,  QModelIndex, QThread, QUrl, QSettings, QEvent, QByteArray, QObject,
+    QPropertyAnimation, QEasingCurve
 )
 
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
@@ -295,6 +296,16 @@ class AstroSuiteProMainWindow(
     def __init__(self, image_manager=None, parent=None,
                  version: str = "dev", build_timestamp: str = "dev"):
         super().__init__(parent)
+        # Prevent white flash: start strictly transparent and force dark bg
+        self.setWindowOpacity(0.0)
+        self.setStyleSheet("QMainWindow { background-color: #0F0F19; }")
+
+        # --- Usage Stats ---
+        self._session_start_time = time.time()
+        self._stats_timer = QTimer(self)
+        self._stats_timer.timeout.connect(self._update_usage_stats)
+        self._stats_timer.start(60000)  # Update every minute
+        
         from setiastro.saspro.doc_manager import DocManager
         from setiastro.saspro.window_shelf import WindowShelf, MinimizeInterceptor
         from setiastro.saspro.imageops.mdi_snap import MdiSnapController
@@ -425,6 +436,7 @@ class AstroSuiteProMainWindow(
         self._init_console_dock()
         self._init_header_viewer_dock()
         self._init_layers_dock()
+        self._init_resource_monitor_overlay()
         self._shutting_down = False
         self._init_status_log_dock()
         self._init_log_dock()
@@ -568,6 +580,19 @@ class AstroSuiteProMainWindow(
         except Exception:
             pass
 
+    def createPopupMenu(self):
+        """Override to add System Monitor to the toolbar/dock context menu."""
+        # Get the default popup menu from QMainWindow
+        menu = super().createPopupMenu()
+        if menu is None:
+            menu = QMenu(self)
+        
+        # Add System Monitor toggle if available
+        if hasattr(self, "act_toggle_monitor") and self.act_toggle_monitor is not None:
+            menu.addSeparator()
+            menu.addAction(self.act_toggle_monitor)
+        
+        return menu
 
     def _on_sw_activated(self, sw):
         if not sw:
@@ -1823,6 +1848,7 @@ class AstroSuiteProMainWindow(
             actions = self._collect_all_qactions()
         except Exception:
             actions = self.findChildren(QAction)
+
         for act in actions:
             for seq in _seqs_for_action(act):
                 rows.append((_qs_to_str(seq), _describe_action(act), _where_for_action(act)))
@@ -1832,6 +1858,12 @@ class AstroSuiteProMainWindow(
             seq = sc.key()
             if seq and not seq.isEmpty():
                 rows.append((_qs_to_str(seq), _describe_shortcut(sc), _where_for_shortcut(sc)))
+
+        # 3) App-level shortcuts not represented by QAction/QShortcut
+        try:
+            add_extra_shortcuts(rows)  # ✅ Ctrl+K, Ctrl+Alt+M, etc.
+        except Exception:
+            pass
 
         # De-duplicate and sort by shortcut text
         rows = _uniq_keep_order(rows)
@@ -7790,6 +7822,90 @@ class AstroSuiteProMainWindow(
         flags |= Qt.WindowType.WindowMaximizeButtonHint
         sw.setWindowFlags(flags)
 
+        # -------------------------------------------------------------------------
+        # Explicitly size the window to valid dimensions so it doesn't default
+        # to "maximized" or "full MDI area" if the previous window was large.
+        # We target ~60% of the viewport height, clamped to sane bounds.
+        # -------------------------------------------------------------------------
+        vp = self.mdi.viewport()
+        area = vp.rect() if vp else self.mdi.rect()
+        
+        # Determine aspect ratio
+        img_w = img_h = None
+        try:
+            img_w, img_h = self._infer_image_size(view)
+        except Exception:
+            pass
+
+        if not img_w or not img_h:
+            aspect = 1.0
+        else:
+            aspect = float(img_w) / float(img_h)
+
+        # Clamp aspect
+        aspect = max(0.3, min(aspect, 4.0))
+
+        target_h = int(area.height() * 0.6)
+        target_w = int(target_h * aspect)
+        
+        # Ensure it fits within the area (with some margin)
+        max_w = int(area.width() * 0.9)
+        max_h = int(area.height() * 0.9)
+        
+        if target_w > max_w:
+            target_w = max_w
+            # Recalculate height to preserve aspect, if possible
+            target_h = int(target_w / aspect)
+        
+        if target_h > max_h:
+            target_h = max_h
+
+        # Enforce minimums
+        target_w = max(200, target_w)
+        target_h = max(200, target_h)
+
+        sw.resize(target_w, target_h)
+        sw.showNormal()  # CRITICAL: clears any "maximized" flag from previous active window
+
+        # -------------------------------------------------------------------------
+        # Smart Cascade: Position relative to the *currently active* window
+        # (before we make the new one active).
+        # -------------------------------------------------------------------------
+        new_x, new_y = 0, 0
+        
+        # Get dominant/active window *before* we activate the new one
+        active = self.mdi.activeSubWindow()
+        if active and active.isVisible() and not (active.windowState() & Qt.WindowState.WindowMinimized):
+            # Cascade from the active window
+            geo = active.geometry()
+            new_x = geo.x() + 30
+            new_y = geo.y() + 30
+        else:
+            # Fallback: try to find the "last added" visible window to cascade from
+            # (useful if active is None but windows exist)
+            try:
+                subs = [s for s in self.mdi.subWindowList() if s.isVisible() and s is not sw]
+                if subs:
+                    # simplistic "last created" might be at end of list
+                    last = subs[-1]
+                    geo = last.geometry()
+                    new_x = geo.x() + 30
+                    new_y = geo.y() + 30
+            except Exception:
+                pass
+
+        # Bounds check: don't let it drift completely off-screen
+        # (allow valid title bar to be visible at least)
+        if (new_x + target_w > area.width() + 50) or (new_y + 50 > area.height()):
+            new_x = 0
+            new_y = 0
+        
+        # Clamp to 0 if negative for some reason
+        new_x = max(0, new_x)
+        new_y = max(0, new_y)
+
+        sw.move(new_x, new_y)
+
         # âŒ removed the "fill MDI viewport" block - we *don't* want full-monitor first window
 
         # Show / activate
@@ -8449,6 +8565,40 @@ class AstroSuiteProMainWindow(
         if self._suspend_dock_sync:
             QTimer.singleShot(0, lambda: self.changeEvent(QEvent(QEvent.Type.WindowStateChange)))
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # Update floating resource monitor position if it exists (from DockMixin)
+        if hasattr(self, "_update_monitor_position"):
+            self._update_monitor_position()
+
+    def moveEvent(self, event):
+        super().moveEvent(event)
+        # Update floating resource monitor position if it exists (from DockMixin)
+        if hasattr(self, "_update_monitor_position"):
+            self._update_monitor_position()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        # 1. Existing logic for dock sync (re-instated from showEvent logic if needed, but usually changeEvent is enough)
+        # (The snippet viewed previously showed showEvent firing a oneshot to call changeEvent)
+        
+        # 2. Resource Monitor Sync
+        if event.type() == QEvent.Type.WindowStateChange:
+            if self.windowState() & Qt.WindowState.WindowMinimized:
+                # App minimized -> hide overlay
+                if hasattr(self, "resource_monitor") and self.resource_monitor:
+                    self.resource_monitor.hide()
+            elif not (self.windowState() & Qt.WindowState.WindowMinimized):
+                # Only auto-show if the initial fade-in is done
+                if getattr(self, "_fade_in_complete", False):
+                    # App restored -> show overlay if enabled in settings
+                    if hasattr(self, "resource_monitor") and self.resource_monitor:
+                        if self.settings.value("ui/resource_monitor_visible", True, type=bool):
+                            self.resource_monitor.show()
+                            # Ensure position is correct upon restore
+                            if hasattr(self, "_update_monitor_position"):
+                                self._update_monitor_position()
+
     def save_ui_state(self):
         """Save window geometry, state, and shortcuts to settings."""
         self._ensure_persistent_names()
@@ -8478,12 +8628,69 @@ class AstroSuiteProMainWindow(
         
         self.settings.sync()
 
+    def on_fade_in_complete(self):
+        """Called when main window fade-in is finished."""
+        self._fade_in_complete = True
+        # Sync Monitor Visibility
+        if hasattr(self, "resource_monitor") and self.resource_monitor:
+            if not self.isMinimized() and self.settings.value("ui/resource_monitor_visible", True, type=bool):
+                # Delay show to ensure visually pleasing sequence (monitor appears AFTER app)
+                QTimer.singleShot(500, self.resource_monitor.show)
+                # Ensure position
+                QTimer.singleShot(600, self._update_monitor_position)
+
+    def keyPressEvent(self, event):
+        """Handle key press events for secret shortcuts."""
+        if (event.modifiers() == (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier) and 
+            event.key() == Qt.Key.Key_M):
+            
+            # Secret minigame launcher
+            # __file__ is in .../saspro/gui/main_window.py
+            # We want to go up to .../saspro/
+            base_pkg = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            minigame_path = os.path.join(base_pkg, "widgets", "minigame", "index.html")
+            
+            if os.path.exists(minigame_path):
+                QDesktopServices.openUrl(QUrl.fromLocalFile(minigame_path))
+                event.accept()
+                return
+
+        super().keyPressEvent(event)
+
+    def _update_usage_stats(self):
+        try:
+            now = time.time()
+            elapsed = now - self._session_start_time
+            self._session_start_time = now  # Reset session start to avoid double counting
+            
+            total = self.settings.value("stats/total_time_seconds", 0.0, type=float)
+            self.settings.setValue("stats/total_time_seconds", total + elapsed)
+        except Exception:
+            pass
+
+    def _on_tool_triggered(self):
+        """Slot to track tool usage count."""
+        try:
+            count = self.settings.value("stats/opened_tools_count", 0, type=int)
+            self.settings.setValue("stats/opened_tools_count", count + 1)
+        except Exception:
+            pass
+
     def closeEvent(self, e):
+        self._update_usage_stats()
+
+
         # Optimization: If restarting (e.g. language change), bypass confirmation and close immediately
         if getattr(self, "_is_restarting", False):
             e.accept()
             return
-            
+        
+        # Check if we have already faded out
+        if getattr(self, "_fade_out_complete", False):
+            # Proceed with shutdown
+            self._do_shutdown_steps(e)
+            return
+
         try:
             if hasattr(self, "_orig_stdout") and self._orig_stdout is not None:
                 sys.stdout = self._orig_stdout
@@ -8491,6 +8698,8 @@ class AstroSuiteProMainWindow(
                 sys.stderr = self._orig_stderr
         except Exception:
             pass        
+
+        # --- Confirmation Logic ---
         self._shutting_down = True
         # Gather open docs
         docs = []
@@ -8501,35 +8710,68 @@ class AstroSuiteProMainWindow(
                 docs.append(d)
 
         edited = [d for d in docs if self._document_has_edits(d)]
-        msg = self.tr("Exit Seti Astro Suite Pro?")
-        detail = []
-        if docs:
-            detail.append(self.tr("Open images:") + f" {len(docs)}")
-        if edited:
-            detail.append(self.tr("Edited since open:") + f" {len(edited)}")
-        if detail:
-            msg += "\n\n" + "\n".join(detail)
+        # If user has disabled exit confirmation (optional setting, but default is confirm)
+        confirm = True 
+        
+        if confirm:
+            msg = self.tr("Exit Seti Astro Suite Pro?")
+            detail = []
+            if docs:
+                detail.append(self.tr("Open images:") + f" {len(docs)}")
+            if edited:
+                detail.append(self.tr("Edited since open:") + f" {len(edited)}")
+            if detail:
+                msg += "\n\n" + "\n".join(detail)
 
-        # --- stay-on-top message box ---
-        mbox = QMessageBox(self)
-        mbox.setIcon(QMessageBox.Icon.Question)
-        mbox.setWindowTitle(self.tr("Confirm Exit"))
-        mbox.setText(msg)
-        mbox.setStandardButtons(
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        )
-        mbox.setDefaultButton(QMessageBox.StandardButton.No)
-        # ðŸ'‡ key line
-        mbox.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
-        mbox.raise_()
-        mbox.activateWindow()
-        btn = mbox.exec()
+            # --- stay-on-top message box ---
+            mbox = QMessageBox(self)
+            mbox.setIcon(QMessageBox.Icon.Question)
+            mbox.setWindowTitle(self.tr("Confirm Exit"))
+            mbox.setText(msg)
+            mbox.setStandardButtons(
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            mbox.setDefaultButton(QMessageBox.StandardButton.No)
+            mbox.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+            mbox.raise_()
+            mbox.activateWindow()
+            btn = mbox.exec()
 
-        if btn != QMessageBox.StandardButton.Yes:
-            e.ignore()
-            return
+            if btn != QMessageBox.StandardButton.Yes:
+                e.ignore()
+                self._shutting_down = False
+                return
 
-        # User confirmed: prevent per-subwindow prompts and proceed
+        # --- User confirmed (or no confirm needed) ---
+        # Start Fade Out Animation
+        e.ignore() # Defer close until animation completes
+        self.setEnabled(False) # Prevent further interaction
+        
+        # Hide monitor immediately when fade starts (user preference)
+        if hasattr(self, "resource_monitor") and self.resource_monitor:
+            try:
+                if hasattr(self.resource_monitor, "backend"):
+                    self.resource_monitor.backend.stop()
+            except Exception:
+                pass
+            self.resource_monitor.hide()
+            self.resource_monitor.close()
+        
+        self._anim_close = QPropertyAnimation(self, b"windowOpacity")
+        self._anim_close.setDuration(800)
+        self._anim_close.setStartValue(1.0)
+        self._anim_close.setEndValue(0.0)
+        self._anim_close.setEasingCurve(QEasingCurve.Type.OutQuad)
+        self._anim_close.finished.connect(self._on_fade_out_finished)
+        self._anim_close.start()
+
+    def _on_fade_out_finished(self):
+        """Called when close animation completes."""    
+        self._fade_out_complete = True
+        self.close()
+
+    def _do_shutdown_steps(self, e):
+        """Actual shutdown logic after verification and animation."""
         self._force_close_all = True
         self._shutting_down = True
 
@@ -8553,6 +8795,7 @@ class AstroSuiteProMainWindow(
 # CheatSheet dialog and helper functions imported from setiastro.saspro.cheat_sheet
 from setiastro.saspro.cheat_sheet import (
     CheatSheetDialog as _CheatSheetDialog,
+    add_extra_shortcuts,
     _qs_to_str,
     _clean_text,
     _uniq_keep_order,

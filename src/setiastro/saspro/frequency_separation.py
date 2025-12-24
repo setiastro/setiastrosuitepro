@@ -708,10 +708,16 @@ class FrequencySeperationTab(QWidget):
 
         # channel reconcile
         if rch == 1 and ch == 3:
-            # convert RGB→mono (luma or average; we’ll use average)
+            # convert RGB→mono (use weighted luma for consistency, or mean if desired. Original was mean)
             a = a.mean(axis=2).astype(np.float32)
         elif rch == 3 and ch == 1:
-            a = np.repeat(a[..., None], 3, axis=2).astype(np.float32)
+            # Broadcast mono to 3 channels without copying
+            # (H,W,1) -> (H,W,3) via broadcasted view if consumer allows,
+            # but usually downstream (like subtraction) handles broadcasting fine.
+            # If explicit physical layout is needed, we must check usage.
+            # Here: used for subtraction (OK) and preview (OK).
+            # We return a view using broadcast_to or striding tricks.
+            a = np.broadcast_to(a, (ah, aw, 3))
 
         return a
 

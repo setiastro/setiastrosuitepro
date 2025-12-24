@@ -805,6 +805,7 @@ TRANSLATIONS_PT = {
         "Value": "Valor",
     },
     "FileMixin": {
+        "Start a new project? This closes all views and clears desktop shortcuts.": "Iniciar um novo projeto? Isso fechará todas as visualizações e limpará os atalhos da área de trabalho.",
         "Failed to save:\n{e}": "Falha ao salvar:\n{e}",
         "Failed to save:\n{msg}": "Falha ao salvar:\n{msg}",
         "File not found": "Arquivo não encontrado",
@@ -1076,6 +1077,7 @@ TRANSLATIONS_PT = {
     },
     "MenuMixin": {
         "&About": "&Sobre",
+        "Statistics...": "Estatísticas...",
         "&Edit": "&Editar",
         "&File": "&Arquivo",
         "&Functions": "&Funções",
@@ -1328,6 +1330,7 @@ TRANSLATIONS_PT = {
         "Use Open Views": "Usar visualizações abertas",
     },
     "AstroSuiteProMainWindow": {
+        "Start a new project? This closes all views and clears desktop shortcuts.": "Iniciar um novo projeto? Isso fechará todas as visualizações e limpará os atalhos da área de trabalho.",
         "&About": "&Sobre",
         "&Edit": "&Editar",
         "&File": "&Arquivo",
@@ -3820,6 +3823,8 @@ TRANSLATIONS_PT = {
         "View in Aladin": "Ver no Aladin",
     },
     "SettingsDialog": {
+        "Restart required": "Reinicialização necessária",
+        "Language changed. Please manually restart the application to apply the new language.": "Idioma alterado. Reinicie manualmente a aplicação para aplicar o novo idioma.",
         "ASTAP executable:": "Executável ASTAP:",
         "Astrometry.net API key:": "Chave API Astrometry.net:",
         "Check Now…": "Verificar agora…",
@@ -3849,5 +3854,16 @@ TRANSLATIONS_PT = {
         "Theme:": "Tema:",
         "Restart required": "Reinicialização necessária",
         "The application will now restart to apply the language change.": "O aplicativo será reiniciado agora para aplicar a alteração de idioma.",
+    },
+
+    "StatisticsDialog": {
+        "App Statistics": "Estatísticas da Aplicação",
+        "Time Spent:": "Tempo Gasto:",
+        "Images Opened:": "Imagens Abertas:",
+        "Tools Opened:": "Ferramentas Abertas:",
+        "Days": "Dias",
+        "Hours": "Horas",
+        "Minutes": "Minutos",
+        "Close": "Fechar",
     },
 }

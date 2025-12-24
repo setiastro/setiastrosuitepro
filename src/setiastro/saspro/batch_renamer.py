@@ -46,6 +46,9 @@ class BatchRenamerDialog(QDialog):
         self.setWindowFlag(Qt.WindowType.WindowTitleHint, True)
         self.setWindowFlag(Qt.WindowType.WindowMinMaxButtonsHint, True)
         self.setWindowFlag(Qt.WindowType.WindowContextHelpButtonHint, False)
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
         self.setSizeGripEnabled(True)
 
         self._build_ui()

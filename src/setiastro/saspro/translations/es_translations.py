@@ -140,8 +140,10 @@ TRANSLATIONS_ES = {
         "Post-alignment failed: {0}": "Post-alineación fallida: {0}",
     },
     "AstroSuiteProMainWindow": {
+        "Start a new project? This closes all views and clears desktop shortcuts.": "¿Desea iniciar un nuevo proyecto? Esto cerrará todas las vistas y borrará los accesos directos del escritorio.",
         # Menu strings (from MenuMixin)
         "&About": "&Acerca de",
+        "Statistics...": "Estadísticas...",
         "&Edit": "&Editar",
         "&File": "&Archivo",
         "&Functions": "&Funciones",
@@ -1436,6 +1438,7 @@ TRANSLATIONS_ES = {
         "Value": "Valor",
     },
     "FileMixin": {
+        "Start a new project? This closes all views and clears desktop shortcuts.": "¿Desea iniciar un nuevo proyecto? Esto cerrará todas las vistas y borrará los accesos directos del escritorio.",
         "All Files": "Todos los archivos",
         "Cancel": "Cancelar",
         "Clear Recent": "Borrar recientes",
@@ -2317,6 +2320,8 @@ TRANSLATIONS_ES = {
         "Selective Color Correction": "Corrección Selectiva de Color",
     },
     "SettingsDialog": {
+        "Restart required": "Reinicio requerido",
+        "Language changed. Please manually restart the application to apply the new language.": "Idioma cambiado. Reinicie manualmente la aplicación para aplicar el nuevo idioma.",
         "(Not required) Additional Model Paths for Denoise and Satellites": "(No requerido) Rutas de Modelos Adicionales para Reducción de Ruido y Satélites",
         "AHD (default)": "AHD (predeterminado)",
         "ASTAP executable:": "Ejecutable ASTAP:",
@@ -3919,5 +3924,16 @@ TRANSLATIONS_ES = {
         "Hide": "Ocultar",
         "Plate Solving": "Resolución de Placa",
         "Starting…": "Iniciando…",
+    },
+
+    "StatisticsDialog": {
+        "App Statistics": "Estadísticas de la aplicación",
+        "Time Spent:": "Tiempo transcurrido:",
+        "Images Opened:": "Imágenes abiertas:",
+        "Tools Opened:": "Herramientas abiertas:",
+        "Days": "Días",
+        "Hours": "Horas",
+        "Minutes": "Minutos",
+        "Close": "Cerrar",
     },
 }

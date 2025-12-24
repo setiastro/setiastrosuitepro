@@ -15,6 +15,9 @@ class CopyAstrometryDialog(QDialog):
     def __init__(self, parent=None, target=None):
         super().__init__(parent)
         self.setWindowTitle("Copy Astrometric Solution")
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
         self.setMinimumWidth(420)
 
         self._mw = parent

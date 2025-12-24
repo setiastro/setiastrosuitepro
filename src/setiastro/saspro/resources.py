@@ -469,9 +469,16 @@ def _init_legacy_paths():
 _legacy = _init_legacy_paths()
 globals().update(_legacy)
 
+
+# Background for startup
+background_startup_path = os.path.join(_get_base_path(), 'images', 'Background_startup.jpg')
+_legacy['background_startup_path'] = background_startup_path
+
 # Export list for `from setiastro.saspro.resources import *`
 __all__ = [
     'Icons', 'Resources', 
     'get_icons', 'get_resources',
     'get_icon_path', 'get_data_path',
+    'background_startup_path',
 ] + list(_legacy.keys())
+

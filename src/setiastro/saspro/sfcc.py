@@ -346,6 +346,9 @@ class SFCCDialog(QDialog):
     def __init__(self, doc_manager, sasp_data_path, parent=None):
         super().__init__(parent)
         self.setWindowTitle(self.tr("Spectral Flux Color Calibration"))
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
         self.setMinimumSize(800, 600)
 
         self.doc_manager = doc_manager
@@ -1155,18 +1158,56 @@ class SFCCDialog(QDialog):
         diag_meas_BG, diag_exp_BG = [], []
         enriched = []
 
+        # --- Optimization: Pre-calculate integrals for unique templates ---
+        unique_simbad_types = set(m["template"] for m in raw_matches)
+        
+        # Map simbad_type -> pickles_template_name
+        simbad_to_pickles = {}
+        pickles_templates_needed = set()
+        
+        for sp in unique_simbad_types:
+            cands = pickles_match_for_simbad(sp, getattr(self, "pickles_templates", []))
+            if cands:
+                pickles_name = cands[0]
+                simbad_to_pickles[sp] = pickles_name
+                pickles_templates_needed.add(pickles_name)
+
+        # Pre-calc integrals for each unique Pickles template
+        # Cache structure: template_name -> (S_sr, S_sg, S_sb)
+        template_integrals = {}
+
+        # Cache for load_sed to avoid re-reading even across different calls if desired, 
+        # but here we just optimize the loop.
+        
+        for pname in pickles_templates_needed:
+            try:
+                wl_s, fl_s = load_sed(pname)
+                fs_i = np.interp(wl_grid, wl_s, fl_s, left=0., right=0.)
+                
+                S_sr = np.trapezoid(fs_i * T_sys_R, x=wl_grid)
+                S_sg = np.trapezoid(fs_i * T_sys_G, x=wl_grid)
+                S_sb = np.trapezoid(fs_i * T_sys_B, x=wl_grid)
+                
+                template_integrals[pname] = (S_sr, S_sg, S_sb)
+            except Exception as e:
+                print(f"[SFCC] Warning: failed to load/integrate template {pname}: {e}")
+
+        # --- Main Match Loop ---
         for m in raw_matches:
             xi, yi, sp = m["x_pix"], m["y_pix"], m["template"]
             Rm = float(base[yi, xi, 0]); Gm = float(base[yi, xi, 1]); Bm = float(base[yi, xi, 2])
             if Gm <= 0: continue
 
-            cands = pickles_match_for_simbad(sp, getattr(self, "pickles_templates", []))
-            if not cands: continue
-            wl_s, fl_s = load_sed(cands[0])
-            fs_i = np.interp(wl_grid, wl_s, fl_s, left=0., right=0.)
-            S_sr = np.trapezoid(fs_i * T_sys_R, x=wl_grid)
-            S_sg = np.trapezoid(fs_i * T_sys_G, x=wl_grid)
-            S_sb = np.trapezoid(fs_i * T_sys_B, x=wl_grid)
+            # 1. Resolve Simbad -> Pickles
+            pname = simbad_to_pickles.get(sp)
+            if not pname: continue
+            
+            # 2. Retrieve pre-calced integrals
+            integrals = template_integrals.get(pname)
+            if not integrals: continue
+            
+            S_sr, S_sg, S_sb = integrals
+            
             if S_sg <= 0: continue
 
             exp_RG = S_sr / S_sg; exp_BG = S_sb / S_sg
@@ -1180,7 +1221,8 @@ class SFCCDialog(QDialog):
                 "S_star_R": S_sr, "S_star_G": S_sg, "S_star_B": S_sb,
                 "exp_RG": exp_RG, "exp_BG": exp_BG
             })
-        self._last_matched = enriched  # <-- missing in SASpro
+            
+        self._last_matched = enriched
         diag_meas_RG = np.array(diag_meas_RG); diag_exp_RG = np.array(diag_exp_RG)
         diag_meas_BG = np.array(diag_meas_BG); diag_exp_BG = np.array(diag_exp_BG)
         if diag_meas_RG.size == 0 or diag_meas_BG.size == 0:

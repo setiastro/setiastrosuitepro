@@ -120,6 +120,13 @@ class FileMixin:
                 doc = self.docman.open_path(p)   # this emits documentAdded
                 self._log(f"Opened: {p}")
                 self._add_recent_image(p)        # âœ... track in MRU
+                
+                # Increment statistics
+                try:
+                    count = self.settings.value("stats/opened_images_count", 0, type=int)
+                    self.settings.setValue("stats/opened_images_count", count + 1)
+                except Exception:
+                    pass
             except Exception as e:
                 QMessageBox.warning(self, self.tr("Open failed"), f"{p}\n\n{e}")
 

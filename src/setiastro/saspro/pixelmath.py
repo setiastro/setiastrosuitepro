@@ -59,9 +59,10 @@ class PixelImage:
         a = np.asarray(a, dtype=np.float32)
         b = np.asarray(b, dtype=np.float32)
         if a.ndim == 3 and b.ndim == 2:
-            b = np.repeat(b[..., None], a.shape[2], axis=2)
+            # Broadcast b to (H,W,1) virtual view; numpy ufuncs handle (H,W,3) vs (H,W,1) automatically
+            b = b[..., None]
         elif a.ndim == 2 and b.ndim == 3:
-            a = np.repeat(a[..., None], b.shape[2], axis=2)
+            a = a[..., None]
         return a, b
 
     # ---- binary arithmetic helpers ----
@@ -756,6 +757,9 @@ class PixelMathDialogPro(QDialog):
     def __init__(self, parent, doc, icon: QIcon | None = None):
         super().__init__(parent)
         self.setWindowTitle(self.tr("Pixel Math"))
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
         if icon:
             try:
                 self.setWindowIcon(icon)

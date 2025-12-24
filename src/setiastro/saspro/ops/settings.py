@@ -500,54 +500,12 @@ class SettingsDialog(QDialog):
         # Apply language change immediately if changed
         if new_lang != self._initial_language:
             from PyQt6.QtWidgets import QMessageBox
-            import sys
-            import os
-            
-            # Save UI state before restart to avoid losing toolbar/window changes
-            p = self.parent()
-            if p and hasattr(p, "save_ui_state"):
-                try:
-                    p.save_ui_state()
-                except Exception:
-                    pass
-            
-            # Set restart flag on parent to bypass exit confirmation
-            if p:
-                p._is_restarting = True
-            
-            self.settings.sync()
             
             QMessageBox.information(
                 self,
                 self.tr("Restart required"),
-                self.tr("The application will now restart to apply the language change.")
+                self.tr("Language changed. Please manually restart the application to apply the new language.")
             )
-            
-            # Restart logic
-            import subprocess
-            try:
-                # Prepare arguments for restart
-                args = sys.argv[:]
-                if getattr(sys, 'frozen', False):
-                    # If frozen, sys.executable is the app, and args[0] is also the app
-                    cmd = [sys.executable] + args[1:]
-                else:
-                    # If running from source, sys.executable is python, args[0] is the script
-                    cmd = [sys.executable] + args
-                
-                # Start new process and exit current one
-                if os.name == 'nt':
-                    # On Windows, use DETACHED_PROCESS to break the process tree connection to the terminal
-                    # and close_fds to ensure no handles are inherited.
-                    subprocess.Popen(cmd, creationflags=subprocess.DETACHED_PROCESS, close_fds=True)
-                else:
-                    subprocess.Popen(cmd)
-                
-                QApplication.instance().quit()
-                sys.exit(0)
-            except Exception:
-                # Fallback to execl if Popen fails
-                os.execl(sys.executable, sys.executable, *sys.argv)
 
         self.settings.sync()
 

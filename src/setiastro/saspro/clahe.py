@@ -114,6 +114,9 @@ class CLAHEDialogPro(QDialog):
     def __init__(self, parent, doc, icon: QIcon | None = None):
         super().__init__(parent)
         self.setWindowTitle(self.tr("CLAHE"))
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
         if icon:
             try: self.setWindowIcon(icon)
             except Exception as e:
@@ -319,10 +322,33 @@ class CLAHEDialogPro(QDialog):
                 pass
             # ─────────────────────────────────────────────────────────────
 
-            self.accept()
+            # Dialog stays open so user can apply to other images
+            # Refresh document reference for next operation
+            self._refresh_document_from_active()
 
         except Exception as e:
             QMessageBox.critical(self, "CLAHE", f"Failed to apply:\n{e}")
+
+    def _refresh_document_from_active(self):
+        """
+        Refresh the dialog's document reference to the currently active document.
+        This allows reusing the same dialog on different images.
+        """
+        try:
+            main = self.parent()
+            if main and hasattr(main, "_active_doc"):
+                new_doc = main._active_doc()
+                if new_doc is not None and new_doc is not self.doc:
+                    self.doc = new_doc
+                    # Refresh original image and preview for new document
+                    self.orig = np.clip(np.asarray(new_doc.image, dtype=np.float32), 0.0, 1.0)
+                    disp = self.orig
+                    if disp.ndim == 2: disp = disp[..., None].repeat(3, axis=2)
+                    elif disp.ndim == 3 and disp.shape[2] == 1: disp = disp.repeat(3, axis=2)
+                    self._disp_base = disp
+                    self._update_preview()
+        except Exception:
+            pass
 
     def _tile_grid_from_px(self, tile_px: int, hw: tuple[int, int]) -> tuple[int, int]:
         """

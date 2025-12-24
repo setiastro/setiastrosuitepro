@@ -127,8 +127,16 @@ class StarStretchDialog(QDialog):
     def __init__(self, parent, document):
         super().__init__(parent)
         self.setWindowTitle(self.tr("Star Stretch"))
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
+        self._main = parent
         self.doc = document
         self._preview: np.ndarray | None = None
+
+        # Connect to active document change signal
+        if hasattr(self._main, "currentDocumentChanged"):
+            self._main.currentDocumentChanged.connect(self._on_active_doc_changed)
         self._pix: QPixmap | None = None
         self._zoom = 0.25
         self._panning = False
@@ -223,6 +231,15 @@ class StarStretchDialog(QDialog):
         self.btn_apply.clicked.connect(self._apply_to_doc)
 
         # initialize preview with current doc image
+        self._update_preview_pix(self.doc.image)
+
+    # --- active document change ---
+    def _on_active_doc_changed(self, doc):
+        """Called when user clicks a different image window."""
+        if doc is None or getattr(doc, "image", None) is None:
+            return
+        self.doc = doc
+        self._preview = None
         self._update_preview_pix(self.doc.image)
 
     # --- UI change handlers ---
@@ -325,7 +342,27 @@ class StarStretchDialog(QDialog):
         except Exception as e:
             QMessageBox.critical(self, "Apply failed", str(e))
             return
-        self.accept()
+        
+        # Dialog stays open so user can apply to other images
+        # Refresh document reference for next operation
+        self._refresh_document_from_active()
+
+    def _refresh_document_from_active(self):
+        """
+        Refresh the dialog's document reference to the currently active document.
+        This allows reusing the same dialog on different images.
+        """
+        try:
+            main = self._find_main_window()
+            if main and hasattr(main, "_active_doc"):
+                new_doc = main._active_doc()
+                if new_doc is not None and new_doc is not self.doc:
+                    self.doc = new_doc
+                    # Reset preview for new document
+                    self._preview = None
+                    self._compute_and_show_preview()
+        except Exception:
+            pass
 
 
     # --- preview rendering ---

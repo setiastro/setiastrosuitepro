@@ -36,7 +36,10 @@ _app = None
 _splash_initialized = False
 
 from setiastro.saspro.versioning import get_app_version
-_EARLY_VERSION = "1.6.1"
+_EARLY_VERSION = get_app_version("setiastrosuitepro")
+
+VERSION = _EARLY_VERSION
+
 def _init_splash():
     """Initialize the splash screen. Safe to call multiple times."""
     global _splash, _app, _splash_initialized
@@ -46,7 +49,8 @@ def _init_splash():
     
     # Minimal imports for splash screen
     from PyQt6.QtWidgets import QApplication, QWidget
-    from PyQt6.QtCore import Qt, QCoreApplication, QRect
+    from PyQt6.QtCore import Qt, QCoreApplication, QRect, QPropertyAnimation, QEasingCurve
+    import time
     from PyQt6.QtGui import QGuiApplication, QIcon, QPixmap, QColor, QPainter, QFont, QLinearGradient
     
 
@@ -128,13 +132,20 @@ def _init_splash():
 
     # NEW: Prefer centralized resources resolver
     try:
-        from setiastro.saspro.resources import icon_path
+        from setiastro.saspro.resources import icon_path, background_startup_path
         _early_icon_path = icon_path
         if not os.path.exists(_early_icon_path):
             # fall back to legacy search if for some reason this is missing
             _early_icon_path = _find_icon_path()
+        
+        # Load startup background path
+        _startup_bg_path = background_startup_path
+        if not os.path.exists(_startup_bg_path):
+             _startup_bg_path = None
+             
     except Exception:
         _early_icon_path = _find_icon_path()
+        _startup_bg_path = None
 
     
     # =========================================================================
@@ -146,7 +157,7 @@ def _init_splash():
         """
         def __init__(self, logo_path: str):
             super().__init__()
-            self._version = "1.6.1"
+            self._version = _EARLY_VERSION
             self._build = ""
             self.current_message = QCoreApplication.translate("Splash", "Starting...")
             self.progress_value = 0
@@ -176,6 +187,11 @@ def _init_splash():
             # Load and scale logo
             self.logo_pixmap = self._load_logo(logo_path)
             
+            # Load background image
+            self.bg_image_pixmap = QPixmap()
+            if _startup_bg_path:
+                self.bg_image_pixmap = QPixmap(_startup_bg_path)
+
             # Fonts
             self.title_font = QFont("Segoe UI", 28, QFont.Weight.Bold)
             self.subtitle_font = QFont("Segoe UI", 11)
@@ -214,15 +230,42 @@ def _init_splash():
                 _app.processEvents()
         
         def setProgress(self, value: int):
-            """Update progress (0-100)."""
-            self.progress_value = max(0, min(100, value))
+            """Update progress (0-100) with smooth animation."""
+            target = max(0, min(100, value))
+            start = self.progress_value
+            
+            # If jumping backwards or small change, just set it
+            if target <= start or (target - start) < 1:
+                self.progress_value = target
+                self.repaint()
+                if _app: _app.processEvents()
+                return
+
+            # Animate forward
+            steps = 15  # number of frames for the slide
+            # We want the total slide to take ~100-150ms max to feel responsive but smooth
+            dt = 0.005  # 5ms per frame
+            
+            for i in range(1, steps + 1):
+                # Ease out interpolator
+                t = i / steps
+                # Quadratic ease out: f(t) = -t*(t-2)
+                factor = -t * (t - 2)
+                
+                cur = start + (target - start) * factor
+                self.progress_value = cur
+                self.repaint()
+                if _app: _app.processEvents()
+                time.sleep(dt)
+
+            self.progress_value = target
             self.repaint()
             if _app:
                 _app.processEvents()
         
         def setBuildInfo(self, version: str, build: str):
             """Update version and build info once available."""
-            self._version = "1.6.1"
+            self._version = _EARLY_VERSION
             self._build = build
             self.repaint()
         
@@ -241,6 +284,45 @@ def _init_splash():
             gradient.setColorAt(1.0, QColor(10, 10, 20))
             painter.fillRect(0, 0, w, h, gradient)
             
+            # --- Background Image (Centered with Fade Out) ---
+            if not self.bg_image_pixmap.isNull():
+                # Create a temporary pixmap to handle the masking
+                temp = QPixmap(w, h)
+                temp.fill(Qt.GlobalColor.transparent)
+                
+                ptmp = QPainter(temp)
+                ptmp.setRenderHint(QPainter.RenderHint.Antialiasing)
+                ptmp.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+                
+                # Scale image to cover the entire splash screen
+                scaled = self.bg_image_pixmap.scaled(
+                    w, h, 
+                    Qt.AspectRatioMode.KeepAspectRatioByExpanding, 
+                    Qt.TransformationMode.SmoothTransformation
+                )
+                
+                # Center the image
+                sx = (w - scaled.width()) // 2
+                sy = (h - scaled.height()) // 2
+                ptmp.drawPixmap(sx, sy, scaled)
+                
+                # Apply Fade Out Mask (Gradient Alpha)
+                ptmp.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
+                fade_gradient = QLinearGradient(0, 0, 0, h)
+                # Keep top half fully visible (subject to global opacity)
+                fade_gradient.setColorAt(0.0, QColor(0, 0, 0, 255)) 
+                fade_gradient.setColorAt(0.5, QColor(0, 0, 0, 255)) 
+                # Fade out completely at the bottom
+                fade_gradient.setColorAt(1.0, QColor(0, 0, 0, 0))   
+                ptmp.fillRect(0, 0, w, h, fade_gradient)
+                ptmp.end()
+                
+                # Draw combined result with 50% opacity
+                painter.save()
+                painter.setOpacity(0.25)
+                painter.drawPixmap(0, 0, temp)
+                painter.restore()
+
             # --- Subtle border ---
             painter.setPen(QColor(60, 60, 80))
             painter.drawRect(0, 0, w - 1, h - 1)
@@ -311,20 +393,52 @@ def _init_splash():
             self.hide()
             self.close()
             self.deleteLater()
+
+        def start_fade_out(self):
+            """Smoothly fade out the splash screen."""
+            self._anim = QPropertyAnimation(self, b"windowOpacity")
+            self._anim.setDuration(1000)
+            self._anim.setStartValue(1.0)
+            self._anim.setEndValue(0.0)
+            self._anim.setEasingCurve(QEasingCurve.Type.OutQuad)
+            self._anim.finished.connect(self.finish)
+            self._anim.start()
     
+        def start_fade_in(self):
+            """Smoothly fade in the splash screen."""
+            self.setWindowOpacity(0.0)
+            self._anim = QPropertyAnimation(self, b"windowOpacity")
+            self._anim.setDuration(800)
+            self._anim.setStartValue(0.0)
+            self._anim.setEndValue(1.0)
+            self._anim.setEasingCurve(QEasingCurve.Type.InQuad)
+            self._anim.start()
+
     # --- Show splash IMMEDIATELY ---
     _splash = _EarlySplash(_early_icon_path)
+    _splash.start_fade_in()
     _splash.show()
+    
+    # Block briefly to allow fade-in to progress smoothly before heavy imports start
+    # We use a busy loop with processEvents to keep the UI responsive during fade
+    t_start = time.time()
+    while time.time() - t_start < 0.85:  # slightly longer than animation
+        _app.processEvents()
+        if _splash.windowOpacity() >= 0.99:
+            break
+        time.sleep(0.01)
+
     _splash.setMessage(QCoreApplication.translate("Splash", "Initializing Python runtime..."))
     _splash.setProgress(2)
     _app.processEvents()
     
     # Load translation BEFORE any other widgets are created
     try:
-        from setiastro.saspro.i18n import load_language
-        load_language(app=_app)
-    except Exception:
-        pass  # Translations not critical - continue without them
+        from setiastro.saspro.i18n import load_language, get_translations_dir
+        ok = load_language(app=_app)
+    except Exception as e:
+        print("i18n load failed:", repr(e))
+
     
     _splash_initialized = True
 
@@ -515,7 +629,8 @@ from PyQt6.QtGui import (QPixmap, QColor, QIcon, QKeySequence, QShortcut, QGuiAp
 )
 
 # ----- QtCore -----
-from PyQt6.QtCore import (Qt, pyqtSignal, QCoreApplication, QTimer, QSize, QSignalBlocker, QModelIndex, QThread, QUrl, QSettings, QEvent, QByteArray, QObject
+from PyQt6.QtCore import (Qt, pyqtSignal, QCoreApplication, QTimer, QSize, QSignalBlocker, QModelIndex, QThread, QUrl, QSettings, QEvent, QByteArray, QObject,
+    QPropertyAnimation, QEasingCurve
 )
 
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
@@ -528,8 +643,6 @@ except Exception:
     BUILD_TIMESTAMP = "dev"
 
 
-from setiastro.saspro.versioning import get_app_version
-VERSION = "1.6.1"
 
 _update_splash(QCoreApplication.translate("Splash", "Loading resources..."), 50)
 
@@ -746,7 +859,33 @@ def main():
         if _splash:
             _splash.setMessage(QCoreApplication.translate("Splash", "Showing main window..."))
             _splash.setProgress(95)
+        
+        # --- Smooth Transition: App Fade In + Splash Fade Out ---
+        # MITIGATION: Prevent "White Flash" on startup
+        # 1. Force a dark background immediately so if opacity lags, it's dark not white
+        win.setStyleSheet("QMainWindow { background-color: #0F0F19; }") 
+        # 2. Ensure native window handle exists so setWindowOpacity works immediately
+        win.winId()
+        # 3. Set opacity to 0
+        win.setWindowOpacity(0.0)
+        
         win.show()
+        
+        # 1. Animate Main Window Fade In
+        anim_app = QPropertyAnimation(win, b"windowOpacity")
+        anim_app.setDuration(1200)
+        anim_app.setStartValue(0.0)
+        anim_app.setEndValue(1.0)
+        anim_app.setEasingCurve(QEasingCurve.Type.OutQuad)
+        
+        # Cleanup temp stylesheet upon completion to avoid interfering with ThemeMixin
+        def _on_fade_in_finished():
+            win.setStyleSheet("")
+            if hasattr(win, "on_fade_in_complete"):
+                win.on_fade_in_complete()
+            
+        anim_app.finished.connect(_on_fade_in_finished)
+        anim_app.start()
 
         # Start background Numba warmup after UI is visible
         try:
@@ -760,18 +899,16 @@ def main():
             _splash.setProgress(100)
             _app.processEvents()
             
-            # Small delay to show "Ready!" before closing
+            # Small delay to ensure "Ready!" is seen briefly before fade starts
             import time
-            time.sleep(0.3)
-            _app.processEvents()
-
-            # Ensure the splash cannot resurrect later:
-            try:
-                _splash.finish()
-            finally:
-                _splash.hide()
-                _splash.close()
-                _splash.deleteLater()
+            time.sleep(0.1)
+            
+            # 2. Animate Splash Fade Out
+            # Note: We do NOT use finish() directly here. The animation calls it when done.
+            _splash.start_fade_out()
+            
+            # NOTE: We keep a reference to _splash (global) so it doesn't get GC'd during animation.
+            # It will deleteLater() itself.
         
         if BUILD_TIMESTAMP == "dev":
             build_label = "running from local source code"

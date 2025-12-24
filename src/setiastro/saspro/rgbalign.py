@@ -324,15 +324,12 @@ class RGBAlignWorker(QThread):
     def _warp_channel(self, ch: np.ndarray, kind: str, X, ref_shape):
         H, W = ref_shape[:2]
         if kind == "affine":
-            if cv2 is None:
-                return ch
+            # Just assume cv2 is available (standard dependency) for perf
             A = np.asarray(X, dtype=np.float32).reshape(2, 3)
             return cv2.warpAffine(ch, A, (W, H), flags=cv2.INTER_LANCZOS4,
                                   borderMode=cv2.BORDER_CONSTANT, borderValue=0)
 
         if kind == "homography":
-            if cv2 is None:
-                return ch
             Hm = np.asarray(X, dtype=np.float32).reshape(3, 3)
             return cv2.warpPerspective(ch, Hm, (W, H), flags=cv2.INTER_LANCZOS4,
                                        borderMode=cv2.BORDER_CONSTANT, borderValue=0)
@@ -350,6 +347,9 @@ class RGBAlignDialog(QDialog):
     def __init__(self, parent=None, document=None):
         super().__init__(parent)
         self.setWindowTitle(self.tr("RGB Align"))
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
         self.parent = parent
         # document could be a view; try to unwrap
         self.doc_view = document

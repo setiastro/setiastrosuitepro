@@ -298,8 +298,8 @@ class AberrationAIDialog(QDialog):
 
         # Normalize window behavior across platforms
         self.setWindowFlag(Qt.WindowType.Window, True)
-        # This is a “big operation” tool; app-modal is usually fine here
-        self.setWindowModality(Qt.WindowModality.ApplicationModal)
+        # Non-modal: allow user to switch between images while dialog is open
+        self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         #self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
 
@@ -680,7 +680,7 @@ class AberrationAIDialog(QDialog):
         )
 
         self.progress.setValue(100)
-        self.accept()
+        # Dialog stays open so user can apply to other images
 
     def _on_worker_finished(self):
         # If dialog is already gone, this method is never called because the receiver (self)

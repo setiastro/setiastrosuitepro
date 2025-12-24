@@ -25,6 +25,11 @@ AVAILABLE_LANGUAGES: Dict[str, str] = {
     "de": "Deutsch",
     "pt": "Português",
     "ja": "日本語",
+    "hi": "हिन्दी",
+    "sw": "Kiswahili",
+    "uk": "Українська",
+    "ru": "Русский",
+    "ar": "العربية",
 }
 
 
@@ -47,6 +52,7 @@ def get_translations_dir() -> str:
             return frozen_legacy
 
     return pkg_dir
+
 
 
 def get_available_languages() -> Dict[str, str]:

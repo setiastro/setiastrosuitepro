@@ -271,6 +271,9 @@ class CosmicClarityDialogPro(QDialog):
             QTimer.singleShot(0, self.reject)
             return        
         self.setWindowTitle(self.tr("Cosmic Clarity"))
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
         if icon: 
             try: self.setWindowIcon(icon)
             except Exception as e:
@@ -632,7 +635,53 @@ class CosmicClarityDialogPro(QDialog):
         if self._wait: self._wait.close(); self._wait = None
         if self._wait_thread: self._wait_thread.stop(); self._wait_thread = None
 
-        # Load processed image we just got
+        has_more = bool(self._op_queue)
+        
+        # --- Optimization: Chained Execution Fast Path ---
+        # If we have more steps, skip the expensive load/display/save cycle.
+        # Just move the output file to be the input for the next step.
+        if has_more:
+            if not out_path or not os.path.exists(out_path):
+                QMessageBox.critical(self, "Cosmic Clarity", "Output file missing during chain execution.")
+                self._op_queue.clear()
+                return
+
+            base     = self._base_name()
+            next_in  = os.path.join(self.cosmic_root, "input", f"{base}.tif")
+            prev_in  = getattr(self, "_current_input", None)
+
+            try:
+                # Direct move/copy instead of decode+encode
+                if os.path.abspath(out_path) != os.path.abspath(next_in):
+                    # Windows cannot atomic replace if target exists via os.rename usually,
+                    # but shutil.move is generally robust. 
+                    # We remove target first to be sure.
+                    if os.path.exists(next_in):
+                        os.remove(next_in)
+                    shutil.move(out_path, next_in)
+                
+                # Ensure stability of the *new* input
+                if not _wait_stable_file(next_in):
+                     QMessageBox.critical(self, "Cosmic Clarity", "Staged input for next step is unstable.")
+                     self._op_queue.clear()
+                     return
+
+                self._current_input = next_in
+
+                # Cleanup previous input if distinct
+                if prev_in and prev_in != next_in and os.path.exists(prev_in):
+                    os.remove(prev_in)
+
+            except Exception as e:
+                QMessageBox.critical(self, "Cosmic Clarity", f"Failed to stage next step:\n{e}")
+                self._op_queue.clear()
+                return
+
+            # Trigger next step immediately
+            QTimer.singleShot(50, self._run_next)
+            return
+
+        # --- Final Step (or Single Step): Load and Display ---
         try:
             img, hdr, bd, mono = load_image(out_path)
             if img is None:
@@ -643,61 +692,34 @@ class CosmicClarityDialogPro(QDialog):
 
         dest = img.astype(np.float32, copy=False)
 
-        # Apply to document (so the user sees the step result immediately)
+        # Apply to document
         step_title = f"Cosmic Clarity – {mode.title()}"
         create_new = (self.cmb_target.currentIndex() == 1)
 
         if create_new:
             ok = self._spawn_new_doc_from_numpy(dest, step_title)
             if not ok:
-                # fall back to overwriting if we couldn’t spawn a new doc
                 self._apply_to_active(dest, step_title)
         else:
             self._apply_to_active(dest, step_title)
 
-        # Will we run another step (i.e., we're in "Both")?
-        has_more = bool(self._op_queue)
-        base     = self._base_name()
-        next_in  = os.path.join(self.cosmic_root, "input", f"{base}.tif")
-        prev_in  = getattr(self, "_current_input", None)
+        # Cleanup final output
+        if out_path and os.path.exists(out_path):
+            try: os.remove(out_path)
+            except OSError: pass
+        
+        # Cleanup final input
+        prev_in = getattr(self, "_current_input", None)
+        if prev_in and os.path.exists(prev_in):
+            try: os.remove(prev_in)
+            except OSError: pass
 
+        # Final purge
         try:
-            if has_more:
-                def _writer(tmp_path, arr=dest):
-                    save_image(arr, tmp_path, "tiff", "32-bit floating point",
-                            getattr(self.doc, "original_header", None),
-                            getattr(self.doc, "is_mono", False))
-                _atomic_fsync_replace(_writer, next_in)
-                if not _wait_stable_file(next_in):
-                    QMessageBox.critical(self, "Cosmic Clarity", "Staging for next step failed (not stable).")
-                    self._op_queue.clear()
-                    return
-                self._current_input = next_in
-
-            # Now it’s safe to clean up the produced output
-            if out_path and os.path.exists(out_path):
-                os.remove(out_path)
-
-            # Remove the previous input file if it’s different from the new one
-            if prev_in and prev_in != next_in and os.path.exists(prev_in):
-                os.remove(prev_in)
-
-        except Exception as e:
-            QMessageBox.critical(self, "Cosmic Clarity", f"Failed while staging next step:\n{e}")
-            self._op_queue.clear()
-            return
-
-        # Continue or finish
-        if has_more:
-            QTimer.singleShot(100, self._run_next)
-        else:
-            # Nothing else queued — we're done
-            try:
-                # 🔸 Final cleanup: clear both input & output
-                _purge_cc_io(self.cosmic_root, clear_input=True, clear_output=True)
-            except Exception:
-                pass
-            self.accept()
+            _purge_cc_io(self.cosmic_root, clear_input=True, clear_output=True)
+        except Exception:
+            pass
+        self.accept()
 
 
     def _on_wait_error(self, msg: str):
@@ -1009,6 +1031,9 @@ class CosmicClaritySatelliteDialogPro(QDialog):
     def __init__(self, parent, doc=None, icon: QIcon | None = None):
         super().__init__(parent)
         self.setWindowTitle("Cosmic Clarity – Satellite Removal")
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
         if icon:
             try: self.setWindowIcon(icon)
             except Exception as e:

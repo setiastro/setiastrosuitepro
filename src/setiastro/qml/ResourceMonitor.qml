@@ -1,0 +1,126 @@
+import QtQuick 2.15
+import QtQuick.Controls 2.15
+import QtQuick.Layouts 1.15
+
+Rectangle {
+    id: root
+    // Wider to fit 3 gauges + spacing
+    width: 200
+    height: 60
+    // 50% opacity black
+    color: "#80000000"
+    radius: 30
+    border.color: "#555"
+    border.width: 1
+
+    property double cpuUsage: 0.0
+    property double ramUsage: 0.0
+    property double gpuUsage: 0.0
+    property double appRamUsage: 0.0
+    property string appRamString: "0 MB"
+
+        // Helper component for gauges
+        component MiniGauge: Item {
+            Layout.preferredWidth: 40
+            Layout.preferredHeight: 40
+            property string label: ""
+            property color barColor: "#0f0"
+            property double value: 0
+            
+            // Trigger repaint when value changes
+            onValueChanged: if (gaugeCanvas) gaugeCanvas.requestPaint()
+
+            Canvas {
+                id: gaugeCanvas
+                anchors.fill: parent
+                antialiasing: true
+                onPaint: {
+                    var ctx = getContext("2d");
+                    var cx = width / 2;
+                    var cy = height / 2;
+                    var r = (width / 2) - 3;
+                    
+                    ctx.reset();
+                    
+                    // Track
+                    ctx.beginPath();
+                    ctx.arc(cx, cy, r, 0, 2*Math.PI);
+                    ctx.lineWidth = 4;
+                    ctx.strokeStyle = "#444";
+                    ctx.stroke();
+
+                    // Value Arc
+                    // start at -90 deg (top)
+                    var start = -Math.PI/2;
+                    var end = start + (value/100 * 2*Math.PI);
+                    
+                    ctx.beginPath();
+                    ctx.arc(cx, cy, r, start, end);
+                    ctx.lineWidth = 4;
+                    ctx.lineCap = "round";
+                    ctx.strokeStyle = barColor;
+                    ctx.stroke();
+                }
+            }
+            
+            // Numeric Percent in center
+            Text {
+                anchors.centerIn: parent
+                text: Math.round(value) + "%"
+                font.pixelSize: 10
+                font.bold: true
+                color: "#fff"
+            }
+        }
+
+    RowLayout {
+        anchors.centerIn: parent
+        spacing: 15
+
+        // --- CPU ---
+        ColumnLayout {
+            spacing: 2
+            MiniGauge {
+                value: root.cpuUsage
+                // Dynamic color
+                barColor: root.cpuUsage > 80 ? "#ff4444" : (root.cpuUsage > 50 ? "#ffbb33" : "#00C851")
+            }
+            Text { 
+                Layout.alignment: Qt.AlignHCenter 
+                text: "CPU" 
+                color: "#aaaaaa" 
+                font.pixelSize: 9
+            }
+        }
+
+        // --- RAM ---
+        ColumnLayout {
+            spacing: 2
+            MiniGauge {
+                value: root.ramUsage
+                barColor: "#33b5e5"
+            }
+            Text { 
+                Layout.alignment: Qt.AlignHCenter 
+                text: "RAM" 
+                color: "#aaaaaa" 
+                font.pixelSize: 9
+            }
+        }
+
+        // --- GPU ---
+        ColumnLayout {
+            spacing: 2
+            MiniGauge {
+                value: root.gpuUsage
+                barColor: "#aa66cc"
+            }
+            Text { 
+                Layout.alignment: Qt.AlignHCenter 
+                text: "GPU" 
+                color: "#aaaaaa" 
+                font.pixelSize: 9
+            }
+        }
+    }
+}

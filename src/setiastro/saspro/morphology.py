@@ -46,10 +46,9 @@ def apply_morphology(image: np.ndarray, *, operation: str = "erosion",
 
     if img.ndim == 3 and img.shape[2] == 3:
         u8 = (img * 255.0).astype(np.uint8)
-        ch = cv2.split(u8)
-        ch = [_do(c) for c in ch]
-        out = cv2.merge(ch).astype(np.float32) / 255.0
-        return np.clip(out, 0.0, 1.0)
+        # OpenCV morphology functions handle multi-channel images natively (independent channels)
+        out_u8 = _do(u8)
+        return (out_u8.astype(np.float32) / 255.0).clip(0.0, 1.0)
 
     raise ValueError("Input image must be mono (H,W)/(H,W,1) or RGB (H,W,3).")
 
@@ -92,6 +91,9 @@ class MorphologyDialogPro(QDialog):
     def __init__(self, parent, doc, icon: QIcon | None = None, initial: dict | None = None):
         super().__init__(parent)
         self.setWindowTitle(self.tr("Morphological Operations"))
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
         if icon:
             try: self.setWindowIcon(icon)
             except Exception as e:
@@ -258,9 +260,32 @@ class MorphologyDialogPro(QDialog):
                 pass
             # ────────────────────────────────────────────────────────────
 
-            self.accept()
+            # Dialog stays open so user can apply to other images
+            # Refresh document reference for next operation
+            self._refresh_document_from_active()
         except Exception as e:
             QMessageBox.critical(self, "Morphology", f"Failed to apply:\n{e}")
+
+    def _refresh_document_from_active(self):
+        """
+        Refresh the dialog's document reference to the currently active document.
+        This allows reusing the same dialog on different images.
+        """
+        try:
+            main = self.parent()
+            if main and hasattr(main, "_active_doc"):
+                new_doc = main._active_doc()
+                if new_doc is not None and new_doc is not self.doc:
+                    self.doc = new_doc
+                    # Refresh preview for new document
+                    self.orig = np.clip(np.asarray(new_doc.image, dtype=np.float32), 0.0, 1.0)
+                    disp = self.orig
+                    if disp.ndim == 2: disp = disp[..., None].repeat(3, axis=2)
+                    elif disp.ndim == 3 and disp.shape[2] == 1: disp = disp.repeat(3, axis=2)
+                    self._disp_base = disp
+                    self._update_preview()
+        except Exception:
+            pass
 
 
 

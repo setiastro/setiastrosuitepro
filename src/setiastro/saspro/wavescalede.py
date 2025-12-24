@@ -201,6 +201,9 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
                 import logging
                 logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
         self.resize(980, 700)
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
 
         self._doc = doc
         base = getattr(doc, "image", None)
@@ -581,7 +584,26 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
             # Never let replay wiring break the apply
             pass
 
-        self.accept()
+        # Dialog stays open so user can apply to other images
+        # Refresh document reference for next operation
+        self._refresh_document_from_active()
+
+    def _refresh_document_from_active(self):
+        """
+        Refresh the dialog's document reference to the currently active document.
+        This allows reusing the same dialog on different images.
+        """
+        try:
+            main = self.parent()
+            if main and hasattr(main, "_active_doc"):
+                new_doc = main._active_doc()
+                if new_doc is not None and new_doc is not self._doc:
+                    self._doc = new_doc
+                    # Reset state and refresh for new document
+                    self._L_original = None
+                    self._last_preview = None
+        except Exception:
+            pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
