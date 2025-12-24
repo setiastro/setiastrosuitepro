@@ -2575,7 +2575,7 @@ Alt+Drag: перетягнути на вікно</translation>
     </message>
     <message>
       <source>Clear Selections</source>
-      <translation>Очистити вибір</translation>
+      <translation>Очистити Вибір</translation>
     </message>
     <message>
       <source>Collisions</source>
@@ -5953,39 +5953,63 @@ Remove it from the recent projects list?</source>
     <name>FunctionBundleDialog</name>
     <message>
       <source>Apply to Active View</source>
-      <translation>Apply to Active View</translation>
+      <translation>Застосувати до Активного Виду</translation>
     </message>
     <message>
       <source>Apply to View Bundle…</source>
-      <translation>Apply to View Bundle…</translation>
+      <translation>Застосувати до Набору Видів…</translation>
     </message>
     <message>
       <source>Clear Steps</source>
-      <translation>Clear Steps</translation>
+      <translation>Очистити Кроки</translation>
     </message>
     <message>
       <source>Compress to Chip</source>
-      <translation>Compress to Chip</translation>
+      <translation>Стиснути в Чіп</translation>
     </message>
     <message>
       <source>Drag Bundle</source>
-      <translation>Drag Bundle</translation>
+      <translation>Перетягнути Набір</translation>
     </message>
     <message>
       <source>Edit Preset…</source>
-      <translation>Edit Preset…</translation>
+      <translation>Редагувати Пресет…</translation>
     </message>
     <message>
       <source>Remove Selected</source>
-      <translation>Remove Selected</translation>
+      <translation>Видалити Вибрані</translation>
     </message>
     <message>
       <source>▲ Move Up</source>
-      <translation>▲ Move Up</translation>
+      <translation>▲ Вгору</translation>
     </message>
     <message>
       <source>▼ Move Down</source>
-      <translation>▼ Move Down</translation>
+      <translation>▼ Вниз</translation>
+    </message>
+    <message>
+      <source>Function Bundles</source>
+      <translation>Набори Функцій</translation>
+    </message>
+    <message>
+      <source>New</source>
+      <translation>Новий</translation>
+    </message>
+    <message>
+      <source>Duplicate</source>
+      <translation>Дублювати</translation>
+    </message>
+    <message>
+      <source>Delete</source>
+      <translation>Видалити</translation>
+    </message>
+    <message>
+      <source>Drop shortcuts here to add steps</source>
+      <translation>Перетягніть ярлики сюди, щоб додати кроки</translation>
+    </message>
+    <message>
+      <source>Delete Chip</source>
+      <translation>Видалити Чіп</translation>
     </message>
   </context>
   <context>
@@ -9604,7 +9628,7 @@ Set it in Preferences → ASTAP executable.</source>
     </message>
     <message>
       <source>Delete</source>
-      <translation>Delete</translation>
+      <translation>Видалити</translation>
     </message>
     <message>
       <source>Edit Preset (JSON)</source>
@@ -14315,43 +14339,71 @@ Run the installer now? (SAS will close.)</source>
     <name>ViewBundleDialog</name>
     <message>
       <source>Add Directory (Recursive)…</source>
-      <translation>Add Directory (Recursive)…</translation>
+      <translation>Додати Папку (Рекурсивно)…</translation>
     </message>
     <message>
       <source>Add Files…</source>
-      <translation>Add Files…</translation>
+      <translation>Додати Файли…</translation>
     </message>
     <message>
       <source>Add from Open…</source>
-      <translation>Add from Open…</translation>
+      <translation>Додати з Відкритих…</translation>
     </message>
     <message>
       <source>Clear Views</source>
-      <translation>Clear Views</translation>
+      <translation>Очистити Види</translation>
     </message>
     <message>
       <source>Compress to Chip</source>
-      <translation>Compress to Chip</translation>
+      <translation>Стиснути в Чіп</translation>
     </message>
     <message>
       <source>Delete</source>
-      <translation>Delete</translation>
+      <translation>Видалити</translation>
     </message>
     <message>
       <source>Duplicate</source>
-      <translation>Duplicate</translation>
+      <translation>Дублювати</translation>
     </message>
     <message>
       <source>New Bundle</source>
-      <translation>New Bundle</translation>
+      <translation>Новий Набір</translation>
     </message>
     <message>
       <source>Remove Selected</source>
-      <translation>Remove Selected</translation>
+      <translation>Видалити Вибрані</translation>
     </message>
     <message>
       <source>View Bundles</source>
-      <translation>View Bundles</translation>
+      <translation>Набори Видів</translation>
+    </message>
+    <message>
+      <source>Choose views to add:</source>
+      <translation>Виберіть види для додавання:</translation>
+    </message>
+    <message>
+      <source>Select all open views</source>
+      <translation>Вибрати всі відкриті види</translation>
+    </message>
+    <message>
+      <source>Drop views here to add • Drop shortcuts here to apply to THIS bundle</source>
+      <translation>Перетягніть види сюди, щоб додати • Перетягніть ярлики сюди, щоб застосувати до ЦЬОГО набору</translation>
+    </message>
+    <message>
+      <source>Bundles</source>
+      <translation>Набори</translation>
+    </message>
+    <message>
+      <source>Views in Selected Bundle</source>
+      <translation>Види у Вибраному Наборі</translation>
+    </message>
+    <message>
+      <source>Delete Chip</source>
+      <translation>Видалити Чіп</translation>
+    </message>
+    <message>
+      <source>Drag to move · Ctrl+drag to apply · Drop views/shortcuts here</source>
+      <translation>Перетягніть, щоб перемістити · Ctrl+перетягування, щоб застосувати · Перетягніть види/ярлики сюди</translation>
     </message>
   </context>
   <context>
@@ -14879,102 +14931,102 @@ Ctrl + Drag — копіювати астрометричне рішення (WC
     </message>
     <message>
       <source>Load Image File</source>
-      <translation>Load Image File</translation>
+      <translation>Завантажити файл зображення</translation>
     </message>
     <message>
       <source>Load from View</source>
-      <translation>Load from View</translation>
+      <translation>Завантажити з вигляду</translation>
     </message>
     <message>
       <source>AutoStretch</source>
-      <translation>AutoStretch</translation>
+      <translation>Авторозтягування</translation>
     </message>
     <message>
       <source>Shift+Click to define a search region</source>
-      <translation>Shift+Click to define a search region</translation>
+      <translation>Shift+Клік для визн. регіону пошуку</translation>
     </message>
     <message>
       <source>Query Simbad</source>
-      <translation>Query Simbad</translation>
+      <translation>Запит Simbad</translation>
     </message>
     <message>
       <source>Save CSV</source>
-      <translation>Save CSV</translation>
+      <translation>Зберегти CSV</translation>
     </message>
     <message>
       <source>Advanced Search</source>
-      <translation>Advanced Search</translation>
+      <translation>Розширений пошук</translation>
     </message>
     <message>
       <source>Status: Ready</source>
-      <translation>Status: Ready</translation>
+      <translation>Статус: Готовий</translation>
     </message>
   </context>
   <context>
     <name>WhatsInMySkyDialog</name>
     <message>
       <source>What's In My Sky</source>
-      <translation>What's In My Sky</translation>
+      <translation>Що у моєму небі</translation>
     </message>
     <message>
       <source>Latitude:</source>
-      <translation>Latitude:</translation>
+      <translation>Широта:</translation>
     </message>
     <message>
       <source>Longitude (E+, W−):</source>
-      <translation>Longitude (E+, W−):</translation>
+      <translation>Довгота (С+, З−):</translation>
     </message>
     <message>
       <source>Date (YYYY-MM-DD):</source>
-      <translation>Date (YYYY-MM-DD):</translation>
+      <translation>Дата (РРРР-ММ-ДД):</translation>
     </message>
     <message>
       <source>Time (HH:MM):</source>
-      <translation>Time (HH:MM):</translation>
+      <translation>Час (ГГ:ХХ):</translation>
     </message>
     <message>
       <source>Time Zone:</source>
-      <translation>Time Zone:</translation>
+      <translation>Часовий пояс:</translation>
     </message>
     <message>
       <source>Min Altitude (0–90°):</source>
-      <translation>Min Altitude (0–90°):</translation>
+      <translation>Мін. висота (0–90°):</translation>
     </message>
     <message>
       <source>Catalog Filters:</source>
-      <translation>Catalog Filters:</translation>
+      <translation>Фільтри каталогу:</translation>
     </message>
     <message>
       <source>Degrees</source>
-      <translation>Degrees</translation>
+      <translation>Градуси</translation>
     </message>
     <message>
       <source>H:M:S / D:M:S</source>
-      <translation>H:M:S / D:M:S</translation>
+      <translation>Г:Х:С / Г:Х:С</translation>
     </message>
     <message>
       <source>RA/Dec Format:</source>
-      <translation>RA/Dec Format:</translation>
+      <translation>Формат RA/Dec:</translation>
     </message>
     <message>
       <source>Calculate</source>
-      <translation>Calculate</translation>
+      <translation>Розрахувати</translation>
     </message>
     <message>
       <source>Status: Idle</source>
-      <translation>Status: Idle</translation>
+      <translation>Статус: Очікування</translation>
     </message>
     <message>
       <source>Local Sidereal Time: 0.000</source>
-      <translation>Local Sidereal Time: 0.000</translation>
+      <translation>Місцевий зоряний час: 0.000</translation>
     </message>
     <message>
       <source>Lunar Phase: N/A</source>
-      <translation>Lunar Phase: N/A</translation>
+      <translation>Фаза Місяця: Н/Д</translation>
     </message>
     <message>
       <source>Name</source>
-      <translation>Name</translation>
+      <translation>Назва</translation>
     </message>
     <message>
       <source>RA</source>
@@ -14986,113 +15038,113 @@ Ctrl + Drag — копіювати астрометричне рішення (WC
     </message>
     <message>
       <source>Altitude</source>
-      <translation>Altitude</translation>
+      <translation>Висота</translation>
     </message>
     <message>
       <source>Azimuth</source>
-      <translation>Azimuth</translation>
+      <translation>Азимут</translation>
     </message>
     <message>
       <source>Minutes to Transit</source>
-      <translation>Minutes to Transit</translation>
+      <translation>Хвилин до транзиту</translation>
     </message>
     <message>
       <source>Before/After Transit</source>
-      <translation>Before/After Transit</translation>
+      <translation>До/Після транзиту</translation>
     </message>
     <message>
       <source>Degrees from Moon</source>
-      <translation>Degrees from Moon</translation>
+      <translation>Градусів від Місяця</translation>
     </message>
     <message>
       <source>Alt Name</source>
-      <translation>Alt Name</translation>
+      <translation>Альт. назва</translation>
     </message>
     <message>
       <source>Type</source>
-      <translation>Type</translation>
+      <translation>Тип</translation>
     </message>
     <message>
       <source>Magnitude</source>
-      <translation>Magnitude</translation>
+      <translation>Зоряна величина</translation>
     </message>
     <message>
       <source>Size (arcmin)</source>
-      <translation>Size (arcmin)</translation>
+      <translation>Розмір (кут. мін)</translation>
     </message>
     <message>
       <source>Add Custom Object</source>
-      <translation>Add Custom Object</translation>
+      <translation>Додати власний об'єкт</translation>
     </message>
     <message>
       <source>Save to CSV</source>
-      <translation>Save to CSV</translation>
+      <translation>Зберегти в CSV</translation>
     </message>
     <message>
       <source>Settings</source>
-      <translation>Settings</translation>
+      <translation>Налаштування</translation>
     </message>
     <message>
       <source>Enter number of objects to display:</source>
-      <translation>Enter number of objects to display:</translation>
+      <translation>Введіть кількість об'єктів для відображення:</translation>
     </message>
     <message>
       <source>Enter object name:</source>
-      <translation>Enter object name:</translation>
+      <translation>Введіть назву об'єкта:</translation>
     </message>
     <message>
       <source>Enter RA (deg):</source>
-      <translation>Enter RA (deg):</translation>
+      <translation>Введіть RA (град):</translation>
     </message>
     <message>
       <source>Enter Dec (deg):</source>
-      <translation>Enter Dec (deg):</translation>
+      <translation>Введіть Dec (град):</translation>
     </message>
     <message>
       <source>Added custom object: {}</source>
-      <translation>Added custom object: {}</translation>
+      <translation>Додано власний об'єкт: {}</translation>
     </message>
     <message>
       <source>Could not update catalog:
 {}</source>
-      <translation>Could not update catalog:
+      <translation>Не вдалося оновити каталог:
 {}</translation>
     </message>
     <message>
       <source>Save CSV File</source>
-      <translation>Save CSV File</translation>
+      <translation>Зберегти файл CSV</translation>
     </message>
     <message>
       <source>CSV files (*.csv);;All Files (*)</source>
-      <translation>CSV files (*.csv);;All Files (*)</translation>
+      <translation>Файли CSV (*.csv);;Всі файли (*)</translation>
     </message>
     <message>
       <source>Data saved to {}</source>
-      <translation>Data saved to {}</translation>
+      <translation>Дані збережено в {}</translation>
     </message>
     <message>
       <source>Invalid input: {}</source>
-      <translation>Invalid input: {}</translation>
+      <translation>Невірне введення: {}</translation>
     </message>
     <message>
       <source> Please verify your longitude/timezone.</source>
-      <translation> Please verify your longitude/timezone.</translation>
+      <translation> Будь ласка, перевірте довготу/часовий пояс.</translation>
     </message>
     <message>
       <source>Inputs look consistent.</source>
-      <translation>Inputs look consistent.</translation>
+      <translation>Введені дані виглядають коректними.</translation>
     </message>
     <message>
       <source>Calculating…</source>
-      <translation>Calculating…</translation>
+      <translation>Обчислення…</translation>
     </message>
     <message>
       <source>Lunar Phase: {}% illuminated</source>
-      <translation>Lunar Phase: {}% illuminated</translation>
+      <translation>Фаза Місяця: {}% освітлено</translation>
     </message>
     <message>
       <source>Status: {}</source>
-      <translation>Status: {}</translation>
+      <translation>Статус: {}</translation>
     </message>
   </context>
 </TS>

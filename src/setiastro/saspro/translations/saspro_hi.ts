@@ -4680,39 +4680,63 @@ Remove it from the recent projects list?</source>
     <name>FunctionBundleDialog</name>
     <message>
       <source>Apply to Active View</source>
-      <translation>Apply to Active View</translation>
+      <translation>सक्रिय दृश्य पर लागू करें</translation>
     </message>
     <message>
       <source>Apply to View Bundle…</source>
-      <translation>Apply to View Bundle…</translation>
+      <translation>व्यू बंडल पर लागू करें…</translation>
     </message>
     <message>
       <source>Clear Steps</source>
-      <translation>Clear Steps</translation>
+      <translation>चरण साफ़ करें</translation>
     </message>
     <message>
       <source>Compress to Chip</source>
-      <translation>Compress to Chip</translation>
+      <translation>चिप में संपीड़ित करें</translation>
     </message>
     <message>
       <source>Drag Bundle</source>
-      <translation>Drag Bundle</translation>
+      <translation>बंडल खींचें</translation>
     </message>
     <message>
       <source>Edit Preset…</source>
-      <translation>Edit Preset…</translation>
+      <translation>प्रीसेट संपादित करें…</translation>
     </message>
     <message>
       <source>Remove Selected</source>
-      <translation>Remove Selected</translation>
+      <translation>चयनित हटाएं</translation>
     </message>
     <message>
       <source>▲ Move Up</source>
-      <translation>▲ Move Up</translation>
+      <translation>▲ ऊपर ले जाएं</translation>
     </message>
     <message>
       <source>▼ Move Down</source>
-      <translation>▼ Move Down</translation>
+      <translation>▼ नीचे ले जाएं</translation>
+    </message>
+    <message>
+      <source>Function Bundles</source>
+      <translation>फंक्शन बंडल</translation>
+    </message>
+    <message>
+      <source>New</source>
+      <translation>नया</translation>
+    </message>
+    <message>
+      <source>Duplicate</source>
+      <translation>डुप्लिकेट</translation>
+    </message>
+    <message>
+      <source>Delete</source>
+      <translation>हटाएं</translation>
+    </message>
+    <message>
+      <source>Drop shortcuts here to add steps</source>
+      <translation>चरण जोड़ने के लिए शॉर्टकट यहाँ छोड़ें</translation>
+    </message>
+    <message>
+      <source>Delete Chip</source>
+      <translation>चिप हटाएं</translation>
     </message>
   </context>
   <context>
@@ -6775,7 +6799,7 @@ Set it in Preferences → ASTAP executable.</source>
     </message>
     <message>
       <source>Delete</source>
-      <translation>Delete</translation>
+      <translation>हटाएं</translation>
     </message>
     <message>
       <source>Edit Preset (JSON)</source>
@@ -13514,43 +13538,71 @@ Run the installer now? (SAS will close.)</source>
     <name>ViewBundleDialog</name>
     <message>
       <source>Add Directory (Recursive)…</source>
-      <translation>Add Directory (Recursive)…</translation>
+      <translation>निर्देशिका जोड़ें (पुनरावर्ती)…</translation>
     </message>
     <message>
       <source>Add Files…</source>
-      <translation>Add Files…</translation>
+      <translation>फ़ाइलें जोड़ें…</translation>
     </message>
     <message>
       <source>Add from Open…</source>
-      <translation>Add from Open…</translation>
+      <translation>खुले से जोड़ें…</translation>
     </message>
     <message>
       <source>Clear Views</source>
-      <translation>Clear Views</translation>
+      <translation>दृश्य साफ़ करें</translation>
     </message>
     <message>
       <source>Compress to Chip</source>
-      <translation>Compress to Chip</translation>
+      <translation>चिप में संपीड़ित करें</translation>
     </message>
     <message>
       <source>Delete</source>
-      <translation>Delete</translation>
+      <translation>हटाएं</translation>
     </message>
     <message>
       <source>Duplicate</source>
-      <translation>Duplicate</translation>
+      <translation>डुप्लिकेट</translation>
     </message>
     <message>
       <source>New Bundle</source>
-      <translation>New Bundle</translation>
+      <translation>नया बंडल</translation>
     </message>
     <message>
       <source>Remove Selected</source>
-      <translation>Remove Selected</translation>
+      <translation>चयनित हटाएं</translation>
     </message>
     <message>
       <source>View Bundles</source>
-      <translation>View Bundles</translation>
+      <translation>व्यू बंडल</translation>
+    </message>
+    <message>
+      <source>Choose views to add:</source>
+      <translation>जोड़ने के लिए दृश्य चुनें:</translation>
+    </message>
+    <message>
+      <source>Select all open views</source>
+      <translation>सभी खुले दृश्य चुनें</translation>
+    </message>
+    <message>
+      <source>Drop views here to add • Drop shortcuts here to apply to THIS bundle</source>
+      <translation>जोड़ने के लिए दृश्य यहाँ छोड़ें • इस बंडल पर लागू करने के लिए शॉर्टकट यहाँ छोड़ें</translation>
+    </message>
+    <message>
+      <source>Bundles</source>
+      <translation>बंडल</translation>
+    </message>
+    <message>
+      <source>Views in Selected Bundle</source>
+      <translation>चयनित बंडल में दृश्य</translation>
+    </message>
+    <message>
+      <source>Delete Chip</source>
+      <translation>चिप हटाएं</translation>
+    </message>
+    <message>
+      <source>Drag to move · Ctrl+drag to apply · Drop views/shortcuts here</source>
+      <translation>ले जाने के लिए खींचें · लागू करने के लिए Ctrl+खींचें · दृश्य/शॉर्टकट यहाँ छोड़ें</translation>
     </message>
   </context>
   <context>
@@ -14486,11 +14538,11 @@ Hold Ctrl while dragging to copy the astrometric solution (WCS) to another view.
     </message>
     <message>
       <source>Load Image File</source>
-      <translation>Load Image File</translation>
+      <translation>छवि फ़ाइल लोड करें</translation>
     </message>
     <message>
       <source>Load from View</source>
-      <translation>Load from View</translation>
+      <translation>दृश्य से लोड करें</translation>
     </message>
     <message>
       <source>AutoStretch</source>
@@ -14498,62 +14550,62 @@ Hold Ctrl while dragging to copy the astrometric solution (WCS) to another view.
     </message>
     <message>
       <source>Shift+Click to define a search region</source>
-      <translation>Shift+Click to define a search region</translation>
+      <translation>खोज क्षेत्र को परिभाषित करने के लिए Shift+Click</translation>
     </message>
     <message>
       <source>Query Simbad</source>
-      <translation>Query Simbad</translation>
+      <translation>Simbad क्वेरी करें</translation>
     </message>
     <message>
       <source>Save CSV</source>
-      <translation>Save CSV</translation>
+      <translation>CSV सहेजें</translation>
     </message>
     <message>
       <source>Advanced Search</source>
-      <translation>Advanced Search</translation>
+      <translation>उन्नत खोज</translation>
     </message>
     <message>
       <source>Status: Ready</source>
-      <translation>Status: Ready</translation>
+      <translation>स्थिति: तैयार</translation>
     </message>
   </context>
   <context>
     <name>WhatsInMySkyDialog</name>
     <message>
       <source>What's In My Sky</source>
-      <translation>What's In My Sky</translation>
+      <translation>मेरे आकाश में क्या है</translation>
     </message>
     <message>
       <source>Latitude:</source>
-      <translation>Latitude:</translation>
+      <translation>अक्षांश:</translation>
     </message>
     <message>
       <source>Longitude (E+, W−):</source>
-      <translation>Longitude (E+, W−):</translation>
+      <translation>देशांतर (E+, W−):</translation>
     </message>
     <message>
       <source>Date (YYYY-MM-DD):</source>
-      <translation>Date (YYYY-MM-DD):</translation>
+      <translation>दिनांक (YYYY-MM-DD):</translation>
     </message>
     <message>
       <source>Time (HH:MM):</source>
-      <translation>Time (HH:MM):</translation>
+      <translation>समय (HH:MM):</translation>
     </message>
     <message>
       <source>Time Zone:</source>
-      <translation>Time Zone:</translation>
+      <translation>समय क्षेत्र:</translation>
     </message>
     <message>
       <source>Min Altitude (0–90°):</source>
-      <translation>Min Altitude (0–90°):</translation>
+      <translation>न्यूनतम ऊंचाई (0–90°):</translation>
     </message>
     <message>
       <source>Catalog Filters:</source>
-      <translation>Catalog Filters:</translation>
+      <translation>कैटलॉग फिल्टर:</translation>
     </message>
     <message>
       <source>Degrees</source>
-      <translation>Degrees</translation>
+      <translation>डिग्री</translation>
     </message>
     <message>
       <source>H:M:S / D:M:S</source>
@@ -14561,27 +14613,27 @@ Hold Ctrl while dragging to copy the astrometric solution (WCS) to another view.
     </message>
     <message>
       <source>RA/Dec Format:</source>
-      <translation>RA/Dec Format:</translation>
+      <translation>RA/Dec प्रारूप:</translation>
     </message>
     <message>
       <source>Calculate</source>
-      <translation>Calculate</translation>
+      <translation>गणना करें</translation>
     </message>
     <message>
       <source>Status: Idle</source>
-      <translation>Status: Idle</translation>
+      <translation>स्थिति: निष्क्रिय</translation>
     </message>
     <message>
       <source>Local Sidereal Time: 0.000</source>
-      <translation>Local Sidereal Time: 0.000</translation>
+      <translation>स्थानीय नक्षत्र समय: 0.000</translation>
     </message>
     <message>
       <source>Lunar Phase: N/A</source>
-      <translation>Lunar Phase: N/A</translation>
+      <translation>चंद्र चरण: N/A</translation>
     </message>
     <message>
       <source>Name</source>
-      <translation>Name</translation>
+      <translation>नाम</translation>
     </message>
     <message>
       <source>RA</source>
@@ -14593,113 +14645,113 @@ Hold Ctrl while dragging to copy the astrometric solution (WCS) to another view.
     </message>
     <message>
       <source>Altitude</source>
-      <translation>Altitude</translation>
+      <translation>ऊंचाई</translation>
     </message>
     <message>
       <source>Azimuth</source>
-      <translation>Azimuth</translation>
+      <translation>दिगंश (Azimuth)</translation>
     </message>
     <message>
       <source>Minutes to Transit</source>
-      <translation>Minutes to Transit</translation>
+      <translation>पारगमन के लिए मिनट</translation>
     </message>
     <message>
       <source>Before/After Transit</source>
-      <translation>Before/After Transit</translation>
+      <translation>पारगमन से पहले/बाद</translation>
     </message>
     <message>
       <source>Degrees from Moon</source>
-      <translation>Degrees from Moon</translation>
+      <translation>चंद्रमा से डिग्री</translation>
     </message>
     <message>
       <source>Alt Name</source>
-      <translation>Alt Name</translation>
+      <translation>वैकल्पिक नाम</translation>
     </message>
     <message>
       <source>Type</source>
-      <translation>Type</translation>
+      <translation>प्रकार</translation>
     </message>
     <message>
       <source>Magnitude</source>
-      <translation>Magnitude</translation>
+      <translation>परिमाण</translation>
     </message>
     <message>
       <source>Size (arcmin)</source>
-      <translation>Size (arcmin)</translation>
+      <translation>आकार (arcmin)</translation>
     </message>
     <message>
       <source>Add Custom Object</source>
-      <translation>Add Custom Object</translation>
+      <translation>कस्टम ऑब्जेक्ट जोड़ें</translation>
     </message>
     <message>
       <source>Save to CSV</source>
-      <translation>Save to CSV</translation>
+      <translation>CSV में सहेजें</translation>
     </message>
     <message>
       <source>Settings</source>
-      <translation>Settings</translation>
+      <translation>सेटिंग्स</translation>
     </message>
     <message>
       <source>Enter number of objects to display:</source>
-      <translation>Enter number of objects to display:</translation>
+      <translation>प्रदर्शित करने के लिए वस्तुओं की संख्या दर्ज करें:</translation>
     </message>
     <message>
       <source>Enter object name:</source>
-      <translation>Enter object name:</translation>
+      <translation>वस्तु का नाम दर्ज करें:</translation>
     </message>
     <message>
       <source>Enter RA (deg):</source>
-      <translation>Enter RA (deg):</translation>
+      <translation>RA दर्ज करें (डिग्री):</translation>
     </message>
     <message>
       <source>Enter Dec (deg):</source>
-      <translation>Enter Dec (deg):</translation>
+      <translation>Dec दर्ज करें (डिग्री):</translation>
     </message>
     <message>
       <source>Added custom object: {}</source>
-      <translation>Added custom object: {}</translation>
+      <translation>कस्टम ऑब्जेक्ट जोड़ा गया: {}</translation>
     </message>
     <message>
       <source>Could not update catalog:
 {}</source>
-      <translation>Could not update catalog:
+      <translation>कैटलॉग अपडेट नहीं किया जा सका:
 {}</translation>
     </message>
     <message>
       <source>Save CSV File</source>
-      <translation>Save CSV File</translation>
+      <translation>CSV फ़ाइल सहेजें</translation>
     </message>
     <message>
       <source>CSV files (*.csv);;All Files (*)</source>
-      <translation>CSV files (*.csv);;All Files (*)</translation>
+      <translation>CSV फ़ाइलें (*.csv);;सभी फ़ाइलें (*)</translation>
     </message>
     <message>
       <source>Data saved to {}</source>
-      <translation>Data saved to {}</translation>
+      <translation>डेटा {} में सहेजा गया</translation>
     </message>
     <message>
       <source>Invalid input: {}</source>
-      <translation>Invalid input: {}</translation>
+      <translation>अमान्य इनपुट: {}</translation>
     </message>
     <message>
       <source> Please verify your longitude/timezone.</source>
-      <translation> Please verify your longitude/timezone.</translation>
+      <translation> कृपया अपने देशांतर/समय क्षेत्र की पुष्टि करें।</translation>
     </message>
     <message>
       <source>Inputs look consistent.</source>
-      <translation>Inputs look consistent.</translation>
+      <translation>इनपुट सुसंगत लगते हैं।</translation>
     </message>
     <message>
       <source>Calculating…</source>
-      <translation>Calculating…</translation>
+      <translation>गणना हो रही है…</translation>
     </message>
     <message>
       <source>Lunar Phase: {}% illuminated</source>
-      <translation>Lunar Phase: {}% illuminated</translation>
+      <translation>चंद्र चरण: {}% प्रकाशित</translation>
     </message>
     <message>
       <source>Status: {}</source>
-      <translation>Status: {}</translation>
+      <translation>स्थिति: {}</translation>
     </message>
   </context>
 </TS>

@@ -4728,15 +4728,15 @@ Rimuoverlo dalla lista progetti recenti?</translation>
     <name>FunctionBundleDialog</name>
     <message>
       <source>Apply to Active View</source>
-      <translation>Applica alla vista attiva</translation>
+      <translation>Applica a Vista Attiva</translation>
     </message>
     <message>
       <source>Apply to View Bundle…</source>
-      <translation>Applica al Bundle viste…</translation>
+      <translation>Applica a Pacchetto Viste…</translation>
     </message>
     <message>
       <source>Clear Steps</source>
-      <translation>Cancella passaggi</translation>
+      <translation>Pulisci Passaggi</translation>
     </message>
     <message>
       <source>Compress to Chip</source>
@@ -4744,7 +4744,7 @@ Rimuoverlo dalla lista progetti recenti?</translation>
     </message>
     <message>
       <source>Drag Bundle</source>
-      <translation>Trascina Bundle</translation>
+      <translation>Trascina Pacchetto</translation>
     </message>
     <message>
       <source>Edit Preset…</source>
@@ -4752,15 +4752,39 @@ Rimuoverlo dalla lista progetti recenti?</translation>
     </message>
     <message>
       <source>Remove Selected</source>
-      <translation>Rimuovi selezionati</translation>
+      <translation>Rimuovi Selezionati</translation>
     </message>
     <message>
       <source>▲ Move Up</source>
-      <translation>▲ Sposta su</translation>
+      <translation>▲ Sposta Su</translation>
     </message>
     <message>
       <source>▼ Move Down</source>
-      <translation>▼ Sposta giù</translation>
+      <translation>▼ Sposta Giù</translation>
+    </message>
+    <message>
+      <source>Function Bundles</source>
+      <translation>Pacchetti Funzioni</translation>
+    </message>
+    <message>
+      <source>New</source>
+      <translation>Nuovo</translation>
+    </message>
+    <message>
+      <source>Duplicate</source>
+      <translation>Duplica</translation>
+    </message>
+    <message>
+      <source>Delete</source>
+      <translation>Elimina</translation>
+    </message>
+    <message>
+      <source>Drop shortcuts here to add steps</source>
+      <translation>Trascina qui le scorciatoie per aggiungere passaggi</translation>
+    </message>
+    <message>
+      <source>Delete Chip</source>
+      <translation>Elimina Chip</translation>
     </message>
   </context>
   <context>
@@ -13984,19 +14008,19 @@ Eseguire l'installer ora? (SAS si chiuderà.)</translation>
     <name>ViewBundleDialog</name>
     <message>
       <source>Add Directory (Recursive)…</source>
-      <translation>Aggiungi cartella (Ricorsivo)…</translation>
+      <translation>Aggiungi Cartella (Ricorsivo)…</translation>
     </message>
     <message>
       <source>Add Files…</source>
-      <translation>Aggiungi file…</translation>
+      <translation>Aggiungi File…</translation>
     </message>
     <message>
       <source>Add from Open…</source>
-      <translation>Aggiungi da aperti…</translation>
+      <translation>Aggiungi da Aperte…</translation>
     </message>
     <message>
       <source>Clear Views</source>
-      <translation>Cancella viste</translation>
+      <translation>Pulisci Viste</translation>
     </message>
     <message>
       <source>Compress to Chip</source>
@@ -14012,15 +14036,43 @@ Eseguire l'installer ora? (SAS si chiuderà.)</translation>
     </message>
     <message>
       <source>New Bundle</source>
-      <translation>Nuovo Bundle</translation>
+      <translation>Nuovo Pacchetto</translation>
     </message>
     <message>
       <source>Remove Selected</source>
-      <translation>Rimuovi selezionati</translation>
+      <translation>Rimuovi Selezionati</translation>
     </message>
     <message>
       <source>View Bundles</source>
-      <translation>Visualizza bundle</translation>
+      <translation>Visualizza Pacchetti</translation>
+    </message>
+    <message>
+      <source>Choose views to add:</source>
+      <translation>Scegli viste da aggiungere:</translation>
+    </message>
+    <message>
+      <source>Select all open views</source>
+      <translation>Seleziona tutte le viste aperte</translation>
+    </message>
+    <message>
+      <source>Drop views here to add • Drop shortcuts here to apply to THIS bundle</source>
+      <translation>Trascina qui le viste per aggiungere • Trascina qui le scorciatoie per applicare a QUESTO pacchetto</translation>
+    </message>
+    <message>
+      <source>Bundles</source>
+      <translation>Pacchetti</translation>
+    </message>
+    <message>
+      <source>Views in Selected Bundle</source>
+      <translation>Viste nel Pacchetto Selezionato</translation>
+    </message>
+    <message>
+      <source>Delete Chip</source>
+      <translation>Elimina Chip</translation>
+    </message>
+    <message>
+      <source>Drag to move · Ctrl+drag to apply · Drop views/shortcuts here</source>
+      <translation>Trascina per spostare · Ctrl+trascina per applicare · Trascina qui viste/scorciatoie</translation>
     </message>
   </context>
   <context>

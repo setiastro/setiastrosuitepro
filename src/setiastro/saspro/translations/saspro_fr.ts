@@ -2583,7 +2583,7 @@ Alt+Glisser: déposer sur une vue</translation>
     </message>
     <message>
       <source>Clear Selections</source>
-      <translation>Effacer Sélections</translation>
+      <translation>Effacer les sélections</translation>
     </message>
     <message>
       <source>Collisions</source>
@@ -6167,7 +6167,7 @@ Le retirer de la liste des projets récents?</translation>
     </message>
     <message>
       <source>Compress to Chip</source>
-      <translation>Compresser en puce</translation>
+      <translation>Compresser en Puce</translation>
     </message>
     <message>
       <source>Drag Bundle</source>
@@ -6179,15 +6179,39 @@ Le retirer de la liste des projets récents?</translation>
     </message>
     <message>
       <source>Remove Selected</source>
-      <translation>Supprimer la sélection</translation>
+      <translation>Retirer la sélection</translation>
     </message>
     <message>
       <source>▲ Move Up</source>
-      <translation>▲ Déplacer vers le haut</translation>
+      <translation>▲ Monter</translation>
     </message>
     <message>
       <source>▼ Move Down</source>
-      <translation>▼ Déplacer vers le bas</translation>
+      <translation>▼ Descendre</translation>
+    </message>
+    <message>
+      <source>Function Bundles</source>
+      <translation>Groupes de Fonctions</translation>
+    </message>
+    <message>
+      <source>New</source>
+      <translation>Nouveau</translation>
+    </message>
+    <message>
+      <source>Duplicate</source>
+      <translation>Dupliquer</translation>
+    </message>
+    <message>
+      <source>Delete</source>
+      <translation>Supprimer</translation>
+    </message>
+    <message>
+      <source>Drop shortcuts here to add steps</source>
+      <translation>Déposez les raccourcis ici pour ajouter des étapes</translation>
+    </message>
+    <message>
+      <source>Delete Chip</source>
+      <translation>Supprimer la Puce</translation>
     </message>
   </context>
   <context>
@@ -14945,7 +14969,7 @@ Lancer l'installeur maintenant? (SAS se fermera.)</translation>
     </message>
     <message>
       <source>Add from Open…</source>
-      <translation>Ajouter des ouverts…</translation>
+      <translation>Ajouter depuis ouvertes…</translation>
     </message>
     <message>
       <source>Clear Views</source>
@@ -14953,7 +14977,7 @@ Lancer l'installeur maintenant? (SAS se fermera.)</translation>
     </message>
     <message>
       <source>Compress to Chip</source>
-      <translation>Compresser en puce</translation>
+      <translation>Compresser en Puce</translation>
     </message>
     <message>
       <source>Delete</source>
@@ -14965,15 +14989,43 @@ Lancer l'installeur maintenant? (SAS se fermera.)</translation>
     </message>
     <message>
       <source>New Bundle</source>
-      <translation>Nouveau groupe</translation>
+      <translation>Nouveau Groupe</translation>
     </message>
     <message>
       <source>Remove Selected</source>
-      <translation>Supprimer la sélection</translation>
+      <translation>Retirer la sélection</translation>
     </message>
     <message>
       <source>View Bundles</source>
-      <translation>Voir les groupes</translation>
+      <translation>Vues Groupées</translation>
+    </message>
+    <message>
+      <source>Choose views to add:</source>
+      <translation>Choisir les vues à ajouter:</translation>
+    </message>
+    <message>
+      <source>Select all open views</source>
+      <translation>Sélectionner toutes les vues ouvertes</translation>
+    </message>
+    <message>
+      <source>Drop views here to add • Drop shortcuts here to apply to THIS bundle</source>
+      <translation>Déposez les vues ici pour ajouter • Déposez les raccourcis ici pour appliquer à CE groupe</translation>
+    </message>
+    <message>
+      <source>Bundles</source>
+      <translation>Groupes</translation>
+    </message>
+    <message>
+      <source>Views in Selected Bundle</source>
+      <translation>Vues dans le groupe sélectionné</translation>
+    </message>
+    <message>
+      <source>Delete Chip</source>
+      <translation>Supprimer la Puce</translation>
+    </message>
+    <message>
+      <source>Drag to move · Ctrl+drag to apply · Drop views/shortcuts here</source>
+      <translation>Glisser pour déplacer · Ctrl+glisser pour appliquer · Déposer vues/raccourcis ici</translation>
     </message>
   </context>
   <context>
@@ -15501,11 +15553,11 @@ Maintenir Ctrl en glissant pour copier la solution astrométrique (WCS) vers une
     </message>
     <message>
       <source>Load Image File</source>
-      <translation>Load Image File</translation>
+      <translation>Charger un fichier image</translation>
     </message>
     <message>
       <source>Load from View</source>
-      <translation>Load from View</translation>
+      <translation>Charger depuis la vue</translation>
     </message>
     <message>
       <source>AutoStretch</source>
@@ -15513,30 +15565,30 @@ Maintenir Ctrl en glissant pour copier la solution astrométrique (WCS) vers une
     </message>
     <message>
       <source>Shift+Click to define a search region</source>
-      <translation>Shift+Click to define a search region</translation>
+      <translation>Shift+Clic pour définir une région de recherche</translation>
     </message>
     <message>
       <source>Query Simbad</source>
-      <translation>Query Simbad</translation>
+      <translation>Interroger Simbad</translation>
     </message>
     <message>
       <source>Save CSV</source>
-      <translation>Save CSV</translation>
+      <translation>Enregistrer CSV</translation>
     </message>
     <message>
       <source>Advanced Search</source>
-      <translation>Advanced Search</translation>
+      <translation>Recherche avancée</translation>
     </message>
     <message>
       <source>Status: Ready</source>
-      <translation>Status: Ready</translation>
+      <translation>Statut: Prêt</translation>
     </message>
   </context>
   <context>
     <name>WhatsInMySkyDialog</name>
     <message>
       <source>What's In My Sky</source>
-      <translation>What's In My Sky</translation>
+      <translation>Qu'est-ce qu'il y a dans mon ciel</translation>
     </message>
     <message>
       <source>Latitude:</source>
@@ -15544,31 +15596,31 @@ Maintenir Ctrl en glissant pour copier la solution astrométrique (WCS) vers une
     </message>
     <message>
       <source>Longitude (E+, W−):</source>
-      <translation>Longitude (E+, W−):</translation>
+      <translation>Longitude (E+, O−):</translation>
     </message>
     <message>
       <source>Date (YYYY-MM-DD):</source>
-      <translation>Date (YYYY-MM-DD):</translation>
+      <translation>Date (AAAA-MM-JJ):</translation>
     </message>
     <message>
       <source>Time (HH:MM):</source>
-      <translation>Time (HH:MM):</translation>
+      <translation>Heure (HH:MM):</translation>
     </message>
     <message>
       <source>Time Zone:</source>
-      <translation>Time Zone:</translation>
+      <translation>Fuseau horaire:</translation>
     </message>
     <message>
       <source>Min Altitude (0–90°):</source>
-      <translation>Min Altitude (0–90°):</translation>
+      <translation>Altitude Min (0–90°):</translation>
     </message>
     <message>
       <source>Catalog Filters:</source>
-      <translation>Catalog Filters:</translation>
+      <translation>Filtres de catalogue:</translation>
     </message>
     <message>
       <source>Degrees</source>
-      <translation>Degrees</translation>
+      <translation>Degrés</translation>
     </message>
     <message>
       <source>H:M:S / D:M:S</source>
@@ -15576,35 +15628,35 @@ Maintenir Ctrl en glissant pour copier la solution astrométrique (WCS) vers une
     </message>
     <message>
       <source>RA/Dec Format:</source>
-      <translation>RA/Dec Format:</translation>
+      <translation>Format AD/Déc:</translation>
     </message>
     <message>
       <source>Calculate</source>
-      <translation>Calculate</translation>
+      <translation>Calculer</translation>
     </message>
     <message>
       <source>Status: Idle</source>
-      <translation>Status: Idle</translation>
+      <translation>Statut: Inactif</translation>
     </message>
     <message>
       <source>Local Sidereal Time: 0.000</source>
-      <translation>Local Sidereal Time: 0.000</translation>
+      <translation>Temps Sidéral Local: 0.000</translation>
     </message>
     <message>
       <source>Lunar Phase: N/A</source>
-      <translation>Lunar Phase: N/A</translation>
+      <translation>Phase Lunaire: N/A</translation>
     </message>
     <message>
       <source>Name</source>
-      <translation>Name</translation>
+      <translation>Nom</translation>
     </message>
     <message>
       <source>RA</source>
-      <translation>RA</translation>
+      <translation>AD</translation>
     </message>
     <message>
       <source>Dec</source>
-      <translation>Dec</translation>
+      <translation>Déc</translation>
     </message>
     <message>
       <source>Altitude</source>
@@ -15612,23 +15664,23 @@ Maintenir Ctrl en glissant pour copier la solution astrométrique (WCS) vers une
     </message>
     <message>
       <source>Azimuth</source>
-      <translation>Azimuth</translation>
+      <translation>Azimut</translation>
     </message>
     <message>
       <source>Minutes to Transit</source>
-      <translation>Minutes to Transit</translation>
+      <translation>Minutes avant transit</translation>
     </message>
     <message>
       <source>Before/After Transit</source>
-      <translation>Before/After Transit</translation>
+      <translation>Avant/Après transit</translation>
     </message>
     <message>
       <source>Degrees from Moon</source>
-      <translation>Degrees from Moon</translation>
+      <translation>Degrés depuis la Lune</translation>
     </message>
     <message>
       <source>Alt Name</source>
-      <translation>Alt Name</translation>
+      <translation>Autre nom</translation>
     </message>
     <message>
       <source>Type</source>
@@ -15640,81 +15692,81 @@ Maintenir Ctrl en glissant pour copier la solution astrométrique (WCS) vers une
     </message>
     <message>
       <source>Size (arcmin)</source>
-      <translation>Size (arcmin)</translation>
+      <translation>Taille (arcmin)</translation>
     </message>
     <message>
       <source>Add Custom Object</source>
-      <translation>Add Custom Object</translation>
+      <translation>Ajouter objet perso</translation>
     </message>
     <message>
       <source>Save to CSV</source>
-      <translation>Save to CSV</translation>
+      <translation>Enregistrer en CSV</translation>
     </message>
     <message>
       <source>Settings</source>
-      <translation>Settings</translation>
+      <translation>Paramètres</translation>
     </message>
     <message>
       <source>Enter number of objects to display:</source>
-      <translation>Enter number of objects to display:</translation>
+      <translation>Nombre d'objets à afficher:</translation>
     </message>
     <message>
       <source>Enter object name:</source>
-      <translation>Enter object name:</translation>
+      <translation>Nom de l'objet:</translation>
     </message>
     <message>
       <source>Enter RA (deg):</source>
-      <translation>Enter RA (deg):</translation>
+      <translation>Entrer AD (deg):</translation>
     </message>
     <message>
       <source>Enter Dec (deg):</source>
-      <translation>Enter Dec (deg):</translation>
+      <translation>Entrer Déc (deg):</translation>
     </message>
     <message>
       <source>Added custom object: {}</source>
-      <translation>Added custom object: {}</translation>
+      <translation>Objet perso ajouté: {}</translation>
     </message>
     <message>
       <source>Could not update catalog:
 {}</source>
-      <translation>Could not update catalog:
+      <translation>Impossible de mettre à jour le catalogue:
 {}</translation>
     </message>
     <message>
       <source>Save CSV File</source>
-      <translation>Save CSV File</translation>
+      <translation>Enregistrer fichier CSV</translation>
     </message>
     <message>
       <source>CSV files (*.csv);;All Files (*)</source>
-      <translation>CSV files (*.csv);;All Files (*)</translation>
+      <translation>Fichiers CSV (*.csv);;Tous les fichiers (*)</translation>
     </message>
     <message>
       <source>Data saved to {}</source>
-      <translation>Data saved to {}</translation>
+      <translation>Données enregistrées dans {}</translation>
     </message>
     <message>
       <source>Invalid input: {}</source>
-      <translation>Invalid input: {}</translation>
+      <translation>Entrée invalide: {}</translation>
     </message>
     <message>
       <source> Please verify your longitude/timezone.</source>
-      <translation> Please verify your longitude/timezone.</translation>
+      <translation> Vérifiez votre longitude/fuseau horaire.</translation>
     </message>
     <message>
       <source>Inputs look consistent.</source>
-      <translation>Inputs look consistent.</translation>
+      <translation>Les entrées semblent cohérentes.</translation>
     </message>
     <message>
       <source>Calculating…</source>
-      <translation>Calculating…</translation>
+      <translation>Calcul en cours…</translation>
     </message>
     <message>
       <source>Lunar Phase: {}% illuminated</source>
-      <translation>Lunar Phase: {}% illuminated</translation>
+      <translation>Phase Lunaire: {}% illuminée</translation>
     </message>
     <message>
       <source>Status: {}</source>
-      <translation>Status: {}</translation>
+      <translation>Statut: {}</translation>
     </message>
   </context>
 </TS>

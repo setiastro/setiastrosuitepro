@@ -4692,39 +4692,63 @@ Remove it from the recent projects list?</source>
     <name>FunctionBundleDialog</name>
     <message>
       <source>Apply to Active View</source>
-      <translation>Apply to Active View</translation>
+      <translation>应用到活动视图</translation>
     </message>
     <message>
       <source>Apply to View Bundle…</source>
-      <translation>Apply to View Bundle…</translation>
+      <translation>应用到视图捆绑包…</translation>
     </message>
     <message>
       <source>Clear Steps</source>
-      <translation>Clear Steps</translation>
+      <translation>清除步骤</translation>
     </message>
     <message>
       <source>Compress to Chip</source>
-      <translation>Compress to Chip</translation>
+      <translation>压缩为芯片</translation>
     </message>
     <message>
       <source>Drag Bundle</source>
-      <translation>Drag Bundle</translation>
+      <translation>拖动捆绑包</translation>
     </message>
     <message>
       <source>Edit Preset…</source>
-      <translation>Edit Preset…</translation>
+      <translation>编辑预设…</translation>
     </message>
     <message>
       <source>Remove Selected</source>
-      <translation>Remove Selected</translation>
+      <translation>移除选中</translation>
     </message>
     <message>
       <source>▲ Move Up</source>
-      <translation>▲ Move Up</translation>
+      <translation>▲ 上移</translation>
     </message>
     <message>
       <source>▼ Move Down</source>
-      <translation>▼ Move Down</translation>
+      <translation>▼ 下移</translation>
+    </message>
+    <message>
+      <source>Function Bundles</source>
+      <translation>功能捆绑包</translation>
+    </message>
+    <message>
+      <source>New</source>
+      <translation>新建</translation>
+    </message>
+    <message>
+      <source>Duplicate</source>
+      <translation>复制</translation>
+    </message>
+    <message>
+      <source>Delete</source>
+      <translation>删除</translation>
+    </message>
+    <message>
+      <source>Drop shortcuts here to add steps</source>
+      <translation>拖放快捷方式到此添加步骤</translation>
+    </message>
+    <message>
+      <source>Delete Chip</source>
+      <translation>删除芯片</translation>
     </message>
   </context>
   <context>
@@ -6787,7 +6811,7 @@ Set it in Preferences → ASTAP executable.</source>
     </message>
     <message>
       <source>Delete</source>
-      <translation>Delete</translation>
+      <translation>删除</translation>
     </message>
     <message>
       <source>Edit Preset (JSON)</source>
@@ -13948,43 +13972,71 @@ Run the installer now? (SAS will close.)</source>
     <name>ViewBundleDialog</name>
     <message>
       <source>Add Directory (Recursive)…</source>
-      <translation>Add Directory (Recursive)…</translation>
+      <translation>添加目录 (递归)…</translation>
     </message>
     <message>
       <source>Add Files…</source>
-      <translation>Add Files…</translation>
+      <translation>添加文件…</translation>
     </message>
     <message>
       <source>Add from Open…</source>
-      <translation>Add from Open…</translation>
+      <translation>从打开中添加…</translation>
     </message>
     <message>
       <source>Clear Views</source>
-      <translation>Clear Views</translation>
+      <translation>清除视图</translation>
     </message>
     <message>
       <source>Compress to Chip</source>
-      <translation>Compress to Chip</translation>
+      <translation>压缩为芯片</translation>
     </message>
     <message>
       <source>Delete</source>
-      <translation>Delete</translation>
+      <translation>删除</translation>
     </message>
     <message>
       <source>Duplicate</source>
-      <translation>Duplicate</translation>
+      <translation>复制</translation>
     </message>
     <message>
       <source>New Bundle</source>
-      <translation>New Bundle</translation>
+      <translation>新捆绑包</translation>
     </message>
     <message>
       <source>Remove Selected</source>
-      <translation>Remove Selected</translation>
+      <translation>移除选中</translation>
     </message>
     <message>
       <source>View Bundles</source>
-      <translation>View Bundles</translation>
+      <translation>视图捆绑包</translation>
+    </message>
+    <message>
+      <source>Choose views to add:</source>
+      <translation>选择要添加的视图:</translation>
+    </message>
+    <message>
+      <source>Select all open views</source>
+      <translation>选择所有打开的视图</translation>
+    </message>
+    <message>
+      <source>Drop views here to add • Drop shortcuts here to apply to THIS bundle</source>
+      <translation>拖放视图到此添加 • 拖放快捷方式到此应用到此捆绑包</translation>
+    </message>
+    <message>
+      <source>Bundles</source>
+      <translation>捆绑包</translation>
+    </message>
+    <message>
+      <source>Views in Selected Bundle</source>
+      <translation>选中捆绑包中的视图</translation>
+    </message>
+    <message>
+      <source>Delete Chip</source>
+      <translation>删除芯片</translation>
+    </message>
+    <message>
+      <source>Drag to move · Ctrl+drag to apply · Drop views/shortcuts here</source>
+      <translation>拖动移动 · Ctrl+拖动应用 · 拖放视图/快捷方式到此</translation>
     </message>
   </context>
   <context>
@@ -14920,11 +14972,11 @@ Hold Ctrl while dragging to copy the astrometric solution (WCS) to another view.
     </message>
     <message>
       <source>Load Image File</source>
-      <translation>Load Image File</translation>
+      <translation>加载图像文件</translation>
     </message>
     <message>
       <source>Load from View</source>
-      <translation>Load from View</translation>
+      <translation>从视图加载</translation>
     </message>
     <message>
       <source>AutoStretch</source>
@@ -14932,208 +14984,208 @@ Hold Ctrl while dragging to copy the astrometric solution (WCS) to another view.
     </message>
     <message>
       <source>Shift+Click to define a search region</source>
-      <translation>Shift+Click to define a search region</translation>
+      <translation>Shift+单击定义搜索区域</translation>
     </message>
     <message>
       <source>Query Simbad</source>
-      <translation>Query Simbad</translation>
+      <translation>查询 Simbad</translation>
     </message>
     <message>
       <source>Save CSV</source>
-      <translation>Save CSV</translation>
+      <translation>保存 CSV</translation>
     </message>
     <message>
       <source>Advanced Search</source>
-      <translation>Advanced Search</translation>
+      <translation>高级搜索</translation>
     </message>
     <message>
       <source>Status: Ready</source>
-      <translation>Status: Ready</translation>
+      <translation>状态: 就绪</translation>
     </message>
   </context>
   <context>
     <name>WhatsInMySkyDialog</name>
     <message>
       <source>What's In My Sky</source>
-      <translation>What's In My Sky</translation>
+      <translation>我的天空有什么</translation>
     </message>
     <message>
       <source>Latitude:</source>
-      <translation>Latitude:</translation>
+      <translation>纬度:</translation>
     </message>
     <message>
       <source>Longitude (E+, W−):</source>
-      <translation>Longitude (E+, W−):</translation>
+      <translation>经度 (E+, W−):</translation>
     </message>
     <message>
       <source>Date (YYYY-MM-DD):</source>
-      <translation>Date (YYYY-MM-DD):</translation>
+      <translation>日期 (YYYY-MM-DD):</translation>
     </message>
     <message>
       <source>Time (HH:MM):</source>
-      <translation>Time (HH:MM):</translation>
+      <translation>时间 (HH:MM):</translation>
     </message>
     <message>
       <source>Time Zone:</source>
-      <translation>Time Zone:</translation>
+      <translation>时区:</translation>
     </message>
     <message>
       <source>Min Altitude (0–90°):</source>
-      <translation>Min Altitude (0–90°):</translation>
+      <translation>最小高度 (0–90°):</translation>
     </message>
     <message>
       <source>Catalog Filters:</source>
-      <translation>Catalog Filters:</translation>
+      <translation>星表过滤器:</translation>
     </message>
     <message>
       <source>Degrees</source>
-      <translation>Degrees</translation>
+      <translation>度</translation>
     </message>
     <message>
       <source>H:M:S / D:M:S</source>
-      <translation>H:M:S / D:M:S</translation>
+      <translation>时:分:秒 / 度:分:秒</translation>
     </message>
     <message>
       <source>RA/Dec Format:</source>
-      <translation>RA/Dec Format:</translation>
+      <translation>赤经/赤纬格式:</translation>
     </message>
     <message>
       <source>Calculate</source>
-      <translation>Calculate</translation>
+      <translation>计算</translation>
     </message>
     <message>
       <source>Status: Idle</source>
-      <translation>Status: Idle</translation>
+      <translation>状态: 空闲</translation>
     </message>
     <message>
       <source>Local Sidereal Time: 0.000</source>
-      <translation>Local Sidereal Time: 0.000</translation>
+      <translation>本地恒星时: 0.000</translation>
     </message>
     <message>
       <source>Lunar Phase: N/A</source>
-      <translation>Lunar Phase: N/A</translation>
+      <translation>月相: N/A</translation>
     </message>
     <message>
       <source>Name</source>
-      <translation>Name</translation>
+      <translation>名称</translation>
     </message>
     <message>
       <source>RA</source>
-      <translation>RA</translation>
+      <translation>赤经</translation>
     </message>
     <message>
       <source>Dec</source>
-      <translation>Dec</translation>
+      <translation>赤纬</translation>
     </message>
     <message>
       <source>Altitude</source>
-      <translation>Altitude</translation>
+      <translation>高度</translation>
     </message>
     <message>
       <source>Azimuth</source>
-      <translation>Azimuth</translation>
+      <translation>方位角</translation>
     </message>
     <message>
       <source>Minutes to Transit</source>
-      <translation>Minutes to Transit</translation>
+      <translation>中天时间 (分钟)</translation>
     </message>
     <message>
       <source>Before/After Transit</source>
-      <translation>Before/After Transit</translation>
+      <translation>中天前/后</translation>
     </message>
     <message>
       <source>Degrees from Moon</source>
-      <translation>Degrees from Moon</translation>
+      <translation>离月亮角度</translation>
     </message>
     <message>
       <source>Alt Name</source>
-      <translation>Alt Name</translation>
+      <translation>别名</translation>
     </message>
     <message>
       <source>Type</source>
-      <translation>Type</translation>
+      <translation>类型</translation>
     </message>
     <message>
       <source>Magnitude</source>
-      <translation>Magnitude</translation>
+      <translation>星等</translation>
     </message>
     <message>
       <source>Size (arcmin)</source>
-      <translation>Size (arcmin)</translation>
+      <translation>大小 (角分)</translation>
     </message>
     <message>
       <source>Add Custom Object</source>
-      <translation>Add Custom Object</translation>
+      <translation>添加自定义天体</translation>
     </message>
     <message>
       <source>Save to CSV</source>
-      <translation>Save to CSV</translation>
+      <translation>保存为 CSV</translation>
     </message>
     <message>
       <source>Settings</source>
-      <translation>Settings</translation>
+      <translation>设置</translation>
     </message>
     <message>
       <source>Enter number of objects to display:</source>
-      <translation>Enter number of objects to display:</translation>
+      <translation>输入显示天体数量:</translation>
     </message>
     <message>
       <source>Enter object name:</source>
-      <translation>Enter object name:</translation>
+      <translation>输入天体名称:</translation>
     </message>
     <message>
       <source>Enter RA (deg):</source>
-      <translation>Enter RA (deg):</translation>
+      <translation>输入赤经 (度):</translation>
     </message>
     <message>
       <source>Enter Dec (deg):</source>
-      <translation>Enter Dec (deg):</translation>
+      <translation>输入赤纬 (度):</translation>
     </message>
     <message>
       <source>Added custom object: {}</source>
-      <translation>Added custom object: {}</translation>
+      <translation>已添加自定义天体: {}</translation>
     </message>
     <message>
       <source>Could not update catalog:
 {}</source>
-      <translation>Could not update catalog:
+      <translation>无法更新目录:
 {}</translation>
     </message>
     <message>
       <source>Save CSV File</source>
-      <translation>Save CSV File</translation>
+      <translation>保存 CSV 文件</translation>
     </message>
     <message>
       <source>CSV files (*.csv);;All Files (*)</source>
-      <translation>CSV files (*.csv);;All Files (*)</translation>
+      <translation>CSV 文件 (*.csv);;所有文件 (*)</translation>
     </message>
     <message>
       <source>Data saved to {}</source>
-      <translation>Data saved to {}</translation>
+      <translation>数据已保存至 {}</translation>
     </message>
     <message>
       <source>Invalid input: {}</source>
-      <translation>Invalid input: {}</translation>
+      <translation>输入无效: {}</translation>
     </message>
     <message>
       <source> Please verify your longitude/timezone.</source>
-      <translation> Please verify your longitude/timezone.</translation>
+      <translation> 请验证您的经度/时区。</translation>
     </message>
     <message>
       <source>Inputs look consistent.</source>
-      <translation>Inputs look consistent.</translation>
+      <translation>输入看起来一致。</translation>
     </message>
     <message>
       <source>Calculating…</source>
-      <translation>Calculating…</translation>
+      <translation>计算中…</translation>
     </message>
     <message>
       <source>Lunar Phase: {}% illuminated</source>
-      <translation>Lunar Phase: {}% illuminated</translation>
+      <translation>月相: {}% 照明</translation>
     </message>
     <message>
       <source>Status: {}</source>
-      <translation>Status: {}</translation>
+      <translation>状态: {}</translation>
     </message>
   </context>
 </TS>

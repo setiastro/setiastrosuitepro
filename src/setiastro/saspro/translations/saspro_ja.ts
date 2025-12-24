@@ -4392,39 +4392,63 @@ Remove it from the recent projects list?</source>
     <name>FunctionBundleDialog</name>
     <message>
       <source>Apply to Active View</source>
-      <translation>Apply to Active View</translation>
+      <translation>アクティブビューに適用</translation>
     </message>
     <message>
       <source>Apply to View Bundle…</source>
-      <translation>Apply to View Bundle…</translation>
+      <translation>ビューバンドルに適用…</translation>
     </message>
     <message>
       <source>Clear Steps</source>
-      <translation>Clear Steps</translation>
+      <translation>ステップをクリア</translation>
     </message>
     <message>
       <source>Compress to Chip</source>
-      <translation>Compress to Chip</translation>
+      <translation>チップに圧縮</translation>
     </message>
     <message>
       <source>Drag Bundle</source>
-      <translation>Drag Bundle</translation>
+      <translation>バンドルをドラッグ</translation>
     </message>
     <message>
       <source>Edit Preset…</source>
-      <translation>Edit Preset…</translation>
+      <translation>プリセットを編集…</translation>
     </message>
     <message>
       <source>Remove Selected</source>
-      <translation>Remove Selected</translation>
+      <translation>選択を削除</translation>
     </message>
     <message>
       <source>▲ Move Up</source>
-      <translation>▲ Move Up</translation>
+      <translation>▲ 上へ移動</translation>
     </message>
     <message>
       <source>▼ Move Down</source>
-      <translation>▼ Move Down</translation>
+      <translation>▼ 下へ移動</translation>
+    </message>
+    <message>
+      <source>Function Bundles</source>
+      <translation>ファンクションバンドル</translation>
+    </message>
+    <message>
+      <source>New</source>
+      <translation>新規</translation>
+    </message>
+    <message>
+      <source>Duplicate</source>
+      <translation>複製</translation>
+    </message>
+    <message>
+      <source>Delete</source>
+      <translation>削除</translation>
+    </message>
+    <message>
+      <source>Drop shortcuts here to add steps</source>
+      <translation>ここにショートカットをドロップしてステップを追加</translation>
+    </message>
+    <message>
+      <source>Delete Chip</source>
+      <translation>チップを削除</translation>
     </message>
   </context>
   <context>
@@ -6491,7 +6515,7 @@ Set it in Preferences → ASTAP executable.</source>
     </message>
     <message>
       <source>Delete</source>
-      <translation>Delete</translation>
+      <translation>削除</translation>
     </message>
     <message>
       <source>Edit Preset (JSON)</source>
@@ -13639,43 +13663,71 @@ Run the installer now? (SAS will close.)</source>
     <name>ViewBundleDialog</name>
     <message>
       <source>Add Directory (Recursive)…</source>
-      <translation>Add Directory (Recursive)…</translation>
+      <translation>ディレクトリを追加 (再帰的)…</translation>
     </message>
     <message>
       <source>Add Files…</source>
-      <translation>Add Files…</translation>
+      <translation>ファイルを追加…</translation>
     </message>
     <message>
       <source>Add from Open…</source>
-      <translation>Add from Open…</translation>
+      <translation>開いているものから追加…</translation>
     </message>
     <message>
       <source>Clear Views</source>
-      <translation>Clear Views</translation>
+      <translation>ビューをクリア</translation>
     </message>
     <message>
       <source>Compress to Chip</source>
-      <translation>Compress to Chip</translation>
+      <translation>チップに圧縮</translation>
     </message>
     <message>
       <source>Delete</source>
-      <translation>Delete</translation>
+      <translation>削除</translation>
     </message>
     <message>
       <source>Duplicate</source>
-      <translation>Duplicate</translation>
+      <translation>複製</translation>
     </message>
     <message>
       <source>New Bundle</source>
-      <translation>New Bundle</translation>
+      <translation>新しいバンドル</translation>
     </message>
     <message>
       <source>Remove Selected</source>
-      <translation>Remove Selected</translation>
+      <translation>選択を削除</translation>
     </message>
     <message>
       <source>View Bundles</source>
-      <translation>View Bundles</translation>
+      <translation>ビューバンドル</translation>
+    </message>
+    <message>
+      <source>Choose views to add:</source>
+      <translation>追加するビューを選択:</translation>
+    </message>
+    <message>
+      <source>Select all open views</source>
+      <translation>開いているすべてのビューを選択</translation>
+    </message>
+    <message>
+      <source>Drop views here to add • Drop shortcuts here to apply to THIS bundle</source>
+      <translation>ここにビューをドロップして追加 • ここにショートカットをドロップしてこのバンドルに適用</translation>
+    </message>
+    <message>
+      <source>Bundles</source>
+      <translation>バンドル</translation>
+    </message>
+    <message>
+      <source>Views in Selected Bundle</source>
+      <translation>選択されたバンドルのビュー</translation>
+    </message>
+    <message>
+      <source>Delete Chip</source>
+      <translation>チップを削除</translation>
+    </message>
+    <message>
+      <source>Drag to move · Ctrl+drag to apply · Drop views/shortcuts here</source>
+      <translation>ドラッグして移動 · Ctrl+ドラッグして適用 · ここにビュー/ショートカットをドロップ</translation>
     </message>
   </context>
   <context>
@@ -14611,11 +14663,11 @@ Ctrl を押しながらドラッグすると、位置天文学的解決 (WCS) �
     </message>
     <message>
       <source>Load Image File</source>
-      <translation>Load Image File</translation>
+      <translation>画像ファイルを読み込む</translation>
     </message>
     <message>
       <source>Load from View</source>
-      <translation>Load from View</translation>
+      <translation>ビューから読み込む</translation>
     </message>
     <message>
       <source>AutoStretch</source>
@@ -14623,208 +14675,208 @@ Ctrl を押しながらドラッグすると、位置天文学的解決 (WCS) �
     </message>
     <message>
       <source>Shift+Click to define a search region</source>
-      <translation>Shift+Click to define a search region</translation>
+      <translation>Shift+クリックで検索領域を定義</translation>
     </message>
     <message>
       <source>Query Simbad</source>
-      <translation>Query Simbad</translation>
+      <translation>Simbadを照会</translation>
     </message>
     <message>
       <source>Save CSV</source>
-      <translation>Save CSV</translation>
+      <translation>CSVを保存</translation>
     </message>
     <message>
       <source>Advanced Search</source>
-      <translation>Advanced Search</translation>
+      <translation>詳細検索</translation>
     </message>
     <message>
       <source>Status: Ready</source>
-      <translation>Status: Ready</translation>
+      <translation>ステータス: 準備完了</translation>
     </message>
   </context>
   <context>
     <name>WhatsInMySkyDialog</name>
     <message>
       <source>What's In My Sky</source>
-      <translation>What's In My Sky</translation>
+      <translation>私の空にあるもの</translation>
     </message>
     <message>
       <source>Latitude:</source>
-      <translation>Latitude:</translation>
+      <translation>緯度:</translation>
     </message>
     <message>
       <source>Longitude (E+, W−):</source>
-      <translation>Longitude (E+, W−):</translation>
+      <translation>経度 (E+, W−):</translation>
     </message>
     <message>
       <source>Date (YYYY-MM-DD):</source>
-      <translation>Date (YYYY-MM-DD):</translation>
+      <translation>日付 (YYYY-MM-DD):</translation>
     </message>
     <message>
       <source>Time (HH:MM):</source>
-      <translation>Time (HH:MM):</translation>
+      <translation>時間 (HH:MM):</translation>
     </message>
     <message>
       <source>Time Zone:</source>
-      <translation>Time Zone:</translation>
+      <translation>タイムゾーン:</translation>
     </message>
     <message>
       <source>Min Altitude (0–90°):</source>
-      <translation>Min Altitude (0–90°):</translation>
+      <translation>最低高度 (0–90°):</translation>
     </message>
     <message>
       <source>Catalog Filters:</source>
-      <translation>Catalog Filters:</translation>
+      <translation>カタログフィルター:</translation>
     </message>
     <message>
       <source>Degrees</source>
-      <translation>Degrees</translation>
+      <translation>度</translation>
     </message>
     <message>
       <source>H:M:S / D:M:S</source>
-      <translation>H:M:S / D:M:S</translation>
+      <translation>時:分:秒 / 度:分:秒</translation>
     </message>
     <message>
       <source>RA/Dec Format:</source>
-      <translation>RA/Dec Format:</translation>
+      <translation>赤経/赤緯形式:</translation>
     </message>
     <message>
       <source>Calculate</source>
-      <translation>Calculate</translation>
+      <translation>計算</translation>
     </message>
     <message>
       <source>Status: Idle</source>
-      <translation>Status: Idle</translation>
+      <translation>ステータス: アイドル</translation>
     </message>
     <message>
       <source>Local Sidereal Time: 0.000</source>
-      <translation>Local Sidereal Time: 0.000</translation>
+      <translation>地方恒星時: 0.000</translation>
     </message>
     <message>
       <source>Lunar Phase: N/A</source>
-      <translation>Lunar Phase: N/A</translation>
+      <translation>月相: N/A</translation>
     </message>
     <message>
       <source>Name</source>
-      <translation>Name</translation>
+      <translation>名前</translation>
     </message>
     <message>
       <source>RA</source>
-      <translation>RA</translation>
+      <translation>赤経</translation>
     </message>
     <message>
       <source>Dec</source>
-      <translation>Dec</translation>
+      <translation>赤緯</translation>
     </message>
     <message>
       <source>Altitude</source>
-      <translation>Altitude</translation>
+      <translation>高度</translation>
     </message>
     <message>
       <source>Azimuth</source>
-      <translation>Azimuth</translation>
+      <translation>方位角</translation>
     </message>
     <message>
       <source>Minutes to Transit</source>
-      <translation>Minutes to Transit</translation>
+      <translation>子午線通過まで (分)</translation>
     </message>
     <message>
       <source>Before/After Transit</source>
-      <translation>Before/After Transit</translation>
+      <translation>子午線通過前/後</translation>
     </message>
     <message>
       <source>Degrees from Moon</source>
-      <translation>Degrees from Moon</translation>
+      <translation>月からの角度</translation>
     </message>
     <message>
       <source>Alt Name</source>
-      <translation>Alt Name</translation>
+      <translation>別名</translation>
     </message>
     <message>
       <source>Type</source>
-      <translation>Type</translation>
+      <translation>タイプ</translation>
     </message>
     <message>
       <source>Magnitude</source>
-      <translation>Magnitude</translation>
+      <translation>等級</translation>
     </message>
     <message>
       <source>Size (arcmin)</source>
-      <translation>Size (arcmin)</translation>
+      <translation>サイズ (分角)</translation>
     </message>
     <message>
       <source>Add Custom Object</source>
-      <translation>Add Custom Object</translation>
+      <translation>カスタム天体を追加</translation>
     </message>
     <message>
       <source>Save to CSV</source>
-      <translation>Save to CSV</translation>
+      <translation>CSVに保存</translation>
     </message>
     <message>
       <source>Settings</source>
-      <translation>Settings</translation>
+      <translation>設定</translation>
     </message>
     <message>
       <source>Enter number of objects to display:</source>
-      <translation>Enter number of objects to display:</translation>
+      <translation>表示する天体数を入力:</translation>
     </message>
     <message>
       <source>Enter object name:</source>
-      <translation>Enter object name:</translation>
+      <translation>天体名を入力:</translation>
     </message>
     <message>
       <source>Enter RA (deg):</source>
-      <translation>Enter RA (deg):</translation>
+      <translation>赤経を入力 (度):</translation>
     </message>
     <message>
       <source>Enter Dec (deg):</source>
-      <translation>Enter Dec (deg):</translation>
+      <translation>赤緯を入力 (度):</translation>
     </message>
     <message>
       <source>Added custom object: {}</source>
-      <translation>Added custom object: {}</translation>
+      <translation>カスタム天体を追加しました: {}</translation>
     </message>
     <message>
       <source>Could not update catalog:
 {}</source>
-      <translation>Could not update catalog:
+      <translation>カタログを更新できませんでした:
 {}</translation>
     </message>
     <message>
       <source>Save CSV File</source>
-      <translation>Save CSV File</translation>
+      <translation>CSVファイルを保存</translation>
     </message>
     <message>
       <source>CSV files (*.csv);;All Files (*)</source>
-      <translation>CSV files (*.csv);;All Files (*)</translation>
+      <translation>CSVファイル (*.csv);;すべてのファイル (*)</translation>
     </message>
     <message>
       <source>Data saved to {}</source>
-      <translation>Data saved to {}</translation>
+      <translation>データは {} に保存されました</translation>
     </message>
     <message>
       <source>Invalid input: {}</source>
-      <translation>Invalid input: {}</translation>
+      <translation>無効な入力: {}</translation>
     </message>
     <message>
       <source> Please verify your longitude/timezone.</source>
-      <translation> Please verify your longitude/timezone.</translation>
+      <translation> 経度/タイムゾーンを確認してください。</translation>
     </message>
     <message>
       <source>Inputs look consistent.</source>
-      <translation>Inputs look consistent.</translation>
+      <translation>入力は整合しているようです。</translation>
     </message>
     <message>
       <source>Calculating…</source>
-      <translation>Calculating…</translation>
+      <translation>計算中…</translation>
     </message>
     <message>
       <source>Lunar Phase: {}% illuminated</source>
-      <translation>Lunar Phase: {}% illuminated</translation>
+      <translation>月相: {}% 輝面比</translation>
     </message>
     <message>
       <source>Status: {}</source>
-      <translation>Status: {}</translation>
+      <translation>ステータス: {}</translation>
     </message>
   </context>
 </TS>

@@ -174,7 +174,7 @@ class BundleChip(QWidget):
         v.setSpacing(0)
         self._title = QLabel(self._name)
         self._title.setObjectName("chipTitle")
-        self._hint = QLabel("Drag to move · Ctrl+drag to apply · Drop views/shortcuts here")
+        self._hint = QLabel(self._panel.tr("Drag to move · Ctrl+drag to apply · Drop views/shortcuts here"))
         self._hint.setObjectName("chipHint")
         v.addWidget(self._title, 0, Qt.AlignmentFlag.AlignCenter)
         v.addWidget(self._hint, 0, Qt.AlignmentFlag.AlignCenter)
@@ -265,7 +265,7 @@ class BundleChip(QWidget):
 
     def contextMenuEvent(self, ev):
         m = QMenu(self)
-        act_del = m.addAction("Delete Chip")
+        act_del = m.addAction(self._panel.tr("Delete Chip"))
         act = m.exec(ev.globalPos())
         if act is act_del:
             try:
@@ -384,11 +384,11 @@ class SelectViewsDialog(QDialog):
         self._boxes: list[QCheckBox] = []
 
         v = QVBoxLayout(self)
-        v.addWidget(QLabel("Choose views to add:"))
+        v.addWidget(QLabel(self.tr("Choose views to add:")))
         v.setSpacing(6)
 
         # NEW: "Select all" checkbox
-        self._select_all = QCheckBox("Select all open views")
+        self._select_all = QCheckBox(self.tr("Select all open views"))
         self._select_all.toggled.connect(self._on_select_all_toggled)
         v.addWidget(self._select_all)
 
@@ -547,19 +547,19 @@ class ViewBundleDialog(QDialog):
         self.btn_add_files = QPushButton(self.tr("Add Files…"))
         self.btn_add_dir   = QPushButton(self.tr("Add Directory (Recursive)…"))        
         self.btn_compress = QPushButton(self.tr("Compress to Chip"))
-        self.drop_hint = QLabel("Drop views here to add • Drop shortcuts here to apply to THIS bundle")
+        self.drop_hint = QLabel(self.tr("Drop views here to add • Drop shortcuts here to apply to THIS bundle"))
         self.drop_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.drop_hint.setStyleSheet("color:#aaa; padding:6px; border:1px dashed #666; border-radius:6px;")
 
         left = QVBoxLayout()
-        left.addWidget(QLabel("Bundles"))
+        left.addWidget(QLabel(self.tr("Bundles")))
         left.addWidget(self.list, 1)
         row = QHBoxLayout()
         row.addWidget(self.btn_new); row.addWidget(self.btn_dup); row.addWidget(self.btn_del)
         left.addLayout(row)
 
         right = QVBoxLayout()
-        right.addWidget(QLabel("Views in Selected Bundle"))
+        right.addWidget(QLabel(self.tr("Views in Selected Bundle")))
         right.addWidget(self.docs, 1)
 
         rrow = QHBoxLayout()

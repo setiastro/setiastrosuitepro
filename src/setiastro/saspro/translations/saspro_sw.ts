@@ -2189,7 +2189,7 @@ Alt+Buruta: dondosha kwenye mtazamo</translation>
     </message>
     <message>
       <source>Clear Selections</source>
-      <translation>Futa Chaguzi</translation>
+      <translation>Futa Chaguo</translation>
     </message>
     <message>
       <source>Collisions</source>
@@ -4644,39 +4644,63 @@ Liondoe kwenye orodha ya miradi ya hivi karibuni?</translation>
     <name>FunctionBundleDialog</name>
     <message>
       <source>Apply to Active View</source>
-      <translation>Apply to Active View</translation>
+      <translation>Tumia kwa Mwonekano Amilifu</translation>
     </message>
     <message>
       <source>Apply to View Bundle…</source>
-      <translation>Apply to View Bundle…</translation>
+      <translation>Tumia kwa Kifurushi cha Mwonekano…</translation>
     </message>
     <message>
       <source>Clear Steps</source>
-      <translation>Clear Steps</translation>
+      <translation>Futa Hatua</translation>
     </message>
     <message>
       <source>Compress to Chip</source>
-      <translation>Compress to Chip</translation>
+      <translation>Bana kwa Chip</translation>
     </message>
     <message>
       <source>Drag Bundle</source>
-      <translation>Drag Bundle</translation>
+      <translation>Buruta Kifurushi</translation>
     </message>
     <message>
       <source>Edit Preset…</source>
-      <translation>Edit Preset…</translation>
+      <translation>Hariri Usanidi wa Awali…</translation>
     </message>
     <message>
       <source>Remove Selected</source>
-      <translation>Remove Selected</translation>
+      <translation>Ondoa Iliyochaguliwa</translation>
     </message>
     <message>
       <source>▲ Move Up</source>
-      <translation>▲ Move Up</translation>
+      <translation>▲ Sogeza Juu</translation>
     </message>
     <message>
       <source>▼ Move Down</source>
-      <translation>▼ Move Down</translation>
+      <translation>▼ Sogeza Chini</translation>
+    </message>
+    <message>
+      <source>Function Bundles</source>
+      <translation>Vifurushi vya Kazi</translation>
+    </message>
+    <message>
+      <source>New</source>
+      <translation>Mpya</translation>
+    </message>
+    <message>
+      <source>Duplicate</source>
+      <translation>Rudufu</translation>
+    </message>
+    <message>
+      <source>Delete</source>
+      <translation>Futa</translation>
+    </message>
+    <message>
+      <source>Drop shortcuts here to add steps</source>
+      <translation>Dondosha njia za mkato hapa ili kuongeza hatua</translation>
+    </message>
+    <message>
+      <source>Delete Chip</source>
+      <translation>Futa Chip</translation>
     </message>
   </context>
   <context>
@@ -6739,7 +6763,7 @@ Iweke katika Mapendeleo → ASTAP inayoweza kutekelezwa.</translation>
     </message>
     <message>
       <source>Delete</source>
-      <translation>Delete</translation>
+      <translation>Futa</translation>
     </message>
     <message>
       <source>Edit Preset (JSON)</source>
@@ -13896,43 +13920,71 @@ Endesha kisakinishaji sasa? (SAS itafungwa.)</translation>
     <name>ViewBundleDialog</name>
     <message>
       <source>Add Directory (Recursive)…</source>
-      <translation>Add Directory (Recursive)…</translation>
+      <translation>Ongeza Saraka (Kujirudia)…</translation>
     </message>
     <message>
       <source>Add Files…</source>
-      <translation>Add Files…</translation>
+      <translation>Ongeza Faili…</translation>
     </message>
     <message>
       <source>Add from Open…</source>
-      <translation>Add from Open…</translation>
+      <translation>Ongeza kutoka kwa Iliyo wazi…</translation>
     </message>
     <message>
       <source>Clear Views</source>
-      <translation>Clear Views</translation>
+      <translation>Futa Mionekano</translation>
     </message>
     <message>
       <source>Compress to Chip</source>
-      <translation>Compress to Chip</translation>
+      <translation>Bana kwa Chip</translation>
     </message>
     <message>
       <source>Delete</source>
-      <translation>Delete</translation>
+      <translation>Futa</translation>
     </message>
     <message>
       <source>Duplicate</source>
-      <translation>Duplicate</translation>
+      <translation>Rudufu</translation>
     </message>
     <message>
       <source>New Bundle</source>
-      <translation>New Bundle</translation>
+      <translation>Kifurushi Kipya</translation>
     </message>
     <message>
       <source>Remove Selected</source>
-      <translation>Remove Selected</translation>
+      <translation>Ondoa Iliyochaguliwa</translation>
     </message>
     <message>
       <source>View Bundles</source>
-      <translation>View Bundles</translation>
+      <translation>Angalia Vifurushi</translation>
+    </message>
+    <message>
+      <source>Choose views to add:</source>
+      <translation>Chagua mionekano ya kuongeza:</translation>
+    </message>
+    <message>
+      <source>Select all open views</source>
+      <translation>Chagua mionekano yote iliyo wazi</translation>
+    </message>
+    <message>
+      <source>Drop views here to add • Drop shortcuts here to apply to THIS bundle</source>
+      <translation>Dondosha mionekano hapa ili kuongeza • Dondosha njia za mkato hapa ili kutumia kwa KIFURUSHI hiki</translation>
+    </message>
+    <message>
+      <source>Bundles</source>
+      <translation>Vifurushi</translation>
+    </message>
+    <message>
+      <source>Views in Selected Bundle</source>
+      <translation>Mionekano katika Kifurushi Kilichochaguliwa</translation>
+    </message>
+    <message>
+      <source>Delete Chip</source>
+      <translation>Futa Chip</translation>
+    </message>
+    <message>
+      <source>Drag to move · Ctrl+drag to apply · Drop views/shortcuts here</source>
+      <translation>Buruta ili kusogeza · Ctrl+buruta ili kutumia · Dondosha mionekano/njia za mkato hapa</translation>
     </message>
   </context>
   <context>
@@ -14868,11 +14920,11 @@ Shikilia Ctrl ukiburuta ili kunakili suluhisho la astrometriki (WCS) kwenye mwon
     </message>
     <message>
       <source>Load Image File</source>
-      <translation>Load Image File</translation>
+      <translation>Pakia Faili ya Picha</translation>
     </message>
     <message>
       <source>Load from View</source>
-      <translation>Load from View</translation>
+      <translation>Pakia kutoka kwa Mwonekano</translation>
     </message>
     <message>
       <source>AutoStretch</source>
@@ -14880,90 +14932,90 @@ Shikilia Ctrl ukiburuta ili kunakili suluhisho la astrometriki (WCS) kwenye mwon
     </message>
     <message>
       <source>Shift+Click to define a search region</source>
-      <translation>Shift+Click to define a search region</translation>
+      <translation>Shift+Bonyeza kufafanua eneo la utafutaji</translation>
     </message>
     <message>
       <source>Query Simbad</source>
-      <translation>Query Simbad</translation>
+      <translation>Hoja Simbad</translation>
     </message>
     <message>
       <source>Save CSV</source>
-      <translation>Save CSV</translation>
+      <translation>Hifadhi CSV</translation>
     </message>
     <message>
       <source>Advanced Search</source>
-      <translation>Advanced Search</translation>
+      <translation>Utafutaji wa Kina</translation>
     </message>
     <message>
       <source>Status: Ready</source>
-      <translation>Status: Ready</translation>
+      <translation>Hali: Tayari</translation>
     </message>
   </context>
   <context>
     <name>WhatsInMySkyDialog</name>
     <message>
       <source>What's In My Sky</source>
-      <translation>What's In My Sky</translation>
+      <translation>Kuna Nini Kwenye Anga Yangu</translation>
     </message>
     <message>
       <source>Latitude:</source>
-      <translation>Latitude:</translation>
+      <translation>Latitudo:</translation>
     </message>
     <message>
       <source>Longitude (E+, W−):</source>
-      <translation>Longitude (E+, W−):</translation>
+      <translation>Longitudo (E+, M−):</translation>
     </message>
     <message>
       <source>Date (YYYY-MM-DD):</source>
-      <translation>Date (YYYY-MM-DD):</translation>
+      <translation>Tarehe (MwMwMwMw-MmMm-SsSs):</translation>
     </message>
     <message>
       <source>Time (HH:MM):</source>
-      <translation>Time (HH:MM):</translation>
+      <translation>Muda (Ss:Dd):</translation>
     </message>
     <message>
       <source>Time Zone:</source>
-      <translation>Time Zone:</translation>
+      <translation>Ukanda wa Saa:</translation>
     </message>
     <message>
       <source>Min Altitude (0–90°):</source>
-      <translation>Min Altitude (0–90°):</translation>
+      <translation>Mwinuko wa chini (0–90°):</translation>
     </message>
     <message>
       <source>Catalog Filters:</source>
-      <translation>Catalog Filters:</translation>
+      <translation>Vichungi vya Orodha:</translation>
     </message>
     <message>
       <source>Degrees</source>
-      <translation>Degrees</translation>
+      <translation>Digrii</translation>
     </message>
     <message>
       <source>H:M:S / D:M:S</source>
-      <translation>H:M:S / D:M:S</translation>
+      <translation>S:D:S / D:M:S</translation>
     </message>
     <message>
       <source>RA/Dec Format:</source>
-      <translation>RA/Dec Format:</translation>
+      <translation>Muundo wa RA/Dec:</translation>
     </message>
     <message>
       <source>Calculate</source>
-      <translation>Calculate</translation>
+      <translation>Kokotoa</translation>
     </message>
     <message>
       <source>Status: Idle</source>
-      <translation>Status: Idle</translation>
+      <translation>Hali: Haifanyi kazi</translation>
     </message>
     <message>
       <source>Local Sidereal Time: 0.000</source>
-      <translation>Local Sidereal Time: 0.000</translation>
+      <translation>Saa ya Nyota ya Mahali: 0.000</translation>
     </message>
     <message>
       <source>Lunar Phase: N/A</source>
-      <translation>Lunar Phase: N/A</translation>
+      <translation>Awamu ya Mwezi: N/A</translation>
     </message>
     <message>
       <source>Name</source>
-      <translation>Name</translation>
+      <translation>Jina</translation>
     </message>
     <message>
       <source>RA</source>
@@ -14975,7 +15027,7 @@ Shikilia Ctrl ukiburuta ili kunakili suluhisho la astrometriki (WCS) kwenye mwon
     </message>
     <message>
       <source>Altitude</source>
-      <translation>Altitude</translation>
+      <translation>Mwinuko</translation>
     </message>
     <message>
       <source>Azimuth</source>
@@ -14983,105 +15035,105 @@ Shikilia Ctrl ukiburuta ili kunakili suluhisho la astrometriki (WCS) kwenye mwon
     </message>
     <message>
       <source>Minutes to Transit</source>
-      <translation>Minutes to Transit</translation>
+      <translation>Dakika hadi Kupita</translation>
     </message>
     <message>
       <source>Before/After Transit</source>
-      <translation>Before/After Transit</translation>
+      <translation>Kabla/Baada ya Kupita</translation>
     </message>
     <message>
       <source>Degrees from Moon</source>
-      <translation>Degrees from Moon</translation>
+      <translation>Digrii kutoka kwa Mwezi</translation>
     </message>
     <message>
       <source>Alt Name</source>
-      <translation>Alt Name</translation>
+      <translation>Jina jingine</translation>
     </message>
     <message>
       <source>Type</source>
-      <translation>Type</translation>
+      <translation>Aina</translation>
     </message>
     <message>
       <source>Magnitude</source>
-      <translation>Magnitude</translation>
+      <translation>Magnitudi</translation>
     </message>
     <message>
       <source>Size (arcmin)</source>
-      <translation>Size (arcmin)</translation>
+      <translation>Ukubwa (dakika za arc)</translation>
     </message>
     <message>
       <source>Add Custom Object</source>
-      <translation>Add Custom Object</translation>
+      <translation>Ongeza Kitu Maalum</translation>
     </message>
     <message>
       <source>Save to CSV</source>
-      <translation>Save to CSV</translation>
+      <translation>Hifadhi kama CSV</translation>
     </message>
     <message>
       <source>Settings</source>
-      <translation>Settings</translation>
+      <translation>Mipangilio</translation>
     </message>
     <message>
       <source>Enter number of objects to display:</source>
-      <translation>Enter number of objects to display:</translation>
+      <translation>Ingiza idadi ya vitu vya kuonyesha:</translation>
     </message>
     <message>
       <source>Enter object name:</source>
-      <translation>Enter object name:</translation>
+      <translation>Ingiza jina la kitu:</translation>
     </message>
     <message>
       <source>Enter RA (deg):</source>
-      <translation>Enter RA (deg):</translation>
+      <translation>Ingiza RA (digrii):</translation>
     </message>
     <message>
       <source>Enter Dec (deg):</source>
-      <translation>Enter Dec (deg):</translation>
+      <translation>Ingiza Dec (digrii):</translation>
     </message>
     <message>
       <source>Added custom object: {}</source>
-      <translation>Added custom object: {}</translation>
+      <translation>Kitu maalum kimeongezwa: {}</translation>
     </message>
     <message>
       <source>Could not update catalog:
 {}</source>
-      <translation>Could not update catalog:
+      <translation>Imeshindikana kusasisha orodha:
 {}</translation>
     </message>
     <message>
       <source>Save CSV File</source>
-      <translation>Save CSV File</translation>
+      <translation>Hifadhi Faili la CSV</translation>
     </message>
     <message>
       <source>CSV files (*.csv);;All Files (*)</source>
-      <translation>CSV files (*.csv);;All Files (*)</translation>
+      <translation>Faili za CSV (*.csv);;Faili Zote (*)</translation>
     </message>
     <message>
       <source>Data saved to {}</source>
-      <translation>Data saved to {}</translation>
+      <translation>Data imehifadhiwa kwa {}</translation>
     </message>
     <message>
       <source>Invalid input: {}</source>
-      <translation>Invalid input: {}</translation>
+      <translation>Ingizo batili: {}</translation>
     </message>
     <message>
       <source> Please verify your longitude/timezone.</source>
-      <translation> Please verify your longitude/timezone.</translation>
+      <translation> Tafadhali hakiki longitudo/ukanda wa saa wako.</translation>
     </message>
     <message>
       <source>Inputs look consistent.</source>
-      <translation>Inputs look consistent.</translation>
+      <translation>Maingizo yanaonekana sawa.</translation>
     </message>
     <message>
       <source>Calculating…</source>
-      <translation>Calculating…</translation>
+      <translation>Inakokotoa…</translation>
     </message>
     <message>
       <source>Lunar Phase: {}% illuminated</source>
-      <translation>Lunar Phase: {}% illuminated</translation>
+      <translation>Awamu ya Mwezi: {}% imemulikwa</translation>
     </message>
     <message>
       <source>Status: {}</source>
-      <translation>Status: {}</translation>
+      <translation>Hali: {}</translation>
     </message>
   </context>
 </TS>

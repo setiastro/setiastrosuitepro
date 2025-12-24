@@ -202,7 +202,7 @@ class FunctionBundleChip(QWidget):
         from PyQt6.QtWidgets import QMenu  # already imported at top, but safe
 
         m = QMenu(self)
-        act_del = m.addAction("Delete Chip")
+        act_del = m.addAction(self._panel.tr("Delete Chip"))
         act = m.exec(ev.globalPos())
         if act is act_del:
             try:
@@ -333,7 +333,7 @@ class FunctionBundleDialog(QDialog):
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         _pin_on_top_mac(self)
-        self.setWindowTitle("Function Bundles")
+        self.setWindowTitle(self.tr("Function Bundles"))
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
@@ -350,9 +350,9 @@ class FunctionBundleDialog(QDialog):
         self.list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
 
-        self.btn_new = QPushButton("New")
-        self.btn_dup = QPushButton("Duplicate")
-        self.btn_del = QPushButton("Delete")
+        self.btn_new = QPushButton(self.tr("New"))
+        self.btn_dup = QPushButton(self.tr("Duplicate"))
+        self.btn_del = QPushButton(self.tr("Delete"))
 
         # right: steps
         self.steps = QListWidget()
@@ -368,7 +368,7 @@ class FunctionBundleDialog(QDialog):
         self.steps.setResizeMode(QListView.ResizeMode.Adjust)  # recompute item layout on width change
         self.steps.setUniformItemSizes(False)
 
-        self.add_hint = QLabel("Drop shortcuts here to add steps")
+        self.add_hint = QLabel(self.tr("Drop shortcuts here to add steps"))
         self.add_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.add_hint.setStyleSheet("color:#aaa; padding:6px; border:1px dashed #666; border-radius:6px;")
 
@@ -387,7 +387,7 @@ class FunctionBundleDialog(QDialog):
 
         # layout
         left = QVBoxLayout()
-        left.addWidget(QLabel("Function Bundles"))
+        left.addWidget(QLabel(self.tr("Function Bundles")))
         left.addWidget(self.list, 1)
         row = QHBoxLayout()
         row.addWidget(self.btn_new); row.addWidget(self.btn_dup); row.addWidget(self.btn_del)
