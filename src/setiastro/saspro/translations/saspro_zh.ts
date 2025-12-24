@@ -1,0 +1,14675 @@
+<?xml version='1.0' encoding='utf-8'?>
+<TS version="2.1" language="zh">
+  <context>
+    <name>ABEDialog</name>
+    <message>
+      <source># sample points:</source>
+      <translation># 采样点：</translation>
+    </message>
+    <message>
+      <source>Apply</source>
+      <translation>应用</translation>
+    </message>
+    <message>
+      <source>Automatic Background Extraction (ABE)</source>
+      <translation>自动背景提取 (ABE)</translation>
+    </message>
+    <message>
+      <source>Clear Exclusions</source>
+      <translation>清除排除区域</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>关闭</translation>
+    </message>
+    <message>
+      <source>Create background document</source>
+      <translation>创建背景文档</translation>
+    </message>
+    <message>
+      <source>Downsample factor:</source>
+      <translation>降采样因子：</translation>
+    </message>
+    <message>
+      <source>Enable RBF refinement (after polynomial)</source>
+      <translation>启用RBF细化（多项式后）</translation>
+    </message>
+    <message>
+      <source>Patch size (px):</source>
+      <translation>块大小（像素）：</translation>
+    </message>
+    <message>
+      <source>Polynomial degree:</source>
+      <translation>多项式阶数：</translation>
+    </message>
+    <message>
+      <source>Preview</source>
+      <translation>预览</translation>
+    </message>
+    <message>
+      <source>Preview background instead of corrected</source>
+      <translation>预览背景而非校正图像</translation>
+    </message>
+    <message>
+      <source>RBF Refinement</source>
+      <translation>RBF细化</translation>
+    </message>
+    <message>
+      <source>Smooth (x0.01):</source>
+      <translation>平滑度（x0.01）：</translation>
+    </message>
+  </context>
+  <context>
+    <name>AberrationAIDialog</name>
+    <message>
+      <source>Auto GPU (if available)</source>
+      <translation>自动GPU（如可用）</translation>
+    </message>
+    <message>
+      <source>Browse…</source>
+      <translation>浏览…</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>关闭</translation>
+    </message>
+    <message>
+      <source>Download latest model…</source>
+      <translation>下载最新模型…</translation>
+    </message>
+    <message>
+      <source>Model:</source>
+      <translation>模型：</translation>
+    </message>
+    <message>
+      <source>Open model folder</source>
+      <translation>打开模型文件夹</translation>
+    </message>
+    <message>
+      <source>Overlap</source>
+      <translation>重叠</translation>
+    </message>
+    <message>
+      <source>Patch</source>
+      <translation>分块</translation>
+    </message>
+    <message>
+      <source>Provider:</source>
+      <translation>提供者：</translation>
+    </message>
+    <message>
+      <source>R.A.'s Aberration Correction (AI)</source>
+      <translation>R.A.像差校正（AI）</translation>
+    </message>
+    <message>
+      <source>Run</source>
+      <translation>运行</translation>
+    </message>
+  </context>
+  <context>
+    <name>AboutDialog</name>
+    <message>
+      <source>About Seti Astro Suite</source>
+      <translation>关于 Seti Astro Suite</translation>
+    </message>
+    <message>
+      <source>Build:</source>
+      <translation>构建版本：</translation>
+    </message>
+    <message>
+      <source>Click here to donate</source>
+      <translation>点击此处捐赠</translation>
+    </message>
+    <message>
+      <source>Collaborators: Fabio Tempera</source>
+      <translation>协作者：Fabio Tempera</translation>
+    </message>
+    <message>
+      <source>Copyright © 2025 Seti Astro</source>
+      <translation>版权所有 © 2025 Seti Astro</translation>
+    </message>
+    <message>
+      <source>Donations:</source>
+      <translation>捐赠：</translation>
+    </message>
+    <message>
+      <source>Website:</source>
+      <translation>网站：</translation>
+    </message>
+    <message>
+      <source>Written by Franklin Marek</source>
+      <translation>作者：Franklin Marek</translation>
+    </message>
+  </context>
+  <context>
+    <name>AddStarsDialog</name>
+    <message>
+      <source>Add Stars to Image</source>
+      <translation>向图像添加星点</translation>
+    </message>
+    <message>
+      <source>Apply</source>
+      <translation>应用</translation>
+    </message>
+    <message>
+      <source>Blend Ratio (Screen/Add Intensity):</source>
+      <translation>混合比例（滤色/叠加强度）：</translation>
+    </message>
+    <message>
+      <source>Blend Type:</source>
+      <translation>混合类型：</translation>
+    </message>
+    <message>
+      <source>Cancel</source>
+      <translation>取消</translation>
+    </message>
+    <message>
+      <source>Load from File</source>
+      <translation>从文件加载</translation>
+    </message>
+    <message>
+      <source>Refresh Views</source>
+      <translation>刷新视图</translation>
+    </message>
+    <message>
+      <source>Starless View:</source>
+      <translation>无星图像：</translation>
+    </message>
+    <message>
+      <source>Stars-Only View:</source>
+      <translation>仅星点图像：</translation>
+    </message>
+  </context>
+  <context>
+    <name>AfterAlignWorker</name>
+    <message>
+      <source>Post-alignment complete.
+
+{0}</source>
+      <translation>后对齐完成。
+
+{0}</translation>
+    </message>
+    <message>
+      <source>Post-alignment failed: {0}</source>
+      <translation>后对齐失败：{0}</translation>
+    </message>
+  </context>
+  <context>
+    <name>AstroSuiteProMainWindow</name>
+    <message>
+      <source>&amp;About</source>
+      <translation>关于(&amp;A)</translation>
+    </message>
+    <message>
+      <source>&amp;Edit</source>
+      <translation>编辑(&amp;E)</translation>
+    </message>
+    <message>
+      <source>&amp;Exit</source>
+      <translation>退出(&amp;X)</translation>
+    </message>
+    <message>
+      <source>&amp;File</source>
+      <translation>文件(&amp;F)</translation>
+    </message>
+    <message>
+      <source>&amp;Functions</source>
+      <translation>功能(&amp;U)</translation>
+    </message>
+    <message>
+      <source>&amp;Geometry</source>
+      <translation>几何变换(&amp;G)</translation>
+    </message>
+    <message>
+      <source>&amp;Header Mods &amp;&amp; Misc</source>
+      <translation>头信息修改和杂项(&amp;H)</translation>
+    </message>
+    <message>
+      <source>&amp;History</source>
+      <translation>历史(&amp;H)</translation>
+    </message>
+    <message>
+      <source>&amp;Masks</source>
+      <translation>蒙版(&amp;M)</translation>
+    </message>
+    <message>
+      <source>&amp;Scripts</source>
+      <translation>脚本(&amp;C)</translation>
+    </message>
+    <message>
+      <source>&amp;Settings</source>
+      <translation>设置(&amp;S)</translation>
+    </message>
+    <message>
+      <source>&amp;Shortcuts</source>
+      <translation>快捷方式(&amp;O)</translation>
+    </message>
+    <message>
+      <source>&amp;Smart Tools</source>
+      <translation>智能工具(&amp;M)</translation>
+    </message>
+    <message>
+      <source>&amp;Star Stuff</source>
+      <translation>星点处理(&amp;T)</translation>
+    </message>
+    <message>
+      <source>&amp;Tools</source>
+      <translation>工具(&amp;T)</translation>
+    </message>
+    <message>
+      <source>&amp;View</source>
+      <translation>视图(&amp;V)</translation>
+    </message>
+    <message>
+      <source>&amp;What's In My...</source>
+      <translation>我的图像中有什么...(&amp;W)</translation>
+    </message>
+    <message>
+      <source>1:1</source>
+      <translation>1:1</translation>
+    </message>
+    <message>
+      <source>ABE...</source>
+      <translation>自动背景提取...</translation>
+    </message>
+    <message>
+      <source>Aberration Correction (AI)...</source>
+      <translation>像差校正（AI）...</translation>
+    </message>
+    <message>
+      <source>About...</source>
+      <translation>关于...</translation>
+    </message>
+    <message>
+      <source>Add Stars...</source>
+      <translation>添加星点...</translation>
+    </message>
+    <message>
+      <source>Add diffraction spikes to detected stars</source>
+      <translation>为检测到的星点添加衍射尖峰</translation>
+    </message>
+    <message>
+      <source>Add signatures/overlays and bake them into the active image</source>
+      <translation>添加签名/叠加层并烘焙到当前图像</translation>
+    </message>
+    <message>
+      <source>Adjust specific hue ranges with CMY/RGB controls</source>
+      <translation>使用CMY/RGB控制调整特定色相范围</translation>
+    </message>
+    <message>
+      <source>Advanced diffraction spikes with halos, flares and rainbow effects</source>
+      <translation>高级衍射尖峰（带光晕、眩光和彩虹效果）</translation>
+    </message>
+    <message>
+      <source>Align R and B channels to G using astroalign (affine/homography/poly)</source>
+      <translation>使用astroalign将R和B通道对齐到G（仿射/单应/多项式）</translation>
+    </message>
+    <message>
+      <source>Align images via astroalign / triangles</source>
+      <translation>通过astroalign/三角形对齐图像</translation>
+    </message>
+    <message>
+      <source>Apply Mask</source>
+      <translation>应用蒙版</translation>
+    </message>
+    <message>
+      <source>Apply a mask document to the active image</source>
+      <translation>将蒙版文档应用到当前图像</translation>
+    </message>
+    <message>
+      <source>Apply the current Display-Stretch to the image and add an undo step</source>
+      <translation>将当前显示拉伸应用到图像并添加撤销步骤</translation>
+    </message>
+    <message>
+      <source>Apply the same stretch to all RGB channels</source>
+      <translation>对所有RGB通道应用相同的拉伸</translation>
+    </message>
+    <message>
+      <source>Apply white balance (Star-Based, Manual, or Auto)</source>
+      <translation>应用白平衡（基于星点、手动或自动）</translation>
+    </message>
+    <message>
+      <source>Arcsinh star stretch with optional SCNR and color boost</source>
+      <translation>反双曲正弦星点拉伸（可选SCNR和色彩增强）</translation>
+    </message>
+    <message>
+      <source>Arrange subwindows in a near-square grid</source>
+      <translation>将子窗口排列成近似正方形网格</translation>
+    </message>
+    <message>
+      <source>AstroBin Exporter...</source>
+      <translation>AstroBin导出器...</translation>
+    </message>
+    <message>
+      <source>AstroSpike...</source>
+      <translation>AstroSpike...</translation>
+    </message>
+    <message>
+      <source>Auto-fit on Resize</source>
+      <translation>调整大小时自动适应</translation>
+    </message>
+    <message>
+      <source>Automatic Background Extraction</source>
+      <translation>自动背景提取</translation>
+    </message>
+    <message>
+      <source>Background Neutralization...</source>
+      <translation>背景中和...</translation>
+    </message>
+    <message>
+      <source>Batch Converter...</source>
+      <translation>批量转换器...</translation>
+    </message>
+    <message>
+      <source>Batch Modify FITS Headers</source>
+      <translation>批量修改FITS头信息</translation>
+    </message>
+    <message>
+      <source>Batch Rename from FITS...</source>
+      <translation>从FITS批量重命名...</translation>
+    </message>
+    <message>
+      <source>Batch-align frames to a reference</source>
+      <translation>批量对齐帧到参考帧</translation>
+    </message>
+    <message>
+      <source>Blemish Blaster...</source>
+      <translation>瑕疵消除器...</translation>
+    </message>
+    <message>
+      <source>Blend a starless view with a stars-only view</source>
+      <translation>混合无星图像和纯星点图像</translation>
+    </message>
+    <message>
+      <source>Blend two open images (replace A or create new)</source>
+      <translation>混合两个打开的图像（替换A或创建新图像）</translation>
+    </message>
+    <message>
+      <source>Blink Comparator...</source>
+      <translation>闪烁比较器...</translation>
+    </message>
+    <message>
+      <source>Build mosaics from overlapping frames</source>
+      <translation>从重叠帧构建马赛克</translation>
+    </message>
+    <message>
+      <source>Bundles</source>
+      <translation>工具包</translation>
+    </message>
+    <message>
+      <source>CLAHE...</source>
+      <translation>CLAHE...</translation>
+    </message>
+    <message>
+      <source>Cascade Views</source>
+      <translation>层叠视图</translation>
+    </message>
+    <message>
+      <source>Cascade all subwindows</source>
+      <translation>层叠所有子窗口</translation>
+    </message>
+    <message>
+      <source>Check for Updates...</source>
+      <translation>检查更新...</translation>
+    </message>
+    <message>
+      <source>Clear All Shortcuts</source>
+      <translation>清除所有快捷方式</translation>
+    </message>
+    <message>
+      <source>Clear All Views</source>
+      <translation>关闭所有视图</translation>
+    </message>
+    <message>
+      <source>Clear Console</source>
+      <translation>Clear Console</translation>
+    </message>
+    <message>
+      <source>Clear List</source>
+      <translation>清除列表</translation>
+    </message>
+    <message>
+      <source>Close all views and clear shortcuts</source>
+      <translation>关闭所有视图并清除快捷方式</translation>
+    </message>
+    <message>
+      <source>Close all views and documents, keep desktop shortcuts</source>
+      <translation>关闭所有视图和文档，保留桌面快捷方式</translation>
+    </message>
+    <message>
+      <source>Combine narrowband to RGB with optional OSC stars</source>
+      <translation>将窄带合成RGB（可选OSC星点）</translation>
+    </message>
+    <message>
+      <source>Combine three mono images into RGB</source>
+      <translation>将三张单色图像合成RGB</translation>
+    </message>
+    <message>
+      <source>Compare a stack of images by blinking</source>
+      <translation>通过闪烁比较图像堆叠</translation>
+    </message>
+    <message>
+      <source>Console / Status</source>
+      <translation>Console / Status</translation>
+    </message>
+    <message>
+      <source>Continuum Subtract (NB - scaled broadband)</source>
+      <translation>连续谱减除（窄带 - 缩放宽带）</translation>
+    </message>
+    <message>
+      <source>Continuum Subtract...</source>
+      <translation>连续谱减除...</translation>
+    </message>
+    <message>
+      <source>Contrast Limited Adaptive Histogram Equalization</source>
+      <translation>对比度限制自适应直方图均衡化</translation>
+    </message>
+    <message>
+      <source>Convolution / Deconvolution...</source>
+      <translation>卷积/反卷积...</translation>
+    </message>
+    <message>
+      <source>Copy All</source>
+      <translation>Copy All</translation>
+    </message>
+    <message>
+      <source>Copy Astrometric Solution...</source>
+      <translation>复制天体测量解...</translation>
+    </message>
+    <message>
+      <source>Copy Selected</source>
+      <translation>Copy Selected</translation>
+    </message>
+    <message>
+      <source>Copy View (zoom/pan)</source>
+      <translation>复制视图（缩放/平移）</translation>
+    </message>
+    <message>
+      <source>Cosmic Clarity</source>
+      <translation>宇宙清晰度</translation>
+    </message>
+    <message>
+      <source>Cosmic Clarity Satellite...</source>
+      <translation>宇宙清晰度卫星...</translation>
+    </message>
+    <message>
+      <source>Cosmic Clarity UI...</source>
+      <translation>宇宙清晰度界面...</translation>
+    </message>
+    <message>
+      <source>Create Mask...</source>
+      <translation>创建蒙版...</translation>
+    </message>
+    <message>
+      <source>Create Sample Scripts...</source>
+      <translation>创建示例脚本...</translation>
+    </message>
+    <message>
+      <source>Create a mask from the active image</source>
+      <translation>从当前图像创建蒙版</translation>
+    </message>
+    <message>
+      <source>Create a new mono document using the selected luminance method</source>
+      <translation>使用选定的亮度方法创建新的单色文档</translation>
+    </message>
+    <message>
+      <source>Create and run bundles of functions/shortcuts</source>
+      <translation>创建并运行功能/快捷方式包</translation>
+    </message>
+    <message>
+      <source>Create bundles of views; drop shortcuts to apply to all</source>
+      <translation>创建视图包；拖放快捷方式应用到所有</translation>
+    </message>
+    <message>
+      <source>Crop / rotate with handles</source>
+      <translation>使用控制柄裁剪/旋转</translation>
+    </message>
+    <message>
+      <source>Crop...</source>
+      <translation>裁剪...</translation>
+    </message>
+    <message>
+      <source>Curves Editor...</source>
+      <translation>曲线编辑器...</translation>
+    </message>
+    <message>
+      <source>Debayer...</source>
+      <translation>解拜耳...</translation>
+    </message>
+    <message>
+      <source>Demosaic a Bayer-mosaic mono image to RGB</source>
+      <translation>将拜耳马赛克单色图像解马赛克为RGB</translation>
+    </message>
+    <message>
+      <source>Detect exoplanet transits from time-series subs</source>
+      <translation>从时间序列单帧中检测系外行星凌日</translation>
+    </message>
+    <message>
+      <source>Diffraction Spikes...</source>
+      <translation>衍射星芒...</translation>
+    </message>
+    <message>
+      <source>Display-Stretch</source>
+      <translation>显示拉伸</translation>
+    </message>
+    <message>
+      <source>Documentation...</source>
+      <translation>文档...</translation>
+    </message>
+    <message>
+      <source>Enhance faint/dark structures with wavelet-guided masking</source>
+      <translation>使用小波引导蒙版增强暗弱结构</translation>
+    </message>
+    <message>
+      <source>Erosion, dilation, opening, and closing.</source>
+      <translation>腐蚀、膨胀、开运算和闭运算。</translation>
+    </message>
+    <message>
+      <source>Evaluate expressions using open view names</source>
+      <translation>使用打开的视图名称计算表达式</translation>
+    </message>
+    <message>
+      <source>Exoplanet Detector...</source>
+      <translation>系外行星检测器...</translation>
+    </message>
+    <message>
+      <source>Explorer</source>
+      <translation>Explorer</translation>
+    </message>
+    <message>
+      <source>Export Shortcuts...</source>
+      <translation>导出快捷方式...</translation>
+    </message>
+    <message>
+      <source>Extract Luminance</source>
+      <translation>提取亮度</translation>
+    </message>
+    <message>
+      <source>Extract R/G/B as three mono documents</source>
+      <translation>提取R/G/B为三个单色文档</translation>
+    </message>
+    <message>
+      <source>FITS Header Batch Modifier...</source>
+      <translation>FITS头批量修改器...</translation>
+    </message>
+    <message>
+      <source>FITS Header Modifier...</source>
+      <translation>FITS头修改器...</translation>
+    </message>
+    <message>
+      <source>Find transients/anomalies across frames</source>
+      <translation>在帧之间查找瞬变/异常</translation>
+    </message>
+    <message>
+      <source>Fit</source>
+      <translation>适应</translation>
+    </message>
+    <message>
+      <source>Fit galaxy isophotes and reveal residuals</source>
+      <translation>拟合星系等光度线并显示残差</translation>
+    </message>
+    <message>
+      <source>Fit image to current window</source>
+      <translation>适应窗口大小</translation>
+    </message>
+    <message>
+      <source>Flip Horizontal</source>
+      <translation>水平翻转</translation>
+    </message>
+    <message>
+      <source>Flip Vertical</source>
+      <translation>垂直翻转</translation>
+    </message>
+    <message>
+      <source>Flip image left&lt;-&gt;right</source>
+      <translation>左右翻转图像</translation>
+    </message>
+    <message>
+      <source>Flip image top&lt;-&gt;bottom</source>
+      <translation>上下翻转图像</translation>
+    </message>
+    <message>
+      <source>Frequency Separation...</source>
+      <translation>频率分离...</translation>
+    </message>
+    <message>
+      <source>Function Bundles...</source>
+      <translation>功能包...</translation>
+    </message>
+    <message>
+      <source>Functions</source>
+      <translation>功能</translation>
+    </message>
+    <message>
+      <source>GLIMR -- Isophote Modeler...</source>
+      <translation>GLIMR -- 等光度线建模器...</translation>
+    </message>
+    <message>
+      <source>Generalized hyperbolic stretch (α/beta/gamma, LP/HP, pivot)</source>
+      <translation>广义双曲线拉伸（α/beta/γ、低通/高通、中心点）</translation>
+    </message>
+    <message>
+      <source>Geometry</source>
+      <translation>几何变换</translation>
+    </message>
+    <message>
+      <source>Group A</source>
+      <translation>组 A</translation>
+    </message>
+    <message>
+      <source>Group B</source>
+      <translation>组 B</translation>
+    </message>
+    <message>
+      <source>Group C</source>
+      <translation>组 C</translation>
+    </message>
+    <message>
+      <source>Group D</source>
+      <translation>组 D</translation>
+    </message>
+    <message>
+      <source>Halo-B-Gon...</source>
+      <translation>光晕消除...</translation>
+    </message>
+    <message>
+      <source>Hard (target 0.50, σ 2)</source>
+      <translation>强硬 (目标 0.50, σ 2)</translation>
+    </message>
+    <message>
+      <source>Hard-Display-Stretch</source>
+      <translation>强硬显示拉伸</translation>
+    </message>
+    <message>
+      <source>Hide Mask Overlay</source>
+      <translation>隐藏蒙版叠加</translation>
+    </message>
+    <message>
+      <source>Histogram...</source>
+      <translation>直方图...</translation>
+    </message>
+    <message>
+      <source>History Explorer...</source>
+      <translation>历史浏览器...</translation>
+    </message>
+    <message>
+      <source>Hyperbolic Stretch...</source>
+      <translation>双曲线拉伸...</translation>
+    </message>
+    <message>
+      <source>Identify objects in a plate-solved frame</source>
+      <translation>识别已解析帧中的天体</translation>
+    </message>
+    <message>
+      <source>Image Combine...</source>
+      <translation>图像合并...</translation>
+    </message>
+    <message>
+      <source>Image Inspector and Focal Plane Analysis</source>
+      <translation>图像检查器和焦平面分析</translation>
+    </message>
+    <message>
+      <source>Image Peeker...</source>
+      <translation>图像查看器...</translation>
+    </message>
+    <message>
+      <source>Import Shortcuts...</source>
+      <translation>导入快捷方式...</translation>
+    </message>
+    <message>
+      <source>Inspect and restore from the slot's history</source>
+      <translation>检查并从插槽历史恢复</translation>
+    </message>
+    <message>
+      <source>Inspect star PSF/HFR and flux histograms (SEP)</source>
+      <translation>检查星点PSF/HFR和通量直方图(SEP)</translation>
+    </message>
+    <message>
+      <source>Interactive blemish removal on the active view</source>
+      <translation>在当前视图上交互式移除瑕疵</translation>
+    </message>
+    <message>
+      <source>Invert</source>
+      <translation>反转</translation>
+    </message>
+    <message>
+      <source>Invert Mask</source>
+      <translation>反转蒙版</translation>
+    </message>
+    <message>
+      <source>Invert image colors</source>
+      <translation>反转图像颜色</translation>
+    </message>
+    <message>
+      <source>Keyboard Shortcut Cheat Sheet...</source>
+      <translation>键盘快捷键速查表...</translation>
+    </message>
+    <message>
+      <source>Linear Fit...</source>
+      <translation>线性拟合...</translation>
+    </message>
+    <message>
+      <source>Link Pan/Zoom</source>
+      <translation>链接平移/缩放</translation>
+    </message>
+    <message>
+      <source>Link RGB channels</source>
+      <translation>链接 RGB 通道</translation>
+    </message>
+    <message>
+      <source>Live Stacking...</source>
+      <translation>实时堆叠...</translation>
+    </message>
+    <message>
+      <source>Live monitor and stack incoming frames</source>
+      <translation>实时监控并堆叠传入帧</translation>
+    </message>
+    <message>
+      <source>Load Project...</source>
+      <translation>加载项目...</translation>
+    </message>
+    <message>
+      <source>Load a .sas project (views, histories, shortcuts)</source>
+      <translation>加载.sas项目（视图、历史、快捷方式）</translation>
+    </message>
+    <message>
+      <source>Make Display-Stretch Permanent</source>
+      <translation>使显示拉伸永久化</translation>
+    </message>
+    <message>
+      <source>Masks</source>
+      <translation>蒙版</translation>
+    </message>
+    <message>
+      <source>Match image levels using Linear Fit</source>
+      <translation>使用线性拟合匹配图像级别</translation>
+    </message>
+    <message>
+      <source>Mid (target 0.40, σ 3)</source>
+      <translation>中等 (目标 0.40, σ 3)</translation>
+    </message>
+    <message>
+      <source>Morphological Operations...</source>
+      <translation>形态学操作...</translation>
+    </message>
+    <message>
+      <source>Mosaic Master...</source>
+      <translation>马赛克大师...</translation>
+    </message>
+    <message>
+      <source>Multiscale Decomposition...</source>
+      <translation>多尺度分解...</translation>
+    </message>
+    <message>
+      <source>Multiscale detail/residual decomposition with per-layer controls</source>
+      <translation>多尺度细节/残差分解（带逐层控制）</translation>
+    </message>
+    <message>
+      <source>NB-&gt;RGB Stars...</source>
+      <translation>窄带-&gt;RGB星点...</translation>
+    </message>
+    <message>
+      <source>Neutralize background color balance using a sampled region</source>
+      <translation>使用采样区域中和背景色彩平衡</translation>
+    </message>
+    <message>
+      <source>New Project</source>
+      <translation>新建项目</translation>
+    </message>
+    <message>
+      <source>No recent images</source>
+      <translation>没有最近的图像</translation>
+    </message>
+    <message>
+      <source>No recent projects</source>
+      <translation>没有最近的项目</translation>
+    </message>
+    <message>
+      <source>None</source>
+      <translation>无</translation>
+    </message>
+    <message>
+      <source>Normal (target 0.30, σ 5)</source>
+      <translation>正常 (目标 0.30, σ 5)</translation>
+    </message>
+    <message>
+      <source>Open Convolution / Deconvolution</source>
+      <translation>打开卷积/反卷积</translation>
+    </message>
+    <message>
+      <source>Open Recent Images</source>
+      <translation>最近的图像</translation>
+    </message>
+    <message>
+      <source>Open Recent Projects</source>
+      <translation>最近的项目</translation>
+    </message>
+    <message>
+      <source>Open SFCC (Pickles + Filters + Sensor QE)</source>
+      <translation>打开 SFCC (Pickles + 滤镜 + 传感器 QE)</translation>
+    </message>
+    <message>
+      <source>Open Scripts Folder...</source>
+      <translation>打开脚本文件夹...</translation>
+    </message>
+    <message>
+      <source>Open Scripts Forum (Discord)...</source>
+      <translation>打开脚本论坛 (Discord)...</translation>
+    </message>
+    <message>
+      <source>Open User Scripts (GitHub)...</source>
+      <translation>打开用户脚本 (GitHub)...</translation>
+    </message>
+    <message>
+      <source>Open image(s)</source>
+      <translation>打开图像</translation>
+    </message>
+    <message>
+      <source>Open the Curves Editor for the active image</source>
+      <translation>打开当前图像的曲线编辑器</translation>
+    </message>
+    <message>
+      <source>Open the SASpro user scripts folder</source>
+      <translation>打开SASpro用户脚本文件夹</translation>
+    </message>
+    <message>
+      <source>Open the Seti Astro Suite Pro online documentation</source>
+      <translation>打开Seti Astro Suite Pro在线文档</translation>
+    </message>
+    <message>
+      <source>Open the built-in script editor</source>
+      <translation>打开内置脚本编辑器</translation>
+    </message>
+    <message>
+      <source>Open...</source>
+      <translation>打开...</translation>
+    </message>
+    <message>
+      <source>PSF Viewer...</source>
+      <translation>PSF 查看器...</translation>
+    </message>
+    <message>
+      <source>Paste View</source>
+      <translation>粘贴视图</translation>
+    </message>
+    <message>
+      <source>Perfect Palette Picker...</source>
+      <translation>完美调色板选择器...</translation>
+    </message>
+    <message>
+      <source>Pick the perfect palette for your image</source>
+      <translation>为您的图像选择完美的调色板</translation>
+    </message>
+    <message>
+      <source>Pixel Math...</source>
+      <translation>像素数学...</translation>
+    </message>
+    <message>
+      <source>Plan targets by altitude, transit time, and lunar separation</source>
+      <translation>按高度、过中天时间和月球角距规划目标</translation>
+    </message>
+    <message>
+      <source>Plate Solver...</source>
+      <translation>天体测量...</translation>
+    </message>
+    <message>
+      <source>Preferences...</source>
+      <translation>首选项...</translation>
+    </message>
+    <message>
+      <source>Presets</source>
+      <translation>预设</translation>
+    </message>
+    <message>
+      <source>RGB Align...</source>
+      <translation>RGB对齐...</translation>
+    </message>
+    <message>
+      <source>RGB Combination...</source>
+      <translation>RGB合成...</translation>
+    </message>
+    <message>
+      <source>RGB Extract</source>
+      <translation>RGB提取</translation>
+    </message>
+    <message>
+      <source>Recombine Luminance...</source>
+      <translation>重新合成亮度...</translation>
+    </message>
+    <message>
+      <source>Redo</source>
+      <translation>重做</translation>
+    </message>
+    <message>
+      <source>Reload Scripts</source>
+      <translation>重新加载脚本</translation>
+    </message>
+    <message>
+      <source>Remove Active Mask</source>
+      <translation>移除当前蒙版</translation>
+    </message>
+    <message>
+      <source>Remove Gradient (GraXpert)...</source>
+      <translation>移除渐变 (GraXpert)...</translation>
+    </message>
+    <message>
+      <source>Remove Green...</source>
+      <translation>移除绿色...</translation>
+    </message>
+    <message>
+      <source>Remove Pedestal</source>
+      <translation>移除底噪</translation>
+    </message>
+    <message>
+      <source>Remove Stars...</source>
+      <translation>移除星点...</translation>
+    </message>
+    <message>
+      <source>Remove the active mask from the active image</source>
+      <translation>从当前图像移除当前蒙版</translation>
+    </message>
+    <message>
+      <source>Remove those pesky halos around your stars</source>
+      <translation>移除星点周围烦人的光晕</translation>
+    </message>
+    <message>
+      <source>Replace the active image's luminance from another view</source>
+      <translation>从另一个视图替换当前图像的亮度</translation>
+    </message>
+    <message>
+      <source>Rescale image by a factor</source>
+      <translation>按比例缩放图像</translation>
+    </message>
+    <message>
+      <source>Rescale...</source>
+      <translation>重新缩放...</translation>
+    </message>
+    <message>
+      <source>Rescan the scripts folder and reload .py files</source>
+      <translation>重新扫描脚本文件夹并重新加载.py文件</translation>
+    </message>
+    <message>
+      <source>Rotate 180°</source>
+      <translation>旋转180°</translation>
+    </message>
+    <message>
+      <source>Rotate 90° Clockwise</source>
+      <translation>顺时针旋转90°</translation>
+    </message>
+    <message>
+      <source>Rotate 90° Counterclockwise</source>
+      <translation>逆时针旋转90°</translation>
+    </message>
+    <message>
+      <source>Rotate image 180°</source>
+      <translation>旋转图像180°</translation>
+    </message>
+    <message>
+      <source>Rotate image 90° clockwise</source>
+      <translation>顺时针旋转图像90°</translation>
+    </message>
+    <message>
+      <source>Rotate image 90° counterclockwise</source>
+      <translation>逆时针旋转图像90°</translation>
+    </message>
+    <message>
+      <source>Run GraXpert background extraction on the active image</source>
+      <translation>在当前图像上执行GraXpert背景提取</translation>
+    </message>
+    <message>
+      <source>Run star removal on the active image</source>
+      <translation>在当前图像上执行移除星点</translation>
+    </message>
+    <message>
+      <source>SCNR-style green channel removal.</source>
+      <translation>SCNR风格的绿色通道移除。</translation>
+    </message>
+    <message>
+      <source>Save As...</source>
+      <translation>另存为...</translation>
+    </message>
+    <message>
+      <source>Save Project...</source>
+      <translation>保存项目...</translation>
+    </message>
+    <message>
+      <source>Save all views, histories, and shortcuts to a .sas file</source>
+      <translation>将所有视图、历史和快捷方式保存到.sas文件</translation>
+    </message>
+    <message>
+      <source>Save the active image</source>
+      <translation>保存当前图像</translation>
+    </message>
+    <message>
+      <source>Script Editor...</source>
+      <translation>脚本编辑器...</translation>
+    </message>
+    <message>
+      <source>Select All Lines</source>
+      <translation>Select All Lines</translation>
+    </message>
+    <message>
+      <source>Selective Color Correction...</source>
+      <translation>选择性色彩校正...</translation>
+    </message>
+    <message>
+      <source>Set Sigma...</source>
+      <translation>设置西格玛...</translation>
+    </message>
+    <message>
+      <source>Set Target Median...</source>
+      <translation>设置目标中值...</translation>
+    </message>
+    <message>
+      <source>Set the sigma for Display-Stretch (e.g., 5.0)</source>
+      <translation>设置显示拉伸的西格玛（例如5.0）</translation>
+    </message>
+    <message>
+      <source>Set the target median for Display-Stretch (e.g., 0.30)</source>
+      <translation>设置显示拉伸的目标中值（例如0.30）</translation>
+    </message>
+    <message>
+      <source>Show Mask Overlay</source>
+      <translation>显示蒙版叠加</translation>
+    </message>
+    <message>
+      <source>Signature / Insert...</source>
+      <translation>签名/插入...</translation>
+    </message>
+    <message>
+      <source>Smart Grid</source>
+      <translation>智能网格</translation>
+    </message>
+    <message>
+      <source>Solve WCS/SIP for the active image or a file</source>
+      <translation>为当前图像或文件解析WCS/SIP</translation>
+    </message>
+    <message>
+      <source>Spectral Flux Color Calibration...</source>
+      <translation>光谱通量色彩校准...</translation>
+    </message>
+    <message>
+      <source>Split into LF/HF and enhance HF (scale, wavelet, denoise)</source>
+      <translation>分离低频/高频并增强高频（缩放、小波、降噪）</translation>
+    </message>
+    <message>
+      <source>Split the workspace into equal horizontal rows</source>
+      <translation>将工作区分割成等高的水平行</translation>
+    </message>
+    <message>
+      <source>Split the workspace into equal vertical columns</source>
+      <translation>将工作区分割成等宽的垂直列</translation>
+    </message>
+    <message>
+      <source>Stacking Suite...</source>
+      <translation>堆叠套件...</translation>
+    </message>
+    <message>
+      <source>Stacking! Darks, Flats, Lights, Calibration, Drizzle, and more!!</source>
+      <translation>堆叠！暗场、平场、亮场、校准、Drizzle等等！！</translation>
+    </message>
+    <message>
+      <source>Star Stretch...</source>
+      <translation>星点拉伸...</translation>
+    </message>
+    <message>
+      <source>Star Stuff</source>
+      <translation>星点处理</translation>
+    </message>
+    <message>
+      <source>Start a new project? This closes all views and clears desktop shortcuts.</source>
+      <translation>开始新项目？这将关闭所有视图并清除桌面快捷方式。</translation>
+    </message>
+    <message>
+      <source>Statistical Stretch...</source>
+      <translation>统计拉伸...</translation>
+    </message>
+    <message>
+      <source>Statistics...</source>
+      <translation>统计...</translation>
+    </message>
+    <message>
+      <source>Stellar Alignment...</source>
+      <translation>星点对齐...</translation>
+    </message>
+    <message>
+      <source>Stellar Register...</source>
+      <translation>星点注册...</translation>
+    </message>
+    <message>
+      <source>Stretch the image using median/SD statistics</source>
+      <translation>使用中值/标准差统计拉伸图像</translation>
+    </message>
+    <message>
+      <source>Subtract per-channel minimum.
+Click: active view
+Alt+Drag: drop onto a view</source>
+      <translation>减去每通道最小值。
+点击：当前视图
+Alt+拖动：放置到视图上</translation>
+    </message>
+    <message>
+      <source>Supernova / Asteroid Hunter...</source>
+      <translation>超新星/小行星猎人...</translation>
+    </message>
+    <message>
+      <source>System Monitor</source>
+      <translation>System Monitor</translation>
+    </message>
+    <message>
+      <source>Tile Horizontally</source>
+      <translation>水平平铺</translation>
+    </message>
+    <message>
+      <source>Tile Vertically</source>
+      <translation>垂直平铺</translation>
+    </message>
+    <message>
+      <source>Tile Views</source>
+      <translation>平铺视图</translation>
+    </message>
+    <message>
+      <source>Tile all subwindows</source>
+      <translation>平铺所有子窗口</translation>
+    </message>
+    <message>
+      <source>Toggle display auto-stretch for the active window</source>
+      <translation>切换当前窗口的自动拉伸显示</translation>
+    </message>
+    <message>
+      <source>Toggle hard profile for Display-Stretch (H)</source>
+      <translation>切换显示拉伸的强硬模式(H)</translation>
+    </message>
+    <message>
+      <source>Tools</source>
+      <translation>工具</translation>
+    </message>
+    <message>
+      <source>Undo</source>
+      <translation>撤销</translation>
+    </message>
+    <message>
+      <source>View Bundles...</source>
+      <translation>视图包...</translation>
+    </message>
+    <message>
+      <source>View histogram and basic stats for the active image</source>
+      <translation>查看当前图像的直方图和基本统计</translation>
+    </message>
+    <message>
+      <source>View/Edit FITS headers</source>
+      <translation>查看/编辑FITS头信息</translation>
+    </message>
+    <message>
+      <source>Wave-scale HDR with luminance-masked starlet</source>
+      <translation>使用亮度蒙版星点小波的波尺度HDR</translation>
+    </message>
+    <message>
+      <source>WaveScale Dark Enhancer...</source>
+      <translation>WaveScale 暗部增强器...</translation>
+    </message>
+    <message>
+      <source>WaveScale HDR...</source>
+      <translation>WaveScale HDR...</translation>
+    </message>
+    <message>
+      <source>What's In My Image...</source>
+      <translation>我的图像中有什么...</translation>
+    </message>
+    <message>
+      <source>What's In My Sky...</source>
+      <translation>我的天空中有什么...</translation>
+    </message>
+    <message>
+      <source>What's In My...</source>
+      <translation>我的...中有什么...</translation>
+    </message>
+    <message>
+      <source>White Balance...</source>
+      <translation>白平衡...</translation>
+    </message>
+    <message>
+      <source>Write a ready-to-edit sample script into the scripts folder</source>
+      <translation>将可编辑的示例脚本写入脚本文件夹</translation>
+    </message>
+    <message>
+      <source>Zoom In</source>
+      <translation>放大</translation>
+    </message>
+    <message>
+      <source>Zoom Out</source>
+      <translation>缩小</translation>
+    </message>
+    <message>
+      <source>Zoom in</source>
+      <translation>放大</translation>
+    </message>
+    <message>
+      <source>Zoom out</source>
+      <translation>缩小</translation>
+    </message>
+    <message>
+      <source>Zoom to 100% (pixel-for-pixel)</source>
+      <translation>缩放到100%（像素对像素）</translation>
+    </message>
+  </context>
+  <context>
+    <name>AstrobinExportTab</name>
+    <message>
+      <source> ({0} failed)</source>
+      <translation> ({0} 失败)</translation>
+    </message>
+    <message>
+      <source> — skipped {0} XISF (reader unavailable)</source>
+      <translation> — 跳过 {0} 个 XISF (读取器不可用)</translation>
+    </message>
+    <message>
+      <source># Subs</source>
+      <translation>子帧数</translation>
+    </message>
+    <message>
+      <source>(e.g. 4408)</source>
+      <translation>(例如 4408)</translation>
+    </message>
+    <message>
+      <source>0–9</source>
+      <translation>0–9</translation>
+    </message>
+    <message>
+      <source>API Key</source>
+      <translation>API 密钥</translation>
+    </message>
+    <message>
+      <source>API Secret</source>
+      <translation>API 密钥 (Secret)</translation>
+    </message>
+    <message>
+      <source>Accessories</source>
+      <translation>配件</translation>
+    </message>
+    <message>
+      <source>Acquisition details</source>
+      <translation>拍摄详情</translation>
+    </message>
+    <message>
+      <source>Add Files…</source>
+      <translation>添加文件...</translation>
+    </message>
+    <message>
+      <source>Add watermark</source>
+      <translation>添加水印</translation>
+    </message>
+    <message>
+      <source>All selected files are already in the list.</source>
+      <translation>所有选定的文件已在列表中。</translation>
+    </message>
+    <message>
+      <source>Apply</source>
+      <translation>应用</translation>
+    </message>
+    <message>
+      <source>AstroBin Export</source>
+      <translation>AstroBin 导出</translation>
+    </message>
+    <message>
+      <source>Astrobin Export</source>
+      <translation>Astrobin 导出</translation>
+    </message>
+    <message>
+      <source>Astrobin Filter ID</source>
+      <translation>Astrobin 滤镜 ID</translation>
+    </message>
+    <message>
+      <source>Astrobin Link</source>
+      <translation>Astrobin 链接</translation>
+    </message>
+    <message>
+      <source>Bandwidth</source>
+      <translation>带宽</translation>
+    </message>
+    <message>
+      <source>Bias (#)</source>
+      <translation>偏置场 (#)</translation>
+    </message>
+    <message>
+      <source>Bortle</source>
+      <translation>波特尔</translation>
+    </message>
+    <message>
+      <source>Bortle scale</source>
+      <translation>波特尔等级</translation>
+    </message>
+    <message>
+      <source>Brand</source>
+      <translation>品牌</translation>
+    </message>
+    <message>
+      <source>Browse Filters</source>
+      <translation>浏览滤镜</translation>
+    </message>
+    <message>
+      <source>Browse...</source>
+      <translation>浏览...</translation>
+    </message>
+    <message>
+      <source>CSV Files (*.csv);;All Files (*)</source>
+      <translation>CSV 文件 (*.csv);;所有文件 (*)</translation>
+    </message>
+    <message>
+      <source>CSV Load Error</source>
+      <translation>CSV 加载错误</translation>
+    </message>
+    <message>
+      <source>CSV copied to clipboard.</source>
+      <translation>CSV 已复制到剪贴板。</translation>
+    </message>
+    <message>
+      <source>Camera</source>
+      <translation>相机</translation>
+    </message>
+    <message>
+      <source>Catalog CSV loaded.</source>
+      <translation>目录 CSV 已加载。</translation>
+    </message>
+    <message>
+      <source>Clear</source>
+      <translation>清除</translation>
+    </message>
+    <message>
+      <source>Cleared. Load FITS via 'Select Folder…' or 'Add Files…' to begin.</source>
+      <translation>已清除。通过“选择文件夹...”或“添加文件...”加载 FITS 以开始。</translation>
+    </message>
+    <message>
+      <source>Copied</source>
+      <translation>已复制</translation>
+    </message>
+    <message>
+      <source>Copy CSV</source>
+      <translation>复制 CSV</translation>
+    </message>
+    <message>
+      <source>Copy to Clipboard</source>
+      <translation>复制到剪贴板</translation>
+    </message>
+    <message>
+      <source>Could not load Astrobin filters: {0}</source>
+      <translation>无法加载 Astrobin 滤镜: {0}</translation>
+    </message>
+    <message>
+      <source>Could not load equipment CSV: {0}</source>
+      <translation>无法加载设备 CSV: {0}</translation>
+    </message>
+    <message>
+      <source>Could not load filter mapping CSV: {0}</source>
+      <translation>无法加载滤镜映射 CSV: {0}</translation>
+    </message>
+    <message>
+      <source>Could not save filter mapping CSV: {0}</source>
+      <translation>无法保存滤镜映射 CSV: {0}</translation>
+    </message>
+    <message>
+      <source>Credentials invalid</source>
+      <translation>凭据无效</translation>
+    </message>
+    <message>
+      <source>Credentials valid</source>
+      <translation>凭据有效</translation>
+    </message>
+    <message>
+      <source>Darks (#)</source>
+      <translation>暗场 (#)</translation>
+    </message>
+    <message>
+      <source>Data source</source>
+      <translation>数据源</translation>
+    </message>
+    <message>
+      <source>Deep sky</source>
+      <translation>深空</translation>
+    </message>
+    <message>
+      <source>Description</source>
+      <translation>描述</translation>
+    </message>
+    <message>
+      <source>Enter your AstroBin API key</source>
+      <translation>输入您的 AstroBin API 密钥</translation>
+    </message>
+    <message>
+      <source>Enter your AstroBin API secret</source>
+      <translation>输入您的 AstroBin API 密钥 (Secret)</translation>
+    </message>
+    <message>
+      <source>Equipment</source>
+      <translation>设备</translation>
+    </message>
+    <message>
+      <source>Error</source>
+      <translation>错误</translation>
+    </message>
+    <message>
+      <source>Export settings</source>
+      <translation>导出设置</translation>
+    </message>
+    <message>
+      <source>Exposure (s)</source>
+      <translation>曝光 (秒)</translation>
+    </message>
+    <message>
+      <source>Exposure: {0}</source>
+      <translation>曝光: {0}</translation>
+    </message>
+    <message>
+      <source>FITS Files (*.fits *.fit *.fts);;All Files (*.*)</source>
+      <translation>FITS 文件 (*.fits *.fit *.fts);;所有文件 (*.*)</translation>
+    </message>
+    <message>
+      <source>FITS/XISF (*.fit *.fits *.xisf);;All Files (*)</source>
+      <translation>FITS/XISF (*.fit *.fits *.xisf);;所有文件 (*)</translation>
+    </message>
+    <message>
+      <source>Failed to load filter mappings: {0}</source>
+      <translation>加载滤镜映射失败: {0}</translation>
+    </message>
+    <message>
+      <source>Failed to save filter mappings: {0}</source>
+      <translation>保存滤镜映射失败: {0}</translation>
+    </message>
+    <message>
+      <source>Files (Object → Filter → Exposure)</source>
+      <translation>文件 (天体 → 滤镜 → 曝光)</translation>
+    </message>
+    <message>
+      <source>Filter</source>
+      <translation>滤镜</translation>
+    </message>
+    <message>
+      <source>Filter Browser</source>
+      <translation>滤镜浏览器</translation>
+    </message>
+    <message>
+      <source>Filter mappings loaded successfully.</source>
+      <translation>滤镜映射加载成功。</translation>
+    </message>
+    <message>
+      <source>Filter mappings saved successfully.</source>
+      <translation>滤镜映射保存成功。</translation>
+    </message>
+    <message>
+      <source>Filter: {0}</source>
+      <translation>滤镜: {0}</translation>
+    </message>
+    <message>
+      <source>Filters</source>
+      <translation>滤镜</translation>
+    </message>
+    <message>
+      <source>Filters Found:</source>
+      <translation>发现的滤镜:</translation>
+    </message>
+    <message>
+      <source>Flat-darks (#)</source>
+      <translation>平场暗场 (#)</translation>
+    </message>
+    <message>
+      <source>Flats (#)</source>
+      <translation>平场 (#)</translation>
+    </message>
+    <message>
+      <source>From active view</source>
+      <translation>来自当前视图</translation>
+    </message>
+    <message>
+      <source>From file</source>
+      <translation>来自文件</translation>
+    </message>
+    <message>
+      <source>Gear</source>
+      <translation>器材</translation>
+    </message>
+    <message>
+      <source>Global inputs (used if FITS headers are missing/zero)</source>
+      <translation>全局输入（如果 FITS 头缺失或为零时使用）</translation>
+    </message>
+    <message>
+      <source>Group nights noon → noon (local time)</source>
+      <translation>按中午到中午分组夜晚（当地时间）</translation>
+    </message>
+    <message>
+      <source>ID</source>
+      <translation>ID</translation>
+    </message>
+    <message>
+      <source>Image Information</source>
+      <translation>图像信息</translation>
+    </message>
+    <message>
+      <source>Image Selection</source>
+      <translation>图像选择</translation>
+    </message>
+    <message>
+      <source>Image format</source>
+      <translation>图像格式</translation>
+    </message>
+    <message>
+      <source>Input Files</source>
+      <translation>输入文件</translation>
+    </message>
+    <message>
+      <source>Integration summary copied!</source>
+      <translation>集成摘要已复制！</translation>
+    </message>
+    <message>
+      <source>Load Catalog</source>
+      <translation>加载目录</translation>
+    </message>
+    <message>
+      <source>Load FITS Headers</source>
+      <translation>加载 FITS 头</translation>
+    </message>
+    <message>
+      <source>Load FITS via 'Select Folder…' or 'Add Files…' to begin.</source>
+      <translation>通过“选择文件夹...”或“添加文件...”加载 FITS 以开始。</translation>
+    </message>
+    <message>
+      <source>Load FITS/XISF via 'Select Folder…' or 'Add Files…' to begin.</source>
+      <translation>通过“选择文件夹...”或“添加文件...”加载 FITS/XISF 以开始。</translation>
+    </message>
+    <message>
+      <source>Load Filter Mappings from CSV</source>
+      <translation>从 CSV 加载滤镜映射</translation>
+    </message>
+    <message>
+      <source>Load Telescope/Camera from CSV</source>
+      <translation>从 CSV 加载望远镜/相机</translation>
+    </message>
+    <message>
+      <source>Loaded {0} file(s)</source>
+      <translation>已加载 {0} 个文件</translation>
+    </message>
+    <message>
+      <source>Loaded {0} filters.</source>
+      <translation>已加载 {0} 个滤镜。</translation>
+    </message>
+    <message>
+      <source>Loading filters from Astrobin...</source>
+      <translation>正在从 Astrobin 加载滤镜...</translation>
+    </message>
+    <message>
+      <source>Location</source>
+      <translation>位置</translation>
+    </message>
+    <message>
+      <source>Manage Filter IDs…</source>
+      <translation>管理滤镜 ID...</translation>
+    </message>
+    <message>
+      <source>Maximum dimension</source>
+      <translation>最大尺寸</translation>
+    </message>
+    <message>
+      <source>Mean FWHM</source>
+      <translation>平均 FWHM</translation>
+    </message>
+    <message>
+      <source>Mean SQM</source>
+      <translation>平均 SQM</translation>
+    </message>
+    <message>
+      <source>Mount</source>
+      <translation>赤道仪</translation>
+    </message>
+    <message>
+      <source>Name</source>
+      <translation>名称</translation>
+    </message>
+    <message>
+      <source>No .fit/.fits/.xisf files found.</source>
+      <translation>未发现 .fit/.fits/.xisf 文件。</translation>
+    </message>
+    <message>
+      <source>No FITS files selected.</source>
+      <translation>未选择 FITS 文件。</translation>
+    </message>
+    <message>
+      <source>No Images</source>
+      <translation>无图像</translation>
+    </message>
+    <message>
+      <source>No New Files</source>
+      <translation>无新文件</translation>
+    </message>
+    <message>
+      <source>No integration data to copy.</source>
+      <translation>没有可复制的集成数据。</translation>
+    </message>
+    <message>
+      <source>No mappings set</source>
+      <translation>未设置映射</translation>
+    </message>
+    <message>
+      <source>Noctilucent clouds</source>
+      <translation>夜光云</translation>
+    </message>
+    <message>
+      <source>Northern lights</source>
+      <translation>北极光</translation>
+    </message>
+    <message>
+      <source>Nothing to copy</source>
+      <translation>没有可复制的内容</translation>
+    </message>
+    <message>
+      <source>Object: {0}</source>
+      <translation>天体: {0}</translation>
+    </message>
+    <message>
+      <source>Open AstroBin Equipment Explorer (Filters)</source>
+      <translation>打开 AstroBin 设备浏览器 (滤镜)</translation>
+    </message>
+    <message>
+      <source>Own data</source>
+      <translation>自有数据</translation>
+    </message>
+    <message>
+      <source>Prevents splitting a single observing night at midnight.</source>
+      <translation>防止在午夜分割单个观测之夜。</translation>
+    </message>
+    <message>
+      <source>Processing details</source>
+      <translation>处理详情</translation>
+    </message>
+    <message>
+      <source>Quality</source>
+      <translation>质量</translation>
+    </message>
+    <message>
+      <source>Recompute</source>
+      <translation>重新计算</translation>
+    </message>
+    <message>
+      <source>Remote source</source>
+      <translation>远程源</translation>
+    </message>
+    <message>
+      <source>Resize</source>
+      <translation>调整大小</translation>
+    </message>
+    <message>
+      <source>SQM value</source>
+      <translation>SQM 值</translation>
+    </message>
+    <message>
+      <source>Save Filter Mapping CSV</source>
+      <translation>保存滤镜映射 CSV</translation>
+    </message>
+    <message>
+      <source>Save Filter Mappings to CSV</source>
+      <translation>将滤镜映射保存到 CSV</translation>
+    </message>
+    <message>
+      <source>Save credentials</source>
+      <translation>保存凭据</translation>
+    </message>
+    <message>
+      <source>Search:</source>
+      <translation>搜索:</translation>
+    </message>
+    <message>
+      <source>Seeing</source>
+      <translation>视宁度</translation>
+    </message>
+    <message>
+      <source>Select</source>
+      <translation>选择</translation>
+    </message>
+    <message>
+      <source>Select Equipment CSV</source>
+      <translation>选择设备 CSV</translation>
+    </message>
+    <message>
+      <source>Select FITS Files</source>
+      <translation>选择 FITS 文件</translation>
+    </message>
+    <message>
+      <source>Select FITS/XISF Files</source>
+      <translation>选择 FITS/XISF 文件</translation>
+    </message>
+    <message>
+      <source>Select Filter Mapping CSV</source>
+      <translation>选择滤镜映射 CSV</translation>
+    </message>
+    <message>
+      <source>Select Folder Containing FITS/XISF Files</source>
+      <translation>选择包含 FITS/XISF 文件的文件夹</translation>
+    </message>
+    <message>
+      <source>Select Folder…</source>
+      <translation>选择文件夹...</translation>
+    </message>
+    <message>
+      <source>Select image to export</source>
+      <translation>选择要导出的图像</translation>
+    </message>
+    <message>
+      <source>Size</source>
+      <translation>大小</translation>
+    </message>
+    <message>
+      <source>Software</source>
+      <translation>软件</translation>
+    </message>
+    <message>
+      <source>Solar system</source>
+      <translation>太阳系</translation>
+    </message>
+    <message>
+      <source>Star trails</source>
+      <translation>星轨</translation>
+    </message>
+    <message>
+      <source>Subject type</source>
+      <translation>拍摄主体类型</translation>
+    </message>
+    <message>
+      <source>Success</source>
+      <translation>成功</translation>
+    </message>
+    <message>
+      <source>Telescope</source>
+      <translation>望远镜</translation>
+    </message>
+    <message>
+      <source>Telescope/Camera Selection:</source>
+      <translation>望远镜/相机选择:</translation>
+    </message>
+    <message>
+      <source>There is no CSV content yet.</source>
+      <translation>尚无 CSV 内容。</translation>
+    </message>
+    <message>
+      <source>Title</source>
+      <translation>标题</translation>
+    </message>
+    <message>
+      <source>Total Frames:</source>
+      <translation>总帧数:</translation>
+    </message>
+    <message>
+      <source>Total Integration Time</source>
+      <translation>总集成时间</translation>
+    </message>
+    <message>
+      <source>Total Integration:</source>
+      <translation>总集成:</translation>
+    </message>
+    <message>
+      <source>Transparency</source>
+      <translation>透明度</translation>
+    </message>
+    <message>
+      <source>Type</source>
+      <translation>类型</translation>
+    </message>
+    <message>
+      <source>Upload</source>
+      <translation>上传</translation>
+    </message>
+    <message>
+      <source>Upload complete</source>
+      <translation>上传完成</translation>
+    </message>
+    <message>
+      <source>Upload failed</source>
+      <translation>上传失败</translation>
+    </message>
+    <message>
+      <source>Upload to AstroBin</source>
+      <translation>上传到 AstroBin</translation>
+    </message>
+    <message>
+      <source>Uploading...</source>
+      <translation>正在上传...</translation>
+    </message>
+    <message>
+      <source>Validate credentials</source>
+      <translation>验证凭据</translation>
+    </message>
+    <message>
+      <source>View on AstroBin</source>
+      <translation>在 AstroBin 上查看</translation>
+    </message>
+    <message>
+      <source>Watermark</source>
+      <translation>水印</translation>
+    </message>
+    <message>
+      <source>Watermark opacity</source>
+      <translation>水印不透明度</translation>
+    </message>
+    <message>
+      <source>Watermark position</source>
+      <translation>水印位置</translation>
+    </message>
+    <message>
+      <source>Watermark text</source>
+      <translation>水印文本</translation>
+    </message>
+    <message>
+      <source>Wide field</source>
+      <translation>宽视场</translation>
+    </message>
+    <message>
+      <source>bias</source>
+      <translation>偏置场</translation>
+    </message>
+    <message>
+      <source>binning</source>
+      <translation>分级 (Binning)</translation>
+    </message>
+    <message>
+      <source>bortle</source>
+      <translation>波特尔</translation>
+    </message>
+    <message>
+      <source>darks</source>
+      <translation>暗场</translation>
+    </message>
+    <message>
+      <source>date</source>
+      <translation>日期</translation>
+    </message>
+    <message>
+      <source>duration</source>
+      <translation>时长</translation>
+    </message>
+    <message>
+      <source>e.g. 2.10</source>
+      <translation>例如 2.10</translation>
+    </message>
+    <message>
+      <source>e.g. 21.30</source>
+      <translation>例如 21.30</translation>
+    </message>
+    <message>
+      <source>e.g. 4.0</source>
+      <translation>例如 4.0</translation>
+    </message>
+    <message>
+      <source>e.g. 4408</source>
+      <translation>例如 4408</translation>
+    </message>
+    <message>
+      <source>f/number</source>
+      <translation>光圈值 (f/number)</translation>
+    </message>
+    <message>
+      <source>fNumber</source>
+      <translation>光圈值</translation>
+    </message>
+    <message>
+      <source>filter</source>
+      <translation>滤镜</translation>
+    </message>
+    <message>
+      <source>flatDarks</source>
+      <translation>平场暗场</translation>
+    </message>
+    <message>
+      <source>flats</source>
+      <translation>平场</translation>
+    </message>
+    <message>
+      <source>gain</source>
+      <translation>增益</translation>
+    </message>
+    <message>
+      <source>h</source>
+      <translation>小时</translation>
+    </message>
+    <message>
+      <source>iso</source>
+      <translation>ISO</translation>
+    </message>
+    <message>
+      <source>m</source>
+      <translation>分钟</translation>
+    </message>
+    <message>
+      <source>meanFwhm</source>
+      <translation>平均 FWHM</translation>
+    </message>
+    <message>
+      <source>meanSqm</source>
+      <translation>平均 SQM</translation>
+    </message>
+    <message>
+      <source>number</source>
+      <translation>数量</translation>
+    </message>
+    <message>
+      <source>s</source>
+      <translation>秒</translation>
+    </message>
+    <message>
+      <source>sensorCooling</source>
+      <translation>传感器冷却</translation>
+    </message>
+    <message>
+      <source>temperature</source>
+      <translation>温度</translation>
+    </message>
+  </context>
+  <context>
+    <name>AstrobinExporterDialog</name>
+    <message>
+      <source>AstroBin Exporter</source>
+      <translation>AstroBin 导出器</translation>
+    </message>
+  </context>
+  <context>
+    <name>BackgroundNeutralizationDialog</name>
+    <message>
+      <source>Apply Neutralization</source>
+      <translation>应用中和</translation>
+    </message>
+    <message>
+      <source>Background Neutralization</source>
+      <translation>背景中和</translation>
+    </message>
+    <message>
+      <source>Cancel</source>
+      <translation>取消</translation>
+    </message>
+    <message>
+      <source>Enable Auto-Stretch</source>
+      <translation>启用自动拉伸</translation>
+    </message>
+    <message>
+      <source>Find Background</source>
+      <translation>查找背景</translation>
+    </message>
+  </context>
+  <context>
+    <name>BatchConvertDialog</name>
+    <message>
+      <source>Batch Convert</source>
+      <translation>批量转换</translation>
+    </message>
+    <message>
+      <source>Bit depth:</source>
+      <translation>位深度：</translation>
+    </message>
+    <message>
+      <source>Cancel</source>
+      <translation>取消</translation>
+    </message>
+    <message>
+      <source>Output format:</source>
+      <translation>输出格式：</translation>
+    </message>
+    <message>
+      <source>Start</source>
+      <translation>开始</translation>
+    </message>
+  </context>
+  <context>
+    <name>BatchFITSHeaderDialog</name>
+    <message>
+      <source>Add if missing (for Add/Update)</source>
+      <translation>如果缺失则添加（用于添加/更新）</translation>
+    </message>
+    <message>
+      <source>Add/Update</source>
+      <translation>添加/更新</translation>
+    </message>
+    <message>
+      <source>Apply to all HDUs</source>
+      <translation>应用到所有HDU</translation>
+    </message>
+    <message>
+      <source>Batch Complete</source>
+      <translation>批量处理完成</translation>
+    </message>
+    <message>
+      <source>Batch Modify FITS Headers</source>
+      <translation>批量修改FITS头信息</translation>
+    </message>
+    <message>
+      <source>Choose FITS Files…</source>
+      <translation>选择FITS文件…</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>关闭</translation>
+    </message>
+    <message>
+      <source>Comment (optional)</source>
+      <translation>注释（可选）</translation>
+    </message>
+    <message>
+      <source>Delete</source>
+      <translation>删除</translation>
+    </message>
+    <message>
+      <source>FITS files (*.fits *.fit *.fts *.fz)</source>
+      <translation>FITS文件 (*.fits *.fit *.fts *.fz)</translation>
+    </message>
+    <message>
+      <source>KEYWORD</source>
+      <translation>关键字</translation>
+    </message>
+    <message>
+      <source>Missing keyword</source>
+      <translation>缺失关键字</translation>
+    </message>
+    <message>
+      <source>No files</source>
+      <translation>无文件</translation>
+    </message>
+    <message>
+      <source>No files selected</source>
+      <translation>未选择文件</translation>
+    </message>
+    <message>
+      <source>Please choose one or more FITS files.</source>
+      <translation>请选择一个或多个FITS文件。</translation>
+    </message>
+    <message>
+      <source>Please enter a FITS keyword.</source>
+      <translation>请输入FITS关键字。</translation>
+    </message>
+    <message>
+      <source>Run</source>
+      <translation>运行</translation>
+    </message>
+    <message>
+      <source>Select FITS files</source>
+      <translation>选择FITS文件</translation>
+    </message>
+    <message>
+      <source>Updated {0} file(s); {1} error(s).</source>
+      <translation>已更新 {0} 个文件；{1} 个错误。</translation>
+    </message>
+    <message>
+      <source>Value (leave blank for delete)</source>
+      <translation>值（留空则删除）</translation>
+    </message>
+    <message>
+      <source>{0} files selected</source>
+      <translation>已选择 {0} 个文件</translation>
+    </message>
+  </context>
+  <context>
+    <name>BatchRenamerDialog</name>
+    <message>
+      <source>(optional) Rename into this folder; leave empty to rename in place</source>
+      <translation>（可选）重命名到此文件夹；留空则在原处重命名</translation>
+    </message>
+    <message>
+      <source>Add FITS files</source>
+      <translation>添加FITS文件</translation>
+    </message>
+    <message>
+      <source>Add Files...</source>
+      <translation>添加文件...</translation>
+    </message>
+    <message>
+      <source>Add Files…</source>
+      <translation>添加文件…</translation>
+    </message>
+    <message>
+      <source>Add Folder...</source>
+      <translation>添加文件夹...</translation>
+    </message>
+    <message>
+      <source>All files renamed.</source>
+      <translation>所有文件已重命名。</translation>
+    </message>
+    <message>
+      <source>Apply Rename</source>
+      <translation>应用重命名</translation>
+    </message>
+    <message>
+      <source>As is</source>
+      <translation>保持原样</translation>
+    </message>
+    <message>
+      <source>Available FITS keywords (double-click to insert):</source>
+      <translation>可用FITS关键字（双击插入）：</translation>
+    </message>
+    <message>
+      <source>Available tokens</source>
+      <translation>可用标记</translation>
+    </message>
+    <message>
+      <source>Available tokens: {name}, {date}, {time}, {counter}, {ext}</source>
+      <translation>可用标记：{name}, {date}, {time}, {counter}, {ext}</translation>
+    </message>
+    <message>
+      <source>Batch File Renamer</source>
+      <translation>批量文件重命名器</translation>
+    </message>
+    <message>
+      <source>Batch Rename</source>
+      <translation>批量重命名</translation>
+    </message>
+    <message>
+      <source>Batch Rename from FITS</source>
+      <translation>从FITS批量重命名</translation>
+    </message>
+    <message>
+      <source>Browse...</source>
+      <translation>浏览...</translation>
+    </message>
+    <message>
+      <source>Browse…</source>
+      <translation>浏览…</translation>
+    </message>
+    <message>
+      <source>Cancel</source>
+      <translation>取消</translation>
+    </message>
+    <message>
+      <source>Case</source>
+      <translation>大小写</translation>
+    </message>
+    <message>
+      <source>Case sensitive</source>
+      <translation>区分大小写</translation>
+    </message>
+    <message>
+      <source>Choose Destination Folder</source>
+      <translation>选择目标文件夹</translation>
+    </message>
+    <message>
+      <source>Clear All</source>
+      <translation>全部清除</translation>
+    </message>
+    <message>
+      <source>Clear Selections</source>
+      <translation>清除选择</translation>
+    </message>
+    <message>
+      <source>Collisions</source>
+      <translation>冲突</translation>
+    </message>
+    <message>
+      <source>Complete</source>
+      <translation>完成</translation>
+    </message>
+    <message>
+      <source>Copy files</source>
+      <translation>复制文件</translation>
+    </message>
+    <message>
+      <source>Counter Padding</source>
+      <translation>计数器填充</translation>
+    </message>
+    <message>
+      <source>Counter Start</source>
+      <translation>计数器开始</translation>
+    </message>
+    <message>
+      <source>Current Name</source>
+      <translation>当前名称</translation>
+    </message>
+    <message>
+      <source>Custom folder</source>
+      <translation>自定义文件夹</translation>
+    </message>
+    <message>
+      <source>Date format</source>
+      <translation>日期格式</translation>
+    </message>
+    <message>
+      <source>Destination:</source>
+      <translation>目标：</translation>
+    </message>
+    <message>
+      <source>Done</source>
+      <translation>完成</translation>
+    </message>
+    <message>
+      <source>Done with errors</source>
+      <translation>完成（有错误）</translation>
+    </message>
+    <message>
+      <source>Dry Run</source>
+      <translation>模拟运行</translation>
+    </message>
+    <message>
+      <source>ERROR: {0}</source>
+      <translation>错误：{0}</translation>
+    </message>
+    <message>
+      <source>Error</source>
+      <translation>错误</translation>
+    </message>
+    <message>
+      <source>Error renaming files: {0}</source>
+      <translation>重命名文件时出错：{0}</translation>
+    </message>
+    <message>
+      <source>FITS files (*.fit *.fits *.fts *.fz);;All files (*)</source>
+      <translation>FITS文件 (*.fit *.fits *.fit *.fz);;所有文件 (*)</translation>
+    </message>
+    <message>
+      <source>Failed to rename {0} files</source>
+      <translation>重命名 {0} 个文件失败</translation>
+    </message>
+    <message>
+      <source>File already exists</source>
+      <translation>文件已存在</translation>
+    </message>
+    <message>
+      <source>Filename pattern</source>
+      <translation>文件名模式</translation>
+    </message>
+    <message>
+      <source>Files renamed successfully.</source>
+      <translation>文件重命名成功。</translation>
+    </message>
+    <message>
+      <source>Filter Pattern</source>
+      <translation>过滤模式</translation>
+    </message>
+    <message>
+      <source>Find</source>
+      <translation>查找</translation>
+    </message>
+    <message>
+      <source>Include Subfolders</source>
+      <translation>包括子文件夹</translation>
+    </message>
+    <message>
+      <source>Index start:</source>
+      <translation>索引开始：</translation>
+    </message>
+    <message>
+      <source>Insert</source>
+      <translation>插入</translation>
+    </message>
+    <message>
+      <source>Insert token</source>
+      <translation>插入标记</translation>
+    </message>
+    <message>
+      <source>Lowercase</source>
+      <translation>小写</translation>
+    </message>
+    <message>
+      <source>Move files</source>
+      <translation>移动文件</translation>
+    </message>
+    <message>
+      <source>New Name</source>
+      <translation>新名称</translation>
+    </message>
+    <message>
+      <source>New name</source>
+      <translation>新名称</translation>
+    </message>
+    <message>
+      <source>No files found matching the pattern.</source>
+      <translation>未找到匹配模式的文件。</translation>
+    </message>
+    <message>
+      <source>No files to rename.</source>
+      <translation>没有要重命名的文件。</translation>
+    </message>
+    <message>
+      <source>No previous rename operation to undo.</source>
+      <translation>没有可撤销的上一次重命名操作。</translation>
+    </message>
+    <message>
+      <source>Old path</source>
+      <translation>旧路径</translation>
+    </message>
+    <message>
+      <source>Options</source>
+      <translation>选项</translation>
+    </message>
+    <message>
+      <source>Original Name</source>
+      <translation>原始名称</translation>
+    </message>
+    <message>
+      <source>Output</source>
+      <translation>输出</translation>
+    </message>
+    <message>
+      <source>Overwrite</source>
+      <translation>覆盖</translation>
+    </message>
+    <message>
+      <source>Overwrite all</source>
+      <translation>全部覆盖</translation>
+    </message>
+    <message>
+      <source>Overwrite?</source>
+      <translation>是否覆盖？</translation>
+    </message>
+    <message>
+      <source>Padding</source>
+      <translation>填充</translation>
+    </message>
+    <message>
+      <source>Pattern</source>
+      <translation>模式</translation>
+    </message>
+    <message>
+      <source>Preview</source>
+      <translation>预览</translation>
+    </message>
+    <message>
+      <source>Preview Changes</source>
+      <translation>预览更改</translation>
+    </message>
+    <message>
+      <source>Processing</source>
+      <translation>处理</translation>
+    </message>
+    <message>
+      <source>Remove Selected</source>
+      <translation>移除所选</translation>
+    </message>
+    <message>
+      <source>Rename</source>
+      <translation>重命名</translation>
+    </message>
+    <message>
+      <source>Rename All</source>
+      <translation>全部重命名</translation>
+    </message>
+    <message>
+      <source>Rename Collision</source>
+      <translation>重命名冲突</translation>
+    </message>
+    <message>
+      <source>Rename Pattern</source>
+      <translation>重命名模式</translation>
+    </message>
+    <message>
+      <source>Renamed {0} files</source>
+      <translation>已重命名 {0} 个文件</translation>
+    </message>
+    <message>
+      <source>Renaming files...</source>
+      <translation>正在重命名文件...</translation>
+    </message>
+    <message>
+      <source>Renaming...</source>
+      <translation>正在重命名...</translation>
+    </message>
+    <message>
+      <source>Replace</source>
+      <translation>替换</translation>
+    </message>
+    <message>
+      <source>Replace with</source>
+      <translation>替换为</translation>
+    </message>
+    <message>
+      <source>Same folder</source>
+      <translation>相同文件夹</translation>
+    </message>
+    <message>
+      <source>Scan Folder…</source>
+      <translation>扫描文件夹…</translation>
+    </message>
+    <message>
+      <source>Select Folder</source>
+      <translation>选择文件夹</translation>
+    </message>
+    <message>
+      <source>Select Source Folder</source>
+      <translation>选择源文件夹</translation>
+    </message>
+    <message>
+      <source>Select a folder or add files…</source>
+      <translation>选择文件夹或添加文件…</translation>
+    </message>
+    <message>
+      <source>Separator</source>
+      <translation>分隔符</translation>
+    </message>
+    <message>
+      <source>Skip</source>
+      <translation>跳过</translation>
+    </message>
+    <message>
+      <source>Skip all</source>
+      <translation>全部跳过</translation>
+    </message>
+    <message>
+      <source>Some files could not be renamed ({0} errors).</source>
+      <translation>部分文件无法重命名（{0} 个错误）。</translation>
+    </message>
+    <message>
+      <source>Some files would have the same name after renaming. Please adjust the pattern.</source>
+      <translation>重命名后部分文件将具有相同的名称。请调整模式。</translation>
+    </message>
+    <message>
+      <source>Source Files</source>
+      <translation>源文件</translation>
+    </message>
+    <message>
+      <source>Source Folder</source>
+      <translation>源文件夹</translation>
+    </message>
+    <message>
+      <source>Source:</source>
+      <translation>源：</translation>
+    </message>
+    <message>
+      <source>Start number</source>
+      <translation>起始编号</translation>
+    </message>
+    <message>
+      <source>Status</source>
+      <translation>状态</translation>
+    </message>
+    <message>
+      <source>Success</source>
+      <translation>成功</translation>
+    </message>
+    <message>
+      <source>Template:</source>
+      <translation>模板：</translation>
+    </message>
+    <message>
+      <source>Time format</source>
+      <translation>时间格式</translation>
+    </message>
+    <message>
+      <source>Title case</source>
+      <translation>词首字母大写</translation>
+    </message>
+    <message>
+      <source>Two or more files would map to the same name. Adjust your pattern.</source>
+      <translation>两个或多个文件将映射到相同的名称。请调整您的模式。</translation>
+    </message>
+    <message>
+      <source>Undo Last Rename</source>
+      <translation>撤销上一次重命名</translation>
+    </message>
+    <message>
+      <source>Uppercase</source>
+      <translation>大写</translation>
+    </message>
+    <message>
+      <source>Use regex</source>
+      <translation>使用正则表达式</translation>
+    </message>
+    <message>
+      <source>Warning</source>
+      <translation>警告</translation>
+    </message>
+    <message>
+      <source>append .{ext} if missing</source>
+      <translation>如果缺失则附加 .{ext}</translation>
+    </message>
+    <message>
+      <source>e.g. *.fits, *.tif</source>
+      <translation>例如 *.fits, *.tif</translation>
+    </message>
+    <message>
+      <source>e.g. LIGHT_{FILTER}_{EXPOSURE:.0f}s_{DATE-OBS:%Y%m%d}_{#03}.{ext}</source>
+      <translation>例如 LIGHT_{FILTER}_{EXPOSURE:.0f}s_{DATE-OBS:%Y%m%d}_{#03}.{ext}</translation>
+    </message>
+    <message>
+      <source>e.g. {name}_{date}_{counter}</source>
+      <translation>例如 {name}_{date}_{counter}</translation>
+    </message>
+    <message>
+      <source>lowercase</source>
+      <translation>小写</translation>
+    </message>
+    <message>
+      <source>name collision</source>
+      <translation>名称冲突</translation>
+    </message>
+    <message>
+      <source>ok</source>
+      <translation>确定</translation>
+    </message>
+    <message>
+      <source>renamed</source>
+      <translation>已重命名</translation>
+    </message>
+    <message>
+      <source>spaces→_</source>
+      <translation>空格→_</translation>
+    </message>
+    <message>
+      <source>will overwrite</source>
+      <translation>将覆盖</translation>
+    </message>
+  </context>
+  <context>
+    <name>BatchSettingsDialog</name>
+    <message>
+      <source>Apply to All</source>
+      <translation>应用到全部</translation>
+    </message>
+    <message>
+      <source>Batch Settings</source>
+      <translation>批量设置</translation>
+    </message>
+    <message>
+      <source>Bit Depth</source>
+      <translation>位深度</translation>
+    </message>
+    <message>
+      <source>Cancel</source>
+      <translation>取消</translation>
+    </message>
+    <message>
+      <source>Exposure Time (seconds):</source>
+      <translation>曝光时间（秒）：</translation>
+    </message>
+    <message>
+      <source>Filter:</source>
+      <translation>滤镜：</translation>
+    </message>
+    <message>
+      <source>Image Type (IMAGETYP):</source>
+      <translation>图像类型 (IMAGETYP)：</translation>
+    </message>
+    <message>
+      <source>OK</source>
+      <translation>确定</translation>
+    </message>
+    <message>
+      <source>Output Format</source>
+      <translation>输出格式</translation>
+    </message>
+    <message>
+      <source>Set Type, Exposure, and Filter for All Files</source>
+      <translation>为所有文件设置类型、曝光和滤镜</translation>
+    </message>
+  </context>
+  <context>
+    <name>BlemishBlasterDialogPro</name>
+    <message>
+      <source>Apply to Document</source>
+      <translation>应用到文档</translation>
+    </message>
+    <message>
+      <source>Auto-stretch preview</source>
+      <translation>自动拉伸预览</translation>
+    </message>
+    <message>
+      <source>Blemish Blaster</source>
+      <translation>瑕疵消除器</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>关闭</translation>
+    </message>
+    <message>
+      <source>Controls</source>
+      <translation>控制</translation>
+    </message>
+    <message>
+      <source>Feather:</source>
+      <translation>羽化：</translation>
+    </message>
+    <message>
+      <source>Linked color channels</source>
+      <translation>链接颜色通道</translation>
+    </message>
+    <message>
+      <source>Opacity:</source>
+      <translation>不透明度：</translation>
+    </message>
+    <message>
+      <source>Radius:</source>
+      <translation>半径：</translation>
+    </message>
+    <message>
+      <source>Redo</source>
+      <translation>重做</translation>
+    </message>
+    <message>
+      <source>Target median:</source>
+      <translation>目标中值：</translation>
+    </message>
+    <message>
+      <source>Undo</source>
+      <translation>撤销</translation>
+    </message>
+  </context>
+  <context>
+    <name>BlinkComparatorPro</name>
+    <message>
+      <source>Blink Comparator</source>
+      <translation>闪烁比较器</translation>
+    </message>
+  </context>
+  <context>
+    <name>BlinkTab</name>
+    <message>
+      <source>
+
+{0} file(s) could not be renamed:</source>
+      <translation>
+
+{0} 个文件无法重命名：</translation>
+    </message>
+    <message>
+      <source>0 = infinite</source>
+      <translation>0 = 无限</translation>
+    </message>
+    <message>
+      <source>Absolute Difference</source>
+      <translation>绝对差异</translation>
+    </message>
+    <message>
+      <source>Add Additional</source>
+      <translation>添加额外</translation>
+    </message>
+    <message>
+      <source>Add Additional Images</source>
+      <translation>添加额外图像</translation>
+    </message>
+    <message>
+      <source>Add Frames</source>
+      <translation>添加帧</translation>
+    </message>
+    <message>
+      <source>Add Images</source>
+      <translation>添加图像</translation>
+    </message>
+    <message>
+      <source>Aggressive Stretch</source>
+      <translation>强力拉伸</translation>
+    </message>
+    <message>
+      <source>Align images</source>
+      <translation>对齐图像</translation>
+    </message>
+    <message>
+      <source>Aligning frames...</source>
+      <translation>正在对齐帧...</translation>
+    </message>
+    <message>
+      <source>Aligning...</source>
+      <translation>正在对齐...</translation>
+    </message>
+    <message>
+      <source>Alignment Method:</source>
+      <translation>对齐方法：</translation>
+    </message>
+    <message>
+      <source>Alignment complete</source>
+      <translation>对齐完成</translation>
+    </message>
+    <message>
+      <source>Alignment complete.</source>
+      <translation>对齐完成。</translation>
+    </message>
+    <message>
+      <source>Alignment failed</source>
+      <translation>对齐失败</translation>
+    </message>
+    <message>
+      <source>Alignment failed: {0}</source>
+      <translation>对齐失败：{0}</translation>
+    </message>
+    <message>
+      <source>All</source>
+      <translation>全部</translation>
+    </message>
+    <message>
+      <source>Apply to All Frames</source>
+      <translation>应用到所有帧</translation>
+    </message>
+    <message>
+      <source>Are you sure you want to clear all loaded images?</source>
+      <translation>您确定要清除所有加载的图像吗？</translation>
+    </message>
+    <message>
+      <source>Are you sure you want to permanently delete {0} flagged images? This action is irreversible.</source>
+      <translation>您确定要永久删除 {0} 个标记的图像吗？此操作不可逆。</translation>
+    </message>
+    <message>
+      <source>Are you sure you want to permanently delete {0} selected images? This action is irreversible.</source>
+      <translation>您确定要永久删除 {0} 个选定的图像吗？此操作不可逆。</translation>
+    </message>
+    <message>
+      <source>Auto Align Frames</source>
+      <translation>自动对齐帧</translation>
+    </message>
+    <message>
+      <source>Auto Stretch</source>
+      <translation>自动拉伸</translation>
+    </message>
+    <message>
+      <source>Auto-align</source>
+      <translation>自动对齐</translation>
+    </message>
+    <message>
+      <source>Auto-stretch</source>
+      <translation>自动拉伸</translation>
+    </message>
+    <message>
+      <source>Batch Deletion</source>
+      <translation>批量删除</translation>
+    </message>
+    <message>
+      <source>Batch Move</source>
+      <translation>批量移动</translation>
+    </message>
+    <message>
+      <source>Batch Operations</source>
+      <translation>批量操作</translation>
+    </message>
+    <message>
+      <source>Batch Rename</source>
+      <translation>批量重命名</translation>
+    </message>
+    <message>
+      <source>Batch Rename Selected…</source>
+      <translation>批量重命名所选…</translation>
+    </message>
+    <message>
+      <source>Blink</source>
+      <translation>闪烁</translation>
+    </message>
+    <message>
+      <source>Blink Comparator</source>
+      <translation>闪烁比较器</translation>
+    </message>
+    <message>
+      <source>Cancel</source>
+      <translation>取消</translation>
+    </message>
+    <message>
+      <source>Cancel Export</source>
+      <translation>取消导出</translation>
+    </message>
+    <message>
+      <source>Clear All</source>
+      <translation>全部清除</translation>
+    </message>
+    <message>
+      <source>Clear All Images</source>
+      <translation>清除所有图像</translation>
+    </message>
+    <message>
+      <source>Clear Flags</source>
+      <translation>清除标记</translation>
+    </message>
+    <message>
+      <source>Clear Images</source>
+      <translation>清除图像</translation>
+    </message>
+    <message>
+      <source>Clear marks</source>
+      <translation>清除标记</translation>
+    </message>
+    <message>
+      <source>Confirm Batch Deletion</source>
+      <translation>确认批量删除</translation>
+    </message>
+    <message>
+      <source>Confirm Delete</source>
+      <translation>确认删除</translation>
+    </message>
+    <message>
+      <source>Confirm Deletion</source>
+      <translation>确认删除</translation>
+    </message>
+    <message>
+      <source>Copy coordinates</source>
+      <translation>复制坐标</translation>
+    </message>
+    <message>
+      <source>Crop All</source>
+      <translation>全部裁剪</translation>
+    </message>
+    <message>
+      <source>Crossfade</source>
+      <translation>淡入淡出</translation>
+    </message>
+    <message>
+      <source>Current frame</source>
+      <translation>当前帧</translation>
+    </message>
+    <message>
+      <source>Date</source>
+      <translation>日期</translation>
+    </message>
+    <message>
+      <source>Delay (ms)</source>
+      <translation>延迟 (ms)</translation>
+    </message>
+    <message>
+      <source>Delete All Flagged Images</source>
+      <translation>删除所有标记的图像</translation>
+    </message>
+    <message>
+      <source>Delete Flagged</source>
+      <translation>删除标记的</translation>
+    </message>
+    <message>
+      <source>Delete Selected Items</source>
+      <translation>删除选定项目</translation>
+    </message>
+    <message>
+      <source>Delete flagged frame(s)?</source>
+      <translation>删除标记的帧？</translation>
+    </message>
+    <message>
+      <source>Deleted {0} flagged images.</source>
+      <translation>已删除 {0} 个标记的图像。</translation>
+    </message>
+    <message>
+      <source>Difference Mode</source>
+      <translation>差异模式</translation>
+    </message>
+    <message>
+      <source>Difference mode</source>
+      <translation>差异模式</translation>
+    </message>
+    <message>
+      <source>Difference threshold</source>
+      <translation>差异阈值</translation>
+    </message>
+    <message>
+      <source>Doc Manager</source>
+      <translation>文档管理器</translation>
+    </message>
+    <message>
+      <source>DocManager lacks open_array/open_numpy/create_document</source>
+      <translation>DocManager 缺少 open_array/open_numpy/create_document</translation>
+    </message>
+    <message>
+      <source>DocManager returned no document.</source>
+      <translation>DocManager 未返回文档。</translation>
+    </message>
+    <message>
+      <source>Document Manager</source>
+      <translation>文档管理器</translation>
+    </message>
+    <message>
+      <source>Duplicate Frame</source>
+      <translation>复制帧</translation>
+    </message>
+    <message>
+      <source>Duration:</source>
+      <translation>持续时间：</translation>
+    </message>
+    <message>
+      <source>Empty image</source>
+      <translation>空图像</translation>
+    </message>
+    <message>
+      <source>Enter a prefix or suffix to rename selected files:</source>
+      <translation>输入前缀或后缀以重命名选定文件：</translation>
+    </message>
+    <message>
+      <source>Enter new name:</source>
+      <translation>输入新名称：</translation>
+    </message>
+    <message>
+      <source>Error</source>
+      <translation>错误</translation>
+    </message>
+    <message>
+      <source>Export</source>
+      <translation>导出</translation>
+    </message>
+    <message>
+      <source>Export All as FITS</source>
+      <translation>全部导出为 FITS</translation>
+    </message>
+    <message>
+      <source>Export All as PNG</source>
+      <translation>全部导出为 PNG</translation>
+    </message>
+    <message>
+      <source>Export All as TIFF</source>
+      <translation>全部导出为 TIFF</translation>
+    </message>
+    <message>
+      <source>Export Blink Video</source>
+      <translation>导出闪烁视频</translation>
+    </message>
+    <message>
+      <source>Export Frames</source>
+      <translation>导出帧</translation>
+    </message>
+    <message>
+      <source>Export GIF</source>
+      <translation>导出 GIF</translation>
+    </message>
+    <message>
+      <source>Export Video</source>
+      <translation>导出视频</translation>
+    </message>
+    <message>
+      <source>Export Video…</source>
+      <translation>导出视频…</translation>
+    </message>
+    <message>
+      <source>Export animation</source>
+      <translation>导出动画</translation>
+    </message>
+    <message>
+      <source>Export canceled.</source>
+      <translation>导出已取消。</translation>
+    </message>
+    <message>
+      <source>Export cancelled.</source>
+      <translation>导出已取消。</translation>
+    </message>
+    <message>
+      <source>Export marks</source>
+      <translation>导出标记</translation>
+    </message>
+    <message>
+      <source>Export only selected frames</source>
+      <translation>仅导出选定帧</translation>
+    </message>
+    <message>
+      <source>Export video</source>
+      <translation>导出视频</translation>
+    </message>
+    <message>
+      <source>Exporting video...</source>
+      <translation>正在导出视频...</translation>
+    </message>
+    <message>
+      <source>Exposure: {0}</source>
+      <translation>曝光：{0}</translation>
+    </message>
+    <message>
+      <source>FITS header</source>
+      <translation>FITS 头信息</translation>
+    </message>
+    <message>
+      <source>FPS:</source>
+      <translation>FPS：</translation>
+    </message>
+    <message>
+      <source>Failed to create document:
+{0}</source>
+      <translation>创建文档失败：
+{0}</translation>
+    </message>
+    <message>
+      <source>Failed to load frame: {0}</source>
+      <translation>加载帧失败：{0}</translation>
+    </message>
+    <message>
+      <source>Failed to move {0}: {1}</source>
+      <translation>移动 {0} 失败：{1}</translation>
+    </message>
+    <message>
+      <source>Failed to open subwindow:
+{0}</source>
+      <translation>打开子窗口失败：
+{0}</translation>
+    </message>
+    <message>
+      <source>Failed to rename the file: {0}</source>
+      <translation>重命名文件失败：{0}</translation>
+    </message>
+    <message>
+      <source>Filename</source>
+      <translation>文件名</translation>
+    </message>
+    <message>
+      <source>Filter: {0}</source>
+      <translation>滤镜：{0}</translation>
+    </message>
+    <message>
+      <source>First</source>
+      <translation>第一帧</translation>
+    </message>
+    <message>
+      <source>First Frame</source>
+      <translation>第一帧</translation>
+    </message>
+    <message>
+      <source>Fit to Preview</source>
+      <translation>适应预览</translation>
+    </message>
+    <message>
+      <source>Flag</source>
+      <translation>标记</translation>
+    </message>
+    <message>
+      <source>Flag All</source>
+      <translation>全部标记</translation>
+    </message>
+    <message>
+      <source>Flag Selected</source>
+      <translation>标记所选</translation>
+    </message>
+    <message>
+      <source>Flagged frames moved to: {0}</source>
+      <translation>标记的帧已移动到：{0}</translation>
+    </message>
+    <message>
+      <source>Frame</source>
+      <translation>帧</translation>
+    </message>
+    <message>
+      <source>Frame Rate:</source>
+      <translation>帧率：</translation>
+    </message>
+    <message>
+      <source>Frame rate</source>
+      <translation>帧率</translation>
+    </message>
+    <message>
+      <source>Frame {0} of {1}</source>
+      <translation>第 {0} 帧，共 {1} 帧</translation>
+    </message>
+    <message>
+      <source>Frames exported to: {0}</source>
+      <translation>帧已导出到：{0}</translation>
+    </message>
+    <message>
+      <source>Frames loaded successfully.</source>
+      <translation>帧加载成功。</translation>
+    </message>
+    <message>
+      <source>Full Affine</source>
+      <translation>全仿射</translation>
+    </message>
+    <message>
+      <source>GIF Files (*.gif)</source>
+      <translation>GIF 文件 (*.gif)</translation>
+    </message>
+    <message>
+      <source>GIF export failed: {0}</source>
+      <translation>GIF 导出失败：{0}</translation>
+    </message>
+    <message>
+      <source>GIF exported: {0}</source>
+      <translation>GIF 已导出：{0}</translation>
+    </message>
+    <message>
+      <source>Hide Flagged</source>
+      <translation>隐藏标记的</translation>
+    </message>
+    <message>
+      <source>Highlight differences</source>
+      <translation>突出显示差异</translation>
+    </message>
+    <message>
+      <source>Homography</source>
+      <translation>单应性</translation>
+    </message>
+    <message>
+      <source>Image Files</source>
+      <translation>图像文件</translation>
+    </message>
+    <message>
+      <source>Image Files (*.fits *.fit *.tif *.tiff *.png *.jpg *.jpeg);;All Files (*)</source>
+      <translation>图像文件 (*.fits *.fit *.tif *.tiff *.png *.jpg *.jpeg);;所有文件 (*)</translation>
+    </message>
+    <message>
+      <source>Image info</source>
+      <translation>图像信息</translation>
+    </message>
+    <message>
+      <source>Images (*.png *.tif *.tiff *.fits *.fit *.xisf *.cr2 *.cr3 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef);;All Files (*)</source>
+      <translation>图像 (*.png *.tif *.tiff *.fits *.fit *.xisf *.cr2 *.cr3 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef);;所有文件 (*)</translation>
+    </message>
+    <message>
+      <source>Images (*.png *.tif *.tiff *.fits *.fit *.xisf *.cr2 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef);;All Files (*)</source>
+      <translation>图像 (*.png *.tif *.tiff *.fits *.fit *.xisf *.cr2 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef);;所有文件 (*)</translation>
+    </message>
+    <message>
+      <source>Individual Stretch</source>
+      <translation>单独拉伸</translation>
+    </message>
+    <message>
+      <source>Individual stretch</source>
+      <translation>单独拉伸</translation>
+    </message>
+    <message>
+      <source>Invert Flags</source>
+      <translation>反转标记</translation>
+    </message>
+    <message>
+      <source>Invert difference</source>
+      <translation>反转差异</translation>
+    </message>
+    <message>
+      <source>Last</source>
+      <translation>最后一帧</translation>
+    </message>
+    <message>
+      <source>Last Frame</source>
+      <translation>最后一帧</translation>
+    </message>
+    <message>
+      <source>Link stretch</source>
+      <translation>链接拉伸</translation>
+    </message>
+    <message>
+      <source>Linked Stretch</source>
+      <translation>链接拉伸</translation>
+    </message>
+    <message>
+      <source>Load images before exporting.</source>
+      <translation>导出前请先加载图像。</translation>
+    </message>
+    <message>
+      <source>Load some images first.</source>
+      <translation>请先加载一些图像。</translation>
+    </message>
+    <message>
+      <source>Loaded {0} images.</source>
+      <translation>已加载 {0} 张图像。</translation>
+    </message>
+    <message>
+      <source>Loaded {0} image{1}.</source>
+      <translation>已加载 {0} 张图像{1}。</translation>
+    </message>
+    <message>
+      <source>Loading frame {0} of {1}...</source>
+      <translation>正在加载第 {0} 帧，共 {1} 帧...</translation>
+    </message>
+    <message>
+      <source>Loading frames...</source>
+      <translation>正在加载帧...</translation>
+    </message>
+    <message>
+      <source>Loading images...</source>
+      <translation>正在加载图像...</translation>
+    </message>
+    <message>
+      <source>Loading...</source>
+      <translation>加载中...</translation>
+    </message>
+    <message>
+      <source>Loop</source>
+      <translation>循环</translation>
+    </message>
+    <message>
+      <source>Loop Count:</source>
+      <translation>循环次数：</translation>
+    </message>
+    <message>
+      <source>Main window or DocManager not available.</source>
+      <translation>主窗口或 DocManager 不可用。</translation>
+    </message>
+    <message>
+      <source>Manual align</source>
+      <translation>手动对齐</translation>
+    </message>
+    <message>
+      <source>Mark as reference</source>
+      <translation>标记为参考</translation>
+    </message>
+    <message>
+      <source>Mark transient</source>
+      <translation>标记瞬变</translation>
+    </message>
+    <message>
+      <source>Move All Flagged Images</source>
+      <translation>移动所有标记的图像</translation>
+    </message>
+    <message>
+      <source>Move Down</source>
+      <translation>下移</translation>
+    </message>
+    <message>
+      <source>Move Flagged to Folder</source>
+      <translation>移动标记的到文件夹</translation>
+    </message>
+    <message>
+      <source>Move Selected Items</source>
+      <translation>移动选定项目</translation>
+    </message>
+    <message>
+      <source>Move Up</source>
+      <translation>上移</translation>
+    </message>
+    <message>
+      <source>Moved {0} flagged images.</source>
+      <translation>已移动 {0} 个标记的图像。</translation>
+    </message>
+    <message>
+      <source>Next</source>
+      <translation>下一步</translation>
+    </message>
+    <message>
+      <source>Next Frame</source>
+      <translation>下一帧</translation>
+    </message>
+    <message>
+      <source>No Flagged Images</source>
+      <translation>没有标记的图像</translation>
+    </message>
+    <message>
+      <source>No Frames</source>
+      <translation>没有帧</translation>
+    </message>
+    <message>
+      <source>No Images</source>
+      <translation>没有图像</translation>
+    </message>
+    <message>
+      <source>No Images Found</source>
+      <translation>未找到图像</translation>
+    </message>
+    <message>
+      <source>No New Images</source>
+      <translation>没有新图像</translation>
+    </message>
+    <message>
+      <source>No Prefix</source>
+      <translation>没有前缀</translation>
+    </message>
+    <message>
+      <source>No Selection</source>
+      <translation>没有选择</translation>
+    </message>
+    <message>
+      <source>No compatible video codec found.
+
+Tip: install FFmpeg or `pip install imageio[ffmpeg]` for a portable fallback.</source>
+      <translation>未找到兼容的视频编解码器。
+
+提示：安装 FFmpeg 或 `pip install imageio[ffmpeg]` 以获得便携式备选方案。</translation>
+    </message>
+    <message>
+      <source>No frames loaded.</source>
+      <translation>未加载帧。</translation>
+    </message>
+    <message>
+      <source>No frames were written (codec/back-end issue?).</source>
+      <translation>未写入帧（编解码器/后端问题？）。</translation>
+    </message>
+    <message>
+      <source>No image is currently selected to flag.</source>
+      <translation>当前未选择要标记的图像。</translation>
+    </message>
+    <message>
+      <source>No image loaded. Cannot fit to preview.</source>
+      <translation>未加载图像。无法适应预览。</translation>
+    </message>
+    <message>
+      <source>No image selected.</source>
+      <translation>未选择图像。</translation>
+    </message>
+    <message>
+      <source>No images</source>
+      <translation>没有图像</translation>
+    </message>
+    <message>
+      <source>No images loaded</source>
+      <translation>未加载图像</translation>
+    </message>
+    <message>
+      <source>No individual frames selected.</source>
+      <translation>未选择单个帧。</translation>
+    </message>
+    <message>
+      <source>No items selected for deletion.</source>
+      <translation>未选择要删除的项目。</translation>
+    </message>
+    <message>
+      <source>No items selected for moving.</source>
+      <translation>未选择要移动的项目。</translation>
+    </message>
+    <message>
+      <source>No items selected for renaming.</source>
+      <translation>未选择要重命名的项目。</translation>
+    </message>
+    <message>
+      <source>No new images selected or already loaded.</source>
+      <translation>未选择新图像或已加载。</translation>
+    </message>
+    <message>
+      <source>No new images were selected or all selected images are already loaded.</source>
+      <translation>未选择新图像或所有选定图像已加载。</translation>
+    </message>
+    <message>
+      <source>No prefix entered. This will not change any filenames.
+
+Continue anyway?</source>
+      <translation>未输入前缀。这不会更改任何文件名。
+
+是否继续？</translation>
+    </message>
+    <message>
+      <source>No supported image files were found in the selected directory.</source>
+      <translation>在选定目录中未找到支持的图像文件。</translation>
+    </message>
+    <message>
+      <source>Normalize All</source>
+      <translation>全部归一化</translation>
+    </message>
+    <message>
+      <source>Nothing to export.</source>
+      <translation>没有可导出的内容。</translation>
+    </message>
+    <message>
+      <source>OK</source>
+      <translation>确定</translation>
+    </message>
+    <message>
+      <source>Object: {0}</source>
+      <translation>天体：{0}</translation>
+    </message>
+    <message>
+      <source>Only one frame</source>
+      <translation>仅一帧</translation>
+    </message>
+    <message>
+      <source>Opacity:</source>
+      <translation>不透明度：</translation>
+    </message>
+    <message>
+      <source>Open Images</source>
+      <translation>打开图像</translation>
+    </message>
+    <message>
+      <source>Open in Document Window</source>
+      <translation>在文档窗口中打开</translation>
+    </message>
+    <message>
+      <source>Output Format:</source>
+      <translation>输出格式：</translation>
+    </message>
+    <message>
+      <source>Overlay mode</source>
+      <translation>叠加模式</translation>
+    </message>
+    <message>
+      <source>Pause</source>
+      <translation>暂停</translation>
+    </message>
+    <message>
+      <source>Ping Pong</source>
+      <translation>往返播放</translation>
+    </message>
+    <message>
+      <source>Ping-pong</source>
+      <translation>往返播放</translation>
+    </message>
+    <message>
+      <source>Play</source>
+      <translation>播放</translation>
+    </message>
+    <message>
+      <source>Playback speed (0.1–10.0 fps)</source>
+      <translation>播放速度 (0.1–10.0 fps)</translation>
+    </message>
+    <message>
+      <source>Prefix</source>
+      <translation>前缀</translation>
+    </message>
+    <message>
+      <source>Prefix to add to flagged image filenames:</source>
+      <translation>要添加到标记图像文件名的前缀：</translation>
+    </message>
+    <message>
+      <source>Press 'F' to flag/unflag an image.
+Right-click on an image for more options.</source>
+      <translation>按 'F' 标记/取消标记图像。
+右键单击图像以获取更多选项。</translation>
+    </message>
+    <message>
+      <source>Previous</source>
+      <translation>上一步</translation>
+    </message>
+    <message>
+      <source>Previous Frame</source>
+      <translation>上一帧</translation>
+    </message>
+    <message>
+      <source>Quality</source>
+      <translation>质量</translation>
+    </message>
+    <message>
+      <source>Quality:</source>
+      <translation>质量：</translation>
+    </message>
+    <message>
+      <source>Reference Frame</source>
+      <translation>参考帧</translation>
+    </message>
+    <message>
+      <source>Remove Image</source>
+      <translation>移除图像</translation>
+    </message>
+    <message>
+      <source>Remove Selected</source>
+      <translation>移除所选</translation>
+    </message>
+    <message>
+      <source>Rename</source>
+      <translation>重命名</translation>
+    </message>
+    <message>
+      <source>Rename Flagged Images</source>
+      <translation>重命名标记的图像</translation>
+    </message>
+    <message>
+      <source>Rename Flagged Images…</source>
+      <translation>重命名标记的图像…</translation>
+    </message>
+    <message>
+      <source>Rename Image</source>
+      <translation>重命名图像</translation>
+    </message>
+    <message>
+      <source>Rename flagged images</source>
+      <translation>重命名标记的图像</translation>
+    </message>
+    <message>
+      <source>Renamed {0} flagged image{1}.</source>
+      <translation>已重命名 {0} 个标记的图像{1}。</translation>
+    </message>
+    <message>
+      <source>Rendering video…</source>
+      <translation>正在渲染视频…</translation>
+    </message>
+    <message>
+      <source>Reset Stretch</source>
+      <translation>重置拉伸</translation>
+    </message>
+    <message>
+      <source>Reset alignment</source>
+      <translation>重置对齐</translation>
+    </message>
+    <message>
+      <source>Resolution</source>
+      <translation>分辨率</translation>
+    </message>
+    <message>
+      <source>Reverse Order</source>
+      <translation>反向排序</translation>
+    </message>
+    <message>
+      <source>Rotate All</source>
+      <translation>全部旋转</translation>
+    </message>
+    <message>
+      <source>Save All</source>
+      <translation>全部保存</translation>
+    </message>
+    <message>
+      <source>Save GIF</source>
+      <translation>保存 GIF</translation>
+    </message>
+    <message>
+      <source>Save Video</source>
+      <translation>保存视频</translation>
+    </message>
+    <message>
+      <source>Saved: {0}
+Frames: {1} @ {2} fps</source>
+      <translation>已保存：{0}
+帧数：{1} @ {2} fps</translation>
+    </message>
+    <message>
+      <source>Search transients</source>
+      <translation>搜索瞬变</translation>
+    </message>
+    <message>
+      <source>Searching...</source>
+      <translation>正在搜索...</translation>
+    </message>
+    <message>
+      <source>Select Destination Folder</source>
+      <translation>选择目标文件夹</translation>
+    </message>
+    <message>
+      <source>Select Directory</source>
+      <translation>选择目录</translation>
+    </message>
+    <message>
+      <source>Select Frames</source>
+      <translation>选择帧</translation>
+    </message>
+    <message>
+      <source>Select Images</source>
+      <translation>选择图像</translation>
+    </message>
+    <message>
+      <source>Select Output Folder</source>
+      <translation>选择输出文件夹</translation>
+    </message>
+    <message>
+      <source>Send selected (or all) blink files to the Stacking Suite → Image Integration tab</source>
+      <translation>将选定（或全部）闪烁文件发送到堆叠套件 → 图像整合标签页</translation>
+    </message>
+    <message>
+      <source>Send selected (or all) blink files to the Stacking Suite → Light tab</source>
+      <translation>将选定（或全部）闪烁文件发送到堆叠套件 → 亮场标签页</translation>
+    </message>
+    <message>
+      <source>Send to Stacking → Integration</source>
+      <translation>发送到堆叠 → 整合</translation>
+    </message>
+    <message>
+      <source>Send to Stacking → Lights</source>
+      <translation>发送到堆叠 → 亮场</translation>
+    </message>
+    <message>
+      <source>Set as Reference</source>
+      <translation>设为参考</translation>
+    </message>
+    <message>
+      <source>Show Difference</source>
+      <translation>显示差异</translation>
+    </message>
+    <message>
+      <source>Show Flagged Only</source>
+      <translation>仅显示标记的</translation>
+    </message>
+    <message>
+      <source>Show Metrics</source>
+      <translation>显示指标</translation>
+    </message>
+    <message>
+      <source>Show crosshair</source>
+      <translation>显示十字准星</translation>
+    </message>
+    <message>
+      <source>Show filename</source>
+      <translation>显示文件名</translation>
+    </message>
+    <message>
+      <source>Show grid</source>
+      <translation>显示网格</translation>
+    </message>
+    <message>
+      <source>Show histogram</source>
+      <translation>显示直方图</translation>
+    </message>
+    <message>
+      <source>Show timestamp</source>
+      <translation>显示时间戳</translation>
+    </message>
+    <message>
+      <source>Side by side</source>
+      <translation>并排</translation>
+    </message>
+    <message>
+      <source>Signed Difference</source>
+      <translation>有符号差异</translation>
+    </message>
+    <message>
+      <source>Single pass</source>
+      <translation>单次通过</translation>
+    </message>
+    <message>
+      <source>Size:</source>
+      <translation>大小：</translation>
+    </message>
+    <message>
+      <source>Sort by Date</source>
+      <translation>按日期排序</translation>
+    </message>
+    <message>
+      <source>Sort by Name</source>
+      <translation>按名称排序</translation>
+    </message>
+    <message>
+      <source>Speed</source>
+      <translation>速度</translation>
+    </message>
+    <message>
+      <source>Speed:</source>
+      <translation>速度：</translation>
+    </message>
+    <message>
+      <source>Stop</source>
+      <translation>停止</translation>
+    </message>
+    <message>
+      <source>Suffix</source>
+      <translation>后缀</translation>
+    </message>
+    <message>
+      <source>Sync pan</source>
+      <translation>同步平移</translation>
+    </message>
+    <message>
+      <source>Sync zoom</source>
+      <translation>同步缩放</translation>
+    </message>
+    <message>
+      <source>There are no flagged images to delete.</source>
+      <translation>没有要删除的标记图像。</translation>
+    </message>
+    <message>
+      <source>There are no flagged images to move.</source>
+      <translation>没有要移动的标记图像。</translation>
+    </message>
+    <message>
+      <source>There are no flagged images to rename.</source>
+      <translation>没有要重命名的标记图像。</translation>
+    </message>
+    <message>
+      <source>There are no images to send.</source>
+      <translation>没有要发送的图像。</translation>
+    </message>
+    <message>
+      <source>Total frames</source>
+      <translation>总帧数</translation>
+    </message>
+    <message>
+      <source>Transients found</source>
+      <translation>找到瞬变</translation>
+    </message>
+    <message>
+      <source>Translation + Rotation</source>
+      <translation>平移 + 旋转</translation>
+    </message>
+    <message>
+      <source>Translation Only</source>
+      <translation>仅平移</translation>
+    </message>
+    <message>
+      <source>UI</source>
+      <translation>界面</translation>
+    </message>
+    <message>
+      <source>Unflag All</source>
+      <translation>全部取消标记</translation>
+    </message>
+    <message>
+      <source>Unflag Selected</source>
+      <translation>取消标记所选</translation>
+    </message>
+    <message>
+      <source>Unsupported Bayer pattern: {0}</source>
+      <translation>不支持的拜耳模式：{0}</translation>
+    </message>
+    <message>
+      <source>Video (*.mp4 *.avi)</source>
+      <translation>视频 (*.mp4 *.avi)</translation>
+    </message>
+    <message>
+      <source>Video Codec:</source>
+      <translation>视频编解码器：</translation>
+    </message>
+    <message>
+      <source>Video Export (optional)</source>
+      <translation>视频导出（可选）</translation>
+    </message>
+    <message>
+      <source>Video Files (*.mp4 *.avi *.mov)</source>
+      <translation>视频文件 (*.mp4 *.avi *.mov)</translation>
+    </message>
+    <message>
+      <source>Video Options</source>
+      <translation>视频选项</translation>
+    </message>
+    <message>
+      <source>Video export failed: {0}</source>
+      <translation>视频导出失败：{0}</translation>
+    </message>
+    <message>
+      <source>Video exported: {0}</source>
+      <translation>视频已导出：{0}</translation>
+    </message>
+    <message>
+      <source>Warning</source>
+      <translation>警告</translation>
+    </message>
+    <message>
+      <source>You're about to export a video with a single frame. Continue?</source>
+      <translation>您即将导出一个只有一帧的视频。是否继续？</translation>
+    </message>
+    <message>
+      <source>Zoom 100%</source>
+      <translation>缩放 100%</translation>
+    </message>
+    <message>
+      <source>Zoom In</source>
+      <translation>放大</translation>
+    </message>
+    <message>
+      <source>Zoom Out</source>
+      <translation>缩小</translation>
+    </message>
+    <message>
+      <source>Zoom to fit</source>
+      <translation>缩放以适应</translation>
+    </message>
+    <message>
+      <source>{0} frames</source>
+      <translation>{0} 帧</translation>
+    </message>
+    <message>
+      <source>{0} frames deleted.</source>
+      <translation>已删除 {0} 帧。</translation>
+    </message>
+    <message>
+      <source>→ Stacking: Integration</source>
+      <translation>→ 堆叠：整合</translation>
+    </message>
+    <message>
+      <source>→ Stacking: Lights</source>
+      <translation>→ 堆叠：亮场</translation>
+    </message>
+  </context>
+  <context>
+    <name>CLAHEDialogPro</name>
+    <message>
+      <source>Apply</source>
+      <translation>应用</translation>
+    </message>
+    <message>
+      <source>CLAHE</source>
+      <translation>CLAHE</translation>
+    </message>
+    <message>
+      <source>CLAHE Parameters</source>
+      <translation>CLAHE 参数</translation>
+    </message>
+    <message>
+      <source>Cancel</source>
+      <translation>取消</translation>
+    </message>
+    <message>
+      <source>Clip Limit:</source>
+      <translation>裁剪限制：</translation>
+    </message>
+    <message>
+      <source>Reset</source>
+      <translation>重置</translation>
+    </message>
+    <message>
+      <source>Tile Size (px):</source>
+      <translation>块大小（像素）：</translation>
+    </message>
+  </context>
+  <context>
+    <name>CheatSheet</name>
+    <message>
+      <source>Action</source>
+      <translation>操作</translation>
+    </message>
+    <message>
+      <source>Menus/Toolbar</source>
+      <translation>菜单/工具栏</translation>
+    </message>
+    <message>
+      <source>Shortcut</source>
+      <translation>快捷键</translation>
+    </message>
+    <message>
+      <source>Window</source>
+      <translation>窗口</translation>
+    </message>
+  </context>
+  <context>
+    <name>CheatSheetDialog</name>
+    <message>
+      <source>Action</source>
+      <translation>操作</translation>
+    </message>
+    <message>
+      <source>Additional &amp; Mouse &amp; Drag</source>
+      <translation>附加 &amp; 鼠标 &amp; 拖动</translation>
+    </message>
+    <message>
+      <source>Base Keyboard</source>
+      <translation>基础键盘</translation>
+    </message>
+    <message>
+      <source>Cheat sheet copied to clipboard.</source>
+      <translation>速查表已复制到剪贴板。</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>关闭</translation>
+    </message>
+    <message>
+      <source>Context</source>
+      <translation>上下文</translation>
+    </message>
+    <message>
+      <source>Copied</source>
+      <translation>已复制</translation>
+    </message>
+    <message>
+      <source>Copy</source>
+      <translation>复制</translation>
+    </message>
+    <message>
+      <source>Effect</source>
+      <translation>效果</translation>
+    </message>
+    <message>
+      <source>Gesture</source>
+      <translation>手势</translation>
+    </message>
+    <message>
+      <source>Keyboard Shortcut Cheat Sheet</source>
+      <translation>键盘快捷键速查表</translation>
+    </message>
+    <message>
+      <source>Shortcut</source>
+      <translation>快捷键</translation>
+    </message>
+    <message>
+      <source>Where</source>
+      <translation>位置</translation>
+    </message>
+  </context>
+  <context>
+    <name>ContinuumSubtractTab</name>
+    <message>
+      <source>Clear Loaded Images</source>
+      <translation>清除加载的图像</translation>
+    </message>
+    <message>
+      <source>Continuum Sources</source>
+      <translation>连续谱源</translation>
+    </message>
+    <message>
+      <source>Denoise continuum result with Cosmic Clarity (0.9)</source>
+      <translation>使用 Cosmic Clarity (0.9) 对连续谱结果进行降噪</translation>
+    </message>
+    <message>
+      <source>Execute</source>
+      <translation>执行</translation>
+    </message>
+    <message>
+      <source>Narrowband Filters</source>
+      <translation>窄带滤镜</translation>
+    </message>
+    <message>
+      <source>Output Linear Image Only</source>
+      <translation>仅输出线性图像</translation>
+    </message>
+    <message>
+      <source>Star-Based WB</source>
+      <translation>基于星点的白平衡</translation>
+    </message>
+  </context>
+  <context>
+    <name>ConvoDeconvoDialog</name>
+    <message>
+      <source>Close</source>
+      <translation>关闭</translation>
+    </message>
+    <message>
+      <source>Convolution</source>
+      <translation>卷积</translation>
+    </message>
+    <message>
+      <source>Convolution / Deconvolution</source>
+      <translation>卷积 / 反卷积</translation>
+    </message>
+    <message>
+      <source>Deconvolution</source>
+      <translation>反卷积</translation>
+    </message>
+    <message>
+      <source>PSF Estimator</source>
+      <translation>PSF 估计器</translation>
+    </message>
+    <message>
+      <source>Preview</source>
+      <translation>预览</translation>
+    </message>
+    <message>
+      <source>Push</source>
+      <translation>推送</translation>
+    </message>
+    <message>
+      <source>TV Denoise</source>
+      <translation>TV 降噪</translation>
+    </message>
+    <message>
+      <source>Undo</source>
+      <translation>撤销</translation>
+    </message>
+  </context>
+  <context>
+    <name>CosmicClarityDialogPro</name>
+    <message>
+      <source>Close</source>
+      <translation>关闭</translation>
+    </message>
+    <message>
+      <source>Cosmic Clarity</source>
+      <translation>Cosmic Clarity</translation>
+    </message>
+    <message>
+      <source>Execute</source>
+      <translation>执行</translation>
+    </message>
+    <message>
+      <source>Mode:</source>
+      <translation>模式：</translation>
+    </message>
+    <message>
+      <source>No</source>
+      <translation>否</translation>
+    </message>
+    <message>
+      <source>Parameters</source>
+      <translation>参数</translation>
+    </message>
+    <message>
+      <source>Use GPU:</source>
+      <translation>使用 GPU：</translation>
+    </message>
+    <message>
+      <source>Yes</source>
+      <translation>是</translation>
+    </message>
+  </context>
+  <context>
+    <name>CrashHandler</name>
+    <message>
+      <source>Details are available below and in saspro.log.</source>
+      <translation>详情见下方及 saspro.log。</translation>
+    </message>
+    <message>
+      <source>Unhandled Exception</source>
+      <translation>未处理的异常</translation>
+    </message>
+    <message>
+      <source>Unhandled Thread Exception</source>
+      <translation>未处理的线程异常</translation>
+    </message>
+  </context>
+  <context>
+    <name>CropDialogPro</name>
+    <message>
+      <source>Applied crop to all open images. Any Astrometric Solutions has been updated.</source>
+      <translation>已对所有打开的图像应用裁剪。任何天体测量解算已更新。</translation>
+    </message>
+    <message>
+      <source>Apply</source>
+      <translation>应用</translation>
+    </message>
+    <message>
+      <source>Apply failed</source>
+      <translation>应用失败</translation>
+    </message>
+    <message>
+      <source>Apply this crop to {0} open image(s)?</source>
+      <translation>将此裁剪应用到 {0} 张打开的图像？</translation>
+    </message>
+    <message>
+      <source>Aspect Ratio:</source>
+      <translation>纵横比：</translation>
+    </message>
+    <message>
+      <source>Astrometric solution updated ✔️
+
+</source>
+      <translation>天体测量解算已更新 ✔️
+
+</translation>
+    </message>
+    <message>
+      <source>Batch Crop</source>
+      <translation>批量裁剪</translation>
+    </message>
+    <message>
+      <source>Batch Crop (all open)</source>
+      <translation>批量裁剪（全部打开）</translation>
+    </message>
+    <message>
+      <source>Bottom</source>
+      <translation>底部</translation>
+    </message>
+    <message>
+      <source>CRVAL: ({0:.6f}, {1:.6f}) → ({2:.6f}, {3:.6f})
+</source>
+      <translation>CRVAL: ({0:.6f}, {1:.6f}) → ({2:.6f}, {3:.6f})
+</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>关闭</translation>
+    </message>
+    <message>
+      <source>Confirm Batch</source>
+      <translation>确认批量</translation>
+    </message>
+    <message>
+      <source>Crop Tool</source>
+      <translation>裁剪工具</translation>
+    </message>
+    <message>
+      <source>Draw &amp; finalize a crop first.</source>
+      <translation>请先绘制并确定裁剪区域。</translation>
+    </message>
+    <message>
+      <source>Fit residuals: RMS {0:.3f}"  (p95 {1:.3f}")</source>
+      <translation>拟合残差：RMS {0:.3f}"  (p95 {1:.3f}")</translation>
+    </message>
+    <message>
+      <source>Fit to View</source>
+      <translation>适应视图</translation>
+    </message>
+    <message>
+      <source>Free</source>
+      <translation>自由</translation>
+    </message>
+    <message>
+      <source>Invalid crop bounds.</source>
+      <translation>无效的裁剪边界。</translation>
+    </message>
+    <message>
+      <source>Invalid crop size.</source>
+      <translation>无效的裁剪大小。</translation>
+    </message>
+    <message>
+      <source>Left</source>
+      <translation>左侧</translation>
+    </message>
+    <message>
+      <source>Load Previous Crop</source>
+      <translation>加载上一次裁剪</translation>
+    </message>
+    <message>
+      <source>Margins (px):</source>
+      <translation>边距（像素）：</translation>
+    </message>
+    <message>
+      <source>Model: {0}   Image: {1}
+</source>
+      <translation>模型：{0}   图像：{1}
+</translation>
+    </message>
+    <message>
+      <source>No Images</source>
+      <translation>无图像</translation>
+    </message>
+    <message>
+      <source>No Previous</source>
+      <translation>无上一次记录</translation>
+    </message>
+    <message>
+      <source>No Selection</source>
+      <translation>未选择</translation>
+    </message>
+    <message>
+      <source>No open images to crop.</source>
+      <translation>没有打开的图像可供裁剪。</translation>
+    </message>
+    <message>
+      <source>No previous crop stored.</source>
+      <translation>没有存储的上一次裁剪。</translation>
+    </message>
+    <message>
+      <source>Original</source>
+      <translation>原始</translation>
+    </message>
+    <message>
+      <source>Right</source>
+      <translation>右侧</translation>
+    </message>
+    <message>
+      <source>Selection: {0}×{1} px</source>
+      <translation>选择：{0}×{1} 像素</translation>
+    </message>
+    <message>
+      <source>Selection: —</source>
+      <translation>选择：—</translation>
+    </message>
+    <message>
+      <source>Toggle Autostretch</source>
+      <translation>切换自动拉伸</translation>
+    </message>
+    <message>
+      <source>Top</source>
+      <translation>顶部</translation>
+    </message>
+    <message>
+      <source>WCS Updated</source>
+      <translation>WCS 已更新</translation>
+    </message>
+    <message>
+      <source>Zoom 100%</source>
+      <translation>缩放 100%</translation>
+    </message>
+    <message>
+      <source>Zoom In</source>
+      <translation>放大</translation>
+    </message>
+    <message>
+      <source>Zoom Out</source>
+      <translation>缩小</translation>
+    </message>
+    <message>
+      <source>• Click–drag to draw a crop
+• Drag corner handles to resize
+• Shift + drag on box to rotate</source>
+      <translation>• 点击并拖动以绘制裁剪区域
+• 拖动角柄以调整大小
+• Shift + 在框上拖动以旋转</translation>
+    </message>
+  </context>
+  <context>
+    <name>CurveEditor</name>
+    <message>
+      <source>Inflection @ K={0:.3f}</source>
+      <translation>拐点 @ K={0:.3f}</translation>
+    </message>
+  </context>
+  <context>
+    <name>CurvesDialogPro</name>
+    <message>
+      <source>Apply to Document</source>
+      <translation>应用到文档</translation>
+    </message>
+    <message>
+      <source>Curves Editor</source>
+      <translation>曲线编辑器</translation>
+    </message>
+    <message>
+      <source>Manage…</source>
+      <translation>管理…</translation>
+    </message>
+    <message>
+      <source>Presets</source>
+      <translation>预设</translation>
+    </message>
+    <message>
+      <source>Reset</source>
+      <translation>重置</translation>
+    </message>
+    <message>
+      <source>Save as Preset...</source>
+      <translation>保存为预设...</translation>
+    </message>
+    <message>
+      <source>Toggle Preview</source>
+      <translation>切换预览</translation>
+    </message>
+  </context>
+  <context>
+    <name>DSEWorker</name>
+    <message>
+      <source>Analyzing dark structure…</source>
+      <translation>正在分析暗部结构…</translation>
+    </message>
+    <message>
+      <source>Finalizing…</source>
+      <translation>正在完成…</translation>
+    </message>
+  </context>
+  <context>
+    <name>DebayerDialog</name>
+    <message>
+      <source>Bayer pattern</source>
+      <translation>拜耳模式</translation>
+    </message>
+    <message>
+      <source>Debayer</source>
+      <translation>去马赛克</translation>
+    </message>
+    <message>
+      <source>Method</source>
+      <translation>方法</translation>
+    </message>
+  </context>
+  <context>
+    <name>DistortionGridDialog</name>
+    <message>
+      <source>Astrometric Distortion &amp; Histogram</source>
+      <translation>天体测量畸变与直方图</translation>
+    </message>
+    <message>
+      <source>Astrometric Distortion Grid</source>
+      <translation>天体测量畸变网格</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>关闭</translation>
+    </message>
+    <message>
+      <source>Distortion</source>
+      <translation>畸变</translation>
+    </message>
+    <message>
+      <source>Distortion (″)</source>
+      <translation>畸变 (″)</translation>
+    </message>
+    <message>
+      <source>Not enough stars found.</source>
+      <translation>未找到足够的星点。</translation>
+    </message>
+    <message>
+      <source>Number of stars</source>
+      <translation>星点数量</translation>
+    </message>
+    <message>
+      <source>Residual histogram</source>
+      <translation>残差直方图</translation>
+    </message>
+  </context>
+  <context>
+    <name>DockMixin</name>
+    <message>
+      <source>Console / Status</source>
+      <translation>控制台 / 状态</translation>
+    </message>
+    <message>
+      <source>Explorer</source>
+      <translation>资源管理器</translation>
+    </message>
+    <message>
+      <source>Show System Log Panel</source>
+      <translation>显示系统日志面板</translation>
+    </message>
+    <message>
+      <source>System Log</source>
+      <translation>系统日志</translation>
+    </message>
+  </context>
+  <context>
+    <name>DraggableToolBar</name>
+    <message>
+      <source>Create Desktop Shortcut</source>
+      <translation>Create Desktop Shortcut</translation>
+    </message>
+    <message>
+      <source>Hide this icon</source>
+      <translation>Hide this icon</translation>
+    </message>
+    <message>
+      <source>Lock Toolbar Icons</source>
+      <translation>Lock Toolbar Icons</translation>
+    </message>
+    <message>
+      <source>Reset hidden icons</source>
+      <translation>Reset hidden icons</translation>
+    </message>
+    <message>
+      <source>Show hidden…</source>
+      <translation>Show hidden…</translation>
+    </message>
+    <message>
+      <source>Tip: Alt+Drag to create</source>
+      <translation>Tip: Alt+Drag to create</translation>
+    </message>
+  </context>
+  <context>
+    <name>ExoPlanetWindow</name>
+    <message>
+      <source>1: Load Raw Subs…</source>
+      <translation>1: 加载原始子帧…</translation>
+    </message>
+    <message>
+      <source>1a: Calibrate &amp;&amp; Align Subs</source>
+      <translation>1a: 校准并对齐子帧</translation>
+    </message>
+    <message>
+      <source>2: Measure &amp;&amp; Photometry</source>
+      <translation>2: 测量与光度测定</translation>
+    </message>
+    <message>
+      <source>Aligned Subs</source>
+      <translation>已对齐的子帧</translation>
+    </message>
+    <message>
+      <source>Exoplanet Transit Detector</source>
+      <translation>系外行星凌日探测器</translation>
+    </message>
+    <message>
+      <source>Load Master Dark…</source>
+      <translation>加载主暗场…</translation>
+    </message>
+    <message>
+      <source>Load Master Flat…</source>
+      <translation>加载主平场…</translation>
+    </message>
+    <message>
+      <source>Load, Measure &amp;&amp; Photometry…</source>
+      <translation>加载、测量与光度测定…</translation>
+    </message>
+    <message>
+      <source>Mode:</source>
+      <translation>模式：</translation>
+    </message>
+    <message>
+      <source>Raw Subs</source>
+      <translation>原始子帧</translation>
+    </message>
+  </context>
+  <context>
+    <name>FITSModifier</name>
+    <message>
+      <source>(no file)</source>
+      <translation>（无文件）</translation>
+    </message>
+    <message>
+      <source>Add/Update</source>
+      <translation>添加/更新</translation>
+    </message>
+    <message>
+      <source>Apply add/update/delete to all HDUs</source>
+      <translation>应用添加/更新/删除到所有 HDU</translation>
+    </message>
+    <message>
+      <source>Batch Modify...</source>
+      <translation>批量修改...</translation>
+    </message>
+    <message>
+      <source>Comment</source>
+      <translation>注释</translation>
+    </message>
+    <message>
+      <source>Comment (optional)</source>
+      <translation>注释（可选）</translation>
+    </message>
+    <message>
+      <source>Could not save:
+{0}</source>
+      <translation>无法保存：
+{0}</translation>
+    </message>
+    <message>
+      <source>Delete Selected</source>
+      <translation>删除所选</translation>
+    </message>
+    <message>
+      <source>FITS (*.fits *.fit);;TIFF (*.tif *.tiff);;PNG (*.png);;JPEG (*.jpg *.jpeg);;XISF (*.xisf)</source>
+      <translation>FITS (*.fits *.fit);;TIFF (*.tif *.tiff);;PNG (*.png);;JPEG (*.jpg *.jpeg);;XISF (*.xisf)</translation>
+    </message>
+    <message>
+      <source>FITS Header Editor</source>
+      <translation>FITS 头信息编辑器</translation>
+    </message>
+    <message>
+      <source>FITS files (*.fits *.fit *.fts *.fz)</source>
+      <translation>FITS 文件 (*.fits *.fit *.fts *.fz)</translation>
+    </message>
+    <message>
+      <source>File:</source>
+      <translation>文件：</translation>
+    </message>
+    <message>
+      <source>HDU:</source>
+      <translation>HDU：</translation>
+    </message>
+    <message>
+      <source>Invalid FITS</source>
+      <translation>无效的 FITS</translation>
+    </message>
+    <message>
+      <source>KEYWORD</source>
+      <translation>关键字</translation>
+    </message>
+    <message>
+      <source>Keyword</source>
+      <translation>关键字</translation>
+    </message>
+    <message>
+      <source>No Image</source>
+      <translation>无图像</translation>
+    </message>
+    <message>
+      <source>No active image/document to save.</source>
+      <translation>没有活动的图像/文档可保存。</translation>
+    </message>
+    <message>
+      <source>Open FITS</source>
+      <translation>打开 FITS</translation>
+    </message>
+    <message>
+      <source>Open FITS…</source>
+      <translation>打开 FITS…</translation>
+    </message>
+    <message>
+      <source>Reload</source>
+      <translation>重新加载</translation>
+    </message>
+    <message>
+      <source>Save</source>
+      <translation>保存</translation>
+    </message>
+    <message>
+      <source>Save Error</source>
+      <translation>保存错误</translation>
+    </message>
+    <message>
+      <source>Save Image As</source>
+      <translation>图像另存为</translation>
+    </message>
+    <message>
+      <source>Save a Copy As…</source>
+      <translation>另存副本为…</translation>
+    </message>
+    <message>
+      <source>Saved Copy</source>
+      <translation>已保存副本</translation>
+    </message>
+    <message>
+      <source>Saved a copy to:
+{0}</source>
+      <translation>已保存副本到：
+{0}</translation>
+    </message>
+    <message>
+      <source>This file does not appear to be a valid FITS:
+
+{0}
+
+{1}
+
+Tip: Choose a FITS file via 'Open FITS…' or edit an in-memory header.</source>
+      <translation>此文件似乎不是有效的 FITS：
+
+{0}
+
+{1}
+
+提示：通过“打开 FITS…”选择 FITS 文件或编辑内存中的头信息。</translation>
+    </message>
+    <message>
+      <source>Value</source>
+      <translation>值</translation>
+    </message>
+  </context>
+  <context>
+    <name>FileMixin</name>
+    <message>
+      <source>Failed to save:
+{e}</source>
+      <translation>保存失败：
+{e}</translation>
+    </message>
+    <message>
+      <source>Failed to save:
+{msg}</source>
+      <translation>保存失败：
+{msg}</translation>
+    </message>
+    <message>
+      <source>File not found</source>
+      <translation>未找到文件</translation>
+    </message>
+    <message>
+      <source>Load Project</source>
+      <translation>加载项目</translation>
+    </message>
+    <message>
+      <source>New Project</source>
+      <translation>新建项目</translation>
+    </message>
+    <message>
+      <source>No documents to save.</source>
+      <translation>没有要保存的文档。</translation>
+    </message>
+    <message>
+      <source>Open Images</source>
+      <translation>打开图像</translation>
+    </message>
+    <message>
+      <source>Open failed</source>
+      <translation>打开失败</translation>
+    </message>
+    <message>
+      <source>Project not found</source>
+      <translation>未找到项目</translation>
+    </message>
+    <message>
+      <source>Save As</source>
+      <translation>另存为</translation>
+    </message>
+    <message>
+      <source>Save Project</source>
+      <translation>保存项目</translation>
+    </message>
+    <message>
+      <source>Save failed</source>
+      <translation>保存失败</translation>
+    </message>
+    <message>
+      <source>Saving</source>
+      <translation>正在保存</translation>
+    </message>
+    <message>
+      <source>Saving project...</source>
+      <translation>正在保存项目...</translation>
+    </message>
+    <message>
+      <source>Start a new project? This closes all views and clears desktop shortcuts.</source>
+      <translation>开始新项目？这将关闭所有视图并清除桌面快捷方式。</translation>
+    </message>
+    <message>
+      <source>The file does not exist:
+{path}
+
+Remove it from the recent images list?</source>
+      <translation>文件不存在：
+{path}
+
+是否将其从最近图像列表中移除？</translation>
+    </message>
+    <message>
+      <source>The project file does not exist:
+{path}
+
+Remove it from the recent projects list?</source>
+      <translation>项目文件不存在：
+{path}
+
+是否将其从最近项目列表中移除？</translation>
+    </message>
+  </context>
+  <context>
+    <name>FilterIdDialog</name>
+    <message>
+      <source>Add row</source>
+      <translation>添加行</translation>
+    </message>
+    <message>
+      <source>AstroBin Filter IDs</source>
+      <translation>AstroBin 滤镜 ID</translation>
+    </message>
+    <message>
+      <source>AstroBin ID</source>
+      <translation>AstroBin ID</translation>
+    </message>
+    <message>
+      <source>Brand</source>
+      <translation>品牌</translation>
+    </message>
+    <message>
+      <source>CSV files (*.csv);;All files (*)</source>
+      <translation>CSV 文件 (*.csv);;所有文件 (*)</translation>
+    </message>
+    <message>
+      <source>Delete selected</source>
+      <translation>删除所选</translation>
+    </message>
+    <message>
+      <source>Edit filter names and their AstroBin numeric IDs.</source>
+      <translation>编辑滤镜名称及其 AstroBin 数字 ID。</translation>
+    </message>
+    <message>
+      <source>Filter name</source>
+      <translation>滤镜名称</translation>
+    </message>
+    <message>
+      <source>ID</source>
+      <translation>ID</translation>
+    </message>
+    <message>
+      <source>Load offline DB…</source>
+      <translation>加载离线数据库…</translation>
+    </message>
+    <message>
+      <source>Name</source>
+      <translation>名称</translation>
+    </message>
+    <message>
+      <source>No DB</source>
+      <translation>无数据库</translation>
+    </message>
+    <message>
+      <source>Offline filters database not loaded yet.</source>
+      <translation>离线滤镜数据库尚未加载。</translation>
+    </message>
+    <message>
+      <source>Open AstroBin Equipment Explorer (Filters)</source>
+      <translation>打开 AstroBin 设备浏览器（滤镜）</translation>
+    </message>
+    <message>
+      <source>Search AstroBin Filters (offline)</source>
+      <translation>搜索 AstroBin 滤镜（离线）</translation>
+    </message>
+    <message>
+      <source>Search ID, brand, or name…</source>
+      <translation>搜索 ID、品牌或名称…</translation>
+    </message>
+    <message>
+      <source>Search offline DB…</source>
+      <translation>搜索离线数据库…</translation>
+    </message>
+    <message>
+      <source>Search or load the offline filters database.</source>
+      <translation>搜索或加载离线滤镜数据库。</translation>
+    </message>
+    <message>
+      <source>Select AstroBin Filters CSV</source>
+      <translation>选择 AstroBin 滤镜 CSV</translation>
+    </message>
+  </context>
+  <context>
+    <name>FrequencySeperationTab</name>
+    <message>
+      <source>&lt;b&gt;HF Enhancements&lt;/b&gt;</source>
+      <translation>&lt;b&gt;高频增强&lt;/b&gt;</translation>
+    </message>
+    <message>
+      <source>Apply - Split HF &amp; LF</source>
+      <translation>应用 - 分离高频和低频</translation>
+    </message>
+    <message>
+      <source>Apply HF Enhancements</source>
+      <translation>应用高频增强</translation>
+    </message>
+    <message>
+      <source>Combine HF+LF -&gt; Push</source>
+      <translation>合并高频+低频 -&gt; 推送</translation>
+    </message>
+    <message>
+      <source>Enable HF Denoise</source>
+      <translation>启用高频降噪</translation>
+    </message>
+    <message>
+      <source>Enable Sharpen Scale</source>
+      <translation>启用锐化比例</translation>
+    </message>
+    <message>
+      <source>Enable Wavelet Sharpening</source>
+      <translation>启用小波锐化</translation>
+    </message>
+    <message>
+      <source>Method:</source>
+      <translation>方法：</translation>
+    </message>
+    <message>
+      <source>Push HF</source>
+      <translation>推送高频</translation>
+    </message>
+    <message>
+      <source>Push LF</source>
+      <translation>推送低频</translation>
+    </message>
+  </context>
+  <context>
+    <name>FunctionBundleDialog</name>
+    <message>
+      <source>Apply to Active View</source>
+      <translation>Apply to Active View</translation>
+    </message>
+    <message>
+      <source>Apply to View Bundle…</source>
+      <translation>Apply to View Bundle…</translation>
+    </message>
+    <message>
+      <source>Clear Steps</source>
+      <translation>Clear Steps</translation>
+    </message>
+    <message>
+      <source>Compress to Chip</source>
+      <translation>Compress to Chip</translation>
+    </message>
+    <message>
+      <source>Drag Bundle</source>
+      <translation>Drag Bundle</translation>
+    </message>
+    <message>
+      <source>Edit Preset…</source>
+      <translation>Edit Preset…</translation>
+    </message>
+    <message>
+      <source>Remove Selected</source>
+      <translation>Remove Selected</translation>
+    </message>
+    <message>
+      <source>▲ Move Up</source>
+      <translation>▲ Move Up</translation>
+    </message>
+    <message>
+      <source>▼ Move Down</source>
+      <translation>▼ Move Down</translation>
+    </message>
+  </context>
+  <context>
+    <name>GeometryMixin</name>
+    <message>
+      <source>Active view has no image.</source>
+      <translation>活动视图没有图像。</translation>
+    </message>
+    <message>
+      <source>Enter scaling factor (e.g., 0.5 for 50%, 2 for 200%):</source>
+      <translation>输入缩放因子（例如，0.5 表示 50%，2 表示 200%）：</translation>
+    </message>
+    <message>
+      <source>Flip Horizontal</source>
+      <translation>水平翻转</translation>
+    </message>
+    <message>
+      <source>Flip Vertical</source>
+      <translation>垂直翻转</translation>
+    </message>
+    <message>
+      <source>Invert</source>
+      <translation>反转</translation>
+    </message>
+    <message>
+      <source>Rescale Image</source>
+      <translation>缩放图像</translation>
+    </message>
+    <message>
+      <source>Rotate 180°</source>
+      <translation>旋转180°</translation>
+    </message>
+    <message>
+      <source>Rotate 90° CCW</source>
+      <translation>逆时针旋转 90°</translation>
+    </message>
+    <message>
+      <source>Rotate 90° CW</source>
+      <translation>顺时针旋转 90°</translation>
+    </message>
+  </context>
+  <context>
+    <name>GhsDialogPro</name>
+    <message>
+      <source>Open a Histogram for this image.
+Ctrl+Click on the histogram to set the GHS pivot.</source>
+      <translation>打开此图像的直方图。
+Ctrl+点击直方图以设置 GHS 枢轴。</translation>
+    </message>
+  </context>
+  <context>
+    <name>GlimrDialog</name>
+    <message>
+      <source>Allow higher harmonics</source>
+      <translation>允许高次谐波</translation>
+    </message>
+    <message>
+      <source>Auto-detect center</source>
+      <translation>自动检测中心</translation>
+    </message>
+    <message>
+      <source>Center</source>
+      <translation>中心</translation>
+    </message>
+    <message>
+      <source>Clip iterations</source>
+      <translation>裁剪迭代</translation>
+    </message>
+    <message>
+      <source>Create mask</source>
+      <translation>创建蒙版</translation>
+    </message>
+    <message>
+      <source>Create model</source>
+      <translation>创建模型</translation>
+    </message>
+    <message>
+      <source>Ellipticity</source>
+      <translation>椭圆度</translation>
+    </message>
+    <message>
+      <source>Ellipticity profile</source>
+      <translation>椭圆度轮廓</translation>
+    </message>
+    <message>
+      <source>Error</source>
+      <translation>错误</translation>
+    </message>
+    <message>
+      <source>Export</source>
+      <translation>导出</translation>
+    </message>
+    <message>
+      <source>Export model</source>
+      <translation>导出模型</translation>
+    </message>
+    <message>
+      <source>Export residuals</source>
+      <translation>导出残差</translation>
+    </message>
+    <message>
+      <source>Export table</source>
+      <translation>导出表格</translation>
+    </message>
+    <message>
+      <source>Fit isophotes</source>
+      <translation>拟合等光强线</translation>
+    </message>
+    <message>
+      <source>Fitting complete</source>
+      <translation>拟合完成</translation>
+    </message>
+    <message>
+      <source>Fitting failed</source>
+      <translation>拟合失败</translation>
+    </message>
+    <message>
+      <source>Fitting parameters</source>
+      <translation>拟合参数</translation>
+    </message>
+    <message>
+      <source>Fitting...</source>
+      <translation>正在拟合...</translation>
+    </message>
+    <message>
+      <source>Fix center</source>
+      <translation>固定中心</translation>
+    </message>
+    <message>
+      <source>Fix ellipticity</source>
+      <translation>固定椭圆度</translation>
+    </message>
+    <message>
+      <source>Fix position angle</source>
+      <translation>固定位置角</translation>
+    </message>
+    <message>
+      <source>GLIMR</source>
+      <translation>GLIMR</translation>
+    </message>
+    <message>
+      <source>GLIMR - Galaxy Isophote Modeler</source>
+      <translation>GLIMR - 星系等光强线建模器</translation>
+    </message>
+    <message>
+      <source>Geometry</source>
+      <translation>几何变换</translation>
+    </message>
+    <message>
+      <source>Intensity</source>
+      <translation>强度</translation>
+    </message>
+    <message>
+      <source>Isophote Fitting</source>
+      <translation>等光强线拟合</translation>
+    </message>
+    <message>
+      <source>Isophote table</source>
+      <translation>等光强线表格</translation>
+    </message>
+    <message>
+      <source>Linear step</source>
+      <translation>线性步长</translation>
+    </message>
+    <message>
+      <source>Logarithmic step</source>
+      <translation>对数步长</translation>
+    </message>
+    <message>
+      <source>Manual center</source>
+      <translation>手动中心</translation>
+    </message>
+    <message>
+      <source>Masking</source>
+      <translation>蒙版处理</translation>
+    </message>
+    <message>
+      <source>Maximum radius</source>
+      <translation>最大半径</translation>
+    </message>
+    <message>
+      <source>Minimum radius</source>
+      <translation>最小半径</translation>
+    </message>
+    <message>
+      <source>Model</source>
+      <translation>模型</translation>
+    </message>
+    <message>
+      <source>Pick center</source>
+      <translation>选取中心</translation>
+    </message>
+    <message>
+      <source>Plot results</source>
+      <translation>绘制结果</translation>
+    </message>
+    <message>
+      <source>Position angle</source>
+      <translation>位置角</translation>
+    </message>
+    <message>
+      <source>Position angle profile</source>
+      <translation>位置角轮廓</translation>
+    </message>
+    <message>
+      <source>Results</source>
+      <translation>结果</translation>
+    </message>
+    <message>
+      <source>Semi-major axis</source>
+      <translation>半长轴</translation>
+    </message>
+    <message>
+      <source>Show residuals</source>
+      <translation>显示残差</translation>
+    </message>
+    <message>
+      <source>Sigma clipping</source>
+      <translation>Sigma 裁剪</translation>
+    </message>
+    <message>
+      <source>Step size</source>
+      <translation>步长</translation>
+    </message>
+    <message>
+      <source>Subtract model</source>
+      <translation>减去模型</translation>
+    </message>
+    <message>
+      <source>Surface brightness profile</source>
+      <translation>表面亮度轮廓</translation>
+    </message>
+    <message>
+      <source>Use mask</source>
+      <translation>使用蒙版</translation>
+    </message>
+    <message>
+      <source>X</source>
+      <translation>X</translation>
+    </message>
+    <message>
+      <source>Y</source>
+      <translation>Y</translation>
+    </message>
+  </context>
+  <context>
+    <name>HeaderMixin</name>
+    <message>
+      <source>Comment</source>
+      <translation>注释</translation>
+    </message>
+    <message>
+      <source>Header</source>
+      <translation>头信息</translation>
+    </message>
+    <message>
+      <source>Key</source>
+      <translation>键</translation>
+    </message>
+    <message>
+      <source>No header</source>
+      <translation>无头信息</translation>
+    </message>
+    <message>
+      <source>No image</source>
+      <translation>无图像</translation>
+    </message>
+    <message>
+      <source>Value</source>
+      <translation>值</translation>
+    </message>
+  </context>
+  <context>
+    <name>HeaderViewerDock</name>
+    <message>
+      <source>CSV (*.csv)</source>
+      <translation>CSV (*.csv)</translation>
+    </message>
+    <message>
+      <source>FITS Header</source>
+      <translation>FITS 头信息</translation>
+    </message>
+    <message>
+      <source>Failed to save:
+{0}</source>
+      <translation>保存失败：
+{0}</translation>
+    </message>
+    <message>
+      <source>Header (dict from document)</source>
+      <translation>头信息（来自文档的字典）</translation>
+    </message>
+    <message>
+      <source>Header (snapshot)</source>
+      <translation>头信息（快照）</translation>
+    </message>
+    <message>
+      <source>Header Viewer</source>
+      <translation>头信息查看器</translation>
+    </message>
+    <message>
+      <source>Header: {0}</source>
+      <translation>头信息：{0}</translation>
+    </message>
+    <message>
+      <source>Key</source>
+      <translation>键</translation>
+    </message>
+    <message>
+      <source>Metadata</source>
+      <translation>元数据</translation>
+    </message>
+    <message>
+      <source>Save Metadata</source>
+      <translation>保存元数据</translation>
+    </message>
+    <message>
+      <source>Save Metadata…</source>
+      <translation>保存元数据…</translation>
+    </message>
+    <message>
+      <source>Untitled</source>
+      <translation>无标题</translation>
+    </message>
+    <message>
+      <source>Value</source>
+      <translation>值</translation>
+    </message>
+    <message>
+      <source>WCS</source>
+      <translation>WCS</translation>
+    </message>
+    <message>
+      <source>XISF File Metadata</source>
+      <translation>XISF 文件元数据</translation>
+    </message>
+    <message>
+      <source>XISF Image Metadata</source>
+      <translation>XISF 图像元数据</translation>
+    </message>
+    <message>
+      <source>XISF Properties</source>
+      <translation>XISF 属性</translation>
+    </message>
+    <message>
+      <source>XISF Properties (document)</source>
+      <translation>XISF 属性（文档）</translation>
+    </message>
+  </context>
+  <context>
+    <name>HistogramDialog</name>
+    <message>
+      <source>Set your camera's true saturation level for clipping warnings.
+Tip: take an overexposed frame and see its max ADU.</source>
+      <translation>设置相机的真实饱和度水平以进行裁剪警告。
+提示：拍摄一张过曝的帧并查看其最大 ADU。</translation>
+    </message>
+  </context>
+  <context>
+    <name>HistoryExplorer</name>
+    <message>
+      <source>Action</source>
+      <translation>操作</translation>
+    </message>
+    <message>
+      <source>Clear history</source>
+      <translation>清除历史</translation>
+    </message>
+    <message>
+      <source>Compare with current</source>
+      <translation>与当前比较</translation>
+    </message>
+    <message>
+      <source>Create snapshot</source>
+      <translation>创建快照</translation>
+    </message>
+    <message>
+      <source>Current state</source>
+      <translation>当前状态</translation>
+    </message>
+    <message>
+      <source>Delete snapshot</source>
+      <translation>删除快照</translation>
+    </message>
+    <message>
+      <source>History</source>
+      <translation>历史</translation>
+    </message>
+    <message>
+      <source>History Explorer</source>
+      <translation>历史浏览器</translation>
+    </message>
+    <message>
+      <source>Load snapshot</source>
+      <translation>加载快照</translation>
+    </message>
+    <message>
+      <source>Modified</source>
+      <translation>已修改</translation>
+    </message>
+    <message>
+      <source>No history available</source>
+      <translation>无可用历史</translation>
+    </message>
+    <message>
+      <source>Original</source>
+      <translation>原始</translation>
+    </message>
+    <message>
+      <source>Redo</source>
+      <translation>重做</translation>
+    </message>
+    <message>
+      <source>Restore this state</source>
+      <translation>恢复此状态</translation>
+    </message>
+    <message>
+      <source>Snapshot</source>
+      <translation>快照</translation>
+    </message>
+    <message>
+      <source>Snapshots</source>
+      <translation>快照</translation>
+    </message>
+    <message>
+      <source>Step</source>
+      <translation>步骤</translation>
+    </message>
+    <message>
+      <source>Timestamp</source>
+      <translation>时间戳</translation>
+    </message>
+    <message>
+      <source>Undo</source>
+      <translation>撤销</translation>
+    </message>
+  </context>
+  <context>
+    <name>ImagePeekerDialogPro</name>
+    <message>
+      <source>ASTAP/Astrometry failed:
+{0}</source>
+      <translation>ASTAP/Astrometry 失败：
+{0}</translation>
+    </message>
+    <message>
+      <source>Analysis:</source>
+      <translation>分析：</translation>
+    </message>
+    <message>
+      <source>Aperture (mm):</source>
+      <translation>口径 (mm)：</translation>
+    </message>
+    <message>
+      <source>Astrometric Distortion Analysis</source>
+      <translation>天体测量畸变分析</translation>
+    </message>
+    <message>
+      <source>Cannot determine pixel scale.</source>
+      <translation>无法确定像素比例。</translation>
+    </message>
+    <message>
+      <source>Choose separation color</source>
+      <translation>选择分离颜色</translation>
+    </message>
+    <message>
+      <source>Eccentricity Map</source>
+      <translation>离心率图</translation>
+    </message>
+    <message>
+      <source>Exit without Saving</source>
+      <translation>退出且不保存</translation>
+    </message>
+    <message>
+      <source>FWHM Heatmap</source>
+      <translation>FWHM 热图</translation>
+    </message>
+    <message>
+      <source>Focal Plane Analysis</source>
+      <translation>焦平面分析</translation>
+    </message>
+    <message>
+      <source>Focal length (mm):</source>
+      <translation>焦距 (mm)：</translation>
+    </message>
+    <message>
+      <source>Grid parameters</source>
+      <translation>网格参数</translation>
+    </message>
+    <message>
+      <source>Grid size:</source>
+      <translation>网格大小：</translation>
+    </message>
+    <message>
+      <source>Image Peeker</source>
+      <translation>图像查看器</translation>
+    </message>
+    <message>
+      <source>No Distortion Model</source>
+      <translation>无畸变模型</translation>
+    </message>
+    <message>
+      <source>No image</source>
+      <translation>无图像</translation>
+    </message>
+    <message>
+      <source>No image loaded to peek at!</source>
+      <translation>未加载可查看的图像！</translation>
+    </message>
+    <message>
+      <source>None</source>
+      <translation>无</translation>
+    </message>
+    <message>
+      <source>Orientation Map</source>
+      <translation>方向图</translation>
+    </message>
+    <message>
+      <source>Panel size:</source>
+      <translation>面板大小：</translation>
+    </message>
+    <message>
+      <source>Pixel size (µm):</source>
+      <translation>像素大小 (µm)：</translation>
+    </message>
+    <message>
+      <source>Plate Solve</source>
+      <translation>解析</translation>
+    </message>
+    <message>
+      <source>Plate solve did not produce a readable WCS header.</source>
+      <translation>解析未生成可读的 WCS 头信息。</translation>
+    </message>
+    <message>
+      <source>Processing…</source>
+      <translation>正在处理…</translation>
+    </message>
+    <message>
+      <source>Running {0}…</source>
+      <translation>正在运行 {0}…</translation>
+    </message>
+    <message>
+      <source>Save Settings &amp;&amp; Exit</source>
+      <translation>保存设置并退出</translation>
+    </message>
+    <message>
+      <source>Sensor Tilt (µm)</source>
+      <translation>传感器倾斜 (µm)</translation>
+    </message>
+    <message>
+      <source>Separation:</source>
+      <translation>分离：</translation>
+    </message>
+    <message>
+      <source>This image has a valid WCS, but no SIP distortion terms (A_*, B_*).
+Astrometric distortion analysis requires a SIP-enabled solve.
+
+Re-solve with distortion fitting enabled in ASTAP.</source>
+      <translation>此图像具有有效的 WCS，但没有 SIP 畸变项 (A_*, B_*)。
+天体测量畸变分析需要启用 SIP 的解析。
+
+请在 ASTAP 中启用畸变拟合重新解析。</translation>
+    </message>
+    <message>
+      <source>Tilt Analysis</source>
+      <translation>倾斜分析</translation>
+    </message>
+    <message>
+      <source>WCS Error</source>
+      <translation>WCS 错误</translation>
+    </message>
+  </context>
+  <context>
+    <name>ImagePreviewDialog</name>
+    <message>
+      <source>1:1 (100%)</source>
+      <translation>1:1 (100%)</translation>
+    </message>
+    <message>
+      <source>AutoStretch (Off)</source>
+      <translation>自动拉伸 (关)</translation>
+    </message>
+    <message>
+      <source>AutoStretch (On)</source>
+      <translation>自动拉伸 (开)</translation>
+    </message>
+    <message>
+      <source>Fit to Preview</source>
+      <translation>适应预览</translation>
+    </message>
+    <message>
+      <source>Image Preview</source>
+      <translation>图像预览</translation>
+    </message>
+    <message>
+      <source>Toggle AutoStretch</source>
+      <translation>切换自动拉伸</translation>
+    </message>
+    <message>
+      <source>Zoom In</source>
+      <translation>放大</translation>
+    </message>
+    <message>
+      <source>Zoom Out</source>
+      <translation>缩小</translation>
+    </message>
+  </context>
+  <context>
+    <name>ImageSubWindow</name>
+    <message>
+      <source>Clear View Name (use doc name)</source>
+      <translation>清除视图名称（使用文档名称）</translation>
+    </message>
+    <message>
+      <source>Click: replay the last action on the base image.
+Arrow: pick a specific past action to replay on the base image.</source>
+      <translation>点击：在基础图像上重放上一个操作。
+箭头：选取特定的过去操作在基础图像上重放。</translation>
+    </message>
+    <message>
+      <source>Close Image?</source>
+      <translation>关闭图像？</translation>
+    </message>
+    <message>
+      <source>Create Preview (drag rectangle)</source>
+      <translation>创建预览（拖动矩形）</translation>
+    </message>
+    <message>
+      <source>Create Preview: click, then drag on the image to define a preview rectangle.</source>
+      <translation>创建预览：点击，然后在图像上拖动以定义预览矩形。</translation>
+    </message>
+    <message>
+      <source>Drag onto another window to copy zoom/pan.
+Double-click to duplicate this view.</source>
+      <translation>拖动到另一个窗口以复制缩放/平移。
+双击以复制此视图。</translation>
+    </message>
+    <message>
+      <source>Full</source>
+      <translation>全图</translation>
+    </message>
+    <message>
+      <source>New document name:</source>
+      <translation>新文档名称：</translation>
+    </message>
+    <message>
+      <source>New view name:</source>
+      <translation>新视图名称：</translation>
+    </message>
+    <message>
+      <source>Press Space + Click/Drag to probe pixels (WCS shown if available)</source>
+      <translation>按空格 + 点击/拖动以探测像素（如果可用则显示 WCS）</translation>
+    </message>
+    <message>
+      <source>Preview mode: drag a rectangle on the image to create a preview.</source>
+      <translation>预览模式：在图像上拖动矩形以创建预览。</translation>
+    </message>
+    <message>
+      <source>Preview {0} ({1}×{2})</source>
+      <translation>预览 {0} ({1}×{2})</translation>
+    </message>
+    <message>
+      <source>Redo (this view)</source>
+      <translation>重做（此视图）</translation>
+    </message>
+    <message>
+      <source>Rename Document</source>
+      <translation>重命名文档</translation>
+    </message>
+    <message>
+      <source>Rename Document…</source>
+      <translation>重命名文档…</translation>
+    </message>
+    <message>
+      <source>Rename View</source>
+      <translation>重命名视图</translation>
+    </message>
+    <message>
+      <source>Rename View… (F2)</source>
+      <translation>重命名视图… (F2)</translation>
+    </message>
+    <message>
+      <source>Send to Shelf</source>
+      <translation>发送到暂存架</translation>
+    </message>
+    <message>
+      <source>Show pixel/WCS readout hint</source>
+      <translation>显示像素/WCS 读取提示</translation>
+    </message>
+    <message>
+      <source>This image has edits that aren't applied/saved.
+Close anyway?</source>
+      <translation>此图像有未应用/保存的编辑。
+是否仍然关闭？</translation>
+    </message>
+    <message>
+      <source>This image has edits that aren’t applied/saved.
+Close anyway?</source>
+      <translation>此图像有未应用/保存的编辑。
+是否仍然关闭？</translation>
+    </message>
+    <message>
+      <source>Toggle WCS grid overlay (if WCS exists)</source>
+      <translation>切换 WCS 网格叠加（如果存在 WCS）</translation>
+    </message>
+    <message>
+      <source>Undo (this view)</source>
+      <translation>撤销（此视图）</translation>
+    </message>
+    <message>
+      <source>Unlink from Linked Views</source>
+      <translation>从链接视图中取消链接</translation>
+    </message>
+    <message>
+      <source>Untitled</source>
+      <translation>无标题</translation>
+    </message>
+    <message>
+      <source>View</source>
+      <translation>视图</translation>
+    </message>
+  </context>
+  <context>
+    <name>LivePreviewDialog</name>
+    <message>
+      <source>Live Mask Preview</source>
+      <translation>实时蒙版预览</translation>
+    </message>
+  </context>
+  <context>
+    <name>Main</name>
+    <message>
+      <source>An unexpected error occurred.</source>
+      <translation>发生意外错误。</translation>
+    </message>
+    <message>
+      <source>Application Error</source>
+      <translation>应用程序错误</translation>
+    </message>
+  </context>
+  <context>
+    <name>MaskCreationDialog</name>
+    <message>
+      <source>Edge Blur (px):</source>
+      <translation>边缘模糊（像素）：</translation>
+    </message>
+    <message>
+      <source>Ellipse</source>
+      <translation>椭圆</translation>
+    </message>
+    <message>
+      <source>Freehand</source>
+      <translation>手绘</translation>
+    </message>
+    <message>
+      <source>Mask Creation</source>
+      <translation>蒙版创建</translation>
+    </message>
+    <message>
+      <source>Select Entire Image</source>
+      <translation>选择整个图像</translation>
+    </message>
+  </context>
+  <context>
+    <name>MaskMixin</name>
+    <message>
+      <source>Choose Mask Image</source>
+      <translation>选择蒙版图像</translation>
+    </message>
+    <message>
+      <source>Could not resolve mask document.</source>
+      <translation>无法解析蒙版文档。</translation>
+    </message>
+    <message>
+      <source>Mask</source>
+      <translation>蒙版</translation>
+    </message>
+    <message>
+      <source>Mask Overlay</source>
+      <translation>蒙版叠加</translation>
+    </message>
+    <message>
+      <source>No active document.</source>
+      <translation>没有活动的文档。</translation>
+    </message>
+    <message>
+      <source>No active mask on this image.</source>
+      <translation>此图像上没有活动的蒙版。</translation>
+    </message>
+    <message>
+      <source>No active mask to remove.</source>
+      <translation>没有要移除的活动蒙版。</translation>
+    </message>
+    <message>
+      <source>No image</source>
+      <translation>无图像</translation>
+    </message>
+    <message>
+      <source>Open an image first.</source>
+      <translation>请先打开一张图像。</translation>
+    </message>
+    <message>
+      <source>Open another image to use as a mask.</source>
+      <translation>打开另一张图像作为蒙版。</translation>
+    </message>
+    <message>
+      <source>Use this image as mask:</source>
+      <translation>使用此图像作为蒙版：</translation>
+    </message>
+  </context>
+  <context>
+    <name>MaskPreviewDialog</name>
+    <message>
+      <source>Mask Preview</source>
+      <translation>蒙版预览</translation>
+    </message>
+    <message>
+      <source>Push as New Document…</source>
+      <translation>作为新文档推送…</translation>
+    </message>
+  </context>
+  <context>
+    <name>MenuMixin</name>
+    <message>
+      <source>&amp;About</source>
+      <translation>关于(&amp;A)</translation>
+    </message>
+    <message>
+      <source>&amp;Edit</source>
+      <translation>编辑(&amp;E)</translation>
+    </message>
+    <message>
+      <source>&amp;File</source>
+      <translation>文件(&amp;F)</translation>
+    </message>
+    <message>
+      <source>&amp;Functions</source>
+      <translation>功能(&amp;U)</translation>
+    </message>
+    <message>
+      <source>&amp;Geometry</source>
+      <translation>几何变换(&amp;G)</translation>
+    </message>
+    <message>
+      <source>&amp;Header Mods &amp;&amp; Misc</source>
+      <translation>头信息修改和杂项(&amp;H)</translation>
+    </message>
+    <message>
+      <source>&amp;History</source>
+      <translation>历史(&amp;H)</translation>
+    </message>
+    <message>
+      <source>&amp;Masks</source>
+      <translation>蒙版(&amp;M)</translation>
+    </message>
+    <message>
+      <source>&amp;Scripts</source>
+      <translation>脚本(&amp;C)</translation>
+    </message>
+    <message>
+      <source>&amp;Settings</source>
+      <translation>设置(&amp;S)</translation>
+    </message>
+    <message>
+      <source>&amp;Shortcuts</source>
+      <translation>快捷方式(&amp;O)</translation>
+    </message>
+    <message>
+      <source>&amp;Smart Tools</source>
+      <translation>智能工具(&amp;M)</translation>
+    </message>
+    <message>
+      <source>&amp;Star Stuff</source>
+      <translation>星点处理(&amp;T)</translation>
+    </message>
+    <message>
+      <source>&amp;Tools</source>
+      <translation>工具(&amp;T)</translation>
+    </message>
+    <message>
+      <source>&amp;View</source>
+      <translation>视图(&amp;V)</translation>
+    </message>
+    <message>
+      <source>&amp;What's In My...</source>
+      <translation>我的图像中有什么...(&amp;W)</translation>
+    </message>
+    <message>
+      <source>About...</source>
+      <translation>关于...</translation>
+    </message>
+    <message>
+      <source>Clear All Shortcuts</source>
+      <translation>清除所有快捷方式</translation>
+    </message>
+    <message>
+      <source>Clear List</source>
+      <translation>清除列表</translation>
+    </message>
+    <message>
+      <source>Export Shortcuts...</source>
+      <translation>导出快捷方式...</translation>
+    </message>
+    <message>
+      <source>Group A</source>
+      <translation>组 A</translation>
+    </message>
+    <message>
+      <source>Group B</source>
+      <translation>组 B</translation>
+    </message>
+    <message>
+      <source>Group C</source>
+      <translation>组 C</translation>
+    </message>
+    <message>
+      <source>Group D</source>
+      <translation>组 D</translation>
+    </message>
+    <message>
+      <source>Import Shortcuts...</source>
+      <translation>导入快捷方式...</translation>
+    </message>
+    <message>
+      <source>Keyboard Shortcut Cheat Sheet...</source>
+      <translation>键盘快捷键速查表...</translation>
+    </message>
+    <message>
+      <source>No recent images</source>
+      <translation>没有最近的图像</translation>
+    </message>
+    <message>
+      <source>No recent projects</source>
+      <translation>没有最近的项目</translation>
+    </message>
+    <message>
+      <source>None</source>
+      <translation>无</translation>
+    </message>
+    <message>
+      <source>Open Recent Images</source>
+      <translation>最近的图像</translation>
+    </message>
+    <message>
+      <source>Open Recent Projects</source>
+      <translation>最近的项目</translation>
+    </message>
+    <message>
+      <source>Preferences...</source>
+      <translation>首选项...</translation>
+    </message>
+  </context>
+  <context>
+    <name>MetricsPanel</name>
+    <message>
+      <source>Background</source>
+      <translation>背景</translation>
+    </message>
+    <message>
+      <source>Cancel</source>
+      <translation>取消</translation>
+    </message>
+    <message>
+      <source>Computing frame metrics…</source>
+      <translation>正在计算帧指标…</translation>
+    </message>
+    <message>
+      <source>Don't show again</source>
+      <translation>不再显示</translation>
+    </message>
+    <message>
+      <source>Eccentricity</source>
+      <translation>离心率</translation>
+    </message>
+    <message>
+      <source>FWHM (px)</source>
+      <translation>FWHM (像素)</translation>
+    </message>
+    <message>
+      <source>Heads-up</source>
+      <translation>提示</translation>
+    </message>
+    <message>
+      <source>Star Count</source>
+      <translation>星点数量</translation>
+    </message>
+    <message>
+      <source>This is going to use ALL your CPU cores and the UI may lock up until it finishes.
+
+Continue?</source>
+      <translation>这将使用所有 CPU 核心，界面可能会锁定直到完成。
+
+是否继续？</translation>
+    </message>
+  </context>
+  <context>
+    <name>MetricsWindow</name>
+    <message>
+      <source>All</source>
+      <translation>全部</translation>
+    </message>
+    <message>
+      <source>Flagged Items {0}/{1}  ({2:.1f}%)</source>
+      <translation>标记项目 {0}/{1}  ({2:.1f}%)</translation>
+    </message>
+    <message>
+      <source>Frame Metrics</source>
+      <translation>帧指标</translation>
+    </message>
+    <message>
+      <source>Instructions:
+ • Use the filter dropdown to restrict by FILTER.
+ • Click a dot to flag/unflag a frame.
+ • Shift-click a dot to preview the image.
+ • Drag the red lines to set thresholds.</source>
+      <translation>说明：
+ • 使用滤镜下拉菜单按滤镜限制。
+ • 点击一个点以标记/取消标记帧。
+ • Shift+点击一个点以预览图像。
+ • 拖动红线以设置阈值。</translation>
+    </message>
+  </context>
+  <context>
+    <name>MinorBodyWorker</name>
+    <message>
+      <source>Minor-body search: preparing catalog query...</source>
+      <translation>小天体搜索：正在准备目录查询...</translation>
+    </message>
+  </context>
+  <context>
+    <name>MorphologyDialogPro</name>
+    <message>
+      <source>Apply</source>
+      <translation>应用</translation>
+    </message>
+    <message>
+      <source>Cancel</source>
+      <translation>取消</translation>
+    </message>
+    <message>
+      <source>Iterations:</source>
+      <translation>迭代次数：</translation>
+    </message>
+    <message>
+      <source>Kernel size:</source>
+      <translation>内核大小：</translation>
+    </message>
+    <message>
+      <source>Morphological Operations</source>
+      <translation>形态学操作</translation>
+    </message>
+    <message>
+      <source>Morphological Parameters</source>
+      <translation>形态学参数</translation>
+    </message>
+    <message>
+      <source>Operation:</source>
+      <translation>操作：</translation>
+    </message>
+    <message>
+      <source>Reset</source>
+      <translation>重置</translation>
+    </message>
+  </context>
+  <context>
+    <name>PixelMathDialog</name>
+    <message>
+      <source>Add blend</source>
+      <translation>添加混合</translation>
+    </message>
+    <message>
+      <source>Available views</source>
+      <translation>可用视图</translation>
+    </message>
+    <message>
+      <source>Average</source>
+      <translation>平均</translation>
+    </message>
+    <message>
+      <source>Clear</source>
+      <translation>清除</translation>
+    </message>
+    <message>
+      <source>Color</source>
+      <translation>颜色</translation>
+    </message>
+    <message>
+      <source>Create new image</source>
+      <translation>创建新图像</translation>
+    </message>
+    <message>
+      <source>Difference</source>
+      <translation>差异</translation>
+    </message>
+    <message>
+      <source>Division by zero</source>
+      <translation>除以零</translation>
+    </message>
+    <message>
+      <source>Enter expression</source>
+      <translation>输入表达式</translation>
+    </message>
+    <message>
+      <source>Evaluate</source>
+      <translation>评估</translation>
+    </message>
+    <message>
+      <source>Expression</source>
+      <translation>表达式</translation>
+    </message>
+    <message>
+      <source>Functions</source>
+      <translation>功能</translation>
+    </message>
+    <message>
+      <source>History</source>
+      <translation>历史</translation>
+    </message>
+    <message>
+      <source>Insert function</source>
+      <translation>插入函数</translation>
+    </message>
+    <message>
+      <source>Insert variable</source>
+      <translation>插入变量</translation>
+    </message>
+    <message>
+      <source>Invalid expression</source>
+      <translation>无效表达式</translation>
+    </message>
+    <message>
+      <source>Load expression</source>
+      <translation>加载表达式</translation>
+    </message>
+    <message>
+      <source>Logical</source>
+      <translation>逻辑</translation>
+    </message>
+    <message>
+      <source>Luminance mask</source>
+      <translation>亮度蒙版</translation>
+    </message>
+    <message>
+      <source>Mathematical</source>
+      <translation>数学</translation>
+    </message>
+    <message>
+      <source>Maximum</source>
+      <translation>最大值</translation>
+    </message>
+    <message>
+      <source>Minimum</source>
+      <translation>最小值</translation>
+    </message>
+    <message>
+      <source>Multiply blend</source>
+      <translation>乘法混合</translation>
+    </message>
+    <message>
+      <source>Output</source>
+      <translation>输出</translation>
+    </message>
+    <message>
+      <source>Pixel Math</source>
+      <translation>像素数学</translation>
+    </message>
+    <message>
+      <source>Presets</source>
+      <translation>预设</translation>
+    </message>
+    <message>
+      <source>Preview</source>
+      <translation>预览</translation>
+    </message>
+    <message>
+      <source>Range mask</source>
+      <translation>范围蒙版</translation>
+    </message>
+    <message>
+      <source>Replace active image</source>
+      <translation>替换活动图像</translation>
+    </message>
+    <message>
+      <source>Result</source>
+      <translation>结果</translation>
+    </message>
+    <message>
+      <source>Save expression</source>
+      <translation>保存表达式</translation>
+    </message>
+    <message>
+      <source>Screen blend</source>
+      <translation>屏幕混合</translation>
+    </message>
+    <message>
+      <source>Star mask</source>
+      <translation>星点蒙版</translation>
+    </message>
+    <message>
+      <source>Statistical</source>
+      <translation>统计</translation>
+    </message>
+    <message>
+      <source>Subtract blend</source>
+      <translation>减法混合</translation>
+    </message>
+    <message>
+      <source>Syntax error</source>
+      <translation>语法错误</translation>
+    </message>
+    <message>
+      <source>Variable not found</source>
+      <translation>未找到变量</translation>
+    </message>
+    <message>
+      <source>Variables</source>
+      <translation>变量</translation>
+    </message>
+  </context>
+  <context>
+    <name>PlateSolver</name>
+    <message>
+      <source>ASTAP path is not set (see Preferences) or file not found.</source>
+      <translation>未设置 ASTAP 路径（见首选项）或未找到文件。</translation>
+    </message>
+    <message>
+      <source>ASTAP returned a non-zero exit code.</source>
+      <translation>ASTAP 返回了非零退出代码。</translation>
+    </message>
+    <message>
+      <source>ASTAP timed out.</source>
+      <translation>ASTAP 超时。</translation>
+    </message>
+    <message>
+      <source>Active document has no image data.</source>
+      <translation>活动文档没有图像数据。</translation>
+    </message>
+    <message>
+      <source>Astrometry.net API Key</source>
+      <translation>Astrometry.net API 密钥</translation>
+    </message>
+    <message>
+      <source>Astrometry.net calibration not received in time.</source>
+      <translation>未及时收到 Astrometry.net 校准。</translation>
+    </message>
+    <message>
+      <source>Astrometry.net job ID not received in time.</source>
+      <translation>未及时收到 Astrometry.net 任务 ID。</translation>
+    </message>
+    <message>
+      <source>Astrometry.net login failed.</source>
+      <translation>Astrometry.net 登录失败。</translation>
+    </message>
+    <message>
+      <source>Astrometry.net upload failed.</source>
+      <translation>Astrometry.net 上传失败。</translation>
+    </message>
+    <message>
+      <source>Enter your Astrometry.net API key:</source>
+      <translation>输入您的 Astrometry.net API 密钥：</translation>
+    </message>
+    <message>
+      <source>Failed to start ASTAP: {0}</source>
+      <translation>启动 ASTAP 失败：{0}</translation>
+    </message>
+    <message>
+      <source>No active document to plate-solve.</source>
+      <translation>没有活动的文档可供解析。</translation>
+    </message>
+    <message>
+      <source>Status:</source>
+      <translation>状态：</translation>
+    </message>
+    <message>
+      <source>Status: ASTAP failed ({0}). Falling back to Astrometry.net…</source>
+      <translation>状态：ASTAP 失败 ({0})。正在回退到 Astrometry.net…</translation>
+    </message>
+    <message>
+      <source>Status: ASTAP failed to start.</source>
+      <translation>状态：ASTAP 启动失败。</translation>
+    </message>
+    <message>
+      <source>Status: ASTAP solving…</source>
+      <translation>状态：ASTAP 正在解析…</translation>
+    </message>
+    <message>
+      <source>Status: ASTAP timed out.</source>
+      <translation>状态：ASTAP 超时。</translation>
+    </message>
+    <message>
+      <source>Status: Astrometry.net failed ({0}).</source>
+      <translation>状态：Astrometry.net 失败 ({0})。</translation>
+    </message>
+    <message>
+      <source>Status: Building WCS header from calibration…</source>
+      <translation>状态：正在从校准构建 WCS 头信息…</translation>
+    </message>
+    <message>
+      <source>Status: Downloading WCS file (with SIP) from Astrometry.net…</source>
+      <translation>状态：正在从 Astrometry.net 下载 WCS 文件（带 SIP）…</translation>
+    </message>
+    <message>
+      <source>Status: Job assigned (ID {0}).</source>
+      <translation>状态：任务已分配 (ID {0})。</translation>
+    </message>
+    <message>
+      <source>Status: Logging in to Astrometry.net…</source>
+      <translation>状态：正在登录 Astrometry.net…</translation>
+    </message>
+    <message>
+      <source>Status: Login canceled (no API key).</source>
+      <translation>状态：登录已取消（无 API 密钥）。</translation>
+    </message>
+    <message>
+      <source>Status: Login failed.</source>
+      <translation>状态：登录失败。</translation>
+    </message>
+    <message>
+      <source>Status: Login successful.</source>
+      <translation>状态：登录成功。</translation>
+    </message>
+    <message>
+      <source>Status: Plate solve completed.</source>
+      <translation>状态：解析完成。</translation>
+    </message>
+    <message>
+      <source>Status: Preparing full-res 16-bit FITS for web solve…</source>
+      <translation>状态：正在为网络解析准备全分辨率 16 位 FITS…</translation>
+    </message>
+    <message>
+      <source>Status: Preparing plate solve…</source>
+      <translation>状态：正在准备解析…</translation>
+    </message>
+    <message>
+      <source>Status: Running local solve-field…</source>
+      <translation>状态：正在运行本地 solve-field…</translation>
+    </message>
+    <message>
+      <source>Status: Solution received.</source>
+      <translation>状态：已收到解算结果。</translation>
+    </message>
+    <message>
+      <source>Status: Solved via Astrometry.net.</source>
+      <translation>状态：通过 Astrometry.net 解析成功。</translation>
+    </message>
+    <message>
+      <source>Status: Solved with ASTAP.</source>
+      <translation>状态：使用 ASTAP 解析成功。</translation>
+    </message>
+    <message>
+      <source>Status: Solving with ASTAP…</source>
+      <translation>状态：正在使用 ASTAP 解析…</translation>
+    </message>
+    <message>
+      <source>Status: Upload complete.</source>
+      <translation>状态：上传完成。</translation>
+    </message>
+    <message>
+      <source>Status: Upload failed (temp FITS empty).</source>
+      <translation>状态：上传失败（临时 FITS 为空）。</translation>
+    </message>
+    <message>
+      <source>Status: Upload failed.</source>
+      <translation>状态：上传失败。</translation>
+    </message>
+    <message>
+      <source>Status: Uploading image to Astrometry.net…</source>
+      <translation>状态：正在上传图像到 Astrometry.net…</translation>
+    </message>
+    <message>
+      <source>Status: Waiting for job assignment…</source>
+      <translation>状态：正在等待任务分配…</translation>
+    </message>
+    <message>
+      <source>Status: Waiting for solution…</source>
+      <translation>状态：正在等待解算结果…</translation>
+    </message>
+    <message>
+      <source>Status: process did not exit normally.</source>
+      <translation>状态：进程未正常退出。</translation>
+    </message>
+    <message>
+      <source>Status: process timed out.</source>
+      <translation>状态：进程超时。</translation>
+    </message>
+    <message>
+      <source>Status: solve-field failed to start.</source>
+      <translation>状态：solve-field 启动失败。</translation>
+    </message>
+    <message>
+      <source>Status: solve-field failed.</source>
+      <translation>状态：solve-field 失败。</translation>
+    </message>
+    <message>
+      <source>Status: solve-field timed out.</source>
+      <translation>状态：solve-field 超时。</translation>
+    </message>
+    <message>
+      <source>Status: {0} retry {1}/{2}…</source>
+      <translation>状态：{0} 重试 {1}/{2}…</translation>
+    </message>
+    <message>
+      <source>Temp FITS for web upload is empty/tiny ({0} bytes).</source>
+      <translation>用于网络上传的临时 FITS 为空或极小 ({0} 字节)。</translation>
+    </message>
+    <message>
+      <source>requests not available for astrometry.net API.</source>
+      <translation>requests 库不可用于 astrometry.net API。</translation>
+    </message>
+    <message>
+      <source>solve-field not configured.</source>
+      <translation>solve-field 未配置。</translation>
+    </message>
+    <message>
+      <source>solve-field returned no header.</source>
+      <translation>solve-field 未返回头信息。</translation>
+    </message>
+  </context>
+  <context>
+    <name>PlateSolverDialog</name>
+    <message>
+      <source>  ✔ saved: </source>
+      <translation>  ✔ 已保存： </translation>
+    </message>
+    <message>
+      <source>  ❌ Failed to load</source>
+      <translation>  ❌ 加载失败</translation>
+    </message>
+    <message>
+      <source>  ❌ error: </source>
+      <translation>  ❌ 错误： </translation>
+    </message>
+    <message>
+      <source>ASTAP -fov. Compute uses image height × scale; Auto lets ASTAP infer.</source>
+      <translation>ASTAP -fov。计算使用图像高度 × 比例；自动则让 ASTAP 推断。</translation>
+    </message>
+    <message>
+      <source>ASTAP -r. Auto lets ASTAP choose; Value forces a cone radius.</source>
+      <translation>ASTAP -r。自动则让 ASTAP 选择；数值则强制圆锥半径。</translation>
+    </message>
+    <message>
+      <source>ASTAP path missing.
+Set it in Preferences → ASTAP executable.</source>
+      <translation>缺少 ASTAP 路径。
+请在首选项 → ASTAP 可执行文件中设置。</translation>
+    </message>
+    <message>
+      <source>ASTAP path missing. Set Preferences → ASTAP executable.</source>
+      <translation>缺少 ASTAP 路径。请设置首选项 → ASTAP 可执行文件。</translation>
+    </message>
+    <message>
+      <source>Active View</source>
+      <translation>活动视图</translation>
+    </message>
+    <message>
+      <source>Auto (-fov 0)</source>
+      <translation>自动 (-fov 0)</translation>
+    </message>
+    <message>
+      <source>Auto (-r 0)</source>
+      <translation>自动 (-r 0)</translation>
+    </message>
+    <message>
+      <source>Auto (from header)</source>
+      <translation>自动（从头信息）</translation>
+    </message>
+    <message>
+      <source>Batch</source>
+      <translation>批量</translation>
+    </message>
+    <message>
+      <source>Batch plate solving completed.</source>
+      <translation>批量解析完成。</translation>
+    </message>
+    <message>
+      <source>Browse Input…</source>
+      <translation>浏览输入…</translation>
+    </message>
+    <message>
+      <source>Browse Output…</source>
+      <translation>浏览输出…</translation>
+    </message>
+    <message>
+      <source>Browse…</source>
+      <translation>浏览…</translation>
+    </message>
+    <message>
+      <source>Cannot read image:
+{0}</source>
+      <translation>无法读取图像：
+{0}</translation>
+    </message>
+    <message>
+      <source>Choose Image</source>
+      <translation>选择图像</translation>
+    </message>
+    <message>
+      <source>Choose a file to solve.</source>
+      <translation>选择一个要解析的文件。</translation>
+    </message>
+    <message>
+      <source>Choose an image…</source>
+      <translation>选择一张图像…</translation>
+    </message>
+    <message>
+      <source>Choose input directory</source>
+      <translation>选择输入目录</translation>
+    </message>
+    <message>
+      <source>Choose output directory</source>
+      <translation>选择输出目录</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>关闭</translation>
+    </message>
+    <message>
+      <source>Compute from scale</source>
+      <translation>从比例计算</translation>
+    </message>
+    <message>
+      <source>Dec (e.g. +40:42:43 or 40.7123)</source>
+      <translation>赤纬 (例如 +40:42:43 或 40.7123)</translation>
+    </message>
+    <message>
+      <source>FITS files (*.fits *.fit)</source>
+      <translation>FITS 文件 (*.fits *.fit)</translation>
+    </message>
+    <message>
+      <source>FOV:</source>
+      <translation>视野 (FOV)：</translation>
+    </message>
+    <message>
+      <source>Failed to save: {0}</source>
+      <translation>保存失败：{0}</translation>
+    </message>
+    <message>
+      <source>File</source>
+      <translation>文件</translation>
+    </message>
+    <message>
+      <source>Found {0} files. Starting batch…</source>
+      <translation>找到 {0} 个文件。正在开始批量处理…</translation>
+    </message>
+    <message>
+      <source>Images (*.fits *.fit *.xisf *.tif *.tiff *.png *.jpg *.jpeg);;All files (*)</source>
+      <translation>图像 (*.fits *.fit *.xisf *.tif *.tiff *.png *.jpg *.jpeg);;所有文件 (*)</translation>
+    </message>
+    <message>
+      <source>Input directory</source>
+      <translation>输入目录</translation>
+    </message>
+    <message>
+      <source>Manual</source>
+      <translation>手动</translation>
+    </message>
+    <message>
+      <source>Manual RA/Dec/Scale:</source>
+      <translation>手动赤经/赤纬/比例：</translation>
+    </message>
+    <message>
+      <source>Mode:</source>
+      <translation>模式：</translation>
+    </message>
+    <message>
+      <source>No acceptable image files found.</source>
+      <translation>未找到可接受的图像文件。</translation>
+    </message>
+    <message>
+      <source>No active image view.</source>
+      <translation>没有活动的图像视图。</translation>
+    </message>
+    <message>
+      <source>None (blind)</source>
+      <translation>无（盲解）</translation>
+    </message>
+    <message>
+      <source>Output directory</source>
+      <translation>输出目录</translation>
+    </message>
+    <message>
+      <source>Pixel scale in arcseconds/pixel (e.g., 1.46).</source>
+      <translation>像素比例，单位为角秒/像素（例如 1.46）。</translation>
+    </message>
+    <message>
+      <source>Plate Solver</source>
+      <translation>解析器</translation>
+    </message>
+    <message>
+      <source>Please choose a valid input directory.</source>
+      <translation>请选择一个有效的输入目录。</translation>
+    </message>
+    <message>
+      <source>Please choose a valid output directory.</source>
+      <translation>请选择一个有效的输出目录。</translation>
+    </message>
+    <message>
+      <source>RA (e.g. 22:32:14 or 338.1385)</source>
+      <translation>赤经 (例如 22:32:14 或 338.1385)</translation>
+    </message>
+    <message>
+      <source>Save Error</source>
+      <translation>保存错误</translation>
+    </message>
+    <message>
+      <source>Save Plate-Solved FITS</source>
+      <translation>保存解析后的 FITS</translation>
+    </message>
+    <message>
+      <source>Scale [" / px] (e.g. 1.46)</source>
+      <translation>比例 [" / px] (例如 1.46)</translation>
+    </message>
+    <message>
+      <source>Search radius:</source>
+      <translation>搜索半径：</translation>
+    </message>
+    <message>
+      <source>Seed mode:</source>
+      <translation>种子模式：</translation>
+    </message>
+    <message>
+      <source>Seeding &amp; Constraints</source>
+      <translation>种子与约束</translation>
+    </message>
+    <message>
+      <source>Selected file does not exist.</source>
+      <translation>选定的文件不存在。</translation>
+    </message>
+    <message>
+      <source>Solve the currently active image view.</source>
+      <translation>解析当前活动的图像视图。</translation>
+    </message>
+    <message>
+      <source>Solved (not saved).</source>
+      <translation>已解析（未保存）。</translation>
+    </message>
+    <message>
+      <source>Solved FITS saved:
+{0}</source>
+      <translation>解析后的 FITS 已保存：
+{0}</translation>
+    </message>
+    <message>
+      <source>Solved with ASTAP (WCS + SIP applied to active doc).</source>
+      <translation>使用 ASTAP 解析成功（WCS + SIP 已应用到活动文档）。</translation>
+    </message>
+    <message>
+      <source>Start</source>
+      <translation>开始</translation>
+    </message>
+    <message>
+      <source>Status:</source>
+      <translation>状态：</translation>
+    </message>
+    <message>
+      <source>Unsupported or unreadable image.</source>
+      <translation>不支持或无法读取的图像。</translation>
+    </message>
+    <message>
+      <source>Use FITS header, your manual RA/Dec/scale, or blind solve.</source>
+      <translation>使用 FITS 头信息、手动赤经/赤纬/比例或盲解。</translation>
+    </message>
+    <message>
+      <source>Value (deg)</source>
+      <translation>数值 (度)</translation>
+    </message>
+    <message>
+      <source>e.g. 1.80</source>
+      <translation>例如 1.80</translation>
+    </message>
+    <message>
+      <source>e.g. 5.0</source>
+      <translation>例如 5.0</translation>
+    </message>
+  </context>
+  <context>
+    <name>PreviewPane</name>
+    <message>
+      <source>AutoStretch</source>
+      <translation>自动拉伸</translation>
+    </message>
+    <message>
+      <source>Fit to Preview</source>
+      <translation>适应预览</translation>
+    </message>
+    <message>
+      <source>Zoom In</source>
+      <translation>放大</translation>
+    </message>
+    <message>
+      <source>Zoom Out</source>
+      <translation>缩小</translation>
+    </message>
+  </context>
+  <context>
+    <name>RGBAlignDialog</name>
+    <message>
+      <source>Align</source>
+      <translation>对齐</translation>
+    </message>
+    <message>
+      <source>Alignment model:</source>
+      <translation>对齐模型：</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>关闭</translation>
+    </message>
+    <message>
+      <source>Create new document (keep original)</source>
+      <translation>创建新文档（保留原始文档）</translation>
+    </message>
+    <message>
+      <source>RGB Align</source>
+      <translation>RGB 对齐</translation>
+    </message>
+    <message>
+      <source>SEP sigma:</source>
+      <translation>SEP sigma：</translation>
+    </message>
+    <message>
+      <source>Trial detect stars</source>
+      <translation>尝试检测星点</translation>
+    </message>
+  </context>
+  <context>
+    <name>RGBCombinationDialogPro</name>
+    <message>
+      <source>Blue:</source>
+      <translation>蓝色：</translation>
+    </message>
+    <message>
+      <source>Blue: Not selected</source>
+      <translation>蓝色：未选择</translation>
+    </message>
+    <message>
+      <source>Cancel</source>
+      <translation>取消</translation>
+    </message>
+    <message>
+      <source>Combine</source>
+      <translation>合并</translation>
+    </message>
+    <message>
+      <source>Files</source>
+      <translation>文件</translation>
+    </message>
+    <message>
+      <source>Green:</source>
+      <translation>绿色：</translation>
+    </message>
+    <message>
+      <source>Green: Not selected</source>
+      <translation>绿色：未选择</translation>
+    </message>
+    <message>
+      <source>Load Blue…</source>
+      <translation>加载蓝色…</translation>
+    </message>
+    <message>
+      <source>Load Green…</source>
+      <translation>加载绿色…</translation>
+    </message>
+    <message>
+      <source>Load Individual Files</source>
+      <translation>加载单个文件</translation>
+    </message>
+    <message>
+      <source>Load Red…</source>
+      <translation>加载红色…</translation>
+    </message>
+    <message>
+      <source>RGB Combination</source>
+      <translation>RGB 合并</translation>
+    </message>
+    <message>
+      <source>Red:</source>
+      <translation>红色：</translation>
+    </message>
+    <message>
+      <source>Red: Not selected</source>
+      <translation>红色：未选择</translation>
+    </message>
+    <message>
+      <source>Select Open Views for R / G / B</source>
+      <translation>为 R / G / B 选择打开的视图</translation>
+    </message>
+    <message>
+      <source>Select RGB Combination Mode</source>
+      <translation>选择 RGB 合并模式</translation>
+    </message>
+    <message>
+      <source>Use Open Views</source>
+      <translation>使用打开的视图</translation>
+    </message>
+  </context>
+  <context>
+    <name>ReferenceFrameReviewDialog</name>
+    <message>
+      <source>Cancel</source>
+      <translation>取消</translation>
+    </message>
+    <message>
+      <source>Disable Autostretch</source>
+      <translation>禁用自动拉伸</translation>
+    </message>
+    <message>
+      <source>Enable Autostretch</source>
+      <translation>启用自动拉伸</translation>
+    </message>
+    <message>
+      <source>Error</source>
+      <translation>错误</translation>
+    </message>
+    <message>
+      <source>FITS Files (*.fits *.fit);;All Files (*)</source>
+      <translation>FITS 文件 (*.fits *.fit);;所有文件 (*)</translation>
+    </message>
+    <message>
+      <source>Failed to load the reference image.</source>
+      <translation>加载参考图像失败。</translation>
+    </message>
+    <message>
+      <source>Reference Frame Review</source>
+      <translation>参考帧审查</translation>
+    </message>
+    <message>
+      <source>Reference Preview</source>
+      <translation>参考预览</translation>
+    </message>
+    <message>
+      <source>Reference image not loaded.</source>
+      <translation>参考图像未加载。</translation>
+    </message>
+    <message>
+      <source>Select New Reference Frame</source>
+      <translation>选择新参考帧</translation>
+    </message>
+    <message>
+      <source>Unable to load preview.</source>
+      <translation>无法加载预览。</translation>
+    </message>
+    <message>
+      <source>Use This Reference Frame</source>
+      <translation>使用此参考帧</translation>
+    </message>
+    <message>
+      <source>Zoom In</source>
+      <translation>放大</translation>
+    </message>
+    <message>
+      <source>Zoom Out</source>
+      <translation>缩小</translation>
+    </message>
+  </context>
+  <context>
+    <name>ReferenceOverlayDialog</name>
+    <message>
+      <source>Reference Frame: Stars Overlay</source>
+      <translation>参考帧：星点叠加</translation>
+    </message>
+  </context>
+  <context>
+    <name>RemoveGreenDialog</name>
+    <message>
+      <source>Apply</source>
+      <translation>应用</translation>
+    </message>
+    <message>
+      <source>Cancel</source>
+      <translation>取消</translation>
+    </message>
+    <message>
+      <source>Neutral mode:</source>
+      <translation>中性模式：</translation>
+    </message>
+    <message>
+      <source>Preserve lightness</source>
+      <translation>保留亮度</translation>
+    </message>
+    <message>
+      <source>Remove Green (SCNR)</source>
+      <translation>移除绿色 (SCNR)</translation>
+    </message>
+    <message>
+      <source>Select the amount to remove green noise:</source>
+      <translation>选择移除绿色噪声的量：</translation>
+    </message>
+  </context>
+  <context>
+    <name>SaveOptionsDialog</name>
+    <message>
+      <source>Cancel</source>
+      <translation>取消</translation>
+    </message>
+    <message>
+      <source>Choose bit depth for export:</source>
+      <translation>选择导出的位深度：</translation>
+    </message>
+    <message>
+      <source>OK</source>
+      <translation>确定</translation>
+    </message>
+    <message>
+      <source>Save Options</source>
+      <translation>保存选项</translation>
+    </message>
+  </context>
+  <context>
+    <name>SelectiveColorCorrection</name>
+    <message>
+      <source>Complementary colors (CMY)</source>
+      <translation>互补色 (CMY)</translation>
+    </message>
+    <message>
+      <source>Luminance, Chroma/Saturation, Contrast</source>
+      <translation>亮度、色度/饱和度、对比度</translation>
+    </message>
+    <message>
+      <source>Mask</source>
+      <translation>蒙版</translation>
+    </message>
+    <message>
+      <source>RGB Colors</source>
+      <translation>RGB 颜色</translation>
+    </message>
+    <message>
+      <source>Selective Color Correction</source>
+      <translation>选择性颜色校正</translation>
+    </message>
+  </context>
+  <context>
+    <name>SettingsDialog</name>
+    <message>
+      <source>ASTAP executable:</source>
+      <translation>ASTAP 可执行文件：</translation>
+    </message>
+    <message>
+      <source>Astrometry.net API key:</source>
+      <translation>Astrometry.net API 密钥：</translation>
+    </message>
+    <message>
+      <source>Check Now…</source>
+      <translation>立即检查…</translation>
+    </message>
+    <message>
+      <source>Chinese</source>
+      <translation>简体中文</translation>
+    </message>
+    <message>
+      <source>Choose Background…</source>
+      <translation>选择背景…</translation>
+    </message>
+    <message>
+      <source>Clear</source>
+      <translation>清除</translation>
+    </message>
+    <message>
+      <source>Compute autostretch on a 16-bit histogram (smoother gradients).</source>
+      <translation>在 16 位直方图上计算自动拉伸（更平滑的渐变）。</translation>
+    </message>
+    <message>
+      <source>Cosmic Clarity folder:</source>
+      <translation>Cosmic Clarity 文件夹：</translation>
+    </message>
+    <message>
+      <source>Customize…</source>
+      <translation>自定义…</translation>
+    </message>
+    <message>
+      <source>Edit custom colors and font</source>
+      <translation>编辑自定义颜色和字体</translation>
+    </message>
+    <message>
+      <source>English</source>
+      <translation>英语</translation>
+    </message>
+    <message>
+      <source>French</source>
+      <translation>法语</translation>
+    </message>
+    <message>
+      <source>German</source>
+      <translation>德语</translation>
+    </message>
+    <message>
+      <source>GraXpert executable:</source>
+      <translation>GraXpert 可执行文件：</translation>
+    </message>
+    <message>
+      <source>High-quality autostretch (16-bit; better gradients)</source>
+      <translation>高质量自动拉伸（16 位；更好的渐变）</translation>
+    </message>
+    <message>
+      <source>Italian</source>
+      <translation>意大利语</translation>
+    </message>
+    <message>
+      <source>Japanese</source>
+      <translation>日语</translation>
+    </message>
+    <message>
+      <source>Language changed. Please manually restart the application to apply the new language.</source>
+      <translation>语言已更改。请手动重启应用以应用新语言。</translation>
+    </message>
+    <message>
+      <source>Language:</source>
+      <translation>语言：</translation>
+    </message>
+    <message>
+      <source>Pick a PNG or JPG to use as the application background</source>
+      <translation>选取一张 PNG 或 JPG 作为应用程序背景</translation>
+    </message>
+    <message>
+      <source>Portuguese</source>
+      <translation>葡萄牙语</translation>
+    </message>
+    <message>
+      <source>Remove custom background and restore default</source>
+      <translation>移除自定义背景并恢复默认</translation>
+    </message>
+    <message>
+      <source>Restart required</source>
+      <translation>需要重启</translation>
+    </message>
+    <message>
+      <source>Restore default updates URL</source>
+      <translation>恢复默认更新 URL</translation>
+    </message>
+    <message>
+      <source>Run an update check immediately</source>
+      <translation>立即运行更新检查</translation>
+    </message>
+    <message>
+      <source>Save desktop shortcuts on exit</source>
+      <translation>退出时保存桌面快捷方式</translation>
+    </message>
+    <message>
+      <source>Spanish</source>
+      <translation>西班牙语</translation>
+    </message>
+    <message>
+      <source>StarNet executable:</source>
+      <translation>StarNet 可执行文件：</translation>
+    </message>
+    <message>
+      <source>The application will now restart to apply the language change.</source>
+      <translation>应用程序现在将重新启动以应用语言更改。</translation>
+    </message>
+    <message>
+      <source>Theme:</source>
+      <translation>主题：</translation>
+    </message>
+  </context>
+  <context>
+    <name>ShortcutButton</name>
+    <message>
+      <source>Clear Preset</source>
+      <translation>Clear Preset</translation>
+    </message>
+    <message>
+      <source>Delete</source>
+      <translation>Delete</translation>
+    </message>
+    <message>
+      <source>Edit Preset (JSON)</source>
+      <translation>Edit Preset (JSON)</translation>
+    </message>
+    <message>
+      <source>Edit Preset…</source>
+      <translation>Edit Preset…</translation>
+    </message>
+    <message>
+      <source>Invalid JSON</source>
+      <translation>Invalid JSON</translation>
+    </message>
+    <message>
+      <source>Name:</source>
+      <translation>Name:</translation>
+    </message>
+    <message>
+      <source>Preset must be a JSON object</source>
+      <translation>Preset must be a JSON object</translation>
+    </message>
+    <message>
+      <source>Preset saved</source>
+      <translation>Preset saved</translation>
+    </message>
+    <message>
+      <source>Preset stored on shortcut.</source>
+      <translation>Preset stored on shortcut.</translation>
+    </message>
+    <message>
+      <source>Preset:</source>
+      <translation>Preset:</translation>
+    </message>
+    <message>
+      <source>Rename Shortcut</source>
+      <translation>Rename Shortcut</translation>
+    </message>
+    <message>
+      <source>Rename…</source>
+      <translation>Rename…</translation>
+    </message>
+    <message>
+      <source>Run</source>
+      <translation>Run</translation>
+    </message>
+  </context>
+  <context>
+    <name>SignatureInsertDialogPro</name>
+    <message>
+      <source>Signature / Insert</source>
+      <translation>签名 / 插入</translation>
+    </message>
+  </context>
+  <context>
+    <name>Splash</name>
+    <message>
+      <source>  •  Build {0}</source>
+      <translation>  •  构建版本 {0}</translation>
+    </message>
+    <message>
+      <source>  •  Running locally from source code</source>
+      <translation>  •  正在从源代码本地运行</translation>
+    </message>
+    <message>
+      <source>Building main window...</source>
+      <translation>正在构建主窗口...</translation>
+    </message>
+    <message>
+      <source>Configuring Qt message handler...</source>
+      <translation>正在配置 Qt 消息处理程序...</translation>
+    </message>
+    <message>
+      <source>Configuring matplotlib...</source>
+      <translation>正在配置 matplotlib...</translation>
+    </message>
+    <message>
+      <source>Configuring multiprocessing...</source>
+      <translation>正在配置多进程...</translation>
+    </message>
+    <message>
+      <source>Creating image manager...</source>
+      <translation>正在创建图像管理器...</translation>
+    </message>
+    <message>
+      <source>Initializing Python runtime...</source>
+      <translation>正在初始化 Python 运行时...</translation>
+    </message>
+    <message>
+      <source>Installing crash handlers...</source>
+      <translation>正在安装崩溃处理程序...</translation>
+    </message>
+    <message>
+      <source>Loading MDI widgets...</source>
+      <translation>正在加载 MDI 挂件...</translation>
+    </message>
+    <message>
+      <source>Loading NumPy...</source>
+      <translation>正在加载 NumPy...</translation>
+    </message>
+    <message>
+      <source>Loading OpenCV...</source>
+      <translation>正在加载 OpenCV...</translation>
+    </message>
+    <message>
+      <source>Loading PyQt6 components...</source>
+      <translation>正在加载 PyQt6 组件...</translation>
+    </message>
+    <message>
+      <source>Loading PyTorch runtime...</source>
+      <translation>正在加载 PyTorch 运行时...</translation>
+    </message>
+    <message>
+      <source>Loading UI utilities...</source>
+      <translation>正在加载 UI 实用程序...</translation>
+    </message>
+    <message>
+      <source>Loading image libraries...</source>
+      <translation>正在加载图像库...</translation>
+    </message>
+    <message>
+      <source>Loading image manager...</source>
+      <translation>正在加载图像管理器...</translation>
+    </message>
+    <message>
+      <source>Loading main window module...</source>
+      <translation>正在加载主窗口模块...</translation>
+    </message>
+    <message>
+      <source>Loading reproject library...</source>
+      <translation>正在加载 reproject 库...</translation>
+    </message>
+    <message>
+      <source>Loading resources...</source>
+      <translation>正在加载资源...</translation>
+    </message>
+    <message>
+      <source>Loading standard libraries...</source>
+      <translation>正在加载标准库...</translation>
+    </message>
+    <message>
+      <source>Modules loaded, finalizing...</source>
+      <translation>模块已加载，正在完成...</translation>
+    </message>
+    <message>
+      <source>Ready!</source>
+      <translation>就绪！</translation>
+    </message>
+    <message>
+      <source>Setting up logging...</source>
+      <translation>正在设置日志...</translation>
+    </message>
+    <message>
+      <source>Showing main window...</source>
+      <translation>正在显示主窗口...</translation>
+    </message>
+    <message>
+      <source>Starting...</source>
+      <translation>正在启动...</translation>
+    </message>
+    <message>
+      <source>Suppressing warnings...</source>
+      <translation>正在抑制警告...</translation>
+    </message>
+    <message>
+      <source>Version {0}</source>
+      <translation>版本 {0}</translation>
+    </message>
+  </context>
+  <context>
+    <name>StackingSuiteDialog</name>
+    <message>
+      <source>
+
+(Comet Star Removal is currently OFF in Settings.)</source>
+      <translation>
+
+(设置中当前已关闭彗星星点移除。)</translation>
+    </message>
+    <message>
+      <source>
+
+Linux tip:
+ • Install python3.12 or 3.11 via your package manager
+ • Then relaunch the app.</source>
+      <translation>
+
+Linux 提示：
+ • 通过包管理器安装 python3.12 或 3.11
+ • 然后重新启动应用程序。</translation>
+    </message>
+    <message>
+      <source>
+
+Windows tip:
+ • Install Python 3.12/3.11/3.10 (x64) from python.org
+ • Then relaunch the app.</source>
+      <translation>
+
+Windows 提示：
+ • 从 python.org 安装 Python 3.12/3.11/3.10 (x64)
+ • 然后重新启动应用程序。</translation>
+    </message>
+    <message>
+      <source>
+
+macOS tip (Apple Silicon):
+ • Install Python 3.12:  brew install python@3.12
+ • Then relaunch the app so it can create its runtime with 3.12.</source>
+      <translation>
+
+macOS 提示 (Apple Silicon)：
+ • 安装 Python 3.12：brew install python@3.12
+ • 然后重新启动应用程序，以便它可以使用 3.12 创建其运行时。</translation>
+    </message>
+    <message>
+      <source>    ✓ [{0}/{1}] starless saved</source>
+      <translation>    ✓ [{0}/{1}] 无星图像已保存</translation>
+    </message>
+    <message>
+      <source>   With &lt;~40–55% fill, expect visible patching even with many frames)</source>
+      <translation>   填充率 &lt;~40–55% 时，即使帧数很多，也预计会出现可见的修补痕迹)</translation>
+    </message>
+    <message>
+      <source>   With &lt;~40–55% fill, expect visible patching even with many frames.</source>
+      <translation>   填充率 &lt;~40–55% 时，即使帧数很多，也预计会出现可见的修补痕迹。</translation>
+    </message>
+    <message>
+      <source>   bbox(ref)→reg: ({0:.1f},{1:.1f}) to ({2:.1f},{3:.1f}); canvas {4}×{5} @ {6}×</source>
+      <translation>   bbox(ref)→reg: ({0:.1f},{1:.1f}) 到 ({2:.1f},{3:.1f}); 画布 {4}×{5} @ {6}×</translation>
+    </message>
+    <message>
+      <source>   originals needed (sample): {0}</source>
+      <translation>   需要的原始文件 (样本): {0}</translation>
+    </message>
+    <message>
+      <source>   sasd FILEs (sample):       {0}</source>
+      <translation>   sasd 文件 (样本):       {0}</translation>
+    </message>
+    <message>
+      <source>   • Tile source: STARLESS (pre-aligned)</source>
+      <translation>   • 平铺源: 无星 (预对齐)</translation>
+    </message>
+    <message>
+      <source>   ↳ Integration done in {0:.1f}s.</source>
+      <translation>   ↳ 集成完成，耗时 {0:.1f}s。</translation>
+    </message>
+    <message>
+      <source>   ⚠️ Starless reader path mismatch at i={0}; got {1}, expected {2}. Using index order.</source>
+      <translation>   ⚠️ i={0} 处的无星读取器路径不匹配；得到 {1}，预期 {2}。使用索引顺序。</translation>
+    </message>
+    <message>
+      <source>  • {0} → {1}</source>
+      <translation>  • {0} → {1}</translation>
+    </message>
+    <message>
+      <source>  ↳ tile {0} done in {1:.3f}s  (~{2:.1f} MPx/s)</source>
+      <translation>  ↳ 平铺 {0} 完成，耗时 {1:.3f}s (~{2:.1f} MPx/s)</translation>
+    </message>
+    <message>
+      <source>  ◦ DarkStar comet star removal…</source>
+      <translation>  ◦ DarkStar 彗星星点移除...</translation>
+    </message>
+    <message>
+      <source>  ◦ StarNet comet star removal…</source>
+      <translation>  ◦ StarNet 彗星星点移除...</translation>
+    </message>
+    <message>
+      <source>  ◦ applying rejection algorithm: {0}</source>
+      <translation>  ◦ 正在应用剔除算法: {0}</translation>
+    </message>
+    <message>
+      <source>  ◦ seed xy={0:.1f},{1:.1f} within {2}×{3}? {4}</source>
+      <translation>  ◦ 种子 xy={0:.1f},{1:.1f} 在 {2}×{3} 内? {4}</translation>
+    </message>
+    <message>
+      <source>  ◦ seeding first registered frame with _comet_ref_xy</source>
+      <translation>  ◦ 正在使用 _comet_ref_xy 为第一帧注册帧播种</translation>
+    </message>
+    <message>
+      <source>  ◦ user cancelled or no edits — using auto centroids</source>
+      <translation>  ◦ 用户取消或未编辑 — 使用自动质心</translation>
+    </message>
+    <message>
+      <source>  ◦ user confirmed/edited {0} centroids</source>
+      <translation>  ◦ 用户确认/编辑了 {0} 个质心</translation>
+    </message>
+    <message>
+      <source>  ◦ using user seed on {0}</source>
+      <translation>  ◦ 在 {0} 上使用用户种子</translation>
+    </message>
+    <message>
+      <source>  ⚠️ comet preview skipped: no worker emitter present</source>
+      <translation>  ⚠️ 彗星预览已跳过：不存在工作发射器</translation>
+    </message>
+    <message>
+      <source>  ⚠️ comet preview skipped: {0!r}</source>
+      <translation>  ⚠️ 彗星预览已跳过：{0!r}</translation>
+    </message>
+    <message>
+      <source>  ⚠️ comet preview unavailable (no UI target)</source>
+      <translation>  ⚠️ 彗星预览不可用（无 UI 目标）</translation>
+    </message>
+    <message>
+      <source>  ⚠️ star removal failed on {0}: {1}</source>
+      <translation>  ⚠️ {0} 上的星点移除失败：{1}</translation>
+    </message>
+    <message>
+      <source>  ⚠️ user seed: no affine for that registered file</source>
+      <translation>  ⚠️ 用户种子：该注册文件没有仿射变换</translation>
+    </message>
+    <message>
+      <source>  ❌ {0}</source>
+      <translation>  ❌ {0}</translation>
+    </message>
+    <message>
+      <source> (repaired {0})</source>
+      <translation> (已修复 {0})</translation>
+    </message>
+    <message>
+      <source> + CFA</source>
+      <translation> + CFA</translation>
+    </message>
+    <message>
+      <source> + drizzle</source>
+      <translation> + drizzle</translation>
+    </message>
+    <message>
+      <source> [GPU]</source>
+      <translation> [GPU]</translation>
+    </message>
+    <message>
+      <source>'Luma' deconvolves luminance only; 'PerChannel' runs on RGB independently.</source>
+      <translation>“亮度”仅对亮度进行反卷积；“每通道”独立运行于 RGB。</translation>
+    </message>
+    <message>
+      <source>(&lt;0 = scale×RMS, &gt;0 = absolute Δ)</source>
+      <translation>(&lt;0 = 缩放×RMS, &gt;0 = 绝对 Δ)</translation>
+    </message>
+    <message>
+      <source>(fallback)</source>
+      <translation>(回退)</translation>
+    </message>
+    <message>
+      <source>(score={0:.4f})</source>
+      <translation>(得分={0:.4f})</translation>
+    </message>
+    <message>
+      <source>**Frame Weights Debug Log:**</source>
+      <translation>**帧权重调试日志：**</translation>
+    </message>
+    <message>
+      <source>1 file · {0}</source>
+      <translation>1 个文件 · {0}</translation>
+    </message>
+    <message>
+      <source>16-bit unsigned</source>
+      <translation>16 位无符号</translation>
+    </message>
+    <message>
+      <source>1× (native)</source>
+      <translation>1× (原生)</translation>
+    </message>
+    <message>
+      <source>2× (super-resolution)</source>
+      <translation>2× (超分辨率)</translation>
+    </message>
+    <message>
+      <source>32-bit float</source>
+      <translation>32 位浮点</translation>
+    </message>
+    <message>
+      <source>3× (extreme)</source>
+      <translation>3× (极端)</translation>
+    </message>
+    <message>
+      <source>64-bit float</source>
+      <translation>64 位浮点</translation>
+    </message>
+    <message>
+      <source>64-bit uses ~2× RAM; 32-bit is faster/lighter.</source>
+      <translation>64 位使用约 2 倍内存；32 位更快、更轻量。</translation>
+    </message>
+    <message>
+      <source>ABE Mode:</source>
+      <translation>ABE 模式:</translation>
+    </message>
+    <message>
+      <source>AHD</source>
+      <translation>AHD</translation>
+    </message>
+    <message>
+      <source>AIRMASS</source>
+      <translation>大气质量</translation>
+    </message>
+    <message>
+      <source>APTDIA</source>
+      <translation>光圈孔径</translation>
+    </message>
+    <message>
+      <source>About CUDA</source>
+      <translation>关于 CUDA</translation>
+    </message>
+    <message>
+      <source>Acceleration</source>
+      <translation>加速</translation>
+    </message>
+    <message>
+      <source>Accept max shift (px):</source>
+      <translation>接受最大偏移 (px):</translation>
+    </message>
+    <message>
+      <source>Accept tolerance (px):</source>
+      <translation>接受容差 (px):</translation>
+    </message>
+    <message>
+      <source>Accurate (3 passes)</source>
+      <translation>精确 (3 次迭代)</translation>
+    </message>
+    <message>
+      <source>Accurate (Star Matching)</source>
+      <translation>精确 (恒星匹配)</translation>
+    </message>
+    <message>
+      <source>Add Bias Frames</source>
+      <translation>添加偏置场帧</translation>
+    </message>
+    <message>
+      <source>Add Conversion Directory</source>
+      <translation>添加转换目录</translation>
+    </message>
+    <message>
+      <source>Add Conversion Files</source>
+      <translation>添加转换文件</translation>
+    </message>
+    <message>
+      <source>Add Dark Directory</source>
+      <translation>添加暗场目录</translation>
+    </message>
+    <message>
+      <source>Add Dark Files</source>
+      <translation>添加暗场文件</translation>
+    </message>
+    <message>
+      <source>Add Dark Frames</source>
+      <translation>添加暗场帧</translation>
+    </message>
+    <message>
+      <source>Add Files...</source>
+      <translation>添加文件...</translation>
+    </message>
+    <message>
+      <source>Add Flat Directory</source>
+      <translation>添加平场目录</translation>
+    </message>
+    <message>
+      <source>Add Flat Files</source>
+      <translation>添加平场文件</translation>
+    </message>
+    <message>
+      <source>Add Flat Frames</source>
+      <translation>添加平场帧</translation>
+    </message>
+    <message>
+      <source>Add Folder...</source>
+      <translation>添加文件夹...</translation>
+    </message>
+    <message>
+      <source>Add Light Directory</source>
+      <translation>添加亮场目录</translation>
+    </message>
+    <message>
+      <source>Add Light Files</source>
+      <translation>添加亮场文件</translation>
+    </message>
+    <message>
+      <source>Add Light Frames</source>
+      <translation>添加亮场帧</translation>
+    </message>
+    <message>
+      <source>Add files to the stacking queue</source>
+      <translation>将文件添加到叠加队列</translation>
+    </message>
+    <message>
+      <source>Add to {0} tab</source>
+      <translation>添加到 {0} 选项卡</translation>
+    </message>
+    <message>
+      <source>Added {0}/{1} Light frames</source>
+      <translation>已添加 {0}/{1} 帧亮场</translation>
+    </message>
+    <message>
+      <source>Adding Blink files to Image Integration…</source>
+      <translation>正在将 Blink 文件添加到图像集成…</translation>
+    </message>
+    <message>
+      <source>Adding Blink files to Light tab…</source>
+      <translation>正在将 Blink 文件添加到亮场选项卡…</translation>
+    </message>
+    <message>
+      <source>Adding {0} Files…</source>
+      <translation>正在添加 {0} 个文件…</translation>
+    </message>
+    <message>
+      <source>Adding {0} from Directory…</source>
+      <translation>正在从目录添加 {0}…</translation>
+    </message>
+    <message>
+      <source>Additive</source>
+      <translation>加法</translation>
+    </message>
+    <message>
+      <source>Additive with Scaling</source>
+      <translation>带缩放的加法</translation>
+    </message>
+    <message>
+      <source>Advanced</source>
+      <translation>高级</translation>
+    </message>
+    <message>
+      <source>Advanced Options</source>
+      <translation>高级选项</translation>
+    </message>
+    <message>
+      <source>Advanced Settings</source>
+      <translation>高级设置</translation>
+    </message>
+    <message>
+      <source>Affine (fast)</source>
+      <translation>仿射 (快速)</translation>
+    </message>
+    <message>
+      <source>After installation, restart the app for changes to take effect.</source>
+      <translation>安装后，重启应用以使更改生效。</translation>
+    </message>
+    <message>
+      <source>After installing CUDA, restart the app.</source>
+      <translation>安装 CUDA 后，请重启应用。</translation>
+    </message>
+    <message>
+      <source>Algorithm:</source>
+      <translation>算法:</translation>
+    </message>
+    <message>
+      <source>Aligning stars…</source>
+      <translation>正在对齐恒星…</translation>
+    </message>
+    <message>
+      <source>Aligning stars… ({0}/{1})</source>
+      <translation>正在对齐恒星… ({0}/{1})</translation>
+    </message>
+    <message>
+      <source>Alignment</source>
+      <translation>对齐</translation>
+    </message>
+    <message>
+      <source>Alignment Mode:</source>
+      <translation>对齐模式:</translation>
+    </message>
+    <message>
+      <source>Alignment Settings</source>
+      <translation>对齐设置</translation>
+    </message>
+    <message>
+      <source>All Supported Files</source>
+      <translation>所有支持的文件</translation>
+    </message>
+    <message>
+      <source>All stacking finished successfully.
+</source>
+      <translation>所有叠加已成功完成。
+</translation>
+    </message>
+    <message>
+      <source>Also output Stars+Comet blend</source>
+      <translation>同时输出恒星+彗星混合图像</translation>
+    </message>
+    <message>
+      <source>Analyze</source>
+      <translation>分析</translation>
+    </message>
+    <message>
+      <source>Analyzing frames...</source>
+      <translation>正在分析帧...</translation>
+    </message>
+    <message>
+      <source>Apply Bias Subtraction (For CCD Users)</source>
+      <translation>应用偏置场减法 (适用于 CCD 用户)</translation>
+    </message>
+    <message>
+      <source>Apply Pedestal</source>
+      <translation>应用底数 (Pedestal)</translation>
+    </message>
+    <message>
+      <source>Apply Settings</source>
+      <translation>应用设置</translation>
+    </message>
+    <message>
+      <source>Apply color matrix</source>
+      <translation>应用色彩矩阵</translation>
+    </message>
+    <message>
+      <source>Apply cosmetic correction</source>
+      <translation>应用瑕疵修复</translation>
+    </message>
+    <message>
+      <source>Apply debayer</source>
+      <translation>应用去马赛克</translation>
+    </message>
+    <message>
+      <source>Apply distortion model</source>
+      <translation>应用畸变模型</translation>
+    </message>
+    <message>
+      <source>Apply filter</source>
+      <translation>应用滤镜</translation>
+    </message>
+    <message>
+      <source>Apply hot pixel removal</source>
+      <translation>应用热像素移除</translation>
+    </message>
+    <message>
+      <source>Apply this choice to all remaining mismatches of this kind</source>
+      <translation>将此选择应用于所有此类剩余的不匹配项</translation>
+    </message>
+    <message>
+      <source>Apply to Group</source>
+      <translation>应用于组</translation>
+    </message>
+    <message>
+      <source>Apply to all frames</source>
+      <translation>应用于所有帧</translation>
+    </message>
+    <message>
+      <source>Applying calibration...</source>
+      <translation>正在应用校准...</translation>
+    </message>
+    <message>
+      <source>Applying rejection...</source>
+      <translation>正在应用剔除...</translation>
+    </message>
+    <message>
+      <source>Are you sure you want to cancel stacking?</source>
+      <translation>您确定要取消叠加吗？</translation>
+    </message>
+    <message>
+      <source>Are you sure you want to remove all frames?</source>
+      <translation>您确定要移除所有帧吗？</translation>
+    </message>
+    <message>
+      <source>Assigning best Master Dark/Flat…</source>
+      <translation>正在分配最佳主暗场/平场…</translation>
+    </message>
+    <message>
+      <source>Auto</source>
+      <translation>自动</translation>
+    </message>
+    <message>
+      <source>Auto (from stars)</source>
+      <translation>自动 (从恒星)</translation>
+    </message>
+    <message>
+      <source>Auto (not set)</source>
+      <translation>自动 (未设置)</translation>
+    </message>
+    <message>
+      <source>Auto (use all cores)</source>
+      <translation>自动 (使用所有核心)</translation>
+    </message>
+    <message>
+      <source>Auto Crop</source>
+      <translation>自动裁剪</translation>
+    </message>
+    <message>
+      <source>Auto Noise Map</source>
+      <translation>自动噪声图</translation>
+    </message>
+    <message>
+      <source>Auto Star Mask</source>
+      <translation>自动星掩模</translation>
+    </message>
+    <message>
+      <source>Auto Weight</source>
+      <translation>自动权重</translation>
+    </message>
+    <message>
+      <source>Auto crop</source>
+      <translation>自动裁剪</translation>
+    </message>
+    <message>
+      <source>Auto-Accept Best Reference</source>
+      <translation>自动接受最佳参考帧</translation>
+    </message>
+    <message>
+      <source>Auto-Select Best Reference</source>
+      <translation>自动选择最佳参考帧</translation>
+    </message>
+    <message>
+      <source>Auto-Select Closest Master Dark</source>
+      <translation>自动选择最接近的主暗场</translation>
+    </message>
+    <message>
+      <source>Auto-Select by Metadata</source>
+      <translation>按元数据自动选择</translation>
+    </message>
+    <message>
+      <source>Auto-accept measured reference</source>
+      <translation>自动接受测量的参考帧</translation>
+    </message>
+    <message>
+      <source>Auto-crop output</source>
+      <translation>自动裁剪输出</translation>
+    </message>
+    <message>
+      <source>Auto-cropped files saved:</source>
+      <translation>自动裁剪的文件已保存:</translation>
+    </message>
+    <message>
+      <source>Auto-detect</source>
+      <translation>自动检测</translation>
+    </message>
+    <message>
+      <source>Auto-detect panels</source>
+      <translation>自动检测面板</translation>
+    </message>
+    <message>
+      <source>Auto-detect session</source>
+      <translation>自动检测会话</translation>
+    </message>
+    <message>
+      <source>Auto-match calibration frames</source>
+      <translation>自动匹配校准帧</translation>
+    </message>
+    <message>
+      <source>Auto-name</source>
+      <translation>自动命名</translation>
+    </message>
+    <message>
+      <source>Auto-register &amp; integrate after calibration</source>
+      <translation>校准后自动注册并集成</translation>
+    </message>
+    <message>
+      <source>Average</source>
+      <translation>平均值</translation>
+    </message>
+    <message>
+      <source>BAYERPAT</source>
+      <translation>拜尔阵列</translation>
+    </message>
+    <message>
+      <source>BGGR</source>
+      <translation>BGGR</translation>
+    </message>
+    <message>
+      <source>Backend: CPU (Python version not supported for GPU install)</source>
+      <translation>后端: CPU (Python 版本不支持 GPU 安装)</translation>
+    </message>
+    <message>
+      <source>Backend: installing…</source>
+      <translation>后端: 正在安装…</translation>
+    </message>
+    <message>
+      <source>Backend: {0}</source>
+      <translation>后端: {0}</translation>
+    </message>
+    <message>
+      <source>Background</source>
+      <translation>背景</translation>
+    </message>
+    <message>
+      <source>Background Normalization</source>
+      <translation>背景归一化</translation>
+    </message>
+    <message>
+      <source>Background level</source>
+      <translation>背景电平</translation>
+    </message>
+    <message>
+      <source>Background matching</source>
+      <translation>背景匹配</translation>
+    </message>
+    <message>
+      <source>Background model</source>
+      <translation>背景模型</translation>
+    </message>
+    <message>
+      <source>Batch Convert Files to Debayered FITS (.fit)</source>
+      <translation>批量将文件转换为去马赛克的 FITS (.fit)</translation>
+    </message>
+    <message>
+      <source>Bayer Pattern</source>
+      <translation>拜尔阵列</translation>
+    </message>
+    <message>
+      <source>Before saving: min = {0:.4f}, max = {1:.4f}</source>
+      <translation>保存前: 最小值 = {0:.4f}, 最大值 = {1:.4f}</translation>
+    </message>
+    <message>
+      <source>Best</source>
+      <translation>最佳</translation>
+    </message>
+    <message>
+      <source>Best Quality</source>
+      <translation>最佳质量</translation>
+    </message>
+    <message>
+      <source>Bias</source>
+      <translation>偏置场</translation>
+    </message>
+    <message>
+      <source>Bias Subtracted</source>
+      <translation>已减去偏置场</translation>
+    </message>
+    <message>
+      <source>Bias: {0}</source>
+      <translation>偏置场: {0}</translation>
+    </message>
+    <message>
+      <source>Bicubic</source>
+      <translation>双三次插值</translation>
+    </message>
+    <message>
+      <source>Bicubic Interpolation</source>
+      <translation>双三次插值</translation>
+    </message>
+    <message>
+      <source>Bilinear</source>
+      <translation>双线性插值</translation>
+    </message>
+    <message>
+      <source>Bilinear Interpolation</source>
+      <translation>双线性插值</translation>
+    </message>
+    <message>
+      <source>Binning</source>
+      <translation>像素合并</translation>
+    </message>
+    <message>
+      <source>Biweight Estimator</source>
+      <translation>双权重估计器</translation>
+    </message>
+    <message>
+      <source>Biweight constant:</source>
+      <translation>双权重常数:</translation>
+    </message>
+    <message>
+      <source>Blend Ratio:</source>
+      <translation>混合比例:</translation>
+    </message>
+    <message>
+      <source>Blending method</source>
+      <translation>混合方法</translation>
+    </message>
+    <message>
+      <source>Both (comet + stars)</source>
+      <translation>两者 (彗星 + 恒星)</translation>
+    </message>
+    <message>
+      <source>Browse</source>
+      <translation>浏览</translation>
+    </message>
+    <message>
+      <source>Browse...</source>
+      <translation>浏览...</translation>
+    </message>
+    <message>
+      <source>CCD-TEMP</source>
+      <translation>CCD 温度</translation>
+    </message>
+    <message>
+      <source>CFA Drizzle</source>
+      <translation>CFA Drizzle</translation>
+    </message>
+    <message>
+      <source>CFA Drizzle (Bayer)</source>
+      <translation>CFA Drizzle (拜尔)</translation>
+    </message>
+    <message>
+      <source>CFA Drizzle is enabled but at least one group has only {0} frames.
+
+CFA Drizzle typically needs ≥{1} frames (scale {2:.0f}×) for good coverage.
+Switch to Edge-Aware Interpolation for this run?</source>
+      <translation>已启用 CFA Drizzle，但至少有一个组只有 {0} 帧。
+
+CFA Drizzle 通常需要 ≥{1} 帧 (缩放 {2:.0f}×) 才能获得良好的覆盖。
+本次运行是否切换到边缘感知插值？</translation>
+    </message>
+    <message>
+      <source>CFA Drizzle: Low Sample Count</source>
+      <translation>CFA Drizzle: 样本数量过低</translation>
+    </message>
+    <message>
+      <source>CFA Edge-Aware Interp</source>
+      <translation>CFA 边缘感知插值</translation>
+    </message>
+    <message>
+      <source>CMOS users: Bias Subtraction is not needed.
+Modern CMOS cameras use Correlated Double Sampling (CDS),
+meaning bias is already subtracted at the sensor level.</source>
+      <translation>CMOS 用户: 不需要减去偏置场。
+现代 CMOS 相机使用相关双采样 (CDS)，
+这意味着偏置场已在传感器级别减去。</translation>
+    </message>
+    <message>
+      <source>CPU only</source>
+      <translation>仅 CPU</translation>
+    </message>
+    <message>
+      <source>CUDA Installation Info</source>
+      <translation>CUDA 安装信息</translation>
+    </message>
+    <message>
+      <source>Cache size (MB)</source>
+      <translation>缓存大小 (MB)</translation>
+    </message>
+    <message>
+      <source>Calculate from frames</source>
+      <translation>从帧计算</translation>
+    </message>
+    <message>
+      <source>Calculating alignment...</source>
+      <translation>正在计算对齐...</translation>
+    </message>
+    <message>
+      <source>Calculating autocrop bounding box…</source>
+      <translation>正在计算自动裁剪边界框…</translation>
+    </message>
+    <message>
+      <source>Calibrated Light Frames</source>
+      <translation>已校准的亮场帧</translation>
+    </message>
+    <message>
+      <source>Calibrating...</source>
+      <translation>正在校准...</translation>
+    </message>
+    <message>
+      <source>Calibration</source>
+      <translation>校准</translation>
+    </message>
+    <message>
+      <source>Calibration Settings</source>
+      <translation>校准设置</translation>
+    </message>
+    <message>
+      <source>Calibration complete</source>
+      <translation>校准完成</translation>
+    </message>
+    <message>
+      <source>Calibration mismatch</source>
+      <translation>校准不匹配</translation>
+    </message>
+    <message>
+      <source>Camera</source>
+      <translation>相机</translation>
+    </message>
+    <message>
+      <source>Cancel</source>
+      <translation>取消</translation>
+    </message>
+    <message>
+      <source>Cancel the current operation</source>
+      <translation>取消当前操作</translation>
+    </message>
+    <message>
+      <source>Cannot write to output directory</source>
+      <translation>无法写入输出目录</translation>
+    </message>
+    <message>
+      <source>Caps Astroalign max_control_points (typical 500–1500). Lower = faster, higher = more robust.</source>
+      <translation>限制 Astroalign 最大控制点 (通常为 500–1500)。越低 = 越快，越高 = 越稳健。</translation>
+    </message>
+    <message>
+      <source>Capture Date</source>
+      <translation>拍摄日期</translation>
+    </message>
+    <message>
+      <source>Choose the initial seed image for MFDeconv:
+• Robust μ–σ: running mean with sigma clipping (RAM-friendly, default)
+• Median: tiled median stack (more outlier-resistant; heavier I/O, esp. for XISF)</source>
+      <translation>为 MFDeconv 选择初始种子图像：
+• 稳健 μ–σ: 带 sigma 裁剪的运行均值 (节省内存，默认)
+• 中值: 分块中值叠加 (更抗离群值；I/O 负担较重，尤其是 XISF)</translation>
+    </message>
+    <message>
+      <source>Chunk Size:</source>
+      <translation>块大小:</translation>
+    </message>
+    <message>
+      <source>Chunk size</source>
+      <translation>块大小</translation>
+    </message>
+    <message>
+      <source>Circular</source>
+      <translation>圆形</translation>
+    </message>
+    <message>
+      <source>Circular (disk)</source>
+      <translation>圆形 (圆盘)</translation>
+    </message>
+    <message>
+      <source>Clear</source>
+      <translation>清除</translation>
+    </message>
+    <message>
+      <source>Clear All</source>
+      <translation>清除全部</translation>
+    </message>
+    <message>
+      <source>Clear List</source>
+      <translation>清除列表</translation>
+    </message>
+    <message>
+      <source>Clear Selection</source>
+      <translation>清除选择</translation>
+    </message>
+    <message>
+      <source>Clear all files from queue</source>
+      <translation>从队列中清除所有文件</translation>
+    </message>
+    <message>
+      <source>Clear existing session?</source>
+      <translation>清除现有会话？</translation>
+    </message>
+    <message>
+      <source>Click to select files</source>
+      <translation>点击选择文件</translation>
+    </message>
+    <message>
+      <source>Clip (lo/hi):</source>
+      <translation>裁剪 (低/高):</translation>
+    </message>
+    <message>
+      <source>Clip high</source>
+      <translation>高位裁剪</translation>
+    </message>
+    <message>
+      <source>Clip low</source>
+      <translation>低位裁剪</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>关闭</translation>
+    </message>
+    <message>
+      <source>Cold Pixel Removal</source>
+      <translation>冷像素移除</translation>
+    </message>
+    <message>
+      <source>Cold Threshold:</source>
+      <translation>冷像素阈值:</translation>
+    </message>
+    <message>
+      <source>Cold pixel detection</source>
+      <translation>冷像素检测</translation>
+    </message>
+    <message>
+      <source>Cold pixel replacement</source>
+      <translation>冷像素替换</translation>
+    </message>
+    <message>
+      <source>Cold pixel threshold (σ)</source>
+      <translation>冷像素阈值 (σ)</translation>
+    </message>
+    <message>
+      <source>Cold σ:</source>
+      <translation>冷像素 σ:</translation>
+    </message>
+    <message>
+      <source>Color matrix</source>
+      <translation>色彩矩阵</translation>
+    </message>
+    <message>
+      <source>Color mode:</source>
+      <translation>色彩模式:</translation>
+    </message>
+    <message>
+      <source>Columns</source>
+      <translation>列</translation>
+    </message>
+    <message>
+      <source>Combine panels</source>
+      <translation>合并面板</translation>
+    </message>
+    <message>
+      <source>Comet (High-Clip Percentile tuning)</source>
+      <translation>彗星 (高位裁剪百分比调整)</translation>
+    </message>
+    <message>
+      <source>Comet Center</source>
+      <translation>彗星中心</translation>
+    </message>
+    <message>
+      <source>Comet Detection:</source>
+      <translation>彗星检测:</translation>
+    </message>
+    <message>
+      <source>Comet Mode</source>
+      <translation>彗星模式</translation>
+    </message>
+    <message>
+      <source>Comet Star Removal (Optional)</source>
+      <translation>彗星恒星移除 (可选)</translation>
+    </message>
+    <message>
+      <source>Comet alignment</source>
+      <translation>彗星对齐</translation>
+    </message>
+    <message>
+      <source>Complete</source>
+      <translation>完成</translation>
+    </message>
+    <message>
+      <source>Confirm action</source>
+      <translation>确认操作</translation>
+    </message>
+    <message>
+      <source>Controls down-weighting strength.</source>
+      <translation>控制降权强度。</translation>
+    </message>
+    <message>
+      <source>Conversion complete.</source>
+      <translation>转换完成。</translation>
+    </message>
+    <message>
+      <source>Conversion list cleared.</source>
+      <translation>转换列表已清除。</translation>
+    </message>
+    <message>
+      <source>Conversion output directory set to: {0}</source>
+      <translation>转换输出目录设置为: {0}</translation>
+    </message>
+    <message>
+      <source>Convert All Files to FITS</source>
+      <translation>将所有文件转换为 FITS</translation>
+    </message>
+    <message>
+      <source>Convert Non-FITS Formats</source>
+      <translation>转换非 FITS 格式</translation>
+    </message>
+    <message>
+      <source>Converted</source>
+      <translation>已转换</translation>
+    </message>
+    <message>
+      <source>Converted {0} to FITS with IMAGETYP={1}, EXPTIME={2}.</source>
+      <translation>已将 {0} 转换为 FITS，IMAGETYP={1}, EXPTIME={2}。</translation>
+    </message>
+    <message>
+      <source>Copy commands</source>
+      <translation>复制命令</translation>
+    </message>
+    <message>
+      <source>Core mask feather (px):</source>
+      <translation>核心掩模羽化 (px):</translation>
+    </message>
+    <message>
+      <source>Corrections</source>
+      <translation>修正</translation>
+    </message>
+    <message>
+      <source>Cosmetic Correction</source>
+      <translation>瑕疵修复</translation>
+    </message>
+    <message>
+      <source>Cosmetic Correction (Advanced)</source>
+      <translation>瑕疵修复 (高级)</translation>
+    </message>
+    <message>
+      <source>Cosmetic Correction Applied (debayered/mono)</source>
+      <translation>已应用瑕疵修复 (去马赛克/黑白)</translation>
+    </message>
+    <message>
+      <source>Cosmetic Correction Applied for Bayer Pattern ({0})</source>
+      <translation>已为拜尔阵列 ({0}) 应用瑕疵修复</translation>
+    </message>
+    <message>
+      <source>Could not load {0} to create memmap cache.</source>
+      <translation>无法加载 {0} 以创建内存映射缓存。</translation>
+    </message>
+    <message>
+      <source>Could not load:
+{0}
+
+{1}</source>
+      <translation>无法加载:
+{0}
+
+{1}</translation>
+    </message>
+    <message>
+      <source>Coverage:</source>
+      <translation>覆盖率:</translation>
+    </message>
+    <message>
+      <source>Create Comet-Only Stack</source>
+      <translation>创建仅彗星叠加</translation>
+    </message>
+    <message>
+      <source>Create Master</source>
+      <translation>创建主场</translation>
+    </message>
+    <message>
+      <source>Create Master Bias</source>
+      <translation>创建主偏置场</translation>
+    </message>
+    <message>
+      <source>Create Master Calibration Files</source>
+      <translation>创建主校准文件</translation>
+    </message>
+    <message>
+      <source>Create Master Dark</source>
+      <translation>创建主暗场</translation>
+    </message>
+    <message>
+      <source>Create Master Darks</source>
+      <translation>创建主暗场</translation>
+    </message>
+    <message>
+      <source>Create Master Flat</source>
+      <translation>创建主平场</translation>
+    </message>
+    <message>
+      <source>Create Master Flats</source>
+      <translation>创建主平场</translation>
+    </message>
+    <message>
+      <source>Create Masters</source>
+      <translation>创建主场</translation>
+    </message>
+    <message>
+      <source>Create Stars+Comet Blend</source>
+      <translation>创建恒星+彗星混合</translation>
+    </message>
+    <message>
+      <source>Create comet-aligned version</source>
+      <translation>创建彗星对齐版本</translation>
+    </message>
+    <message>
+      <source>Create log file</source>
+      <translation>创建日志文件</translation>
+    </message>
+    <message>
+      <source>Create star-aligned version</source>
+      <translation>创建恒星对齐版本</translation>
+    </message>
+    <message>
+      <source>Creating master bias...</source>
+      <translation>正在创建主偏置场...</translation>
+    </message>
+    <message>
+      <source>Creating master dark...</source>
+      <translation>正在创建主暗场...</translation>
+    </message>
+    <message>
+      <source>Creating master flat...</source>
+      <translation>正在创建主平场...</translation>
+    </message>
+    <message>
+      <source>Crop Method:</source>
+      <translation>裁剪方法:</translation>
+    </message>
+    <message>
+      <source>Crop Padding (px):</source>
+      <translation>裁剪填充 (px):</translation>
+    </message>
+    <message>
+      <source>Crop final image to pixels covered by ≥ Coverage % of frames</source>
+      <translation>将最终图像裁剪为覆盖率 ≥ % 的帧所覆盖的像素</translation>
+    </message>
+    <message>
+      <source>Crop to common area</source>
+      <translation>裁剪到公共区域</translation>
+    </message>
+    <message>
+      <source>Cross Correlation</source>
+      <translation>互相关</translation>
+    </message>
+    <message>
+      <source>Current Status: {0}</source>
+      <translation>当前状态: {0}</translation>
+    </message>
+    <message>
+      <source>Current Step</source>
+      <translation>当前步骤</translation>
+    </message>
+    <message>
+      <source>Current frame</source>
+      <translation>当前帧</translation>
+    </message>
+    <message>
+      <source>Current stacking settings saved to profile '{0}'.</source>
+      <translation>当前叠加设置已保存到配置文件 '{0}'。</translation>
+    </message>
+    <message>
+      <source>Custom</source>
+      <translation>自定义</translation>
+    </message>
+    <message>
+      <source>Custom Weight</source>
+      <translation>自定义权重</translation>
+    </message>
+    <message>
+      <source>Custom directory</source>
+      <translation>自定义目录</translation>
+    </message>
+    <message>
+      <source>Custom matrix</source>
+      <translation>自定义矩阵</translation>
+    </message>
+    <message>
+      <source>DCB</source>
+      <translation>DCB</translation>
+    </message>
+    <message>
+      <source>DEBUG: File '{0}' does not exist on disk.</source>
+      <translation>调试: 文件 '{0}' 在磁盘上不存在。</translation>
+    </message>
+    <message>
+      <source>DEC</source>
+      <translation>赤纬 (DEC)</translation>
+    </message>
+    <message>
+      <source>Dark</source>
+      <translation>暗场</translation>
+    </message>
+    <message>
+      <source>Dark Flat</source>
+      <translation>暗平场</translation>
+    </message>
+    <message>
+      <source>Dark Flats</source>
+      <translation>暗平场</translation>
+    </message>
+    <message>
+      <source>Dark Frames</source>
+      <translation>暗场帧</translation>
+    </message>
+    <message>
+      <source>Dark Subtracted: {0}</source>
+      <translation>已减去暗场: {0}</translation>
+    </message>
+    <message>
+      <source>DarkStar</source>
+      <translation>DarkStar</translation>
+    </message>
+    <message>
+      <source>Darks</source>
+      <translation>暗场</translation>
+    </message>
+    <message>
+      <source>Date</source>
+      <translation>日期</translation>
+    </message>
+    <message>
+      <source>Dead column detection</source>
+      <translation>死列检测</translation>
+    </message>
+    <message>
+      <source>Dead row detection</source>
+      <translation>死行检测</translation>
+    </message>
+    <message>
+      <source>Debayer</source>
+      <translation>去马赛克</translation>
+    </message>
+    <message>
+      <source>Debayer Method</source>
+      <translation>去马赛克方法</translation>
+    </message>
+    <message>
+      <source>Debayer Settings</source>
+      <translation>去马赛克设置</translation>
+    </message>
+    <message>
+      <source>Debayer before calibration</source>
+      <translation>校准前去马赛克</translation>
+    </message>
+    <message>
+      <source>Debug Mode</source>
+      <translation>调试模式</translation>
+    </message>
+    <message>
+      <source>Dec rate (arcsec/min)</source>
+      <translation>赤纬速率 (角秒/分)</translation>
+    </message>
+    <message>
+      <source>Deconvolution Iterations:</source>
+      <translation>反卷积迭代次数:</translation>
+    </message>
+    <message>
+      <source>Deconvolution Strength:</source>
+      <translation>反卷积强度:</translation>
+    </message>
+    <message>
+      <source>Deconvolving '{0}' ({1} frames)…</source>
+      <translation>正在对 '{0}' 进行反卷积 ({1} 帧)…</translation>
+    </message>
+    <message>
+      <source>Default</source>
+      <translation>默认</translation>
+    </message>
+    <message>
+      <source>Defect Map Files</source>
+      <translation>缺陷图文件</translation>
+    </message>
+    <message>
+      <source>Defect map</source>
+      <translation>缺陷图</translation>
+    </message>
+    <message>
+      <source>Delete</source>
+      <translation>删除</translation>
+    </message>
+    <message>
+      <source>Delete profile</source>
+      <translation>删除配置文件</translation>
+    </message>
+    <message>
+      <source>Delete stacking profile '{0}'?</source>
+      <translation>删除叠加配置文件 '{0}'？</translation>
+    </message>
+    <message>
+      <source>Detect bad columns</source>
+      <translation>检测坏列</translation>
+    </message>
+    <message>
+      <source>Detect bad rows</source>
+      <translation>检测坏行</translation>
+    </message>
+    <message>
+      <source>Detect dithering</source>
+      <translation>检测抖动</translation>
+    </message>
+    <message>
+      <source>Detected backend:</source>
+      <translation>检测到的后端:</translation>
+    </message>
+    <message>
+      <source>Detecting stars...</source>
+      <translation>正在检测恒星...</translation>
+    </message>
+    <message>
+      <source>Detection scale</source>
+      <translation>检测尺度</translation>
+    </message>
+    <message>
+      <source>Detection threshold</source>
+      <translation>检测阈值</translation>
+    </message>
+    <message>
+      <source>Dilate (+px):</source>
+      <translation>膨胀 (+px):</translation>
+    </message>
+    <message>
+      <source>Distortion / Transform</source>
+      <translation>畸变 / 变换</translation>
+    </message>
+    <message>
+      <source>Distortion correction</source>
+      <translation>畸变修正</translation>
+    </message>
+    <message>
+      <source>Dithering</source>
+      <translation>抖动</translation>
+    </message>
+    <message>
+      <source>Dithering pattern</source>
+      <translation>抖动模式</translation>
+    </message>
+    <message>
+      <source>Dithering scale</source>
+      <translation>抖动尺度</translation>
+    </message>
+    <message>
+      <source>Divide (flat-like)</source>
+      <translation>除法 (类似平场)</translation>
+    </message>
+    <message>
+      <source>Divide gain limits:</source>
+      <translation>除法增益限制:</translation>
+    </message>
+    <message>
+      <source>Double-click to preview</source>
+      <translation>双击预览</translation>
+    </message>
+    <message>
+      <source>Downloads PyTorch with the right backend (CUDA/MPS/CPU). One-time per machine.</source>
+      <translation>下载带有正确后端 (CUDA/MPS/CPU) 的 PyTorch。每台机器一次。</translation>
+    </message>
+    <message>
+      <source>Downsample (AREA):</source>
+      <translation>降采样 (区域):</translation>
+    </message>
+    <message>
+      <source>Downsample:</source>
+      <translation>降采样:</translation>
+    </message>
+    <message>
+      <source>Drag and drop files here</source>
+      <translation>将文件拖放到此处</translation>
+    </message>
+    <message>
+      <source>Drizzle</source>
+      <translation>Drizzle</translation>
+    </message>
+    <message>
+      <source>Drizzle Integration</source>
+      <translation>Drizzle 集成</translation>
+    </message>
+    <message>
+      <source>Drizzle Kernel:</source>
+      <translation>Drizzle 内核:</translation>
+    </message>
+    <message>
+      <source>Drizzle Scale:</source>
+      <translation>Drizzle 缩放:</translation>
+    </message>
+    <message>
+      <source>Drizzle Settings</source>
+      <translation>Drizzle 设置</translation>
+    </message>
+    <message>
+      <source>Drizzle cfg → scale={0}×, pixfrac={1:.3f}, kernel={2}</source>
+      <translation>Drizzle 配置 → 缩放={0}×, pixfrac={1:.3f}, 内核={2}</translation>
+    </message>
+    <message>
+      <source>Drizzle: False</source>
+      <translation>Drizzle: 否</translation>
+    </message>
+    <message>
+      <source>Drizzle: True, Scale: {0:g}x, Drop: {1:.2f}</source>
+      <translation>Drizzle: 是, 缩放: {0:g}x, Drop: {1:.2f}</translation>
+    </message>
+    <message>
+      <source>Drizzle: True, Scale: {0}, Drop: {1:.2f}</source>
+      <translation>Drizzle: 是, 缩放: {0}, Drop: {1:.2f}</translation>
+    </message>
+    <message>
+      <source>Drizzle: {0}</source>
+      <translation>Drizzle: {0}</translation>
+    </message>
+    <message>
+      <source>Drizzle: {0}, Scale: {1}, Drop:{2}</source>
+      <translation>Drizzle: {0}, 缩放: {1}, Drop:{2}</translation>
+    </message>
+    <message>
+      <source>Drop Fraction (pixfrac):</source>
+      <translation>Drop 分数 (pixfrac):</translation>
+    </message>
+    <message>
+      <source>Drop Shrink:</source>
+      <translation>Drop 收缩:</translation>
+    </message>
+    <message>
+      <source>Drop Size (Pixfrac)</source>
+      <translation>Drop 大小 (Pixfrac)</translation>
+    </message>
+    <message>
+      <source>EGAIN</source>
+      <translation>电子增益</translation>
+    </message>
+    <message>
+      <source>EQUINOX</source>
+      <translation>分点</translation>
+    </message>
+    <message>
+      <source>ESD threshold:</source>
+      <translation>ESD 阈值:</translation>
+    </message>
+    <message>
+      <source>EXPTIME</source>
+      <translation>曝光时间</translation>
+    </message>
+    <message>
+      <source>Eccentricity</source>
+      <translation>离心率</translation>
+    </message>
+    <message>
+      <source>Elapsed time</source>
+      <translation>已用时间</translation>
+    </message>
+    <message>
+      <source>Ellipse scale:</source>
+      <translation>椭圆缩放:</translation>
+    </message>
+    <message>
+      <source>Enable ABE Pre-Processing</source>
+      <translation>启用 ABE 预处理</translation>
+    </message>
+    <message>
+      <source>Enable Auto Crop</source>
+      <translation>启用自动裁剪</translation>
+    </message>
+    <message>
+      <source>Enable Comet Stacking</source>
+      <translation>启用彗星叠加</translation>
+    </message>
+    <message>
+      <source>Enable Cosmetic Correction</source>
+      <translation>启用瑕疵修复</translation>
+    </message>
+    <message>
+      <source>Enable Drizzle</source>
+      <translation>启用 Drizzle</translation>
+    </message>
+    <message>
+      <source>Enable GPU Acceleration</source>
+      <translation>启用 GPU 加速</translation>
+    </message>
+    <message>
+      <source>Enable GPU/MPS via PyTorch when supported; falls back to CPU automatically.</source>
+      <translation>支持时通过 PyTorch 启用 GPU/MPS；自动回退到 CPU。</translation>
+    </message>
+    <message>
+      <source>Enable MF Deconvolution</source>
+      <translation>启用多帧反卷积</translation>
+    </message>
+    <message>
+      <source>Enable MFDeconv during integration</source>
+      <translation>集成期间启用多帧反卷积</translation>
+    </message>
+    <message>
+      <source>Enable MPS (Apple Silicon)</source>
+      <translation>启用 MPS (Apple Silicon)</translation>
+    </message>
+    <message>
+      <source>Enable Registration</source>
+      <translation>启用注册</translation>
+    </message>
+    <message>
+      <source>Enable Star Trails</source>
+      <translation>启用星轨</translation>
+    </message>
+    <message>
+      <source>Enable advanced cosmetic tuning</source>
+      <translation>启用高级瑕疵调整</translation>
+    </message>
+    <message>
+      <source>Enable comet mode</source>
+      <translation>启用彗星模式</translation>
+    </message>
+    <message>
+      <source>Enable cosmetic correction</source>
+      <translation>启用瑕疵修复</translation>
+    </message>
+    <message>
+      <source>Enable local normalization</source>
+      <translation>启用局部归一化</translation>
+    </message>
+    <message>
+      <source>Enable mosaic mode</source>
+      <translation>启用马赛克模式</translation>
+    </message>
+    <message>
+      <source>Enable scoring</source>
+      <translation>启用评分</translation>
+    </message>
+    <message>
+      <source>Enter new group name:</source>
+      <translation>输入新组名:</translation>
+    </message>
+    <message>
+      <source>Enter session label (e.g., Night1, RedFilterSet2):</source>
+      <translation>输入会话标签 (例如 Night1, RedFilterSet2):</translation>
+    </message>
+    <message>
+      <source>Enter session name:</source>
+      <translation>输入会话名称:</translation>
+    </message>
+    <message>
+      <source>Error</source>
+      <translation>错误</translation>
+    </message>
+    <message>
+      <source>Error converting {0}: {1}</source>
+      <translation>转换 {0} 出错: {1}</translation>
+    </message>
+    <message>
+      <source>Error: {0}</source>
+      <translation>错误: {0}</translation>
+    </message>
+    <message>
+      <source>Estimated remaining</source>
+      <translation>预计剩余时间</translation>
+    </message>
+    <message>
+      <source>Exclude from Stack</source>
+      <translation>从叠加中排除</translation>
+    </message>
+    <message>
+      <source>Exclude from stacking</source>
+      <translation>从叠加中排除</translation>
+    </message>
+    <message>
+      <source>Expected dither (pixels)</source>
+      <translation>预期抖动 (像素)</translation>
+    </message>
+    <message>
+      <source>Export Settings</source>
+      <translation>导出设置</translation>
+    </message>
+    <message>
+      <source>Exposure</source>
+      <translation>曝光</translation>
+    </message>
+    <message>
+      <source>Exposure Time</source>
+      <translation>曝光时间</translation>
+    </message>
+    <message>
+      <source>Exposure Tolerance (sec):</source>
+      <translation>曝光容差 (秒):</translation>
+    </message>
+    <message>
+      <source>Exposure Tolerance (seconds):</source>
+      <translation>曝光容差 (秒):</translation>
+    </message>
+    <message>
+      <source>Extreme Studentized Deviate (ESD)</source>
+      <translation>极端学生化偏差 (ESD)</translation>
+    </message>
+    <message>
+      <source>FITS</source>
+      <translation>FITS</translation>
+    </message>
+    <message>
+      <source>FITS Files</source>
+      <translation>FITS 文件</translation>
+    </message>
+    <message>
+      <source>FITS Files (*.fit *.fits);;All Files (*)</source>
+      <translation>FITS 文件 (*.fit *.fits);;所有文件 (*)</translation>
+    </message>
+    <message>
+      <source>FITS Files (*.fits *.fit *.fts *.fits.gz *.fit.gz *.fz)</source>
+      <translation>FITS 文件 (*.fits *.fit *.fts *.fits.gz *.fit.gz *.fz)</translation>
+    </message>
+    <message>
+      <source>FITS Files (*.fits *.fit *.fz *.xisf *.tif *.tiff *.png *.jpg *.jpeg)</source>
+      <translation>FITS 文件 (*.fits *.fit *.fz *.xisf *.tif *.tiff *.png *.jpg *.jpeg)</translation>
+    </message>
+    <message>
+      <source>FITS Files (*.fits *.fit)</source>
+      <translation>FITS 文件 (*.fits *.fit)</translation>
+    </message>
+    <message>
+      <source>FITS Images (*.fits *.fit);;All Files (*)</source>
+      <translation>FITS 图像 (*.fits *.fit);;所有文件 (*)</translation>
+    </message>
+    <message>
+      <source>FOCALLEN</source>
+      <translation>焦距</translation>
+    </message>
+    <message>
+      <source>FWHM</source>
+      <translation>半高全宽 (FWHM)</translation>
+    </message>
+    <message>
+      <source>FWHM (lower is better)</source>
+      <translation>FWHM (越低越好)</translation>
+    </message>
+    <message>
+      <source>Failed to calibrate frame</source>
+      <translation>校准帧失败</translation>
+    </message>
+    <message>
+      <source>Failed to load</source>
+      <translation>加载失败</translation>
+    </message>
+    <message>
+      <source>Failed to load frame</source>
+      <translation>加载帧失败</translation>
+    </message>
+    <message>
+      <source>Failed to load image.</source>
+      <translation>加载图像失败。</translation>
+    </message>
+    <message>
+      <source>Failed to load session</source>
+      <translation>加载会话失败</translation>
+    </message>
+    <message>
+      <source>Failed to load {0}</source>
+      <translation>加载 {0} 失败</translation>
+    </message>
+    <message>
+      <source>Failed to register frame</source>
+      <translation>注册帧失败</translation>
+    </message>
+    <message>
+      <source>Failed to save session</source>
+      <translation>保存会话失败</translation>
+    </message>
+    <message>
+      <source>Failed to stack frames</source>
+      <translation>叠加帧失败</translation>
+    </message>
+    <message>
+      <source>Falling back to CPU</source>
+      <translation>正在回退到 CPU</translation>
+    </message>
+    <message>
+      <source>Fast (1 pass)</source>
+      <translation>快速 (1 次迭代)</translation>
+    </message>
+    <message>
+      <source>Fast (AstroAlign)</source>
+      <translation>快速 (AstroAlign)</translation>
+    </message>
+    <message>
+      <source>Fast = single pass; Accurate = 3-pass refinement.</source>
+      <translation>快速 = 单次迭代；精确 = 3 次迭代精炼。</translation>
+    </message>
+    <message>
+      <source>Feather</source>
+      <translation>羽化</translation>
+    </message>
+    <message>
+      <source>Feather width</source>
+      <translation>羽化宽度</translation>
+    </message>
+    <message>
+      <source>Feather σ (px):</source>
+      <translation>羽化 σ (px):</translation>
+    </message>
+    <message>
+      <source>Feature Matching</source>
+      <translation>特征匹配</translation>
+    </message>
+    <message>
+      <source>File</source>
+      <translation>文件</translation>
+    </message>
+    <message>
+      <source>Filename</source>
+      <translation>文件名</translation>
+    </message>
+    <message>
+      <source>Fill value</source>
+      <translation>填充值</translation>
+    </message>
+    <message>
+      <source>Filter</source>
+      <translation>滤镜</translation>
+    </message>
+    <message>
+      <source>Filter &amp; Exposure</source>
+      <translation>滤镜 &amp; 曝光</translation>
+    </message>
+    <message>
+      <source>Filter - Exposure - Size</source>
+      <translation>滤镜 - 曝光 - 大小</translation>
+    </message>
+    <message>
+      <source>Filter by score</source>
+      <translation>按评分过滤</translation>
+    </message>
+    <message>
+      <source>Filter={0}  Exp={1}</source>
+      <translation>滤镜={0}  曝光={1}</translation>
+    </message>
+    <message>
+      <source>Finalizing...</source>
+      <translation>正在完成...</translation>
+    </message>
+    <message>
+      <source>First Frame</source>
+      <translation>第一帧</translation>
+    </message>
+    <message>
+      <source>Flat</source>
+      <translation>平场</translation>
+    </message>
+    <message>
+      <source>Flat Applied: {0}</source>
+      <translation>已应用平场: {0}</translation>
+    </message>
+    <message>
+      <source>Flat Frames</source>
+      <translation>平场帧</translation>
+    </message>
+    <message>
+      <source>Flats</source>
+      <translation>平场</translation>
+    </message>
+    <message>
+      <source>Flipping Image</source>
+      <translation>正在翻转图像</translation>
+    </message>
+    <message>
+      <source>For OSC dual-band data: SII/OIII → R=SII, G=OIII; Ha/OIII → R=Ha, G=OIII</source>
+      <translation>对于 OSC 双窄带数据: SII/OIII → R=SII, G=OIII; Ha/OIII → R=Ha, G=OIII</translation>
+    </message>
+    <message>
+      <source>Found '{0}' with IMAGETYP = {1}
+which looks like **{2}**, not {3}.
+
+What would you like to do?</source>
+      <translation>找到 '{0}'，IMAGETYP = {1}
+看起来像 **{2}**，而不是 {3}。
+
+您想做什么？</translation>
+    </message>
+    <message>
+      <source>Fraction trimmed on each end before averaging.</source>
+      <translation>平均前两端修剪的分数。</translation>
+    </message>
+    <message>
+      <source>Frame Filtering</source>
+      <translation>帧过滤</translation>
+    </message>
+    <message>
+      <source>Frame Scoring</source>
+      <translation>帧评分</translation>
+    </message>
+    <message>
+      <source>Frame dimensions mismatch</source>
+      <translation>帧尺寸不匹配</translation>
+    </message>
+    <message>
+      <source>Frames per group:
+</source>
+      <translation>每组帧数:
+</translation>
+    </message>
+    <message>
+      <source>Frames processed</source>
+      <translation>已处理帧数</translation>
+    </message>
+    <message>
+      <source>From WCS</source>
+      <translation>来自 WCS</translation>
+    </message>
+    <message>
+      <source>GBRG</source>
+      <translation>GBRG</translation>
+    </message>
+    <message>
+      <source>GPU Device:</source>
+      <translation>GPU 设备:</translation>
+    </message>
+    <message>
+      <source>GPU acceleration not available</source>
+      <translation>GPU 加速不可用</translation>
+    </message>
+    <message>
+      <source>GPU device</source>
+      <translation>GPU 设备</translation>
+    </message>
+    <message>
+      <source>GPU still not being used?</source>
+      <translation>GPU 仍未被使用？</translation>
+    </message>
+    <message>
+      <source>GRBG</source>
+      <translation>GRBG</translation>
+    </message>
+    <message>
+      <source>Gain</source>
+      <translation>增益</translation>
+    </message>
+    <message>
+      <source>Gain Clip Max:</source>
+      <translation>增益裁剪最大值:</translation>
+    </message>
+    <message>
+      <source>Gain Clip Min:</source>
+      <translation>增益裁剪最小值:</translation>
+    </message>
+    <message>
+      <source>Gaussian</source>
+      <translation>高斯</translation>
+    </message>
+    <message>
+      <source>Gaussian σ (px):</source>
+      <translation>高斯 σ (px):</translation>
+    </message>
+    <message>
+      <source>Generalized ESD</source>
+      <translation>广义 ESD</translation>
+    </message>
+    <message>
+      <source>Generalized Extreme Studentized Deviate</source>
+      <translation>广义极端学生化偏差</translation>
+    </message>
+    <message>
+      <source>Generate defect map</source>
+      <translation>生成缺陷图</translation>
+    </message>
+    <message>
+      <source>Generate panel stacks</source>
+      <translation>生成面板叠加</translation>
+    </message>
+    <message>
+      <source>Gradient Removal (Pre-Integration)</source>
+      <translation>梯度移除 (集成前)</translation>
+    </message>
+    <message>
+      <source>Gradient matching</source>
+      <translation>梯度匹配</translation>
+    </message>
+    <message>
+      <source>Gradient removal (ABE Poly²): mode={0}, samples={1}, downsample={2}, patch={3}, min_strength={4:.2f}%, gain_clip=[{5},{6}]</source>
+      <translation>梯度移除 (ABE Poly²): 模式={0}, 样本={1}, 降采样={2}, 补丁={3}, 最小强度={4:.2f}%, 增益裁剪=[{5},{6}]</translation>
+    </message>
+    <message>
+      <source>Grid size</source>
+      <translation>网格大小</translation>
+    </message>
+    <message>
+      <source>Group '{0}' has {1} file(s) after filtering.</source>
+      <translation>过滤后，组 '{0}' 有 {1} 个文件。</translation>
+    </message>
+    <message>
+      <source>Group By</source>
+      <translation>分组依据</translation>
+    </message>
+    <message>
+      <source>Group Name:</source>
+      <translation>组名:</translation>
+    </message>
+    <message>
+      <source>Group by dither position</source>
+      <translation>按抖动位置分组</translation>
+    </message>
+    <message>
+      <source>H:</source>
+      <translation>H:</translation>
+    </message>
+    <message>
+      <source>Half Size</source>
+      <translation>一半大小</translation>
+    </message>
+    <message>
+      <source>Height</source>
+      <translation>高度</translation>
+    </message>
+    <message>
+      <source>High Octane</source>
+      <translation>高辛烷值 (高性能)</translation>
+    </message>
+    <message>
+      <source>High-Octane (Let 'er rip)</source>
+      <translation>高辛烷值 (全力运行)</translation>
+    </message>
+    <message>
+      <source>High-Octane (Let ’er rip)</source>
+      <translation>高辛烷值 (全力运行)</translation>
+    </message>
+    <message>
+      <source>High-clip k / Percentile p:</source>
+      <translation>高位裁剪 k / 百分比 p:</translation>
+    </message>
+    <message>
+      <source>High/Low σ used by sigma-based rejection.</source>
+      <translation>基于 sigma 的剔除所使用的高/低 σ。</translation>
+    </message>
+    <message>
+      <source>High:</source>
+      <translation>高:</translation>
+    </message>
+    <message>
+      <source>Homography (full)</source>
+      <translation>单应性 (完整)</translation>
+    </message>
+    <message>
+      <source>Homography (projective)</source>
+      <translation>单应性 (投影)</translation>
+    </message>
+    <message>
+      <source>Hot Pixel Removal</source>
+      <translation>热像素移除</translation>
+    </message>
+    <message>
+      <source>Hot Threshold:</source>
+      <translation>热像素阈值:</translation>
+    </message>
+    <message>
+      <source>Hot pixel detection</source>
+      <translation>热像素检测</translation>
+    </message>
+    <message>
+      <source>Hot pixel replacement</source>
+      <translation>热像素替换</translation>
+    </message>
+    <message>
+      <source>Hot pixel threshold</source>
+      <translation>热像素阈值</translation>
+    </message>
+    <message>
+      <source>Hot pixel threshold (σ)</source>
+      <translation>热像素阈值 (σ)</translation>
+    </message>
+    <message>
+      <source>Hot σ:</source>
+      <translation>热像素 σ:</translation>
+    </message>
+    <message>
+      <source>Huber δ sets the cutoff between 'quadratic' (treat as normal) and 'linear' (treat as outlier) behavior.
+• |residual| ≤ δ → quadratic (more aggressive corrections)
+• |residual| &gt; δ → linear (gentler, more robust)
+Negative values mean 'scale by RMS': e.g., δ = -2 uses 2×RMS.
+Smaller |δ| (closer to 0) → more pixels counted as outliers → more conservative.
+Examples: κ=1.1 &amp; δ=-0.7 = gentle; κ=2 &amp; δ=-2 = more aggressive.</source>
+      <translation>Huber δ 设置了“二次”(视为正常) 和 “线性”(视为离群值) 行为之间的截止点。
+• |残差| ≤ δ → 二次 (更激进的修正)
+• |残差| &gt; δ → 线性 (更温和，更稳健)
+负值表示“按 RMS 缩放”：例如，δ = -2 使用 2×RMS。
+较小的 |δ| (接近 0) → 更多像素被计为离群值 → 更保守。
+示例: κ=1.1 &amp; δ=-0.7 = 温和；κ=2 &amp; δ=-2 = 更激进。</translation>
+    </message>
+    <message>
+      <source>Huber δ sets the cutoff between ‘quadratic’ (treat as normal) and ‘linear’ (treat as outlier) behavior.
+• |residual| ≤ δ → quadratic (more aggressive corrections)
+• |residual| &gt; δ → linear (gentler, more robust)
+Negative values mean ‘scale by RMS’: e.g., δ = -2 uses 2×RMS.
+Smaller |δ| (closer to 0) → more pixels counted as outliers → more conservative.
+Examples: κ=1.1 &amp; δ=-0.7 = gentle; κ=2 &amp; δ=-2 = more aggressive.</source>
+      <translation>Huber δ 设置了“二次”(视为正常) 和 “线性”(视为离群值) 行为之间的截止点。
+• |残差| ≤ δ → 二次 (更激进的修正)
+• |残差| &gt; δ → 线性 (更温和，更稳健)
+负值表示“按 RMS 缩放”：例如，δ = -2 使用 2×RMS。
+较小的 |δ| (接近 0) → 更多像素被计为离群值 → 更保守。
+示例: κ=1.1 &amp; δ=-0.7 = 温和；κ=2 &amp; δ=-2 = 更激进。</translation>
+    </message>
+    <message>
+      <source>Huber δ:</source>
+      <translation>Huber δ:</translation>
+    </message>
+    <message>
+      <source>IMAGETYP</source>
+      <translation>图像类型</translation>
+    </message>
+    <message>
+      <source>INSTRUME</source>
+      <translation>仪器</translation>
+    </message>
+    <message>
+      <source>IQR Clipping</source>
+      <translation>IQR 裁剪</translation>
+    </message>
+    <message>
+      <source>ISO</source>
+      <translation>ISO</translation>
+    </message>
+    <message>
+      <source>If GPU still not being used — click for fix steps</source>
+      <translation>如果 GPU 仍未被使用 — 点击查看修复步骤</translation>
+    </message>
+    <message>
+      <source>If checked, the best measured frame is accepted automatically.</source>
+      <translation>如果勾选，将自动接受测量的最佳帧。</translation>
+    </message>
+    <message>
+      <source>If enabled, saves the seed and every iteration image into a subfolder next to the final output.</source>
+      <translation>如果启用，将种子和每次迭代图像保存到最终输出旁边的子文件夹中。</translation>
+    </message>
+    <message>
+      <source>Image Files</source>
+      <translation>图像文件</translation>
+    </message>
+    <message>
+      <source>Image Integration</source>
+      <translation>图像集成</translation>
+    </message>
+    <message>
+      <source>Images (*.fit *.fits *.tif *.tiff *.png *.jpg *.jpeg)</source>
+      <translation>图像 (*.fit *.fits *.tif *.tiff *.png *.jpg *.jpeg)</translation>
+    </message>
+    <message>
+      <source>Import Settings</source>
+      <translation>导入设置</translation>
+    </message>
+    <message>
+      <source>Important: GPU stacking requires both CUDA and PyTorch-GPU.</source>
+      <translation>重要提示: GPU 叠加需要 CUDA 和 PyTorch-GPU。</translation>
+    </message>
+    <message>
+      <source>Include in Stack</source>
+      <translation>包含在叠加中</translation>
+    </message>
+    <message>
+      <source>Include in stacking</source>
+      <translation>包含在叠加中</translation>
+    </message>
+    <message>
+      <source>Info</source>
+      <translation>信息</translation>
+    </message>
+    <message>
+      <source>Install PyTorch (CUDA)</source>
+      <translation>安装 PyTorch (CUDA)</translation>
+    </message>
+    <message>
+      <source>Install/Update GPU Acceleration…</source>
+      <translation>安装/更新 GPU 加速…</translation>
+    </message>
+    <message>
+      <source>Installing GPU Acceleration</source>
+      <translation>正在安装 GPU 加速</translation>
+    </message>
+    <message>
+      <source>Installing NVIDIA CUDA for Stacking Suite</source>
+      <translation>正在为叠加套件安装 NVIDIA CUDA</translation>
+    </message>
+    <message>
+      <source>Insufficient frames for stacking</source>
+      <translation>叠加帧数不足</translation>
+    </message>
+    <message>
+      <source>Integrate Only</source>
+      <translation>仅集成</translation>
+    </message>
+    <message>
+      <source>Integrate Previously Registered Images</source>
+      <translation>集成之前注册的图像</translation>
+    </message>
+    <message>
+      <source>Integrating comet tile {0}…</source>
+      <translation>正在集成彗星分块 {0}…</translation>
+    </message>
+    <message>
+      <source>Integrating tile {0}/{1} [y:{2}:{3} x:{4}:{5} size={6}×{7}] mode={8}…</source>
+      <translation>正在集成分块 {0}/{1} [y:{2}:{3} x:{4}:{5} 大小={6}×{7}] 模式={8}…</translation>
+    </message>
+    <message>
+      <source>Integrating...</source>
+      <translation>正在集成...</translation>
+    </message>
+    <message>
+      <source>Integration Algorithm</source>
+      <translation>集成算法</translation>
+    </message>
+    <message>
+      <source>Integration Method</source>
+      <translation>集成方法</translation>
+    </message>
+    <message>
+      <source>Integration Method:</source>
+      <translation>集成方法:</translation>
+    </message>
+    <message>
+      <source>Integration complete for group '{0}'.</source>
+      <translation>组 '{0}' 的集成已完成。</translation>
+    </message>
+    <message>
+      <source>Internal Precision:</source>
+      <translation>内部精度:</translation>
+    </message>
+    <message>
+      <source>Interpolation</source>
+      <translation>插值</translation>
+    </message>
+    <message>
+      <source>Invalid session file</source>
+      <translation>无效的会话文件</translation>
+    </message>
+    <message>
+      <source>Iterations</source>
+      <translation>迭代次数</translation>
+    </message>
+    <message>
+      <source>Iterations (max):</source>
+      <translation>迭代次数 (最大):</translation>
+    </message>
+    <message>
+      <source>Iterations:</source>
+      <translation>迭代次数:</translation>
+    </message>
+    <message>
+      <source>Kappa-Sigma Clipping</source>
+      <translation>Kappa-Sigma 裁剪</translation>
+    </message>
+    <message>
+      <source>Kappa:</source>
+      <translation>Kappa:</translation>
+    </message>
+    <message>
+      <source>Keep best %</source>
+      <translation>保留最佳 %</translation>
+    </message>
+    <message>
+      <source>Keep-floor:</source>
+      <translation>保留底限:</translation>
+    </message>
+    <message>
+      <source>Kernel</source>
+      <translation>内核</translation>
+    </message>
+    <message>
+      <source>Kernel width:</source>
+      <translation>内核宽度:</translation>
+    </message>
+    <message>
+      <source>Kernel:</source>
+      <translation>内核:</translation>
+    </message>
+    <message>
+      <source>LWP (Local Weighted Polynomial)</source>
+      <translation>LWP (局部加权多项式)</translation>
+    </message>
+    <message>
+      <source>Lanczos</source>
+      <translation>Lanczos</translation>
+    </message>
+    <message>
+      <source>Lanczos Interpolation</source>
+      <translation>Lanczos 插值</translation>
+    </message>
+    <message>
+      <source>Lanczos-2</source>
+      <translation>Lanczos-2</translation>
+    </message>
+    <message>
+      <source>Lanczos-3</source>
+      <translation>Lanczos-3</translation>
+    </message>
+    <message>
+      <source>Lanczos-4</source>
+      <translation>Lanczos-4</translation>
+    </message>
+    <message>
+      <source>Lanczos-5</source>
+      <translation>Lanczos-5</translation>
+    </message>
+    <message>
+      <source>Lanczos2</source>
+      <translation>Lanczos2</translation>
+    </message>
+    <message>
+      <source>Lanczos3</source>
+      <translation>Lanczos3</translation>
+    </message>
+    <message>
+      <source>Light</source>
+      <translation>亮场</translation>
+    </message>
+    <message>
+      <source>Light Frames</source>
+      <translation>亮场帧</translation>
+    </message>
+    <message>
+      <source>Lighten (screen)</source>
+      <translation>变亮 (屏幕)</translation>
+    </message>
+    <message>
+      <source>Lights</source>
+      <translation>亮场</translation>
+    </message>
+    <message>
+      <source>Linear</source>
+      <translation>线性</translation>
+    </message>
+    <message>
+      <source>Linear Fit Clipping</source>
+      <translation>线性拟合裁剪</translation>
+    </message>
+    <message>
+      <source>Load</source>
+      <translation>加载</translation>
+    </message>
+    <message>
+      <source>Load Master Dark</source>
+      <translation>加载主暗场</translation>
+    </message>
+    <message>
+      <source>Load Master Flat</source>
+      <translation>加载主平场</translation>
+    </message>
+    <message>
+      <source>Load Session</source>
+      <translation>加载会话</translation>
+    </message>
+    <message>
+      <source>Load defect map</source>
+      <translation>加载缺陷图</translation>
+    </message>
+    <message>
+      <source>Load defect map...</source>
+      <translation>加载缺陷图...</translation>
+    </message>
+    <message>
+      <source>Load profile</source>
+      <translation>加载配置文件</translation>
+    </message>
+    <message>
+      <source>Load profile '{0}'?
+
+This will overwrite the current stacking configuration and restart the Stacking Suite.</source>
+      <translation>加载配置文件 '{0}'？
+
+这将覆盖当前的叠加配置并重启叠加套件。</translation>
+    </message>
+    <message>
+      <source>Loading frames...</source>
+      <translation>正在加载帧...</translation>
+    </message>
+    <message>
+      <source>Local Normalization</source>
+      <translation>局部归一化</translation>
+    </message>
+    <message>
+      <source>Lock Reference</source>
+      <translation>锁定参考帧</translation>
+    </message>
+    <message>
+      <source>Low/High Sigma:</source>
+      <translation>低/高 Sigma:</translation>
+    </message>
+    <message>
+      <source>Low:</source>
+      <translation>低:</translation>
+    </message>
+    <message>
+      <source>Lower = more aggressive (MAD-based).</source>
+      <translation>越低 = 越激进 (基于 MAD)。</translation>
+    </message>
+    <message>
+      <source>Lower = more aggressive outlier rejection.</source>
+      <translation>越低 = 越激进的离群值剔除。</translation>
+    </message>
+    <message>
+      <source>Lower = stronger masking near stars; 0 = hard mask, 0.2 = gentle.</source>
+      <translation>越低 = 恒星附近掩模越强；0 = 硬掩模，0.2 = 温和。</translation>
+    </message>
+    <message>
+      <source>MAD Clipping</source>
+      <translation>MAD 裁剪</translation>
+    </message>
+    <message>
+      <source>MF Deconvolution</source>
+      <translation>多帧反卷积</translation>
+    </message>
+    <message>
+      <source>MF Deconvolution Settings</source>
+      <translation>多帧反卷积设置</translation>
+    </message>
+    <message>
+      <source>MFDeconv Engine</source>
+      <translation>MFDeconv 引擎</translation>
+    </message>
+    <message>
+      <source>MFDeconv Engine:</source>
+      <translation>MFDeconv 引擎:</translation>
+    </message>
+    <message>
+      <source>MFDeconv — Multi-Frame Deconvolution (ImageMM)</source>
+      <translation>MFDeconv — 多帧反卷积 (ImageMM)</translation>
+    </message>
+    <message>
+      <source>MFDeconv: Normal vs High Octane</source>
+      <translation>MFDeconv: 普通 vs 高性能</translation>
+    </message>
+    <message>
+      <source>Manual</source>
+      <translation>手动</translation>
+    </message>
+    <message>
+      <source>Manual Selection</source>
+      <translation>手动选择</translation>
+    </message>
+    <message>
+      <source>Manual Session:</source>
+      <translation>手动会话:</translation>
+    </message>
+    <message>
+      <source>Manual Weight</source>
+      <translation>手动权重</translation>
+    </message>
+    <message>
+      <source>Manual layout</source>
+      <translation>手动布局</translation>
+    </message>
+    <message>
+      <source>Mark as Reference</source>
+      <translation>标记为参考帧</translation>
+    </message>
+    <message>
+      <source>Mask-based (accurate)</source>
+      <translation>基于掩模 (精确)</translation>
+    </message>
+    <message>
+      <source>Master Bias</source>
+      <translation>主偏置场</translation>
+    </message>
+    <message>
+      <source>Master Calibration Frames</source>
+      <translation>主校准帧</translation>
+    </message>
+    <message>
+      <source>Master Dark</source>
+      <translation>主暗场</translation>
+    </message>
+    <message>
+      <source>Master Dark Flat</source>
+      <translation>主暗平场</translation>
+    </message>
+    <message>
+      <source>Master Dark Used</source>
+      <translation>已使用主暗场</translation>
+    </message>
+    <message>
+      <source>Master Darks</source>
+      <translation>主暗场</translation>
+    </message>
+    <message>
+      <source>Master File</source>
+      <translation>主文件</translation>
+    </message>
+    <message>
+      <source>Master Flat</source>
+      <translation>主平场</translation>
+    </message>
+    <message>
+      <source>Master Flats</source>
+      <translation>主平场</translation>
+    </message>
+    <message>
+      <source>Master bias created</source>
+      <translation>主偏置场已创建</translation>
+    </message>
+    <message>
+      <source>Master dark created</source>
+      <translation>主暗场已创建</translation>
+    </message>
+    <message>
+      <source>Master flat created</source>
+      <translation>主平场已创建</translation>
+    </message>
+    <message>
+      <source>Match by Exposure</source>
+      <translation>按曝光匹配</translation>
+    </message>
+    <message>
+      <source>Match by Filter</source>
+      <translation>按滤镜匹配</translation>
+    </message>
+    <message>
+      <source>Match by Gain/ISO</source>
+      <translation>按增益/ISO 匹配</translation>
+    </message>
+    <message>
+      <source>Match by Temperature</source>
+      <translation>按温度匹配</translation>
+    </message>
+    <message>
+      <source>Match by:</source>
+      <translation>匹配依据:</translation>
+    </message>
+    <message>
+      <source>Max (brightest)</source>
+      <translation>最大值 (最亮)</translation>
+    </message>
+    <message>
+      <source>Max Shift (px):</source>
+      <translation>最大偏移 (px):</translation>
+    </message>
+    <message>
+      <source>Max Stars:</source>
+      <translation>最大恒星数:</translation>
+    </message>
+    <message>
+      <source>Max Value</source>
+      <translation>最大值</translation>
+    </message>
+    <message>
+      <source>Max control points:</source>
+      <translation>最大控制点:</translation>
+    </message>
+    <message>
+      <source>Max ratio:</source>
+      <translation>最大比例:</translation>
+    </message>
+    <message>
+      <source>Max star radius (px):</source>
+      <translation>最大恒星半径 (px):</translation>
+    </message>
+    <message>
+      <source>Max stars kept:</source>
+      <translation>保留的最大恒星数:</translation>
+    </message>
+    <message>
+      <source>Max stars:</source>
+      <translation>最大恒星数:</translation>
+    </message>
+    <message>
+      <source>Maximum</source>
+      <translation>最大值</translation>
+    </message>
+    <message>
+      <source>Maximum FWHM</source>
+      <translation>最大 FWHM</translation>
+    </message>
+    <message>
+      <source>Maximum background</source>
+      <translation>最大背景</translation>
+    </message>
+    <message>
+      <source>Maximum eccentricity</source>
+      <translation>最大离心率</translation>
+    </message>
+    <message>
+      <source>Maximum roundness deviation</source>
+      <translation>最大圆度偏差</translation>
+    </message>
+    <message>
+      <source>Maximum stars</source>
+      <translation>最大恒星数</translation>
+    </message>
+    <message>
+      <source>Mean</source>
+      <translation>均值</translation>
+    </message>
+    <message>
+      <source>Mean ratio:</source>
+      <translation>平均比例:</translation>
+    </message>
+    <message>
+      <source>Median</source>
+      <translation>中值</translation>
+    </message>
+    <message>
+      <source>Median (Sukhdeep et al.)</source>
+      <translation>中值 (Sukhdeep 等人)</translation>
+    </message>
+    <message>
+      <source>Median Filter Radius:</source>
+      <translation>中值滤波半径:</translation>
+    </message>
+    <message>
+      <source>Memory Limit (MB):</source>
+      <translation>内存限制 (MB):</translation>
+    </message>
+    <message>
+      <source>Memory allocation failed</source>
+      <translation>内存分配失败</translation>
+    </message>
+    <message>
+      <source>Memory management</source>
+      <translation>内存管理</translation>
+    </message>
+    <message>
+      <source>Memory optimization</source>
+      <translation>内存优化</translation>
+    </message>
+    <message>
+      <source>Merge Groups</source>
+      <translation>合并组</translation>
+    </message>
+    <message>
+      <source>Metadata</source>
+      <translation>元数据</translation>
+    </message>
+    <message>
+      <source>Min (darkest)</source>
+      <translation>最小值 (最暗)</translation>
+    </message>
+    <message>
+      <source>Min Frames for Master:</source>
+      <translation>创建主场的最少帧数:</translation>
+    </message>
+    <message>
+      <source>Min Stars:</source>
+      <translation>最少恒星数:</translation>
+    </message>
+    <message>
+      <source>Min Strength:</source>
+      <translation>最小强度:</translation>
+    </message>
+    <message>
+      <source>Min iters:</source>
+      <translation>最小迭代次数:</translation>
+    </message>
+    <message>
+      <source>Min star area (px):</source>
+      <translation>最小恒星面积 (px):</translation>
+    </message>
+    <message>
+      <source>Minimum</source>
+      <translation>最小值</translation>
+    </message>
+    <message>
+      <source>Minimum connected-pixel area to keep a detection as a star (px). Helps reject hot pixels/noise.</source>
+      <translation>保留检测为恒星的最小连通像素面积 (px)。有助于剔除热像素/噪声。</translation>
+    </message>
+    <message>
+      <source>Minimum score</source>
+      <translation>最低评分</translation>
+    </message>
+    <message>
+      <source>Minimum stars</source>
+      <translation>最少恒星数</translation>
+    </message>
+    <message>
+      <source>Mismatched Image Type</source>
+      <translation>图像类型不匹配</translation>
+    </message>
+    <message>
+      <source>Mix:</source>
+      <translation>混合:</translation>
+    </message>
+    <message>
+      <source>Mode:</source>
+      <translation>模式:</translation>
+    </message>
+    <message>
+      <source>Model:</source>
+      <translation>模型:</translation>
+    </message>
+    <message>
+      <source>Modified Z threshold:</source>
+      <translation>修正 Z 阈值:</translation>
+    </message>
+    <message>
+      <source>Modified Z-Score Clipping</source>
+      <translation>修正 Z 分数裁剪</translation>
+    </message>
+    <message>
+      <source>Mosaic Mode</source>
+      <translation>马赛克模式</translation>
+    </message>
+    <message>
+      <source>Motion vector</source>
+      <translation>运动矢量</translation>
+    </message>
+    <message>
+      <source>Multi-Frame Deconvolution</source>
+      <translation>多帧反卷积</translation>
+    </message>
+    <message>
+      <source>Multi-band</source>
+      <translation>多波段</translation>
+    </message>
+    <message>
+      <source>Multi-frame Deconvolution</source>
+      <translation>多帧反卷积</translation>
+    </message>
+    <message>
+      <source>Multi-frame deconvolving…</source>
+      <translation>正在进行多帧反卷积…</translation>
+    </message>
+    <message>
+      <source>Multiplicative</source>
+      <translation>乘法</translation>
+    </message>
+    <message>
+      <source>Multiplicative with Scaling</source>
+      <translation>带缩放的乘法</translation>
+    </message>
+    <message>
+      <source>Naive (pixfrac=1)</source>
+      <translation>朴素 (pixfrac=1)</translation>
+    </message>
+    <message>
+      <source>Nearest Neighbor</source>
+      <translation>最近邻插值</translation>
+    </message>
+    <message>
+      <source>New Group</source>
+      <translation>新组</translation>
+    </message>
+    <message>
+      <source>New Session</source>
+      <translation>新会话</translation>
+    </message>
+    <message>
+      <source>New stacking profile</source>
+      <translation>新叠加配置文件</translation>
+    </message>
+    <message>
+      <source>New…</source>
+      <translation>新建…</translation>
+    </message>
+    <message>
+      <source>No Calibration</source>
+      <translation>无校准</translation>
+    </message>
+    <message>
+      <source>No Distortion (rotate/translate/scale)</source>
+      <translation>无畸变 (旋转/平移/缩放)</translation>
+    </message>
+    <message>
+      <source>No Files</source>
+      <translation>无文件</translation>
+    </message>
+    <message>
+      <source>No Normalization</source>
+      <translation>无归一化</translation>
+    </message>
+    <message>
+      <source>No Output Directory</source>
+      <translation>无输出目录</translation>
+    </message>
+    <message>
+      <source>No Rejection</source>
+      <translation>无剔除</translation>
+    </message>
+    <message>
+      <source>No Weighting</source>
+      <translation>无权重</translation>
+    </message>
+    <message>
+      <source>No calibration frames</source>
+      <translation>无校准帧</translation>
+    </message>
+    <message>
+      <source>No comet center was selected. Registration has been cancelled so you can try again.</source>
+      <translation>未选择彗星中心。注册已取消，您可以重试。</translation>
+    </message>
+    <message>
+      <source>No file chosen.</source>
+      <translation>未选择文件。</translation>
+    </message>
+    <message>
+      <source>No file selected</source>
+      <translation>未选择文件</translation>
+    </message>
+    <message>
+      <source>No files selected for split.</source>
+      <translation>未选择要拆分的文件。</translation>
+    </message>
+    <message>
+      <source>No frames loaded</source>
+      <translation>未加载帧</translation>
+    </message>
+    <message>
+      <source>No light frames</source>
+      <translation>无亮场帧</translation>
+    </message>
+    <message>
+      <source>No new reference selected; using previous reference.</source>
+      <translation>未选择新参考帧；使用之前的参考帧。</translation>
+    </message>
+    <message>
+      <source>No output directory is set. Do you want to select one now?</source>
+      <translation>未设置输出目录。您现在要选择一个吗？</translation>
+    </message>
+    <message>
+      <source>No profile selected</source>
+      <translation>未选择配置文件</translation>
+    </message>
+    <message>
+      <source>No stacking folder selected</source>
+      <translation>未选择叠加文件夹</translation>
+    </message>
+    <message>
+      <source>No stars detected in frame</source>
+      <translation>帧中未检测到恒星</translation>
+    </message>
+    <message>
+      <source>Noise Evaluation</source>
+      <translation>噪声评估</translation>
+    </message>
+    <message>
+      <source>Noise level</source>
+      <translation>噪声水平</translation>
+    </message>
+    <message>
+      <source>None</source>
+      <translation>无</translation>
+    </message>
+    <message>
+      <source>None (Use Auto-Select)</source>
+      <translation>无 (使用自动选择)</translation>
+    </message>
+    <message>
+      <source>None (Use no Dark to Calibrate)</source>
+      <translation>无 (不使用暗场校准)</translation>
+    </message>
+    <message>
+      <source>Normal</source>
+      <translation>普通</translation>
+    </message>
+    <message>
+      <source>Normal (cuDNN-free)</source>
+      <translation>普通 (无需 cuDNN)</translation>
+    </message>
+    <message>
+      <source>Normal (fallback)</source>
+      <translation>普通 (回退)</translation>
+    </message>
+    <message>
+      <source>Normalization</source>
+      <translation>归一化</translation>
+    </message>
+    <message>
+      <source>Normalization &amp; Gradient (ABE Poly²)</source>
+      <translation>归一化 &amp; 梯度 (ABE Poly²)</translation>
+    </message>
+    <message>
+      <source>Normalize by:</source>
+      <translation>归一化依据:</translation>
+    </message>
+    <message>
+      <source>Notes</source>
+      <translation>备注</translation>
+    </message>
+    <message>
+      <source>Nucleus position</source>
+      <translation>核位置</translation>
+    </message>
+    <message>
+      <source>Number of kappa-sigma iterations.</source>
+      <translation>Kappa-Sigma 迭代次数。</translation>
+    </message>
+    <message>
+      <source>Number of threads</source>
+      <translation>线程数</translation>
+    </message>
+    <message>
+      <source>Number of threads:</source>
+      <translation>线程数:</translation>
+    </message>
+    <message>
+      <source>OBJECT</source>
+      <translation>目标</translation>
+    </message>
+    <message>
+      <source>OFF</source>
+      <translation>关闭</translation>
+    </message>
+    <message>
+      <source>ON, Scale {0}, Drop {1:.2f}</source>
+      <translation>开启, 缩放 {0}, Drop {1:.2f}</translation>
+    </message>
+    <message>
+      <source>Observer</source>
+      <translation>观测者</translation>
+    </message>
+    <message>
+      <source>Offset</source>
+      <translation>偏移</translation>
+    </message>
+    <message>
+      <source>Open Command Prompt and run the following.
+
+Step 1: uninstall PyTorch
+Step 2: install the correct build for your GPU</source>
+      <translation>打开命令提示符并运行以下命令。
+
+步骤 1: 卸载 PyTorch
+步骤 2: 为您的 GPU 安装正确的版本</translation>
+    </message>
+    <message>
+      <source>Open Log</source>
+      <translation>打开日志</translation>
+    </message>
+    <message>
+      <source>Open in viewer</source>
+      <translation>在查看器中打开</translation>
+    </message>
+    <message>
+      <source>Open result when done</source>
+      <translation>完成后打开结果</translation>
+    </message>
+    <message>
+      <source>Open the main window to see the Stacking Log dock.</source>
+      <translation>打开主窗口以查看叠加日志停靠栏。</translation>
+    </message>
+    <message>
+      <source>Output</source>
+      <translation>输出</translation>
+    </message>
+    <message>
+      <source>Output Bit Depth</source>
+      <translation>输出位深</translation>
+    </message>
+    <message>
+      <source>Output Directory</source>
+      <translation>输出目录</translation>
+    </message>
+    <message>
+      <source>Output Directory:</source>
+      <translation>输出目录:</translation>
+    </message>
+    <message>
+      <source>Output Filename</source>
+      <translation>输出文件名</translation>
+    </message>
+    <message>
+      <source>Output Format</source>
+      <translation>输出格式</translation>
+    </message>
+    <message>
+      <source>Output Settings</source>
+      <translation>输出设置</translation>
+    </message>
+    <message>
+      <source>Output directory does not exist</source>
+      <translation>输出目录不存在</translation>
+    </message>
+    <message>
+      <source>Output directory is not set.</source>
+      <translation>未设置输出目录。</translation>
+    </message>
+    <message>
+      <source>Output pixel size</source>
+      <translation>输出像素大小</translation>
+    </message>
+    <message>
+      <source>Output saved to:</source>
+      <translation>输出保存到:</translation>
+    </message>
+    <message>
+      <source>Overall Progress</source>
+      <translation>总体进度</translation>
+    </message>
+    <message>
+      <source>Overlap</source>
+      <translation>重叠</translation>
+    </message>
+    <message>
+      <source>Override Dark Frame</source>
+      <translation>覆盖暗场帧</translation>
+    </message>
+    <message>
+      <source>Override Flat Frame</source>
+      <translation>覆盖平场帧</translation>
+    </message>
+    <message>
+      <source>Override Master Dark Selection</source>
+      <translation>覆盖主暗场选择</translation>
+    </message>
+    <message>
+      <source>Overwrite existing file?</source>
+      <translation>覆盖现有文件？</translation>
+    </message>
+    <message>
+      <source>PIXSIZE1</source>
+      <translation>像素大小 1</translation>
+    </message>
+    <message>
+      <source>PIXSIZE2</source>
+      <translation>像素大小 2</translation>
+    </message>
+    <message>
+      <source>PSF Estimation:</source>
+      <translation>PSF 估计:</translation>
+    </message>
+    <message>
+      <source>PSF FWHM:</source>
+      <translation>PSF FWHM:</translation>
+    </message>
+    <message>
+      <source>Panel layout</source>
+      <translation>面板布局</translation>
+    </message>
+    <message>
+      <source>Parallel Loading</source>
+      <translation>并行加载</translation>
+    </message>
+    <message>
+      <source>Parallel processing</source>
+      <translation>并行处理</translation>
+    </message>
+    <message>
+      <source>Patch Size:</source>
+      <translation>补丁大小:</translation>
+    </message>
+    <message>
+      <source>Patch size (small):</source>
+      <translation>补丁大小 (小):</translation>
+    </message>
+    <message>
+      <source>Path</source>
+      <translation>路径</translation>
+    </message>
+    <message>
+      <source>Pattern</source>
+      <translation>模式</translation>
+    </message>
+    <message>
+      <source>Pause</source>
+      <translation>暂停</translation>
+    </message>
+    <message>
+      <source>Pedestal (0-1000):</source>
+      <translation>底数 (0-1000):</translation>
+    </message>
+    <message>
+      <source>Pending</source>
+      <translation>待处理</translation>
+    </message>
+    <message>
+      <source>Per-frame alignment timeout for the parallel workers. Default 300s.</source>
+      <translation>并行工作线程的每帧对齐超时。默认 300 秒。</translation>
+    </message>
+    <message>
+      <source>Percentile Clip</source>
+      <translation>百分比裁剪</translation>
+    </message>
+    <message>
+      <source>Percentile Clipping</source>
+      <translation>百分比裁剪</translation>
+    </message>
+    <message>
+      <source>Percentile High</source>
+      <translation>高位百分比</translation>
+    </message>
+    <message>
+      <source>Percentile High:</source>
+      <translation>高位百分比:</translation>
+    </message>
+    <message>
+      <source>Percentile Low</source>
+      <translation>低位百分比</translation>
+    </message>
+    <message>
+      <source>Percentile Low:</source>
+      <translation>低位百分比:</translation>
+    </message>
+    <message>
+      <source>Performance</source>
+      <translation>性能</translation>
+    </message>
+    <message>
+      <source>Performance Settings</source>
+      <translation>性能设置</translation>
+    </message>
+    <message>
+      <source>Phase Correlation</source>
+      <translation>相位相关</translation>
+    </message>
+    <message>
+      <source>Pick a frame to mark the comet center</source>
+      <translation>选择一帧以标记彗星中心</translation>
+    </message>
+    <message>
+      <source>Pick comet center…</source>
+      <translation>选择彗星中心…</translation>
+    </message>
+    <message>
+      <source>Pixel rejection (local)</source>
+      <translation>像素剔除 (局部)</translation>
+    </message>
+    <message>
+      <source>Pixels above this image quantile are treated as saturated and never replaced.</source>
+      <translation>高于此图像分位数的像素被视为饱和，且永不替换。</translation>
+    </message>
+    <message>
+      <source>Please choose a profile to load.</source>
+      <translation>请选择要加载的配置文件。</translation>
+    </message>
+    <message>
+      <source>Please select a conversion output directory first.</source>
+      <translation>请先选择转换输出目录。</translation>
+    </message>
+    <message>
+      <source>Please set the stacking directory first using the wrench button.</source>
+      <translation>请先使用扳手按钮设置叠加目录。</translation>
+    </message>
+    <message>
+      <source>Please set the stacking directory first.</source>
+      <translation>请先设置叠加目录。</translation>
+    </message>
+    <message>
+      <source>Please wait</source>
+      <translation>请稍候</translation>
+    </message>
+    <message>
+      <source>Point</source>
+      <translation>点</translation>
+    </message>
+    <message>
+      <source>Polynomial 3rd-order</source>
+      <translation>3 阶多项式</translation>
+    </message>
+    <message>
+      <source>Polynomial 4th-order</source>
+      <translation>4 阶多项式</translation>
+    </message>
+    <message>
+      <source>Polynomial Degree:</source>
+      <translation>多项式阶数:</translation>
+    </message>
+    <message>
+      <source>Polynomial degree</source>
+      <translation>多项式阶数</translation>
+    </message>
+    <message>
+      <source>Post-Alignment</source>
+      <translation>对齐后</translation>
+    </message>
+    <message>
+      <source>Prefix</source>
+      <translation>前缀</translation>
+    </message>
+    <message>
+      <source>Preparing MF deconvolution…</source>
+      <translation>正在准备多帧反卷积…</translation>
+    </message>
+    <message>
+      <source>Preparing runtime…</source>
+      <translation>正在准备运行时…</translation>
+    </message>
+    <message>
+      <source>Preserve raw data</source>
+      <translation>保留原始数据</translation>
+    </message>
+    <message>
+      <source>Preview</source>
+      <translation>预览</translation>
+    </message>
+    <message>
+      <source>Preview background</source>
+      <translation>预览背景</translation>
+    </message>
+    <message>
+      <source>Preview defects</source>
+      <translation>预览缺陷</translation>
+    </message>
+    <message>
+      <source>Preview filename</source>
+      <translation>预览文件名</translation>
+    </message>
+    <message>
+      <source>Preview integration</source>
+      <translation>预览集成</translation>
+    </message>
+    <message>
+      <source>Preview motion</source>
+      <translation>预览运动</translation>
+    </message>
+    <message>
+      <source>Preview size</source>
+      <translation>预览大小</translation>
+    </message>
+    <message>
+      <source>Processing...</source>
+      <translation>处理中...</translation>
+    </message>
+    <message>
+      <source>Profile name:</source>
+      <translation>配置文件名称:</translation>
+    </message>
+    <message>
+      <source>Profile saved</source>
+      <translation>配置文件已保存</translation>
+    </message>
+    <message>
+      <source>Profile:</source>
+      <translation>配置文件:</translation>
+    </message>
+    <message>
+      <source>Profiles</source>
+      <translation>配置文件</translation>
+    </message>
+    <message>
+      <source>Progress</source>
+      <translation>进度</translation>
+    </message>
+    <message>
+      <source>Progress initialized: {0} tiles across groups.</source>
+      <translation>进度已初始化: 跨组共 {0} 个分块。</translation>
+    </message>
+    <message>
+      <source>Protect core radius (px):</source>
+      <translation>保护核心半径 (px):</translation>
+    </message>
+    <message>
+      <source>Quality</source>
+      <translation>质量</translation>
+    </message>
+    <message>
+      <source>RA</source>
+      <translation>赤经 (RA)</translation>
+    </message>
+    <message>
+      <source>RA rate (arcsec/min)</source>
+      <translation>赤经速率 (角秒/分)</translation>
+    </message>
+    <message>
+      <source>RANSAC Iterations:</source>
+      <translation>RANSAC 迭代次数:</translation>
+    </message>
+    <message>
+      <source>RANSAC Threshold:</source>
+      <translation>RANSAC 阈值:</translation>
+    </message>
+    <message>
+      <source>RANSAC reproj (px):</source>
+      <translation>RANSAC 重投影 (px):</translation>
+    </message>
+    <message>
+      <source>RGGB</source>
+      <translation>RGGB</translation>
+    </message>
+    <message>
+      <source>Ready</source>
+      <translation>就绪</translation>
+    </message>
+    <message>
+      <source>Recent Sessions</source>
+      <translation>最近会话</translation>
+    </message>
+    <message>
+      <source>Reconstruct on an r× super-res grid using SR PSFs.
+Compute cost grows roughly ~ r^4. Drizzle usually provides better results.</source>
+      <translation>使用 SR PSF 在 r× 超分辨率网格上重建。
+计算成本大约按 ~ r^4 增长。Drizzle 通常提供更好的结果。</translation>
+    </message>
+    <message>
+      <source>Recurse subfolders</source>
+      <translation>递归子文件夹</translation>
+    </message>
+    <message>
+      <source>Reference Frame</source>
+      <translation>参考帧</translation>
+    </message>
+    <message>
+      <source>Reference frame not found</source>
+      <translation>未找到参考帧</translation>
+    </message>
+    <message>
+      <source>Refinement:</source>
+      <translation>精炼:</translation>
+    </message>
+    <message>
+      <source>Register &amp;&amp; Integrate</source>
+      <translation>注册 &amp;&amp; 集成</translation>
+    </message>
+    <message>
+      <source>Register Only</source>
+      <translation>仅注册</translation>
+    </message>
+    <message>
+      <source>Registering...</source>
+      <translation>正在注册...</translation>
+    </message>
+    <message>
+      <source>Registration</source>
+      <translation>配准</translation>
+    </message>
+    <message>
+      <source>Registration Method</source>
+      <translation>配准方法</translation>
+    </message>
+    <message>
+      <source>Registration Settings</source>
+      <translation>配准设置</translation>
+    </message>
+    <message>
+      <source>Registration complete</source>
+      <translation>配准完成</translation>
+    </message>
+    <message>
+      <source>Registration failed for frame</source>
+      <translation>帧注册失败</translation>
+    </message>
+    <message>
+      <source>Registration in progress…</source>
+      <translation>正在注册…</translation>
+    </message>
+    <message>
+      <source>Regularization (lambda):</source>
+      <translation>正则化 (lambda):</translation>
+    </message>
+    <message>
+      <source>Regularization:</source>
+      <translation>正则化:</translation>
+    </message>
+    <message>
+      <source>Reject a frame if its residual shift exceeds this many pixels after alignment.</source>
+      <translation>如果对齐后的残差偏移超过此像素数，则剔除该帧。</translation>
+    </message>
+    <message>
+      <source>Reject worst %</source>
+      <translation>剔除最差的 %</translation>
+    </message>
+    <message>
+      <source>Rejected</source>
+      <translation>已剔除</translation>
+    </message>
+    <message>
+      <source>Rejection</source>
+      <translation>剔除</translation>
+    </message>
+    <message>
+      <source>Rejection Algorithm</source>
+      <translation>剔除算法</translation>
+    </message>
+    <message>
+      <source>Rejection Method</source>
+      <translation>剔除方法</translation>
+    </message>
+    <message>
+      <source>Rejection Method:</source>
+      <translation>剔除方法:</translation>
+    </message>
+    <message>
+      <source>Remove All</source>
+      <translation>移除全部</translation>
+    </message>
+    <message>
+      <source>Remove Selected</source>
+      <translation>移除所选</translation>
+    </message>
+    <message>
+      <source>Remove background gradient (ABE Poly²)</source>
+      <translation>移除背景梯度 (ABE Poly²)</translation>
+    </message>
+    <message>
+      <source>Remove from Group</source>
+      <translation>从组中移除</translation>
+    </message>
+    <message>
+      <source>Remove selected files from queue</source>
+      <translation>从队列中移除所选文件</translation>
+    </message>
+    <message>
+      <source>Remove stars on comet-aligned frames</source>
+      <translation>移除彗星对齐帧上的恒星</translation>
+    </message>
+    <message>
+      <source>Rename Group</source>
+      <translation>重命名组</translation>
+    </message>
+    <message>
+      <source>Requires 'Enable Drizzle'. Maps R/G/B CFA samples directly into channels (no interpolation).</source>
+      <translation>需要“启用 Drizzle”。将 R/G/B CFA 样本直接映射到通道 (无插值)。</translation>
+    </message>
+    <message>
+      <source>Reset All</source>
+      <translation>重置全部</translation>
+    </message>
+    <message>
+      <source>Reset MFDeconv to Recommended</source>
+      <translation>将 MFDeconv 重置为推荐值</translation>
+    </message>
+    <message>
+      <source>Reset filter</source>
+      <translation>重置滤镜</translation>
+    </message>
+    <message>
+      <source>Reset to Defaults</source>
+      <translation>重置为默认值</translation>
+    </message>
+    <message>
+      <source>Restore MFDeconv star mask + variance map tuning to the recommended defaults.</source>
+      <translation>将 MFDeconv 星掩模 + 方差图调整恢复为推荐默认值。</translation>
+    </message>
+    <message>
+      <source>Restore Recommended</source>
+      <translation>恢复推荐值</translation>
+    </message>
+    <message>
+      <source>Resume</source>
+      <translation>恢复</translation>
+    </message>
+    <message>
+      <source>Review Reference Before Alignment</source>
+      <translation>对齐前检查参考帧</translation>
+    </message>
+    <message>
+      <source>Right Click to Assign Session Keys if desired</source>
+      <translation>如果需要，右键单击以分配会话密钥</translation>
+    </message>
+    <message>
+      <source>Right-click for options</source>
+      <translation>右键单击查看选项</translation>
+    </message>
+    <message>
+      <source>Robust μ–σ (live stack)</source>
+      <translation>稳健 μ–σ (实时叠加)</translation>
+    </message>
+    <message>
+      <source>Roundness (closer to 1 is better)</source>
+      <translation>圆度 (越接近 1 越好)</translation>
+    </message>
+    <message>
+      <source>Rows</source>
+      <translation>行</translation>
+    </message>
+    <message>
+      <source>Runs multi-frame deconvolution during integration. Turn off if testing.</source>
+      <translation>在集成期间运行多帧反卷积。如果是测试，请关闭。</translation>
+    </message>
+    <message>
+      <source>SET-TEMP</source>
+      <translation>设定温度</translation>
+    </message>
+    <message>
+      <source>SITELAT</source>
+      <translation>站点纬度</translation>
+    </message>
+    <message>
+      <source>SITELONG</source>
+      <translation>站点经度</translation>
+    </message>
+    <message>
+      <source>SNR Weight</source>
+      <translation>信噪比权重</translation>
+    </message>
+    <message>
+      <source>Same as input</source>
+      <translation>与输入相同</translation>
+    </message>
+    <message>
+      <source>Sample Points:</source>
+      <translation>采样点:</translation>
+    </message>
+    <message>
+      <source>Sample points:</source>
+      <translation>采样点:</translation>
+    </message>
+    <message>
+      <source>Saturation quantile:</source>
+      <translation>饱和分位数:</translation>
+    </message>
+    <message>
+      <source>Save</source>
+      <translation>保存</translation>
+    </message>
+    <message>
+      <source>Save Defect Map</source>
+      <translation>保存缺陷图</translation>
+    </message>
+    <message>
+      <source>Save Rejection Maps</source>
+      <translation>保存剔除图</translation>
+    </message>
+    <message>
+      <source>Save Session</source>
+      <translation>保存会话</translation>
+    </message>
+    <message>
+      <source>Save Session As...</source>
+      <translation>会话另存为...</translation>
+    </message>
+    <message>
+      <source>Save Star-Trail Image</source>
+      <translation>保存星轨图像</translation>
+    </message>
+    <message>
+      <source>Save all comet-aligned starless frames.
+Requires: 'Create comet stack' AND 'Remove stars on comet-aligned frames'.</source>
+      <translation>保存所有彗星对齐的无星帧。
+需要：“创建彗星叠加”且“移除彗星对齐帧上的恒星”。</translation>
+    </message>
+    <message>
+      <source>Save all comet-aligned starless frames.
+Requires: ‘Create comet stack’ AND ‘Remove stars on comet-aligned frames’.</source>
+      <translation>保存所有彗星对齐的无星帧。
+需要：“创建彗星叠加”且“移除彗星对齐帧上的恒星”。</translation>
+    </message>
+    <message>
+      <source>Save all starless comet-aligned frames</source>
+      <translation>保存所有无星彗星对齐帧</translation>
+    </message>
+    <message>
+      <source>Save calibrated frames</source>
+      <translation>保存校准后的帧</translation>
+    </message>
+    <message>
+      <source>Save defect map</source>
+      <translation>保存缺陷图</translation>
+    </message>
+    <message>
+      <source>Save defect map...</source>
+      <translation>保存缺陷图...</translation>
+    </message>
+    <message>
+      <source>Save intermediate files</source>
+      <translation>保存中间文件</translation>
+    </message>
+    <message>
+      <source>Save intermediate iterative images</source>
+      <translation>保存中间迭代图像</translation>
+    </message>
+    <message>
+      <source>Save profile as…</source>
+      <translation>配置文件另存为…</translation>
+    </message>
+    <message>
+      <source>Save registered frames</source>
+      <translation>保存注册后的帧</translation>
+    </message>
+    <message>
+      <source>Save rejection maps</source>
+      <translation>保存剔除图</translation>
+    </message>
+    <message>
+      <source>Save session before closing?</source>
+      <translation>关闭前保存会话吗？</translation>
+    </message>
+    <message>
+      <source>Saved: {0} ({1}/{2})</source>
+      <translation>已保存: {0} ({1}/{2})</translation>
+    </message>
+    <message>
+      <source>Scale</source>
+      <translation>缩放</translation>
+    </message>
+    <message>
+      <source>Scale to Reference</source>
+      <translation>缩放到参考帧</translation>
+    </message>
+    <message>
+      <source>Scale:</source>
+      <translation>缩放:</translation>
+    </message>
+    <message>
+      <source>Score by</source>
+      <translation>评分依据</translation>
+    </message>
+    <message>
+      <source>Seed image:</source>
+      <translation>种子图像:</translation>
+    </message>
+    <message>
+      <source>Select Bias Directory</source>
+      <translation>选择偏置场目录</translation>
+    </message>
+    <message>
+      <source>Select Bias Files</source>
+      <translation>选择偏置场文件</translation>
+    </message>
+    <message>
+      <source>Select Bias Frames</source>
+      <translation>选择偏置场帧</translation>
+    </message>
+    <message>
+      <source>Select Conversion Output Directory</source>
+      <translation>选择转换输出目录</translation>
+    </message>
+    <message>
+      <source>Select Dark Directory</source>
+      <translation>选择暗场目录</translation>
+    </message>
+    <message>
+      <source>Select Dark Files</source>
+      <translation>选择暗场文件</translation>
+    </message>
+    <message>
+      <source>Select Dark Flat Frames</source>
+      <translation>选择暗平场帧</translation>
+    </message>
+    <message>
+      <source>Select Dark Frames</source>
+      <translation>选择暗场帧</translation>
+    </message>
+    <message>
+      <source>Select Defect Map</source>
+      <translation>选择缺陷图</translation>
+    </message>
+    <message>
+      <source>Select Directory for Conversion</source>
+      <translation>选择转换目录</translation>
+    </message>
+    <message>
+      <source>Select Files for Conversion</source>
+      <translation>选择转换文件</translation>
+    </message>
+    <message>
+      <source>Select Flat Directory</source>
+      <translation>选择平场目录</translation>
+    </message>
+    <message>
+      <source>Select Flat Files</source>
+      <translation>选择平场文件</translation>
+    </message>
+    <message>
+      <source>Select Flat Frames</source>
+      <translation>选择平场帧</translation>
+    </message>
+    <message>
+      <source>Select Light Directory</source>
+      <translation>选择亮场目录</translation>
+    </message>
+    <message>
+      <source>Select Light Files</source>
+      <translation>选择亮场文件</translation>
+    </message>
+    <message>
+      <source>Select Light Frames</source>
+      <translation>选择亮场帧</translation>
+    </message>
+    <message>
+      <source>Select Master Bias</source>
+      <translation>选择主偏置场</translation>
+    </message>
+    <message>
+      <source>Select Master Bias File(s)</source>
+      <translation>选择主偏置场文件</translation>
+    </message>
+    <message>
+      <source>Select Master Bias Frame</source>
+      <translation>选择主偏置场帧</translation>
+    </message>
+    <message>
+      <source>Select Master Dark</source>
+      <translation>选择主暗场</translation>
+    </message>
+    <message>
+      <source>Select Master Dark File(s)</source>
+      <translation>选择主暗场文件</translation>
+    </message>
+    <message>
+      <source>Select Master Flat</source>
+      <translation>选择主平场</translation>
+    </message>
+    <message>
+      <source>Select Master Flat File(s)</source>
+      <translation>选择主平场文件</translation>
+    </message>
+    <message>
+      <source>Select New Reference Frame</source>
+      <translation>选择新参考帧</translation>
+    </message>
+    <message>
+      <source>Select Output Directory</source>
+      <translation>选择输出目录</translation>
+    </message>
+    <message>
+      <source>Select Reference Frame</source>
+      <translation>选择参考帧</translation>
+    </message>
+    <message>
+      <source>Select Reference Frame:</source>
+      <translation>选择参考帧:</translation>
+    </message>
+    <message>
+      <source>Select Reference...</source>
+      <translation>选择参考帧...</translation>
+    </message>
+    <message>
+      <source>Select Stacking Directory</source>
+      <translation>选择叠加目录</translation>
+    </message>
+    <message>
+      <source>Select files to split:</source>
+      <translation>选择要拆分的文件:</translation>
+    </message>
+    <message>
+      <source>Select output directory for stacked images</source>
+      <translation>选择叠加图像的输出目录</translation>
+    </message>
+    <message>
+      <source>Selected</source>
+      <translation>已选择</translation>
+    </message>
+    <message>
+      <source>Send to {0} tab</source>
+      <translation>发送到 {0} 选项卡</translation>
+    </message>
+    <message>
+      <source>Session</source>
+      <translation>会话</translation>
+    </message>
+    <message>
+      <source>Session Files</source>
+      <translation>会话文件</translation>
+    </message>
+    <message>
+      <source>Session Info</source>
+      <translation>会话信息</translation>
+    </message>
+    <message>
+      <source>Session loaded</source>
+      <translation>会话已加载</translation>
+    </message>
+    <message>
+      <source>Session saved</source>
+      <translation>会话已保存</translation>
+    </message>
+    <message>
+      <source>Set Reference Frame</source>
+      <translation>设置参考帧</translation>
+    </message>
+    <message>
+      <source>Set Session Tag</source>
+      <translation>设置会话标签</translation>
+    </message>
+    <message>
+      <source>Set Session Tag...</source>
+      <translation>设置会话标签...</translation>
+    </message>
+    <message>
+      <source>Set Stacking Directory &amp; Sigma Clipping</source>
+      <translation>设置叠加目录 &amp; Sigma 裁剪</translation>
+    </message>
+    <message>
+      <source>Set as reference frame</source>
+      <translation>设为参考帧</translation>
+    </message>
+    <message>
+      <source>Sharpness</source>
+      <translation>锐度</translation>
+    </message>
+    <message>
+      <source>Show preview</source>
+      <translation>显示预览</translation>
+    </message>
+    <message>
+      <source>Show the Stacking Suite log window</source>
+      <translation>显示叠加套件日志窗口</translation>
+    </message>
+    <message>
+      <source>Sigma Clipping</source>
+      <translation>Sigma 裁剪</translation>
+    </message>
+    <message>
+      <source>Sigma High</source>
+      <translation>Sigma 高位</translation>
+    </message>
+    <message>
+      <source>Sigma Low</source>
+      <translation>Sigma 低位</translation>
+    </message>
+    <message>
+      <source>Sigma thresholds:</source>
+      <translation>Sigma 阈值:</translation>
+    </message>
+    <message>
+      <source>Simple</source>
+      <translation>简单</translation>
+    </message>
+    <message>
+      <source>Simple Average (No Rejection)</source>
+      <translation>简单平均 (无剔除)</translation>
+    </message>
+    <message>
+      <source>Simple Median (No Rejection)</source>
+      <translation>简单中值 (无剔除)</translation>
+    </message>
+    <message>
+      <source>Size: {0}</source>
+      <translation>大小: {0}</translation>
+    </message>
+    <message>
+      <source>Size: {0} | Session: {1}</source>
+      <translation>大小: {0} | 会话: {1}</translation>
+    </message>
+    <message>
+      <source>Size: {0}, Temp: {1}°C, Date: {2}</source>
+      <translation>大小: {0}, 温度: {1}°C, 日期: {2}</translation>
+    </message>
+    <message>
+      <source>Skip Normal Integration (MFDeconv only)</source>
+      <translation>跳过普通集成 (仅 MFDeconv)</translation>
+    </message>
+    <message>
+      <source>Skip file</source>
+      <translation>跳过文件</translation>
+    </message>
+    <message>
+      <source>Skip if strength &lt;</source>
+      <translation>如果强度 &lt; 则跳过</translation>
+    </message>
+    <message>
+      <source>Skip registration/alignment and use Maximum-Intensity projection for star trails</source>
+      <translation>跳过注册/对齐，并使用最大强度投影生成星轨</translation>
+    </message>
+    <message>
+      <source>Smoothness</source>
+      <translation>平滑度</translation>
+    </message>
+    <message>
+      <source>Solve downsample:</source>
+      <translation>解算降采样:</translation>
+    </message>
+    <message>
+      <source>Sort</source>
+      <translation>排序</translation>
+    </message>
+    <message>
+      <source>Sort by Quality</source>
+      <translation>按质量排序</translation>
+    </message>
+    <message>
+      <source>Spline</source>
+      <translation>样条插值</translation>
+    </message>
+    <message>
+      <source>Spline-3</source>
+      <translation>Spline-3</translation>
+    </message>
+    <message>
+      <source>Spline-5</source>
+      <translation>Spline-5</translation>
+    </message>
+    <message>
+      <source>Split Group</source>
+      <translation>拆分组</translation>
+    </message>
+    <message>
+      <source>Split dual-band OSC before integration</source>
+      <translation>集成前拆分双窄带 OSC</translation>
+    </message>
+    <message>
+      <source>Square</source>
+      <translation>方形</translation>
+    </message>
+    <message>
+      <source>Square (pixfrac)</source>
+      <translation>方形 (pixfrac)</translation>
+    </message>
+    <message>
+      <source>Stack</source>
+      <translation>叠加</translation>
+    </message>
+    <message>
+      <source>Stack Method:</source>
+      <translation>叠加方法:</translation>
+    </message>
+    <message>
+      <source>Stack Mode:</source>
+      <translation>叠加模式:</translation>
+    </message>
+    <message>
+      <source>Stacking &amp; drizzle (if enabled)…</source>
+      <translation>正在叠加 &amp; drizzle (如果启用)…</translation>
+    </message>
+    <message>
+      <source>Stacking Complete</source>
+      <translation>叠加完成</translation>
+    </message>
+    <message>
+      <source>Stacking Directory:</source>
+      <translation>叠加目录:</translation>
+    </message>
+    <message>
+      <source>Stacking Log</source>
+      <translation>叠加日志</translation>
+    </message>
+    <message>
+      <source>Stacking Settings</source>
+      <translation>叠加设置</translation>
+    </message>
+    <message>
+      <source>Stacking Suite</source>
+      <translation>叠加套件</translation>
+    </message>
+    <message>
+      <source>Stacking cancelled by user</source>
+      <translation>用户已取消叠加</translation>
+    </message>
+    <message>
+      <source>Stacking complete!</source>
+      <translation>叠加完成！</translation>
+    </message>
+    <message>
+      <source>Stacking...</source>
+      <translation>正在叠加...</translation>
+    </message>
+    <message>
+      <source>Star Detection Threshold:</source>
+      <translation>恒星检测阈值:</translation>
+    </message>
+    <message>
+      <source>Star Removal for Comet</source>
+      <translation>彗星恒星移除</translation>
+    </message>
+    <message>
+      <source>Star Trail Mode</source>
+      <translation>星轨模式</translation>
+    </message>
+    <message>
+      <source>Star detect σ:</source>
+      <translation>恒星检测 σ:</translation>
+    </message>
+    <message>
+      <source>Star detection threshold in σ above background. Lower = more stars (faster saturation, more false positives); higher = fewer stars.</source>
+      <translation>高于背景的恒星检测阈值 (σ)。越低 = 恒星越多 (饱和更快，误报更多)；越高 = 恒星越少。</translation>
+    </message>
+    <message>
+      <source>Star guards:</source>
+      <translation>恒星保护:</translation>
+    </message>
+    <message>
+      <source>Star saturation</source>
+      <translation>恒星饱和</translation>
+    </message>
+    <message>
+      <source>StarNet</source>
+      <translation>StarNet</translation>
+    </message>
+    <message>
+      <source>Stars</source>
+      <translation>星点</translation>
+    </message>
+    <message>
+      <source>Stars Weight</source>
+      <translation>恒星权重</translation>
+    </message>
+    <message>
+      <source>Stars detected</source>
+      <translation>检测到的恒星</translation>
+    </message>
+    <message>
+      <source>Start the stacking process</source>
+      <translation>开始叠加过程</translation>
+    </message>
+    <message>
+      <source>Starting Master Dark Creation...</source>
+      <translation>开始创建主暗场...</translation>
+    </message>
+    <message>
+      <source>Starting Master Flat Creation...</source>
+      <translation>开始创建主平场...</translation>
+    </message>
+    <message>
+      <source>Starting integration for group '{0}' with {1} files.</source>
+      <translation>开始集成组 '{0}'，共 {1} 个文件。</translation>
+    </message>
+    <message>
+      <source>Status</source>
+      <translation>状态</translation>
+    </message>
+    <message>
+      <source>Status: {0}</source>
+      <translation>状态: {0}</translation>
+    </message>
+    <message>
+      <source>Std Dev</source>
+      <translation>标准差</translation>
+    </message>
+    <message>
+      <source>Std-devs from median; higher = more lenient.</source>
+      <translation>偏离中值的标准差；越高越宽松。</translation>
+    </message>
+    <message>
+      <source>Stellar Alignment</source>
+      <translation>恒星对齐</translation>
+    </message>
+    <message>
+      <source>Step 1: Install NVIDIA CUDA Toolkit 12.x</source>
+      <translation>步骤 1: 安装 NVIDIA CUDA Toolkit 12.x</translation>
+    </message>
+    <message>
+      <source>Step 2: Install PyTorch with CUDA (click button below)</source>
+      <translation>步骤 2: 安装带 CUDA 的 PyTorch (点击下方按钮)</translation>
+    </message>
+    <message>
+      <source>Stop</source>
+      <translation>停止</translation>
+    </message>
+    <message>
+      <source>Sub-pixel accuracy</source>
+      <translation>亚像素精度</translation>
+    </message>
+    <message>
+      <source>Subpixel Alignment</source>
+      <translation>亚像素对齐</translation>
+    </message>
+    <message>
+      <source>Subtract (additive)</source>
+      <translation>减法 (加性)</translation>
+    </message>
+    <message>
+      <source>Subtract comet</source>
+      <translation>减去彗星</translation>
+    </message>
+    <message>
+      <source>Subtract stars</source>
+      <translation>减去恒星</translation>
+    </message>
+    <message>
+      <source>Successfully stacked {0} frames</source>
+      <translation>成功叠加了 {0} 帧</translation>
+    </message>
+    <message>
+      <source>Suffix</source>
+      <translation>后缀</translation>
+    </message>
+    <message>
+      <source>Sum</source>
+      <translation>求和</translation>
+    </message>
+    <message>
+      <source>Super Pixel</source>
+      <translation>超级像素</translation>
+    </message>
+    <message>
+      <source>Super Resolution</source>
+      <translation>超分辨率</translation>
+    </message>
+    <message>
+      <source>Super-resolution scale factor r (integer ≥2).</source>
+      <translation>超分辨率缩放因子 r (整数 ≥2)。</translation>
+    </message>
+    <message>
+      <source>Supported Files (*.fits *.fit *.fz *.fz *.fits.gz *.fit.gz *.tiff *.tif *.png *.jpg *.jpeg *.cr2 *.cr3 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef *.xisf)</source>
+      <translation>支持的文件 (*.fits *.fit *.fz *.fz *.fits.gz *.fit.gz *.tiff *.tif *.png *.jpg *.jpeg *.cr2 *.cr3 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef *.xisf)</translation>
+    </message>
+    <message>
+      <source>TELESCOP</source>
+      <translation>望远镜</translation>
+    </message>
+    <message>
+      <source>TIFF</source>
+      <translation>TIFF</translation>
+    </message>
+    <message>
+      <source>TIFF (*.tif);;PNG (*.png);;JPEG (*.jpg *.jpeg);;FITS (*.fits);;XISF (*.xisf)</source>
+      <translation>TIFF (*.tif);;PNG (*.png);;JPEG (*.jpg *.jpeg);;FITS (*.fits);;XISF (*.xisf)</translation>
+    </message>
+    <message>
+      <source>Target Name</source>
+      <translation>目标名称</translation>
+    </message>
+    <message>
+      <source>Telescope</source>
+      <translation>望远镜</translation>
+    </message>
+    <message>
+      <source>Temperature</source>
+      <translation>温度</translation>
+    </message>
+    <message>
+      <source>Temperature Tolerance (°C):</source>
+      <translation>温度容差 (°C):</translation>
+    </message>
+    <message>
+      <source>Template Matching</source>
+      <translation>模板匹配</translation>
+    </message>
+    <message>
+      <source>There are no files to convert.</source>
+      <translation>没有要转换的文件。</translation>
+    </message>
+    <message>
+      <source>This app is running on Python {0}.{1}. GPU acceleration requires Python 3.10, 3.11, or 3.12.</source>
+      <translation>此应用运行在 Python {0}.{1} 上。GPU 加速需要 Python 3.10, 3.11 或 3.12。</translation>
+    </message>
+    <message>
+      <source>Thread Count:</source>
+      <translation>线程数:</translation>
+    </message>
+    <message>
+      <source>Time</source>
+      <translation>时间</translation>
+    </message>
+    <message>
+      <source>Timeout per frame (s):</source>
+      <translation>每帧超时 (秒):</translation>
+    </message>
+    <message>
+      <source>Too few matching stars</source>
+      <translation>匹配的恒星太少</translation>
+    </message>
+    <message>
+      <source>Tool:</source>
+      <translation>工具:</translation>
+    </message>
+    <message>
+      <source>Total</source>
+      <translation>总计</translation>
+    </message>
+    <message>
+      <source>Track nucleus</source>
+      <translation>跟踪核</translation>
+    </message>
+    <message>
+      <source>Track stars</source>
+      <translation>跟踪恒星</translation>
+    </message>
+    <message>
+      <source>Transform calculation failed</source>
+      <translation>变换计算失败</translation>
+    </message>
+    <message>
+      <source>Transform-based (fast)</source>
+      <translation>基于变换 (快速)</translation>
+    </message>
+    <message>
+      <source>Transforming images...</source>
+      <translation>正在变换图像...</translation>
+    </message>
+    <message>
+      <source>Triangle Match Tolerance:</source>
+      <translation>三角形匹配容差:</translation>
+    </message>
+    <message>
+      <source>Triangle Similarity</source>
+      <translation>三角形相似性</translation>
+    </message>
+    <message>
+      <source>Trim fraction:</source>
+      <translation>修剪比例:</translation>
+    </message>
+    <message>
+      <source>Trimmed Mean</source>
+      <translation>修剪均值</translation>
+    </message>
+    <message>
+      <source>Turbo</source>
+      <translation>加速 (Turbo)</translation>
+    </message>
+    <message>
+      <source>Turn Those Darks Into Master Darks</source>
+      <translation>将这些暗场转换为主暗场</translation>
+    </message>
+    <message>
+      <source>Turn Those Flats Into Master Flats</source>
+      <translation>将这些平场转换为主平场</translation>
+    </message>
+    <message>
+      <source>Type</source>
+      <translation>类型</translation>
+    </message>
+    <message>
+      <source>Unknown</source>
+      <translation>未知</translation>
+    </message>
+    <message>
+      <source>Unmark Reference</source>
+      <translation>取消标记参考帧</translation>
+    </message>
+    <message>
+      <source>Unsaved session</source>
+      <translation>未保存的会话</translation>
+    </message>
+    <message>
+      <source>Unsupported Python Version</source>
+      <translation>不支持的 Python 版本</translation>
+    </message>
+    <message>
+      <source>Unsupported image ndim={0} for {1}</source>
+      <translation>不支持的图像维度 ndim={0}，用于 {1}</translation>
+    </message>
+    <message>
+      <source>Update clip (κ):</source>
+      <translation>更新裁剪 (κ):</translation>
+    </message>
+    <message>
+      <source>Update preview automatically</source>
+      <translation>自动更新预览</translation>
+    </message>
+    <message>
+      <source>Use GPU acceleration</source>
+      <translation>使用 GPU 加速</translation>
+    </message>
+    <message>
+      <source>Use Master Bias</source>
+      <translation>使用主偏置场</translation>
+    </message>
+    <message>
+      <source>Use Master Dark</source>
+      <translation>使用主暗场</translation>
+    </message>
+    <message>
+      <source>Use Master Flat</source>
+      <translation>使用主平场</translation>
+    </message>
+    <message>
+      <source>Use defect map</source>
+      <translation>使用缺陷图</translation>
+    </message>
+    <message>
+      <source>Use hardware acceleration if available</source>
+      <translation>如果可用，使用硬件加速</translation>
+    </message>
+    <message>
+      <source>Use memory mapping</source>
+      <translation>使用内存映射</translation>
+    </message>
+    <message>
+      <source>Use memory-mapped files</source>
+      <translation>使用内存映射文件</translation>
+    </message>
+    <message>
+      <source>Use reference frame from this list</source>
+      <translation>使用此列表中的参考帧</translation>
+    </message>
+    <message>
+      <source>User selected a new reference frame: {0}</source>
+      <translation>用户选择了新参考帧: {0}</translation>
+    </message>
+    <message>
+      <source>Using GPU for tile {0} with algo {1}</source>
+      <translation>正在为分块 {0} 使用 GPU，算法 {1}</translation>
+    </message>
+    <message>
+      <source>Using Master Bias (for flats when needed): {0}</source>
+      <translation>使用主偏置场 (必要时用于平场): {0}</translation>
+    </message>
+    <message>
+      <source>Using Master Bias: {0}</source>
+      <translation>使用主偏置场: {0}</translation>
+    </message>
+    <message>
+      <source>Using {0} kernel drizzle ({1}).</source>
+      <translation>使用 {0} 内核 drizzle ({1})。</translation>
+    </message>
+    <message>
+      <source>VNG</source>
+      <translation>VNG</translation>
+    </message>
+    <message>
+      <source>VarMap floor (log10):</source>
+      <translation>方差图底限 (log10):</translation>
+    </message>
+    <message>
+      <source>VarMap sample stride:</source>
+      <translation>方差图采样步长:</translation>
+    </message>
+    <message>
+      <source>VarMap smooth σ:</source>
+      <translation>方差图平滑 σ:</translation>
+    </message>
+    <message>
+      <source>Verbose logging</source>
+      <translation>详细日志</translation>
+    </message>
+    <message>
+      <source>View frame header</source>
+      <translation>查看帧头</translation>
+    </message>
+    <message>
+      <source>View frame info</source>
+      <translation>查看帧信息</translation>
+    </message>
+    <message>
+      <source>Visit the NVIDIA CUDA Downloads page in your browser to install CUDA Toolkit 12.x:
+
+https://developer.nvidia.com/cuda-downloads</source>
+      <translation>在浏览器中访问 NVIDIA CUDA 下载页面以安装 CUDA Toolkit 12.x:
+
+https://developer.nvidia.com/cuda-downloads</translation>
+    </message>
+    <message>
+      <source>W:</source>
+      <translation>W:</translation>
+    </message>
+    <message>
+      <source>WCS Alignment</source>
+      <translation>WCS 对齐</translation>
+    </message>
+    <message>
+      <source>Warning</source>
+      <translation>警告</translation>
+    </message>
+    <message>
+      <source>Warning: Could not read dimensions for {0}: {1}</source>
+      <translation>警告: 无法读取 {0} 的尺寸: {1}</translation>
+    </message>
+    <message>
+      <source>Weight Radius:</source>
+      <translation>权重半径:</translation>
+    </message>
+    <message>
+      <source>Weight keyword</source>
+      <translation>权重关键字</translation>
+    </message>
+    <message>
+      <source>Weight:</source>
+      <translation>权重:</translation>
+    </message>
+    <message>
+      <source>Weighted Average</source>
+      <translation>加权平均</translation>
+    </message>
+    <message>
+      <source>Weighted Windsorized Sigma Clipping</source>
+      <translation>加权 Windsorized Sigma 裁剪</translation>
+    </message>
+    <message>
+      <source>Weighting</source>
+      <translation>加权</translation>
+    </message>
+    <message>
+      <source>When checked, once calibration finishes the app will switch to Image Registration and run 'Register and Integrate Images' automatically.</source>
+      <translation>勾选后，校准完成后应用将切换到图像注册并自动运行“注册并集成图像”。</translation>
+    </message>
+    <message>
+      <source>Width</source>
+      <translation>宽度</translation>
+    </message>
+    <message>
+      <source>Winsorized Average</source>
+      <translation>Winsorized 平均</translation>
+    </message>
+    <message>
+      <source>Winsorized Sigma</source>
+      <translation>Winsorized Sigma</translation>
+    </message>
+    <message>
+      <source>Winsorized Sigma Clipping</source>
+      <translation>Winsorized Sigma 裁剪</translation>
+    </message>
+    <message>
+      <source>Worst</source>
+      <translation>最差</translation>
+    </message>
+    <message>
+      <source>Writing output...</source>
+      <translation>正在写入输出...</translation>
+    </message>
+    <message>
+      <source>XBINNING</source>
+      <translation>X 像素合并</translation>
+    </message>
+    <message>
+      <source>XISF</source>
+      <translation>XISF</translation>
+    </message>
+    <message>
+      <source>YBINNING</source>
+      <translation>Y 像素合并</translation>
+    </message>
+    <message>
+      <source>[Stacking] tile {0}/{1} ts.shape={2}, N={3}, C={4}</source>
+      <translation>[叠加] 分块 {0}/{1} ts.shape={2}, N={3}, C={4}</translation>
+    </message>
+    <message>
+      <source>bias</source>
+      <translation>偏置场</translation>
+    </message>
+    <message>
+      <source>circular</source>
+      <translation>圆形</translation>
+    </message>
+    <message>
+      <source>color</source>
+      <translation>彩色</translation>
+    </message>
+    <message>
+      <source>compass Reference PA: (unknown)</source>
+      <translation>罗盘参考 PA: (未知)</translation>
+    </message>
+    <message>
+      <source>compass Reference PA: {0:.2f}°</source>
+      <translation>罗盘参考 PA: {0:.2f}°</translation>
+    </message>
+    <message>
+      <source>compass Tree snapshot → groups: {0}, leaves seen: {1}, paths kept: {2}</source>
+      <translation>罗盘树快照 → 组: {0}, 已见叶子: {1}, 保留路径: {2}</translation>
+    </message>
+    <message>
+      <source>dark</source>
+      <translation>暗场</translation>
+    </message>
+    <message>
+      <source>darkflat</source>
+      <translation>暗平场</translation>
+    </message>
+    <message>
+      <source>e.g. M31</source>
+      <translation>例如 M31</translation>
+    </message>
+    <message>
+      <source>flat</source>
+      <translation>平场</translation>
+    </message>
+    <message>
+      <source>folder change</source>
+      <translation>文件夹更改</translation>
+    </message>
+    <message>
+      <source>gaussian</source>
+      <translation>高斯</translation>
+    </message>
+    <message>
+      <source>light</source>
+      <translation>亮场</translation>
+    </message>
+    <message>
+      <source>log10 of variance floor (DN²). -8 ≡ 1e-8.</source>
+      <translation>方差底限的 log10 (DN²)。-8 ≡ 1e-8。</translation>
+    </message>
+    <message>
+      <source>mono</source>
+      <translation>黑白</translation>
+    </message>
+    <message>
+      <source>naive (square, pixfrac≈1)</source>
+      <translation>朴素 (方形, pixfrac≈1)</translation>
+    </message>
+    <message>
+      <source>precision → {0}</source>
+      <translation>精度 → {0}</translation>
+    </message>
+    <message>
+      <source>square</source>
+      <translation>方形</translation>
+    </message>
+    <message>
+      <source>{0:g}s</source>
+      <translation>{0:g}秒</translation>
+    </message>
+    <message>
+      <source>{0} file</source>
+      <translation>{0} 个文件</translation>
+    </message>
+    <message>
+      <source>{0} file · {1}</source>
+      <translation>{0} 个文件 · {1}</translation>
+    </message>
+    <message>
+      <source>{0} file(s)</source>
+      <translation>{0} 个文件</translation>
+    </message>
+    <message>
+      <source>{0} files · {1}</source>
+      <translation>{0} 个文件 · {1}</translation>
+    </message>
+    <message>
+      <source>{0} files, {1:.0f}s–{2:.0f}s</source>
+      <translation>{0} 个文件, {1:.0f}秒–{2:.0f}秒</translation>
+    </message>
+    <message>
+      <source>{0} {1}: {2}</source>
+      <translation>{0} {1}: {2}</translation>
+    </message>
+    <message>
+      <source>{0}: {1} frame(s)</source>
+      <translation>{0}: {1} 帧</translation>
+    </message>
+    <message>
+      <source>{0}Alignment summary: {1} succeeded, {2} rejected.</source>
+      <translation>{0}对齐摘要: {1} 成功, {2} 剔除。</translation>
+    </message>
+    <message>
+      <source>{0}h {1}m {2}s</source>
+      <translation>{0}小时 {1}分 {2}秒</translation>
+    </message>
+    <message>
+      <source>{0}m {1}s</source>
+      <translation>{0}分 {1}秒</translation>
+    </message>
+    <message>
+      <source>{0}s</source>
+      <translation>{0}秒</translation>
+    </message>
+    <message>
+      <source>{0}s ({1}) — tile {2}/{3} y:{4}-{5} x:{6}-{7}</source>
+      <translation>{0}秒 ({1}) — 分块 {2}/{3} y:{4}-{5} x:{6}-{7}</translation>
+    </message>
+    <message>
+      <source>κ (kappa) limits how big each multiplicative update can be per iteration.
+• κ = 1.0 → no change (1×); larger κ allows bigger step sizes.
+• Lower values = gentler, safer updates; higher values = faster but riskier.
+Typical: 1.05–1.5 for conservative, ~2 for punchier updates.</source>
+      <translation>κ (kappa) 限制了每次迭代中每个乘法更新的大小。
+• κ = 1.0 → 无变化 (1×)；较大的 κ 允许更大的步长。
+• 较低的值 = 更温和、更安全的更新；较高的值 = 更快但风险更高。
+典型值: 保守更新为 1.05–1.5，更强力的更新约为 2。</translation>
+    </message>
+    <message>
+      <source>ρ (loss):</source>
+      <translation>ρ (损失):</translation>
+    </message>
+    <message>
+      <source>‘Luma’ deconvolves luminance only; ‘PerChannel’ runs on RGB independently.</source>
+      <translation>“亮度”仅对亮度进行反卷积；“逐通道”独立运行于 RGB。</translation>
+    </message>
+    <message>
+      <source>• Hardware acceleration: {0}</source>
+      <translation>• 硬件加速: {0}</translation>
+    </message>
+    <message>
+      <source>• Internal precision: {0}</source>
+      <translation>• 内部精度: {0}</translation>
+    </message>
+    <message>
+      <source>• {0}  |  session: {1}  →  {2} files, {3}</source>
+      <translation>• {0}  |  会话: {1}  →  {2} 个文件, {3}</translation>
+    </message>
+    <message>
+      <source>• {0}  →  {1} files, {2}</source>
+      <translation>• {0}  →  {1} 个文件, {2}</translation>
+    </message>
+    <message>
+      <source>• {0}: {1} stacked{2}</source>
+      <translation>• {0}: {1} 已叠加{2}</translation>
+    </message>
+    <message>
+      <source>ℹ️ CFA Drizzle kept despite low frame count (you chose No).</source>
+      <translation>ℹ️ 尽管帧数较少，仍保留 CFA Drizzle (您选择了“否”)。</translation>
+    </message>
+    <message>
+      <source>ℹ️ Could not resolve comet seed to reference (no matrix for that frame).</source>
+      <translation>ℹ️ 无法将彗星种子解析为参考帧 (该帧没有矩阵)。</translation>
+    </message>
+    <message>
+      <source>ℹ️ No dual-band frames detected or split.</source>
+      <translation>ℹ️ 未检测到或拆分双窄带帧。</translation>
+    </message>
+    <message>
+      <source>ℹ️ Registration already in progress; auto-run skipped.</source>
+      <translation>ℹ️ 注册已在进行中；跳过自动运行。</translation>
+    </message>
+    <message>
+      <source>ℹ️ Single group spread {0:.3f}% &gt; tol {1:.2f}% → will normalize.</source>
+      <translation>ℹ️ 单组跨度 {0:.3f}% &gt; 容差 {1:.2f}% → 将进行归一化。</translation>
+    </message>
+    <message>
+      <source>ℹ️ Skipping rejection map save for '{0}' (drizzle disabled).</source>
+      <translation>ℹ️ 跳过 '{0}' 的剔除图保存 (drizzle 已禁用)。</translation>
+    </message>
+    <message>
+      <source>ℹ️ This flat group: Auto-Select is OFF and no override set → No Calibration.</source>
+      <translation>ℹ️ 此平场组: 自动选择已关闭且未设置覆盖 → 无校准。</translation>
+    </message>
+    <message>
+      <source>ℹ️ This flat group: no matching Master Dark (size) — proceeding without subtraction.</source>
+      <translation>ℹ️ 此平场组: 没有匹配的主暗场 (尺寸) — 正在进行且不减去暗场。</translation>
+    </message>
+    <message>
+      <source>ℹ️ This flat group: override = No Calibration.</source>
+      <translation>ℹ️ 此平场组: 覆盖 = 无校准。</translation>
+    </message>
+    <message>
+      <source>ℹ️ Using in-memory REF_SHAPE fallback: {0}×{1}</source>
+      <translation>ℹ️ 使用内存中的 REF_SHAPE 回退: {0}×{1}</translation>
+    </message>
+    <message>
+      <source>ℹ️ {0} frame(s) had zero/NaN preview medians; using neutral scale for those.</source>
+      <translation>ℹ️ {0} 帧的预览中值为零/NaN；对这些帧使用中性缩放。</translation>
+    </message>
+    <message>
+      <source>↻ 180° rotate (PA Δ≈180°): {0}</source>
+      <translation>↻ 180° 旋转 (PA Δ≈180°): {0}</translation>
+    </message>
+    <message>
+      <source>⏭️ Normal integration suppressed (MFDeconv-only run).</source>
+      <translation>⏭️ 普通集成已抑制 (仅运行 MFDeconv)。</translation>
+    </message>
+    <message>
+      <source>⏭️ Pixel-scale normalize skipped: single-group policy (no header reads).</source>
+      <translation>⏭️ 跳过像素尺度归一化: 单组策略 (不读取头文件)。</translation>
+    </message>
+    <message>
+      <source>⏭️ Pixel-scale normalize skipped: spread ≤ {0:.2f}% (single group).</source>
+      <translation>⏭️ 跳过像素尺度归一化: 跨度 ≤ {0:.2f}% (单组)。</translation>
+    </message>
+    <message>
+      <source>⏳ Loading…</source>
+      <translation>⏳ 正在加载…</translation>
+    </message>
+    <message>
+      <source>⏳ Please wait…</source>
+      <translation>⏳ 请稍候…</translation>
+    </message>
+    <message>
+      <source>⏳ Registering…</source>
+      <translation>⏳ 正在注册…</translation>
+    </message>
+    <message>
+      <source>⏸ Another job is running; ignoring extra click.</source>
+      <translation>⏸ 另一个作业正在运行；忽略额外点击。</translation>
+    </message>
+    <message>
+      <source>⏸ Registration already running; ignoring extra click.</source>
+      <translation>⏸ 注册已在运行；忽略额外点击。</translation>
+    </message>
+    <message>
+      <source>▶️ Starting tile processing for group '{0}' ({1}s, {2}, session '{3}')</source>
+      <translation>▶️ 开始处理组 '{0}' 的分块 ({1}秒, {2}, 会话 '{3}')</translation>
+    </message>
+    <message>
+      <source>★★ Star-Trail Mode ★★ (Max-Value Stack)</source>
+      <translation>★★ 星轨模式 ★★ (最大值叠加)</translation>
+    </message>
+    <message>
+      <source>⚖️ Computing frame weights…</source>
+      <translation>⚖️ 正在计算帧权重…</translation>
+    </message>
+    <message>
+      <source>⚙️ Auto: starting registration &amp; integration…</source>
+      <translation>⚙️ 自动: 开始注册 &amp; 集成…</translation>
+    </message>
+    <message>
+      <source>⚙️ MFDeconv engine: {0}</source>
+      <translation>⚙️ MFDeconv 引擎: {0}</translation>
+    </message>
+    <message>
+      <source>⚙️ Normalizing {0} flats by per-frame medians (central patch).</source>
+      <translation>⚙️ 正在按每帧中值 (中心补丁) 归一化 {0} 个平场。</translation>
+    </message>
+    <message>
+      <source>⚙️ {0} reducer for flats — {1} ({2})</source>
+      <translation>⚙️ 用于平场的 {0} 还原器 — {1} ({2})</translation>
+    </message>
+    <message>
+      <source>⚙️ {0} selected for {1} frames (channels={2})</source>
+      <translation>⚙️ 为 {1} 帧选择了 {0} (通道={2})</translation>
+    </message>
+    <message>
+      <source>⚠️ (MF) Auto-crop of output failed: {0}</source>
+      <translation>⚠️ (MF) 输出自动裁剪失败: {0}</translation>
+    </message>
+    <message>
+      <source>⚠️ (MF) Global crop failed: {0}</source>
+      <translation>⚠️ (MF) 全局裁剪失败: {0}</translation>
+    </message>
+    <message>
+      <source>⚠️ Auto register/integrate failed: {0}</source>
+      <translation>⚠️ 自动注册/集成失败: {0}</translation>
+    </message>
+    <message>
+      <source>⚠️ CFA Drizzle: low-count fallback → using Edge-Aware Interpolation for this run.</source>
+      <translation>⚠️ CFA Drizzle: 数量过低回退 → 本次运行使用边缘感知插值。</translation>
+    </message>
+    <message>
+      <source>⚠️ Cannot load {0}; skipping.</source>
+      <translation>⚠️ 无法加载 {0}；跳过。</translation>
+    </message>
+    <message>
+      <source>⚠️ Cannot read image size for {0}: {1}</source>
+      <translation>⚠️ 无法读取 {0} 的图像尺寸: {1}</translation>
+    </message>
+    <message>
+      <source>⚠️ Comet seed resolve failed: {0}</source>
+      <translation>⚠️ 彗星种子解析失败: {0}</translation>
+    </message>
+    <message>
+      <source>⚠️ Comet star removal pre-process aborted: {0}</source>
+      <translation>⚠️ 彗星恒星移除预处理已中止: {0}</translation>
+    </message>
+    <message>
+      <source>⚠️ Could not ensure subfolders in '{0}': {1}</source>
+      <translation>⚠️ 无法确保 '{0}' 中的子文件夹: {1}</translation>
+    </message>
+    <message>
+      <source>⚠️ Could not load Master Bias: {0}</source>
+      <translation>⚠️ 无法加载主偏置场: {0}</translation>
+    </message>
+    <message>
+      <source>⚠️ Could not load reference '{0}' for comet stack.</source>
+      <translation>⚠️ 无法为彗星叠加加载参考帧 '{0}'。</translation>
+    </message>
+    <message>
+      <source>⚠️ Could not load reference '{0}' for group '{1}'.</source>
+      <translation>⚠️ 无法为组 '{1}' 加载参考帧 '{0}'。</translation>
+    </message>
+    <message>
+      <source>⚠️ Could not load reference '{0}', skipping group.</source>
+      <translation>⚠️ 无法加载参考帧 '{0}'，跳过组。</translation>
+    </message>
+    <message>
+      <source>⚠️ Could not load {0} to determine drizzle shape!</source>
+      <translation>⚠️ 无法加载 {0} 以确定 drizzle 形状！</translation>
+    </message>
+    <message>
+      <source>⚠️ Could not read XISF {0}: {1}; treating as generic image</source>
+      <translation>⚠️ 无法读取 XISF {0}: {1}；视为普通图像</translation>
+    </message>
+    <message>
+      <source>⚠️ Degenerate tile shape {0} at tile {1} [y:{2}:{3} x:{4}:{5}] – using CPU for this tile.</source>
+      <translation>⚠️ 分块 {1} 处的退化分块形状 {0} [y:{2}:{3} x:{4}:{5}] – 对此分块使用 CPU。</translation>
+    </message>
+    <message>
+      <source>⚠️ ERROR: Could not parse {0}</source>
+      <translation>⚠️ 错误: 无法解析 {0}</translation>
+    </message>
+    <message>
+      <source>⚠️ Error normalizing {0}: {1}</source>
+      <translation>⚠️ 归一化 {0} 出错: {1}</translation>
+    </message>
+    <message>
+      <source>⚠️ Error previewing {0}: {1}</source>
+      <translation>⚠️ 预览 {0} 出错: {1}</translation>
+    </message>
+    <message>
+      <source>⚠️ Error: No alignment data available.</source>
+      <translation>⚠️ 错误: 无可用对齐数据。</translation>
+    </message>
+    <message>
+      <source>⚠️ Failed to load {0}; skipping</source>
+      <translation>⚠️ 加载 {0} 失败；跳过</translation>
+    </message>
+    <message>
+      <source>⚠️ Failed to open images (memmap): {0}</source>
+      <translation>⚠️ 打开图像失败 (内存映射): {0}</translation>
+    </message>
+    <message>
+      <source>⚠️ Failed to read {0} – skipping</source>
+      <translation>⚠️ 读取 {0} 失败 – 跳过</translation>
+    </message>
+    <message>
+      <source>⚠️ Failed to save transform file: {0}</source>
+      <translation>⚠️ 保存变换文件失败: {0}</translation>
+    </message>
+    <message>
+      <source>⚠️ Failed to write SASD v2 ({0}); writing affine-only fallback.</source>
+      <translation>⚠️ 写入 SASD v2 失败 ({0})；正在写入仅仿射回退。</translation>
+    </message>
+    <message>
+      <source>⚠️ File not found: {0}, skipping.</source>
+      <translation>⚠️ 未找到文件: {0}，跳过。</translation>
+    </message>
+    <message>
+      <source>⚠️ GPU rejection failed on tile {0}/{1} shape={2}: {3} – falling back to CPU for this and remaining tiles.</source>
+      <translation>⚠️ 分块 {0}/{1} 形状={2} 的 GPU 剔除失败: {3} – 对此分块及剩余分块回退到 CPU。</translation>
+    </message>
+    <message>
+      <source>⚠️ Global crop (mask-based) failed: {0}</source>
+      <translation>⚠️ 全局裁剪 (基于掩模) 失败: {0}</translation>
+    </message>
+    <message>
+      <source>⚠️ Group '{0}' does not have enough frames to drizzle.</source>
+      <translation>⚠️ 组 '{0}' 没有足够的帧进行 drizzle。</translation>
+    </message>
+    <message>
+      <source>⚠️ Group '{0}' does not have enough frames to stack.</source>
+      <translation>⚠️ 组 '{0}' 没有足够的帧进行叠加。</translation>
+    </message>
+    <message>
+      <source>⚠️ Image registration failed: {0}</source>
+      <translation>⚠️ 图像注册失败: {0}</translation>
+    </message>
+    <message>
+      <source>⚠️ MEF save failed ({0}); falling back to single-HDU save.</source>
+      <translation>⚠️ MEF 保存失败 ({0})；回退到单 HDU 保存。</translation>
+    </message>
+    <message>
+      <source>⚠️ MFDeconv engine import failed ({0}); falling back to Normal.</source>
+      <translation>⚠️ MFDeconv 引擎导入失败 ({0})；回退到普通模式。</translation>
+    </message>
+    <message>
+      <source>⚠️ Missing REF_SHAPE in SASD; cannot drizzle.</source>
+      <translation>⚠️ SASD 中缺少 REF_SHAPE；无法进行 drizzle。</translation>
+    </message>
+    <message>
+      <source>⚠️ No aligned frames available for MF deconvolution.</source>
+      <translation>⚠️ 无可用对齐帧进行多帧反卷积。</translation>
+    </message>
+    <message>
+      <source>⚠️ No calibrated lights available for star trails.</source>
+      <translation>⚠️ 无可用校准亮场进行星轨叠加。</translation>
+    </message>
+    <message>
+      <source>⚠️ No data for {0}</source>
+      <translation>⚠️ 无 {0} 的数据</translation>
+    </message>
+    <message>
+      <source>⚠️ No eligible dark groups found to stack.</source>
+      <translation>⚠️ 未找到符合条件的暗场组进行叠加。</translation>
+    </message>
+    <message>
+      <source>⚠️ No eligible flat groups found to stack.</source>
+      <translation>⚠️ 未找到符合条件的平场组进行叠加。</translation>
+    </message>
+    <message>
+      <source>⚠️ No frames could be measured!</source>
+      <translation>⚠️ 无法测量任何帧！</translation>
+    </message>
+    <message>
+      <source>⚠️ No frames found in the registration tree!</source>
+      <translation>⚠️ 注册树中未找到任何帧！</translation>
+    </message>
+    <message>
+      <source>⚠️ No frames to stack; aborting.</source>
+      <translation>⚠️ 无叠加帧；正在中止。</translation>
+    </message>
+    <message>
+      <source>⚠️ No leaf files selected to retag.</source>
+      <translation>⚠️ 未选择要重新标记的叶子文件。</translation>
+    </message>
+    <message>
+      <source>⚠️ No light files to register!</source>
+      <translation>⚠️ 无亮场文件可注册！</translation>
+    </message>
+    <message>
+      <source>⚠️ No light frames available for stacking!</source>
+      <translation>⚠️ 无亮场帧可用于叠加！</translation>
+    </message>
+    <message>
+      <source>⚠️ No registered images found!</source>
+      <translation>⚠️ 未找到注册后的图像！</translation>
+    </message>
+    <message>
+      <source>⚠️ No usable transform for {0} – skipping</source>
+      <translation>⚠️ {0} 无可用变换 – 跳过</translation>
+    </message>
+    <message>
+      <source>⚠️ No valid frames to compute reference median; aborting star-trail.</source>
+      <translation>⚠️ 无有效帧计算参考中值；中止星轨叠加。</translation>
+    </message>
+    <message>
+      <source>⚠️ No valid previews in this chunk (couldn't find image data in any HDU).</source>
+      <translation>⚠️ 此块中无有效预览 (在任何 HDU 中都找不到图像数据)。</translation>
+    </message>
+    <message>
+      <source>⚠️ No valid previews in this chunk (couldn’t find image data in any HDU).</source>
+      <translation>⚠️ 此块中无有效预览 (在任何 HDU 中都找不到图像数据)。</translation>
+    </message>
+    <message>
+      <source>⚠️ No valid previews in this chunk.</source>
+      <translation>⚠️ 此块中无有效预览。</translation>
+    </message>
+    <message>
+      <source>⚠️ Not enough frames with valid comet centroids; skipping comet stack.</source>
+      <translation>⚠️ 具有有效彗星质心的帧数不足；跳过彗星叠加。</translation>
+    </message>
+    <message>
+      <source>⚠️ Not enough valid frames in group '{0}' to stack.</source>
+      <translation>⚠️ 组 '{0}' 中有效帧数不足，无法叠加。</translation>
+    </message>
+    <message>
+      <source>⚠️ Override dark missing on disk; falling back to Auto/None.</source>
+      <translation>⚠️ 磁盘上缺少覆盖暗场；回退到自动/无。</translation>
+    </message>
+    <message>
+      <source>⚠️ Per-group transform crop failed for '{0}': {1}</source>
+      <translation>⚠️ '{0}' 的逐组变换裁剪失败: {1}</translation>
+    </message>
+    <message>
+      <source>⚠️ Preview error for {0}: {1}</source>
+      <translation>⚠️ {0} 的预览错误: {1}</translation>
+    </message>
+    <message>
+      <source>⚠️ PyTorch reports no GPU but you have an NVIDIA card – restarting may help.</source>
+      <translation>⚠️ PyTorch 报告无 GPU，但您有 NVIDIA 显卡 – 重启可能有所帮助。</translation>
+    </message>
+    <message>
+      <source>⚠️ Reference file '{0}' not found, skipping group.</source>
+      <translation>⚠️ 未找到参考文件 '{0}'，跳过组。</translation>
+    </message>
+    <message>
+      <source>⚠️ Skipping {0}s ({1}) - Not enough frames to stack.</source>
+      <translation>⚠️ 跳过 {0}秒 ({1}) - 帧数不足，无法叠加。</translation>
+    </message>
+    <message>
+      <source>⚠️ Skipping {0}s ({1}) [{2}] [{3}] - Not enough frames to stack.</source>
+      <translation>⚠️ 跳过 {0}秒 ({1}) [{2}] [{3}] - 帧数不足，无法叠加。</translation>
+    </message>
+    <message>
+      <source>⚠️ Split error on {0}: {1}</source>
+      <translation>⚠️ {0} 拆分错误: {1}</translation>
+    </message>
+    <message>
+      <source>⚠️ Too many open files ({0}); falling back to lazy per-tile reads.</source>
+      <translation>⚠️ 打开文件过多 ({0})；回退到延迟逐块读取。</translation>
+    </message>
+    <message>
+      <source>⚠️ Transform-based global crop failed ({0}); falling back to mask-based.</source>
+      <translation>⚠️ 基于变换的全局裁剪失败 ({0})；回退到基于掩模的裁剪。</translation>
+    </message>
+    <message>
+      <source>⚠️ Unsupported transform '{0}' – skipping {1}</source>
+      <translation>⚠️ 不支持的变换 '{0}' – 跳过 {1}</translation>
+    </message>
+    <message>
+      <source>⚠️ WARNING: No Master Calibration Files available.</source>
+      <translation>⚠️ 警告: 无可用主校准文件。</translation>
+    </message>
+    <message>
+      <source>⚠️ WARNING: No Master Darks available.</source>
+      <translation>⚠️ 警告: 无可用主暗场。</translation>
+    </message>
+    <message>
+      <source>⚠️ Warning: {0}</source>
+      <translation>⚠️ 警告: {0}</translation>
+    </message>
+    <message>
+      <source>⚠️ rebuild_flat_tree: could not parse key '{0}': {1}</source>
+      <translation>⚠️ rebuild_flat_tree: 无法解析键 '{0}': {1}</translation>
+    </message>
+    <message>
+      <source>⚠️ {0}</source>
+      <translation>⚠️ {0}</translation>
+    </message>
+    <message>
+      <source>⚠️ {0} frame has no aligned counterpart – skipping {1}</source>
+      <translation>⚠️ {0} 帧没有对应的对齐帧 – 跳过 {1}</translation>
+    </message>
+    <message>
+      <source>⚠️ {0} frames failed to align</source>
+      <translation>⚠️ {0} 帧对齐失败</translation>
+    </message>
+    <message>
+      <source>⚡ Fast mode: </source>
+      <translation>⚡ 快速模式: </translation>
+    </message>
+    <message>
+      <source>⛔ Master Dark creation cancelled during tile processing.</source>
+      <translation>⛔ 分块处理期间主暗场创建已取消。</translation>
+    </message>
+    <message>
+      <source>⛔ Master Dark creation cancelled.</source>
+      <translation>⛔ 主暗场创建已取消。</translation>
+    </message>
+    <message>
+      <source>⛔ Master Dark creation cancelled; cleaning up temporary files.</source>
+      <translation>⛔ 主暗场创建已取消；正在清理临时文件。</translation>
+    </message>
+    <message>
+      <source>⛔ Master Flat creation cancelled.</source>
+      <translation>⛔ 主平场创建已取消。</translation>
+    </message>
+    <message>
+      <source>⛔ Master Flat creation cancelled; cleaning up temporary files.</source>
+      <translation>⛔ 主平场创建已取消；正在清理临时文件。</translation>
+    </message>
+    <message>
+      <source>✂️ (MF) Auto Crop: using transform footprints…</source>
+      <translation>✂️ (MF) 自动裁剪: 使用变换足迹…</translation>
+    </message>
+    <message>
+      <source>✂️ (MF) Auto-crop disabled (no common region).</source>
+      <translation>✂️ (MF) 自动裁剪已禁用 (无公共区域)。</translation>
+    </message>
+    <message>
+      <source>✂️ (MF) Mask-based crop → [{0}:{1}]×[{2}:{3}] ({4}×{5})</source>
+      <translation>✂️ (MF) 基于掩模的裁剪 → [{0}:{1}]×[{2}:{3}] ({4}×{5})</translation>
+    </message>
+    <message>
+      <source>✂️ (MF) No transforms/geometry available; falling back to mask-based method…</source>
+      <translation>✂️ (MF) 无可用变换/几何信息；回退到基于掩模的方法…</translation>
+    </message>
+    <message>
+      <source>✂️ (MF) Saved auto-cropped copy → {0}</source>
+      <translation>✂️ (MF) 已保存自动裁剪的副本 → {0}</translation>
+    </message>
+    <message>
+      <source>✂️ (MF) Transform crop yielded no valid rect; falling back to mask-based method…</source>
+      <translation>✂️ (MF) 变换裁剪未产生有效矩形；回退到基于掩模的方法…</translation>
+    </message>
+    <message>
+      <source>✂️ (MF) Transform crop → [{0}:{1}]×[{2}:{3}] ({4}×{5})</source>
+      <translation>✂️ (MF) 变换裁剪 → [{0}:{1}]×[{2}:{3}] ({4}×{5})</translation>
+    </message>
+    <message>
+      <source>✂️ Auto Crop Enabled. Calculating bounding box…</source>
+      <translation>✂️ 自动裁剪已启用。正在计算边界框…</translation>
+    </message>
+    <message>
+      <source>✂️ Auto-crop: 0/{0} frames had usable transforms; skipping.</source>
+      <translation>✂️ 自动裁剪: 0/{0} 帧具有可用变换；跳过。</translation>
+    </message>
+    <message>
+      <source>✂️ Auto-crop: Loading transforms...</source>
+      <translation>✂️ 自动裁剪: 正在加载变换...</translation>
+    </message>
+    <message>
+      <source>✂️ Auto-crop: could not load first aligned ref.</source>
+      <translation>✂️ 自动裁剪: 无法加载第一个对齐参考帧。</translation>
+    </message>
+    <message>
+      <source>✂️ Auto-crop: no common area found; skipping.</source>
+      <translation>✂️ 自动裁剪: 未找到公共区域；跳过。</translation>
+    </message>
+    <message>
+      <source>✂️ Auto-crop: no transforms file at {0}</source>
+      <translation>✂️ 自动裁剪: {0} 处无变换文件</translation>
+    </message>
+    <message>
+      <source>✂️ Auto-crop: rasterized {0}/{1} frames; need {2} per-pixel.</source>
+      <translation>✂️ 自动裁剪: 已光栅化 {0}/{1} 帧；每像素需要 {2}。</translation>
+    </message>
+    <message>
+      <source>✂️ Auto-crop: threshold produced empty mask.</source>
+      <translation>✂️ 自动裁剪: 阈值产生了空掩模。</translation>
+    </message>
+    <message>
+      <source>✂️ Auto-cropped to [{0}:{1}]×[{2}:{3}] (scale {4}×)</source>
+      <translation>✂️ 自动裁剪至 [{0}:{1}]×[{2}:{3}] (缩放 {4}×)</translation>
+    </message>
+    <message>
+      <source>✂️ Drizzle (auto-cropped) saved: {0}</source>
+      <translation>✂️ Drizzle (自动裁剪) 已保存: {0}</translation>
+    </message>
+    <message>
+      <source>✂️ Global crop disabled; will fall back to per-group.</source>
+      <translation>✂️ 全局裁剪已禁用；将回退到逐组裁剪。</translation>
+    </message>
+    <message>
+      <source>✂️ Global crop rect={0} → size {1}×{2}</source>
+      <translation>✂️ 全局裁剪 矩形={0} → 大小 {1}×{2}</translation>
+    </message>
+    <message>
+      <source>✂️ Global crop: mask shapes differ across groups.</source>
+      <translation>✂️ 全局裁剪: 各组掩模形状不同。</translation>
+    </message>
+    <message>
+      <source>✂️ Global crop: no mask for '{0}' → disabling global crop.</source>
+      <translation>✂️ 全局裁剪: '{0}' 无掩模 → 禁用全局裁剪。</translation>
+    </message>
+    <message>
+      <source>✂️ Global crop: rect too small; disabling global crop.</source>
+      <translation>✂️ 全局裁剪: 矩形太小；禁用全局裁剪。</translation>
+    </message>
+    <message>
+      <source>✂️ Mask-based crop (global) → [{0}:{1}]×[{2}:{3}] ({4}×{5})</source>
+      <translation>✂️ 基于掩模的裁剪 (全局) → [{0}:{1}]×[{2}:{3}] ({4}×{5})</translation>
+    </message>
+    <message>
+      <source>✂️ No stable rect found for this group; per-image fallback will be used.</source>
+      <translation>✂️ 此组未找到稳定矩形；将使用逐图像回退。</translation>
+    </message>
+    <message>
+      <source>✂️ No transforms/geometry available for fast global crop; falling back to mask-based.</source>
+      <translation>✂️ 无可用变换/几何信息进行快速全局裁剪；回退到基于掩模的裁剪。</translation>
+    </message>
+    <message>
+      <source>✂️ Saved CometBlend (auto-cropped) → {0}</source>
+      <translation>✂️ 已保存彗星混合 (自动裁剪) → {0}</translation>
+    </message>
+    <message>
+      <source>✂️ Saved CometOnly (auto-cropped) → {0}</source>
+      <translation>✂️ 已保存仅彗星 (自动裁剪) → {0}</translation>
+    </message>
+    <message>
+      <source>✂️ Saved auto-cropped image for '{0}': {1}</source>
+      <translation>✂️ 已保存 '{0}' 的自动裁剪图像: {1}</translation>
+    </message>
+    <message>
+      <source>✂️ Transform crop (global) → [{0}:{1}]×[{2}:{3}] ({4}×{5})</source>
+      <translation>✂️ 变换裁剪 (全局) → [{0}:{1}]×[{2}:{3}] ({4}×{5})</translation>
+    </message>
+    <message>
+      <source>✂️ Transform crop produced no stable global rect; falling back to mask-based.</source>
+      <translation>✂️ 变换裁剪未产生稳定的全局矩形；回退到基于掩模的裁剪。</translation>
+    </message>
+    <message>
+      <source>✂️ Using fixed crop rect for '{0}': ({1},{2})–({3},{4})</source>
+      <translation>✂️ 对 '{0}' 使用固定裁剪矩形: ({1},{2})–({3},{4})</translation>
+    </message>
+    <message>
+      <source>✅ </source>
+      <translation>✅ </translation>
+    </message>
+    <message>
+      <source>✅ Added Master {0} -&gt; {1} under {2} with metadata: {3}</source>
+      <translation>✅ 已添加主场 {0} -&gt; {1} 在 {2} 下，元数据: {3}</translation>
+    </message>
+    <message>
+      <source>✅ Added {0} as {1}</source>
+      <translation>✅ 已添加 {0} 为 {1}</translation>
+    </message>
+    <message>
+      <source>✅ Added {0} file(s)</source>
+      <translation>✅ 已添加 {0} 个文件</translation>
+    </message>
+    <message>
+      <source>✅ Aligned {0} frames successfully</source>
+      <translation>✅ 成功对齐了 {0} 帧</translation>
+    </message>
+    <message>
+      <source>✅ All chunks complete! Measured {0} frames total.</source>
+      <translation>✅ 所有块已完成！共测量了 {0} 帧。</translation>
+    </message>
+    <message>
+      <source>✅ All frames registered successfully!</source>
+      <translation>✅ 所有帧已成功注册！</translation>
+    </message>
+    <message>
+      <source>✅ Auto-accept measured reference is enabled; using the measured best frame.</source>
+      <translation>✅ 自动接受测量的参考帧已启用；使用测量的最佳帧。</translation>
+    </message>
+    <message>
+      <source>✅ Calibrated {0} frames</source>
+      <translation>✅ 已校准 {0} 帧</translation>
+    </message>
+    <message>
+      <source>✅ Calibration Complete!</source>
+      <translation>✅ 校准完成！</translation>
+    </message>
+    <message>
+      <source>✅ Chunked stacking {0} group(s)...</source>
+      <translation>✅ 正在分块叠加 {0} 个组...</translation>
+    </message>
+    <message>
+      <source>✅ Comet seed set. Proceeding with registration…</source>
+      <translation>✅ 彗星种子已设置。正在进行注册…</translation>
+    </message>
+    <message>
+      <source>✅ DEBUG: Added Master {0} -&gt; {1} under {2} with metadata: {3}</source>
+      <translation>✅ 调试: 已添加主场 {0} -&gt; {1} 在 {2} 下，元数据: {3}</translation>
+    </message>
+    <message>
+      <source>✅ Drizzle (original) saved: {0}</source>
+      <translation>✅ Drizzle (原始) 已保存: {0}</translation>
+    </message>
+    <message>
+      <source>✅ Dual-band split complete: Ha={0}, SII={1}, OIII={2}, Hb={3} (drizzle seeded on {4} new group(s))</source>
+      <translation>✅ 双窄带拆分完成: Ha={0}, SII={1}, OIII={2}, Hb={3} (drizzle 已在 {4} 个新组上播种)</translation>
+    </message>
+    <message>
+      <source>✅ Frame weights computed!</source>
+      <translation>✅ 帧权重已计算！</translation>
+    </message>
+    <message>
+      <source>✅ Group '{0}' not set for drizzle. Integrated image already saved.</source>
+      <translation>✅ 组 '{0}' 未设置 drizzle。集成图像已保存。</translation>
+    </message>
+    <message>
+      <source>✅ Group '{0}' stacked {1} frame(s)! Saved: {2}</source>
+      <translation>✅ 组 '{0}' 已叠加 {1} 帧！已保存: {2}</translation>
+    </message>
+    <message>
+      <source>✅ MFDeconv complete for all groups. Skipping normal integration as requested.</source>
+      <translation>✅ 所有组的 MFDeconv 已完成。按要求跳过普通集成。</translation>
+    </message>
+    <message>
+      <source>✅ MFDeconv complete for all groups. Skipping normal integration.</source>
+      <translation>✅ 所有组的 MFDeconv 已完成。跳过普通集成。</translation>
+    </message>
+    <message>
+      <source>✅ Master Dark saved and added to UI: {0}</source>
+      <translation>✅ 主暗场已保存并添加到 UI: {0}</translation>
+    </message>
+    <message>
+      <source>✅ Master Dark saved: {0}</source>
+      <translation>✅ 主暗场已保存: {0}</translation>
+    </message>
+    <message>
+      <source>✅ Master Flat saved: {0}</source>
+      <translation>✅ 主平场已保存: {0}</translation>
+    </message>
+    <message>
+      <source>✅ Master Light saved for group '{0}': {1}</source>
+      <translation>✅ 组 '{0}' 的主亮场已保存: {1}</translation>
+    </message>
+    <message>
+      <source>✅ Master bias saved</source>
+      <translation>✅ 主偏置场已保存</translation>
+    </message>
+    <message>
+      <source>✅ Master dark saved</source>
+      <translation>✅ 主暗场已保存</translation>
+    </message>
+    <message>
+      <source>✅ Master flat saved</source>
+      <translation>✅ 主平场已保存</translation>
+    </message>
+    <message>
+      <source>✅ Ready</source>
+      <translation>✅ 就绪</translation>
+    </message>
+    <message>
+      <source>✅ Removed {0} file(s)</source>
+      <translation>✅ 已移除 {0} 个文件</translation>
+    </message>
+    <message>
+      <source>✅ SASD v2: loaded {0} transform(s).</source>
+      <translation>✅ SASD v2: 已加载 {0} 个变换。</translation>
+    </message>
+    <message>
+      <source>✅ Saved CometBlend → {0}</source>
+      <translation>✅ 已保存彗星混合 → {0}</translation>
+    </message>
+    <message>
+      <source>✅ Saved CometOnly → {0}</source>
+      <translation>✅ 已保存仅彗星 → {0}</translation>
+    </message>
+    <message>
+      <source>✅ Saved integrated image (original) for '{0}': {1}</source>
+      <translation>✅ 已保存 '{0}' 的集成图像 (原始): {1}</translation>
+    </message>
+    <message>
+      <source>✅ Saved integrated image (single-HDU) for '{0}': {1}</source>
+      <translation>✅ 已保存 '{0}' 的集成图像 (单 HDU): {1}</translation>
+    </message>
+    <message>
+      <source>✅ Saved integrated image (with rejection layers) for '{0}': {1}</source>
+      <translation>✅ 已保存 '{0}' 的集成图像 (带剔除层): {1}</translation>
+    </message>
+    <message>
+      <source>✅ Saved rejection map to {0}</source>
+      <translation>✅ 剔除图已保存至 {0}</translation>
+    </message>
+    <message>
+      <source>✅ Saved stacking settings.</source>
+      <translation>✅ 叠加设置已保存。</translation>
+    </message>
+    <message>
+      <source>✅ Star‐Trail image written to {0}</source>
+      <translation>✅ 星轨图像已写入 {0}</translation>
+    </message>
+    <message>
+      <source>✅ Transform file saved as alignment_transforms.sasd (v2)</source>
+      <translation>✅ 变换文件已保存为 alignment_transforms.sasd (v2)</translation>
+    </message>
+    <message>
+      <source>✅ Transform file saved as {0}</source>
+      <translation>✅ 变换文件已保存为 {0}</translation>
+    </message>
+    <message>
+      <source>✅ Updated self.light_files to use debayered, normalized *_n.fit frames.</source>
+      <translation>✅ 已更新 self.light_files 以使用解拜耳、归一化的 *_n.fit 帧。</translation>
+    </message>
+    <message>
+      <source>✅ User reference is locked; skipping reference review dialog.</source>
+      <translation>✅ 用户参考帧已锁定；跳过参考帧检查对话框。</translation>
+    </message>
+    <message>
+      <source>✅ {0}</source>
+      <translation>✅ {0}</translation>
+    </message>
+    <message>
+      <source>✖ Star-trail save cancelled.</source>
+      <translation>✖ 星轨保存已取消。</translation>
+    </message>
+    <message>
+      <source>✨ Comet star removal enabled — pre-processing frames…</source>
+      <translation>✨ 彗星去星功能已启用 — 正在预处理帧…</translation>
+    </message>
+    <message>
+      <source>✨ Using comet-aligned STARLESS frames for stack ({0} files).</source>
+      <translation>✨ 使用彗星对齐的无星帧进行堆叠（{0} 个文件）。</translation>
+    </message>
+    <message>
+      <source>❌ </source>
+      <translation>❌ </translation>
+    </message>
+    <message>
+      <source>❌ ERROR: Could not read FITS header for {0} - {1}</source>
+      <translation>❌ 错误：无法读取 {0} 的 FITS 头信息 - {1}</translation>
+    </message>
+    <message>
+      <source>❌ ERROR: Failed to load {0}</source>
+      <translation>❌ 错误：加载 {0} 失败</translation>
+    </message>
+    <message>
+      <source>❌ Error: {0}</source>
+      <translation>❌ 错误：{0}</translation>
+    </message>
+    <message>
+      <source>❌ Failed to load reference {0}</source>
+      <translation>❌ 无法加载参考帧 {0}</translation>
+    </message>
+    <message>
+      <source>❌ Failed to memmap dark frames: {0}</source>
+      <translation>❌ 内存映射暗场帧失败：{0}</translation>
+    </message>
+    <message>
+      <source>❌ Failed to memmap flat frames: {0}</source>
+      <translation>❌ 内存映射平场帧失败：{0}</translation>
+    </message>
+    <message>
+      <source>❌ GPU Acceleration install aborted: unsupported Python version.</source>
+      <translation>❌ GPU 加速安装已中止：不支持的 Python 版本。</translation>
+    </message>
+    <message>
+      <source>❌ MFDeconv failed for '{0}': {1}</source>
+      <translation>❌ '{0}' 的 MFDeconv 失败：{1}</translation>
+    </message>
+    <message>
+      <source>❌ Operation cancelled</source>
+      <translation>❌ 操作已取消</translation>
+    </message>
+    <message>
+      <source>❌ Registration cancelled (no comet seed).</source>
+      <translation>❌ 注册已取消（无彗星种子）。</translation>
+    </message>
+    <message>
+      <source>❌ {0}</source>
+      <translation>❌ {0}</translation>
+    </message>
+    <message>
+      <source>⤴ {0}: {1} files</source>
+      <translation>⤴ {0}: {1} 个文件</translation>
+    </message>
+    <message>
+      <source>⭐ Stacking in progress…</source>
+      <translation>⭐ 正在堆叠…</translation>
+    </message>
+    <message>
+      <source>⭐ Star-Trail Mode disabled: other options re-enabled.</source>
+      <translation>⭐ 星轨模式已禁用：其他选项已重新启用。</translation>
+    </message>
+    <message>
+      <source>⭐ Star-Trail Mode enabled: Drizzle, Comet stack, and MFDeconv disabled.</source>
+      <translation>⭐ 星轨模式已启用：Drizzle、彗星堆叠和 MFDeconv 已禁用。</translation>
+    </message>
+    <message>
+      <source>🌀 Normalizing chunk {0}/{1} ({2} frames)…</source>
+      <translation>🌀 正在归一化分块 {0}/{1}（{2} 帧）…</translation>
+    </message>
+    <message>
+      <source>🌈 Splitting dual-band OSC frames into Ha / SII / OIII...</source>
+      <translation>🌈 正在将双带 OSC 帧拆分为 Ha / SII / OIII...</translation>
+    </message>
+    <message>
+      <source>🌍 Loading {0} images in parallel for normalization (up to {1} threads)…</source>
+      <translation>🌍 正在并行加载 {0} 张图像进行归一化（最多 {1} 个线程）…</translation>
+    </message>
+    <message>
+      <source>🌍 Loading {0} previews in parallel (up to {1} threads)...</source>
+      <translation>🌍 正在并行加载 {0} 个预览（最多 {1} 个线程）...</translation>
+    </message>
+    <message>
+      <source>🌍 Measuring global means in parallel...</source>
+      <translation>🌍 正在并行测量全局平均值...</translation>
+    </message>
+    <message>
+      <source>🌓 This flat group: using AUTO dark → {0}</source>
+      <translation>🌓 此平场组：使用自动暗场 → {0}</translation>
+    </message>
+    <message>
+      <source>🌓 This flat group: using OVERRIDE dark → {0}</source>
+      <translation>🌓 此平场组：使用覆盖暗场 → {0}</translation>
+    </message>
+    <message>
+      <source>🌠 Comet anchor in reference frame: ({0:.1f}, {1:.1f})</source>
+      <translation>🌠 参考帧中的彗星锚点：({0:.1f}, {1:.1f})</translation>
+    </message>
+    <message>
+      <source>🌠 Comet mode enabled for this group</source>
+      <translation>🌠 此组已启用彗星模式</translation>
+    </message>
+    <message>
+      <source>🌠 Comet mode: please click the comet center to continue…</source>
+      <translation>🌠 彗星模式：请点击彗星中心以继续…</translation>
+    </message>
+    <message>
+      <source>🌠 Comet seed set on {0} at ({1:.1f}, {2:.1f}).</source>
+      <translation>🌠 彗星种子已设置在 {0} 的 ({1:.1f}, {2:.1f})。</translation>
+    </message>
+    <message>
+      <source>🌠 Create comet stack (comet-aligned)</source>
+      <translation>🌠 创建彗星堆叠（彗星对齐）</translation>
+    </message>
+    <message>
+      <source>🌠 Star-Trail Mode enabled: skipping registration &amp; using max-value stack</source>
+      <translation>🌠 星轨模式已启用：跳过注册并使用最大值堆叠</translation>
+    </message>
+    <message>
+      <source>🎉 CUDA: torch.cuda.is_available() → True, GPU ready.</source>
+      <translation>🎉 CUDA: torch.cuda.is_available() → True，GPU 已就绪。</translation>
+    </message>
+    <message>
+      <source>🎯 Stacking complete!</source>
+      <translation>🎯 堆叠完成！</translation>
+    </message>
+    <message>
+      <source>🎯 Target pixel scale (hi-res): {0:.3f}"/px × {1:.3f}"/px</source>
+      <translation>🎯 目标像素比例（高分辨率）：{0:.3f}"/px × {1:.3f}"/px</translation>
+    </message>
+    <message>
+      <source>🎯 Target pixel scale unknown (no WCS/pixel size). Will skip scale normalization.</source>
+      <translation>🎯 目标像素比例未知（无 WCS/像素大小）。将跳过比例归一化。</translation>
+    </message>
+    <message>
+      <source>💡 For best results with CFA drizzle, aim for &gt;65% fill.</source>
+      <translation>💡 为了获得 CFA drizzle 的最佳效果，目标填充率应 &gt;65%。</translation>
+    </message>
+    <message>
+      <source>💾 Saving result…</source>
+      <translation>💾 正在保存结果…</translation>
+    </message>
+    <message>
+      <source>📁 Calibrated files saved to: {0}</source>
+      <translation>📁 已校准文件保存至：{0}</translation>
+    </message>
+    <message>
+      <source>📁 Output saved to: {0}</source>
+      <translation>📁 输出已保存至：{0}</translation>
+    </message>
+    <message>
+      <source>📁 Post-align: {0} group(s), {1} aligned frame(s).</source>
+      <translation>📁 对齐后：{0} 个组，{1} 帧已对齐。</translation>
+    </message>
+    <message>
+      <source>📂 DEBUG: Master Files Stored: {0}</source>
+      <translation>📂 调试：主文件已存储：{0}</translation>
+    </message>
+    <message>
+      <source>📂 Loaded stacking profile: {0}</source>
+      <translation>📂 已加载堆叠配置文件：{0}</translation>
+    </message>
+    <message>
+      <source>📂 Preparing to stack {0} frames in {1} groups.</source>
+      <translation>📂 准备在 {1} 个组中堆叠 {0} 帧。</translation>
+    </message>
+    <message>
+      <source>📂 {0} → StarCount={1}, Ecc={2:.4f}, Mean={3:.4f}, Weight={4:.4f}</source>
+      <translation>📂 {0} → 星点数={1}, 离心率={2:.4f}, 平均值={3:.4f}, 权重={4:.4f}</translation>
+    </message>
+    <message>
+      <source>📈 Dark groups summary:</source>
+      <translation>📈 暗场组摘要：</translation>
+    </message>
+    <message>
+      <source>📈 Flat groups summary:</source>
+      <translation>📈 平场组摘要：</translation>
+    </message>
+    <message>
+      <source>📈 Light groups summary:</source>
+      <translation>📈 亮场组摘要：</translation>
+    </message>
+    <message>
+      <source>📊 (New) reference median: {0:.4f}</source>
+      <translation>📊 （新）参考帧中值：{0:.4f}</translation>
+    </message>
+    <message>
+      <source>📊 Calculating statistics…</source>
+      <translation>📊 正在计算统计信息…</translation>
+    </message>
+    <message>
+      <source>📊 Found {0} aligned/normalized frames. Measuring in parallel previews…</source>
+      <translation>📊 找到 {0} 帧已对齐/归一化的帧。正在并行测量预览…</translation>
+    </message>
+    <message>
+      <source>📊 Found {0} total frames. Now measuring in parallel batches...</source>
+      <translation>📊 共找到 {0} 帧。正在并行批量测量...</translation>
+    </message>
+    <message>
+      <source>📊 Group '{0}' has {1} aligned file(s).</source>
+      <translation>📊 组 '{0}' 有 {1} 个已对齐文件。</translation>
+    </message>
+    <message>
+      <source>📊 Reference (debayered) median: {0:.4f}</source>
+      <translation>📊 参考帧（解拜耳）中值：{0:.4f}</translation>
+    </message>
+    <message>
+      <source>📊 Reference min={0:.6f}, normalized-median={1:.6f}</source>
+      <translation>📊 参考帧 最小值={0:.6f}, 归一化中值={1:.6f}</translation>
+    </message>
+    <message>
+      <source>📊 Stacking group '{0}' with {1}</source>
+      <translation>📊 正在堆叠组 '{0}'，使用 {1}</translation>
+    </message>
+    <message>
+      <source>📊 Stacking group '{0}' with {1}{2}</source>
+      <translation>📊 正在堆叠组 '{0}'，使用 {1}{2}</translation>
+    </message>
+    <message>
+      <source>📊 Stacking {0} frames</source>
+      <translation>📊 正在堆叠 {0} 帧</translation>
+    </message>
+    <message>
+      <source>📌 Auto-selected reference: {0}</source>
+      <translation>📌 自动选择的参考帧：{0}</translation>
+    </message>
+    <message>
+      <source>📌 Auto-selected reference: {0} {1}</source>
+      <translation>📌 自动选择的参考帧：{0} {1}</translation>
+    </message>
+    <message>
+      <source>📌 Comet reference pixel @ {0} → ({1:.2f},{2:.2f})</source>
+      <translation>📌 彗星参考像素 @ {0} → ({1:.2f},{2:.2f})</translation>
+    </message>
+    <message>
+      <source>📌 Reference for alignment (verbatim): {0}</source>
+      <translation>📌 用于对齐的参考帧（逐字）：{0}</translation>
+    </message>
+    <message>
+      <source>📌 Using user-specified reference (locked): {0}</source>
+      <translation>📌 使用用户指定的参考帧（已锁定）：{0}</translation>
+    </message>
+    <message>
+      <source>📌 Using user-specified reference: {0}</source>
+      <translation>📌 使用用户指定的参考帧：{0}</translation>
+    </message>
+    <message>
+      <source>📏 Pixel-scale normalize {0:.3f}"/{1:.3f}" → {2:.3f}"/{3:.3f}" | size {4}×{5} → {6}×{7}</source>
+      <translation>📏 像素比例归一化 {0:.3f}"/{1:.3f}" → {2:.3f}"/{3:.3f}" | 尺寸 {4}×{5} → {6}×{7}</translation>
+    </message>
+    <message>
+      <source>📐 Applying geometric correction…</source>
+      <translation>📐 正在应用几何校正…</translation>
+    </message>
+    <message>
+      <source>📐 Drizzle for '{0}' at {1}× (drop={2}) using {3} frame(s).</source>
+      <translation>📐 对 '{0}' 进行 {1}× Drizzle (drop={2})，使用 {3} 帧。</translation>
+    </message>
+    <message>
+      <source>📜 Reading metadata for {0} files…</source>
+      <translation>📜 正在读取 {0} 个文件的元数据…</translation>
+    </message>
+    <message>
+      <source>📦 Debayering reference frame…</source>
+      <translation>📦 正在对参考帧进行解拜耳…</translation>
+    </message>
+    <message>
+      <source>📦 Debayering {0}…</source>
+      <translation>📦 正在对 {0} 进行解拜耳…</translation>
+    </message>
+    <message>
+      <source>📦 Measuring chunk {0}/{1} ({2} frames)</source>
+      <translation>📦 正在测量分块 {0}/{1}（{2} 帧）</translation>
+    </message>
+    <message>
+      <source>📦 {0} tiles to process for this group (chunk {1}×{2}).</source>
+      <translation>📦 此组有 {0} 个切片待处理（分块 {1}×{2}）。</translation>
+    </message>
+    <message>
+      <source>📷 Applying bias subtraction…</source>
+      <translation>📷 正在应用偏置场扣除…</translation>
+    </message>
+    <message>
+      <source>📷 Applying dark subtraction…</source>
+      <translation>📷 正在应用暗场扣除…</translation>
+    </message>
+    <message>
+      <source>📷 Applying flat correction…</source>
+      <translation>📷 正在应用平场校正…</translation>
+    </message>
+    <message>
+      <source>🔀 Computing transforms…</source>
+      <translation>🔀 正在计算变换…</translation>
+    </message>
+    <message>
+      <source>🔁 Restarting Stacking Suite to apply {0}…</source>
+      <translation>🔁 正在重启堆叠套件以应用 {0}…</translation>
+    </message>
+    <message>
+      <source>🔄 Aligning frame {0}…</source>
+      <translation>🔄 正在对齐第 {0} 帧…</translation>
+    </message>
+    <message>
+      <source>🔄 Image Registration Started...</source>
+      <translation>🔄 图像注册已开始...</translation>
+    </message>
+    <message>
+      <source>🔄 Integrating Previously Registered Images…</source>
+      <translation>🔄 正在集成之前注册的图像…</translation>
+    </message>
+    <message>
+      <source>🔄 Normalizing frame {0}/{1}</source>
+      <translation>🔄 正在归一化第 {0}/{1} 帧</translation>
+    </message>
+    <message>
+      <source>🔄 Processing files…</source>
+      <translation>🔄 正在处理文件…</translation>
+    </message>
+    <message>
+      <source>🔍 Detected {0} stars</source>
+      <translation>🔍 检测到 {0} 颗星</translation>
+    </message>
+    <message>
+      <source>🔍 Detecting stars in reference frame…</source>
+      <translation>🔍 正在参考帧中检测星点…</translation>
+    </message>
+    <message>
+      <source>🔎 CFA drizzle sub-pixel phase fill (8×8): {0:.1f}%</source>
+      <translation>🔎 CFA drizzle 子像素相位填充 (8×8)：{0:.1f}%</translation>
+    </message>
+    <message>
+      <source>🔎 Discovered {0} flat groups ({1} eligible to stack) — {2} files total.</source>
+      <translation>🔎 发现 {0} 个平场组（{1} 个符合堆叠条件）— 共 {2} 个文件。</translation>
+    </message>
+    <message>
+      <source>🔎 Discovered {0} grouped exposures ({1} eligible to stack) — {2} files total.</source>
+      <translation>🔎 发现 {0} 个分组曝光（{1} 个符合堆叠条件）— 共 {2} 个文件。</translation>
+    </message>
+    <message>
+      <source>🔎 Scanning {0} file(s)…</source>
+      <translation>🔎 正在扫描 {0} 个文件…</translation>
+    </message>
+    <message>
+      <source>🔢 Processing frame {0} of {1}</source>
+      <translation>🔢 正在处理第 {0}/{1} 帧</translation>
+    </message>
+    <message>
+      <source>🔥🚀Register and Integrate Images🔥🚀</source>
+      <translation>🔥🚀注册并集成图像🔥🚀</translation>
+    </message>
+    <message>
+      <source>🔧 Applying corrections…</source>
+      <translation>🔧 正在应用校正…</translation>
+    </message>
+    <message>
+      <source>🔧 Calibrating frame {0}…</source>
+      <translation>🔧 正在校准第 {0} 帧…</translation>
+    </message>
+    <message>
+      <source>🔧 Comet stack chunk {0}×{1}</source>
+      <translation>🔧 彗星堆叠分块 {0}×{1}</translation>
+    </message>
+    <message>
+      <source>🔧 Resampled for binning {0}×{1} → {2}×{3} size {4}×{5} → {6}×{7}</source>
+      <translation>🔧 为 Binning 重采样 {0}×{1} → {2}×{3} 尺寸 {4}×{5} → {6}×{7}</translation>
+    </message>
+    <message>
+      <source>🔧 Using chunk size {0}×{1} for {2}</source>
+      <translation>🔧 为 {2} 使用分块大小 {0}×{1}</translation>
+    </message>
+    <message>
+      <source>🔨 Creating master bias from {0} frames…</source>
+      <translation>🔨 正在从 {0} 帧创建主偏置场…</translation>
+    </message>
+    <message>
+      <source>🔨 Creating master dark from {0} frames…</source>
+      <translation>🔨 正在从 {0} 帧创建主暗场…</translation>
+    </message>
+    <message>
+      <source>🔨 Creating master flat from {0} frames…</source>
+      <translation>🔨 正在从 {0} 帧创建主平场…</translation>
+    </message>
+    <message>
+      <source>🔬 Drizzle factor: {0}x</source>
+      <translation>🔬 Drizzle 因子：{0}x</translation>
+    </message>
+    <message>
+      <source>🔬 Drizzle integration complete</source>
+      <translation>🔬 Drizzle 集成完成</translation>
+    </message>
+    <message>
+      <source>🔬 Output resolution: {0}x{1}</source>
+      <translation>🔬 输出分辨率：{0}x{1}</translation>
+    </message>
+    <message>
+      <source>🔬 Using {0} kernel</source>
+      <translation>🔬 使用 {0} 内核</translation>
+    </message>
+    <message>
+      <source>🔭 Drizzle stacking for group '{0}' with {1} total rejected pixels.</source>
+      <translation>🔭 组 '{0}' 的 Drizzle 堆叠，共拒绝 {1} 个像素。</translation>
+    </message>
+    <message>
+      <source>🔹 [{0}/{1}] Integrating '{2}' with {3} file(s)…</source>
+      <translation>🔹 [{0}/{1}] 正在集成 '{2}'，包含 {3} 个文件…</translation>
+    </message>
+    <message>
+      <source>🗂️ Creating temp memmap: {0} (shape={1}×{2}×{3}, dtype=float32)</source>
+      <translation>🗂️ 正在创建临时内存映射：{0} (形状={1}×{2}×{3}, 类型=float32)</translation>
+    </message>
+    <message>
+      <source>🚀 Calibrate Light Frames 🚀</source>
+      <translation>🚀 校准亮场帧 🚀</translation>
+    </message>
+    <message>
+      <source>🚨 Could not load reference {0}. Aborting.</source>
+      <translation>🚨 无法加载参考帧 {0}。正在中止。</translation>
+    </message>
+    <message>
+      <source>🚨 Reference file does not exist: {0}</source>
+      <translation>🚨 参考文件不存在：{0}</translation>
+    </message>
+    <message>
+      <source>🚨 Rejected {0} frame(s) due to shift &gt; {1}px.</source>
+      <translation>🚨 由于偏移 &gt; {1}px，已拒绝 {0} 帧。</translation>
+    </message>
+    <message>
+      <source>🟠 Comet-aligned integration…</source>
+      <translation>🟠 彗星对齐集成…</translation>
+    </message>
+    <message>
+      <source>🟡 Blending Stars+Comet (screen after 5% stretch; mix={0:.2f})…</source>
+      <translation>🟡 正在混合星点+彗星（5% 拉伸后屏幕混合；混合度={0:.2f}）…</translation>
+    </message>
+    <message>
+      <source>🟢 Assigned session '{0}' to group '{1}'</source>
+      <translation>🟢 已将会话 '{0}' 分配给组 '{1}'</translation>
+    </message>
+    <message>
+      <source>🟢 Assigned session '{0}' to {1} file(s).</source>
+      <translation>🟢 已将会话 '{0}' 分配给 {1} 个文件。</translation>
+    </message>
+    <message>
+      <source>🟢 Measuring comet centers (template match)…</source>
+      <translation>🟢 正在测量彗星中心（模板匹配）…</translation>
+    </message>
+    <message>
+      <source>🟢 Processing {0} darks for {1}s ({2}) exposure…</source>
+      <translation>🟢 正在处理 {0} 个暗场，曝光时间 {1}s ({2})…</translation>
+    </message>
+    <message>
+      <source>🟢 Processing {0} flats for {1} ({2}) [{3}] in session '{4}'…</source>
+      <translation>🟢 正在处理 {0} 个平场，用于 {1} ({2}) [{3}]，会话 '{4}'…</translation>
+    </message>
+    <message>
+      <source>🧠 Selecting reference optimized for AstroAlign (starcount/(median*ecc))…</source>
+      <translation>🧠 正在选择针对 AstroAlign 优化的参考帧 (星点数/(中值*离心率))…</translation>
+    </message>
+    <message>
+      <source>🧩 Bayer flat group detected: {0}</source>
+      <translation>🧩 检测到拜耳平场组：{0}</translation>
+    </message>
+    <message>
+      <source>🧪 Multi-frame PSF-aware deconvolution path enabled.</source>
+      <translation>🧪 已启用多帧 PSF 感知反卷积路径。</translation>
+    </message>
+    <message>
+      <source>🧭 Drizzle uses {0} for {1}</source>
+      <translation>🧭 Drizzle 为 {1} 使用 {0}</translation>
+    </message>
+    <message>
+      <source>🧭 Total tiles to process: {0} (base chunk preference {1}×{2})</source>
+      <translation>🧭 待处理切片总数：{0}（基础分块偏好 {1}×{2}）</translation>
+    </message>
+    <message>
+      <source>🧮 Binning summary → target={0}×{1} (range observed: x=[{2}..{3}], y=[{4}..{5}])</source>
+      <translation>🧮 Binning 摘要 → 目标={0}×{1}（观测范围：x=[{2}..{3}], y=[{4}..{5}]）</translation>
+    </message>
+    <message>
+      <source>🧹 Clearing selection…</source>
+      <translation>🧹 正在清除选择…</translation>
+    </message>
+  </context>
+  <context>
+    <name>StarSpikesDialogPro</name>
+    <message>
+      <source>Aperture</source>
+      <translation>孔径</translation>
+    </message>
+    <message>
+      <source>Aperture Help</source>
+      <translation>孔径帮助</translation>
+    </message>
+    <message>
+      <source>Aperture Type:</source>
+      <translation>孔径类型：</translation>
+    </message>
+    <message>
+      <source>Apply to Active Document</source>
+      <translation>应用到当前文档</translation>
+    </message>
+    <message>
+      <source>Detection Threshold (σ):</source>
+      <translation>检测阈值 (σ)：</translation>
+    </message>
+    <message>
+      <source>Diffraction Spikes</source>
+      <translation>衍射尖峰</translation>
+    </message>
+    <message>
+      <source>Fit to Preview</source>
+      <translation>适应预览</translation>
+    </message>
+    <message>
+      <source>Flux Min:</source>
+      <translation>最小通量：</translation>
+    </message>
+    <message>
+      <source>Generate Spikes</source>
+      <translation>生成尖峰</translation>
+    </message>
+    <message>
+      <source>Number of Vanes:</source>
+      <translation>叶片数量：</translation>
+    </message>
+    <message>
+      <source>Obstruction:</source>
+      <translation>遮挡：</translation>
+    </message>
+    <message>
+      <source>PSF &amp; Synthesis</source>
+      <translation>PSF 与合成</translation>
+    </message>
+    <message>
+      <source>PSF Blur Sigma:</source>
+      <translation>PSF 模糊西格玛：</translation>
+    </message>
+    <message>
+      <source>Pupil Radius:</source>
+      <translation>瞳孔半径：</translation>
+    </message>
+    <message>
+      <source>Ready</source>
+      <translation>就绪</translation>
+    </message>
+    <message>
+      <source>Rotation (deg):</source>
+      <translation>旋转（度）：</translation>
+    </message>
+    <message>
+      <source>Spike Boost:</source>
+      <translation>尖峰增强：</translation>
+    </message>
+    <message>
+      <source>Star Detection</source>
+      <translation>星点检测</translation>
+    </message>
+    <message>
+      <source>Vane Width:</source>
+      <translation>叶片宽度：</translation>
+    </message>
+    <message>
+      <source>Zoom In</source>
+      <translation>放大</translation>
+    </message>
+    <message>
+      <source>Zoom Out</source>
+      <translation>缩小</translation>
+    </message>
+  </context>
+  <context>
+    <name>StarStretchDialog</name>
+    <message>
+      <source>Apply to Document</source>
+      <translation>应用到文档</translation>
+    </message>
+    <message>
+      <source>Color Boost:</source>
+      <translation>色彩增强：</translation>
+    </message>
+    <message>
+      <source>Fit to Preview</source>
+      <translation>适应预览</translation>
+    </message>
+    <message>
+      <source>Preview</source>
+      <translation>预览</translation>
+    </message>
+    <message>
+      <source>Remove Green via SCNR (Optional)</source>
+      <translation>通过 SCNR 移除绿色（可选）</translation>
+    </message>
+    <message>
+      <source>Star Stretch</source>
+      <translation>星点拉伸</translation>
+    </message>
+    <message>
+      <source>Stretch Amount:</source>
+      <translation>拉伸量：</translation>
+    </message>
+    <message>
+      <source>Zoom In</source>
+      <translation>放大</translation>
+    </message>
+    <message>
+      <source>Zoom Out</source>
+      <translation>缩小</translation>
+    </message>
+  </context>
+  <context>
+    <name>StatisticalStretchDialog</name>
+    <message>
+      <source>Apply</source>
+      <translation>应用</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>关闭</translation>
+    </message>
+    <message>
+      <source>Curves boost</source>
+      <translation>曲线增强</translation>
+    </message>
+    <message>
+      <source>Linked channels</source>
+      <translation>链接通道</translation>
+    </message>
+    <message>
+      <source>Normalize to [0..1]</source>
+      <translation>归一化到 [0..1]</translation>
+    </message>
+    <message>
+      <source>Preview</source>
+      <translation>预览</translation>
+    </message>
+    <message>
+      <source>Statistical Stretch</source>
+      <translation>统计拉伸</translation>
+    </message>
+    <message>
+      <source>Strength:</source>
+      <translation>强度：</translation>
+    </message>
+    <message>
+      <source>Target median:</source>
+      <translation>目标中值：</translation>
+    </message>
+  </context>
+  <context>
+    <name>StatisticsDialog</name>
+    <message>
+      <source>App Statistics</source>
+      <translation>应用统计</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>关闭</translation>
+    </message>
+    <message>
+      <source>Days</source>
+      <translation>天</translation>
+    </message>
+    <message>
+      <source>Hours</source>
+      <translation>小时</translation>
+    </message>
+    <message>
+      <source>Images Opened:</source>
+      <translation>打开的图像：</translation>
+    </message>
+    <message>
+      <source>Minutes</source>
+      <translation>分钟</translation>
+    </message>
+    <message>
+      <source>Time Spent:</source>
+      <translation>花费时间：</translation>
+    </message>
+    <message>
+      <source>Tools Opened:</source>
+      <translation>打开的工具：</translation>
+    </message>
+  </context>
+  <context>
+    <name>StatusLogWindow</name>
+    <message>
+      <source>Clear</source>
+      <translation>清除</translation>
+    </message>
+    <message>
+      <source>Stacking Suite Log</source>
+      <translation>堆叠套件日志</translation>
+    </message>
+  </context>
+  <context>
+    <name>SupernovaAsteroidHunterDialog</name>
+    <message>
+      <source>Images (*.png *.tif *.tiff *.fits *.fit *.xisf)</source>
+      <translation>图像 (*.png *.tif *.tiff *.fits *.fit *.xisf)</translation>
+    </message>
+  </context>
+  <context>
+    <name>SurfaceDialog</name>
+    <message>
+      <source>Close</source>
+      <translation>关闭</translation>
+    </message>
+    <message>
+      <source>Span: {0:.2f} … {1:.2f} {2}</source>
+      <translation>跨度：{0:.2f} … {1:.2f} {2}</translation>
+    </message>
+  </context>
+  <context>
+    <name>TableSubWindow</name>
+    <message>
+      <source>CSV Files (*.csv)</source>
+      <translation>CSV 文件 (*.csv)</translation>
+    </message>
+    <message>
+      <source>Export CSV</source>
+      <translation>导出 CSV</translation>
+    </message>
+    <message>
+      <source>Export CSV…</source>
+      <translation>导出 CSV…</translation>
+    </message>
+    <message>
+      <source>Failed to copy CSV:
+{0}</source>
+      <translation>复制 CSV 失败：
+{0}</translation>
+    </message>
+    <message>
+      <source>Failed to export CSV:
+{0}</source>
+      <translation>导出 CSV 失败：
+{0}</translation>
+    </message>
+    <message>
+      <source>Save CSV As…</source>
+      <translation>CSV 另存为…</translation>
+    </message>
+  </context>
+  <context>
+    <name>TiltDialog</name>
+    <message>
+      <source>Close</source>
+      <translation>关闭</translation>
+    </message>
+    <message>
+      <source>Corner</source>
+      <translation>角落</translation>
+    </message>
+    <message>
+      <source>Tilt span: {0:.1f} µm … {1:.1f} µm</source>
+      <translation>倾斜跨度：{0:.1f} µm … {1:.1f} µm</translation>
+    </message>
+    <message>
+      <source>Δ µm</source>
+      <translation>Δ µm</translation>
+    </message>
+  </context>
+  <context>
+    <name>ToolbarMixin</name>
+    <message>
+      <source>&amp;Exit</source>
+      <translation>退出(&amp;X)</translation>
+    </message>
+    <message>
+      <source>1:1</source>
+      <translation>1:1</translation>
+    </message>
+    <message>
+      <source>ABE...</source>
+      <translation>自动背景提取...</translation>
+    </message>
+    <message>
+      <source>Aberration Correction (AI)...</source>
+      <translation>像差校正 (AI)...</translation>
+    </message>
+    <message>
+      <source>Add Stars...</source>
+      <translation>添加星点...</translation>
+    </message>
+    <message>
+      <source>Add diffraction spikes to detected stars</source>
+      <translation>为检测到的星点添加衍射尖峰</translation>
+    </message>
+    <message>
+      <source>Add signatures/overlays and bake them into the active image</source>
+      <translation>添加签名/叠加层并烘焙到当前图像</translation>
+    </message>
+    <message>
+      <source>Adjust specific hue ranges with CMY/RGB controls</source>
+      <translation>使用CMY/RGB控制调整特定色相范围</translation>
+    </message>
+    <message>
+      <source>Advanced diffraction spikes with halos, flares and rainbow effects</source>
+      <translation>高级衍射尖峰（带光晕、眩光和彩虹效果）</translation>
+    </message>
+    <message>
+      <source>Align R and B channels to G using astroalign (affine/homography/poly)</source>
+      <translation>使用astroalign将R和B通道对齐到G（仿射/单应/多项式）</translation>
+    </message>
+    <message>
+      <source>Align images via astroalign / triangles</source>
+      <translation>通过astroalign/三角形对齐图像</translation>
+    </message>
+    <message>
+      <source>Apply Mask</source>
+      <translation>应用蒙版</translation>
+    </message>
+    <message>
+      <source>Apply a mask document to the active image</source>
+      <translation>将蒙版文档应用到当前图像</translation>
+    </message>
+    <message>
+      <source>Apply the current Display-Stretch to the image and add an undo step</source>
+      <translation>将当前显示拉伸应用到图像并添加撤销步骤</translation>
+    </message>
+    <message>
+      <source>Apply the same stretch to all RGB channels</source>
+      <translation>对所有RGB通道应用相同的拉伸</translation>
+    </message>
+    <message>
+      <source>Apply white balance (Star-Based, Manual, or Auto)</source>
+      <translation>应用白平衡（基于星点、手动或自动）</translation>
+    </message>
+    <message>
+      <source>Arcsinh star stretch with optional SCNR and color boost</source>
+      <translation>反双曲正弦星点拉伸（可选SCNR和色彩增强）</translation>
+    </message>
+    <message>
+      <source>Arrange subwindows in a near-square grid</source>
+      <translation>将子窗口排列成近似正方形网格</translation>
+    </message>
+    <message>
+      <source>AstroBin Exporter...</source>
+      <translation>AstroBin 导出器...</translation>
+    </message>
+    <message>
+      <source>AstroSpike...</source>
+      <translation>AstroSpike...</translation>
+    </message>
+    <message>
+      <source>Auto-fit on Resize</source>
+      <translation>调整大小时自动适应</translation>
+    </message>
+    <message>
+      <source>Automatic Background Extraction</source>
+      <translation>自动背景提取</translation>
+    </message>
+    <message>
+      <source>Background Neutralization...</source>
+      <translation>背景中和...</translation>
+    </message>
+    <message>
+      <source>Batch Converter...</source>
+      <translation>批量转换器...</translation>
+    </message>
+    <message>
+      <source>Batch Modify FITS Headers</source>
+      <translation>批量修改FITS头信息</translation>
+    </message>
+    <message>
+      <source>Batch Rename from FITS...</source>
+      <translation>从 FITS 批量重命名...</translation>
+    </message>
+    <message>
+      <source>Batch-align frames to a reference</source>
+      <translation>批量对齐帧到参考帧</translation>
+    </message>
+    <message>
+      <source>Blemish Blaster...</source>
+      <translation>瑕疵消除器...</translation>
+    </message>
+    <message>
+      <source>Blend a starless view with a stars-only view</source>
+      <translation>混合无星图像和纯星点图像</translation>
+    </message>
+    <message>
+      <source>Blend two open images (replace A or create new)</source>
+      <translation>混合两个打开的图像（替换A或创建新图像）</translation>
+    </message>
+    <message>
+      <source>Blink Comparator...</source>
+      <translation>闪烁比较器...</translation>
+    </message>
+    <message>
+      <source>Build mosaics from overlapping frames</source>
+      <translation>从重叠帧构建马赛克</translation>
+    </message>
+    <message>
+      <source>Bundles</source>
+      <translation>工具包</translation>
+    </message>
+    <message>
+      <source>CLAHE...</source>
+      <translation>CLAHE...</translation>
+    </message>
+    <message>
+      <source>Cascade Views</source>
+      <translation>层叠视图</translation>
+    </message>
+    <message>
+      <source>Cascade all subwindows</source>
+      <translation>层叠所有子窗口</translation>
+    </message>
+    <message>
+      <source>Check for Updates...</source>
+      <translation>检查更新...</translation>
+    </message>
+    <message>
+      <source>Clear All Views</source>
+      <translation>关闭所有视图</translation>
+    </message>
+    <message>
+      <source>Close all views and clear shortcuts</source>
+      <translation>关闭所有视图并清除快捷方式</translation>
+    </message>
+    <message>
+      <source>Close all views and documents, keep desktop shortcuts</source>
+      <translation>关闭所有视图和文档，保留桌面快捷方式</translation>
+    </message>
+    <message>
+      <source>Combine narrowband to RGB with optional OSC stars</source>
+      <translation>将窄带合成RGB（可选OSC星点）</translation>
+    </message>
+    <message>
+      <source>Combine three mono images into RGB</source>
+      <translation>将三张单色图像合成RGB</translation>
+    </message>
+    <message>
+      <source>Compare a stack of images by blinking</source>
+      <translation>通过闪烁比较图像堆叠</translation>
+    </message>
+    <message>
+      <source>Continuum Subtract (NB - scaled broadband)</source>
+      <translation>连续谱减除（窄带 - 缩放宽带）</translation>
+    </message>
+    <message>
+      <source>Continuum Subtract...</source>
+      <translation>连续谱减除...</translation>
+    </message>
+    <message>
+      <source>Contrast Limited Adaptive Histogram Equalization</source>
+      <translation>对比度限制自适应直方图均衡化</translation>
+    </message>
+    <message>
+      <source>Convolution / Deconvolution...</source>
+      <translation>卷积/反卷积...</translation>
+    </message>
+    <message>
+      <source>Copy Astrometric Solution...</source>
+      <translation>复制天体测量解...</translation>
+    </message>
+    <message>
+      <source>Copy View (zoom/pan)</source>
+      <translation>复制视图（缩放/平移）</translation>
+    </message>
+    <message>
+      <source>Cosmic Clarity</source>
+      <translation>宇宙清晰度</translation>
+    </message>
+    <message>
+      <source>Cosmic Clarity Satellite...</source>
+      <translation>宇宙清晰度卫星...</translation>
+    </message>
+    <message>
+      <source>Cosmic Clarity UI...</source>
+      <translation>宇宙清晰度界面...</translation>
+    </message>
+    <message>
+      <source>Create Mask...</source>
+      <translation>创建蒙版...</translation>
+    </message>
+    <message>
+      <source>Create Sample Scripts...</source>
+      <translation>创建示例脚本...</translation>
+    </message>
+    <message>
+      <source>Create a mask from the active image</source>
+      <translation>从当前图像创建蒙版</translation>
+    </message>
+    <message>
+      <source>Create a new mono document using the selected luminance method</source>
+      <translation>使用选定的亮度方法创建新的单色文档</translation>
+    </message>
+    <message>
+      <source>Create and run bundles of functions/shortcuts</source>
+      <translation>创建并运行功能/快捷方式包</translation>
+    </message>
+    <message>
+      <source>Create bundles of views; drop shortcuts to apply to all</source>
+      <translation>创建视图包；拖放快捷方式应用到所有</translation>
+    </message>
+    <message>
+      <source>Crop / rotate with handles</source>
+      <translation>使用控制柄裁剪/旋转</translation>
+    </message>
+    <message>
+      <source>Crop...</source>
+      <translation>裁剪...</translation>
+    </message>
+    <message>
+      <source>Curves Editor...</source>
+      <translation>曲线编辑器...</translation>
+    </message>
+    <message>
+      <source>Debayer...</source>
+      <translation>解拜耳...</translation>
+    </message>
+    <message>
+      <source>Demosaic a Bayer-mosaic mono image to RGB</source>
+      <translation>将拜耳马赛克单色图像解马赛克为RGB</translation>
+    </message>
+    <message>
+      <source>Detect exoplanet transits from time-series subs</source>
+      <translation>从时间序列单帧中检测系外行星凌日</translation>
+    </message>
+    <message>
+      <source>Diffraction Spikes...</source>
+      <translation>衍射光针...</translation>
+    </message>
+    <message>
+      <source>Display-Stretch</source>
+      <translation>显示拉伸</translation>
+    </message>
+    <message>
+      <source>Documentation...</source>
+      <translation>文档...</translation>
+    </message>
+    <message>
+      <source>Enhance faint/dark structures with wavelet-guided masking</source>
+      <translation>使用小波引导蒙版增强暗弱结构</translation>
+    </message>
+    <message>
+      <source>Erosion, dilation, opening, and closing.</source>
+      <translation>腐蚀、膨胀、开运算和闭运算。</translation>
+    </message>
+    <message>
+      <source>Evaluate expressions using open view names</source>
+      <translation>使用打开的视图名称计算表达式</translation>
+    </message>
+    <message>
+      <source>Exoplanet Detector...</source>
+      <translation>系外行星检测器...</translation>
+    </message>
+    <message>
+      <source>Extract Luminance</source>
+      <translation>提取亮度</translation>
+    </message>
+    <message>
+      <source>Extract R/G/B as three mono documents</source>
+      <translation>提取R/G/B为三个单色文档</translation>
+    </message>
+    <message>
+      <source>FITS Header Batch Modifier...</source>
+      <translation>FITS头批量修改器...</translation>
+    </message>
+    <message>
+      <source>FITS Header Modifier...</source>
+      <translation>FITS头修改器...</translation>
+    </message>
+    <message>
+      <source>Find transients/anomalies across frames</source>
+      <translation>在帧之间查找瞬变/异常</translation>
+    </message>
+    <message>
+      <source>Fit</source>
+      <translation>适应</translation>
+    </message>
+    <message>
+      <source>Fit galaxy isophotes and reveal residuals</source>
+      <translation>拟合星系等光度线并显示残差</translation>
+    </message>
+    <message>
+      <source>Fit image to current window</source>
+      <translation>适应窗口大小</translation>
+    </message>
+    <message>
+      <source>Flip Horizontal</source>
+      <translation>水平翻转</translation>
+    </message>
+    <message>
+      <source>Flip Vertical</source>
+      <translation>垂直翻转</translation>
+    </message>
+    <message>
+      <source>Flip image left&lt;-&gt;right</source>
+      <translation>左右翻转图像</translation>
+    </message>
+    <message>
+      <source>Flip image top&lt;-&gt;bottom</source>
+      <translation>上下翻转图像</translation>
+    </message>
+    <message>
+      <source>Frequency Separation...</source>
+      <translation>频率分离...</translation>
+    </message>
+    <message>
+      <source>Function Bundles...</source>
+      <translation>功能包...</translation>
+    </message>
+    <message>
+      <source>Functions</source>
+      <translation>功能</translation>
+    </message>
+    <message>
+      <source>GLIMR -- Isophote Modeler...</source>
+      <translation>GLIMR -- 等光强线建模器...</translation>
+    </message>
+    <message>
+      <source>Generalized hyperbolic stretch (α/beta/gamma, LP/HP, pivot)</source>
+      <translation>广义双曲线拉伸（α/beta/γ、低通/高通、中心点）</translation>
+    </message>
+    <message>
+      <source>Geometry</source>
+      <translation>几何变换</translation>
+    </message>
+    <message>
+      <source>Halo-B-Gon...</source>
+      <translation>光晕消除...</translation>
+    </message>
+    <message>
+      <source>Hard (target 0.50, σ 2)</source>
+      <translation>强力 (目标 0.50, σ 2)</translation>
+    </message>
+    <message>
+      <source>Hard-Display-Stretch</source>
+      <translation>强力显示拉伸</translation>
+    </message>
+    <message>
+      <source>Hide Mask Overlay</source>
+      <translation>隐藏蒙版叠加</translation>
+    </message>
+    <message>
+      <source>Histogram...</source>
+      <translation>直方图...</translation>
+    </message>
+    <message>
+      <source>History Explorer...</source>
+      <translation>历史浏览器...</translation>
+    </message>
+    <message>
+      <source>Hyperbolic Stretch...</source>
+      <translation>双曲线拉伸...</translation>
+    </message>
+    <message>
+      <source>Identify objects in a plate-solved frame</source>
+      <translation>识别已解析帧中的天体</translation>
+    </message>
+    <message>
+      <source>Image Combine...</source>
+      <translation>图像合并...</translation>
+    </message>
+    <message>
+      <source>Image Inspector and Focal Plane Analysis</source>
+      <translation>图像检查器和焦平面分析</translation>
+    </message>
+    <message>
+      <source>Image Peeker...</source>
+      <translation>图像预览器...</translation>
+    </message>
+    <message>
+      <source>Inspect and restore from the slot's history</source>
+      <translation>检查并从插槽历史恢复</translation>
+    </message>
+    <message>
+      <source>Inspect star PSF/HFR and flux histograms (SEP)</source>
+      <translation>检查星点PSF/HFR和通量直方图(SEP)</translation>
+    </message>
+    <message>
+      <source>Interactive blemish removal on the active view</source>
+      <translation>在当前视图上交互式移除瑕疵</translation>
+    </message>
+    <message>
+      <source>Invert</source>
+      <translation>反转</translation>
+    </message>
+    <message>
+      <source>Invert Mask</source>
+      <translation>反转蒙版</translation>
+    </message>
+    <message>
+      <source>Invert image colors</source>
+      <translation>反转图像颜色</translation>
+    </message>
+    <message>
+      <source>Linear Fit...</source>
+      <translation>线性拟合...</translation>
+    </message>
+    <message>
+      <source>Link Pan/Zoom</source>
+      <translation>链接平移/缩放</translation>
+    </message>
+    <message>
+      <source>Link RGB channels</source>
+      <translation>链接RGB通道</translation>
+    </message>
+    <message>
+      <source>Live Stacking...</source>
+      <translation>实时堆叠...</translation>
+    </message>
+    <message>
+      <source>Live monitor and stack incoming frames</source>
+      <translation>实时监控并堆叠传入帧</translation>
+    </message>
+    <message>
+      <source>Load Project...</source>
+      <translation>加载项目...</translation>
+    </message>
+    <message>
+      <source>Load a .sas project (views, histories, shortcuts)</source>
+      <translation>加载.sas项目（视图、历史、快捷方式）</translation>
+    </message>
+    <message>
+      <source>Make Display-Stretch Permanent</source>
+      <translation>使显示拉伸永久化</translation>
+    </message>
+    <message>
+      <source>Masks</source>
+      <translation>蒙版</translation>
+    </message>
+    <message>
+      <source>Match image levels using Linear Fit</source>
+      <translation>使用线性拟合匹配图像级别</translation>
+    </message>
+    <message>
+      <source>Mid (target 0.40, σ 3)</source>
+      <translation>中等 (目标 0.40, σ 3)</translation>
+    </message>
+    <message>
+      <source>Morphological Operations...</source>
+      <translation>形态学操作...</translation>
+    </message>
+    <message>
+      <source>Mosaic Master...</source>
+      <translation>马赛克大师...</translation>
+    </message>
+    <message>
+      <source>Multiscale Decomposition...</source>
+      <translation>多尺度分解...</translation>
+    </message>
+    <message>
+      <source>Multiscale detail/residual decomposition with per-layer controls</source>
+      <translation>多尺度细节/残差分解（带逐层控制）</translation>
+    </message>
+    <message>
+      <source>NB-&gt;RGB Stars...</source>
+      <translation>窄带-&gt;RGB星点...</translation>
+    </message>
+    <message>
+      <source>Neutralize background color balance using a sampled region</source>
+      <translation>使用采样区域中和背景色彩平衡</translation>
+    </message>
+    <message>
+      <source>New Project</source>
+      <translation>新建项目</translation>
+    </message>
+    <message>
+      <source>Normal (target 0.30, σ 5)</source>
+      <translation>正常 (目标 0.30, σ 5)</translation>
+    </message>
+    <message>
+      <source>Open Convolution / Deconvolution</source>
+      <translation>打开卷积/反卷积</translation>
+    </message>
+    <message>
+      <source>Open SFCC (Pickles + Filters + Sensor QE)</source>
+      <translation>打开SFCC（Pickles + 滤镜 + 传感器QE）</translation>
+    </message>
+    <message>
+      <source>Open Scripts Folder...</source>
+      <translation>打开脚本文件夹...</translation>
+    </message>
+    <message>
+      <source>Open Scripts Forum (Discord)...</source>
+      <translation>打开脚本论坛 (Discord)...</translation>
+    </message>
+    <message>
+      <source>Open User Scripts (GitHub)...</source>
+      <translation>打开用户脚本 (GitHub)...</translation>
+    </message>
+    <message>
+      <source>Open image(s)</source>
+      <translation>打开图像</translation>
+    </message>
+    <message>
+      <source>Open the Curves Editor for the active image</source>
+      <translation>打开当前图像的曲线编辑器</translation>
+    </message>
+    <message>
+      <source>Open the SASpro user scripts folder</source>
+      <translation>打开SASpro用户脚本文件夹</translation>
+    </message>
+    <message>
+      <source>Open the Seti Astro Suite Pro online documentation</source>
+      <translation>打开Seti Astro Suite Pro在线文档</translation>
+    </message>
+    <message>
+      <source>Open the built-in script editor</source>
+      <translation>打开内置脚本编辑器</translation>
+    </message>
+    <message>
+      <source>Open...</source>
+      <translation>打开...</translation>
+    </message>
+    <message>
+      <source>PSF Viewer...</source>
+      <translation>PSF查看器...</translation>
+    </message>
+    <message>
+      <source>Paste View</source>
+      <translation>粘贴视图</translation>
+    </message>
+    <message>
+      <source>Perfect Palette Picker...</source>
+      <translation>完美调色板选择器...</translation>
+    </message>
+    <message>
+      <source>Pick the perfect palette for your image</source>
+      <translation>为您的图像选择完美的调色板</translation>
+    </message>
+    <message>
+      <source>Pixel Math...</source>
+      <translation>像素数学...</translation>
+    </message>
+    <message>
+      <source>Plan targets by altitude, transit time, and lunar separation</source>
+      <translation>按高度、过中天时间和月球角距规划目标</translation>
+    </message>
+    <message>
+      <source>Plate Solver...</source>
+      <translation>天体测量...</translation>
+    </message>
+    <message>
+      <source>Presets</source>
+      <translation>预设</translation>
+    </message>
+    <message>
+      <source>RGB Align...</source>
+      <translation>RGB对齐...</translation>
+    </message>
+    <message>
+      <source>RGB Combination...</source>
+      <translation>RGB合成...</translation>
+    </message>
+    <message>
+      <source>RGB Extract</source>
+      <translation>RGB提取</translation>
+    </message>
+    <message>
+      <source>Recombine Luminance...</source>
+      <translation>重新合成亮度...</translation>
+    </message>
+    <message>
+      <source>Redo</source>
+      <translation>重做</translation>
+    </message>
+    <message>
+      <source>Reload Scripts</source>
+      <translation>重新加载脚本</translation>
+    </message>
+    <message>
+      <source>Remove Active Mask</source>
+      <translation>移除当前蒙版</translation>
+    </message>
+    <message>
+      <source>Remove Gradient (GraXpert)...</source>
+      <translation>移除渐变 (GraXpert)...</translation>
+    </message>
+    <message>
+      <source>Remove Green...</source>
+      <translation>移除绿色...</translation>
+    </message>
+    <message>
+      <source>Remove Pedestal</source>
+      <translation>移除底噪</translation>
+    </message>
+    <message>
+      <source>Remove Stars...</source>
+      <translation>移除星点...</translation>
+    </message>
+    <message>
+      <source>Remove the active mask from the active image</source>
+      <translation>从当前图像移除当前蒙版</translation>
+    </message>
+    <message>
+      <source>Remove those pesky halos around your stars</source>
+      <translation>移除星点周围烦人的光晕</translation>
+    </message>
+    <message>
+      <source>Replace the active image's luminance from another view</source>
+      <translation>从另一个视图替换当前图像的亮度</translation>
+    </message>
+    <message>
+      <source>Rescale image by a factor</source>
+      <translation>按比例缩放图像</translation>
+    </message>
+    <message>
+      <source>Rescale...</source>
+      <translation>缩放...</translation>
+    </message>
+    <message>
+      <source>Rescan the scripts folder and reload .py files</source>
+      <translation>重新扫描脚本文件夹并重新加载.py文件</translation>
+    </message>
+    <message>
+      <source>Rotate 180°</source>
+      <translation>旋转180°</translation>
+    </message>
+    <message>
+      <source>Rotate 90° Clockwise</source>
+      <translation>顺时针旋转90°</translation>
+    </message>
+    <message>
+      <source>Rotate 90° Counterclockwise</source>
+      <translation>逆时针旋转90°</translation>
+    </message>
+    <message>
+      <source>Rotate image 180°</source>
+      <translation>旋转图像180°</translation>
+    </message>
+    <message>
+      <source>Rotate image 90° clockwise</source>
+      <translation>顺时针旋转图像90°</translation>
+    </message>
+    <message>
+      <source>Rotate image 90° counterclockwise</source>
+      <translation>逆时针旋转图像90°</translation>
+    </message>
+    <message>
+      <source>Run GraXpert background extraction on the active image</source>
+      <translation>在当前图像上执行GraXpert背景提取</translation>
+    </message>
+    <message>
+      <source>Run star removal on the active image</source>
+      <translation>在当前图像上执行移除星点</translation>
+    </message>
+    <message>
+      <source>SCNR-style green channel removal.</source>
+      <translation>SCNR风格的绿色通道移除。</translation>
+    </message>
+    <message>
+      <source>Save As...</source>
+      <translation>另存为...</translation>
+    </message>
+    <message>
+      <source>Save Project...</source>
+      <translation>保存项目...</translation>
+    </message>
+    <message>
+      <source>Save all views, histories, and shortcuts to a .sas file</source>
+      <translation>将所有视图、历史和快捷方式保存到.sas文件</translation>
+    </message>
+    <message>
+      <source>Save the active image</source>
+      <translation>保存当前图像</translation>
+    </message>
+    <message>
+      <source>Script Editor...</source>
+      <translation>脚本编辑器...</translation>
+    </message>
+    <message>
+      <source>Selective Color Correction...</source>
+      <translation>选择性颜色校正...</translation>
+    </message>
+    <message>
+      <source>Set Sigma...</source>
+      <translation>设置 Sigma...</translation>
+    </message>
+    <message>
+      <source>Set Target Median...</source>
+      <translation>设置目标中值...</translation>
+    </message>
+    <message>
+      <source>Set the sigma for Display-Stretch (e.g., 5.0)</source>
+      <translation>设置显示拉伸的西格玛（例如5.0）</translation>
+    </message>
+    <message>
+      <source>Set the target median for Display-Stretch (e.g., 0.30)</source>
+      <translation>设置显示拉伸的目标中值（例如0.30）</translation>
+    </message>
+    <message>
+      <source>Show Mask Overlay</source>
+      <translation>显示蒙版叠加</translation>
+    </message>
+    <message>
+      <source>Signature / Insert...</source>
+      <translation>签名 / 插入...</translation>
+    </message>
+    <message>
+      <source>Smart Grid</source>
+      <translation>智能网格</translation>
+    </message>
+    <message>
+      <source>Solve WCS/SIP for the active image or a file</source>
+      <translation>为当前图像或文件解析WCS/SIP</translation>
+    </message>
+    <message>
+      <source>Spectral Flux Color Calibration...</source>
+      <translation>光谱通量颜色校准...</translation>
+    </message>
+    <message>
+      <source>Split into LF/HF and enhance HF (scale, wavelet, denoise)</source>
+      <translation>分离低频/高频并增强高频（缩放、小波、降噪）</translation>
+    </message>
+    <message>
+      <source>Split the workspace into equal horizontal rows</source>
+      <translation>将工作区分割成等高的水平行</translation>
+    </message>
+    <message>
+      <source>Split the workspace into equal vertical columns</source>
+      <translation>将工作区分割成等宽的垂直列</translation>
+    </message>
+    <message>
+      <source>Stacking Suite...</source>
+      <translation>堆叠套件...</translation>
+    </message>
+    <message>
+      <source>Stacking! Darks, Flats, Lights, Calibration, Drizzle, and more!!</source>
+      <translation>堆叠！暗场、平场、亮场、校准、Drizzle等等！！</translation>
+    </message>
+    <message>
+      <source>Star Stretch...</source>
+      <translation>星点拉伸...</translation>
+    </message>
+    <message>
+      <source>Star Stuff</source>
+      <translation>星点处理</translation>
+    </message>
+    <message>
+      <source>Statistical Stretch...</source>
+      <translation>统计拉伸...</translation>
+    </message>
+    <message>
+      <source>Stellar Alignment...</source>
+      <translation>星点对齐...</translation>
+    </message>
+    <message>
+      <source>Stellar Register...</source>
+      <translation>星点注册...</translation>
+    </message>
+    <message>
+      <source>Stretch the image using median/SD statistics</source>
+      <translation>使用中值/标准差统计拉伸图像</translation>
+    </message>
+    <message>
+      <source>Subtract per-channel minimum.
+Click: active view
+Alt+Drag: drop onto a view</source>
+      <translation>减去每通道最小值。
+点击：当前视图
+Alt+拖动：放置到视图上</translation>
+    </message>
+    <message>
+      <source>Supernova / Asteroid Hunter...</source>
+      <translation>超新星 / 小行星猎手...</translation>
+    </message>
+    <message>
+      <source>Tile Horizontally</source>
+      <translation>水平平铺</translation>
+    </message>
+    <message>
+      <source>Tile Vertically</source>
+      <translation>垂直平铺</translation>
+    </message>
+    <message>
+      <source>Tile Views</source>
+      <translation>平铺视图</translation>
+    </message>
+    <message>
+      <source>Tile all subwindows</source>
+      <translation>平铺所有子窗口</translation>
+    </message>
+    <message>
+      <source>Toggle display auto-stretch for the active window</source>
+      <translation>切换当前窗口的自动拉伸显示</translation>
+    </message>
+    <message>
+      <source>Toggle hard profile for Display-Stretch (H)</source>
+      <translation>切换显示拉伸的强硬模式(H)</translation>
+    </message>
+    <message>
+      <source>Tools</source>
+      <translation>工具</translation>
+    </message>
+    <message>
+      <source>Undo</source>
+      <translation>撤销</translation>
+    </message>
+    <message>
+      <source>View Bundles...</source>
+      <translation>查看包...</translation>
+    </message>
+    <message>
+      <source>View histogram and basic stats for the active image</source>
+      <translation>查看当前图像的直方图和基本统计</translation>
+    </message>
+    <message>
+      <source>View/Edit FITS headers</source>
+      <translation>查看/编辑FITS头信息</translation>
+    </message>
+    <message>
+      <source>Wave-scale HDR with luminance-masked starlet</source>
+      <translation>使用亮度蒙版星点小波的波尺度HDR</translation>
+    </message>
+    <message>
+      <source>WaveScale Dark Enhancer...</source>
+      <translation>WaveScale 暗部增强器...</translation>
+    </message>
+    <message>
+      <source>WaveScale HDR...</source>
+      <translation>WaveScale HDR...</translation>
+    </message>
+    <message>
+      <source>What's In My Image...</source>
+      <translation>我的图像中有什么...</translation>
+    </message>
+    <message>
+      <source>What's In My Sky...</source>
+      <translation>我的天空中有什么...</translation>
+    </message>
+    <message>
+      <source>What's In My...</source>
+      <translation>我的...中有什么...</translation>
+    </message>
+    <message>
+      <source>White Balance...</source>
+      <translation>白平衡...</translation>
+    </message>
+    <message>
+      <source>Write a ready-to-edit sample script into the scripts folder</source>
+      <translation>在脚本文件夹中编写一个准备编辑的示例脚本</translation>
+    </message>
+    <message>
+      <source>Zoom In</source>
+      <translation>放大</translation>
+    </message>
+    <message>
+      <source>Zoom Out</source>
+      <translation>缩小</translation>
+    </message>
+    <message>
+      <source>Zoom in</source>
+      <translation>放大</translation>
+    </message>
+    <message>
+      <source>Zoom out</source>
+      <translation>缩小</translation>
+    </message>
+    <message>
+      <source>Zoom to 100% (pixel-for-pixel)</source>
+      <translation>缩放到100%（像素对像素）</translation>
+    </message>
+  </context>
+  <context>
+    <name>UpdateMixin</name>
+    <message>
+      <source>A new version ({0}) is available!</source>
+      <translation>新版本 ({0}) 已发布！</translation>
+    </message>
+    <message>
+      <source>A new version is available</source>
+      <translation>有新版本可用</translation>
+    </message>
+    <message>
+      <source>Check for Updates</source>
+      <translation>检查更新</translation>
+    </message>
+    <message>
+      <source>Checking for updates...</source>
+      <translation>正在检查更新...</translation>
+    </message>
+    <message>
+      <source>Could not download update:
+{0}</source>
+      <translation>无法下载更新：
+{0}</translation>
+    </message>
+    <message>
+      <source>Could not extract update zip:
+{0}</source>
+      <translation>无法解压更新压缩包：
+{0}</translation>
+    </message>
+    <message>
+      <source>Could not save update to disk:
+{0}</source>
+      <translation>无法将更新保存到磁盘：
+{0}</translation>
+    </message>
+    <message>
+      <source>Could not start installer:
+{0}</source>
+      <translation>无法启动安装程序：
+{0}</translation>
+    </message>
+    <message>
+      <source>Current version</source>
+      <translation>当前版本</translation>
+    </message>
+    <message>
+      <source>Download</source>
+      <translation>下载</translation>
+    </message>
+    <message>
+      <source>Download and install</source>
+      <translation>下载并安装</translation>
+    </message>
+    <message>
+      <source>Download complete</source>
+      <translation>下载完成</translation>
+    </message>
+    <message>
+      <source>Download failed</source>
+      <translation>下载失败</translation>
+    </message>
+    <message>
+      <source>Downloaded ZIP did not contain an .exe installer.
+Folder: {0}</source>
+      <translation>下载的 ZIP 不包含 .exe 安装程序。
+文件夹：{0}</translation>
+    </message>
+    <message>
+      <source>Downloading update...</source>
+      <translation>正在下载更新...</translation>
+    </message>
+    <message>
+      <source>Downloading update... {0:.1f} KB / {1:.1f} KB</source>
+      <translation>正在下载更新... {0:.1f} KB / {1:.1f} KB</translation>
+    </message>
+    <message>
+      <source>Failed to check for updates</source>
+      <translation>检查更新失败</translation>
+    </message>
+    <message>
+      <source>Installing update...</source>
+      <translation>正在安装更新...</translation>
+    </message>
+    <message>
+      <source>Invalid response from server</source>
+      <translation>服务器响应无效</translation>
+    </message>
+    <message>
+      <source>Network error</source>
+      <translation>网络错误</translation>
+    </message>
+    <message>
+      <source>New version</source>
+      <translation>新版本</translation>
+    </message>
+    <message>
+      <source>No download link available for this platform.</source>
+      <translation>此平台没有可用的下载链接。</translation>
+    </message>
+    <message>
+      <source>No updates available</source>
+      <translation>没有可用更新</translation>
+    </message>
+    <message>
+      <source>Release Notes:
+{0}</source>
+      <translation>发行说明：
+{0}</translation>
+    </message>
+    <message>
+      <source>Release notes</source>
+      <translation>发行说明</translation>
+    </message>
+    <message>
+      <source>Remind me later</source>
+      <translation>稍后提醒我</translation>
+    </message>
+    <message>
+      <source>Restart later</source>
+      <translation>稍后重启</translation>
+    </message>
+    <message>
+      <source>Restart now</source>
+      <translation>立即重启</translation>
+    </message>
+    <message>
+      <source>Restart required</source>
+      <translation>需要重启</translation>
+    </message>
+    <message>
+      <source>Run Installer</source>
+      <translation>运行安装程序</translation>
+    </message>
+    <message>
+      <source>Skip this version</source>
+      <translation>跳过此版本</translation>
+    </message>
+    <message>
+      <source>The update has been downloaded.
+
+Run the installer now? (SAS will close.)</source>
+      <translation>更新已下载。
+
+现在运行安装程序吗？（SAS 将关闭。）</translation>
+    </message>
+    <message>
+      <source>Unable to check for updates.
+
+{err}</source>
+      <translation>无法检查更新。
+
+{err}</translation>
+    </message>
+    <message>
+      <source>Up to Date</source>
+      <translation>已是最新</translation>
+    </message>
+    <message>
+      <source>Update Available</source>
+      <translation>有可用更新</translation>
+    </message>
+    <message>
+      <source>Update Check Failed</source>
+      <translation>检查更新失败</translation>
+    </message>
+    <message>
+      <source>Update Failed</source>
+      <translation>更新失败</translation>
+    </message>
+    <message>
+      <source>Update JSON is invalid.
+
+{je}</source>
+      <translation>更新 JSON 无效。
+
+{je}</translation>
+    </message>
+    <message>
+      <source>Update JSON missing the 'version' field.</source>
+      <translation>更新 JSON 缺少 'version' 字段。</translation>
+    </message>
+    <message>
+      <source>Update available</source>
+      <translation>有可用更新</translation>
+    </message>
+    <message>
+      <source>Update available: {0}</source>
+      <translation>可用更新：{0}</translation>
+    </message>
+    <message>
+      <source>Update installed</source>
+      <translation>更新已安装</translation>
+    </message>
+    <message>
+      <source>What's new</source>
+      <translation>新功能</translation>
+    </message>
+    <message>
+      <source>You are running the latest version</source>
+      <translation>您正在运行最新版本</translation>
+    </message>
+    <message>
+      <source>You're already running the latest version.</source>
+      <translation>您已经运行的是最新版本。</translation>
+    </message>
+  </context>
+  <context>
+    <name>ViewBundleDialog</name>
+    <message>
+      <source>Add Directory (Recursive)…</source>
+      <translation>Add Directory (Recursive)…</translation>
+    </message>
+    <message>
+      <source>Add Files…</source>
+      <translation>Add Files…</translation>
+    </message>
+    <message>
+      <source>Add from Open…</source>
+      <translation>Add from Open…</translation>
+    </message>
+    <message>
+      <source>Clear Views</source>
+      <translation>Clear Views</translation>
+    </message>
+    <message>
+      <source>Compress to Chip</source>
+      <translation>Compress to Chip</translation>
+    </message>
+    <message>
+      <source>Delete</source>
+      <translation>Delete</translation>
+    </message>
+    <message>
+      <source>Duplicate</source>
+      <translation>Duplicate</translation>
+    </message>
+    <message>
+      <source>New Bundle</source>
+      <translation>New Bundle</translation>
+    </message>
+    <message>
+      <source>Remove Selected</source>
+      <translation>Remove Selected</translation>
+    </message>
+    <message>
+      <source>View Bundles</source>
+      <translation>View Bundles</translation>
+    </message>
+  </context>
+  <context>
+    <name>WhatsInMyImage</name>
+    <message>
+      <source>Analyze Image</source>
+      <translation>分析图像</translation>
+    </message>
+    <message>
+      <source>Analyzing...</source>
+      <translation>正在分析...</translation>
+    </message>
+    <message>
+      <source>Annotation color</source>
+      <translation>注释颜色</translation>
+    </message>
+    <message>
+      <source>Annotation size</source>
+      <translation>注释大小</translation>
+    </message>
+    <message>
+      <source>Annotation style</source>
+      <translation>注释样式</translation>
+    </message>
+    <message>
+      <source>Arrow</source>
+      <translation>箭头</translation>
+    </message>
+    <message>
+      <source>Asteroids</source>
+      <translation>小行星</translation>
+    </message>
+    <message>
+      <source>Circle</source>
+      <translation>圆圈</translation>
+    </message>
+    <message>
+      <source>Comets</source>
+      <translation>彗星</translation>
+    </message>
+    <message>
+      <source>Constellation</source>
+      <translation>星座</translation>
+    </message>
+    <message>
+      <source>Crosshair</source>
+      <translation>十字准星</translation>
+    </message>
+    <message>
+      <source>Dark nebulae</source>
+      <translation>暗星云</translation>
+    </message>
+    <message>
+      <source>Distance</source>
+      <translation>距离</translation>
+    </message>
+    <message>
+      <source>Export catalog</source>
+      <translation>导出目录</translation>
+    </message>
+    <message>
+      <source>Found Objects</source>
+      <translation>发现的天体</translation>
+    </message>
+    <message>
+      <source>Galaxies</source>
+      <translation>星系</translation>
+    </message>
+    <message>
+      <source>Globular clusters</source>
+      <translation>球状星团</translation>
+    </message>
+    <message>
+      <source>Hide annotations</source>
+      <translation>隐藏注释</translation>
+    </message>
+    <message>
+      <source>Label</source>
+      <translation>标签</translation>
+    </message>
+    <message>
+      <source>Magnitude</source>
+      <translation>星等</translation>
+    </message>
+    <message>
+      <source>Maximum magnitude</source>
+      <translation>最大星等</translation>
+    </message>
+    <message>
+      <source>Minimum magnitude</source>
+      <translation>最小星等</translation>
+    </message>
+    <message>
+      <source>Nebulae</source>
+      <translation>星云</translation>
+    </message>
+    <message>
+      <source>No WCS data</source>
+      <translation>无 WCS 数据</translation>
+    </message>
+    <message>
+      <source>No objects found</source>
+      <translation>未发现天体</translation>
+    </message>
+    <message>
+      <source>Object Name</source>
+      <translation>天体名称</translation>
+    </message>
+    <message>
+      <source>Object types</source>
+      <translation>天体类型</translation>
+    </message>
+    <message>
+      <source>Open clusters</source>
+      <translation>疏散星团</translation>
+    </message>
+    <message>
+      <source>Planetary nebulae</source>
+      <translation>行星状星云</translation>
+    </message>
+    <message>
+      <source>Please plate solve the image first</source>
+      <translation>请先对图像进行天体测量解析</translation>
+    </message>
+    <message>
+      <source>Quasars</source>
+      <translation>类星体</translation>
+    </message>
+    <message>
+      <source>RA/Dec</source>
+      <translation>赤经/赤纬</translation>
+    </message>
+    <message>
+      <source>Search radius</source>
+      <translation>搜索半径</translation>
+    </message>
+    <message>
+      <source>Settings</source>
+      <translation>设置</translation>
+    </message>
+    <message>
+      <source>Show annotations</source>
+      <translation>显示注释</translation>
+    </message>
+    <message>
+      <source>Show distance</source>
+      <translation>显示距离</translation>
+    </message>
+    <message>
+      <source>Show magnitude</source>
+      <translation>显示星等</translation>
+    </message>
+    <message>
+      <source>Show on image</source>
+      <translation>在图像上显示</translation>
+    </message>
+    <message>
+      <source>Show type</source>
+      <translation>显示类型</translation>
+    </message>
+    <message>
+      <source>Size</source>
+      <translation>大小</translation>
+    </message>
+    <message>
+      <source>Star clusters</source>
+      <translation>星团</translation>
+    </message>
+    <message>
+      <source>Stars</source>
+      <translation>星点</translation>
+    </message>
+    <message>
+      <source>Type</source>
+      <translation>类型</translation>
+    </message>
+    <message>
+      <source>What's In My Image</source>
+      <translation>我的图像中有什么</translation>
+    </message>
+  </context>
+  <context>
+    <name>WhatsInMySky</name>
+    <message>
+      <source>Add to imaging plan</source>
+      <translation>添加到拍摄计划</translation>
+    </message>
+    <message>
+      <source>Altitude</source>
+      <translation>高度</translation>
+    </message>
+    <message>
+      <source>Altitude chart</source>
+      <translation>高度图</translation>
+    </message>
+    <message>
+      <source>Astronomical twilight</source>
+      <translation>天文晨昏蒙影</translation>
+    </message>
+    <message>
+      <source>Azimuth</source>
+      <translation>方位角</translation>
+    </message>
+    <message>
+      <source>Civil twilight</source>
+      <translation>民用晨昏蒙影</translation>
+    </message>
+    <message>
+      <source>Custom time</source>
+      <translation>自定义时间</translation>
+    </message>
+    <message>
+      <source>Dark time</source>
+      <translation>黑暗时间</translation>
+    </message>
+    <message>
+      <source>Date</source>
+      <translation>日期</translation>
+    </message>
+    <message>
+      <source>Date &amp; Time</source>
+      <translation>日期和时间</translation>
+    </message>
+    <message>
+      <source>Enter coordinates</source>
+      <translation>输入坐标</translation>
+    </message>
+    <message>
+      <source>Excellent</source>
+      <translation>极佳</translation>
+    </message>
+    <message>
+      <source>Export list</source>
+      <translation>导出列表</translation>
+    </message>
+    <message>
+      <source>Fair</source>
+      <translation>一般</translation>
+    </message>
+    <message>
+      <source>Filter by type</source>
+      <translation>按类型筛选</translation>
+    </message>
+    <message>
+      <source>First quarter</source>
+      <translation>上弦月</translation>
+    </message>
+    <message>
+      <source>Full moon</source>
+      <translation>满月</translation>
+    </message>
+    <message>
+      <source>Good</source>
+      <translation>良好</translation>
+    </message>
+    <message>
+      <source>Illumination</source>
+      <translation>照明度</translation>
+    </message>
+    <message>
+      <source>Imaging time</source>
+      <translation>拍摄时间</translation>
+    </message>
+    <message>
+      <source>Imaging window</source>
+      <translation>拍摄窗口</translation>
+    </message>
+    <message>
+      <source>Last quarter</source>
+      <translation>下弦月</translation>
+    </message>
+    <message>
+      <source>Latitude</source>
+      <translation>纬度</translation>
+    </message>
+    <message>
+      <source>Location</source>
+      <translation>位置</translation>
+    </message>
+    <message>
+      <source>Longitude</source>
+      <translation>经度</translation>
+    </message>
+    <message>
+      <source>Maximum moon separation</source>
+      <translation>最大月球角距</translation>
+    </message>
+    <message>
+      <source>Minimum altitude</source>
+      <translation>最小高度</translation>
+    </message>
+    <message>
+      <source>Minimum transit altitude</source>
+      <translation>最小过中天高度</translation>
+    </message>
+    <message>
+      <source>Moon Separation</source>
+      <translation>月球角距</translation>
+    </message>
+    <message>
+      <source>Moon phase</source>
+      <translation>月相</translation>
+    </message>
+    <message>
+      <source>Moon separation</source>
+      <translation>月球角距</translation>
+    </message>
+    <message>
+      <source>Moonrise</source>
+      <translation>月出</translation>
+    </message>
+    <message>
+      <source>Moonset</source>
+      <translation>月落</translation>
+    </message>
+    <message>
+      <source>Name</source>
+      <translation>名称</translation>
+    </message>
+    <message>
+      <source>Nautical twilight</source>
+      <translation>航海晨昏蒙影</translation>
+    </message>
+    <message>
+      <source>New moon</source>
+      <translation>新月</translation>
+    </message>
+    <message>
+      <source>Not visible</source>
+      <translation>不可见</translation>
+    </message>
+    <message>
+      <source>Object Name</source>
+      <translation>天体名称</translation>
+    </message>
+    <message>
+      <source>Poor</source>
+      <translation>较差</translation>
+    </message>
+    <message>
+      <source>Rise Time</source>
+      <translation>升起时间</translation>
+    </message>
+    <message>
+      <source>Search</source>
+      <translation>搜索</translation>
+    </message>
+    <message>
+      <source>Search targets</source>
+      <translation>搜索目标</translation>
+    </message>
+    <message>
+      <source>Set Time</source>
+      <translation>设置时间</translation>
+    </message>
+    <message>
+      <source>Show chart</source>
+      <translation>显示图表</translation>
+    </message>
+    <message>
+      <source>Sky chart</source>
+      <translation>星图</translation>
+    </message>
+    <message>
+      <source>Sort by</source>
+      <translation>排序方式</translation>
+    </message>
+    <message>
+      <source>Sunset</source>
+      <translation>日落</translation>
+    </message>
+    <message>
+      <source>Time</source>
+      <translation>时间</translation>
+    </message>
+    <message>
+      <source>Time Zone</source>
+      <translation>时区</translation>
+    </message>
+    <message>
+      <source>Tomorrow night</source>
+      <translation>明晚</translation>
+    </message>
+    <message>
+      <source>Tonight</source>
+      <translation>今晚</translation>
+    </message>
+    <message>
+      <source>Transit Time</source>
+      <translation>过中天时间</translation>
+    </message>
+    <message>
+      <source>Transit time</source>
+      <translation>过中天时间</translation>
+    </message>
+    <message>
+      <source>Type</source>
+      <translation>类型</translation>
+    </message>
+    <message>
+      <source>Use current location</source>
+      <translation>使用当前位置</translation>
+    </message>
+    <message>
+      <source>Use current time</source>
+      <translation>使用当前时间</translation>
+    </message>
+    <message>
+      <source>Visibility</source>
+      <translation>可见性</translation>
+    </message>
+    <message>
+      <source>Visible Objects</source>
+      <translation>可见天体</translation>
+    </message>
+    <message>
+      <source>Waning</source>
+      <translation>亏</translation>
+    </message>
+    <message>
+      <source>Waxing</source>
+      <translation>盈</translation>
+    </message>
+    <message>
+      <source>What's In My Sky</source>
+      <translation>我的天空中有什么</translation>
+    </message>
+  </context>
+  <context>
+    <name>WindowShelf</name>
+    <message>
+      <source>Minimized Views</source>
+      <translation>Minimized Views</translation>
+    </message>
+    <message>
+      <source>Untitled</source>
+      <translation>Untitled</translation>
+    </message>
+  </context>
+  <context>
+    <name>_AstrobinIdDelegate</name>
+    <message>
+      <source>Enter AstroBin ID</source>
+      <translation>输入 AstroBin ID</translation>
+    </message>
+    <message>
+      <source>Invalid ID format</source>
+      <translation>ID 格式无效</translation>
+    </message>
+    <message>
+      <source>e.g. 4408</source>
+      <translation>例如 4408</translation>
+    </message>
+  </context>
+  <context>
+    <name>_DragTab</name>
+    <message>
+      <source>Close all tabs</source>
+      <translation>关闭所有标签页</translation>
+    </message>
+    <message>
+      <source>Close other tabs</source>
+      <translation>关闭其他标签页</translation>
+    </message>
+    <message>
+      <source>Close tab</source>
+      <translation>关闭标签页</translation>
+    </message>
+    <message>
+      <source>Close tabs to the right</source>
+      <translation>关闭右侧标签页</translation>
+    </message>
+    <message>
+      <source>Drag to duplicate/copy view.
+Hold Alt while dragging to LINK this view with another (live pan/zoom sync).
+Hold Shift while dragging to drop this image as a mask onto another view.
+Hold Ctrl while dragging to copy the astrometric solution (WCS) to another view.</source>
+      <translation>拖动以复制视图。
+拖动时按住 Alt 键将此视图与另一个视图链接（实时平移/缩放同步）。
+拖动时按住 Shift 键将此图像作为蒙版放置到另一个视图上。
+拖动时按住 Ctrl 键将天体测量解 (WCS) 复制到另一个视图。</translation>
+    </message>
+    <message>
+      <source>Drag to reorder</source>
+      <translation>拖动以重新排序</translation>
+    </message>
+  </context>
+  <context>
+    <name>_MaskWindow</name>
+    <message>
+      <source>Apply</source>
+      <translation>应用</translation>
+    </message>
+    <message>
+      <source>Blur</source>
+      <translation>模糊</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>关闭</translation>
+    </message>
+    <message>
+      <source>Contract</source>
+      <translation>收缩</translation>
+    </message>
+    <message>
+      <source>Dark Mask</source>
+      <translation>暗部蒙版</translation>
+    </message>
+    <message>
+      <source>Expand</source>
+      <translation>扩张</translation>
+    </message>
+    <message>
+      <source>Feather</source>
+      <translation>羽化</translation>
+    </message>
+    <message>
+      <source>Invert</source>
+      <translation>反转</translation>
+    </message>
+    <message>
+      <source>Mask</source>
+      <translation>蒙版</translation>
+    </message>
+    <message>
+      <source>Mask Preview</source>
+      <translation>蒙版预览</translation>
+    </message>
+    <message>
+      <source>Reset</source>
+      <translation>重置</translation>
+    </message>
+  </context>
+  <context>
+    <name>_Progress</name>
+    <message>
+      <source>Cancel</source>
+      <translation>取消</translation>
+    </message>
+    <message>
+      <source>Cancelled</source>
+      <translation>已取消</translation>
+    </message>
+    <message>
+      <source>Completed</source>
+      <translation>完成</translation>
+    </message>
+    <message>
+      <source>Failed</source>
+      <translation>失败</translation>
+    </message>
+    <message>
+      <source>Please wait...</source>
+      <translation>请稍候...</translation>
+    </message>
+    <message>
+      <source>Processing...</source>
+      <translation>处理中...</translation>
+    </message>
+    <message>
+      <source>Progress</source>
+      <translation>进度</translation>
+    </message>
+  </context>
+  <context>
+    <name>_SimplePickDialog</name>
+    <message>
+      <source>1:1</source>
+      <translation>1:1</translation>
+    </message>
+    <message>
+      <source>Cancel</source>
+      <translation>取消</translation>
+    </message>
+    <message>
+      <source>Click the comet center</source>
+      <translation>点击彗星中心</translation>
+    </message>
+    <message>
+      <source>Disable Autostretch</source>
+      <translation>禁用自动拉伸</translation>
+    </message>
+    <message>
+      <source>Enable Autostretch</source>
+      <translation>启用自动拉伸</translation>
+    </message>
+    <message>
+      <source>Fit</source>
+      <translation>适应</translation>
+    </message>
+    <message>
+      <source>OK</source>
+      <translation>确定</translation>
+    </message>
+    <message>
+      <source>Select</source>
+      <translation>选择</translation>
+    </message>
+    <message>
+      <source>Zoom In</source>
+      <translation>放大</translation>
+    </message>
+    <message>
+      <source>Zoom Out</source>
+      <translation>缩小</translation>
+    </message>
+  </context>
+  <context>
+    <name>_SolveStatusPopup</name>
+    <message>
+      <source>Apply WCS</source>
+      <translation>应用 WCS</translation>
+    </message>
+    <message>
+      <source>Cancelled</source>
+      <translation>已取消</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>关闭</translation>
+    </message>
+    <message>
+      <source>Copy to clipboard</source>
+      <translation>复制到剪贴板</translation>
+    </message>
+    <message>
+      <source>Dec</source>
+      <translation>赤纬</translation>
+    </message>
+    <message>
+      <source>Failed</source>
+      <translation>失败</translation>
+    </message>
+    <message>
+      <source>Field size</source>
+      <translation>视场大小</translation>
+    </message>
+    <message>
+      <source>Hide</source>
+      <translation>隐藏</translation>
+    </message>
+    <message>
+      <source>Plate Solve Status</source>
+      <translation>天体测量解析状态</translation>
+    </message>
+    <message>
+      <source>Plate Solving</source>
+      <translation>天体测量解析中</translation>
+    </message>
+    <message>
+      <source>RA</source>
+      <translation>赤经</translation>
+    </message>
+    <message>
+      <source>RMS error</source>
+      <translation>RMS 误差</translation>
+    </message>
+    <message>
+      <source>Rotation</source>
+      <translation>旋转</translation>
+    </message>
+    <message>
+      <source>Scale</source>
+      <translation>缩放</translation>
+    </message>
+    <message>
+      <source>Solving...</source>
+      <translation>解析中...</translation>
+    </message>
+    <message>
+      <source>Stars matched</source>
+      <translation>匹配的星点</translation>
+    </message>
+    <message>
+      <source>Starting…</source>
+      <translation>正在启动...</translation>
+    </message>
+    <message>
+      <source>Success</source>
+      <translation>成功</translation>
+    </message>
+    <message>
+      <source>View in Aladin</source>
+      <translation>在 Aladin 中查看</translation>
+    </message>
+  </context>
+</TS>

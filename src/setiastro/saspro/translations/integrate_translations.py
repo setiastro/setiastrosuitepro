@@ -161,7 +161,9 @@ def inject_translations_into_ts(ts_file: Path, translations: dict, lang: str):
             injected_count += 1
     
     # Write back the modified .ts file with pretty printing if possible
-    # We'll just use the default write for now
+    if hasattr(ET, 'indent'):
+        ET.indent(tree, space="  ", level=0)
+    
     tree.write(ts_file, encoding='utf-8', xml_declaration=True)
     
     return injected_count
@@ -221,7 +223,6 @@ def main():
         'es': TRANSLATIONS_ES,
         'zh': TRANSLATIONS_ZH,
         'de': TRANSLATIONS_DE,
-        'pt': TRANSLATIONS_PT,
         'pt': TRANSLATIONS_PT,
         'ja': TRANSLATIONS_JA,
         'hi': TRANSLATIONS_HI,
