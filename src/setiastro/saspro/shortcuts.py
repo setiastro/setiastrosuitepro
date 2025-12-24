@@ -487,17 +487,17 @@ class DraggableToolBar(QToolBar):
     def _show_toolbutton_context_menu(self, btn: QToolButton, act: QAction, gpos: QPoint):
         m = QMenu(btn)
 
-        m.addAction("Create Desktop Shortcut", lambda: self._add_shortcut_for_action(act))
+        m.addAction(self.tr("Create Desktop Shortcut"), lambda: self._add_shortcut_for_action(act))
 
         # Hide this icon
         cid = self._action_id(act)
         if cid:
             m.addSeparator()
-            m.addAction("Hide this icon", lambda: self._set_action_hidden(act, True))
+            m.addAction(self.tr("Hide this icon"), lambda: self._set_action_hidden(act, True))
 
         # (Optional) teach users about Alt+Drag:
         m.addSeparator()
-        tip = m.addAction("Tip: Alt+Drag to create")
+        tip = m.addAction(self.tr("Tip: Alt+Drag to create"))
         tip.setEnabled(False)
 
         m.exec(gpos)
@@ -522,7 +522,7 @@ class DraggableToolBar(QToolBar):
 
         # Submenu listing hidden actions for this toolbar
         hidden = self._load_hidden_set()
-        sub = m.addMenu("Show hidden…")
+        sub = m.addMenu(self.tr("Show hidden…"))
 
         # Build list from actions that are currently invisible
         any_hidden = False
@@ -536,7 +536,7 @@ class DraggableToolBar(QToolBar):
             sub.setEnabled(False)
 
         m.addSeparator()
-        m.addAction("Reset hidden icons", self._reset_hidden_icons)
+        m.addAction(self.tr("Reset hidden icons"), self._reset_hidden_icons)
 
         m.exec(ev.globalPos())
 
@@ -781,18 +781,18 @@ class ShortcutButton(QToolButton):
     # --- Context menu (run / preset / delete) ----------------------------
     def _context_menu(self, pos):
         m = QMenu(self)
-        m.addAction("Run", lambda: self._mgr.trigger(self.command_id))
+        m.addAction(self.tr("Run"), lambda: self._mgr.trigger(self.command_id))
         m.addSeparator()
-        m.addAction("Edit Preset…", self._edit_preset_ui)
-        m.addAction("Clear Preset", lambda: self._save_preset(None))
-        m.addAction("Rename…", self._rename)                    # ← NEW
+        m.addAction(self.tr("Edit Preset…"), self._edit_preset_ui)
+        m.addAction(self.tr("Clear Preset"), lambda: self._save_preset(None))
+        m.addAction(self.tr("Rename…"), self._rename)                    # ← NEW
         m.addSeparator()
-        m.addAction("Delete", self._delete)
+        m.addAction(self.tr("Delete"), self._delete)
         m.exec(self.mapToGlobal(pos))
 
     def _rename(self):
         current = self.text()
-        new_name, ok = QInputDialog.getText(self, "Rename Shortcut", "Name:", text=current)
+        new_name, ok = QInputDialog.getText(self, self.tr("Rename Shortcut"), self.tr("Name:"), text=current)
         if not ok or not new_name.strip():
             return
         self.setText(new_name.strip())
@@ -804,21 +804,21 @@ class ShortcutButton(QToolButton):
         result = _open_preset_editor_for_command(self, cid, cur)
         if result is not None:
             self._save_preset(result)
-            QMessageBox.information(self, "Preset saved", "Preset stored on shortcut.")
+            QMessageBox.information(self, self.tr("Preset saved"), self.tr("Preset stored on shortcut."))
             return
 
         # Fallback: JSON editor
         raw = json.dumps(cur or {}, indent=2)
-        text, ok = QInputDialog.getMultiLineText(self, "Edit Preset (JSON)", "Preset:", raw)
+        text, ok = QInputDialog.getMultiLineText(self, self.tr("Edit Preset (JSON)"), self.tr("Preset:"), raw)
         if ok:
             try:
                 preset = json.loads(text or "{}")
                 if not isinstance(preset, dict):
-                    raise ValueError("Preset must be a JSON object")
+                    raise ValueError(self.tr("Preset must be a JSON object"))
                 self._save_preset(preset)
-                QMessageBox.information(self, "Preset saved", "Preset stored on shortcut.")
+                QMessageBox.information(self, self.tr("Preset saved"), self.tr("Preset stored on shortcut."))
             except Exception as e:
-                QMessageBox.warning(self, "Invalid JSON", str(e))
+                QMessageBox.warning(self, self.tr("Invalid JSON"), str(e))
 
 
     def _start_command_drag(self):

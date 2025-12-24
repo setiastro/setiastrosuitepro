@@ -1,8 +1,4 @@
 # -*- coding: utf-8 -*-
-"""
-Hindi translations for Seti Astro Suite Pro.
-Partial translations generated via script.
-"""
 
 TRANSLATIONS_HI = {
     "ABEDialog": {
@@ -60,9 +56,7 @@ TRANSLATIONS_HI = {
         "Post-alignment failed: {0}": "संरेखण के बाद का कार्य विफल: {0}",
     },
     "AstroSuiteProMainWindow": {
-        "Start a new project? This closes all views and clears desktop shortcuts.": "नया प्रोजेक्ट शुरू करें? यह सभी दृश्यों को बंद कर देगा और डेस्कटॉप शॉर्टकट्स को साफ़ कर देगा।",
         "&About": "&बारे में",
-        "Statistics...": "आंकड़े...",
         "&Edit": "&संपादन",
         "&Exit": "&निकास",
         "&File": "&फ़ाइल",
@@ -124,6 +118,7 @@ TRANSLATIONS_HI = {
         "Combine narrowband to RGB with optional OSC stars": "वैकल्पिक OSC तारों के साथ नैरोबैंड को RGB में संयोजित करें",
         "Combine three mono images into RGB": "तीन मोनो छवियों को RGB में संयोजित करें",
         "Compare a stack of images by blinking": "ब्लिंकिंग द्वारा छवियों के ढेर की तुलना करें",
+        "Console / Status": "Console / Status",
         "Continuum Subtract (NB - scaled broadband)": "कॉन्टिनम घटाव (NB - स्केल किया गया ब्रॉडबैंड)",
         "Continuum Subtract...": "कॉन्टिनम घटाव...",
         "Contrast Limited Adaptive Histogram Equalization": "कंट्रास्ट लिमिटेड एडेप्टिव हिस्टोग्राम इक्वलाइजेशन",
@@ -152,6 +147,7 @@ TRANSLATIONS_HI = {
         "Erosion, dilation, opening, and closing.": "कटाव, फैलाव, खोलना और बंद करना।",
         "Evaluate expressions using open view names": "खुले दृश्यों के नामों का उपयोग करके व्यंजकों का मूल्यांकन करें",
         "Exoplanet Detector...": "एक्सोप्लैनेट डिटेक्टर...",
+        "Explorer": "Explorer",
         "Export Shortcuts...": "शॉर्टकट निर्यात करें...",
         "Extract Luminance": "ल्यूमिनेंस निकालें",
         "Extract R/G/B as three mono documents": "R/G/B को तीन मोनो दस्तावेज़ों के रूप में निकालें",
@@ -286,12 +282,15 @@ TRANSLATIONS_HI = {
         "Stacking! Darks, Flats, Lights, Calibration, Drizzle, and more!!": "स्टैकिंग! डार्क, फ्लैट, लाइट, अंशांकन, ड्रिजल, और बहुत कुछ!!",
         "Star Stretch...": "स्टार स्ट्रेच...",
         "Star Stuff": "स्टार स्टफ",
+        "Start a new project? This closes all views and clears desktop shortcuts.": "नया प्रोजेक्ट शुरू करें? यह सभी दृश्यों को बंद कर देगा और डेस्कटॉप शॉर्टकट्स को साफ़ कर देगा।",
         "Statistical Stretch...": "सांख्यिकीय स्ट्रेच...",
+        "Statistics...": "आंकड़े...",
         "Stellar Alignment...": "तारकीय संरेखण...",
         "Stellar Register...": "तारकीय रजिस्टर...",
         "Stretch the image using median/SD statistics": "माध्यिका/SD सांख्यिकी का उपयोग करके छवि को स्ट्रेच करें",
         "Subtract per-channel minimum.\nClick: active view\nAlt+Drag: drop onto a view": "प्रति-चैनल न्यूनतम घटाएं।\nक्लिक करें: सक्रिय दृश्य\nAlt+ड्रैग: एक दृश्य पर छोड़ें",
         "Supernova / Asteroid Hunter...": "सुपरनोवा / क्षुद्रग्रह हंटर...",
+        "System Monitor": "System Monitor",
         "Tile Horizontally": "क्षैतिज रूप से टाइल करें",
         "Tile Vertically": "लंबवत रूप से टाइल करें",
         "Tile Views": "दृश्य टाइल करें",
@@ -1091,6 +1090,14 @@ TRANSLATIONS_HI = {
         "Show System Log Panel": "सिस्टम लॉग पैनल दिखाएं",
         "System Log": "सिस्टम लॉग",
     },
+    "DraggableToolBar": {
+        "Create Desktop Shortcut": "Create Desktop Shortcut",
+        "Hide this icon": "Hide this icon",
+        "Lock Toolbar Icons": "Lock Toolbar Icons",
+        "Reset hidden icons": "Reset hidden icons",
+        "Show hidden…": "Show hidden…",
+        "Tip: Alt+Drag to create": "Tip: Alt+Drag to create",
+    },
     "ExoPlanetWindow": {
         "1: Load Raw Subs…": "1: रॉ सब्स लोड करें…",
         "1a: Calibrate && Align Subs": "1a: सब्स को कैलिब्रेट और संरेखित करें",
@@ -1135,7 +1142,6 @@ TRANSLATIONS_HI = {
         "Value": "मान",
     },
     "FileMixin": {
-        "Start a new project? This closes all views and clears desktop shortcuts.": "नया प्रोजेक्ट शुरू करें? यह सभी दृश्यों को बंद कर देगा और डेस्कटॉप शॉर्टकट्स को साफ़ कर देगा।",
         "Failed to save:\n{e}": "सहेजने में विफल:\n{e}",
         "Failed to save:\n{msg}": "सहेजने में विफल:\n{msg}",
         "File not found": "फ़ाइल नहीं मिली",
@@ -1699,8 +1705,6 @@ TRANSLATIONS_HI = {
         "Selective Color Correction": "चयनात्मक रंग सुधार (Selective Color Correction)",
     },
     "SettingsDialog": {
-        "Restart required": "पुनः आरंभ आवश्यक",
-        "Language changed. Please manually restart the application to apply the new language.": "भाषा बदल गई है। नई भाषा लागू करने के लिए कृपया एप्लिकेशन को मैन्युअल रूप से पुनरारंभ करें।",
         "ASTAP executable:": "ASTAP निष्पादन योग्य (executable):",
         "Astrometry.net API key:": "Astrometry.net API कुंजी:",
         "Check Now…": "अभी जाँचें…",
@@ -1718,6 +1722,7 @@ TRANSLATIONS_HI = {
         "High-quality autostretch (16-bit; better gradients)": "उच्च गुणवत्ता वाला ऑटोस्ट्रेच (16-बिट; बेहतर ग्रेडिएंट्स)",
         "Italian": "इतालवी (Italian)",
         "Japanese": "जापानी (Japanese)",
+        "Language changed. Please manually restart the application to apply the new language.": "भाषा बदल गई है। नई भाषा लागू करने के लिए कृपया एप्लिकेशन को मैन्युअल रूप से पुनरारंभ करें।",
         "Language:": "भाषा:",
         "Pick a PNG or JPG to use as the application background": "एप्लिकेशन पृष्ठभूमि के रूप में उपयोग करने के लिए PNG या JPG चुनें",
         "Portuguese": "पुर्तगाली (Portuguese)",
@@ -1730,6 +1735,21 @@ TRANSLATIONS_HI = {
         "StarNet executable:": "StarNet निष्पादन योग्य:",
         "The application will now restart to apply the language change.": "भाषा परिवर्तन लागू करने के लिए एप्लिकेशन अब रीस्टार्ट होगा।",
         "Theme:": "थीम:",
+    },
+    "ShortcutButton": {
+        "Clear Preset": "Clear Preset",
+        "Delete": "Delete",
+        "Edit Preset (JSON)": "Edit Preset (JSON)",
+        "Edit Preset…": "Edit Preset…",
+        "Invalid JSON": "Invalid JSON",
+        "Name:": "Name:",
+        "Preset must be a JSON object": "Preset must be a JSON object",
+        "Preset saved": "Preset saved",
+        "Preset stored on shortcut.": "Preset stored on shortcut.",
+        "Preset:": "Preset:",
+        "Rename Shortcut": "Rename Shortcut",
+        "Rename…": "Rename…",
+        "Run": "Run",
     },
     "SignatureInsertDialogPro": {
         "Signature / Insert": "हस्ताक्षर / सम्मिलित करें",
@@ -3082,6 +3102,16 @@ TRANSLATIONS_HI = {
         "Strength:": "शक्ति (Strength):",
         "Target median:": "लक्षित माध्यिका (Target median):",
     },
+    "StatisticsDialog": {
+        "App Statistics": "ऐप के आंकड़े",
+        "Close": "बंद करें",
+        "Days": "दिन",
+        "Hours": "घंटे",
+        "Images Opened:": "खोली गई छवियां:",
+        "Minutes": "मिनट",
+        "Time Spent:": "बिताया गया समय:",
+        "Tools Opened:": "खोले गए उपकरण:",
+    },
     "StatusLogWindow": {
         "Clear": "साफ़ करें",
         "Stacking Suite Log": "स्टैकिंग सूट लॉग",
@@ -3300,8 +3330,6 @@ TRANSLATIONS_HI = {
         "Stacking! Darks, Flats, Lights, Calibration, Drizzle, and more!!": "स्टैकिंग! डार्क, फ्लैट्स, लाइट्स, कैलिब्रेशन, ड्रिज़ल और बहुत कुछ!!",
         "Star Stretch...": "स्टार स्ट्रेच...",
         "Star Stuff": "स्टार स्टफ",
-        "Star Stretch...": "स्टार स्ट्रेच...",
-        "Star Stuff": "स्टार स्टफ",
         "Statistical Stretch...": "सांख्यिकीय स्ट्रेच...",
         "Stellar Alignment...": "तारकीय संरेखण...",
         "Stellar Register...": "Stellar Register...",
@@ -3489,6 +3517,10 @@ TRANSLATIONS_HI = {
         "Waxing": "बढ़ता हुआ (Waxing)",
         "What's In My Sky": "मेरे आकाश में क्या है",
     },
+    "WindowShelf": {
+        "Minimized Views": "Minimized Views",
+        "Untitled": "Untitled",
+    },
     "_AstrobinIdDelegate": {
         "Enter AstroBin ID": "AstroBin ID दर्ज करें",
         "Invalid ID format": "अमान्य ID प्रारूप",
@@ -3556,16 +3588,5 @@ TRANSLATIONS_HI = {
         "Starting…": "शुरू हो रहा है…",
         "Success": "सफलता",
         "View in Aladin": "Aladin में देखें",
-    },
-
-    "StatisticsDialog": {
-        "App Statistics": "ऐप के आंकड़े",
-        "Time Spent:": "बिताया गया समय:",
-        "Images Opened:": "खोली गई छवियां:",
-        "Tools Opened:": "खोले गए उपकरण:",
-        "Days": "दिन",
-        "Hours": "घंटे",
-        "Minutes": "मिनट",
-        "Close": "बंद करें",
     },
 }
