@@ -1848,6 +1848,7 @@ class AstroSuiteProMainWindow(
             actions = self._collect_all_qactions()
         except Exception:
             actions = self.findChildren(QAction)
+
         for act in actions:
             for seq in _seqs_for_action(act):
                 rows.append((_qs_to_str(seq), _describe_action(act), _where_for_action(act)))
@@ -1857,6 +1858,12 @@ class AstroSuiteProMainWindow(
             seq = sc.key()
             if seq and not seq.isEmpty():
                 rows.append((_qs_to_str(seq), _describe_shortcut(sc), _where_for_shortcut(sc)))
+
+        # 3) App-level shortcuts not represented by QAction/QShortcut
+        try:
+            add_extra_shortcuts(rows)  # ✅ Ctrl+K, Ctrl+Alt+M, etc.
+        except Exception:
+            pass
 
         # De-duplicate and sort by shortcut text
         rows = _uniq_keep_order(rows)
@@ -8788,6 +8795,7 @@ class AstroSuiteProMainWindow(
 # CheatSheet dialog and helper functions imported from setiastro.saspro.cheat_sheet
 from setiastro.saspro.cheat_sheet import (
     CheatSheetDialog as _CheatSheetDialog,
+    add_extra_shortcuts,
     _qs_to_str,
     _clean_text,
     _uniq_keep_order,

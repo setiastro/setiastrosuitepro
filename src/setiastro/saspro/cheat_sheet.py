@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMessageBox
 )
 from PyQt6.QtGui import QAction, QShortcut, QKeySequence
+from PyQt6.QtCore import Qt, QCoreApplication
 
 
 def _qs_to_str(seq: QKeySequence) -> str:
@@ -46,37 +47,68 @@ def _seqs_for_action(act: QAction):
 
 def _where_for_action(act: QAction) -> str:
     """Determine where an action is available (Menus/Toolbar or Window)."""
-    if act.parent():
-        pn = act.parent().__class__.__name__
-        if pn.startswith("QMenu") or pn.startswith("QToolBar"):
-            from PyQt6.QtCore import QCoreApplication
-            return QCoreApplication.translate("CheatSheet", "Menus/Toolbar")
+    try:
+        parent = act.parent()
+        if parent is not None:
+            pn = parent.__class__.__name__
+            if pn.startswith("QMenu") or pn.startswith("QToolBar"):
+                return QCoreApplication.translate("CheatSheet", "Menus/Toolbar")
+    except Exception:
+        pass
     return QCoreApplication.translate("CheatSheet", "Window")
 
 
 def _describe_action(act: QAction) -> str:
     """Get a human-readable description for an action."""
-    desc = _clean_text(act.statusTip() or act.toolTip() or act.text() or act.objectName() or "Action")
-    if desc == "Action":
-        from PyQt6.QtCore import QCoreApplication
+    try:
+        desc = _clean_text(
+            act.statusTip() or act.toolTip() or act.text() or act.objectName() or ""
+        )
+    except Exception:
+        desc = ""
+
+    if not desc:
         desc = QCoreApplication.translate("CheatSheet", "Action")
     return desc
 
 
 def _describe_shortcut(sc: QShortcut) -> str:
     """Get a human-readable description for a shortcut."""
-    desc = _clean_text(sc.property("hint") or sc.whatsThis() or sc.objectName() or "Shortcut")
-    if desc == "Shortcut":
-        from PyQt6.QtCore import QCoreApplication
+    try:
+        hint = sc.property("hint")
+        desc = _clean_text(hint or sc.whatsThis() or sc.objectName() or "")
+    except Exception:
+        desc = ""
+
+    if not desc:
         desc = QCoreApplication.translate("CheatSheet", "Shortcut")
     return desc
 
-
+def add_extra_shortcuts(rows):
+    """
+    Add app-level shortcuts that aren't represented by QActions/QShortcuts.
+    rows: list of (shortcut_str, action_str, where_str)
+    """
+    rows.append((
+        _clean_text("Ctrl+K"),
+        _clean_text("Toggle Show/Hide Mask"),
+        QCoreApplication.translate("CheatSheet", "Window"),
+    ))
+    rows.append((
+        _clean_text("Ctrl+Alt+M"),
+        _clean_text("SASpro Neon Invaders (Easter Egg)"),
+        QCoreApplication.translate("CheatSheet", "Window"),
+    ))
+    
 def _where_for_shortcut(sc: QShortcut) -> str:
     """Determine where a shortcut is available."""
-    par = sc.parent()
-    from PyQt6.QtCore import QCoreApplication
-    return par.__class__.__name__ if par is not None else QCoreApplication.translate("CheatSheet", "Window")
+    try:
+        par = sc.parent()
+        if par is not None:
+            return par.__class__.__name__
+    except Exception:
+        pass
+    return QCoreApplication.translate("CheatSheet", "Window")
 
 
 class CheatSheetDialog(QDialog):
