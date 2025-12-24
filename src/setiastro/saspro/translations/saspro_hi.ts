@@ -14238,4 +14238,251 @@ Hold Ctrl while dragging to copy the astrometric solution (WCS) to another view.
       <translation>Aladin में देखें</translation>
     </message>
   </context>
+  <context>
+    <name>WIMIDialog</name>
+    <message>
+      <source>Add Text</source>
+      <translation>टेक्स्ट जोड़ें</translation>
+    </message>
+    <message>
+      <source>Clear Annotations</source>
+      <translation>एनोटेशन साफ़ करें</translation>
+    </message>
+    <message>
+      <source>Clear Results</source>
+      <translation>परिणाम साफ़ करें</translation>
+    </message>
+    <message>
+      <source>Copy Object Information</source>
+      <translation>ऑब्जेक्ट जानकारी कॉपी करें</translation>
+    </message>
+    <message>
+      <source>Delete Selected Items</source>
+      <translation>चयनित आइटम हटाएं</translation>
+    </message>
+    <message>
+      <source>Delete Selected Object(s)</source>
+      <translation>चयनित ऑब्जेक्ट हटाएं</translation>
+    </message>
+    <message>
+      <source>Legend</source>
+      <translation>संकेत</translation>
+    </message>
+    <message>
+      <source>Open Website</source>
+      <translation>वेबसाइट खोलें</translation>
+    </message>
+    <message>
+      <source>Select Annotation Color</source>
+      <translation>एनोटेशन रंग चुनें</translation>
+    </message>
+    <message>
+      <source>Select Annotation Font</source>
+      <translation>एनोटेशन फ़ॉन्ट चुनें</translation>
+    </message>
+    <message>
+      <source>Select Color</source>
+      <translation>रंग चुनें</translation>
+    </message>
+    <message>
+      <source>Select Font</source>
+      <translation>फ़ॉन्ट चुनें</translation>
+    </message>
+    <message>
+      <source>Show Annotation Tools</source>
+      <translation>एनोटेशन टूल दिखाएं</translation>
+    </message>
+    <message>
+      <source>Show Object Names</source>
+      <translation>ऑब्जेक्ट नाम दिखाएं</translation>
+    </message>
+    <message>
+      <source>Show Visible Objects Only</source>
+      <translation>केवल दृश्य ऑब्जेक्ट दिखाएं</translation>
+    </message>
+    <message>
+      <source>Undo</source>
+      <translation>पूर्ववत करें</translation>
+    </message>
+    <message>
+      <source>Zoom to Object</source>
+      <translation>ऑब्जेक्ट पर ज़ूम करें</translation>
+    </message>
+    <message>
+      <source>Copy RA/Dec to Clipboard</source>
+      <translation>RA/Dec को क्लिपबोर्ड पर कॉपी करें</translation>
+    </message>
+    <message>
+      <source>Save Plate Solved Fits</source>
+      <translation>प्लेट वेल्ड FITS सहेजें</translation>
+    </message>
+    <message>
+      <source>RA: N/A</source>
+      <translation>RA: N/A</translation>
+    </message>
+    <message>
+      <source>Dec: N/A</source>
+      <translation>Dec: N/A</translation>
+    </message>
+    <message>
+      <source>Orientation: N/A°</source>
+      <translation>अभिविन्यास: N/A°</translation>
+    </message>
+    <message>
+      <source>Mini Preview</source>
+      <translation>मिनी पूर्वावलोकन</translation>
+    </message>
+    <message>
+      <source>Zoom In</source>
+      <translation>ज़ूम इन</translation>
+    </message>
+    <message>
+      <source>Zoom Out</source>
+      <translation>ज़ूम आउट</translation>
+    </message>
+    <message>
+      <source>Save Annotated Image</source>
+      <translation>एनोटेटेड छवि सहेजें</translation>
+    </message>
+    <message>
+      <source>Save Collage of Objects</source>
+      <translation>ऑब्जेक्ट्स का कोलाज सहेजें</translation>
+    </message>
+    <message>
+      <source>3D Distance Model</source>
+      <translation>3D दूरी मॉडल</translation>
+    </message>
+    <message>
+      <source>H-R Diagram</source>
+      <translation>H-R आरेख</translation>
+    </message>
+    <message>
+      <source>Objects Found: 0</source>
+      <translation>मिले ऑब्जेक्ट: 0</translation>
+    </message>
+    <message>
+      <source>Right Click a Row for More Options</source>
+      <translation>अधिक विकल्पों के लिए एक पंक्ति पर राइट क्लिक करें</translation>
+    </message>
+    <message>
+      <source>Ctrl+Click to add items, Alt+Click to measure distance</source>
+      <translation>आइटम जोड़ने के लिए Ctrl+क्लिक, दूरी मापने के लिए Alt+क्लिक</translation>
+    </message>
+    <message>
+      <source>Draw Ellipse</source>
+      <translation>दीर्घवृत्त बनाएं</translation>
+    </message>
+    <message>
+      <source>Freehand (Lasso)</source>
+      <translation>फ्रीहैंड (लास्सो)</translation>
+    </message>
+    <message>
+      <source>Draw Rectangle</source>
+      <translation>आयत बनाएं</translation>
+    </message>
+    <message>
+      <source>Draw Arrow</source>
+      <translation>तीर बनाएं</translation>
+    </message>
+    <message>
+      <source>Place Celestial Compass</source>
+      <translation>आकाशीय कम्पास रखें</translation>
+    </message>
+    <message>
+      <source>Advanced Search Parameters</source>
+      <translation>उन्नत खोज पैरामीटर</translation>
+    </message>
+    <message>
+      <source>Object Type</source>
+      <translation>ऑब्जेक्ट प्रकार</translation>
+    </message>
+    <message>
+      <source>Description</source>
+      <translation>विवरण</translation>
+    </message>
+    <message>
+      <source>Toggle All</source>
+      <translation>सभी टॉगल करें</translation>
+    </message>
+    <message>
+      <source>Save List…</source>
+      <translation>सूची सहेजें…</translation>
+    </message>
+    <message>
+      <source>Load List…</source>
+      <translation>सूची लोड करें…</translation>
+    </message>
+    <message>
+      <source>Search Defined Region</source>
+      <translation>परिभाषित क्षेत्र खोजें</translation>
+    </message>
+    <message>
+      <source>Search Entire Image</source>
+      <translation>संपूर्ण छवि खोजें</translation>
+    </message>
+    <message>
+      <source>Minor Planets / Comets</source>
+      <translation>लघु ग्रह / धूमकेतु</translation>
+    </message>
+    <message>
+      <source>Database: not downloaded</source>
+      <translation>डेटाबेस: डाउनलोड नहीं किया गया</translation>
+    </message>
+    <message>
+      <source>Download Catalog</source>
+      <translation>कैटलॉग डाउनलोड करें</translation>
+    </message>
+    <message>
+      <source>Search Minor Bodies</source>
+      <translation>लघु पिंड खोजें</translation>
+    </message>
+    <message>
+      <source>Search scope:</source>
+      <translation>खोज दायरा:</translation>
+    </message>
+    <message>
+      <source>Defined Region</source>
+      <translation>परिभाषित क्षेत्र</translation>
+    </message>
+    <message>
+      <source>Entire Image</source>
+      <translation>संपूर्ण छवि</translation>
+    </message>
+    <message>
+      <source>Asteroid H ≤</source>
+      <translation>क्षुद्रग्रह H ≤</translation>
+    </message>
+    <message>
+      <source>Max asteroids:</source>
+      <translation>अधिकतम क्षुद्रग्रह:</translation>
+    </message>
+    <message>
+      <source>Comet H ≤</source>
+      <translation>धूमकेतु H ≤</translation>
+    </message>
+    <message>
+      <source>Max comets:</source>
+      <translation>अधिकतम धूमकेतु:</translation>
+    </message>
+    <message>
+      <source>Target (optional):</source>
+      <translation>लक्ष्य (वैकल्पिक):</translation>
+    </message>
+    <message>
+      <source>Count Objects Brighter Than Limits</source>
+      <translation>सीमाओं से अधिक चमकीले ऑब्जेक्ट्स की गिनती करें</translation>
+    </message>
+    <message>
+      <source>Time offset (hours):</source>
+      <translation>समय ऑफसेट (घंटे):</translation>
+    </message>
+    <message>
+      <source>Caution - Deep Vizier Search</source>
+      <translation>सावधानी - डीप विज़ियर खोज</translation>
+    </message>
+    <message>
+      <source>Search M.A.S.T Database</source>
+      <translation>M.A.S.T डेटाबेस खोजें</translation>
+    </message>
+  </context>
 </TS>

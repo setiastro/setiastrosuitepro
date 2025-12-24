@@ -14672,4 +14672,251 @@ Hold Ctrl while dragging to copy the astrometric solution (WCS) to another view.
       <translation>在 Aladin 中查看</translation>
     </message>
   </context>
+  <context>
+    <name>WIMIDialog</name>
+    <message>
+      <source>Add Text</source>
+      <translation>添加文本</translation>
+    </message>
+    <message>
+      <source>Clear Annotations</source>
+      <translation>清除注释</translation>
+    </message>
+    <message>
+      <source>Clear Results</source>
+      <translation>清除结果</translation>
+    </message>
+    <message>
+      <source>Copy Object Information</source>
+      <translation>复制对象信息</translation>
+    </message>
+    <message>
+      <source>Delete Selected Items</source>
+      <translation>删除所选项目</translation>
+    </message>
+    <message>
+      <source>Delete Selected Object(s)</source>
+      <translation>删除所选对象</translation>
+    </message>
+    <message>
+      <source>Legend</source>
+      <translation>图例</translation>
+    </message>
+    <message>
+      <source>Open Website</source>
+      <translation>打开网站</translation>
+    </message>
+    <message>
+      <source>Select Annotation Color</source>
+      <translation>选择注释颜色</translation>
+    </message>
+    <message>
+      <source>Select Annotation Font</source>
+      <translation>选择注释字体</translation>
+    </message>
+    <message>
+      <source>Select Color</source>
+      <translation>选择颜色</translation>
+    </message>
+    <message>
+      <source>Select Font</source>
+      <translation>选择字体</translation>
+    </message>
+    <message>
+      <source>Show Annotation Tools</source>
+      <translation>显示注释工具</translation>
+    </message>
+    <message>
+      <source>Show Object Names</source>
+      <translation>显示对象名称</translation>
+    </message>
+    <message>
+      <source>Show Visible Objects Only</source>
+      <translation>仅显示可见对象</translation>
+    </message>
+    <message>
+      <source>Undo</source>
+      <translation>撤销</translation>
+    </message>
+    <message>
+      <source>Zoom to Object</source>
+      <translation>缩放到对象</translation>
+    </message>
+    <message>
+      <source>Copy RA/Dec to Clipboard</source>
+      <translation>复制 RA/Dec 到剪贴板</translation>
+    </message>
+    <message>
+      <source>Save Plate Solved Fits</source>
+      <translation>保存已解析的 FITS</translation>
+    </message>
+    <message>
+      <source>RA: N/A</source>
+      <translation>赤经: N/A</translation>
+    </message>
+    <message>
+      <source>Dec: N/A</source>
+      <translation>赤纬: N/A</translation>
+    </message>
+    <message>
+      <source>Orientation: N/A°</source>
+      <translation>方向: N/A°</translation>
+    </message>
+    <message>
+      <source>Mini Preview</source>
+      <translation>迷你预览</translation>
+    </message>
+    <message>
+      <source>Zoom In</source>
+      <translation>放大</translation>
+    </message>
+    <message>
+      <source>Zoom Out</source>
+      <translation>缩小</translation>
+    </message>
+    <message>
+      <source>Save Annotated Image</source>
+      <translation>保存带注释的图像</translation>
+    </message>
+    <message>
+      <source>Save Collage of Objects</source>
+      <translation>保存对象拼贴</translation>
+    </message>
+    <message>
+      <source>3D Distance Model</source>
+      <translation>3D 距离模型</translation>
+    </message>
+    <message>
+      <source>H-R Diagram</source>
+      <translation>赫罗图 (H-R Diagram)</translation>
+    </message>
+    <message>
+      <source>Objects Found: 0</source>
+      <translation>找到的对象: 0</translation>
+    </message>
+    <message>
+      <source>Right Click a Row for More Options</source>
+      <translation>右键单击一行以获取更多选项</translation>
+    </message>
+    <message>
+      <source>Ctrl+Click to add items, Alt+Click to measure distance</source>
+      <translation>按住 Ctrl+单击以添加项目，按住 Alt+单击以测量距离</translation>
+    </message>
+    <message>
+      <source>Draw Ellipse</source>
+      <translation>绘制椭圆</translation>
+    </message>
+    <message>
+      <source>Freehand (Lasso)</source>
+      <translation>手绘 (套索)</translation>
+    </message>
+    <message>
+      <source>Draw Rectangle</source>
+      <translation>绘制矩形</translation>
+    </message>
+    <message>
+      <source>Draw Arrow</source>
+      <translation>绘制箭头</translation>
+    </message>
+    <message>
+      <source>Place Celestial Compass</source>
+      <translation>放置天体罗盘</translation>
+    </message>
+    <message>
+      <source>Advanced Search Parameters</source>
+      <translation>高级搜索参数</translation>
+    </message>
+    <message>
+      <source>Object Type</source>
+      <translation>对象类型</translation>
+    </message>
+    <message>
+      <source>Description</source>
+      <translation>描述</translation>
+    </message>
+    <message>
+      <source>Toggle All</source>
+      <translation>切换全部</translation>
+    </message>
+    <message>
+      <source>Save List…</source>
+      <translation>保存列表…</translation>
+    </message>
+    <message>
+      <source>Load List…</source>
+      <translation>加载列表…</translation>
+    </message>
+    <message>
+      <source>Search Defined Region</source>
+      <translation>搜索定义区域</translation>
+    </message>
+    <message>
+      <source>Search Entire Image</source>
+      <translation>搜索整个图像</translation>
+    </message>
+    <message>
+      <source>Minor Planets / Comets</source>
+      <translation>小行星 / 彗星</translation>
+    </message>
+    <message>
+      <source>Database: not downloaded</source>
+      <translation>数据库: 未下载</translation>
+    </message>
+    <message>
+      <source>Download Catalog</source>
+      <translation>下载目录</translation>
+    </message>
+    <message>
+      <source>Search Minor Bodies</source>
+      <translation>搜索小天体</translation>
+    </message>
+    <message>
+      <source>Search scope:</source>
+      <translation>搜索范围:</translation>
+    </message>
+    <message>
+      <source>Defined Region</source>
+      <translation>定义区域</translation>
+    </message>
+    <message>
+      <source>Entire Image</source>
+      <translation>整个图像</translation>
+    </message>
+    <message>
+      <source>Asteroid H ≤</source>
+      <translation>小行星 H ≤</translation>
+    </message>
+    <message>
+      <source>Max asteroids:</source>
+      <translation>最大小行星数:</translation>
+    </message>
+    <message>
+      <source>Comet H ≤</source>
+      <translation>彗星 H ≤</translation>
+    </message>
+    <message>
+      <source>Max comets:</source>
+      <translation>最大彗星数:</translation>
+    </message>
+    <message>
+      <source>Target (optional):</source>
+      <translation>目标 (可选):</translation>
+    </message>
+    <message>
+      <source>Count Objects Brighter Than Limits</source>
+      <translation>统计亮度超过限制的对象</translation>
+    </message>
+    <message>
+      <source>Time offset (hours):</source>
+      <translation>时间偏移 (小时):</translation>
+    </message>
+    <message>
+      <source>Caution - Deep Vizier Search</source>
+      <translation>注意 - 深度 Vizier 搜索</translation>
+    </message>
+    <message>
+      <source>Search M.A.S.T Database</source>
+      <translation>搜索 M.A.S.T 数据库</translation>
+    </message>
+  </context>
 </TS>

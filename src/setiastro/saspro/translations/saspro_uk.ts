@@ -14631,4 +14631,251 @@ Ctrl + Drag — копіювати астрометричне рішення (WC
       <translation>Запуск…</translation>
     </message>
   </context>
+  <context>
+    <name>WIMIDialog</name>
+    <message>
+      <source>Add Text</source>
+      <translation>Додати текст</translation>
+    </message>
+    <message>
+      <source>Clear Annotations</source>
+      <translation>Очистити анотації</translation>
+    </message>
+    <message>
+      <source>Clear Results</source>
+      <translation>Очистити результати</translation>
+    </message>
+    <message>
+      <source>Copy Object Information</source>
+      <translation>Копіювати інформацію про об'єкт</translation>
+    </message>
+    <message>
+      <source>Delete Selected Items</source>
+      <translation>Видалити вибрані елементи</translation>
+    </message>
+    <message>
+      <source>Delete Selected Object(s)</source>
+      <translation>Видалити вибраний об'єкт(и)</translation>
+    </message>
+    <message>
+      <source>Legend</source>
+      <translation>Легенда</translation>
+    </message>
+    <message>
+      <source>Open Website</source>
+      <translation>Відкрити веб-сайт</translation>
+    </message>
+    <message>
+      <source>Select Annotation Color</source>
+      <translation>Вибрати колір анотації</translation>
+    </message>
+    <message>
+      <source>Select Annotation Font</source>
+      <translation>Вибрати шрифт анотації</translation>
+    </message>
+    <message>
+      <source>Select Color</source>
+      <translation>Вибрати колір</translation>
+    </message>
+    <message>
+      <source>Select Font</source>
+      <translation>Вибрати шрифт</translation>
+    </message>
+    <message>
+      <source>Show Annotation Tools</source>
+      <translation>Показати інструменти анотування</translation>
+    </message>
+    <message>
+      <source>Show Object Names</source>
+      <translation>Показати назви об'єктів</translation>
+    </message>
+    <message>
+      <source>Show Visible Objects Only</source>
+      <translation>Показувати лише видимі об'єкти</translation>
+    </message>
+    <message>
+      <source>Undo</source>
+      <translation>Скасувати</translation>
+    </message>
+    <message>
+      <source>Zoom to Object</source>
+      <translation>Масштабувати до об'єкта</translation>
+    </message>
+    <message>
+      <source>Copy RA/Dec to Clipboard</source>
+      <translation>Копіювати RA/Dec в буфер</translation>
+    </message>
+    <message>
+      <source>Save Plate Solved Fits</source>
+      <translation>Зберегти вирішений FITS</translation>
+    </message>
+    <message>
+      <source>RA: N/A</source>
+      <translation>RA: N/A</translation>
+    </message>
+    <message>
+      <source>Dec: N/A</source>
+      <translation>Dec: N/A</translation>
+    </message>
+    <message>
+      <source>Orientation: N/A°</source>
+      <translation>Орієнтація: N/A°</translation>
+    </message>
+    <message>
+      <source>Mini Preview</source>
+      <translation>Міні-перегляд</translation>
+    </message>
+    <message>
+      <source>Zoom In</source>
+      <translation>Збільшити</translation>
+    </message>
+    <message>
+      <source>Zoom Out</source>
+      <translation>Зменшити</translation>
+    </message>
+    <message>
+      <source>Save Annotated Image</source>
+      <translation>Зберегти анотацію</translation>
+    </message>
+    <message>
+      <source>Save Collage of Objects</source>
+      <translation>Зберегти колаж об'єктів</translation>
+    </message>
+    <message>
+      <source>3D Distance Model</source>
+      <translation>3D модель відстаней</translation>
+    </message>
+    <message>
+      <source>H-R Diagram</source>
+      <translation>Діаграма Г-Р</translation>
+    </message>
+    <message>
+      <source>Objects Found: 0</source>
+      <translation>Знайдено об'єктів: 0</translation>
+    </message>
+    <message>
+      <source>Right Click a Row for More Options</source>
+      <translation>ПКМ для опцій</translation>
+    </message>
+    <message>
+      <source>Ctrl+Click to add items, Alt+Click to measure distance</source>
+      <translation>Ctrl+Клік додати, Alt+Клік виміряти</translation>
+    </message>
+    <message>
+      <source>Draw Ellipse</source>
+      <translation>Малювати еліпс</translation>
+    </message>
+    <message>
+      <source>Freehand (Lasso)</source>
+      <translation>Ласо</translation>
+    </message>
+    <message>
+      <source>Draw Rectangle</source>
+      <translation>Малювати прямокутник</translation>
+    </message>
+    <message>
+      <source>Draw Arrow</source>
+      <translation>Малювати стрілку</translation>
+    </message>
+    <message>
+      <source>Place Celestial Compass</source>
+      <translation>Розмістити небесний компас</translation>
+    </message>
+    <message>
+      <source>Advanced Search Parameters</source>
+      <translation>Розширені параметри пошуку</translation>
+    </message>
+    <message>
+      <source>Object Type</source>
+      <translation>Тип об'єкта</translation>
+    </message>
+    <message>
+      <source>Description</source>
+      <translation>Опис</translation>
+    </message>
+    <message>
+      <source>Toggle All</source>
+      <translation>Перемкнути все</translation>
+    </message>
+    <message>
+      <source>Save List…</source>
+      <translation>Зберегти список…</translation>
+    </message>
+    <message>
+      <source>Load List…</source>
+      <translation>Завантажити список…</translation>
+    </message>
+    <message>
+      <source>Search Defined Region</source>
+      <translation>Пошук у визначеній області</translation>
+    </message>
+    <message>
+      <source>Search Entire Image</source>
+      <translation>Пошук по всьому зображенню</translation>
+    </message>
+    <message>
+      <source>Minor Planets / Comets</source>
+      <translation>Малі планети / Комети</translation>
+    </message>
+    <message>
+      <source>Database: not downloaded</source>
+      <translation>БД не завантажена</translation>
+    </message>
+    <message>
+      <source>Download Catalog</source>
+      <translation>Завантажити каталог</translation>
+    </message>
+    <message>
+      <source>Search Minor Bodies</source>
+      <translation>Пошук малих тіл</translation>
+    </message>
+    <message>
+      <source>Search scope:</source>
+      <translation>Область пошуку:</translation>
+    </message>
+    <message>
+      <source>Defined Region</source>
+      <translation>Визначена область</translation>
+    </message>
+    <message>
+      <source>Entire Image</source>
+      <translation>Все зображення</translation>
+    </message>
+    <message>
+      <source>Asteroid H ≤</source>
+      <translation>Астероїд H ≤</translation>
+    </message>
+    <message>
+      <source>Max asteroids:</source>
+      <translation>Макс. астероїдів:</translation>
+    </message>
+    <message>
+      <source>Comet H ≤</source>
+      <translation>Комета H ≤</translation>
+    </message>
+    <message>
+      <source>Max comets:</source>
+      <translation>Макс. комет:</translation>
+    </message>
+    <message>
+      <source>Target (optional):</source>
+      <translation>Ціль (опц.):</translation>
+    </message>
+    <message>
+      <source>Count Objects Brighter Than Limits</source>
+      <translation>Рахувати об'єкти яскравіше ліміту</translation>
+    </message>
+    <message>
+      <source>Time offset (hours):</source>
+      <translation>Зміщення часу (год):</translation>
+    </message>
+    <message>
+      <source>Caution - Deep Vizier Search</source>
+      <translation>Обережно - Глибокий пошук Vizier</translation>
+    </message>
+    <message>
+      <source>Search M.A.S.T Database</source>
+      <translation>Пошук в базі M.A.S.T</translation>
+    </message>
+  </context>
 </TS>

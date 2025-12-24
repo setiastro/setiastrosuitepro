@@ -635,7 +635,7 @@
     </message>
     <message>
       <source>Function Bundles...</source>
-      <translation>Funktions-Bundles...</translation>
+      <translation>Funktionspakete...</translation>
     </message>
     <message>
       <source>Functions</source>
@@ -776,6 +776,10 @@
     <message>
       <source>System Monitor</source>
       <translation>Systemmonitor</translation>
+    </message>
+    <message>
+      <source>View Bundles...</source>
+      <translation>Pakete anzeigen...</translation>
     </message>
   </context>
   <context>
@@ -13925,6 +13929,253 @@ Halten Sie Strg beim Ziehen gedrückt, um die astrometrische Lösung (WCS) in ei
     <message>
       <source>View in Aladin</source>
       <translation>In Aladin anzeigen</translation>
+    </message>
+  </context>
+  <context>
+    <name>WIMIDialog</name>
+    <message>
+      <source>Add Text</source>
+      <translation>Text hinzufügen</translation>
+    </message>
+    <message>
+      <source>Clear Annotations</source>
+      <translation>Anmerkungen löschen</translation>
+    </message>
+    <message>
+      <source>Clear Results</source>
+      <translation>Ergebnisse löschen</translation>
+    </message>
+    <message>
+      <source>Copy Object Information</source>
+      <translation>Objektinformationen kopieren</translation>
+    </message>
+    <message>
+      <source>Delete Selected Items</source>
+      <translation>Ausgewählte Elemente löschen</translation>
+    </message>
+    <message>
+      <source>Delete Selected Object(s)</source>
+      <translation>Ausgewählte(s) Objekt(e) löschen</translation>
+    </message>
+    <message>
+      <source>Legend</source>
+      <translation>Legende</translation>
+    </message>
+    <message>
+      <source>Open Website</source>
+      <translation>Website öffnen</translation>
+    </message>
+    <message>
+      <source>Select Annotation Color</source>
+      <translation>Anmerkungsfarbe wählen</translation>
+    </message>
+    <message>
+      <source>Select Annotation Font</source>
+      <translation>Anmerkungsschriftart wählen</translation>
+    </message>
+    <message>
+      <source>Select Color</source>
+      <translation>Farbe wählen</translation>
+    </message>
+    <message>
+      <source>Select Font</source>
+      <translation>Schriftart wählen</translation>
+    </message>
+    <message>
+      <source>Show Annotation Tools</source>
+      <translation>Anmerkungswerkzeuge anzeigen</translation>
+    </message>
+    <message>
+      <source>Show Object Names</source>
+      <translation>Objektnamen anzeigen</translation>
+    </message>
+    <message>
+      <source>Show Visible Objects Only</source>
+      <translation>Nur sichtbare Objekte anzeigen</translation>
+    </message>
+    <message>
+      <source>Undo</source>
+      <translation>Rückgängig</translation>
+    </message>
+    <message>
+      <source>Zoom to Object</source>
+      <translation>Zum Objekt zoomen</translation>
+    </message>
+    <message>
+      <source>Copy RA/Dec to Clipboard</source>
+      <translation>RA/Dec in die Zwischenablage kopieren</translation>
+    </message>
+    <message>
+      <source>Save Plate Solved Fits</source>
+      <translation>Gelöstes FITS speichern</translation>
+    </message>
+    <message>
+      <source>RA: N/A</source>
+      <translation>RA: N/V</translation>
+    </message>
+    <message>
+      <source>Dec: N/A</source>
+      <translation>Dec: N/V</translation>
+    </message>
+    <message>
+      <source>Orientation: N/A°</source>
+      <translation>Ausrichtung: N/V°</translation>
+    </message>
+    <message>
+      <source>Mini Preview</source>
+      <translation>Minivorschau</translation>
+    </message>
+    <message>
+      <source>Zoom In</source>
+      <translation>Vergrößern</translation>
+    </message>
+    <message>
+      <source>Zoom Out</source>
+      <translation>Verkleinern</translation>
+    </message>
+    <message>
+      <source>Save Annotated Image</source>
+      <translation>Annotiertes Bild speichern</translation>
+    </message>
+    <message>
+      <source>Save Collage of Objects</source>
+      <translation>Objektcollage speichern</translation>
+    </message>
+    <message>
+      <source>3D Distance Model</source>
+      <translation>3D-Abstandsmodell</translation>
+    </message>
+    <message>
+      <source>H-R Diagram</source>
+      <translation>H-R-Diagramm</translation>
+    </message>
+    <message>
+      <source>Objects Found: 0</source>
+      <translation>Objekte gefunden: 0</translation>
+    </message>
+    <message>
+      <source>Right Click a Row for More Options</source>
+      <translation>Rechtsklick auf Zeile für Optionen</translation>
+    </message>
+    <message>
+      <source>Ctrl+Click to add items, Alt+Click to measure distance</source>
+      <translation>Strg+Klick hinzufügen, Alt+Klick messen</translation>
+    </message>
+    <message>
+      <source>Draw Ellipse</source>
+      <translation>Ellipse zeichnen</translation>
+    </message>
+    <message>
+      <source>Freehand (Lasso)</source>
+      <translation>Freihand (Lasso)</translation>
+    </message>
+    <message>
+      <source>Draw Rectangle</source>
+      <translation>Rechteck zeichnen</translation>
+    </message>
+    <message>
+      <source>Draw Arrow</source>
+      <translation>Pfeil zeichnen</translation>
+    </message>
+    <message>
+      <source>Place Celestial Compass</source>
+      <translation>Himmelskompass platzieren</translation>
+    </message>
+    <message>
+      <source>Advanced Search Parameters</source>
+      <translation>Erweiterte Suchparameter</translation>
+    </message>
+    <message>
+      <source>Object Type</source>
+      <translation>Objekttyp</translation>
+    </message>
+    <message>
+      <source>Description</source>
+      <translation>Beschreibung</translation>
+    </message>
+    <message>
+      <source>Toggle All</source>
+      <translation>Alle umschalten</translation>
+    </message>
+    <message>
+      <source>Save List…</source>
+      <translation>Liste speichern…</translation>
+    </message>
+    <message>
+      <source>Load List…</source>
+      <translation>Liste laden…</translation>
+    </message>
+    <message>
+      <source>Search Defined Region</source>
+      <translation>Definierte Region suchen</translation>
+    </message>
+    <message>
+      <source>Search Entire Image</source>
+      <translation>Ganzes Bild suchen</translation>
+    </message>
+    <message>
+      <source>Minor Planets / Comets</source>
+      <translation>Kleinplaneten / Kometen</translation>
+    </message>
+    <message>
+      <source>Database: not downloaded</source>
+      <translation>Datenbank: nicht heruntergeladen</translation>
+    </message>
+    <message>
+      <source>Download Catalog</source>
+      <translation>Katalog herunterladen</translation>
+    </message>
+    <message>
+      <source>Search Minor Bodies</source>
+      <translation>Kleinkörper suchen</translation>
+    </message>
+    <message>
+      <source>Search scope:</source>
+      <translation>Suchbereich:</translation>
+    </message>
+    <message>
+      <source>Defined Region</source>
+      <translation>Definierte Region</translation>
+    </message>
+    <message>
+      <source>Entire Image</source>
+      <translation>Ganzes Bild</translation>
+    </message>
+    <message>
+      <source>Asteroid H ≤</source>
+      <translation>Asteroid H ≤</translation>
+    </message>
+    <message>
+      <source>Max asteroids:</source>
+      <translation>Max Asteroiden:</translation>
+    </message>
+    <message>
+      <source>Comet H ≤</source>
+      <translation>Komet H ≤</translation>
+    </message>
+    <message>
+      <source>Max comets:</source>
+      <translation>Max Kometen:</translation>
+    </message>
+    <message>
+      <source>Target (optional):</source>
+      <translation>Ziel (optional):</translation>
+    </message>
+    <message>
+      <source>Count Objects Brighter Than Limits</source>
+      <translation>Objekte heller als Limits zählen</translation>
+    </message>
+    <message>
+      <source>Time offset (hours):</source>
+      <translation>Zeitversatz (Stunden):</translation>
+    </message>
+    <message>
+      <source>Caution - Deep Vizier Search</source>
+      <translation>Vorsicht - Tiefe Vizier-Suche</translation>
+    </message>
+    <message>
+      <source>Search M.A.S.T Database</source>
+      <translation>M.A.S.T Datenbank suchen</translation>
     </message>
   </context>
 </TS>

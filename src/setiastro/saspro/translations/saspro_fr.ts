@@ -15253,4 +15253,251 @@ Maintenir Ctrl en glissant pour copier la solution astrométrique (WCS) vers une
       <translation>Démarrage…</translation>
     </message>
   </context>
+  <context>
+    <name>WIMIDialog</name>
+    <message>
+      <source>Add Text</source>
+      <translation>Ajouter du texte</translation>
+    </message>
+    <message>
+      <source>Clear Annotations</source>
+      <translation>Effacer les annotations</translation>
+    </message>
+    <message>
+      <source>Clear Results</source>
+      <translation>Effacer les résultats</translation>
+    </message>
+    <message>
+      <source>Copy Object Information</source>
+      <translation>Copier les informations de l'objet</translation>
+    </message>
+    <message>
+      <source>Delete Selected Items</source>
+      <translation>Supprimer les éléments sélectionnés</translation>
+    </message>
+    <message>
+      <source>Delete Selected Object(s)</source>
+      <translation>Supprimer l'objet sélectionné</translation>
+    </message>
+    <message>
+      <source>Legend</source>
+      <translation>Légende</translation>
+    </message>
+    <message>
+      <source>Open Website</source>
+      <translation>Ouvrir le site web</translation>
+    </message>
+    <message>
+      <source>Select Annotation Color</source>
+      <translation>Sélectionner la couleur de l'annotation</translation>
+    </message>
+    <message>
+      <source>Select Annotation Font</source>
+      <translation>Sélectionner la police de l'annotation</translation>
+    </message>
+    <message>
+      <source>Select Color</source>
+      <translation>Sélectionner la couleur</translation>
+    </message>
+    <message>
+      <source>Select Font</source>
+      <translation>Sélectionner la police</translation>
+    </message>
+    <message>
+      <source>Show Annotation Tools</source>
+      <translation>Afficher les outils d'annotation</translation>
+    </message>
+    <message>
+      <source>Show Object Names</source>
+      <translation>Afficher les noms des objets</translation>
+    </message>
+    <message>
+      <source>Show Visible Objects Only</source>
+      <translation>Afficher uniquement les objets visibles</translation>
+    </message>
+    <message>
+      <source>Undo</source>
+      <translation>Annuler</translation>
+    </message>
+    <message>
+      <source>Zoom to Object</source>
+      <translation>Zoomer sur l'objet</translation>
+    </message>
+    <message>
+      <source>Copy RA/Dec to Clipboard</source>
+      <translation>Copier AD/Déc presse-papiers</translation>
+    </message>
+    <message>
+      <source>Save Plate Solved Fits</source>
+      <translation>Enregistrer FITS résolu</translation>
+    </message>
+    <message>
+      <source>RA: N/A</source>
+      <translation>AD: N/D</translation>
+    </message>
+    <message>
+      <source>Dec: N/A</source>
+      <translation>Déc: N/D</translation>
+    </message>
+    <message>
+      <source>Orientation: N/A°</source>
+      <translation>Orientation : N/D°</translation>
+    </message>
+    <message>
+      <source>Mini Preview</source>
+      <translation>Mini aperçu</translation>
+    </message>
+    <message>
+      <source>Zoom In</source>
+      <translation>Zoom avant</translation>
+    </message>
+    <message>
+      <source>Zoom Out</source>
+      <translation>Zoom arrière</translation>
+    </message>
+    <message>
+      <source>Save Annotated Image</source>
+      <translation>Enregistrer image annotée</translation>
+    </message>
+    <message>
+      <source>Save Collage of Objects</source>
+      <translation>Enregistrer collage objets</translation>
+    </message>
+    <message>
+      <source>3D Distance Model</source>
+      <translation>Modèle distance 3D</translation>
+    </message>
+    <message>
+      <source>H-R Diagram</source>
+      <translation>Diagramme H-R</translation>
+    </message>
+    <message>
+      <source>Objects Found: 0</source>
+      <translation>Objets trouvés : 0</translation>
+    </message>
+    <message>
+      <source>Right Click a Row for More Options</source>
+      <translation>Clic droit pour plus d'options</translation>
+    </message>
+    <message>
+      <source>Ctrl+Click to add items, Alt+Click to measure distance</source>
+      <translation>Ctrl+Clic ajouter, Alt+Clic mesurer</translation>
+    </message>
+    <message>
+      <source>Draw Ellipse</source>
+      <translation>Dessiner ellipse</translation>
+    </message>
+    <message>
+      <source>Freehand (Lasso)</source>
+      <translation>Main levée (Lasso)</translation>
+    </message>
+    <message>
+      <source>Draw Rectangle</source>
+      <translation>Dessiner rectangle</translation>
+    </message>
+    <message>
+      <source>Draw Arrow</source>
+      <translation>Dessiner flèche</translation>
+    </message>
+    <message>
+      <source>Place Celestial Compass</source>
+      <translation>Placer boussole céleste</translation>
+    </message>
+    <message>
+      <source>Advanced Search Parameters</source>
+      <translation>Paramètres recherche avancée</translation>
+    </message>
+    <message>
+      <source>Object Type</source>
+      <translation>Type d'objet</translation>
+    </message>
+    <message>
+      <source>Description</source>
+      <translation>Description</translation>
+    </message>
+    <message>
+      <source>Toggle All</source>
+      <translation>Basculer tout</translation>
+    </message>
+    <message>
+      <source>Save List…</source>
+      <translation>Enregistrer liste…</translation>
+    </message>
+    <message>
+      <source>Load List…</source>
+      <translation>Charger liste…</translation>
+    </message>
+    <message>
+      <source>Search Defined Region</source>
+      <translation>Rechercher région définie</translation>
+    </message>
+    <message>
+      <source>Search Entire Image</source>
+      <translation>Rechercher toute l'image</translation>
+    </message>
+    <message>
+      <source>Minor Planets / Comets</source>
+      <translation>Planètes mineures / Comètes</translation>
+    </message>
+    <message>
+      <source>Database: not downloaded</source>
+      <translation>Base de données : non téléchargée</translation>
+    </message>
+    <message>
+      <source>Download Catalog</source>
+      <translation>Télécharger catalogue</translation>
+    </message>
+    <message>
+      <source>Search Minor Bodies</source>
+      <translation>Rechercher corps mineurs</translation>
+    </message>
+    <message>
+      <source>Search scope:</source>
+      <translation>Portée recherche :</translation>
+    </message>
+    <message>
+      <source>Defined Region</source>
+      <translation>Région définie</translation>
+    </message>
+    <message>
+      <source>Entire Image</source>
+      <translation>Toute l'image</translation>
+    </message>
+    <message>
+      <source>Asteroid H ≤</source>
+      <translation>Astéroïde H ≤</translation>
+    </message>
+    <message>
+      <source>Max asteroids:</source>
+      <translation>Max astéroïdes :</translation>
+    </message>
+    <message>
+      <source>Comet H ≤</source>
+      <translation>Comète H ≤</translation>
+    </message>
+    <message>
+      <source>Max comets:</source>
+      <translation>Max comètes :</translation>
+    </message>
+    <message>
+      <source>Target (optional):</source>
+      <translation>Cible (optionnel) :</translation>
+    </message>
+    <message>
+      <source>Count Objects Brighter Than Limits</source>
+      <translation>Compter objets plus brillants que limites</translation>
+    </message>
+    <message>
+      <source>Time offset (hours):</source>
+      <translation>Décalage horaire (heures) :</translation>
+    </message>
+    <message>
+      <source>Caution - Deep Vizier Search</source>
+      <translation>Attention - Recherche Vizier approfondie</translation>
+    </message>
+    <message>
+      <source>Search M.A.S.T Database</source>
+      <translation>Rechercher base de données M.A.S.T</translation>
+    </message>
+  </context>
 </TS>

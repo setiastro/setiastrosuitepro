@@ -14363,4 +14363,251 @@ Ctrl を押しながらドラッグすると、位置天文学的解決 (WCS) �
       <translation>Aladin で表示</translation>
     </message>
   </context>
+  <context>
+    <name>WIMIDialog</name>
+    <message>
+      <source>Add Text</source>
+      <translation>テキストを追加</translation>
+    </message>
+    <message>
+      <source>Clear Annotations</source>
+      <translation>注釈をクリア</translation>
+    </message>
+    <message>
+      <source>Clear Results</source>
+      <translation>結果をクリア</translation>
+    </message>
+    <message>
+      <source>Copy Object Information</source>
+      <translation>オブジェクト情報をコピー</translation>
+    </message>
+    <message>
+      <source>Delete Selected Items</source>
+      <translation>選択した項目を削除</translation>
+    </message>
+    <message>
+      <source>Delete Selected Object(s)</source>
+      <translation>選択したオブジェクトを削除</translation>
+    </message>
+    <message>
+      <source>Legend</source>
+      <translation>凡例</translation>
+    </message>
+    <message>
+      <source>Open Website</source>
+      <translation>ウェブサイトを開く</translation>
+    </message>
+    <message>
+      <source>Select Annotation Color</source>
+      <translation>注釈の色を選択</translation>
+    </message>
+    <message>
+      <source>Select Annotation Font</source>
+      <translation>注釈のフォントを選択</translation>
+    </message>
+    <message>
+      <source>Select Color</source>
+      <translation>色を選択</translation>
+    </message>
+    <message>
+      <source>Select Font</source>
+      <translation>フォントを選択</translation>
+    </message>
+    <message>
+      <source>Show Annotation Tools</source>
+      <translation>注釈ツールを表示</translation>
+    </message>
+    <message>
+      <source>Show Object Names</source>
+      <translation>オブジェクト名を表示</translation>
+    </message>
+    <message>
+      <source>Show Visible Objects Only</source>
+      <translation>表示されているオブジェクトのみ表示</translation>
+    </message>
+    <message>
+      <source>Undo</source>
+      <translation>元に戻す</translation>
+    </message>
+    <message>
+      <source>Zoom to Object</source>
+      <translation>オブジェクトにズーム</translation>
+    </message>
+    <message>
+      <source>Copy RA/Dec to Clipboard</source>
+      <translation>RA/Dec をクリップボードにコピー</translation>
+    </message>
+    <message>
+      <source>Save Plate Solved Fits</source>
+      <translation>解析済み FITS を保存</translation>
+    </message>
+    <message>
+      <source>RA: N/A</source>
+      <translation>RA: N/A</translation>
+    </message>
+    <message>
+      <source>Dec: N/A</source>
+      <translation>Dec: N/A</translation>
+    </message>
+    <message>
+      <source>Orientation: N/A°</source>
+      <translation>方向: N/A°</translation>
+    </message>
+    <message>
+      <source>Mini Preview</source>
+      <translation>ミニプレビュー</translation>
+    </message>
+    <message>
+      <source>Zoom In</source>
+      <translation>ズームイン</translation>
+    </message>
+    <message>
+      <source>Zoom Out</source>
+      <translation>ズームアウト</translation>
+    </message>
+    <message>
+      <source>Save Annotated Image</source>
+      <translation>注釈付き画像を保存</translation>
+    </message>
+    <message>
+      <source>Save Collage of Objects</source>
+      <translation>オブジェクトのコラージュを保存</translation>
+    </message>
+    <message>
+      <source>3D Distance Model</source>
+      <translation>3D 距離モデル</translation>
+    </message>
+    <message>
+      <source>H-R Diagram</source>
+      <translation>H-R 図</translation>
+    </message>
+    <message>
+      <source>Objects Found: 0</source>
+      <translation>見つかったオブジェクト: 0</translation>
+    </message>
+    <message>
+      <source>Right Click a Row for More Options</source>
+      <translation>行を右クリックしてオプションを表示</translation>
+    </message>
+    <message>
+      <source>Ctrl+Click to add items, Alt+Click to measure distance</source>
+      <translation>Ctrl+クリックでアイテム追加、Alt+クリックで距離測定</translation>
+    </message>
+    <message>
+      <source>Draw Ellipse</source>
+      <translation>楕円を描画</translation>
+    </message>
+    <message>
+      <source>Freehand (Lasso)</source>
+      <translation>フリーハンド (なげなわ)</translation>
+    </message>
+    <message>
+      <source>Draw Rectangle</source>
+      <translation>長方形を描画</translation>
+    </message>
+    <message>
+      <source>Draw Arrow</source>
+      <translation>矢印を描画</translation>
+    </message>
+    <message>
+      <source>Place Celestial Compass</source>
+      <translation>天体コンパスを配置</translation>
+    </message>
+    <message>
+      <source>Advanced Search Parameters</source>
+      <translation>詳細検索パラメータ</translation>
+    </message>
+    <message>
+      <source>Object Type</source>
+      <translation>オブジェクトタイプ</translation>
+    </message>
+    <message>
+      <source>Description</source>
+      <translation>説明</translation>
+    </message>
+    <message>
+      <source>Toggle All</source>
+      <translation>すべて切り替え</translation>
+    </message>
+    <message>
+      <source>Save List…</source>
+      <translation>リストを保存…</translation>
+    </message>
+    <message>
+      <source>Load List…</source>
+      <translation>リストを読み込み…</translation>
+    </message>
+    <message>
+      <source>Search Defined Region</source>
+      <translation>定義された領域を検索</translation>
+    </message>
+    <message>
+      <source>Search Entire Image</source>
+      <translation>画像全体を検索</translation>
+    </message>
+    <message>
+      <source>Minor Planets / Comets</source>
+      <translation>小惑星 / 彗星</translation>
+    </message>
+    <message>
+      <source>Database: not downloaded</source>
+      <translation>データベース: ダウンロードされていません</translation>
+    </message>
+    <message>
+      <source>Download Catalog</source>
+      <translation>カタログをダウンロード</translation>
+    </message>
+    <message>
+      <source>Search Minor Bodies</source>
+      <translation>小天体を検索</translation>
+    </message>
+    <message>
+      <source>Search scope:</source>
+      <translation>検索範囲:</translation>
+    </message>
+    <message>
+      <source>Defined Region</source>
+      <translation>定義された領域</translation>
+    </message>
+    <message>
+      <source>Entire Image</source>
+      <translation>画像全体</translation>
+    </message>
+    <message>
+      <source>Asteroid H ≤</source>
+      <translation>小惑星 H ≤</translation>
+    </message>
+    <message>
+      <source>Max asteroids:</source>
+      <translation>最大小惑星数:</translation>
+    </message>
+    <message>
+      <source>Comet H ≤</source>
+      <translation>彗星 H ≤</translation>
+    </message>
+    <message>
+      <source>Max comets:</source>
+      <translation>最大彗星数:</translation>
+    </message>
+    <message>
+      <source>Target (optional):</source>
+      <translation>ターゲット (オプション):</translation>
+    </message>
+    <message>
+      <source>Count Objects Brighter Than Limits</source>
+      <translation>制限より明るいオブジェクトをカウント</translation>
+    </message>
+    <message>
+      <source>Time offset (hours):</source>
+      <translation>時間オフセット (時間):</translation>
+    </message>
+    <message>
+      <source>Caution - Deep Vizier Search</source>
+      <translation>注意 - Deep Vizier 検索</translation>
+    </message>
+    <message>
+      <source>Search M.A.S.T Database</source>
+      <translation>M.A.S.T データベースを検索</translation>
+    </message>
+  </context>
 </TS>

@@ -11218,4 +11218,251 @@ Ctrl+Drag: копировать WCS.</translation>
       <translation>Открыть в Aladin</translation>
     </message>
   </context>
+  <context>
+    <name>WIMIDialog</name>
+    <message>
+      <source>Add Text</source>
+      <translation>Добавить текст</translation>
+    </message>
+    <message>
+      <source>Clear Annotations</source>
+      <translation>Очистить аннотации</translation>
+    </message>
+    <message>
+      <source>Clear Results</source>
+      <translation>Очистить результаты</translation>
+    </message>
+    <message>
+      <source>Copy Object Information</source>
+      <translation>Копировать информацию об объекте</translation>
+    </message>
+    <message>
+      <source>Delete Selected Items</source>
+      <translation>Удалить выбранные элементы</translation>
+    </message>
+    <message>
+      <source>Delete Selected Object(s)</source>
+      <translation>Удалить выбранный объект(ы)</translation>
+    </message>
+    <message>
+      <source>Legend</source>
+      <translation>Легенда</translation>
+    </message>
+    <message>
+      <source>Open Website</source>
+      <translation>Открыть веб-сайт</translation>
+    </message>
+    <message>
+      <source>Select Annotation Color</source>
+      <translation>Выбрать цвет аннотации</translation>
+    </message>
+    <message>
+      <source>Select Annotation Font</source>
+      <translation>Выбрать шрифт аннотации</translation>
+    </message>
+    <message>
+      <source>Select Color</source>
+      <translation>Выбрать цвет</translation>
+    </message>
+    <message>
+      <source>Select Font</source>
+      <translation>Выбрать шрифт</translation>
+    </message>
+    <message>
+      <source>Show Annotation Tools</source>
+      <translation>Показать инструменты аннотирования</translation>
+    </message>
+    <message>
+      <source>Show Object Names</source>
+      <translation>Показать названия объектов</translation>
+    </message>
+    <message>
+      <source>Show Visible Objects Only</source>
+      <translation>Показывать только видимые объекты</translation>
+    </message>
+    <message>
+      <source>Undo</source>
+      <translation>Отменить</translation>
+    </message>
+    <message>
+      <source>Zoom to Object</source>
+      <translation>Масштабировать к объекту</translation>
+    </message>
+    <message>
+      <source>Copy RA/Dec to Clipboard</source>
+      <translation>Копировать RA/Dec в буфер</translation>
+    </message>
+    <message>
+      <source>Save Plate Solved Fits</source>
+      <translation>Сохранить решенный FITS</translation>
+    </message>
+    <message>
+      <source>RA: N/A</source>
+      <translation>RA: N/A</translation>
+    </message>
+    <message>
+      <source>Dec: N/A</source>
+      <translation>Dec: N/A</translation>
+    </message>
+    <message>
+      <source>Orientation: N/A°</source>
+      <translation>Ориентация: N/A°</translation>
+    </message>
+    <message>
+      <source>Mini Preview</source>
+      <translation>Мини-превью</translation>
+    </message>
+    <message>
+      <source>Zoom In</source>
+      <translation>Увеличить</translation>
+    </message>
+    <message>
+      <source>Zoom Out</source>
+      <translation>Уменьшить</translation>
+    </message>
+    <message>
+      <source>Save Annotated Image</source>
+      <translation>Сохранить аннотированное изображение</translation>
+    </message>
+    <message>
+      <source>Save Collage of Objects</source>
+      <translation>Сохранить коллаж объектов</translation>
+    </message>
+    <message>
+      <source>3D Distance Model</source>
+      <translation>3D модель расстояний</translation>
+    </message>
+    <message>
+      <source>H-R Diagram</source>
+      <translation>Диаграмма Г-Р</translation>
+    </message>
+    <message>
+      <source>Objects Found: 0</source>
+      <translation>Найдено объектов: 0</translation>
+    </message>
+    <message>
+      <source>Right Click a Row for More Options</source>
+      <translation>ПКМ для доп. опций</translation>
+    </message>
+    <message>
+      <source>Ctrl+Click to add items, Alt+Click to measure distance</source>
+      <translation>Ctrl+Клик добавить, Alt+Клик измерить</translation>
+    </message>
+    <message>
+      <source>Draw Ellipse</source>
+      <translation>Рисовать эллипс</translation>
+    </message>
+    <message>
+      <source>Freehand (Lasso)</source>
+      <translation>Лассо</translation>
+    </message>
+    <message>
+      <source>Draw Rectangle</source>
+      <translation>Рисовать прямоугольник</translation>
+    </message>
+    <message>
+      <source>Draw Arrow</source>
+      <translation>Рисовать стрелку</translation>
+    </message>
+    <message>
+      <source>Place Celestial Compass</source>
+      <translation>Разместить небесный компас</translation>
+    </message>
+    <message>
+      <source>Advanced Search Parameters</source>
+      <translation>Расширенные параметры поиска</translation>
+    </message>
+    <message>
+      <source>Object Type</source>
+      <translation>Тип объекта</translation>
+    </message>
+    <message>
+      <source>Description</source>
+      <translation>Описание</translation>
+    </message>
+    <message>
+      <source>Toggle All</source>
+      <translation>Переключить все</translation>
+    </message>
+    <message>
+      <source>Save List…</source>
+      <translation>Сохранить список…</translation>
+    </message>
+    <message>
+      <source>Load List…</source>
+      <translation>Загрузить список…</translation>
+    </message>
+    <message>
+      <source>Search Defined Region</source>
+      <translation>Поиск в определенной области</translation>
+    </message>
+    <message>
+      <source>Search Entire Image</source>
+      <translation>Поиск по всему изображению</translation>
+    </message>
+    <message>
+      <source>Minor Planets / Comets</source>
+      <translation>Малые планеты / Кометы</translation>
+    </message>
+    <message>
+      <source>Database: not downloaded</source>
+      <translation>БД не загружена</translation>
+    </message>
+    <message>
+      <source>Download Catalog</source>
+      <translation>Скачать каталог</translation>
+    </message>
+    <message>
+      <source>Search Minor Bodies</source>
+      <translation>Поиск малых тел</translation>
+    </message>
+    <message>
+      <source>Search scope:</source>
+      <translation>Область поиска:</translation>
+    </message>
+    <message>
+      <source>Defined Region</source>
+      <translation>Выбранная область</translation>
+    </message>
+    <message>
+      <source>Entire Image</source>
+      <translation>Все изображение</translation>
+    </message>
+    <message>
+      <source>Asteroid H ≤</source>
+      <translation>Астероид H ≤</translation>
+    </message>
+    <message>
+      <source>Max asteroids:</source>
+      <translation>Макс. астероидов:</translation>
+    </message>
+    <message>
+      <source>Comet H ≤</source>
+      <translation>Комета H ≤</translation>
+    </message>
+    <message>
+      <source>Max comets:</source>
+      <translation>Макс. комет:</translation>
+    </message>
+    <message>
+      <source>Target (optional):</source>
+      <translation>Цель (опц.):</translation>
+    </message>
+    <message>
+      <source>Count Objects Brighter Than Limits</source>
+      <translation>Считать объекты ярче лимита</translation>
+    </message>
+    <message>
+      <source>Time offset (hours):</source>
+      <translation>Смещение времени (ч):</translation>
+    </message>
+    <message>
+      <source>Caution - Deep Vizier Search</source>
+      <translation>Осторожно - Глубокий поиск Vizier</translation>
+    </message>
+    <message>
+      <source>Search M.A.S.T Database</source>
+      <translation>Поиск в базе M.A.S.T</translation>
+    </message>
+  </context>
 </TS>

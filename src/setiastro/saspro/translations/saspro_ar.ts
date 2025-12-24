@@ -15402,4 +15402,251 @@ Hold Ctrl while dragging to copy the astrometric solution (WCS) to another view.
       <translation>عرض في Aladin</translation>
     </message>
   </context>
+  <context>
+    <name>WIMIDialog</name>
+    <message>
+      <source>Add Text</source>
+      <translation>إضافة نص</translation>
+    </message>
+    <message>
+      <source>Clear Annotations</source>
+      <translation>مسح التعليقات التوضيحية</translation>
+    </message>
+    <message>
+      <source>Clear Results</source>
+      <translation>مسح النتائج</translation>
+    </message>
+    <message>
+      <source>Copy Object Information</source>
+      <translation>نسخ معلومات الكائن</translation>
+    </message>
+    <message>
+      <source>Delete Selected Items</source>
+      <translation>حذف العناصر المحددة</translation>
+    </message>
+    <message>
+      <source>Delete Selected Object(s)</source>
+      <translation>حذف الكائن (الكائنات) المحدد</translation>
+    </message>
+    <message>
+      <source>Legend</source>
+      <translation>وسيلة الإيضاح</translation>
+    </message>
+    <message>
+      <source>Open Website</source>
+      <translation>فتح الموقع</translation>
+    </message>
+    <message>
+      <source>Select Annotation Color</source>
+      <translation>تحديد لون التعليق التوضيحي</translation>
+    </message>
+    <message>
+      <source>Select Annotation Font</source>
+      <translation>تحديد خط التعليق التوضيحي</translation>
+    </message>
+    <message>
+      <source>Select Color</source>
+      <translation>تحديد اللون</translation>
+    </message>
+    <message>
+      <source>Select Font</source>
+      <translation>تحديد الخط</translation>
+    </message>
+    <message>
+      <source>Show Annotation Tools</source>
+      <translation>إظهار أدوات التعليق التوضيحي</translation>
+    </message>
+    <message>
+      <source>Show Object Names</source>
+      <translation>إظهار أسماء الكائنات</translation>
+    </message>
+    <message>
+      <source>Show Visible Objects Only</source>
+      <translation>إظهار الكائنات المرئية فقط</translation>
+    </message>
+    <message>
+      <source>Undo</source>
+      <translation>تراجع</translation>
+    </message>
+    <message>
+      <source>Zoom to Object</source>
+      <translation>تكبير الكائن</translation>
+    </message>
+    <message>
+      <source>Copy RA/Dec to Clipboard</source>
+      <translation>نسخ RA/Dec إلى الحافظة</translation>
+    </message>
+    <message>
+      <source>Save Plate Solved Fits</source>
+      <translation>حفظ FITS المحلولة</translation>
+    </message>
+    <message>
+      <source>RA: N/A</source>
+      <translation>RA: N/A</translation>
+    </message>
+    <message>
+      <source>Dec: N/A</source>
+      <translation>Dec: N/A</translation>
+    </message>
+    <message>
+      <source>Orientation: N/A°</source>
+      <translation>التوجيه: N/A°</translation>
+    </message>
+    <message>
+      <source>Mini Preview</source>
+      <translation>معاينة مصغرة</translation>
+    </message>
+    <message>
+      <source>Zoom In</source>
+      <translation>تكبير</translation>
+    </message>
+    <message>
+      <source>Zoom Out</source>
+      <translation>تصغير</translation>
+    </message>
+    <message>
+      <source>Save Annotated Image</source>
+      <translation>حفظ الصورة المشروحة</translation>
+    </message>
+    <message>
+      <source>Save Collage of Objects</source>
+      <translation>حفظ مجمعة الكائنات</translation>
+    </message>
+    <message>
+      <source>3D Distance Model</source>
+      <translation>نموذج المسافة ثلاثي الأبعاد</translation>
+    </message>
+    <message>
+      <source>H-R Diagram</source>
+      <translation>مخطط H-R</translation>
+    </message>
+    <message>
+      <source>Objects Found: 0</source>
+      <translation>الكائنات التي تم العثور عليها: 0</translation>
+    </message>
+    <message>
+      <source>Right Click a Row for More Options</source>
+      <translation>انقر بزر الماوس الأيمن فوق صف لمزيد من الخيارات</translation>
+    </message>
+    <message>
+      <source>Ctrl+Click to add items, Alt+Click to measure distance</source>
+      <translation>Ctrl+Click لإضافة عناصر، Alt+Click لقياس المسافة</translation>
+    </message>
+    <message>
+      <source>Draw Ellipse</source>
+      <translation>رسم قطع ناقص</translation>
+    </message>
+    <message>
+      <source>Freehand (Lasso)</source>
+      <translation>رسم حر (Lasso)</translation>
+    </message>
+    <message>
+      <source>Draw Rectangle</source>
+      <translation>رسم مستطيل</translation>
+    </message>
+    <message>
+      <source>Draw Arrow</source>
+      <translation>رسم سهم</translation>
+    </message>
+    <message>
+      <source>Place Celestial Compass</source>
+      <translation>وضع البوصلة السماوية</translation>
+    </message>
+    <message>
+      <source>Advanced Search Parameters</source>
+      <translation>معلمات البحث المتقدمة</translation>
+    </message>
+    <message>
+      <source>Object Type</source>
+      <translation>نوع الكائن</translation>
+    </message>
+    <message>
+      <source>Description</source>
+      <translation>الوصف</translation>
+    </message>
+    <message>
+      <source>Toggle All</source>
+      <translation>تبديل الكل</translation>
+    </message>
+    <message>
+      <source>Save List…</source>
+      <translation>حفظ القائمة…</translation>
+    </message>
+    <message>
+      <source>Load List…</source>
+      <translation>تحميل القائمة…</translation>
+    </message>
+    <message>
+      <source>Search Defined Region</source>
+      <translation>بحث في المنطقة المحددة</translation>
+    </message>
+    <message>
+      <source>Search Entire Image</source>
+      <translation>بحث في الصورة بأكملها</translation>
+    </message>
+    <message>
+      <source>Minor Planets / Comets</source>
+      <translation>الكواكب الصغيرة / المذنبات</translation>
+    </message>
+    <message>
+      <source>Database: not downloaded</source>
+      <translation>قاعدة البيانات: لم يتم تنزيلها</translation>
+    </message>
+    <message>
+      <source>Download Catalog</source>
+      <translation>تنزيل الكتالوج</translation>
+    </message>
+    <message>
+      <source>Search Minor Bodies</source>
+      <translation>بحث عن الجثث الصغيرة</translation>
+    </message>
+    <message>
+      <source>Search scope:</source>
+      <translation>نطاق البحث:</translation>
+    </message>
+    <message>
+      <source>Defined Region</source>
+      <translation>منطقة محددة</translation>
+    </message>
+    <message>
+      <source>Entire Image</source>
+      <translation>الصورة بأكملها</translation>
+    </message>
+    <message>
+      <source>Asteroid H ≤</source>
+      <translation>الكويكب H ≤</translation>
+    </message>
+    <message>
+      <source>Max asteroids:</source>
+      <translation>الحد الأقصى للكويكبات:</translation>
+    </message>
+    <message>
+      <source>Comet H ≤</source>
+      <translation>المذنب H ≤</translation>
+    </message>
+    <message>
+      <source>Max comets:</source>
+      <translation>الحد الأقصى للمذنبات:</translation>
+    </message>
+    <message>
+      <source>Target (optional):</source>
+      <translation>الهدف (اختياري):</translation>
+    </message>
+    <message>
+      <source>Count Objects Brighter Than Limits</source>
+      <translation>عد الكائنات الأكثر سطوعًا من الحدود</translation>
+    </message>
+    <message>
+      <source>Time offset (hours):</source>
+      <translation>إزاحة الوقت (ساعات):</translation>
+    </message>
+    <message>
+      <source>Caution - Deep Vizier Search</source>
+      <translation>تحذير - بحث Vizier العميق</translation>
+    </message>
+    <message>
+      <source>Search M.A.S.T Database</source>
+      <translation>بحث في قاعدة بيانات M.A.S.T</translation>
+    </message>
+  </context>
 </TS>

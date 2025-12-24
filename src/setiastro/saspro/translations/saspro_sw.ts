@@ -14620,4 +14620,251 @@ Shikilia Ctrl ukiburuta ili kunakili suluhisho la astrometriki (WCS) kwenye mwon
       <translation>Angalia katika Aladin</translation>
     </message>
   </context>
+  <context>
+    <name>WIMIDialog</name>
+    <message>
+      <source>Add Text</source>
+      <translation>Ongeza Maandishi</translation>
+    </message>
+    <message>
+      <source>Clear Annotations</source>
+      <translation>Futa Maelezo</translation>
+    </message>
+    <message>
+      <source>Clear Results</source>
+      <translation>Futa Matokeo</translation>
+    </message>
+    <message>
+      <source>Copy Object Information</source>
+      <translation>Nakili Taarifa za Kitu</translation>
+    </message>
+    <message>
+      <source>Delete Selected Items</source>
+      <translation>Futa Vitu Vilivyochaguliwa</translation>
+    </message>
+    <message>
+      <source>Delete Selected Object(s)</source>
+      <translation>Futa Kitu/Vitu Vilivyochaguliwa</translation>
+    </message>
+    <message>
+      <source>Legend</source>
+      <translation>Kielelezo</translation>
+    </message>
+    <message>
+      <source>Open Website</source>
+      <translation>Fungua Tovuti</translation>
+    </message>
+    <message>
+      <source>Select Annotation Color</source>
+      <translation>Chagua Rangi ya Maelezo</translation>
+    </message>
+    <message>
+      <source>Select Annotation Font</source>
+      <translation>Chagua Fonti ya Maelezo</translation>
+    </message>
+    <message>
+      <source>Select Color</source>
+      <translation>Chagua Rangi</translation>
+    </message>
+    <message>
+      <source>Select Font</source>
+      <translation>Chagua Fonti</translation>
+    </message>
+    <message>
+      <source>Show Annotation Tools</source>
+      <translation>Onyesha Zana za Maelezo</translation>
+    </message>
+    <message>
+      <source>Show Object Names</source>
+      <translation>Onyesha Majina ya Vitu</translation>
+    </message>
+    <message>
+      <source>Show Visible Objects Only</source>
+      <translation>Onyesha Vitu Vinavyoonekana Tu</translation>
+    </message>
+    <message>
+      <source>Undo</source>
+      <translation>Tendua</translation>
+    </message>
+    <message>
+      <source>Zoom to Object</source>
+      <translation>Kuza Kwenye Kitu</translation>
+    </message>
+    <message>
+      <source>Copy RA/Dec to Clipboard</source>
+      <translation>Nakili RA/Dec kwenye Ubao wa kunakili</translation>
+    </message>
+    <message>
+      <source>Save Plate Solved Fits</source>
+      <translation>Hifadhi FITS Zilizotatuliwa</translation>
+    </message>
+    <message>
+      <source>RA: N/A</source>
+      <translation>RA: N/A</translation>
+    </message>
+    <message>
+      <source>Dec: N/A</source>
+      <translation>Dec: N/A</translation>
+    </message>
+    <message>
+      <source>Orientation: N/A°</source>
+      <translation>Mwelekeo: N/A°</translation>
+    </message>
+    <message>
+      <source>Mini Preview</source>
+      <translation>Onyesho la Awali Dogo</translation>
+    </message>
+    <message>
+      <source>Zoom In</source>
+      <translation>Kuza</translation>
+    </message>
+    <message>
+      <source>Zoom Out</source>
+      <translation>Punguza</translation>
+    </message>
+    <message>
+      <source>Save Annotated Image</source>
+      <translation>Hifadhi Picha yenye Maelezo</translation>
+    </message>
+    <message>
+      <source>Save Collage of Objects</source>
+      <translation>Hifadhi Collage ya Vitu</translation>
+    </message>
+    <message>
+      <source>3D Distance Model</source>
+      <translation>Mfano wa Umbali wa 3D</translation>
+    </message>
+    <message>
+      <source>H-R Diagram</source>
+      <translation>Mchoro wa H-R</translation>
+    </message>
+    <message>
+      <source>Objects Found: 0</source>
+      <translation>Vitu Vilivyopatikana: 0</translation>
+    </message>
+    <message>
+      <source>Right Click a Row for More Options</source>
+      <translation>Bofya Kulia kwenye Mstari kwa Chaguo Zaidi</translation>
+    </message>
+    <message>
+      <source>Ctrl+Click to add items, Alt+Click to measure distance</source>
+      <translation>Ctrl+Bofya ili kuongeza vitu, Alt+Bofya ili kupima umbali</translation>
+    </message>
+    <message>
+      <source>Draw Ellipse</source>
+      <translation>Chora Ellipse</translation>
+    </message>
+    <message>
+      <source>Freehand (Lasso)</source>
+      <translation>Chora Huru (Lasso)</translation>
+    </message>
+    <message>
+      <source>Draw Rectangle</source>
+      <translation>Chora Mstatili</translation>
+    </message>
+    <message>
+      <source>Draw Arrow</source>
+      <translation>Chora Mshale</translation>
+    </message>
+    <message>
+      <source>Place Celestial Compass</source>
+      <translation>Weka Kampasi ya Anga</translation>
+    </message>
+    <message>
+      <source>Advanced Search Parameters</source>
+      <translation>Vigezo vya Utafutaji wa Juu</translation>
+    </message>
+    <message>
+      <source>Object Type</source>
+      <translation>Aina ya Kitu</translation>
+    </message>
+    <message>
+      <source>Description</source>
+      <translation>Maelezo</translation>
+    </message>
+    <message>
+      <source>Toggle All</source>
+      <translation>Badilisha Yote</translation>
+    </message>
+    <message>
+      <source>Save List…</source>
+      <translation>Hifadhi Orodha…</translation>
+    </message>
+    <message>
+      <source>Load List…</source>
+      <translation>Pakia Orodha…</translation>
+    </message>
+    <message>
+      <source>Search Defined Region</source>
+      <translation>Tafuta Eneo Lililofafanuliwa</translation>
+    </message>
+    <message>
+      <source>Search Entire Image</source>
+      <translation>Tafuta Picha Nzima</translation>
+    </message>
+    <message>
+      <source>Minor Planets / Comets</source>
+      <translation>Sayari Ndogo / Nyotamkia</translation>
+    </message>
+    <message>
+      <source>Database: not downloaded</source>
+      <translation>Hifadhidata: haijapakuliwa</translation>
+    </message>
+    <message>
+      <source>Download Catalog</source>
+      <translation>Pakua Katalogi</translation>
+    </message>
+    <message>
+      <source>Search Minor Bodies</source>
+      <translation>Tafuta Miili Midogo</translation>
+    </message>
+    <message>
+      <source>Search scope:</source>
+      <translation>Upeo wa Utafutaji:</translation>
+    </message>
+    <message>
+      <source>Defined Region</source>
+      <translation>Eneo Lililofafanuliwa</translation>
+    </message>
+    <message>
+      <source>Entire Image</source>
+      <translation>Picha Nzima</translation>
+    </message>
+    <message>
+      <source>Asteroid H ≤</source>
+      <translation>Asteroidi H ≤</translation>
+    </message>
+    <message>
+      <source>Max asteroids:</source>
+      <translation>Upeo wa asteroidi:</translation>
+    </message>
+    <message>
+      <source>Comet H ≤</source>
+      <translation>Nyotamkia H ≤</translation>
+    </message>
+    <message>
+      <source>Max comets:</source>
+      <translation>Upeo wa nyotamkia:</translation>
+    </message>
+    <message>
+      <source>Target (optional):</source>
+      <translation>Lengo (hiari):</translation>
+    </message>
+    <message>
+      <source>Count Objects Brighter Than Limits</source>
+      <translation>Hesabu Vitu Vinavyong'aa Kuliko Vituo</translation>
+    </message>
+    <message>
+      <source>Time offset (hours):</source>
+      <translation>Muda wa kukabiliana (saa):</translation>
+    </message>
+    <message>
+      <source>Caution - Deep Vizier Search</source>
+      <translation>Tahadhari - Utafutaji wa Kina wa Vizier</translation>
+    </message>
+    <message>
+      <source>Search M.A.S.T Database</source>
+      <translation>Tafuta Hifadhidata ya M.A.S.T</translation>
+    </message>
+  </context>
 </TS>
