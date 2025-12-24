@@ -260,20 +260,17 @@ class DockMixin:
                      self.resource_monitor.raise_()
                      return
 
-            m = 5 # margin
-            
-            # Get current screen geometry (monitor where the main window is located)
+            m = 5  # margin
+
             screen = self.screen()
             geom = screen.availableGeometry()
-            
-            # Anchor to bottom-right of the SCREEN (not the window)
-            # geom.width() includes multi-monitor offset if using availableGeometry of specific screen
-            # actually availableGeometry() returns a QRect which has x,y,width,height.
-            
-            x = geom.x() + geom.width() - w - m
-            y = geom.y() + geom.height() - h - m
-            
-            # Move directly to global coordinates
+
+            mw = self.resource_monitor.width()
+            mh = self.resource_monitor.height()
+
+            x = geom.x() + geom.width()  - mw - m
+            y = geom.y() + geom.height() - mh - m
+
             self.resource_monitor.move(x, y)
             self.resource_monitor.raise_()
 
