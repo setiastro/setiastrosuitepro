@@ -18,6 +18,7 @@ except Exception:
 _CUDA_AVAILABLE = False
 _CUDA_DEVICE_NAME = "N/A"
 _CUDA_INITIALIZED = False
+_CUDA_SEPARATION_INITIALIZED = False  # Track if first GPU separation has been run
 _CUDA_DENOISE_INITIALIZED = False  # Track if NLM denoise has been run once
 
 def _warmup_cuda():
@@ -56,8 +57,11 @@ def _warmup_cuda():
         pass
 
 try:
-    if cv2 is not None:
-        _cuda_count = cv2.cuda.getCudaEnabledDeviceCount()
+    if cv2 is not None and hasattr(cv2, 'cuda'):
+        try:
+            _cuda_count = cv2.cuda.getCudaEnabledDeviceCount()
+        except Exception:
+            _cuda_count = 0
         if _cuda_count > 0:
             _CUDA_AVAILABLE = True
             try:
@@ -65,10 +69,10 @@ try:
                 _CUDA_DEVICE_NAME = _device_info.name()
             except Exception:
                 _CUDA_DEVICE_NAME = f"{_cuda_count} device(s)"
-            # Warm up CUDA immediately (basic ops only, NLM done on first use)
-            _warmup_cuda()
+            # Note: We skip warmup at module load to avoid crashes.
+            # First CUDA operation runs on main thread via _apply_separation_sync()
 except Exception:
-    pass
+    _CUDA_AVAILABLE = False
 
 # Minimum image size (pixels) to benefit from CUDA - smaller images have too much transfer overhead
 _CUDA_MIN_PIXELS = 500_000  # ~700x700 or larger
@@ -1416,6 +1420,8 @@ class FrequencySeperationTab(QWidget):
 
     # --------------- processing ---------------
     def _apply_separation(self):
+        global _CUDA_SEPARATION_INITIALIZED
+
         if self.image is None:
             QMessageBox.warning(self, "No Image", "Load or select an image first.")
             return
@@ -1424,6 +1430,16 @@ class FrequencySeperationTab(QWidget):
         if self.low_freq_image is not None and self.high_freq_image is not None:
             self._split_history.append((self.low_freq_image.copy(), self.high_freq_image.copy()))
             self.btn_undo_split.setEnabled(True)
+
+        # Check if first GPU separation needs to run on main thread
+        h, w = self.image.shape[:2]
+        will_use_cuda = (self.use_gpu and _CUDA_AVAILABLE and (h * w >= _CUDA_MIN_PIXELS))
+
+        if will_use_cuda and not _CUDA_SEPARATION_INITIALIZED:
+            # First CUDA separation - run synchronously on main thread to init CUDA context
+            self._apply_separation_sync()
+            _CUDA_SEPARATION_INITIALIZED = True
+            return
 
         self._show_spinner(True)
 
@@ -1437,6 +1453,42 @@ class FrequencySeperationTab(QWidget):
         self.proc_thread.separation_done.connect(self._on_sep_done)
         self.proc_thread.error_signal.connect(self._on_sep_error)
         self.proc_thread.start()
+
+    def _apply_separation_sync(self):
+        """Run separation synchronously on main thread (used for first CUDA separation)."""
+        from PyQt6.QtWidgets import QApplication
+
+        self.setCursor(Qt.CursorShape.WaitCursor)
+        QApplication.processEvents()
+
+        try:
+            # Create thread object just to use its methods
+            sep = FrequencySeperationThread(
+                image=self.image, method=self.method, radius=self.radius, tolerance=self.tolerance,
+                use_cuda=self.use_gpu
+            )
+            # Run the CUDA separation directly on main thread
+            if sep.use_cuda:
+                lf, hf = sep._run_cuda()
+            else:
+                lf, hf = sep._run_cpu()
+
+            # Update state (same as _on_sep_done)
+            self.low_freq_image = lf.astype(np.float32)
+            self.high_freq_image = hf.astype(np.float32)
+            self._lf_dirty = True
+            self._hf_dirty = True
+            self._combined_dirty = True
+            self._lf_pixmap_cache = None
+            self._hf_pixmap_cache = None
+            self._lf_scaled_cache = None
+            self._hf_scaled_cache = None
+            self._invalidate_combined_cache()
+            self._update_previews()
+        except Exception as e:
+            QMessageBox.critical(self, "Frequency Separation", str(e))
+        finally:
+            self.setCursor(Qt.CursorShape.ArrowCursor)
 
     def _on_sep_done(self, lf: np.ndarray, hf: np.ndarray):
         self._show_spinner(False)
