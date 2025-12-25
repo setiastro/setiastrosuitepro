@@ -604,7 +604,8 @@ class SelectiveColorCorrection(QDialog):
 
         # Row 3: chroma + lightness
         gl.addWidget(QLabel("Min chroma:"), 3, 2)
-        self.ds_minC = QDoubleSpinBox(); self.ds_minC.setRange(0,1); self.ds_minC.setSingleStep(0.05); self.ds_minC.setValue(0.0)
+        self.ds_minC = QDoubleSpinBox(); self.ds_minC.setRange(0,1); self.ds_minC.setSingleStep(0.05); self.ds_minC.setValue(0.05)
+
         self.ds_minC.valueChanged.connect(self._recompute_mask_and_preview)
         gl.addWidget(self.ds_minC, 3, 3)
 
@@ -1013,7 +1014,7 @@ class SelectiveColorCorrection(QDialog):
                 w.setValue(int(val))
             w.blockSignals(False)
 
-        setv(self.ds_minC, 0.0)
+        setv(self.ds_minC, 0.05)
         setv(self.ds_minL, 0.0)
         setv(self.ds_maxL, 1.0)
         setv(self.ds_smooth, 10.0)
@@ -1058,23 +1059,27 @@ class SelectiveColorCorrection(QDialog):
         self._recompute_mask_and_preview()
 
 
-    def _schedule_adjustments(self, delay_ms: int | None = None):
+    def _schedule_adjustments(self, *_, delay_ms: int | None = None):
         if delay_ms is None:
             delay_ms = getattr(self, "_adj_delay_ms", 200)
-        # if called very early, just no-op safely
+
         if not hasattr(self, "_adj_timer"):
             return
+
+        ms = max(1, int(delay_ms))  # never allow 0/negative
         self._adj_timer.stop()
-        self._adj_timer.start(int(delay_ms))
+        self._adj_timer.start(ms)
 
-
-    def _schedule_mask(self, delay_ms: int | None = None):
-        """Debounce mask recomputation for hue changes."""
+    def _schedule_mask(self, *_, delay_ms: int | None = None):
         if delay_ms is None:
-            delay_ms = self._mask_delay_ms
-        # restart the timer on every change
+            delay_ms = getattr(self, "_mask_delay_ms", 200)
+
+        if not hasattr(self, "_mask_timer"):
+            return
+
+        ms = max(1, int(delay_ms))
         self._mask_timer.stop()
-        self._mask_timer.start(int(delay_ms))
+        self._mask_timer.start(ms)
 
 
     def _sample_hue_deg_from_base(self, x: int, y: int) -> float | None:
