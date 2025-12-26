@@ -129,7 +129,7 @@ from PyQt6.QtGui import (QPixmap, QColor, QIcon, QKeySequence, QShortcut,
 
 # ----- QtCore -----
 from PyQt6.QtCore import (Qt, pyqtSignal, QCoreApplication, QTimer, QSize, QSignalBlocker,  QModelIndex, QThread, QUrl, QSettings, QEvent, QByteArray, QObject,
-    QPropertyAnimation, QEasingCurve
+    QPropertyAnimation, QEasingCurve, QElapsedTimer
 )
 
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
@@ -467,26 +467,23 @@ class AstroSuiteProMainWindow(
         self.mdi.linkViewDropped.connect(self._on_linkview_drop)
 
         self.doc_manager.set_mdi_area(self.mdi)
-
+        # Coalesce undo/redo label refreshes
+        self._undo_redo_refresh_pending = False
+        self._undo_redo_refresh_timer = QTimer(self)
+        self._undo_redo_refresh_timer.setSingleShot(True)
+        self._undo_redo_refresh_timer.timeout.connect(self._do_undo_redo_label_refresh)
         # Keep the toolbar in sync whenever anything relevant changes
-        self.doc_manager.documentAdded.connect(lambda *_: self.update_undo_redo_action_labels())
-        self.doc_manager.documentRemoved.connect(lambda *_: self.update_undo_redo_action_labels())
-        self.doc_manager.imageRegionUpdated.connect(lambda *_: self.update_undo_redo_action_labels())
-        self.doc_manager.previewRepaintRequested.connect(lambda *_: self.update_undo_redo_action_labels())
+        self.doc_manager.documentAdded.connect(lambda *_: self._schedule_undo_redo_label_refresh())
+        self.doc_manager.documentRemoved.connect(lambda *_: self._schedule_undo_redo_label_refresh())
+        self.doc_manager.imageRegionUpdated.connect(lambda *_: self._schedule_undo_redo_label_refresh())
+        self.doc_manager.previewRepaintRequested.connect(lambda *_: self._schedule_undo_redo_label_refresh())
+        self.mdi.subWindowActivated.connect(lambda *_: self._schedule_undo_redo_label_refresh())
 
-        # Also refresh when the active subwindow changes
-        try:
-            self.mdi.subWindowActivated.connect(lambda *_: self.update_undo_redo_action_labels())
-        except Exception:
-            pass
-
-        try:
-            QApplication.instance().focusChanged.connect(
-                lambda *_: QTimer.singleShot(0, self.update_undo_redo_action_labels)
-            )
-        except Exception:
-            pass
-
+        # optional: keep, but schedule (or remove entirely)
+        #try:
+        #    QApplication.instance().focusChanged.connect(lambda *_: self._schedule_undo_redo_label_refresh())
+        #except Exception:
+        #    pass
         self.shortcuts.load_shortcuts()
         self._ensure_persistent_names() 
         self._restore_window_placement()
@@ -570,6 +567,22 @@ class AstroSuiteProMainWindow(
 
     # _init_log_dock, _hook_stdout_stderr, and _append_log_text are now in DockMixin
 
+    def _schedule_undo_redo_label_refresh(self):
+        # Coalesce many triggers into one UI update
+        if getattr(self, "_undo_redo_refresh_pending", False):
+            return
+        self._undo_redo_refresh_pending = True
+        # 0ms is fine *if* it’s a real attribute timer (not a local)
+        self._undo_redo_refresh_timer.start(0)
+
+    def _do_undo_redo_label_refresh(self):
+        self._undo_redo_refresh_pending = False
+        try:
+            self.update_undo_redo_action_labels()
+        except Exception:
+            pass
+
+
     def _rebuild_menus_for_language(self):
         """Rebuild menus after language change to apply new translations."""
         try:
@@ -608,7 +621,7 @@ class AstroSuiteProMainWindow(
             doc.changed.connect(self.update_undo_redo_action_labels)
         except Exception:
             pass
-        self.update_undo_redo_action_labels()
+        self._schedule_undo_redo_label_refresh()
 
     def _promote_roi_preview_to_real_doc(self, st: dict, preview_doc) -> None:
         """
@@ -7562,7 +7575,7 @@ class AstroSuiteProMainWindow(
             except Exception:
                 pass
 
-            try: self.update_undo_redo_action_labels()
+            try: self._schedule_undo_redo_label_refresh()
             except Exception as e:
                 import logging
                 logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
@@ -8050,7 +8063,7 @@ class AstroSuiteProMainWindow(
         # If no subwindows remain, clear all "active doc" UI bits, including header
         if not self.mdi.subWindowList():
             self.currentDocumentChanged.emit(None)   # drives HeaderViewerDock.set_document(None)
-            self.update_undo_redo_action_labels()
+            self._schedule_undo_redo_label_refresh()
             self._hdr_refresh_timer.start(0)       # belt-and-suspenders for manual widgets
             # If your dock has its own set_document, call it explicitly too
             hv = getattr(self, "header_viewer", None)
@@ -8392,18 +8405,19 @@ class AstroSuiteProMainWindow(
 
         # Misc UI refreshes (guarded)
         try:
-            self.update_undo_redo_action_labels()
+            self._schedule_undo_redo_label_refresh()
         except Exception:
             pass
-        try:
-            if hasattr(self, "_hdr_refresh_timer") and self._hdr_refresh_timer is not None:
-                self._hdr_refresh_timer.start(0)
-        except Exception:
-            pass
+        #try:
+        #    if hasattr(self, "_hdr_refresh_timer") and self._hdr_refresh_timer is not None:
+        #        self._hdr_refresh_timer.start(0)
+        #except Exception:
+        #    pass
         try:
             self._refresh_mask_action_states()
         except Exception:
             pass
+
 
     def _sync_docman_active(self, doc):
         dm = self.doc_manager

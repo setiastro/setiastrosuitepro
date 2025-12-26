@@ -1438,6 +1438,34 @@ class RegistrationWorkerSignals(QObject):
 # Identity transform (2x3)
 IDENTITY_2x3 = np.array([[1, 0, 0], [0, 1, 0]], dtype=np.float64)
 
+def _to3x3_affine(A2x3: np.ndarray) -> np.ndarray:
+    A = np.asarray(A2x3, np.float64).reshape(2,3)
+    return np.vstack([A, [0,0,1]])
+
+def _from3x3_affine(A3: np.ndarray) -> np.ndarray:
+    return np.asarray(A3, np.float64)[:2,:]
+
+def _S(ds: float) -> np.ndarray:
+    ds = float(ds)
+    return np.array([[1.0/ds, 0, 0],
+                     [0, 1.0/ds, 0],
+                     [0, 0, 1]], np.float64)
+
+def lift_affine_2x3_from_ds(A_ds_2x3: np.ndarray, ds: float) -> np.ndarray:
+    S = _S(ds); Si = np.linalg.inv(S)
+    A3_full = Si @ _to3x3_affine(A_ds_2x3) @ S
+    return _from3x3_affine(A3_full)
+
+def downscale_affine_2x3_to_ds(A_full_2x3: np.ndarray, ds: float) -> np.ndarray:
+    S = _S(ds); Si = np.linalg.inv(S)
+    A3_ds = S @ _to3x3_affine(A_full_2x3) @ Si
+    return _from3x3_affine(A3_ds)
+
+def lift_homography_from_ds(H_ds: np.ndarray, ds: float) -> np.ndarray:
+    S = _S(ds); Si = np.linalg.inv(S)
+    return Si @ np.asarray(H_ds, np.float64) @ S
+
+
 def compute_affine_transform_astroalign_cropped(source_img, reference_img,
                                                 scale: float = 1.20,
                                                 limit_stars: int | None = None,
@@ -1879,31 +1907,34 @@ def project_affine_to_similarity(A2x3: np.ndarray) -> np.ndarray:
 def _solve_delta_job(args):
     """
     Worker: compute incremental affine/similarity delta for one frame against the ref preview.
-    args = (orig_path, current_transform_2x3, ref_small, Wref, Href,
-            resample_flag, det_sigma, limit_stars, minarea,
-            model, h_reproj)
+    args =
+      (orig_path, current_transform_2x3,
+       ref_small_ds, Wref_ds, Href_ds,
+       resample_flag, det_sigma, limit_stars, minarea,
+       model, h_reproj, ds)
     """
     try:
         import os
         import numpy as np
         import cv2
-        import sep
         from astropy.io import fits
 
-        (orig_path, current_transform_2x3, ref_small, Wref, Href,
+        (orig_path, current_transform_2x3,
+         ref_small_ds, Wref_ds, Href_ds,
          resample_flag, det_sigma, limit_stars, minarea,
-         model, h_reproj) = args
+         model, h_reproj, ds) = args
+
+        ds = max(1, int(ds))
 
         try:
             cv2.setNumThreads(1)
             try: cv2.ocl.setUseOpenCL(False)
-            except Exception as e:
-                import logging
-                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
+            except Exception:
+                pass
         except Exception:
             pass
 
-        # 1) read → gray float32
+        # 1) read → gray float32 (full)
         with fits.open(orig_path, memmap=True) as hdul:
             arr = hdul[0].data
             if arr is None:
@@ -1911,48 +1942,66 @@ def _solve_delta_job(args):
             gray = arr if arr.ndim == 2 else np.mean(arr, axis=2)
             gray = np.nan_to_num(gray, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
 
-        # 2) pre-warp to REF size
-        T_prev = np.asarray(current_transform_2x3, np.float32).reshape(2, 3)
-        src_for_match = cv2.warpAffine(
-            gray, T_prev, (Wref, Href),
+        # 2) downsample source to DS space
+        if ds > 1:
+            Wds = max(1, int(gray.shape[1] // ds))
+            Hds = max(1, int(gray.shape[0] // ds))
+            gray_ds = cv2.resize(gray, (Wds, Hds), interpolation=cv2.INTER_AREA)
+        else:
+            gray_ds = gray
+
+        # 3) pre-warp in DS space using downscaled transform
+        T_prev_full = np.asarray(current_transform_2x3, np.float64).reshape(2, 3)
+        T_prev_ds = downscale_affine_2x3_to_ds(T_prev_full, ds).astype(np.float32)
+
+        # Warp DS source into DS ref geometry
+        src_for_match_ds = cv2.warpAffine(
+            gray_ds, T_prev_ds, (int(Wref_ds), int(Href_ds)),
             flags=resample_flag, borderMode=cv2.BORDER_REFLECT_101
         )
 
-        # 3) denoise sparse islands to stabilize AA
-        src_for_match = _suppress_tiny_islands(src_for_match, det_sigma=det_sigma, minarea=minarea)
-        ref_small     = _suppress_tiny_islands(ref_small,     det_sigma=det_sigma, minarea=minarea)
+        # 4) denoise sparse islands in DS space (cheaper)
+        src_for_match_ds = _suppress_tiny_islands(src_for_match_ds, det_sigma=det_sigma, minarea=minarea)
+        ref_for_match_ds = _suppress_tiny_islands(np.asarray(ref_small_ds, np.float32, order="C"),
+                                                  det_sigma=det_sigma, minarea=minarea)
 
-        # 4) AA incremental delta on cropped ref
+        # 5) AA delta solve in DS space
         m = (model or "affine").lower()
         if m in ("no_distortion", "nodistortion"):
             m = "similarity"
 
         if m == "similarity":
-            tform = compute_similarity_transform_astroalign_cropped(
-                src_for_match, ref_small,
+            tform_ds = compute_similarity_transform_astroalign_cropped(
+                src_for_match_ds, ref_for_match_ds,
                 limit_stars=int(limit_stars) if limit_stars is not None else None,
                 det_sigma=float(det_sigma),
                 minarea=int(minarea),
                 h_reproj=float(h_reproj)
             )
         else:
-            tform = compute_affine_transform_astroalign_cropped(
-                src_for_match, ref_small,
+            tform_ds = compute_affine_transform_astroalign_cropped(
+                src_for_match_ds, ref_for_match_ds,
                 limit_stars=int(limit_stars) if limit_stars is not None else None,
                 det_sigma=float(det_sigma),
                 minarea=int(minarea)
             )
 
-        if tform is None:
+        if tform_ds is None:
             return (orig_path, None,
                     f"Astroalign failed for {os.path.basename(orig_path)} – skipping (no transform returned)")
 
-        T_new = np.asarray(tform, np.float64).reshape(2, 3)
-        return (orig_path, T_new, None)
+        # 6) lift DS delta back to full-res coords
+        T_new_full = lift_affine_2x3_from_ds(np.asarray(tform_ds, np.float64).reshape(2, 3), ds)
+
+        return (orig_path, np.asarray(T_new_full, np.float64).reshape(2, 3), None)
 
     except Exception as e:
+        try:
+            base = os.path.basename(args[0]) if args else "<unknown>"
+        except Exception:
+            base = "<unknown>"
         return (args[0] if args else "<unknown>", None,
-                f"Astroalign failed for {os.path.basename(args[0]) if args else '<unknown>'}: {e}")
+                f"Astroalign failed for {base}: {e}")
 
 
 
@@ -2036,7 +2085,7 @@ def _suppress_tiny_islands(img32: np.ndarray, det_sigma: float, minarea: int) ->
 # ─────────────────────────────────────────────────────────────
 def _finalize_write_job(args):
     """
-    Process-safe worker: read full-res, compute/choose model, warp, save.
+    Process-safe worker: read full-res, choose model, warp, save.
     Returns (orig_path, out_path or "", msg, success, drizzle_tuple or None)
     drizzle_tuple = (kind, matrix_or_None)
     """
@@ -2057,16 +2106,18 @@ def _finalize_write_job(args):
     try:
         cv2.setNumThreads(1)
         try: cv2.ocl.setUseOpenCL(False)
-        except Exception as e:
-            import logging
-            logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
+        except Exception:
+            pass
     except Exception:
         pass
 
     debug_lines = []
     def dbg(s: str):
-        # keep it short-ish; UI emits each line
         debug_lines.append(str(s))
+
+    def _A3(A2x3):
+        A = np.asarray(A2x3, np.float64).reshape(2, 3)
+        return np.vstack([A, [0, 0, 1]])
 
     try:
         # 1) load source (full-res)
@@ -2076,12 +2127,12 @@ def _finalize_write_job(args):
         if img is None:
             return (orig_path, "", f"⚠️ Failed to read {os.path.basename(orig_path)}", False, None)
 
-        # Fix for white images: Normalize integer types to [0,1]
+        # normalize ints
         if img.dtype == np.uint16:
             img = img.astype(np.float32) / 65535.0
         elif img.dtype == np.uint8:
             img = img.astype(np.float32) / 255.0
-        
+
         is_mono = (img.ndim == 2)
         src_gray_full = img if is_mono else np.mean(img, axis=2)
         src_gray_full = np.nan_to_num(src_gray_full, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
@@ -2090,40 +2141,61 @@ def _finalize_write_job(args):
 
         Href, Wref = ref_shape
 
-        # 2) load reference via memmap
+        # 2) load reference (full-res) via memmap
         ref2d = np.load(ref_npy_path, mmap_mode="r").astype(np.float32, copy=False)
         if ref2d.shape[:2] != (Href, Wref):
             return (orig_path, "", f"⚠️ Ref shape mismatch for {os.path.basename(orig_path)}", False, None)
 
         base = os.path.basename(orig_path)
 
-        # helper: force affine to similarity (no shear)
-        def _affine_to_similarity(A2x3: np.ndarray) -> np.ndarray:
-            A2x3 = np.asarray(A2x3, np.float64).reshape(2, 3)
-            R = A2x3[:, :2]
-            t = A2x3[:, 2]
-            U, S, Vt = np.linalg.svd(R)
-            rot = U @ Vt
-            if np.linalg.det(rot) < 0:
-                U[:, -1] *= -1
-                rot = U @ Vt
-            s = float((S[0] + S[1]) * 0.5)
-            Rsim = rot * s
-            out = np.zeros((2, 3), dtype=np.float64)
-            out[:, :2] = Rsim
-            out[:, 2] = t
-            return out
-
-        # 3) choose transform
         model = (align_model or "affine").lower()
         if model in ("no_distortion", "nodistortion"):
             model = "similarity"
 
-        kind = "affine"
-        X = np.asarray(affine_2x3, np.float64).reshape(2, 3)
+        # Base (accumulated) affine from refinement
+        A_prev = np.asarray(affine_2x3, np.float64).reshape(2, 3)
+        A_prev3 = _A3(A_prev)
 
+        # Default finalize is just the affine refinement result
+        kind = "affine"
+        X = A_prev.copy()
+
+        # ---- Non-affine finalize: DS solve + lift, but KEEP affine-as-start ----
         if model != "affine":
-            # ---- AA pairs (adaptive tiling) ----
+            dbg(f"[finalize] base={base} model={model} det_sigma={det_sigma} minarea={minarea} limit_stars={limit_stars}")
+
+            ds = 2  # ✅ keep simple/safe; only DS+lift change requested
+            ds = max(1, int(ds))
+
+            # DS reference
+            if ds > 1:
+                ref_ds = cv2.resize(ref2d, (max(1, Wref // ds), max(1, Href // ds)), interpolation=cv2.INTER_AREA)
+            else:
+                ref_ds = np.ascontiguousarray(ref2d)
+
+            ref_ds = np.ascontiguousarray(ref_ds.astype(np.float32, copy=False))
+            Hds, Wds = ref_ds.shape[:2]
+
+            # DS source
+            if ds > 1:
+                src_ds0 = cv2.resize(src_gray_full, (Wds, Hds), interpolation=cv2.INTER_AREA)
+            else:
+                src_ds0 = cv2.resize(src_gray_full, (Wds, Hds), interpolation=cv2.INTER_AREA) if (src_gray_full.shape[:2] != (Hds, Wds)) else src_gray_full
+
+            src_ds0 = np.ascontiguousarray(src_ds0.astype(np.float32, copy=False))
+
+            # Pre-warp source in DS space using downscaled accumulated affine
+            A_prev_ds = downscale_affine_2x3_to_ds(A_prev, ds).astype(np.float32)
+            src_pre_ds = cv2.warpAffine(
+                src_ds0, A_prev_ds, (Wds, Hds),
+                flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT_101
+            )
+
+            # Optional suppress tiny islands (your existing helper)
+            src_pre_ds = _suppress_tiny_islands(src_pre_ds, det_sigma=float(det_sigma), minarea=int(minarea))
+            ref_ds     = _suppress_tiny_islands(ref_ds,     det_sigma=float(det_sigma), minarea=int(minarea))
+
+            # AA correspondences in DS space: prewarped src vs ref
             max_cp = None
             try:
                 if limit_stars is not None and int(limit_stars) > 0:
@@ -2131,13 +2203,10 @@ def _finalize_write_job(args):
             except Exception:
                 max_cp = None
 
-            dbg(f"[finalize] base={base} model={model} det_sigma={det_sigma} minarea={minarea} limit_stars={limit_stars}")
+            AA_SCALE = 0.80
 
-            AA_SCALE = 0.80  # finalize-only
-
-            # ---- tiles=1 (center crop) ----
             src_xy, tgt_xy, best_P, best_xy0 = _aa_find_pairs_multitile(
-                src_gray_full, ref2d,
+                src_pre_ds, ref_ds,
                 scale=AA_SCALE,
                 tiles=1,
                 det_sigma=float(det_sigma),
@@ -2145,143 +2214,72 @@ def _finalize_write_job(args):
                 max_control_points=max_cp,
                 _dbg=dbg
             )
-
             if src_xy is None or len(src_xy) < 8:
-                dbg("[AA] tiles=1 too few matches")
-                raise RuntimeError("astroalign produced too few matches")
+                raise RuntimeError("astroalign produced too few matches (finalize)")
 
-            dbg(f"[AA] tiles=1 matches={len(src_xy)} best_tile_xy0={best_xy0}")
-
-            spread_ok1 = _points_spread_ok(tgt_xy, Wref, Href, _dbg=dbg)
-            dbg(f"[AA] spread_ok(tiles=1)={spread_ok1}")
-
-            # ---- fallback: tiles=5 (corners + center) ----
-            if not spread_ok1:
-                src_xy5, tgt_xy5, best_P5, best_xy0_5 = _aa_find_pairs_multitile(
-                    src_gray_full, ref2d,
-                    scale=AA_SCALE,
-                    tiles=5,  # <-- NEW primary fallback
-                    det_sigma=float(det_sigma),
-                    minarea=int(minarea),
-                    max_control_points=max_cp,
-                    _dbg=dbg
-                )
-
-                if src_xy5 is None or len(src_xy5) < 8:
-                    dbg("[AA] tiles=5 too few matches; keeping tiles=1")
-                else:
-                    dbg(f"[AA] tiles=5 matches={len(src_xy5)} best_tile_xy0={best_xy0_5}")
-                    spread_ok5 = _points_spread_ok(tgt_xy5, Wref, Href, _dbg=dbg)
-                    dbg(f"[AA] spread_ok(tiles=5)={spread_ok5}")
-
-                    # choose tiles=5 if it spreads better OR gives more matches
-                    if spread_ok5 or len(src_xy5) > len(src_xy):
-                        dbg("[AA] switching to tiles=5 result")
-                        src_xy, tgt_xy = src_xy5, tgt_xy5
-                        best_P, best_xy0 = best_P5, best_xy0_5
-                    else:
-                        dbg("[AA] keeping tiles=1 result (tiles=5 not better)")
-
-            # ---- tertiary fallback: tiles=3 grid ----
-            spread_ok_after = _points_spread_ok(tgt_xy, Wref, Href, _dbg=dbg)
-            dbg(f"[AA] spread_ok(after tiles=5 check)={spread_ok_after}")
-
-            if not spread_ok_after:
-                src_xy3, tgt_xy3, best_P3, best_xy0_3 = _aa_find_pairs_multitile(
-                    src_gray_full, ref2d,
-                    scale=AA_SCALE,
-                    tiles=3,
-                    det_sigma=float(det_sigma),
-                    minarea=int(minarea),
-                    max_control_points=max_cp,
-                    _dbg=dbg
-                )
-
-                if src_xy3 is None or len(src_xy3) < 8:
-                    dbg("[AA] tiles=3 too few matches; keeping current result")
-                else:
-                    dbg(f"[AA] tiles=3 matches={len(src_xy3)} best_tile_xy0={best_xy0_3}")
-                    spread_ok3 = _points_spread_ok(tgt_xy3, Wref, Href, _dbg=dbg)
-                    dbg(f"[AA] spread_ok(tiles=3)={spread_ok3}")
-
-                    if spread_ok3 or len(src_xy3) > len(src_xy):
-                        dbg("[AA] switching to tiles=3 result")
-                        src_xy, tgt_xy = src_xy3, tgt_xy3
-                        best_P, best_xy0 = best_P3, best_xy0_3
-                    else:
-                        dbg("[AA] keeping current result (tiles=3 not better)")
-
-            x0, y0 = best_xy0
-            P = np.asarray(best_P, np.float64)
-
-            # ---- base full-ref from best_P + best_xy0 ----
-            if P.shape == (3, 3):
-                base_kind0 = "homography"
-                T  = np.array([[1,0,x0],[0,1,y0],[0,0,1]], dtype=np.float64)
-                base_X0 = T @ P
-            else:
-                base_kind0 = "affine"
-                A3 = np.vstack([P[0:2, :], [0,0,1]])
-                T  = np.array([[1,0,x0],[0,1,y0],[0,0,1]], dtype=np.float64)
-                base_X0 = (T @ A3)[0:2, :]
-
+            # RANSAC threshold in DS pixels
             hth = float(h_reproj)
 
             if model == "homography":
-                H, inl = cv2.findHomography(src_xy, tgt_xy, cv2.RANSAC, ransacReprojThreshold=hth)
+                # Delta homography maps prewarped -> ref  (both in DS coords)
+                H_delta_ds, inl = cv2.findHomography(src_xy, tgt_xy, cv2.RANSAC, ransacReprojThreshold=hth)
                 ninl = int(inl.sum()) if inl is not None else 0
-                dbg(f"[RANSAC] homography inliers={ninl}/{len(src_xy)} thr={hth}")
+                dbg(f"[RANSAC] homography delta(DS) inliers={ninl}/{len(src_xy)} thr={hth}")
 
-                if H is not None:
-                    kind, X = "homography", np.asarray(H, np.float64)
+                if H_delta_ds is None:
+                    # fallback to just affine refinement
+                    kind, X = "affine", A_prev.copy()
                 else:
-                    kind, X = base_kind0, base_X0
+                    H_delta_full = lift_homography_from_ds(H_delta_ds, ds)
+                    H_final = np.asarray(H_delta_full, np.float64) @ A_prev3
+                    kind, X = "homography", H_final
 
             elif model == "similarity":
-                A, inl = cv2.estimateAffinePartial2D(src_xy, tgt_xy, cv2.RANSAC, ransacReprojThreshold=hth)
+                # Delta similarity (affine partial) maps prewarped -> ref in DS coords
+                A_delta_ds, inl = cv2.estimateAffinePartial2D(
+                    src_xy, tgt_xy, cv2.RANSAC, ransacReprojThreshold=hth
+                )
                 ninl = int(inl.sum()) if inl is not None else 0
-                dbg(f"[RANSAC] similarity inliers={ninl}/{len(src_xy)} thr={hth}")
+                dbg(f"[RANSAC] similarity delta(DS) inliers={ninl}/{len(src_xy)} thr={hth}")
 
-                if A is not None:
-                    kind, X = "similarity", np.asarray(A, np.float64)
+                if A_delta_ds is None:
+                    kind, X = "similarity", _project_to_similarity(A_prev)
                 else:
-                    if base_kind0 == "affine":
-                        kind, X = "similarity", _affine_to_similarity(base_X0)
-                    else:
-                        kind, X = base_kind0, base_X0
-
-            elif model == "affine":
-                kind, X = "affine", np.asarray(affine_2x3, np.float64)
+                    A_delta_full = lift_affine_2x3_from_ds(A_delta_ds, ds)
+                    # Compose delta ∘ prev in affine space
+                    A_final3 = _A3(A_delta_full) @ A_prev3
+                    A_final = A_final3[:2, :]
+                    kind, X = "similarity", _project_to_similarity(A_final)
 
             elif model in ("poly3", "poly4"):
+                # Keep behavior simple: poly fit in FULL coords using pairs from prewarped DS,
+                # then apply as remap on the ORIGINAL image (same as your current poly path).
+                # (If you later want true "poly residual after affine", we can do that safely,
+                # but that is a pattern change beyond DS+lift.)
                 order = 3 if model == "poly3" else 4
-                cx, cy = _fit_poly_xy(src_xy, tgt_xy, order=order)
+                src_full = (np.asarray(src_xy, np.float32) * float(ds)).astype(np.float32)
+                tgt_full = (np.asarray(tgt_xy, np.float32) * float(ds)).astype(np.float32)
+
+                cx, cy = _fit_poly_xy(src_full, tgt_full, order=order)
                 map_x, map_y = _poly_eval_grid(cx, cy, Wref, Href, order=order)
                 kind, X = model, (map_x, map_y)
 
             else:
-                dbg(f"[AA] unknown model '{model}', falling back to base {base_kind0}")
-                kind, X = base_kind0, base_X0
+                # Unknown model -> just write affine refinement
+                kind, X = "affine", A_prev.copy()
 
-        # 4) warp
+        # 4) warp full-res
         Hh, Ww = Href, Wref
 
         if kind in ("affine", "similarity"):
             A = np.asarray(X, np.float64).reshape(2, 3)
-
             if is_mono:
-                aligned = cv2.warpAffine(
-                    img, A, (Ww, Hh),
-                    flags=cv2.INTER_LANCZOS4,
-                    borderMode=cv2.BORDER_CONSTANT, borderValue=0
-                )
+                aligned = cv2.warpAffine(img, A, (Ww, Hh), flags=cv2.INTER_LANCZOS4,
+                                         borderMode=cv2.BORDER_CONSTANT, borderValue=0)
             else:
                 aligned = np.stack([
-                    cv2.warpAffine(
-                        img[..., c], A, (Ww, Hh),
-                        flags=cv2.INTER_LANCZOS4,
-                        borderMode=cv2.BORDER_CONSTANT, borderValue=0
-                    )
+                    cv2.warpAffine(img[..., c], A, (Ww, Hh), flags=cv2.INTER_LANCZOS4,
+                                   borderMode=cv2.BORDER_CONSTANT, borderValue=0)
                     for c in range(img.shape[2])
                 ], axis=2)
 
@@ -2290,34 +2288,27 @@ def _finalize_write_job(args):
 
         elif kind == "homography":
             Hm = np.asarray(X, np.float64).reshape(3, 3)
-
             if is_mono:
-                aligned = cv2.warpPerspective(
-                    img, Hm, (Ww, Hh),
-                    flags=cv2.INTER_LANCZOS4,
-                    borderMode=cv2.BORDER_CONSTANT, borderValue=0
-                )
+                aligned = cv2.warpPerspective(img, Hm, (Ww, Hh), flags=cv2.INTER_LANCZOS4,
+                                              borderMode=cv2.BORDER_CONSTANT, borderValue=0)
             else:
                 aligned = np.stack([
-                    cv2.warpPerspective(
-                        img[..., c], Hm, (Ww, Hh),
-                        flags=cv2.INTER_LANCZOS4,
-                        borderMode=cv2.BORDER_CONSTANT, borderValue=0
-                    )
+                    cv2.warpPerspective(img[..., c], Hm, (Ww, Hh), flags=cv2.INTER_LANCZOS4,
+                                        borderMode=cv2.BORDER_CONSTANT, borderValue=0)
                     for c in range(img.shape[2])
                 ], axis=2)
 
             drizzle_tuple = ("homography", Hm.astype(np.float64))
             warp_label = "homography"
 
-        elif kind in ("poly3","poly4"):
+        elif kind in ("poly3", "poly4"):
             map_x, map_y = X
             if is_mono:
                 aligned = cv2.remap(img, map_x, map_y, cv2.INTER_LANCZOS4,
                                     borderMode=cv2.BORDER_CONSTANT, borderValue=0)
             else:
                 aligned = np.stack([
-                    cv2.remap(img[...,c], map_x, map_y, cv2.INTER_LANCZOS4,
+                    cv2.remap(img[..., c], map_x, map_y, cv2.INTER_LANCZOS4,
                               borderMode=cv2.BORDER_CONSTANT, borderValue=0)
                     for c in range(img.shape[2])
                 ], axis=2)
@@ -2378,14 +2369,10 @@ class StarRegistrationWorker(QRunnable):
 
     def run(self):
         """
-        Affine:
-        - Apply current transform to a preview-sized image
-        - Solve incremental delta vs reference preview
-        - Emit the incremental delta (2x3) keyed by ORIGINAL path
+        Refinement worker ALWAYS computes incremental deltas in affine/similarity space,
+        even if the FINAL requested model is homography/poly3/poly4.
 
-        Non-affine (homography/poly3/4):
-        - This QRunnable does not try to do residuals; it just reports and emits identity.
-            The multi-process residual pass is handled by StarRegistrationThread.
+        The final non-affine model (if any) is applied in _finalize_write_job only.
         """
         try:
             _cap_native_threads_once()
@@ -2411,21 +2398,19 @@ class StarRegistrationWorker(QRunnable):
                 return
             Href, Wref = ref_small.shape[:2]
 
-            model = (self.model_name or "affine").lower()
+            # ✅ Refinement solve model: always affine or similarity
+            model_req = (self.model_name or "affine").lower()
+            if model_req in ("no_distortion", "nodistortion", "similarity"):
+                refine_model = "similarity"
+            else:
+                refine_model = "affine"  # includes when final requested is homography/poly*
 
-            # --- Non-affine: don't accumulate here; identity + progress line only
-            if model in ("homography", "poly3", "poly4"):
-                self.signals.progress.emit(
-                    f"Residual-only mode for {os.path.basename(self.original_file)} (model={model}); "
-                    "emitting identity transform (handled by thread pass)."
-                )
-                self.signals.result_transform.emit(os.path.normpath(self.original_file), IDENTITY_2x3.copy())
-                self.signals.result.emit(self.original_file)
-                return
-
-            # --- Affine incremental
             T_prev = np.array(self.current_transform, dtype=np.float32).reshape(2, 3)
-            use_warp = not np.allclose(T_prev, np.array([[1,0,0],[0,1,0]], dtype=np.float32), rtol=1e-5, atol=1e-5)
+            use_warp = not np.allclose(
+                T_prev,
+                np.array([[1, 0, 0], [0, 1, 0]], dtype=np.float32),
+                rtol=1e-5, atol=1e-5
+            )
 
             if use_warp and cv2 is not None:
                 src_for_match = cv2.warpAffine(
@@ -2439,9 +2424,21 @@ class StarRegistrationWorker(QRunnable):
                     src_for_match = gray_small
 
             try:
-                transform = self.compute_affine_transform_astroalign(
-                    src_for_match, ref_small, limit_stars=getattr(self, "limit_stars", None)
-                )
+                if refine_model == "similarity":
+                    transform = compute_similarity_transform_astroalign_cropped(
+                        src_for_match, ref_small,
+                        limit_stars=getattr(self, "limit_stars", None),
+                        det_sigma=getattr(self, "det_sigma", 12.0),
+                        minarea=getattr(self, "minarea", 10),
+                        h_reproj=getattr(self, "h_reproj", 3.0),
+                    )
+                else:
+                    transform = self.compute_affine_transform_astroalign(
+                        src_for_match, ref_small,
+                        limit_stars=getattr(self, "limit_stars", None),
+                        det_sigma=getattr(self, "det_sigma", 12.0),
+                        minarea=getattr(self, "minarea", 10),
+                    )
             except Exception as e:
                 msg = str(e)
                 base = os.path.basename(self.original_file)
@@ -2457,18 +2454,21 @@ class StarRegistrationWorker(QRunnable):
                 return
 
             transform = np.array(transform, dtype=np.float64).reshape(2, 3)
+
+            # Similarity projection safety (no shear)
+            if refine_model == "similarity":
+                transform = _project_to_similarity(transform)
+
             key = os.path.normpath(self.original_file)
             self.signals.result_transform.emit(key, transform)
             self.signals.progress.emit(
                 f"Astroalign delta for {os.path.basename(self.original_file)} "
-                f"(model={self.model_name}): dx={transform[0, 2]:.2f}, dy={transform[1, 2]:.2f}"
+                f"(refine={refine_model}, final={self.model_name}): dx={transform[0,2]:.2f}, dy={transform[1,2]:.2f}"
             )
             self.signals.result.emit(self.original_file)
 
         except Exception as e:
             self.signals.error.emit(f"Error processing {self.original_file}: {e}")
-
-
 
     @staticmethod
     def compute_affine_transform_astroalign(source_img, reference_img,
@@ -2969,23 +2969,37 @@ class StarRegistrationThread(QThread):
 
             # ✂️ No DAO/RANSAC: astroalign handles detection internally.
 
-            # Single shared downsampled ref for workers
-            #ds = max(1, int(self.align_prefs.get("downsample", 2)))
-            #if ds > 1:
-            #    new_hw = (max(1, ref2d.shape[1] // ds), max(1, ref2d.shape[0] // ds))  # (W, H)
-            #    ref_small = cv2.resize(ref2d, new_hw, interpolation=cv2.INTER_AREA)
-            #else:
-            #    ref_small = ref2d
-            #self.ref_small = np.ascontiguousarray(ref_small.astype(np.float32))
-            self.ref_small = np.ascontiguousarray(ref2d.astype(np.float32))
+            # --- Build shared ref at full + downsampled solve-res ---
+            self.ref_small_full = np.ascontiguousarray(ref2d.astype(np.float32, copy=False))
+
+            # Use existing preference key you already have: self.downsample
+            # (you load it in __init__: self.downsample = int(self.align_prefs.get("downsample", 2)))
+            ds = max(1, int(self.downsample))
+            self.solve_downsample = ds
+
+            if ds > 1 and cv2 is not None:
+                new_hw = (max(1, ref2d.shape[1] // ds), max(1, ref2d.shape[0] // ds))  # (W, H)
+                ref_ds = cv2.resize(self.ref_small_full, new_hw, interpolation=cv2.INTER_AREA)
+            else:
+                ref_ds = self.ref_small_full
+
+            self.ref_small = self.ref_small_full               # keep existing attribute name (full)
+            self.ref_small_ds = np.ascontiguousarray(ref_ds.astype(np.float32, copy=False))
 
             # Initialize transforms to identity for EVERY original frame
             self.alignment_matrices = {os.path.normpath(f): IDENTITY_2x3.copy() for f in self.original_files}
             self.delta_transforms = {}
 
             # Progress totals (units = number of worker completions across passes)
+            # Progress totals:
+            #   passes = N * passes
+            #   finalize = N
+            N = len(self.original_files)
+            P = max(1, int(self.max_refinement_passes))
+
             self._done = 0
-            self._total = len(self.original_files) * max(1, int(self.max_refinement_passes))
+            self._total = (N * P) + N   # <-- IMPORTANT: include finalize
+            self.progress_step.emit(self._done, self._total)  # optional but helps UI reset immediately
 
             # Registration passes (compute deltas only)
             for pass_idx in range(self.max_refinement_passes):
@@ -3027,109 +3041,30 @@ class StarRegistrationThread(QThread):
     def run_one_registration_pass(self, _ref_stars_unused, _ref_triangles_unused, pass_index):
         _cap_native_threads_once()
         import os
-        import shutil
-        import tempfile
         import cv2
+        import time
 
-        model = (self.align_model or "affine").lower()
-        ref_small = np.ascontiguousarray(self.ref_small.astype(np.float32, copy=False))
-        Href, Wref = ref_small.shape[:2]
+        # Requested final model (used ONLY in finalize)
+        final_model = (self.align_model or "affine").lower()
 
-        # --- Build reverse map: current_path -> original_key (handles bin2-upscale / rewrites)
+        # ✅ Refinement model: affine or similarity only
+        if final_model in ("no_distortion", "nodistortion", "similarity"):
+            refine_model = "similarity"
+        else:
+            refine_model = "affine"
+
+        ref_small_ds = np.ascontiguousarray(self.ref_small_ds.astype(np.float32, copy=False))
+        Href_ds, Wref_ds = ref_small_ds.shape[:2]
+        ds = max(1, int(getattr(self, "solve_downsample", 1)))
+
+        # --- reverse map: current_path -> original_key
         rev_current_to_orig = {}
         for orig_k, curr_p in self.file_key_to_current_path.items():
             rev_current_to_orig[os.path.normpath(curr_p)] = os.path.normpath(orig_k)
 
-        # ---------- NON-AFFINE PATH: residuals-only ----------
-        if model in ("homography", "poly3", "poly4"):
-            work_list = list(self.original_files)
-
-            from concurrent.futures import ProcessPoolExecutor, as_completed
-            procs = max(2, min((os.cpu_count() or 8), 32))
-            self.progress_update.emit(f"Using {procs} processes to measure residuals (model={model}).")
-
-            tmpdir = tempfile.mkdtemp(prefix="sas_resid_")
-            ref_npy = os.path.join(tmpdir, "ref_small.npy")
-            try:
-                np.save(ref_npy, ref_small)
-            except Exception as e:
-                try: shutil.rmtree(tmpdir, ignore_errors=True)
-                except Exception as e:
-                    import logging
-                    logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
-                self.on_worker_error(f"Failed to persist residual reference: {e}")
-                return False, "Residual pass aborted."
-
-            pass_deltas = []
-            try:
-
-                import time
-
-                jobs = [
-                    (p, ref_npy, model, self.h_reproj, self.det_sigma, self.minarea, self.limit_stars)
-                    for p in work_list
-                ]
-                total = len(jobs)
-                done = 0
-
-                self.progress_update.emit(f"Using {procs} processes to measure residuals (model={model}).")
-                self.progress_step.emit(0, total)
-
-                with _make_executor(procs) as ex:
-                    pending = {ex.submit(_residual_job_worker, j): j[0] for j in jobs}
-                    last_heartbeat = time.monotonic()
-
-                    while pending:
-                        done_set, pending = wait(pending, timeout=0.6, return_when=FIRST_COMPLETED)
-                        # heartbeat if nothing finished for a bit
-                        now = time.monotonic()
-                        if not done_set and (now - last_heartbeat) > 2.0:
-                            self.progress_update.emit(f"… measuring residuals ({done}/{total} done)")
-                            last_heartbeat = now
-
-                        for fut in done_set:
-                            orig_pth = os.path.normpath(pending.pop(fut, "<unknown>")) if fut in pending else "<unknown>"
-                            try:
-                                pth, rms, err = fut.result()
-                            except Exception as e:
-                                pth, rms, err = (orig_pth, float("inf"), f"Worker crashed: {e}")
-
-                            k_orig = os.path.normpath(pth or orig_pth)
-                            if err:
-                                self.on_worker_error(f"Residual measure failed for {os.path.basename(k_orig)}: {err}")
-                                self.delta_transforms[k_orig] = float("inf")
-                            else:
-                                self.delta_transforms[k_orig] = float(rms)
-                                self.progress_update.emit(
-                                    f"[residuals] {os.path.basename(k_orig)} → RMS={rms:.2f}px"
-                                )
-
-                            done += 1
-                            self.progress_step.emit(done, total)
-                            last_heartbeat = now
-
-                for orig in self.original_files:
-                    pass_deltas.append(self.delta_transforms.get(os.path.normpath(orig), float("inf")))
-                self.transform_deltas.append(pass_deltas)
-
-                preview = ", ".join([f"{d:.2f}" if np.isfinite(d) else "∞" for d in pass_deltas[:10]])
-                if len(pass_deltas) > 10:
-                    preview += f" … ({len(pass_deltas)} total)"
-                self.progress_update.emit(f"Pass {pass_index + 1}: residual RMS px [{preview}]")
-
-                aligned_count = sum(1 for d in pass_deltas if np.isfinite(d) and d <= self.shift_tolerance)
-                if aligned_count:
-                    self.progress_update.emit(f"Within tolerance (≤ {self.shift_tolerance:.2f}px): {aligned_count} frame(s)")
-                return True, "Residual pass complete."
-            finally:
-                try: shutil.rmtree(tmpdir, ignore_errors=True)
-                except Exception as e:
-                    import logging
-                    logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
-
-        # ---------- AFFINE PATH (incremental delta accumulation) ----------
         resample_flag = cv2.INTER_AREA if pass_index == 0 else cv2.INTER_LINEAR
 
+        # Work list: pass 0 all; later passes skip within tolerance
         if pass_index == 0:
             work_list = list(self.original_files)
         else:
@@ -3156,30 +3091,36 @@ class StarRegistrationThread(QThread):
             return True, "Pass complete (nothing to refine)."
 
         procs = max(2, min((os.cpu_count() or 8), 32))
-        self.progress_update.emit(f"Using {procs} processes for stellar alignment (HW={os.cpu_count() or 8}).")
+        self.progress_update.emit(f"Using {procs} processes for stellar alignment (refine={refine_model}).")
 
         timeout_sec = int(self.align_prefs.get("timeout_per_job_sec", 300))
+
         jobs = []
         for orig_key in work_list:
             ok = os.path.normpath(orig_key)
-            current_path = os.path.normpath(self.file_key_to_current_path.get(ok, ok))
+
+            # IMPORTANT: refinement reads ORIGINAL frame (no intermediate saves)
+            current_path = ok
+
             current_transform = self.alignment_matrices.get(ok, IDENTITY_2x3)
+
             jobs.append((
                 current_path,
                 current_transform,
-                ref_small, Wref, Href,
-                resample_flag, float(self.det_sigma), int(self.limit_stars), int(self.minarea),
-                model, float(self.h_reproj)
+                ref_small_ds, int(Wref_ds), int(Href_ds),
+                resample_flag, float(self.det_sigma),
+                int(self.limit_stars) if self.limit_stars is not None else None,
+                int(self.minarea),
+                refine_model, float(self.h_reproj),
+                int(ds)
             ))
 
-        import time
         executor = _make_executor(procs)
-
         try:
             fut_info, pending = {}, set()
             for j in jobs:
                 f = executor.submit(_solve_delta_job, j)
-                fut_info[f] = (time.monotonic(), j[0])  # j[0] = current_path
+                fut_info[f] = (time.monotonic(), j[0])
                 pending.add(f)
 
             while pending:
@@ -3191,7 +3132,7 @@ class StarRegistrationThread(QThread):
                     except Exception as e:
                         curr_path_r, T_new, err = (returned_path or "<unknown>", None, f"Worker crashed: {e}")
 
-                    # Map CURRENT path back to ORIGINAL key for consistent accumulation
+                    # Map back to ORIGINAL key
                     curr_norm = os.path.normpath(curr_path_r)
                     k_orig = rev_current_to_orig.get(curr_norm, curr_norm)
 
@@ -3201,10 +3142,13 @@ class StarRegistrationThread(QThread):
                         continue
 
                     T_new = np.array(T_new, dtype=np.float64).reshape(2, 3)
-                    if model in ("no_distortion", "nodistortion", "similarity"):
-                        T_new = _project_to_similarity(T_new)                    
+
+                    if refine_model == "similarity":
+                        T_new = _project_to_similarity(T_new)
+
                     self.delta_transforms[k_orig] = float(np.hypot(T_new[0, 2], T_new[1, 2]))
 
+                    # Accumulate: T_total = T_new ∘ T_prev
                     T_prev = np.array(self.alignment_matrices.get(k_orig, IDENTITY_2x3), dtype=np.float64).reshape(2, 3)
                     prev_3 = np.vstack([T_prev, [0, 0, 1]])
                     new_3  = np.vstack([T_new,  [0, 0, 1]])
@@ -3212,7 +3156,7 @@ class StarRegistrationThread(QThread):
 
                     self.on_worker_progress(
                         f"Astroalign delta for {os.path.basename(curr_path_r)} "
-                        f"(model={self.align_model}): dx={T_new[0, 2]:.2f}, dy={T_new[1, 2]:.2f}"
+                        f"(refine={refine_model}, final={final_model}): dx={T_new[0,2]:.2f}, dy={T_new[1,2]:.2f}"
                     )
                     self._increment_progress()
 
@@ -3247,14 +3191,13 @@ class StarRegistrationThread(QThread):
                 preview += f" … ({len(pass_deltas)} total)"
             self.progress_update.emit(f"Pass {pass_index + 1} delta shifts: [{preview}]")
             if aligned_count:
-                self.progress_update.emit(f"Skipped (delta < {self.shift_tolerance:.2f}px): {aligned_count} frame(s)")
+                self.progress_update.emit(f"Within tolerance (≤ {self.shift_tolerance:.2f}px): {aligned_count} frame(s)")
             return True, "Pass complete."
         finally:
             try:
                 executor.shutdown(wait=False, cancel_futures=True)
             except Exception:
                 pass
-
 
     def on_worker_result_transform(self, persistent_key, new_transform):
         k = os.path.normpath(persistent_key)
@@ -3396,8 +3339,8 @@ class StarRegistrationThread(QThread):
             A = np.asarray(self.alignment_matrices.get(k, IDENTITY_2x3), dtype=np.float64)
 
             # 👉 If non-affine, we pass identity to make workers solve from scratch
-            if self.align_model.lower() in ("homography", "poly3", "poly4"):
-                A = IDENTITY_2x3.copy()
+            #if self.align_model.lower() in ("homography", "poly3", "poly4"):
+            #    A = IDENTITY_2x3.copy()
 
             jobs.append((
                 orig_path,
@@ -3423,6 +3366,7 @@ class StarRegistrationThread(QThread):
                         orig_path, out_path, msg, success, drizzle = fut.result()
                     except Exception as e:
                         self.progress_update.emit(f"⚠️ Finalize worker crashed: {e}")
+                        self._increment_progress()
                         continue
 
                     if msg:
@@ -3445,6 +3389,7 @@ class StarRegistrationThread(QThread):
                                     self.drizzle_xforms[k] = (str(kind), None)  # poly3/4
                             except Exception:
                                 pass
+                    self._increment_progress()           
         finally:
             try: shutil.rmtree(tmpdir, ignore_errors=True)
             except Exception as e:

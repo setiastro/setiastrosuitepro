@@ -10,6 +10,9 @@ from PyQt6.QtCore import Qt, QTimer, QUrl
 from PyQt6.QtGui import QAction, QActionGroup, QIcon, QKeySequence, QDesktopServices
 from PyQt6.QtWidgets import QMenu, QToolButton
 
+from PyQt6.QtCore import QElapsedTimer
+
+
 if TYPE_CHECKING:
     pass
 
@@ -369,6 +372,14 @@ class ToolbarMixin:
                 pass
 
         self._rebind_view_dropdowns()
+
+
+    def _tlog(self, label: str, ms: int):
+        try:
+            self._log(f"[ACTIVATE] {label}: {ms} ms")
+        except Exception:
+            print(f"[ACTIVATE] {label}: {ms} ms")
+
 
     def _toolbar_containing_action(self, action: QAction):
         from setiastro.saspro.shortcuts import DraggableToolBar
@@ -1396,6 +1407,7 @@ class ToolbarMixin:
                 a.setStatusTip(tip)
                 a.setEnabled(False)
 
+
     def _sync_link_action_state(self):
         g = self._current_group_of_active()
         self.act_link_group.blockSignals(True)
@@ -1441,6 +1453,7 @@ class ToolbarMixin:
         QTimer.singleShot(0, self.update_undo_redo_action_labels)
 
     def _refresh_mask_action_states(self):
+        t = QElapsedTimer(); t.start()
         active_doc = self._active_doc()
 
         can_apply = bool(active_doc and self._list_candidate_mask_sources(exclude_doc=active_doc))
@@ -1463,4 +1476,5 @@ class ToolbarMixin:
             self.act_show_mask.setEnabled(has_mask and not overlay_on)
         if hasattr(self, "act_hide_mask"):
             self.act_hide_mask.setEnabled(has_mask and overlay_on)
+        self._tlog("_refresh_mask_action_states total", t.elapsed())
 
