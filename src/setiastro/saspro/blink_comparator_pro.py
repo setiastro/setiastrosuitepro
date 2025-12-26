@@ -479,27 +479,77 @@ class MetricsWindow(QWidget):
         """
         Called when some frames were deleted/moved out of the list.
         Does NOT recompute metrics. Just trims cached arrays and re-plots.
+
+        Robust against:
+        - removed indices referring to the old list (out of range)
+        - metrics_panel arrays being a different length than _all_images
+        - stale _order_all / _current_indices containing out-of-bounds indices
         """
         if not removed:
             return
-        removed = sorted(set(int(i) for i in removed))
 
-        # 1) shrink cached arrays in the panel
-        self.metrics_panel.remove_frames(removed)
+        # Unique + int
+        removed = sorted({int(i) for i in removed})
 
-        # 2) update our “master” list and ordering (object identity unchanged)
-        #    (BlinkTab will already have mutated the underlying list for us)
+        # ---- 1) Trim metrics panel caches SAFELY ----
+        # Prefer panel's current frame count, because it represents the arrays we must slice.
+        n_panel = getattr(self.metrics_panel, "n_frames", None)
+        if callable(n_panel):
+            n_panel = n_panel()
+        if not isinstance(n_panel, int) or n_panel <= 0:
+            # fallback: infer from metrics_data if present
+            md = getattr(self.metrics_panel, "metrics_data", None)
+            if md is not None and len(md) and md[0] is not None:
+                try:
+                    n_panel = int(len(md[0]))
+                except Exception:
+                    n_panel = 0
+            else:
+                n_panel = 0
+
+        if n_panel > 0:
+            removed_panel = [i for i in removed if 0 <= i < n_panel]
+            if removed_panel:
+                self.metrics_panel.remove_frames(removed_panel)
+        # else: panel has nothing (or isn't initialized) — just continue with ordering cleanup
+
+        # ---- 2) Update ordering arrays with the SAME removed set (but clamp later) ----
         self._order_all = self._reindex_list_after_remove(self._order_all, removed)
-        self._current_indices = self._reindex_list_after_remove(self._current_indices, removed)
+        if self._current_indices is not None:
+            self._current_indices = self._reindex_list_after_remove(self._current_indices, removed)
 
-        # 3) rebuild group list (filters may have disappeared)
+        # ---- 3) Rebuild groups (filters may have disappeared) ----
         self._rebuild_groups_from_images()
 
-        # 4) replot current group with updated order
+        # ---- 4) Plot with VALID indices only ----
+        n_imgs = len(self._all_images) if self._all_images is not None else 0
+
+        def _sanitize_indices(ixs):
+            if not ixs:
+                return []
+            out = []
+            seen = set()
+            for i in ixs:
+                try:
+                    ii = int(i)
+                except Exception:
+                    continue
+                if 0 <= ii < n_imgs and ii not in seen:
+                    seen.add(ii)
+                    out.append(ii)
+            return out
+
         indices = self._current_indices if self._current_indices is not None else self._order_all
+        indices = _sanitize_indices(indices)
+
+        # If the current group became empty, fall back to "all"
+        if not indices and n_imgs:
+            indices = list(range(n_imgs))
+            self._current_indices = indices  # optional: keeps UI consistent
+
         self.metrics_panel.plot(self._all_images, indices=indices)
 
-        # 5) recolor & status
+        # ---- 5) Recolor & status ----
         self.metrics_panel.refresh_colors_and_status()
         self._update_status()
 
@@ -1239,13 +1289,6 @@ class BlinkTab(QWidget):
             if item is not None:
                 self.fileTree.scrollToItem(item, QAbstractItemView.ScrollHint.EnsureVisible)
 
-    def toggle_aggressive(self):
-        self.aggressive_stretch_enabled = self.aggressive_button.isChecked()
-        # force a redisplay of the current image
-        cur = self.fileTree.currentItem()
-        if cur:
-            self.on_item_clicked(cur, 0)
-
     def clearFlags(self):
         """Clear all flagged states, update tree icons & metrics."""
         # 1) Reset internal flag state
@@ -1507,30 +1550,22 @@ class BlinkTab(QWidget):
 
 
     def _after_list_changed(self, removed_indices: List[int] | None = None):
-        """Call after you mutate image_paths/loaded_images. Keeps UI + metrics in sync w/o recompute."""
-        # 1) rebuild the tree (groups collapse if empty)
         self._rebuild_tree_from_loaded()
         self.imagesChanged.emit(len(self.loaded_images))
 
-        # 2) refresh metrics (if open) WITHOUT recomputing SEP
         if self.metrics_window and self.metrics_window.isVisible():
-            if removed_indices:
-                # drop points and reindex
-                self.metrics_window._all_images = self.loaded_images
-                self.metrics_window.remove_indices(list(removed_indices))
-            else:
-                # just order changed or paths changed -> replot current group
-                self.metrics_window.update_metrics(
-                    self.loaded_images,
-                    order=self._tree_order_indices()
-                )
+            # ✅ safest: rebind images + rebuild plot order from tree
+            self.metrics_window.set_images(self.loaded_images, order=self._tree_order_indices())
+            self._sync_metrics_flags()
 
     def get_tree_item_for_index(self, idx):
-        target = os.path.basename(self.image_paths[idx])
+        target_path = self.image_paths[idx]
         for item in self.get_all_leaf_items():
-            if item.text(0).lstrip("⚠️ ") == target:
+            p = item.data(0, Qt.ItemDataRole.UserRole)
+            if p == target_path:
                 return item
         return None
+
 
     def compute_metric(self, metric_idx, entry):
         """Recompute a single metric for one image.  Use cached orig_background for metric 2."""
@@ -2169,38 +2204,9 @@ class BlinkTab(QWidget):
 
         idx = self.image_paths.index(file_path)
         entry = self.loaded_images[idx]
-        stored = entry['image_data']  # already stretched & clipped at load time
 
-        # --- Fast path: just display what we cached in RAM ---
-        if not self.aggressive_stretch_enabled:
-            # Convert to 8-bit only if needed (no additional stretch)
-            if stored.dtype == np.uint8:
-                disp8 = stored
-            elif stored.dtype == np.uint16:
-                disp8 = (stored >> 8).astype(np.uint8)   # ~ /257, quick & vectorized
-            else:  # float32 in [0..1]
-                disp8 = (np.clip(stored, 0.0, 1.0) * 255.0).astype(np.uint8)
-
-        else:
-            # Aggressive mode: compute only here (from float01)
-            base01 = self._as_float01(stored)
-            # Siril-style autostretch
-            if base01.ndim == 2:
-                st = siril_style_autostretch(base01, sigma=self.current_sigma)
-                disp01 = self._as_float01(st)   # <-- IMPORTANT: handles 0..255 or 0..1 correctly
-            else:
-                base01 = self._as_float01(stored)
-
-                if base01.ndim == 2:
-                    disp01 = self._aggressive_display_boost(base01, strength=self.current_sigma)
-                else:
-                    lum = base01.mean(axis=2).astype(np.float32)
-                    lum_boost = self._aggressive_display_boost(lum, strength=self.current_sigma)
-                    gain = lum_boost / (lum + 1e-6)
-                    disp01 = np.clip(base01 * gain[..., None], 0.0, 1.0)
-
-                disp8 = (disp01 * 255.0).astype(np.uint8)
-
+        # ✅ single source of truth (handles aggressive + mono + color)
+        disp8 = self._make_display_frame(entry)
 
         qimage = self.convert_to_qimage(disp8)
         self.current_pixmap = QPixmap.fromImage(qimage)
