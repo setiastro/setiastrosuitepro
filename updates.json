@@ -1,9 +1,9 @@
 {
-  "version": "1.6.2",
+  "version": "1.6.3",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.6.2/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.6.2/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.6.2/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.6.3/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.6.3/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.6.3/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.6.2 Many updates, new translations, UX updates, optimizatuons and bug fixes.!"
+  "notes": "Seti Astro Suite Pro V1.6.3 Bug fix and Optimization update: Multiscale decomp, stacking suite loading, blink items, crop items, background neutralization, system monitor fixes, and others."
 }
