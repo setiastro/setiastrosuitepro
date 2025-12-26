@@ -1161,12 +1161,13 @@ class BlinkTab(QWidget):
 
         if not use_aggr:
             if stored.dtype == np.uint8:
-                disp8 = stored
+                return stored
             elif stored.dtype == np.uint16:
-                disp8 = (stored >> 8).astype(np.uint8)
+                return (stored >> 8).astype(np.uint8)
             else:
-                disp8 = (np.clip(stored, 0.0, 1.0) * 255.0).astype(np.uint8)
-            return disp8
+                # ✅ display-only normalization for float / weird ranges
+                f01 = self._ensure_float01(stored)
+                return (f01 * 255.0).astype(np.uint8)
 
         base01 = self._as_float01(stored)
 
@@ -3102,16 +3103,14 @@ class BlinkTab(QWidget):
             self.on_item_clicked(cur, 0)
 
     def convert_to_qimage(self, img_array):
-        """Convert numpy image array to QImage."""
-        # 1) Bring everything into a uint8 (0–255) array
         if img_array.dtype == np.uint8:
             arr8 = img_array
         elif img_array.dtype == np.uint16:
-            # downscale 16-bit → 8-bit
             arr8 = (img_array.astype(np.float32) / 65535.0 * 255.0).clip(0,255).astype(np.uint8)
         else:
-            # assume float in [0..1]
-            arr8 = (img_array.clip(0.0, 1.0) * 255.0).astype(np.uint8)
+            # ✅ display-only normalize floats outside 0..1
+            f01 = self._ensure_float01(img_array)
+            arr8 = (f01 * 255.0).astype(np.uint8)
 
         h, w = arr8.shape[:2]
         buffer = arr8.tobytes()
