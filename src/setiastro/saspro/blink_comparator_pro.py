@@ -1260,11 +1260,29 @@ class BlinkTab(QWidget):
         self.loading_label.setText(self.tr("Loaded {0} image{1}.").format(n, 's' if n != 1 else ''))
 
     def _apply_playback_interval(self, *_):
-        # read from custom spin if present
-        fps = float(self.speed_spin.value) if hasattr(self, "speed_spin") else float(getattr(self, "play_fps", 1.0))
+        # read from custom spin if present (support both .value() and .value attribute)
+        fps = float(getattr(self, "play_fps", 1.0))
+
+        if hasattr(self, "speed_spin") and self.speed_spin is not None:
+            try:
+                v = getattr(self.speed_spin, "value", None)
+                if callable(v):
+                    fps = float(v())          # QDoubleSpinBox-style
+                elif v is not None:
+                    fps = float(v)            # CustomDoubleSpinBox stores numeric attribute
+                else:
+                    # last-resort: try Qt API name
+                    fps = float(self.speed_spin.value())
+            except Exception:
+                # fall back to existing play_fps
+                pass
+
         fps = max(0.1, min(10.0, fps))
         self.play_fps = fps
-        self.playback_timer.setInterval(int(round(1000.0 / fps)))  # 0.1 fps -> 10000 ms
+
+        if hasattr(self, "playback_timer") and self.playback_timer is not None:
+            self.playback_timer.setInterval(int(round(1000.0 / fps)))  # 0.1 fps -> 10000 ms
+
 
     def _on_current_item_changed_safe(self, current, previous):
         if not current:
@@ -1288,6 +1306,42 @@ class BlinkTab(QWidget):
             item = self.fileTree.currentItem()
             if item is not None:
                 self.fileTree.scrollToItem(item, QAbstractItemView.ScrollHint.EnsureVisible)
+
+    def _leaf_path(self, item: QTreeWidgetItem) -> str | None:
+        """Return full path for a leaf item, preferring UserRole; fallback to basename match."""
+        if not item or item.childCount() > 0:
+            return None
+
+        p = item.data(0, Qt.ItemDataRole.UserRole)
+        if p and isinstance(p, str):
+            return p
+
+        # fallback: basename match (legacy items)
+        name = item.text(0).lstrip("⚠️ ").strip()
+        if not name:
+            return None
+        return next((x for x in self.image_paths if os.path.basename(x) == name), None)
+
+
+    def _leaf_index(self, item: QTreeWidgetItem) -> int | None:
+        """Return index into image_paths/loaded_images for a leaf item."""
+        p = self._leaf_path(item)
+        if not p:
+            return None
+        try:
+            return self.image_paths.index(p)
+        except ValueError:
+            return None
+
+
+    def _set_leaf_display(self, item: QTreeWidgetItem, *, base_name: str, flagged: bool, full_path: str):
+        """Update a leaf item's text + UserRole consistently."""
+        disp = base_name
+        if flagged:
+            disp = f"⚠️ {disp}"
+        item.setText(0, disp)
+        item.setData(0, Qt.ItemDataRole.UserRole, full_path)
+
 
     def clearFlags(self):
         """Clear all flagged states, update tree icons & metrics."""
@@ -1886,25 +1940,27 @@ class BlinkTab(QWidget):
 
 
     def _toggle_flag_on_item(self, item: QTreeWidgetItem, *, sync_metrics: bool = True):
-        file_name = item.text(0).lstrip("⚠️ ")
-        file_path = next((p for p in self.image_paths if os.path.basename(p) == file_name), None)
-        if file_path is None:
+        idx = self._leaf_index(item)
+        if idx is None:
             return
 
-        idx = self.image_paths.index(file_path)
         entry = self.loaded_images[idx]
-        entry['flagged'] = not entry['flagged']
+        entry['flagged'] = not bool(entry.get('flagged', False))
 
         RED = Qt.GlobalColor.red
-        palette = self.fileTree.palette()
-        normal_color = palette.color(QPalette.ColorRole.WindowText)
+        normal_color = self.fileTree.palette().color(QPalette.ColorRole.WindowText)
+
+        base = os.path.basename(self.image_paths[idx])
 
         if entry['flagged']:
-            item.setText(0, f"⚠️ {file_name}")
+            item.setText(0, f"⚠️ {base}")
             item.setForeground(0, QBrush(RED))
         else:
-            item.setText(0, file_name)
+            item.setText(0, base)
             item.setForeground(0, QBrush(normal_color))
+
+        # Keep UserRole correct (in case this was a legacy leaf)
+        item.setData(0, Qt.ItemDataRole.UserRole, self.image_paths[idx])
 
         if sync_metrics:
             self._sync_metrics_flags()
@@ -2194,15 +2250,20 @@ class BlinkTab(QWidget):
 
     def on_item_clicked(self, item, column):
         self.fileTree.setFocus()
+        if not item or item.childCount() > 0:
+            return
 
-        name = item.text(0).lstrip("⚠️ ").strip()
-        file_path = next((p for p in self.image_paths if os.path.basename(p) == name), None)
+        file_path = self._leaf_path(item)
         if not file_path:
             return
 
         self._capture_view_center_norm()
 
-        idx = self.image_paths.index(file_path)
+        try:
+            idx = self.image_paths.index(file_path)
+        except ValueError:
+            return
+
         entry = self.loaded_images[idx]
 
         # ✅ single source of truth (handles aggressive + mono + color)
@@ -2211,6 +2272,7 @@ class BlinkTab(QWidget):
         qimage = self.convert_to_qimage(disp8)
         self.current_pixmap = QPixmap.fromImage(qimage)
         self.apply_zoom()
+
 
     def _capture_view_center_norm(self):
         """Remember the current viewport center as a fraction of the content size."""
@@ -2376,44 +2438,94 @@ class BlinkTab(QWidget):
         menu.exec(self.fileTree.mapToGlobal(pos))
 
 
-    def push_to_docs(self, item):
-        # Resolve file + entry
-        file_name = item.text(0).lstrip("⚠️ ")
-        file_path = next((p for p in self.image_paths if os.path.basename(p) == file_name), None)
+    def push_to_docs(self, item: QTreeWidgetItem):
+        """
+        Push the currently selected blink leaf image into DocManager as a new document,
+        preserving all original metadata (original_header, meta, bit_depth, is_mono, etc.)
+        and swapping ONLY the numpy image array.
+        """
+        if not item or item.childCount() > 0:
+            return
+
+        # --- Resolve full path safely (UserRole-first) ---
+        file_path = item.data(0, Qt.ItemDataRole.UserRole)
+        if not file_path or not isinstance(file_path, str):
+            # legacy fallback: try to map by displayed name
+            file_name = item.text(0).lstrip("⚠️ ").strip()
+            file_path = next((p for p in self.image_paths if os.path.basename(p) == file_name), None)
+
         if not file_path:
             return
-        idx   = self.image_paths.index(file_path)
+
+        try:
+            idx = self.image_paths.index(file_path)
+        except ValueError:
+            return
+
         entry = self.loaded_images[idx]
 
-        # Find main window + doc manager
+        # --- Find main window + doc manager ---
         mw = self._main_window()
         dm = self.doc_manager or (getattr(mw, "docman", None) if mw else None)
         if not mw or not dm:
             QMessageBox.warning(self, self.tr("Document Manager"), self.tr("Main window or DocManager not available."))
             return
 
-        # Prepare image + metadata for a real document
-        np_image_f01 = self._as_float01(entry['image_data'])  # ensure float32 [0..1]
-        metadata  = {
-            'file_path': file_path,
-            'original_header': entry.get('header', {}),
-            'bit_depth': entry.get('bit_depth'),
-            'is_mono': entry.get('is_mono'),
-            'source': 'BlinkComparatorPro',
+        # --- Build the swapped payload (image replaced, metadata preserved) ---
+        # Whatever you're storing as entry['image_data'] (uint16/float/etc), normalize to float01 for display pipeline.
+        # If your DocManager expects native dtype instead, swap _as_float01 for your native image.
+        np_image_f01 = self._as_float01(entry["image_data"]).astype(np.float32, copy=False)
+
+        # Preserve your full load_image return structure as much as possible:
+        # load_image returns: image, original_header, bit_depth, is_mono, meta
+        original_header = entry.get("original_header", entry.get("header", None))
+        bit_depth       = entry.get("bit_depth", None)
+        is_mono         = entry.get("is_mono", None)
+        meta            = entry.get("meta", {})
+
+        # Keep meta dict style your app uses; add source tag without clobbering
+        if isinstance(meta, dict):
+            meta = dict(meta)
+            meta.setdefault("source", "BlinkComparatorPro")
+            meta.setdefault("file_path", file_path)
+
+        # This is the "all the other stuff" you wanted preserved
+        payload = {
+            "file_path": file_path,
+            "original_header": original_header,
+            "bit_depth": bit_depth,
+            "is_mono": is_mono,
+            "meta": meta,
+            "source": "BlinkComparatorPro",
         }
+
         title = os.path.basename(file_path)
 
-        # Create the document using whatever API your DocManager has
+        # --- Create document using whatever DocManager API exists ---
         doc = None
         try:
-            if hasattr(dm, "open_array"):
-                doc = dm.open_array(np_image_f01, metadata=metadata, title=title)
+            # Preferred: if you have a method that mirrors open_file/load_image shape
+            if hasattr(dm, "open_from_load_image"):
+                # (image, original_header, bit_depth, is_mono, meta)
+                doc = dm.open_from_load_image(np_image_f01, original_header, bit_depth, is_mono, meta, title=title)
+
+            elif hasattr(dm, "open_array"):
+                # Some of your code expects metadata in doc.metadata; pass payload whole
+                doc = dm.open_array(np_image_f01, metadata=payload, title=title)
+
             elif hasattr(dm, "open_numpy"):
-                doc = dm.open_numpy(np_image_f01, metadata=metadata, title=title)
+                doc = dm.open_numpy(np_image_f01, metadata=payload, title=title)
+
             elif hasattr(dm, "create_document"):
-                doc = dm.create_document(image=np_image_f01, metadata=metadata, name=title)
+                # Try both signatures
+                try:
+                    doc = dm.create_document(image=np_image_f01, metadata=payload, name=title)
+                except TypeError:
+                    doc = dm.create_document(np_image_f01, payload, title)
+
             else:
-                raise AttributeError(self.tr("DocManager lacks open_array/open_numpy/create_document"))
+                raise AttributeError("DocManager lacks a known creation method")
+
         except Exception as e:
             QMessageBox.critical(self, self.tr("Doc Manager"), self.tr("Failed to create document:\n{0}").format(e))
             return
@@ -2422,13 +2534,28 @@ class BlinkTab(QWidget):
             QMessageBox.critical(self, self.tr("Doc Manager"), self.tr("DocManager returned no document."))
             return
 
-        # SHOW it: ask the main window to spawn an MDI subwindow
+        # --- Hand off to DocManager flow (DocManager should trigger MDI + window creation) ---
         try:
-            mw._spawn_subwindow_for(doc)
+            # If your architecture already auto-spawns windows on documentAdded,
+            # you should NOT call mw._spawn_subwindow_for(doc) here.
+            if hasattr(dm, "add_document"):
+                dm.add_document(doc)
+            elif hasattr(dm, "register_document"):
+                dm.register_document(doc)
+            else:
+                # If open_array/open_numpy already registers the doc internally, do nothing.
+                pass
+
+            # If you *must* spawn manually (older path), keep as fallback
+            if hasattr(mw, "_spawn_subwindow_for"):
+                mw._spawn_subwindow_for(doc)
+
             if hasattr(mw, "_log"):
                 mw._log(f"Blink → opened '{title}' as new document")
+
         except Exception as e:
             QMessageBox.critical(self, self.tr("UI"), self.tr("Failed to open subwindow:\n{0}").format(e))
+
 
 
     # optional shim to keep any old calls working
@@ -2437,27 +2564,55 @@ class BlinkTab(QWidget):
 
 
 
-    def rename_item(self, item):
-        """Allow the user to rename the selected image."""
-        current_name = item.text(0).lstrip("⚠️ ")
-        new_name, ok = QInputDialog.getText(self, self.tr("Rename Image"), self.tr("Enter new name:"), text=current_name)
+    def rename_item(self, item: QTreeWidgetItem):
+        if not item or item.childCount() > 0:
+            return
 
-        if ok and new_name:
-            file_path = next((path for path in self.image_paths if os.path.basename(path) == current_name), None)
-            if file_path:
-                # Get the new file path with the new name
-                new_file_path = os.path.join(os.path.dirname(file_path), new_name)
+        idx = self._leaf_index(item)
+        if idx is None:
+            return
 
-                try:
-                    # Rename the file
-                    os.rename(file_path, new_file_path)
-                    print(f"File renamed from {current_name} to {new_name}")
-                    
-                    # Update the image paths and tree view
-                    self.image_paths[self.image_paths.index(file_path)] = new_file_path
-                    item.setText(0, new_name)
-                except Exception as e:
-                    QMessageBox.critical(self, self.tr("Error"), self.tr("Failed to rename the file: {0}").format(e))
+        old_path = self.image_paths[idx]
+        old_base = os.path.basename(old_path)
+
+        new_name, ok = QInputDialog.getText(
+            self,
+            self.tr("Rename Image"),
+            self.tr("Enter new name:"),
+            text=old_base
+        )
+        if not ok:
+            return
+
+        new_name = (new_name or "").strip()
+        if not new_name:
+            return
+
+        new_path = os.path.join(os.path.dirname(old_path), new_name)
+
+        # Avoid overwrite
+        if os.path.exists(new_path):
+            QMessageBox.critical(self, self.tr("Error"), self.tr("A file with that name already exists."))
+            return
+
+        try:
+            os.rename(old_path, new_path)
+        except Exception as e:
+            QMessageBox.critical(self, self.tr("Error"), self.tr("Failed to rename the file: {0}").format(e))
+            return
+
+        # Update internal structures
+        self.image_paths[idx] = new_path
+        self.loaded_images[idx]['file_path'] = new_path
+
+        # Update the leaf item
+        flagged = bool(self.loaded_images[idx].get("flagged", False))
+        self._set_leaf_display(item, base_name=new_name, flagged=flagged, full_path=new_path)
+
+        # Rebuild so natural sort stays correct and groups update
+        self._after_list_changed()
+        self._sync_metrics_flags()
+
 
     def rename_flagged_images(self):
         """Prefix all *flagged* images on disk and in the tree."""
@@ -2568,79 +2723,102 @@ class BlinkTab(QWidget):
 
 
     def batch_rename_items(self):
-        """Batch rename selected items by adding a prefix or suffix."""
-        selected_items = self.fileTree.selectedItems()
-
+        """Batch rename selected leaf items by adding a prefix and/or suffix."""
+        selected_items = [it for it in self.fileTree.selectedItems() if it and it.childCount() == 0]
         if not selected_items:
-            QMessageBox.warning(self, self.tr("Warning"), self.tr("No items selected for renaming."))
+            QMessageBox.warning(self, self.tr("Warning"), self.tr("No individual image items selected for renaming."))
             return
 
-        # Create a custom dialog for entering the prefix and suffix
         dialog = QDialog(self)
         dialog.setWindowTitle(self.tr("Batch Rename"))
         dialog_layout = QVBoxLayout(dialog)
 
-        instruction_label = QLabel(self.tr("Enter a prefix or suffix to rename selected files:"))
-        dialog_layout.addWidget(instruction_label)
+        dialog_layout.addWidget(QLabel(self.tr("Enter a prefix or suffix to rename selected files:"), dialog))
 
-        # Create fields for prefix and suffix
         form_layout = QHBoxLayout()
-
         prefix_field = QLineEdit(dialog)
         prefix_field.setPlaceholderText(self.tr("Prefix"))
         form_layout.addWidget(prefix_field)
 
-        current_filename_label = QLabel("currentfilename", dialog)
-        form_layout.addWidget(current_filename_label)
+        mid_label = QLabel(self.tr("filename"), dialog)
+        mid_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        form_layout.addWidget(mid_label)
 
         suffix_field = QLineEdit(dialog)
         suffix_field.setPlaceholderText(self.tr("Suffix"))
         form_layout.addWidget(suffix_field)
-
         dialog_layout.addLayout(form_layout)
 
-        # Add OK and Cancel buttons
-        button_layout = QHBoxLayout()
+        btns = QHBoxLayout()
         ok_button = QPushButton(self.tr("OK"), dialog)
-        ok_button.clicked.connect(dialog.accept)
-        button_layout.addWidget(ok_button)
-
         cancel_button = QPushButton(self.tr("Cancel"), dialog)
+        ok_button.clicked.connect(dialog.accept)
         cancel_button.clicked.connect(dialog.reject)
-        button_layout.addWidget(cancel_button)
+        btns.addWidget(ok_button)
+        btns.addWidget(cancel_button)
+        dialog_layout.addLayout(btns)
 
-        dialog_layout.addLayout(button_layout)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
 
-        # Show the dialog and handle user input
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            prefix = prefix_field.text().strip()
-            suffix = suffix_field.text().strip()
+        prefix = (prefix_field.text() or "").strip()
+        suffix = (suffix_field.text() or "").strip()
 
-            # Rename each selected file
-            for item in selected_items:
-                current_name = item.text(0)
-                file_path = next((path for path in self.image_paths if os.path.basename(path) == current_name), None)
+        if not prefix and not suffix:
+            QMessageBox.information(self, self.tr("Batch Rename"), self.tr("No prefix or suffix entered. Nothing to do."))
+            return
 
-                if file_path:
-                    # Construct the new filename
-                    directory = os.path.dirname(file_path)
-                    new_name = f"{prefix}{current_name}{suffix}"
-                    new_file_path = os.path.join(directory, new_name)
+        renamed = 0
+        failures = []
 
-                    try:
-                        # Rename the file
-                        os.rename(file_path, new_file_path)
-                        print(f"File renamed from {file_path} to {new_file_path}")
+        # Work on indices so we can update lists safely
+        indices = []
+        for it in selected_items:
+            idx = self._leaf_index(it)
+            if idx is not None:
+                indices.append((idx, it))
 
-                        # Update the paths and tree view
-                        self.image_paths[self.image_paths.index(file_path)] = new_file_path
-                        item.setText(0, new_name)
+        for idx, it in indices:
+            old_path = self.image_paths[idx]
+            directory, base = os.path.split(old_path)
 
-                    except Exception as e:
-                        print(f"Failed to rename {file_path}: {e}")
-                        QMessageBox.critical(self, self.tr("Error"), self.tr("Failed to rename the file: {0}").format(e))
+            new_base = f"{prefix}{base}{suffix}"
+            new_path = os.path.join(directory, new_base)
 
-            print(f"Batch renamed {len(selected_items)} items.")
+            if new_path == old_path:
+                continue
+
+            if os.path.exists(new_path):
+                failures.append((old_path, self.tr("target already exists")))
+                continue
+
+            try:
+                os.rename(old_path, new_path)
+            except Exception as e:
+                failures.append((old_path, str(e)))
+                continue
+
+            # Update internal lists
+            self.image_paths[idx] = new_path
+            self.loaded_images[idx]["file_path"] = new_path
+
+            # Update leaf item
+            flagged = bool(self.loaded_images[idx].get("flagged", False))
+            self._set_leaf_display(it, base_name=new_base, flagged=flagged, full_path=new_path)
+
+            renamed += 1
+
+        # Rebuild so group headers + natural order stay correct
+        self._after_list_changed()
+        self._sync_metrics_flags()
+
+        msg = self.tr("Batch renamed {0} file{1}.").format(renamed, "s" if renamed != 1 else "")
+        if failures:
+            msg += self.tr("\n\n{0} file(s) failed:").format(len(failures))
+            for old, err in failures[:10]:
+                msg += f"\n• {os.path.basename(old)} – {err}"
+        QMessageBox.information(self, self.tr("Batch Rename"), msg)
+
 
     def batch_delete_flagged_images(self):
         """Delete all flagged images."""
@@ -2687,140 +2865,180 @@ class BlinkTab(QWidget):
             self._after_list_changed(removed_indices)
 
     def batch_move_flagged_images(self):
-        """Move all flagged images to a selected directory."""
-        flagged_images = [img for img in self.loaded_images if img['flagged']]
-        
-        if not flagged_images:
+        """Move all flagged images to a selected directory AND remove them from the blink list."""
+        flagged_indices = [i for i, e in enumerate(self.loaded_images) if e.get("flagged", False)]
+        if not flagged_indices:
             QMessageBox.information(self, self.tr("No Flagged Images"), self.tr("There are no flagged images to move."))
             return
 
-        # Select destination directory
         destination_dir = QFileDialog.getExistingDirectory(self, self.tr("Select Destination Folder"), "")
         if not destination_dir:
-            return  # User canceled
-
-        for img in flagged_images:
-            src_path = img['file_path']
-            file_name = os.path.basename(src_path)
-            dest_path = os.path.join(destination_dir, file_name)
-
-            try:
-                os.rename(src_path, dest_path)
-                print(f"Moved flagged image from {src_path} to {dest_path}")
-            except Exception as e:
-                print(f"Failed to move {src_path}: {e}")
-                QMessageBox.critical(self, self.tr("Error"), self.tr("Failed to move {0}: {1}").format(src_path, e))
-                continue
-
-            # Update data structures
-            self.image_paths.remove(src_path)
-            self.image_paths.append(dest_path)
-            img['file_path'] = dest_path
-            img['flagged'] = False  # Reset flag if desired
-
-            # Update tree view
-            self.remove_item_from_tree(src_path)
-            self.add_item_to_tree(dest_path)
-
-        QMessageBox.information(self, self.tr("Batch Move"), self.tr("Moved {0} flagged images.").format(len(flagged_images)))
-        self._after_list_changed(removed_indices=None)
-
-    def move_items(self):
-        """Move selected images *and* remove them from the tree+metrics."""
-        selected_items = self.fileTree.selectedItems()
-        if not selected_items:
-            QMessageBox.warning(self, self.tr("Warning"), self.tr("No items selected for moving."))
             return
 
-        # Ask where to move
-        new_dir = QFileDialog.getExistingDirectory(self,
-                                                self.tr("Select Destination Folder"),
-                                                "")
+        failures = []
+
+        # Move first (use current paths from indices)
+        for i in flagged_indices:
+            src_path = self.image_paths[i]
+            dest_path = os.path.join(destination_dir, os.path.basename(src_path))
+            try:
+                os.rename(src_path, dest_path)
+            except Exception as e:
+                failures.append((src_path, str(e)))
+
+        # Remove from lists ONLY if move succeeded
+        # Build a set of indices to remove: those that did NOT fail
+        failed_src = {p for p, _ in failures}
+        removed_indices = [i for i in flagged_indices if self.image_paths[i] not in failed_src]
+
+        removed_indices = sorted(set(removed_indices), reverse=True)
+        for idx in removed_indices:
+            if 0 <= idx < len(self.image_paths):
+                del self.image_paths[idx]
+            if 0 <= idx < len(self.loaded_images):
+                del self.loaded_images[idx]
+
+        if removed_indices:
+            self._after_list_changed(removed_indices)
+
+        if failures:
+            msg = self.tr("Moved {0} flagged file(s). {1} failed:").format(len(removed_indices), len(failures))
+            for p, err in failures[:10]:
+                msg += f"\n• {os.path.basename(p)} – {err}"
+            QMessageBox.warning(self, self.tr("Batch Move"), msg)
+        else:
+            QMessageBox.information(self, self.tr("Batch Move"), self.tr("Moved and removed {0} flagged image(s).").format(len(removed_indices)))
+
+
+    def move_items(self):
+        """Move selected leaf images to a selected directory AND remove them from the blink list."""
+        selected_items = [it for it in self.fileTree.selectedItems() if it and it.childCount() == 0]
+        if not selected_items:
+            QMessageBox.warning(self, self.tr("Warning"), self.tr("No individual image items selected for moving."))
+            return
+
+        new_dir = QFileDialog.getExistingDirectory(self, self.tr("Select Destination Folder"), "")
         if not new_dir:
             return
 
-        # Keep track of which on‐disk paths we actually moved
-        moved_old_paths = []
         removed_indices = []
+        failures = []
 
-        for item in selected_items:
-            name = item.text(0).lstrip("⚠️ ")
-            old_path = next((p for p in self.image_paths 
-                            if os.path.basename(p) == name), None)
-            if not old_path:
+        # Collect (idx, old_path, item) first to avoid index drift
+        triplets = []
+        for it in selected_items:
+            p = self._leaf_path(it)
+            if not p:
                 continue
-            removed_indices.append(self.image_paths.index(old_path)) 
+            try:
+                idx = self.image_paths.index(p)
+            except ValueError:
+                continue
+            triplets.append((idx, p, it))
 
-            new_path = os.path.join(new_dir, name)
+        for idx, old_path, it in triplets:
+            base = os.path.basename(old_path)
+            new_path = os.path.join(new_dir, base)
             try:
                 os.rename(old_path, new_path)
             except Exception as e:
-                QMessageBox.critical(self, self.tr("Error"), self.tr("Failed to move {0}: {1}").format(old_path, e))
+                failures.append((old_path, str(e)))
                 continue
 
-            moved_old_paths.append(old_path)
+            removed_indices.append(idx)
 
-            # 1) Remove the leaf from the tree
-            parent = item.parent() or self.fileTree.invisibleRootItem()
-            parent.removeChild(item)
+            # remove leaf from tree immediately (optional; _after_list_changed will rebuild anyway)
+            #parent = it.parent() or self.fileTree.invisibleRootItem()
+            #parent.removeChild(it)
 
-        # 2) Purge them from your internal lists
-        for idx in sorted(removed_indices, reverse=True):
-            del self.image_paths[idx]
-            del self.loaded_images[idx]
+        # Purge arrays descending
+        removed_indices = sorted(set(removed_indices), reverse=True)
+        for idx in removed_indices:
+            if 0 <= idx < len(self.image_paths):
+                del self.image_paths[idx]
+            if 0 <= idx < len(self.loaded_images):
+                del self.loaded_images[idx]
 
-        self._after_list_changed(removed_indices)
-        print(f"Moved and removed {len(removed_indices)} items.")
+        if removed_indices:
+            self._after_list_changed(removed_indices)
 
-
+        if failures:
+            msg = self.tr("Moved {0} file(s). {1} failed:").format(len(removed_indices), len(failures))
+            for old, err in failures[:10]:
+                msg += f"\n• {os.path.basename(old)} – {err}"
+            QMessageBox.warning(self, self.tr("Move Selected Items"), msg)
+        else:
+            QMessageBox.information(self, self.tr("Move Selected Items"), self.tr("Moved and removed {0} item(s).").format(len(removed_indices)))
 
     def delete_items(self):
-        """Delete the selected items from the tree, the loaded images list, and the file system."""
-        selected_items = self.fileTree.selectedItems()
-
+        """Delete selected leaf images from disk and remove them from the blink list."""
+        selected_items = [it for it in self.fileTree.selectedItems() if it and it.childCount() == 0]
         if not selected_items:
-            QMessageBox.warning(self, self.tr("Warning"), self.tr("No items selected for deletion."))
+            QMessageBox.warning(self, self.tr("Warning"), self.tr("No individual image items selected for deletion."))
             return
 
-        # Confirmation dialog
         reply = QMessageBox.question(
             self,
-            self.tr('Confirm Deletion'),
+            self.tr("Confirm Deletion"),
             self.tr("Are you sure you want to permanently delete {0} selected images? This action is irreversible.").format(len(selected_items)),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No
         )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
 
         removed_indices = []
-        if reply == QMessageBox.StandardButton.Yes:
-            for item in selected_items:
-                file_name = item.text(0).lstrip("⚠️ ")
-                file_path = next((path for path in self.image_paths if os.path.basename(path) == file_name), None)
-                if file_path:
-                    try:
-                        idx = self.image_paths.index(file_path)
-                        removed_indices.append(idx)  # collect BEFORE mutation
-                        ...
-                        os.remove(file_path)
-                    except Exception as e:
-                        ...
-            # Remove from widgets
-            for item in selected_items:
-                parent = item.parent() or self.fileTree.invisibleRootItem()
-                parent.removeChild(item)
+        failures = []
 
-            # Purge arrays (descending order)
-            for idx in sorted(removed_indices, reverse=True):
+        # Snapshot first
+        triplets = []
+        for it in selected_items:
+            p = self._leaf_path(it)
+            if not p:
+                continue
+            try:
+                idx = self.image_paths.index(p)
+            except ValueError:
+                continue
+            triplets.append((idx, p, it))
+
+        for idx, path, it in triplets:
+            try:
+                os.remove(path)
+            except Exception as e:
+                failures.append((path, str(e)))
+                continue
+
+            removed_indices.append(idx)
+
+            # remove from tree immediately (optional)
+            parent = it.parent() or self.fileTree.invisibleRootItem()
+            parent.removeChild(it)
+
+        # Purge arrays descending
+        removed_indices = sorted(set(removed_indices), reverse=True)
+        for idx in removed_indices:
+            if 0 <= idx < len(self.image_paths):
                 del self.image_paths[idx]
+            if 0 <= idx < len(self.loaded_images):
                 del self.loaded_images[idx]
 
-            # Clear preview
-            self.preview_label.clear()
-            self.preview_label.setText(self.tr('No image selected.'))
-            self.current_image = None
+        # Clear preview safely
+        self.preview_label.clear()
+        self.preview_label.setText(self.tr("No image selected."))
+        self.current_pixmap = None
 
-            # 🔁 refresh tree + metrics (no recompute)
+        if removed_indices:
             self._after_list_changed(removed_indices)
+
+        if failures:
+            msg = self.tr("Deleted {0} file(s). {1} failed:").format(len(removed_indices), len(failures))
+            for p, err in failures[:10]:
+                msg += f"\n• {os.path.basename(p)} – {err}"
+            QMessageBox.warning(self, self.tr("Delete Selected Items"), msg)
+        else:
+            QMessageBox.information(self, self.tr("Delete Selected Items"), self.tr("Deleted {0} item(s).").format(len(removed_indices)))
+
 
     def eventFilter(self, source, event):
         """Handle mouse events for dragging."""
