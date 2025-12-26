@@ -9,7 +9,7 @@ const ctx = canvas.getContext('2d');
 // --- CONSTANTS ---
 const GAME_WIDTH = 800;
 const GAME_HEIGHT = 600;
-const FPS = 60;
+const FPS = 48; // Reduced to 80% speed (Original 60)
 const DT = 1 / FPS;
 
 const COLORS = {
@@ -971,14 +971,19 @@ function updateHUD() {
 
 // Game Loop
 let lastTimeMs = 0;
+const FRAME_INTERVAL = 1000 / FPS;
+
 function loop(timestamp) {
-    const dt = timestamp - lastTimeMs;
-    lastTimeMs = timestamp;
-
-    Game.update();
-    Game.draw();
-
     requestAnimationFrame(loop);
+
+    if (!lastTimeMs) lastTimeMs = timestamp;
+    const elapsed = timestamp - lastTimeMs;
+
+    if (elapsed > FRAME_INTERVAL) {
+        lastTimeMs = timestamp - (elapsed % FRAME_INTERVAL);
+        Game.update();
+        Game.draw();
+    }
 }
 
 // Start

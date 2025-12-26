@@ -289,7 +289,7 @@ def _tz_vs_longitude_hint(tz_name: str, date_str: str, time_str: str, lon_deg: f
 class WhatsInMySkyDialog(QDialog):
     def __init__(self, parent=None, wims_path: Optional[str] = None, wrench_path: Optional[str] = None):
         super().__init__(parent)
-        self.setWindowTitle("What's In My Sky")
+        self.setWindowTitle(self.tr("What's In My Sky"))
         if wims_path:
             self.setWindowIcon(QIcon(wims_path))
 
@@ -316,14 +316,14 @@ class WhatsInMySkyDialog(QDialog):
         self.timezone_combo.setFixedWidth(fixed_w)
 
         r = 0
-        layout.addWidget(QLabel("Latitude:"), r, 0); layout.addWidget(self.latitude_entry, r, 1); r += 1
-        layout.addWidget(QLabel("Longitude (E+, W−):"), r, 0); layout.addWidget(self.longitude_entry, r, 1); r += 1
-        layout.addWidget(QLabel("Date (YYYY-MM-DD):"), r, 0); layout.addWidget(self.date_entry, r, 1); r += 1
-        layout.addWidget(QLabel("Time (HH:MM):"), r, 0); layout.addWidget(self.time_entry, r, 1); r += 1
-        layout.addWidget(QLabel("Time Zone:"), r, 0); layout.addWidget(self.timezone_combo, r, 1); r += 1
+        layout.addWidget(QLabel(self.tr("Latitude:")), r, 0); layout.addWidget(self.latitude_entry, r, 1); r += 1
+        layout.addWidget(QLabel(self.tr("Longitude (E+, W−):")), r, 0); layout.addWidget(self.longitude_entry, r, 1); r += 1
+        layout.addWidget(QLabel(self.tr("Date (YYYY-MM-DD):")), r, 0); layout.addWidget(self.date_entry, r, 1); r += 1
+        layout.addWidget(QLabel(self.tr("Time (HH:MM):")), r, 0); layout.addWidget(self.time_entry, r, 1); r += 1
+        layout.addWidget(QLabel(self.tr("Time Zone:")), r, 0); layout.addWidget(self.timezone_combo, r, 1); r += 1
 
         self.min_altitude_entry = QLineEdit(); self.min_altitude_entry.setFixedWidth(fixed_w)
-        layout.addWidget(QLabel("Min Altitude (0–90°):"), r, 0); layout.addWidget(self.min_altitude_entry, r, 1); r += 1
+        layout.addWidget(QLabel(self.tr("Min Altitude (0–90°):")), r, 0); layout.addWidget(self.min_altitude_entry, r, 1); r += 1
 
         # catalogs
         catalog_frame = QScrollArea()
@@ -334,36 +334,36 @@ class WhatsInMySkyDialog(QDialog):
             cat_layout.addWidget(cb, i // 5, i % 5)
             self.catalog_vars[name] = cb
         catalog_frame.setWidget(cat_widget); catalog_frame.setFixedWidth(fixed_w + 250)
-        layout.addWidget(QLabel("Catalog Filters:"), r, 0); layout.addWidget(catalog_frame, r, 1); r += 1
+        layout.addWidget(QLabel(self.tr("Catalog Filters:")), r, 0); layout.addWidget(catalog_frame, r, 1); r += 1
 
         # RA/Dec format
-        self.ra_dec_degrees = QRadioButton("Degrees")
-        self.ra_dec_hms     = QRadioButton("H:M:S / D:M:S")
+        self.ra_dec_degrees = QRadioButton(self.tr("Degrees"))
+        self.ra_dec_hms     = QRadioButton(self.tr("H:M:S / D:M:S"))
         self.ra_dec_degrees.setChecked(True)
         g = QButtonGroup(self); g.addButton(self.ra_dec_degrees); g.addButton(self.ra_dec_hms)
         ra_row = QHBoxLayout(); ra_row.addWidget(self.ra_dec_degrees); ra_row.addWidget(self.ra_dec_hms)
-        layout.addWidget(QLabel("RA/Dec Format:"), r, 0); layout.addLayout(ra_row, r, 1); r += 1
+        layout.addWidget(QLabel(self.tr("RA/Dec Format:")), r, 0); layout.addLayout(ra_row, r, 1); r += 1
         self.ra_dec_degrees.toggled.connect(self.update_ra_dec_format)
         self.ra_dec_hms.toggled.connect(self.update_ra_dec_format)
 
         # action buttons / status
-        calc_btn = QPushButton("Calculate"); calc_btn.setFixedWidth(fixed_w); calc_btn.clicked.connect(self.start_calculation)
+        calc_btn = QPushButton(self.tr("Calculate")); calc_btn.setFixedWidth(fixed_w); calc_btn.clicked.connect(self.start_calculation)
         layout.addWidget(calc_btn, r, 0); r += 1
 
-        self.status_label = QLabel("Status: Idle"); layout.addWidget(self.status_label, r, 0, 1, 2); r += 1
-        self.lst_label    = QLabel("Local Sidereal Time: 0.000"); layout.addWidget(self.lst_label, r, 0, 1, 2); r += 1
+        self.status_label = QLabel(self.tr("Status: Idle")); layout.addWidget(self.status_label, r, 0, 1, 2); r += 1
+        self.lst_label    = QLabel(self.tr("Local Sidereal Time: 0.000")); layout.addWidget(self.lst_label, r, 0, 1, 2); r += 1
 
         # moon phase preview
         self.lunar_phase_image_label = QLabel()
         layout.addWidget(self.lunar_phase_image_label, 0, 2, 4, 1)
-        self.lunar_phase_label = QLabel("Lunar Phase: N/A")
+        self.lunar_phase_label = QLabel(self.tr("Lunar Phase: N/A"))
         layout.addWidget(self.lunar_phase_label, 4, 2)
 
         # results tree
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels([
-            "Name","RA","Dec","Altitude","Azimuth","Minutes to Transit","Before/After Transit",
-            "Degrees from Moon","Alt Name","Type","Magnitude","Size (arcmin)"
+            self.tr("Name"),self.tr("RA"),self.tr("Dec"),self.tr("Altitude"),self.tr("Azimuth"),self.tr("Minutes to Transit"),self.tr("Before/After Transit"),
+            self.tr("Degrees from Moon"),self.tr("Alt Name"),self.tr("Type"),self.tr("Magnitude"),self.tr("Size (arcmin)")
         ])
         self.tree.setSortingEnabled(True)
         hdr = self.tree.header()
@@ -374,10 +374,10 @@ class WhatsInMySkyDialog(QDialog):
         layout.addWidget(self.tree, r, 0, 1, 3); r += 1
 
         # bottom row
-        add_btn = QPushButton("Add Custom Object"); add_btn.setFixedWidth(fixed_w); add_btn.clicked.connect(self.add_custom_object)
+        add_btn = QPushButton(self.tr("Add Custom Object")); add_btn.setFixedWidth(fixed_w); add_btn.clicked.connect(self.add_custom_object)
         layout.addWidget(add_btn, r, 0)
 
-        save_btn = QPushButton("Save to CSV"); save_btn.setFixedWidth(fixed_w); save_btn.clicked.connect(self.save_to_csv)
+        save_btn = QPushButton(self.tr("Save to CSV")); save_btn.setFixedWidth(fixed_w); save_btn.clicked.connect(self.save_to_csv)
         layout.addWidget(save_btn, r, 1)
 
         settings_btn = QPushButton(); settings_btn.setFixedWidth(fixed_w)
@@ -434,7 +434,7 @@ class WhatsInMySkyDialog(QDialog):
             tz_str    = self.timezone_combo.currentText()
             min_alt   = float(self.min_altitude_entry.text())
         except ValueError as e:
-            self.update_status(f"Invalid input: {e}")
+            self.update_status(self.tr("Invalid input: {}").format(e))
             return
 
         # Heuristic warning (and gentle auto-fix if user probably forgot the suffix)
@@ -450,9 +450,9 @@ class WhatsInMySkyDialog(QDialog):
                 self.longitude_entry.setText(_format_with_suffix(longitude, "lon"))
                 self.update_status(f"{msg} → Assuming you meant {_format_with_suffix(longitude, 'lon')} (auto-corrected).")
             else:
-                self.update_status(msg + " Please verify your longitude/timezone.")
+                self.update_status(msg + self.tr(" Please verify your longitude/timezone."))
         else:
-            self.update_status("Inputs look consistent.")
+            self.update_status(self.tr("Inputs look consistent."))
 
         # Persist settings (numeric)
         self._save_settings(latitude, longitude, date_str, time_str, tz_str, min_alt)
@@ -467,11 +467,11 @@ class WhatsInMySkyDialog(QDialog):
         self.calc_thread.lst_calculated.connect(self.update_lst)
         self.calc_thread.status_update.connect(self.update_status)
 
-        self.update_status("Calculating…")
+        self.update_status(self.tr("Calculating…"))
         self.calc_thread.start()
 
     def update_lunar_phase(self, phase_percentage: int, phase_image_name: str):
-        self.lunar_phase_label.setText(f"Lunar Phase: {phase_percentage}% illuminated")
+        self.lunar_phase_label.setText(self.tr("Lunar Phase: {}% illuminated").format(phase_percentage))
         pth = imgs_path(phase_image_name)
         if os.path.exists(pth):
             pm = QPixmap(pth).scaled(100, 100, Qt.AspectRatioMode.KeepAspectRatio,
@@ -509,13 +509,13 @@ class WhatsInMySkyDialog(QDialog):
             self.tree.addTopLevelItem(SortableTreeWidgetItem(vals))
 
     def update_status(self, msg: str):
-        self.status_label.setText(f"Status: {msg}")
+        self.status_label.setText(self.tr("Status: {}").format(msg))
 
     def update_lst(self, msg: str):
         self.lst_label.setText(msg)
 
     def open_settings(self):
-        n, ok = QInputDialog.getInt(self, "Settings", "Enter number of objects to display:",
+        n, ok = QInputDialog.getInt(self, self.tr("Settings"), self.tr("Enter number of objects to display:"),
                                     value=int(self.object_limit), min=1, max=1000)
         if ok:
             self.object_limit = int(n)
@@ -526,12 +526,12 @@ class WhatsInMySkyDialog(QDialog):
         webbrowser.open(f"https://www.astrobin.com/search/?q={name}")
 
     def add_custom_object(self):
-        name, ok = QInputDialog.getText(self, "Add Custom Object", "Enter object name:")
+        name, ok = QInputDialog.getText(self, self.tr("Add Custom Object"), self.tr("Enter object name:"))
         if not ok or not name:
             return
-        ra, ok = QInputDialog.getDouble(self, "Add Custom Object", "Enter RA (deg):", decimals=3)
+        ra, ok = QInputDialog.getDouble(self, self.tr("Add Custom Object"), self.tr("Enter RA (deg):"), decimals=3)
         if not ok: return
-        dec, ok = QInputDialog.getDouble(self, "Add Custom Object", "Enter Dec (deg):", decimals=3)
+        dec, ok = QInputDialog.getDouble(self, self.tr("Add Custom Object"), self.tr("Enter Dec (deg):"), decimals=3)
         if not ok: return
 
         entry = {"Name": name, "RA": ra, "Dec": dec, "Catalog": "User",
@@ -542,9 +542,9 @@ class WhatsInMySkyDialog(QDialog):
             df = pd.read_csv(catalog_csv, encoding="ISO-8859-1") if os.path.exists(catalog_csv) else pd.DataFrame()
             df = pd.concat([df, pd.DataFrame([entry])], ignore_index=True)
             df.to_csv(catalog_csv, index=False, encoding="ISO-8859-1")
-            self.update_status(f"Added custom object: {name}")
+            self.update_status(self.tr("Added custom object: {}").format(name))
         except Exception as e:
-            QMessageBox.warning(self, "Add Custom Object", f"Could not update catalog:\n{e}")
+            QMessageBox.warning(self, self.tr("Add Custom Object"), self.tr("Could not update catalog:\n{}").format(e))
 
     def update_ra_dec_format(self):
         use_deg = self.ra_dec_degrees.isChecked()
@@ -566,7 +566,7 @@ class WhatsInMySkyDialog(QDialog):
                 pass
 
     def save_to_csv(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Save CSV File", "", "CSV files (*.csv);;All Files (*)")
+        path, _ = QFileDialog.getSaveFileName(self, self.tr("Save CSV File"), "", self.tr("CSV files (*.csv);;All Files (*)"))
         if not path:
             return
         cols = [self.tree.headerItem().text(i) for i in range(self.tree.columnCount())]
@@ -575,4 +575,4 @@ class WhatsInMySkyDialog(QDialog):
             it = self.tree.topLevelItem(i)
             rows.append([it.text(j) for j in range(self.tree.columnCount())])
         pd.DataFrame(rows, columns=cols).to_csv(path, index=False)
-        self.update_status(f"Data saved to {path}")
+        self.update_status(self.tr("Data saved to {}").format(path))

@@ -302,7 +302,17 @@ class CropDialogPro(QDialog):
         row.addStretch(1)
         row.addWidget(QLabel(self.tr("Aspect Ratio:")))
         self.cmb_ar = QComboBox()
-        self.cmb_ar.addItems([self.tr("Free"), self.tr("Original"), "1:1", "16:9", "9:16", "4:3"])
+        self.cmb_ar.addItems([
+            self.tr("Free"), self.tr("Original"),
+            "1:1",
+            "3:2", "2:3",
+            "4:3", "3:4",
+            "4:5", "5:4",
+            "16:9", "9:16",
+            "21:9", "9:21",
+            "2:1", "1:2",
+            "3:5", "5:3",
+        ])
         row.addWidget(self.cmb_ar)
         row.addStretch(1)
         main.addLayout(row)

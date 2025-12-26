@@ -209,6 +209,17 @@ class DraggableToolBar(QToolBar):
         s.setValue(self._settings_key, ids)
 
 
+    def _is_locked(self) -> bool:
+        """Check if toolbar icon movement is locked globally."""
+        s = self._settings()
+        # Default to False (unlocked)
+        return s.value("UI/ToolbarLocked", False, type=bool)
+
+    def _set_locked(self, locked: bool):
+        """Set the global lock state."""
+        s = self._settings()
+        s.setValue("UI/ToolbarLocked", locked)
+
     # install/remove our event filter when actions are added/removed
     def actionEvent(self, e):
         super().actionEvent(e)
@@ -259,6 +270,7 @@ class DraggableToolBar(QToolBar):
                     if delta.manhattanLength() > QApplication.startDragDistance():
                         mods_now = QApplication.keyboardModifiers()
                         had_mod  = self._press_had_mod.get(obj, False)
+                        
                         # CASE 1: had/has modifiers → create desktop shortcut / function-bundle drag (existing behavior)
                         if had_mod or self._mods_ok(mods_now):
                             act = self._find_action_for_button(obj)
@@ -270,6 +282,20 @@ class DraggableToolBar(QToolBar):
                             return True  # consume
                         else:
                             # CASE 2: plain drag (no modifiers) → reorder within this toolbar
+                            # CHECK LOCK STATE FIRST
+                            if self._is_locked():
+                                # Lock is active: DO NOT start drag.
+                                # Should we consume the event? 
+                                # If we consume it, the button won't feel "pressed" anymore if the user keeps dragging?
+                                # Actually, if we just return False, standard QToolButton behavior applies (it might think it's being pressed).
+                                # However, we want to prevent the *reorder* logic.
+                                # So simply doing nothing here is enough to prevent the reorder drag from starting.
+                                
+                                # But we might want to let the user know, or just silently fail distinctively?
+                                # Silently failing distinctively is what the user asked for (prevent involuntary move).
+                                # If we return False, the button keeps tracking the mouse, which is fine (it won't click unless released inside).
+                                return False 
+
                             self._start_reorder_drag_for_button(obj)
                             self._suppress_release.add(obj)
                             self._press_pos.pop(obj, None)
@@ -461,28 +487,42 @@ class DraggableToolBar(QToolBar):
     def _show_toolbutton_context_menu(self, btn: QToolButton, act: QAction, gpos: QPoint):
         m = QMenu(btn)
 
-        m.addAction("Create Desktop Shortcut", lambda: self._add_shortcut_for_action(act))
+        m.addAction(self.tr("Create Desktop Shortcut"), lambda: self._add_shortcut_for_action(act))
 
         # Hide this icon
         cid = self._action_id(act)
         if cid:
             m.addSeparator()
-            m.addAction("Hide this icon", lambda: self._set_action_hidden(act, True))
+            m.addAction(self.tr("Hide this icon"), lambda: self._set_action_hidden(act, True))
 
         # (Optional) teach users about Alt+Drag:
         m.addSeparator()
-        tip = m.addAction("Tip: Alt+Drag to create")
+        tip = m.addAction(self.tr("Tip: Alt+Drag to create"))
         tip.setEnabled(False)
 
         m.exec(gpos)
+
 
     def contextMenuEvent(self, ev):
         # Right-click on empty toolbar area
         m = QMenu(self)
 
+        # 1. Lock/Unlock Action
+        is_locked = self._is_locked()
+        act_lock = m.addAction(self.tr("Lock Toolbar Icons"))
+        act_lock.setCheckable(True)
+        act_lock.setChecked(is_locked)
+        
+        def _toggle_lock(checked):
+            self._set_locked(checked)
+            
+        act_lock.triggered.connect(_toggle_lock)
+        
+        m.addSeparator()
+
         # Submenu listing hidden actions for this toolbar
         hidden = self._load_hidden_set()
-        sub = m.addMenu("Show hidden…")
+        sub = m.addMenu(self.tr("Show hidden…"))
 
         # Build list from actions that are currently invisible
         any_hidden = False
@@ -496,7 +536,7 @@ class DraggableToolBar(QToolBar):
             sub.setEnabled(False)
 
         m.addSeparator()
-        m.addAction("Reset hidden icons", self._reset_hidden_icons)
+        m.addAction(self.tr("Reset hidden icons"), self._reset_hidden_icons)
 
         m.exec(ev.globalPos())
 
@@ -741,18 +781,18 @@ class ShortcutButton(QToolButton):
     # --- Context menu (run / preset / delete) ----------------------------
     def _context_menu(self, pos):
         m = QMenu(self)
-        m.addAction("Run", lambda: self._mgr.trigger(self.command_id))
+        m.addAction(self.tr("Run"), lambda: self._mgr.trigger(self.command_id))
         m.addSeparator()
-        m.addAction("Edit Preset…", self._edit_preset_ui)
-        m.addAction("Clear Preset", lambda: self._save_preset(None))
-        m.addAction("Rename…", self._rename)                    # ← NEW
+        m.addAction(self.tr("Edit Preset…"), self._edit_preset_ui)
+        m.addAction(self.tr("Clear Preset"), lambda: self._save_preset(None))
+        m.addAction(self.tr("Rename…"), self._rename)                    # ← NEW
         m.addSeparator()
-        m.addAction("Delete", self._delete)
+        m.addAction(self.tr("Delete"), self._delete)
         m.exec(self.mapToGlobal(pos))
 
     def _rename(self):
         current = self.text()
-        new_name, ok = QInputDialog.getText(self, "Rename Shortcut", "Name:", text=current)
+        new_name, ok = QInputDialog.getText(self, self.tr("Rename Shortcut"), self.tr("Name:"), text=current)
         if not ok or not new_name.strip():
             return
         self.setText(new_name.strip())
@@ -764,21 +804,21 @@ class ShortcutButton(QToolButton):
         result = _open_preset_editor_for_command(self, cid, cur)
         if result is not None:
             self._save_preset(result)
-            QMessageBox.information(self, "Preset saved", "Preset stored on shortcut.")
+            QMessageBox.information(self, self.tr("Preset saved"), self.tr("Preset stored on shortcut."))
             return
 
         # Fallback: JSON editor
         raw = json.dumps(cur or {}, indent=2)
-        text, ok = QInputDialog.getMultiLineText(self, "Edit Preset (JSON)", "Preset:", raw)
+        text, ok = QInputDialog.getMultiLineText(self, self.tr("Edit Preset (JSON)"), self.tr("Preset:"), raw)
         if ok:
             try:
                 preset = json.loads(text or "{}")
                 if not isinstance(preset, dict):
-                    raise ValueError("Preset must be a JSON object")
+                    raise ValueError(self.tr("Preset must be a JSON object"))
                 self._save_preset(preset)
-                QMessageBox.information(self, "Preset saved", "Preset stored on shortcut.")
+                QMessageBox.information(self, self.tr("Preset saved"), self.tr("Preset stored on shortcut."))
             except Exception as e:
-                QMessageBox.warning(self, "Invalid JSON", str(e))
+                QMessageBox.warning(self, self.tr("Invalid JSON"), str(e))
 
 
     def _start_command_drag(self):
@@ -1066,11 +1106,11 @@ class ShortcutCanvas(QWidget):
     def contextMenuEvent(self, e):
         menu = QMenu(self)
         has_sel = bool(self._mgr.selected)
-        a_del = menu.addAction("Delete Selected", self._mgr.delete_selected); a_del.setEnabled(has_sel)
-        a_clr = menu.addAction("Clear Selection", self._mgr.clear_selection); a_clr.setEnabled(has_sel)
+        a_del = menu.addAction(self.tr("Delete Selected"), self._mgr.delete_selected); a_del.setEnabled(has_sel)
+        a_clr = menu.addAction(self.tr("Clear Selection"), self._mgr.clear_selection); a_clr.setEnabled(has_sel)
         menu.addSeparator()
-        a_vb = menu.addAction("View Bundles…", lambda: _open_view_bundles_from_canvas(self))
-        a_fb = menu.addAction("Function Bundles…", lambda: _open_function_bundles_from_canvas(self))
+        a_vb = menu.addAction(self.tr("View Bundles…"), lambda: _open_view_bundles_from_canvas(self))
+        a_fb = menu.addAction(self.tr("Function Bundles…"), lambda: _open_function_bundles_from_canvas(self))
         menu.exec(e.globalPos())
 
 

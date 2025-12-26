@@ -1206,11 +1206,11 @@ class AstroSuiteProMainWindow(
         global_pos = lw.viewport().mapToGlobal(pos)
 
         menu = QMenu(lw)
-        act_copy_selected = menu.addAction("Copy Selected")
-        act_copy_all      = menu.addAction("Copy All")
+        act_copy_selected = menu.addAction(self.tr("Copy Selected"))
+        act_copy_all      = menu.addAction(self.tr("Copy All"))
         menu.addSeparator()
-        act_select_all    = menu.addAction("Select All Lines")
-        act_clear         = menu.addAction("Clear Console")
+        act_select_all    = menu.addAction(self.tr("Select All Lines"))
+        act_clear         = menu.addAction(self.tr("Clear Console"))
 
         action = menu.exec(global_pos)
         if action is None:
@@ -1804,7 +1804,7 @@ class AstroSuiteProMainWindow(
 
             show_view_bundles(self)
         except Exception as e:
-            QMessageBox.warning(self, "View Bundles", f"Open failed:\n{e}")
+            QMessageBox.warning(self, self.tr("View Bundles"), f"Open failed:\n{e}")
 
     def _open_function_bundles(self):
         from setiastro.saspro.function_bundle import show_function_bundles
@@ -1812,7 +1812,7 @@ class AstroSuiteProMainWindow(
 
             show_function_bundles(self)
         except Exception as e:
-            QMessageBox.warning(self, "Function Bundles", f"Open failed:\n{e}")
+            QMessageBox.warning(self, self.tr("Function Bundles"), f"Open failed:\n{e}")
 
     def _open_scripts_folder(self):
         if hasattr(self, "scriptman"):
@@ -1874,43 +1874,43 @@ class AstroSuiteProMainWindow(
         # Manual list (extend anytime). Format: (Gesture, Context, Effect)
         rows = [
             # Command search
-            ("A", "Display Stretch", "Toggle Display Auto-Stretch"),
-            ("Ctrl+I", "Invert", "Invert the Image"),
-            ("Ctrl+Shift+P", "Command Search", "Focus the command search bar; Enter runs first match"),
+            ("A", "Display Stretch", self.tr("Toggle Display Auto-Stretch")),
+            ("Ctrl+I", "Invert", self.tr("Invert the Image")),
+            ("Ctrl+Shift+P", "Command Search", self.tr("Focus the command search bar; Enter runs first match")),
 
             # View Icon
-            ("Drag view -> Off to Canvas", "View", "Duplicate Image"),
-            ("Drag view -> On to Other Image", "View", "Copy Zoom and Pan"),
-            ("Shift+Drag -> On to Other Image", "View", "Apply that image to the other as a mask"), 
-            ("Ctrl+Drag -> On to Other Image", "View", "Copy Astrometric Solution"),            
+            ("Drag view -> Off to Canvas", "View", self.tr("Duplicate Image")),
+            ("Drag view -> On to Other Image", "View", self.tr("Copy Zoom and Pan")),
+            ("Shift+Drag -> On to Other Image", "View", self.tr("Apply that image to the other as a mask")), 
+            ("Ctrl+Drag -> On to Other Image", "View", self.tr("Copy Astrometric Solution")),            
 
             # View zoom
-            ("Ctrl+1", "View", "Zoom to 100% (1:1)"),
-            ("Ctrl+0", "View", "Fit image to current window"),
-            ("Ctrl++", "View", "Zoom In"),
-            ("Ctrl+-", "View", "Zoom Out"),
+            ("Ctrl+1", "View", self.tr("Zoom to 100% (1:1)")),
+            ("Ctrl+0", "View", self.tr("Fit image to current window")),
+            ("Ctrl++", "View", self.tr("Zoom In")),
+            ("Ctrl+-", "View", self.tr("Zoom Out")),
 
             # Window switching
-            ("Ctrl+PgDown", "MDI", "Switch to previously active view"),
-            ("Ctrl+PgUp",   "MDI", "Switch to next active view"),
+            ("Ctrl+PgDown", "MDI", self.tr("Switch to previously active view")),
+            ("Ctrl+PgUp",   "MDI", self.tr("Switch to next active view")),
 
             # Shortcuts canvas + buttons
-            ("Alt+Drag (toolbar button)", "Toolbar", "Create a desktop shortcut for that action"),
-            ("Alt+Drag (shortcut button -> view)", "Shortcuts", "Headless apply the shortcut's command/preset to a view"),
-            ("Ctrl/Shift+Click", "Shortcuts", "Multi-select shortcut buttons"),
-            ("Drag (selection)", "Shortcuts", "Move selected shortcut buttons"),
-            ("Delete / Backspace", "Shortcuts", "Delete selected shortcut buttons"),
-            ("Ctrl+A", "Shortcuts", "Select all shortcut buttons"),
-            ("Double-click empty area", "MDI background", "Open files dialog"),
+            ("Alt+Drag (toolbar button)", "Toolbar", self.tr("Create a desktop shortcut for that action")),
+            ("Alt+Drag (shortcut button -> view)", "Shortcuts", self.tr("Headless apply the shortcut's command/preset to a view")),
+            ("Ctrl/Shift+Click", "Shortcuts", self.tr("Multi-select shortcut buttons")),
+            ("Drag (selection)", "Shortcuts", self.tr("Move selected shortcut buttons")),
+            ("Delete / Backspace", "Shortcuts", self.tr("Delete selected shortcut buttons")),
+            ("Ctrl+A", "Shortcuts", self.tr("Select all shortcut buttons")),
+            ("Double-click empty area", "MDI background", self.tr("Open files dialog")),
 
             # Layers dock
-            ("Drag view -> Layers list", "Layers", "Add dragged view as a new layer (on top)"),
-            ("Shift+Drag mask -> Layers list", "Layers", "Attach dragged image as mask to the selected layer"),
+            ("Drag view -> Layers list", "Layers", self.tr("Add dragged view as a new layer (on top)")),
+            ("Shift+Drag mask -> Layers list", "Layers", self.tr("Attach dragged image as mask to the selected layer")),
 
             # Crop tool
-            ("Click-drag", "Crop Tool", "Draw a crop rectangle"),
-            ("Drag corner handles", "Crop Tool", "Resize crop rectangle"),
-            ("Shift+Drag on box", "Crop Tool", "Rotate crop rectangle"),
+            ("Click-drag", "Crop Tool", self.tr("Draw a crop rectangle")),
+            ("Drag corner handles", "Crop Tool", self.tr("Resize crop rectangle")),
+            ("Shift+Drag on box", "Crop Tool", self.tr("Rotate crop rectangle")),
         ]
         return rows
 
@@ -2027,7 +2027,7 @@ class AstroSuiteProMainWindow(
         if getattr(self, "doc_manager", None) and self.doc_manager._docs:
             if not self._confirm_discard(
                 title=title,
-                msg=(
+                msg=self.tr(
                     "Loading a project will close current views and replace desktop shortcuts.\n"
                     "Continue?"
                 ),
@@ -7347,7 +7347,7 @@ class AstroSuiteProMainWindow(
             self._search_dock = None
 
         # --- Right-side mini dock with the search box ---
-        self._search_dock = QDockWidget("Command Search", self)
+        self._search_dock = QDockWidget(self.tr("Command Search"), self)
         self._search_dock.setObjectName("CommandSearchDock")
         # âœ... Allow moving/closing like other panels
         self._search_dock.setAllowedAreas(

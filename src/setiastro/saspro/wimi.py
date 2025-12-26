@@ -2596,12 +2596,12 @@ class WIMIDialog(QDialog):
         button_layout = QHBoxLayout()
         
         # Load button
-        self.load_button = QPushButton("Load Image File")
+        self.load_button = QPushButton(self.tr("Load Image File"))
         self.load_button.setIcon(QApplication.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogStart))
         self.load_button.clicked.connect(self.open_image)
 
         self.load_from_view_btn = QToolButton()
-        self.load_from_view_btn.setText("Load from View")
+        self.load_from_view_btn.setText(self.tr("Load from View"))
         self.load_from_view_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.load_from_view_btn.setIcon(QApplication.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon))
         self.load_from_view_menu = QMenu(self)
@@ -2611,7 +2611,7 @@ class WIMIDialog(QDialog):
         button_layout.addWidget(self.load_from_view_btn)
 
         # AutoStretch button
-        self.auto_stretch_button = QPushButton("AutoStretch")
+        self.auto_stretch_button = QPushButton(self.tr("AutoStretch"))
         self.auto_stretch_button.clicked.connect(self.toggle_autostretch)
 
         # Add both buttons to the horizontal layout
@@ -2622,7 +2622,7 @@ class WIMIDialog(QDialog):
         left_panel.addLayout(button_layout)
 
         # Create the instruction QLabel for search region
-        search_region_instruction_label = QLabel("Shift+Click to define a search region")
+        search_region_instruction_label = QLabel(self.tr("Shift+Click to define a search region"))
         search_region_instruction_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         search_region_instruction_label.setStyleSheet("font-size: 15px; color: gray;")
 
@@ -2632,12 +2632,12 @@ class WIMIDialog(QDialog):
 
 
         # Query Simbad button
-        self.query_button = QPushButton("Query Simbad")
+        self.query_button = QPushButton(self.tr("Query Simbad"))
         self.query_button.setIcon(QApplication.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton))
         left_panel.addWidget(self.query_button)
         self.query_button.clicked.connect(lambda: self.query_simbad(self.get_defined_radius()))
 
-        self.legend_button = QPushButton("Legend")
+        self.legend_button = QPushButton(self.tr("Legend"))
         self.legend_button.clicked.connect(self.show_legend)
         left_panel.addWidget(self.legend_button)
 
@@ -2645,12 +2645,12 @@ class WIMIDialog(QDialog):
         show_clear_layout = QHBoxLayout()
 
         # Create the Show Object Names checkbox
-        self.show_names_checkbox = QCheckBox("Show Object Names")
+        self.show_names_checkbox = QCheckBox(self.tr("Show Object Names"))
         self.show_names_checkbox.stateChanged.connect(self.toggle_object_names)  # Connect to a function to toggle names
         show_clear_layout.addWidget(self.show_names_checkbox)
 
         # Create the Clear Results button
-        self.clear_results_button = QPushButton("Clear Results")
+        self.clear_results_button = QPushButton(self.tr("Clear Results"))
         self.clear_results_button.setIcon(QApplication.style().standardIcon(QStyle.StandardPixmap.SP_DialogCloseButton))
         self.clear_results_button.clicked.connect(self.clear_search_results)  # Connect to a function to clear results
         show_clear_layout.addWidget(self.clear_results_button)
@@ -2662,7 +2662,7 @@ class WIMIDialog(QDialog):
         button_layout = QHBoxLayout()
 
         # Show Visible Objects Only button
-        self.toggle_visible_objects_button = QPushButton("Show Visible Objects Only")
+        self.toggle_visible_objects_button = QPushButton(self.tr("Show Visible Objects Only"))
         self.toggle_visible_objects_button.setCheckable(True)  # Toggle button state
         self.toggle_visible_objects_button.setIcon(QIcon(eye_icon_path))
         self.toggle_visible_objects_button.clicked.connect(self.filter_visible_objects)
@@ -2670,7 +2670,7 @@ class WIMIDialog(QDialog):
         button_layout.addWidget(self.toggle_visible_objects_button)
 
         # Save CSV button
-        self.save_csv_button = QPushButton("Save CSV")
+        self.save_csv_button = QPushButton(self.tr("Save CSV"))
         self.save_csv_button.setIcon(QIcon(csv_icon_path))
         self.save_csv_button.clicked.connect(self.save_results_as_csv)
         button_layout.addWidget(self.save_csv_button)
@@ -2679,7 +2679,7 @@ class WIMIDialog(QDialog):
         left_panel.addLayout(button_layout)  
 
         # Advanced Search Button
-        self.advanced_search_button = QPushButton("Advanced Search")
+        self.advanced_search_button = QPushButton(self.tr("Advanced Search"))
         self.advanced_search_button.setIcon(QApplication.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView))
         self.advanced_search_button.setCheckable(True)
         self.advanced_search_button.clicked.connect(self.toggle_advanced_search)
@@ -2693,14 +2693,14 @@ class WIMIDialog(QDialog):
         self.advanced_search_panel_widget.setVisible(False)  # Hide initially        
 
         # Status label
-        self.status_label = QLabel("Status: Ready")
+        self.status_label = QLabel(self.tr("Status: Ready"))
         left_panel.addWidget(self.status_label)
 
         # Create a horizontal layout
         button_layout = QHBoxLayout()
 
         # Copy RA/Dec to Clipboard button
-        self.copy_button = QPushButton("Copy RA/Dec to Clipboard", self)
+        self.copy_button = QPushButton(self.tr("Copy RA/Dec to Clipboard"), self)
         self.copy_button.setIcon(QApplication.style().standardIcon(QStyle.StandardPixmap.SP_CommandLink))
         self.copy_button.clicked.connect(self.copy_ra_dec_to_clipboard)
         button_layout.addWidget(self.copy_button)
@@ -2715,23 +2715,23 @@ class WIMIDialog(QDialog):
         left_panel.addLayout(button_layout)
         
          # Save Plate Solved Fits Button
-        self.save_plate_solved_button = QPushButton("Save Plate Solved Fits")
+        self.save_plate_solved_button = QPushButton(self.tr("Save Plate Solved Fits"))
         self.save_plate_solved_button.setIcon(QIcon(disk_icon_path))
         self.save_plate_solved_button.clicked.connect(self.save_plate_solved_fits)
         left_panel.addWidget(self.save_plate_solved_button)       
 
         # RA/Dec Labels
         ra_dec_layout = QHBoxLayout()
-        self.ra_label = QLabel("RA: N/A")
-        self.dec_label = QLabel("Dec: N/A")
-        self.orientation_label = QLabel("Orientation: N/A°")
+        self.ra_label = QLabel(self.tr("RA: N/A"))
+        self.dec_label = QLabel(self.tr("Dec: N/A"))
+        self.orientation_label = QLabel(self.tr("Orientation: N/A°"))
         ra_dec_layout.addWidget(self.ra_label)
         ra_dec_layout.addWidget(self.dec_label)
         ra_dec_layout.addWidget(self.orientation_label)
         left_panel.addLayout(ra_dec_layout)
 
         # Mini Preview
-        self.mini_preview = QLabel("Mini Preview")
+        self.mini_preview = QLabel(self.tr("Mini Preview"))
         self.mini_preview.setMaximumSize(300, 300)
         self.mini_preview.mousePressEvent = self.on_mini_preview_press
         self.mini_preview.mouseMoveEvent = self.on_mini_preview_drag
@@ -2746,9 +2746,9 @@ class WIMIDialog(QDialog):
 
         # Zoom buttons above the main preview
         zoom_controls_layout = QHBoxLayout()
-        self.zoom_in_button = QPushButton("Zoom In")
+        self.zoom_in_button = QPushButton(self.tr("Zoom In"))
         self.zoom_in_button.clicked.connect(self.zoom_in)
-        self.zoom_out_button = QPushButton("Zoom Out")
+        self.zoom_out_button = QPushButton(self.tr("Zoom Out"))
         self.zoom_out_button.clicked.connect(self.zoom_out)
         zoom_controls_layout.addWidget(self.zoom_in_button)
         zoom_controls_layout.addWidget(self.zoom_out_button)
@@ -2783,28 +2783,28 @@ class WIMIDialog(QDialog):
         save_buttons_layout = QHBoxLayout()
 
         # Button to toggle annotation tools section
-        self.show_annotations_button = QPushButton("Show Annotation Tools")
+        self.show_annotations_button = QPushButton(self.tr("Show Annotation Tools"))
         self.show_annotations_button.setIcon(QApplication.style().standardIcon(QStyle.StandardPixmap.SP_DialogResetButton))
         self.show_annotations_button.clicked.connect(self.toggle_annotation_tools)
         save_buttons_layout.addWidget(self.show_annotations_button)
         
-        self.save_annotated_button = QPushButton("Save Annotated Image")
+        self.save_annotated_button = QPushButton(self.tr("Save Annotated Image"))
         self.save_annotated_button.setIcon(QIcon(annotated_path))
         self.save_annotated_button.clicked.connect(self.save_annotated_image)
         save_buttons_layout.addWidget(self.save_annotated_button)
         
-        self.save_collage_button = QPushButton("Save Collage of Objects")
+        self.save_collage_button = QPushButton(self.tr("Save Collage of Objects"))
         self.save_collage_button.setIcon(QIcon(collage_path))
         self.save_collage_button.clicked.connect(self.save_collage_of_objects)
         save_buttons_layout.addWidget(self.save_collage_button)
 
         # New 3D View Button
-        self.show_3d_view_button = QPushButton("3D Distance Model")
+        self.show_3d_view_button = QPushButton(self.tr("3D Distance Model"))
         self.show_3d_view_button.clicked.connect(self.show_3d_model_view)
         self.show_3d_view_button.setIcon(    QApplication.style().standardIcon(QStyle.StandardPixmap.SP_TitleBarNormalButton))
         save_buttons_layout.addWidget(self.show_3d_view_button)
 
-        self.show_hr_button = QPushButton("H-R Diagram")
+        self.show_hr_button = QPushButton(self.tr("H-R Diagram"))
         # Optionally give it an icon:
         self.show_hr_button.setIcon(QApplication.style().standardIcon(
             QStyle.StandardPixmap.SP_DesktopIcon))
@@ -2821,10 +2821,10 @@ class WIMIDialog(QDialog):
         label_layout = QHBoxLayout()
 
         # Create the label to display the count of objects
-        self.object_count_label = QLabel("Objects Found: 0")
+        self.object_count_label = QLabel(self.tr("Objects Found: 0"))
 
         # Create the label with instructions
-        self.instructions_label = QLabel("Right Click a Row for More Options")
+        self.instructions_label = QLabel(self.tr("Right Click a Row for More Options"))
 
         # Add both labels to the horizontal layout
         label_layout.addWidget(self.object_count_label)
@@ -2850,61 +2850,61 @@ class WIMIDialog(QDialog):
         self.annotation_tools_section = QWidget()
         annotation_tools_layout = QGridLayout(self.annotation_tools_section)
 
-        annotation_instruction_label = QLabel("Ctrl+Click to add items, Alt+Click to measure distance")
+        annotation_instruction_label = QLabel(self.tr("Ctrl+Click to add items, Alt+Click to measure distance"))
         annotation_instruction_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         annotation_instruction_label.setStyleSheet("font-size: 10px; color: gray;")        
 
-        self.draw_ellipse_button = QPushButton("Draw Ellipse")
+        self.draw_ellipse_button = QPushButton(self.tr("Draw Ellipse"))
         self.draw_ellipse_button.tool_name = "Ellipse"
         self.draw_ellipse_button.clicked.connect(lambda: self.set_tool("Ellipse"))
         self.annotation_buttons.append(self.draw_ellipse_button)
 
-        self.freehand_button = QPushButton("Freehand (Lasso)")
+        self.freehand_button = QPushButton(self.tr("Freehand (Lasso)"))
         self.freehand_button.tool_name = "Freehand"
         self.freehand_button.clicked.connect(lambda: self.set_tool("Freehand"))
         self.annotation_buttons.append(self.freehand_button)
 
-        self.draw_rectangle_button = QPushButton("Draw Rectangle")
+        self.draw_rectangle_button = QPushButton(self.tr("Draw Rectangle"))
         self.draw_rectangle_button.tool_name = "Rectangle"
         self.draw_rectangle_button.clicked.connect(lambda: self.set_tool("Rectangle"))
         self.annotation_buttons.append(self.draw_rectangle_button)
 
-        self.draw_arrow_button = QPushButton("Draw Arrow")
+        self.draw_arrow_button = QPushButton(self.tr("Draw Arrow"))
         self.draw_arrow_button.tool_name = "Arrow"
         self.draw_arrow_button.clicked.connect(lambda: self.set_tool("Arrow"))
         self.annotation_buttons.append(self.draw_arrow_button)
 
-        self.place_compass_button = QPushButton("Place Celestial Compass")
+        self.place_compass_button = QPushButton(self.tr("Place Celestial Compass"))
         self.place_compass_button.tool_name = "Compass"
         self.place_compass_button.clicked.connect(lambda: self.set_tool("Compass"))
         self.annotation_buttons.append(self.place_compass_button)
 
-        self.add_text_button = QPushButton("Add Text")
+        self.add_text_button = QPushButton(self.tr("Add Text"))
         self.add_text_button.tool_name = "Text"
         self.add_text_button.clicked.connect(lambda: self.set_tool("Text"))
         self.annotation_buttons.append(self.add_text_button)
 
         # Add Color and Font buttons
-        self.color_button = QPushButton("Select Color")
+        self.color_button = QPushButton(self.tr("Select Color"))
         self.color_button.setIcon(QIcon(colorwheel_path))
         self.color_button.clicked.connect(self.select_color)
 
-        self.font_button = QPushButton("Select Font")
+        self.font_button = QPushButton(self.tr("Select Font"))
         self.font_button.setIcon(QIcon(font_path))
         self.font_button.clicked.connect(self.select_font)
 
         # Undo button
-        self.undo_button = QPushButton("Undo")
+        self.undo_button = QPushButton(self.tr("Undo"))
         self.undo_button.setIcon(QApplication.style().standardIcon(QStyle.StandardPixmap.SP_ArrowLeft))  # Left arrow icon for undo
         self.undo_button.clicked.connect(self.main_preview.undo_annotation)  # Connect to undo_annotation in CustomGraphicsView
 
         # Clear Annotations button
-        self.clear_annotations_button = QPushButton("Clear Annotations")
+        self.clear_annotations_button = QPushButton(self.tr("Clear Annotations"))
         self.clear_annotations_button.setIcon(QApplication.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon))  # Trash icon
         self.clear_annotations_button.clicked.connect(self.main_preview.clear_annotations)  # Connect to clear_annotations in CustomGraphicsView
 
         # Delete Selected Object button
-        self.delete_selected_object_button = QPushButton("Delete Selected Object(s)")
+        self.delete_selected_object_button = QPushButton(self.tr("Delete Selected Items"))
         self.delete_selected_object_button.setIcon(QApplication.style().standardIcon(QStyle.StandardPixmap.SP_DialogCloseButton))  # Trash icon
         self.delete_selected_object_button.clicked.connect(self.main_preview.delete_selected_objects)
 
@@ -2928,12 +2928,12 @@ class WIMIDialog(QDialog):
         right_panel.addWidget(self.annotation_tools_section)
 
         # Advanced Search Panel
-        self.advanced_param_label = QLabel("Advanced Search Parameters")
+        self.advanced_param_label = QLabel(self.tr("Advanced Search Parameters"))
         self.advanced_search_panel.addWidget(self.advanced_param_label)
 
         # TreeWidget for object types
         self.object_tree = QTreeWidget()
-        self.object_tree.setHeaderLabels(["Object Type", "Description"])
+        self.object_tree.setHeaderLabels([self.tr("Object Type"), self.tr("Description")])
         self.object_tree.setColumnWidth(0, 150)
         self.object_tree.setSortingEnabled(True)
 
@@ -2949,17 +2949,17 @@ class WIMIDialog(QDialog):
         toggle_buttons_layout = QHBoxLayout()
 
         # Toggle All
-        self.toggle_all_button = QPushButton("Toggle All")
+        self.toggle_all_button = QPushButton(self.tr("Toggle All"))
         self.toggle_all_button.clicked.connect(self.toggle_all_items)
         toggle_buttons_layout.addWidget(self.toggle_all_button)
 
         # Save Custom List
-        self.save_list_button = QPushButton("Save List…")
+        self.save_list_button = QPushButton(self.tr("Save List…"))
         self.save_list_button.clicked.connect(self.save_custom_list)
         toggle_buttons_layout.addWidget(self.save_list_button)
 
         # Load Custom List
-        self.load_list_button = QPushButton("Load List…")
+        self.load_list_button = QPushButton(self.tr("Load List…"))
         self.load_list_button.clicked.connect(self.load_custom_list)
         toggle_buttons_layout.addWidget(self.load_list_button)
 
@@ -2968,11 +2968,11 @@ class WIMIDialog(QDialog):
         # Add Simbad Search buttons below the toggle buttons
         search_button_layout = QHBoxLayout()
 
-        self.simbad_defined_region_button = QPushButton("Search Defined Region")
+        self.simbad_defined_region_button = QPushButton(self.tr("Search Defined Region"))
         self.simbad_defined_region_button.clicked.connect(self.search_defined_region)
         search_button_layout.addWidget(self.simbad_defined_region_button)
 
-        self.simbad_entire_image_button = QPushButton("Search Entire Image")
+        self.simbad_entire_image_button = QPushButton(self.tr("Search Entire Image"))
         self.simbad_entire_image_button.clicked.connect(self.search_entire_image)
         search_button_layout.addWidget(self.simbad_entire_image_button)
 
@@ -2981,17 +2981,17 @@ class WIMIDialog(QDialog):
         # ─────────────────────────────
         # Minor Planets / Comets block
         # ─────────────────────────────
-        self.minor_group = QGroupBox("Minor Planets / Comets")
+        self.minor_group = QGroupBox(self.tr("Minor Planets / Comets"))
         minor_layout = QGridLayout(self.minor_group)
 
         # --- DB info + buttons ---
-        self.minor_db_label = QLabel("Database: not downloaded")
+        self.minor_db_label = QLabel(self.tr("Database: not downloaded"))
         self.minor_db_label.setStyleSheet("font-size: 10px; color: gray;")
 
-        self.btn_minor_download = QPushButton("Download Catalog")
+        self.btn_minor_download = QPushButton(self.tr("Download Catalog"))
         self.btn_minor_download.clicked.connect(self.download_minor_body_catalog)
 
-        self.btn_minor_search = QPushButton("Search Minor Bodies")
+        self.btn_minor_search = QPushButton(self.tr("Search Minor Bodies"))
         self.btn_minor_search.clicked.connect(self.perform_minor_body_search)
 
         # Row 0: status label across full width
@@ -3002,18 +3002,18 @@ class WIMIDialog(QDialog):
         minor_layout.addWidget(self.btn_minor_search,   1, 2, 1, 2)
 
         # --- Search scope (Defined Circle vs Entire Image) ---
-        scope_label = QLabel("Search scope:")
+        scope_label = QLabel(self.tr("Search scope:"))
         self.minor_scope_combo = QComboBox()
         self.minor_scope_combo.addItems([
-            "Defined Region",
-            "Entire Image",
+            self.tr("Defined Region"),
+            self.tr("Entire Image"),
         ])
 
         minor_layout.addWidget(scope_label,          2, 0)
         minor_layout.addWidget(self.minor_scope_combo, 2, 1, 1, 3)
 
         # --- Limits row 1: asteroid H_max + max count ---
-        ast_H_label = QLabel("Asteroid H \u2264")
+        ast_H_label = QLabel(self.tr("Asteroid H \u2264"))
         self.minor_ast_H_spin = QDoubleSpinBox()
         self.minor_ast_H_spin.setRange(0.0, 40.0)
         self.minor_ast_H_spin.setDecimals(1)
@@ -3022,7 +3022,7 @@ class WIMIDialog(QDialog):
             float(self.settings.value("wimi/minor/asteroid_H_max", 20.0))
         )
 
-        ast_max_label = QLabel("Max asteroids:")
+        ast_max_label = QLabel(self.tr("Max asteroids:"))
         self.minor_ast_max_spin = QSpinBox()
         self.minor_ast_max_spin.setRange(100, 2000000)
         self.minor_ast_max_spin.setSingleStep(1000)
@@ -3036,7 +3036,7 @@ class WIMIDialog(QDialog):
         minor_layout.addWidget(self.minor_ast_max_spin, 3, 3)
 
         # --- Limits row 2: comet H_max + max count ---
-        com_H_label = QLabel("Comet H \u2264")
+        com_H_label = QLabel(self.tr("Comet H \u2264"))
         self.minor_com_H_spin = QDoubleSpinBox()
         self.minor_com_H_spin.setRange(0.0, 40.0)
         self.minor_com_H_spin.setDecimals(1)
@@ -3045,7 +3045,7 @@ class WIMIDialog(QDialog):
             float(self.settings.value("wimi/minor/comet_H_max", 15.0))
         )
 
-        com_max_label = QLabel("Max comets:")
+        com_max_label = QLabel(self.tr("Max comets:"))
         self.minor_com_max_spin = QSpinBox()
         self.minor_com_max_spin.setRange(100, 100000)
         self.minor_com_max_spin.setSingleStep(500)
@@ -3059,14 +3059,14 @@ class WIMIDialog(QDialog):
         minor_layout.addWidget(self.minor_com_max_spin, 4, 3)
 
         # --- Optional specific target (designation / name) ---
-        target_label = QLabel("Target (optional):")
+        target_label = QLabel(self.tr("Target (optional):"))
         self.minor_target_edit = QLineEdit()
         self.minor_target_edit.setPlaceholderText("e.g. 584, Semiramis, C/2023 A3...")
 
         minor_layout.addWidget(target_label,          5, 0)
         minor_layout.addWidget(self.minor_target_edit, 5, 1, 1, 3)
 
-        self.minor_count_button = QPushButton("Count Objects Brighter Than Limits")
+        self.minor_count_button = QPushButton(self.tr("Count Objects Brighter Than Limits"))
         self.minor_count_button.setToolTip(
             "Show how many catalog objects are brighter than the selected H limits."
         )
@@ -3075,7 +3075,7 @@ class WIMIDialog(QDialog):
         minor_layout.addWidget(self.minor_count_button, 6, 0, 1, 4)
 
         # --- Time offset (hours) for ephemerides ---
-        time_offset_label = QLabel("Time offset (hours):")
+        time_offset_label = QLabel(self.tr("Time offset (hours):"))
         self.minor_time_offset_spin = QDoubleSpinBox()
         self.minor_time_offset_spin.setRange(-24.0, 24.0)
         self.minor_time_offset_spin.setDecimals(2)
@@ -3099,7 +3099,7 @@ class WIMIDialog(QDialog):
         self._load_minor_db_path()
 
         # Adding the "Deep Vizier Search" button below the other search buttons
-        self.deep_vizier_button = QPushButton("Caution - Deep Vizier Search")
+        self.deep_vizier_button = QPushButton(self.tr("Caution - Deep Vizier Search"))
         self.deep_vizier_button.setIcon(QIcon(nuke_path))  # Assuming `nuke_path` is the correct path for the icon
         self.deep_vizier_button.setToolTip("Perform a deep search with Vizier. Caution: May return large datasets.")
 
@@ -3109,7 +3109,7 @@ class WIMIDialog(QDialog):
         # Add the Deep Vizier button to the advanced search layout
         self.advanced_search_panel.addWidget(self.deep_vizier_button)
 
-        self.mast_search_button = QPushButton("Search M.A.S.T Database")
+        self.mast_search_button = QPushButton(self.tr("Search M.A.S.T Database"))
         self.mast_search_button.setIcon(QIcon(hubble_path))
         self.mast_search_button.clicked.connect(self.perform_mast_search)
         self.mast_search_button.setToolTip("Search Hubble, JWST, Spitzer, TESS and More.")
@@ -3604,15 +3604,15 @@ class WIMIDialog(QDialog):
         menu = QMenu(self)
 
         # Define actions
-        open_website_action = QAction("Open Website", self)
+        open_website_action = QAction(self.tr("Open Website"), self)
         open_website_action.triggered.connect(lambda: self.results_tree.itemDoubleClicked.emit(item, 0))
         menu.addAction(open_website_action)
 
-        zoom_to_object_action = QAction("Zoom to Object", self)
+        zoom_to_object_action = QAction(self.tr("Zoom to Object"), self)
         zoom_to_object_action.triggered.connect(lambda: self.zoom_to_object(item))
         menu.addAction(zoom_to_object_action)
 
-        copy_info_action = QAction("Copy Object Information", self)
+        copy_info_action = QAction(self.tr("Copy Object Information"), self)
         copy_info_action.triggered.connect(lambda: self.copy_object_information(item))
         menu.addAction(copy_info_action)
 

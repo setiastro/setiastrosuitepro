@@ -134,6 +134,15 @@ class CustomSpinBox(QWidget):
         """Decrease value by step."""
         self.setValue(self._value - self.step)
 
+    def value(self) -> int:
+        """
+        Qt-compatible getter (QSpinBox uses value()).
+
+        Note: we also have @property value for convenience,
+        but code that expects QSpinBox calls value().
+        """
+        return self._value
+
     def _update_button_states(self) -> None:
         """Enable/disable buttons at limits."""
         self.upButton.setEnabled(self._value < self.maximum)
@@ -227,6 +236,15 @@ class CustomDoubleSpinBox(QWidget):
         if self._value < minimum:
             self.setValue(minimum)
         self._update_button_states()
+
+    def value(self) -> float:
+        """
+        Qt-compatible getter (QDoubleSpinBox uses value()).
+
+        Note: we also have @property value for convenience,
+        but code that expects QDoubleSpinBox calls value().
+        """
+        return self._value
 
     def setMaximum(self, maximum: float) -> None:
         """Set the maximum value."""

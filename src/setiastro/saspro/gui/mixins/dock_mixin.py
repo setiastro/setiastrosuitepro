@@ -243,22 +243,35 @@ class DockMixin:
             self.settings.setValue("ui/resource_monitor_visible", checked)
 
     def _update_monitor_position(self):
-        """Snap monitor to bottom-right corner."""
+        """Snap monitor to bottom-right corner or restore saved position."""
         if hasattr(self, 'resource_monitor') and self.resource_monitor:
             from PyQt6.QtCore import QPoint
-            m = 5 # margin
-            # Position relative to the main window geometry
-            w = self.resource_monitor.width()
-            h = self.resource_monitor.height()
             
-            # Anchor to bottom-right of the window
-            x = self.width() - w - m
-            y = self.height() - h - m
+            # Check for saved position first
+            saved_x = self.settings.value("ui/resource_monitor_pos_x", type=int)
+            saved_y = self.settings.value("ui/resource_monitor_pos_y", type=int)
             
-            # Map local MainWindow coordinates to Global Screen coordinates
-            # This is required because resource_monitor is a Top-Level Window (for transparency)
-            global_pos = self.mapToGlobal(QPoint(x, y))
-            self.resource_monitor.move(global_pos)
+            if saved_x != 0 and saved_y != 0: # Basic validity check (0,0 is unlikely to be desired but also default if missing)
+                 # Actually 0,0 is valid but type=int returns 0 if missing. 
+                 # Let's check string existence to be safer or just accept 0 if set.
+                 # Checking existence via `contains` is better but value() logic is ok for now.
+                 if self.settings.contains("ui/resource_monitor_pos_x"):
+                     self.resource_monitor.move(saved_x, saved_y)
+                     self.resource_monitor.raise_()
+                     return
+
+            m = 5  # margin
+
+            screen = self.screen()
+            geom = screen.availableGeometry()
+
+            mw = self.resource_monitor.width()
+            mh = self.resource_monitor.height()
+
+            x = geom.x() + geom.width()  - mw - m
+            y = geom.y() + geom.height() - mh - m
+
+            self.resource_monitor.move(x, y)
             self.resource_monitor.raise_()
 
     # We need to hook resizeEvent to call _update_monitor_position.
@@ -290,12 +303,12 @@ class DockMixin:
 
         # Friendly ordering for common ones; others follow alphabetically.
         order_hint = {
-            "Explorer": 10,
-            "Console / Status": 20,
-            "Header Viewer": 30,
-            "Layers": 40,
-            "Window Shelf": 50,
-            "Command Search": 60,
+            self.tr("Explorer"): 10,
+            self.tr("Console / Status"): 20,
+            self.tr("Header Viewer"): 30,
+            self.tr("Layers"): 40,
+            self.tr("Window Shelf"): 50,
+            self.tr("Command Search"): 60,
         }
         
         # Add special action for overlay monitor

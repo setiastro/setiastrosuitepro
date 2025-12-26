@@ -536,7 +536,16 @@ class BackgroundNeutralizationDialog(QDialog):
         )
         # Dialog stays open so user can apply to other images
         # Refresh to use the now-active document for next operation
-        self._refresh_document_from_active()
+        self.accept()   # or: self.close()
+
+    def closeEvent(self, e):
+        try:
+            if hasattr(self._main, "currentDocumentChanged"):
+                self._main.currentDocumentChanged.disconnect(self._on_active_doc_changed)
+        except Exception:
+            pass
+        super().closeEvent(e)
+
 
     def _refresh_document_from_active(self):
         """

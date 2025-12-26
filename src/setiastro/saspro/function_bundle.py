@@ -202,7 +202,7 @@ class FunctionBundleChip(QWidget):
         from PyQt6.QtWidgets import QMenu  # already imported at top, but safe
 
         m = QMenu(self)
-        act_del = m.addAction("Delete Chip")
+        act_del = m.addAction(self._panel.tr("Delete Chip"))
         act = m.exec(ev.globalPos())
         if act is act_del:
             try:
@@ -333,7 +333,7 @@ class FunctionBundleDialog(QDialog):
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         _pin_on_top_mac(self)
-        self.setWindowTitle("Function Bundles")
+        self.setWindowTitle(self.tr("Function Bundles"))
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
@@ -350,9 +350,9 @@ class FunctionBundleDialog(QDialog):
         self.list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
 
-        self.btn_new = QPushButton("New")
-        self.btn_dup = QPushButton("Duplicate")
-        self.btn_del = QPushButton("Delete")
+        self.btn_new = QPushButton(self.tr("New"))
+        self.btn_dup = QPushButton(self.tr("Duplicate"))
+        self.btn_del = QPushButton(self.tr("Delete"))
 
         # right: steps
         self.steps = QListWidget()
@@ -368,26 +368,26 @@ class FunctionBundleDialog(QDialog):
         self.steps.setResizeMode(QListView.ResizeMode.Adjust)  # recompute item layout on width change
         self.steps.setUniformItemSizes(False)
 
-        self.add_hint = QLabel("Drop shortcuts here to add steps")
+        self.add_hint = QLabel(self.tr("Drop shortcuts here to add steps"))
         self.add_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.add_hint.setStyleSheet("color:#aaa; padding:6px; border:1px dashed #666; border-radius:6px;")
 
-        self.btn_edit_preset = QPushButton("Edit Preset…")
+        self.btn_edit_preset = QPushButton(self.tr("Edit Preset…"))
         self.btn_edit_preset.setEnabled(False)  # enabled when exactly one step is selected
 
-        self.btn_remove = QPushButton("Remove Selected")
-        self.btn_clear  = QPushButton("Clear Steps")
-        self.btn_up     = QPushButton("▲ Move Up")
-        self.btn_down   = QPushButton("▼ Move Down")
+        self.btn_remove = QPushButton(self.tr("Remove Selected"))
+        self.btn_clear  = QPushButton(self.tr("Clear Steps"))
+        self.btn_up     = QPushButton(self.tr("▲ Move Up"))
+        self.btn_down   = QPushButton(self.tr("▼ Move Down"))
 
-        self.btn_drag_bundle = QPushButton("Drag Bundle")
-        self.btn_run_active  = QPushButton("Apply to Active View")
-        self.btn_apply_to_vbundle = QPushButton("Apply to View Bundle…")
-        self.btn_chip   = QPushButton("Compress to Chip")
+        self.btn_drag_bundle = QPushButton(self.tr("Drag Bundle"))
+        self.btn_run_active  = QPushButton(self.tr("Apply to Active View"))
+        self.btn_apply_to_vbundle = QPushButton(self.tr("Apply to View Bundle…"))
+        self.btn_chip   = QPushButton(self.tr("Compress to Chip"))
 
         # layout
         left = QVBoxLayout()
-        left.addWidget(QLabel("Function Bundles"))
+        left.addWidget(QLabel(self.tr("Function Bundles")))
         left.addWidget(self.list, 1)
         row = QHBoxLayout()
         row.addWidget(self.btn_new); row.addWidget(self.btn_dup); row.addWidget(self.btn_del)

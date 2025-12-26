@@ -1,253 +1,14548 @@
 <?xml version='1.0' encoding='utf-8'?>
 <TS version="2.1" language="de">
-<context><name>SettingsDialog</name><message><source>ASTAP executable:</source><translation>ASTAP-Ausführbare Datei:</translation></message><message><source>Astrometry.net API key:</source><translation>Astrometry.net API-Schlüssel:</translation></message><message><source>Check Now…</source><translation>Jetzt prüfen…</translation></message><message><source>Choose Background…</source><translation>Hintergrund wählen…</translation></message><message><source>Clear</source><translation>Löschen</translation></message><message><source>Compute autostretch on a 16-bit histogram (smoother gradients).</source><translation>Autostretch auf einem 16-Bit-Histogramm berechnen (glattere Gradienten).</translation></message><message><source>Cosmic Clarity folder:</source><translation>Cosmic Clarity Ordner:</translation></message><message><source>Customize…</source><translation>Anpassen…</translation></message><message><source>Edit custom colors and font</source><translation>Benutzerdefinierte Farben und Schriftart bearbeiten</translation></message><message><source>GraXpert executable:</source><translation>GraXpert-Ausführbare Datei:</translation></message><message><source>High-quality autostretch (16-bit; better gradients)</source><translation>Hochwertiger Autostretch (16-Bit; bessere Gradienten)</translation></message><message><source>Pick a PNG or JPG to use as the application background</source><translation>Wählen Sie ein PNG oder JPG als Anwendungshintergrund</translation></message><message><source>Remove custom background and restore default</source><translation>Benutzerdefinierten Hintergrund entfernen und Standard wiederherstellen</translation></message><message><source>Restore default updates URL</source><translation>Standard-Update-URL wiederherstellen</translation></message><message><source>Run an update check immediately</source><translation>Sofort nach Updates suchen</translation></message><message><source>Save desktop shortcuts on exit</source><translation>Desktop-Verknüpfungen beim Beenden speichern</translation></message><message><source>StarNet executable:</source><translation>StarNet-Ausführbare Datei:</translation></message><message><source>English</source><translation>Englisch</translation></message><message><source>French</source><translation>Französisch</translation></message><message><source>Italian</source><translation>Italienisch</translation></message><message><source>Spanish</source><translation>Spanisch</translation></message><message><source>Chinese</source><translation>Chinesisch</translation></message><message><source>German</source><translation>Deutsch</translation></message><message><source>Portuguese</source><translation>Portugiesisch</translation></message><message><source>Japanese</source><translation>Japanisch</translation></message><message><source>Language:</source><translation>Sprache:</translation></message><message><source>Theme:</source><translation>Thema:</translation></message><message><source>Restart required</source><translation>Neustart erforderlich</translation></message><message><source>The application will now restart to apply the language change.</source><translation>Die Anwendung wird nun neu gestartet, um die Sprachänderung zu übernehmen.</translation></message><message><source>Language changed. Please manually restart the application to apply the new language.</source><translation>Sprache geändert. Bitte starten Sie die Anwendung manuell neu, um die neue Sprache anzuwenden.</translation></message></context><context><name>ABEDialog</name><message><source># sample points:</source><translation># Probenpunkte:</translation></message><message><source>Apply</source><translation>Anwenden</translation></message><message><source>Automatic Background Extraction (ABE)</source><translation>Automatische Hintergrundextraktion (ABE)</translation></message><message><source>Clear Exclusions</source><translation>Ausschlüsse löschen</translation></message><message><source>Close</source><translation>Schließen</translation></message><message><source>Create background document</source><translation>Hintergrunddokument erstellen</translation></message><message><source>Downsample factor:</source><translation>Downsample-Faktor:</translation></message><message><source>Enable RBF refinement (after polynomial)</source><translation>RBF-Verfeinerung aktivieren (nach Polynom)</translation></message><message><source>Patch size (px):</source><translation>Patch-Größe (px):</translation></message><message><source>Polynomial degree:</source><translation>Polynomgrad:</translation></message><message><source>Preview</source><translation>Vorschau</translation></message><message><source>Preview background instead of corrected</source><translation>Hintergrund statt Korrektur anzeigen</translation></message><message><source>RBF Refinement</source><translation>RBF-Verfeinerung</translation></message><message><source>Smooth (x0.01):</source><translation>Glätten (x0.01):</translation></message></context><context><name>AberrationAIDialog</name><message><source>Auto GPU (if available)</source><translation>Auto GPU (falls verfügbar)</translation></message><message><source>Browse…</source><translation>Durchsuchen…</translation></message><message><source>Close</source><translation>Schließen</translation></message><message><source>Download latest model…</source><translation>Neuestes Modell herunterladen…</translation></message><message><source>Model:</source><translation>Modell:</translation></message><message><source>Open model folder</source><translation>Modellordner öffnen</translation></message><message><source>Overlap</source><translation>Überlappung</translation></message><message><source>Patch</source><translation>Patch</translation></message><message><source>Provider:</source><translation>Anbieter:</translation></message><message><source>R.A.'s Aberration Correction (AI)</source><translation>R.A. Aberrationskorrektur (KI)</translation></message><message><source>Run</source><translation>Ausführen</translation></message></context><context><name>AboutDialog</name><message><source>About Seti Astro Suite</source><translation>Über Seti Astro Suite</translation></message><message><source>Build:</source><translation>Build:</translation></message><message><source>Click here to donate</source><translation>Hier klicken zum Spenden</translation></message><message><source>Collaborators: Fabio Tempera</source><translation>Mitarbeiter: Fabio Tempera</translation></message><message><source>Copyright © 2025 Seti Astro</source><translation>Copyright © 2025 Seti Astro</translation></message><message><source>Donations:</source><translation>Donazioni:</translation></message><message><source>Website:</source><translation>Website:</translation></message><message><source>Written by Franklin Marek</source><translation>Geschrieben von Franklin Marek</translation></message></context><context><name>AddStarsDialog</name><message><source>Add Stars to Image</source><translation>Sterne zum Bild hinzufügen</translation></message><message><source>Apply</source><translation>Anwenden</translation></message><message><source>Blend Ratio (Screen/Add Intensity):</source><translation>Mischverhältnis (Bildschirm/Intensität hinzufügen):</translation></message><message><source>Blend Type:</source><translation>Mischtyp:</translation></message><message><source>Cancel</source><translation>Abbrechen</translation></message><message><source>Load from File</source><translation>Aus Datei laden</translation></message><message><source>Refresh Views</source><translation>Ansichten aktualisieren</translation></message><message><source>Starless View:</source><translation>Sternlose Ansicht:</translation></message><message><source>Stars-Only View:</source><translation>Nur-Sterne-Ansicht:</translation></message></context><context><name>AfterAlignWorker</name><message><source>Post-alignment complete.
+  <context>
+    <name>ABEDialog</name>
+    <message>
+      <source># sample points:</source>
+      <translation># Probenpunkte:</translation>
+    </message>
+    <message>
+      <source>Apply</source>
+      <translation>Anwenden</translation>
+    </message>
+    <message>
+      <source>Automatic Background Extraction (ABE)</source>
+      <translation>Automatische Hintergrundextraktion (ABE)</translation>
+    </message>
+    <message>
+      <source>Clear Exclusions</source>
+      <translation>Ausschlüsse löschen</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Schließen</translation>
+    </message>
+    <message>
+      <source>Create background document</source>
+      <translation>Hintergrunddokument erstellen</translation>
+    </message>
+    <message>
+      <source>Downsample factor:</source>
+      <translation>Downsample-Faktor:</translation>
+    </message>
+    <message>
+      <source>Enable RBF refinement (after polynomial)</source>
+      <translation>RBF-Verfeinerung aktivieren (nach Polynom)</translation>
+    </message>
+    <message>
+      <source>Patch size (px):</source>
+      <translation>Patch-Größe (px):</translation>
+    </message>
+    <message>
+      <source>Polynomial degree:</source>
+      <translation>Polynomgrad:</translation>
+    </message>
+    <message>
+      <source>Preview</source>
+      <translation>Vorschau</translation>
+    </message>
+    <message>
+      <source>Preview background instead of corrected</source>
+      <translation>Hintergrund statt Korrektur anzeigen</translation>
+    </message>
+    <message>
+      <source>RBF Refinement</source>
+      <translation>RBF-Verfeinerung</translation>
+    </message>
+    <message>
+      <source>Smooth (x0.01):</source>
+      <translation>Glätten (x0.01):</translation>
+    </message>
+  </context>
+  <context>
+    <name>AberrationAIDialog</name>
+    <message>
+      <source>Auto GPU (if available)</source>
+      <translation>Auto GPU (falls verfügbar)</translation>
+    </message>
+    <message>
+      <source>Browse…</source>
+      <translation>Durchsuchen…</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Schließen</translation>
+    </message>
+    <message>
+      <source>Download latest model…</source>
+      <translation>Neuestes Modell herunterladen…</translation>
+    </message>
+    <message>
+      <source>Model:</source>
+      <translation>Modell:</translation>
+    </message>
+    <message>
+      <source>Open model folder</source>
+      <translation>Modellordner öffnen</translation>
+    </message>
+    <message>
+      <source>Overlap</source>
+      <translation>Überlappung</translation>
+    </message>
+    <message>
+      <source>Patch</source>
+      <translation>Patch</translation>
+    </message>
+    <message>
+      <source>Provider:</source>
+      <translation>Anbieter:</translation>
+    </message>
+    <message>
+      <source>R.A.'s Aberration Correction (AI)</source>
+      <translation>R.A. Aberrationskorrektur (KI)</translation>
+    </message>
+    <message>
+      <source>Run</source>
+      <translation>Ausführen</translation>
+    </message>
+  </context>
+  <context>
+    <name>AboutDialog</name>
+    <message>
+      <source>About Seti Astro Suite</source>
+      <translation>Über Seti Astro Suite</translation>
+    </message>
+    <message>
+      <source>Build:</source>
+      <translation>Build:</translation>
+    </message>
+    <message>
+      <source>Click here to donate</source>
+      <translation>Hier klicken zum Spenden</translation>
+    </message>
+    <message>
+      <source>Collaborators: Fabio Tempera</source>
+      <translation>Mitarbeiter: Fabio Tempera</translation>
+    </message>
+    <message>
+      <source>Copyright © 2025 Seti Astro</source>
+      <translation>Copyright © 2025 Seti Astro</translation>
+    </message>
+    <message>
+      <source>Donations:</source>
+      <translation>Donazioni:</translation>
+    </message>
+    <message>
+      <source>Website:</source>
+      <translation>Website:</translation>
+    </message>
+    <message>
+      <source>Written by Franklin Marek</source>
+      <translation>Geschrieben von Franklin Marek</translation>
+    </message>
+  </context>
+  <context>
+    <name>AddStarsDialog</name>
+    <message>
+      <source>Add Stars to Image</source>
+      <translation>Sterne zum Bild hinzufügen</translation>
+    </message>
+    <message>
+      <source>Apply</source>
+      <translation>Anwenden</translation>
+    </message>
+    <message>
+      <source>Blend Ratio (Screen/Add Intensity):</source>
+      <translation>Mischverhältnis (Bildschirm/Intensität hinzufügen):</translation>
+    </message>
+    <message>
+      <source>Blend Type:</source>
+      <translation>Mischtyp:</translation>
+    </message>
+    <message>
+      <source>Cancel</source>
+      <translation>Abbrechen</translation>
+    </message>
+    <message>
+      <source>Load from File</source>
+      <translation>Aus Datei laden</translation>
+    </message>
+    <message>
+      <source>Refresh Views</source>
+      <translation>Ansichten aktualisieren</translation>
+    </message>
+    <message>
+      <source>Starless View:</source>
+      <translation>Sternlose Ansicht:</translation>
+    </message>
+    <message>
+      <source>Stars-Only View:</source>
+      <translation>Nur-Sterne-Ansicht:</translation>
+    </message>
+  </context>
+  <context>
+    <name>AfterAlignWorker</name>
+    <message>
+      <source>Post-alignment complete.
 
-{0}</source><translation>Post-Ausrichtung abgeschlossen.
+{0}</source>
+      <translation>Post-Ausrichtung abgeschlossen.
 
-{0}</translation></message><message><source>Post-alignment failed: {0}</source><translation>Post-Ausrichtung fehlgeschlagen: {0}</translation></message></context><context><name>AstrobinExportTab</name><message><source> ({0} failed)</source><translation> ({0} fehlgeschlagen)</translation></message><message><source> — skipped {0} XISF (reader unavailable)</source><translation> — {0} XISF übersprungen (Reader nicht verfügbar)</translation></message><message><source># Subs</source><translation># Subs</translation></message><message><source>(e.g. 4408)</source><translation>(z.B. 4408)</translation></message><message><source>0–9</source><translation>0–9</translation></message><message><source>API Key</source><translation>API-Schlüssel</translation></message><message><source>API Secret</source><translation>API-Geheimnis</translation></message><message><source>Accessories</source><translation>Zubehör</translation></message><message><source>Acquisition details</source><translation>Akquisitionsdetails</translation></message><message><source>Add Files…</source><translation>Dateien hinzufügen…</translation></message><message><source>Add watermark</source><translation>Wasserzeichen hinzufügen</translation></message><message><source>All selected files are already in the list.</source><translation>Alle ausgewählten Dateien sind bereits in der Liste.</translation></message><message><source>Apply</source><translation>Anwenden</translation></message><message><source>AstroBin Export</source><translation>AstroBin-Export</translation></message><message><source>Astrobin Export</source><translation>Esporta su Astrobin</translation></message><message><source>Astrobin Filter ID</source><translation>Astrobin Filter-ID</translation></message><message><source>Astrobin Link</source><translation>Astrobin-Link</translation></message><message><source>Bandwidth</source><translation>Bandbreite</translation></message><message><source>Bias (#)</source><translation>Bias (#)</translation></message><message><source>Bortle</source><translation>Bortle</translation></message><message><source>Bortle scale</source><translation>Bortle-Skala</translation></message><message><source>Brand</source><translation>Marke</translation></message><message><source>Browse Filters</source><translation>Filter durchsuchen</translation></message><message><source>Browse...</source><translation>Durchsuchen...</translation></message><message><source>CSV Files (*.csv);;All Files (*)</source><translation>CSV-Dateien (*.csv);;Alle Dateien (*)</translation></message><message><source>CSV Load Error</source><translation>CSV-Ladefehler</translation></message><message><source>CSV copied to clipboard.</source><translation>CSV in die Zwischenablage kopiert.</translation></message><message><source>Camera</source><translation>Kamera</translation></message><message><source>Catalog CSV loaded.</source><translation>Katalog-CSV geladen.</translation></message><message><source>Clear</source><translation>Löschen</translation></message><message><source>Cleared. Load FITS via 'Select Folder…' or 'Add Files…' to begin.</source><translation>Gelöscht. FITS über 'Ordner auswählen…' oder 'Dateien hinzufügen…' laden, um zu beginnen.</translation></message><message><source>Copied</source><translation>Kopiert</translation></message><message><source>Copy CSV</source><translation>CSV kopieren</translation></message><message><source>Copy to Clipboard</source><translation>In die Zwischenablage kopieren</translation></message><message><source>Could not load Astrobin filters: {0}</source><translation>Astrobin-Filter konnten nicht geladen werden: {0}</translation></message><message><source>Could not load equipment CSV: {0}</source><translation>Ausrüstungs-CSV konnte nicht geladen werden: {0}</translation></message><message><source>Could not load filter mapping CSV: {0}</source><translation>Filter-Mapping-CSV konnte nicht geladen werden: {0}</translation></message><message><source>Could not save filter mapping CSV: {0}</source><translation>Filter-Mapping-CSV konnte nicht gespeichert werden: {0}</translation></message><message><source>Credentials invalid</source><translation>Anmeldedaten ungültig</translation></message><message><source>Credentials valid</source><translation>Anmeldedaten gültig</translation></message><message><source>Darks (#)</source><translation>Darks (#)</translation></message><message><source>Data source</source><translation>Datenquelle</translation></message><message><source>Deep sky</source><translation>Deep Sky</translation></message><message><source>Description</source><translation>Beschreibung</translation></message><message><source>Enter your AstroBin API key</source><translation>Geben Sie Ihren AstroBin API-Schlüssel ein</translation></message><message><source>Enter your AstroBin API secret</source><translation>Geben Sie Ihr AstroBin API-Geheimnis ein</translation></message><message><source>Equipment</source><translation>Ausrüstung</translation></message><message><source>Error</source><translation>Fehler</translation></message><message><source>Export settings</source><translation>Exporteinstellungen</translation></message><message><source>Exposure (s)</source><translation>Belichtung (s)</translation></message><message><source>Exposure: {0}</source><translation>Belichtung: {0}</translation></message><message><source>FITS Files (*.fits *.fit *.fts);;All Files (*.*)</source><translation>FITS-Dateien (*.fits *.fit *.fts);;Alle Dateien (*.*)</translation></message><message><source>FITS/XISF (*.fit *.fits *.xisf);;All Files (*)</source><translation>FITS/XISF (*.fit *.fits *.xisf);;Alle Dateien (*)</translation></message><message><source>Failed to load filter mappings: {0}</source><translation>Filter-Mappings konnten nicht geladen werden: {0}</translation></message><message><source>Failed to save filter mappings: {0}</source><translation>Filter-Mappings konnten nicht gespeichert werden: {0}</translation></message><message><source>Files (Object → Filter → Exposure)</source><translation>Dateien (Objekt → Filter → Belichtung)</translation></message><message><source>Filter</source><translation>Filter</translation></message><message><source>Filter Browser</source><translation>Filter-Browser</translation></message><message><source>Filter mappings loaded successfully.</source><translation>Filter-Mappings erfolgreich geladen.</translation></message><message><source>Filter mappings saved successfully.</source><translation>Filter-Mappings erfolgreich gespeichert.</translation></message><message><source>Filter: {0}</source><translation>Filter: {0}</translation></message><message><source>Filters</source><translation>Filter</translation></message><message><source>Filters Found:</source><translation>Gefundene Filter:</translation></message><message><source>Flat-darks (#)</source><translation>Flat-Darks (#)</translation></message><message><source>Flats (#)</source><translation>Flats (#)</translation></message><message><source>From active view</source><translation>Von aktiver Ansicht</translation></message><message><source>From file</source><translation>Von Datei</translation></message><message><source>Gear</source><translation>Ausrüstung</translation></message><message><source>Global inputs (used if FITS headers are missing/zero)</source><translation>Globale Eingaben (verwendet, wenn FITS-Header fehlen/null sind)</translation></message><message><source>Group nights noon → noon (local time)</source><translation>Nächte von Mittag bis Mittag gruppieren (Lokalzeit)</translation></message><message><source>ID</source><translation>ID</translation></message><message><source>Image Information</source><translation>Bildinformationen</translation></message><message><source>Image Selection</source><translation>Bildauswahl</translation></message><message><source>Image format</source><translation>Bildformat</translation></message><message><source>Input Files</source><translation>Eingabedateien</translation></message><message><source>Integration summary copied!</source><translation>Integrationszusammenfassung kopiert!</translation></message><message><source>Load Catalog</source><translation>Katalog laden</translation></message><message><source>Load FITS Headers</source><translation>FITS-Header laden</translation></message><message><source>Load FITS via 'Select Folder…' or 'Add Files…' to begin.</source><translation>FITS über 'Ordner auswählen…' oder 'Dateien hinzufügen…' laden, um zu beginnen.</translation></message><message><source>Load FITS/XISF via 'Select Folder…' or 'Add Files…' to begin.</source><translation>FITS/XISF über 'Ordner auswählen…' oder 'Dateien hinzufügen…' laden, um zu beginnen.</translation></message><message><source>Load Filter Mappings from CSV</source><translation>Filter-Mappings aus CSV laden</translation></message><message><source>Load Telescope/Camera from CSV</source><translation>Teleskop/Kamera aus CSV laden</translation></message><message><source>Loaded {0} file(s)</source><translation>{0} Datei(en) geladen</translation></message><message><source>Loaded {0} filters.</source><translation>{0} Filter geladen.</translation></message><message><source>Loading filters from Astrobin...</source><translation>Filter werden von Astrobin geladen...</translation></message><message><source>Location</source><translation>Standort</translation></message><message><source>Manage Filter IDs…</source><translation>Filter-IDs verwalten…</translation></message><message><source>Maximum dimension</source><translation>Maximale Dimension</translation></message><message><source>Mean FWHM</source><translation>Mittlere FWHM</translation></message><message><source>Mean SQM</source><translation>Mittlerer SQM</translation></message><message><source>Mount</source><translation>Montierung</translation></message><message><source>Name</source><translation>Nome</translation></message><message><source>No .fit/.fits/.xisf files found.</source><translation>Keine .fit/.fits/.xisf Dateien gefunden.</translation></message><message><source>No FITS files selected.</source><translation>Keine FITS-Dateien ausgewählt.</translation></message><message><source>No Images</source><translation>Keine Bilder</translation></message><message><source>No New Files</source><translation>Keine neuen Dateien</translation></message><message><source>No integration data to copy.</source><translation>Keine Integrationsdaten zum Kopieren.</translation></message><message><source>No mappings set</source><translation>Keine Mappings festgelegt</translation></message><message><source>Noctilucent clouds</source><translation>Leuchtende Nachtwolken</translation></message><message><source>Northern lights</source><translation>Polarlichter</translation></message><message><source>Nothing to copy</source><translation>Nichts zum Kopieren</translation></message><message><source>Object: {0}</source><translation>Objekt: {0}</translation></message><message><source>Open AstroBin Equipment Explorer (Filters)</source><translation>AstroBin Ausrüstungs-Explorer öffnen (Filter)</translation></message><message><source>Own data</source><translation>Eigene Daten</translation></message><message><source>Prevents splitting a single observing night at midnight.</source><translation>Verhindert die Aufteilung einer einzelnen Beobachtungsnacht um Mitternacht.</translation></message><message><source>Processing details</source><translation>Verarbeitungsdetails</translation></message><message><source>Quality</source><translation>Qualität</translation></message><message><source>Recompute</source><translation>Neu berechnen</translation></message><message><source>Remote source</source><translation>Remote-Quelle</translation></message><message><source>Resize</source><translation>Größe ändern</translation></message><message><source>SQM value</source><translation>SQM-Wert</translation></message><message><source>Save Filter Mapping CSV</source><translation>Filter-Mapping-CSV speichern</translation></message><message><source>Save Filter Mappings to CSV</source><translation>Filter-Mappings in CSV speichern</translation></message><message><source>Save credentials</source><translation>Anmeldedaten speichern</translation></message><message><source>Search:</source><translation>Suche:</translation></message><message><source>Seeing</source><translation>Seeing</translation></message><message><source>Select</source><translation>Auswählen</translation></message><message><source>Select Equipment CSV</source><translation>Ausrüstungs-CSV auswählen</translation></message><message><source>Select FITS Files</source><translation>FITS-Dateien auswählen</translation></message><message><source>Select FITS/XISF Files</source><translation>FITS/XISF-Dateien auswählen</translation></message><message><source>Select Filter Mapping CSV</source><translation>Filter-Mapping-CSV auswählen</translation></message><message><source>Select Folder Containing FITS/XISF Files</source><translation>Ordner mit FITS/XISF-Dateien auswählen</translation></message><message><source>Select Folder…</source><translation>Ordner auswählen…</translation></message><message><source>Select image to export</source><translation>Bild zum Exportieren auswählen</translation></message><message><source>Size</source><translation>Größe</translation></message><message><source>Software</source><translation>Software</translation></message><message><source>Solar system</source><translation>Sonnensystem</translation></message><message><source>Star trails</source><translation>Sternspuren</translation></message><message><source>Subject type</source><translation>Motivtyp</translation></message><message><source>Success</source><translation>Erfolg</translation></message><message><source>Telescope</source><translation>Teleskop</translation></message><message><source>Telescope/Camera Selection:</source><translation>Teleskop/Kamera-Auswahl:</translation></message><message><source>There is no CSV content yet.</source><translation>Noch kein CSV-Inhalt vorhanden.</translation></message><message><source>Title</source><translation>Titel</translation></message><message><source>Total Frames:</source><translation>Gesamtanzahl Frames:</translation></message><message><source>Total Integration Time</source><translation>Gesamtintegrationszeit</translation></message><message><source>Total Integration:</source><translation>Gesamtintegration:</translation></message><message><source>Transparency</source><translation>Transparenz</translation></message><message><source>Type</source><translation>Typ</translation></message><message><source>Upload</source><translation>Hochladen</translation></message><message><source>Upload complete</source><translation>Hochladen abgeschlossen</translation></message><message><source>Upload failed</source><translation>Hochladen fehlgeschlagen</translation></message><message><source>Upload to AstroBin</source><translation>Auf AstroBin hochladen</translation></message><message><source>Uploading...</source><translation>Hochladen...</translation></message><message><source>Validate credentials</source><translation>Anmeldedaten validieren</translation></message><message><source>View on AstroBin</source><translation>Auf AstroBin ansehen</translation></message><message><source>Watermark</source><translation>Wasserzeichen</translation></message><message><source>Watermark opacity</source><translation>Wasserzeichen-Deckkraft</translation></message><message><source>Watermark position</source><translation>Wasserzeichen-Position</translation></message><message><source>Watermark text</source><translation>Wasserzeichen-Text</translation></message><message><source>Wide field</source><translation>Weitfeld</translation></message><message><source>bias</source><translation>Bias</translation></message><message><source>binning</source><translation>Binning</translation></message><message><source>bortle</source><translation>Bortle</translation></message><message><source>darks</source><translation>Darks</translation></message><message><source>date</source><translation>Datum</translation></message><message><source>duration</source><translation>Dauer</translation></message><message><source>e.g. 2.10</source><translation>z.B. 2.10</translation></message><message><source>e.g. 21.30</source><translation>z.B. 21.30</translation></message><message><source>e.g. 4.0</source><translation>z.B. 4.0</translation></message><message><source>f/number</source><translation>Blende</translation></message><message><source>fNumber</source><translation>Blende</translation></message><message><source>filter</source><translation>Filter</translation></message><message><source>flatDarks</source><translation>Flat-Darks</translation></message><message><source>flats</source><translation>Flats</translation></message><message><source>gain</source><translation>Gain</translation></message><message><source>h</source><translation>h</translation></message><message><source>iso</source><translation>ISO</translation></message><message><source>m</source><translation>m</translation></message><message><source>meanFwhm</source><translation>mittlereFwhm</translation></message><message><source>meanSqm</source><translation>mittlererSqm</translation></message><message><source>number</source><translation>Anzahl</translation></message><message><source>s</source><translation>s</translation></message><message><source>sensorCooling</source><translation>Sensorkühlung</translation></message><message><source>temperature</source><translation>Temperatur</translation></message></context><context><name>AstrobinExporterDialog</name><message><source>AstroBin Exporter</source><translation>AstroBin-Exporter</translation></message></context><context><name>BackgroundNeutralizationDialog</name><message><source>Apply Neutralization</source><translation>Neutralisierung anwenden</translation></message><message><source>Background Neutralization</source><translation>Hintergrund-Neutralisierung</translation></message><message><source>Cancel</source><translation>Abbrechen</translation></message><message><source>Enable Auto-Stretch</source><translation>Auto-Stretch aktivieren</translation></message><message><source>Find Background</source><translation>Hintergrund finden</translation></message></context><context><name>BatchConvertDialog</name><message><source>Batch Convert</source><translation>Batch-Konvertierung</translation></message><message><source>Bit depth:</source><translation>Bittiefe:</translation></message><message><source>Cancel</source><translation>Abbrechen</translation></message><message><source>Output format:</source><translation>Ausgabeformat:</translation></message><message><source>Start</source><translation>Start</translation></message></context><context><name>BatchFITSHeaderDialog</name><message><source>Add if missing (for Add/Update)</source><translation>Hinzufügen falls fehlend (für Hinzufügen/Aktualisieren)</translation></message><message><source>Add/Update</source><translation>Hinzufügen/Aktualisieren</translation></message><message><source>Apply to all HDUs</source><translation>Auf alle HDUs anwenden</translation></message><message><source>Batch Complete</source><translation>Batch abgeschlossen</translation></message><message><source>Batch Modify FITS Headers</source><translation>FITS-Header stapelweise ändern</translation></message><message><source>Choose FITS Files…</source><translation>FITS-Dateien auswählen…</translation></message><message><source>Close</source><translation>Schließen</translation></message><message><source>Comment (optional)</source><translation>Kommentar (optional)</translation></message><message><source>Delete</source><translation>Löschen</translation></message><message><source>FITS files (*.fits *.fit *.fts *.fz)</source><translation>FITS-Dateien (*.fits *.fit *.fts *.fz)</translation></message><message><source>KEYWORD</source><translation>SCHLÜSSELWORT</translation></message><message><source>Missing keyword</source><translation>Fehlendes Schlüsselwort</translation></message><message><source>No files</source><translation>Keine Dateien</translation></message><message><source>No files selected</source><translation>Keine Dateien ausgewählt</translation></message><message><source>Please choose one or more FITS files.</source><translation>Bitte wählen Sie eine oder mehrere FITS-Dateien aus.</translation></message><message><source>Please enter a FITS keyword.</source><translation>Bitte geben Sie ein FITS-Schlüsselwort ein.</translation></message><message><source>Run</source><translation>Esegui</translation></message><message><source>Select FITS files</source><translation>FITS-Dateien auswählen</translation></message><message><source>Updated {0} file(s); {1} error(s).</source><translation>{0} Datei(en) aktualisiert; {1} Fehler.</translation></message><message><source>Value (leave blank for delete)</source><translation>Wert (leer lassen zum Löschen)</translation></message><message><source>{0} files selected</source><translation>{0} Dateien ausgewählt</translation></message></context><context><name>BatchRenamerDialog</name><message><source>(optional) Rename into this folder; leave empty to rename in place</source><translation>(optional) In diesen Ordner umbenennen; leer lassen, um vor Ort umzubenennen</translation></message><message><source>Add FITS files</source><translation>FITS-Dateien hinzufügen</translation></message><message><source>Add Files...</source><translation>Dateien hinzufügen...</translation></message><message><source>Add Files…</source><translation>Dateien hinzufügen…</translation></message><message><source>Add Folder...</source><translation>Ordner hinzufügen...</translation></message><message><source>All files renamed.</source><translation>Alle Dateien umbenannt.</translation></message><message><source>Apply Rename</source><translation>Umbenennung anwenden</translation></message><message><source>As is</source><translation>Wie sie sind</translation></message><message><source>Available FITS keywords (double-click to insert):</source><translation>Verfügbare FITS-Schlüsselwörter (Doppelklick zum Einfügen):</translation></message><message><source>Available tokens</source><translation>Token disponibili</translation></message><message><source>Available tokens: {name}, {date}, {time}, {counter}, {ext}</source><translation>Verfügbare Token: {name}, {date}, {time}, {counter}, {ext}</translation></message><message><source>Batch File Renamer</source><translation>Batch-Datei-Umbenenner</translation></message><message><source>Batch Rename</source><translation>Batch-Umbenennung</translation></message><message><source>Batch Rename from FITS</source><translation>Batch-Umbenennung von FITS</translation></message><message><source>Browse...</source><translation>Durchsuchen...</translation></message><message><source>Browse…</source><translation>Durchsuchen…</translation></message><message><source>Cancel</source><translation>Abbrechen</translation></message><message><source>Case</source><translation>Groß-/Kleinschreibung</translation></message><message><source>Case sensitive</source><translation>Groß-/Kleinschreibung beachten</translation></message><message><source>Choose Destination Folder</source><translation>Zielordner wählen</translation></message><message><source>Clear All</source><translation>Alles löschen</translation></message><message><source>Clear Selections</source><translation>Auswahl löschen</translation></message><message><source>Collisions</source><translation>Kollisionen</translation></message><message><source>Complete</source><translation>Abgeschlossen</translation></message><message><source>Copy files</source><translation>Dateien kopieren</translation></message><message><source>Counter Padding</source><translation>Zähler-Auffüllung</translation></message><message><source>Counter Start</source><translation>Zähler-Start</translation></message><message><source>Current Name</source><translation>Aktueller Name</translation></message><message><source>Custom folder</source><translation>Benutzerdefinierter Ordner</translation></message><message><source>Date format</source><translation>Datumsformat</translation></message><message><source>Destination:</source><translation>Ziel:</translation></message><message><source>Done</source><translation>Fertig</translation></message><message><source>Done with errors</source><translation>Mit Fehlern abgeschlossen</translation></message><message><source>Dry Run</source><translation>Testlauf</translation></message><message><source>ERROR: {0}</source><translation>FEHLER: {0}</translation></message><message><source>Error</source><translation>Fehler</translation></message><message><source>Error renaming files: {0}</source><translation>Fehler beim Umbenennen der Dateien: {0}</translation></message><message><source>FITS files (*.fit *.fits *.fts *.fz);;All files (*)</source><translation>FITS-Dateien (*.fit *.fits *.fts *.fz);;Alle Dateien (*)</translation></message><message><source>Failed to rename {0} files</source><translation>Umbenennen von {0} Dateien fehlgeschlagen</translation></message><message><source>File already exists</source><translation>Datei existiert bereits</translation></message><message><source>Filename pattern</source><translation>Dateinamensmuster</translation></message><message><source>Files renamed successfully.</source><translation>Dateien erfolgreich umbenannt.</translation></message><message><source>Filter Pattern</source><translation>Filtermuster</translation></message></context><context><name>BatchSettingsDialog</name><message><source>Batch Edit Settings (JSON)</source><translation>Stapelweise Einstellungen ändern (JSON)</translation></message><message><source>Batch Modify Settings (JSON)</source><translation>Stapelweise Einstellungen modifizieren (JSON)</translation></message><message><source>JSON files (*.json)</source><translation>JSON-Dateien (*.json)</translation></message><message><source>No settings files selected.</source><translation>Keine Einstellungsdateien ausgewählt.</translation></message><message><source>Run</source><translation>Ausführen</translation></message><message><source>Select settings files</source><translation>Einstellungsdateien auswählen</translation></message></context><context><name>BlemishBlasterDialogPro</name><message><source>Apply to Document</source><translation>Auf Dokument anwenden</translation></message><message><source>Auto-stretch preview</source><translation>Vorschau automatisch strecken</translation></message><message><source>Blemish Blaster</source><translation>Blemish Blaster</translation></message><message><source>Close</source><translation>Schließen</translation></message><message><source>Controls</source><translation>Steuerung</translation></message><message><source>Feather:</source><translation>Weiche Kante:</translation></message><message><source>Linked color channels</source><translation>Verknüpfte Farbkänale</translation></message><message><source>Opacity:</source><translation>Deckkraft:</translation></message><message><source>Radius:</source><translation>Radius:</translation></message><message><source>Redo</source><translation>Wiederholen</translation></message><message><source>Target median:</source><translation>Ziel-Median:</translation></message><message><source>Undo</source><translation>Rückgängig</translation></message></context><context><name>BlinkComparatorPro</name><message><source>Blink Comparator</source><translation>Blink-Komparator</translation></message></context><context><name>BlinkTab</name><message><source>
+{0}</translation>
+    </message>
+    <message>
+      <source>Post-alignment failed: {0}</source>
+      <translation>Post-Ausrichtung fehlgeschlagen: {0}</translation>
+    </message>
+  </context>
+  <context>
+    <name>AstroSuiteProMainWindow</name>
+    <message>
+      <source>&amp;About</source>
+      <translation>&amp;Über</translation>
+    </message>
+    <message>
+      <source>&amp;Edit</source>
+      <translation>&amp;Bearbeiten</translation>
+    </message>
+    <message>
+      <source>&amp;Exit</source>
+      <translation>&amp;Beenden</translation>
+    </message>
+    <message>
+      <source>&amp;File</source>
+      <translation>&amp;Datei</translation>
+    </message>
+    <message>
+      <source>&amp;Functions</source>
+      <translation>&amp;Funktionen</translation>
+    </message>
+    <message>
+      <source>&amp;Geometry</source>
+      <translation>&amp;Geometrie</translation>
+    </message>
+    <message>
+      <source>&amp;Header Mods &amp;&amp; Misc</source>
+      <translation>&amp;Header-Mods &amp;&amp; Verschiedenes</translation>
+    </message>
+    <message>
+      <source>&amp;History</source>
+      <translation>&amp;Verlauf</translation>
+    </message>
+    <message>
+      <source>&amp;Masks</source>
+      <translation>&amp;Masken</translation>
+    </message>
+    <message>
+      <source>&amp;Scripts</source>
+      <translation>&amp;Skripte</translation>
+    </message>
+    <message>
+      <source>&amp;Settings</source>
+      <translation>&amp;Einstellungen</translation>
+    </message>
+    <message>
+      <source>&amp;Shortcuts</source>
+      <translation>&amp;Tastenkürzel</translation>
+    </message>
+    <message>
+      <source>&amp;Smart Tools</source>
+      <translation>&amp;Smart-Tools</translation>
+    </message>
+    <message>
+      <source>&amp;Star Stuff</source>
+      <translation>&amp;Stern-Sachen</translation>
+    </message>
+    <message>
+      <source>&amp;Tools</source>
+      <translation>&amp;Werkzeuge</translation>
+    </message>
+    <message>
+      <source>&amp;View</source>
+      <translation>&amp;Ansicht</translation>
+    </message>
+    <message>
+      <source>&amp;What's In My...</source>
+      <translation>&amp;Was ist in meinem...</translation>
+    </message>
+    <message>
+      <source>1:1</source>
+      <translation>1:1</translation>
+    </message>
+    <message>
+      <source>ABE...</source>
+      <translation>ABE...</translation>
+    </message>
+    <message>
+      <source>Aberration Correction (AI)...</source>
+      <translation>Aberrationskorrektur (KI)...</translation>
+    </message>
+    <message>
+      <source>About...</source>
+      <translation>Über...</translation>
+    </message>
+    <message>
+      <source>Add Stars...</source>
+      <translation>Sterne hinzufügen...</translation>
+    </message>
+    <message>
+      <source>Add diffraction spikes to detected stars</source>
+      <translation>Diffraktions-Spikes zu erkannten Sternen hinzufügen</translation>
+    </message>
+    <message>
+      <source>Add signatures/overlays and bake them into the active image</source>
+      <translation>Signaturen/Overlays hinzufügen und in das aktive Bild einbetten</translation>
+    </message>
+    <message>
+      <source>Adjust specific hue ranges with CMY/RGB controls</source>
+      <translation>Bestimmte Farbbereichsbereiche mit CMY/RGB-Steuerelementen anpassen</translation>
+    </message>
+    <message>
+      <source>Advanced diffraction spikes with halos, flares and rainbow effects</source>
+      <translation>Fortgeschrittene Diffraktions-Spikes mit Halos, Flares und Regenbogeneffekten</translation>
+    </message>
+    <message>
+      <source>Align R and B channels to G using astroalign (affine/homography/poly)</source>
+      <translation>R- und B-Kanäle an G mit Astroalign ausrichten (affin/homografie/poly)</translation>
+    </message>
+    <message>
+      <source>Align images via astroalign / triangles</source>
+      <translation>Bilder über Astroalign / Dreiecke ausrichten</translation>
+    </message>
+    <message>
+      <source>Apply Mask</source>
+      <translation>Maske anwenden</translation>
+    </message>
+    <message>
+      <source>Apply a mask document to the active image</source>
+      <translation>Ein Maskendokument auf das aktive Bild anwenden</translation>
+    </message>
+    <message>
+      <source>Apply the current Display-Stretch to the image and add an undo step</source>
+      <translation>Wenden Sie den aktuellen Display-Stretch auf das Bild an und fügen Sie einen Rückgängig-Schritt hinzu</translation>
+    </message>
+    <message>
+      <source>Apply the same stretch to all RGB channels</source>
+      <translation>Wenden Sie den gleichen Stretch auf alle RGB-Kanäle an</translation>
+    </message>
+    <message>
+      <source>Apply white balance (Star-Based, Manual, or Auto)</source>
+      <translation>Weißabgleich anwenden (Sternbasiert, Manuell oder Automatisch)</translation>
+    </message>
+    <message>
+      <source>Arcsinh star stretch with optional SCNR and color boost</source>
+      <translation>Arcsinh-Sternstretch mit optionalem SCNR und Farbboost</translation>
+    </message>
+    <message>
+      <source>Arrange subwindows in a near-square grid</source>
+      <translation>Unterfenster in einem fast quadratischen Raster anordnen</translation>
+    </message>
+    <message>
+      <source>AstroBin Exporter...</source>
+      <translation>AstroBin-Exporter...</translation>
+    </message>
+    <message>
+      <source>AstroSpike...</source>
+      <translation>AstroSpike...</translation>
+    </message>
+    <message>
+      <source>Auto-fit on Resize</source>
+      <translation>Automatische Anpassung bei Größenänderung</translation>
+    </message>
+    <message>
+      <source>Automatic Background Extraction</source>
+      <translation>Automatische Hintergrundextraktion</translation>
+    </message>
+    <message>
+      <source>Background Neutralization...</source>
+      <translation>Hintergrundneutralisierung...</translation>
+    </message>
+    <message>
+      <source>Batch Converter...</source>
+      <translation>Batch-Konverter...</translation>
+    </message>
+    <message>
+      <source>Batch Modify FITS Headers</source>
+      <translation>FITS-Header stapelweise ändern</translation>
+    </message>
+    <message>
+      <source>Batch Rename from FITS...</source>
+      <translation>Batch-Umbenennung aus FITS...</translation>
+    </message>
+    <message>
+      <source>Batch-align frames to a reference</source>
+      <translation>Frames stapelweise an einer Referenz ausrichten</translation>
+    </message>
+    <message>
+      <source>Blemish Blaster...</source>
+      <translation>Blemish Blaster...</translation>
+    </message>
+    <message>
+      <source>Blend a starless view with a stars-only view</source>
+      <translation>Eine sternlose Ansicht mit einer Nur-Sterne-Ansicht mischen</translation>
+    </message>
+    <message>
+      <source>Blend two open images (replace A or create new)</source>
+      <translation>Zwei offene Bilder mischen (A ersetzen oder neu erstellen)</translation>
+    </message>
+    <message>
+      <source>Blink Comparator...</source>
+      <translation>Blink-Komparator...</translation>
+    </message>
+    <message>
+      <source>Build mosaics from overlapping frames</source>
+      <translation>Mosaike aus überlappenden Frames erstellen</translation>
+    </message>
+    <message>
+      <source>Bundles</source>
+      <translation>Bundles</translation>
+    </message>
+    <message>
+      <source>CLAHE...</source>
+      <translation>CLAHE...</translation>
+    </message>
+    <message>
+      <source>Cascade Views</source>
+      <translation>Ansichten kaskadieren</translation>
+    </message>
+    <message>
+      <source>Cascade all subwindows</source>
+      <translation>Alle Unterfenster kaskadieren</translation>
+    </message>
+    <message>
+      <source>Check for Updates...</source>
+      <translation>Nach Updates suchen...</translation>
+    </message>
+    <message>
+      <source>Clear All Shortcuts</source>
+      <translation>Alle Tastenkürzel löschen</translation>
+    </message>
+    <message>
+      <source>Clear All Views</source>
+      <translation>Alle Ansichten schließen</translation>
+    </message>
+    <message>
+      <source>Clear Console</source>
+      <translation>Konsole leeren</translation>
+    </message>
+    <message>
+      <source>Clear List</source>
+      <translation>Liste löschen</translation>
+    </message>
+    <message>
+      <source>Close all views and clear shortcuts</source>
+      <translation>Alle Ansichten schließen und Tastenkürzel löschen</translation>
+    </message>
+    <message>
+      <source>Close all views and documents, keep desktop shortcuts</source>
+      <translation>Alle Ansichten und Dokumente schließen, Desktop-Verknüpfungen beibehalten</translation>
+    </message>
+    <message>
+      <source>Combine narrowband to RGB with optional OSC stars</source>
+      <translation>Narrowband mit optionalen OSC-Sternen zu RGB kombinieren</translation>
+    </message>
+    <message>
+      <source>Combine three mono images into RGB</source>
+      <translation>Drei Mono-Bilder zu RGB kombinieren</translation>
+    </message>
+    <message>
+      <source>Compare a stack of images by blinking</source>
+      <translation>Einen Stapel von Bildern durch Blinken vergleichen</translation>
+    </message>
+    <message>
+      <source>Console / Status</source>
+      <translation>Konsole / Status</translation>
+    </message>
+    <message>
+      <source>Continuum Subtract (NB - scaled broadband)</source>
+      <translation>Kontinuum-Subtraktion (NB - skalierte Breitband)</translation>
+    </message>
+    <message>
+      <source>Continuum Subtract...</source>
+      <translation>Kontinuum-Subtraktion...</translation>
+    </message>
+    <message>
+      <source>Contrast Limited Adaptive Histogram Equalization</source>
+      <translation>Kontrastbegrenzte adaptive Histogramm-Equalisierung</translation>
+    </message>
+    <message>
+      <source>Convolution / Deconvolution...</source>
+      <translation>Faltung / Dekonvolution...</translation>
+    </message>
+    <message>
+      <source>Copy All</source>
+      <translation>Alles kopieren</translation>
+    </message>
+    <message>
+      <source>Copy Astrometric Solution...</source>
+      <translation>Astrometrische Lösung kopieren...</translation>
+    </message>
+    <message>
+      <source>Copy Selected</source>
+      <translation>Ausgewähltes kopieren</translation>
+    </message>
+    <message>
+      <source>Copy View (zoom/pan)</source>
+      <translation>Ansicht kopieren (Zoom/Pan)</translation>
+    </message>
+    <message>
+      <source>Cosmic Clarity</source>
+      <translation>Cosmic Clarity</translation>
+    </message>
+    <message>
+      <source>Cosmic Clarity Satellite...</source>
+      <translation>Cosmic Clarity Satellite...</translation>
+    </message>
+    <message>
+      <source>Cosmic Clarity UI...</source>
+      <translation>Cosmic Clarity UI...</translation>
+    </message>
+    <message>
+      <source>Create Mask...</source>
+      <translation>Maske erstellen...</translation>
+    </message>
+    <message>
+      <source>Create Sample Scripts...</source>
+      <translation>Beispielskripte erstellen...</translation>
+    </message>
+    <message>
+      <source>Create a mask from the active image</source>
+      <translation>Eine Maske aus dem aktiven Bild erstellen</translation>
+    </message>
+    <message>
+      <source>Create a new mono document using the selected luminance method</source>
+      <translation>Ein neues Mono-Dokument mit der ausgewählten Luminanzmethode erstellen</translation>
+    </message>
+    <message>
+      <source>Create and run bundles of functions/shortcuts</source>
+      <translation>Bundles von Funktionen/Tastenkürzeln erstellen und ausführen</translation>
+    </message>
+    <message>
+      <source>Create bundles of views; drop shortcuts to apply to all</source>
+      <translation>Bundles von Ansichten erstellen; Tastenkürzel ablegen, um sie auf alle anzuwenden</translation>
+    </message>
+    <message>
+      <source>Crop / rotate with handles</source>
+      <translation>Zuschneiden / Drehen mit Griffen</translation>
+    </message>
+    <message>
+      <source>Crop...</source>
+      <translation>Zuschneiden...</translation>
+    </message>
+    <message>
+      <source>Curves Editor...</source>
+      <translation>Kurven-Editor...</translation>
+    </message>
+    <message>
+      <source>Debayer...</source>
+      <translation>Debayer...</translation>
+    </message>
+    <message>
+      <source>Demosaic a Bayer-mosaic mono image to RGB</source>
+      <translation>Ein Bayer-Mosaik-Mono-Bild zu RGB demosaikieren</translation>
+    </message>
+    <message>
+      <source>Detect exoplanet transits from time-series subs</source>
+      <translation>Exoplaneten-Transite aus Zeitreihen-Subs erkennen</translation>
+    </message>
+    <message>
+      <source>Diffraction Spikes...</source>
+      <translation>Diffraktions-Spikes...</translation>
+    </message>
+    <message>
+      <source>Display-Stretch</source>
+      <translation>Display-Stretch</translation>
+    </message>
+    <message>
+      <source>Documentation...</source>
+      <translation>Dokumentation...</translation>
+    </message>
+    <message>
+      <source>Enhance faint/dark structures with wavelet-guided masking</source>
+      <translation>Schwache/dunkle Strukturen mit wavelet-geführter Maskierung verbessern</translation>
+    </message>
+    <message>
+      <source>Erosion, dilation, opening, and closing.</source>
+      <translation>Erosion, Dilatation, Öffnen und Schließen.</translation>
+    </message>
+    <message>
+      <source>Evaluate expressions using open view names</source>
+      <translation>Ausdrücke unter Verwendung offener Ansichtsnamen auswerten</translation>
+    </message>
+    <message>
+      <source>Exoplanet Detector...</source>
+      <translation>Exoplaneten-Detektor...</translation>
+    </message>
+    <message>
+      <source>Explorer</source>
+      <translation>Explorer</translation>
+    </message>
+    <message>
+      <source>Export Shortcuts...</source>
+      <translation>Tastenkürzel exportieren...</translation>
+    </message>
+    <message>
+      <source>Extract Luminance</source>
+      <translation>Luminanz extrahieren</translation>
+    </message>
+    <message>
+      <source>Extract R/G/B as three mono documents</source>
+      <translation>R/G/B als drei Mono-Dokumente extrahieren</translation>
+    </message>
+    <message>
+      <source>FITS Header Batch Modifier...</source>
+      <translation>FITS-Header Batch-Modifikator...</translation>
+    </message>
+    <message>
+      <source>FITS Header Modifier...</source>
+      <translation>FITS-Header-Modifikator...</translation>
+    </message>
+    <message>
+      <source>Find transients/anomalies across frames</source>
+      <translation>Transienten/Anomalien über Frames hinweg finden</translation>
+    </message>
+    <message>
+      <source>Fit</source>
+      <translation>Einpassen</translation>
+    </message>
+    <message>
+      <source>Fit galaxy isophotes and reveal residuals</source>
+      <translation>Galaxien-Isophoten einpassen und Residuen aufdecken</translation>
+    </message>
+    <message>
+      <source>Fit image to current window</source>
+      <translation>Bild an das aktuelle Fenster anpassen</translation>
+    </message>
+    <message>
+      <source>Flip Horizontal</source>
+      <translation>Horizontal spiegeln</translation>
+    </message>
+    <message>
+      <source>Flip Vertical</source>
+      <translation>Vertikal spiegeln</translation>
+    </message>
+    <message>
+      <source>Flip image left&lt;-&gt;right</source>
+      <translation>Bild links&lt;-&gt;rechts spiegeln</translation>
+    </message>
+    <message>
+      <source>Flip image top&lt;-&gt;bottom</source>
+      <translation>Bild oben&lt;-&gt;unten spiegeln</translation>
+    </message>
+    <message>
+      <source>Frequency Separation...</source>
+      <translation>Frequenzteilung...</translation>
+    </message>
+    <message>
+      <source>Function Bundles...</source>
+      <translation>Funktionspakete...</translation>
+    </message>
+    <message>
+      <source>Functions</source>
+      <translation>Funktionen</translation>
+    </message>
+    <message>
+      <source>GLIMR -- Isophote Modeler...</source>
+      <translation>GLIMR -- Isophoten-Modellierer...</translation>
+    </message>
+    <message>
+      <source>Generalized hyperbolic stretch (α/beta/gamma, LP/HP, pivot)</source>
+      <translation>Verallgemeinerter hyperbolischer Stretch (α/beta/gamma, LP/HP, Pivot)</translation>
+    </message>
+    <message>
+      <source>Geometry</source>
+      <translation>Geometrie</translation>
+    </message>
+    <message>
+      <source>Group A</source>
+      <translation>Gruppe A</translation>
+    </message>
+    <message>
+      <source>Group B</source>
+      <translation>Gruppe B</translation>
+    </message>
+    <message>
+      <source>Group C</source>
+      <translation>Gruppe C</translation>
+    </message>
+    <message>
+      <source>Group D</source>
+      <translation>Gruppe D</translation>
+    </message>
+    <message>
+      <source>Halo-B-Gon...</source>
+      <translation>Halo-B-Gon...</translation>
+    </message>
+    <message>
+      <source>Hard (target 0.50, σ 2)</source>
+      <translation>Hart (Ziel 0.50, σ 2)</translation>
+    </message>
+    <message>
+      <source>Hard-Display-Stretch</source>
+      <translation>Harter Display-Stretch</translation>
+    </message>
+    <message>
+      <source>Hide Mask Overlay</source>
+      <translation>Masken-Overlay ausblenden</translation>
+    </message>
+    <message>
+      <source>Histogram...</source>
+      <translation>Histogramm...</translation>
+    </message>
+    <message>
+      <source>History Explorer...</source>
+      <translation>Verlaufs-Explorer...</translation>
+    </message>
+    <message>
+      <source>Hyperbolic Stretch...</source>
+      <translation>Hyperbolischer Stretch...</translation>
+    </message>
+    <message>
+      <source>Identify objects in a plate-solved frame</source>
+      <translation>Objekte in einem gelösten Frame identifizieren</translation>
+    </message>
+    <message>
+      <source>Image Combine...</source>
+      <translation>Bilder kombinieren...</translation>
+    </message>
+    <message>
+      <source>Image Inspector and Focal Plane Analysis</source>
+      <translation>Bildinspektor und Brennebene-Analyse</translation>
+    </message>
+    <message>
+      <source>Image Peeker...</source>
+      <translation>Image Peeker...</translation>
+    </message>
+    <message>
+      <source>Import Shortcuts...</source>
+      <translation>Tastenkürzel importieren...</translation>
+    </message>
+    <message>
+      <source>Inspect and restore from the slot's history</source>
+      <translation>Aus dem Verlauf des Slots inspizieren und wiederherstellen</translation>
+    </message>
+    <message>
+      <source>Inspect star PSF/HFR and flux histograms (SEP)</source>
+      <translation>Stern PSF/HFR und Flusshistogramme inspizieren (SEP)</translation>
+    </message>
+    <message>
+      <source>Interactive blemish removal on the active view</source>
+      <translation>Interaktive Fleckenentfernung in der aktiven Ansicht</translation>
+    </message>
+    <message>
+      <source>Invert</source>
+      <translation>Invertieren</translation>
+    </message>
+    <message>
+      <source>Invert Mask</source>
+      <translation>Maske invertieren</translation>
+    </message>
+    <message>
+      <source>Invert image colors</source>
+      <translation>Bildfarben invertieren</translation>
+    </message>
+    <message>
+      <source>Keyboard Shortcut Cheat Sheet...</source>
+      <translation>Tastenkürzel-Cheat-Sheet...</translation>
+    </message>
+    <message>
+      <source>No recent images</source>
+      <translation>Keine letzten Bilder</translation>
+    </message>
+    <message>
+      <source>No recent projects</source>
+      <translation>Keine letzten Projekte</translation>
+    </message>
+    <message>
+      <source>None</source>
+      <translation>Keine</translation>
+    </message>
+    <message>
+      <source>Open Recent Images</source>
+      <translation>Zuletzt verwendete Bilder öffnen</translation>
+    </message>
+    <message>
+      <source>Open Recent Projects</source>
+      <translation>Zuletzt verwendete Projekte öffnen</translation>
+    </message>
+    <message>
+      <source>Preferences...</source>
+      <translation>Einstellungen...</translation>
+    </message>
+    <message>
+      <source>Select All Lines</source>
+      <translation>Alle Zeilen auswählen</translation>
+    </message>
+    <message>
+      <source>System Monitor</source>
+      <translation>Systemmonitor</translation>
+    </message>
+    <message>
+      <source>View Bundles...</source>
+      <translation>Pakete anzeigen...</translation>
+    </message>
+    <message>
+      <source>View Bundles</source>
+      <translation>Bündel anzeigen</translation>
+    </message>
+    <message>
+      <source>Function Bundles</source>
+      <translation>Funktionsbündel</translation>
+    </message>
+    <message>
+      <source>Delete selected shortcut buttons</source>
+      <translation>Ausgewählte Verknüpfungsschaltflächen löschen</translation>
+    </message>
+    <message>
+      <source>Toggle Display Auto-Stretch</source>
+      <translation>Automatische Anzeige-Streckung umschalten</translation>
+    </message>
+    <message>
+      <source>Invert the Image</source>
+      <translation>Bild invertieren</translation>
+    </message>
+    <message>
+      <source>Focus the command search bar; Enter runs first match</source>
+      <translation>Befehlssuche fokussieren; Enter führt ersten Treffer aus</translation>
+    </message>
+    <message>
+      <source>Duplicate Image</source>
+      <translation>Bild duplizieren</translation>
+    </message>
+    <message>
+      <source>Copy Zoom and Pan</source>
+      <translation>Zoom und Pan kopieren</translation>
+    </message>
+    <message>
+      <source>Apply that image to the other as a mask</source>
+      <translation>Dieses Bild als Maske auf das andere anwenden</translation>
+    </message>
+    <message>
+      <source>Zoom to 100% (1:1)</source>
+      <translation>Zoom auf 100% (1:1)</translation>
+    </message>
+    <message>
+      <source>Switch to previously active view</source>
+      <translation>Zur vorherigen aktiven Ansicht wechseln</translation>
+    </message>
+    <message>
+      <source>Switch to next active view</source>
+      <translation>Zur nächsten aktiven Ansicht wechseln</translation>
+    </message>
+    <message>
+      <source>Create a desktop shortcut for that action</source>
+      <translation>Desktop-Verknüpfung für diese Aktion erstellen</translation>
+    </message>
+    <message>
+      <source>Headless apply the shortcut's command/preset to a view</source>
+      <translation>Headless-Anwendung des Befehls/Presets auf Ansicht</translation>
+    </message>
+    <message>
+      <source>Multi-select shortcut buttons</source>
+      <translation>Mehrfachauswahl Verknüpfungsschaltflächen</translation>
+    </message>
+    <message>
+      <source>Move selected shortcut buttons</source>
+      <translation>Ausgewählte Verknüpfungsschaltflächen verschieben</translation>
+    </message>
+    <message>
+      <source>Select all shortcut buttons</source>
+      <translation>Alle Verknüpfungsschaltflächen auswählen</translation>
+    </message>
+    <message>
+      <source>Open files dialog</source>
+      <translation>Dateidialog öffnen</translation>
+    </message>
+    <message>
+      <source>Add dragged view as a new layer (on top)</source>
+      <translation>Gezogene Ansicht als neue Ebene hinzufügen (oben)</translation>
+    </message>
+    <message>
+      <source>Attach dragged image as mask to the selected layer</source>
+      <translation>Gezogenes Bild als Maske an ausgewählte Ebene anhängen</translation>
+    </message>
+    <message>
+      <source>Draw a crop rectangle</source>
+      <translation>Zuschneiderechteck zeichnen</translation>
+    </message>
+    <message>
+      <source>Resize crop rectangle</source>
+      <translation>Zuschneiderechteck ändern</translation>
+    </message>
+    <message>
+      <source>Rotate crop rectangle</source>
+      <translation>Zuschneiderechteck drehen</translation>
+    </message>
+    <message>
+      <source>Loading a project will close current views and replace desktop shortcuts.
+Continue?</source>
+      <translation>Das Laden eines Projekts schließt alle Ansichten und ersetzt Desktop-Verknüpfungen.
+Fortfahren?</translation>
+    </message>
+  </context>
+  <context>
+    <name>AstrobinExportTab</name>
+    <message>
+      <source> ({0} failed)</source>
+      <translation> ({0} fehlgeschlagen)</translation>
+    </message>
+    <message>
+      <source> — skipped {0} XISF (reader unavailable)</source>
+      <translation> — {0} XISF übersprungen (Reader nicht verfügbar)</translation>
+    </message>
+    <message>
+      <source># Subs</source>
+      <translation># Subs</translation>
+    </message>
+    <message>
+      <source>(e.g. 4408)</source>
+      <translation>(z.B. 4408)</translation>
+    </message>
+    <message>
+      <source>0–9</source>
+      <translation>0–9</translation>
+    </message>
+    <message>
+      <source>API Key</source>
+      <translation>API-Schlüssel</translation>
+    </message>
+    <message>
+      <source>API Secret</source>
+      <translation>API-Geheimnis</translation>
+    </message>
+    <message>
+      <source>Accessories</source>
+      <translation>Zubehör</translation>
+    </message>
+    <message>
+      <source>Acquisition details</source>
+      <translation>Akquisitionsdetails</translation>
+    </message>
+    <message>
+      <source>Add Files…</source>
+      <translation>Dateien hinzufügen…</translation>
+    </message>
+    <message>
+      <source>Add watermark</source>
+      <translation>Wasserzeichen hinzufügen</translation>
+    </message>
+    <message>
+      <source>All selected files are already in the list.</source>
+      <translation>Alle ausgewählten Dateien sind bereits in der Liste.</translation>
+    </message>
+    <message>
+      <source>Apply</source>
+      <translation>Anwenden</translation>
+    </message>
+    <message>
+      <source>AstroBin Export</source>
+      <translation>AstroBin-Export</translation>
+    </message>
+    <message>
+      <source>Astrobin Export</source>
+      <translation>Esporta su Astrobin</translation>
+    </message>
+    <message>
+      <source>Astrobin Filter ID</source>
+      <translation>Astrobin Filter-ID</translation>
+    </message>
+    <message>
+      <source>Astrobin Link</source>
+      <translation>Astrobin-Link</translation>
+    </message>
+    <message>
+      <source>Bandwidth</source>
+      <translation>Bandbreite</translation>
+    </message>
+    <message>
+      <source>Bias (#)</source>
+      <translation>Bias (#)</translation>
+    </message>
+    <message>
+      <source>Bortle</source>
+      <translation>Bortle</translation>
+    </message>
+    <message>
+      <source>Bortle scale</source>
+      <translation>Bortle-Skala</translation>
+    </message>
+    <message>
+      <source>Brand</source>
+      <translation>Marke</translation>
+    </message>
+    <message>
+      <source>Browse Filters</source>
+      <translation>Filter durchsuchen</translation>
+    </message>
+    <message>
+      <source>Browse...</source>
+      <translation>Durchsuchen...</translation>
+    </message>
+    <message>
+      <source>CSV Files (*.csv);;All Files (*)</source>
+      <translation>CSV-Dateien (*.csv);;Alle Dateien (*)</translation>
+    </message>
+    <message>
+      <source>CSV Load Error</source>
+      <translation>CSV-Ladefehler</translation>
+    </message>
+    <message>
+      <source>CSV copied to clipboard.</source>
+      <translation>CSV in die Zwischenablage kopiert.</translation>
+    </message>
+    <message>
+      <source>Camera</source>
+      <translation>Kamera</translation>
+    </message>
+    <message>
+      <source>Catalog CSV loaded.</source>
+      <translation>Katalog-CSV geladen.</translation>
+    </message>
+    <message>
+      <source>Clear</source>
+      <translation>Löschen</translation>
+    </message>
+    <message>
+      <source>Cleared. Load FITS via 'Select Folder…' or 'Add Files…' to begin.</source>
+      <translation>Gelöscht. FITS über 'Ordner auswählen…' oder 'Dateien hinzufügen…' laden, um zu beginnen.</translation>
+    </message>
+    <message>
+      <source>Copied</source>
+      <translation>Kopiert</translation>
+    </message>
+    <message>
+      <source>Copy CSV</source>
+      <translation>CSV kopieren</translation>
+    </message>
+    <message>
+      <source>Copy to Clipboard</source>
+      <translation>In die Zwischenablage kopieren</translation>
+    </message>
+    <message>
+      <source>Could not load Astrobin filters: {0}</source>
+      <translation>Astrobin-Filter konnten nicht geladen werden: {0}</translation>
+    </message>
+    <message>
+      <source>Could not load equipment CSV: {0}</source>
+      <translation>Ausrüstungs-CSV konnte nicht geladen werden: {0}</translation>
+    </message>
+    <message>
+      <source>Could not load filter mapping CSV: {0}</source>
+      <translation>Filter-Mapping-CSV konnte nicht geladen werden: {0}</translation>
+    </message>
+    <message>
+      <source>Could not save filter mapping CSV: {0}</source>
+      <translation>Filter-Mapping-CSV konnte nicht gespeichert werden: {0}</translation>
+    </message>
+    <message>
+      <source>Credentials invalid</source>
+      <translation>Anmeldedaten ungültig</translation>
+    </message>
+    <message>
+      <source>Credentials valid</source>
+      <translation>Anmeldedaten gültig</translation>
+    </message>
+    <message>
+      <source>Darks (#)</source>
+      <translation>Darks (#)</translation>
+    </message>
+    <message>
+      <source>Data source</source>
+      <translation>Datenquelle</translation>
+    </message>
+    <message>
+      <source>Deep sky</source>
+      <translation>Deep Sky</translation>
+    </message>
+    <message>
+      <source>Description</source>
+      <translation>Beschreibung</translation>
+    </message>
+    <message>
+      <source>Enter your AstroBin API key</source>
+      <translation>Geben Sie Ihren AstroBin API-Schlüssel ein</translation>
+    </message>
+    <message>
+      <source>Enter your AstroBin API secret</source>
+      <translation>Geben Sie Ihr AstroBin API-Geheimnis ein</translation>
+    </message>
+    <message>
+      <source>Equipment</source>
+      <translation>Ausrüstung</translation>
+    </message>
+    <message>
+      <source>Error</source>
+      <translation>Fehler</translation>
+    </message>
+    <message>
+      <source>Export settings</source>
+      <translation>Exporteinstellungen</translation>
+    </message>
+    <message>
+      <source>Exposure (s)</source>
+      <translation>Belichtung (s)</translation>
+    </message>
+    <message>
+      <source>Exposure: {0}</source>
+      <translation>Belichtung: {0}</translation>
+    </message>
+    <message>
+      <source>FITS Files (*.fits *.fit *.fts);;All Files (*.*)</source>
+      <translation>FITS-Dateien (*.fits *.fit *.fts);;Alle Dateien (*.*)</translation>
+    </message>
+    <message>
+      <source>FITS/XISF (*.fit *.fits *.xisf);;All Files (*)</source>
+      <translation>FITS/XISF (*.fit *.fits *.xisf);;Alle Dateien (*)</translation>
+    </message>
+    <message>
+      <source>Failed to load filter mappings: {0}</source>
+      <translation>Filter-Mappings konnten nicht geladen werden: {0}</translation>
+    </message>
+    <message>
+      <source>Failed to save filter mappings: {0}</source>
+      <translation>Filter-Mappings konnten nicht gespeichert werden: {0}</translation>
+    </message>
+    <message>
+      <source>Files (Object → Filter → Exposure)</source>
+      <translation>Dateien (Objekt → Filter → Belichtung)</translation>
+    </message>
+    <message>
+      <source>Filter</source>
+      <translation>Filter</translation>
+    </message>
+    <message>
+      <source>Filter Browser</source>
+      <translation>Filter-Browser</translation>
+    </message>
+    <message>
+      <source>Filter mappings loaded successfully.</source>
+      <translation>Filter-Mappings erfolgreich geladen.</translation>
+    </message>
+    <message>
+      <source>Filter mappings saved successfully.</source>
+      <translation>Filter-Mappings erfolgreich gespeichert.</translation>
+    </message>
+    <message>
+      <source>Filter: {0}</source>
+      <translation>Filter: {0}</translation>
+    </message>
+    <message>
+      <source>Filters</source>
+      <translation>Filter</translation>
+    </message>
+    <message>
+      <source>Filters Found:</source>
+      <translation>Gefundene Filter:</translation>
+    </message>
+    <message>
+      <source>Flat-darks (#)</source>
+      <translation>Flat-Darks (#)</translation>
+    </message>
+    <message>
+      <source>Flats (#)</source>
+      <translation>Flats (#)</translation>
+    </message>
+    <message>
+      <source>From active view</source>
+      <translation>Von aktiver Ansicht</translation>
+    </message>
+    <message>
+      <source>From file</source>
+      <translation>Von Datei</translation>
+    </message>
+    <message>
+      <source>Gear</source>
+      <translation>Ausrüstung</translation>
+    </message>
+    <message>
+      <source>Global inputs (used if FITS headers are missing/zero)</source>
+      <translation>Globale Eingaben (verwendet, wenn FITS-Header fehlen/null sind)</translation>
+    </message>
+    <message>
+      <source>Group nights noon → noon (local time)</source>
+      <translation>Nächte von Mittag bis Mittag gruppieren (Lokalzeit)</translation>
+    </message>
+    <message>
+      <source>ID</source>
+      <translation>ID</translation>
+    </message>
+    <message>
+      <source>Image Information</source>
+      <translation>Bildinformationen</translation>
+    </message>
+    <message>
+      <source>Image Selection</source>
+      <translation>Bildauswahl</translation>
+    </message>
+    <message>
+      <source>Image format</source>
+      <translation>Bildformat</translation>
+    </message>
+    <message>
+      <source>Input Files</source>
+      <translation>Eingabedateien</translation>
+    </message>
+    <message>
+      <source>Integration summary copied!</source>
+      <translation>Integrationszusammenfassung kopiert!</translation>
+    </message>
+    <message>
+      <source>Load Catalog</source>
+      <translation>Katalog laden</translation>
+    </message>
+    <message>
+      <source>Load FITS Headers</source>
+      <translation>FITS-Header laden</translation>
+    </message>
+    <message>
+      <source>Load FITS via 'Select Folder…' or 'Add Files…' to begin.</source>
+      <translation>FITS über 'Ordner auswählen…' oder 'Dateien hinzufügen…' laden, um zu beginnen.</translation>
+    </message>
+    <message>
+      <source>Load FITS/XISF via 'Select Folder…' or 'Add Files…' to begin.</source>
+      <translation>FITS/XISF über 'Ordner auswählen…' oder 'Dateien hinzufügen…' laden, um zu beginnen.</translation>
+    </message>
+    <message>
+      <source>Load Filter Mappings from CSV</source>
+      <translation>Filter-Mappings aus CSV laden</translation>
+    </message>
+    <message>
+      <source>Load Telescope/Camera from CSV</source>
+      <translation>Teleskop/Kamera aus CSV laden</translation>
+    </message>
+    <message>
+      <source>Loaded {0} file(s)</source>
+      <translation>{0} Datei(en) geladen</translation>
+    </message>
+    <message>
+      <source>Loaded {0} filters.</source>
+      <translation>{0} Filter geladen.</translation>
+    </message>
+    <message>
+      <source>Loading filters from Astrobin...</source>
+      <translation>Filter werden von Astrobin geladen...</translation>
+    </message>
+    <message>
+      <source>Location</source>
+      <translation>Standort</translation>
+    </message>
+    <message>
+      <source>Manage Filter IDs…</source>
+      <translation>Filter-IDs verwalten…</translation>
+    </message>
+    <message>
+      <source>Maximum dimension</source>
+      <translation>Maximale Dimension</translation>
+    </message>
+    <message>
+      <source>Mean FWHM</source>
+      <translation>Mittlere FWHM</translation>
+    </message>
+    <message>
+      <source>Mean SQM</source>
+      <translation>Mittlerer SQM</translation>
+    </message>
+    <message>
+      <source>Mount</source>
+      <translation>Montierung</translation>
+    </message>
+    <message>
+      <source>Name</source>
+      <translation>Nome</translation>
+    </message>
+    <message>
+      <source>No .fit/.fits/.xisf files found.</source>
+      <translation>Keine .fit/.fits/.xisf Dateien gefunden.</translation>
+    </message>
+    <message>
+      <source>No FITS files selected.</source>
+      <translation>Keine FITS-Dateien ausgewählt.</translation>
+    </message>
+    <message>
+      <source>No Images</source>
+      <translation>Keine Bilder</translation>
+    </message>
+    <message>
+      <source>No New Files</source>
+      <translation>Keine neuen Dateien</translation>
+    </message>
+    <message>
+      <source>No integration data to copy.</source>
+      <translation>Keine Integrationsdaten zum Kopieren.</translation>
+    </message>
+    <message>
+      <source>No mappings set</source>
+      <translation>Keine Mappings festgelegt</translation>
+    </message>
+    <message>
+      <source>Noctilucent clouds</source>
+      <translation>Leuchtende Nachtwolken</translation>
+    </message>
+    <message>
+      <source>Northern lights</source>
+      <translation>Polarlichter</translation>
+    </message>
+    <message>
+      <source>Nothing to copy</source>
+      <translation>Nichts zum Kopieren</translation>
+    </message>
+    <message>
+      <source>Object: {0}</source>
+      <translation>Objekt: {0}</translation>
+    </message>
+    <message>
+      <source>Open AstroBin Equipment Explorer (Filters)</source>
+      <translation>AstroBin Ausrüstungs-Explorer öffnen (Filter)</translation>
+    </message>
+    <message>
+      <source>Own data</source>
+      <translation>Eigene Daten</translation>
+    </message>
+    <message>
+      <source>Prevents splitting a single observing night at midnight.</source>
+      <translation>Verhindert die Aufteilung einer einzelnen Beobachtungsnacht um Mitternacht.</translation>
+    </message>
+    <message>
+      <source>Processing details</source>
+      <translation>Verarbeitungsdetails</translation>
+    </message>
+    <message>
+      <source>Quality</source>
+      <translation>Qualität</translation>
+    </message>
+    <message>
+      <source>Recompute</source>
+      <translation>Neu berechnen</translation>
+    </message>
+    <message>
+      <source>Remote source</source>
+      <translation>Remote-Quelle</translation>
+    </message>
+    <message>
+      <source>Resize</source>
+      <translation>Größe ändern</translation>
+    </message>
+    <message>
+      <source>SQM value</source>
+      <translation>SQM-Wert</translation>
+    </message>
+    <message>
+      <source>Save Filter Mapping CSV</source>
+      <translation>Filter-Mapping-CSV speichern</translation>
+    </message>
+    <message>
+      <source>Save Filter Mappings to CSV</source>
+      <translation>Filter-Mappings in CSV speichern</translation>
+    </message>
+    <message>
+      <source>Save credentials</source>
+      <translation>Anmeldedaten speichern</translation>
+    </message>
+    <message>
+      <source>Search:</source>
+      <translation>Suche:</translation>
+    </message>
+    <message>
+      <source>Seeing</source>
+      <translation>Seeing</translation>
+    </message>
+    <message>
+      <source>Select</source>
+      <translation>Auswählen</translation>
+    </message>
+    <message>
+      <source>Select Equipment CSV</source>
+      <translation>Ausrüstungs-CSV auswählen</translation>
+    </message>
+    <message>
+      <source>Select FITS Files</source>
+      <translation>FITS-Dateien auswählen</translation>
+    </message>
+    <message>
+      <source>Select FITS/XISF Files</source>
+      <translation>FITS/XISF-Dateien auswählen</translation>
+    </message>
+    <message>
+      <source>Select Filter Mapping CSV</source>
+      <translation>Filter-Mapping-CSV auswählen</translation>
+    </message>
+    <message>
+      <source>Select Folder Containing FITS/XISF Files</source>
+      <translation>Ordner mit FITS/XISF-Dateien auswählen</translation>
+    </message>
+    <message>
+      <source>Select Folder…</source>
+      <translation>Ordner auswählen…</translation>
+    </message>
+    <message>
+      <source>Select image to export</source>
+      <translation>Bild zum Exportieren auswählen</translation>
+    </message>
+    <message>
+      <source>Size</source>
+      <translation>Größe</translation>
+    </message>
+    <message>
+      <source>Software</source>
+      <translation>Software</translation>
+    </message>
+    <message>
+      <source>Solar system</source>
+      <translation>Sonnensystem</translation>
+    </message>
+    <message>
+      <source>Star trails</source>
+      <translation>Sternspuren</translation>
+    </message>
+    <message>
+      <source>Subject type</source>
+      <translation>Motivtyp</translation>
+    </message>
+    <message>
+      <source>Success</source>
+      <translation>Erfolg</translation>
+    </message>
+    <message>
+      <source>Telescope</source>
+      <translation>Teleskop</translation>
+    </message>
+    <message>
+      <source>Telescope/Camera Selection:</source>
+      <translation>Teleskop/Kamera-Auswahl:</translation>
+    </message>
+    <message>
+      <source>There is no CSV content yet.</source>
+      <translation>Noch kein CSV-Inhalt vorhanden.</translation>
+    </message>
+    <message>
+      <source>Title</source>
+      <translation>Titel</translation>
+    </message>
+    <message>
+      <source>Total Frames:</source>
+      <translation>Gesamtanzahl Frames:</translation>
+    </message>
+    <message>
+      <source>Total Integration Time</source>
+      <translation>Gesamtintegrationszeit</translation>
+    </message>
+    <message>
+      <source>Total Integration:</source>
+      <translation>Gesamtintegration:</translation>
+    </message>
+    <message>
+      <source>Transparency</source>
+      <translation>Transparenz</translation>
+    </message>
+    <message>
+      <source>Type</source>
+      <translation>Typ</translation>
+    </message>
+    <message>
+      <source>Upload</source>
+      <translation>Hochladen</translation>
+    </message>
+    <message>
+      <source>Upload complete</source>
+      <translation>Hochladen abgeschlossen</translation>
+    </message>
+    <message>
+      <source>Upload failed</source>
+      <translation>Hochladen fehlgeschlagen</translation>
+    </message>
+    <message>
+      <source>Upload to AstroBin</source>
+      <translation>Auf AstroBin hochladen</translation>
+    </message>
+    <message>
+      <source>Uploading...</source>
+      <translation>Hochladen...</translation>
+    </message>
+    <message>
+      <source>Validate credentials</source>
+      <translation>Anmeldedaten validieren</translation>
+    </message>
+    <message>
+      <source>View on AstroBin</source>
+      <translation>Auf AstroBin ansehen</translation>
+    </message>
+    <message>
+      <source>Watermark</source>
+      <translation>Wasserzeichen</translation>
+    </message>
+    <message>
+      <source>Watermark opacity</source>
+      <translation>Wasserzeichen-Deckkraft</translation>
+    </message>
+    <message>
+      <source>Watermark position</source>
+      <translation>Wasserzeichen-Position</translation>
+    </message>
+    <message>
+      <source>Watermark text</source>
+      <translation>Wasserzeichen-Text</translation>
+    </message>
+    <message>
+      <source>Wide field</source>
+      <translation>Weitfeld</translation>
+    </message>
+    <message>
+      <source>bias</source>
+      <translation>Bias</translation>
+    </message>
+    <message>
+      <source>binning</source>
+      <translation>Binning</translation>
+    </message>
+    <message>
+      <source>bortle</source>
+      <translation>Bortle</translation>
+    </message>
+    <message>
+      <source>darks</source>
+      <translation>Darks</translation>
+    </message>
+    <message>
+      <source>date</source>
+      <translation>Datum</translation>
+    </message>
+    <message>
+      <source>duration</source>
+      <translation>Dauer</translation>
+    </message>
+    <message>
+      <source>e.g. 2.10</source>
+      <translation>z.B. 2.10</translation>
+    </message>
+    <message>
+      <source>e.g. 21.30</source>
+      <translation>z.B. 21.30</translation>
+    </message>
+    <message>
+      <source>e.g. 4.0</source>
+      <translation>z.B. 4.0</translation>
+    </message>
+    <message>
+      <source>f/number</source>
+      <translation>Blende</translation>
+    </message>
+    <message>
+      <source>fNumber</source>
+      <translation>Blende</translation>
+    </message>
+    <message>
+      <source>filter</source>
+      <translation>Filter</translation>
+    </message>
+    <message>
+      <source>flatDarks</source>
+      <translation>Flat-Darks</translation>
+    </message>
+    <message>
+      <source>flats</source>
+      <translation>Flats</translation>
+    </message>
+    <message>
+      <source>gain</source>
+      <translation>Gain</translation>
+    </message>
+    <message>
+      <source>h</source>
+      <translation>h</translation>
+    </message>
+    <message>
+      <source>iso</source>
+      <translation>ISO</translation>
+    </message>
+    <message>
+      <source>m</source>
+      <translation>m</translation>
+    </message>
+    <message>
+      <source>meanFwhm</source>
+      <translation>mittlereFwhm</translation>
+    </message>
+    <message>
+      <source>meanSqm</source>
+      <translation>mittlererSqm</translation>
+    </message>
+    <message>
+      <source>number</source>
+      <translation>Anzahl</translation>
+    </message>
+    <message>
+      <source>s</source>
+      <translation>s</translation>
+    </message>
+    <message>
+      <source>sensorCooling</source>
+      <translation>Sensorkühlung</translation>
+    </message>
+    <message>
+      <source>temperature</source>
+      <translation>Temperatur</translation>
+    </message>
+  </context>
+  <context>
+    <name>AstrobinExporterDialog</name>
+    <message>
+      <source>AstroBin Exporter</source>
+      <translation>AstroBin-Exporter</translation>
+    </message>
+  </context>
+  <context>
+    <name>BackgroundNeutralizationDialog</name>
+    <message>
+      <source>Apply Neutralization</source>
+      <translation>Neutralisierung anwenden</translation>
+    </message>
+    <message>
+      <source>Background Neutralization</source>
+      <translation>Hintergrund-Neutralisierung</translation>
+    </message>
+    <message>
+      <source>Cancel</source>
+      <translation>Abbrechen</translation>
+    </message>
+    <message>
+      <source>Enable Auto-Stretch</source>
+      <translation>Auto-Stretch aktivieren</translation>
+    </message>
+    <message>
+      <source>Find Background</source>
+      <translation>Hintergrund finden</translation>
+    </message>
+  </context>
+  <context>
+    <name>BatchConvertDialog</name>
+    <message>
+      <source>Batch Convert</source>
+      <translation>Batch-Konvertierung</translation>
+    </message>
+    <message>
+      <source>Bit depth:</source>
+      <translation>Bittiefe:</translation>
+    </message>
+    <message>
+      <source>Cancel</source>
+      <translation>Abbrechen</translation>
+    </message>
+    <message>
+      <source>Output format:</source>
+      <translation>Ausgabeformat:</translation>
+    </message>
+    <message>
+      <source>Start</source>
+      <translation>Start</translation>
+    </message>
+  </context>
+  <context>
+    <name>BatchFITSHeaderDialog</name>
+    <message>
+      <source>Add if missing (for Add/Update)</source>
+      <translation>Hinzufügen falls fehlend (für Hinzufügen/Aktualisieren)</translation>
+    </message>
+    <message>
+      <source>Add/Update</source>
+      <translation>Hinzufügen/Aktualisieren</translation>
+    </message>
+    <message>
+      <source>Apply to all HDUs</source>
+      <translation>Auf alle HDUs anwenden</translation>
+    </message>
+    <message>
+      <source>Batch Complete</source>
+      <translation>Batch abgeschlossen</translation>
+    </message>
+    <message>
+      <source>Batch Modify FITS Headers</source>
+      <translation>FITS-Header stapelweise ändern</translation>
+    </message>
+    <message>
+      <source>Choose FITS Files…</source>
+      <translation>FITS-Dateien auswählen…</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Schließen</translation>
+    </message>
+    <message>
+      <source>Comment (optional)</source>
+      <translation>Kommentar (optional)</translation>
+    </message>
+    <message>
+      <source>Delete</source>
+      <translation>Löschen</translation>
+    </message>
+    <message>
+      <source>FITS files (*.fits *.fit *.fts *.fz)</source>
+      <translation>FITS-Dateien (*.fits *.fit *.fts *.fz)</translation>
+    </message>
+    <message>
+      <source>KEYWORD</source>
+      <translation>SCHLÜSSELWORT</translation>
+    </message>
+    <message>
+      <source>Missing keyword</source>
+      <translation>Fehlendes Schlüsselwort</translation>
+    </message>
+    <message>
+      <source>No files</source>
+      <translation>Keine Dateien</translation>
+    </message>
+    <message>
+      <source>No files selected</source>
+      <translation>Keine Dateien ausgewählt</translation>
+    </message>
+    <message>
+      <source>Please choose one or more FITS files.</source>
+      <translation>Bitte wählen Sie eine oder mehrere FITS-Dateien aus.</translation>
+    </message>
+    <message>
+      <source>Please enter a FITS keyword.</source>
+      <translation>Bitte geben Sie ein FITS-Schlüsselwort ein.</translation>
+    </message>
+    <message>
+      <source>Run</source>
+      <translation>Esegui</translation>
+    </message>
+    <message>
+      <source>Select FITS files</source>
+      <translation>FITS-Dateien auswählen</translation>
+    </message>
+    <message>
+      <source>Updated {0} file(s); {1} error(s).</source>
+      <translation>{0} Datei(en) aktualisiert; {1} Fehler.</translation>
+    </message>
+    <message>
+      <source>Value (leave blank for delete)</source>
+      <translation>Wert (leer lassen zum Löschen)</translation>
+    </message>
+    <message>
+      <source>{0} files selected</source>
+      <translation>{0} Dateien ausgewählt</translation>
+    </message>
+  </context>
+  <context>
+    <name>BatchRenamerDialog</name>
+    <message>
+      <source>(optional) Rename into this folder; leave empty to rename in place</source>
+      <translation>(optional) In diesen Ordner umbenennen; leer lassen, um vor Ort umzubenennen</translation>
+    </message>
+    <message>
+      <source>Add FITS files</source>
+      <translation>FITS-Dateien hinzufügen</translation>
+    </message>
+    <message>
+      <source>Add Files...</source>
+      <translation>Dateien hinzufügen...</translation>
+    </message>
+    <message>
+      <source>Add Files…</source>
+      <translation>Dateien hinzufügen…</translation>
+    </message>
+    <message>
+      <source>Add Folder...</source>
+      <translation>Ordner hinzufügen...</translation>
+    </message>
+    <message>
+      <source>All files renamed.</source>
+      <translation>Alle Dateien umbenannt.</translation>
+    </message>
+    <message>
+      <source>Apply Rename</source>
+      <translation>Umbenennung anwenden</translation>
+    </message>
+    <message>
+      <source>As is</source>
+      <translation>Wie sie sind</translation>
+    </message>
+    <message>
+      <source>Available FITS keywords (double-click to insert):</source>
+      <translation>Verfügbare FITS-Schlüsselwörter (Doppelklick zum Einfügen):</translation>
+    </message>
+    <message>
+      <source>Available tokens</source>
+      <translation>Token disponibili</translation>
+    </message>
+    <message>
+      <source>Available tokens: {name}, {date}, {time}, {counter}, {ext}</source>
+      <translation>Verfügbare Token: {name}, {date}, {time}, {counter}, {ext}</translation>
+    </message>
+    <message>
+      <source>Batch File Renamer</source>
+      <translation>Batch-Datei-Umbenenner</translation>
+    </message>
+    <message>
+      <source>Batch Rename</source>
+      <translation>Batch-Umbenennung</translation>
+    </message>
+    <message>
+      <source>Batch Rename from FITS</source>
+      <translation>Batch-Umbenennung von FITS</translation>
+    </message>
+    <message>
+      <source>Browse...</source>
+      <translation>Durchsuchen...</translation>
+    </message>
+    <message>
+      <source>Browse…</source>
+      <translation>Durchsuchen…</translation>
+    </message>
+    <message>
+      <source>Cancel</source>
+      <translation>Abbrechen</translation>
+    </message>
+    <message>
+      <source>Case</source>
+      <translation>Groß-/Kleinschreibung</translation>
+    </message>
+    <message>
+      <source>Case sensitive</source>
+      <translation>Groß-/Kleinschreibung beachten</translation>
+    </message>
+    <message>
+      <source>Choose Destination Folder</source>
+      <translation>Zielordner wählen</translation>
+    </message>
+    <message>
+      <source>Clear All</source>
+      <translation>Alles löschen</translation>
+    </message>
+    <message>
+      <source>Clear Selections</source>
+      <translation>Auswahl leeren</translation>
+    </message>
+    <message>
+      <source>Collisions</source>
+      <translation>Kollisionen</translation>
+    </message>
+    <message>
+      <source>Complete</source>
+      <translation>Abgeschlossen</translation>
+    </message>
+    <message>
+      <source>Copy files</source>
+      <translation>Dateien kopieren</translation>
+    </message>
+    <message>
+      <source>Counter Padding</source>
+      <translation>Zähler-Auffüllung</translation>
+    </message>
+    <message>
+      <source>Counter Start</source>
+      <translation>Zähler-Start</translation>
+    </message>
+    <message>
+      <source>Current Name</source>
+      <translation>Aktueller Name</translation>
+    </message>
+    <message>
+      <source>Custom folder</source>
+      <translation>Benutzerdefinierter Ordner</translation>
+    </message>
+    <message>
+      <source>Date format</source>
+      <translation>Datumsformat</translation>
+    </message>
+    <message>
+      <source>Destination:</source>
+      <translation>Ziel:</translation>
+    </message>
+    <message>
+      <source>Done</source>
+      <translation>Fertig</translation>
+    </message>
+    <message>
+      <source>Done with errors</source>
+      <translation>Mit Fehlern abgeschlossen</translation>
+    </message>
+    <message>
+      <source>Dry Run</source>
+      <translation>Testlauf</translation>
+    </message>
+    <message>
+      <source>ERROR: {0}</source>
+      <translation>FEHLER: {0}</translation>
+    </message>
+    <message>
+      <source>Error</source>
+      <translation>Fehler</translation>
+    </message>
+    <message>
+      <source>Error renaming files: {0}</source>
+      <translation>Fehler beim Umbenennen der Dateien: {0}</translation>
+    </message>
+    <message>
+      <source>FITS files (*.fit *.fits *.fts *.fz);;All files (*)</source>
+      <translation>FITS-Dateien (*.fit *.fits *.fts *.fz);;Alle Dateien (*)</translation>
+    </message>
+    <message>
+      <source>Failed to rename {0} files</source>
+      <translation>Umbenennen von {0} Dateien fehlgeschlagen</translation>
+    </message>
+    <message>
+      <source>File already exists</source>
+      <translation>Datei existiert bereits</translation>
+    </message>
+    <message>
+      <source>Filename pattern</source>
+      <translation>Dateinamensmuster</translation>
+    </message>
+    <message>
+      <source>Files renamed successfully.</source>
+      <translation>Dateien erfolgreich umbenannt.</translation>
+    </message>
+    <message>
+      <source>Filter Pattern</source>
+      <translation>Filtermuster</translation>
+    </message>
+  </context>
+  <context>
+    <name>BatchSettingsDialog</name>
+    <message>
+      <source>Batch Edit Settings (JSON)</source>
+      <translation>Stapelweise Einstellungen ändern (JSON)</translation>
+    </message>
+    <message>
+      <source>Batch Modify Settings (JSON)</source>
+      <translation>Stapelweise Einstellungen modifizieren (JSON)</translation>
+    </message>
+    <message>
+      <source>JSON files (*.json)</source>
+      <translation>JSON-Dateien (*.json)</translation>
+    </message>
+    <message>
+      <source>No settings files selected.</source>
+      <translation>Keine Einstellungsdateien ausgewählt.</translation>
+    </message>
+    <message>
+      <source>Run</source>
+      <translation>Ausführen</translation>
+    </message>
+    <message>
+      <source>Select settings files</source>
+      <translation>Einstellungsdateien auswählen</translation>
+    </message>
+  </context>
+  <context>
+    <name>BlemishBlasterDialogPro</name>
+    <message>
+      <source>Apply to Document</source>
+      <translation>Auf Dokument anwenden</translation>
+    </message>
+    <message>
+      <source>Auto-stretch preview</source>
+      <translation>Vorschau automatisch strecken</translation>
+    </message>
+    <message>
+      <source>Blemish Blaster</source>
+      <translation>Blemish Blaster</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Schließen</translation>
+    </message>
+    <message>
+      <source>Controls</source>
+      <translation>Steuerung</translation>
+    </message>
+    <message>
+      <source>Feather:</source>
+      <translation>Weiche Kante:</translation>
+    </message>
+    <message>
+      <source>Linked color channels</source>
+      <translation>Verknüpfte Farbkänale</translation>
+    </message>
+    <message>
+      <source>Opacity:</source>
+      <translation>Deckkraft:</translation>
+    </message>
+    <message>
+      <source>Radius:</source>
+      <translation>Radius:</translation>
+    </message>
+    <message>
+      <source>Redo</source>
+      <translation>Wiederholen</translation>
+    </message>
+    <message>
+      <source>Target median:</source>
+      <translation>Ziel-Median:</translation>
+    </message>
+    <message>
+      <source>Undo</source>
+      <translation>Rückgängig</translation>
+    </message>
+  </context>
+  <context>
+    <name>BlinkComparatorPro</name>
+    <message>
+      <source>Blink Comparator</source>
+      <translation>Blink-Komparator</translation>
+    </message>
+  </context>
+  <context>
+    <name>BlinkTab</name>
+    <message>
+      <source>
 
-{0} file(s) could not be renamed:</source><translation>
+{0} file(s) could not be renamed:</source>
+      <translation>
 
-{0} Datei(en) konnten nicht umbenannt werden:</translation></message><message><source>0 = infinite</source><translation>0 = unendlich</translation></message><message><source>Absolute Difference</source><translation>Absolute Differenz</translation></message><message><source>Add Additional</source><translation>Zusätzliche hinzufügen</translation></message><message><source>Add Additional Images</source><translation>Zusätzliche Bilder hinzufügen</translation></message><message><source>Add Frames</source><translation>Frames hinzufügen</translation></message><message><source>Add Images</source><translation>Bilder hinzufügen</translation></message><message><source>Aggressive Stretch</source><translation>Aggressives Strecken</translation></message><message><source>Align images</source><translation>Bilder ausrichten</translation></message><message><source>Aligning frames...</source><translation>Frames werden ausgerichtet...</translation></message><message><source>Aligning...</source><translation>Ausrichtung...</translation></message><message><source>Alignment complete</source><translation>Ausrichtung abgeschlossen</translation></message><message><source>Alignment complete.</source><translation>Ausrichtung abgeschlossen.</translation></message><message><source>Alignment failed</source><translation>Ausrichtung fehlgeschlagen</translation></message><message><source>Alignment failed: {0}</source><translation>Ausrichtung fehlgeschlagen: {0}</translation></message><message><source>All</source><translation>Alle</translation></message><message><source>Apply to All Frames</source><translation>Auf alle Frames anwenden</translation></message><message><source>Are you sure you want to clear all loaded images?</source><translation>Sind Sie sicher, dass Sie alle geladenen Bilder löschen möchten?</translation></message><message><source>Are you sure you want to permanently delete {0} flagged images? This action is irreversible.</source><translation>Sind Sie sicher, dass Sie {0} markierte Bilder dauerhaft löschen möchten? Diese Aktion ist nicht rückgängig zu machen.</translation></message><message><source>Are you sure you want to permanently delete {0} selected images? This action is irreversible.</source><translation>Sind Sie sicher, dass Sie {0} ausgewählte Bilder dauerhaft löschen möchten? Diese Aktion ist nicht rückgängig zu machen.</translation></message><message><source>Auto Align Frames</source><translation>Frames automatisch ausrichten</translation></message><message><source>Auto Stretch</source><translation>Auto-Stretch</translation></message><message><source>Auto-align</source><translation>Auto-Ausrichtung</translation></message><message><source>Auto-stretch</source><translation>Auto-Stretch</translation></message><message><source>Batch Deletion</source><translation>Stapel-Löschen</translation></message><message><source>Batch Move</source><translation>Stapel-Verschieben</translation></message><message><source>Batch Operations</source><translation>Stapel-Operationen</translation></message><message><source>Batch Rename</source><translation>Stapel-Umbenennen</translation></message><message><source>Batch Rename Selected…</source><translation>Ausgewählte stapelweise umbenennen…</translation></message><message><source>Blink</source><translation>Blink</translation></message><message><source>Blink Comparator</source><translation>Blink-Komparator</translation></message><message><source>Cancel</source><translation>Abbrechen</translation></message><message><source>Cancel Export</source><translation>Export abbrechen</translation></message><message><source>Clear All</source><translation>Alle löschen</translation></message><message><source>Clear All Images</source><translation>Alle Bilder löschen</translation></message><message><source>Clear Flags</source><translation>Markierungen löschen</translation></message><message><source>Clear Images</source><translation>Bilder löschen</translation></message><message><source>Clear marks</source><translation>Markierungen löschen</translation></message><message><source>Confirm Batch Deletion</source><translation>Stapel-Löschen bestätigen</translation></message><message><source>Confirm Delete</source><translation>Löschen bestätigen</translation></message><message><source>Confirm Deletion</source><translation>Löschung bestätigen</translation></message><message><source>Copy coordinates</source><translation>Koordinaten kopieren</translation></message><message><source>Crop All</source><translation>Alle zuschneiden</translation></message><message><source>Crossfade</source><translation>Überblenden</translation></message><message><source>Current frame</source><translation>Aktueller Frame</translation></message><message><source>Date</source><translation>Datum</translation></message><message><source>Delay (ms)</source><translation>Verzögerung (ms)</translation></message><message><source>Delete All Flagged Images</source><translation>Alle markierten Bilder löschen</translation></message><message><source>Delete Flagged</source><translation>Markierte löschen</translation></message><message><source>Delete Selected Items</source><translation>Ausgewählte Elemente löschen</translation></message><message><source>Delete flagged frame(s)?</source><translation>Markierte(n) Frame(s) löschen?</translation></message><message><source>Deleted {0} flagged images.</source><translation>{0} markierte Bilder gelöscht.</translation></message><message><source>Difference Mode</source><translation>Differenzmodus</translation></message><message><source>Difference mode</source><translation>Differenzmodus</translation></message><message><source>Difference threshold</source><translation>Differenzschwellenwert</translation></message><message><source>Doc Manager</source><translation>Dokument-Manager</translation></message><message><source>DocManager lacks open_array/open_numpy/create_document</source><translation>DocManager fehlen open_array/open_numpy/create_document</translation></message><message><source>DocManager returned no document.</source><translation>DocManager gab kein Dokument zurück.</translation></message><message><source>Document Manager</source><translation>Dokument-Manager</translation></message><message><source>Duplicate Frame</source><translation>Frame duplizieren</translation></message><message><source>Duration:</source><translation>Dauer:</translation></message><message><source>Empty image</source><translation>Leeres Bild</translation></message><message><source>Enter a prefix or suffix to rename selected files:</source><translation>Geben Sie ein Präfix oder Suffix ein, um ausgewählte Dateien umzubenennen:</translation></message><message><source>Enter new name:</source><translation>Neuen Namen eingeben:</translation></message><message><source>Error</source><translation>Fehler</translation></message><message><source>Export</source><translation>Exportieren</translation></message><message><source>Export All as FITS</source><translation>Alle als FITS exportieren</translation></message><message><source>Export All as PNG</source><translation>Alle als PNG exportieren</translation></message><message><source>Export All as TIFF</source><translation>Alle als TIFF exportieren</translation></message><message><source>Export Blink Video</source><translation>Blink-Video exportieren</translation></message><message><source>Export Frames</source><translation>Frames exportieren</translation></message><message><source>Export GIF</source><translation>GIF exportieren</translation></message><message><source>Export Video</source><translation>Video exportieren</translation></message><message><source>Export Video…</source><translation>Video exportieren…</translation></message><message><source>Export animation</source><translation>Animation exportieren</translation></message><message><source>Export canceled.</source><translation>Export abgebrochen.</translation></message><message><source>Export cancelled.</source><translation>Export abgebrochen.</translation></message><message><source>Export marks</source><translation>Markierungen exportieren</translation></message><message><source>Export only selected frames</source><translation>Nur ausgewählte Frames exportieren</translation></message><message><source>Export video</source><translation>Video exportieren</translation></message><message><source>Exporting video...</source><translation>Video wird exportiert...</translation></message><message><source>Exposure: {0}</source><translation>Belichtung: {0}</translation></message><message><source>FITS header</source><translation>FITS-Header</translation></message><message><source>FPS:</source><translation>FPS:</translation></message><message><source>Failed to create document:
-{0}</source><translation>Dokument konnte nicht erstellt werden:
-{0}</translation></message><message><source>Failed to load frame: {0}</source><translation>Frame konnte nicht geladen werden: {0}</translation></message><message><source>Failed to move {0}: {1}</source><translation>Fehler beim Verschieben von {0}: {1}</translation></message><message><source>Failed to open subwindow:
-{0}</source><translation>Unterfenster konnte nicht geöffnet werden:
-{0}</translation></message><message><source>Failed to rename the file: {0}</source><translation>Datei konnte nicht umbenannt werden: {0}</translation></message><message><source>Filename</source><translation>Dateiname</translation></message><message><source>Filter: {0}</source><translation>Filter: {0}</translation></message><message><source>First</source><translation>Erster</translation></message><message><source>First Frame</source><translation>Erster Frame</translation></message><message><source>Fit to Preview</source><translation>An Vorschau anpassen</translation></message><message><source>Flag</source><translation>Markieren</translation></message><message><source>Flag All</source><translation>Alle markieren</translation></message><message><source>Flag Selected</source><translation>Ausgewählte markieren</translation></message><message><source>Flagged frames moved to: {0}</source><translation>Markierte Frames verschoben nach: {0}</translation></message><message><source>Frame</source><translation>Frame</translation></message><message><source>Frame Rate:</source><translation>Bildrate:</translation></message><message><source>Frame rate</source><translation>Bildrate</translation></message><message><source>Frame {0} of {1}</source><translation>Frame {0} von {1}</translation></message><message><source>Frames exported to: {0}</source><translation>Frames exportiert nach: {0}</translation></message><message><source>Frames loaded successfully.</source><translation>Frames erfolgreich geladen.</translation></message><message><source>Full Affine</source><translation>Voll-Affin</translation></message><message><source>GIF Files (*.gif)</source><translation>GIF-Dateien (*.gif)</translation></message><message><source>GIF export failed: {0}</source><translation>GIF-Export fehlgeschlagen: {0}</translation></message><message><source>GIF exported: {0}</source><translation>GIF exportiert: {0}</translation></message><message><source>Hide Flagged</source><translation>Markierte ausblenden</translation></message><message><source>Highlight differences</source><translation>Unterschiede hervorheben</translation></message><message><source>Homography</source><translation>Homographie</translation></message><message><source>Image Files</source><translation>Bilddateien</translation></message><message><source>Image Files (*.fits *.fit *.tif *.tiff *.png *.jpg *.jpeg);;All Files (*)</source><translation>Bilddateien (*.fits *.fit *.tif *.tiff *.png *.jpg *.jpeg);;Alle Dateien (*)</translation></message><message><source>Image info</source><translation>Bildinfo</translation></message><message><source>Images (*.png *.tif *.tiff *.fits *.fit *.xisf *.cr2 *.cr3 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef);;All Files (*)</source><translation>Bilder (*.png *.tif *.tiff *.fits *.fit *.xisf *.cr2 *.cr3 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef);;Alle Dateien (*)</translation></message><message><source>Individual Stretch</source><translation>Individuelles Strecken</translation></message><message><source>Individual stretch</source><translation>Individuelles Strecken</translation></message><message><source>Invert Flags</source><translation>Markierungen umkehren</translation></message><message><source>Invert difference</source><translation>Differenz umkehren</translation></message><message><source>Last</source><translation>Letzter</translation></message><message><source>Last Frame</source><translation>Letzter Frame</translation></message><message><source>Link stretch</source><translation>Strecken verknüpfen</translation></message><message><source>Linked Stretch</source><translation>Verknüpftes Strecken</translation></message><message><source>Load images before exporting.</source><translation>Bilder vor dem Exportieren laden.</translation></message><message><source>Load some images first.</source><translation>Laden Sie zuerst einige Bilder.</translation></message><message><source>Loaded {0} images.</source><translation>{0} Bilder geladen.</translation></message><message><source>Loaded {0} image{1}.</source><translation>{0} Bild(er) geladen.</translation></message><message><source>Loading frame {0} of {1}...</source><translation>Lade Frame {0} von {1}...</translation></message><message><source>Loading frames...</source><translation>Lade Frames...</translation></message><message><source>Loading images...</source><translation>Lade Bilder...</translation></message><message><source>Loading...</source><translation>Laden...</translation></message><message><source>Loop</source><translation>Schleife</translation></message><message><source>Loop Count:</source><translation>Schleifenanzahl:</translation></message><message><source>Main window or DocManager not available.</source><translation>Hauptfenster oder DocManager nicht verfügbar.</translation></message><message><source>Manual align</source><translation>Manuelle Ausrichtung</translation></message><message><source>Mark as reference</source><translation>Als Referenz markieren</translation></message><message><source>Mark transient</source><translation>Transient markieren</translation></message><message><source>Move All Flagged Images</source><translation>Alle markierten Bilder verschieben</translation></message><message><source>Move Down</source><translation>Nach unten verschieben</translation></message><message><source>Move Flagged to Folder</source><translation>Markierte in Ordner verschieben</translation></message><message><source>Move Selected Items</source><translation>Ausgewählte Elemente verschieben</translation></message><message><source>Move Up</source><translation>Nach oben verschieben</translation></message><message><source>Moved {0} flagged images.</source><translation>{0} markierte Bilder verschoben.</translation></message><message><source>Next</source><translation>Nächster</translation></message><message><source>Next Frame</source><translation>Nächster Frame</translation></message><message><source>No Flagged Images</source><translation>Keine markierten Bilder</translation></message><message><source>No Frames</source><translation>Keine Frames</translation></message><message><source>No Images</source><translation>Keine Bilder</translation></message><message><source>No Images Found</source><translation>Keine Bilder gefunden</translation></message><message><source>No New Images</source><translation>Keine neuen Bilder</translation></message><message><source>No Prefix</source><translation>Kein Präfix</translation></message><message><source>No Selection</source><translation>Keine Auswahl</translation></message><message><source>No compatible video codec found.
+{0} Datei(en) konnten nicht umbenannt werden:</translation>
+    </message>
+    <message>
+      <source>0 = infinite</source>
+      <translation>0 = unendlich</translation>
+    </message>
+    <message>
+      <source>Absolute Difference</source>
+      <translation>Absolute Differenz</translation>
+    </message>
+    <message>
+      <source>Add Additional</source>
+      <translation>Zusätzliche hinzufügen</translation>
+    </message>
+    <message>
+      <source>Add Additional Images</source>
+      <translation>Zusätzliche Bilder hinzufügen</translation>
+    </message>
+    <message>
+      <source>Add Frames</source>
+      <translation>Frames hinzufügen</translation>
+    </message>
+    <message>
+      <source>Add Images</source>
+      <translation>Bilder hinzufügen</translation>
+    </message>
+    <message>
+      <source>Aggressive Stretch</source>
+      <translation>Aggressives Strecken</translation>
+    </message>
+    <message>
+      <source>Align images</source>
+      <translation>Bilder ausrichten</translation>
+    </message>
+    <message>
+      <source>Aligning frames...</source>
+      <translation>Frames werden ausgerichtet...</translation>
+    </message>
+    <message>
+      <source>Aligning...</source>
+      <translation>Ausrichtung...</translation>
+    </message>
+    <message>
+      <source>Alignment complete</source>
+      <translation>Ausrichtung abgeschlossen</translation>
+    </message>
+    <message>
+      <source>Alignment complete.</source>
+      <translation>Ausrichtung abgeschlossen.</translation>
+    </message>
+    <message>
+      <source>Alignment failed</source>
+      <translation>Ausrichtung fehlgeschlagen</translation>
+    </message>
+    <message>
+      <source>Alignment failed: {0}</source>
+      <translation>Ausrichtung fehlgeschlagen: {0}</translation>
+    </message>
+    <message>
+      <source>All</source>
+      <translation>Alle</translation>
+    </message>
+    <message>
+      <source>Apply to All Frames</source>
+      <translation>Auf alle Frames anwenden</translation>
+    </message>
+    <message>
+      <source>Are you sure you want to clear all loaded images?</source>
+      <translation>Sind Sie sicher, dass Sie alle geladenen Bilder löschen möchten?</translation>
+    </message>
+    <message>
+      <source>Are you sure you want to permanently delete {0} flagged images? This action is irreversible.</source>
+      <translation>Sind Sie sicher, dass Sie {0} markierte Bilder dauerhaft löschen möchten? Diese Aktion ist nicht rückgängig zu machen.</translation>
+    </message>
+    <message>
+      <source>Are you sure you want to permanently delete {0} selected images? This action is irreversible.</source>
+      <translation>Sind Sie sicher, dass Sie {0} ausgewählte Bilder dauerhaft löschen möchten? Diese Aktion ist nicht rückgängig zu machen.</translation>
+    </message>
+    <message>
+      <source>Auto Align Frames</source>
+      <translation>Frames automatisch ausrichten</translation>
+    </message>
+    <message>
+      <source>Auto Stretch</source>
+      <translation>Auto-Stretch</translation>
+    </message>
+    <message>
+      <source>Auto-align</source>
+      <translation>Auto-Ausrichtung</translation>
+    </message>
+    <message>
+      <source>Auto-stretch</source>
+      <translation>Auto-Stretch</translation>
+    </message>
+    <message>
+      <source>Batch Deletion</source>
+      <translation>Stapel-Löschen</translation>
+    </message>
+    <message>
+      <source>Batch Move</source>
+      <translation>Stapel-Verschieben</translation>
+    </message>
+    <message>
+      <source>Batch Operations</source>
+      <translation>Stapel-Operationen</translation>
+    </message>
+    <message>
+      <source>Batch Rename</source>
+      <translation>Stapel-Umbenennen</translation>
+    </message>
+    <message>
+      <source>Batch Rename Selected…</source>
+      <translation>Ausgewählte stapelweise umbenennen…</translation>
+    </message>
+    <message>
+      <source>Blink</source>
+      <translation>Blink</translation>
+    </message>
+    <message>
+      <source>Blink Comparator</source>
+      <translation>Blink-Komparator</translation>
+    </message>
+    <message>
+      <source>Cancel</source>
+      <translation>Abbrechen</translation>
+    </message>
+    <message>
+      <source>Cancel Export</source>
+      <translation>Export abbrechen</translation>
+    </message>
+    <message>
+      <source>Clear All</source>
+      <translation>Alle löschen</translation>
+    </message>
+    <message>
+      <source>Clear All Images</source>
+      <translation>Alle Bilder löschen</translation>
+    </message>
+    <message>
+      <source>Clear Flags</source>
+      <translation>Markierungen löschen</translation>
+    </message>
+    <message>
+      <source>Clear Images</source>
+      <translation>Bilder löschen</translation>
+    </message>
+    <message>
+      <source>Clear marks</source>
+      <translation>Markierungen löschen</translation>
+    </message>
+    <message>
+      <source>Confirm Batch Deletion</source>
+      <translation>Stapel-Löschen bestätigen</translation>
+    </message>
+    <message>
+      <source>Confirm Delete</source>
+      <translation>Löschen bestätigen</translation>
+    </message>
+    <message>
+      <source>Confirm Deletion</source>
+      <translation>Löschung bestätigen</translation>
+    </message>
+    <message>
+      <source>Copy coordinates</source>
+      <translation>Koordinaten kopieren</translation>
+    </message>
+    <message>
+      <source>Crop All</source>
+      <translation>Alle zuschneiden</translation>
+    </message>
+    <message>
+      <source>Crossfade</source>
+      <translation>Überblenden</translation>
+    </message>
+    <message>
+      <source>Current frame</source>
+      <translation>Aktueller Frame</translation>
+    </message>
+    <message>
+      <source>Date</source>
+      <translation>Datum</translation>
+    </message>
+    <message>
+      <source>Delay (ms)</source>
+      <translation>Verzögerung (ms)</translation>
+    </message>
+    <message>
+      <source>Delete All Flagged Images</source>
+      <translation>Alle markierten Bilder löschen</translation>
+    </message>
+    <message>
+      <source>Delete Flagged</source>
+      <translation>Markierte löschen</translation>
+    </message>
+    <message>
+      <source>Delete Selected Items</source>
+      <translation>Ausgewählte Elemente löschen</translation>
+    </message>
+    <message>
+      <source>Delete flagged frame(s)?</source>
+      <translation>Markierte(n) Frame(s) löschen?</translation>
+    </message>
+    <message>
+      <source>Deleted {0} flagged images.</source>
+      <translation>{0} markierte Bilder gelöscht.</translation>
+    </message>
+    <message>
+      <source>Difference Mode</source>
+      <translation>Differenzmodus</translation>
+    </message>
+    <message>
+      <source>Difference mode</source>
+      <translation>Differenzmodus</translation>
+    </message>
+    <message>
+      <source>Difference threshold</source>
+      <translation>Differenzschwellenwert</translation>
+    </message>
+    <message>
+      <source>Doc Manager</source>
+      <translation>Dokument-Manager</translation>
+    </message>
+    <message>
+      <source>DocManager lacks open_array/open_numpy/create_document</source>
+      <translation>DocManager fehlen open_array/open_numpy/create_document</translation>
+    </message>
+    <message>
+      <source>DocManager returned no document.</source>
+      <translation>DocManager gab kein Dokument zurück.</translation>
+    </message>
+    <message>
+      <source>Document Manager</source>
+      <translation>Dokument-Manager</translation>
+    </message>
+    <message>
+      <source>Duplicate Frame</source>
+      <translation>Frame duplizieren</translation>
+    </message>
+    <message>
+      <source>Duration:</source>
+      <translation>Dauer:</translation>
+    </message>
+    <message>
+      <source>Empty image</source>
+      <translation>Leeres Bild</translation>
+    </message>
+    <message>
+      <source>Enter a prefix or suffix to rename selected files:</source>
+      <translation>Geben Sie ein Präfix oder Suffix ein, um ausgewählte Dateien umzubenennen:</translation>
+    </message>
+    <message>
+      <source>Enter new name:</source>
+      <translation>Neuen Namen eingeben:</translation>
+    </message>
+    <message>
+      <source>Error</source>
+      <translation>Fehler</translation>
+    </message>
+    <message>
+      <source>Export</source>
+      <translation>Exportieren</translation>
+    </message>
+    <message>
+      <source>Export All as FITS</source>
+      <translation>Alle als FITS exportieren</translation>
+    </message>
+    <message>
+      <source>Export All as PNG</source>
+      <translation>Alle als PNG exportieren</translation>
+    </message>
+    <message>
+      <source>Export All as TIFF</source>
+      <translation>Alle als TIFF exportieren</translation>
+    </message>
+    <message>
+      <source>Export Blink Video</source>
+      <translation>Blink-Video exportieren</translation>
+    </message>
+    <message>
+      <source>Export Frames</source>
+      <translation>Frames exportieren</translation>
+    </message>
+    <message>
+      <source>Export GIF</source>
+      <translation>GIF exportieren</translation>
+    </message>
+    <message>
+      <source>Export Video</source>
+      <translation>Video exportieren</translation>
+    </message>
+    <message>
+      <source>Export Video…</source>
+      <translation>Video exportieren…</translation>
+    </message>
+    <message>
+      <source>Export animation</source>
+      <translation>Animation exportieren</translation>
+    </message>
+    <message>
+      <source>Export canceled.</source>
+      <translation>Export abgebrochen.</translation>
+    </message>
+    <message>
+      <source>Export cancelled.</source>
+      <translation>Export abgebrochen.</translation>
+    </message>
+    <message>
+      <source>Export marks</source>
+      <translation>Markierungen exportieren</translation>
+    </message>
+    <message>
+      <source>Export only selected frames</source>
+      <translation>Nur ausgewählte Frames exportieren</translation>
+    </message>
+    <message>
+      <source>Export video</source>
+      <translation>Video exportieren</translation>
+    </message>
+    <message>
+      <source>Exporting video...</source>
+      <translation>Video wird exportiert...</translation>
+    </message>
+    <message>
+      <source>Exposure: {0}</source>
+      <translation>Belichtung: {0}</translation>
+    </message>
+    <message>
+      <source>FITS header</source>
+      <translation>FITS-Header</translation>
+    </message>
+    <message>
+      <source>FPS:</source>
+      <translation>FPS:</translation>
+    </message>
+    <message>
+      <source>Failed to create document:
+{0}</source>
+      <translation>Dokument konnte nicht erstellt werden:
+{0}</translation>
+    </message>
+    <message>
+      <source>Failed to load frame: {0}</source>
+      <translation>Frame konnte nicht geladen werden: {0}</translation>
+    </message>
+    <message>
+      <source>Failed to move {0}: {1}</source>
+      <translation>Fehler beim Verschieben von {0}: {1}</translation>
+    </message>
+    <message>
+      <source>Failed to open subwindow:
+{0}</source>
+      <translation>Unterfenster konnte nicht geöffnet werden:
+{0}</translation>
+    </message>
+    <message>
+      <source>Failed to rename the file: {0}</source>
+      <translation>Datei konnte nicht umbenannt werden: {0}</translation>
+    </message>
+    <message>
+      <source>Filename</source>
+      <translation>Dateiname</translation>
+    </message>
+    <message>
+      <source>Filter: {0}</source>
+      <translation>Filter: {0}</translation>
+    </message>
+    <message>
+      <source>First</source>
+      <translation>Erster</translation>
+    </message>
+    <message>
+      <source>First Frame</source>
+      <translation>Erster Frame</translation>
+    </message>
+    <message>
+      <source>Fit to Preview</source>
+      <translation>An Vorschau anpassen</translation>
+    </message>
+    <message>
+      <source>Flag</source>
+      <translation>Markieren</translation>
+    </message>
+    <message>
+      <source>Flag All</source>
+      <translation>Alle markieren</translation>
+    </message>
+    <message>
+      <source>Flag Selected</source>
+      <translation>Ausgewählte markieren</translation>
+    </message>
+    <message>
+      <source>Flagged frames moved to: {0}</source>
+      <translation>Markierte Frames verschoben nach: {0}</translation>
+    </message>
+    <message>
+      <source>Frame</source>
+      <translation>Frame</translation>
+    </message>
+    <message>
+      <source>Frame Rate:</source>
+      <translation>Bildrate:</translation>
+    </message>
+    <message>
+      <source>Frame rate</source>
+      <translation>Bildrate</translation>
+    </message>
+    <message>
+      <source>Frame {0} of {1}</source>
+      <translation>Frame {0} von {1}</translation>
+    </message>
+    <message>
+      <source>Frames exported to: {0}</source>
+      <translation>Frames exportiert nach: {0}</translation>
+    </message>
+    <message>
+      <source>Frames loaded successfully.</source>
+      <translation>Frames erfolgreich geladen.</translation>
+    </message>
+    <message>
+      <source>Full Affine</source>
+      <translation>Voll-Affin</translation>
+    </message>
+    <message>
+      <source>GIF Files (*.gif)</source>
+      <translation>GIF-Dateien (*.gif)</translation>
+    </message>
+    <message>
+      <source>GIF export failed: {0}</source>
+      <translation>GIF-Export fehlgeschlagen: {0}</translation>
+    </message>
+    <message>
+      <source>GIF exported: {0}</source>
+      <translation>GIF exportiert: {0}</translation>
+    </message>
+    <message>
+      <source>Hide Flagged</source>
+      <translation>Markierte ausblenden</translation>
+    </message>
+    <message>
+      <source>Highlight differences</source>
+      <translation>Unterschiede hervorheben</translation>
+    </message>
+    <message>
+      <source>Homography</source>
+      <translation>Homographie</translation>
+    </message>
+    <message>
+      <source>Image Files</source>
+      <translation>Bilddateien</translation>
+    </message>
+    <message>
+      <source>Image Files (*.fits *.fit *.tif *.tiff *.png *.jpg *.jpeg);;All Files (*)</source>
+      <translation>Bilddateien (*.fits *.fit *.tif *.tiff *.png *.jpg *.jpeg);;Alle Dateien (*)</translation>
+    </message>
+    <message>
+      <source>Image info</source>
+      <translation>Bildinfo</translation>
+    </message>
+    <message>
+      <source>Images (*.png *.tif *.tiff *.fits *.fit *.xisf *.cr2 *.cr3 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef);;All Files (*)</source>
+      <translation>Bilder (*.png *.tif *.tiff *.fits *.fit *.xisf *.cr2 *.cr3 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef);;Alle Dateien (*)</translation>
+    </message>
+    <message>
+      <source>Individual Stretch</source>
+      <translation>Individuelles Strecken</translation>
+    </message>
+    <message>
+      <source>Individual stretch</source>
+      <translation>Individuelles Strecken</translation>
+    </message>
+    <message>
+      <source>Invert Flags</source>
+      <translation>Markierungen umkehren</translation>
+    </message>
+    <message>
+      <source>Invert difference</source>
+      <translation>Differenz umkehren</translation>
+    </message>
+    <message>
+      <source>Last</source>
+      <translation>Letzter</translation>
+    </message>
+    <message>
+      <source>Last Frame</source>
+      <translation>Letzter Frame</translation>
+    </message>
+    <message>
+      <source>Link stretch</source>
+      <translation>Strecken verknüpfen</translation>
+    </message>
+    <message>
+      <source>Linked Stretch</source>
+      <translation>Verknüpftes Strecken</translation>
+    </message>
+    <message>
+      <source>Load images before exporting.</source>
+      <translation>Bilder vor dem Exportieren laden.</translation>
+    </message>
+    <message>
+      <source>Load some images first.</source>
+      <translation>Laden Sie zuerst einige Bilder.</translation>
+    </message>
+    <message>
+      <source>Loaded {0} images.</source>
+      <translation>{0} Bilder geladen.</translation>
+    </message>
+    <message>
+      <source>Loaded {0} image{1}.</source>
+      <translation>{0} Bild(er) geladen.</translation>
+    </message>
+    <message>
+      <source>Loading frame {0} of {1}...</source>
+      <translation>Lade Frame {0} von {1}...</translation>
+    </message>
+    <message>
+      <source>Loading frames...</source>
+      <translation>Lade Frames...</translation>
+    </message>
+    <message>
+      <source>Loading images...</source>
+      <translation>Lade Bilder...</translation>
+    </message>
+    <message>
+      <source>Loading...</source>
+      <translation>Laden...</translation>
+    </message>
+    <message>
+      <source>Loop</source>
+      <translation>Schleife</translation>
+    </message>
+    <message>
+      <source>Loop Count:</source>
+      <translation>Schleifenanzahl:</translation>
+    </message>
+    <message>
+      <source>Main window or DocManager not available.</source>
+      <translation>Hauptfenster oder DocManager nicht verfügbar.</translation>
+    </message>
+    <message>
+      <source>Manual align</source>
+      <translation>Manuelle Ausrichtung</translation>
+    </message>
+    <message>
+      <source>Mark as reference</source>
+      <translation>Als Referenz markieren</translation>
+    </message>
+    <message>
+      <source>Mark transient</source>
+      <translation>Transient markieren</translation>
+    </message>
+    <message>
+      <source>Move All Flagged Images</source>
+      <translation>Alle markierten Bilder verschieben</translation>
+    </message>
+    <message>
+      <source>Move Down</source>
+      <translation>Nach unten verschieben</translation>
+    </message>
+    <message>
+      <source>Move Flagged to Folder</source>
+      <translation>Markierte in Ordner verschieben</translation>
+    </message>
+    <message>
+      <source>Move Selected Items</source>
+      <translation>Ausgewählte Elemente verschieben</translation>
+    </message>
+    <message>
+      <source>Move Up</source>
+      <translation>Nach oben verschieben</translation>
+    </message>
+    <message>
+      <source>Moved {0} flagged images.</source>
+      <translation>{0} markierte Bilder verschoben.</translation>
+    </message>
+    <message>
+      <source>Next</source>
+      <translation>Nächster</translation>
+    </message>
+    <message>
+      <source>Next Frame</source>
+      <translation>Nächster Frame</translation>
+    </message>
+    <message>
+      <source>No Flagged Images</source>
+      <translation>Keine markierten Bilder</translation>
+    </message>
+    <message>
+      <source>No Frames</source>
+      <translation>Keine Frames</translation>
+    </message>
+    <message>
+      <source>No Images</source>
+      <translation>Keine Bilder</translation>
+    </message>
+    <message>
+      <source>No Images Found</source>
+      <translation>Keine Bilder gefunden</translation>
+    </message>
+    <message>
+      <source>No New Images</source>
+      <translation>Keine neuen Bilder</translation>
+    </message>
+    <message>
+      <source>No Prefix</source>
+      <translation>Kein Präfix</translation>
+    </message>
+    <message>
+      <source>No Selection</source>
+      <translation>Keine Auswahl</translation>
+    </message>
+    <message>
+      <source>No compatible video codec found.
 
-Tip: install FFmpeg or `pip install imageio[ffmpeg]` for a portable fallback.</source><translation>Kein kompatibler Videocodec gefunden.
+Tip: install FFmpeg or `pip install imageio[ffmpeg]` for a portable fallback.</source>
+      <translation>Kein kompatibler Videocodec gefunden.
 
-Tipp: Installieren Sie FFmpeg oder `pip install imageio[ffmpeg]` für einen portablen Fallback.</translation></message><message><source>No frames loaded.</source><translation>Keine Frames geladen.</translation></message><message><source>No frames were written (codec/back-end issue?).</source><translation>Es wurden keine Frames geschrieben (Codec/Backend-Problem?).</translation></message><message><source>No image is currently selected to flag.</source><translation>Momentan ist kein Bild zum Markieren ausgewählt.</translation></message><message><source>No image loaded. Cannot fit to preview.</source><translation>Kein Bild geladen. Anpassung an Vorschau nicht möglich.</translation></message><message><source>No image selected.</source><translation>Kein Bild ausgewählt.</translation></message><message><source>No images</source><translation>Keine Bilder</translation></message><message><source>No images loaded</source><translation>Keine Bilder geladen</translation></message><message><source>No individual frames selected.</source><translation>Keine einzelnen Frames ausgewählt.</translation></message><message><source>No items selected for deletion.</source><translation>Keine Elemente zum Löschen ausgewählt.</translation></message><message><source>No items selected for moving.</source><translation>Keine Elemente zum Verschieben ausgewählt.</translation></message><message><source>No items selected for renaming.</source><translation>Keine Elemente zum Umbenennen ausgewählt.</translation></message><message><source>No new images selected or already loaded.</source><translation>Keine neuen Bilder ausgewählt oder bereits geladen.</translation></message><message><source>No new images were selected or all selected images are already loaded.</source><translation>Es wurden keine neuen Bilder ausgewählt oder alle ausgewählten Bilder sind bereits geladen.</translation></message><message><source>No prefix entered. This will not change any filenames.
+Tipp: Installieren Sie FFmpeg oder `pip install imageio[ffmpeg]` für einen portablen Fallback.</translation>
+    </message>
+    <message>
+      <source>No frames loaded.</source>
+      <translation>Keine Frames geladen.</translation>
+    </message>
+    <message>
+      <source>No frames were written (codec/back-end issue?).</source>
+      <translation>Es wurden keine Frames geschrieben (Codec/Backend-Problem?).</translation>
+    </message>
+    <message>
+      <source>No image is currently selected to flag.</source>
+      <translation>Momentan ist kein Bild zum Markieren ausgewählt.</translation>
+    </message>
+    <message>
+      <source>No image loaded. Cannot fit to preview.</source>
+      <translation>Kein Bild geladen. Anpassung an Vorschau nicht möglich.</translation>
+    </message>
+    <message>
+      <source>No image selected.</source>
+      <translation>Kein Bild ausgewählt.</translation>
+    </message>
+    <message>
+      <source>No images</source>
+      <translation>Keine Bilder</translation>
+    </message>
+    <message>
+      <source>No images loaded</source>
+      <translation>Keine Bilder geladen</translation>
+    </message>
+    <message>
+      <source>No individual frames selected.</source>
+      <translation>Keine einzelnen Frames ausgewählt.</translation>
+    </message>
+    <message>
+      <source>No items selected for deletion.</source>
+      <translation>Keine Elemente zum Löschen ausgewählt.</translation>
+    </message>
+    <message>
+      <source>No items selected for moving.</source>
+      <translation>Keine Elemente zum Verschieben ausgewählt.</translation>
+    </message>
+    <message>
+      <source>No items selected for renaming.</source>
+      <translation>Keine Elemente zum Umbenennen ausgewählt.</translation>
+    </message>
+    <message>
+      <source>No new images selected or already loaded.</source>
+      <translation>Keine neuen Bilder ausgewählt oder bereits geladen.</translation>
+    </message>
+    <message>
+      <source>No new images were selected or all selected images are already loaded.</source>
+      <translation>Es wurden keine neuen Bilder ausgewählt oder alle ausgewählten Bilder sind bereits geladen.</translation>
+    </message>
+    <message>
+      <source>No prefix entered. This will not change any filenames.
 
-Continue anyway?</source><translation>Kein Präfix eingegeben. Dies wird keine Dateinamen ändern.
+Continue anyway?</source>
+      <translation>Kein Präfix eingegeben. Dies wird keine Dateinamen ändern.
 
-Trotzdem fortfahren?</translation></message><message><source>No supported image files were found in the selected directory.</source><translation>Im ausgewählten Verzeichnis wurden keine unterstützten Bilddateien gefunden.</translation></message><message><source>Normalize All</source><translation>Alle normalisieren</translation></message><message><source>Nothing to export.</source><translation>Nichts zum Exportieren.</translation></message><message><source>OK</source><translation>OK</translation></message><message><source>Object: {0}</source><translation>Objekt: {0}</translation></message><message><source>Only one frame</source><translation>Nur ein Frame</translation></message><message><source>Opacity:</source><translation>Deckkraft:</translation></message><message><source>Open Images</source><translation>Bilder öffnen</translation></message><message><source>Open in Document Window</source><translation>In Dokumentenfenster öffnen</translation></message><message><source>Output Format:</source><translation>Ausgabeformat:</translation></message><message><source>Overlay mode</source><translation>Overlay-Modus</translation></message><message><source>Pause</source><translation>Pause</translation></message><message><source>Ping Pong</source><translation>Ping-Pong</translation></message><message><source>Ping-pong</source><translation>Ping-Pong</translation></message><message><source>Play</source><translation>Wiedergabe</translation></message><message><source>Playback speed (0.1–10.0 fps)</source><translation>Wiedergabegeschwindigkeit (0.1–10.0 fps)</translation></message><message><source>Prefix</source><translation>Präfix</translation></message><message><source>Prefix to add to flagged image filenames:</source><translation>Präfix zum Hinzufügen zu markierten Bilddateinamen:</translation></message><message><source>Press 'F' to flag/unflag an image.
-Right-click on an image for more options.</source><translation>Drücken Sie 'F', um ein Bild zu markieren/Demarkieren.
-Rechtsklick auf ein Bild für weitere Optionen.</translation></message><message><source>Previous</source><translation>Vorheriger</translation></message><message><source>Previous Frame</source><translation>Vorheriger Frame</translation></message><message><source>Quality</source><translation>Qualität</translation></message><message><source>Quality:</source><translation>Qualität:</translation></message><message><source>Reference Frame</source><translation>Referenzframe</translation></message><message><source>Remove Image</source><translation>Bild entfernen</translation></message><message><source>Remove Selected</source><translation>Ausgewählte entfernen</translation></message><message><source>Rename</source><translation>Umbenennen</translation></message><message><source>Rename Flagged Images</source><translation>Markierte Bilder umbenennen</translation></message><message><source>Rename Flagged Images…</source><translation>Markierte Bilder umbenennen…</translation></message><message><source>Rename Image</source><translation>Bild umbenennen</translation></message><message><source>Rename flagged images</source><translation>Markierte Bilder umbenennen</translation></message><message><source>Renamed {0} flagged image{1}.</source><translation>{0} markierte(s) Bild(er) umbenannt.</translation></message><message><source>Rendering video…</source><translation>Video wird gerendert…</translation></message><message><source>Reset Stretch</source><translation>Strecken zurücksetzen</translation></message><message><source>Reset alignment</source><translation>Ausrichtung zurücksetzen</translation></message><message><source>Resolution</source><translation>Auflösung</translation></message><message><source>Reverse Order</source><translation>Reihenfolge umkehren</translation></message><message><source>Rotate All</source><translation>Alle drehen</translation></message><message><source>Save All</source><translation>Alle speichern</translation></message><message><source>Save GIF</source><translation>GIF speichern</translation></message><message><source>Save Video</source><translation>Video speichern</translation></message><message><source>Saved: {0}
-Frames: {1} @ {2} fps</source><translation>Gespeichert: {0}
-Frames: {1} @ {2} fps</translation></message><message><source>Search transients</source><translation>Transienten suchen</translation></message><message><source>Searching...</source><translation>Suche...</translation></message><message><source>Select Destination Folder</source><translation>Zielordner auswählen</translation></message><message><source>Select Directory</source><translation>Verzeichnis auswählen</translation></message><message><source>Select Frames</source><translation>Frames auswählen</translation></message><message><source>Select Images</source><translation>Bilder auswählen</translation></message><message><source>Select Output Folder</source><translation>Ausgabeordner auswählen</translation></message><message><source>Send selected (or all) blink files to the Stacking Suite → Image Integration tab</source><translation>Ausgewählte (oder alle) Blink-Dateien an die Stacking-Suite → Registerkarte Bildintegration senden</translation></message><message><source>Send selected (or all) blink files to the Stacking Suite → Light tab</source><translation>Ausgewählte (oder alle) Blink-Dateien an die Stacking-Suite → Registerkarte Lights senden</translation></message><message><source>Send to Stacking → Integration</source><translation>An Stacking → Integration senden</translation></message><message><source>Send to Stacking → Lights</source><translation>An Stacking → Lights senden</translation></message><message><source>Set as Reference</source><translation>Als Referenz festlegen</translation></message><message><source>Show Difference</source><translation>Differenz anzeigen</translation></message><message><source>Show Flagged Only</source><translation>Nur markierte anzeigen</translation></message><message><source>Show Metrics</source><translation>Metriken anzeigen</translation></message><message><source>Show crosshair</source><translation>Fadenkreuz anzeigen</translation></message><message><source>Show filename</source><translation>Dateiname anzeigen</translation></message><message><source>Show grid</source><translation>Gitter anzeigen</translation></message><message><source>Show histogram</source><translation>Histogramm anzeigen</translation></message><message><source>Show timestamp</source><translation>Zeitstempel anzeigen</translation></message><message><source>Side by side</source><translation>Nebeneinander</translation></message><message><source>Signed Difference</source><translation>Vorzeichenbehaftete Differenz</translation></message><message><source>Single pass</source><translation>Einzelner Durchlauf</translation></message><message><source>Size:</source><translation>Größe:</translation></message><message><source>Sort by Date</source><translation>Nach Datum sortieren</translation></message><message><source>Sort by Name</source><translation>Nach Namen sortieren</translation></message><message><source>Speed</source><translation>Geschwindigkeit</translation></message><message><source>Speed:</source><translation>Geschwindigkeit:</translation></message><message><source>Stop</source><translation>Stopp</translation></message><message><source>Suffix</source><translation>Suffix</translation></message><message><source>Sync pan</source><translation>Pan synchronisieren</translation></message><message><source>Sync zoom</source><translation>Zoom synchronisieren</translation></message><message><source>There are no flagged images to delete.</source><translation>Es gibt keine markierten Bilder zum Löschen.</translation></message><message><source>There are no flagged images to move.</source><translation>Es gibt keine markierten Bilder zum Verschieben.</translation></message><message><source>There are no flagged images to rename.</source><translation>Es gibt keine markierten Bilder zum Umbenennen.</translation></message><message><source>There are no images to send.</source><translation>Es gibt keine Bilder zum Senden.</translation></message><message><source>Total frames</source><translation>Frames insgesamt</translation></message><message><source>Transients found</source><translation>Transienten gefunden</translation></message><message><source>Translation + Rotation</source><translation>Verschiebung + Rotation</translation></message><message><source>Translation Only</source><translation>Nur Verschiebung</translation></message><message><source>UI</source><translation>Benutzeroberfläche</translation></message><message><source>Unflag All</source><translation>Alle Markierungen entfernen</translation></message><message><source>Unflag Selected</source><translation>Markierung für Ausgewählte entfernen</translation></message><message><source>Unsupported Bayer pattern: {0}</source><translation>Nicht unterstütztes Bayer-Muster: {0}</translation></message><message><source>Video (*.mp4 *.avi)</source><translation>Video (*.mp4 *.avi)</translation></message><message><source>Video Codec:</source><translation>Video-Codec:</translation></message><message><source>Video Export (optional)</source><translation>Video-Export (optional)</translation></message><message><source>Video Files (*.mp4 *.avi *.mov)</source><translation>Videodateien (*.mp4 *.avi *.mov)</translation></message><message><source>Video Options</source><translation>Videooptionen</translation></message><message><source>Video export failed: {0}</source><translation>Videoexport fehlgeschlagen: {0}</translation></message><message><source>Video exported: {0}</source><translation>Video exportiert: {0}</translation></message><message><source>Warning</source><translation>Warnung</translation></message><message><source>You're about to export a video with a single frame. Continue?</source><translation>Sie sind im Begriff, ein Video mit einem einzigen Frame zu exportieren. Fortfahren?</translation></message><message><source>Zoom 100%</source><translation>Zoom 100%</translation></message><message><source>Zoom In</source><translation>Vergrößern</translation></message><message><source>Zoom Out</source><translation>Verkleinern</translation></message><message><source>Zoom to fit</source><translation>Anpassen</translation></message><message><source>{0} frames</source><translation>{0} Frames</translation></message><message><source>{0} frames deleted.</source><translation>{0} Frames gelöscht.</translation></message><message><source>→ Stacking: Integration</source><translation>→ Stacking: Integration</translation></message><message><source>→ Stacking: Lights</source><translation>→ Stacking: Lights</translation></message></context><context><name>CLAHEDialogPro</name><message><source>Apply</source><translation>Anwenden</translation></message><message><source>CLAHE</source><translation>CLAHE</translation></message><message><source>CLAHE Parameters</source><translation>CLAHE-Parameter</translation></message><message><source>Cancel</source><translation>Abbrechen</translation></message><message><source>Clip Limit:</source><translation>Clip-Limit:</translation></message><message><source>Reset</source><translation>Zurücksetzen</translation></message><message><source>Tile Size (px):</source><translation>Kachelgröße (px):</translation></message></context><context><name>CheatSheet</name><message><source>Action</source><translation>Aktion</translation></message><message><source>Menus/Toolbar</source><translation>Menüs/Symbolleiste</translation></message><message><source>Shortcut</source><translation>Tastenkombination</translation></message><message><source>Window</source><translation>Fenster</translation></message></context><context><name>CheatSheetDialog</name><message><source>Action</source><translation>Aktion</translation></message><message><source>Additional &amp; Mouse &amp; Drag</source><translation>Zusätzlich &amp; Maus &amp; Ziehen</translation></message><message><source>Base Keyboard</source><translation>Basistastatur</translation></message><message><source>Cheat sheet copied to clipboard.</source><translation>Kurzübersicht in die Zwischenablage kopiert.</translation></message><message><source>Close</source><translation>Schließen</translation></message><message><source>Context</source><translation>Kontext</translation></message><message><source>Copied</source><translation>Kopiert</translation></message><message><source>Copy</source><translation>Kopieren</translation></message><message><source>Effect</source><translation>Effekt</translation></message><message><source>Gesture</source><translation>Geste</translation></message><message><source>Keyboard Shortcut Cheat Sheet</source><translation>Kurzübersicht Tastenkombinationen</translation></message><message><source>Shortcut</source><translation>Tastenkombination</translation></message><message><source>Where</source><translation>Wo</translation></message></context><context><name>ContinuumSubtractTab</name><message><source>Clear Loaded Images</source><translation>Geladene Bilder löschen</translation></message><message><source>Continuum Sources</source><translation>Kontinuumsquellen</translation></message><message><source>Denoise continuum result with Cosmic Clarity (0.9)</source><translation>Kontinuumsergebnis mit Cosmic Clarity entrauschen (0.9)</translation></message><message><source>Execute</source><translation>Ausführen</translation></message><message><source>Narrowband Filters</source><translation>Schmalbandfilter</translation></message><message><source>Output Linear Image Only</source><translation>Nur lineares Bild ausgeben</translation></message><message><source>Star-Based WB</source><translation>Sternbasierter WB</translation></message></context><context><name>ConvoDeconvoDialog</name><message><source>Close</source><translation>Schließen</translation></message><message><source>Convolution</source><translation>Faltung (Convolution)</translation></message><message><source>Convolution / Deconvolution</source><translation>Faltung / Defaltung</translation></message><message><source>Deconvolution</source><translation>Defaltung (Deconvolution)</translation></message><message><source>PSF Estimator</source><translation>PSF-Schätzer</translation></message><message><source>Preview</source><translation>Vorschau</translation></message><message><source>Push</source><translation>Anwenden (Push)</translation></message><message><source>TV Denoise</source><translation>TV-Entrauschen</translation></message><message><source>Undo</source><translation>Rückgängig</translation></message></context><context><name>CosmicClarityDialogPro</name><message><source>Close</source><translation>Schließen</translation></message><message><source>Cosmic Clarity</source><translation>Cosmic Clarity</translation></message><message><source>Execute</source><translation>Ausführen</translation></message><message><source>Mode:</source><translation>Modus:</translation></message><message><source>No</source><translation>Nein</translation></message><message><source>Parameters</source><translation>Parameter</translation></message><message><source>Use GPU:</source><translation>GPU verwenden:</translation></message><message><source>Yes</source><translation>Ja</translation></message></context><context><name>CrashHandler</name><message><source>Details are available below and in saspro.log.</source><translation>Details sind unten und in saspro.log verfügbar.</translation></message><message><source>Unhandled Exception</source><translation>Unbehandelte Ausnahme</translation></message><message><source>Unhandled Thread Exception</source><translation>Unbehandelte Thread-Ausnahme</translation></message></context><context><name>CropDialogPro</name><message><source>Applied crop to all open images. Any Astrometric Solutions has been updated.</source><translation>Zuschnitt auf alle offenen Bilder angewendet. Alle astrometrischen Lösungen wurden aktualisiert.</translation></message><message><source>Apply</source><translation>Anwenden</translation></message><message><source>Apply failed</source><translation>Anwenden fehlgeschlagen</translation></message><message><source>Apply this crop to {0} open image(s)?</source><translation>Diesen Zuschnitt auf {0} offene(s) Bild(er) anwenden?</translation></message><message><source>Aspect Ratio:</source><translation>Seitenverhältnis:</translation></message><message><source>Astrometric solution updated ✔️
+Trotzdem fortfahren?</translation>
+    </message>
+    <message>
+      <source>No supported image files were found in the selected directory.</source>
+      <translation>Im ausgewählten Verzeichnis wurden keine unterstützten Bilddateien gefunden.</translation>
+    </message>
+    <message>
+      <source>Normalize All</source>
+      <translation>Alle normalisieren</translation>
+    </message>
+    <message>
+      <source>Nothing to export.</source>
+      <translation>Nichts zum Exportieren.</translation>
+    </message>
+    <message>
+      <source>OK</source>
+      <translation>OK</translation>
+    </message>
+    <message>
+      <source>Object: {0}</source>
+      <translation>Objekt: {0}</translation>
+    </message>
+    <message>
+      <source>Only one frame</source>
+      <translation>Nur ein Frame</translation>
+    </message>
+    <message>
+      <source>Opacity:</source>
+      <translation>Deckkraft:</translation>
+    </message>
+    <message>
+      <source>Open Images</source>
+      <translation>Bilder öffnen</translation>
+    </message>
+    <message>
+      <source>Open in Document Window</source>
+      <translation>In Dokumentenfenster öffnen</translation>
+    </message>
+    <message>
+      <source>Output Format:</source>
+      <translation>Ausgabeformat:</translation>
+    </message>
+    <message>
+      <source>Overlay mode</source>
+      <translation>Overlay-Modus</translation>
+    </message>
+    <message>
+      <source>Pause</source>
+      <translation>Pause</translation>
+    </message>
+    <message>
+      <source>Ping Pong</source>
+      <translation>Ping-Pong</translation>
+    </message>
+    <message>
+      <source>Ping-pong</source>
+      <translation>Ping-Pong</translation>
+    </message>
+    <message>
+      <source>Play</source>
+      <translation>Wiedergabe</translation>
+    </message>
+    <message>
+      <source>Playback speed (0.1–10.0 fps)</source>
+      <translation>Wiedergabegeschwindigkeit (0.1–10.0 fps)</translation>
+    </message>
+    <message>
+      <source>Prefix</source>
+      <translation>Präfix</translation>
+    </message>
+    <message>
+      <source>Prefix to add to flagged image filenames:</source>
+      <translation>Präfix zum Hinzufügen zu markierten Bilddateinamen:</translation>
+    </message>
+    <message>
+      <source>Press 'F' to flag/unflag an image.
+Right-click on an image for more options.</source>
+      <translation>Drücken Sie 'F', um ein Bild zu markieren/Demarkieren.
+Rechtsklick auf ein Bild für weitere Optionen.</translation>
+    </message>
+    <message>
+      <source>Previous</source>
+      <translation>Vorheriger</translation>
+    </message>
+    <message>
+      <source>Previous Frame</source>
+      <translation>Vorheriger Frame</translation>
+    </message>
+    <message>
+      <source>Quality</source>
+      <translation>Qualität</translation>
+    </message>
+    <message>
+      <source>Quality:</source>
+      <translation>Qualität:</translation>
+    </message>
+    <message>
+      <source>Reference Frame</source>
+      <translation>Referenzframe</translation>
+    </message>
+    <message>
+      <source>Remove Image</source>
+      <translation>Bild entfernen</translation>
+    </message>
+    <message>
+      <source>Remove Selected</source>
+      <translation>Ausgewählte entfernen</translation>
+    </message>
+    <message>
+      <source>Rename</source>
+      <translation>Umbenennen</translation>
+    </message>
+    <message>
+      <source>Rename Flagged Images</source>
+      <translation>Markierte Bilder umbenennen</translation>
+    </message>
+    <message>
+      <source>Rename Flagged Images…</source>
+      <translation>Markierte Bilder umbenennen…</translation>
+    </message>
+    <message>
+      <source>Rename Image</source>
+      <translation>Bild umbenennen</translation>
+    </message>
+    <message>
+      <source>Rename flagged images</source>
+      <translation>Markierte Bilder umbenennen</translation>
+    </message>
+    <message>
+      <source>Renamed {0} flagged image{1}.</source>
+      <translation>{0} markierte(s) Bild(er) umbenannt.</translation>
+    </message>
+    <message>
+      <source>Rendering video…</source>
+      <translation>Video wird gerendert…</translation>
+    </message>
+    <message>
+      <source>Reset Stretch</source>
+      <translation>Strecken zurücksetzen</translation>
+    </message>
+    <message>
+      <source>Reset alignment</source>
+      <translation>Ausrichtung zurücksetzen</translation>
+    </message>
+    <message>
+      <source>Resolution</source>
+      <translation>Auflösung</translation>
+    </message>
+    <message>
+      <source>Reverse Order</source>
+      <translation>Reihenfolge umkehren</translation>
+    </message>
+    <message>
+      <source>Rotate All</source>
+      <translation>Alle drehen</translation>
+    </message>
+    <message>
+      <source>Save All</source>
+      <translation>Alle speichern</translation>
+    </message>
+    <message>
+      <source>Save GIF</source>
+      <translation>GIF speichern</translation>
+    </message>
+    <message>
+      <source>Save Video</source>
+      <translation>Video speichern</translation>
+    </message>
+    <message>
+      <source>Saved: {0}
+Frames: {1} @ {2} fps</source>
+      <translation>Gespeichert: {0}
+Frames: {1} @ {2} fps</translation>
+    </message>
+    <message>
+      <source>Search transients</source>
+      <translation>Transienten suchen</translation>
+    </message>
+    <message>
+      <source>Searching...</source>
+      <translation>Suche...</translation>
+    </message>
+    <message>
+      <source>Select Destination Folder</source>
+      <translation>Zielordner auswählen</translation>
+    </message>
+    <message>
+      <source>Select Directory</source>
+      <translation>Verzeichnis auswählen</translation>
+    </message>
+    <message>
+      <source>Select Frames</source>
+      <translation>Frames auswählen</translation>
+    </message>
+    <message>
+      <source>Select Images</source>
+      <translation>Bilder auswählen</translation>
+    </message>
+    <message>
+      <source>Select Output Folder</source>
+      <translation>Ausgabeordner auswählen</translation>
+    </message>
+    <message>
+      <source>Send selected (or all) blink files to the Stacking Suite → Image Integration tab</source>
+      <translation>Ausgewählte (oder alle) Blink-Dateien an die Stacking-Suite → Registerkarte Bildintegration senden</translation>
+    </message>
+    <message>
+      <source>Send selected (or all) blink files to the Stacking Suite → Light tab</source>
+      <translation>Ausgewählte (oder alle) Blink-Dateien an die Stacking-Suite → Registerkarte Lights senden</translation>
+    </message>
+    <message>
+      <source>Send to Stacking → Integration</source>
+      <translation>An Stacking → Integration senden</translation>
+    </message>
+    <message>
+      <source>Send to Stacking → Lights</source>
+      <translation>An Stacking → Lights senden</translation>
+    </message>
+    <message>
+      <source>Set as Reference</source>
+      <translation>Als Referenz festlegen</translation>
+    </message>
+    <message>
+      <source>Show Difference</source>
+      <translation>Differenz anzeigen</translation>
+    </message>
+    <message>
+      <source>Show Flagged Only</source>
+      <translation>Nur markierte anzeigen</translation>
+    </message>
+    <message>
+      <source>Show Metrics</source>
+      <translation>Metriken anzeigen</translation>
+    </message>
+    <message>
+      <source>Show crosshair</source>
+      <translation>Fadenkreuz anzeigen</translation>
+    </message>
+    <message>
+      <source>Show filename</source>
+      <translation>Dateiname anzeigen</translation>
+    </message>
+    <message>
+      <source>Show grid</source>
+      <translation>Gitter anzeigen</translation>
+    </message>
+    <message>
+      <source>Show histogram</source>
+      <translation>Histogramm anzeigen</translation>
+    </message>
+    <message>
+      <source>Show timestamp</source>
+      <translation>Zeitstempel anzeigen</translation>
+    </message>
+    <message>
+      <source>Side by side</source>
+      <translation>Nebeneinander</translation>
+    </message>
+    <message>
+      <source>Signed Difference</source>
+      <translation>Vorzeichenbehaftete Differenz</translation>
+    </message>
+    <message>
+      <source>Single pass</source>
+      <translation>Einzelner Durchlauf</translation>
+    </message>
+    <message>
+      <source>Size:</source>
+      <translation>Größe:</translation>
+    </message>
+    <message>
+      <source>Sort by Date</source>
+      <translation>Nach Datum sortieren</translation>
+    </message>
+    <message>
+      <source>Sort by Name</source>
+      <translation>Nach Namen sortieren</translation>
+    </message>
+    <message>
+      <source>Speed</source>
+      <translation>Geschwindigkeit</translation>
+    </message>
+    <message>
+      <source>Speed:</source>
+      <translation>Geschwindigkeit:</translation>
+    </message>
+    <message>
+      <source>Stop</source>
+      <translation>Stopp</translation>
+    </message>
+    <message>
+      <source>Suffix</source>
+      <translation>Suffix</translation>
+    </message>
+    <message>
+      <source>Sync pan</source>
+      <translation>Pan synchronisieren</translation>
+    </message>
+    <message>
+      <source>Sync zoom</source>
+      <translation>Zoom synchronisieren</translation>
+    </message>
+    <message>
+      <source>There are no flagged images to delete.</source>
+      <translation>Es gibt keine markierten Bilder zum Löschen.</translation>
+    </message>
+    <message>
+      <source>There are no flagged images to move.</source>
+      <translation>Es gibt keine markierten Bilder zum Verschieben.</translation>
+    </message>
+    <message>
+      <source>There are no flagged images to rename.</source>
+      <translation>Es gibt keine markierten Bilder zum Umbenennen.</translation>
+    </message>
+    <message>
+      <source>There are no images to send.</source>
+      <translation>Es gibt keine Bilder zum Senden.</translation>
+    </message>
+    <message>
+      <source>Total frames</source>
+      <translation>Frames insgesamt</translation>
+    </message>
+    <message>
+      <source>Transients found</source>
+      <translation>Transienten gefunden</translation>
+    </message>
+    <message>
+      <source>Translation + Rotation</source>
+      <translation>Verschiebung + Rotation</translation>
+    </message>
+    <message>
+      <source>Translation Only</source>
+      <translation>Nur Verschiebung</translation>
+    </message>
+    <message>
+      <source>UI</source>
+      <translation>Benutzeroberfläche</translation>
+    </message>
+    <message>
+      <source>Unflag All</source>
+      <translation>Alle Markierungen entfernen</translation>
+    </message>
+    <message>
+      <source>Unflag Selected</source>
+      <translation>Markierung für Ausgewählte entfernen</translation>
+    </message>
+    <message>
+      <source>Unsupported Bayer pattern: {0}</source>
+      <translation>Nicht unterstütztes Bayer-Muster: {0}</translation>
+    </message>
+    <message>
+      <source>Video (*.mp4 *.avi)</source>
+      <translation>Video (*.mp4 *.avi)</translation>
+    </message>
+    <message>
+      <source>Video Codec:</source>
+      <translation>Video-Codec:</translation>
+    </message>
+    <message>
+      <source>Video Export (optional)</source>
+      <translation>Video-Export (optional)</translation>
+    </message>
+    <message>
+      <source>Video Files (*.mp4 *.avi *.mov)</source>
+      <translation>Videodateien (*.mp4 *.avi *.mov)</translation>
+    </message>
+    <message>
+      <source>Video Options</source>
+      <translation>Videooptionen</translation>
+    </message>
+    <message>
+      <source>Video export failed: {0}</source>
+      <translation>Videoexport fehlgeschlagen: {0}</translation>
+    </message>
+    <message>
+      <source>Video exported: {0}</source>
+      <translation>Video exportiert: {0}</translation>
+    </message>
+    <message>
+      <source>Warning</source>
+      <translation>Warnung</translation>
+    </message>
+    <message>
+      <source>You're about to export a video with a single frame. Continue?</source>
+      <translation>Sie sind im Begriff, ein Video mit einem einzigen Frame zu exportieren. Fortfahren?</translation>
+    </message>
+    <message>
+      <source>Zoom 100%</source>
+      <translation>Zoom 100%</translation>
+    </message>
+    <message>
+      <source>Zoom In</source>
+      <translation>Vergrößern</translation>
+    </message>
+    <message>
+      <source>Zoom Out</source>
+      <translation>Verkleinern</translation>
+    </message>
+    <message>
+      <source>Zoom to fit</source>
+      <translation>Anpassen</translation>
+    </message>
+    <message>
+      <source>{0} frames</source>
+      <translation>{0} Frames</translation>
+    </message>
+    <message>
+      <source>{0} frames deleted.</source>
+      <translation>{0} Frames gelöscht.</translation>
+    </message>
+    <message>
+      <source>→ Stacking: Integration</source>
+      <translation>→ Stacking: Integration</translation>
+    </message>
+    <message>
+      <source>→ Stacking: Lights</source>
+      <translation>→ Stacking: Lights</translation>
+    </message>
+  </context>
+  <context>
+    <name>CLAHEDialogPro</name>
+    <message>
+      <source>Apply</source>
+      <translation>Anwenden</translation>
+    </message>
+    <message>
+      <source>CLAHE</source>
+      <translation>CLAHE</translation>
+    </message>
+    <message>
+      <source>CLAHE Parameters</source>
+      <translation>CLAHE-Parameter</translation>
+    </message>
+    <message>
+      <source>Cancel</source>
+      <translation>Abbrechen</translation>
+    </message>
+    <message>
+      <source>Clip Limit:</source>
+      <translation>Clip-Limit:</translation>
+    </message>
+    <message>
+      <source>Reset</source>
+      <translation>Zurücksetzen</translation>
+    </message>
+    <message>
+      <source>Tile Size (px):</source>
+      <translation>Kachelgröße (px):</translation>
+    </message>
+  </context>
+  <context>
+    <name>CheatSheet</name>
+    <message>
+      <source>Action</source>
+      <translation>Aktion</translation>
+    </message>
+    <message>
+      <source>Menus/Toolbar</source>
+      <translation>Menüs/Symbolleiste</translation>
+    </message>
+    <message>
+      <source>Shortcut</source>
+      <translation>Tastenkombination</translation>
+    </message>
+    <message>
+      <source>Window</source>
+      <translation>Fenster</translation>
+    </message>
+  </context>
+  <context>
+    <name>CheatSheetDialog</name>
+    <message>
+      <source>Action</source>
+      <translation>Aktion</translation>
+    </message>
+    <message>
+      <source>Additional &amp; Mouse &amp; Drag</source>
+      <translation>Zusätzlich &amp; Maus &amp; Ziehen</translation>
+    </message>
+    <message>
+      <source>Base Keyboard</source>
+      <translation>Basistastatur</translation>
+    </message>
+    <message>
+      <source>Cheat sheet copied to clipboard.</source>
+      <translation>Kurzübersicht in die Zwischenablage kopiert.</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Schließen</translation>
+    </message>
+    <message>
+      <source>Context</source>
+      <translation>Kontext</translation>
+    </message>
+    <message>
+      <source>Copied</source>
+      <translation>Kopiert</translation>
+    </message>
+    <message>
+      <source>Copy</source>
+      <translation>Kopieren</translation>
+    </message>
+    <message>
+      <source>Effect</source>
+      <translation>Effekt</translation>
+    </message>
+    <message>
+      <source>Gesture</source>
+      <translation>Geste</translation>
+    </message>
+    <message>
+      <source>Keyboard Shortcut Cheat Sheet</source>
+      <translation>Kurzübersicht Tastenkombinationen</translation>
+    </message>
+    <message>
+      <source>Shortcut</source>
+      <translation>Tastenkombination</translation>
+    </message>
+    <message>
+      <source>Where</source>
+      <translation>Wo</translation>
+    </message>
+  </context>
+  <context>
+    <name>ContinuumSubtractTab</name>
+    <message>
+      <source>Clear Loaded Images</source>
+      <translation>Geladene Bilder löschen</translation>
+    </message>
+    <message>
+      <source>Continuum Sources</source>
+      <translation>Kontinuumsquellen</translation>
+    </message>
+    <message>
+      <source>Denoise continuum result with Cosmic Clarity (0.9)</source>
+      <translation>Kontinuumsergebnis mit Cosmic Clarity entrauschen (0.9)</translation>
+    </message>
+    <message>
+      <source>Execute</source>
+      <translation>Ausführen</translation>
+    </message>
+    <message>
+      <source>Narrowband Filters</source>
+      <translation>Schmalbandfilter</translation>
+    </message>
+    <message>
+      <source>Output Linear Image Only</source>
+      <translation>Nur lineares Bild ausgeben</translation>
+    </message>
+    <message>
+      <source>Star-Based WB</source>
+      <translation>Sternbasierter WB</translation>
+    </message>
+  </context>
+  <context>
+    <name>ConvoDeconvoDialog</name>
+    <message>
+      <source>Close</source>
+      <translation>Schließen</translation>
+    </message>
+    <message>
+      <source>Convolution</source>
+      <translation>Faltung (Convolution)</translation>
+    </message>
+    <message>
+      <source>Convolution / Deconvolution</source>
+      <translation>Faltung / Defaltung</translation>
+    </message>
+    <message>
+      <source>Deconvolution</source>
+      <translation>Defaltung (Deconvolution)</translation>
+    </message>
+    <message>
+      <source>PSF Estimator</source>
+      <translation>PSF-Schätzer</translation>
+    </message>
+    <message>
+      <source>Preview</source>
+      <translation>Vorschau</translation>
+    </message>
+    <message>
+      <source>Push</source>
+      <translation>Anwenden (Push)</translation>
+    </message>
+    <message>
+      <source>TV Denoise</source>
+      <translation>TV-Entrauschen</translation>
+    </message>
+    <message>
+      <source>Undo</source>
+      <translation>Rückgängig</translation>
+    </message>
+  </context>
+  <context>
+    <name>CosmicClarityDialogPro</name>
+    <message>
+      <source>Close</source>
+      <translation>Schließen</translation>
+    </message>
+    <message>
+      <source>Cosmic Clarity</source>
+      <translation>Cosmic Clarity</translation>
+    </message>
+    <message>
+      <source>Execute</source>
+      <translation>Ausführen</translation>
+    </message>
+    <message>
+      <source>Mode:</source>
+      <translation>Modus:</translation>
+    </message>
+    <message>
+      <source>No</source>
+      <translation>Nein</translation>
+    </message>
+    <message>
+      <source>Parameters</source>
+      <translation>Parameter</translation>
+    </message>
+    <message>
+      <source>Use GPU:</source>
+      <translation>GPU verwenden:</translation>
+    </message>
+    <message>
+      <source>Yes</source>
+      <translation>Ja</translation>
+    </message>
+  </context>
+  <context>
+    <name>CrashHandler</name>
+    <message>
+      <source>Details are available below and in saspro.log.</source>
+      <translation>Details sind unten und in saspro.log verfügbar.</translation>
+    </message>
+    <message>
+      <source>Unhandled Exception</source>
+      <translation>Unbehandelte Ausnahme</translation>
+    </message>
+    <message>
+      <source>Unhandled Thread Exception</source>
+      <translation>Unbehandelte Thread-Ausnahme</translation>
+    </message>
+  </context>
+  <context>
+    <name>CropDialogPro</name>
+    <message>
+      <source>Applied crop to all open images. Any Astrometric Solutions has been updated.</source>
+      <translation>Zuschnitt auf alle offenen Bilder angewendet. Alle astrometrischen Lösungen wurden aktualisiert.</translation>
+    </message>
+    <message>
+      <source>Apply</source>
+      <translation>Anwenden</translation>
+    </message>
+    <message>
+      <source>Apply failed</source>
+      <translation>Anwenden fehlgeschlagen</translation>
+    </message>
+    <message>
+      <source>Apply this crop to {0} open image(s)?</source>
+      <translation>Diesen Zuschnitt auf {0} offene(s) Bild(er) anwenden?</translation>
+    </message>
+    <message>
+      <source>Aspect Ratio:</source>
+      <translation>Seitenverhältnis:</translation>
+    </message>
+    <message>
+      <source>Astrometric solution updated ✔️
 
-</source><translation>Astrometrische Lösung aktualisiert ✔️
+</source>
+      <translation>Astrometrische Lösung aktualisiert ✔️
 
-</translation></message><message><source>Batch Crop</source><translation>Stapel-Zuschnitt</translation></message><message><source>Batch Crop (all open)</source><translation>Stapel-Zuschnitt (alle offenen)</translation></message><message><source>Bottom</source><translation>Unten</translation></message><message><source>CRVAL: ({0:.6f}, {1:.6f}) → ({2:.6f}, {3:.6f})
-</source><translation>CRVAL: ({0:.6f}, {1:.6f}) → ({2:.6f}, {3:.6f})
-</translation></message><message><source>Close</source><translation>Schließen</translation></message><message><source>Confirm Batch</source><translation>Stapel bestätigen</translation></message><message><source>Crop Tool</source><translation>Zuschneidewerkzeug</translation></message><message><source>Draw &amp; finalize a crop first.</source><translation>Zuerst einen Zuschnitt zeichnen und finalisieren.</translation></message><message><source>Fit residuals: RMS {0:.3f}"  (p95 {1:.3f}")</source><translation>Fit-Residuen: RMS {0:.3f}"  (p95 {1:.3f}")</translation></message><message><source>Fit to View</source><translation>An Ansicht anpassen</translation></message><message><source>Free</source><translation>Frei</translation></message><message><source>Invalid crop bounds.</source><translation>Ungültige Zuschnittgrenzen.</translation></message><message><source>Invalid crop size.</source><translation>Ungültige Zuschnittgröße.</translation></message><message><source>Left</source><translation>Links</translation></message><message><source>Load Previous Crop</source><translation>Vorherigen Zuschnitt laden</translation></message><message><source>Margins (px):</source><translation>Ränder (px):</translation></message><message><source>Model: {0}   Image: {1}
-</source><translation>Modell: {0} Bild: {1}
-</translation></message><message><source>No Images</source><translation>Keine Bilder</translation></message><message><source>No Previous</source><translation>Kein vorheriger</translation></message><message><source>No Selection</source><translation>Keine Auswahl</translation></message><message><source>No open images to crop.</source><translation>Keine offenen Bilder zum Zuschneiden.</translation></message><message><source>No previous crop stored.</source><translation>Kein vorheriger Zuschnitt gespeichert.</translation></message><message><source>Original</source><translation>Original</translation></message><message><source>Right</source><translation>Rechts</translation></message><message><source>Selection: {0}×{1} px</source><translation>Auswahl: {0}×{1} px</translation></message><message><source>Selection: —</source><translation>Auswahl: —</translation></message><message><source>Toggle Autostretch</source><translation>Autostretch umschalten</translation></message><message><source>Top</source><translation>Oben</translation></message><message><source>WCS Updated</source><translation>WCS aktualisiert</translation></message><message><source>Zoom 100%</source><translation>Zoom 100%</translation></message><message><source>Zoom In</source><translation>Vergrößern</translation></message><message><source>Zoom Out</source><translation>Verkleinern</translation></message><message><source>• Click–drag to draw a crop
+</translation>
+    </message>
+    <message>
+      <source>Batch Crop</source>
+      <translation>Stapel-Zuschnitt</translation>
+    </message>
+    <message>
+      <source>Batch Crop (all open)</source>
+      <translation>Stapel-Zuschnitt (alle offenen)</translation>
+    </message>
+    <message>
+      <source>Bottom</source>
+      <translation>Unten</translation>
+    </message>
+    <message>
+      <source>CRVAL: ({0:.6f}, {1:.6f}) → ({2:.6f}, {3:.6f})
+</source>
+      <translation>CRVAL: ({0:.6f}, {1:.6f}) → ({2:.6f}, {3:.6f})
+</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Schließen</translation>
+    </message>
+    <message>
+      <source>Confirm Batch</source>
+      <translation>Stapel bestätigen</translation>
+    </message>
+    <message>
+      <source>Crop Tool</source>
+      <translation>Zuschneidewerkzeug</translation>
+    </message>
+    <message>
+      <source>Draw &amp; finalize a crop first.</source>
+      <translation>Zuerst einen Zuschnitt zeichnen und finalisieren.</translation>
+    </message>
+    <message>
+      <source>Fit residuals: RMS {0:.3f}"  (p95 {1:.3f}")</source>
+      <translation>Fit-Residuen: RMS {0:.3f}"  (p95 {1:.3f}")</translation>
+    </message>
+    <message>
+      <source>Fit to View</source>
+      <translation>An Ansicht anpassen</translation>
+    </message>
+    <message>
+      <source>Free</source>
+      <translation>Frei</translation>
+    </message>
+    <message>
+      <source>Invalid crop bounds.</source>
+      <translation>Ungültige Zuschnittgrenzen.</translation>
+    </message>
+    <message>
+      <source>Invalid crop size.</source>
+      <translation>Ungültige Zuschnittgröße.</translation>
+    </message>
+    <message>
+      <source>Left</source>
+      <translation>Links</translation>
+    </message>
+    <message>
+      <source>Load Previous Crop</source>
+      <translation>Vorherigen Zuschnitt laden</translation>
+    </message>
+    <message>
+      <source>Margins (px):</source>
+      <translation>Ränder (px):</translation>
+    </message>
+    <message>
+      <source>Model: {0}   Image: {1}
+</source>
+      <translation>Modell: {0} Bild: {1}
+</translation>
+    </message>
+    <message>
+      <source>No Images</source>
+      <translation>Keine Bilder</translation>
+    </message>
+    <message>
+      <source>No Previous</source>
+      <translation>Kein vorheriger</translation>
+    </message>
+    <message>
+      <source>No Selection</source>
+      <translation>Keine Auswahl</translation>
+    </message>
+    <message>
+      <source>No open images to crop.</source>
+      <translation>Keine offenen Bilder zum Zuschneiden.</translation>
+    </message>
+    <message>
+      <source>No previous crop stored.</source>
+      <translation>Kein vorheriger Zuschnitt gespeichert.</translation>
+    </message>
+    <message>
+      <source>Original</source>
+      <translation>Original</translation>
+    </message>
+    <message>
+      <source>Right</source>
+      <translation>Rechts</translation>
+    </message>
+    <message>
+      <source>Selection: {0}×{1} px</source>
+      <translation>Auswahl: {0}×{1} px</translation>
+    </message>
+    <message>
+      <source>Selection: —</source>
+      <translation>Auswahl: —</translation>
+    </message>
+    <message>
+      <source>Toggle Autostretch</source>
+      <translation>Autostretch umschalten</translation>
+    </message>
+    <message>
+      <source>Top</source>
+      <translation>Oben</translation>
+    </message>
+    <message>
+      <source>WCS Updated</source>
+      <translation>WCS aktualisiert</translation>
+    </message>
+    <message>
+      <source>Zoom 100%</source>
+      <translation>Zoom 100%</translation>
+    </message>
+    <message>
+      <source>Zoom In</source>
+      <translation>Vergrößern</translation>
+    </message>
+    <message>
+      <source>Zoom Out</source>
+      <translation>Verkleinern</translation>
+    </message>
+    <message>
+      <source>• Click–drag to draw a crop
 • Drag corner handles to resize
-• Shift + drag on box to rotate</source><translation>• Klicken und ziehen, um einen Zuschnitt zu zeichnen
+• Shift + drag on box to rotate</source>
+      <translation>• Klicken und ziehen, um einen Zuschnitt zu zeichnen
 • Ecken ziehen, um die Größe zu ändern
-• Shift + Ziehen auf dem Rahmen, um zu rotieren</translation></message></context><context><name>CurveEditor</name><message><source>Inflection @ K={0:.3f}</source><translation>Wendepunkt @ K={0:.3f}</translation></message></context><context><name>CurvesDialogPro</name><message><source>Apply to Document</source><translation>Auf Dokument anwenden</translation></message><message><source>Curves Editor</source><translation>Kurven-Editor</translation></message><message><source>Manage…</source><translation>Verwalten…</translation></message><message><source>Presets</source><translation>Voreinstellungen</translation></message><message><source>Reset</source><translation>Zurücksetzen</translation></message><message><source>Save as Preset...</source><translation>Als Voreinstellung speichern...</translation></message><message><source>Toggle Preview</source><translation>Vorschau umschalten</translation></message></context><context><name>DSEWorker</name><message><source>Analyzing dark structure…</source><translation>Analysiere dunkle Struktur…</translation></message><message><source>Finalizing…</source><translation>Finalisierung…</translation></message></context><context><name>DebayerDialog</name><message><source>Bayer pattern</source><translation>Bayer-Muster</translation></message><message><source>Debayer</source><translation>Debayer</translation></message><message><source>Method</source><translation>Methode</translation></message></context><context><name>DistortionGridDialog</name><message><source>Astrometric Distortion &amp; Histogram</source><translation>Astrometrische Distorsion &amp; Histogramm</translation></message><message><source>Astrometric Distortion Grid</source><translation>Astrometrische Distorsionsgitter</translation></message><message><source>Close</source><translation>Schließen</translation></message><message><source>Distortion</source><translation>Distorsion</translation></message><message><source>Distortion (″)</source><translation>Distorsion (″)</translation></message><message><source>Not enough stars found.</source><translation>Nicht genügend Sterne gefunden.</translation></message><message><source>Number of stars</source><translation>Anzahl der Sterne</translation></message><message><source>Residual histogram</source><translation>Residuen-Histogramm</translation></message></context><context><name>DockMixin</name><message><source>Console / Status</source><translation>Konsole / Status</translation></message><message><source>Explorer</source><translation>Explorer</translation></message><message><source>Show System Log Panel</source><translation>Systemlog-Panel anzeigen</translation></message><message><source>System Log</source><translation>Systemlog</translation></message></context><context><name>ExoPlanetWindow</name><message><source>1: Load Raw Subs…</source><translation>1: Roh-Subs laden…</translation></message><message><source>1a: Calibrate &amp;&amp; Align Subs</source><translation>1a: Subs kalibrieren &amp;&amp; ausrichten</translation></message><message><source>2: Measure &amp;&amp; Photometry</source><translation>2: Messen &amp;&amp; Photometrie</translation></message><message><source>Aligned Subs</source><translation>Ausgerichtete Subs</translation></message><message><source>Exoplanet Transit Detector</source><translation>Exoplanet-Transit-Detektor</translation></message><message><source>Load Master Dark…</source><translation>Master-Dark laden…</translation></message><message><source>Load Master Flat…</source><translation>Master-Flat laden…</translation></message><message><source>Load, Measure &amp;&amp; Photometry…</source><translation>Laden, Messen &amp;&amp; Photometrie…</translation></message><message><source>Mode:</source><translation>Modus:</translation></message><message><source>Raw Subs</source><translation>Roh-Subs</translation></message></context><context><name>FITSModifier</name><message><source>(no file)</source><translation>(keine Datei)</translation></message><message><source>Add/Update</source><translation>Hinzufügen/Aktualisieren</translation></message><message><source>Apply add/update/delete to all HDUs</source><translation>Hinzufügen/Aktualisieren/Löschen auf alle HDUs anwenden</translation></message><message><source>Batch Modify...</source><translation>Stapelweise modifizieren...</translation></message><message><source>Comment</source><translation>Kommentar</translation></message><message><source>Comment (optional)</source><translation>Kommentar (optional)</translation></message><message><source>Could not save:
-{0}</source><translation>Speichern fehlgeschlagen:
-{0}</translation></message><message><source>Delete Selected</source><translation>Ausgewählte löschen</translation></message><message><source>FITS (*.fits *.fit);;TIFF (*.tif *.tiff);;PNG (*.png);;JPEG (*.jpg *.jpeg);;XISF (*.xisf)</source><translation>FITS (*.fits *.fit);;TIFF (*.tif *.tiff);;PNG (*.png);;JPEG (*.jpg *.jpeg);;XISF (*.xisf)</translation></message><message><source>FITS Header Editor</source><translation>FITS-Header-Editor</translation></message><message><source>FITS files (*.fits *.fit *.fts *.fz)</source><translation>FITS-Dateien (*.fits *.fit *.fts *.fz)</translation></message><message><source>File:</source><translation>Datei:</translation></message><message><source>HDU:</source><translation>HDU:</translation></message><message><source>Invalid FITS</source><translation>Ungültiges FITS</translation></message><message><source>KEYWORD</source><translation>SCHLÜSSELWORT</translation></message><message><source>Keyword</source><translation>Schlüsselwort</translation></message><message><source>No Image</source><translation>Kein Bild</translation></message><message><source>No active image/document to save.</source><translation>Kein aktives Bild/Dokument zum Speichern.</translation></message><message><source>Open FITS</source><translation>FITS öffnen</translation></message><message><source>Open FITS…</source><translation>FITS öffnen…</translation></message><message><source>Reload</source><translation>Neu laden</translation></message><message><source>Save</source><translation>Speichern</translation></message><message><source>Save Error</source><translation>Speicherfehler</translation></message><message><source>Save Image As</source><translation>Bild speichern unter</translation></message><message><source>Save a Copy As…</source><translation>Eine Kopie speichern unter…</translation></message><message><source>Saved Copy</source><translation>Kopie gespeichert</translation></message><message><source>Saved a copy to:
-{0}</source><translation>Eine Kopie wurde gespeichert unter:
-{0}</translation></message><message><source>This file does not appear to be a valid FITS:
+• Shift + Ziehen auf dem Rahmen, um zu rotieren</translation>
+    </message>
+  </context>
+  <context>
+    <name>CurveEditor</name>
+    <message>
+      <source>Inflection @ K={0:.3f}</source>
+      <translation>Wendepunkt @ K={0:.3f}</translation>
+    </message>
+  </context>
+  <context>
+    <name>CurvesDialogPro</name>
+    <message>
+      <source>Apply to Document</source>
+      <translation>Auf Dokument anwenden</translation>
+    </message>
+    <message>
+      <source>Curves Editor</source>
+      <translation>Kurven-Editor</translation>
+    </message>
+    <message>
+      <source>Manage…</source>
+      <translation>Verwalten…</translation>
+    </message>
+    <message>
+      <source>Presets</source>
+      <translation>Voreinstellungen</translation>
+    </message>
+    <message>
+      <source>Reset</source>
+      <translation>Zurücksetzen</translation>
+    </message>
+    <message>
+      <source>Save as Preset...</source>
+      <translation>Als Voreinstellung speichern...</translation>
+    </message>
+    <message>
+      <source>Toggle Preview</source>
+      <translation>Vorschau umschalten</translation>
+    </message>
+  </context>
+  <context>
+    <name>DSEWorker</name>
+    <message>
+      <source>Analyzing dark structure…</source>
+      <translation>Analysiere dunkle Struktur…</translation>
+    </message>
+    <message>
+      <source>Finalizing…</source>
+      <translation>Finalisierung…</translation>
+    </message>
+  </context>
+  <context>
+    <name>DebayerDialog</name>
+    <message>
+      <source>Bayer pattern</source>
+      <translation>Bayer-Muster</translation>
+    </message>
+    <message>
+      <source>Debayer</source>
+      <translation>Debayer</translation>
+    </message>
+    <message>
+      <source>Method</source>
+      <translation>Methode</translation>
+    </message>
+  </context>
+  <context>
+    <name>DistortionGridDialog</name>
+    <message>
+      <source>Astrometric Distortion &amp; Histogram</source>
+      <translation>Astrometrische Distorsion &amp; Histogramm</translation>
+    </message>
+    <message>
+      <source>Astrometric Distortion Grid</source>
+      <translation>Astrometrische Distorsionsgitter</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Schließen</translation>
+    </message>
+    <message>
+      <source>Distortion</source>
+      <translation>Distorsion</translation>
+    </message>
+    <message>
+      <source>Distortion (″)</source>
+      <translation>Distorsion (″)</translation>
+    </message>
+    <message>
+      <source>Not enough stars found.</source>
+      <translation>Nicht genügend Sterne gefunden.</translation>
+    </message>
+    <message>
+      <source>Number of stars</source>
+      <translation>Anzahl der Sterne</translation>
+    </message>
+    <message>
+      <source>Residual histogram</source>
+      <translation>Residuen-Histogramm</translation>
+    </message>
+  </context>
+  <context>
+    <name>DockMixin</name>
+    <message>
+      <source>Console / Status</source>
+      <translation>Konsole / Status</translation>
+    </message>
+    <message>
+      <source>Explorer</source>
+      <translation>Explorer</translation>
+    </message>
+    <message>
+      <source>Show System Log Panel</source>
+      <translation>Systemlog-Panel anzeigen</translation>
+    </message>
+    <message>
+      <source>System Log</source>
+      <translation>Systemlog</translation>
+    </message>
+  </context>
+  <context>
+    <name>DraggableToolBar</name>
+    <message>
+      <source>Create Desktop Shortcut</source>
+      <translation>Desktop-Verknüpfung erstellen</translation>
+    </message>
+    <message>
+      <source>Hide this icon</source>
+      <translation>Dieses Symbol ausblenden</translation>
+    </message>
+    <message>
+      <source>Lock Toolbar Icons</source>
+      <translation>Symbolleistensymbole sperren</translation>
+    </message>
+    <message>
+      <source>Reset hidden icons</source>
+      <translation>Versteckte Symbole zurücksetzen</translation>
+    </message>
+    <message>
+      <source>Show hidden…</source>
+      <translation>Versteckte anzeigen…</translation>
+    </message>
+    <message>
+      <source>Tip: Alt+Drag to create</source>
+      <translation>Tipp: Alt+Ziehen zum Erstellen</translation>
+    </message>
+  </context>
+  <context>
+    <name>ExoPlanetWindow</name>
+    <message>
+      <source>1: Load Raw Subs…</source>
+      <translation>1: Roh-Subs laden…</translation>
+    </message>
+    <message>
+      <source>1a: Calibrate &amp;&amp; Align Subs</source>
+      <translation>1a: Subs kalibrieren &amp;&amp; ausrichten</translation>
+    </message>
+    <message>
+      <source>2: Measure &amp;&amp; Photometry</source>
+      <translation>2: Messen &amp;&amp; Photometrie</translation>
+    </message>
+    <message>
+      <source>Aligned Subs</source>
+      <translation>Ausgerichtete Subs</translation>
+    </message>
+    <message>
+      <source>Exoplanet Transit Detector</source>
+      <translation>Exoplanet-Transit-Detektor</translation>
+    </message>
+    <message>
+      <source>Load Master Dark…</source>
+      <translation>Master-Dark laden…</translation>
+    </message>
+    <message>
+      <source>Load Master Flat…</source>
+      <translation>Master-Flat laden…</translation>
+    </message>
+    <message>
+      <source>Load, Measure &amp;&amp; Photometry…</source>
+      <translation>Laden, Messen &amp;&amp; Photometrie…</translation>
+    </message>
+    <message>
+      <source>Mode:</source>
+      <translation>Modus:</translation>
+    </message>
+    <message>
+      <source>Raw Subs</source>
+      <translation>Roh-Subs</translation>
+    </message>
+  </context>
+  <context>
+    <name>FITSModifier</name>
+    <message>
+      <source>(no file)</source>
+      <translation>(keine Datei)</translation>
+    </message>
+    <message>
+      <source>Add/Update</source>
+      <translation>Hinzufügen/Aktualisieren</translation>
+    </message>
+    <message>
+      <source>Apply add/update/delete to all HDUs</source>
+      <translation>Hinzufügen/Aktualisieren/Löschen auf alle HDUs anwenden</translation>
+    </message>
+    <message>
+      <source>Batch Modify...</source>
+      <translation>Stapelweise modifizieren...</translation>
+    </message>
+    <message>
+      <source>Comment</source>
+      <translation>Kommentar</translation>
+    </message>
+    <message>
+      <source>Comment (optional)</source>
+      <translation>Kommentar (optional)</translation>
+    </message>
+    <message>
+      <source>Could not save:
+{0}</source>
+      <translation>Speichern fehlgeschlagen:
+{0}</translation>
+    </message>
+    <message>
+      <source>Delete Selected</source>
+      <translation>Ausgewählte löschen</translation>
+    </message>
+    <message>
+      <source>FITS (*.fits *.fit);;TIFF (*.tif *.tiff);;PNG (*.png);;JPEG (*.jpg *.jpeg);;XISF (*.xisf)</source>
+      <translation>FITS (*.fits *.fit);;TIFF (*.tif *.tiff);;PNG (*.png);;JPEG (*.jpg *.jpeg);;XISF (*.xisf)</translation>
+    </message>
+    <message>
+      <source>FITS Header Editor</source>
+      <translation>FITS-Header-Editor</translation>
+    </message>
+    <message>
+      <source>FITS files (*.fits *.fit *.fts *.fz)</source>
+      <translation>FITS-Dateien (*.fits *.fit *.fts *.fz)</translation>
+    </message>
+    <message>
+      <source>File:</source>
+      <translation>Datei:</translation>
+    </message>
+    <message>
+      <source>HDU:</source>
+      <translation>HDU:</translation>
+    </message>
+    <message>
+      <source>Invalid FITS</source>
+      <translation>Ungültiges FITS</translation>
+    </message>
+    <message>
+      <source>KEYWORD</source>
+      <translation>SCHLÜSSELWORT</translation>
+    </message>
+    <message>
+      <source>Keyword</source>
+      <translation>Schlüsselwort</translation>
+    </message>
+    <message>
+      <source>No Image</source>
+      <translation>Kein Bild</translation>
+    </message>
+    <message>
+      <source>No active image/document to save.</source>
+      <translation>Kein aktives Bild/Dokument zum Speichern.</translation>
+    </message>
+    <message>
+      <source>Open FITS</source>
+      <translation>FITS öffnen</translation>
+    </message>
+    <message>
+      <source>Open FITS…</source>
+      <translation>FITS öffnen…</translation>
+    </message>
+    <message>
+      <source>Reload</source>
+      <translation>Neu laden</translation>
+    </message>
+    <message>
+      <source>Save</source>
+      <translation>Speichern</translation>
+    </message>
+    <message>
+      <source>Save Error</source>
+      <translation>Speicherfehler</translation>
+    </message>
+    <message>
+      <source>Save Image As</source>
+      <translation>Bild speichern unter</translation>
+    </message>
+    <message>
+      <source>Save a Copy As…</source>
+      <translation>Eine Kopie speichern unter…</translation>
+    </message>
+    <message>
+      <source>Saved Copy</source>
+      <translation>Kopie gespeichert</translation>
+    </message>
+    <message>
+      <source>Saved a copy to:
+{0}</source>
+      <translation>Eine Kopie wurde gespeichert unter:
+{0}</translation>
+    </message>
+    <message>
+      <source>This file does not appear to be a valid FITS:
 
 {0}
 
 {1}
 
-Tip: Choose a FITS file via 'Open FITS…' or edit an in-memory header.</source><translation>Diese Datei scheint kein gültiges FITS zu sein:
+Tip: Choose a FITS file via 'Open FITS…' or edit an in-memory header.</source>
+      <translation>Diese Datei scheint kein gültiges FITS zu sein:
 
 {0}
 
 {1}
 
-Tipp: Wählen Sie eine FITS-Datei über 'FITS öffnen…' oder bearbeiten Sie einen Header im Speicher.</translation></message><message><source>Value</source><translation>Wert</translation></message></context><context><name>FileMixin</name><message><source>Failed to save:
-{e}</source><translation>Speichern fehlgeschlagen:
-{e}</translation></message><message><source>Failed to save:
-{msg}</source><translation>Speichern fehlgeschlagen:
-{msg}</translation></message><message><source>File not found</source><translation>Datei nicht gefunden</translation></message><message><source>Load Project</source><translation>Projekt laden</translation></message><message><source>New Project</source><translation>Neues Projekt</translation></message><message><source>No documents to save.</source><translation>Keine Dokumente zum Speichern.</translation></message><message><source>Open Images</source><translation>Bilder öffnen</translation></message><message><source>Open failed</source><translation>Öffnen fehlgeschlagen</translation></message><message><source>Project not found</source><translation>Projekt nicht gefunden</translation></message><message><source>Save As</source><translation>Speichern unter</translation></message><message><source>Save Project</source><translation>Projekt speichern</translation></message><message><source>Save failed</source><translation>Speichern fehlgeschlagen</translation></message><message><source>Saving</source><translation>Speichere</translation></message><message><source>Saving project...</source><translation>Projekt wird gespeichert...</translation></message><message><source>Start a new project? This closes all views and clears desktop shortcuts.</source><translation>Neues Projekt starten? Dies schließt alle Ansichten und löscht Desktop-Verknüpfungen.</translation></message><message><source>The file does not exist:
+Tipp: Wählen Sie eine FITS-Datei über 'FITS öffnen…' oder bearbeiten Sie einen Header im Speicher.</translation>
+    </message>
+    <message>
+      <source>Value</source>
+      <translation>Wert</translation>
+    </message>
+  </context>
+  <context>
+    <name>FileMixin</name>
+    <message>
+      <source>Failed to save:
+{e}</source>
+      <translation>Speichern fehlgeschlagen:
+{e}</translation>
+    </message>
+    <message>
+      <source>Failed to save:
+{msg}</source>
+      <translation>Speichern fehlgeschlagen:
+{msg}</translation>
+    </message>
+    <message>
+      <source>File not found</source>
+      <translation>Datei nicht gefunden</translation>
+    </message>
+    <message>
+      <source>Load Project</source>
+      <translation>Projekt laden</translation>
+    </message>
+    <message>
+      <source>New Project</source>
+      <translation>Neues Projekt</translation>
+    </message>
+    <message>
+      <source>No documents to save.</source>
+      <translation>Keine Dokumente zum Speichern.</translation>
+    </message>
+    <message>
+      <source>Open Images</source>
+      <translation>Bilder öffnen</translation>
+    </message>
+    <message>
+      <source>Open failed</source>
+      <translation>Öffnen fehlgeschlagen</translation>
+    </message>
+    <message>
+      <source>Project not found</source>
+      <translation>Projekt nicht gefunden</translation>
+    </message>
+    <message>
+      <source>Save As</source>
+      <translation>Speichern unter</translation>
+    </message>
+    <message>
+      <source>Save Project</source>
+      <translation>Projekt speichern</translation>
+    </message>
+    <message>
+      <source>Save failed</source>
+      <translation>Speichern fehlgeschlagen</translation>
+    </message>
+    <message>
+      <source>Saving</source>
+      <translation>Speichere</translation>
+    </message>
+    <message>
+      <source>Saving project...</source>
+      <translation>Projekt wird gespeichert...</translation>
+    </message>
+    <message>
+      <source>Start a new project? This closes all views and clears desktop shortcuts.</source>
+      <translation>Neues Projekt starten? Dies schließt alle Ansichten und löscht Desktop-Verknüpfungen.</translation>
+    </message>
+    <message>
+      <source>The file does not exist:
 {path}
 
-Remove it from the recent images list?</source><translation>Die Datei existiert nicht:
+Remove it from the recent images list?</source>
+      <translation>Die Datei existiert nicht:
 {path}
 
-Aus der Liste der letzten Bilder entfernen?</translation></message><message><source>The project file does not exist:
+Aus der Liste der letzten Bilder entfernen?</translation>
+    </message>
+    <message>
+      <source>The project file does not exist:
 {path}
 
-Remove it from the recent projects list?</source><translation>Die Projektdatei existiert nicht:
+Remove it from the recent projects list?</source>
+      <translation>Die Projektdatei existiert nicht:
 {path}
 
-Aus der Liste der letzten Projekte entfernen?</translation></message></context><context><name>FilterIdDialog</name><message><source>Add row</source><translation>Zeile hinzufügen</translation></message><message><source>AstroBin Filter IDs</source><translation>AstroBin-Filter-IDs</translation></message><message><source>AstroBin ID</source><translation>AstroBin-ID</translation></message><message><source>Brand</source><translation>Marke</translation></message><message><source>CSV files (*.csv);;All files (*)</source><translation>CSV-Dateien (*.csv);;Alle Dateien (*)</translation></message><message><source>Delete selected</source><translation>Ausgewählte löschen</translation></message><message><source>Edit filter names and their AstroBin numeric IDs.</source><translation>Filternamen und deren numerische AstroBin-IDs bearbeiten.</translation></message><message><source>Filter name</source><translation>Filtername</translation></message><message><source>ID</source><translation>ID</translation></message><message><source>Load offline DB…</source><translation>Offline-Datenbank laden…</translation></message><message><source>Name</source><translation>Name</translation></message><message><source>No DB</source><translation>Keine DB</translation></message><message><source>Offline filters database not loaded yet.</source><translation>Offline-Filterdatenbank noch nicht geladen.</translation></message><message><source>Open AstroBin Equipment Explorer (Filters)</source><translation>AstroBin Equipment Explorer öffnen (Filter)</translation></message><message><source>Search AstroBin Filters (offline)</source><translation>AstroBin-Filter suchen (offline)</translation></message><message><source>Search ID, brand, or name…</source><translation>ID, Marke oder Name suchen…</translation></message><message><source>Search offline DB…</source><translation>Offline-Datenbank durchsuchen…</translation></message><message><source>Search or load the offline filters database.</source><translation>Die Offline-Filterdatenbank suchen oder laden.</translation></message><message><source>Select AstroBin Filters CSV</source><translation>AstroBin-Filter-CSV auswählen</translation></message></context><context><name>FrequencySeperationTab</name><message><source>&lt;b&gt;HF Enhancements&lt;/b&gt;</source><translation>&lt;b&gt;HF-Verbesserungen&lt;/b&gt;</translation></message><message><source>Apply - Split HF &amp; LF</source><translation>Anwenden - HF &amp; LF aufteilen</translation></message><message><source>Apply HF Enhancements</source><translation>HF-Verbesserungen anwenden</translation></message><message><source>Combine HF+LF -&gt; Push</source><translation>HF+LF kombinieren -&gt; Anwenden</translation></message><message><source>Enable HF Denoise</source><translation>HF-Denoise aktivieren</translation></message><message><source>Enable Sharpen Scale</source><translation>Schärfungsskala aktivieren</translation></message><message><source>Enable Wavelet Sharpening</source><translation>Wavelet-Schärfung aktivieren</translation></message><message><source>Method:</source><translation>Methode:</translation></message><message><source>Push HF</source><translation>HF anwenden</translation></message><message><source>Push LF</source><translation>LF anwenden</translation></message></context><context><name>GeometryMixin</name><message><source>Active view has no image.</source><translation>Aktive Ansicht hat kein Bild.</translation></message><message><source>Enter scaling factor (e.g., 0.5 for 50%, 2 for 200%):</source><translation>Skalierungsfaktor eingeben (z. B. 0.5 für 50%, 2 für 200%):</translation></message><message><source>Flip Horizontal</source><translation>Horizontal spiegeln</translation></message><message><source>Flip Vertical</source><translation>Vertikal spiegeln</translation></message><message><source>Invert</source><translation>Invertieren</translation></message><message><source>Rescale Image</source><translation>Bild neu skalieren</translation></message><message><source>Rotate 180°</source><translation>180° drehen</translation></message><message><source>Rotate 90° CCW</source><translation>90° gegen Uhrzeigersinn drehen</translation></message><message><source>Rotate 90° CW</source><translation>90° im Uhrzeigersinn drehen</translation></message></context><context><name>GhsDialogPro</name><message><source>Open a Histogram for this image.
-Ctrl+Click on the histogram to set the GHS pivot.</source><translation>Öffnen Sie ein Histogramm für dieses Bild.
-Strg+Klick auf das Histogramm, um den GHS-Drehpunkt festzulegen.</translation></message></context><context><name>GlimrDialog</name><message><source>Allow higher harmonics</source><translation>Höhere Harmonische zulassen</translation></message><message><source>Auto-detect center</source><translation>Zentrum automatisch erkennen</translation></message><message><source>Center</source><translation>Zentrum</translation></message><message><source>Clip iterations</source><translation>Clip-Iterationen</translation></message><message><source>Create mask</source><translation>Maske erstellen</translation></message><message><source>Create model</source><translation>Modell erstellen</translation></message><message><source>Ellipticity</source><translation>Ellittizität</translation></message><message><source>Ellipticity profile</source><translation>Elliptizitätsprofil</translation></message><message><source>Error</source><translation>Fehler</translation></message><message><source>Export</source><translation>Exportieren</translation></message><message><source>Export model</source><translation>Modell exportieren</translation></message><message><source>Export residuals</source><translation>Residuen exportieren</translation></message><message><source>Export table</source><translation>Tabelle exportieren</translation></message><message><source>Fit isophotes</source><translation>Isophoten anpassen</translation></message><message><source>Fitting complete</source><translation>Fitting abgeschlossen</translation></message><message><source>Fitting failed</source><translation>Fitting fehlgeschlagen</translation></message><message><source>Fitting parameters</source><translation>Fitting-Parameter</translation></message><message><source>Fitting...</source><translation>Fitting...</translation></message><message><source>Fix center</source><translation>Zentrum fixieren</translation></message><message><source>Fix ellipticity</source><translation>Elliptizität fixieren</translation></message><message><source>Fix position angle</source><translation>Positionswinkel fixieren</translation></message><message><source>GLIMR</source><translation>GLIMR</translation></message><message><source>GLIMR - Galaxy Isophote Modeler</source><translation>GLIMR - Galaxien-Isophoten-Modellierer</translation></message><message><source>Geometry</source><translation>Geometrie</translation></message><message><source>Intensity</source><translation>Intensität</translation></message><message><source>Isophote Fitting</source><translation>Isophoten-Fitting</translation></message><message><source>Isophote table</source><translation>Isophoten-Tabelle</translation></message><message><source>Linear step</source><translation>Linearer Schritt</translation></message><message><source>Logarithmic step</source><translation>Logarithmischer Schritt</translation></message><message><source>Manual center</source><translation>Manuelles Zentrum</translation></message><message><source>Masking</source><translation>Maskierung</translation></message><message><source>Maximum radius</source><translation>Maximaler Radius</translation></message><message><source>Minimum radius</source><translation>Minimaler Radius</translation></message><message><source>Model</source><translation>Modell</translation></message><message><source>Pick center</source><translation>Zentrum wählen</translation></message><message><source>Plot results</source><translation>Ergebnisse plotten</translation></message><message><source>Position angle</source><translation>Positionswinkel</translation></message><message><source>Position angle profile</source><translation>Positionswinkelprofil</translation></message><message><source>Results</source><translation>Ergebnisse</translation></message><message><source>Semi-major axis</source><translation>Große Halbachse</translation></message><message><source>Show residuals</source><translation>Residuen anzeigen</translation></message><message><source>Sigma clipping</source><translation>Sigma-Clipping</translation></message><message><source>Step size</source><translation>Schrittgröße</translation></message><message><source>Subtract model</source><translation>Modell subtrahieren</translation></message><message><source>Surface brightness profile</source><translation>Oberflächenhelligkeitsprofil</translation></message><message><source>Use mask</source><translation>Maske verwenden</translation></message><message><source>X</source><translation>X</translation></message><message><source>Y</source><translation>Y</translation></message></context><context><name>HeaderMixin</name><message><source>Comment</source><translation>Kommentar</translation></message><message><source>Header</source><translation>Header</translation></message><message><source>Key</source><translation>Schlüssel</translation></message><message><source>No header</source><translation>Kein Header</translation></message><message><source>No image</source><translation>Kein Bild</translation></message><message><source>Value</source><translation>Wert</translation></message></context><context><name>HeaderViewerDock</name><message><source>CSV (*.csv)</source><translation>CSV (*.csv)</translation></message><message><source>FITS Header</source><translation>FITS-Header</translation></message><message><source>Failed to save:
-{0}</source><translation>Speichern fehlgeschlagen:
-{0}</translation></message><message><source>Header (dict from document)</source><translation>Header (dict vom Dokument)</translation></message><message><source>Header (snapshot)</source><translation>Header (Snapshot)</translation></message><message><source>Header Viewer</source><translation>Header-Viewer</translation></message><message><source>Header: {0}</source><translation>Header: {0}</translation></message><message><source>Key</source><translation>Schlüssel</translation></message><message><source>Metadata</source><translation>Metadaten</translation></message><message><source>Save Metadata</source><translation>Metadaten speichern</translation></message><message><source>Save Metadata…</source><translation>Metadaten speichern…</translation></message><message><source>Untitled</source><translation>Unbenannt</translation></message><message><source>Value</source><translation>Wert</translation></message><message><source>WCS</source><translation>WCS</translation></message><message><source>XISF File Metadata</source><translation>XISF-Dateimetadaten</translation></message><message><source>XISF Image Metadata</source><translation>XISF-Bildmetadaten</translation></message><message><source>XISF Properties</source><translation>XISF-Eigenschaften</translation></message><message><source>XISF Properties (document)</source><translation>XISF-Eigenschaften (Dokument)</translation></message></context><context><name>HistogramDialog</name><message><source>Set your camera's true saturation level for clipping warnings.
-Tip: take an overexposed frame and see its max ADU.</source><translation>Legen Sie den tatsächlichen Sättigungsgrad Ihrer Kamera für Clipping-Warnungen fest.
-Tipp: Nehmen Sie ein überbelichtetes Bild auf und prüfen Sie dessen maximalen ADU-Wert.</translation></message></context><context><name>HistoryExplorer</name><message><source>Action</source><translation>Aktion</translation></message><message><source>Clear history</source><translation>Verlauf löschen</translation></message><message><source>Compare with current</source><translation>Mit aktuellem vergleichen</translation></message><message><source>Create snapshot</source><translation>Snapshot erstellen</translation></message><message><source>Current state</source><translation>Aktueller Zustand</translation></message><message><source>Delete snapshot</source><translation>Snapshot löschen</translation></message><message><source>History</source><translation>Verlauf</translation></message><message><source>History Explorer</source><translation>Verlaufs-Explorer</translation></message><message><source>Load snapshot</source><translation>Snapshot laden</translation></message><message><source>Modified</source><translation>Geändert</translation></message><message><source>No history available</source><translation>Kein Verlauf verfügbar</translation></message><message><source>Original</source><translation>Original</translation></message><message><source>Redo</source><translation>Wiederholen</translation></message><message><source>Restore this state</source><translation>Diesen Zustand wiederherstellen</translation></message><message><source>Snapshot</source><translation>Snapshot</translation></message><message><source>Snapshots</source><translation>Snapshots</translation></message><message><source>Step</source><translation>Schritt</translation></message><message><source>Timestamp</source><translation>Zeitstempel</translation></message><message><source>Undo</source><translation>Rückgängig</translation></message></context><context><name>ImagePeekerDialogPro</name><message><source>ASTAP/Astrometry failed:
-{0}</source><translation>ASTAP/Astrometry fehlgeschlagen:
-{0}</translation></message><message><source>Analysis:</source><translation>Analyse:</translation></message><message><source>Aperture (mm):</source><translation>Öffnung (mm):</translation></message><message><source>Astrometric Distortion Analysis</source><translation>Astrometrische Distorsionsanalyse</translation></message><message><source>Cannot determine pixel scale.</source><translation>Pixel-Skala kann nicht bestimmt werden.</translation></message><message><source>Choose separation color</source><translation>Trennfarbe wählen</translation></message><message><source>Eccentricity Map</source><translation>Exzentrizitätskarte</translation></message><message><source>Exit without Saving</source><translation>Beenden ohne Speichern</translation></message><message><source>FWHM Heatmap</source><translation>FWHM-Heatmap</translation></message><message><source>Focal Plane Analysis</source><translation>Fokalebenenanalyse</translation></message><message><source>Focal length (mm):</source><translation>Brennweite (mm):</translation></message><message><source>Grid parameters</source><translation>Gitterparameter</translation></message><message><source>Grid size:</source><translation>Gittergröße:</translation></message><message><source>Image Peeker</source><translation>Image Peeker</translation></message><message><source>No Distortion Model</source><translation>Kein Distorsionsmodell</translation></message><message><source>No image</source><translation>Kein Bild</translation></message><message><source>No image loaded to peek at!</source><translation>Kein Bild zum Untersuchen geladen!</translation></message><message><source>None</source><translation>Keine</translation></message><message><source>Orientation Map</source><translation>Orientierungskarte</translation></message><message><source>Panel size:</source><translation>Panel-Größe:</translation></message><message><source>Pixel size (µm):</source><translation>Pixelgröße (µm):</translation></message><message><source>Plate Solve</source><translation>Plate Solve</translation></message><message><source>Plate solve did not produce a readable WCS header.</source><translation>Plate Solve hat keinen lesbaren WCS-Header erzeugt.</translation></message><message><source>Processing…</source><translation>Verarbeitung…</translation></message><message><source>Running {0}…</source><translation>Einführung {0}…</translation></message><message><source>Save Settings &amp;&amp; Exit</source><translation>Einstellungen speichern &amp;&amp; Beenden</translation></message><message><source>Sensor Tilt (µm)</source><translation>Sensor-Tilt (µm)</translation></message><message><source>Separation:</source><translation>Trennung:</translation></message><message><source>This image has a valid WCS, but no SIP distortion terms (A_*, B_*).
+Aus der Liste der letzten Projekte entfernen?</translation>
+    </message>
+  </context>
+  <context>
+    <name>FilterIdDialog</name>
+    <message>
+      <source>Add row</source>
+      <translation>Zeile hinzufügen</translation>
+    </message>
+    <message>
+      <source>AstroBin Filter IDs</source>
+      <translation>AstroBin-Filter-IDs</translation>
+    </message>
+    <message>
+      <source>AstroBin ID</source>
+      <translation>AstroBin-ID</translation>
+    </message>
+    <message>
+      <source>Brand</source>
+      <translation>Marke</translation>
+    </message>
+    <message>
+      <source>CSV files (*.csv);;All files (*)</source>
+      <translation>CSV-Dateien (*.csv);;Alle Dateien (*)</translation>
+    </message>
+    <message>
+      <source>Delete selected</source>
+      <translation>Ausgewählte löschen</translation>
+    </message>
+    <message>
+      <source>Edit filter names and their AstroBin numeric IDs.</source>
+      <translation>Filternamen und deren numerische AstroBin-IDs bearbeiten.</translation>
+    </message>
+    <message>
+      <source>Filter name</source>
+      <translation>Filtername</translation>
+    </message>
+    <message>
+      <source>ID</source>
+      <translation>ID</translation>
+    </message>
+    <message>
+      <source>Load offline DB…</source>
+      <translation>Offline-Datenbank laden…</translation>
+    </message>
+    <message>
+      <source>Name</source>
+      <translation>Name</translation>
+    </message>
+    <message>
+      <source>No DB</source>
+      <translation>Keine DB</translation>
+    </message>
+    <message>
+      <source>Offline filters database not loaded yet.</source>
+      <translation>Offline-Filterdatenbank noch nicht geladen.</translation>
+    </message>
+    <message>
+      <source>Open AstroBin Equipment Explorer (Filters)</source>
+      <translation>AstroBin Equipment Explorer öffnen (Filter)</translation>
+    </message>
+    <message>
+      <source>Search AstroBin Filters (offline)</source>
+      <translation>AstroBin-Filter suchen (offline)</translation>
+    </message>
+    <message>
+      <source>Search ID, brand, or name…</source>
+      <translation>ID, Marke oder Name suchen…</translation>
+    </message>
+    <message>
+      <source>Search offline DB…</source>
+      <translation>Offline-Datenbank durchsuchen…</translation>
+    </message>
+    <message>
+      <source>Search or load the offline filters database.</source>
+      <translation>Die Offline-Filterdatenbank suchen oder laden.</translation>
+    </message>
+    <message>
+      <source>Select AstroBin Filters CSV</source>
+      <translation>AstroBin-Filter-CSV auswählen</translation>
+    </message>
+  </context>
+  <context>
+    <name>FrequencySeperationTab</name>
+    <message>
+      <source>&lt;b&gt;HF Enhancements&lt;/b&gt;</source>
+      <translation>&lt;b&gt;HF-Verbesserungen&lt;/b&gt;</translation>
+    </message>
+    <message>
+      <source>Apply - Split HF &amp; LF</source>
+      <translation>Anwenden - HF &amp; LF aufteilen</translation>
+    </message>
+    <message>
+      <source>Apply HF Enhancements</source>
+      <translation>HF-Verbesserungen anwenden</translation>
+    </message>
+    <message>
+      <source>Combine HF+LF -&gt; Push</source>
+      <translation>HF+LF kombinieren -&gt; Anwenden</translation>
+    </message>
+    <message>
+      <source>Enable HF Denoise</source>
+      <translation>HF-Denoise aktivieren</translation>
+    </message>
+    <message>
+      <source>Enable Sharpen Scale</source>
+      <translation>Schärfungsskala aktivieren</translation>
+    </message>
+    <message>
+      <source>Enable Wavelet Sharpening</source>
+      <translation>Wavelet-Schärfung aktivieren</translation>
+    </message>
+    <message>
+      <source>Method:</source>
+      <translation>Methode:</translation>
+    </message>
+    <message>
+      <source>Push HF</source>
+      <translation>HF anwenden</translation>
+    </message>
+    <message>
+      <source>Push LF</source>
+      <translation>LF anwenden</translation>
+    </message>
+  </context>
+  <context>
+    <name>FunctionBundleDialog</name>
+    <message>
+      <source>Apply to Active View</source>
+      <translation>Auf aktive Ansicht anwenden</translation>
+    </message>
+    <message>
+      <source>Apply to View Bundle…</source>
+      <translation>Auf Ansichts-Paket anwenden…</translation>
+    </message>
+    <message>
+      <source>Clear Steps</source>
+      <translation>Schritte leeren</translation>
+    </message>
+    <message>
+      <source>Compress to Chip</source>
+      <translation>Zu Chip komprimieren</translation>
+    </message>
+    <message>
+      <source>Drag Bundle</source>
+      <translation>Paket ziehen</translation>
+    </message>
+    <message>
+      <source>Edit Preset…</source>
+      <translation>Voreinstellung bearbeiten…</translation>
+    </message>
+    <message>
+      <source>Remove Selected</source>
+      <translation>Auswahl entfernen</translation>
+    </message>
+    <message>
+      <source>▲ Move Up</source>
+      <translation>▲ Nach oben</translation>
+    </message>
+    <message>
+      <source>▼ Move Down</source>
+      <translation>▼ Nach unten</translation>
+    </message>
+    <message>
+      <source>Function Bundles</source>
+      <translation>Funktions-Pakete</translation>
+    </message>
+    <message>
+      <source>New</source>
+      <translation>Neu</translation>
+    </message>
+    <message>
+      <source>Duplicate</source>
+      <translation>Duplizieren</translation>
+    </message>
+    <message>
+      <source>Delete</source>
+      <translation>Löschen</translation>
+    </message>
+    <message>
+      <source>Drop shortcuts here to add steps</source>
+      <translation>Verknüpfungen hier ablegen für Schritte</translation>
+    </message>
+    <message>
+      <source>Delete Chip</source>
+      <translation>Chip löschen</translation>
+    </message>
+  </context>
+  <context>
+    <name>GeometryMixin</name>
+    <message>
+      <source>Active view has no image.</source>
+      <translation>Aktive Ansicht hat kein Bild.</translation>
+    </message>
+    <message>
+      <source>Enter scaling factor (e.g., 0.5 for 50%, 2 for 200%):</source>
+      <translation>Skalierungsfaktor eingeben (z. B. 0.5 für 50%, 2 für 200%):</translation>
+    </message>
+    <message>
+      <source>Flip Horizontal</source>
+      <translation>Horizontal spiegeln</translation>
+    </message>
+    <message>
+      <source>Flip Vertical</source>
+      <translation>Vertikal spiegeln</translation>
+    </message>
+    <message>
+      <source>Invert</source>
+      <translation>Invertieren</translation>
+    </message>
+    <message>
+      <source>Rescale Image</source>
+      <translation>Bild neu skalieren</translation>
+    </message>
+    <message>
+      <source>Rotate 180°</source>
+      <translation>180° drehen</translation>
+    </message>
+    <message>
+      <source>Rotate 90° CCW</source>
+      <translation>90° gegen Uhrzeigersinn drehen</translation>
+    </message>
+    <message>
+      <source>Rotate 90° CW</source>
+      <translation>90° im Uhrzeigersinn drehen</translation>
+    </message>
+  </context>
+  <context>
+    <name>GhsDialogPro</name>
+    <message>
+      <source>Open a Histogram for this image.
+Ctrl+Click on the histogram to set the GHS pivot.</source>
+      <translation>Öffnen Sie ein Histogramm für dieses Bild.
+Strg+Klick auf das Histogramm, um den GHS-Drehpunkt festzulegen.</translation>
+    </message>
+  </context>
+  <context>
+    <name>GlimrDialog</name>
+    <message>
+      <source>Allow higher harmonics</source>
+      <translation>Höhere Harmonische zulassen</translation>
+    </message>
+    <message>
+      <source>Auto-detect center</source>
+      <translation>Zentrum automatisch erkennen</translation>
+    </message>
+    <message>
+      <source>Center</source>
+      <translation>Zentrum</translation>
+    </message>
+    <message>
+      <source>Clip iterations</source>
+      <translation>Clip-Iterationen</translation>
+    </message>
+    <message>
+      <source>Create mask</source>
+      <translation>Maske erstellen</translation>
+    </message>
+    <message>
+      <source>Create model</source>
+      <translation>Modell erstellen</translation>
+    </message>
+    <message>
+      <source>Ellipticity</source>
+      <translation>Ellittizität</translation>
+    </message>
+    <message>
+      <source>Ellipticity profile</source>
+      <translation>Elliptizitätsprofil</translation>
+    </message>
+    <message>
+      <source>Error</source>
+      <translation>Fehler</translation>
+    </message>
+    <message>
+      <source>Export</source>
+      <translation>Exportieren</translation>
+    </message>
+    <message>
+      <source>Export model</source>
+      <translation>Modell exportieren</translation>
+    </message>
+    <message>
+      <source>Export residuals</source>
+      <translation>Residuen exportieren</translation>
+    </message>
+    <message>
+      <source>Export table</source>
+      <translation>Tabelle exportieren</translation>
+    </message>
+    <message>
+      <source>Fit isophotes</source>
+      <translation>Isophoten anpassen</translation>
+    </message>
+    <message>
+      <source>Fitting complete</source>
+      <translation>Fitting abgeschlossen</translation>
+    </message>
+    <message>
+      <source>Fitting failed</source>
+      <translation>Fitting fehlgeschlagen</translation>
+    </message>
+    <message>
+      <source>Fitting parameters</source>
+      <translation>Fitting-Parameter</translation>
+    </message>
+    <message>
+      <source>Fitting...</source>
+      <translation>Fitting...</translation>
+    </message>
+    <message>
+      <source>Fix center</source>
+      <translation>Zentrum fixieren</translation>
+    </message>
+    <message>
+      <source>Fix ellipticity</source>
+      <translation>Elliptizität fixieren</translation>
+    </message>
+    <message>
+      <source>Fix position angle</source>
+      <translation>Positionswinkel fixieren</translation>
+    </message>
+    <message>
+      <source>GLIMR</source>
+      <translation>GLIMR</translation>
+    </message>
+    <message>
+      <source>GLIMR - Galaxy Isophote Modeler</source>
+      <translation>GLIMR - Galaxien-Isophoten-Modellierer</translation>
+    </message>
+    <message>
+      <source>Geometry</source>
+      <translation>Geometrie</translation>
+    </message>
+    <message>
+      <source>Intensity</source>
+      <translation>Intensität</translation>
+    </message>
+    <message>
+      <source>Isophote Fitting</source>
+      <translation>Isophoten-Fitting</translation>
+    </message>
+    <message>
+      <source>Isophote table</source>
+      <translation>Isophoten-Tabelle</translation>
+    </message>
+    <message>
+      <source>Linear step</source>
+      <translation>Linearer Schritt</translation>
+    </message>
+    <message>
+      <source>Logarithmic step</source>
+      <translation>Logarithmischer Schritt</translation>
+    </message>
+    <message>
+      <source>Manual center</source>
+      <translation>Manuelles Zentrum</translation>
+    </message>
+    <message>
+      <source>Masking</source>
+      <translation>Maskierung</translation>
+    </message>
+    <message>
+      <source>Maximum radius</source>
+      <translation>Maximaler Radius</translation>
+    </message>
+    <message>
+      <source>Minimum radius</source>
+      <translation>Minimaler Radius</translation>
+    </message>
+    <message>
+      <source>Model</source>
+      <translation>Modell</translation>
+    </message>
+    <message>
+      <source>Pick center</source>
+      <translation>Zentrum wählen</translation>
+    </message>
+    <message>
+      <source>Plot results</source>
+      <translation>Ergebnisse plotten</translation>
+    </message>
+    <message>
+      <source>Position angle</source>
+      <translation>Positionswinkel</translation>
+    </message>
+    <message>
+      <source>Position angle profile</source>
+      <translation>Positionswinkelprofil</translation>
+    </message>
+    <message>
+      <source>Results</source>
+      <translation>Ergebnisse</translation>
+    </message>
+    <message>
+      <source>Semi-major axis</source>
+      <translation>Große Halbachse</translation>
+    </message>
+    <message>
+      <source>Show residuals</source>
+      <translation>Residuen anzeigen</translation>
+    </message>
+    <message>
+      <source>Sigma clipping</source>
+      <translation>Sigma-Clipping</translation>
+    </message>
+    <message>
+      <source>Step size</source>
+      <translation>Schrittgröße</translation>
+    </message>
+    <message>
+      <source>Subtract model</source>
+      <translation>Modell subtrahieren</translation>
+    </message>
+    <message>
+      <source>Surface brightness profile</source>
+      <translation>Oberflächenhelligkeitsprofil</translation>
+    </message>
+    <message>
+      <source>Use mask</source>
+      <translation>Maske verwenden</translation>
+    </message>
+    <message>
+      <source>X</source>
+      <translation>X</translation>
+    </message>
+    <message>
+      <source>Y</source>
+      <translation>Y</translation>
+    </message>
+  </context>
+  <context>
+    <name>HeaderMixin</name>
+    <message>
+      <source>Comment</source>
+      <translation>Kommentar</translation>
+    </message>
+    <message>
+      <source>Header</source>
+      <translation>Header</translation>
+    </message>
+    <message>
+      <source>Key</source>
+      <translation>Schlüssel</translation>
+    </message>
+    <message>
+      <source>No header</source>
+      <translation>Kein Header</translation>
+    </message>
+    <message>
+      <source>No image</source>
+      <translation>Kein Bild</translation>
+    </message>
+    <message>
+      <source>Value</source>
+      <translation>Wert</translation>
+    </message>
+  </context>
+  <context>
+    <name>HeaderViewerDock</name>
+    <message>
+      <source>CSV (*.csv)</source>
+      <translation>CSV (*.csv)</translation>
+    </message>
+    <message>
+      <source>FITS Header</source>
+      <translation>FITS-Header</translation>
+    </message>
+    <message>
+      <source>Failed to save:
+{0}</source>
+      <translation>Speichern fehlgeschlagen:
+{0}</translation>
+    </message>
+    <message>
+      <source>Header (dict from document)</source>
+      <translation>Header (dict vom Dokument)</translation>
+    </message>
+    <message>
+      <source>Header (snapshot)</source>
+      <translation>Header (Snapshot)</translation>
+    </message>
+    <message>
+      <source>Header Viewer</source>
+      <translation>Header-Viewer</translation>
+    </message>
+    <message>
+      <source>Header: {0}</source>
+      <translation>Header: {0}</translation>
+    </message>
+    <message>
+      <source>Key</source>
+      <translation>Schlüssel</translation>
+    </message>
+    <message>
+      <source>Metadata</source>
+      <translation>Metadaten</translation>
+    </message>
+    <message>
+      <source>Save Metadata</source>
+      <translation>Metadaten speichern</translation>
+    </message>
+    <message>
+      <source>Save Metadata…</source>
+      <translation>Metadaten speichern…</translation>
+    </message>
+    <message>
+      <source>Untitled</source>
+      <translation>Unbenannt</translation>
+    </message>
+    <message>
+      <source>Value</source>
+      <translation>Wert</translation>
+    </message>
+    <message>
+      <source>WCS</source>
+      <translation>WCS</translation>
+    </message>
+    <message>
+      <source>XISF File Metadata</source>
+      <translation>XISF-Dateimetadaten</translation>
+    </message>
+    <message>
+      <source>XISF Image Metadata</source>
+      <translation>XISF-Bildmetadaten</translation>
+    </message>
+    <message>
+      <source>XISF Properties</source>
+      <translation>XISF-Eigenschaften</translation>
+    </message>
+    <message>
+      <source>XISF Properties (document)</source>
+      <translation>XISF-Eigenschaften (Dokument)</translation>
+    </message>
+  </context>
+  <context>
+    <name>HistogramDialog</name>
+    <message>
+      <source>Set your camera's true saturation level for clipping warnings.
+Tip: take an overexposed frame and see its max ADU.</source>
+      <translation>Legen Sie den tatsächlichen Sättigungsgrad Ihrer Kamera für Clipping-Warnungen fest.
+Tipp: Nehmen Sie ein überbelichtetes Bild auf und prüfen Sie dessen maximalen ADU-Wert.</translation>
+    </message>
+  </context>
+  <context>
+    <name>HistoryExplorer</name>
+    <message>
+      <source>Action</source>
+      <translation>Aktion</translation>
+    </message>
+    <message>
+      <source>Clear history</source>
+      <translation>Verlauf löschen</translation>
+    </message>
+    <message>
+      <source>Compare with current</source>
+      <translation>Mit aktuellem vergleichen</translation>
+    </message>
+    <message>
+      <source>Create snapshot</source>
+      <translation>Snapshot erstellen</translation>
+    </message>
+    <message>
+      <source>Current state</source>
+      <translation>Aktueller Zustand</translation>
+    </message>
+    <message>
+      <source>Delete snapshot</source>
+      <translation>Snapshot löschen</translation>
+    </message>
+    <message>
+      <source>History</source>
+      <translation>Verlauf</translation>
+    </message>
+    <message>
+      <source>History Explorer</source>
+      <translation>Verlaufs-Explorer</translation>
+    </message>
+    <message>
+      <source>Load snapshot</source>
+      <translation>Snapshot laden</translation>
+    </message>
+    <message>
+      <source>Modified</source>
+      <translation>Geändert</translation>
+    </message>
+    <message>
+      <source>No history available</source>
+      <translation>Kein Verlauf verfügbar</translation>
+    </message>
+    <message>
+      <source>Original</source>
+      <translation>Original</translation>
+    </message>
+    <message>
+      <source>Redo</source>
+      <translation>Wiederholen</translation>
+    </message>
+    <message>
+      <source>Restore this state</source>
+      <translation>Diesen Zustand wiederherstellen</translation>
+    </message>
+    <message>
+      <source>Snapshot</source>
+      <translation>Snapshot</translation>
+    </message>
+    <message>
+      <source>Snapshots</source>
+      <translation>Snapshots</translation>
+    </message>
+    <message>
+      <source>Step</source>
+      <translation>Schritt</translation>
+    </message>
+    <message>
+      <source>Timestamp</source>
+      <translation>Zeitstempel</translation>
+    </message>
+    <message>
+      <source>Undo</source>
+      <translation>Rückgängig</translation>
+    </message>
+  </context>
+  <context>
+    <name>ImagePeekerDialogPro</name>
+    <message>
+      <source>ASTAP/Astrometry failed:
+{0}</source>
+      <translation>ASTAP/Astrometry fehlgeschlagen:
+{0}</translation>
+    </message>
+    <message>
+      <source>Analysis:</source>
+      <translation>Analyse:</translation>
+    </message>
+    <message>
+      <source>Aperture (mm):</source>
+      <translation>Öffnung (mm):</translation>
+    </message>
+    <message>
+      <source>Astrometric Distortion Analysis</source>
+      <translation>Astrometrische Distorsionsanalyse</translation>
+    </message>
+    <message>
+      <source>Cannot determine pixel scale.</source>
+      <translation>Pixel-Skala kann nicht bestimmt werden.</translation>
+    </message>
+    <message>
+      <source>Choose separation color</source>
+      <translation>Trennfarbe wählen</translation>
+    </message>
+    <message>
+      <source>Eccentricity Map</source>
+      <translation>Exzentrizitätskarte</translation>
+    </message>
+    <message>
+      <source>Exit without Saving</source>
+      <translation>Beenden ohne Speichern</translation>
+    </message>
+    <message>
+      <source>FWHM Heatmap</source>
+      <translation>FWHM-Heatmap</translation>
+    </message>
+    <message>
+      <source>Focal Plane Analysis</source>
+      <translation>Fokalebenenanalyse</translation>
+    </message>
+    <message>
+      <source>Focal length (mm):</source>
+      <translation>Brennweite (mm):</translation>
+    </message>
+    <message>
+      <source>Grid parameters</source>
+      <translation>Gitterparameter</translation>
+    </message>
+    <message>
+      <source>Grid size:</source>
+      <translation>Gittergröße:</translation>
+    </message>
+    <message>
+      <source>Image Peeker</source>
+      <translation>Image Peeker</translation>
+    </message>
+    <message>
+      <source>No Distortion Model</source>
+      <translation>Kein Distorsionsmodell</translation>
+    </message>
+    <message>
+      <source>No image</source>
+      <translation>Kein Bild</translation>
+    </message>
+    <message>
+      <source>No image loaded to peek at!</source>
+      <translation>Kein Bild zum Untersuchen geladen!</translation>
+    </message>
+    <message>
+      <source>None</source>
+      <translation>Keine</translation>
+    </message>
+    <message>
+      <source>Orientation Map</source>
+      <translation>Orientierungskarte</translation>
+    </message>
+    <message>
+      <source>Panel size:</source>
+      <translation>Panel-Größe:</translation>
+    </message>
+    <message>
+      <source>Pixel size (µm):</source>
+      <translation>Pixelgröße (µm):</translation>
+    </message>
+    <message>
+      <source>Plate Solve</source>
+      <translation>Plate Solve</translation>
+    </message>
+    <message>
+      <source>Plate solve did not produce a readable WCS header.</source>
+      <translation>Plate Solve hat keinen lesbaren WCS-Header erzeugt.</translation>
+    </message>
+    <message>
+      <source>Processing…</source>
+      <translation>Verarbeitung…</translation>
+    </message>
+    <message>
+      <source>Running {0}…</source>
+      <translation>Einführung {0}…</translation>
+    </message>
+    <message>
+      <source>Save Settings &amp;&amp; Exit</source>
+      <translation>Einstellungen speichern &amp;&amp; Beenden</translation>
+    </message>
+    <message>
+      <source>Sensor Tilt (µm)</source>
+      <translation>Sensor-Tilt (µm)</translation>
+    </message>
+    <message>
+      <source>Separation:</source>
+      <translation>Trennung:</translation>
+    </message>
+    <message>
+      <source>This image has a valid WCS, but no SIP distortion terms (A_*, B_*).
 Astrometric distortion analysis requires a SIP-enabled solve.
 
-Re-solve with distortion fitting enabled in ASTAP.</source><translation>Dieses Bild hat ein gültiges WCS, aber keine SIP-Distorsionsbegriffe (A_*, B_*).
+Re-solve with distortion fitting enabled in ASTAP.</source>
+      <translation>Dieses Bild hat ein gültiges WCS, aber keine SIP-Distorsionsbegriffe (A_*, B_*).
 Die astrometrische Distorsionsanalyse erfordert einen SIP-fähigen Solve.
 
-Lösen Sie erneut mit aktiviertem Distortion-Fitting in ASTAP.</translation></message><message><source>Tilt Analysis</source><translation>Tilt-Analyse</translation></message><message><source>WCS Error</source><translation>WCS-Fehler</translation></message></context><context><name>ImagePreviewDialog</name><message><source>1:1 (100%)</source><translation>1:1 (100%)</translation></message><message><source>AutoStretch (Off)</source><translation>AutoStretch (Aus)</translation></message><message><source>AutoStretch (On)</source><translation>AutoStretch (An)</translation></message><message><source>Fit to Preview</source><translation>An Vorschau anpassen</translation></message><message><source>Image Preview</source><translation>Bildvorschau</translation></message><message><source>Toggle AutoStretch</source><translation>AutoStretch umschalten</translation></message><message><source>Zoom In</source><translation>Vergrößern</translation></message><message><source>Zoom Out</source><translation>Verkleinern</translation></message></context><context><name>ImageSubWindow</name><message><source>Clear View Name (use doc name)</source><translation>Ansichtsnamen löschen (Dokumentnamen verwenden)</translation></message><message><source>Click: replay the last action on the base image.
-Arrow: pick a specific past action to replay on the base image.</source><translation>Klick: Die letzte Aktion auf dem Basisbild wiederholen.
-Pfeil: Eine spezifische vergangene Aktion auswählen, um sie auf dem Basisbild zu wiederholen.</translation></message><message><source>Close Image?</source><translation>Bild schließen?</translation></message><message><source>Create Preview (drag rectangle)</source><translation>Vorschau erstellen (Rechteck ziehen)</translation></message><message><source>Create Preview: click, then drag on the image to define a preview rectangle.</source><translation>Vorschau erstellen: Klicken, dann auf dem Bild ziehen, um ein Vorschaurechteck zu definieren.</translation></message><message><source>Drag onto another window to copy zoom/pan.
-Double-click to duplicate this view.</source><translation>Auf ein anderes Fenster ziehen, um Zoom/Pan zu kopieren.
-Doppelklicken, um diese Ansicht zu duplizieren.</translation></message><message><source>Full</source><translation>Voll</translation></message><message><source>New document name:</source><translation>Neuer Dokumentname:</translation></message><message><source>New view name:</source><translation>Neuer Ansichtsname:</translation></message><message><source>Press Space + Click/Drag to probe pixels (WCS shown if available)</source><translation>Leertaste drücken + Klicken/Ziehen, um Pixel zu untersuchen (WCS wird angezeigt, falls verfügbar)</translation></message><message><source>Preview mode: drag a rectangle on the image to create a preview.</source><translation>Vorschaumodus: Ziehen Sie ein Rechteck auf dem Bild, um eine Vorschau zu erstellen.</translation></message><message><source>Preview {0} ({1}×{2})</source><translation>Vorschau {0} ({1}×{2})</translation></message><message><source>Redo (this view)</source><translation>Wiederholen (diese Ansicht)</translation></message><message><source>Rename Document</source><translation>Dokument umbenennen</translation></message><message><source>Rename Document…</source><translation>Dokument umbenennen…</translation></message><message><source>Rename View</source><translation>Ansicht umbenennen</translation></message><message><source>Rename View… (F2)</source><translation>Ansicht umbenennen… (F2)</translation></message><message><source>Send to Shelf</source><translation>An Ablage senden</translation></message><message><source>Show pixel/WCS readout hint</source><translation>Pixel/WCS-Lesehinweis anzeigen</translation></message><message><source>This image has edits that aren't applied/saved.
-Close anyway?</source><translation>Dieses Bild hat Bearbeitungen, die nicht angewendet/gespeichert wurden.
-Trotzdem schließen?</translation></message><message><source>This image has edits that aren’t applied/saved.
-Close anyway?</source><translation>Dieses Bild hat Bearbeitungen, die nicht angewendet/gespeichert wurden.
-Trotzdem schließen?</translation></message><message><source>Toggle WCS grid overlay (if WCS exists)</source><translation>WCS-Gitter-Overlay umschalten (falls WCS vorhanden)</translation></message><message><source>Undo (this view)</source><translation>Rückgängig (diese Ansicht)</translation></message><message><source>Unlink from Linked Views</source><translation>Von verknüpften Ansichten trennen</translation></message><message><source>Untitled</source><translation>Unbenannt</translation></message><message><source>View</source><translation>Ansicht</translation></message></context><context><name>LivePreviewDialog</name><message><source>Live Mask Preview</source><translation>Live-Maskenvorschau</translation></message></context><context><name>Main</name><message><source>An unexpected error occurred.</source><translation>Ein unerwarteter Fehler ist aufgetreten.</translation></message><message><source>Application Error</source><translation>Anwendungsfehler</translation></message></context><context><name>MaskCreationDialog</name><message><source>Edge Blur (px):</source><translation>Randunschärfe (px):</translation></message><message><source>Ellipse</source><translation>Ellipse</translation></message><message><source>Freehand</source><translation>Freihand</translation></message><message><source>Mask Creation</source><translation>Maskenerstellung</translation></message><message><source>Select Entire Image</source><translation>Gesamtes Bild auswählen</translation></message></context><context><name>MaskMixin</name><message><source>Choose Mask Image</source><translation>Maskenbild wählen</translation></message><message><source>Could not resolve mask document.</source><translation>Maskendokument konnte nicht aufgelöst werden.</translation></message><message><source>Mask</source><translation>Maske</translation></message><message><source>Mask Overlay</source><translation>Masken-Overlay</translation></message><message><source>No active document.</source><translation>Kein aktives Dokument.</translation></message><message><source>No active mask on this image.</source><translation>Keine aktive Maske auf diesem Bild.</translation></message><message><source>No active mask to remove.</source><translation>Keine aktive Maske zum Entfernen.</translation></message><message><source>No image</source><translation>Kein Bild</translation></message><message><source>Open an image first.</source><translation>Zuerst ein Bild öffnen.</translation></message><message><source>Open another image to use as a mask.</source><translation>Ein anderes Bild öffnen, um es als Maske zu verwenden.</translation></message><message><source>Use this image as mask:</source><translation>Dieses Bild als Maske verwenden:</translation></message></context><context><name>MaskPreviewDialog</name><message><source>Mask Preview</source><translation>Maskenvorschau</translation></message><message><source>Push as New Document…</source><translation>Als neues Dokument anwenden…</translation></message></context><context><name>MenuMixin</name><message><source>&amp;About</source><translation>&amp;Über</translation></message><message><source>&amp;Edit</source><translation>&amp;Bearbeiten</translation></message><message><source>&amp;File</source><translation>&amp;Datei</translation></message><message><source>&amp;Functions</source><translation>&amp;Funktionen</translation></message><message><source>&amp;Geometry</source><translation>&amp;Geometrie</translation></message><message><source>&amp;Header Mods &amp;&amp; Misc</source><translation>&amp;Header-Änderungen &amp;&amp; Verschiedenes</translation></message><message><source>&amp;History</source><translation>&amp;Verlauf</translation></message><message><source>&amp;Masks</source><translation>&amp;Masken</translation></message><message><source>&amp;Scripts</source><translation>&amp;Skripte</translation></message><message><source>&amp;Settings</source><translation>&amp;Einstellungen</translation></message><message><source>&amp;Shortcuts</source><translation>&amp;Tastenkürzel</translation></message><message><source>&amp;Smart Tools</source><translation>&amp;Smart-Tools</translation></message><message><source>&amp;Star Stuff</source><translation>&amp;Stern-Dinge</translation></message><message><source>&amp;Tools</source><translation>&amp;Werkzeuge</translation></message><message><source>&amp;View</source><translation>&amp;Ansicht</translation></message><message><source>&amp;What's In My...</source><translation>&amp;Was ist in meinem...</translation></message><message><source>About...</source><translation>Über...</translation></message><message><source>Clear All Shortcuts</source><translation>Alle Tastenkürzel löschen</translation></message><message><source>Clear List</source><translation>Liste löschen</translation></message><message><source>Export Shortcuts...</source><translation>Tastenkürzel exportieren...</translation></message><message><source>Group A</source><translation>Gruppe A</translation></message><message><source>Group B</source><translation>Gruppe B</translation></message><message><source>Group C</source><translation>Gruppe C</translation></message><message><source>Group D</source><translation>Gruppe D</translation></message><message><source>Import Shortcuts...</source><translation>Tastenkürzel importieren...</translation></message><message><source>Keyboard Shortcut Cheat Sheet...</source><translation>Tastenkürzel-Spickzettel...</translation></message><message><source>No recent images</source><translation>Keine kürzlich verwendeten Bilder</translation></message><message><source>No recent projects</source><translation>Keine kürzlich verwendeten Projekte</translation></message><message><source>None</source><translation>Keine</translation></message><message><source>Open Recent Images</source><translation>Zuletzt verwendete Bilder öffnen</translation></message><message><source>Open Recent Projects</source><translation>Zuletzt verwendete Projekte öffnen</translation></message><message><source>Preferences...</source><translation>Präferenzen...</translation></message><message><source>Statistics...</source><translation>Statistiken...</translation></message></context><context><name>MetricsPanel</name><message><source>Background</source><translation>Hintergrund</translation></message><message><source>Cancel</source><translation>Abbrechen</translation></message><message><source>Computing frame metrics…</source><translation>Berechne Frame-Metriken…</translation></message><message><source>Don't show again</source><translation>Nicht mehr anzeigen</translation></message><message><source>Eccentricity</source><translation>Exzentrizität</translation></message><message><source>FWHM (px)</source><translation>FWHM (px)</translation></message><message><source>Heads-up</source><translation>Warnung</translation></message><message><source>Star Count</source><translation>Sternanzahl</translation></message><message><source>This is going to use ALL your CPU cores and the UI may lock up until it finishes.
+Lösen Sie erneut mit aktiviertem Distortion-Fitting in ASTAP.</translation>
+    </message>
+    <message>
+      <source>Tilt Analysis</source>
+      <translation>Tilt-Analyse</translation>
+    </message>
+    <message>
+      <source>WCS Error</source>
+      <translation>WCS-Fehler</translation>
+    </message>
+  </context>
+  <context>
+    <name>ImagePreviewDialog</name>
+    <message>
+      <source>1:1 (100%)</source>
+      <translation>1:1 (100%)</translation>
+    </message>
+    <message>
+      <source>AutoStretch (Off)</source>
+      <translation>AutoStretch (Aus)</translation>
+    </message>
+    <message>
+      <source>AutoStretch (On)</source>
+      <translation>AutoStretch (An)</translation>
+    </message>
+    <message>
+      <source>Fit to Preview</source>
+      <translation>An Vorschau anpassen</translation>
+    </message>
+    <message>
+      <source>Image Preview</source>
+      <translation>Bildvorschau</translation>
+    </message>
+    <message>
+      <source>Toggle AutoStretch</source>
+      <translation>AutoStretch umschalten</translation>
+    </message>
+    <message>
+      <source>Zoom In</source>
+      <translation>Vergrößern</translation>
+    </message>
+    <message>
+      <source>Zoom Out</source>
+      <translation>Verkleinern</translation>
+    </message>
+  </context>
+  <context>
+    <name>ImageSubWindow</name>
+    <message>
+      <source>Clear View Name (use doc name)</source>
+      <translation>Ansichtsnamen löschen (Dokumentnamen verwenden)</translation>
+    </message>
+    <message>
+      <source>Click: replay the last action on the base image.
+Arrow: pick a specific past action to replay on the base image.</source>
+      <translation>Klick: Die letzte Aktion auf dem Basisbild wiederholen.
+Pfeil: Eine spezifische vergangene Aktion auswählen, um sie auf dem Basisbild zu wiederholen.</translation>
+    </message>
+    <message>
+      <source>Close Image?</source>
+      <translation>Bild schließen?</translation>
+    </message>
+    <message>
+      <source>Create Preview (drag rectangle)</source>
+      <translation>Vorschau erstellen (Rechteck ziehen)</translation>
+    </message>
+    <message>
+      <source>Create Preview: click, then drag on the image to define a preview rectangle.</source>
+      <translation>Vorschau erstellen: Klicken, dann auf dem Bild ziehen, um ein Vorschaurechteck zu definieren.</translation>
+    </message>
+    <message>
+      <source>Drag onto another window to copy zoom/pan.
+Double-click to duplicate this view.</source>
+      <translation>Auf ein anderes Fenster ziehen, um Zoom/Pan zu kopieren.
+Doppelklicken, um diese Ansicht zu duplizieren.</translation>
+    </message>
+    <message>
+      <source>Full</source>
+      <translation>Voll</translation>
+    </message>
+    <message>
+      <source>New document name:</source>
+      <translation>Neuer Dokumentname:</translation>
+    </message>
+    <message>
+      <source>New view name:</source>
+      <translation>Neuer Ansichtsname:</translation>
+    </message>
+    <message>
+      <source>Press Space + Click/Drag to probe pixels (WCS shown if available)</source>
+      <translation>Leertaste drücken + Klicken/Ziehen, um Pixel zu untersuchen (WCS wird angezeigt, falls verfügbar)</translation>
+    </message>
+    <message>
+      <source>Preview mode: drag a rectangle on the image to create a preview.</source>
+      <translation>Vorschaumodus: Ziehen Sie ein Rechteck auf dem Bild, um eine Vorschau zu erstellen.</translation>
+    </message>
+    <message>
+      <source>Preview {0} ({1}×{2})</source>
+      <translation>Vorschau {0} ({1}×{2})</translation>
+    </message>
+    <message>
+      <source>Redo (this view)</source>
+      <translation>Wiederholen (diese Ansicht)</translation>
+    </message>
+    <message>
+      <source>Rename Document</source>
+      <translation>Dokument umbenennen</translation>
+    </message>
+    <message>
+      <source>Rename Document…</source>
+      <translation>Dokument umbenennen…</translation>
+    </message>
+    <message>
+      <source>Rename View</source>
+      <translation>Ansicht umbenennen</translation>
+    </message>
+    <message>
+      <source>Rename View… (F2)</source>
+      <translation>Ansicht umbenennen… (F2)</translation>
+    </message>
+    <message>
+      <source>Send to Shelf</source>
+      <translation>An Ablage senden</translation>
+    </message>
+    <message>
+      <source>Show pixel/WCS readout hint</source>
+      <translation>Pixel/WCS-Lesehinweis anzeigen</translation>
+    </message>
+    <message>
+      <source>This image has edits that aren't applied/saved.
+Close anyway?</source>
+      <translation>Dieses Bild hat Bearbeitungen, die nicht angewendet/gespeichert wurden.
+Trotzdem schließen?</translation>
+    </message>
+    <message>
+      <source>This image has edits that aren’t applied/saved.
+Close anyway?</source>
+      <translation>Dieses Bild hat Bearbeitungen, die nicht angewendet/gespeichert wurden.
+Trotzdem schließen?</translation>
+    </message>
+    <message>
+      <source>Toggle WCS grid overlay (if WCS exists)</source>
+      <translation>WCS-Gitter-Overlay umschalten (falls WCS vorhanden)</translation>
+    </message>
+    <message>
+      <source>Undo (this view)</source>
+      <translation>Rückgängig (diese Ansicht)</translation>
+    </message>
+    <message>
+      <source>Unlink from Linked Views</source>
+      <translation>Von verknüpften Ansichten trennen</translation>
+    </message>
+    <message>
+      <source>Untitled</source>
+      <translation>Unbenannt</translation>
+    </message>
+    <message>
+      <source>View</source>
+      <translation>Ansicht</translation>
+    </message>
+  </context>
+  <context>
+    <name>LivePreviewDialog</name>
+    <message>
+      <source>Live Mask Preview</source>
+      <translation>Live-Maskenvorschau</translation>
+    </message>
+  </context>
+  <context>
+    <name>Main</name>
+    <message>
+      <source>An unexpected error occurred.</source>
+      <translation>Ein unerwarteter Fehler ist aufgetreten.</translation>
+    </message>
+    <message>
+      <source>Application Error</source>
+      <translation>Anwendungsfehler</translation>
+    </message>
+  </context>
+  <context>
+    <name>MaskCreationDialog</name>
+    <message>
+      <source>Edge Blur (px):</source>
+      <translation>Randunschärfe (px):</translation>
+    </message>
+    <message>
+      <source>Ellipse</source>
+      <translation>Ellipse</translation>
+    </message>
+    <message>
+      <source>Freehand</source>
+      <translation>Freihand</translation>
+    </message>
+    <message>
+      <source>Mask Creation</source>
+      <translation>Maskenerstellung</translation>
+    </message>
+    <message>
+      <source>Select Entire Image</source>
+      <translation>Gesamtes Bild auswählen</translation>
+    </message>
+  </context>
+  <context>
+    <name>MaskMixin</name>
+    <message>
+      <source>Choose Mask Image</source>
+      <translation>Maskenbild wählen</translation>
+    </message>
+    <message>
+      <source>Could not resolve mask document.</source>
+      <translation>Maskendokument konnte nicht aufgelöst werden.</translation>
+    </message>
+    <message>
+      <source>Mask</source>
+      <translation>Maske</translation>
+    </message>
+    <message>
+      <source>Mask Overlay</source>
+      <translation>Masken-Overlay</translation>
+    </message>
+    <message>
+      <source>No active document.</source>
+      <translation>Kein aktives Dokument.</translation>
+    </message>
+    <message>
+      <source>No active mask on this image.</source>
+      <translation>Keine aktive Maske auf diesem Bild.</translation>
+    </message>
+    <message>
+      <source>No active mask to remove.</source>
+      <translation>Keine aktive Maske zum Entfernen.</translation>
+    </message>
+    <message>
+      <source>No image</source>
+      <translation>Kein Bild</translation>
+    </message>
+    <message>
+      <source>Open an image first.</source>
+      <translation>Zuerst ein Bild öffnen.</translation>
+    </message>
+    <message>
+      <source>Open another image to use as a mask.</source>
+      <translation>Ein anderes Bild öffnen, um es als Maske zu verwenden.</translation>
+    </message>
+    <message>
+      <source>Use this image as mask:</source>
+      <translation>Dieses Bild als Maske verwenden:</translation>
+    </message>
+  </context>
+  <context>
+    <name>MaskPreviewDialog</name>
+    <message>
+      <source>Mask Preview</source>
+      <translation>Maskenvorschau</translation>
+    </message>
+    <message>
+      <source>Push as New Document…</source>
+      <translation>Als neues Dokument anwenden…</translation>
+    </message>
+  </context>
+  <context>
+    <name>MenuMixin</name>
+    <message>
+      <source>&amp;About</source>
+      <translation>&amp;Über</translation>
+    </message>
+    <message>
+      <source>&amp;Edit</source>
+      <translation>&amp;Bearbeiten</translation>
+    </message>
+    <message>
+      <source>&amp;File</source>
+      <translation>&amp;Datei</translation>
+    </message>
+    <message>
+      <source>&amp;Functions</source>
+      <translation>&amp;Funktionen</translation>
+    </message>
+    <message>
+      <source>&amp;Geometry</source>
+      <translation>&amp;Geometrie</translation>
+    </message>
+    <message>
+      <source>&amp;Header Mods &amp;&amp; Misc</source>
+      <translation>&amp;Header-Änderungen &amp;&amp; Verschiedenes</translation>
+    </message>
+    <message>
+      <source>&amp;History</source>
+      <translation>&amp;Verlauf</translation>
+    </message>
+    <message>
+      <source>&amp;Masks</source>
+      <translation>&amp;Masken</translation>
+    </message>
+    <message>
+      <source>&amp;Scripts</source>
+      <translation>&amp;Skripte</translation>
+    </message>
+    <message>
+      <source>&amp;Settings</source>
+      <translation>&amp;Einstellungen</translation>
+    </message>
+    <message>
+      <source>&amp;Shortcuts</source>
+      <translation>&amp;Tastenkürzel</translation>
+    </message>
+    <message>
+      <source>&amp;Smart Tools</source>
+      <translation>&amp;Smart-Tools</translation>
+    </message>
+    <message>
+      <source>&amp;Star Stuff</source>
+      <translation>&amp;Stern-Dinge</translation>
+    </message>
+    <message>
+      <source>&amp;Tools</source>
+      <translation>&amp;Werkzeuge</translation>
+    </message>
+    <message>
+      <source>&amp;View</source>
+      <translation>&amp;Ansicht</translation>
+    </message>
+    <message>
+      <source>&amp;What's In My...</source>
+      <translation>&amp;Was ist in meinem...</translation>
+    </message>
+    <message>
+      <source>About...</source>
+      <translation>Über...</translation>
+    </message>
+    <message>
+      <source>Clear All Shortcuts</source>
+      <translation>Alle Tastenkürzel löschen</translation>
+    </message>
+    <message>
+      <source>Clear List</source>
+      <translation>Liste löschen</translation>
+    </message>
+    <message>
+      <source>Export Shortcuts...</source>
+      <translation>Tastenkürzel exportieren...</translation>
+    </message>
+    <message>
+      <source>Group A</source>
+      <translation>Gruppe A</translation>
+    </message>
+    <message>
+      <source>Group B</source>
+      <translation>Gruppe B</translation>
+    </message>
+    <message>
+      <source>Group C</source>
+      <translation>Gruppe C</translation>
+    </message>
+    <message>
+      <source>Group D</source>
+      <translation>Gruppe D</translation>
+    </message>
+    <message>
+      <source>Import Shortcuts...</source>
+      <translation>Tastenkürzel importieren...</translation>
+    </message>
+    <message>
+      <source>Keyboard Shortcut Cheat Sheet...</source>
+      <translation>Tastenkürzel-Spickzettel...</translation>
+    </message>
+    <message>
+      <source>No recent images</source>
+      <translation>Keine kürzlich verwendeten Bilder</translation>
+    </message>
+    <message>
+      <source>No recent projects</source>
+      <translation>Keine kürzlich verwendeten Projekte</translation>
+    </message>
+    <message>
+      <source>None</source>
+      <translation>Keine</translation>
+    </message>
+    <message>
+      <source>Open Recent Images</source>
+      <translation>Zuletzt verwendete Bilder öffnen</translation>
+    </message>
+    <message>
+      <source>Open Recent Projects</source>
+      <translation>Zuletzt verwendete Projekte öffnen</translation>
+    </message>
+    <message>
+      <source>Preferences...</source>
+      <translation>Präferenzen...</translation>
+    </message>
+    <message>
+      <source>Statistics...</source>
+      <translation>Statistiken...</translation>
+    </message>
+  </context>
+  <context>
+    <name>MetricsPanel</name>
+    <message>
+      <source>Background</source>
+      <translation>Hintergrund</translation>
+    </message>
+    <message>
+      <source>Cancel</source>
+      <translation>Abbrechen</translation>
+    </message>
+    <message>
+      <source>Computing frame metrics…</source>
+      <translation>Berechne Frame-Metriken…</translation>
+    </message>
+    <message>
+      <source>Don't show again</source>
+      <translation>Nicht mehr anzeigen</translation>
+    </message>
+    <message>
+      <source>Eccentricity</source>
+      <translation>Exzentrizität</translation>
+    </message>
+    <message>
+      <source>FWHM (px)</source>
+      <translation>FWHM (px)</translation>
+    </message>
+    <message>
+      <source>Heads-up</source>
+      <translation>Warnung</translation>
+    </message>
+    <message>
+      <source>Star Count</source>
+      <translation>Sternanzahl</translation>
+    </message>
+    <message>
+      <source>This is going to use ALL your CPU cores and the UI may lock up until it finishes.
 
-Continue?</source><translation>Dies wird ALLE Ihre CPU-Kerne beanspruchen und die Benutzeroberfläche könnte bis zum Abschluss einfrieren.
+Continue?</source>
+      <translation>Dies wird ALLE Ihre CPU-Kerne beanspruchen und die Benutzeroberfläche könnte bis zum Abschluss einfrieren.
 
-Fortfahren?</translation></message></context><context><name>MetricsWindow</name><message><source>All</source><translation>Alle</translation></message><message><source>Flagged Items {0}/{1}  ({2:.1f}%)</source><translation>Markierte Elemente {0}/{1}  ({2:.1f}%)</translation></message><message><source>Frame Metrics</source><translation>Frame-Metriken</translation></message><message><source>Instructions:
+Fortfahren?</translation>
+    </message>
+  </context>
+  <context>
+    <name>MetricsWindow</name>
+    <message>
+      <source>All</source>
+      <translation>Alle</translation>
+    </message>
+    <message>
+      <source>Flagged Items {0}/{1}  ({2:.1f}%)</source>
+      <translation>Markierte Elemente {0}/{1}  ({2:.1f}%)</translation>
+    </message>
+    <message>
+      <source>Frame Metrics</source>
+      <translation>Frame-Metriken</translation>
+    </message>
+    <message>
+      <source>Instructions:
  • Use the filter dropdown to restrict by FILTER.
  • Click a dot to flag/unflag a frame.
  • Shift-click a dot to preview the image.
- • Drag the red lines to set thresholds.</source><translation>Anleitung:
+ • Drag the red lines to set thresholds.</source>
+      <translation>Anleitung:
  • Nutzen Sie das Filter-Menü, um nach FILTER einzuschränken.
  • Klicken Sie auf einen Punkt, um ein Frame zu markieren/entmarkieren.
  • Shift-Klick auf einen Punkt für eine Bildvorschau.
- • Ziehen Sie die roten Linien, um Schwellenwerte festzulegen.</translation></message></context><context><name>MinorBodyWorker</name><message><source>Minor-body search: preparing catalog query...</source><translation>Kleinkörper-Suche: Bereite Katalogabfrage vor...</translation></message></context><context><name>MorphologyDialogPro</name><message><source>Apply</source><translation>Anwenden</translation></message><message><source>Cancel</source><translation>Abbrechen</translation></message><message><source>Iterations:</source><translation>Iterationen:</translation></message><message><source>Kernel size:</source><translation>Kernel-Größe:</translation></message><message><source>Morphological Operations</source><translation>Morphologische Operationen</translation></message><message><source>Morphological Parameters</source><translation>Morphologische Parameter</translation></message><message><source>Operation:</source><translation>Operation:</translation></message><message><source>Reset</source><translation>Zurücksetzen</translation></message></context><context><name>PixelMathDialog</name><message><source>Add blend</source><translation>Additiv mischen</translation></message><message><source>Available views</source><translation>Verfügbare Ansichten</translation></message><message><source>Average</source><translation>Durchschnitt</translation></message><message><source>Clear</source><translation>Löschen</translation></message><message><source>Color</source><translation>Farbe</translation></message><message><source>Create new image</source><translation>Neues Bild erstellen</translation></message><message><source>Difference</source><translation>Differenz</translation></message><message><source>Division by zero</source><translation>Division durch Null</translation></message><message><source>Enter expression</source><translation>Ausdruck eingeben</translation></message><message><source>Evaluate</source><translation>Auswerten</translation></message><message><source>Expression</source><translation>Ausdruck</translation></message><message><source>Functions</source><translation>Funktionen</translation></message><message><source>History</source><translation>Verlauf</translation></message><message><source>Insert function</source><translation>Funktion einfügen</translation></message><message><source>Insert variable</source><translation>Variable einfügen</translation></message><message><source>Invalid expression</source><translation>Ungültiger Ausdruck</translation></message><message><source>Load expression</source><translation>Ausdruck laden</translation></message><message><source>Logical</source><translation>Logisch</translation></message><message><source>Luminance mask</source><translation>Luminanzmaske</translation></message><message><source>Mathematical</source><translation>Mathematisch</translation></message><message><source>Maximum</source><translation>Maximum</translation></message><message><source>Minimum</source><translation>Minimum</translation></message><message><source>Multiply blend</source><translation>Multiplikativ mischen</translation></message><message><source>Output</source><translation>Ausgabe</translation></message><message><source>Pixel Math</source><translation>Pixel Math</translation></message><message><source>Presets</source><translation>Presets</translation></message><message><source>Preview</source><translation>Vorschau</translation></message><message><source>Range mask</source><translation>Bereichsmaske</translation></message><message><source>Replace active image</source><translation>Aktives Bild ersetzen</translation></message><message><source>Result</source><translation>Ergebnis</translation></message><message><source>Save expression</source><translation>Ausdruck speichern</translation></message><message><source>Screen blend</source><translation>Negativ multiplizieren</translation></message><message><source>Star mask</source><translation>Sternmaske</translation></message><message><source>Statistical</source><translation>Statistisch</translation></message><message><source>Subtract blend</source><translation>Subtraktiv mischen</translation></message><message><source>Syntax error</source><translation>Syntaxfehler</translation></message><message><source>Variable not found</source><translation>Variable nicht gefunden</translation></message><message><source>Variables</source><translation>Variablen</translation></message></context><context><name>PlateSolver</name><message><source>ASTAP path is not set (see Preferences) or file not found.</source><translation>ASTAP-Pfad ist nicht festgelegt (siehe Einstellungen) oder Datei nicht gefunden.</translation></message><message><source>ASTAP returned a non-zero exit code.</source><translation>ASTAP gab einen Exit-Code ungleich Null zurück.</translation></message><message><source>ASTAP timed out.</source><translation>ASTAP-Zeitüberschreitung.</translation></message><message><source>Active document has no image data.</source><translation>Aktives Dokument enthält keine Bilddaten.</translation></message><message><source>Astrometry.net API Key</source><translation>Astrometry.net API-Schlüssel</translation></message><message><source>Astrometry.net calibration not received in time.</source><translation>Astrometry.net-Kalibrierung nicht rechtzeitig erhalten.</translation></message><message><source>Astrometry.net job ID not received in time.</source><translation>Astrometry.net-Job-ID nicht rechtzeitig erhalten.</translation></message><message><source>Astrometry.net login failed.</source><translation>Astrometry.net-Anmeldung fehlgeschlagen.</translation></message><message><source>Astrometry.net upload failed.</source><translation>Astrometry.net-Upload fehlgeschlagen.</translation></message><message><source>Enter your Astrometry.net API key:</source><translation>Geben Sie Ihren Astrometry.net API-Schlüssel ein:</translation></message><message><source>Failed to start ASTAP: {0}</source><translation>ASTAP konnte nicht gestartet werden: {0}</translation></message><message><source>No active document to plate-solve.</source><translation>Kein aktives Dokument für Plate-Solve vorhanden.</translation></message><message><source>Status:</source><translation>Status:</translation></message><message><source>Status: ASTAP failed ({0}). Falling back to Astrometry.net…</source><translation>Status: ASTAP fehlgeschlagen ({0}). Fallback auf Astrometry.net…</translation></message><message><source>Status: ASTAP failed to start.</source><translation>Status: ASTAP konnte nicht gestartet werden.</translation></message><message><source>Status: ASTAP solving…</source><translation>Status: ASTAP löst…</translation></message><message><source>Status: ASTAP timed out.</source><translation>Status: ASTAP-Zeitüberschreitung.</translation></message><message><source>Status: Astrometry.net failed ({0}).</source><translation>Status: Astrometry.net fehlgeschlagen ({0}).</translation></message><message><source>Status: Building WCS header from calibration…</source><translation>Status: Erstelle WCS-Header aus Kalibrierung…</translation></message><message><source>Status: Downloading WCS file (with SIP) from Astrometry.net…</source><translation>Status: Lade WCS-Datei (mit SIP) von Astrometry.net herunter…</translation></message><message><source>Status: Job assigned (ID {0}).</source><translation>Status: Job zugewiesen (ID {0}).</translation></message><message><source>Status: Logging in to Astrometry.net…</source><translation>Status: Melde bei Astrometry.net an…</translation></message><message><source>Status: Login canceled (no API key).</source><translation>Status: Anmeldung abgebrochen (kein API-Schlüssel).</translation></message><message><source>Status: Login failed.</source><translation>Status: Anmeldung fehlgeschlagen.</translation></message><message><source>Status: Login successful.</source><translation>Status: Anmeldung erfolgreich.</translation></message><message><source>Status: Plate solve completed.</source><translation>Status: Plate-Solve abgeschlossen.</translation></message><message><source>Status: Preparing full-res 16-bit FITS for web solve…</source><translation>Status: Bereite hochauflösendes 16-Bit FITS für Web-Solve vor…</translation></message><message><source>Status: Preparing plate solve…</source><translation>Status: Bereite Plate-Solve vor…</translation></message><message><source>Status: Running local solve-field…</source><translation>Status: Führe lokales solve-field aus…</translation></message><message><source>Status: Solution received.</source><translation>Status: Lösung erhalten.</translation></message><message><source>Status: Solved via Astrometry.net.</source><translation>Status: Gelöst über Astrometry.net.</translation></message><message><source>Status: Solved with ASTAP.</source><translation>Status: Gelöst mit ASTAP.</translation></message><message><source>Status: Solving with ASTAP…</source><translation>Status: Risoluzione con ASTAP…</translation></message><message><source>Status: Upload complete.</source><translation>Status: Upload abgeschlossen.</translation></message><message><source>Status: Upload failed (temp FITS empty).</source><translation>Status: Upload fehlgeschlagen (temporäres FITS leer).</translation></message><message><source>Status: Upload failed.</source><translation>Status: Upload fehlgeschlagen.</translation></message><message><source>Status: Uploading image to Astrometry.net…</source><translation>Status: Lade Bild zu Astrometry.net hoch…</translation></message><message><source>Status: Waiting for job assignment…</source><translation>Status: Warte auf Job-Zuweisung…</translation></message><message><source>Status: Waiting for solution…</source><translation>Status: Warte auf Lösung…</translation></message><message><source>Status: process did not exit normally.</source><translation>Status: Prozess wurde nicht normal beendet.</translation></message><message><source>Status: process timed out.</source><translation>Status: Prozess-Zeitüberschreitung.</translation></message><message><source>Status: solve-field failed to start.</source><translation>Status: solve-field konnte nicht gestartet werden.</translation></message><message><source>Status: solve-field failed.</source><translation>Status: solve-field fehlgeschlagen.</translation></message><message><source>Status: solve-field timed out.</source><translation>Status: solve-field Zeitüberschreitung.</translation></message><message><source>Status: {0} retry {1}/{2}…</source><translation>Status: {0} Versuch {1}/{2}…</translation></message><message><source>Temp FITS for web upload is empty/tiny ({0} bytes).</source><translation>Temporäres FITS für Web-Upload ist leer/winzig ({0} Bytes).</translation></message><message><source>requests not available for astrometry.net API.</source><translation>requests nicht verfügbar für Astrometry.net-API.</translation></message><message><source>solve-field not configured.</source><translation>solve-field nicht konfiguriert.</translation></message><message><source>solve-field returned no header.</source><translation>solve-field gab keinen Header zurück.</translation></message></context><context><name>PlateSolverDialog</name><message><source>  ✔ saved: </source><translation>  ✔ gespeichert: </translation></message><message><source>  ❌ Failed to load</source><translation>  ❌ Laden fehlgeschlagen</translation></message><message><source>  ❌ error: </source><translation>  ❌ Fehler: </translation></message><message><source>ASTAP -fov. Compute uses image height × scale; Auto lets ASTAP infer.</source><translation>ASTAP -fov. "Berechnen" nutzt Bildhöhe × Skala; "Auto" lässt ASTAP inferieren.</translation></message><message><source>ASTAP -r. Auto lets ASTAP choose; Value forces a cone radius.</source><translation>ASTAP -r. "Auto" lässt ASTAP wählen; ein Wert erzwingt einen Kegelradius.</translation></message><message><source>ASTAP path missing.
-Set it in Preferences → ASTAP executable.</source><translation>ASTAP-Pfad fehlt.
-Legen Sie ihn in Einstellungen → ASTAP-Programmdatei fest.</translation></message><message><source>ASTAP path missing. Set Preferences → ASTAP executable.</source><translation>ASTAP-Pfad fehlt. Einstellungen → ASTAP-Programmdatei festlegen.</translation></message><message><source>Active View</source><translation>Aktive Ansicht</translation></message><message><source>Auto (-fov 0)</source><translation>Auto (-fov 0)</translation></message><message><source>Auto (-r 0)</source><translation>Auto (-r 0)</translation></message><message><source>Auto (from header)</source><translation>Auto (aus Header)</translation></message><message><source>Batch</source><translation>Stapel</translation></message><message><source>Batch plate solving completed.</source><translation>Stapel-Plate-Solve abgeschlossen.</translation></message><message><source>Browse Input…</source><translation>Eingabe durchsuchen…</translation></message><message><source>Browse Output…</source><translation>Ausgabe durchsuchen…</translation></message><message><source>Browse…</source><translation>Durchsuchen…</translation></message><message><source>Cannot read image:
-{0}</source><translation>Bild kann nicht gelesen werden:
-{0}</translation></message><message><source>Choose Image</source><translation>Bild auswählen</translation></message><message><source>Choose a file to solve.</source><translation>Wählen Sie eine Datei zum Lösen aus.</translation></message><message><source>Choose an image…</source><translation>Wählen Sie ein Bild aus…</translation></message><message><source>Choose input directory</source><translation>Eingabeverzeichnis wählen</translation></message><message><source>Choose output directory</source><translation>Ausgabeverzeichnis wählen</translation></message><message><source>Close</source><translation>Schließen</translation></message><message><source>Compute from scale</source><translation>Aus Skala berechnen</translation></message><message><source>Dec (e.g. +40:42:43 or 40.7123)</source><translation>Dec (z. B. +40:42:43 oder 40.7123)</translation></message><message><source>FITS files (*.fits *.fit)</source><translation>FITS-Dateien (*.fits *.fit)</translation></message><message><source>FOV:</source><translation>Sichtfeld (FOV):</translation></message><message><source>Failed to save: {0}</source><translation>Speichern fehlgeschlagen: {0}</translation></message><message><source>File</source><translation>Datei</translation></message><message><source>Found {0} files. Starting batch…</source><translation>{0} Dateien gefunden. Starte Stapelverarbeitung…</translation></message><message><source>Images (*.fits *.fit *.xisf *.tif *.tiff *.png *.jpg *.jpeg);;All files (*)</source><translation>Bilder (*.fits *.fit *.xisf *.tif *.tiff *.png *.jpg *.jpeg);;Alle Dateien (*)</translation></message><message><source>Input directory</source><translation>Eingabeverzeichnis</translation></message><message><source>Manual</source><translation>Manuell</translation></message><message><source>Manual RA/Dec/Scale:</source><translation>Manuelle RA/Dec/Skala:</translation></message><message><source>Mode:</source><translation>Modus:</translation></message><message><source>No acceptable image files found.</source><translation>Keine akzeptablen Bilddateien gefunden.</translation></message><message><source>No active image view.</source><translation>Keine aktive Bildansicht.</translation></message><message><source>None (blind)</source><translation>Keine (Blind)</translation></message><message><source>Output directory</source><translation>Ausgabeverzeichnis</translation></message><message><source>Pixel scale in arcseconds/pixel (e.g., 1.46).</source><translation>Pixel-Skala in Bogensekunden/Pixel (z. B. 1.46).</translation></message><message><source>Plate Solver</source><translation>Plate Solver</translation></message><message><source>Please choose a valid input directory.</source><translation>Bitte wählen Sie ein gültiges Eingabeverzeichnis.</translation></message><message><source>Please choose a valid output directory.</source><translation>Bitte wählen Sie ein gültiges Ausgabeverzeichnis.</translation></message><message><source>RA (e.g. 22:32:14 or 338.1385)</source><translation>RA (z. B. 22:32:14 oder 338.1385)</translation></message><message><source>Save Error</source><translation>Speicherfehler</translation></message><message><source>Save Plate-Solved FITS</source><translation>Plate-Solved FITS speichern</translation></message><message><source>Scale [" / px] (e.g. 1.46)</source><translation>Skala [" / px] (z. B. 1.46)</translation></message><message><source>Search radius:</source><translation>Suchradius:</translation></message><message><source>Seed mode:</source><translation>Seed-Modus:</translation></message><message><source>Seeding &amp; Constraints</source><translation>Initialisierung &amp; Einschränkungen</translation></message><message><source>Selected file does not exist.</source><translation>Die ausgewählte Datei existiert nicht.</translation></message><message><source>Solve the currently active image view.</source><translation>Löse die aktuell aktive Bildansicht.</translation></message><message><source>Solved (not saved).</source><translation>Gelöst (nicht gespeichert).</translation></message><message><source>Solved FITS saved:
-{0}</source><translation>Gelöstes FITS gespeichert:
-{0}</translation></message><message><source>Solved with ASTAP (WCS + SIP applied to active doc).</source><translation>Gelöst mit ASTAP (WCS + SIP auf aktives Dokument angewendet).</translation></message><message><source>Start</source><translation>Start</translation></message><message><source>Status:</source><translation>Status:</translation></message><message><source>Unsupported or unreadable image.</source><translation>Nicht unterstütztes oder unlesbares Bild.</translation></message><message><source>Use FITS header, your manual RA/Dec/scale, or blind solve.</source><translation>Verwenden Sie den FITS-Header, Ihre manuelle RA/Dec/Skala oder den Blind-Solve.</translation></message><message><source>Value (deg)</source><translation>Wert (Grad)</translation></message><message><source>e.g. 1.80</source><translation>z. B. 1.80</translation></message><message><source>e.g. 5.0</source><translation>z. B. 5.0</translation></message></context><context><name>PreviewPane</name><message><source>AutoStretch</source><translation>AutoStretch</translation></message><message><source>Fit to Preview</source><translation>An Vorschau anpassen</translation></message><message><source>Zoom In</source><translation>Vergrößern</translation></message><message><source>Zoom Out</source><translation>Verkleinern</translation></message></context><context><name>RGBAlignDialog</name><message><source>Align</source><translation>Ausrichten</translation></message><message><source>Alignment model:</source><translation>Ausrichtungsmodell:</translation></message><message><source>Close</source><translation>Schließen</translation></message><message><source>Create new document (keep original)</source><translation>Neues Dokument erstellen (Original behalten)</translation></message><message><source>RGB Align</source><translation>RGB-Ausrichtung</translation></message><message><source>SEP sigma:</source><translation>SEP Sigma:</translation></message><message><source>Trial detect stars</source><translation>Test-Sternerkennung</translation></message></context><context><name>RGBCombinationDialogPro</name><message><source>Blue:</source><translation>Blau:</translation></message><message><source>Blue: Not selected</source><translation>Blau: Nicht ausgewählt</translation></message><message><source>Cancel</source><translation>Abbrechen</translation></message><message><source>Combine</source><translation>Kombinieren</translation></message><message><source>Files</source><translation>Dateien</translation></message><message><source>Green:</source><translation>Grün:</translation></message><message><source>Green: Not selected</source><translation>Grün: Nicht ausgewählt</translation></message><message><source>Load Blue…</source><translation>Blau laden…</translation></message><message><source>Load Green…</source><translation>Grün laden…</translation></message><message><source>Load Individual Files</source><translation>Einzelne Dateien laden</translation></message><message><source>Load Red…</source><translation>Rot laden…</translation></message><message><source>RGB Combination</source><translation>RGB-Kombination</translation></message><message><source>Red:</source><translation>Rot:</translation></message><message><source>Red: Not selected</source><translation>Rot: Nicht ausgewählt</translation></message><message><source>Select Open Views for R / G / B</source><translation>Wählen Sie offene Ansichten für R / G / B</translation></message><message><source>Select RGB Combination Mode</source><translation>RGB-Kombinationsmodus wählen</translation></message><message><source>Use Open Views</source><translation>Offene Ansichten verwenden</translation></message></context><context><name>AstroSuiteProMainWindow</name><message><source>&amp;About</source><translation>&amp;Über</translation></message><message><source>&amp;Edit</source><translation>&amp;Bearbeiten</translation></message><message><source>&amp;File</source><translation>&amp;Datei</translation></message><message><source>&amp;Functions</source><translation>&amp;Funktionen</translation></message><message><source>&amp;Geometry</source><translation>&amp;Geometrie</translation></message><message><source>&amp;Header Mods &amp;&amp; Misc</source><translation>&amp;Header-Mods &amp;&amp; Verschiedenes</translation></message><message><source>&amp;History</source><translation>&amp;Verlauf</translation></message><message><source>&amp;Masks</source><translation>&amp;Masken</translation></message><message><source>&amp;Scripts</source><translation>&amp;Skripte</translation></message><message><source>&amp;Settings</source><translation>&amp;Einstellungen</translation></message><message><source>&amp;Shortcuts</source><translation>&amp;Tastenkürzel</translation></message><message><source>&amp;Smart Tools</source><translation>&amp;Smart-Tools</translation></message><message><source>&amp;Star Stuff</source><translation>&amp;Stern-Sachen</translation></message><message><source>&amp;Tools</source><translation>&amp;Werkzeuge</translation></message><message><source>&amp;View</source><translation>&amp;Ansicht</translation></message><message><source>&amp;What's In My...</source><translation>&amp;Was ist in meinem...</translation></message><message><source>About...</source><translation>Über...</translation></message><message><source>Clear All Shortcuts</source><translation>Alle Tastenkürzel löschen</translation></message><message><source>Clear List</source><translation>Liste löschen</translation></message><message><source>Export Shortcuts...</source><translation>Tastenkürzel exportieren...</translation></message><message><source>Group A</source><translation>Gruppe A</translation></message><message><source>Group B</source><translation>Gruppe B</translation></message><message><source>Group C</source><translation>Gruppe C</translation></message><message><source>Group D</source><translation>Gruppe D</translation></message><message><source>Import Shortcuts...</source><translation>Tastenkürzel importieren...</translation></message><message><source>Keyboard Shortcut Cheat Sheet...</source><translation>Tastenkürzel-Cheat-Sheet...</translation></message><message><source>No recent images</source><translation>Keine letzten Bilder</translation></message><message><source>No recent projects</source><translation>Keine letzten Projekte</translation></message><message><source>None</source><translation>Keine</translation></message><message><source>Open Recent Images</source><translation>Zuletzt verwendete Bilder öffnen</translation></message><message><source>Open Recent Projects</source><translation>Zuletzt verwendete Projekte öffnen</translation></message><message><source>Preferences...</source><translation>Einstellungen...</translation></message><message><source>&amp;Exit</source><translation>&amp;Beenden</translation></message><message><source>1:1</source><translation>1:1</translation></message><message><source>ABE...</source><translation>ABE...</translation></message><message><source>Aberration Correction (AI)...</source><translation>Aberrationskorrektur (KI)...</translation></message><message><source>Add Stars...</source><translation>Sterne hinzufügen...</translation></message><message><source>Add diffraction spikes to detected stars</source><translation>Diffraktions-Spikes zu erkannten Sternen hinzufügen</translation></message><message><source>Add signatures/overlays and bake them into the active image</source><translation>Signaturen/Overlays hinzufügen und in das aktive Bild einbetten</translation></message><message><source>Adjust specific hue ranges with CMY/RGB controls</source><translation>Bestimmte Farbbereichsbereiche mit CMY/RGB-Steuerelementen anpassen</translation></message><message><source>Advanced diffraction spikes with halos, flares and rainbow effects</source><translation>Fortgeschrittene Diffraktions-Spikes mit Halos, Flares und Regenbogeneffekten</translation></message><message><source>Align R and B channels to G using astroalign (affine/homography/poly)</source><translation>R- und B-Kanäle an G mit Astroalign ausrichten (affin/homografie/poly)</translation></message><message><source>Align images via astroalign / triangles</source><translation>Bilder über Astroalign / Dreiecke ausrichten</translation></message><message><source>Apply Mask</source><translation>Maske anwenden</translation></message><message><source>Apply a mask document to the active image</source><translation>Ein Maskendokument auf das aktive Bild anwenden</translation></message><message><source>Apply the current Display-Stretch to the image and add an undo step</source><translation>Wenden Sie den aktuellen Display-Stretch auf das Bild an und fügen Sie einen Rückgängig-Schritt hinzu</translation></message><message><source>Apply the same stretch to all RGB channels</source><translation>Wenden Sie den gleichen Stretch auf alle RGB-Kanäle an</translation></message><message><source>Apply white balance (Star-Based, Manual, or Auto)</source><translation>Weißabgleich anwenden (Sternbasiert, Manuell oder Automatisch)</translation></message><message><source>Arcsinh star stretch with optional SCNR and color boost</source><translation>Arcsinh-Sternstretch mit optionalem SCNR und Farbboost</translation></message><message><source>Arrange subwindows in a near-square grid</source><translation>Unterfenster in einem fast quadratischen Raster anordnen</translation></message><message><source>AstroBin Exporter...</source><translation>AstroBin-Exporter...</translation></message><message><source>AstroSpike...</source><translation>AstroSpike...</translation></message><message><source>Auto-fit on Resize</source><translation>Automatische Anpassung bei Größenänderung</translation></message><message><source>Automatic Background Extraction</source><translation>Automatische Hintergrundextraktion</translation></message><message><source>Background Neutralization...</source><translation>Hintergrundneutralisierung...</translation></message><message><source>Batch Converter...</source><translation>Batch-Konverter...</translation></message><message><source>Batch Modify FITS Headers</source><translation>FITS-Header stapelweise ändern</translation></message><message><source>Batch Rename from FITS...</source><translation>Batch-Umbenennung aus FITS...</translation></message><message><source>Batch-align frames to a reference</source><translation>Frames stapelweise an einer Referenz ausrichten</translation></message><message><source>Blemish Blaster...</source><translation>Blemish Blaster...</translation></message><message><source>Blend a starless view with a stars-only view</source><translation>Eine sternlose Ansicht mit einer Nur-Sterne-Ansicht mischen</translation></message><message><source>Blend two open images (replace A or create new)</source><translation>Zwei offene Bilder mischen (A ersetzen oder neu erstellen)</translation></message><message><source>Blink Comparator...</source><translation>Blink-Komparator...</translation></message><message><source>Build mosaics from overlapping frames</source><translation>Mosaike aus überlappenden Frames erstellen</translation></message><message><source>Bundles</source><translation>Bundles</translation></message><message><source>CLAHE...</source><translation>CLAHE...</translation></message><message><source>Cascade Views</source><translation>Ansichten kaskadieren</translation></message><message><source>Cascade all subwindows</source><translation>Alle Unterfenster kaskadieren</translation></message><message><source>Check for Updates...</source><translation>Nach Updates suchen...</translation></message><message><source>Clear All Views</source><translation>Alle Ansichten schließen</translation></message><message><source>Close all views and clear shortcuts</source><translation>Alle Ansichten schließen und Tastenkürzel löschen</translation></message><message><source>Close all views and documents, keep desktop shortcuts</source><translation>Alle Ansichten und Dokumente schließen, Desktop-Verknüpfungen beibehalten</translation></message><message><source>Combine narrowband to RGB with optional OSC stars</source><translation>Narrowband mit optionalen OSC-Sternen zu RGB kombinieren</translation></message><message><source>Combine three mono images into RGB</source><translation>Drei Mono-Bilder zu RGB kombinieren</translation></message><message><source>Compare a stack of images by blinking</source><translation>Einen Stapel von Bildern durch Blinken vergleichen</translation></message><message><source>Continuum Subtract (NB - scaled broadband)</source><translation>Kontinuum-Subtraktion (NB - skalierte Breitband)</translation></message><message><source>Continuum Subtract...</source><translation>Kontinuum-Subtraktion...</translation></message><message><source>Contrast Limited Adaptive Histogram Equalization</source><translation>Kontrastbegrenzte adaptive Histogramm-Equalisierung</translation></message><message><source>Convolution / Deconvolution...</source><translation>Faltung / Dekonvolution...</translation></message><message><source>Copy Astrometric Solution...</source><translation>Astrometrische Lösung kopieren...</translation></message><message><source>Copy View (zoom/pan)</source><translation>Ansicht kopieren (Zoom/Pan)</translation></message><message><source>Cosmic Clarity</source><translation>Cosmic Clarity</translation></message><message><source>Cosmic Clarity Satellite...</source><translation>Cosmic Clarity Satellite...</translation></message><message><source>Cosmic Clarity UI...</source><translation>Cosmic Clarity UI...</translation></message><message><source>Create Mask...</source><translation>Maske erstellen...</translation></message><message><source>Create Sample Scripts...</source><translation>Beispielskripte erstellen...</translation></message><message><source>Create a mask from the active image</source><translation>Eine Maske aus dem aktiven Bild erstellen</translation></message><message><source>Create a new mono document using the selected luminance method</source><translation>Ein neues Mono-Dokument mit der ausgewählten Luminanzmethode erstellen</translation></message><message><source>Create and run bundles of functions/shortcuts</source><translation>Bundles von Funktionen/Tastenkürzeln erstellen und ausführen</translation></message><message><source>Create bundles of views; drop shortcuts to apply to all</source><translation>Bundles von Ansichten erstellen; Tastenkürzel ablegen, um sie auf alle anzuwenden</translation></message><message><source>Crop / rotate with handles</source><translation>Zuschneiden / Drehen mit Griffen</translation></message><message><source>Crop...</source><translation>Zuschneiden...</translation></message><message><source>Curves Editor...</source><translation>Kurven-Editor...</translation></message><message><source>Debayer...</source><translation>Debayer...</translation></message><message><source>Demosaic a Bayer-mosaic mono image to RGB</source><translation>Ein Bayer-Mosaik-Mono-Bild zu RGB demosaikieren</translation></message><message><source>Detect exoplanet transits from time-series subs</source><translation>Exoplaneten-Transite aus Zeitreihen-Subs erkennen</translation></message><message><source>Diffraction Spikes...</source><translation>Diffraktions-Spikes...</translation></message><message><source>Display-Stretch</source><translation>Display-Stretch</translation></message><message><source>Documentation...</source><translation>Dokumentation...</translation></message><message><source>Enhance faint/dark structures with wavelet-guided masking</source><translation>Schwache/dunkle Strukturen mit wavelet-geführter Maskierung verbessern</translation></message><message><source>Erosion, dilation, opening, and closing.</source><translation>Erosion, Dilatation, Öffnen und Schließen.</translation></message><message><source>Evaluate expressions using open view names</source><translation>Ausdrücke unter Verwendung offener Ansichtsnamen auswerten</translation></message><message><source>Exoplanet Detector...</source><translation>Exoplaneten-Detektor...</translation></message><message><source>Extract Luminance</source><translation>Luminanz extrahieren</translation></message><message><source>Extract R/G/B as three mono documents</source><translation>R/G/B als drei Mono-Dokumente extrahieren</translation></message><message><source>FITS Header Batch Modifier...</source><translation>FITS-Header Batch-Modifikator...</translation></message><message><source>FITS Header Modifier...</source><translation>FITS-Header-Modifikator...</translation></message><message><source>Find transients/anomalies across frames</source><translation>Transienten/Anomalien über Frames hinweg finden</translation></message><message><source>Fit</source><translation>Einpassen</translation></message><message><source>Fit galaxy isophotes and reveal residuals</source><translation>Galaxien-Isophoten einpassen und Residuen aufdecken</translation></message><message><source>Fit image to current window</source><translation>Bild an das aktuelle Fenster anpassen</translation></message><message><source>Flip Horizontal</source><translation>Horizontal spiegeln</translation></message><message><source>Flip Vertical</source><translation>Vertikal spiegeln</translation></message><message><source>Flip image left&lt;-&gt;right</source><translation>Bild links&lt;-&gt;rechts spiegeln</translation></message><message><source>Flip image top&lt;-&gt;bottom</source><translation>Bild oben&lt;-&gt;unten spiegeln</translation></message><message><source>Frequency Separation...</source><translation>Frequenzteilung...</translation></message><message><source>Function Bundles...</source><translation>Funktions-Bundles...</translation></message><message><source>Functions</source><translation>Funktionen</translation></message><message><source>GLIMR -- Isophote Modeler...</source><translation>GLIMR -- Isophoten-Modellierer...</translation></message><message><source>Generalized hyperbolic stretch (α/beta/gamma, LP/HP, pivot)</source><translation>Verallgemeinerter hyperbolischer Stretch (α/beta/gamma, LP/HP, Pivot)</translation></message><message><source>Geometry</source><translation>Geometrie</translation></message><message><source>Halo-B-Gon...</source><translation>Halo-B-Gon...</translation></message><message><source>Hard (target 0.50, σ 2)</source><translation>Hart (Ziel 0.50, σ 2)</translation></message><message><source>Hard-Display-Stretch</source><translation>Harter Display-Stretch</translation></message><message><source>Hide Mask Overlay</source><translation>Masken-Overlay ausblenden</translation></message><message><source>Histogram...</source><translation>Histogramm...</translation></message><message><source>History Explorer...</source><translation>Verlaufs-Explorer...</translation></message><message><source>Hyperbolic Stretch...</source><translation>Hyperbolischer Stretch...</translation></message><message><source>Identify objects in a plate-solved frame</source><translation>Objekte in einem gelösten Frame identifizieren</translation></message><message><source>Image Combine...</source><translation>Bilder kombinieren...</translation></message><message><source>Image Inspector and Focal Plane Analysis</source><translation>Bildinspektor und Brennebene-Analyse</translation></message><message><source>Image Peeker...</source><translation>Image Peeker...</translation></message><message><source>Inspect and restore from the slot's history</source><translation>Aus dem Verlauf des Slots inspizieren und wiederherstellen</translation></message><message><source>Inspect star PSF/HFR and flux histograms (SEP)</source><translation>Stern PSF/HFR und Flusshistogramme inspizieren (SEP)</translation></message><message><source>Interactive blemish removal on the active view</source><translation>Interaktive Fleckenentfernung in der aktiven Ansicht</translation></message><message><source>Invert</source><translation>Invertieren</translation></message><message><source>Invert Mask</source><translation>Maske invertieren</translation></message><message><source>Invert image colors</source><translation>Bildfarben invertieren</translation></message></context><context><name>ReferenceFrameReviewDialog</name><message><source>Cancel</source><translation>Abbrechen</translation></message><message><source>Disable Autostretch</source><translation>Autostretch deaktivieren</translation></message><message><source>Enable Autostretch</source><translation>Autostretch aktivieren</translation></message><message><source>Error</source><translation>Fehler</translation></message><message><source>FITS Files (*.fits *.fit);;All Files (*)</source><translation>FITS-Dateien (*.fits *.fit);;Alle Dateien (*)</translation></message><message><source>Failed to load the reference image.</source><translation>Das Referenzbild konnte nicht geladen werden.</translation></message><message><source>Reference Frame Review</source><translation>Referenzrahmen-Überprüfung</translation></message><message><source>Reference Preview</source><translation>Referenz-Vorschau</translation></message><message><source>Reference image not loaded.</source><translation>Referenzbild nicht geladen.</translation></message><message><source>Select New Reference Frame</source><translation>Neuen Referenzrahmen auswählen</translation></message><message><source>Unable to load preview.</source><translation>Vorschau konnte nicht geladen werden.</translation></message><message><source>Use This Reference Frame</source><translation>Diesen Referenzrahmen verwenden</translation></message><message><source>Zoom In</source><translation>Heranzoomen</translation></message><message><source>Zoom Out</source><translation>Herauszoomen</translation></message></context><context><name>ReferenceOverlayDialog</name><message><source>Reference Frame: Stars Overlay</source><translation>Referenzrahmen: Sterne-Overlay</translation></message></context><context><name>RemoveGreenDialog</name><message><source>Apply</source><translation>Anwenden</translation></message><message><source>Cancel</source><translation>Abbrechen</translation></message><message><source>Neutral mode:</source><translation>Neutraler Modus:</translation></message><message><source>Preserve lightness</source><translation>Helligkeit bewahren</translation></message><message><source>Remove Green (SCNR)</source><translation>Grün entfernen (SCNR)</translation></message><message><source>Select the amount to remove green noise:</source><translation>Menge der Grünrauschentfernung wählen:</translation></message></context><context><name>SaveOptionsDialog</name><message><source>Cancel</source><translation>Abbrechen</translation></message><message><source>Choose bit depth for export:</source><translation>Bittiefe für Export wählen:</translation></message><message><source>OK</source><translation>OK</translation></message><message><source>Save Options</source><translation>Speicheroptionen</translation></message></context><context><name>SelectiveColorCorrection</name><message><source>Complementary colors (CMY)</source><translation>Komplementärfarben (CMY)</translation></message><message><source>Luminance, Chroma/Saturation, Contrast</source><translation>Luminanz, Chroma/Sättigung, Kontrast</translation></message><message><source>Mask</source><translation>Maske</translation></message><message><source>RGB Colors</source><translation>RGB-Farben</translation></message><message><source>Selective Color Correction</source><translation>Selektive Farbkorrektur</translation></message></context><context><name>SignatureInsertDialogPro</name><message><source>Signature / Insert</source><translation>Signatur / Einfügen</translation></message></context><context><name>Splash</name><message><source>  •  Build {0}</source><translation>  •  Build {0}</translation></message><message><source>  •  Running locally from source code</source><translation>  •  Lokale Ausführung aus Quellcode</translation></message><message><source>Building main window...</source><translation>Hauptfenster wird erstellt...</translation></message><message><source>Configuring Qt message handler...</source><translation>Qt-Message-Handler wird konfiguriert...</translation></message><message><source>Configuring matplotlib...</source><translation>Matplotlib wird konfiguriert...</translation></message><message><source>Configuring multiprocessing...</source><translation>Multiprocessing wird konfiguriert...</translation></message><message><source>Creating image manager...</source><translation>Bildmanager wird erstellt...</translation></message><message><source>Initializing Python runtime...</source><translation>Python-Runtime wird initialisiert...</translation></message><message><source>Installing crash handlers...</source><translation>Crash-Handler werden installiert...</translation></message><message><source>Loading MDI widgets...</source><translation>MDI-Widgets werden geladen...</translation></message><message><source>Loading NumPy...</source><translation>NumPy wird geladen...</translation></message><message><source>Loading OpenCV...</source><translation>OpenCV wird geladen...</translation></message><message><source>Loading PyQt6 components...</source><translation>PyQt6-Komponenten werden geladen...</translation></message><message><source>Loading PyTorch runtime...</source><translation>PyTorch-Runtime wird geladen...</translation></message><message><source>Loading UI utilities...</source><translation>UI-Utilities werden geladen...</translation></message><message><source>Loading image libraries...</source><translation>Bildbibliotheken werden geladen...</translation></message><message><source>Loading image manager...</source><translation>Bildmanager wird geladen...</translation></message><message><source>Loading main window module...</source><translation>Hauptfenstermodul wird geladen...</translation></message><message><source>Loading reproject library...</source><translation>Reproject-Bibliothek wird geladen...</translation></message><message><source>Loading resources...</source><translation>Ressourcen werden geladen...</translation></message><message><source>Loading standard libraries...</source><translation>Standardbibliotheken werden geladen...</translation></message><message><source>Modules loaded, finalizing...</source><translation>Module geladen, Finalisierung...</translation></message><message><source>Ready!</source><translation>Fertig!</translation></message><message><source>Setting up logging...</source><translation>Logging wird eingerichtet...</translation></message><message><source>Showing main window...</source><translation>Hauptfenster wird angezeigt...</translation></message><message><source>Starting...</source><translation>Startvorgang...</translation></message><message><source>Suppressing warnings...</source><translation>Warnungen werden unterdrückt...</translation></message><message><source>Version {0}</source><translation>Version {0}</translation></message></context><context><name>StackingSuiteDialog</name><message><source>
+ • Ziehen Sie die roten Linien, um Schwellenwerte festzulegen.</translation>
+    </message>
+  </context>
+  <context>
+    <name>MinorBodyWorker</name>
+    <message>
+      <source>Minor-body search: preparing catalog query...</source>
+      <translation>Kleinkörper-Suche: Bereite Katalogabfrage vor...</translation>
+    </message>
+  </context>
+  <context>
+    <name>MorphologyDialogPro</name>
+    <message>
+      <source>Apply</source>
+      <translation>Anwenden</translation>
+    </message>
+    <message>
+      <source>Cancel</source>
+      <translation>Abbrechen</translation>
+    </message>
+    <message>
+      <source>Iterations:</source>
+      <translation>Iterationen:</translation>
+    </message>
+    <message>
+      <source>Kernel size:</source>
+      <translation>Kernel-Größe:</translation>
+    </message>
+    <message>
+      <source>Morphological Operations</source>
+      <translation>Morphologische Operationen</translation>
+    </message>
+    <message>
+      <source>Morphological Parameters</source>
+      <translation>Morphologische Parameter</translation>
+    </message>
+    <message>
+      <source>Operation:</source>
+      <translation>Operation:</translation>
+    </message>
+    <message>
+      <source>Reset</source>
+      <translation>Zurücksetzen</translation>
+    </message>
+  </context>
+  <context>
+    <name>PixelMathDialog</name>
+    <message>
+      <source>Add blend</source>
+      <translation>Additiv mischen</translation>
+    </message>
+    <message>
+      <source>Available views</source>
+      <translation>Verfügbare Ansichten</translation>
+    </message>
+    <message>
+      <source>Average</source>
+      <translation>Durchschnitt</translation>
+    </message>
+    <message>
+      <source>Clear</source>
+      <translation>Löschen</translation>
+    </message>
+    <message>
+      <source>Color</source>
+      <translation>Farbe</translation>
+    </message>
+    <message>
+      <source>Create new image</source>
+      <translation>Neues Bild erstellen</translation>
+    </message>
+    <message>
+      <source>Difference</source>
+      <translation>Differenz</translation>
+    </message>
+    <message>
+      <source>Division by zero</source>
+      <translation>Division durch Null</translation>
+    </message>
+    <message>
+      <source>Enter expression</source>
+      <translation>Ausdruck eingeben</translation>
+    </message>
+    <message>
+      <source>Evaluate</source>
+      <translation>Auswerten</translation>
+    </message>
+    <message>
+      <source>Expression</source>
+      <translation>Ausdruck</translation>
+    </message>
+    <message>
+      <source>Functions</source>
+      <translation>Funktionen</translation>
+    </message>
+    <message>
+      <source>History</source>
+      <translation>Verlauf</translation>
+    </message>
+    <message>
+      <source>Insert function</source>
+      <translation>Funktion einfügen</translation>
+    </message>
+    <message>
+      <source>Insert variable</source>
+      <translation>Variable einfügen</translation>
+    </message>
+    <message>
+      <source>Invalid expression</source>
+      <translation>Ungültiger Ausdruck</translation>
+    </message>
+    <message>
+      <source>Load expression</source>
+      <translation>Ausdruck laden</translation>
+    </message>
+    <message>
+      <source>Logical</source>
+      <translation>Logisch</translation>
+    </message>
+    <message>
+      <source>Luminance mask</source>
+      <translation>Luminanzmaske</translation>
+    </message>
+    <message>
+      <source>Mathematical</source>
+      <translation>Mathematisch</translation>
+    </message>
+    <message>
+      <source>Maximum</source>
+      <translation>Maximum</translation>
+    </message>
+    <message>
+      <source>Minimum</source>
+      <translation>Minimum</translation>
+    </message>
+    <message>
+      <source>Multiply blend</source>
+      <translation>Multiplikativ mischen</translation>
+    </message>
+    <message>
+      <source>Output</source>
+      <translation>Ausgabe</translation>
+    </message>
+    <message>
+      <source>Pixel Math</source>
+      <translation>Pixel Math</translation>
+    </message>
+    <message>
+      <source>Presets</source>
+      <translation>Presets</translation>
+    </message>
+    <message>
+      <source>Preview</source>
+      <translation>Vorschau</translation>
+    </message>
+    <message>
+      <source>Range mask</source>
+      <translation>Bereichsmaske</translation>
+    </message>
+    <message>
+      <source>Replace active image</source>
+      <translation>Aktives Bild ersetzen</translation>
+    </message>
+    <message>
+      <source>Result</source>
+      <translation>Ergebnis</translation>
+    </message>
+    <message>
+      <source>Save expression</source>
+      <translation>Ausdruck speichern</translation>
+    </message>
+    <message>
+      <source>Screen blend</source>
+      <translation>Negativ multiplizieren</translation>
+    </message>
+    <message>
+      <source>Star mask</source>
+      <translation>Sternmaske</translation>
+    </message>
+    <message>
+      <source>Statistical</source>
+      <translation>Statistisch</translation>
+    </message>
+    <message>
+      <source>Subtract blend</source>
+      <translation>Subtraktiv mischen</translation>
+    </message>
+    <message>
+      <source>Syntax error</source>
+      <translation>Syntaxfehler</translation>
+    </message>
+    <message>
+      <source>Variable not found</source>
+      <translation>Variable nicht gefunden</translation>
+    </message>
+    <message>
+      <source>Variables</source>
+      <translation>Variablen</translation>
+    </message>
+  </context>
+  <context>
+    <name>PlateSolver</name>
+    <message>
+      <source>ASTAP path is not set (see Preferences) or file not found.</source>
+      <translation>ASTAP-Pfad ist nicht festgelegt (siehe Einstellungen) oder Datei nicht gefunden.</translation>
+    </message>
+    <message>
+      <source>ASTAP returned a non-zero exit code.</source>
+      <translation>ASTAP gab einen Exit-Code ungleich Null zurück.</translation>
+    </message>
+    <message>
+      <source>ASTAP timed out.</source>
+      <translation>ASTAP-Zeitüberschreitung.</translation>
+    </message>
+    <message>
+      <source>Active document has no image data.</source>
+      <translation>Aktives Dokument enthält keine Bilddaten.</translation>
+    </message>
+    <message>
+      <source>Astrometry.net API Key</source>
+      <translation>Astrometry.net API-Schlüssel</translation>
+    </message>
+    <message>
+      <source>Astrometry.net calibration not received in time.</source>
+      <translation>Astrometry.net-Kalibrierung nicht rechtzeitig erhalten.</translation>
+    </message>
+    <message>
+      <source>Astrometry.net job ID not received in time.</source>
+      <translation>Astrometry.net-Job-ID nicht rechtzeitig erhalten.</translation>
+    </message>
+    <message>
+      <source>Astrometry.net login failed.</source>
+      <translation>Astrometry.net-Anmeldung fehlgeschlagen.</translation>
+    </message>
+    <message>
+      <source>Astrometry.net upload failed.</source>
+      <translation>Astrometry.net-Upload fehlgeschlagen.</translation>
+    </message>
+    <message>
+      <source>Enter your Astrometry.net API key:</source>
+      <translation>Geben Sie Ihren Astrometry.net API-Schlüssel ein:</translation>
+    </message>
+    <message>
+      <source>Failed to start ASTAP: {0}</source>
+      <translation>ASTAP konnte nicht gestartet werden: {0}</translation>
+    </message>
+    <message>
+      <source>No active document to plate-solve.</source>
+      <translation>Kein aktives Dokument für Plate-Solve vorhanden.</translation>
+    </message>
+    <message>
+      <source>Status:</source>
+      <translation>Status:</translation>
+    </message>
+    <message>
+      <source>Status: ASTAP failed ({0}). Falling back to Astrometry.net…</source>
+      <translation>Status: ASTAP fehlgeschlagen ({0}). Fallback auf Astrometry.net…</translation>
+    </message>
+    <message>
+      <source>Status: ASTAP failed to start.</source>
+      <translation>Status: ASTAP konnte nicht gestartet werden.</translation>
+    </message>
+    <message>
+      <source>Status: ASTAP solving…</source>
+      <translation>Status: ASTAP löst…</translation>
+    </message>
+    <message>
+      <source>Status: ASTAP timed out.</source>
+      <translation>Status: ASTAP-Zeitüberschreitung.</translation>
+    </message>
+    <message>
+      <source>Status: Astrometry.net failed ({0}).</source>
+      <translation>Status: Astrometry.net fehlgeschlagen ({0}).</translation>
+    </message>
+    <message>
+      <source>Status: Building WCS header from calibration…</source>
+      <translation>Status: Erstelle WCS-Header aus Kalibrierung…</translation>
+    </message>
+    <message>
+      <source>Status: Downloading WCS file (with SIP) from Astrometry.net…</source>
+      <translation>Status: Lade WCS-Datei (mit SIP) von Astrometry.net herunter…</translation>
+    </message>
+    <message>
+      <source>Status: Job assigned (ID {0}).</source>
+      <translation>Status: Job zugewiesen (ID {0}).</translation>
+    </message>
+    <message>
+      <source>Status: Logging in to Astrometry.net…</source>
+      <translation>Status: Melde bei Astrometry.net an…</translation>
+    </message>
+    <message>
+      <source>Status: Login canceled (no API key).</source>
+      <translation>Status: Anmeldung abgebrochen (kein API-Schlüssel).</translation>
+    </message>
+    <message>
+      <source>Status: Login failed.</source>
+      <translation>Status: Anmeldung fehlgeschlagen.</translation>
+    </message>
+    <message>
+      <source>Status: Login successful.</source>
+      <translation>Status: Anmeldung erfolgreich.</translation>
+    </message>
+    <message>
+      <source>Status: Plate solve completed.</source>
+      <translation>Status: Plate-Solve abgeschlossen.</translation>
+    </message>
+    <message>
+      <source>Status: Preparing full-res 16-bit FITS for web solve…</source>
+      <translation>Status: Bereite hochauflösendes 16-Bit FITS für Web-Solve vor…</translation>
+    </message>
+    <message>
+      <source>Status: Preparing plate solve…</source>
+      <translation>Status: Bereite Plate-Solve vor…</translation>
+    </message>
+    <message>
+      <source>Status: Running local solve-field…</source>
+      <translation>Status: Führe lokales solve-field aus…</translation>
+    </message>
+    <message>
+      <source>Status: Solution received.</source>
+      <translation>Status: Lösung erhalten.</translation>
+    </message>
+    <message>
+      <source>Status: Solved via Astrometry.net.</source>
+      <translation>Status: Gelöst über Astrometry.net.</translation>
+    </message>
+    <message>
+      <source>Status: Solved with ASTAP.</source>
+      <translation>Status: Gelöst mit ASTAP.</translation>
+    </message>
+    <message>
+      <source>Status: Solving with ASTAP…</source>
+      <translation>Status: Risoluzione con ASTAP…</translation>
+    </message>
+    <message>
+      <source>Status: Upload complete.</source>
+      <translation>Status: Upload abgeschlossen.</translation>
+    </message>
+    <message>
+      <source>Status: Upload failed (temp FITS empty).</source>
+      <translation>Status: Upload fehlgeschlagen (temporäres FITS leer).</translation>
+    </message>
+    <message>
+      <source>Status: Upload failed.</source>
+      <translation>Status: Upload fehlgeschlagen.</translation>
+    </message>
+    <message>
+      <source>Status: Uploading image to Astrometry.net…</source>
+      <translation>Status: Lade Bild zu Astrometry.net hoch…</translation>
+    </message>
+    <message>
+      <source>Status: Waiting for job assignment…</source>
+      <translation>Status: Warte auf Job-Zuweisung…</translation>
+    </message>
+    <message>
+      <source>Status: Waiting for solution…</source>
+      <translation>Status: Warte auf Lösung…</translation>
+    </message>
+    <message>
+      <source>Status: process did not exit normally.</source>
+      <translation>Status: Prozess wurde nicht normal beendet.</translation>
+    </message>
+    <message>
+      <source>Status: process timed out.</source>
+      <translation>Status: Prozess-Zeitüberschreitung.</translation>
+    </message>
+    <message>
+      <source>Status: solve-field failed to start.</source>
+      <translation>Status: solve-field konnte nicht gestartet werden.</translation>
+    </message>
+    <message>
+      <source>Status: solve-field failed.</source>
+      <translation>Status: solve-field fehlgeschlagen.</translation>
+    </message>
+    <message>
+      <source>Status: solve-field timed out.</source>
+      <translation>Status: solve-field Zeitüberschreitung.</translation>
+    </message>
+    <message>
+      <source>Status: {0} retry {1}/{2}…</source>
+      <translation>Status: {0} Versuch {1}/{2}…</translation>
+    </message>
+    <message>
+      <source>Temp FITS for web upload is empty/tiny ({0} bytes).</source>
+      <translation>Temporäres FITS für Web-Upload ist leer/winzig ({0} Bytes).</translation>
+    </message>
+    <message>
+      <source>requests not available for astrometry.net API.</source>
+      <translation>requests nicht verfügbar für Astrometry.net-API.</translation>
+    </message>
+    <message>
+      <source>solve-field not configured.</source>
+      <translation>solve-field nicht konfiguriert.</translation>
+    </message>
+    <message>
+      <source>solve-field returned no header.</source>
+      <translation>solve-field gab keinen Header zurück.</translation>
+    </message>
+  </context>
+  <context>
+    <name>PlateSolverDialog</name>
+    <message>
+      <source>  ✔ saved: </source>
+      <translation>  ✔ gespeichert: </translation>
+    </message>
+    <message>
+      <source>  ❌ Failed to load</source>
+      <translation>  ❌ Laden fehlgeschlagen</translation>
+    </message>
+    <message>
+      <source>  ❌ error: </source>
+      <translation>  ❌ Fehler: </translation>
+    </message>
+    <message>
+      <source>ASTAP -fov. Compute uses image height × scale; Auto lets ASTAP infer.</source>
+      <translation>ASTAP -fov. "Berechnen" nutzt Bildhöhe × Skala; "Auto" lässt ASTAP inferieren.</translation>
+    </message>
+    <message>
+      <source>ASTAP -r. Auto lets ASTAP choose; Value forces a cone radius.</source>
+      <translation>ASTAP -r. "Auto" lässt ASTAP wählen; ein Wert erzwingt einen Kegelradius.</translation>
+    </message>
+    <message>
+      <source>ASTAP path missing.
+Set it in Preferences → ASTAP executable.</source>
+      <translation>ASTAP-Pfad fehlt.
+Legen Sie ihn in Einstellungen → ASTAP-Programmdatei fest.</translation>
+    </message>
+    <message>
+      <source>ASTAP path missing. Set Preferences → ASTAP executable.</source>
+      <translation>ASTAP-Pfad fehlt. Einstellungen → ASTAP-Programmdatei festlegen.</translation>
+    </message>
+    <message>
+      <source>Active View</source>
+      <translation>Aktive Ansicht</translation>
+    </message>
+    <message>
+      <source>Auto (-fov 0)</source>
+      <translation>Auto (-fov 0)</translation>
+    </message>
+    <message>
+      <source>Auto (-r 0)</source>
+      <translation>Auto (-r 0)</translation>
+    </message>
+    <message>
+      <source>Auto (from header)</source>
+      <translation>Auto (aus Header)</translation>
+    </message>
+    <message>
+      <source>Batch</source>
+      <translation>Stapel</translation>
+    </message>
+    <message>
+      <source>Batch plate solving completed.</source>
+      <translation>Stapel-Plate-Solve abgeschlossen.</translation>
+    </message>
+    <message>
+      <source>Browse Input…</source>
+      <translation>Eingabe durchsuchen…</translation>
+    </message>
+    <message>
+      <source>Browse Output…</source>
+      <translation>Ausgabe durchsuchen…</translation>
+    </message>
+    <message>
+      <source>Browse…</source>
+      <translation>Durchsuchen…</translation>
+    </message>
+    <message>
+      <source>Cannot read image:
+{0}</source>
+      <translation>Bild kann nicht gelesen werden:
+{0}</translation>
+    </message>
+    <message>
+      <source>Choose Image</source>
+      <translation>Bild auswählen</translation>
+    </message>
+    <message>
+      <source>Choose a file to solve.</source>
+      <translation>Wählen Sie eine Datei zum Lösen aus.</translation>
+    </message>
+    <message>
+      <source>Choose an image…</source>
+      <translation>Wählen Sie ein Bild aus…</translation>
+    </message>
+    <message>
+      <source>Choose input directory</source>
+      <translation>Eingabeverzeichnis wählen</translation>
+    </message>
+    <message>
+      <source>Choose output directory</source>
+      <translation>Ausgabeverzeichnis wählen</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Schließen</translation>
+    </message>
+    <message>
+      <source>Compute from scale</source>
+      <translation>Aus Skala berechnen</translation>
+    </message>
+    <message>
+      <source>Dec (e.g. +40:42:43 or 40.7123)</source>
+      <translation>Dec (z. B. +40:42:43 oder 40.7123)</translation>
+    </message>
+    <message>
+      <source>FITS files (*.fits *.fit)</source>
+      <translation>FITS-Dateien (*.fits *.fit)</translation>
+    </message>
+    <message>
+      <source>FOV:</source>
+      <translation>Sichtfeld (FOV):</translation>
+    </message>
+    <message>
+      <source>Failed to save: {0}</source>
+      <translation>Speichern fehlgeschlagen: {0}</translation>
+    </message>
+    <message>
+      <source>File</source>
+      <translation>Datei</translation>
+    </message>
+    <message>
+      <source>Found {0} files. Starting batch…</source>
+      <translation>{0} Dateien gefunden. Starte Stapelverarbeitung…</translation>
+    </message>
+    <message>
+      <source>Images (*.fits *.fit *.xisf *.tif *.tiff *.png *.jpg *.jpeg);;All files (*)</source>
+      <translation>Bilder (*.fits *.fit *.xisf *.tif *.tiff *.png *.jpg *.jpeg);;Alle Dateien (*)</translation>
+    </message>
+    <message>
+      <source>Input directory</source>
+      <translation>Eingabeverzeichnis</translation>
+    </message>
+    <message>
+      <source>Manual</source>
+      <translation>Manuell</translation>
+    </message>
+    <message>
+      <source>Manual RA/Dec/Scale:</source>
+      <translation>Manuelle RA/Dec/Skala:</translation>
+    </message>
+    <message>
+      <source>Mode:</source>
+      <translation>Modus:</translation>
+    </message>
+    <message>
+      <source>No acceptable image files found.</source>
+      <translation>Keine akzeptablen Bilddateien gefunden.</translation>
+    </message>
+    <message>
+      <source>No active image view.</source>
+      <translation>Keine aktive Bildansicht.</translation>
+    </message>
+    <message>
+      <source>None (blind)</source>
+      <translation>Keine (Blind)</translation>
+    </message>
+    <message>
+      <source>Output directory</source>
+      <translation>Ausgabeverzeichnis</translation>
+    </message>
+    <message>
+      <source>Pixel scale in arcseconds/pixel (e.g., 1.46).</source>
+      <translation>Pixel-Skala in Bogensekunden/Pixel (z. B. 1.46).</translation>
+    </message>
+    <message>
+      <source>Plate Solver</source>
+      <translation>Plate Solver</translation>
+    </message>
+    <message>
+      <source>Please choose a valid input directory.</source>
+      <translation>Bitte wählen Sie ein gültiges Eingabeverzeichnis.</translation>
+    </message>
+    <message>
+      <source>Please choose a valid output directory.</source>
+      <translation>Bitte wählen Sie ein gültiges Ausgabeverzeichnis.</translation>
+    </message>
+    <message>
+      <source>RA (e.g. 22:32:14 or 338.1385)</source>
+      <translation>RA (z. B. 22:32:14 oder 338.1385)</translation>
+    </message>
+    <message>
+      <source>Save Error</source>
+      <translation>Speicherfehler</translation>
+    </message>
+    <message>
+      <source>Save Plate-Solved FITS</source>
+      <translation>Plate-Solved FITS speichern</translation>
+    </message>
+    <message>
+      <source>Scale [" / px] (e.g. 1.46)</source>
+      <translation>Skala [" / px] (z. B. 1.46)</translation>
+    </message>
+    <message>
+      <source>Search radius:</source>
+      <translation>Suchradius:</translation>
+    </message>
+    <message>
+      <source>Seed mode:</source>
+      <translation>Seed-Modus:</translation>
+    </message>
+    <message>
+      <source>Seeding &amp; Constraints</source>
+      <translation>Initialisierung &amp; Einschränkungen</translation>
+    </message>
+    <message>
+      <source>Selected file does not exist.</source>
+      <translation>Die ausgewählte Datei existiert nicht.</translation>
+    </message>
+    <message>
+      <source>Solve the currently active image view.</source>
+      <translation>Löse die aktuell aktive Bildansicht.</translation>
+    </message>
+    <message>
+      <source>Solved (not saved).</source>
+      <translation>Gelöst (nicht gespeichert).</translation>
+    </message>
+    <message>
+      <source>Solved FITS saved:
+{0}</source>
+      <translation>Gelöstes FITS gespeichert:
+{0}</translation>
+    </message>
+    <message>
+      <source>Solved with ASTAP (WCS + SIP applied to active doc).</source>
+      <translation>Gelöst mit ASTAP (WCS + SIP auf aktives Dokument angewendet).</translation>
+    </message>
+    <message>
+      <source>Start</source>
+      <translation>Start</translation>
+    </message>
+    <message>
+      <source>Status:</source>
+      <translation>Status:</translation>
+    </message>
+    <message>
+      <source>Unsupported or unreadable image.</source>
+      <translation>Nicht unterstütztes oder unlesbares Bild.</translation>
+    </message>
+    <message>
+      <source>Use FITS header, your manual RA/Dec/scale, or blind solve.</source>
+      <translation>Verwenden Sie den FITS-Header, Ihre manuelle RA/Dec/Skala oder den Blind-Solve.</translation>
+    </message>
+    <message>
+      <source>Value (deg)</source>
+      <translation>Wert (Grad)</translation>
+    </message>
+    <message>
+      <source>e.g. 1.80</source>
+      <translation>z. B. 1.80</translation>
+    </message>
+    <message>
+      <source>e.g. 5.0</source>
+      <translation>z. B. 5.0</translation>
+    </message>
+  </context>
+  <context>
+    <name>PreviewPane</name>
+    <message>
+      <source>AutoStretch</source>
+      <translation>AutoStretch</translation>
+    </message>
+    <message>
+      <source>Fit to Preview</source>
+      <translation>An Vorschau anpassen</translation>
+    </message>
+    <message>
+      <source>Zoom In</source>
+      <translation>Vergrößern</translation>
+    </message>
+    <message>
+      <source>Zoom Out</source>
+      <translation>Verkleinern</translation>
+    </message>
+  </context>
+  <context>
+    <name>RGBAlignDialog</name>
+    <message>
+      <source>Align</source>
+      <translation>Ausrichten</translation>
+    </message>
+    <message>
+      <source>Alignment model:</source>
+      <translation>Ausrichtungsmodell:</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Schließen</translation>
+    </message>
+    <message>
+      <source>Create new document (keep original)</source>
+      <translation>Neues Dokument erstellen (Original behalten)</translation>
+    </message>
+    <message>
+      <source>RGB Align</source>
+      <translation>RGB-Ausrichtung</translation>
+    </message>
+    <message>
+      <source>SEP sigma:</source>
+      <translation>SEP Sigma:</translation>
+    </message>
+    <message>
+      <source>Trial detect stars</source>
+      <translation>Test-Sternerkennung</translation>
+    </message>
+  </context>
+  <context>
+    <name>RGBCombinationDialogPro</name>
+    <message>
+      <source>Blue:</source>
+      <translation>Blau:</translation>
+    </message>
+    <message>
+      <source>Blue: Not selected</source>
+      <translation>Blau: Nicht ausgewählt</translation>
+    </message>
+    <message>
+      <source>Cancel</source>
+      <translation>Abbrechen</translation>
+    </message>
+    <message>
+      <source>Combine</source>
+      <translation>Kombinieren</translation>
+    </message>
+    <message>
+      <source>Files</source>
+      <translation>Dateien</translation>
+    </message>
+    <message>
+      <source>Green:</source>
+      <translation>Grün:</translation>
+    </message>
+    <message>
+      <source>Green: Not selected</source>
+      <translation>Grün: Nicht ausgewählt</translation>
+    </message>
+    <message>
+      <source>Load Blue…</source>
+      <translation>Blau laden…</translation>
+    </message>
+    <message>
+      <source>Load Green…</source>
+      <translation>Grün laden…</translation>
+    </message>
+    <message>
+      <source>Load Individual Files</source>
+      <translation>Einzelne Dateien laden</translation>
+    </message>
+    <message>
+      <source>Load Red…</source>
+      <translation>Rot laden…</translation>
+    </message>
+    <message>
+      <source>RGB Combination</source>
+      <translation>RGB-Kombination</translation>
+    </message>
+    <message>
+      <source>Red:</source>
+      <translation>Rot:</translation>
+    </message>
+    <message>
+      <source>Red: Not selected</source>
+      <translation>Rot: Nicht ausgewählt</translation>
+    </message>
+    <message>
+      <source>Select Open Views for R / G / B</source>
+      <translation>Wählen Sie offene Ansichten für R / G / B</translation>
+    </message>
+    <message>
+      <source>Select RGB Combination Mode</source>
+      <translation>RGB-Kombinationsmodus wählen</translation>
+    </message>
+    <message>
+      <source>Use Open Views</source>
+      <translation>Offene Ansichten verwenden</translation>
+    </message>
+  </context>
+  <context>
+    <name>ReferenceFrameReviewDialog</name>
+    <message>
+      <source>Cancel</source>
+      <translation>Abbrechen</translation>
+    </message>
+    <message>
+      <source>Disable Autostretch</source>
+      <translation>Autostretch deaktivieren</translation>
+    </message>
+    <message>
+      <source>Enable Autostretch</source>
+      <translation>Autostretch aktivieren</translation>
+    </message>
+    <message>
+      <source>Error</source>
+      <translation>Fehler</translation>
+    </message>
+    <message>
+      <source>FITS Files (*.fits *.fit);;All Files (*)</source>
+      <translation>FITS-Dateien (*.fits *.fit);;Alle Dateien (*)</translation>
+    </message>
+    <message>
+      <source>Failed to load the reference image.</source>
+      <translation>Das Referenzbild konnte nicht geladen werden.</translation>
+    </message>
+    <message>
+      <source>Reference Frame Review</source>
+      <translation>Referenzrahmen-Überprüfung</translation>
+    </message>
+    <message>
+      <source>Reference Preview</source>
+      <translation>Referenz-Vorschau</translation>
+    </message>
+    <message>
+      <source>Reference image not loaded.</source>
+      <translation>Referenzbild nicht geladen.</translation>
+    </message>
+    <message>
+      <source>Select New Reference Frame</source>
+      <translation>Neuen Referenzrahmen auswählen</translation>
+    </message>
+    <message>
+      <source>Unable to load preview.</source>
+      <translation>Vorschau konnte nicht geladen werden.</translation>
+    </message>
+    <message>
+      <source>Use This Reference Frame</source>
+      <translation>Diesen Referenzrahmen verwenden</translation>
+    </message>
+    <message>
+      <source>Zoom In</source>
+      <translation>Heranzoomen</translation>
+    </message>
+    <message>
+      <source>Zoom Out</source>
+      <translation>Herauszoomen</translation>
+    </message>
+  </context>
+  <context>
+    <name>ReferenceOverlayDialog</name>
+    <message>
+      <source>Reference Frame: Stars Overlay</source>
+      <translation>Referenzrahmen: Sterne-Overlay</translation>
+    </message>
+  </context>
+  <context>
+    <name>RemoveGreenDialog</name>
+    <message>
+      <source>Apply</source>
+      <translation>Anwenden</translation>
+    </message>
+    <message>
+      <source>Cancel</source>
+      <translation>Abbrechen</translation>
+    </message>
+    <message>
+      <source>Neutral mode:</source>
+      <translation>Neutraler Modus:</translation>
+    </message>
+    <message>
+      <source>Preserve lightness</source>
+      <translation>Helligkeit bewahren</translation>
+    </message>
+    <message>
+      <source>Remove Green (SCNR)</source>
+      <translation>Grün entfernen (SCNR)</translation>
+    </message>
+    <message>
+      <source>Select the amount to remove green noise:</source>
+      <translation>Menge der Grünrauschentfernung wählen:</translation>
+    </message>
+  </context>
+  <context>
+    <name>SaveOptionsDialog</name>
+    <message>
+      <source>Cancel</source>
+      <translation>Abbrechen</translation>
+    </message>
+    <message>
+      <source>Choose bit depth for export:</source>
+      <translation>Bittiefe für Export wählen:</translation>
+    </message>
+    <message>
+      <source>OK</source>
+      <translation>OK</translation>
+    </message>
+    <message>
+      <source>Save Options</source>
+      <translation>Speicheroptionen</translation>
+    </message>
+  </context>
+  <context>
+    <name>SelectiveColorCorrection</name>
+    <message>
+      <source>Complementary colors (CMY)</source>
+      <translation>Komplementärfarben (CMY)</translation>
+    </message>
+    <message>
+      <source>Luminance, Chroma/Saturation, Contrast</source>
+      <translation>Luminanz, Chroma/Sättigung, Kontrast</translation>
+    </message>
+    <message>
+      <source>Mask</source>
+      <translation>Maske</translation>
+    </message>
+    <message>
+      <source>RGB Colors</source>
+      <translation>RGB-Farben</translation>
+    </message>
+    <message>
+      <source>Selective Color Correction</source>
+      <translation>Selektive Farbkorrektur</translation>
+    </message>
+  </context>
+  <context>
+    <name>SettingsDialog</name>
+    <message>
+      <source>ASTAP executable:</source>
+      <translation>ASTAP-Ausführbare Datei:</translation>
+    </message>
+    <message>
+      <source>Astrometry.net API key:</source>
+      <translation>Astrometry.net API-Schlüssel:</translation>
+    </message>
+    <message>
+      <source>Check Now…</source>
+      <translation>Jetzt prüfen…</translation>
+    </message>
+    <message>
+      <source>Chinese</source>
+      <translation>Chinesisch</translation>
+    </message>
+    <message>
+      <source>Choose Background…</source>
+      <translation>Hintergrund wählen…</translation>
+    </message>
+    <message>
+      <source>Clear</source>
+      <translation>Löschen</translation>
+    </message>
+    <message>
+      <source>Compute autostretch on a 16-bit histogram (smoother gradients).</source>
+      <translation>Autostretch auf einem 16-Bit-Histogramm berechnen (glattere Gradienten).</translation>
+    </message>
+    <message>
+      <source>Cosmic Clarity folder:</source>
+      <translation>Cosmic Clarity Ordner:</translation>
+    </message>
+    <message>
+      <source>Customize…</source>
+      <translation>Anpassen…</translation>
+    </message>
+    <message>
+      <source>Edit custom colors and font</source>
+      <translation>Benutzerdefinierte Farben und Schriftart bearbeiten</translation>
+    </message>
+    <message>
+      <source>English</source>
+      <translation>Englisch</translation>
+    </message>
+    <message>
+      <source>French</source>
+      <translation>Französisch</translation>
+    </message>
+    <message>
+      <source>German</source>
+      <translation>Deutsch</translation>
+    </message>
+    <message>
+      <source>GraXpert executable:</source>
+      <translation>GraXpert-Ausführbare Datei:</translation>
+    </message>
+    <message>
+      <source>High-quality autostretch (16-bit; better gradients)</source>
+      <translation>Hochwertiger Autostretch (16-Bit; bessere Gradienten)</translation>
+    </message>
+    <message>
+      <source>Italian</source>
+      <translation>Italienisch</translation>
+    </message>
+    <message>
+      <source>Japanese</source>
+      <translation>Japanisch</translation>
+    </message>
+    <message>
+      <source>Language changed. Please manually restart the application to apply the new language.</source>
+      <translation>Sprache geändert. Bitte starten Sie die Anwendung manuell neu, um die neue Sprache anzuwenden.</translation>
+    </message>
+    <message>
+      <source>Language:</source>
+      <translation>Sprache:</translation>
+    </message>
+    <message>
+      <source>Pick a PNG or JPG to use as the application background</source>
+      <translation>Wählen Sie ein PNG oder JPG als Anwendungshintergrund</translation>
+    </message>
+    <message>
+      <source>Portuguese</source>
+      <translation>Portugiesisch</translation>
+    </message>
+    <message>
+      <source>Remove custom background and restore default</source>
+      <translation>Benutzerdefinierten Hintergrund entfernen und Standard wiederherstellen</translation>
+    </message>
+    <message>
+      <source>Restart required</source>
+      <translation>Neustart erforderlich</translation>
+    </message>
+    <message>
+      <source>Restore default updates URL</source>
+      <translation>Standard-Update-URL wiederherstellen</translation>
+    </message>
+    <message>
+      <source>Run an update check immediately</source>
+      <translation>Sofort nach Updates suchen</translation>
+    </message>
+    <message>
+      <source>Save desktop shortcuts on exit</source>
+      <translation>Desktop-Verknüpfungen beim Beenden speichern</translation>
+    </message>
+    <message>
+      <source>Spanish</source>
+      <translation>Spanisch</translation>
+    </message>
+    <message>
+      <source>StarNet executable:</source>
+      <translation>StarNet-Ausführbare Datei:</translation>
+    </message>
+    <message>
+      <source>The application will now restart to apply the language change.</source>
+      <translation>Die Anwendung wird nun neu gestartet, um die Sprachänderung zu übernehmen.</translation>
+    </message>
+    <message>
+      <source>Theme:</source>
+      <translation>Thema:</translation>
+    </message>
+  </context>
+  <context>
+    <name>ShortcutButton</name>
+    <message>
+      <source>Clear Preset</source>
+      <translation>Voreinstellung löschen</translation>
+    </message>
+    <message>
+      <source>Delete</source>
+      <translation>Löschen</translation>
+    </message>
+    <message>
+      <source>Edit Preset (JSON)</source>
+      <translation>Voreinstellung bearbeiten (JSON)</translation>
+    </message>
+    <message>
+      <source>Edit Preset…</source>
+      <translation>Voreinstellung bearbeiten…</translation>
+    </message>
+    <message>
+      <source>Invalid JSON</source>
+      <translation>Ungültiges JSON</translation>
+    </message>
+    <message>
+      <source>Name:</source>
+      <translation>Name:</translation>
+    </message>
+    <message>
+      <source>Preset must be a JSON object</source>
+      <translation>Voreinstellung muss ein JSON-Objekt sein</translation>
+    </message>
+    <message>
+      <source>Preset saved</source>
+      <translation>Voreinstellung gespeichert</translation>
+    </message>
+    <message>
+      <source>Preset stored on shortcut.</source>
+      <translation>Voreinstellung in Verknüpfung gespeichert.</translation>
+    </message>
+    <message>
+      <source>Preset:</source>
+      <translation>Voreinstellung:</translation>
+    </message>
+    <message>
+      <source>Rename Shortcut</source>
+      <translation>Verknüpfung umbenennen</translation>
+    </message>
+    <message>
+      <source>Rename…</source>
+      <translation>Umbenennen…</translation>
+    </message>
+    <message>
+      <source>Run</source>
+      <translation>Ausführen</translation>
+    </message>
+  </context>
+  <context>
+    <name>SignatureInsertDialogPro</name>
+    <message>
+      <source>Signature / Insert</source>
+      <translation>Signatur / Einfügen</translation>
+    </message>
+  </context>
+  <context>
+    <name>Splash</name>
+    <message>
+      <source>  •  Build {0}</source>
+      <translation>  •  Build {0}</translation>
+    </message>
+    <message>
+      <source>  •  Running locally from source code</source>
+      <translation>  •  Lokale Ausführung aus Quellcode</translation>
+    </message>
+    <message>
+      <source>Building main window...</source>
+      <translation>Hauptfenster wird erstellt...</translation>
+    </message>
+    <message>
+      <source>Configuring Qt message handler...</source>
+      <translation>Qt-Message-Handler wird konfiguriert...</translation>
+    </message>
+    <message>
+      <source>Configuring matplotlib...</source>
+      <translation>Matplotlib wird konfiguriert...</translation>
+    </message>
+    <message>
+      <source>Configuring multiprocessing...</source>
+      <translation>Multiprocessing wird konfiguriert...</translation>
+    </message>
+    <message>
+      <source>Creating image manager...</source>
+      <translation>Bildmanager wird erstellt...</translation>
+    </message>
+    <message>
+      <source>Initializing Python runtime...</source>
+      <translation>Python-Runtime wird initialisiert...</translation>
+    </message>
+    <message>
+      <source>Installing crash handlers...</source>
+      <translation>Crash-Handler werden installiert...</translation>
+    </message>
+    <message>
+      <source>Loading MDI widgets...</source>
+      <translation>MDI-Widgets werden geladen...</translation>
+    </message>
+    <message>
+      <source>Loading NumPy...</source>
+      <translation>NumPy wird geladen...</translation>
+    </message>
+    <message>
+      <source>Loading OpenCV...</source>
+      <translation>OpenCV wird geladen...</translation>
+    </message>
+    <message>
+      <source>Loading PyQt6 components...</source>
+      <translation>PyQt6-Komponenten werden geladen...</translation>
+    </message>
+    <message>
+      <source>Loading PyTorch runtime...</source>
+      <translation>PyTorch-Runtime wird geladen...</translation>
+    </message>
+    <message>
+      <source>Loading UI utilities...</source>
+      <translation>UI-Utilities werden geladen...</translation>
+    </message>
+    <message>
+      <source>Loading image libraries...</source>
+      <translation>Bildbibliotheken werden geladen...</translation>
+    </message>
+    <message>
+      <source>Loading image manager...</source>
+      <translation>Bildmanager wird geladen...</translation>
+    </message>
+    <message>
+      <source>Loading main window module...</source>
+      <translation>Hauptfenstermodul wird geladen...</translation>
+    </message>
+    <message>
+      <source>Loading reproject library...</source>
+      <translation>Reproject-Bibliothek wird geladen...</translation>
+    </message>
+    <message>
+      <source>Loading resources...</source>
+      <translation>Ressourcen werden geladen...</translation>
+    </message>
+    <message>
+      <source>Loading standard libraries...</source>
+      <translation>Standardbibliotheken werden geladen...</translation>
+    </message>
+    <message>
+      <source>Modules loaded, finalizing...</source>
+      <translation>Module geladen, Finalisierung...</translation>
+    </message>
+    <message>
+      <source>Ready!</source>
+      <translation>Fertig!</translation>
+    </message>
+    <message>
+      <source>Setting up logging...</source>
+      <translation>Logging wird eingerichtet...</translation>
+    </message>
+    <message>
+      <source>Showing main window...</source>
+      <translation>Hauptfenster wird angezeigt...</translation>
+    </message>
+    <message>
+      <source>Starting...</source>
+      <translation>Startvorgang...</translation>
+    </message>
+    <message>
+      <source>Suppressing warnings...</source>
+      <translation>Warnungen werden unterdrückt...</translation>
+    </message>
+    <message>
+      <source>Version {0}</source>
+      <translation>Version {0}</translation>
+    </message>
+  </context>
+  <context>
+    <name>StackingSuiteDialog</name>
+    <message>
+      <source>
 
-(Comet Star Removal is currently OFF in Settings.)</source><translation>
+(Comet Star Removal is currently OFF in Settings.)</source>
+      <translation>
 
-(Kometen-Stern-Entfernung ist derzeit in den Einstellungen DEAKTIVIERT.)</translation></message><message><source>
+(Kometen-Stern-Entfernung ist derzeit in den Einstellungen DEAKTIVIERT.)</translation>
+    </message>
+    <message>
+      <source>
 
 Linux tip:
  • Install python3.12 or 3.11 via your package manager
- • Then relaunch the app.</source><translation>
+ • Then relaunch the app.</source>
+      <translation>
 
 Linux-Tipp:
  • Installiere python3.12 oder 3.11 über deinen Paketmanager
- • Starte dann die App neu.</translation></message><message><source>
+ • Starte dann die App neu.</translation>
+    </message>
+    <message>
+      <source>
 
 Windows tip:
  • Install Python 3.12/3.11/3.10 (x64) from python.org
- • Then relaunch the app.</source><translation>
+ • Then relaunch the app.</source>
+      <translation>
 
 Windows-Tipp:
  • Installiere Python 3.12/3.11/3.10 (x64) von python.org
- • Starte dann die App neu.</translation></message><message><source>
+ • Starte dann die App neu.</translation>
+    </message>
+    <message>
+      <source>
 
 macOS tip (Apple Silicon):
  • Install Python 3.12:  brew install python@3.12
- • Then relaunch the app so it can create its runtime with 3.12.</source><translation>
+ • Then relaunch the app so it can create its runtime with 3.12.</source>
+      <translation>
 
 macOS-Tipp (Apple Silicon):
  • Installiere Python 3.12: brew install python@3.12
- • Starte dann die App neu, damit sie ihre Runtime mit 3.12 erstellen kann.</translation></message><message><source>    ✓ [{0}/{1}] starless saved</source><translation>    ✓ [{0}/{1}] sternlos gespeichert</translation></message><message><source>   With &lt;~40–55% fill, expect visible patching even with many frames)</source><translation>   Bei &lt;~40–55% Füllung sind sichtbare Patches zu erwarten, selbst bei vielen Frames)</translation></message><message><source>   With &lt;~40–55% fill, expect visible patching even with many frames.</source><translation>   Bei &lt;~40–55% Füllung sind sichtbare Patches zu erwarten, selbst bei vielen Frames.</translation></message><message><source>   bbox(ref)→reg: ({0:.1f},{1:.1f}) to ({2:.1f},{3:.1f}); canvas {4}×{5} @ {6}×</source><translation>   bbox(ref)→reg: ({0:.1f},{1:.1f}) bis ({2:.1f},{3:.1f}); Canvas {4}×{5} @ {6}×</translation></message><message><source>   originals needed (sample): {0}</source><translation>   Originale benötigt (Probe): {0}</translation></message><message><source>   sasd FILEs (sample):       {0}</source><translation>   sasd-DATEIEN (Probe):       {0}</translation></message><message><source>   • Tile source: STARLESS (pre-aligned)</source><translation>   • Tile-Quelle: STERNLOS (vor-ausgerichtet)</translation></message><message><source>   ↳ Integration done in {0:.1f}s.</source><translation>   ↳ Integration abgeschlossen in {0:.1f}s.</translation></message><message><source>   ⚠️ Starless reader path mismatch at i={0}; got {1}, expected {2}. Using index order.</source><translation>   ⚠️ Sternloser Reader-Pfad-Mismatch bei i={0}; erhalten {1}, erwartet {2}. Verwende Index-Reihenfolge.</translation></message><message><source>  • {0} → {1}</source><translation>  • {0} → {1}</translation></message><message><source>  ↳ tile {0} done in {1:.3f}s  (~{2:.1f} MPx/s)</source><translation>  ↳ Tile {0} abgeschlossen in {1:.3f}s (~{2:.1f} MPx/s)</translation></message><message><source>  ◦ DarkStar comet star removal…</source><translation>  ◦ DarkStar Kometen-Stern-Entfernung…</translation></message><message><source>  ◦ StarNet comet star removal…</source><translation>  ◦ StarNet Kometen-Stern-Entfernung…</translation></message><message><source>  ◦ applying rejection algorithm: {0}</source><translation>  ◦ wende Rejection-Algorithmus an: {0}</translation></message><message><source>  ◦ seed xy={0:.1f},{1:.1f} within {2}×{3}? {4}</source><translation>  ◦ Seed xy={0:.1f},{1:.1f} innerhalb {2}×{3}? {4}</translation></message><message><source>  ◦ seeding first registered frame with _comet_ref_xy</source><translation>  ◦ Seeding des ersten registrierten Frames mit _comet_ref_xy</translation></message><message><source>  ◦ user cancelled or no edits — using auto centroids</source><translation>  ◦ Benutzer abgebrochen oder keine Bearbeitungen — verwende Auto-Zentroide</translation></message><message><source>  ◦ user confirmed/edited {0} centroids</source><translation>  ◦ Benutzer bestätigt/bearbeitet {0} Zentroide</translation></message><message><source>  ◦ using user seed on {0}</source><translation>  ◦ verwende Benutzer-Seed auf {0}</translation></message><message><source>  ⚠️ comet preview skipped: no worker emitter present</source><translation>  ⚠️ Kometen-Vorschau übersprungen: kein Worker-Emitter vorhanden</translation></message><message><source>  ⚠️ comet preview skipped: {0!r}</source><translation>  ⚠️ Kometen-Vorschau übersprungen: {0!r}</translation></message><message><source>  ⚠️ comet preview unavailable (no UI target)</source><translation>  ⚠️ Kometen-Vorschau nicht verfügbar (kein UI-Target)</translation></message><message><source>  ⚠️ star removal failed on {0}: {1}</source><translation>  ⚠️ Sternentfernung fehlgeschlagen auf {0}: {1}</translation></message><message><source>  ⚠️ user seed: no affine for that registered file</source><translation>  ⚠️ Benutzer-Seed: kein Affine für diese registrierte Datei</translation></message><message><source>  ❌ {0}</source><translation>  ❌ {0}</translation></message><message><source> (repaired {0})</source><translation> ({0} repariert)</translation></message><message><source> + CFA</source><translation> + CFA</translation></message><message><source> + drizzle</source><translation> + Drizzle</translation></message><message><source> [GPU]</source><translation> [GPU]</translation></message><message><source>'Luma' deconvolves luminance only; 'PerChannel' runs on RGB independently.</source><translation>'Luma' dekonvolviert nur Luminanz; 'PerChannel' läuft auf RGB unabhängig.</translation></message><message><source>(&lt;0 = scale×RMS, &gt;0 = absolute Δ)</source><translation>(&lt;0 = Skala×RMS, &gt;0 = absolutes Δ)</translation></message><message><source>(fallback)</source><translation>(Fallback)</translation></message><message><source>(score={0:.4f})</source><translation>(Score={0:.4f})</translation></message><message><source>**Frame Weights Debug Log:**</source><translation>**Frame-Gewichte Debug-Log:**</translation></message><message><source>1 file · {0}</source><translation>1 Datei · {0}</translation></message><message><source>16-bit unsigned</source><translation>16-Bit vorzeichenlos</translation></message><message><source>1× (native)</source><translation>1× (nativ)</translation></message><message><source>2× (super-resolution)</source><translation>2× (Super-Resolution)</translation></message><message><source>32-bit float</source><translation>32-Bit Float</translation></message><message><source>3× (extreme)</source><translation>3× (extrem)</translation></message><message><source>64-bit float</source><translation>64-Bit Float</translation></message><message><source>64-bit uses ~2× RAM; 32-bit is faster/lighter.</source><translation>64-Bit verbraucht ~2× RAM; 32-Bit ist schneller/leichter.</translation></message><message><source>ABE Mode:</source><translation>ABE-Modus:</translation></message><message><source>AHD</source><translation>AHD</translation></message><message><source>AIRMASS</source><translation>Luftmasse</translation></message><message><source>APTDIA</source><translation>Öffnungsdurchmesser</translation></message><message><source>About CUDA</source><translation>Über CUDA</translation></message><message><source>Acceleration</source><translation>Beschleunigung</translation></message><message><source>Accept max shift (px):</source><translation>Max. Verschiebung akzeptieren (px):</translation></message><message><source>Accept tolerance (px):</source><translation>Toleranz akzeptieren (px):</translation></message><message><source>Accurate (3 passes)</source><translation>Genau (3 Durchgänge)</translation></message><message><source>Accurate (Star Matching)</source><translation>Genau (Stern-Matching)</translation></message><message><source>Add Bias Frames</source><translation>Bias-Frames hinzufügen</translation></message><message><source>Add Conversion Directory</source><translation>Konvertierungsverzeichnis hinzufügen</translation></message><message><source>Add Conversion Files</source><translation>Konvertierungsdateien hinzufügen</translation></message><message><source>Add Dark Directory</source><translation>Dark-Verzeichnis hinzufügen</translation></message><message><source>Add Dark Files</source><translation>Dark-Dateien hinzufügen</translation></message><message><source>Add Dark Frames</source><translation>Dark-Frames hinzufügen</translation></message><message><source>Add Files...</source><translation>Dateien hinzufügen...</translation></message><message><source>Add Flat Directory</source><translation>Flat-Verzeichnis hinzufügen</translation></message><message><source>Add Flat Files</source><translation>Flat-Dateien hinzufügen</translation></message><message><source>Add Flat Frames</source><translation>Flat-Frames hinzufügen</translation></message><message><source>Add Folder...</source><translation>Ordner hinzufügen...</translation></message><message><source>Add Light Directory</source><translation>Light-Verzeichnis hinzufügen</translation></message><message><source>Add Light Files</source><translation>Light-Dateien hinzufügen</translation></message><message><source>Add Light Frames</source><translation>Light-Frames hinzufügen</translation></message><message><source>Add files to the stacking queue</source><translation>Dateien zur Stacking-Warteschlange hinzufügen</translation></message><message><source>Add to {0} tab</source><translation>Zu Tab {0} hinzufügen</translation></message><message><source>Added {0}/{1} Light frames</source><translation>{0}/{1} Light-Frames hinzugefügt</translation></message><message><source>Adding Blink files to Image Integration…</source><translation>Füge Blink-Dateien zur Bildintegration hinzu…</translation></message><message><source>Adding Blink files to Light tab…</source><translation>Füge Blink-Dateien zum Light-Tab hinzu…</translation></message><message><source>Adding {0} Files…</source><translation>Füge {0} Dateien hinzu…</translation></message><message><source>Adding {0} from Directory…</source><translation>Füge {0} aus Verzeichnis hinzu…</translation></message><message><source>Additive</source><translation>Additiv</translation></message><message><source>Additive with Scaling</source><translation>Additiv mit Skalierung</translation></message><message><source>Advanced</source><translation>Erweitert</translation></message><message><source>Advanced Options</source><translation>Erweiterte Optionen</translation></message><message><source>Advanced Settings</source><translation>Erweiterte Einstellungen</translation></message><message><source>Affine (fast)</source><translation>Affine (schnell)</translation></message><message><source>After installation, restart the app for changes to take effect.</source><translation>Nach der Installation die App neu starten, damit die Änderungen wirksam werden.</translation></message><message><source>After installing CUDA, restart the app.</source><translation>Nach der Installation von CUDA die App neu starten.</translation></message><message><source>Algorithm:</source><translation>Algorithmus:</translation></message><message><source>Aligning stars…</source><translation>Sterne werden ausgerichtet…</translation></message><message><source>Aligning stars… ({0}/{1})</source><translation>Sterne werden ausgerichtet… ({0}/{1})</translation></message><message><source>Alignment</source><translation>Ausrichtung</translation></message><message><source>Alignment Mode:</source><translation>Ausrichtungsmodus:</translation></message><message><source>Alignment Settings</source><translation>Ausrichtungseinstellungen</translation></message><message><source>All Supported Files</source><translation>Alle unterstützten Dateien</translation></message><message><source>All stacking finished successfully.
-</source><translation>Stacking erfolgreich abgeschlossen.
-</translation></message><message><source>Also output Stars+Comet blend</source><translation>Zusätzlich Sterne+Kometen Blend ausgeben</translation></message><message><source>Analyze</source><translation>Analysieren</translation></message><message><source>Analyzing frames...</source><translation>Frames werden analysiert...</translation></message><message><source>Apply Bias Subtraction (For CCD Users)</source><translation>Bias-Subtraktion anwenden (für CCD-Nutzer)</translation></message><message><source>Apply Pedestal</source><translation>Sockel anwenden</translation></message><message><source>Apply Settings</source><translation>Einstellungen anwenden</translation></message><message><source>Apply color matrix</source><translation>Farbmatrix anwenden</translation></message><message><source>Apply cosmetic correction</source><translation>Kosmetische Korrektur anwenden</translation></message><message><source>Apply debayer</source><translation>Debayer anwenden</translation></message><message><source>Apply distortion model</source><translation>Distorsionsmodell anwenden</translation></message><message><source>Apply filter</source><translation>Filter anwenden</translation></message><message><source>Apply hot pixel removal</source><translation>Hot-Pixel-Entfernung anwenden</translation></message><message><source>Apply this choice to all remaining mismatches of this kind</source><translation>Diese Wahl auf alle verbleibenden Abweichungen dieser Art anwenden</translation></message><message><source>Apply to Group</source><translation>Auf Gruppe anwenden</translation></message><message><source>Apply to all frames</source><translation>Auf alle Frames anwenden</translation></message><message><source>Applying calibration...</source><translation>Kalibrierung wird angewendet...</translation></message><message><source>Applying rejection...</source><translation>Rejection wird angewendet...</translation></message><message><source>Are you sure you want to cancel stacking?</source><translation>Sind Sie sicher, dass Sie das Stacking abbrechen möchten?</translation></message><message><source>Are you sure you want to remove all frames?</source><translation>Sind Sie sicher, dass Sie alle Frames entfernen möchten?</translation></message><message><source>Are you sure you want to remove the current master?</source><translation>Sind Sie sicher, dass Sie den aktuellen Master entfernen möchten?</translation></message><message><source>Assigning best Master Dark/Flat…</source><translation>Besten Master Dark/Flat zuweisen…</translation></message><message><source>Auto</source><translation>Auto</translation></message><message><source>Auto (from stars)</source><translation>Auto (von Sternen)</translation></message><message><source>Auto (not set)</source><translation>Auto (nicht gesetzt)</translation></message><message><source>Auto (use all cores)</source><translation>Auto (alle Kerne verwenden)</translation></message><message><source>Auto Crop</source><translation>Auto-Beschnitt</translation></message><message><source>Auto Noise Map</source><translation>Auto-Rauschkarte</translation></message><message><source>Auto Star Mask</source><translation>Auto-Sternmaske</translation></message><message><source>Auto Weight</source><translation>Auto-Gewichtung</translation></message><message><source>Auto crop</source><translation>Automatisch beschneiden</translation></message><message><source>Auto-Accept Best Reference</source><translation>Beste Referenz automatisch akzeptieren</translation></message><message><source>Auto-Select Best Reference</source><translation>Beste Referenz automatisch wählen</translation></message><message><source>Auto-Select Closest Master Dark</source><translation>Nächstgelegenen Master Dark automatisch wählen</translation></message><message><source>Auto-Select by Metadata</source><translation>Auto-Auswahl nach Metadaten</translation></message><message><source>Auto-accept measured reference</source><translation>Gemessene Referenz automatisch akzeptieren</translation></message><message><source>Auto-crop output</source><translation>Auto-Beschnitt-Ausgabe</translation></message><message><source>Auto-cropped files saved:</source><translation>Auto-beschnittene Dateien gespeichert:</translation></message><message><source>Auto-detect</source><translation>Auto-Erkennung</translation></message><message><source>Auto-detect panels</source><translation>Panels automatisch erkennen</translation></message><message><source>Auto-detect session</source><translation>Sitzung automatisch erkennen</translation></message><message><source>Auto-match calibration frames</source><translation>Kalibrierungs-Frames automatisch abgleichen</translation></message><message><source>Auto-name</source><translation>Auto-Name</translation></message><message><source>Auto-register &amp; integrate after calibration</source><translation>Nach Kalibrierung auto-registrieren &amp; integrieren</translation></message><message><source>Average</source><translation>Durchschnitt</translation></message><message><source>BAYERPAT</source><translation>Bayer-Muster</translation></message><message><source>BGGR</source><translation>BGGR</translation></message><message><source>Backend: CPU (Python version not supported for GPU install)</source><translation>Backend: CPU (Python-Version für GPU-Installation nicht unterstützt)</translation></message><message><source>Backend: installing…</source><translation>Backend: Installation…</translation></message><message><source>Backend: {0}</source><translation>Backend: {0}</translation></message><message><source>Background</source><translation>Hintergrund</translation></message><message><source>Background Normalization</source><translation>Hintergrundnormalisierung</translation></message><message><source>Background level</source><translation>Hintergrundpegel</translation></message><message><source>Background matching</source><translation>Hintergrundabgleich</translation></message><message><source>Background model</source><translation>Hintergrundmodell</translation></message><message><source>Batch Convert Files to Debayered FITS (.fit)</source><translation>Dateien im Stapel zu debayerten FITS (.fit) konvertieren</translation></message><message><source>Bayer Pattern</source><translation>Bayer-Muster</translation></message><message><source>Before saving: min = {0:.4f}, max = {1:.4f}</source><translation>Vor dem Speichern: min = {0:.4f}, max = {1:.4f}</translation></message><message><source>Best</source><translation>Beste</translation></message><message><source>Best Quality</source><translation>Beste Qualität</translation></message><message><source>Bias</source><translation>Bias</translation></message><message><source>Bias Subtracted</source><translation>Bias subtrahiert</translation></message><message><source>Bias: {0}</source><translation>Bias: {0}</translation></message><message><source>Bicubic</source><translation>Bikubisch</translation></message><message><source>Bicubic Interpolation</source><translation>Bikubische Interpolation</translation></message><message><source>Bilinear</source><translation>Bilinear</translation></message><message><source>Bilinear Interpolation</source><translation>Bilineare Interpolation</translation></message><message><source>Binning</source><translation>Binning</translation></message><message><source>Biweight Estimator</source><translation>Biweight-Schätzer</translation></message><message><source>Biweight constant:</source><translation>Biweight-Konstante:</translation></message><message><source>Blend Ratio:</source><translation>Mischverhältnis:</translation></message><message><source>Blending method</source><translation>Mischmethode</translation></message><message><source>Both (comet + stars)</source><translation>Beide (Komet + Sterne)</translation></message><message><source>Browse</source><translation>Durchsuchen</translation></message><message><source>Browse...</source><translation>Durchsuchen...</translation></message><message><source>CCD-TEMP</source><translation>CCD-TEMP</translation></message><message><source>CFA Drizzle</source><translation>CFA Drizzle</translation></message><message><source>CFA Drizzle (Bayer)</source><translation>CFA Drizzle (Bayer)</translation></message><message><source>CFA Drizzle is enabled but at least one group has only {0} frames.
+ • Starte dann die App neu, damit sie ihre Runtime mit 3.12 erstellen kann.</translation>
+    </message>
+    <message>
+      <source>    ✓ [{0}/{1}] starless saved</source>
+      <translation>    ✓ [{0}/{1}] sternlos gespeichert</translation>
+    </message>
+    <message>
+      <source>   With &lt;~40–55% fill, expect visible patching even with many frames)</source>
+      <translation>   Bei &lt;~40–55% Füllung sind sichtbare Patches zu erwarten, selbst bei vielen Frames)</translation>
+    </message>
+    <message>
+      <source>   With &lt;~40–55% fill, expect visible patching even with many frames.</source>
+      <translation>   Bei &lt;~40–55% Füllung sind sichtbare Patches zu erwarten, selbst bei vielen Frames.</translation>
+    </message>
+    <message>
+      <source>   bbox(ref)→reg: ({0:.1f},{1:.1f}) to ({2:.1f},{3:.1f}); canvas {4}×{5} @ {6}×</source>
+      <translation>   bbox(ref)→reg: ({0:.1f},{1:.1f}) bis ({2:.1f},{3:.1f}); Canvas {4}×{5} @ {6}×</translation>
+    </message>
+    <message>
+      <source>   originals needed (sample): {0}</source>
+      <translation>   Originale benötigt (Probe): {0}</translation>
+    </message>
+    <message>
+      <source>   sasd FILEs (sample):       {0}</source>
+      <translation>   sasd-DATEIEN (Probe):       {0}</translation>
+    </message>
+    <message>
+      <source>   • Tile source: STARLESS (pre-aligned)</source>
+      <translation>   • Tile-Quelle: STERNLOS (vor-ausgerichtet)</translation>
+    </message>
+    <message>
+      <source>   ↳ Integration done in {0:.1f}s.</source>
+      <translation>   ↳ Integration abgeschlossen in {0:.1f}s.</translation>
+    </message>
+    <message>
+      <source>   ⚠️ Starless reader path mismatch at i={0}; got {1}, expected {2}. Using index order.</source>
+      <translation>   ⚠️ Sternloser Reader-Pfad-Mismatch bei i={0}; erhalten {1}, erwartet {2}. Verwende Index-Reihenfolge.</translation>
+    </message>
+    <message>
+      <source>  • {0} → {1}</source>
+      <translation>  • {0} → {1}</translation>
+    </message>
+    <message>
+      <source>  ↳ tile {0} done in {1:.3f}s  (~{2:.1f} MPx/s)</source>
+      <translation>  ↳ Tile {0} abgeschlossen in {1:.3f}s (~{2:.1f} MPx/s)</translation>
+    </message>
+    <message>
+      <source>  ◦ DarkStar comet star removal…</source>
+      <translation>  ◦ DarkStar Kometen-Stern-Entfernung…</translation>
+    </message>
+    <message>
+      <source>  ◦ StarNet comet star removal…</source>
+      <translation>  ◦ StarNet Kometen-Stern-Entfernung…</translation>
+    </message>
+    <message>
+      <source>  ◦ applying rejection algorithm: {0}</source>
+      <translation>  ◦ wende Rejection-Algorithmus an: {0}</translation>
+    </message>
+    <message>
+      <source>  ◦ seed xy={0:.1f},{1:.1f} within {2}×{3}? {4}</source>
+      <translation>  ◦ Seed xy={0:.1f},{1:.1f} innerhalb {2}×{3}? {4}</translation>
+    </message>
+    <message>
+      <source>  ◦ seeding first registered frame with _comet_ref_xy</source>
+      <translation>  ◦ Seeding des ersten registrierten Frames mit _comet_ref_xy</translation>
+    </message>
+    <message>
+      <source>  ◦ user cancelled or no edits — using auto centroids</source>
+      <translation>  ◦ Benutzer abgebrochen oder keine Bearbeitungen — verwende Auto-Zentroide</translation>
+    </message>
+    <message>
+      <source>  ◦ user confirmed/edited {0} centroids</source>
+      <translation>  ◦ Benutzer bestätigt/bearbeitet {0} Zentroide</translation>
+    </message>
+    <message>
+      <source>  ◦ using user seed on {0}</source>
+      <translation>  ◦ verwende Benutzer-Seed auf {0}</translation>
+    </message>
+    <message>
+      <source>  ⚠️ comet preview skipped: no worker emitter present</source>
+      <translation>  ⚠️ Kometen-Vorschau übersprungen: kein Worker-Emitter vorhanden</translation>
+    </message>
+    <message>
+      <source>  ⚠️ comet preview skipped: {0!r}</source>
+      <translation>  ⚠️ Kometen-Vorschau übersprungen: {0!r}</translation>
+    </message>
+    <message>
+      <source>  ⚠️ comet preview unavailable (no UI target)</source>
+      <translation>  ⚠️ Kometen-Vorschau nicht verfügbar (kein UI-Target)</translation>
+    </message>
+    <message>
+      <source>  ⚠️ star removal failed on {0}: {1}</source>
+      <translation>  ⚠️ Sternentfernung fehlgeschlagen auf {0}: {1}</translation>
+    </message>
+    <message>
+      <source>  ⚠️ user seed: no affine for that registered file</source>
+      <translation>  ⚠️ Benutzer-Seed: kein Affine für diese registrierte Datei</translation>
+    </message>
+    <message>
+      <source>  ❌ {0}</source>
+      <translation>  ❌ {0}</translation>
+    </message>
+    <message>
+      <source> (repaired {0})</source>
+      <translation> ({0} repariert)</translation>
+    </message>
+    <message>
+      <source> + CFA</source>
+      <translation> + CFA</translation>
+    </message>
+    <message>
+      <source> + drizzle</source>
+      <translation> + Drizzle</translation>
+    </message>
+    <message>
+      <source> [GPU]</source>
+      <translation> [GPU]</translation>
+    </message>
+    <message>
+      <source>'Luma' deconvolves luminance only; 'PerChannel' runs on RGB independently.</source>
+      <translation>'Luma' dekonvolviert nur Luminanz; 'PerChannel' läuft auf RGB unabhängig.</translation>
+    </message>
+    <message>
+      <source>(&lt;0 = scale×RMS, &gt;0 = absolute Δ)</source>
+      <translation>(&lt;0 = Skala×RMS, &gt;0 = absolutes Δ)</translation>
+    </message>
+    <message>
+      <source>(fallback)</source>
+      <translation>(Fallback)</translation>
+    </message>
+    <message>
+      <source>(score={0:.4f})</source>
+      <translation>(Score={0:.4f})</translation>
+    </message>
+    <message>
+      <source>**Frame Weights Debug Log:**</source>
+      <translation>**Frame-Gewichte Debug-Log:**</translation>
+    </message>
+    <message>
+      <source>1 file · {0}</source>
+      <translation>1 Datei · {0}</translation>
+    </message>
+    <message>
+      <source>16-bit unsigned</source>
+      <translation>16-Bit vorzeichenlos</translation>
+    </message>
+    <message>
+      <source>1× (native)</source>
+      <translation>1× (nativ)</translation>
+    </message>
+    <message>
+      <source>2× (super-resolution)</source>
+      <translation>2× (Super-Resolution)</translation>
+    </message>
+    <message>
+      <source>32-bit float</source>
+      <translation>32-Bit Float</translation>
+    </message>
+    <message>
+      <source>3× (extreme)</source>
+      <translation>3× (extrem)</translation>
+    </message>
+    <message>
+      <source>64-bit float</source>
+      <translation>64-Bit Float</translation>
+    </message>
+    <message>
+      <source>64-bit uses ~2× RAM; 32-bit is faster/lighter.</source>
+      <translation>64-Bit verbraucht ~2× RAM; 32-Bit ist schneller/leichter.</translation>
+    </message>
+    <message>
+      <source>ABE Mode:</source>
+      <translation>ABE-Modus:</translation>
+    </message>
+    <message>
+      <source>AHD</source>
+      <translation>AHD</translation>
+    </message>
+    <message>
+      <source>AIRMASS</source>
+      <translation>Luftmasse</translation>
+    </message>
+    <message>
+      <source>APTDIA</source>
+      <translation>Öffnungsdurchmesser</translation>
+    </message>
+    <message>
+      <source>About CUDA</source>
+      <translation>Über CUDA</translation>
+    </message>
+    <message>
+      <source>Acceleration</source>
+      <translation>Beschleunigung</translation>
+    </message>
+    <message>
+      <source>Accept max shift (px):</source>
+      <translation>Max. Verschiebung akzeptieren (px):</translation>
+    </message>
+    <message>
+      <source>Accept tolerance (px):</source>
+      <translation>Toleranz akzeptieren (px):</translation>
+    </message>
+    <message>
+      <source>Accurate (3 passes)</source>
+      <translation>Genau (3 Durchgänge)</translation>
+    </message>
+    <message>
+      <source>Accurate (Star Matching)</source>
+      <translation>Genau (Stern-Matching)</translation>
+    </message>
+    <message>
+      <source>Add Bias Frames</source>
+      <translation>Bias-Frames hinzufügen</translation>
+    </message>
+    <message>
+      <source>Add Conversion Directory</source>
+      <translation>Konvertierungsverzeichnis hinzufügen</translation>
+    </message>
+    <message>
+      <source>Add Conversion Files</source>
+      <translation>Konvertierungsdateien hinzufügen</translation>
+    </message>
+    <message>
+      <source>Add Dark Directory</source>
+      <translation>Dark-Verzeichnis hinzufügen</translation>
+    </message>
+    <message>
+      <source>Add Dark Files</source>
+      <translation>Dark-Dateien hinzufügen</translation>
+    </message>
+    <message>
+      <source>Add Dark Frames</source>
+      <translation>Dark-Frames hinzufügen</translation>
+    </message>
+    <message>
+      <source>Add Files...</source>
+      <translation>Dateien hinzufügen...</translation>
+    </message>
+    <message>
+      <source>Add Flat Directory</source>
+      <translation>Flat-Verzeichnis hinzufügen</translation>
+    </message>
+    <message>
+      <source>Add Flat Files</source>
+      <translation>Flat-Dateien hinzufügen</translation>
+    </message>
+    <message>
+      <source>Add Flat Frames</source>
+      <translation>Flat-Frames hinzufügen</translation>
+    </message>
+    <message>
+      <source>Add Folder...</source>
+      <translation>Ordner hinzufügen...</translation>
+    </message>
+    <message>
+      <source>Add Light Directory</source>
+      <translation>Light-Verzeichnis hinzufügen</translation>
+    </message>
+    <message>
+      <source>Add Light Files</source>
+      <translation>Light-Dateien hinzufügen</translation>
+    </message>
+    <message>
+      <source>Add Light Frames</source>
+      <translation>Light-Frames hinzufügen</translation>
+    </message>
+    <message>
+      <source>Add files to the stacking queue</source>
+      <translation>Dateien zur Stacking-Warteschlange hinzufügen</translation>
+    </message>
+    <message>
+      <source>Add to {0} tab</source>
+      <translation>Zu Tab {0} hinzufügen</translation>
+    </message>
+    <message>
+      <source>Added {0}/{1} Light frames</source>
+      <translation>{0}/{1} Light-Frames hinzugefügt</translation>
+    </message>
+    <message>
+      <source>Adding Blink files to Image Integration…</source>
+      <translation>Füge Blink-Dateien zur Bildintegration hinzu…</translation>
+    </message>
+    <message>
+      <source>Adding Blink files to Light tab…</source>
+      <translation>Füge Blink-Dateien zum Light-Tab hinzu…</translation>
+    </message>
+    <message>
+      <source>Adding {0} Files…</source>
+      <translation>Füge {0} Dateien hinzu…</translation>
+    </message>
+    <message>
+      <source>Adding {0} from Directory…</source>
+      <translation>Füge {0} aus Verzeichnis hinzu…</translation>
+    </message>
+    <message>
+      <source>Additive</source>
+      <translation>Additiv</translation>
+    </message>
+    <message>
+      <source>Additive with Scaling</source>
+      <translation>Additiv mit Skalierung</translation>
+    </message>
+    <message>
+      <source>Advanced</source>
+      <translation>Erweitert</translation>
+    </message>
+    <message>
+      <source>Advanced Options</source>
+      <translation>Erweiterte Optionen</translation>
+    </message>
+    <message>
+      <source>Advanced Settings</source>
+      <translation>Erweiterte Einstellungen</translation>
+    </message>
+    <message>
+      <source>Affine (fast)</source>
+      <translation>Affine (schnell)</translation>
+    </message>
+    <message>
+      <source>After installation, restart the app for changes to take effect.</source>
+      <translation>Nach der Installation die App neu starten, damit die Änderungen wirksam werden.</translation>
+    </message>
+    <message>
+      <source>After installing CUDA, restart the app.</source>
+      <translation>Nach der Installation von CUDA die App neu starten.</translation>
+    </message>
+    <message>
+      <source>Algorithm:</source>
+      <translation>Algorithmus:</translation>
+    </message>
+    <message>
+      <source>Aligning stars…</source>
+      <translation>Sterne werden ausgerichtet…</translation>
+    </message>
+    <message>
+      <source>Aligning stars… ({0}/{1})</source>
+      <translation>Sterne werden ausgerichtet… ({0}/{1})</translation>
+    </message>
+    <message>
+      <source>Alignment</source>
+      <translation>Ausrichtung</translation>
+    </message>
+    <message>
+      <source>Alignment Mode:</source>
+      <translation>Ausrichtungsmodus:</translation>
+    </message>
+    <message>
+      <source>Alignment Settings</source>
+      <translation>Ausrichtungseinstellungen</translation>
+    </message>
+    <message>
+      <source>All Supported Files</source>
+      <translation>Alle unterstützten Dateien</translation>
+    </message>
+    <message>
+      <source>All stacking finished successfully.
+</source>
+      <translation>Stacking erfolgreich abgeschlossen.
+</translation>
+    </message>
+    <message>
+      <source>Also output Stars+Comet blend</source>
+      <translation>Zusätzlich Sterne+Kometen Blend ausgeben</translation>
+    </message>
+    <message>
+      <source>Analyze</source>
+      <translation>Analysieren</translation>
+    </message>
+    <message>
+      <source>Analyzing frames...</source>
+      <translation>Frames werden analysiert...</translation>
+    </message>
+    <message>
+      <source>Apply Bias Subtraction (For CCD Users)</source>
+      <translation>Bias-Subtraktion anwenden (für CCD-Nutzer)</translation>
+    </message>
+    <message>
+      <source>Apply Pedestal</source>
+      <translation>Sockel anwenden</translation>
+    </message>
+    <message>
+      <source>Apply Settings</source>
+      <translation>Einstellungen anwenden</translation>
+    </message>
+    <message>
+      <source>Apply color matrix</source>
+      <translation>Farbmatrix anwenden</translation>
+    </message>
+    <message>
+      <source>Apply cosmetic correction</source>
+      <translation>Kosmetische Korrektur anwenden</translation>
+    </message>
+    <message>
+      <source>Apply debayer</source>
+      <translation>Debayer anwenden</translation>
+    </message>
+    <message>
+      <source>Apply distortion model</source>
+      <translation>Distorsionsmodell anwenden</translation>
+    </message>
+    <message>
+      <source>Apply filter</source>
+      <translation>Filter anwenden</translation>
+    </message>
+    <message>
+      <source>Apply hot pixel removal</source>
+      <translation>Hot-Pixel-Entfernung anwenden</translation>
+    </message>
+    <message>
+      <source>Apply this choice to all remaining mismatches of this kind</source>
+      <translation>Diese Wahl auf alle verbleibenden Abweichungen dieser Art anwenden</translation>
+    </message>
+    <message>
+      <source>Apply to Group</source>
+      <translation>Auf Gruppe anwenden</translation>
+    </message>
+    <message>
+      <source>Apply to all frames</source>
+      <translation>Auf alle Frames anwenden</translation>
+    </message>
+    <message>
+      <source>Applying calibration...</source>
+      <translation>Kalibrierung wird angewendet...</translation>
+    </message>
+    <message>
+      <source>Applying rejection...</source>
+      <translation>Rejection wird angewendet...</translation>
+    </message>
+    <message>
+      <source>Are you sure you want to cancel stacking?</source>
+      <translation>Sind Sie sicher, dass Sie das Stacking abbrechen möchten?</translation>
+    </message>
+    <message>
+      <source>Are you sure you want to remove all frames?</source>
+      <translation>Sind Sie sicher, dass Sie alle Frames entfernen möchten?</translation>
+    </message>
+    <message>
+      <source>Are you sure you want to remove the current master?</source>
+      <translation>Sind Sie sicher, dass Sie den aktuellen Master entfernen möchten?</translation>
+    </message>
+    <message>
+      <source>Assigning best Master Dark/Flat…</source>
+      <translation>Besten Master Dark/Flat zuweisen…</translation>
+    </message>
+    <message>
+      <source>Auto</source>
+      <translation>Auto</translation>
+    </message>
+    <message>
+      <source>Auto (from stars)</source>
+      <translation>Auto (von Sternen)</translation>
+    </message>
+    <message>
+      <source>Auto (not set)</source>
+      <translation>Auto (nicht gesetzt)</translation>
+    </message>
+    <message>
+      <source>Auto (use all cores)</source>
+      <translation>Auto (alle Kerne verwenden)</translation>
+    </message>
+    <message>
+      <source>Auto Crop</source>
+      <translation>Auto-Beschnitt</translation>
+    </message>
+    <message>
+      <source>Auto Noise Map</source>
+      <translation>Auto-Rauschkarte</translation>
+    </message>
+    <message>
+      <source>Auto Star Mask</source>
+      <translation>Auto-Sternmaske</translation>
+    </message>
+    <message>
+      <source>Auto Weight</source>
+      <translation>Auto-Gewichtung</translation>
+    </message>
+    <message>
+      <source>Auto crop</source>
+      <translation>Automatisch beschneiden</translation>
+    </message>
+    <message>
+      <source>Auto-Accept Best Reference</source>
+      <translation>Beste Referenz automatisch akzeptieren</translation>
+    </message>
+    <message>
+      <source>Auto-Select Best Reference</source>
+      <translation>Beste Referenz automatisch wählen</translation>
+    </message>
+    <message>
+      <source>Auto-Select Closest Master Dark</source>
+      <translation>Nächstgelegenen Master Dark automatisch wählen</translation>
+    </message>
+    <message>
+      <source>Auto-Select by Metadata</source>
+      <translation>Auto-Auswahl nach Metadaten</translation>
+    </message>
+    <message>
+      <source>Auto-accept measured reference</source>
+      <translation>Gemessene Referenz automatisch akzeptieren</translation>
+    </message>
+    <message>
+      <source>Auto-crop output</source>
+      <translation>Auto-Beschnitt-Ausgabe</translation>
+    </message>
+    <message>
+      <source>Auto-cropped files saved:</source>
+      <translation>Auto-beschnittene Dateien gespeichert:</translation>
+    </message>
+    <message>
+      <source>Auto-detect</source>
+      <translation>Auto-Erkennung</translation>
+    </message>
+    <message>
+      <source>Auto-detect panels</source>
+      <translation>Panels automatisch erkennen</translation>
+    </message>
+    <message>
+      <source>Auto-detect session</source>
+      <translation>Sitzung automatisch erkennen</translation>
+    </message>
+    <message>
+      <source>Auto-match calibration frames</source>
+      <translation>Kalibrierungs-Frames automatisch abgleichen</translation>
+    </message>
+    <message>
+      <source>Auto-name</source>
+      <translation>Auto-Name</translation>
+    </message>
+    <message>
+      <source>Auto-register &amp; integrate after calibration</source>
+      <translation>Nach Kalibrierung auto-registrieren &amp; integrieren</translation>
+    </message>
+    <message>
+      <source>Average</source>
+      <translation>Durchschnitt</translation>
+    </message>
+    <message>
+      <source>BAYERPAT</source>
+      <translation>Bayer-Muster</translation>
+    </message>
+    <message>
+      <source>BGGR</source>
+      <translation>BGGR</translation>
+    </message>
+    <message>
+      <source>Backend: CPU (Python version not supported for GPU install)</source>
+      <translation>Backend: CPU (Python-Version für GPU-Installation nicht unterstützt)</translation>
+    </message>
+    <message>
+      <source>Backend: installing…</source>
+      <translation>Backend: Installation…</translation>
+    </message>
+    <message>
+      <source>Backend: {0}</source>
+      <translation>Backend: {0}</translation>
+    </message>
+    <message>
+      <source>Background</source>
+      <translation>Hintergrund</translation>
+    </message>
+    <message>
+      <source>Background Normalization</source>
+      <translation>Hintergrundnormalisierung</translation>
+    </message>
+    <message>
+      <source>Background level</source>
+      <translation>Hintergrundpegel</translation>
+    </message>
+    <message>
+      <source>Background matching</source>
+      <translation>Hintergrundabgleich</translation>
+    </message>
+    <message>
+      <source>Background model</source>
+      <translation>Hintergrundmodell</translation>
+    </message>
+    <message>
+      <source>Batch Convert Files to Debayered FITS (.fit)</source>
+      <translation>Dateien im Stapel zu debayerten FITS (.fit) konvertieren</translation>
+    </message>
+    <message>
+      <source>Bayer Pattern</source>
+      <translation>Bayer-Muster</translation>
+    </message>
+    <message>
+      <source>Before saving: min = {0:.4f}, max = {1:.4f}</source>
+      <translation>Vor dem Speichern: min = {0:.4f}, max = {1:.4f}</translation>
+    </message>
+    <message>
+      <source>Best</source>
+      <translation>Beste</translation>
+    </message>
+    <message>
+      <source>Best Quality</source>
+      <translation>Beste Qualität</translation>
+    </message>
+    <message>
+      <source>Bias</source>
+      <translation>Bias</translation>
+    </message>
+    <message>
+      <source>Bias Subtracted</source>
+      <translation>Bias subtrahiert</translation>
+    </message>
+    <message>
+      <source>Bias: {0}</source>
+      <translation>Bias: {0}</translation>
+    </message>
+    <message>
+      <source>Bicubic</source>
+      <translation>Bikubisch</translation>
+    </message>
+    <message>
+      <source>Bicubic Interpolation</source>
+      <translation>Bikubische Interpolation</translation>
+    </message>
+    <message>
+      <source>Bilinear</source>
+      <translation>Bilinear</translation>
+    </message>
+    <message>
+      <source>Bilinear Interpolation</source>
+      <translation>Bilineare Interpolation</translation>
+    </message>
+    <message>
+      <source>Binning</source>
+      <translation>Binning</translation>
+    </message>
+    <message>
+      <source>Biweight Estimator</source>
+      <translation>Biweight-Schätzer</translation>
+    </message>
+    <message>
+      <source>Biweight constant:</source>
+      <translation>Biweight-Konstante:</translation>
+    </message>
+    <message>
+      <source>Blend Ratio:</source>
+      <translation>Mischverhältnis:</translation>
+    </message>
+    <message>
+      <source>Blending method</source>
+      <translation>Mischmethode</translation>
+    </message>
+    <message>
+      <source>Both (comet + stars)</source>
+      <translation>Beide (Komet + Sterne)</translation>
+    </message>
+    <message>
+      <source>Browse</source>
+      <translation>Durchsuchen</translation>
+    </message>
+    <message>
+      <source>Browse...</source>
+      <translation>Durchsuchen...</translation>
+    </message>
+    <message>
+      <source>CCD-TEMP</source>
+      <translation>CCD-TEMP</translation>
+    </message>
+    <message>
+      <source>CFA Drizzle</source>
+      <translation>CFA Drizzle</translation>
+    </message>
+    <message>
+      <source>CFA Drizzle (Bayer)</source>
+      <translation>CFA Drizzle (Bayer)</translation>
+    </message>
+    <message>
+      <source>CFA Drizzle is enabled but at least one group has only {0} frames.
 
 CFA Drizzle typically needs ≥{1} frames (scale {2:.0f}×) for good coverage.
-Switch to Edge-Aware Interpolation for this run?</source><translation>CFA Drizzle ist aktiviert, aber mindestens eine Gruppe hat nur {0} Frames.
+Switch to Edge-Aware Interpolation for this run?</source>
+      <translation>CFA Drizzle ist aktiviert, aber mindestens eine Gruppe hat nur {0} Frames.
 
 CFA Drizzle benötigt typischerweise ≥{1} Frames (Skala {2:.0f}×) für gute Abdeckung.
-Für diesen Durchgang zu Edge-Aware-Interpolation wechseln?</translation></message><message><source>CFA Drizzle: Low Sample Count</source><translation>CFA Drizzle: Niedrige Probenanzahl</translation></message><message><source>CFA Edge-Aware Interp</source><translation>CFA Edge-Aware Interp</translation></message><message><source>CMOS users: Bias Subtraction is not needed.
+Für diesen Durchgang zu Edge-Aware-Interpolation wechseln?</translation>
+    </message>
+    <message>
+      <source>CFA Drizzle: Low Sample Count</source>
+      <translation>CFA Drizzle: Niedrige Probenanzahl</translation>
+    </message>
+    <message>
+      <source>CFA Edge-Aware Interp</source>
+      <translation>CFA Edge-Aware Interp</translation>
+    </message>
+    <message>
+      <source>CMOS users: Bias Subtraction is not needed.
 Modern CMOS cameras use Correlated Double Sampling (CDS),
-meaning bias is already subtracted at the sensor level.</source><translation>CMOS-Nutzer: Bias-Subtraktion ist nicht erforderlich.
+meaning bias is already subtracted at the sensor level.</source>
+      <translation>CMOS-Nutzer: Bias-Subtraktion ist nicht erforderlich.
 Moderne CMOS-Kameras verwenden Correlated Double Sampling (CDS),
-das heißt, der Bias wird bereits auf Sensorebene subtrahiert.</translation></message><message><source>CPU only</source><translation>Nur CPU</translation></message><message><source>CUDA Installation Info</source><translation>CUDA Installations-Info</translation></message><message><source>Cache size (MB)</source><translation>Cache-Größe (MB)</translation></message><message><source>Calculate from frames</source><translation>Aus Frames berechnen</translation></message><message><source>Calculating alignment...</source><translation>Ausrichtung wird berechnet...</translation></message><message><source>Calculating autocrop bounding box…</source><translation>Auto-Beschnitt Bounding-Box wird berechnet…</translation></message><message><source>Calibrated Light Frames</source><translation>Kalibrierte Light-Frames</translation></message><message><source>Calibrating...</source><translation>Kalibrierung...</translation></message><message><source>Calibration</source><translation>Kalibrierung</translation></message><message><source>Calibration Settings</source><translation>Kalibrierungseinstellungen</translation></message><message><source>Calibration complete</source><translation>Kalibrierung abgeschlossen</translation></message><message><source>Calibration mismatch</source><translation>Kalibrierungs-Mismatch</translation></message><message><source>Camera</source><translation>Kamera</translation></message><message><source>Cancel</source><translation>Abbrechen</translation></message><message><source>Cancel the current operation</source><translation>Aktuellen Vorgang abbrechen</translation></message><message><source>Cannot write to output directory</source><translation>Kann nicht in Ausgabeverzeichnis schreiben</translation></message><message><source>Caps Astroalign max_control_points (typical 500–1500). Lower = faster, higher = more robust.</source><translation>Begrenzt max_control_points von Astroalign (typisch 500–1500). Niedriger = schneller, höher = robuster.</translation></message><message><source>Capture Date</source><translation>Aufnahmedatum</translation></message><message><source>Choose the initial seed image for MFDeconv:
+das heißt, der Bias wird bereits auf Sensorebene subtrahiert.</translation>
+    </message>
+    <message>
+      <source>CPU only</source>
+      <translation>Nur CPU</translation>
+    </message>
+    <message>
+      <source>CUDA Installation Info</source>
+      <translation>CUDA Installations-Info</translation>
+    </message>
+    <message>
+      <source>Cache size (MB)</source>
+      <translation>Cache-Größe (MB)</translation>
+    </message>
+    <message>
+      <source>Calculate from frames</source>
+      <translation>Aus Frames berechnen</translation>
+    </message>
+    <message>
+      <source>Calculating alignment...</source>
+      <translation>Ausrichtung wird berechnet...</translation>
+    </message>
+    <message>
+      <source>Calculating autocrop bounding box…</source>
+      <translation>Auto-Beschnitt Bounding-Box wird berechnet…</translation>
+    </message>
+    <message>
+      <source>Calibrated Light Frames</source>
+      <translation>Kalibrierte Light-Frames</translation>
+    </message>
+    <message>
+      <source>Calibrating...</source>
+      <translation>Kalibrierung...</translation>
+    </message>
+    <message>
+      <source>Calibration</source>
+      <translation>Kalibrierung</translation>
+    </message>
+    <message>
+      <source>Calibration Settings</source>
+      <translation>Kalibrierungseinstellungen</translation>
+    </message>
+    <message>
+      <source>Calibration complete</source>
+      <translation>Kalibrierung abgeschlossen</translation>
+    </message>
+    <message>
+      <source>Calibration mismatch</source>
+      <translation>Kalibrierungs-Mismatch</translation>
+    </message>
+    <message>
+      <source>Camera</source>
+      <translation>Kamera</translation>
+    </message>
+    <message>
+      <source>Cancel</source>
+      <translation>Abbrechen</translation>
+    </message>
+    <message>
+      <source>Cancel the current operation</source>
+      <translation>Aktuellen Vorgang abbrechen</translation>
+    </message>
+    <message>
+      <source>Cannot write to output directory</source>
+      <translation>Kann nicht in Ausgabeverzeichnis schreiben</translation>
+    </message>
+    <message>
+      <source>Caps Astroalign max_control_points (typical 500–1500). Lower = faster, higher = more robust.</source>
+      <translation>Begrenzt max_control_points von Astroalign (typisch 500–1500). Niedriger = schneller, höher = robuster.</translation>
+    </message>
+    <message>
+      <source>Capture Date</source>
+      <translation>Aufnahmedatum</translation>
+    </message>
+    <message>
+      <source>Choose the initial seed image for MFDeconv:
 • Robust μ–σ: running mean with sigma clipping (RAM-friendly, default)
-• Median: tiled median stack (more outlier-resistant; heavier I/O, esp. for XISF)</source><translation>Wähle das initiale Seed-Bild für MFDeconv:
+• Median: tiled median stack (more outlier-resistant; heavier I/O, esp. for XISF)</source>
+      <translation>Wähle das initiale Seed-Bild für MFDeconv:
 • Robustes μ–σ: Running Mean mit Sigma-Clipping (RAM-freundlich, Standard)
-• Median: Tiled Median Stack (resistenter gegen Ausreißer; höhere I/O-Last, spez. für XISF)</translation></message><message><source>Chunk Size:</source><translation>Chunk-Größe:</translation></message><message><source>Chunk size</source><translation>Chunk-Größe</translation></message><message><source>Circular</source><translation>Zirkulär</translation></message><message><source>Circular (disk)</source><translation>Zirkulär (Disk)</translation></message><message><source>Clear</source><translation>Löschen</translation></message><message><source>Clear All</source><translation>Alles löschen</translation></message><message><source>Clear List</source><translation>Liste löschen</translation></message><message><source>Clear Selection</source><translation>Auswahl löschen</translation></message><message><source>Clear all files from queue</source><translation>Alle Dateien aus der Warteschlange löschen</translation></message><message><source>Clear existing session?</source><translation>Bestehende Sitzung löschen?</translation></message><message><source>Click to select files</source><translation>Klicken, um Dateien auszuwählen</translation></message><message><source>Clip (lo/hi):</source><translation>Clip (niedrig/hoch):</translation></message><message><source>Clip high</source><translation>Hoch clippen</translation></message><message><source>Clip low</source><translation>Niedrig clippen</translation></message><message><source>Close</source><translation>Schließen</translation></message><message><source>Cold Pixel Removal</source><translation>Cold-Pixel-Entfernung</translation></message><message><source>Cold Threshold:</source><translation>Cold-Schwelle:</translation></message><message><source>Cold pixel detection</source><translation>Cold-Pixel-Erkennung</translation></message><message><source>Cold pixel replacement</source><translation>Cold-Pixel-Ersetzung</translation></message><message><source>Cold pixel threshold (σ)</source><translation>Cold-Pixel-Schwelle (σ)</translation></message><message><source>Cold σ:</source><translation>Cold σ:</translation></message><message><source>Color matrix</source><translation>Farbmatrix</translation></message><message><source>Color mode:</source><translation>Farbmodus:</translation></message><message><source>Columns</source><translation>Spalten</translation></message><message><source>Combine panels</source><translation>Panels kombinieren</translation></message><message><source>Comet (High-Clip Percentile tuning)</source><translation>Komet (High-Clip Percentil-Tuning)</translation></message><message><source>Comet Center</source><translation>Kometenzentrum</translation></message><message><source>Comet Detection:</source><translation>Kometen-Erkennung:</translation></message><message><source>Comet Mode</source><translation>Kometen-Modus</translation></message><message><source>Comet Star Removal (Optional)</source><translation>Kometen-Stern-Entfernung (Optional)</translation></message><message><source>Comet alignment</source><translation>Kometen-Ausrichtung</translation></message><message><source>Complete</source><translation>Vollständig</translation></message><message><source>Confirm action</source><translation>Aktion bestätigen</translation></message><message><source>Controls down-weighting strength.</source><translation>Steuert die Stärke der Herabgewichtung.</translation></message><message><source>Conversion complete.</source><translation>Konvertierung abgeschlossen.</translation></message><message><source>Conversion list cleared.</source><translation>Konvertierungsliste gelöscht.</translation></message><message><source>Conversion output directory set to: {0}</source><translation>Konvertierungs-Ausgabeverzeichnis gesetzt auf: {0}</translation></message><message><source>Convert All Files to FITS</source><translation>Alle Dateien in FITS konvertieren</translation></message><message><source>Convert Non-FITS Formats</source><translation>Nicht-FITS-Formate konvertieren</translation></message><message><source>Converted</source><translation>Konvertiert</translation></message><message><source>Converted {0} to FITS with IMAGETYP={1}, EXPTIME={2}.</source><translation>Konvertiert {0} in FITS mit IMAGETYP={1}, EXPTIME={2}.</translation></message><message><source>Copy commands</source><translation>Befehle kopieren</translation></message><message><source>Core mask feather (px):</source><translation>Kernmasken-Feather (px):</translation></message><message><source>Corrections</source><translation>Korrekturen</translation></message><message><source>Cosmetic Correction</source><translation>Kosmetische Korrektur</translation></message><message><source>Cosmetic Correction (Advanced)</source><translation>Kosmetische Korrektur (Erweitert)</translation></message><message><source>Cosmetic Correction Applied (debayered/mono)</source><translation>Kosmetische Korrektur angewendet (debayert/mono)</translation></message><message><source>Cosmetic Correction Applied for Bayer Pattern ({0})</source><translation>Kosmetische Korrektur angewendet für Bayer-Muster ({0})</translation></message><message><source>Could not load {0} to create memmap cache.</source><translation>Konnte {0} nicht laden, um Memmap-Cache zu erstellen.</translation></message><message><source>Could not load:
+• Median: Tiled Median Stack (resistenter gegen Ausreißer; höhere I/O-Last, spez. für XISF)</translation>
+    </message>
+    <message>
+      <source>Chunk Size:</source>
+      <translation>Chunk-Größe:</translation>
+    </message>
+    <message>
+      <source>Chunk size</source>
+      <translation>Chunk-Größe</translation>
+    </message>
+    <message>
+      <source>Circular</source>
+      <translation>Zirkulär</translation>
+    </message>
+    <message>
+      <source>Circular (disk)</source>
+      <translation>Zirkulär (Disk)</translation>
+    </message>
+    <message>
+      <source>Clear</source>
+      <translation>Löschen</translation>
+    </message>
+    <message>
+      <source>Clear All</source>
+      <translation>Alles löschen</translation>
+    </message>
+    <message>
+      <source>Clear List</source>
+      <translation>Liste löschen</translation>
+    </message>
+    <message>
+      <source>Clear Selection</source>
+      <translation>Auswahl löschen</translation>
+    </message>
+    <message>
+      <source>Clear all files from queue</source>
+      <translation>Alle Dateien aus der Warteschlange löschen</translation>
+    </message>
+    <message>
+      <source>Clear existing session?</source>
+      <translation>Bestehende Sitzung löschen?</translation>
+    </message>
+    <message>
+      <source>Click to select files</source>
+      <translation>Klicken, um Dateien auszuwählen</translation>
+    </message>
+    <message>
+      <source>Clip (lo/hi):</source>
+      <translation>Clip (niedrig/hoch):</translation>
+    </message>
+    <message>
+      <source>Clip high</source>
+      <translation>Hoch clippen</translation>
+    </message>
+    <message>
+      <source>Clip low</source>
+      <translation>Niedrig clippen</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Schließen</translation>
+    </message>
+    <message>
+      <source>Cold Pixel Removal</source>
+      <translation>Cold-Pixel-Entfernung</translation>
+    </message>
+    <message>
+      <source>Cold Threshold:</source>
+      <translation>Cold-Schwelle:</translation>
+    </message>
+    <message>
+      <source>Cold pixel detection</source>
+      <translation>Cold-Pixel-Erkennung</translation>
+    </message>
+    <message>
+      <source>Cold pixel replacement</source>
+      <translation>Cold-Pixel-Ersetzung</translation>
+    </message>
+    <message>
+      <source>Cold pixel threshold (σ)</source>
+      <translation>Cold-Pixel-Schwelle (σ)</translation>
+    </message>
+    <message>
+      <source>Cold σ:</source>
+      <translation>Cold σ:</translation>
+    </message>
+    <message>
+      <source>Color matrix</source>
+      <translation>Farbmatrix</translation>
+    </message>
+    <message>
+      <source>Color mode:</source>
+      <translation>Farbmodus:</translation>
+    </message>
+    <message>
+      <source>Columns</source>
+      <translation>Spalten</translation>
+    </message>
+    <message>
+      <source>Combine panels</source>
+      <translation>Panels kombinieren</translation>
+    </message>
+    <message>
+      <source>Comet (High-Clip Percentile tuning)</source>
+      <translation>Komet (High-Clip Percentil-Tuning)</translation>
+    </message>
+    <message>
+      <source>Comet Center</source>
+      <translation>Kometenzentrum</translation>
+    </message>
+    <message>
+      <source>Comet Detection:</source>
+      <translation>Kometen-Erkennung:</translation>
+    </message>
+    <message>
+      <source>Comet Mode</source>
+      <translation>Kometen-Modus</translation>
+    </message>
+    <message>
+      <source>Comet Star Removal (Optional)</source>
+      <translation>Kometen-Stern-Entfernung (Optional)</translation>
+    </message>
+    <message>
+      <source>Comet alignment</source>
+      <translation>Kometen-Ausrichtung</translation>
+    </message>
+    <message>
+      <source>Complete</source>
+      <translation>Vollständig</translation>
+    </message>
+    <message>
+      <source>Confirm action</source>
+      <translation>Aktion bestätigen</translation>
+    </message>
+    <message>
+      <source>Controls down-weighting strength.</source>
+      <translation>Steuert die Stärke der Herabgewichtung.</translation>
+    </message>
+    <message>
+      <source>Conversion complete.</source>
+      <translation>Konvertierung abgeschlossen.</translation>
+    </message>
+    <message>
+      <source>Conversion list cleared.</source>
+      <translation>Konvertierungsliste gelöscht.</translation>
+    </message>
+    <message>
+      <source>Conversion output directory set to: {0}</source>
+      <translation>Konvertierungs-Ausgabeverzeichnis gesetzt auf: {0}</translation>
+    </message>
+    <message>
+      <source>Convert All Files to FITS</source>
+      <translation>Alle Dateien in FITS konvertieren</translation>
+    </message>
+    <message>
+      <source>Convert Non-FITS Formats</source>
+      <translation>Nicht-FITS-Formate konvertieren</translation>
+    </message>
+    <message>
+      <source>Converted</source>
+      <translation>Konvertiert</translation>
+    </message>
+    <message>
+      <source>Converted {0} to FITS with IMAGETYP={1}, EXPTIME={2}.</source>
+      <translation>Konvertiert {0} in FITS mit IMAGETYP={1}, EXPTIME={2}.</translation>
+    </message>
+    <message>
+      <source>Copy commands</source>
+      <translation>Befehle kopieren</translation>
+    </message>
+    <message>
+      <source>Core mask feather (px):</source>
+      <translation>Kernmasken-Feather (px):</translation>
+    </message>
+    <message>
+      <source>Corrections</source>
+      <translation>Korrekturen</translation>
+    </message>
+    <message>
+      <source>Cosmetic Correction</source>
+      <translation>Kosmetische Korrektur</translation>
+    </message>
+    <message>
+      <source>Cosmetic Correction (Advanced)</source>
+      <translation>Kosmetische Korrektur (Erweitert)</translation>
+    </message>
+    <message>
+      <source>Cosmetic Correction Applied (debayered/mono)</source>
+      <translation>Kosmetische Korrektur angewendet (debayert/mono)</translation>
+    </message>
+    <message>
+      <source>Cosmetic Correction Applied for Bayer Pattern ({0})</source>
+      <translation>Kosmetische Korrektur angewendet für Bayer-Muster ({0})</translation>
+    </message>
+    <message>
+      <source>Could not load {0} to create memmap cache.</source>
+      <translation>Konnte {0} nicht laden, um Memmap-Cache zu erstellen.</translation>
+    </message>
+    <message>
+      <source>Could not load:
 {0}
 
-{1}</source><translation>Konnte nicht laden:
+{1}</source>
+      <translation>Konnte nicht laden:
 {0}
 
-{1}</translation></message><message><source>Coverage:</source><translation>Abdeckung:</translation></message><message><source>Create Comet-Only Stack</source><translation>Nur-Kometen-Stack erstellen</translation></message><message><source>Create Master</source><translation>Master erstellen</translation></message><message><source>Create Master Bias</source><translation>Master-Bias erstellen</translation></message><message><source>Create Master Calibration Files</source><translation>Master-Kalibrierungsdateien erstellen</translation></message><message><source>Create Master Dark</source><translation>Master-Dark erstellen</translation></message><message><source>Create Master Darks</source><translation>Master-Darks erstellen</translation></message><message><source>Create Master Flat</source><translation>Master-Flat erstellen</translation></message><message><source>Create Master Flats</source><translation>Master-Flats erstellen</translation></message><message><source>Create Masters</source><translation>Master erstellen</translation></message><message><source>Create Stars+Comet Blend</source><translation>Sterne+Kometen Blend erstellen</translation></message><message><source>Create comet-aligned version</source><translation>Kometen-ausgerichtete Version erstellen</translation></message><message><source>Create log file</source><translation>Log-Datei erstellen</translation></message><message><source>Create star-aligned version</source><translation>Sternen-ausgerichtete Version erstellen</translation></message><message><source>Creating master bias...</source><translation>Master-Bias wird erstellt...</translation></message><message><source>Creating master dark...</source><translation>Master-Dark wird erstellt...</translation></message><message><source>Creating master flat...</source><translation>Master-Flat wird erstellt...</translation></message><message><source>Crop Method:</source><translation>Beschnittmethode:</translation></message><message><source>Crop Padding (px):</source><translation>Beschnitt-Padding (px):</translation></message><message><source>Crop final image to pixels covered by ≥ Coverage % of frames</source><translation>Finales Bild auf Pixel beschneiden, die von ≥ Abdeckung % der Frames bedeckt sind</translation></message><message><source>Crop to common area</source><translation>Auf gemeinsamen Bereich beschneiden</translation></message><message><source>Cross Correlation</source><translation>Kreuzkorrelation</translation></message><message><source>Current Status: {0}</source><translation>Aktueller Status: {0}</translation></message><message><source>Current Step</source><translation>Aktueller Schritt</translation></message><message><source>Current frame</source><translation>Aktueller Frame</translation></message><message><source>Current stacking settings saved to profile '{0}'.</source><translation>Aktuelle Stacking-Einstellungen im Profil '{0}' gespeichert.</translation></message><message><source>Custom</source><translation>Benutzerdefiniert</translation></message><message><source>Custom Weight</source><translation>Benutzerdefinierte Gewichtung</translation></message><message><source>Custom directory</source><translation>Benutzerdefiniertes Verzeichnis</translation></message><message><source>Custom matrix</source><translation>Benutzerdefinierte Matrix</translation></message><message><source>DCB</source><translation>DCB</translation></message><message><source>DEBUG: File '{0}' does not exist on disk.</source><translation>DEBUG: Datei '{0}' existiert nicht auf der Festplatte.</translation></message><message><source>DEC</source><translation>DEK</translation></message><message><source>Dark</source><translation>Dark</translation></message><message><source>Dark Flat</source><translation>Dark Flat</translation></message><message><source>Dark Flats</source><translation>Dark Flats</translation></message><message><source>Dark Frames</source><translation>Dark-Frames</translation></message><message><source>Dark Subtracted: {0}</source><translation>Dark subtrahiert: {0}</translation></message><message><source>DarkStar</source><translation>DarkStar</translation></message><message><source>Darks</source><translation>Darks</translation></message><message><source>Date</source><translation>Datum</translation></message><message><source>Dead column detection</source><translation>Tote-Spalten-Erkennung</translation></message><message><source>Dead row detection</source><translation>Tote-Zeilen-Erkennung</translation></message><message><source>Debayer</source><translation>Debayer</translation></message><message><source>Debayer Method</source><translation>Debayer-Methode</translation></message><message><source>Debayer Settings</source><translation>Debayer-Einstellungen</translation></message><message><source>Debayer before calibration</source><translation>Debayer vor Kalibrierung</translation></message><message><source>Debug Mode</source><translation>Debug-Modus</translation></message><message><source>Dec rate (arcsec/min)</source><translation>Dek-Rate (Bogensek/Min)</translation></message><message><source>Deconvolution Iterations:</source><translation>Dekonvolutions-Iterationen:</translation></message><message><source>Deconvolution Strength:</source><translation>Dekonvolutions-Stärke:</translation></message><message><source>Deconvolving '{0}' ({1} frames)…</source><translation>Dekonvolviere '{0}' ({1} Frames)…</translation></message><message><source>Default</source><translation>Standard</translation></message><message><source>Defect Map Files</source><translation>Defektkarten-Dateien</translation></message><message><source>Defect map</source><translation>Defektkarte</translation></message><message><source>Delete</source><translation>Löschen</translation></message><message><source>Delete profile</source><translation>Profil löschen</translation></message><message><source>Delete stacking profile '{0}'?</source><translation>Stacking-Profil '{0}' löschen?</translation></message><message><source>Detect bad columns</source><translation>Fehlerhafte Spalten erkennen</translation></message><message><source>Detect bad rows</source><translation>Fehlerhafte Zeilen erkennen</translation></message><message><source>Detect dithering</source><translation>Dithering erkennen</translation></message><message><source>Detected backend:</source><translation>Erkanntes Backend:</translation></message><message><source>Detecting stars...</source><translation>Sterne werden erkannt...</translation></message><message><source>Detection scale</source><translation>Erkennungsskala</translation></message><message><source>Detection threshold</source><translation>Erkennungsschwelle</translation></message><message><source>Dilate (+px):</source><translation>Dilatieren (+px):</translation></message><message><source>Distortion / Transform</source><translation>Distorsion / Transformation</translation></message><message><source>Distortion correction</source><translation>Distorsionskorrektur</translation></message><message><source>Dithering</source><translation>Dithering</translation></message><message><source>Dithering pattern</source><translation>Dithering-Muster</translation></message><message><source>Dithering scale</source><translation>Dithering-Skala</translation></message><message><source>Divide (flat-like)</source><translation>Dividieren (Flat-ähnlich)</translation></message><message><source>Divide gain limits:</source><translation>Limit-Gewinn dividieren:</translation></message><message><source>Double-click to preview</source><translation>Doppelklick für Vorschau</translation></message><message><source>Downloads PyTorch with the right backend (CUDA/MPS/CPU). One-time per machine.</source><translation>Lädt PyTorch mit dem richtigen Backend (CUDA/MPS/CPU) herunter. Einmalig pro Maschine.</translation></message><message><source>Downsample (AREA):</source><translation>Downsample (AREA):</translation></message><message><source>Downsample:</source><translation>Downsample:</translation></message><message><source>Drag and drop files here</source><translation>Dateien hierher ziehen und ablegen</translation></message><message><source>Drizzle</source><translation>Drizzle</translation></message><message><source>Drizzle Integration</source><translation>Drizzle-Integration</translation></message><message><source>Drizzle Kernel:</source><translation>Drizzle-Kernel:</translation></message><message><source>Drizzle Scale:</source><translation>Drizzle-Skala:</translation></message><message><source>Drizzle Settings</source><translation>Drizzle-Einstellungen</translation></message><message><source>Drizzle cfg → scale={0}×, pixfrac={1:.3f}, kernel={2}</source><translation>Drizzle-Konfig → Skala={0}×, Pixfrac={1:.3f}, Kernel={2}</translation></message><message><source>Drizzle: False</source><translation>Drizzle: Aus</translation></message><message><source>Drizzle: True, Scale: {0:g}x, Drop: {1:.2f}</source><translation>Drizzle: Ein, Skala: {0:g}x, Drop: {1:.2f}</translation></message><message><source>Drizzle: True, Scale: {0}, Drop: {1:.2f}</source><translation>Drizzle: Ein, Skala: {0}, Drop: {1:.2f}</translation></message><message><source>Drizzle: {0}</source><translation>Drizzle: {0}</translation></message><message><source>Drizzle: {0}, Scale: {1}, Drop:{2}</source><translation>Drizzle: {0}, Skala: {1}, Drop:{2}</translation></message><message><source>Drop Fraction (pixfrac):</source><translation>Drop-Fraktion (pixfrac):</translation></message><message><source>Drop Shrink:</source><translation>Drop-Schrumpfung:</translation></message><message><source>Drop Size (Pixfrac)</source><translation>Drop-Größe (Pixfrac)</translation></message><message><source>EGAIN</source><translation>EGAIN</translation></message><message><source>EQUINOX</source><translation>EQUINOX</translation></message><message><source>ESD threshold:</source><translation>ESD-Schwelle:</translation></message><message><source>EXPTIME</source><translation>Belichtungszeit</translation></message><message><source>Eccentricity</source><translation>Exzentrizität</translation></message><message><source>Elapsed time</source><translation>Verstrichene Zeit</translation></message><message><source>Ellipse scale:</source><translation>Ellipsenskala:</translation></message><message><source>Enable ABE Pre-Processing</source><translation>ABE-Vorverarbeitung aktivieren</translation></message><message><source>Enable Auto Crop</source><translation>Auto-Beschnitt aktivieren</translation></message><message><source>Enable Comet Stacking</source><translation>Kometen-Stacking aktivieren</translation></message><message><source>Enable Cosmetic Correction</source><translation>Kosmetische Korrektur aktivieren</translation></message><message><source>Enable Drizzle</source><translation>Drizzle aktivieren</translation></message><message><source>Enable GPU Acceleration</source><translation>GPU-Beschleunigung aktivieren</translation></message><message><source>Enable GPU/MPS via PyTorch when supported; falls back to CPU automatically.</source><translation>GPU/MPS über PyTorch aktivieren, wenn unterstützt; automatischer Fallback auf CPU.</translation></message><message><source>Enable MF Deconvolution</source><translation>MF-Dekonvolution aktivieren</translation></message><message><source>Enable MFDeconv during integration</source><translation>MFDeconv während Integration aktivieren</translation></message><message><source>Enable MPS (Apple Silicon)</source><translation>MPS aktivieren (Apple Silicon)</translation></message><message><source>Enable Registration</source><translation>Registrierung aktivieren</translation></message><message><source>Enable Star Trails</source><translation>Sternspuren aktivieren</translation></message><message><source>Enable advanced cosmetic tuning</source><translation>Erweitertes kosmetisches Tuning aktivieren</translation></message><message><source>Enable comet mode</source><translation>Kometenmodus aktivieren</translation></message><message><source>Enable cosmetic correction</source><translation>Kosmetische Korrektur aktivieren</translation></message><message><source>Enable local normalization</source><translation>Lokale Normalisierung aktivieren</translation></message><message><source>Enable mosaic mode</source><translation>Mosaikmodus aktivieren</translation></message><message><source>Enable scoring</source><translation>Scoring aktivieren</translation></message><message><source>Enter new group name:</source><translation>Neuen Gruppennamen eingeben:</translation></message><message><source>Enter session label (e.g., Night1, RedFilterSet2):</source><translation>Sitzungslabel eingeben (z.B. Nacht1, Rotfiltersatz2):</translation></message><message><source>Enter session name:</source><translation>Sitzungsnamen eingeben:</translation></message><message><source>Error</source><translation>Fehler</translation></message><message><source>Error converting {0}: {1}</source><translation>Fehler beim Konvertieren von {0}: {1}</translation></message><message><source>Error: {0}</source><translation>Fehler: {0}</translation></message><message><source>Estimated remaining</source><translation>Geschätzt verbleibend</translation></message><message><source>Exclude from Stack</source><translation>Vom Stack ausschließen</translation></message><message><source>Exclude from stacking</source><translation>Vom Stacking ausschließen</translation></message><message><source>Expected dither (pixels)</source><translation>Erwarteter Dither (Pixel)</translation></message><message><source>Export Settings</source><translation>Einstellungen exportieren</translation></message><message><source>Exposure</source><translation>Belichtung</translation></message><message><source>Exposure Time</source><translation>Belichtungszeit</translation></message><message><source>Exposure Tolerance (sec):</source><translation>Belichtungstoleranz (Sek):</translation></message><message><source>Exposure Tolerance (seconds):</source><translation>Belichtungstoleranz (Sekunden):</translation></message><message><source>Extreme Studentized Deviate (ESD)</source><translation>Generalisiertes extremes studentisiertes Residuum (ESD)</translation></message><message><source>FITS</source><translation>FITS</translation></message><message><source>FITS Files</source><translation>FITS-Dateien</translation></message><message><source>FITS Files (*.fit *.fits);;All Files (*)</source><translation>FITS-Dateien (*.fit *.fits);;Alle Dateien (*)</translation></message><message><source>FITS Files (*.fits *.fit *.fts *.fits.gz *.fit.gz *.fz)</source><translation>FITS-Dateien (*.fits *.fit *.fts *.fits.gz *.fit.gz *.fz)</translation></message><message><source>FITS Files (*.fits *.fit *.fz *.xisf *.tif *.tiff *.png *.jpg *.jpeg)</source><translation>FITS-Dateien (*.fits *.fit *.fz *.xisf *.tif *.tiff *.png *.jpg *.jpeg)</translation></message><message><source>FITS Files (*.fits *.fit)</source><translation>FITS-Dateien (*.fits *.fit)</translation></message><message><source>FITS Images (*.fits *.fit);;All Files (*)</source><translation>FITS-Bilder (*.fits *.fit);;Alle Dateien (*)</translation></message><message><source>FOCALLEN</source><translation>Brennweite</translation></message><message><source>FWHM</source><translation>FWHM</translation></message><message><source>FWHM (lower is better)</source><translation>FWHM (niedriger ist besser)</translation></message><message><source>Failed to calibrate frame</source><translation>Frame-Kalibrierung fehlgeschlagen</translation></message><message><source>Failed to load</source><translation>Laden fehlgeschlagen</translation></message><message><source>Failed to load frame</source><translation>Laden des Frames fehlgeschlagen</translation></message><message><source>Failed to load image.</source><translation>Laden des Bildes fehlgeschlagen.</translation></message><message><source>Failed to load session</source><translation>Laden der Sitzung fehlgeschlagen</translation></message><message><source>Failed to load {0}</source><translation>Laden von {0} fehlgeschlagen</translation></message><message><source>Failed to register frame</source><translation>Registrierung des Frames fehlgeschlagen</translation></message><message><source>Failed to save session</source><translation>Speichern der Sitzung fehlgeschlagen</translation></message><message><source>Failed to stack frames</source><translation>Stacken der Frames fehlgeschlagen</translation></message><message><source>Falling back to CPU</source><translation>Fallback auf CPU</translation></message><message><source>Fast (1 pass)</source><translation>Schnell (1 Durchgang)</translation></message><message><source>Fast (AstroAlign)</source><translation>Schnell (AstroAlign)</translation></message><message><source>Fast = single pass; Accurate = 3-pass refinement.</source><translation>Schnell = einziger Durchgang; Genau = 3-Durchgang-Verfeinerung.</translation></message><message><source>Feather</source><translation>Feder</translation></message><message><source>Feather width</source><translation>Federbreite</translation></message><message><source>Feather σ (px):</source><translation>Feder σ (px):</translation></message><message><source>Feature Matching</source><translation>Feature-Matching</translation></message><message><source>File</source><translation>Datei</translation></message><message><source>Filename</source><translation>Dateiname</translation></message><message><source>Fill value</source><translation>Füllwert</translation></message><message><source>Filter</source><translation>Filter</translation></message><message><source>Filter &amp; Exposure</source><translation>Filter &amp; Belichtung</translation></message><message><source>Filter - Exposure - Size</source><translation>Filter - Belichtung - Größe</translation></message><message><source>Filter by score</source><translation>Nach Score filtern</translation></message><message><source>Filter={0}  Exp={1}</source><translation>Filter={0} Bel.={1}</translation></message><message><source>Finalizing...</source><translation>Finalisierung...</translation></message><message><source>First Frame</source><translation>Erster Frame</translation></message><message><source>Flat</source><translation>Flat</translation></message><message><source>Flat Applied: {0}</source><translation>Flat angewendet: {0}</translation></message><message><source>Flat Frames</source><translation>Flat-Frames</translation></message><message><source>Flats</source><translation>Flats</translation></message><message><source>Flipping Image</source><translation>Bild horizontal spiegeln</translation></message><message><source>For OSC dual-band data: SII/OIII → R=SII, G=OIII; Ha/OIII → R=Ha, G=OIII</source><translation>Für OSC-Dual-Band-Daten: SII/OIII → R=SII, G=OIII; Ha/OIII → R=Ha, G=OIII</translation></message><message><source>Found '{0}' with IMAGETYP = {1}
+{1}</translation>
+    </message>
+    <message>
+      <source>Coverage:</source>
+      <translation>Abdeckung:</translation>
+    </message>
+    <message>
+      <source>Create Comet-Only Stack</source>
+      <translation>Nur-Kometen-Stack erstellen</translation>
+    </message>
+    <message>
+      <source>Create Master</source>
+      <translation>Master erstellen</translation>
+    </message>
+    <message>
+      <source>Create Master Bias</source>
+      <translation>Master-Bias erstellen</translation>
+    </message>
+    <message>
+      <source>Create Master Calibration Files</source>
+      <translation>Master-Kalibrierungsdateien erstellen</translation>
+    </message>
+    <message>
+      <source>Create Master Dark</source>
+      <translation>Master-Dark erstellen</translation>
+    </message>
+    <message>
+      <source>Create Master Darks</source>
+      <translation>Master-Darks erstellen</translation>
+    </message>
+    <message>
+      <source>Create Master Flat</source>
+      <translation>Master-Flat erstellen</translation>
+    </message>
+    <message>
+      <source>Create Master Flats</source>
+      <translation>Master-Flats erstellen</translation>
+    </message>
+    <message>
+      <source>Create Masters</source>
+      <translation>Master erstellen</translation>
+    </message>
+    <message>
+      <source>Create Stars+Comet Blend</source>
+      <translation>Sterne+Kometen Blend erstellen</translation>
+    </message>
+    <message>
+      <source>Create comet-aligned version</source>
+      <translation>Kometen-ausgerichtete Version erstellen</translation>
+    </message>
+    <message>
+      <source>Create log file</source>
+      <translation>Log-Datei erstellen</translation>
+    </message>
+    <message>
+      <source>Create star-aligned version</source>
+      <translation>Sternen-ausgerichtete Version erstellen</translation>
+    </message>
+    <message>
+      <source>Creating master bias...</source>
+      <translation>Master-Bias wird erstellt...</translation>
+    </message>
+    <message>
+      <source>Creating master dark...</source>
+      <translation>Master-Dark wird erstellt...</translation>
+    </message>
+    <message>
+      <source>Creating master flat...</source>
+      <translation>Master-Flat wird erstellt...</translation>
+    </message>
+    <message>
+      <source>Crop Method:</source>
+      <translation>Beschnittmethode:</translation>
+    </message>
+    <message>
+      <source>Crop Padding (px):</source>
+      <translation>Beschnitt-Padding (px):</translation>
+    </message>
+    <message>
+      <source>Crop final image to pixels covered by ≥ Coverage % of frames</source>
+      <translation>Finales Bild auf Pixel beschneiden, die von ≥ Abdeckung % der Frames bedeckt sind</translation>
+    </message>
+    <message>
+      <source>Crop to common area</source>
+      <translation>Auf gemeinsamen Bereich beschneiden</translation>
+    </message>
+    <message>
+      <source>Cross Correlation</source>
+      <translation>Kreuzkorrelation</translation>
+    </message>
+    <message>
+      <source>Current Status: {0}</source>
+      <translation>Aktueller Status: {0}</translation>
+    </message>
+    <message>
+      <source>Current Step</source>
+      <translation>Aktueller Schritt</translation>
+    </message>
+    <message>
+      <source>Current frame</source>
+      <translation>Aktueller Frame</translation>
+    </message>
+    <message>
+      <source>Current stacking settings saved to profile '{0}'.</source>
+      <translation>Aktuelle Stacking-Einstellungen im Profil '{0}' gespeichert.</translation>
+    </message>
+    <message>
+      <source>Custom</source>
+      <translation>Benutzerdefiniert</translation>
+    </message>
+    <message>
+      <source>Custom Weight</source>
+      <translation>Benutzerdefinierte Gewichtung</translation>
+    </message>
+    <message>
+      <source>Custom directory</source>
+      <translation>Benutzerdefiniertes Verzeichnis</translation>
+    </message>
+    <message>
+      <source>Custom matrix</source>
+      <translation>Benutzerdefinierte Matrix</translation>
+    </message>
+    <message>
+      <source>DCB</source>
+      <translation>DCB</translation>
+    </message>
+    <message>
+      <source>DEBUG: File '{0}' does not exist on disk.</source>
+      <translation>DEBUG: Datei '{0}' existiert nicht auf der Festplatte.</translation>
+    </message>
+    <message>
+      <source>DEC</source>
+      <translation>DEK</translation>
+    </message>
+    <message>
+      <source>Dark</source>
+      <translation>Dark</translation>
+    </message>
+    <message>
+      <source>Dark Flat</source>
+      <translation>Dark Flat</translation>
+    </message>
+    <message>
+      <source>Dark Flats</source>
+      <translation>Dark Flats</translation>
+    </message>
+    <message>
+      <source>Dark Frames</source>
+      <translation>Dark-Frames</translation>
+    </message>
+    <message>
+      <source>Dark Subtracted: {0}</source>
+      <translation>Dark subtrahiert: {0}</translation>
+    </message>
+    <message>
+      <source>DarkStar</source>
+      <translation>DarkStar</translation>
+    </message>
+    <message>
+      <source>Darks</source>
+      <translation>Darks</translation>
+    </message>
+    <message>
+      <source>Date</source>
+      <translation>Datum</translation>
+    </message>
+    <message>
+      <source>Dead column detection</source>
+      <translation>Tote-Spalten-Erkennung</translation>
+    </message>
+    <message>
+      <source>Dead row detection</source>
+      <translation>Tote-Zeilen-Erkennung</translation>
+    </message>
+    <message>
+      <source>Debayer</source>
+      <translation>Debayer</translation>
+    </message>
+    <message>
+      <source>Debayer Method</source>
+      <translation>Debayer-Methode</translation>
+    </message>
+    <message>
+      <source>Debayer Settings</source>
+      <translation>Debayer-Einstellungen</translation>
+    </message>
+    <message>
+      <source>Debayer before calibration</source>
+      <translation>Debayer vor Kalibrierung</translation>
+    </message>
+    <message>
+      <source>Debug Mode</source>
+      <translation>Debug-Modus</translation>
+    </message>
+    <message>
+      <source>Dec rate (arcsec/min)</source>
+      <translation>Dek-Rate (Bogensek/Min)</translation>
+    </message>
+    <message>
+      <source>Deconvolution Iterations:</source>
+      <translation>Dekonvolutions-Iterationen:</translation>
+    </message>
+    <message>
+      <source>Deconvolution Strength:</source>
+      <translation>Dekonvolutions-Stärke:</translation>
+    </message>
+    <message>
+      <source>Deconvolving '{0}' ({1} frames)…</source>
+      <translation>Dekonvolviere '{0}' ({1} Frames)…</translation>
+    </message>
+    <message>
+      <source>Default</source>
+      <translation>Standard</translation>
+    </message>
+    <message>
+      <source>Defect Map Files</source>
+      <translation>Defektkarten-Dateien</translation>
+    </message>
+    <message>
+      <source>Defect map</source>
+      <translation>Defektkarte</translation>
+    </message>
+    <message>
+      <source>Delete</source>
+      <translation>Löschen</translation>
+    </message>
+    <message>
+      <source>Delete profile</source>
+      <translation>Profil löschen</translation>
+    </message>
+    <message>
+      <source>Delete stacking profile '{0}'?</source>
+      <translation>Stacking-Profil '{0}' löschen?</translation>
+    </message>
+    <message>
+      <source>Detect bad columns</source>
+      <translation>Fehlerhafte Spalten erkennen</translation>
+    </message>
+    <message>
+      <source>Detect bad rows</source>
+      <translation>Fehlerhafte Zeilen erkennen</translation>
+    </message>
+    <message>
+      <source>Detect dithering</source>
+      <translation>Dithering erkennen</translation>
+    </message>
+    <message>
+      <source>Detected backend:</source>
+      <translation>Erkanntes Backend:</translation>
+    </message>
+    <message>
+      <source>Detecting stars...</source>
+      <translation>Sterne werden erkannt...</translation>
+    </message>
+    <message>
+      <source>Detection scale</source>
+      <translation>Erkennungsskala</translation>
+    </message>
+    <message>
+      <source>Detection threshold</source>
+      <translation>Erkennungsschwelle</translation>
+    </message>
+    <message>
+      <source>Dilate (+px):</source>
+      <translation>Dilatieren (+px):</translation>
+    </message>
+    <message>
+      <source>Distortion / Transform</source>
+      <translation>Distorsion / Transformation</translation>
+    </message>
+    <message>
+      <source>Distortion correction</source>
+      <translation>Distorsionskorrektur</translation>
+    </message>
+    <message>
+      <source>Dithering</source>
+      <translation>Dithering</translation>
+    </message>
+    <message>
+      <source>Dithering pattern</source>
+      <translation>Dithering-Muster</translation>
+    </message>
+    <message>
+      <source>Dithering scale</source>
+      <translation>Dithering-Skala</translation>
+    </message>
+    <message>
+      <source>Divide (flat-like)</source>
+      <translation>Dividieren (Flat-ähnlich)</translation>
+    </message>
+    <message>
+      <source>Divide gain limits:</source>
+      <translation>Limit-Gewinn dividieren:</translation>
+    </message>
+    <message>
+      <source>Double-click to preview</source>
+      <translation>Doppelklick für Vorschau</translation>
+    </message>
+    <message>
+      <source>Downloads PyTorch with the right backend (CUDA/MPS/CPU). One-time per machine.</source>
+      <translation>Lädt PyTorch mit dem richtigen Backend (CUDA/MPS/CPU) herunter. Einmalig pro Maschine.</translation>
+    </message>
+    <message>
+      <source>Downsample (AREA):</source>
+      <translation>Downsample (AREA):</translation>
+    </message>
+    <message>
+      <source>Downsample:</source>
+      <translation>Downsample:</translation>
+    </message>
+    <message>
+      <source>Drag and drop files here</source>
+      <translation>Dateien hierher ziehen und ablegen</translation>
+    </message>
+    <message>
+      <source>Drizzle</source>
+      <translation>Drizzle</translation>
+    </message>
+    <message>
+      <source>Drizzle Integration</source>
+      <translation>Drizzle-Integration</translation>
+    </message>
+    <message>
+      <source>Drizzle Kernel:</source>
+      <translation>Drizzle-Kernel:</translation>
+    </message>
+    <message>
+      <source>Drizzle Scale:</source>
+      <translation>Drizzle-Skala:</translation>
+    </message>
+    <message>
+      <source>Drizzle Settings</source>
+      <translation>Drizzle-Einstellungen</translation>
+    </message>
+    <message>
+      <source>Drizzle cfg → scale={0}×, pixfrac={1:.3f}, kernel={2}</source>
+      <translation>Drizzle-Konfig → Skala={0}×, Pixfrac={1:.3f}, Kernel={2}</translation>
+    </message>
+    <message>
+      <source>Drizzle: False</source>
+      <translation>Drizzle: Aus</translation>
+    </message>
+    <message>
+      <source>Drizzle: True, Scale: {0:g}x, Drop: {1:.2f}</source>
+      <translation>Drizzle: Ein, Skala: {0:g}x, Drop: {1:.2f}</translation>
+    </message>
+    <message>
+      <source>Drizzle: True, Scale: {0}, Drop: {1:.2f}</source>
+      <translation>Drizzle: Ein, Skala: {0}, Drop: {1:.2f}</translation>
+    </message>
+    <message>
+      <source>Drizzle: {0}</source>
+      <translation>Drizzle: {0}</translation>
+    </message>
+    <message>
+      <source>Drizzle: {0}, Scale: {1}, Drop:{2}</source>
+      <translation>Drizzle: {0}, Skala: {1}, Drop:{2}</translation>
+    </message>
+    <message>
+      <source>Drop Fraction (pixfrac):</source>
+      <translation>Drop-Fraktion (pixfrac):</translation>
+    </message>
+    <message>
+      <source>Drop Shrink:</source>
+      <translation>Drop-Schrumpfung:</translation>
+    </message>
+    <message>
+      <source>Drop Size (Pixfrac)</source>
+      <translation>Drop-Größe (Pixfrac)</translation>
+    </message>
+    <message>
+      <source>EGAIN</source>
+      <translation>EGAIN</translation>
+    </message>
+    <message>
+      <source>EQUINOX</source>
+      <translation>EQUINOX</translation>
+    </message>
+    <message>
+      <source>ESD threshold:</source>
+      <translation>ESD-Schwelle:</translation>
+    </message>
+    <message>
+      <source>EXPTIME</source>
+      <translation>Belichtungszeit</translation>
+    </message>
+    <message>
+      <source>Eccentricity</source>
+      <translation>Exzentrizität</translation>
+    </message>
+    <message>
+      <source>Elapsed time</source>
+      <translation>Verstrichene Zeit</translation>
+    </message>
+    <message>
+      <source>Ellipse scale:</source>
+      <translation>Ellipsenskala:</translation>
+    </message>
+    <message>
+      <source>Enable ABE Pre-Processing</source>
+      <translation>ABE-Vorverarbeitung aktivieren</translation>
+    </message>
+    <message>
+      <source>Enable Auto Crop</source>
+      <translation>Auto-Beschnitt aktivieren</translation>
+    </message>
+    <message>
+      <source>Enable Comet Stacking</source>
+      <translation>Kometen-Stacking aktivieren</translation>
+    </message>
+    <message>
+      <source>Enable Cosmetic Correction</source>
+      <translation>Kosmetische Korrektur aktivieren</translation>
+    </message>
+    <message>
+      <source>Enable Drizzle</source>
+      <translation>Drizzle aktivieren</translation>
+    </message>
+    <message>
+      <source>Enable GPU Acceleration</source>
+      <translation>GPU-Beschleunigung aktivieren</translation>
+    </message>
+    <message>
+      <source>Enable GPU/MPS via PyTorch when supported; falls back to CPU automatically.</source>
+      <translation>GPU/MPS über PyTorch aktivieren, wenn unterstützt; automatischer Fallback auf CPU.</translation>
+    </message>
+    <message>
+      <source>Enable MF Deconvolution</source>
+      <translation>MF-Dekonvolution aktivieren</translation>
+    </message>
+    <message>
+      <source>Enable MFDeconv during integration</source>
+      <translation>MFDeconv während Integration aktivieren</translation>
+    </message>
+    <message>
+      <source>Enable MPS (Apple Silicon)</source>
+      <translation>MPS aktivieren (Apple Silicon)</translation>
+    </message>
+    <message>
+      <source>Enable Registration</source>
+      <translation>Registrierung aktivieren</translation>
+    </message>
+    <message>
+      <source>Enable Star Trails</source>
+      <translation>Sternspuren aktivieren</translation>
+    </message>
+    <message>
+      <source>Enable advanced cosmetic tuning</source>
+      <translation>Erweitertes kosmetisches Tuning aktivieren</translation>
+    </message>
+    <message>
+      <source>Enable comet mode</source>
+      <translation>Kometenmodus aktivieren</translation>
+    </message>
+    <message>
+      <source>Enable cosmetic correction</source>
+      <translation>Kosmetische Korrektur aktivieren</translation>
+    </message>
+    <message>
+      <source>Enable local normalization</source>
+      <translation>Lokale Normalisierung aktivieren</translation>
+    </message>
+    <message>
+      <source>Enable mosaic mode</source>
+      <translation>Mosaikmodus aktivieren</translation>
+    </message>
+    <message>
+      <source>Enable scoring</source>
+      <translation>Scoring aktivieren</translation>
+    </message>
+    <message>
+      <source>Enter new group name:</source>
+      <translation>Neuen Gruppennamen eingeben:</translation>
+    </message>
+    <message>
+      <source>Enter session label (e.g., Night1, RedFilterSet2):</source>
+      <translation>Sitzungslabel eingeben (z.B. Nacht1, Rotfiltersatz2):</translation>
+    </message>
+    <message>
+      <source>Enter session name:</source>
+      <translation>Sitzungsnamen eingeben:</translation>
+    </message>
+    <message>
+      <source>Error</source>
+      <translation>Fehler</translation>
+    </message>
+    <message>
+      <source>Error converting {0}: {1}</source>
+      <translation>Fehler beim Konvertieren von {0}: {1}</translation>
+    </message>
+    <message>
+      <source>Error: {0}</source>
+      <translation>Fehler: {0}</translation>
+    </message>
+    <message>
+      <source>Estimated remaining</source>
+      <translation>Geschätzt verbleibend</translation>
+    </message>
+    <message>
+      <source>Exclude from Stack</source>
+      <translation>Vom Stack ausschließen</translation>
+    </message>
+    <message>
+      <source>Exclude from stacking</source>
+      <translation>Vom Stacking ausschließen</translation>
+    </message>
+    <message>
+      <source>Expected dither (pixels)</source>
+      <translation>Erwarteter Dither (Pixel)</translation>
+    </message>
+    <message>
+      <source>Export Settings</source>
+      <translation>Einstellungen exportieren</translation>
+    </message>
+    <message>
+      <source>Exposure</source>
+      <translation>Belichtung</translation>
+    </message>
+    <message>
+      <source>Exposure Time</source>
+      <translation>Belichtungszeit</translation>
+    </message>
+    <message>
+      <source>Exposure Tolerance (sec):</source>
+      <translation>Belichtungstoleranz (Sek):</translation>
+    </message>
+    <message>
+      <source>Exposure Tolerance (seconds):</source>
+      <translation>Belichtungstoleranz (Sekunden):</translation>
+    </message>
+    <message>
+      <source>Extreme Studentized Deviate (ESD)</source>
+      <translation>Generalisiertes extremes studentisiertes Residuum (ESD)</translation>
+    </message>
+    <message>
+      <source>FITS</source>
+      <translation>FITS</translation>
+    </message>
+    <message>
+      <source>FITS Files</source>
+      <translation>FITS-Dateien</translation>
+    </message>
+    <message>
+      <source>FITS Files (*.fit *.fits);;All Files (*)</source>
+      <translation>FITS-Dateien (*.fit *.fits);;Alle Dateien (*)</translation>
+    </message>
+    <message>
+      <source>FITS Files (*.fits *.fit *.fts *.fits.gz *.fit.gz *.fz)</source>
+      <translation>FITS-Dateien (*.fits *.fit *.fts *.fits.gz *.fit.gz *.fz)</translation>
+    </message>
+    <message>
+      <source>FITS Files (*.fits *.fit *.fz *.xisf *.tif *.tiff *.png *.jpg *.jpeg)</source>
+      <translation>FITS-Dateien (*.fits *.fit *.fz *.xisf *.tif *.tiff *.png *.jpg *.jpeg)</translation>
+    </message>
+    <message>
+      <source>FITS Files (*.fits *.fit)</source>
+      <translation>FITS-Dateien (*.fits *.fit)</translation>
+    </message>
+    <message>
+      <source>FITS Images (*.fits *.fit);;All Files (*)</source>
+      <translation>FITS-Bilder (*.fits *.fit);;Alle Dateien (*)</translation>
+    </message>
+    <message>
+      <source>FOCALLEN</source>
+      <translation>Brennweite</translation>
+    </message>
+    <message>
+      <source>FWHM</source>
+      <translation>FWHM</translation>
+    </message>
+    <message>
+      <source>FWHM (lower is better)</source>
+      <translation>FWHM (niedriger ist besser)</translation>
+    </message>
+    <message>
+      <source>Failed to calibrate frame</source>
+      <translation>Frame-Kalibrierung fehlgeschlagen</translation>
+    </message>
+    <message>
+      <source>Failed to load</source>
+      <translation>Laden fehlgeschlagen</translation>
+    </message>
+    <message>
+      <source>Failed to load frame</source>
+      <translation>Laden des Frames fehlgeschlagen</translation>
+    </message>
+    <message>
+      <source>Failed to load image.</source>
+      <translation>Laden des Bildes fehlgeschlagen.</translation>
+    </message>
+    <message>
+      <source>Failed to load session</source>
+      <translation>Laden der Sitzung fehlgeschlagen</translation>
+    </message>
+    <message>
+      <source>Failed to load {0}</source>
+      <translation>Laden von {0} fehlgeschlagen</translation>
+    </message>
+    <message>
+      <source>Failed to register frame</source>
+      <translation>Registrierung des Frames fehlgeschlagen</translation>
+    </message>
+    <message>
+      <source>Failed to save session</source>
+      <translation>Speichern der Sitzung fehlgeschlagen</translation>
+    </message>
+    <message>
+      <source>Failed to stack frames</source>
+      <translation>Stacken der Frames fehlgeschlagen</translation>
+    </message>
+    <message>
+      <source>Falling back to CPU</source>
+      <translation>Fallback auf CPU</translation>
+    </message>
+    <message>
+      <source>Fast (1 pass)</source>
+      <translation>Schnell (1 Durchgang)</translation>
+    </message>
+    <message>
+      <source>Fast (AstroAlign)</source>
+      <translation>Schnell (AstroAlign)</translation>
+    </message>
+    <message>
+      <source>Fast = single pass; Accurate = 3-pass refinement.</source>
+      <translation>Schnell = einziger Durchgang; Genau = 3-Durchgang-Verfeinerung.</translation>
+    </message>
+    <message>
+      <source>Feather</source>
+      <translation>Feder</translation>
+    </message>
+    <message>
+      <source>Feather width</source>
+      <translation>Federbreite</translation>
+    </message>
+    <message>
+      <source>Feather σ (px):</source>
+      <translation>Feder σ (px):</translation>
+    </message>
+    <message>
+      <source>Feature Matching</source>
+      <translation>Feature-Matching</translation>
+    </message>
+    <message>
+      <source>File</source>
+      <translation>Datei</translation>
+    </message>
+    <message>
+      <source>Filename</source>
+      <translation>Dateiname</translation>
+    </message>
+    <message>
+      <source>Fill value</source>
+      <translation>Füllwert</translation>
+    </message>
+    <message>
+      <source>Filter</source>
+      <translation>Filter</translation>
+    </message>
+    <message>
+      <source>Filter &amp; Exposure</source>
+      <translation>Filter &amp; Belichtung</translation>
+    </message>
+    <message>
+      <source>Filter - Exposure - Size</source>
+      <translation>Filter - Belichtung - Größe</translation>
+    </message>
+    <message>
+      <source>Filter by score</source>
+      <translation>Nach Score filtern</translation>
+    </message>
+    <message>
+      <source>Filter={0}  Exp={1}</source>
+      <translation>Filter={0} Bel.={1}</translation>
+    </message>
+    <message>
+      <source>Finalizing...</source>
+      <translation>Finalisierung...</translation>
+    </message>
+    <message>
+      <source>First Frame</source>
+      <translation>Erster Frame</translation>
+    </message>
+    <message>
+      <source>Flat</source>
+      <translation>Flat</translation>
+    </message>
+    <message>
+      <source>Flat Applied: {0}</source>
+      <translation>Flat angewendet: {0}</translation>
+    </message>
+    <message>
+      <source>Flat Frames</source>
+      <translation>Flat-Frames</translation>
+    </message>
+    <message>
+      <source>Flats</source>
+      <translation>Flats</translation>
+    </message>
+    <message>
+      <source>Flipping Image</source>
+      <translation>Bild horizontal spiegeln</translation>
+    </message>
+    <message>
+      <source>For OSC dual-band data: SII/OIII → R=SII, G=OIII; Ha/OIII → R=Ha, G=OIII</source>
+      <translation>Für OSC-Dual-Band-Daten: SII/OIII → R=SII, G=OIII; Ha/OIII → R=Ha, G=OIII</translation>
+    </message>
+    <message>
+      <source>Found '{0}' with IMAGETYP = {1}
 which looks like **{2}**, not {3}.
 
-What would you like to do?</source><translation>Trovato '{0}' con IMAGETYP = {1}
+What would you like to do?</source>
+      <translation>Trovato '{0}' con IMAGETYP = {1}
 che sembra **{2}**, non {3}.
 
-Was möchten Sie tun?</translation></message><message><source>Fraction trimmed on each end before averaging.</source><translation>An jedem Ende beschnittener Anteil vor der Mittelung.</translation></message><message><source>Frame Filtering</source><translation>Frame-Filterung</translation></message><message><source>Frame Scoring</source><translation>Frame-Scoring</translation></message><message><source>Frame dimensions mismatch</source><translation>Frame-Dimensionen stimmen nicht überein</translation></message><message><source>Frames per group:
-</source><translation>Frames pro Gruppe:
-</translation></message><message><source>Frames processed</source><translation>Frames verarbeitet</translation></message><message><source>From WCS</source><translation>Von WCS</translation></message><message><source>GBRG</source><translation>GBRG</translation></message><message><source>GPU Device:</source><translation>GPU-Gerät:</translation></message><message><source>GPU acceleration not available</source><translation>GPU-Beschleunigung nicht verfügbar</translation></message><message><source>GPU device</source><translation>GPU-Gerät</translation></message><message><source>GPU still not being used?</source><translation>GPU wird immer noch nicht genutzt?</translation></message><message><source>GRBG</source><translation>GRBG</translation></message><message><source>Gain</source><translation>Gain</translation></message><message><source>Gain Clip Max:</source><translation>Gain-Clip Max:</translation></message><message><source>Gain Clip Min:</source><translation>Gain-Clip Min:</translation></message><message><source>Gaussian</source><translation>Gauß</translation></message><message><source>Gaussian σ (px):</source><translation>Gauß σ (px):</translation></message><message><source>Generalized ESD</source><translation>Generalisierter ESD</translation></message><message><source>Generalized Extreme Studentized Deviate</source><translation>Generalisiertes extremes studentisiertes Residuum</translation></message><message><source>Generate defect map</source><translation>Defektkarte generieren</translation></message><message><source>Generate panel stacks</source><translation>Panel-Stacks generieren</translation></message><message><source>Gradient Removal (Pre-Integration)</source><translation>Gradientenentfernung (Pre-Integration)</translation></message><message><source>Gradient matching</source><translation>Gradientenabgleich</translation></message><message><source>Grid size</source><translation>Rastergröße</translation></message><message><source>Group '{0}' has {1} file(s) after filtering.</source><translation>Gruppe '{0}' hat {1} Datei(en) nach dem Filtern.</translation></message><message><source>Group By</source><translation>Gruppieren nach</translation></message><message><source>Group Name:</source><translation>Gruppenname:</translation></message><message><source>Group by dither position</source><translation>Nach Dither-Position gruppieren</translation></message><message><source>H:</source><translation>H:</translation></message><message><source>Half Size</source><translation>Halbe Größe</translation></message><message><source>Height</source><translation>Höhe</translation></message><message><source>High Octane</source><translation>High Octane</translation></message><message><source>High-Octane (Let 'er rip)</source><translation>High-Octane (Vollgas)</translation></message><message><source>High-Octane (Let ’er rip)</source><translation>High-Octane (Vollgas)</translation></message><message><source>High-clip k / Percentile p:</source><translation>High-Clip k / Perzentil p:</translation></message><message><source>High/Low σ used by sigma-based rejection.</source><translation>Hohes/Niedriges σ, das von der Sigma-basierten Rejektion verwendet wird.</translation></message><message><source>High:</source><translation>Hoch:</translation></message><message><source>Homography (full)</source><translation>Homographie (voll)</translation></message><message><source>Homography (projective)</source><translation>Homographie (projektiv)</translation></message><message><source>Hot Pixel Removal</source><translation>Hotpixel-Entfernung</translation></message><message><source>Hot Threshold:</source><translation>Hot-Schwellenwert:</translation></message><message><source>Hot pixel detection</source><translation>Hotpixel-Erkennung</translation></message><message><source>Hot pixel replacement</source><translation>Hotpixel-Ersetzung</translation></message><message><source>Hot pixel threshold</source><translation>Hotpixel-Schwellenwert</translation></message><message><source>Hot pixel threshold (σ)</source><translation>Hotpixel-Schwellenwert (σ)</translation></message><message><source>Hot σ:</source><translation>Hot σ:</translation></message><message><source>Huber δ sets the cutoff between 'quadratic' (treat as normal) and 'linear' (treat as outlier) behavior.
+Was möchten Sie tun?</translation>
+    </message>
+    <message>
+      <source>Fraction trimmed on each end before averaging.</source>
+      <translation>An jedem Ende beschnittener Anteil vor der Mittelung.</translation>
+    </message>
+    <message>
+      <source>Frame Filtering</source>
+      <translation>Frame-Filterung</translation>
+    </message>
+    <message>
+      <source>Frame Scoring</source>
+      <translation>Frame-Scoring</translation>
+    </message>
+    <message>
+      <source>Frame dimensions mismatch</source>
+      <translation>Frame-Dimensionen stimmen nicht überein</translation>
+    </message>
+    <message>
+      <source>Frames per group:
+</source>
+      <translation>Frames pro Gruppe:
+</translation>
+    </message>
+    <message>
+      <source>Frames processed</source>
+      <translation>Frames verarbeitet</translation>
+    </message>
+    <message>
+      <source>From WCS</source>
+      <translation>Von WCS</translation>
+    </message>
+    <message>
+      <source>GBRG</source>
+      <translation>GBRG</translation>
+    </message>
+    <message>
+      <source>GPU Device:</source>
+      <translation>GPU-Gerät:</translation>
+    </message>
+    <message>
+      <source>GPU acceleration not available</source>
+      <translation>GPU-Beschleunigung nicht verfügbar</translation>
+    </message>
+    <message>
+      <source>GPU device</source>
+      <translation>GPU-Gerät</translation>
+    </message>
+    <message>
+      <source>GPU still not being used?</source>
+      <translation>GPU wird immer noch nicht genutzt?</translation>
+    </message>
+    <message>
+      <source>GRBG</source>
+      <translation>GRBG</translation>
+    </message>
+    <message>
+      <source>Gain</source>
+      <translation>Gain</translation>
+    </message>
+    <message>
+      <source>Gain Clip Max:</source>
+      <translation>Gain-Clip Max:</translation>
+    </message>
+    <message>
+      <source>Gain Clip Min:</source>
+      <translation>Gain-Clip Min:</translation>
+    </message>
+    <message>
+      <source>Gaussian</source>
+      <translation>Gauß</translation>
+    </message>
+    <message>
+      <source>Gaussian σ (px):</source>
+      <translation>Gauß σ (px):</translation>
+    </message>
+    <message>
+      <source>Generalized ESD</source>
+      <translation>Generalisierter ESD</translation>
+    </message>
+    <message>
+      <source>Generalized Extreme Studentized Deviate</source>
+      <translation>Generalisiertes extremes studentisiertes Residuum</translation>
+    </message>
+    <message>
+      <source>Generate defect map</source>
+      <translation>Defektkarte generieren</translation>
+    </message>
+    <message>
+      <source>Generate panel stacks</source>
+      <translation>Panel-Stacks generieren</translation>
+    </message>
+    <message>
+      <source>Gradient Removal (Pre-Integration)</source>
+      <translation>Gradientenentfernung (Pre-Integration)</translation>
+    </message>
+    <message>
+      <source>Gradient matching</source>
+      <translation>Gradientenabgleich</translation>
+    </message>
+    <message>
+      <source>Grid size</source>
+      <translation>Rastergröße</translation>
+    </message>
+    <message>
+      <source>Group '{0}' has {1} file(s) after filtering.</source>
+      <translation>Gruppe '{0}' hat {1} Datei(en) nach dem Filtern.</translation>
+    </message>
+    <message>
+      <source>Group By</source>
+      <translation>Gruppieren nach</translation>
+    </message>
+    <message>
+      <source>Group Name:</source>
+      <translation>Gruppenname:</translation>
+    </message>
+    <message>
+      <source>Group by dither position</source>
+      <translation>Nach Dither-Position gruppieren</translation>
+    </message>
+    <message>
+      <source>H:</source>
+      <translation>H:</translation>
+    </message>
+    <message>
+      <source>Half Size</source>
+      <translation>Halbe Größe</translation>
+    </message>
+    <message>
+      <source>Height</source>
+      <translation>Höhe</translation>
+    </message>
+    <message>
+      <source>High Octane</source>
+      <translation>High Octane</translation>
+    </message>
+    <message>
+      <source>High-Octane (Let 'er rip)</source>
+      <translation>High-Octane (Vollgas)</translation>
+    </message>
+    <message>
+      <source>High-Octane (Let ’er rip)</source>
+      <translation>High-Octane (Vollgas)</translation>
+    </message>
+    <message>
+      <source>High-clip k / Percentile p:</source>
+      <translation>High-Clip k / Perzentil p:</translation>
+    </message>
+    <message>
+      <source>High/Low σ used by sigma-based rejection.</source>
+      <translation>Hohes/Niedriges σ, das von der Sigma-basierten Rejektion verwendet wird.</translation>
+    </message>
+    <message>
+      <source>High:</source>
+      <translation>Hoch:</translation>
+    </message>
+    <message>
+      <source>Homography (full)</source>
+      <translation>Homographie (voll)</translation>
+    </message>
+    <message>
+      <source>Homography (projective)</source>
+      <translation>Homographie (projektiv)</translation>
+    </message>
+    <message>
+      <source>Hot Pixel Removal</source>
+      <translation>Hotpixel-Entfernung</translation>
+    </message>
+    <message>
+      <source>Hot Threshold:</source>
+      <translation>Hot-Schwellenwert:</translation>
+    </message>
+    <message>
+      <source>Hot pixel detection</source>
+      <translation>Hotpixel-Erkennung</translation>
+    </message>
+    <message>
+      <source>Hot pixel replacement</source>
+      <translation>Hotpixel-Ersetzung</translation>
+    </message>
+    <message>
+      <source>Hot pixel threshold</source>
+      <translation>Hotpixel-Schwellenwert</translation>
+    </message>
+    <message>
+      <source>Hot pixel threshold (σ)</source>
+      <translation>Hotpixel-Schwellenwert (σ)</translation>
+    </message>
+    <message>
+      <source>Hot σ:</source>
+      <translation>Hot σ:</translation>
+    </message>
+    <message>
+      <source>Huber δ sets the cutoff between 'quadratic' (treat as normal) and 'linear' (treat as outlier) behavior.
 • |residual| ≤ δ → quadratic (more aggressive corrections)
 • |residual| &gt; δ → linear (gentler, more robust)
 Negative values mean 'scale by RMS': e.g., δ = -2 uses 2×RMS.
 Smaller |δ| (closer to 0) → more pixels counted as outliers → more conservative.
-Examples: κ=1.1 &amp; δ=-0.7 = gentle; κ=2 &amp; δ=-2 = more aggressive.</source><translation>Huber δ setzt die Grenze zwischen 'quadratischem' (als normal behandeln) und 'linearem' (als Ausreißer behandeln) Verhalten.
+Examples: κ=1.1 &amp; δ=-0.7 = gentle; κ=2 &amp; δ=-2 = more aggressive.</source>
+      <translation>Huber δ setzt die Grenze zwischen 'quadratischem' (als normal behandeln) und 'linearem' (als Ausreißer behandeln) Verhalten.
 • |Residuum| ≤ δ → quadratisch (aggressivere Korrekturen)
 • |Residuum| &gt; δ → linear (sanfter, robuster)
 Negative Werte bedeuten 'Skalierung nach RMS': z. B. verwendet δ = -2 den Wert 2×RMS.
 Kleineres |δ| (näher an 0) → mehr Pixel werden als Ausreißer gezählt → konservativer.
-Beispiele: κ=1.1 &amp; δ=-0.7 = sanft; κ=2 &amp; δ=-2 = aggressiver.</translation></message><message><source>Huber δ sets the cutoff between ‘quadratic’ (treat as normal) and ‘linear’ (treat as outlier) behavior.
+Beispiele: κ=1.1 &amp; δ=-0.7 = sanft; κ=2 &amp; δ=-2 = aggressiver.</translation>
+    </message>
+    <message>
+      <source>Huber δ sets the cutoff between ‘quadratic’ (treat as normal) and ‘linear’ (treat as outlier) behavior.
 • |residual| ≤ δ → quadratic (more aggressive corrections)
 • |residual| &gt; δ → linear (gentler, more robust)
 Negative values mean ‘scale by RMS’: e.g., δ = -2 uses 2×RMS.
 Smaller |δ| (closer to 0) → more pixels counted as outliers → more conservative.
-Examples: κ=1.1 &amp; δ=-0.7 = gentle; κ=2 &amp; δ=-2 = more aggressive.</source><translation>Huber δ setzt die Grenze zwischen ‚quadratischem‘ (als normal behandeln) und ‚linearem‘ (als Ausreißer behandeln) Verhalten.
+Examples: κ=1.1 &amp; δ=-0.7 = gentle; κ=2 &amp; δ=-2 = more aggressive.</source>
+      <translation>Huber δ setzt die Grenze zwischen ‚quadratischem‘ (als normal behandeln) und ‚linearem‘ (als Ausreißer behandeln) Verhalten.
 • |Residuum| ≤ δ → quadratisch (aggressivere Korrekturen)
 • |Residuum| &gt; δ → linear (sanfter, robuster)
 Negative Werte bedeuten ‚Skalierung nach RMS‘: z. B. verwendet δ = -2 den Wert 2×RMS.
 Kleineres |δ| (näher an 0) → mehr Pixel werden als Ausreißer gezählt → konservativer.
-Beispiele: κ=1.1 &amp; δ=-0.7 = sanft; κ=2 &amp; δ=-2 = aggressiver.</translation></message><message><source>Huber δ:</source><translation>Huber δ:</translation></message><message><source>IMAGETYP</source><translation>Bildtyp</translation></message><message><source>INSTRUME</source><translation>Instrument</translation></message><message><source>IQR Clipping</source><translation>IQR Clipping</translation></message><message><source>ISO</source><translation>ISO</translation></message><message><source>If GPU still not being used — click for fix steps</source><translation>Wenn die GPU immer noch nicht verwendet wird — klicken Sie für Korrektur-Schritte</translation></message><message><source>If checked, the best measured frame is accepted automatically.</source><translation>Wenn aktiviert, wird das am besten gemessene Bild automatisch akzeptiert.</translation></message><message><source>If enabled, saves the seed and every iteration image into a subfolder next to the final output.</source><translation>Wenn aktiviert, werden der Seed und jedes Iterationsbild in einem Unterordner neben der finalen Ausgabe gespeichert.</translation></message><message><source>Image Files</source><translation>Bilddateien</translation></message><message><source>Image Integration</source><translation>Bildintegration</translation></message><message><source>Images (*.fit *.fits *.tif *.tiff *.png *.jpg *.jpeg)</source><translation>Bilder (*.fit *.fits *.tif *.tiff *.png *.jpg *.jpeg)</translation></message><message><source>Import Settings</source><translation>Einstellungen importieren</translation></message><message><source>Important: GPU stacking requires both CUDA and PyTorch-GPU.</source><translation>Wichtig: GPU-Stacking erfordert sowohl CUDA als auch PyTorch-GPU.</translation></message><message><source>Include in Stack</source><translation>In Stack einbeziehen</translation></message><message><source>Include in stacking</source><translation>In Stacking einbeziehen</translation></message><message><source>Info</source><translation>Info</translation></message><message><source>Install PyTorch (CUDA)</source><translation>PyTorch (CUDA) installieren</translation></message><message><source>Install/Update GPU Acceleration…</source><translation>GPU-Beschleunigung installieren/aktualisieren…</translation></message><message><source>Installing GPU Acceleration</source><translation>GPU-Beschleunigung wird installiert</translation></message><message><source>Installing NVIDIA CUDA for Stacking Suite</source><translation>NVIDIA CUDA für Stacking Suite wird installiert</translation></message><message><source>Insufficient frames for stacking</source><translation>Unzureichend Bilder für das Stacking</translation></message><message><source>Integrate Only</source><translation>Nur Integrieren</translation></message><message><source>Integrate Previously Registered Images</source><translation>Zuvor registrierte Bilder integrieren</translation></message><message><source>Integrating comet tile {0}…</source><translation>Kometen-Kachel {0} wird integriert…</translation></message><message><source>Integrating tile {0}/{1} [y:{2}:{3} x:{4}:{5} size={6}×{7}] mode={8}…</source><translation>Kachel {0}/{1} [y:{2}:{3} x:{4}:{5} Größe={6}×{7}] Modus={8} wird integriert…</translation></message><message><source>Integrating...</source><translation>Integration...</translation></message><message><source>Integration Algorithm</source><translation>Integrationsalgorithmus</translation></message><message><source>Integration Method</source><translation>Integrationsmethode</translation></message><message><source>Integration Method:</source><translation>Integrationsmethode:</translation></message><message><source>Integration complete for group '{0}'.</source><translation>Integration für Gruppe '{0}' abgeschlossen.</translation></message><message><source>Internal Precision:</source><translation>Interne Präzision:</translation></message><message><source>Interpolation</source><translation>Interpolation</translation></message><message><source>Invalid session file</source><translation>Ungültige Sitzungsdatei</translation></message><message><source>Iterations</source><translation>Iterationen</translation></message><message><source>Iterations (max):</source><translation>Iterationen (max):</translation></message><message><source>Iterations:</source><translation>Iterationen:</translation></message><message><source>Kappa-Sigma Clipping</source><translation>Kappa-Sigma-Clipping</translation></message><message><source>Kappa:</source><translation>Kappa:</translation></message><message><source>Keep best %</source><translation>Beste % behalten</translation></message><message><source>Keep-floor:</source><translation>Mindestschwelle:</translation></message><message><source>Kernel</source><translation>Kernel</translation></message><message><source>Kernel width:</source><translation>Kernelbreite:</translation></message><message><source>Kernel:</source><translation>Kernel:</translation></message><message><source>LWP (Local Weighted Polynomial)</source><translation>LWP (Local Weighted Polynomial)</translation></message><message><source>Lanczos</source><translation>Lanczos</translation></message><message><source>Lanczos Interpolation</source><translation>Lanczos-Interpolation</translation></message><message><source>Lanczos-2</source><translation>Lanczos-2</translation></message><message><source>Lanczos-3</source><translation>Lanczos-3</translation></message><message><source>Lanczos-4</source><translation>Lanczos-4</translation></message><message><source>Lanczos-5</source><translation>Lanczos-5</translation></message><message><source>Lanczos2</source><translation>Lanczos2</translation></message><message><source>Lanczos3</source><translation>Lanczos3</translation></message><message><source>Light</source><translation>Light</translation></message><message><source>Light Frames</source><translation>Light-Frames</translation></message><message><source>Lighten (screen)</source><translation>Aufhellen (Screen)</translation></message><message><source>Lights</source><translation>Lights</translation></message><message><source>Linear</source><translation>Linear</translation></message><message><source>Linear Fit Clipping</source><translation>Linear Fit Clipping</translation></message><message><source>Load</source><translation>Laden</translation></message><message><source>Load Master Dark</source><translation>Master-Dark laden</translation></message><message><source>Load Master Flat</source><translation>Master-Flat laden</translation></message><message><source>Load Session</source><translation>Sitzung laden</translation></message><message><source>Load defect map</source><translation>Defektkarte laden</translation></message><message><source>Load defect map...</source><translation>Defektkarte laden...</translation></message><message><source>Load profile</source><translation>Profil laden</translation></message><message><source>Load profile '{0}'?
+Beispiele: κ=1.1 &amp; δ=-0.7 = sanft; κ=2 &amp; δ=-2 = aggressiver.</translation>
+    </message>
+    <message>
+      <source>Huber δ:</source>
+      <translation>Huber δ:</translation>
+    </message>
+    <message>
+      <source>IMAGETYP</source>
+      <translation>Bildtyp</translation>
+    </message>
+    <message>
+      <source>INSTRUME</source>
+      <translation>Instrument</translation>
+    </message>
+    <message>
+      <source>IQR Clipping</source>
+      <translation>IQR Clipping</translation>
+    </message>
+    <message>
+      <source>ISO</source>
+      <translation>ISO</translation>
+    </message>
+    <message>
+      <source>If GPU still not being used — click for fix steps</source>
+      <translation>Wenn die GPU immer noch nicht verwendet wird — klicken Sie für Korrektur-Schritte</translation>
+    </message>
+    <message>
+      <source>If checked, the best measured frame is accepted automatically.</source>
+      <translation>Wenn aktiviert, wird das am besten gemessene Bild automatisch akzeptiert.</translation>
+    </message>
+    <message>
+      <source>If enabled, saves the seed and every iteration image into a subfolder next to the final output.</source>
+      <translation>Wenn aktiviert, werden der Seed und jedes Iterationsbild in einem Unterordner neben der finalen Ausgabe gespeichert.</translation>
+    </message>
+    <message>
+      <source>Image Files</source>
+      <translation>Bilddateien</translation>
+    </message>
+    <message>
+      <source>Image Integration</source>
+      <translation>Bildintegration</translation>
+    </message>
+    <message>
+      <source>Images (*.fit *.fits *.tif *.tiff *.png *.jpg *.jpeg)</source>
+      <translation>Bilder (*.fit *.fits *.tif *.tiff *.png *.jpg *.jpeg)</translation>
+    </message>
+    <message>
+      <source>Import Settings</source>
+      <translation>Einstellungen importieren</translation>
+    </message>
+    <message>
+      <source>Important: GPU stacking requires both CUDA and PyTorch-GPU.</source>
+      <translation>Wichtig: GPU-Stacking erfordert sowohl CUDA als auch PyTorch-GPU.</translation>
+    </message>
+    <message>
+      <source>Include in Stack</source>
+      <translation>In Stack einbeziehen</translation>
+    </message>
+    <message>
+      <source>Include in stacking</source>
+      <translation>In Stacking einbeziehen</translation>
+    </message>
+    <message>
+      <source>Info</source>
+      <translation>Info</translation>
+    </message>
+    <message>
+      <source>Install PyTorch (CUDA)</source>
+      <translation>PyTorch (CUDA) installieren</translation>
+    </message>
+    <message>
+      <source>Install/Update GPU Acceleration…</source>
+      <translation>GPU-Beschleunigung installieren/aktualisieren…</translation>
+    </message>
+    <message>
+      <source>Installing GPU Acceleration</source>
+      <translation>GPU-Beschleunigung wird installiert</translation>
+    </message>
+    <message>
+      <source>Installing NVIDIA CUDA for Stacking Suite</source>
+      <translation>NVIDIA CUDA für Stacking Suite wird installiert</translation>
+    </message>
+    <message>
+      <source>Insufficient frames for stacking</source>
+      <translation>Unzureichend Bilder für das Stacking</translation>
+    </message>
+    <message>
+      <source>Integrate Only</source>
+      <translation>Nur Integrieren</translation>
+    </message>
+    <message>
+      <source>Integrate Previously Registered Images</source>
+      <translation>Zuvor registrierte Bilder integrieren</translation>
+    </message>
+    <message>
+      <source>Integrating comet tile {0}…</source>
+      <translation>Kometen-Kachel {0} wird integriert…</translation>
+    </message>
+    <message>
+      <source>Integrating tile {0}/{1} [y:{2}:{3} x:{4}:{5} size={6}×{7}] mode={8}…</source>
+      <translation>Kachel {0}/{1} [y:{2}:{3} x:{4}:{5} Größe={6}×{7}] Modus={8} wird integriert…</translation>
+    </message>
+    <message>
+      <source>Integrating...</source>
+      <translation>Integration...</translation>
+    </message>
+    <message>
+      <source>Integration Algorithm</source>
+      <translation>Integrationsalgorithmus</translation>
+    </message>
+    <message>
+      <source>Integration Method</source>
+      <translation>Integrationsmethode</translation>
+    </message>
+    <message>
+      <source>Integration Method:</source>
+      <translation>Integrationsmethode:</translation>
+    </message>
+    <message>
+      <source>Integration complete for group '{0}'.</source>
+      <translation>Integration für Gruppe '{0}' abgeschlossen.</translation>
+    </message>
+    <message>
+      <source>Internal Precision:</source>
+      <translation>Interne Präzision:</translation>
+    </message>
+    <message>
+      <source>Interpolation</source>
+      <translation>Interpolation</translation>
+    </message>
+    <message>
+      <source>Invalid session file</source>
+      <translation>Ungültige Sitzungsdatei</translation>
+    </message>
+    <message>
+      <source>Iterations</source>
+      <translation>Iterationen</translation>
+    </message>
+    <message>
+      <source>Iterations (max):</source>
+      <translation>Iterationen (max):</translation>
+    </message>
+    <message>
+      <source>Iterations:</source>
+      <translation>Iterationen:</translation>
+    </message>
+    <message>
+      <source>Kappa-Sigma Clipping</source>
+      <translation>Kappa-Sigma-Clipping</translation>
+    </message>
+    <message>
+      <source>Kappa:</source>
+      <translation>Kappa:</translation>
+    </message>
+    <message>
+      <source>Keep best %</source>
+      <translation>Beste % behalten</translation>
+    </message>
+    <message>
+      <source>Keep-floor:</source>
+      <translation>Mindestschwelle:</translation>
+    </message>
+    <message>
+      <source>Kernel</source>
+      <translation>Kernel</translation>
+    </message>
+    <message>
+      <source>Kernel width:</source>
+      <translation>Kernelbreite:</translation>
+    </message>
+    <message>
+      <source>Kernel:</source>
+      <translation>Kernel:</translation>
+    </message>
+    <message>
+      <source>LWP (Local Weighted Polynomial)</source>
+      <translation>LWP (Local Weighted Polynomial)</translation>
+    </message>
+    <message>
+      <source>Lanczos</source>
+      <translation>Lanczos</translation>
+    </message>
+    <message>
+      <source>Lanczos Interpolation</source>
+      <translation>Lanczos-Interpolation</translation>
+    </message>
+    <message>
+      <source>Lanczos-2</source>
+      <translation>Lanczos-2</translation>
+    </message>
+    <message>
+      <source>Lanczos-3</source>
+      <translation>Lanczos-3</translation>
+    </message>
+    <message>
+      <source>Lanczos-4</source>
+      <translation>Lanczos-4</translation>
+    </message>
+    <message>
+      <source>Lanczos-5</source>
+      <translation>Lanczos-5</translation>
+    </message>
+    <message>
+      <source>Lanczos2</source>
+      <translation>Lanczos2</translation>
+    </message>
+    <message>
+      <source>Lanczos3</source>
+      <translation>Lanczos3</translation>
+    </message>
+    <message>
+      <source>Light</source>
+      <translation>Light</translation>
+    </message>
+    <message>
+      <source>Light Frames</source>
+      <translation>Light-Frames</translation>
+    </message>
+    <message>
+      <source>Lighten (screen)</source>
+      <translation>Aufhellen (Screen)</translation>
+    </message>
+    <message>
+      <source>Lights</source>
+      <translation>Lights</translation>
+    </message>
+    <message>
+      <source>Linear</source>
+      <translation>Linear</translation>
+    </message>
+    <message>
+      <source>Linear Fit Clipping</source>
+      <translation>Linear Fit Clipping</translation>
+    </message>
+    <message>
+      <source>Load</source>
+      <translation>Laden</translation>
+    </message>
+    <message>
+      <source>Load Master Dark</source>
+      <translation>Master-Dark laden</translation>
+    </message>
+    <message>
+      <source>Load Master Flat</source>
+      <translation>Master-Flat laden</translation>
+    </message>
+    <message>
+      <source>Load Session</source>
+      <translation>Sitzung laden</translation>
+    </message>
+    <message>
+      <source>Load defect map</source>
+      <translation>Defektkarte laden</translation>
+    </message>
+    <message>
+      <source>Load defect map...</source>
+      <translation>Defektkarte laden...</translation>
+    </message>
+    <message>
+      <source>Load profile</source>
+      <translation>Profil laden</translation>
+    </message>
+    <message>
+      <source>Load profile '{0}'?
 
-This will overwrite the current stacking configuration and restart the Stacking Suite.</source><translation>Profil '{0}' laden?
+This will overwrite the current stacking configuration and restart the Stacking Suite.</source>
+      <translation>Profil '{0}' laden?
 
-Dies wird die aktuelle Stacking-Konfiguration überschreiben und die Stacking Suite neu starten.</translation></message><message><source>Loading frames...</source><translation>Bilder werden geladen...</translation></message><message><source>Local Normalization</source><translation>Lokale Normalisierung</translation></message><message><source>Lock Reference</source><translation>Referenz sperren</translation></message><message><source>Low/High Sigma:</source><translation>Niedriges/Hohes Sigma:</translation></message><message><source>Low:</source><translation>Niedrig:</translation></message><message><source>Lower = more aggressive (MAD-based).</source><translation>Niedriger = aggressiver (MAD-basiert).</translation></message><message><source>Lower = more aggressive outlier rejection.</source><translation>Niedriger = aggressivere Ausreißer-Rejektion.</translation></message><message><source>Lower = stronger masking near stars; 0 = hard mask, 0.2 = gentle.</source><translation>Niedriger = stärkere Maskierung in der Nähe von Sternen; 0 = harte Maske, 0.2 = sanft.</translation></message><message><source>MAD Clipping</source><translation>MAD-Clipping</translation></message><message><source>MF Deconvolution</source><translation>MF-Deconvolution</translation></message><message><source>MF Deconvolution Settings</source><translation>MF-Deconvolution-Einstellungen</translation></message><message><source>MFDeconv Engine</source><translation>MFDeconv-Engine</translation></message><message><source>MFDeconv Engine:</source><translation>MFDeconv-Engine:</translation></message><message><source>MFDeconv — Multi-Frame Deconvolution (ImageMM)</source><translation>MFDeconv — Multi-Frame Deconvolution (ImageMM)</translation></message><message><source>MFDeconv: Normal vs High Octane</source><translation>MFDeconv: Normal vs. High Octane</translation></message><message><source>Manual</source><translation>Manuell</translation></message><message><source>Manual Selection</source><translation>Manuelle Auswahl</translation></message><message><source>Manual Session:</source><translation>Manuelle Sitzung:</translation></message><message><source>Manual Weight</source><translation>Manuelle Gewichtung</translation></message><message><source>Manual layout</source><translation>Manuelles Layout</translation></message><message><source>Mark as Reference</source><translation>Als Referenz markieren</translation></message><message><source>Mask-based (accurate)</source><translation>Maskenbasiert (genau)</translation></message><message><source>Master Bias</source><translation>Master-Bias</translation></message><message><source>Master Calibration Frames</source><translation>Master-Kalibrierungsbilder</translation></message><message><source>Master Dark</source><translation>Master-Dark</translation></message><message><source>Master Dark Flat</source><translation>Master-Dark-Flat</translation></message><message><source>Master Dark Used</source><translation>Verwendetes Master-Dark</translation></message><message><source>Master Darks</source><translation>Master-Darks</translation></message><message><source>Master File</source><translation>Master-Datei</translation></message><message><source>Master Flat</source><translation>Master-Flat</translation></message><message><source>Master Flats</source><translation>Master-Flats</translation></message><message><source>Master bias created</source><translation>Master-Bias erstellt</translation></message><message><source>Master dark created</source><translation>Master-Dark erstellt</translation></message><message><source>Master flat created</source><translation>Master-Flat erstellt</translation></message><message><source>Match by Exposure</source><translation>Nach Belichtung abgleichen</translation></message><message><source>Match by Filter</source><translation>Nach Filter abgleichen</translation></message><message><source>Match by Gain/ISO</source><translation>Nach Gain/ISO abgleichen</translation></message><message><source>Match by Temperature</source><translation>Nach Temperatur abgleichen</translation></message><message><source>Match by:</source><translation>Abgleichen nach:</translation></message><message><source>Max (brightest)</source><translation>Max (hellste)</translation></message><message><source>Max Shift (px):</source><translation>Max. Verschiebung (px):</translation></message><message><source>Max Stars:</source><translation>Max. Sterne:</translation></message><message><source>Max Value</source><translation>Max. Wert</translation></message><message><source>Max control points:</source><translation>Max. Kontrollpunkte:</translation></message><message><source>Max ratio:</source><translation>Max. Verhältnis:</translation></message><message><source>Max star radius (px):</source><translation>Max. Sternradius (px):</translation></message><message><source>Max stars kept:</source><translation>Max. Sterne behalten:</translation></message><message><source>Max stars:</source><translation>Max. Sterne:</translation></message><message><source>Maximum</source><translation>Maximum</translation></message><message><source>Maximum FWHM</source><translation>Maximaler FWHM</translation></message><message><source>Maximum background</source><translation>Maximaler Hintergrund</translation></message><message><source>Maximum eccentricity</source><translation>Maximale Exzentrizität</translation></message><message><source>Maximum roundness deviation</source><translation>Maximale Rundheitsabweichung</translation></message><message><source>Maximum stars</source><translation>Maximale Sterne</translation></message><message><source>Mean</source><translation>Mittelwert</translation></message><message><source>Mean ratio:</source><translation>Mittelwert-Verhältnis:</translation></message><message><source>Median</source><translation>Median</translation></message><message><source>Median (Sukhdeep et al.)</source><translation>Median (Sukhdeep et al.)</translation></message><message><source>Median Filter Radius:</source><translation>Medianfilter-Radius:</translation></message><message><source>Memory Limit (MB):</source><translation>Speicherlimit (MB):</translation></message><message><source>Memory allocation failed</source><translation>Speicherallokation fehlgeschlagen</translation></message><message><source>Memory management</source><translation>Speicherverwaltung</translation></message><message><source>Memory optimization</source><translation>Speicheroptimierung</translation></message><message><source>Merge Groups</source><translation>Gruppen zusammenführen</translation></message><message><source>Metadata</source><translation>Metadaten</translation></message><message><source>Min (darkest)</source><translation>Min (dunkelste)</translation></message><message><source>Min Frames for Master:</source><translation>Min. Bilder für Master:</translation></message><message><source>Min Stars:</source><translation>Min. Sterne:</translation></message><message><source>Min Strength:</source><translation>Min. Stärke:</translation></message><message><source>Min iters:</source><translation>Min. Iterationen:</translation></message><message><source>Min star area (px):</source><translation>Min. Sternfläche (px):</translation></message><message><source>Minimum</source><translation>Minimum</translation></message><message><source>Minimum connected-pixel area to keep a detection as a star (px). Helps reject hot pixels/noise.</source><translation>Minimale zusammenhängende Pixelfläche, um eine Erkennung als Stern zu behalten (px). Hilft, Hotpixel/Rauschen auszuschließen.</translation></message><message><source>Minimum score</source><translation>Mindestpunktzahl</translation></message><message><source>Minimum stars</source><translation>Minimale Sterne</translation></message><message><source>Mismatched Image Type</source><translation>Nicht übereinstimmender Bildtyp</translation></message><message><source>Mix:</source><translation>Mix:</translation></message><message><source>Mode:</source><translation>Modus:</translation></message><message><source>Model:</source><translation>Modell:</translation></message><message><source>Modified Z threshold:</source><translation>Modifizierter Z-Schwellenwert:</translation></message><message><source>Modified Z-Score Clipping</source><translation>Modified Z-Score Clipping</translation></message><message><source>Mosaic Mode</source><translation>Mosaik-Modus</translation></message><message><source>Motion vector</source><translation>Bewegungsvektor</translation></message><message><source>Multi-Frame Deconvolution</source><translation>Multi-Frame-Deconvolution</translation></message><message><source>Multi-band</source><translation>Multiband</translation></message><message><source>Multi-frame Deconvolution</source><translation>Multi-frame-Deconvolution</translation></message><message><source>Multi-frame deconvolving…</source><translation>Multi-frame Deconvolution wird durchgeführt…</translation></message><message><source>Multiplicative</source><translation>Multiplikativ</translation></message><message><source>Multiplicative with Scaling</source><translation>Multiplikativ mit Skalierung</translation></message><message><source>Naive (pixfrac=1)</source><translation>Naiv (pixfrac=1)</translation></message><message><source>Nearest Neighbor</source><translation>Nächster Nachbar</translation></message><message><source>New Group</source><translation>Neue Gruppe</translation></message><message><source>New Session</source><translation>Neue Sitzung</translation></message><message><source>New stacking profile</source><translation>Neues Stacking-Profil</translation></message><message><source>New…</source><translation>Neu…</translation></message><message><source>No Calibration</source><translation>Keine Kalibrierung</translation></message><message><source>No Distortion (rotate/translate/scale)</source><translation>Keine Verzerrung (Drehen/Verschieben/Skalieren)</translation></message><message><source>No Files</source><translation>Keine Dateien</translation></message><message><source>No Normalization</source><translation>Keine Normalisierung</translation></message><message><source>No Output Directory</source><translation>Kein Ausgabeverzeichnis</translation></message><message><source>No Rejection</source><translation>Keine Rejektion</translation></message><message><source>No Weighting</source><translation>Keine Gewichtung</translation></message><message><source>No calibration frames</source><translation>Keine Kalibrierungsbilder</translation></message><message><source>No comet center was selected. Registration has been cancelled so you can try again.</source><translation>Es wurde kein Kometenzentrum ausgewählt. Die Registrierung wurde abgebrochen, damit Sie es erneut versuchen können.</translation></message><message><source>No file chosen.</source><translation>Keine Datei ausgewählt.</translation></message><message><source>No file selected</source><translation>Keine Datei ausgewählt</translation></message><message><source>No files selected for split.</source><translation>Keine Dateien für Splitten ausgewählt.</translation></message><message><source>No frames loaded</source><translation>Keine Bilder geladen</translation></message><message><source>No light frames</source><translation>Keine Light-Frames</translation></message><message><source>No new reference selected; using previous reference.</source><translation>Keine neue Referenz ausgewählt; verwende vorherige Referenz.</translation></message><message><source>No output directory is set. Do you want to select one now?</source><translation>Kein Ausgabeverzeichnis festgelegt. Möchten Sie jetzt eines auswählen?</translation></message><message><source>No profile selected</source><translation>Kein Profil ausgewählt</translation></message><message><source>No stacking folder selected</source><translation>Kein Stacking-Ordner ausgewählt</translation></message><message><source>No stars detected in frame</source><translation>Keine Sterne im Bild erkannt</translation></message><message><source>Noise Evaluation</source><translation>Rauschbewertung</translation></message><message><source>Noise level</source><translation>Rauschpegel</translation></message><message><source>None</source><translation>Keine</translation></message><message><source>None (Use Auto-Select)</source><translation>Keine (Auto-Select verwenden)</translation></message><message><source>None (Use no Dark to Calibrate)</source><translation>Keine (Kein Dark zur Kalibrierung verwenden)</translation></message><message><source>Normal</source><translation>Normal</translation></message><message><source>Normal (cuDNN-free)</source><translation>Normal (ohne cuDNN)</translation></message><message><source>Normal (fallback)</source><translation>Normal (Fallback)</translation></message><message><source>Normalization</source><translation>Normalisierung</translation></message><message><source>Normalization &amp; Gradient (ABE Poly²)</source><translation>Normalisierung &amp; Gradient (ABE Poly²)</translation></message><message><source>Normalize by:</source><translation>Normalisieren nach:</translation></message><message><source>Notes</source><translation>Notizen</translation></message><message><source>Nucleus position</source><translation>Kernposition</translation></message><message><source>Number of kappa-sigma iterations.</source><translation>Anzahl der Kappa-Sigma-Iterationen.</translation></message><message><source>Number of threads</source><translation>Anzahl der Threads</translation></message><message><source>Number of threads:</source><translation>Anzahl der Threads:</translation></message><message><source>OBJECT</source><translation>OBJEKT</translation></message><message><source>OFF</source><translation>AUS</translation></message><message><source>ON, Scale {0}, Drop {1:.2f}</source><translation>EIN, Skala {0}, Drop {1:.2f}</translation></message><message><source>Observer</source><translation>Beobachter</translation></message><message><source>Offset</source><translation>Offset</translation></message><message><source>Open Command Prompt and run the following.
+Dies wird die aktuelle Stacking-Konfiguration überschreiben und die Stacking Suite neu starten.</translation>
+    </message>
+    <message>
+      <source>Loading frames...</source>
+      <translation>Bilder werden geladen...</translation>
+    </message>
+    <message>
+      <source>Local Normalization</source>
+      <translation>Lokale Normalisierung</translation>
+    </message>
+    <message>
+      <source>Lock Reference</source>
+      <translation>Referenz sperren</translation>
+    </message>
+    <message>
+      <source>Low/High Sigma:</source>
+      <translation>Niedriges/Hohes Sigma:</translation>
+    </message>
+    <message>
+      <source>Low:</source>
+      <translation>Niedrig:</translation>
+    </message>
+    <message>
+      <source>Lower = more aggressive (MAD-based).</source>
+      <translation>Niedriger = aggressiver (MAD-basiert).</translation>
+    </message>
+    <message>
+      <source>Lower = more aggressive outlier rejection.</source>
+      <translation>Niedriger = aggressivere Ausreißer-Rejektion.</translation>
+    </message>
+    <message>
+      <source>Lower = stronger masking near stars; 0 = hard mask, 0.2 = gentle.</source>
+      <translation>Niedriger = stärkere Maskierung in der Nähe von Sternen; 0 = harte Maske, 0.2 = sanft.</translation>
+    </message>
+    <message>
+      <source>MAD Clipping</source>
+      <translation>MAD-Clipping</translation>
+    </message>
+    <message>
+      <source>MF Deconvolution</source>
+      <translation>MF-Deconvolution</translation>
+    </message>
+    <message>
+      <source>MF Deconvolution Settings</source>
+      <translation>MF-Deconvolution-Einstellungen</translation>
+    </message>
+    <message>
+      <source>MFDeconv Engine</source>
+      <translation>MFDeconv-Engine</translation>
+    </message>
+    <message>
+      <source>MFDeconv Engine:</source>
+      <translation>MFDeconv-Engine:</translation>
+    </message>
+    <message>
+      <source>MFDeconv — Multi-Frame Deconvolution (ImageMM)</source>
+      <translation>MFDeconv — Multi-Frame Deconvolution (ImageMM)</translation>
+    </message>
+    <message>
+      <source>MFDeconv: Normal vs High Octane</source>
+      <translation>MFDeconv: Normal vs. High Octane</translation>
+    </message>
+    <message>
+      <source>Manual</source>
+      <translation>Manuell</translation>
+    </message>
+    <message>
+      <source>Manual Selection</source>
+      <translation>Manuelle Auswahl</translation>
+    </message>
+    <message>
+      <source>Manual Session:</source>
+      <translation>Manuelle Sitzung:</translation>
+    </message>
+    <message>
+      <source>Manual Weight</source>
+      <translation>Manuelle Gewichtung</translation>
+    </message>
+    <message>
+      <source>Manual layout</source>
+      <translation>Manuelles Layout</translation>
+    </message>
+    <message>
+      <source>Mark as Reference</source>
+      <translation>Als Referenz markieren</translation>
+    </message>
+    <message>
+      <source>Mask-based (accurate)</source>
+      <translation>Maskenbasiert (genau)</translation>
+    </message>
+    <message>
+      <source>Master Bias</source>
+      <translation>Master-Bias</translation>
+    </message>
+    <message>
+      <source>Master Calibration Frames</source>
+      <translation>Master-Kalibrierungsbilder</translation>
+    </message>
+    <message>
+      <source>Master Dark</source>
+      <translation>Master-Dark</translation>
+    </message>
+    <message>
+      <source>Master Dark Flat</source>
+      <translation>Master-Dark-Flat</translation>
+    </message>
+    <message>
+      <source>Master Dark Used</source>
+      <translation>Verwendetes Master-Dark</translation>
+    </message>
+    <message>
+      <source>Master Darks</source>
+      <translation>Master-Darks</translation>
+    </message>
+    <message>
+      <source>Master File</source>
+      <translation>Master-Datei</translation>
+    </message>
+    <message>
+      <source>Master Flat</source>
+      <translation>Master-Flat</translation>
+    </message>
+    <message>
+      <source>Master Flats</source>
+      <translation>Master-Flats</translation>
+    </message>
+    <message>
+      <source>Master bias created</source>
+      <translation>Master-Bias erstellt</translation>
+    </message>
+    <message>
+      <source>Master dark created</source>
+      <translation>Master-Dark erstellt</translation>
+    </message>
+    <message>
+      <source>Master flat created</source>
+      <translation>Master-Flat erstellt</translation>
+    </message>
+    <message>
+      <source>Match by Exposure</source>
+      <translation>Nach Belichtung abgleichen</translation>
+    </message>
+    <message>
+      <source>Match by Filter</source>
+      <translation>Nach Filter abgleichen</translation>
+    </message>
+    <message>
+      <source>Match by Gain/ISO</source>
+      <translation>Nach Gain/ISO abgleichen</translation>
+    </message>
+    <message>
+      <source>Match by Temperature</source>
+      <translation>Nach Temperatur abgleichen</translation>
+    </message>
+    <message>
+      <source>Match by:</source>
+      <translation>Abgleichen nach:</translation>
+    </message>
+    <message>
+      <source>Max (brightest)</source>
+      <translation>Max (hellste)</translation>
+    </message>
+    <message>
+      <source>Max Shift (px):</source>
+      <translation>Max. Verschiebung (px):</translation>
+    </message>
+    <message>
+      <source>Max Stars:</source>
+      <translation>Max. Sterne:</translation>
+    </message>
+    <message>
+      <source>Max Value</source>
+      <translation>Max. Wert</translation>
+    </message>
+    <message>
+      <source>Max control points:</source>
+      <translation>Max. Kontrollpunkte:</translation>
+    </message>
+    <message>
+      <source>Max ratio:</source>
+      <translation>Max. Verhältnis:</translation>
+    </message>
+    <message>
+      <source>Max star radius (px):</source>
+      <translation>Max. Sternradius (px):</translation>
+    </message>
+    <message>
+      <source>Max stars kept:</source>
+      <translation>Max. Sterne behalten:</translation>
+    </message>
+    <message>
+      <source>Max stars:</source>
+      <translation>Max. Sterne:</translation>
+    </message>
+    <message>
+      <source>Maximum</source>
+      <translation>Maximum</translation>
+    </message>
+    <message>
+      <source>Maximum FWHM</source>
+      <translation>Maximaler FWHM</translation>
+    </message>
+    <message>
+      <source>Maximum background</source>
+      <translation>Maximaler Hintergrund</translation>
+    </message>
+    <message>
+      <source>Maximum eccentricity</source>
+      <translation>Maximale Exzentrizität</translation>
+    </message>
+    <message>
+      <source>Maximum roundness deviation</source>
+      <translation>Maximale Rundheitsabweichung</translation>
+    </message>
+    <message>
+      <source>Maximum stars</source>
+      <translation>Maximale Sterne</translation>
+    </message>
+    <message>
+      <source>Mean</source>
+      <translation>Mittelwert</translation>
+    </message>
+    <message>
+      <source>Mean ratio:</source>
+      <translation>Mittelwert-Verhältnis:</translation>
+    </message>
+    <message>
+      <source>Median</source>
+      <translation>Median</translation>
+    </message>
+    <message>
+      <source>Median (Sukhdeep et al.)</source>
+      <translation>Median (Sukhdeep et al.)</translation>
+    </message>
+    <message>
+      <source>Median Filter Radius:</source>
+      <translation>Medianfilter-Radius:</translation>
+    </message>
+    <message>
+      <source>Memory Limit (MB):</source>
+      <translation>Speicherlimit (MB):</translation>
+    </message>
+    <message>
+      <source>Memory allocation failed</source>
+      <translation>Speicherallokation fehlgeschlagen</translation>
+    </message>
+    <message>
+      <source>Memory management</source>
+      <translation>Speicherverwaltung</translation>
+    </message>
+    <message>
+      <source>Memory optimization</source>
+      <translation>Speicheroptimierung</translation>
+    </message>
+    <message>
+      <source>Merge Groups</source>
+      <translation>Gruppen zusammenführen</translation>
+    </message>
+    <message>
+      <source>Metadata</source>
+      <translation>Metadaten</translation>
+    </message>
+    <message>
+      <source>Min (darkest)</source>
+      <translation>Min (dunkelste)</translation>
+    </message>
+    <message>
+      <source>Min Frames for Master:</source>
+      <translation>Min. Bilder für Master:</translation>
+    </message>
+    <message>
+      <source>Min Stars:</source>
+      <translation>Min. Sterne:</translation>
+    </message>
+    <message>
+      <source>Min Strength:</source>
+      <translation>Min. Stärke:</translation>
+    </message>
+    <message>
+      <source>Min iters:</source>
+      <translation>Min. Iterationen:</translation>
+    </message>
+    <message>
+      <source>Min star area (px):</source>
+      <translation>Min. Sternfläche (px):</translation>
+    </message>
+    <message>
+      <source>Minimum</source>
+      <translation>Minimum</translation>
+    </message>
+    <message>
+      <source>Minimum connected-pixel area to keep a detection as a star (px). Helps reject hot pixels/noise.</source>
+      <translation>Minimale zusammenhängende Pixelfläche, um eine Erkennung als Stern zu behalten (px). Hilft, Hotpixel/Rauschen auszuschließen.</translation>
+    </message>
+    <message>
+      <source>Minimum score</source>
+      <translation>Mindestpunktzahl</translation>
+    </message>
+    <message>
+      <source>Minimum stars</source>
+      <translation>Minimale Sterne</translation>
+    </message>
+    <message>
+      <source>Mismatched Image Type</source>
+      <translation>Nicht übereinstimmender Bildtyp</translation>
+    </message>
+    <message>
+      <source>Mix:</source>
+      <translation>Mix:</translation>
+    </message>
+    <message>
+      <source>Mode:</source>
+      <translation>Modus:</translation>
+    </message>
+    <message>
+      <source>Model:</source>
+      <translation>Modell:</translation>
+    </message>
+    <message>
+      <source>Modified Z threshold:</source>
+      <translation>Modifizierter Z-Schwellenwert:</translation>
+    </message>
+    <message>
+      <source>Modified Z-Score Clipping</source>
+      <translation>Modified Z-Score Clipping</translation>
+    </message>
+    <message>
+      <source>Mosaic Mode</source>
+      <translation>Mosaik-Modus</translation>
+    </message>
+    <message>
+      <source>Motion vector</source>
+      <translation>Bewegungsvektor</translation>
+    </message>
+    <message>
+      <source>Multi-Frame Deconvolution</source>
+      <translation>Multi-Frame-Deconvolution</translation>
+    </message>
+    <message>
+      <source>Multi-band</source>
+      <translation>Multiband</translation>
+    </message>
+    <message>
+      <source>Multi-frame Deconvolution</source>
+      <translation>Multi-frame-Deconvolution</translation>
+    </message>
+    <message>
+      <source>Multi-frame deconvolving…</source>
+      <translation>Multi-frame Deconvolution wird durchgeführt…</translation>
+    </message>
+    <message>
+      <source>Multiplicative</source>
+      <translation>Multiplikativ</translation>
+    </message>
+    <message>
+      <source>Multiplicative with Scaling</source>
+      <translation>Multiplikativ mit Skalierung</translation>
+    </message>
+    <message>
+      <source>Naive (pixfrac=1)</source>
+      <translation>Naiv (pixfrac=1)</translation>
+    </message>
+    <message>
+      <source>Nearest Neighbor</source>
+      <translation>Nächster Nachbar</translation>
+    </message>
+    <message>
+      <source>New Group</source>
+      <translation>Neue Gruppe</translation>
+    </message>
+    <message>
+      <source>New Session</source>
+      <translation>Neue Sitzung</translation>
+    </message>
+    <message>
+      <source>New stacking profile</source>
+      <translation>Neues Stacking-Profil</translation>
+    </message>
+    <message>
+      <source>New…</source>
+      <translation>Neu…</translation>
+    </message>
+    <message>
+      <source>No Calibration</source>
+      <translation>Keine Kalibrierung</translation>
+    </message>
+    <message>
+      <source>No Distortion (rotate/translate/scale)</source>
+      <translation>Keine Verzerrung (Drehen/Verschieben/Skalieren)</translation>
+    </message>
+    <message>
+      <source>No Files</source>
+      <translation>Keine Dateien</translation>
+    </message>
+    <message>
+      <source>No Normalization</source>
+      <translation>Keine Normalisierung</translation>
+    </message>
+    <message>
+      <source>No Output Directory</source>
+      <translation>Kein Ausgabeverzeichnis</translation>
+    </message>
+    <message>
+      <source>No Rejection</source>
+      <translation>Keine Rejektion</translation>
+    </message>
+    <message>
+      <source>No Weighting</source>
+      <translation>Keine Gewichtung</translation>
+    </message>
+    <message>
+      <source>No calibration frames</source>
+      <translation>Keine Kalibrierungsbilder</translation>
+    </message>
+    <message>
+      <source>No comet center was selected. Registration has been cancelled so you can try again.</source>
+      <translation>Es wurde kein Kometenzentrum ausgewählt. Die Registrierung wurde abgebrochen, damit Sie es erneut versuchen können.</translation>
+    </message>
+    <message>
+      <source>No file chosen.</source>
+      <translation>Keine Datei ausgewählt.</translation>
+    </message>
+    <message>
+      <source>No file selected</source>
+      <translation>Keine Datei ausgewählt</translation>
+    </message>
+    <message>
+      <source>No files selected for split.</source>
+      <translation>Keine Dateien für Splitten ausgewählt.</translation>
+    </message>
+    <message>
+      <source>No frames loaded</source>
+      <translation>Keine Bilder geladen</translation>
+    </message>
+    <message>
+      <source>No light frames</source>
+      <translation>Keine Light-Frames</translation>
+    </message>
+    <message>
+      <source>No new reference selected; using previous reference.</source>
+      <translation>Keine neue Referenz ausgewählt; verwende vorherige Referenz.</translation>
+    </message>
+    <message>
+      <source>No output directory is set. Do you want to select one now?</source>
+      <translation>Kein Ausgabeverzeichnis festgelegt. Möchten Sie jetzt eines auswählen?</translation>
+    </message>
+    <message>
+      <source>No profile selected</source>
+      <translation>Kein Profil ausgewählt</translation>
+    </message>
+    <message>
+      <source>No stacking folder selected</source>
+      <translation>Kein Stacking-Ordner ausgewählt</translation>
+    </message>
+    <message>
+      <source>No stars detected in frame</source>
+      <translation>Keine Sterne im Bild erkannt</translation>
+    </message>
+    <message>
+      <source>Noise Evaluation</source>
+      <translation>Rauschbewertung</translation>
+    </message>
+    <message>
+      <source>Noise level</source>
+      <translation>Rauschpegel</translation>
+    </message>
+    <message>
+      <source>None</source>
+      <translation>Keine</translation>
+    </message>
+    <message>
+      <source>None (Use Auto-Select)</source>
+      <translation>Keine (Auto-Select verwenden)</translation>
+    </message>
+    <message>
+      <source>None (Use no Dark to Calibrate)</source>
+      <translation>Keine (Kein Dark zur Kalibrierung verwenden)</translation>
+    </message>
+    <message>
+      <source>Normal</source>
+      <translation>Normal</translation>
+    </message>
+    <message>
+      <source>Normal (cuDNN-free)</source>
+      <translation>Normal (ohne cuDNN)</translation>
+    </message>
+    <message>
+      <source>Normal (fallback)</source>
+      <translation>Normal (Fallback)</translation>
+    </message>
+    <message>
+      <source>Normalization</source>
+      <translation>Normalisierung</translation>
+    </message>
+    <message>
+      <source>Normalization &amp; Gradient (ABE Poly²)</source>
+      <translation>Normalisierung &amp; Gradient (ABE Poly²)</translation>
+    </message>
+    <message>
+      <source>Normalize by:</source>
+      <translation>Normalisieren nach:</translation>
+    </message>
+    <message>
+      <source>Notes</source>
+      <translation>Notizen</translation>
+    </message>
+    <message>
+      <source>Nucleus position</source>
+      <translation>Kernposition</translation>
+    </message>
+    <message>
+      <source>Number of kappa-sigma iterations.</source>
+      <translation>Anzahl der Kappa-Sigma-Iterationen.</translation>
+    </message>
+    <message>
+      <source>Number of threads</source>
+      <translation>Anzahl der Threads</translation>
+    </message>
+    <message>
+      <source>Number of threads:</source>
+      <translation>Anzahl der Threads:</translation>
+    </message>
+    <message>
+      <source>OBJECT</source>
+      <translation>OBJEKT</translation>
+    </message>
+    <message>
+      <source>OFF</source>
+      <translation>AUS</translation>
+    </message>
+    <message>
+      <source>ON, Scale {0}, Drop {1:.2f}</source>
+      <translation>EIN, Skala {0}, Drop {1:.2f}</translation>
+    </message>
+    <message>
+      <source>Observer</source>
+      <translation>Beobachter</translation>
+    </message>
+    <message>
+      <source>Offset</source>
+      <translation>Offset</translation>
+    </message>
+    <message>
+      <source>Open Command Prompt and run the following.
 
 Step 1: uninstall PyTorch
-Step 2: install the correct build for your GPU</source><translation>Öffnen Sie die Eingabeaufforderung und führen Sie Folgendes aus.
+Step 2: install the correct build for your GPU</source>
+      <translation>Öffnen Sie die Eingabeaufforderung und führen Sie Folgendes aus.
 
 Schritt 1: PyTorch deinstallieren
-Schritt 2: Den richtigen Build für Ihre GPU installieren</translation></message><message><source>Open Log</source><translation>Log öffnen</translation></message><message><source>Open in viewer</source><translation>Im Viewer öffnen</translation></message><message><source>Open result when done</source><translation>Ergebnis nach Fertigstellung öffnen</translation></message><message><source>Open the main window to see the Stacking Log dock.</source><translation>Öffnen Sie das Hauptfenster, um das Stacking-Log-Dock zu sehen.</translation></message><message><source>Output</source><translation>Ausgabe</translation></message><message><source>Output Bit Depth</source><translation>Ausgabebittiefe</translation></message><message><source>Output Directory</source><translation>Ausgabeverzeichnis</translation></message><message><source>Output Directory:</source><translation>Ausgabeverzeichnis:</translation></message><message><source>Output Filename</source><translation>Ausgabedateiname</translation></message><message><source>Output Format</source><translation>Ausgabeformat</translation></message><message><source>Output Settings</source><translation>Ausgabeeinstellungen</translation></message><message><source>Output directory does not exist</source><translation>Ausgabeverzeichnis existiert nicht</translation></message><message><source>Output directory is not set.</source><translation>Ausgabeverzeichnis ist nicht festgelegt.</translation></message><message><source>Output pixel size</source><translation>Ausgabepixelgröße</translation></message><message><source>Output saved to:</source><translation>Ausgabe gespeichert in:</translation></message><message><source>Overall Progress</source><translation>Gesamtfortschritt</translation></message><message><source>Overlap</source><translation>Überlappung</translation></message><message><source>Override Dark Frame</source><translation>Dark-Frame überschreiben</translation></message><message><source>Override Flat Frame</source><translation>Flat-Frame überschreiben</translation></message><message><source>Override Master Dark Selection</source><translation>Master-Dark-Auswahl überschreiben</translation></message><message><source>Overwrite existing file?</source><translation>Vorhandene Datei überschreiben?</translation></message><message><source>PIXSIZE1</source><translation>PIXSIZE1</translation></message><message><source>PIXSIZE2</source><translation>PIXSIZE2</translation></message><message><source>PSF Estimation:</source><translation>PSF-Schätzung:</translation></message><message><source>PSF FWHM:</source><translation>PSF-FWHM:</translation></message><message><source>Panel layout</source><translation>Panel-Layout</translation></message><message><source>Parallel Loading</source><translation>Paralleles Laden</translation></message><message><source>Parallel processing</source><translation>Parallele Verarbeitung</translation></message><message><source>Patch Size:</source><translation>Patch-Größe:</translation></message><message><source>Patch size (small):</source><translation>Patch-Größe (klein):</translation></message><message><source>Path</source><translation>Pfad</translation></message><message><source>Pattern</source><translation>Muster</translation></message><message><source>Pause</source><translation>Pause</translation></message><message><source>Pedestal (0-1000):</source><translation>Pedestal (0-1000):</translation></message><message><source>Pending</source><translation>Ausstehend</translation></message><message><source>Per-frame alignment timeout for the parallel workers. Default 300s.</source><translation>Zeitüberschreitung pro Bildausrichtung für die parallelen Worker. Standard 300s.</translation></message><message><source>Percentile Clip</source><translation>Perzentil-Clip</translation></message><message><source>Percentile Clipping</source><translation>Perzentil-Clipping</translation></message><message><source>Percentile High</source><translation>Perzentil hoch</translation></message><message><source>Percentile High:</source><translation>Perzentil hoch:</translation></message><message><source>Percentile Low</source><translation>Perzentil niedrig</translation></message><message><source>Percentile Low:</source><translation>Perzentil niedrig:</translation></message><message><source>Performance</source><translation>Leistung</translation></message><message><source>Performance Settings</source><translation>Leistungseinstellungen</translation></message><message><source>Phase Correlation</source><translation>Phasenkorrelation</translation></message><message><source>Pick a frame to mark the comet center</source><translation>Wählen Sie ein Bild aus, um das Kometenzentrum zu markieren</translation></message><message><source>Pick comet center…</source><translation>Kometenzentrum wählen…</translation></message><message><source>Pixels above this image quantile are treated as saturated and never replaced.</source><translation>Pixel oberhalb dieses Bildquantils werden als gesättigt behandelt und niemals ersetzt.</translation></message><message><source>Please choose a profile to load.</source><translation>Bitte wählen Sie ein Profil zum Laden aus.</translation></message><message><source>Please select a conversion output directory first.</source><translation>Bitte wählen Sie zuerst ein Ausgabeverzeichnis für die Konvertierung aus.</translation></message><message><source>Please set the stacking directory first using the wrench button.</source><translation>Bitte legen Sie zuerst das Stacking-Verzeichnis mit dem Schraubenschlüssel-Symbol fest.</translation></message><message><source>Please set the stacking directory first.</source><translation>Bitte legen Sie zuerst das Stacking-Verzeichnis fest.</translation></message><message><source>Please wait</source><translation>Bitte warten</translation></message><message><source>Point</source><translation>Punkt</translation></message><message><source>Polynomial 3rd-order</source><translation>Polynom 3. Ordnung</translation></message><message><source>Polynomial 4th-order</source><translation>Polynom 4. Ordnung</translation></message><message><source>Polynomial Degree:</source><translation>Polynomgrad:</translation></message><message><source>Polynomial degree</source><translation>Polynomgrad</translation></message><message><source>Post-Alignment</source><translation>Nach dem Ausrichten</translation></message><message><source>Prefix</source><translation>Präfix</translation></message><message><source>Preparing MF deconvolution…</source><translation>MF-Deconvolution wird vorbereitet…</translation></message><message><source>Preparing runtime…</source><translation>Runtime wird vorbereitet…</translation></message><message><source>Preserve raw data</source><translation>Rohdaten erhalten</translation></message><message><source>Preview</source><translation>Vorschau</translation></message><message><source>Preview background</source><translation>Hintergrundvorschau</translation></message><message><source>Preview defects</source><translation>Defektvorschau</translation></message><message><source>Preview filename</source><translation>Dateinamenvorschau</translation></message><message><source>Preview integration</source><translation>Integrationsvorschau</translation></message><message><source>Preview motion</source><translation>Bewegungsvorschau</translation></message><message><source>Preview size</source><translation>Vorschaugröße</translation></message><message><source>Processing...</source><translation>Verarbeitung...</translation></message><message><source>Profile name:</source><translation>Profilname:</translation></message><message><source>Profile saved</source><translation>Profil gespeichert</translation></message><message><source>Profile:</source><translation>Profil:</translation></message><message><source>Profiles</source><translation>Profile</translation></message><message><source>Progress</source><translation>Fortschritt</translation></message><message><source>Progress initialized: {0} tiles across groups.</source><translation>Fortschritt initialisiert: {0} Kacheln über Gruppen hinweg.</translation></message><message><source>Protect core radius (px):</source><translation>Kernradius schützen (px):</translation></message><message><source>Quality</source><translation>Qualität</translation></message><message><source>RA</source><translation>RA</translation></message><message><source>RA rate (arcsec/min)</source><translation>RA-Rate (arcsec/min)</translation></message><message><source>RANSAC Iterations:</source><translation>RANSAC-Iterationen:</translation></message><message><source>RANSAC Threshold:</source><translation>RANSAC-Schwellenwert:</translation></message><message><source>RANSAC reproj (px):</source><translation>RANSAC-Reproj. (px):</translation></message><message><source>RGGB</source><translation>RGGB</translation></message><message><source>Ready</source><translation>Bereit</translation></message><message><source>Recent Sessions</source><translation>Kürzliche Sitzungen</translation></message><message><source>Reconstruct on an r× super-res grid using SR PSFs.
-Compute cost grows roughly ~ r^4. Drizzle usually provides better results.</source><translation>Rekonstruieren auf einem r× Super-Res-Raster unter Verwendung von SR-PSFs.
-Der Rechenaufwand wächst etwa um r^4. Drizzle liefert normalerweise bessere Ergebnisse.</translation></message><message><source>Recurse subfolders</source><translation>Unterordner einbeziehen</translation></message><message><source>Reference Frame</source><translation>Referenzbild</translation></message><message><source>Reference frame not found</source><translation>Referenzbild nicht gefunden</translation></message><message><source>Refinement:</source><translation>Verfeinerung:</translation></message><message><source>Register &amp;&amp; Integrate</source><translation>Registrieren &amp;&amp; Integrieren</translation></message><message><source>Register Only</source><translation>Nur Registrieren</translation></message><message><source>Registering...</source><translation>Registrierung...</translation></message><message><source>Registration</source><translation>Registrierung</translation></message><message><source>Registration Method</source><translation>Registrierungsmethode</translation></message><message><source>Registration Settings</source><translation>Registrierungseinstellungen</translation></message><message><source>Registration complete</source><translation>Registrierung abgeschlossen</translation></message><message><source>Registration failed for frame</source><translation>Registrierung für Bild fehlgeschlagen</translation></message><message><source>Registration in progress…</source><translation>Registrierung läuft…</translation></message><message><source>Regularization (lambda):</source><translation>Regularisierung (Lambda):</translation></message><message><source>Regularization:</source><translation>Regularisierung:</translation></message><message><source>Reject a frame if its residual shift exceeds this many pixels after alignment.</source><translation>Ein Bild ablehnen, wenn seine Restverschiebung nach dem Ausrichten diese Anzahl an Pixeln überschreitet.</translation></message><message><source>Reject worst %</source><translation>Schlechteste % verwerfen</translation></message><message><source>Rejected</source><translation>Verworfen</translation></message><message><source>Rejection</source><translation>Rejektion</translation></message><message><source>Rejection Algorithm</source><translation>Rejektionsalgorithmus</translation></message><message><source>Rejection Method</source><translation>Rejektionsmethode</translation></message><message><source>Rejection Method:</source><translation>Rejektionsmethode:</translation></message><message><source>Remove All</source><translation>Alle entfernen</translation></message><message><source>Remove Selected</source><translation>Ausgewählte entfernen</translation></message><message><source>Remove background gradient (ABE Poly²)</source><translation>Hintergrundgradienten entfernen (ABE Poly²)</translation></message><message><source>Remove from Group</source><translation>Aus Gruppe entfernen</translation></message><message><source>Remove selected files from queue</source><translation>Ausgewählte Dateien aus Warteschlange entfernen</translation></message><message><source>Remove stars on comet-aligned frames</source><translation>Sterne auf kometenausgerichteten Bildern entfernen</translation></message><message><source>Rename Group</source><translation>Gruppe umbenennen</translation></message><message><source>Requires 'Enable Drizzle'. Maps R/G/B CFA samples directly into channels (no interpolation).</source><translation>Erfordert 'Drizzle aktivieren'. Ordnet R/G/B-CFA-Proben direkt den Kanälen zu (keine Interpolation).</translation></message><message><source>Reset All</source><translation>Alle zurücksetzen</translation></message><message><source>Reset MFDeconv to Recommended</source><translation>MFDeconv auf Empfohlen zurücksetzen</translation></message><message><source>Reset filter</source><translation>Filter zurücksetzen</translation></message><message><source>Reset to Defaults</source><translation>Auf Standards zurücksetzen</translation></message><message><source>Restore MFDeconv star mask + variance map tuning to the recommended defaults.</source><translation>MFDeconv-Sternmaske + Varianzkarten-Abstimmung auf die empfohlenen Standardwerte zurücksetzen.</translation></message><message><source>Restore Recommended</source><translation>Empfohlene wiederherstellen</translation></message><message><source>Resume</source><translation>Fortsetzen</translation></message><message><source>Review Reference Before Alignment</source><translation>Referenz vor der Ausrichtung prüfen</translation></message><message><source>Right Click to Assign Session Keys if desired</source><translation>Rechtsklick, um bei Bedarf Sitzungsschlüssel zuzuweisen</translation></message><message><source>Right-click for options</source><translation>Rechtsklick für Optionen</translation></message><message><source>Robust μ–σ (live stack)</source><translation>Robuster μ–σ (Live-Stack)</translation></message><message><source>Roundness (closer to 1 is better)</source><translation>Rundheit (näher bei 1 ist besser)</translation></message><message><source>Rows</source><translation>Zeilen</translation></message><message><source>Runs multi-frame deconvolution during integration. Turn off if testing.</source><translation>Führt Multi-Frame-Deconvolution während der Integration aus. Zum Testen ausschalten.</translation></message><message><source>SET-TEMP</source><translation>SET-TEMP</translation></message><message><source>SITELAT</source><translation>SITELAT</translation></message><message><source>SITELONG</source><translation>SITELONG</translation></message><message><source>SNR Weight</source><translation>SNR-Gewichtung</translation></message><message><source>Same as input</source><translation>Wie Eingabe</translation></message><message><source>Sample Points:</source><translation>Beispielpunkte:</translation></message><message><source>Sample points:</source><translation>Beispielpunkte:</translation></message><message><source>Saturation quantile:</source><translation>Sättigungsquantil:</translation></message><message><source>Save</source><translation>Speichern</translation></message><message><source>Save Defect Map</source><translation>Defektkarte speichern</translation></message><message><source>Save Rejection Maps</source><translation>Rejektionskarten speichern</translation></message><message><source>Save Session</source><translation>Sitzung speichern</translation></message><message><source>Save Session As...</source><translation>Sitzung speichern unter...</translation></message><message><source>Save Star-Trail Image</source><translation>Strichspur-Bild speichern</translation></message><message><source>Save all comet-aligned starless frames.
-Requires: 'Create comet stack' AND 'Remove stars on comet-aligned frames'.</source><translation>Alle kometenausgerichteten sternlosen Bilder speichern.
-Erfordert: 'Kometen-Stack erstellen' UND 'Sterne auf kometenausgerichteten Bildern entfernen'.</translation></message><message><source>Save all comet-aligned starless frames.
-Requires: ‘Create comet stack’ AND ‘Remove stars on comet-aligned frames’.</source><translation>Alle kometenausgerichteten sternlosen Bilder speichern.
-Erfordert: ‚Kometen-Stack erstellen‘ UND ‚Sterne auf kometenausgerichteten Bildern entfernen‘.</translation></message><message><source>Save all starless comet-aligned frames</source><translation>Alle sternlosen kometenausgerichteten Bilder speichern</translation></message><message><source>Save calibrated frames</source><translation>Kalibrierte Bilder speichern</translation></message><message><source>Save defect map</source><translation>Defektkarte speichern</translation></message><message><source>Save defect map...</source><translation>Defektkarte speichern...</translation></message><message><source>Save intermediate files</source><translation>Zwischendateien speichern</translation></message><message><source>Save intermediate iterative images</source><translation>Zwischen-Iterationsbilder speichern</translation></message><message><source>Save profile as…</source><translation>Profil speichern unter…</translation></message><message><source>Save registered frames</source><translation>Registrierte Bilder speichern</translation></message><message><source>Save rejection maps</source><translation>Rejektionskarten speichern</translation></message><message><source>Save session before closing?</source><translation>Sitzung vor dem Schließen speichern?</translation></message><message><source>Saved: {0} ({1}/{2})</source><translation>Gespeichert: {0} ({1}/{2})</translation></message><message><source>Scale</source><translation>Skalierung</translation></message><message><source>Scale to Reference</source><translation>An Referenz skalieren</translation></message><message><source>Scale:</source><translation>Skalierung:</translation></message><message><source>Score by</source><translation>Bewerten nach</translation></message><message><source>Seed image:</source><translation>Seed-Bild:</translation></message><message><source>Select Bias Directory</source><translation>Bias-Verzeichnis wählen</translation></message><message><source>Select Bias Files</source><translation>Bias-Dateien wählen</translation></message><message><source>Select Bias Frames</source><translation>Bias-Bilder wählen</translation></message><message><source>Select Conversion Output Directory</source><translation>Ausgabeverzeichnis für Konvertierung wählen</translation></message><message><source>Select Dark Directory</source><translation>Dark-Verzeichnis wählen</translation></message><message><source>Select Dark Files</source><translation>Dark-Dateien wählen</translation></message><message><source>Select Dark Flat Frames</source><translation>Dark-Flat-Bilder wählen</translation></message><message><source>Select Dark Frames</source><translation>Dark-Bilder wählen</translation></message><message><source>Select Defect Map</source><translation>Defektkarte wählen</translation></message><message><source>Select Directory for Conversion</source><translation>Verzeichnis für Konvertierung wählen</translation></message><message><source>Select Files for Conversion</source><translation>Dateien für Konvertierung wählen</translation></message><message><source>Select Flat Directory</source><translation>Flat-Verzeichnis wählen</translation></message><message><source>Select Flat Files</source><translation>Flat-Dateien wählen</translation></message><message><source>Select Flat Frames</source><translation>Flat-Bilder wählen</translation></message><message><source>Select Light Directory</source><translation>Light-Verzeichnis wählen</translation></message><message><source>Select Light Files</source><translation>Light-Dateien wählen</translation></message><message><source>Select Light Frames</source><translation>Light-Bilder wählen</translation></message><message><source>Select Master Bias</source><translation>Master-Bias wählen</translation></message><message><source>Select Master Bias File(s)</source><translation>Master-Bias-Datei(en) wählen</translation></message><message><source>Select Master Bias Frame</source><translation>Master-Bias-Bild wählen</translation></message><message><source>Select Master Dark</source><translation>Master-Dark wählen</translation></message><message><source>Select Master Dark File(s)</source><translation>Master-Dark-Datei(en) wählen</translation></message><message><source>Select Master Flat</source><translation>Master-Flat wählen</translation></message><message><source>Select Master Flat File(s)</source><translation>Master-Flat-Datei(en) wählen</translation></message><message><source>Select New Reference Frame</source><translation>Neues Referenzbild wählen</translation></message><message><source>Select Output Directory</source><translation>Ausgabeverzeichnis wählen</translation></message><message><source>Select Reference Frame</source><translation>Referenzbild wählen</translation></message><message><source>Select Reference Frame:</source><translation>Referenzbild wählen:</translation></message><message><source>Select Reference...</source><translation>Referenz wählen...</translation></message><message><source>Select Stacking Directory</source><translation>Stacking-Verzeichnis wählen</translation></message><message><source>Select files to split:</source><translation>Dateien zum Splitten wählen:</translation></message><message><source>Select output directory for stacked images</source><translation>Ausgabeverzeichnis für gestackte Bilder wählen</translation></message><message><source>Selected</source><translation>Ausgewählt</translation></message><message><source>Send to {0} tab</source><translation>An Reiter {0} senden</translation></message><message><source>Session</source><translation>Sitzung</translation></message><message><source>Session Files</source><translation>Sitzungsdateien</translation></message><message><source>Session Info</source><translation>Sitzungsinfo</translation></message><message><source>Session loaded</source><translation>Sitzung geladen</translation></message><message><source>Session saved</source><translation>Sitzung gespeichert</translation></message><message><source>Set Reference Frame</source><translation>Referenzbild festlegen</translation></message><message><source>Set Session Tag</source><translation>Sitzungs-Tag festlegen</translation></message><message><source>Set Session Tag...</source><translation>Sitzungs-Tag festlegen...</translation></message><message><source>Set Stacking Directory &amp; Sigma Clipping</source><translation>Stacking-Verzeichnis &amp; Sigma-Clipping festlegen</translation></message><message><source>Set as reference frame</source><translation>Als Referenzbild festlegen</translation></message><message><source>Sharpness</source><translation>Schärfe</translation></message><message><source>Show preview</source><translation>Vorschau anzeigen</translation></message><message><source>Show the Stacking Suite log window</source><translation>Stacking Suite Log-Fenster anzeigen</translation></message><message><source>Sigma Clipping</source><translation>Sigma-Clipping</translation></message><message><source>Sigma High</source><translation>Sigma hoch</translation></message><message><source>Sigma Low</source><translation>Sigma niedrig</translation></message><message><source>Sigma thresholds:</source><translation>Sigma-Schwellenwerte:</translation></message><message><source>Simple</source><translation>Einfach</translation></message><message><source>Simple Average (No Rejection)</source><translation>Einfacher Durchschnitt (keine Rejektion)</translation></message><message><source>Simple Median (No Rejection)</source><translation>Einfacher Median (keine Rejektion)</translation></message><message><source>Size: {0}</source><translation>Größe: {0}</translation></message><message><source>Size: {0} | Session: {1}</source><translation>Größe: {0} | Sitzung: {1}</translation></message><message><source>Size: {0}, Temp: {1}°C, Date: {2}</source><translation>Größe: {0}, Temp: {1}°C, Datum: {2}</translation></message><message><source>Skip Normal Integration (MFDeconv only)</source><translation>Normale Integration überspringen (nur MFDeconv)</translation></message><message><source>Skip file</source><translation>Datei überspringen</translation></message><message><source>Skip if strength &lt;</source><translation>Überspringen, wenn Stärke &lt;</translation></message><message><source>Skip registration/alignment and use Maximum-Intensity projection for star trails</source><translation>Registrierung/Ausrichtung überspringen und Maximum-Intensity-Projektion für Strichspuren verwenden</translation></message><message><source>Smoothness</source><translation>Glätte</translation></message><message><source>Solve downsample:</source><translation>Downsampling beim Lösen:</translation></message><message><source>Sort</source><translation>Sortieren</translation></message><message><source>Sort by Quality</source><translation>Nach Qualität sortieren</translation></message><message><source>Spline</source><translation>Spline</translation></message><message><source>Spline-3</source><translation>Spline-3</translation></message><message><source>Spline-5</source><translation>Spline-5</translation></message><message><source>Split Group</source><translation>Gruppe aufteilen</translation></message><message><source>Split dual-band OSC before integration</source><translation>Dual-Band OSC vor Integration splitten</translation></message><message><source>Square</source><translation>Quadrat</translation></message><message><source>Square (pixfrac)</source><translation>Quadrat (pixfrac)</translation></message><message><source>Stack</source><translation>Stack</translation></message><message><source>Stack Method:</source><translation>Stacking-Methode:</translation></message><message><source>Stack Mode:</source><translation>Stacking-Modus:</translation></message><message><source>Stacking &amp; drizzle (if enabled)…</source><translation>Stacking &amp; Drizzle (falls aktiviert)…</translation></message><message><source>Stacking Complete</source><translation>Stacking abgeschlossen</translation></message><message><source>Stacking Directory:</source><translation>Stacking-Verzeichnis:</translation></message><message><source>Stacking Log</source><translation>Stacking-Log</translation></message><message><source>Stacking Settings</source><translation>Stacking-Einstellungen</translation></message><message><source>Stacking Suite</source><translation>Stacking Suite</translation></message><message><source>Stacking cancelled by user</source><translation>Stacking vom Benutzer abgebrochen</translation></message><message><source>Stacking complete!</source><translation>Stacking abgeschlossen!</translation></message><message><source>Stacking...</source><translation>Stacking...</translation></message><message><source>Star Detection Threshold:</source><translation>Sternerkennung-Schwellenwert:</translation></message><message><source>Star Removal for Comet</source><translation>Sternentfernung für Kometen</translation></message><message><source>Star Trail Mode</source><translation>Strichspur-Modus</translation></message><message><source>Star detect σ:</source><translation>Sternerkennung σ:</translation></message><message><source>Star detection threshold in σ above background. Lower = more stars (faster saturation, more false positives); higher = fewer stars.</source><translation>Sternerkennungsschwellenwert in σ über dem Hintergrund. Niedriger = mehr Sterne (schnellere Sättigung, mehr Fehlalarme); höher = weniger Sterne.</translation></message><message><source>Star guards:</source><translation>Sternwächter (Guards):</translation></message><message><source>Star saturation</source><translation>Sternsättigung</translation></message><message><source>StarNet</source><translation>StarNet</translation></message><message><source>Stars</source><translation>Sterne</translation></message><message><source>Stars Weight</source><translation>Stern-Gewichtung</translation></message><message><source>Stars detected</source><translation>Sterne erkannt</translation></message><message><source>Start the stacking process</source><translation>Stacking-Vorgang starten</translation></message><message><source>Starting Master Dark Creation...</source><translation>Master-Dark-Erstellung wird gestartet...</translation></message><message><source>Starting Master Flat Creation...</source><translation>Master-Flat-Erstellung wird gestartet...</translation></message><message><source>Starting integration for group '{0}' with {1} files.</source><translation>Starte Integration für Gruppe '{0}' mit {1} Dateien.</translation></message><message><source>Status</source><translation>Status</translation></message><message><source>Status: {0}</source><translation>Status: {0}</translation></message><message><source>Std Dev</source><translation>Standardabweichung</translation></message><message><source>Std-devs from median; higher = more lenient.</source><translation>Standardabweichungen vom Median; höher = toleranter.</translation></message><message><source>Stellar Alignment</source><translation>Stellar Alignment</translation></message><message><source>Step 1: Install NVIDIA CUDA Toolkit 12.x</source><translation>Schritt 1: NVIDIA CUDA Toolkit 12.x installieren</translation></message><message><source>Step 2: Install PyTorch with CUDA (click button below)</source><translation>Schritt 2: PyTorch mit CUDA installieren (unten klicken)</translation></message><message><source>Stop</source><translation>Stopp</translation></message><message><source>Sub-pixel accuracy</source><translation>Subpixel-Genauigkeit</translation></message><message><source>Subpixel Alignment</source><translation>Subpixel-Ausrichtung</translation></message><message><source>Subtract (additive)</source><translation>Subtrahieren (additiv)</translation></message><message><source>Subtract comet</source><translation>Komet subtrahieren</translation></message><message><source>Subtract stars</source><translation>Sterne subtrahieren</translation></message><message><source>Successfully stacked {0} frames</source><translation>{0} Bilder erfolgreich gestackt</translation></message><message><source>Suffix</source><translation>Suffix</translation></message><message><source>Sum</source><translation>Summe</translation></message><message><source>Super Pixel</source><translation>Super Pixel</translation></message><message><source>Super Resolution</source><translation>Super Resolution</translation></message><message><source>Super-resolution scale factor r (integer ≥2).</source><translation>Super-Resolution Skalierungsfaktor r (Ganzzahl ≥2).</translation></message><message><source>Supported Files (*.fits *.fit *.fz *.fz *.fits.gz *.fit.gz *.tiff *.tif *.png *.jpg *.jpeg *.cr2 *.cr3 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef *.xisf)</source><translation>Unterstützte Dateien (*.fits *.fit *.fz *.fz *.fits.gz *.fit.gz *.tiff *.tif *.png *.jpg *.jpeg *.cr2 *.cr3 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef *.xisf)</translation></message><message><source>TELESCOP</source><translation>TELESKOP</translation></message><message><source>TIFF</source><translation>TIFF</translation></message><message><source>TIFF (*.tif);;PNG (*.png);;JPEG (*.jpg *.jpeg);;FITS (*.fits);;XISF (*.xisf)</source><translation>TIFF (*.tif);;PNG (*.png);;JPEG (*.jpg *.jpeg);;FITS (*.fits);;XISF (*.xisf)</translation></message><message><source>Target Name</source><translation>Zielname</translation></message><message><source>Telescope</source><translation>Teleskop</translation></message><message><source>Temperature</source><translation>Temperatur</translation></message><message><source>Temperature Tolerance (°C):</source><translation>Temperaturtoleranz (°C):</translation></message><message><source>Template Matching</source><translation>Template Matching</translation></message><message><source>There are no files to convert.</source><translation>Es gibt keine Dateien zum Konvertieren.</translation></message><message><source>This app is running on Python {0}.{1}. GPU acceleration requires Python 3.10, 3.11, or 3.12.</source><translation>Diese App läuft mit Python {0}.{1}. GPU-Beschleunigung erfordert Python 3.10, 3.11 oder 3.12.</translation></message><message><source>Thread Count:</source><translation>Anzahl der Threads:</translation></message><message><source>Time</source><translation>Zeit</translation></message><message><source>Timeout per frame (s):</source><translation>Zeitüberschreitung pro Bild (s):</translation></message><message><source>Too few matching stars</source><translation>Zu wenige übereinstimmende Sterne</translation></message><message><source>Tool:</source><translation>Werkzeug:</translation></message><message><source>Total</source><translation>Gesamt</translation></message><message><source>Track nucleus</source><translation>Kern verfolgen</translation></message><message><source>Track stars</source><translation>Sterne verfolgen</translation></message><message><source>Transform calculation failed</source><translation>Transformationsberechnung fehlgeschlagen</translation></message><message><source>Transform-based (fast)</source><translation>Transformationsbasiert (schnell)</translation></message><message><source>Transforming images...</source><translation>Bilder werden transformiert...</translation></message><message><source>Triangle Match Tolerance:</source><translation>Triangle-Match-Toleranz:</translation></message><message><source>Triangle Similarity</source><translation>Dreiecksähnlichkeit</translation></message><message><source>Trim fraction:</source><translation>Trim-Anteil:</translation></message><message><source>Trimmed Mean</source><translation>Getrimmter Mittelwert</translation></message><message><source>Turbo</source><translation>Turbo</translation></message><message><source>Turn Those Darks Into Master Darks</source><translation>Verwandeln Sie diese Darks in Master-Darks</translation></message><message><source>Turn Those Flats Into Master Flats</source><translation>Verwandeln Sie diese Flats in Master-Flats</translation></message><message><source>Type</source><translation>Typ</translation></message><message><source>Unknown</source><translation>Unbekannt</translation></message><message><source>Unmark Reference</source><translation>Referenzmarkierung aufheben</translation></message><message><source>Unsaved session</source><translation>Nicht gespeicherte Sitzung</translation></message><message><source>Unsupported Python Version</source><translation>Nicht unterstützte Python-Version</translation></message><message><source>Unsupported image ndim={0} for {1}</source><translation>Nicht unterstütztes Bild ndim={0} für {1}</translation></message><message><source>Update clip (κ):</source><translation>Update-Clip (κ):</translation></message><message><source>Update preview automatically</source><translation>Vorschau automatisch aktualisieren</translation></message><message><source>Use GPU acceleration</source><translation>GPU-Beschleunigung verwenden</translation></message><message><source>Use Master Bias</source><translation>Master-Bias verwenden</translation></message><message><source>Use Master Dark</source><translation>Master-Dark verwenden</translation></message><message><source>Use Master Flat</source><translation>Master-Flat verwenden</translation></message><message><source>Use defect map</source><translation>Defektkarte verwenden</translation></message><message><source>Use hardware acceleration if available</source><translation>Hardwarebeschleunigung verwenden, falls verfügbar</translation></message><message><source>Use memory mapping</source><translation>Memory Mapping verwenden</translation></message><message><source>Use memory-mapped files</source><translation>Memory-mapped Dateien verwenden</translation></message><message><source>Use reference frame from this list</source><translation>Referenzbild aus dieser Liste verwenden</translation></message><message><source>User selected a new reference frame: {0}</source><translation>Benutzer hat neues Referenzbild ausgewählt: {0}</translation></message><message><source>Using GPU for tile {0} with algo {1}</source><translation>GPU wird für Kachel {0} mit Algo {1} verwendet</translation></message><message><source>Using Master Bias (for flats when needed): {0}</source><translation>Master-Bias wird verwendet (für Flats bei Bedarf): {0}</translation></message><message><source>Using Master Bias: {0}</source><translation>Verwende Master-Bias: {0}</translation></message><message><source>Using {0} kernel drizzle ({1}).</source><translation>Verwende {0}-Kernel-Drizzle ({1}).</translation></message><message><source>VNG</source><translation>VNG</translation></message><message><source>VarMap floor (log10):</source><translation>VarMap floor (log10):</translation></message><message><source>VarMap sample stride:</source><translation>VarMap sample stride:</translation></message><message><source>VarMap smooth σ:</source><translation>VarMap smooth σ:</translation></message><message><source>Verbose logging</source><translation>Ausführliche Protokollierung</translation></message><message><source>View frame header</source><translation>Bild-Header anzeigen</translation></message><message><source>View frame info</source><translation>Bild-Info anzeigen</translation></message><message><source>Visit the NVIDIA CUDA Downloads page in your browser to install CUDA Toolkit 12.x:
+Schritt 2: Den richtigen Build für Ihre GPU installieren</translation>
+    </message>
+    <message>
+      <source>Open Log</source>
+      <translation>Log öffnen</translation>
+    </message>
+    <message>
+      <source>Open in viewer</source>
+      <translation>Im Viewer öffnen</translation>
+    </message>
+    <message>
+      <source>Open result when done</source>
+      <translation>Ergebnis nach Fertigstellung öffnen</translation>
+    </message>
+    <message>
+      <source>Open the main window to see the Stacking Log dock.</source>
+      <translation>Öffnen Sie das Hauptfenster, um das Stacking-Log-Dock zu sehen.</translation>
+    </message>
+    <message>
+      <source>Output</source>
+      <translation>Ausgabe</translation>
+    </message>
+    <message>
+      <source>Output Bit Depth</source>
+      <translation>Ausgabebittiefe</translation>
+    </message>
+    <message>
+      <source>Output Directory</source>
+      <translation>Ausgabeverzeichnis</translation>
+    </message>
+    <message>
+      <source>Output Directory:</source>
+      <translation>Ausgabeverzeichnis:</translation>
+    </message>
+    <message>
+      <source>Output Filename</source>
+      <translation>Ausgabedateiname</translation>
+    </message>
+    <message>
+      <source>Output Format</source>
+      <translation>Ausgabeformat</translation>
+    </message>
+    <message>
+      <source>Output Settings</source>
+      <translation>Ausgabeeinstellungen</translation>
+    </message>
+    <message>
+      <source>Output directory does not exist</source>
+      <translation>Ausgabeverzeichnis existiert nicht</translation>
+    </message>
+    <message>
+      <source>Output directory is not set.</source>
+      <translation>Ausgabeverzeichnis ist nicht festgelegt.</translation>
+    </message>
+    <message>
+      <source>Output pixel size</source>
+      <translation>Ausgabepixelgröße</translation>
+    </message>
+    <message>
+      <source>Output saved to:</source>
+      <translation>Ausgabe gespeichert in:</translation>
+    </message>
+    <message>
+      <source>Overall Progress</source>
+      <translation>Gesamtfortschritt</translation>
+    </message>
+    <message>
+      <source>Overlap</source>
+      <translation>Überlappung</translation>
+    </message>
+    <message>
+      <source>Override Dark Frame</source>
+      <translation>Dark-Frame überschreiben</translation>
+    </message>
+    <message>
+      <source>Override Flat Frame</source>
+      <translation>Flat-Frame überschreiben</translation>
+    </message>
+    <message>
+      <source>Override Master Dark Selection</source>
+      <translation>Master-Dark-Auswahl überschreiben</translation>
+    </message>
+    <message>
+      <source>Overwrite existing file?</source>
+      <translation>Vorhandene Datei überschreiben?</translation>
+    </message>
+    <message>
+      <source>PIXSIZE1</source>
+      <translation>PIXSIZE1</translation>
+    </message>
+    <message>
+      <source>PIXSIZE2</source>
+      <translation>PIXSIZE2</translation>
+    </message>
+    <message>
+      <source>PSF Estimation:</source>
+      <translation>PSF-Schätzung:</translation>
+    </message>
+    <message>
+      <source>PSF FWHM:</source>
+      <translation>PSF-FWHM:</translation>
+    </message>
+    <message>
+      <source>Panel layout</source>
+      <translation>Panel-Layout</translation>
+    </message>
+    <message>
+      <source>Parallel Loading</source>
+      <translation>Paralleles Laden</translation>
+    </message>
+    <message>
+      <source>Parallel processing</source>
+      <translation>Parallele Verarbeitung</translation>
+    </message>
+    <message>
+      <source>Patch Size:</source>
+      <translation>Patch-Größe:</translation>
+    </message>
+    <message>
+      <source>Patch size (small):</source>
+      <translation>Patch-Größe (klein):</translation>
+    </message>
+    <message>
+      <source>Path</source>
+      <translation>Pfad</translation>
+    </message>
+    <message>
+      <source>Pattern</source>
+      <translation>Muster</translation>
+    </message>
+    <message>
+      <source>Pause</source>
+      <translation>Pause</translation>
+    </message>
+    <message>
+      <source>Pedestal (0-1000):</source>
+      <translation>Pedestal (0-1000):</translation>
+    </message>
+    <message>
+      <source>Pending</source>
+      <translation>Ausstehend</translation>
+    </message>
+    <message>
+      <source>Per-frame alignment timeout for the parallel workers. Default 300s.</source>
+      <translation>Zeitüberschreitung pro Bildausrichtung für die parallelen Worker. Standard 300s.</translation>
+    </message>
+    <message>
+      <source>Percentile Clip</source>
+      <translation>Perzentil-Clip</translation>
+    </message>
+    <message>
+      <source>Percentile Clipping</source>
+      <translation>Perzentil-Clipping</translation>
+    </message>
+    <message>
+      <source>Percentile High</source>
+      <translation>Perzentil hoch</translation>
+    </message>
+    <message>
+      <source>Percentile High:</source>
+      <translation>Perzentil hoch:</translation>
+    </message>
+    <message>
+      <source>Percentile Low</source>
+      <translation>Perzentil niedrig</translation>
+    </message>
+    <message>
+      <source>Percentile Low:</source>
+      <translation>Perzentil niedrig:</translation>
+    </message>
+    <message>
+      <source>Performance</source>
+      <translation>Leistung</translation>
+    </message>
+    <message>
+      <source>Performance Settings</source>
+      <translation>Leistungseinstellungen</translation>
+    </message>
+    <message>
+      <source>Phase Correlation</source>
+      <translation>Phasenkorrelation</translation>
+    </message>
+    <message>
+      <source>Pick a frame to mark the comet center</source>
+      <translation>Wählen Sie ein Bild aus, um das Kometenzentrum zu markieren</translation>
+    </message>
+    <message>
+      <source>Pick comet center…</source>
+      <translation>Kometenzentrum wählen…</translation>
+    </message>
+    <message>
+      <source>Pixels above this image quantile are treated as saturated and never replaced.</source>
+      <translation>Pixel oberhalb dieses Bildquantils werden als gesättigt behandelt und niemals ersetzt.</translation>
+    </message>
+    <message>
+      <source>Please choose a profile to load.</source>
+      <translation>Bitte wählen Sie ein Profil zum Laden aus.</translation>
+    </message>
+    <message>
+      <source>Please select a conversion output directory first.</source>
+      <translation>Bitte wählen Sie zuerst ein Ausgabeverzeichnis für die Konvertierung aus.</translation>
+    </message>
+    <message>
+      <source>Please set the stacking directory first using the wrench button.</source>
+      <translation>Bitte legen Sie zuerst das Stacking-Verzeichnis mit dem Schraubenschlüssel-Symbol fest.</translation>
+    </message>
+    <message>
+      <source>Please set the stacking directory first.</source>
+      <translation>Bitte legen Sie zuerst das Stacking-Verzeichnis fest.</translation>
+    </message>
+    <message>
+      <source>Please wait</source>
+      <translation>Bitte warten</translation>
+    </message>
+    <message>
+      <source>Point</source>
+      <translation>Punkt</translation>
+    </message>
+    <message>
+      <source>Polynomial 3rd-order</source>
+      <translation>Polynom 3. Ordnung</translation>
+    </message>
+    <message>
+      <source>Polynomial 4th-order</source>
+      <translation>Polynom 4. Ordnung</translation>
+    </message>
+    <message>
+      <source>Polynomial Degree:</source>
+      <translation>Polynomgrad:</translation>
+    </message>
+    <message>
+      <source>Polynomial degree</source>
+      <translation>Polynomgrad</translation>
+    </message>
+    <message>
+      <source>Post-Alignment</source>
+      <translation>Nach dem Ausrichten</translation>
+    </message>
+    <message>
+      <source>Prefix</source>
+      <translation>Präfix</translation>
+    </message>
+    <message>
+      <source>Preparing MF deconvolution…</source>
+      <translation>MF-Deconvolution wird vorbereitet…</translation>
+    </message>
+    <message>
+      <source>Preparing runtime…</source>
+      <translation>Runtime wird vorbereitet…</translation>
+    </message>
+    <message>
+      <source>Preserve raw data</source>
+      <translation>Rohdaten erhalten</translation>
+    </message>
+    <message>
+      <source>Preview</source>
+      <translation>Vorschau</translation>
+    </message>
+    <message>
+      <source>Preview background</source>
+      <translation>Hintergrundvorschau</translation>
+    </message>
+    <message>
+      <source>Preview defects</source>
+      <translation>Defektvorschau</translation>
+    </message>
+    <message>
+      <source>Preview filename</source>
+      <translation>Dateinamenvorschau</translation>
+    </message>
+    <message>
+      <source>Preview integration</source>
+      <translation>Integrationsvorschau</translation>
+    </message>
+    <message>
+      <source>Preview motion</source>
+      <translation>Bewegungsvorschau</translation>
+    </message>
+    <message>
+      <source>Preview size</source>
+      <translation>Vorschaugröße</translation>
+    </message>
+    <message>
+      <source>Processing...</source>
+      <translation>Verarbeitung...</translation>
+    </message>
+    <message>
+      <source>Profile name:</source>
+      <translation>Profilname:</translation>
+    </message>
+    <message>
+      <source>Profile saved</source>
+      <translation>Profil gespeichert</translation>
+    </message>
+    <message>
+      <source>Profile:</source>
+      <translation>Profil:</translation>
+    </message>
+    <message>
+      <source>Profiles</source>
+      <translation>Profile</translation>
+    </message>
+    <message>
+      <source>Progress</source>
+      <translation>Fortschritt</translation>
+    </message>
+    <message>
+      <source>Progress initialized: {0} tiles across groups.</source>
+      <translation>Fortschritt initialisiert: {0} Kacheln über Gruppen hinweg.</translation>
+    </message>
+    <message>
+      <source>Protect core radius (px):</source>
+      <translation>Kernradius schützen (px):</translation>
+    </message>
+    <message>
+      <source>Quality</source>
+      <translation>Qualität</translation>
+    </message>
+    <message>
+      <source>RA</source>
+      <translation>RA</translation>
+    </message>
+    <message>
+      <source>RA rate (arcsec/min)</source>
+      <translation>RA-Rate (arcsec/min)</translation>
+    </message>
+    <message>
+      <source>RANSAC Iterations:</source>
+      <translation>RANSAC-Iterationen:</translation>
+    </message>
+    <message>
+      <source>RANSAC Threshold:</source>
+      <translation>RANSAC-Schwellenwert:</translation>
+    </message>
+    <message>
+      <source>RANSAC reproj (px):</source>
+      <translation>RANSAC-Reproj. (px):</translation>
+    </message>
+    <message>
+      <source>RGGB</source>
+      <translation>RGGB</translation>
+    </message>
+    <message>
+      <source>Ready</source>
+      <translation>Bereit</translation>
+    </message>
+    <message>
+      <source>Recent Sessions</source>
+      <translation>Kürzliche Sitzungen</translation>
+    </message>
+    <message>
+      <source>Reconstruct on an r× super-res grid using SR PSFs.
+Compute cost grows roughly ~ r^4. Drizzle usually provides better results.</source>
+      <translation>Rekonstruieren auf einem r× Super-Res-Raster unter Verwendung von SR-PSFs.
+Der Rechenaufwand wächst etwa um r^4. Drizzle liefert normalerweise bessere Ergebnisse.</translation>
+    </message>
+    <message>
+      <source>Recurse subfolders</source>
+      <translation>Unterordner einbeziehen</translation>
+    </message>
+    <message>
+      <source>Reference Frame</source>
+      <translation>Referenzbild</translation>
+    </message>
+    <message>
+      <source>Reference frame not found</source>
+      <translation>Referenzbild nicht gefunden</translation>
+    </message>
+    <message>
+      <source>Refinement:</source>
+      <translation>Verfeinerung:</translation>
+    </message>
+    <message>
+      <source>Register &amp;&amp; Integrate</source>
+      <translation>Registrieren &amp;&amp; Integrieren</translation>
+    </message>
+    <message>
+      <source>Register Only</source>
+      <translation>Nur Registrieren</translation>
+    </message>
+    <message>
+      <source>Registering...</source>
+      <translation>Registrierung...</translation>
+    </message>
+    <message>
+      <source>Registration</source>
+      <translation>Registrierung</translation>
+    </message>
+    <message>
+      <source>Registration Method</source>
+      <translation>Registrierungsmethode</translation>
+    </message>
+    <message>
+      <source>Registration Settings</source>
+      <translation>Registrierungseinstellungen</translation>
+    </message>
+    <message>
+      <source>Registration complete</source>
+      <translation>Registrierung abgeschlossen</translation>
+    </message>
+    <message>
+      <source>Registration failed for frame</source>
+      <translation>Registrierung für Bild fehlgeschlagen</translation>
+    </message>
+    <message>
+      <source>Registration in progress…</source>
+      <translation>Registrierung läuft…</translation>
+    </message>
+    <message>
+      <source>Regularization (lambda):</source>
+      <translation>Regularisierung (Lambda):</translation>
+    </message>
+    <message>
+      <source>Regularization:</source>
+      <translation>Regularisierung:</translation>
+    </message>
+    <message>
+      <source>Reject a frame if its residual shift exceeds this many pixels after alignment.</source>
+      <translation>Ein Bild ablehnen, wenn seine Restverschiebung nach dem Ausrichten diese Anzahl an Pixeln überschreitet.</translation>
+    </message>
+    <message>
+      <source>Reject worst %</source>
+      <translation>Schlechteste % verwerfen</translation>
+    </message>
+    <message>
+      <source>Rejected</source>
+      <translation>Verworfen</translation>
+    </message>
+    <message>
+      <source>Rejection</source>
+      <translation>Rejektion</translation>
+    </message>
+    <message>
+      <source>Rejection Algorithm</source>
+      <translation>Rejektionsalgorithmus</translation>
+    </message>
+    <message>
+      <source>Rejection Method</source>
+      <translation>Rejektionsmethode</translation>
+    </message>
+    <message>
+      <source>Rejection Method:</source>
+      <translation>Rejektionsmethode:</translation>
+    </message>
+    <message>
+      <source>Remove All</source>
+      <translation>Alle entfernen</translation>
+    </message>
+    <message>
+      <source>Remove Selected</source>
+      <translation>Ausgewählte entfernen</translation>
+    </message>
+    <message>
+      <source>Remove background gradient (ABE Poly²)</source>
+      <translation>Hintergrundgradienten entfernen (ABE Poly²)</translation>
+    </message>
+    <message>
+      <source>Remove from Group</source>
+      <translation>Aus Gruppe entfernen</translation>
+    </message>
+    <message>
+      <source>Remove selected files from queue</source>
+      <translation>Ausgewählte Dateien aus Warteschlange entfernen</translation>
+    </message>
+    <message>
+      <source>Remove stars on comet-aligned frames</source>
+      <translation>Sterne auf kometenausgerichteten Bildern entfernen</translation>
+    </message>
+    <message>
+      <source>Rename Group</source>
+      <translation>Gruppe umbenennen</translation>
+    </message>
+    <message>
+      <source>Requires 'Enable Drizzle'. Maps R/G/B CFA samples directly into channels (no interpolation).</source>
+      <translation>Erfordert 'Drizzle aktivieren'. Ordnet R/G/B-CFA-Proben direkt den Kanälen zu (keine Interpolation).</translation>
+    </message>
+    <message>
+      <source>Reset All</source>
+      <translation>Alle zurücksetzen</translation>
+    </message>
+    <message>
+      <source>Reset MFDeconv to Recommended</source>
+      <translation>MFDeconv auf Empfohlen zurücksetzen</translation>
+    </message>
+    <message>
+      <source>Reset filter</source>
+      <translation>Filter zurücksetzen</translation>
+    </message>
+    <message>
+      <source>Reset to Defaults</source>
+      <translation>Auf Standards zurücksetzen</translation>
+    </message>
+    <message>
+      <source>Restore MFDeconv star mask + variance map tuning to the recommended defaults.</source>
+      <translation>MFDeconv-Sternmaske + Varianzkarten-Abstimmung auf die empfohlenen Standardwerte zurücksetzen.</translation>
+    </message>
+    <message>
+      <source>Restore Recommended</source>
+      <translation>Empfohlene wiederherstellen</translation>
+    </message>
+    <message>
+      <source>Resume</source>
+      <translation>Fortsetzen</translation>
+    </message>
+    <message>
+      <source>Review Reference Before Alignment</source>
+      <translation>Referenz vor der Ausrichtung prüfen</translation>
+    </message>
+    <message>
+      <source>Right Click to Assign Session Keys if desired</source>
+      <translation>Rechtsklick, um bei Bedarf Sitzungsschlüssel zuzuweisen</translation>
+    </message>
+    <message>
+      <source>Right-click for options</source>
+      <translation>Rechtsklick für Optionen</translation>
+    </message>
+    <message>
+      <source>Robust μ–σ (live stack)</source>
+      <translation>Robuster μ–σ (Live-Stack)</translation>
+    </message>
+    <message>
+      <source>Roundness (closer to 1 is better)</source>
+      <translation>Rundheit (näher bei 1 ist besser)</translation>
+    </message>
+    <message>
+      <source>Rows</source>
+      <translation>Zeilen</translation>
+    </message>
+    <message>
+      <source>Runs multi-frame deconvolution during integration. Turn off if testing.</source>
+      <translation>Führt Multi-Frame-Deconvolution während der Integration aus. Zum Testen ausschalten.</translation>
+    </message>
+    <message>
+      <source>SET-TEMP</source>
+      <translation>SET-TEMP</translation>
+    </message>
+    <message>
+      <source>SITELAT</source>
+      <translation>SITELAT</translation>
+    </message>
+    <message>
+      <source>SITELONG</source>
+      <translation>SITELONG</translation>
+    </message>
+    <message>
+      <source>SNR Weight</source>
+      <translation>SNR-Gewichtung</translation>
+    </message>
+    <message>
+      <source>Same as input</source>
+      <translation>Wie Eingabe</translation>
+    </message>
+    <message>
+      <source>Sample Points:</source>
+      <translation>Beispielpunkte:</translation>
+    </message>
+    <message>
+      <source>Sample points:</source>
+      <translation>Beispielpunkte:</translation>
+    </message>
+    <message>
+      <source>Saturation quantile:</source>
+      <translation>Sättigungsquantil:</translation>
+    </message>
+    <message>
+      <source>Save</source>
+      <translation>Speichern</translation>
+    </message>
+    <message>
+      <source>Save Defect Map</source>
+      <translation>Defektkarte speichern</translation>
+    </message>
+    <message>
+      <source>Save Rejection Maps</source>
+      <translation>Rejektionskarten speichern</translation>
+    </message>
+    <message>
+      <source>Save Session</source>
+      <translation>Sitzung speichern</translation>
+    </message>
+    <message>
+      <source>Save Session As...</source>
+      <translation>Sitzung speichern unter...</translation>
+    </message>
+    <message>
+      <source>Save Star-Trail Image</source>
+      <translation>Strichspur-Bild speichern</translation>
+    </message>
+    <message>
+      <source>Save all comet-aligned starless frames.
+Requires: 'Create comet stack' AND 'Remove stars on comet-aligned frames'.</source>
+      <translation>Alle kometenausgerichteten sternlosen Bilder speichern.
+Erfordert: 'Kometen-Stack erstellen' UND 'Sterne auf kometenausgerichteten Bildern entfernen'.</translation>
+    </message>
+    <message>
+      <source>Save all comet-aligned starless frames.
+Requires: ‘Create comet stack’ AND ‘Remove stars on comet-aligned frames’.</source>
+      <translation>Alle kometenausgerichteten sternlosen Bilder speichern.
+Erfordert: ‚Kometen-Stack erstellen‘ UND ‚Sterne auf kometenausgerichteten Bildern entfernen‘.</translation>
+    </message>
+    <message>
+      <source>Save all starless comet-aligned frames</source>
+      <translation>Alle sternlosen kometenausgerichteten Bilder speichern</translation>
+    </message>
+    <message>
+      <source>Save calibrated frames</source>
+      <translation>Kalibrierte Bilder speichern</translation>
+    </message>
+    <message>
+      <source>Save defect map</source>
+      <translation>Defektkarte speichern</translation>
+    </message>
+    <message>
+      <source>Save defect map...</source>
+      <translation>Defektkarte speichern...</translation>
+    </message>
+    <message>
+      <source>Save intermediate files</source>
+      <translation>Zwischendateien speichern</translation>
+    </message>
+    <message>
+      <source>Save intermediate iterative images</source>
+      <translation>Zwischen-Iterationsbilder speichern</translation>
+    </message>
+    <message>
+      <source>Save profile as…</source>
+      <translation>Profil speichern unter…</translation>
+    </message>
+    <message>
+      <source>Save registered frames</source>
+      <translation>Registrierte Bilder speichern</translation>
+    </message>
+    <message>
+      <source>Save rejection maps</source>
+      <translation>Rejektionskarten speichern</translation>
+    </message>
+    <message>
+      <source>Save session before closing?</source>
+      <translation>Sitzung vor dem Schließen speichern?</translation>
+    </message>
+    <message>
+      <source>Saved: {0} ({1}/{2})</source>
+      <translation>Gespeichert: {0} ({1}/{2})</translation>
+    </message>
+    <message>
+      <source>Scale</source>
+      <translation>Skalierung</translation>
+    </message>
+    <message>
+      <source>Scale to Reference</source>
+      <translation>An Referenz skalieren</translation>
+    </message>
+    <message>
+      <source>Scale:</source>
+      <translation>Skalierung:</translation>
+    </message>
+    <message>
+      <source>Score by</source>
+      <translation>Bewerten nach</translation>
+    </message>
+    <message>
+      <source>Seed image:</source>
+      <translation>Seed-Bild:</translation>
+    </message>
+    <message>
+      <source>Select Bias Directory</source>
+      <translation>Bias-Verzeichnis wählen</translation>
+    </message>
+    <message>
+      <source>Select Bias Files</source>
+      <translation>Bias-Dateien wählen</translation>
+    </message>
+    <message>
+      <source>Select Bias Frames</source>
+      <translation>Bias-Bilder wählen</translation>
+    </message>
+    <message>
+      <source>Select Conversion Output Directory</source>
+      <translation>Ausgabeverzeichnis für Konvertierung wählen</translation>
+    </message>
+    <message>
+      <source>Select Dark Directory</source>
+      <translation>Dark-Verzeichnis wählen</translation>
+    </message>
+    <message>
+      <source>Select Dark Files</source>
+      <translation>Dark-Dateien wählen</translation>
+    </message>
+    <message>
+      <source>Select Dark Flat Frames</source>
+      <translation>Dark-Flat-Bilder wählen</translation>
+    </message>
+    <message>
+      <source>Select Dark Frames</source>
+      <translation>Dark-Bilder wählen</translation>
+    </message>
+    <message>
+      <source>Select Defect Map</source>
+      <translation>Defektkarte wählen</translation>
+    </message>
+    <message>
+      <source>Select Directory for Conversion</source>
+      <translation>Verzeichnis für Konvertierung wählen</translation>
+    </message>
+    <message>
+      <source>Select Files for Conversion</source>
+      <translation>Dateien für Konvertierung wählen</translation>
+    </message>
+    <message>
+      <source>Select Flat Directory</source>
+      <translation>Flat-Verzeichnis wählen</translation>
+    </message>
+    <message>
+      <source>Select Flat Files</source>
+      <translation>Flat-Dateien wählen</translation>
+    </message>
+    <message>
+      <source>Select Flat Frames</source>
+      <translation>Flat-Bilder wählen</translation>
+    </message>
+    <message>
+      <source>Select Light Directory</source>
+      <translation>Light-Verzeichnis wählen</translation>
+    </message>
+    <message>
+      <source>Select Light Files</source>
+      <translation>Light-Dateien wählen</translation>
+    </message>
+    <message>
+      <source>Select Light Frames</source>
+      <translation>Light-Bilder wählen</translation>
+    </message>
+    <message>
+      <source>Select Master Bias</source>
+      <translation>Master-Bias wählen</translation>
+    </message>
+    <message>
+      <source>Select Master Bias File(s)</source>
+      <translation>Master-Bias-Datei(en) wählen</translation>
+    </message>
+    <message>
+      <source>Select Master Bias Frame</source>
+      <translation>Master-Bias-Bild wählen</translation>
+    </message>
+    <message>
+      <source>Select Master Dark</source>
+      <translation>Master-Dark wählen</translation>
+    </message>
+    <message>
+      <source>Select Master Dark File(s)</source>
+      <translation>Master-Dark-Datei(en) wählen</translation>
+    </message>
+    <message>
+      <source>Select Master Flat</source>
+      <translation>Master-Flat wählen</translation>
+    </message>
+    <message>
+      <source>Select Master Flat File(s)</source>
+      <translation>Master-Flat-Datei(en) wählen</translation>
+    </message>
+    <message>
+      <source>Select New Reference Frame</source>
+      <translation>Neues Referenzbild wählen</translation>
+    </message>
+    <message>
+      <source>Select Output Directory</source>
+      <translation>Ausgabeverzeichnis wählen</translation>
+    </message>
+    <message>
+      <source>Select Reference Frame</source>
+      <translation>Referenzbild wählen</translation>
+    </message>
+    <message>
+      <source>Select Reference Frame:</source>
+      <translation>Referenzbild wählen:</translation>
+    </message>
+    <message>
+      <source>Select Reference...</source>
+      <translation>Referenz wählen...</translation>
+    </message>
+    <message>
+      <source>Select Stacking Directory</source>
+      <translation>Stacking-Verzeichnis wählen</translation>
+    </message>
+    <message>
+      <source>Select files to split:</source>
+      <translation>Dateien zum Splitten wählen:</translation>
+    </message>
+    <message>
+      <source>Select output directory for stacked images</source>
+      <translation>Ausgabeverzeichnis für gestackte Bilder wählen</translation>
+    </message>
+    <message>
+      <source>Selected</source>
+      <translation>Ausgewählt</translation>
+    </message>
+    <message>
+      <source>Send to {0} tab</source>
+      <translation>An Reiter {0} senden</translation>
+    </message>
+    <message>
+      <source>Session</source>
+      <translation>Sitzung</translation>
+    </message>
+    <message>
+      <source>Session Files</source>
+      <translation>Sitzungsdateien</translation>
+    </message>
+    <message>
+      <source>Session Info</source>
+      <translation>Sitzungsinfo</translation>
+    </message>
+    <message>
+      <source>Session loaded</source>
+      <translation>Sitzung geladen</translation>
+    </message>
+    <message>
+      <source>Session saved</source>
+      <translation>Sitzung gespeichert</translation>
+    </message>
+    <message>
+      <source>Set Reference Frame</source>
+      <translation>Referenzbild festlegen</translation>
+    </message>
+    <message>
+      <source>Set Session Tag</source>
+      <translation>Sitzungs-Tag festlegen</translation>
+    </message>
+    <message>
+      <source>Set Session Tag...</source>
+      <translation>Sitzungs-Tag festlegen...</translation>
+    </message>
+    <message>
+      <source>Set Stacking Directory &amp; Sigma Clipping</source>
+      <translation>Stacking-Verzeichnis &amp; Sigma-Clipping festlegen</translation>
+    </message>
+    <message>
+      <source>Set as reference frame</source>
+      <translation>Als Referenzbild festlegen</translation>
+    </message>
+    <message>
+      <source>Sharpness</source>
+      <translation>Schärfe</translation>
+    </message>
+    <message>
+      <source>Show preview</source>
+      <translation>Vorschau anzeigen</translation>
+    </message>
+    <message>
+      <source>Show the Stacking Suite log window</source>
+      <translation>Stacking Suite Log-Fenster anzeigen</translation>
+    </message>
+    <message>
+      <source>Sigma Clipping</source>
+      <translation>Sigma-Clipping</translation>
+    </message>
+    <message>
+      <source>Sigma High</source>
+      <translation>Sigma hoch</translation>
+    </message>
+    <message>
+      <source>Sigma Low</source>
+      <translation>Sigma niedrig</translation>
+    </message>
+    <message>
+      <source>Sigma thresholds:</source>
+      <translation>Sigma-Schwellenwerte:</translation>
+    </message>
+    <message>
+      <source>Simple</source>
+      <translation>Einfach</translation>
+    </message>
+    <message>
+      <source>Simple Average (No Rejection)</source>
+      <translation>Einfacher Durchschnitt (keine Rejektion)</translation>
+    </message>
+    <message>
+      <source>Simple Median (No Rejection)</source>
+      <translation>Einfacher Median (keine Rejektion)</translation>
+    </message>
+    <message>
+      <source>Size: {0}</source>
+      <translation>Größe: {0}</translation>
+    </message>
+    <message>
+      <source>Size: {0} | Session: {1}</source>
+      <translation>Größe: {0} | Sitzung: {1}</translation>
+    </message>
+    <message>
+      <source>Size: {0}, Temp: {1}°C, Date: {2}</source>
+      <translation>Größe: {0}, Temp: {1}°C, Datum: {2}</translation>
+    </message>
+    <message>
+      <source>Skip Normal Integration (MFDeconv only)</source>
+      <translation>Normale Integration überspringen (nur MFDeconv)</translation>
+    </message>
+    <message>
+      <source>Skip file</source>
+      <translation>Datei überspringen</translation>
+    </message>
+    <message>
+      <source>Skip if strength &lt;</source>
+      <translation>Überspringen, wenn Stärke &lt;</translation>
+    </message>
+    <message>
+      <source>Skip registration/alignment and use Maximum-Intensity projection for star trails</source>
+      <translation>Registrierung/Ausrichtung überspringen und Maximum-Intensity-Projektion für Strichspuren verwenden</translation>
+    </message>
+    <message>
+      <source>Smoothness</source>
+      <translation>Glätte</translation>
+    </message>
+    <message>
+      <source>Solve downsample:</source>
+      <translation>Downsampling beim Lösen:</translation>
+    </message>
+    <message>
+      <source>Sort</source>
+      <translation>Sortieren</translation>
+    </message>
+    <message>
+      <source>Sort by Quality</source>
+      <translation>Nach Qualität sortieren</translation>
+    </message>
+    <message>
+      <source>Spline</source>
+      <translation>Spline</translation>
+    </message>
+    <message>
+      <source>Spline-3</source>
+      <translation>Spline-3</translation>
+    </message>
+    <message>
+      <source>Spline-5</source>
+      <translation>Spline-5</translation>
+    </message>
+    <message>
+      <source>Split Group</source>
+      <translation>Gruppe aufteilen</translation>
+    </message>
+    <message>
+      <source>Split dual-band OSC before integration</source>
+      <translation>Dual-Band OSC vor Integration splitten</translation>
+    </message>
+    <message>
+      <source>Square</source>
+      <translation>Quadrat</translation>
+    </message>
+    <message>
+      <source>Square (pixfrac)</source>
+      <translation>Quadrat (pixfrac)</translation>
+    </message>
+    <message>
+      <source>Stack</source>
+      <translation>Stack</translation>
+    </message>
+    <message>
+      <source>Stack Method:</source>
+      <translation>Stacking-Methode:</translation>
+    </message>
+    <message>
+      <source>Stack Mode:</source>
+      <translation>Stacking-Modus:</translation>
+    </message>
+    <message>
+      <source>Stacking &amp; drizzle (if enabled)…</source>
+      <translation>Stacking &amp; Drizzle (falls aktiviert)…</translation>
+    </message>
+    <message>
+      <source>Stacking Complete</source>
+      <translation>Stacking abgeschlossen</translation>
+    </message>
+    <message>
+      <source>Stacking Directory:</source>
+      <translation>Stacking-Verzeichnis:</translation>
+    </message>
+    <message>
+      <source>Stacking Log</source>
+      <translation>Stacking-Log</translation>
+    </message>
+    <message>
+      <source>Stacking Settings</source>
+      <translation>Stacking-Einstellungen</translation>
+    </message>
+    <message>
+      <source>Stacking Suite</source>
+      <translation>Stacking Suite</translation>
+    </message>
+    <message>
+      <source>Stacking cancelled by user</source>
+      <translation>Stacking vom Benutzer abgebrochen</translation>
+    </message>
+    <message>
+      <source>Stacking complete!</source>
+      <translation>Stacking abgeschlossen!</translation>
+    </message>
+    <message>
+      <source>Stacking...</source>
+      <translation>Stacking...</translation>
+    </message>
+    <message>
+      <source>Star Detection Threshold:</source>
+      <translation>Sternerkennung-Schwellenwert:</translation>
+    </message>
+    <message>
+      <source>Star Removal for Comet</source>
+      <translation>Sternentfernung für Kometen</translation>
+    </message>
+    <message>
+      <source>Star Trail Mode</source>
+      <translation>Strichspur-Modus</translation>
+    </message>
+    <message>
+      <source>Star detect σ:</source>
+      <translation>Sternerkennung σ:</translation>
+    </message>
+    <message>
+      <source>Star detection threshold in σ above background. Lower = more stars (faster saturation, more false positives); higher = fewer stars.</source>
+      <translation>Sternerkennungsschwellenwert in σ über dem Hintergrund. Niedriger = mehr Sterne (schnellere Sättigung, mehr Fehlalarme); höher = weniger Sterne.</translation>
+    </message>
+    <message>
+      <source>Star guards:</source>
+      <translation>Sternwächter (Guards):</translation>
+    </message>
+    <message>
+      <source>Star saturation</source>
+      <translation>Sternsättigung</translation>
+    </message>
+    <message>
+      <source>StarNet</source>
+      <translation>StarNet</translation>
+    </message>
+    <message>
+      <source>Stars</source>
+      <translation>Sterne</translation>
+    </message>
+    <message>
+      <source>Stars Weight</source>
+      <translation>Stern-Gewichtung</translation>
+    </message>
+    <message>
+      <source>Stars detected</source>
+      <translation>Sterne erkannt</translation>
+    </message>
+    <message>
+      <source>Start the stacking process</source>
+      <translation>Stacking-Vorgang starten</translation>
+    </message>
+    <message>
+      <source>Starting Master Dark Creation...</source>
+      <translation>Master-Dark-Erstellung wird gestartet...</translation>
+    </message>
+    <message>
+      <source>Starting Master Flat Creation...</source>
+      <translation>Master-Flat-Erstellung wird gestartet...</translation>
+    </message>
+    <message>
+      <source>Starting integration for group '{0}' with {1} files.</source>
+      <translation>Starte Integration für Gruppe '{0}' mit {1} Dateien.</translation>
+    </message>
+    <message>
+      <source>Status</source>
+      <translation>Status</translation>
+    </message>
+    <message>
+      <source>Status: {0}</source>
+      <translation>Status: {0}</translation>
+    </message>
+    <message>
+      <source>Std Dev</source>
+      <translation>Standardabweichung</translation>
+    </message>
+    <message>
+      <source>Std-devs from median; higher = more lenient.</source>
+      <translation>Standardabweichungen vom Median; höher = toleranter.</translation>
+    </message>
+    <message>
+      <source>Stellar Alignment</source>
+      <translation>Stellar Alignment</translation>
+    </message>
+    <message>
+      <source>Step 1: Install NVIDIA CUDA Toolkit 12.x</source>
+      <translation>Schritt 1: NVIDIA CUDA Toolkit 12.x installieren</translation>
+    </message>
+    <message>
+      <source>Step 2: Install PyTorch with CUDA (click button below)</source>
+      <translation>Schritt 2: PyTorch mit CUDA installieren (unten klicken)</translation>
+    </message>
+    <message>
+      <source>Stop</source>
+      <translation>Stopp</translation>
+    </message>
+    <message>
+      <source>Sub-pixel accuracy</source>
+      <translation>Subpixel-Genauigkeit</translation>
+    </message>
+    <message>
+      <source>Subpixel Alignment</source>
+      <translation>Subpixel-Ausrichtung</translation>
+    </message>
+    <message>
+      <source>Subtract (additive)</source>
+      <translation>Subtrahieren (additiv)</translation>
+    </message>
+    <message>
+      <source>Subtract comet</source>
+      <translation>Komet subtrahieren</translation>
+    </message>
+    <message>
+      <source>Subtract stars</source>
+      <translation>Sterne subtrahieren</translation>
+    </message>
+    <message>
+      <source>Successfully stacked {0} frames</source>
+      <translation>{0} Bilder erfolgreich gestackt</translation>
+    </message>
+    <message>
+      <source>Suffix</source>
+      <translation>Suffix</translation>
+    </message>
+    <message>
+      <source>Sum</source>
+      <translation>Summe</translation>
+    </message>
+    <message>
+      <source>Super Pixel</source>
+      <translation>Super Pixel</translation>
+    </message>
+    <message>
+      <source>Super Resolution</source>
+      <translation>Super Resolution</translation>
+    </message>
+    <message>
+      <source>Super-resolution scale factor r (integer ≥2).</source>
+      <translation>Super-Resolution Skalierungsfaktor r (Ganzzahl ≥2).</translation>
+    </message>
+    <message>
+      <source>Supported Files (*.fits *.fit *.fz *.fz *.fits.gz *.fit.gz *.tiff *.tif *.png *.jpg *.jpeg *.cr2 *.cr3 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef *.xisf)</source>
+      <translation>Unterstützte Dateien (*.fits *.fit *.fz *.fz *.fits.gz *.fit.gz *.tiff *.tif *.png *.jpg *.jpeg *.cr2 *.cr3 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef *.xisf)</translation>
+    </message>
+    <message>
+      <source>TELESCOP</source>
+      <translation>TELESKOP</translation>
+    </message>
+    <message>
+      <source>TIFF</source>
+      <translation>TIFF</translation>
+    </message>
+    <message>
+      <source>TIFF (*.tif);;PNG (*.png);;JPEG (*.jpg *.jpeg);;FITS (*.fits);;XISF (*.xisf)</source>
+      <translation>TIFF (*.tif);;PNG (*.png);;JPEG (*.jpg *.jpeg);;FITS (*.fits);;XISF (*.xisf)</translation>
+    </message>
+    <message>
+      <source>Target Name</source>
+      <translation>Zielname</translation>
+    </message>
+    <message>
+      <source>Telescope</source>
+      <translation>Teleskop</translation>
+    </message>
+    <message>
+      <source>Temperature</source>
+      <translation>Temperatur</translation>
+    </message>
+    <message>
+      <source>Temperature Tolerance (°C):</source>
+      <translation>Temperaturtoleranz (°C):</translation>
+    </message>
+    <message>
+      <source>Template Matching</source>
+      <translation>Template Matching</translation>
+    </message>
+    <message>
+      <source>There are no files to convert.</source>
+      <translation>Es gibt keine Dateien zum Konvertieren.</translation>
+    </message>
+    <message>
+      <source>This app is running on Python {0}.{1}. GPU acceleration requires Python 3.10, 3.11, or 3.12.</source>
+      <translation>Diese App läuft mit Python {0}.{1}. GPU-Beschleunigung erfordert Python 3.10, 3.11 oder 3.12.</translation>
+    </message>
+    <message>
+      <source>Thread Count:</source>
+      <translation>Anzahl der Threads:</translation>
+    </message>
+    <message>
+      <source>Time</source>
+      <translation>Zeit</translation>
+    </message>
+    <message>
+      <source>Timeout per frame (s):</source>
+      <translation>Zeitüberschreitung pro Bild (s):</translation>
+    </message>
+    <message>
+      <source>Too few matching stars</source>
+      <translation>Zu wenige übereinstimmende Sterne</translation>
+    </message>
+    <message>
+      <source>Tool:</source>
+      <translation>Werkzeug:</translation>
+    </message>
+    <message>
+      <source>Total</source>
+      <translation>Gesamt</translation>
+    </message>
+    <message>
+      <source>Track nucleus</source>
+      <translation>Kern verfolgen</translation>
+    </message>
+    <message>
+      <source>Track stars</source>
+      <translation>Sterne verfolgen</translation>
+    </message>
+    <message>
+      <source>Transform calculation failed</source>
+      <translation>Transformationsberechnung fehlgeschlagen</translation>
+    </message>
+    <message>
+      <source>Transform-based (fast)</source>
+      <translation>Transformationsbasiert (schnell)</translation>
+    </message>
+    <message>
+      <source>Transforming images...</source>
+      <translation>Bilder werden transformiert...</translation>
+    </message>
+    <message>
+      <source>Triangle Match Tolerance:</source>
+      <translation>Triangle-Match-Toleranz:</translation>
+    </message>
+    <message>
+      <source>Triangle Similarity</source>
+      <translation>Dreiecksähnlichkeit</translation>
+    </message>
+    <message>
+      <source>Trim fraction:</source>
+      <translation>Trim-Anteil:</translation>
+    </message>
+    <message>
+      <source>Trimmed Mean</source>
+      <translation>Getrimmter Mittelwert</translation>
+    </message>
+    <message>
+      <source>Turbo</source>
+      <translation>Turbo</translation>
+    </message>
+    <message>
+      <source>Turn Those Darks Into Master Darks</source>
+      <translation>Verwandeln Sie diese Darks in Master-Darks</translation>
+    </message>
+    <message>
+      <source>Turn Those Flats Into Master Flats</source>
+      <translation>Verwandeln Sie diese Flats in Master-Flats</translation>
+    </message>
+    <message>
+      <source>Type</source>
+      <translation>Typ</translation>
+    </message>
+    <message>
+      <source>Unknown</source>
+      <translation>Unbekannt</translation>
+    </message>
+    <message>
+      <source>Unmark Reference</source>
+      <translation>Referenzmarkierung aufheben</translation>
+    </message>
+    <message>
+      <source>Unsaved session</source>
+      <translation>Nicht gespeicherte Sitzung</translation>
+    </message>
+    <message>
+      <source>Unsupported Python Version</source>
+      <translation>Nicht unterstützte Python-Version</translation>
+    </message>
+    <message>
+      <source>Unsupported image ndim={0} for {1}</source>
+      <translation>Nicht unterstütztes Bild ndim={0} für {1}</translation>
+    </message>
+    <message>
+      <source>Update clip (κ):</source>
+      <translation>Update-Clip (κ):</translation>
+    </message>
+    <message>
+      <source>Update preview automatically</source>
+      <translation>Vorschau automatisch aktualisieren</translation>
+    </message>
+    <message>
+      <source>Use GPU acceleration</source>
+      <translation>GPU-Beschleunigung verwenden</translation>
+    </message>
+    <message>
+      <source>Use Master Bias</source>
+      <translation>Master-Bias verwenden</translation>
+    </message>
+    <message>
+      <source>Use Master Dark</source>
+      <translation>Master-Dark verwenden</translation>
+    </message>
+    <message>
+      <source>Use Master Flat</source>
+      <translation>Master-Flat verwenden</translation>
+    </message>
+    <message>
+      <source>Use defect map</source>
+      <translation>Defektkarte verwenden</translation>
+    </message>
+    <message>
+      <source>Use hardware acceleration if available</source>
+      <translation>Hardwarebeschleunigung verwenden, falls verfügbar</translation>
+    </message>
+    <message>
+      <source>Use memory mapping</source>
+      <translation>Memory Mapping verwenden</translation>
+    </message>
+    <message>
+      <source>Use memory-mapped files</source>
+      <translation>Memory-mapped Dateien verwenden</translation>
+    </message>
+    <message>
+      <source>Use reference frame from this list</source>
+      <translation>Referenzbild aus dieser Liste verwenden</translation>
+    </message>
+    <message>
+      <source>User selected a new reference frame: {0}</source>
+      <translation>Benutzer hat neues Referenzbild ausgewählt: {0}</translation>
+    </message>
+    <message>
+      <source>Using GPU for tile {0} with algo {1}</source>
+      <translation>GPU wird für Kachel {0} mit Algo {1} verwendet</translation>
+    </message>
+    <message>
+      <source>Using Master Bias (for flats when needed): {0}</source>
+      <translation>Master-Bias wird verwendet (für Flats bei Bedarf): {0}</translation>
+    </message>
+    <message>
+      <source>Using Master Bias: {0}</source>
+      <translation>Verwende Master-Bias: {0}</translation>
+    </message>
+    <message>
+      <source>Using {0} kernel drizzle ({1}).</source>
+      <translation>Verwende {0}-Kernel-Drizzle ({1}).</translation>
+    </message>
+    <message>
+      <source>VNG</source>
+      <translation>VNG</translation>
+    </message>
+    <message>
+      <source>VarMap floor (log10):</source>
+      <translation>VarMap floor (log10):</translation>
+    </message>
+    <message>
+      <source>VarMap sample stride:</source>
+      <translation>VarMap sample stride:</translation>
+    </message>
+    <message>
+      <source>VarMap smooth σ:</source>
+      <translation>VarMap smooth σ:</translation>
+    </message>
+    <message>
+      <source>Verbose logging</source>
+      <translation>Ausführliche Protokollierung</translation>
+    </message>
+    <message>
+      <source>View frame header</source>
+      <translation>Bild-Header anzeigen</translation>
+    </message>
+    <message>
+      <source>View frame info</source>
+      <translation>Bild-Info anzeigen</translation>
+    </message>
+    <message>
+      <source>Visit the NVIDIA CUDA Downloads page in your browser to install CUDA Toolkit 12.x:
 
-https://developer.nvidia.com/cuda-downloads</source><translation>Besuchen Sie die NVIDIA CUDA Downloads-Seite in Ihrem Browser, um das CUDA Toolkit 12.x zu installieren:
+https://developer.nvidia.com/cuda-downloads</source>
+      <translation>Besuchen Sie die NVIDIA CUDA Downloads-Seite in Ihrem Browser, um das CUDA Toolkit 12.x zu installieren:
 
-https://developer.nvidia.com/cuda-downloads</translation></message><message><source>W:</source><translation>W:</translation></message><message><source>WCS Alignment</source><translation>WCS-Ausrichtung</translation></message><message><source>Warning</source><translation>Warnung</translation></message><message><source>Warning: Could not read dimensions for {0}: {1}</source><translation>Warnung: Dimensionen für {0} konnten nicht gelesen werden: {1}</translation></message><message><source>Weight Radius:</source><translation>Gewichtungsradius:</translation></message><message><source>Weight keyword</source><translation>Gewichtungs-Stichwort</translation></message><message><source>Weight:</source><translation>Gewichtung:</translation></message><message><source>Weighted Average</source><translation>Gewichteter Durchschnitt</translation></message><message><source>Weighted Windsorized Sigma Clipping</source><translation>Gewichtetes Winsorized Sigma Clipping</translation></message><message><source>Weighting</source><translation>Gewichtung</translation></message><message><source>When checked, once calibration finishes the app will switch to Image Registration and run 'Register and Integrate Images' automatically.</source><translation>Wenn aktiviert, wechselt die App nach Abschluss der Kalibrierung zur Bildregistrierung und führt automatisch ‚Bilder registrieren und integrieren‘ aus.</translation></message><message><source>Width</source><translation>Breite</translation></message><message><source>Winsorized Average</source><translation>Winsorisierter Durchschnitt</translation></message><message><source>Winsorized Sigma</source><translation>Winsorisiertes Sigma</translation></message><message><source>Winsorized Sigma Clipping</source><translation>Winsorized Sigma Clipping</translation></message><message><source>Worst</source><translation>Schlechteste</translation></message><message><source>Writing output...</source><translation>Ausgabe wird geschrieben...</translation></message><message><source>XBINNING</source><translation>XBINNING</translation></message><message><source>XISF</source><translation>XISF</translation></message><message><source>YBINNING</source><translation>YBINNING</translation></message><message><source>[Stacking] tile {0}/{1} ts.shape={2}, N={3}, C={4}</source><translation>[Stacking] Kachel {0}/{1} ts.shape={2}, N={3}, C={4}</translation></message><message><source>bias</source><translation>Bias</translation></message><message><source>circular</source><translation>kreisförmig</translation></message><message><source>color</source><translation>Farbe</translation></message><message><source>compass Reference PA: (unknown)</source><translation>Kompass-Referenz-PA: (unbekannt)</translation></message><message><source>compass Reference PA: {0:.2f}°</source><translation>Kompass-Referenz-PA: {0:.2f}°</translation></message><message><source>compass Tree snapshot → groups: {0}, leaves seen: {1}, paths kept: {2}</source><translation>Kompass-Baum-Schnappschuss → Gruppen: {0}, gesehene Blätter: {1}, behaltene Pfade: {2}</translation></message><message><source>dark</source><translation>Dark</translation></message><message><source>darkflat</source><translation>Darkflat</translation></message><message><source>e.g. M31</source><translation>z. B. M31</translation></message><message><source>flat</source><translation>Flat</translation></message><message><source>folder change</source><translation>Ordneränderung</translation></message><message><source>gaussian</source><translation>gaußisch</translation></message><message><source>light</source><translation>Light</translation></message><message><source>log10 of variance floor (DN²). -8 ≡ 1e-8.</source><translation>log10 der Varianzuntergrenze (DN²). -8 ≡ 1e-8.</translation></message><message><source>mono</source><translation>Mono</translation></message><message><source>naive (square, pixfrac≈1)</source><translation>naiv (Quadrat, pixfrac≈1)</translation></message><message><source>precision → {0}</source><translation>Präzision → {0}</translation></message><message><source>square</source><translation>quadratisch</translation></message><message><source>{0:g}s</source><translation>{0:g}s</translation></message><message><source>{0} file</source><translation>{0} Datei</translation></message><message><source>{0} file · {1}</source><translation>{0} Datei · {1}</translation></message><message><source>{0} file(s)</source><translation>{0} Datei(en)</translation></message><message><source>{0} files · {1}</source><translation>{0} Dateien · {1}</translation></message><message><source>{0} files, {1:.0f}s–{2:.0f}s</source><translation>{0} Dateien, {1:.0f}s–{2:.0f}s</translation></message><message><source>{0} {1}: {2}</source><translation>{0} {1}: {2}</translation></message><message><source>{0}: {1} frame(s)</source><translation>{0}: {1} Bild(er)</translation></message><message><source>{0}Alignment summary: {1} succeeded, {2} rejected.</source><translation>{0}Ausrichtungs-Zusammenfassung: {1} erfolgreich, {2} verworfen.</translation></message><message><source>{0}h {1}m {2}s</source><translation>{0}h {1}m {2}s</translation></message><message><source>{0}m {1}s</source><translation>{0}m {1}s</translation></message><message><source>{0}s</source><translation>{0}s</translation></message><message><source>{0}s ({1}) — tile {2}/{3} y:{4}-{5} x:{6}-{7}</source><translation>{0}s ({1}) — Kachel {2}/{3} y:{4}-{5} x:{6}-{7}</translation></message><message><source>κ (kappa) limits how big each multiplicative update can be per iteration.
+https://developer.nvidia.com/cuda-downloads</translation>
+    </message>
+    <message>
+      <source>W:</source>
+      <translation>W:</translation>
+    </message>
+    <message>
+      <source>WCS Alignment</source>
+      <translation>WCS-Ausrichtung</translation>
+    </message>
+    <message>
+      <source>Warning</source>
+      <translation>Warnung</translation>
+    </message>
+    <message>
+      <source>Warning: Could not read dimensions for {0}: {1}</source>
+      <translation>Warnung: Dimensionen für {0} konnten nicht gelesen werden: {1}</translation>
+    </message>
+    <message>
+      <source>Weight Radius:</source>
+      <translation>Gewichtungsradius:</translation>
+    </message>
+    <message>
+      <source>Weight keyword</source>
+      <translation>Gewichtungs-Stichwort</translation>
+    </message>
+    <message>
+      <source>Weight:</source>
+      <translation>Gewichtung:</translation>
+    </message>
+    <message>
+      <source>Weighted Average</source>
+      <translation>Gewichteter Durchschnitt</translation>
+    </message>
+    <message>
+      <source>Weighted Windsorized Sigma Clipping</source>
+      <translation>Gewichtetes Winsorized Sigma Clipping</translation>
+    </message>
+    <message>
+      <source>Weighting</source>
+      <translation>Gewichtung</translation>
+    </message>
+    <message>
+      <source>When checked, once calibration finishes the app will switch to Image Registration and run 'Register and Integrate Images' automatically.</source>
+      <translation>Wenn aktiviert, wechselt die App nach Abschluss der Kalibrierung zur Bildregistrierung und führt automatisch ‚Bilder registrieren und integrieren‘ aus.</translation>
+    </message>
+    <message>
+      <source>Width</source>
+      <translation>Breite</translation>
+    </message>
+    <message>
+      <source>Winsorized Average</source>
+      <translation>Winsorisierter Durchschnitt</translation>
+    </message>
+    <message>
+      <source>Winsorized Sigma</source>
+      <translation>Winsorisiertes Sigma</translation>
+    </message>
+    <message>
+      <source>Winsorized Sigma Clipping</source>
+      <translation>Winsorized Sigma Clipping</translation>
+    </message>
+    <message>
+      <source>Worst</source>
+      <translation>Schlechteste</translation>
+    </message>
+    <message>
+      <source>Writing output...</source>
+      <translation>Ausgabe wird geschrieben...</translation>
+    </message>
+    <message>
+      <source>XBINNING</source>
+      <translation>XBINNING</translation>
+    </message>
+    <message>
+      <source>XISF</source>
+      <translation>XISF</translation>
+    </message>
+    <message>
+      <source>YBINNING</source>
+      <translation>YBINNING</translation>
+    </message>
+    <message>
+      <source>[Stacking] tile {0}/{1} ts.shape={2}, N={3}, C={4}</source>
+      <translation>[Stacking] Kachel {0}/{1} ts.shape={2}, N={3}, C={4}</translation>
+    </message>
+    <message>
+      <source>bias</source>
+      <translation>Bias</translation>
+    </message>
+    <message>
+      <source>circular</source>
+      <translation>kreisförmig</translation>
+    </message>
+    <message>
+      <source>color</source>
+      <translation>Farbe</translation>
+    </message>
+    <message>
+      <source>compass Reference PA: (unknown)</source>
+      <translation>Kompass-Referenz-PA: (unbekannt)</translation>
+    </message>
+    <message>
+      <source>compass Reference PA: {0:.2f}°</source>
+      <translation>Kompass-Referenz-PA: {0:.2f}°</translation>
+    </message>
+    <message>
+      <source>compass Tree snapshot → groups: {0}, leaves seen: {1}, paths kept: {2}</source>
+      <translation>Kompass-Baum-Schnappschuss → Gruppen: {0}, gesehene Blätter: {1}, behaltene Pfade: {2}</translation>
+    </message>
+    <message>
+      <source>dark</source>
+      <translation>Dark</translation>
+    </message>
+    <message>
+      <source>darkflat</source>
+      <translation>Darkflat</translation>
+    </message>
+    <message>
+      <source>e.g. M31</source>
+      <translation>z. B. M31</translation>
+    </message>
+    <message>
+      <source>flat</source>
+      <translation>Flat</translation>
+    </message>
+    <message>
+      <source>folder change</source>
+      <translation>Ordneränderung</translation>
+    </message>
+    <message>
+      <source>gaussian</source>
+      <translation>gaußisch</translation>
+    </message>
+    <message>
+      <source>light</source>
+      <translation>Light</translation>
+    </message>
+    <message>
+      <source>log10 of variance floor (DN²). -8 ≡ 1e-8.</source>
+      <translation>log10 der Varianzuntergrenze (DN²). -8 ≡ 1e-8.</translation>
+    </message>
+    <message>
+      <source>mono</source>
+      <translation>Mono</translation>
+    </message>
+    <message>
+      <source>naive (square, pixfrac≈1)</source>
+      <translation>naiv (Quadrat, pixfrac≈1)</translation>
+    </message>
+    <message>
+      <source>precision → {0}</source>
+      <translation>Präzision → {0}</translation>
+    </message>
+    <message>
+      <source>square</source>
+      <translation>quadratisch</translation>
+    </message>
+    <message>
+      <source>{0:g}s</source>
+      <translation>{0:g}s</translation>
+    </message>
+    <message>
+      <source>{0} file</source>
+      <translation>{0} Datei</translation>
+    </message>
+    <message>
+      <source>{0} file · {1}</source>
+      <translation>{0} Datei · {1}</translation>
+    </message>
+    <message>
+      <source>{0} file(s)</source>
+      <translation>{0} Datei(en)</translation>
+    </message>
+    <message>
+      <source>{0} files · {1}</source>
+      <translation>{0} Dateien · {1}</translation>
+    </message>
+    <message>
+      <source>{0} files, {1:.0f}s–{2:.0f}s</source>
+      <translation>{0} Dateien, {1:.0f}s–{2:.0f}s</translation>
+    </message>
+    <message>
+      <source>{0} {1}: {2}</source>
+      <translation>{0} {1}: {2}</translation>
+    </message>
+    <message>
+      <source>{0}: {1} frame(s)</source>
+      <translation>{0}: {1} Bild(er)</translation>
+    </message>
+    <message>
+      <source>{0}Alignment summary: {1} succeeded, {2} rejected.</source>
+      <translation>{0}Ausrichtungs-Zusammenfassung: {1} erfolgreich, {2} verworfen.</translation>
+    </message>
+    <message>
+      <source>{0}h {1}m {2}s</source>
+      <translation>{0}h {1}m {2}s</translation>
+    </message>
+    <message>
+      <source>{0}m {1}s</source>
+      <translation>{0}m {1}s</translation>
+    </message>
+    <message>
+      <source>{0}s</source>
+      <translation>{0}s</translation>
+    </message>
+    <message>
+      <source>{0}s ({1}) — tile {2}/{3} y:{4}-{5} x:{6}-{7}</source>
+      <translation>{0}s ({1}) — Kachel {2}/{3} y:{4}-{5} x:{6}-{7}</translation>
+    </message>
+    <message>
+      <source>κ (kappa) limits how big each multiplicative update can be per iteration.
 • κ = 1.0 → no change (1×); larger κ allows bigger step sizes.
 • Lower values = gentler, safer updates; higher values = faster but riskier.
-Typical: 1.05–1.5 for conservative, ~2 for punchier updates.</source><translation>κ (Kappa) begrenzt, wie groß jedes multiplikative Update pro Iteration sein kann.
+Typical: 1.05–1.5 for conservative, ~2 for punchier updates.</source>
+      <translation>κ (Kappa) begrenzt, wie groß jedes multiplikative Update pro Iteration sein kann.
 • κ = 1.0 → keine Änderung (1×); größeres κ erlaubt größere Schrittweiten.
 • Niedrigere Werte = sanftere, sicherere Updates; höhere Werte = schneller, aber riskanter.
-Typisch: 1.05–1.5 für konservative, ~2 für kräftigere Updates.</translation></message><message><source>ρ (loss):</source><translation>ρ (loss):</translation></message><message><source>‘Luma’ deconvolves luminance only; ‘PerChannel’ runs on RGB independently.</source><translation>‚Luma‘ dekontovoliert nur die Luminanz; ‚PerChannel‘ läuft auf RGB unabhängig voneinander.</translation></message><message><source>• Hardware acceleration: {0}</source><translation>• Hardwarebeschleunigung: {0}</translation></message><message><source>• Internal precision: {0}</source><translation>• Interne Präzision: {0}</translation></message><message><source>• {0}  |  session: {1}  →  {2} files, {3}</source><translation>• {0} | Sitzung: {1} → {2} Dateien, {3}</translation></message><message><source>• {0}  →  {1} files, {2}</source><translation>• {0} → {1} Dateien, {2}</translation></message><message><source>• {0}: {1} stacked{2}</source><translation>• {0}: {1} gestackt{2}</translation></message><message><source>ℹ️ CFA Drizzle kept despite low frame count (you chose No).</source><translation>ℹ️ CFA-Drizzle beibehalten trotz geringer Bildanzahl (Sie haben Nein gewählt).</translation></message><message><source>ℹ️ Could not resolve comet seed to reference (no matrix for that frame).</source><translation>ℹ️ Kometen-Seed konnte nicht auf Referenz aufgelöst werden (keine Matrix für dieses Bild).</translation></message><message><source>ℹ️ No dual-band frames detected or split.</source><translation>ℹ️ Keine Dual-Band-Bilder erkannt oder gesplittet.</translation></message><message><source>ℹ️ Registration already in progress; auto-run skipped.</source><translation>ℹ️ Registrierung läuft bereits; Auto-Run übersprungen.</translation></message><message><source>ℹ️ Single group spread {0:.3f}% &gt; tol {1:.2f}% → will normalize.</source><translation>ℹ️ Spreizung in Einzelgruppe {0:.3f}% &gt; Tol {1:.2f}% → wird normalisiert.</translation></message><message><source>ℹ️ Skipping rejection map save for '{0}' (drizzle disabled).</source><translation>ℹ️ Speichern der Rejektionskarte für '{0}' übersprungen (Drizzle deaktiviert).</translation></message><message><source>ℹ️ This flat group: Auto-Select is OFF and no override set → No Calibration.</source><translation>ℹ️ Diese Flat-Gruppe: Auto-Select ist AUS und kein Override gesetzt → Keine Kalibrierung.</translation></message><message><source>ℹ️ This flat group: no matching Master Dark (size) — proceeding without subtraction.</source><translation>ℹ️ Diese Flat-Gruppe: kein passendes Master-Dark (Größe) — fahre ohne Subtraktion fort.</translation></message><message><source>ℹ️ This flat group: override = No Calibration.</source><translation>ℹ️ Diese Flat-Gruppe: Override = Keine Kalibrierung.</translation></message><message><source>ℹ️ Using in-memory REF_SHAPE fallback: {0}×{1}</source><translation>ℹ️ Verwende In-Memory REF_SHAPE Fallback: {0}×{1}</translation></message><message><source>ℹ️ {0} frame(s) had zero/NaN preview medians; using neutral scale for those.</source><translation>ℹ️ {0} Bild(er) hatten Null/NaN-Vorschaumediane; verwende neutrale Skalierung für diese.</translation></message><message><source>↻ 180° rotate (PA Δ≈180°): {0}</source><translation>↻ 180° Drehung (PA Δ≈180°): {0}</translation></message><message><source>⏭️ Normal integration suppressed (MFDeconv-only run).</source><translation>⏭️ Normale Integration unterdrückt (nur MFDeconv-Lauf).</translation></message><message><source>⏭️ Pixel-scale normalize skipped: single-group policy (no header reads).</source><translation>⏭️ Pixel-Skala-Normalisierung übersprungen: Einzelgruppen-Richtlinie (kein Header-Lesen).</translation></message><message><source>⏭️ Pixel-scale normalize skipped: spread ≤ {0:.2f}% (single group).</source><translation>⏭️ Pixel-Skala-Normalisierung übersprungen: Spreizung ≤ {0:.2f}% (Einzelgruppe).</translation></message><message><source>⏳ Loading…</source><translation>⏳ Laden…</translation></message><message><source>⏳ Please wait…</source><translation>⏳ Bitte warten…</translation></message><message><source>⏳ Registering…</source><translation>⏳ Registrierung…</translation></message><message><source>⏸ Another job is running; ignoring extra click.</source><translation>⏸ Ein anderer Job läuft; ignoriere zusätzlichen Klick.</translation></message><message><source>⏸ Registration already running; ignoring extra click.</source><translation>⏸ Registrierung läuft bereits; ignoriere zusätzlichen Klick.</translation></message><message><source>▶️ Starting tile processing for group '{0}' ({1}s, {2}, session '{3}')</source><translation>▶️ Starte Kachelverarbeitung für Gruppe '{0}' ({1}s, {2}, Sitzung '{3}')</translation></message><message><source>★★ Star-Trail Mode ★★ (Max-Value Stack)</source><translation>★★ Strichspur-Modus ★★ (Max-Value-Stack)</translation></message><message><source>⚖️ Computing frame weights…</source><translation>⚖️ Bildgewichtungen werden berechnet…</translation></message><message><source>⚙️ Auto: starting registration &amp; integration…</source><translation>⚙️ Auto: starte Registrierung &amp; Integration…</translation></message><message><source>⚙️ MFDeconv engine: {0}</source><translation>⚙️ MFDeconv-Engine: {0}</translation></message><message><source>⚙️ Normalizing {0} flats by per-frame medians (central patch).</source><translation>⚙️ Normalisiere {0} Flats durch Medianwerte pro Bild (zentraler Bereich).</translation></message><message><source>⚙️ {0} reducer for flats — {1} ({2})</source><translation>⚙️ {0}-Reducer für Flats — {1} ({2})</translation></message><message><source>⚙️ {0} selected for {1} frames (channels={2})</source><translation>⚙️ {0} für {1} Bilder ausgewählt (Kanäle={2})</translation></message><message><source>⚠️ (MF) Auto-crop of output failed: {0}</source><translation>⚠️ (MF) Auto-Crop der Ausgabe fehlgeschlagen: {0}</translation></message><message><source>⚠️ (MF) Global crop failed: {0}</source><translation>⚠️ (MF) Globaler Crop fehlgeschlagen: {0}</translation></message><message><source>⚠️ Auto register/integrate failed: {0}</source><translation>⚠️ Auto-Registrierung/Integration fehlgeschlagen: {0}</translation></message><message><source>⚠️ CFA Drizzle: low-count fallback → using Edge-Aware Interpolation for this run.</source><translation>⚠️ CFA-Drizzle: Fallback bei niedriger Anzahl → verwende Edge-Aware-Interpolation für diesen Lauf.</translation></message><message><source>⚠️ Cannot load {0}; skipping.</source><translation>⚠️ {0} konnte nicht geladen werden; überspringe.</translation></message><message><source>⚠️ Cannot read image size for {0}: {1}</source><translation>⚠️ Bildgröße für {0} konnte nicht gelesen werden: {1}</translation></message><message><source>⚠️ Comet seed resolve failed: {0}</source><translation>⚠️ Kometen-Seed-Auflösung fehlgeschlagen: {0}</translation></message><message><source>⚠️ Comet star removal pre-process aborted: {0}</source><translation>⚠️ Kometen-Stern-Entfernung-Vorverarbeitung abgebrochen: {0}</translation></message><message><source>⚠️ Could not ensure subfolders in '{0}': {1}</source><translation>⚠️ Unterordner in '{0}' konnten nicht sichergestellt werden: {1}</translation></message><message><source>⚠️ Could not load Master Bias: {0}</source><translation>⚠️ Master-Bias konnte nicht geladen werden: {0}</translation></message><message><source>⚠️ Could not load reference '{0}' for comet stack.</source><translation>⚠️ Referenz '{0}' für Kometen-Stack konnte nicht geladen werden.</translation></message><message><source>⚠️ Could not load reference '{0}' for group '{1}'.</source><translation>⚠️ Referenz '{0}' für Gruppe '{1}' konnte nicht geladen werden.</translation></message><message><source>⚠️ Could not load reference '{0}', skipping group.</source><translation>⚠️ Referenz '{0}' konnte nicht geladen werden, überspringe Gruppe.</translation></message><message><source>⚠️ Could not load {0} to determine drizzle shape!</source><translation>⚠️ {0} konnte nicht geladen werden, um Drizzle-Form zu bestimmen!</translation></message><message><source>⚠️ Could not read XISF {0}: {1}; treating as generic image</source><translation>⚠️ XISF {0} konnte nicht gelesen werden: {1}; behandle als generisches Bild.</translation></message><message><source>⚠️ Degenerate tile shape {0} at tile {1} [y:{2}:{3} x:{4}:{5}] – using CPU for this tile.</source><translation>⚠️ Degenerierte Kachelform {0} bei Kachel {1} [y:{2}:{3} x:{4}:{5}] – verwende CPU für diese Kachel.</translation></message><message><source>⚠️ ERROR: Could not parse {0}</source><translation>⚠️ FEHLER: {0} konnte nicht geparst werden</translation></message><message><source>⚠️ Error normalizing {0}: {1}</source><translation>⚠️ Fehler beim Normalisieren von {0}: {1}</translation></message><message><source>⚠️ Error previewing {0}: {1}</source><translation>⚠️ Fehler bei der Vorschau von {0}: {1}</translation></message><message><source>⚠️ Error: No alignment data available.</source><translation>⚠️ Fehler: Keine Ausrichtungsdaten verfügbar.</translation></message><message><source>⚠️ Failed to load {0}; skipping</source><translation>⚠️ Laden von {0} fehlgeschlagen; überspringe</translation></message><message><source>⚠️ Failed to open images (memmap): {0}</source><translation>⚠️ Bilder konnten nicht geöffnet werden (memmap): {0}</translation></message><message><source>⚠️ Failed to read {0} – skipping</source><translation>⚠️ Lesen von {0} fehlgeschlagen – überspringe</translation></message><message><source>⚠️ Failed to save transform file: {0}</source><translation>⚠️ Speichern der Transformationsdatei fehlgeschlagen: {0}</translation></message><message><source>⚠️ Failed to write SASD v2 ({0}); writing affine-only fallback.</source><translation>⚠️ Schreiben von SASD v2 fehlgeschlagen ({0}); schreibe Affine-only Fallback.</translation></message><message><source>⚠️ File not found: {0}, skipping.</source><translation>⚠️ Datei nicht gefunden: {0}, überspringe.</translation></message><message><source>⚠️ GPU rejection failed on tile {0}/{1} shape={2}: {3} – falling back to CPU for this and remaining tiles.</source><translation>⚠️ GPU-Rejektion fehlgeschlagen bei Kachel {0}/{1} Form={2}: {3} – Fallback auf CPU für diese und verbleibende Kacheln.</translation></message><message><source>⚠️ Global crop (mask-based) failed: {0}</source><translation>⚠️ Globaler Crop (maskenbasiert) fehlgeschlagen: {0}</translation></message><message><source>⚠️ Group '{0}' does not have enough frames to drizzle.</source><translation>⚠️ Gruppe '{0}' hat nicht genügend Bilder für Drizzle.</translation></message><message><source>⚠️ Group '{0}' does not have enough frames to stack.</source><translation>⚠️ Gruppe '{0}' hat nicht genügend Bilder für Stacking.</translation></message><message><source>⚠️ Image registration failed: {0}</source><translation>⚠️ Bildregistrierung fehlgeschlagen: {0}</translation></message><message><source>⚠️ MEF save failed ({0}); falling back to single-HDU save.</source><translation>⚠️ MEF-Speichern fehlgeschlagen ({0}); Fallback auf Single-HDU-Speicherung.</translation></message><message><source>⚠️ MFDeconv engine import failed ({0}); falling back to Normal.</source><translation>⚠️ MFDeconv-Engine-Import fehlgeschlagen ({0}); Fallback auf Normal.</translation></message><message><source>⚠️ Missing REF_SHAPE in SASD; cannot drizzle.</source><translation>⚠️ REF_SHAPE in SASD fehlt; Drizzle nicht möglich.</translation></message><message><source>⚠️ No aligned frames available for MF deconvolution.</source><translation>⚠️ Keine ausgerichteten Bilder für MF-Deconvolution verfügbar.</translation></message><message><source>⚠️ No calibrated lights available for star trails.</source><translation>⚠️ Keine kalibrierten Lights für Strichspuren verfügbar.</translation></message><message><source>⚠️ No data for {0}</source><translation>⚠️ Keine Daten für {0}</translation></message><message><source>⚠️ No eligible dark groups found to stack.</source><translation>⚠️ Keine geeigneten Dark-Gruppen zum Stacken gefunden.</translation></message><message><source>⚠️ No eligible flat groups found to stack.</source><translation>⚠️ Keine geeigneten Flat-Gruppen zum Stacken gefunden.</translation></message><message><source>⚠️ No frames could be measured!</source><translation>⚠️ Keine Bilder konnten gemessen werden!</translation></message><message><source>⚠️ No frames found in the registration tree!</source><translation>⚠️ Keine Bilder im Registrierungsbaum gefunden!</translation></message><message><source>⚠️ No frames to stack; aborting.</source><translation>⚠️ Keine Bilder zum Stacken; breche ab.</translation></message><message><source>⚠️ No leaf files selected to retag.</source><translation>⚠️ Keine Leaf-Dateien zum neu Taggen ausgewählt.</translation></message><message><source>⚠️ No light files to register!</source><translation>⚠️ Keine Light-Dateien zum Registrieren!</translation></message><message><source>⚠️ No light frames available for stacking!</source><translation>⚠️ Keine Light-Frames für Stacking verfügbar!</translation></message><message><source>⚠️ No registered images found!</source><translation>⚠️ Keine registrierten Bilder gefunden!</translation></message><message><source>⚠️ No usable transform for {0} – skipping</source><translation>⚠️ Keine verwendbare Transformation für {0} – überspringe</translation></message><message><source>⚠️ No valid frames to compute reference median; aborting star-trail.</source><translation>⚠️ Keine gültigen Bilder zum Berechnen des Referenzmedians; breche Strichspur ab.</translation></message><message><source>⚠️ No valid previews in this chunk (couldn't find image data in any HDU).</source><translation>⚠️ Keine gültigen Vorschauen in diesem Chunk (konnte keine Bilddaten in einer HDU finden).</translation></message><message><source>⚠️ No valid previews in this chunk (couldn’t find image data in any HDU).</source><translation>⚠️ Keine gültigen Vorschauen in diesem Chunk (konnte keine Bilddaten in einer HDU finden).</translation></message><message><source>⚠️ No valid previews in this chunk.</source><translation>⚠️ Keine gültigen Vorschauen in diesem Chunk.</translation></message><message><source>⚠️ Not enough frames with valid comet centroids; skipping comet stack.</source><translation>⚠️ Nicht genügend Bilder mit gültigen Kometen-Zentroiden; überspringe Kometen-Stack.</translation></message><message><source>⚠️ Not enough valid frames in group '{0}' to stack.</source><translation>⚠️ Nicht genügend gültige Bilder in Gruppe '{0}' zum Stacken.</translation></message><message><source>⚠️ Override dark missing on disk; falling back to Auto/None.</source><translation>⚠️ Override-Dark fehlt auf Festplatte; Fallback auf Auto/Keine.</translation></message><message><source>⚠️ Per-group transform crop failed for '{0}': {1}</source><translation>⚠️ Gruppenbasierter Transformations-Crop fehlgeschlagen für '{0}': {1}</translation></message><message><source>⚠️ Preview error for {0}: {1}</source><translation>⚠️ Vorschaufehler für {0}: {1}</translation></message><message><source>⚠️ PyTorch reports no GPU but you have an NVIDIA card – restarting may help.</source><translation>⚠️ PyTorch meldet keine GPU, obwohl Sie eine NVIDIA-Karte haben – ein Neustart könnte helfen.</translation></message><message><source>⚠️ Reference file '{0}' not found, skipping group.</source><translation>⚠️ Referenzdatei '{0}' nicht gefunden, überspringe Gruppe.</translation></message><message><source>⚠️ Skipping {0}s ({1}) - Not enough frames to stack.</source><translation>⚠️ Überspringe {0}s ({1}) - Nicht genügend Bilder zum Stacken.</translation></message><message><source>⚠️ Skipping {0}s ({1}) [{2}] [{3}] - Not enough frames to stack.</source><translation>⚠️ Überspringe {0}s ({1}) [{2}] [{3}] - Nicht genügend Bilder zum Stacken.</translation></message><message><source>⚠️ Split error on {0}: {1}</source><translation>⚠️ Split-Fehler bei {0}: {1}</translation></message><message><source>⚠️ Too many open files ({0}); falling back to lazy per-tile reads.</source><translation>⚠️ Zu viele offene Dateien ({0}); Fallback auf lazilyes Lesen pro Kachel.</translation></message><message><source>⚠️ Transform-based global crop failed ({0}); falling back to mask-based.</source><translation>⚠️ Transformationsbasierter globaler Crop fehlgeschlagen ({0}); Fallback auf maskenbasiert.</translation></message><message><source>⚠️ Unsupported transform '{0}' – skipping {1}</source><translation>⚠️ Nicht unterstützte Transformation '{0}' – überspringe {1}</translation></message><message><source>⚠️ WARNING: No Master Calibration Files available.</source><translation>⚠️ WARNUNG: Keine Master-Kalibrierdateien verfügbar.</translation></message><message><source>⚠️ WARNING: No Master Darks available.</source><translation>⚠️ WARNUNG: Keine Master-Darks verfügbar.</translation></message><message><source>⚠️ Warning: {0}</source><translation>⚠️ Warnung: {0}</translation></message><message><source>⚠️ rebuild_flat_tree: could not parse key '{0}': {1}</source><translation>⚠️ rebuild_flat_tree: Schlüssel '{0}' konnte nicht geparst werden: {1}</translation></message><message><source>⚠️ {0}</source><translation>⚠️ {0}</translation></message><message><source>⚠️ {0} frame has no aligned counterpart – skipping {1}</source><translation>⚠️ {0} Bild hat kein ausgerichtetes Gegenstück – überspringe {1}</translation></message><message><source>⚠️ {0} frames failed to align</source><translation>⚠️ {0} Bilder konnten nicht ausgerichtet werden</translation></message><message><source>⚡ Fast mode: </source><translation>⚡ Fast mode: </translation></message><message><source>⛔ Master Dark creation cancelled during tile processing.</source><translation>⛔ Master-Dark-Erstellung während der Kachelverarbeitung abgebrochen.</translation></message><message><source>⛔ Master Dark creation cancelled.</source><translation>⛔ Master-Dark-Erstellung abgebrochen.</translation></message><message><source>⛔ Master Dark creation cancelled; cleaning up temporary files.</source><translation>⛔ Master-Dark-Erstellung abgebrochen; bereinige temporäre Dateien.</translation></message><message><source>⛔ Master Flat creation cancelled.</source><translation>⛔ Master-Flat-Erstellung abgebrochen.</translation></message><message><source>⛔ Master Flat creation cancelled; cleaning up temporary files.</source><translation>⛔ Master-Flat-Erstellung abgebrochen; bereinige temporäre Dateien.</translation></message><message><source>✂️ (MF) Auto Crop: using transform footprints…</source><translation>✂️ (MF) Auto Crop: verwende Transformations-Footprints…</translation></message><message><source>✂️ (MF) Auto-crop disabled (no common region).</source><translation>✂️ (MF) Auto-Crop deaktiviert (keine gemeinsame Region).</translation></message><message><source>✂️ (MF) Mask-based crop → [{0}:{1}]×[{2}:{3}] ({4}×{5})</source><translation>✂️ (MF) Maskenbasierter Crop → [{0}:{1}]×[{2}:{3}] ({4}×{5})</translation></message><message><source>✂️ (MF) No transforms/geometry available; falling back to mask-based method…</source><translation>✂️ (MF) Keine Transformationen/Geometrie verfügbar; Fallback auf maskenbasierten Modus…</translation></message><message><source>✂️ (MF) Saved auto-cropped copy → {0}</source><translation>✂️ (MF) Auto-gecroppte Kopie gespeichert → {0}</translation></message><message><source>✂️ (MF) Transform crop yielded no valid rect; falling back to mask-based method…</source><translation>✂️ (MF) Transformations-Crop ergab kein gültiges Rechteck; Fallback auf maskenbasierten Modus…</translation></message><message><source>✂️ (MF) Transform crop → [{0}:{1}]×[{2}:{3}] ({4}×{5})</source><translation>✂️ (MF) Transformations-Crop → [{0}:{1}]×[{2}:{3}] ({4}×{5})</translation></message><message><source>✂️ Auto Crop Enabled. Calculating bounding box…</source><translation>✂️ Auto Crop aktiviert. Berechne Begrenzungsrahmen…</translation></message><message><source>✂️ Auto-crop: 0/{0} frames had usable transforms; skipping.</source><translation>✂️ Auto-Crop: 0/{0} Bilder hatten verwendbare Transformationen; überspringe.</translation></message><message><source>✂️ Auto-crop: Loading transforms...</source><translation>✂️ Auto-Crop: Transformationen werden geladen...</translation></message><message><source>✂️ Auto-crop: could not load first aligned ref.</source><translation>✂️ Auto-Crop: erste ausgerichtete Referenz konnte nicht geladen werden.</translation></message><message><source>✂️ Auto-crop: no common area found; skipping.</source><translation>✂️ Auto-Crop: keine gemeinsame Fläche gefunden; überspringe.</translation></message><message><source>✂️ Auto-crop: no transforms file at {0}</source><translation>✂️ Auto-Crop: keine Transformationsdatei bei {0}</translation></message><message><source>✂️ Auto-crop: rasterized {0}/{1} frames; need {2} per-pixel.</source><translation>✂️ Auto-Crop: {0}/{1} Bilder gerastert; benötige {2} pro Pixel.</translation></message><message><source>✂️ Auto-crop: threshold produced empty mask.</source><translation>✂️ Auto-Crop: Schwellenwert ergab leere Maske.</translation></message><message><source>✂️ Auto-cropped to [{0}:{1}]×[{2}:{3}] (scale {4}×)</source><translation>✂️ Auto-gecroppt auf [{0}:{1}]×[{2}:{3}] (Skala {4}×)</translation></message><message><source>✂️ Drizzle (auto-cropped) saved: {0}</source><translation>✂️ Drizzle (auto-gecroppt) gespeichert: {0}</translation></message><message><source>✂️ Global crop disabled; will fall back to per-group.</source><translation>✂️ Globaler Crop deaktiviert; Fallback auf gruppenbasierten Crop.</translation></message><message><source>✂️ Global crop rect={0} → size {1}×{2}</source><translation>✂️ Globaler Crop rect={0} → Größe {1}×{2}</translation></message><message><source>✂️ Global crop: mask shapes differ across groups.</source><translation>✂️ Globaler Crop: Maskenformen unterscheiden sich zwischen Gruppen.</translation></message><message><source>✂️ Global crop: no mask for '{0}' → disabling global crop.</source><translation>✂️ Globaler Crop: keine Maske für '{0}' → deaktiviere globalen Crop.</translation></message><message><source>✂️ Global crop: rect too small; disabling global crop.</source><translation>✂️ Globaler Crop: Rechteck zu klein; deaktiviere globalen Crop.</translation></message><message><source>✂️ Mask-based crop (global) → [{0}:{1}]×[{2}:{3}] ({4}×{5})</source><translation>✂️ Maskenbasierter Crop (global) → [{0}:{1}]×[{2}:{3}] ({4}×{5})</translation></message><message><source>✂️ No stable rect found for this group; per-image fallback will be used.</source><translation>✂️ Kein stabiles Rechteck für diese Gruppe gefunden; bildbasierter Fallback wird verwendet.</translation></message><message><source>✂️ No transforms/geometry available for fast global crop; falling back to mask-based.</source><translation>✂️ Keine Transformationen/Geometrie für schnellen globalen Crop verfügbar; Fallback auf maskenbasiert.</translation></message><message><source>✂️ Saved CometBlend (auto-cropped) → {0}</source><translation>✂️ CometBlend (auto-gecroppt) gespeichert → {0}</translation></message><message><source>✂️ Saved CometOnly (auto-cropped) → {0}</source><translation>✂️ CometOnly (auto-gecroppt) gespeichert → {0}</translation></message><message><source>✂️ Saved auto-cropped image for '{0}': {1}</source><translation>✂️ Auto-gecropptes Bild gespeichert für '{0}': {1}</translation></message><message><source>✂️ Transform crop (global) → [{0}:{1}]×[{2}:{3}] ({4}×{5})</source><translation>✂️ Transformations-Crop (global) → [{0}:{1}]×[{2}:{3}] ({4}×{5})</translation></message><message><source>✂️ Transform crop produced no stable global rect; falling back to focus-based.</source><translation>✂️ Transformations-Crop ergab kein stabiles globales Rechteck; Fallback auf fokusbasiert.</translation></message><message><source>✂️ Using fixed crop rect for '{0}': ({1},{2})–({3},{4})</source><translation>✂️ Verwende festes Crop-Rechteck für '{0}': ({1},{2})–({3},{4})</translation></message><message><source>✅ </source><translation>✅ </translation></message><message><source>✅ Added Master {0} -&gt; {1} under {2} with metadata: {3}</source><translation>✅ Master {0} -&gt; {1} unter {2} mit Metadaten hinzugefügt: {3}</translation></message><message><source>✅ Added {0} as {1}</source><translation>✅ {0} als {1} hinzugefügt</translation></message><message><source>✅ Added {0} file(s)</source><translation>✅ {0} Datei(en) hinzugefügt</translation></message><message><source>✅ Aligned {0} frames successfully</source><translation>✅ {0} Bilder erfolgreich ausgerichtet</translation></message><message><source>✅ All chunks complete! Measured {0} frames total.</source><translation>✅ Alle Chunks vollständig! Insgesamt {0} Bilder gemessen.</translation></message><message><source>✅ All frames registered successfully!</source><translation>✅ Alle Bilder erfolgreich registriert!</translation></message><message><source>✅ Auto-accept measured reference is enabled; using the measured best frame.</source><translation>✅ Automatische Annahme der gemessenen Referenz ist aktiviert; verwende das am besten gemessene Bild.</translation></message><message><source>✅ Calibrated {0} frames</source><translation>✅ {0} Bilder kalibriert</translation></message><message><source>✅ Calibration Complete!</source><translation>✅ Kalibrierung abgeschlossen!</translation></message><message><source>✅ Chunked stacking {0} group(s)...</source><translation>✅ Chunk-basiertes Stacking von {0} Gruppe(n)...</translation></message><message><source>✅ Comet seed set. Proceeding with registration…</source><translation>✅ Kometen-Seed gesetzt. Registrierung wird fortgesetzt…</translation></message><message><source>✅ DEBUG: Added Master {0} -&gt; {1} under {2} with metadata: {3}</source><translation>✅ DEBUG: Master {0} -&gt; {1} unter {2} mit Metadaten hinzugefügt: {3}</translation></message><message><source>✅ Drizzle (original) saved: {0}</source><translation>✅ Drizzle (Original) gespeichert: {0}</translation></message><message><source>✅ Dual-band split complete: Ha={0}, SII={1}, OIII={2}, Hb={3} (drizzle seeded on {4} new group(s))</source><translation>✅ Dual-Band-Split abgeschlossen: Ha={0}, SII={1}, OIII={2}, Hb={3} (Drizzle-Seeds auf {4} neuen Gruppen)</translation></message><message><source>✅ Frame weights computed!</source><translation>✅ Bildgewichtungen berechnet!</translation></message><message><source>✅ Group '{0}' not set for drizzle. Integrated image already saved.</source><translation>✅ Gruppe '{0}' nicht für Drizzle festgelegt. Integriertes Bild bereits gespeichert.</translation></message><message><source>✅ Group '{0}' stacked {1} frame(s)! Saved: {2}</source><translation>✅ Gruppe '{0}' hat {1} Bild(er) gestackt! Gespeichert: {2}</translation></message><message><source>✅ MFDeconv complete for all groups. Skipping normal integration as requested.</source><translation>✅ MFDeconv für alle Gruppen abgeschlossen. Normale Integration wie angefordert übersprungen.</translation></message><message><source>✅ MFDeconv complete for all groups. Skipping normal integration.</source><translation>✅ MFDeconv für alle Gruppen abgeschlossen. Normale Integration übersprungen.</translation></message><message><source>✅ Master Dark saved and added to UI: {0}</source><translation>✅ Master-Dark gespeichert und zur UI hinzugefügt: {0}</translation></message><message><source>✅ Master Dark saved: {0}</source><translation>✅ Master-Dark gespeichert: {0}</translation></message><message><source>✅ Master Flat saved: {0}</source><translation>✅ Master-Flat gespeichert: {0}</translation></message><message><source>✅ Master Light saved for group '{0}': {1}</source><translation>✅ Master-Light für Gruppe '{0}' gespeichert: {1}</translation></message><message><source>✅ Master bias saved</source><translation>✅ Master-Bias gespeichert</translation></message><message><source>✅ Master dark saved</source><translation>✅ Master-Dark gespeichert</translation></message><message><source>✅ Master flat saved</source><translation>✅ Master-Flat gespeichert</translation></message><message><source>✅ Ready</source><translation>✅ Bereit</translation></message><message><source>✅ Removed {0} file(s)</source><translation>✅ {0} Datei(en) entfernt</translation></message><message><source>✅ SASD v2: loaded {0} transform(s).</source><translation>✅ SASD v2: {0} Transformation(en) geladen.</translation></message><message><source>✅ Saved CometBlend → {0}</source><translation>✅ CometBlend gespeichert → {0}</translation></message><message><source>✅ Saved CometOnly → {0}</source><translation>✅ CometOnly gespeichert → {0}</translation></message><message><source>✅ Saved integrated image (original) for '{0}': {1}</source><translation>✅ Integriertes Bild (Original) gespeichert für '{0}': {1}</translation></message><message><source>✅ Saved integrated image (single-HDU) for '{0}': {1}</source><translation>✅ Integriertes Bild (Single-HDU) gespeichert für '{0}': {1}</translation></message><message><source>✅ Saved integrated image (with rejection layers) for '{0}': {1}</source><translation>✅ Integriertes Bild (mit Rejektions-Layern) gespeichert für '{0}': {1}</translation></message><message><source>✅ Saved rejection map to {0}</source><translation>✅ Rejektionskarte gespeichert unter {0}</translation></message><message><source>✅ Saved stacking settings.</source><translation>✅ Stacking-Einstellungen gespeichert.</translation></message><message><source>✅ Star‐Trail image written to {0}</source><translation>✅ Strichspur-Bild geschrieben nach {0}</translation></message><message><source>✅ Transform file saved as alignment_transforms.sasd (v2)</source><translation>✅ Transformationsdatei gespeichert als alignment_transforms.sasd (v2)</translation></message><message><source>✅ Transform file saved as {0}</source><translation>✅ Transformationsdatei gespeichert als {0}</translation></message><message><source>✅ Updated self.light_files to use debayered, normalized *_n.fit frames.</source><translation>✅ self.light_files aktualisiert, um debayerte, normalisierte *_n.fit-Bilder zu verwenden.</translation></message><message><source>✅ User reference is locked; skipping reference review dialog.</source><translation>✅ Benutzerreferenz ist gesperrt; Referenzprüfungsdialog wird übersprungen.</translation></message><message><source>✅ {0}</source><translation>✅ {0}</translation></message><message><source>✖ Star-trail save cancelled.</source><translation>✖ Strichspur-Speicherung abgebrochen.</translation></message><message><source>✨ Comet star removal enabled — pre-processing frames…</source><translation>✨ Kometen-Stern-Entfernung aktiviert — Bilder werden vorverarbeitet…</translation></message><message><source>✨ Using comet-aligned STARLESS frames for stack ({0} files).</source><translation>✨ Stacke kometenausgerichtete STERNLOSE Bilder ({0} Dateien).</translation></message><message><source>❌ </source><translation>❌ </translation></message><message><source>❌ ERROR: Could not read FITS header for {0} - {1}</source><translation>❌ FEHLER: FITS-Header für {0} - {1} konnte nicht gelesen werden</translation></message><message><source>❌ ERROR: Failed to load {0}</source><translation>❌ FEHLER: Laden von {0} fehlgeschlagen</translation></message><message><source>❌ Error: {0}</source><translation>❌ Fehler: {0}</translation></message><message><source>❌ Failed to load reference {0}</source><translation>❌ Laden von Referenz {0} fehlgeschlagen</translation></message><message><source>❌ Failed to memmap dark frames: {0}</source><translation>❌ Memmap von Dark-Frames fehlgeschlagen: {0}</translation></message><message><source>❌ Failed to memmap flat frames: {0}</source><translation>❌ Memmap von Flat-Frames fehlgeschlagen: {0}</translation></message><message><source>❌ GPU Acceleration install aborted: unsupported Python version.</source><translation>❌ GPU-Beschleunigungs-Installation abgebrochen: nicht unterstützte Python-Version.</translation></message><message><source>❌ MFDeconv failed for '{0}': {1}</source><translation>❌ MFDeconv fehlgeschlagen für '{0}': {1}</translation></message><message><source>❌ Operation cancelled</source><translation>❌ Vorgang abgebrochen</translation></message><message><source>❌ Registration cancelled (no comet seed).</source><translation>❌ Registrierung abgebrochen (kein Kometen-Seed).</translation></message><message><source>❌ {0}</source><translation>❌ {0}</translation></message><message><source>⤴ {0}: {1} files</source><translation>⤴ {0}: {1} Dateien</translation></message><message><source>⭐ Stacking in progress…</source><translation>⭐ Stacking läuft…</translation></message><message><source>⭐ Star-Trail Mode disabled: other options re-enabled.</source><translation>⭐ Strichspur-Modus deaktiviert: andere Optionen wieder aktiviert.</translation></message><message><source>⭐ Star-Trail Mode enabled: Drizzle, Comet stack, and MFDeconv disabled.</source><translation>⭐ Strichspur-Modus aktiviert: Drizzle, Kometen-Stack und MFDeconv deaktiviert.</translation></message><message><source>🌀 Normalizing chunk {0}/{1} ({2} frames)…</source><translation>🌀 Normalisiere Chunk {0}/{1} ({2} Bilder)…</translation></message><message><source>🌈 Splitting dual-band OSC frames into Ha / SII / OIII...</source><translation>🌈 Dual-Band-OSC-Bilder werden in Ha / SII / OIII gesplittet...</translation></message><message><source>🌍 Loading {0} images in parallel for normalization (up to {1} threads)…</source><translation>🌍 Lade {0} Bilder parallel für Normalisierung (bis zu {1} Threads)…</translation></message><message><source>🌍 Loading {0} previews in parallel (up to {1} threads)...</source><translation>🌍 Lade {0} Vorschauen parallel (bis zu {1} Threads)...</translation></message><message><source>🌍 Measuring global means in parallel...</source><translation>🌍 Messen der globalen Mittelwerte erfolgt parallel...</translation></message><message><source>🌓 This flat group: using AUTO dark → {0}</source><translation>🌓 Diese Flat-Gruppe: verwende AUTO Dark → {0}</translation></message><message><source>🌓 This flat group: using OVERRIDE dark → {0}</source><translation>🌓 Diese Flat-Gruppe: verwende OVERRIDE Dark → {0}</translation></message><message><source>🌠 Comet anchor in reference frame: ({0:.1f}, {1:.1f})</source><translation>🌠 Kometen-Anker im Referenzbild: ({0:.1f}, {1:.1f})</translation></message><message><source>🌠 Comet mode enabled for this group</source><translation>🌠 Kometen-Modus für diese Gruppe aktiviert</translation></message><message><source>🌠 Comet mode: please click the comet center to continue…</source><translation>🌠 Kometen-Modus: bitte Kometenzentrum anklicken, um fortzufahren…</translation></message><message><source>🌠 Comet seed set on {0} at ({1:.1f}, {2:.1f}).</source><translation>🌠 Kometen-Seed gesetzt auf {0} bei ({1:.1f}, {2:.1f}).</translation></message><message><source>🌠 Create comet stack (comet-aligned)</source><translation>🌠 Kometen-Stack erstellen (kometenausgerichtet)</translation></message><message><source>🌠 Star-Trail Mode enabled: skipping registration &amp; using max-value stack</source><translation>🌠 Strichspur-Modus aktiviert: Registrierung übersprungen &amp; Max-Value-Stack verwendet</translation></message><message><source>🎉 CUDA: torch.cuda.is_available() → True, GPU ready.</source><translation>🎉 CUDA: torch.cuda.is_available() → True, GPU bereit.</translation></message><message><source>🎯 Stacking complete!</source><translation>🎯 Stacking abgeschlossen!</translation></message><message><source>🎯 Target pixel scale (hi-res): {0:.3f}"/px × {1:.3f}"/px</source><translation>🎯 Zielpixelskala (hi-res): {0:.3f}"/px × {1:.3f}"/px</translation></message><message><source>🎯 Target pixel scale unknown (no WCS/pixel size). Will skip scale normalization.</source><translation>🎯 Zielpixelskala unbekannt (keine WCS/Pixelgröße). Überspringe Skalennormalisierung.</translation></message><message><source>💡 For best results with CFA drizzle, aim for &gt;65% fill.</source><translation>💡 Für beste Ergebnisse mit CFA-Drizzle streben Sie eine Füllung von &gt;65 % an.</translation></message><message><source>💾 Saving result…</source><translation>💾 Ergebnis wird gespeichert…</translation></message><message><source>📁 Calibrated files saved to: {0}</source><translation>📁 Kalibrierte Dateien gespeichert unter: {0}</translation></message><message><source>📁 Output saved to: {0}</source><translation>📁 Ausgabe gespeichert unter: {0}</translation></message><message><source>📁 Post-align: {0} group(s), {1} aligned frame(s).</source><translation>📁 Post-align: {0} Gruppe(n), {1} ausgerichtete(s) Bild(er).</translation></message><message><source>📂 DEBUG: Master Files Stored: {0}</source><translation>📂 DEBUG: Master-Dateien gespeichert: {0}</translation></message><message><source>📂 Loaded stacking profile: {0}</source><translation>📂 Stacking-Profil geladen: {0}</translation></message><message><source>📂 Preparing to stack {0} frames in {1} groups.</source><translation>📂 Bereite Stacking von {0} Bildern in {1} Gruppen vor.</translation></message><message><source>📂 {0} → StarCount={1}, Ecc={2:.4f}, Mean={3:.4f}, Weight={4:.4f}</source><translation>📂 {0} → Sternanzahl={1}, Exc={2:.4f}, Mittelw={3:.4f}, Gew={4:.4f}</translation></message><message><source>📈 Dark groups summary:</source><translation>📈 Dark-Gruppen Zusammenfassung:</translation></message><message><source>📈 Flat groups summary:</source><translation>📈 Flat-Gruppen Zusammenfassung:</translation></message><message><source>📈 Light groups summary:</source><translation>📈 Light-Gruppen Zusammenfassung:</translation></message><message><source>📊 (New) reference median: {0:.4f}</source><translation>📊 (Neuer) Referenzmedian: {0:.4f}</translation></message><message><source>📊 Calculating statistics…</source><translation>📊 Statistiken werden berechnet…</translation></message><message><source>📊 Found {0} aligned/normalized frames. Measuring in parallel previews…</source><translation>📊 {0} ausgerichtete/normalisierte Bilder gefunden. Messen erfolgt in parallelen Vorschauen…</translation></message><message><source>📊 Found {0} total frames. Now measuring in parallel batches...</source><translation>📊 Insgesamt {0} Bilder gefunden. Messen erfolgt nun in parallelen Batches...</translation></message><message><source>📊 Group '{0}' has {1} aligned file(s).</source><translation>📊 Gruppe '{0}' hat {1} ausgerichtete Datei(en).</translation></message><message><source>📊 Reference (debayered) median: {0:.4f}</source><translation>📊 Referenz-Median (debayered): {0:.4f}</translation></message><message><source>📊 Reference min={0:.6f}, normalized-median={1:.6f}</source><translation>📊 Referenz Min={0:.6f}, normalized-median={1:.6f}</translation></message><message><source>📊 Stacking group '{0}' with {1}</source><translation>📊 Stacke Gruppe '{0}' mit {1}</translation></message><message><source>📊 Stacking group '{0}' with {1}{2}</source><translation>📊 Stacke Gruppe '{0}' mit {1}{2}</translation></message><message><source>📊 Stacking {0} frames</source><translation>📊 Stacke {0} Bilder</translation></message><message><source>📌 Auto-selected reference: {0}</source><translation>📌 Automatisch gewählte Referenz: {0}</translation></message><message><source>📌 Auto-selected reference: {0} {1}</source><translation>📌 Automatisch gewählte Referenz: {0} {1}</translation></message><message><source>📌 Comet reference pixel @ {0} → ({1:.2f},{2:.2f})</source><translation>📌 Kometen-Referenzpixel @ {0} → ({1:.2f},{2:.2f})</translation></message><message><source>📌 Reference for alignment (verbatim): {0}</source><translation>📌 Referenz für Ausrichtung (wörtlich): {0}</translation></message><message><source>📌 Using user-specified reference (locked): {0}</source><translation>📌 Verwende benutzerspezifische Referenz (gesperrt): {0}</translation></message><message><source>📌 Using user-specified reference: {0}</source><translation>📌 Verwende benutzerspezifische Referenz: {0}</translation></message><message><source>📏 Pixel-scale normalize {0:.3f}"/{1:.3f}" → {2:.3f}"/{3:.3f}" | size {4}×{5} → {6}×{7}</source><translation>📏 Pixel-Skala normalisiert {0:.3f}"/{1:.3f}" → {2:.3f}"/{3:.3f}" | Größe {4}×{5} → {6}×{7}</translation></message><message><source>📐 Applying geometric correction…</source><translation>📐 Geometrische Korrektur wird angewendet…</translation></message><message><source>📐 Drizzle for '{0}' at {1}× (drop={2}) using {3} frame(s).</source><translation>📐 Drizzle für '{0}' bei {1}× (Drop={2}) unter Verwendung von {3} Bild(ern).</translation></message><message><source>📜 Reading metadata for {0} files…</source><translation>📜 Metadaten für {0} Dateien werden gelesen…</translation></message><message><source>📦 Debayering reference frame…</source><translation>📦 Referenzbild wird debayert…</translation></message><message><source>📦 Debayering {0}…</source><translation>📦 {0} wird debayert…</translation></message><message><source>📦 Measuring chunk {0}/{1} ({2} frames)</source><translation>📦 Messe Chunk {0}/{1} ({2} Bilder)</translation></message><message><source>📦 {0} tiles to process for this group (chunk {1}×{2}).</source><translation>📦 {0} Kacheln für diese Gruppe zu verarbeiten (Chunk {1}×{2}).</translation></message><message><source>📷 Applying bias subtraction…</source><translation>📷 Bias-Subtraktion wird angewendet…</translation></message><message><source>📷 Applying dark subtraction…</source><translation>📷 Dark-Subtraktion wird angewendet…</translation></message><message><source>📷 Applying flat correction…</source><translation>📷 Flat-Korrektur wird angewendet…</translation></message><message><source>🔀 Computing transforms…</source><translation>🔀 Transformationen werden berechnet…</translation></message><message><source>🔁 Restarting Stacking Suite to apply {0}…</source><translation>🔁 Stacking Suite wird neu gestartet, um {0} anzuwenden…</translation></message><message><source>🔄 Aligning frame {0}…</source><translation>🔄 Bild {0} wird ausgerichtet…</translation></message><message><source>🔄 Image Registration Started...</source><translation>🔄 Bildregistrierung gestartet...</translation></message><message><source>🔄 Integrating Previously Registered Images…</source><translation>🔄 Zuvor registrierte Bilder werden integriert…</translation></message><message><source>🔄 Normalizing frame {0}/{1}</source><translation>🔄 Normalisiere Bild {0}/{1}</translation></message><message><source>🔄 Processing files…</source><translation>🔄 Dateien werden verarbeitet…</translation></message><message><source>🔍 Detected {0} stars</source><translation>🔍 {0} Sterne erkannt</translation></message><message><source>🔍 Detecting stars in reference frame…</source><translation>🔍 Sterne im Referenzbild werden erkannt…</translation></message><message><source>🔎 CFA drizzle sub-pixel phase fill (8×8): {0:.1f}%</source><translation>🔎 CFA-Drizzle Subpixel Phasenfüllung (8×8): {0:.1f}%</translation></message><message><source>🔎 Discovered {0} flat groups ({1} eligible to stack) — {2} files total.</source><translation>🔎 {0} Flat-Gruppen entdeckt ({1} zum Stacken geeignet) — insgesamt {2} Dateien.</translation></message><message><source>🔎 Discovered {0} grouped exposures ({1} eligible to stack) — {2} files total.</source><translation>🔎 {0} gruppierte Belichtungen entdeckt ({1} zum Stacken geeignet) — insgesamt {2} Dateien.</translation></message><message><source>🔎 Scanning {0} file(s)…</source><translation>🔎 {0} Datei(en) werden gescannt…</translation></message><message><source>🔢 Processing frame {0} of {1}</source><translation>🔢 Verarbeite Bild {0} von {1}</translation></message><message><source>🔥🚀Register and Integrate Images🔥🚀</source><translation>🔥🚀Bilder registrieren und integrieren🔥🚀</translation></message><message><source>🔧 Applying corrections…</source><translation>🔧 Korrekturen werden angewendet…</translation></message><message><source>🔧 Calibrating frame {0}…</source><translation>🔧 Bild {0} wird kalibriert…</translation></message><message><source>🔧 Comet stack chunk {0}×{1}</source><translation>🔧 Kometen-Stack Chunk {0}×{1}</translation></message><message><source>🔧 Resampled for binning {0}×{1} → {2}×{3} size {4}×{5} → {6}×{7}</source><translation>🔧 Resampling für Binning {0}×{1} → {2}×{3} Größe {4}×{5} → {6}×{7}</translation></message><message><source>🔧 Using chunk size {0}×{1} for {2}</source><translation>🔧 Verwende Chunk-Größe {0}×{1} für {2}</translation></message><message><source>🔨 Creating master bias from {0} frames…</source><translation>🔨 Erstelle Master-Bias aus {0} Bildern…</translation></message><message><source>🔨 Creating master dark from {0} frames…</source><translation>🔨 Erstelle Master-Dark aus {0} Bildern…</translation></message><message><source>🔨 Creating master flat from {0} frames…</source><translation>🔨 Erstelle Master-Flat aus {0} Bildern…</translation></message><message><source>🔬 Drizzle factor: {0}x</source><translation>🔬 Drizzle-Faktor: {0}x</translation></message><message><source>🔬 Drizzle integration complete</source><translation>🔬 Drizzle-Integration abgeschlossen</translation></message><message><source>🔬 Output resolution: {0}x{1}</source><translation>🔬 Ausgaberesolution: {0}x{1}</translation></message><message><source>🔬 Using {0} kernel</source><translation>🔬 Verwende {0}-Kernel</translation></message><message><source>🔭 Drizzle stacking for group '{0}' with {1} total rejected pixels.</source><translation>🔭 Drizzle-Stacking für Gruppe '{0}' mit insgesamt {1} verworfenen Pixeln.</translation></message><message><source>🔹 [{0}/{1}] Integrating '{2}' with {3} file(s)…</source><translation>🔹 [{0}/{1}] Integriere '{2}' mit {3} Datei(en)…</translation></message><message><source>🗂️ Creating temp memmap: {0} (shape={1}×{2}×{3}, dtype=float32)</source><translation>🗂️ Erstelle temporäres Memmap: {0} (shape={1}×{2}×{3}, dtype=float32)</translation></message><message><source>🚀 Calibrate Light Frames 🚀</source><translation>🚀 Light-Frames kalibrieren 🚀</translation></message><message><source>🚨 Could not load reference {0}. Aborting.</source><translation>🚨 Referenz {0} konnte nicht geladen werden. Abbrechung.</translation></message><message><source>🚨 Reference file does not exist: {0}</source><translation>🚨 Referenzdatei existiert nicht: {0}</translation></message><message><source>🚨 Rejected {0} frame(s) due to shift &gt; {1}px.</source><translation>🚨 {0} Bild(er) verworfen aufgrund von Verschiebung &gt; {1}px.</translation></message><message><source>🟠 Comet-aligned integration…</source><translation>🟠 Kometenausgerichtete Integration…</translation></message><message><source>🟡 Blending Stars+Comet (screen after 5% stretch; mix={0:.2f})…</source><translation>🟡 Blende Sterne+Komet (Screen nach 5% Stretch; Mix={0:.2f})…</translation></message><message><source>🟢 Assigned session '{0}' to group '{1}'</source><translation>🟢 Sitzung '{0}' der Gruppe '{1}' zugewiesen</translation></message><message><source>🟢 Assigned session '{0}' to {1} file(s).</source><translation>🟢 Sitzung '{0}' {1} Datei(en) zugewiesen.</translation></message><message><source>🟢 Measuring comet centers (template match)…</source><translation>🟢 Messen der Kometenzentren (Template Match)…</translation></message><message><source>🟢 Processing {0} darks for {1}s ({2}) exposure…</source><translation>🟢 Verarbeite {0} Darks für {1}s ({2}) Belichtung…</translation></message><message><source>🟢 Processing {0} flats for {1} ({2}) [{3}] in session '{4}'…</source><translation>🟢 Verarbeite {0} Flats für {1} ({2}) [{3}] in Sitzung ‚{4}‘…</translation></message><message><source>🧠 Selecting reference optimized for AstroAlign (starcount/(median*ecc))…</source><translation>🧠 Wähle für AstroAlign optimierte Referenz (Starcount/(Median*Exc))…</translation></message><message><source>🧩 Bayer flat group detected: {0}</source><translation>🧩 Bayer-Flat-Gruppe erkannt: {0}</translation></message><message><source>🧪 Multi-frame PSF-aware deconvolution path enabled.</source><translation>🧪 Multi-Frame PSF-aware Deconvolution-Pfad aktiviert.</translation></message><message><source>🧭 Drizzle uses {0} for {1}</source><translation>🧭 Drizzle verwendet {0} für {1}</translation></message><message><source>🧭 Total tiles to process: {0} (base chunk preference {1}×{2})</source><translation>🧭 Kacheln gesamt: {0} (Basis-Chunk-Präferenz {1}×{2})</translation></message><message><source>🧮 Binning summary → target={0}×{1} (range observed: x=[{2}..{3}], y=[{4}..{5}])</source><translation>🧮 Binning-Zusammenfassung → Ziel={0}×{1} (beobachteter Bereich: x=[{2}..{3}], y=[{4}..{5}])</translation></message><message><source>🧹 Clearing selection…</source><translation>🧹 Auswahl wird geleert…</translation></message></context><context><name>StarSpikesDialogPro</name><message><source>Aperture</source><translation>Apertur</translation></message><message><source>Aperture Help</source><translation>Apertur Hilfe</translation></message><message><source>Aperture Type:</source><translation>Apertur-Typ:</translation></message><message><source>Apply to Active Document</source><translation>Auf aktives Dokument anwenden</translation></message><message><source>Detection Threshold (σ):</source><translation>Erkennungsschwelle (σ):</translation></message><message><source>Diffraction Spikes</source><translation>Diffraktions-Spikes</translation></message><message><source>Fit to Preview</source><translation>An Vorschau anpassen</translation></message><message><source>Flux Min:</source><translation>Minimaler Fluss:</translation></message><message><source>Generate Spikes</source><translation>Spikes generieren</translation></message><message><source>Number of Vanes:</source><translation>Anzahl der Streben:</translation></message><message><source>Obstruction:</source><translation>Obstruktion:</translation></message><message><source>PSF &amp; Synthesis</source><translation>PSF &amp; Synthese</translation></message><message><source>PSF Blur Sigma:</source><translation>PSF-Unschärfe Sigma:</translation></message><message><source>Pupil Radius:</source><translation>Pupillenradius:</translation></message><message><source>Ready</source><translation>Bereit</translation></message><message><source>Rotation (deg):</source><translation>Rotation (Grad):</translation></message><message><source>Spike Boost:</source><translation>Spike-Boost:</translation></message><message><source>Star Detection</source><translation>Sternerkennung</translation></message><message><source>Vane Width:</source><translation>Strebenbreite:</translation></message><message><source>Zoom In</source><translation>Vergrößern</translation></message><message><source>Zoom Out</source><translation>Verkleinern</translation></message></context><context><name>StarStretchDialog</name><message><source>Apply to Document</source><translation>Auf Dokument anwenden</translation></message><message><source>Color Boost:</source><translation>Farbboost:</translation></message><message><source>Fit to Preview</source><translation>An Vorschau anpassen</translation></message><message><source>Preview</source><translation>Vorschau</translation></message><message><source>Remove Green via SCNR (Optional)</source><translation>Grün per SCNR entfernen (Optional)</translation></message><message><source>Star Stretch</source><translation>Sternstretch</translation></message><message><source>Stretch Amount:</source><translation>Stretch-Betrag:</translation></message><message><source>Zoom In</source><translation>Vergrößern</translation></message><message><source>Zoom Out</source><translation>Verkleinern</translation></message></context><context><name>StatisticalStretchDialog</name><message><source>Apply</source><translation>Anwenden</translation></message><message><source>Close</source><translation>Schließen</translation></message><message><source>Curves boost</source><translation>Kurven-Boost</translation></message><message><source>Linked channels</source><translation>Verknüpfte Kanäle</translation></message><message><source>Normalize to [0..1]</source><translation>Auf [0..1] normalisieren</translation></message><message><source>Preview</source><translation>Vorschau</translation></message><message><source>Statistical Stretch</source><translation>Statistischer Stretch</translation></message><message><source>Strength:</source><translation>Stärke:</translation></message><message><source>Target median:</source><translation>Zielmedian:</translation></message></context><context><name>StatusLogWindow</name><message><source>Clear</source><translation>Löschen</translation></message><message><source>Stacking Suite Log</source><translation>Stacking Suite Log</translation></message></context><context><name>SupernovaAsteroidHunterDialog</name><message><source>Images (*.png *.tif *.tiff *.fits *.fit *.xisf)</source><translation>Bilder (*.png *.tif *.tiff *.fits *.fit *.xisf)</translation></message></context><context><name>SurfaceDialog</name><message><source>Close</source><translation>Schließen</translation></message><message><source>Span: {0:.2f} … {1:.2f} {2}</source><translation>Bereich: {0:.2f} … {1:.2f} {2}</translation></message></context><context><name>TableSubWindow</name><message><source>CSV Files (*.csv)</source><translation>CSV-Dateien (*.csv)</translation></message><message><source>Export CSV</source><translation>CSV exportieren</translation></message><message><source>Export CSV…</source><translation>CSV exportieren…</translation></message><message><source>Failed to copy CSV:
-{0}</source><translation>Kopieren der CSV fehlgeschlagen:
-{0}</translation></message><message><source>Failed to export CSV:
-{0}</source><translation>Exportieren der CSV fehlgeschlagen:
-{0}</translation></message><message><source>Save CSV As…</source><translation>CSV speichern unter…</translation></message></context><context><name>TiltDialog</name><message><source>Close</source><translation>Schließen</translation></message><message><source>Corner</source><translation>Ecke</translation></message><message><source>Tilt span: {0:.1f} µm … {1:.1f} µm</source><translation>Neigungsbereich: {0:.1f} µm … {1:.1f} µm</translation></message><message><source>Δ µm</source><translation>Δ µm</translation></message></context><context><name>ToolbarMixin</name><message><source>&amp;Exit</source><translation>&amp;Beenden</translation></message><message><source>1:1</source><translation>1:1</translation></message><message><source>ABE...</source><translation>ABE...</translation></message><message><source>Aberration Correction (AI)...</source><translation>Aberrationskorrektur (KI)...</translation></message><message><source>Add Stars...</source><translation>Sterne hinzufügen...</translation></message><message><source>Add diffraction spikes to detected stars</source><translation>Diffraktions-Spikes zu erkannten Sternen hinzufügen</translation></message><message><source>Add signatures/overlays and bake them into the active image</source><translation>Signaturen/Overlays hinzufügen und in das aktive Bild einbetten</translation></message><message><source>Adjust specific hue ranges with CMY/RGB controls</source><translation>Bestimmte Farbbereichsbereiche mit CMY/RGB-Steuerelementen anpassen</translation></message><message><source>Advanced diffraction spikes with halos, flares and rainbow effects</source><translation>Fortgeschrittene Diffraktions-Spikes mit Halos, Flares und Regenbogeneffekten</translation></message><message><source>Align R and B channels to G using astroalign (affine/homography/poly)</source><translation>R- und B-Kanäle an G mit Astroalign ausrichten (affin/homografie/poly)</translation></message><message><source>Align images via astroalign / triangles</source><translation>Bilder über Astroalign / Dreiecke ausrichten</translation></message><message><source>Apply Mask</source><translation>Maske anwenden</translation></message><message><source>Apply a mask document to the active image</source><translation>Ein Maskendokument auf das aktive Bild anwenden</translation></message><message><source>Apply the current Display-Stretch to the image and add an undo step</source><translation>Wenden Sie den aktuellen Display-Stretch auf das Bild an und fügen Sie einen Rückgängig-Schritt hinzu</translation></message><message><source>Apply the same stretch to all RGB channels</source><translation>Wenden Sie den gleichen Stretch auf alle RGB-Kanäle an</translation></message><message><source>Apply white balance (Star-Based, Manual, or Auto)</source><translation>Weißabgleich anwenden (Sternbasiert, Manuell oder Automatisch)</translation></message><message><source>Arcsinh star stretch with optional SCNR and color boost</source><translation>Arcsinh-Sternstretch mit optionalem SCNR und Farbboost</translation></message><message><source>Arrange subwindows in a near-square grid</source><translation>Unterfenster in einem fast quadratischen Raster anordnen</translation></message><message><source>AstroBin Exporter...</source><translation>AstroBin-Exporter...</translation></message><message><source>AstroSpike...</source><translation>AstroSpike...</translation></message><message><source>Auto-fit on Resize</source><translation>Automatische Anpassung bei Größenänderung</translation></message><message><source>Automatic Background Extraction</source><translation>Automatische Hintergrundextraktion</translation></message><message><source>Background Neutralization...</source><translation>Hintergrundneutralisierung...</translation></message><message><source>Batch Converter...</source><translation>Batch-Konverter...</translation></message><message><source>Batch Modify FITS Headers</source><translation>FITS-Header stapelweise ändern</translation></message><message><source>Batch Rename from FITS...</source><translation>Batch-Umbenennung aus FITS...</translation></message><message><source>Batch-align frames to a reference</source><translation>Frames stapelweise an einer Referenz ausrichten</translation></message><message><source>Blemish Blaster...</source><translation>Blemish Blaster...</translation></message><message><source>Blend a starless view with a stars-only view</source><translation>Eine sternlose Ansicht mit einer Nur-Sterne-Ansicht mischen</translation></message><message><source>Blend two open images (replace A or create new)</source><translation>Zwei offene Bilder mischen (A ersetzen oder neu erstellen)</translation></message><message><source>Blink Comparator...</source><translation>Blink-Komparator...</translation></message><message><source>Build mosaics from overlapping frames</source><translation>Mosaike aus überlappenden Frames erstellen</translation></message><message><source>Bundles</source><translation>Bundles</translation></message><message><source>CLAHE...</source><translation>CLAHE...</translation></message><message><source>Cascade Views</source><translation>Ansichten kaskadieren</translation></message><message><source>Cascade all subwindows</source><translation>Alle Unterfenster kaskadieren</translation></message><message><source>Check for Updates...</source><translation>Nach Updates suchen...</translation></message><message><source>Clear All Views</source><translation>Alle Ansichten schließen</translation></message><message><source>Close all views and clear shortcuts</source><translation>Alle Ansichten schließen und Tastenkürzel löschen</translation></message><message><source>Close all views and documents, keep desktop shortcuts</source><translation>Alle Ansichten und Dokumente schließen, Desktop-Verknüpfungen beibehalten</translation></message><message><source>Combine narrowband to RGB with optional OSC stars</source><translation>Narrowband mit optionalen OSC-Sternen zu RGB kombinieren</translation></message><message><source>Combine three mono images into RGB</source><translation>Drei Mono-Bilder zu RGB kombinieren</translation></message><message><source>Compare a stack of images by blinking</source><translation>Einen Stapel von Bildern durch Blinken vergleichen</translation></message><message><source>Continuum Subtract (NB - scaled broadband)</source><translation>Kontinuum-Subtraktion (NB - skalierte Breitband)</translation></message><message><source>Continuum Subtract...</source><translation>Kontinuum-Subtraktion...</translation></message><message><source>Contrast Limited Adaptive Histogram Equalization</source><translation>Kontrastbegrenzte adaptive Histogramm-Equalisierung</translation></message><message><source>Convolution / Deconvolution...</source><translation>Faltung / Dekonvolution...</translation></message><message><source>Copy Astrometric Solution...</source><translation>Astrometrische Lösung kopieren...</translation></message><message><source>Copy View (zoom/pan)</source><translation>Ansicht kopieren (Zoom/Pan)</translation></message><message><source>Cosmic Clarity</source><translation>Cosmic Clarity</translation></message><message><source>Cosmic Clarity Satellite...</source><translation>Cosmic Clarity Satellite...</translation></message><message><source>Cosmic Clarity UI...</source><translation>Cosmic Clarity UI...</translation></message><message><source>Create Mask...</source><translation>Maske erstellen...</translation></message><message><source>Create Sample Scripts...</source><translation>Beispielskripte erstellen...</translation></message><message><source>Create a mask from the active image</source><translation>Eine Maske aus dem aktiven Bild erstellen</translation></message><message><source>Create a new mono document using the selected luminance method</source><translation>Ein neues Mono-Dokument mit der ausgewählten Luminanzmethode erstellen</translation></message><message><source>Create and run bundles of functions/shortcuts</source><translation>Bundles von Funktionen/Tastenkürzeln erstellen und ausführen</translation></message><message><source>Create bundles of views; drop shortcuts to apply to all</source><translation>Bundles von Ansichten erstellen; Tastenkürzel ablegen, um sie auf alle anzuwenden</translation></message><message><source>Crop / rotate with handles</source><translation>Zuschneiden / Drehen mit Griffen</translation></message><message><source>Crop...</source><translation>Zuschneiden...</translation></message><message><source>Curves Editor...</source><translation>Kurven-Editor...</translation></message><message><source>Debayer...</source><translation>Debayer...</translation></message><message><source>Demosaic a Bayer-mosaic mono image to RGB</source><translation>Ein Bayer-Mosaik-Mono-Bild zu RGB demosaikieren</translation></message><message><source>Detect exoplanet transits from time-series subs</source><translation>Exoplaneten-Transite aus Zeitreihen-Subs erkennen</translation></message><message><source>Diffraction Spikes...</source><translation>Diffraktions-Spikes...</translation></message><message><source>Display-Stretch</source><translation>Display-Stretch</translation></message><message><source>Documentation...</source><translation>Dokumentation...</translation></message><message><source>Enhance faint/dark structures with wavelet-guided masking</source><translation>Schwache/dunkle Strukturen mit wavelet-geführter Maskierung verbessern</translation></message><message><source>Erosion, dilation, opening, and closing.</source><translation>Erosion, Dilatation, Öffnen und Schließen.</translation></message><message><source>Evaluate expressions using open view names</source><translation>Ausdrücke unter Verwendung offener Ansichtsnamen auswerten</translation></message><message><source>Exoplanet Detector...</source><translation>Exoplaneten-Detektor...</translation></message><message><source>Extract Luminance</source><translation>Luminanz extrahieren</translation></message><message><source>Extract R/G/B as three mono documents</source><translation>R/G/B als drei Mono-Dokumente extrahieren</translation></message><message><source>FITS Header Batch Modifier...</source><translation>FITS-Header Batch-Modifikator...</translation></message><message><source>FITS Header Modifier...</source><translation>FITS-Header-Modifikator...</translation></message><message><source>Find transients/anomalies across frames</source><translation>Transienten/Anomalien über Frames hinweg finden</translation></message><message><source>Fit</source><translation>Einpassen</translation></message><message><source>Fit galaxy isophotes and reveal residuals</source><translation>Galaxien-Isophoten einpassen und Residuen aufdecken</translation></message><message><source>Fit image to current window</source><translation>Bild an das aktuelle Fenster anpassen</translation></message><message><source>Flip Horizontal</source><translation>Horizontal spiegeln</translation></message><message><source>Flip Vertical</source><translation>Vertikal spiegeln</translation></message><message><source>Flip image left&lt;-&gt;right</source><translation>Bild links&lt;-&gt;rechts spiegeln</translation></message><message><source>Flip image top&lt;-&gt;bottom</source><translation>Bild oben&lt;-&gt;unten spiegeln</translation></message><message><source>Frequency Separation...</source><translation>Frequenzteilung...</translation></message><message><source>Function Bundles...</source><translation>Funktions-Bundles...</translation></message><message><source>Functions</source><translation>Funktionen</translation></message><message><source>GLIMR -- Isophote Modeler...</source><translation>GLIMR -- Isophoten-Modellierer...</translation></message><message><source>Generalized hyperbolic stretch (α/beta/gamma, LP/HP, pivot)</source><translation>Verallgemeinerter hyperbolischer Stretch (α/beta/gamma, LP/HP, Pivot)</translation></message><message><source>Geometry</source><translation>Geometrie</translation></message><message><source>Halo-B-Gon...</source><translation>Halo-B-Gon...</translation></message><message><source>Hard (target 0.50, σ 2)</source><translation>Hart (Ziel 0.50, σ 2)</translation></message><message><source>Hard-Display-Stretch</source><translation>Harter Display-Stretch</translation></message><message><source>Hide Mask Overlay</source><translation>Masken-Overlay ausblenden</translation></message><message><source>Histogram...</source><translation>Histogramm...</translation></message><message><source>History Explorer...</source><translation>Verlaufs-Explorer...</translation></message><message><source>Hyperbolic Stretch...</source><translation>Hyperbolischer Stretch...</translation></message><message><source>Identify objects in a plate-solved frame</source><translation>Objekte in einem gelösten Frame identifizieren</translation></message><message><source>Image Combine...</source><translation>Bilder kombinieren...</translation></message><message><source>Image Inspector and Focal Plane Analysis</source><translation>Bildinspektor und Brennebene-Analyse</translation></message><message><source>Image Peeker...</source><translation>Image Peeker...</translation></message><message><source>Inspect and restore from the slot's history</source><translation>Aus dem Verlauf des Slots inspizieren und wiederherstellen</translation></message><message><source>Inspect star PSF/HFR and flux histograms (SEP)</source><translation>Stern PSF/HFR und Flusshistogramme inspizieren (SEP)</translation></message><message><source>Interactive blemish removal on the active view</source><translation>Interaktive Fleckenentfernung in der aktiven Ansicht</translation></message><message><source>Invert</source><translation>Invertieren</translation></message><message><source>Invert Mask</source><translation>Maske invertieren</translation></message><message><source>Invert image colors</source><translation>Bildfarben invertieren</translation></message><message><source>Linear Fit...</source><translation>Linearer Fit...</translation></message><message><source>Link Pan/Zoom</source><translation>Pan/Zoom verknüpfen</translation></message><message><source>Link RGB channels</source><translation>RGB-Kanäle verknüpfen</translation></message><message><source>Live Stacking...</source><translation>Live-Stacking...</translation></message><message><source>Live monitor and stack incoming frames</source><translation>Eingehende Frames live überwachen und stapeln</translation></message><message><source>Load Project...</source><translation>Projekt laden...</translation></message><message><source>Load a .sas project (views, histories, shortcuts)</source><translation>Ein .sas-Projekt laden (Ansichten, Verläufe, Tastenkürzel)</translation></message><message><source>Make Display-Stretch Permanent</source><translation>Display-Stretch permanent machen</translation></message><message><source>Masks</source><translation>Masken</translation></message><message><source>Match image levels using Linear Fit</source><translation>Bildpegel mit linearem Fit anpassen</translation></message><message><source>Mid (target 0.40, σ 3)</source><translation>Mittel (Ziel 0.40, σ 3)</translation></message><message><source>Morphological Operations...</source><translation>Morphologische Operationen...</translation></message><message><source>Mosaic Master...</source><translation>Mosaik-Meister...</translation></message><message><source>Multiscale Decomposition...</source><translation>Multiskalen-Dekomposition...</translation></message><message><source>Multiscale detail/residual decomposition with per-layer controls</source><translation>Multiskalen-Detail-/Residuum-Dekomposition mit Steuerelementen pro Ebene</translation></message><message><source>NB-&gt;RGB Stars...</source><translation>NB-&gt;RGB Sterne...</translation></message><message><source>Neutralize background color balance using a sampled region</source><translation>Hintergrundfarbbalance mit einer abgetasteten Region neutralisieren</translation></message><message><source>New Project</source><translation>Neues Projekt</translation></message><message><source>Normal (target 0.30, σ 5)</source><translation>Normal (Ziel 0.30, σ 5)</translation></message><message><source>Open Convolution / Deconvolution</source><translation>Konvolution / Dekonvolution öffnen</translation></message><message><source>Open SFCC (Pickles + Filters + Sensor QE)</source><translation>SFCC öffnen (Pickles + Filter + Sensor QE)</translation></message><message><source>Open Scripts Folder...</source><translation>Skriptordner öffnen...</translation></message><message><source>Open Scripts Forum (Discord)...</source><translation>Skriptforum öffnen (Discord)...</translation></message><message><source>Open User Scripts (GitHub)...</source><translation>Benutzerskripte öffnen (GitHub)...</translation></message><message><source>Open image(s)</source><translation>Bild(er) öffnen</translation></message><message><source>Open the Curves Editor for the active image</source><translation>Den Kurven-Editor für das aktive Bild öffnen</translation></message><message><source>Open the SASpro user scripts folder</source><translation>Den SASpro-Benutzerskriptordner öffnen</translation></message><message><source>Open the Seti Astro Suite Pro online documentation</source><translation>Die Online-Dokumentation von Seti Astro Suite Pro öffnen</translation></message><message><source>Open the built-in script editor</source><translation>Den integrierten Skripteditor öffnen</translation></message><message><source>Open...</source><translation>Öffnen...</translation></message><message><source>PSF Viewer...</source><translation>PSF-Viewer...</translation></message><message><source>Paste View</source><translation>Ansicht einfügen</translation></message><message><source>Perfect Palette Picker...</source><translation>Perfekter Paletten-Picker...</translation></message><message><source>Pick the perfect palette for your image</source><translation>Wählen Sie die perfekte Palette für Ihr Bild</translation></message><message><source>Pixel Math...</source><translation>Pixel Math...</translation></message><message><source>Plan targets by altitude, transit time, and lunar separation</source><translation>Ziele nach Höhe, Transitzeit und Mondseparation planen</translation></message><message><source>Plate Solver...</source><translation>Plate Solver...</translation></message><message><source>Presets</source><translation>Voreinstellungen</translation></message><message><source>RGB Align...</source><translation>RGB-Ausrichtung...</translation></message><message><source>RGB Combination...</source><translation>RGB-Kombination...</translation></message><message><source>RGB Extract</source><translation>RGB extrahieren</translation></message><message><source>Recombine Luminance...</source><translation>Luminanz rekombinieren...</translation></message><message><source>Redo</source><translation>Wiederholen</translation></message><message><source>Reload Scripts</source><translation>Skripte neu laden</translation></message><message><source>Remove Active Mask</source><translation>Aktive Maske entfernen</translation></message><message><source>Remove Gradient (GraXpert)...</source><translation>Gradient entfernen (GraXpert)...</translation></message><message><source>Remove Green...</source><translation>Grün entfernen...</translation></message><message><source>Remove Pedestal</source><translation>Pedestal entfernen</translation></message><message><source>Remove Stars...</source><translation>Sterne entfernen...</translation></message><message><source>Remove the active mask from the active image</source><translation>Die aktive Maske vom aktiven Bild entfernen</translation></message><message><source>Remove those pesky halos around your stars</source><translation>Entfernen Sie diese lästigen Halos um Ihre Sterne</translation></message><message><source>Replace the active image's luminance from another view</source><translation>Ersetzen Sie die Luminanz des aktiven Bildes durch eine andere Ansicht</translation></message><message><source>Rescale image by a factor</source><translation>Bild um einen Faktor skalieren</translation></message><message><source>Rescale...</source><translation>Skalieren...</translation></message><message><source>Rescan the scripts folder and reload .py files</source><translation>Skriptordner neu scannen und .py-Dateien neu laden</translation></message><message><source>Rotate 180°</source><translation>Um 180° drehen</translation></message><message><source>Rotate 90° Clockwise</source><translation>Um 90° im Uhrzeigersinn drehen</translation></message><message><source>Rotate 90° Counterclockwise</source><translation>Um 90° gegen den Uhrzeigersinn drehen</translation></message><message><source>Rotate image 180°</source><translation>Bild um 180° drehen</translation></message><message><source>Rotate image 90° clockwise</source><translation>Bild um 90° im Uhrzeigersinn drehen</translation></message><message><source>Rotate image 90° counterclockwise</source><translation>Bild um 90° gegen den Uhrzeigersinn drehen</translation></message><message><source>Run GraXpert background extraction on the active image</source><translation>Führen Sie die GraXpert-Hintergrundextraktion auf das aktive Bild aus</translation></message><message><source>Run star removal on the active image</source><translation>Sterne aus dem aktiven Bild entfernen</translation></message><message><source>SCNR-style green channel removal.</source><translation>Entfernung des Grünkanals im SCNR-Stil.</translation></message><message><source>Save As...</source><translation>Speichern unter...</translation></message><message><source>Save Project...</source><translation>Projekt speichern...</translation></message><message><source>Save all views, histories, and shortcuts to a .sas file</source><translation>Alle Ansichten, Verläufe und Tastenkürzel in einer .sas-Datei speichern</translation></message><message><source>Save the active image</source><translation>Das aktive Bild speichern</translation></message><message><source>Script Editor...</source><translation>Skripteditor...</translation></message><message><source>Selective Color Correction...</source><translation>Selektive Farbkorrektur...</translation></message><message><source>Set Sigma...</source><translation>Sigma einstellen...</translation></message><message><source>Set Target Median...</source><translation>Zielmedian einstellen...</translation></message><message><source>Set the sigma for Display-Stretch (e.g., 5.0)</source><translation>Stellen Sie das Sigma für den Display-Stretch ein (z. B. 5.0)</translation></message><message><source>Set the target median for Display-Stretch (e.g., 0.30)</source><translation>Stellen Sie den Zielmedian für den Display-Stretch ein (z. B. 0.30)</translation></message><message><source>Show Mask Overlay</source><translation>Masken-Overlay anzeigen</translation></message><message><source>Signature / Insert...</source><translation>Signatur / Einfügen...</translation></message><message><source>Smart Grid</source><translation>Smart-Grid</translation></message><message><source>Solve WCS/SIP for the active image or a file</source><translation>WCS/SIP für das aktive Bild oder eine Datei lösen</translation></message><message><source>Spectral Flux Color Calibration...</source><translation>Spektrale Flussfarbkalibrierung...</translation></message><message><source>Split into LF/HF and enhance HF (scale, wavelet, denoise)</source><translation>In LF/HF aufteilen und HF verbessern (Skala, Wavelet, Denoise)</translation></message><message><source>Split the workspace into equal horizontal rows</source><translation>Den Arbeitsbereich in gleiche horizontale Zeilen aufteilen</translation></message><message><source>Split the workspace into equal vertical columns</source><translation>Den Arbeitsbereich in gleiche vertikale Spalten aufteilen</translation></message><message><source>Stacking Suite...</source><translation>Stacking-Suite...</translation></message><message><source>Stacking! Darks, Flats, Lights, Calibration, Drizzle, and more!!</source><translation>Stacking! Darks, Flats, Lights, Kalibrierung, Drizzle und mehr!!</translation></message><message><source>Star Stretch...</source><translation>Sternstretch...</translation></message><message><source>Star Stuff</source><translation>Stern-Sachen</translation></message><message><source>Statistical Stretch...</source><translation>Statistischer Stretch...</translation></message><message><source>Stellar Alignment...</source><translation>Sternausrichtung...</translation></message><message><source>Stellar Register...</source><translation>Sternregistrierung...</translation></message><message><source>Stretch the image using median/SD statistics</source><translation>Das Bild mit Median/SD-Statistiken stretchen</translation></message><message><source>Subtract per-channel minimum.
+Typisch: 1.05–1.5 für konservative, ~2 für kräftigere Updates.</translation>
+    </message>
+    <message>
+      <source>ρ (loss):</source>
+      <translation>ρ (loss):</translation>
+    </message>
+    <message>
+      <source>‘Luma’ deconvolves luminance only; ‘PerChannel’ runs on RGB independently.</source>
+      <translation>‚Luma‘ dekontovoliert nur die Luminanz; ‚PerChannel‘ läuft auf RGB unabhängig voneinander.</translation>
+    </message>
+    <message>
+      <source>• Hardware acceleration: {0}</source>
+      <translation>• Hardwarebeschleunigung: {0}</translation>
+    </message>
+    <message>
+      <source>• Internal precision: {0}</source>
+      <translation>• Interne Präzision: {0}</translation>
+    </message>
+    <message>
+      <source>• {0}  |  session: {1}  →  {2} files, {3}</source>
+      <translation>• {0} | Sitzung: {1} → {2} Dateien, {3}</translation>
+    </message>
+    <message>
+      <source>• {0}  →  {1} files, {2}</source>
+      <translation>• {0} → {1} Dateien, {2}</translation>
+    </message>
+    <message>
+      <source>• {0}: {1} stacked{2}</source>
+      <translation>• {0}: {1} gestackt{2}</translation>
+    </message>
+    <message>
+      <source>ℹ️ CFA Drizzle kept despite low frame count (you chose No).</source>
+      <translation>ℹ️ CFA-Drizzle beibehalten trotz geringer Bildanzahl (Sie haben Nein gewählt).</translation>
+    </message>
+    <message>
+      <source>ℹ️ Could not resolve comet seed to reference (no matrix for that frame).</source>
+      <translation>ℹ️ Kometen-Seed konnte nicht auf Referenz aufgelöst werden (keine Matrix für dieses Bild).</translation>
+    </message>
+    <message>
+      <source>ℹ️ No dual-band frames detected or split.</source>
+      <translation>ℹ️ Keine Dual-Band-Bilder erkannt oder gesplittet.</translation>
+    </message>
+    <message>
+      <source>ℹ️ Registration already in progress; auto-run skipped.</source>
+      <translation>ℹ️ Registrierung läuft bereits; Auto-Run übersprungen.</translation>
+    </message>
+    <message>
+      <source>ℹ️ Single group spread {0:.3f}% &gt; tol {1:.2f}% → will normalize.</source>
+      <translation>ℹ️ Spreizung in Einzelgruppe {0:.3f}% &gt; Tol {1:.2f}% → wird normalisiert.</translation>
+    </message>
+    <message>
+      <source>ℹ️ Skipping rejection map save for '{0}' (drizzle disabled).</source>
+      <translation>ℹ️ Speichern der Rejektionskarte für '{0}' übersprungen (Drizzle deaktiviert).</translation>
+    </message>
+    <message>
+      <source>ℹ️ This flat group: Auto-Select is OFF and no override set → No Calibration.</source>
+      <translation>ℹ️ Diese Flat-Gruppe: Auto-Select ist AUS und kein Override gesetzt → Keine Kalibrierung.</translation>
+    </message>
+    <message>
+      <source>ℹ️ This flat group: no matching Master Dark (size) — proceeding without subtraction.</source>
+      <translation>ℹ️ Diese Flat-Gruppe: kein passendes Master-Dark (Größe) — fahre ohne Subtraktion fort.</translation>
+    </message>
+    <message>
+      <source>ℹ️ This flat group: override = No Calibration.</source>
+      <translation>ℹ️ Diese Flat-Gruppe: Override = Keine Kalibrierung.</translation>
+    </message>
+    <message>
+      <source>ℹ️ Using in-memory REF_SHAPE fallback: {0}×{1}</source>
+      <translation>ℹ️ Verwende In-Memory REF_SHAPE Fallback: {0}×{1}</translation>
+    </message>
+    <message>
+      <source>ℹ️ {0} frame(s) had zero/NaN preview medians; using neutral scale for those.</source>
+      <translation>ℹ️ {0} Bild(er) hatten Null/NaN-Vorschaumediane; verwende neutrale Skalierung für diese.</translation>
+    </message>
+    <message>
+      <source>↻ 180° rotate (PA Δ≈180°): {0}</source>
+      <translation>↻ 180° Drehung (PA Δ≈180°): {0}</translation>
+    </message>
+    <message>
+      <source>⏭️ Normal integration suppressed (MFDeconv-only run).</source>
+      <translation>⏭️ Normale Integration unterdrückt (nur MFDeconv-Lauf).</translation>
+    </message>
+    <message>
+      <source>⏭️ Pixel-scale normalize skipped: single-group policy (no header reads).</source>
+      <translation>⏭️ Pixel-Skala-Normalisierung übersprungen: Einzelgruppen-Richtlinie (kein Header-Lesen).</translation>
+    </message>
+    <message>
+      <source>⏭️ Pixel-scale normalize skipped: spread ≤ {0:.2f}% (single group).</source>
+      <translation>⏭️ Pixel-Skala-Normalisierung übersprungen: Spreizung ≤ {0:.2f}% (Einzelgruppe).</translation>
+    </message>
+    <message>
+      <source>⏳ Loading…</source>
+      <translation>⏳ Laden…</translation>
+    </message>
+    <message>
+      <source>⏳ Please wait…</source>
+      <translation>⏳ Bitte warten…</translation>
+    </message>
+    <message>
+      <source>⏳ Registering…</source>
+      <translation>⏳ Registrierung…</translation>
+    </message>
+    <message>
+      <source>⏸ Another job is running; ignoring extra click.</source>
+      <translation>⏸ Ein anderer Job läuft; ignoriere zusätzlichen Klick.</translation>
+    </message>
+    <message>
+      <source>⏸ Registration already running; ignoring extra click.</source>
+      <translation>⏸ Registrierung läuft bereits; ignoriere zusätzlichen Klick.</translation>
+    </message>
+    <message>
+      <source>▶️ Starting tile processing for group '{0}' ({1}s, {2}, session '{3}')</source>
+      <translation>▶️ Starte Kachelverarbeitung für Gruppe '{0}' ({1}s, {2}, Sitzung '{3}')</translation>
+    </message>
+    <message>
+      <source>★★ Star-Trail Mode ★★ (Max-Value Stack)</source>
+      <translation>★★ Strichspur-Modus ★★ (Max-Value-Stack)</translation>
+    </message>
+    <message>
+      <source>⚖️ Computing frame weights…</source>
+      <translation>⚖️ Bildgewichtungen werden berechnet…</translation>
+    </message>
+    <message>
+      <source>⚙️ Auto: starting registration &amp; integration…</source>
+      <translation>⚙️ Auto: starte Registrierung &amp; Integration…</translation>
+    </message>
+    <message>
+      <source>⚙️ MFDeconv engine: {0}</source>
+      <translation>⚙️ MFDeconv-Engine: {0}</translation>
+    </message>
+    <message>
+      <source>⚙️ Normalizing {0} flats by per-frame medians (central patch).</source>
+      <translation>⚙️ Normalisiere {0} Flats durch Medianwerte pro Bild (zentraler Bereich).</translation>
+    </message>
+    <message>
+      <source>⚙️ {0} reducer for flats — {1} ({2})</source>
+      <translation>⚙️ {0}-Reducer für Flats — {1} ({2})</translation>
+    </message>
+    <message>
+      <source>⚙️ {0} selected for {1} frames (channels={2})</source>
+      <translation>⚙️ {0} für {1} Bilder ausgewählt (Kanäle={2})</translation>
+    </message>
+    <message>
+      <source>⚠️ (MF) Auto-crop of output failed: {0}</source>
+      <translation>⚠️ (MF) Auto-Crop der Ausgabe fehlgeschlagen: {0}</translation>
+    </message>
+    <message>
+      <source>⚠️ (MF) Global crop failed: {0}</source>
+      <translation>⚠️ (MF) Globaler Crop fehlgeschlagen: {0}</translation>
+    </message>
+    <message>
+      <source>⚠️ Auto register/integrate failed: {0}</source>
+      <translation>⚠️ Auto-Registrierung/Integration fehlgeschlagen: {0}</translation>
+    </message>
+    <message>
+      <source>⚠️ CFA Drizzle: low-count fallback → using Edge-Aware Interpolation for this run.</source>
+      <translation>⚠️ CFA-Drizzle: Fallback bei niedriger Anzahl → verwende Edge-Aware-Interpolation für diesen Lauf.</translation>
+    </message>
+    <message>
+      <source>⚠️ Cannot load {0}; skipping.</source>
+      <translation>⚠️ {0} konnte nicht geladen werden; überspringe.</translation>
+    </message>
+    <message>
+      <source>⚠️ Cannot read image size for {0}: {1}</source>
+      <translation>⚠️ Bildgröße für {0} konnte nicht gelesen werden: {1}</translation>
+    </message>
+    <message>
+      <source>⚠️ Comet seed resolve failed: {0}</source>
+      <translation>⚠️ Kometen-Seed-Auflösung fehlgeschlagen: {0}</translation>
+    </message>
+    <message>
+      <source>⚠️ Comet star removal pre-process aborted: {0}</source>
+      <translation>⚠️ Kometen-Stern-Entfernung-Vorverarbeitung abgebrochen: {0}</translation>
+    </message>
+    <message>
+      <source>⚠️ Could not ensure subfolders in '{0}': {1}</source>
+      <translation>⚠️ Unterordner in '{0}' konnten nicht sichergestellt werden: {1}</translation>
+    </message>
+    <message>
+      <source>⚠️ Could not load Master Bias: {0}</source>
+      <translation>⚠️ Master-Bias konnte nicht geladen werden: {0}</translation>
+    </message>
+    <message>
+      <source>⚠️ Could not load reference '{0}' for comet stack.</source>
+      <translation>⚠️ Referenz '{0}' für Kometen-Stack konnte nicht geladen werden.</translation>
+    </message>
+    <message>
+      <source>⚠️ Could not load reference '{0}' for group '{1}'.</source>
+      <translation>⚠️ Referenz '{0}' für Gruppe '{1}' konnte nicht geladen werden.</translation>
+    </message>
+    <message>
+      <source>⚠️ Could not load reference '{0}', skipping group.</source>
+      <translation>⚠️ Referenz '{0}' konnte nicht geladen werden, überspringe Gruppe.</translation>
+    </message>
+    <message>
+      <source>⚠️ Could not load {0} to determine drizzle shape!</source>
+      <translation>⚠️ {0} konnte nicht geladen werden, um Drizzle-Form zu bestimmen!</translation>
+    </message>
+    <message>
+      <source>⚠️ Could not read XISF {0}: {1}; treating as generic image</source>
+      <translation>⚠️ XISF {0} konnte nicht gelesen werden: {1}; behandle als generisches Bild.</translation>
+    </message>
+    <message>
+      <source>⚠️ Degenerate tile shape {0} at tile {1} [y:{2}:{3} x:{4}:{5}] – using CPU for this tile.</source>
+      <translation>⚠️ Degenerierte Kachelform {0} bei Kachel {1} [y:{2}:{3} x:{4}:{5}] – verwende CPU für diese Kachel.</translation>
+    </message>
+    <message>
+      <source>⚠️ ERROR: Could not parse {0}</source>
+      <translation>⚠️ FEHLER: {0} konnte nicht geparst werden</translation>
+    </message>
+    <message>
+      <source>⚠️ Error normalizing {0}: {1}</source>
+      <translation>⚠️ Fehler beim Normalisieren von {0}: {1}</translation>
+    </message>
+    <message>
+      <source>⚠️ Error previewing {0}: {1}</source>
+      <translation>⚠️ Fehler bei der Vorschau von {0}: {1}</translation>
+    </message>
+    <message>
+      <source>⚠️ Error: No alignment data available.</source>
+      <translation>⚠️ Fehler: Keine Ausrichtungsdaten verfügbar.</translation>
+    </message>
+    <message>
+      <source>⚠️ Failed to load {0}; skipping</source>
+      <translation>⚠️ Laden von {0} fehlgeschlagen; überspringe</translation>
+    </message>
+    <message>
+      <source>⚠️ Failed to open images (memmap): {0}</source>
+      <translation>⚠️ Bilder konnten nicht geöffnet werden (memmap): {0}</translation>
+    </message>
+    <message>
+      <source>⚠️ Failed to read {0} – skipping</source>
+      <translation>⚠️ Lesen von {0} fehlgeschlagen – überspringe</translation>
+    </message>
+    <message>
+      <source>⚠️ Failed to save transform file: {0}</source>
+      <translation>⚠️ Speichern der Transformationsdatei fehlgeschlagen: {0}</translation>
+    </message>
+    <message>
+      <source>⚠️ Failed to write SASD v2 ({0}); writing affine-only fallback.</source>
+      <translation>⚠️ Schreiben von SASD v2 fehlgeschlagen ({0}); schreibe Affine-only Fallback.</translation>
+    </message>
+    <message>
+      <source>⚠️ File not found: {0}, skipping.</source>
+      <translation>⚠️ Datei nicht gefunden: {0}, überspringe.</translation>
+    </message>
+    <message>
+      <source>⚠️ GPU rejection failed on tile {0}/{1} shape={2}: {3} – falling back to CPU for this and remaining tiles.</source>
+      <translation>⚠️ GPU-Rejektion fehlgeschlagen bei Kachel {0}/{1} Form={2}: {3} – Fallback auf CPU für diese und verbleibende Kacheln.</translation>
+    </message>
+    <message>
+      <source>⚠️ Global crop (mask-based) failed: {0}</source>
+      <translation>⚠️ Globaler Crop (maskenbasiert) fehlgeschlagen: {0}</translation>
+    </message>
+    <message>
+      <source>⚠️ Group '{0}' does not have enough frames to drizzle.</source>
+      <translation>⚠️ Gruppe '{0}' hat nicht genügend Bilder für Drizzle.</translation>
+    </message>
+    <message>
+      <source>⚠️ Group '{0}' does not have enough frames to stack.</source>
+      <translation>⚠️ Gruppe '{0}' hat nicht genügend Bilder für Stacking.</translation>
+    </message>
+    <message>
+      <source>⚠️ Image registration failed: {0}</source>
+      <translation>⚠️ Bildregistrierung fehlgeschlagen: {0}</translation>
+    </message>
+    <message>
+      <source>⚠️ MEF save failed ({0}); falling back to single-HDU save.</source>
+      <translation>⚠️ MEF-Speichern fehlgeschlagen ({0}); Fallback auf Single-HDU-Speicherung.</translation>
+    </message>
+    <message>
+      <source>⚠️ MFDeconv engine import failed ({0}); falling back to Normal.</source>
+      <translation>⚠️ MFDeconv-Engine-Import fehlgeschlagen ({0}); Fallback auf Normal.</translation>
+    </message>
+    <message>
+      <source>⚠️ Missing REF_SHAPE in SASD; cannot drizzle.</source>
+      <translation>⚠️ REF_SHAPE in SASD fehlt; Drizzle nicht möglich.</translation>
+    </message>
+    <message>
+      <source>⚠️ No aligned frames available for MF deconvolution.</source>
+      <translation>⚠️ Keine ausgerichteten Bilder für MF-Deconvolution verfügbar.</translation>
+    </message>
+    <message>
+      <source>⚠️ No calibrated lights available for star trails.</source>
+      <translation>⚠️ Keine kalibrierten Lights für Strichspuren verfügbar.</translation>
+    </message>
+    <message>
+      <source>⚠️ No data for {0}</source>
+      <translation>⚠️ Keine Daten für {0}</translation>
+    </message>
+    <message>
+      <source>⚠️ No eligible dark groups found to stack.</source>
+      <translation>⚠️ Keine geeigneten Dark-Gruppen zum Stacken gefunden.</translation>
+    </message>
+    <message>
+      <source>⚠️ No eligible flat groups found to stack.</source>
+      <translation>⚠️ Keine geeigneten Flat-Gruppen zum Stacken gefunden.</translation>
+    </message>
+    <message>
+      <source>⚠️ No frames could be measured!</source>
+      <translation>⚠️ Keine Bilder konnten gemessen werden!</translation>
+    </message>
+    <message>
+      <source>⚠️ No frames found in the registration tree!</source>
+      <translation>⚠️ Keine Bilder im Registrierungsbaum gefunden!</translation>
+    </message>
+    <message>
+      <source>⚠️ No frames to stack; aborting.</source>
+      <translation>⚠️ Keine Bilder zum Stacken; breche ab.</translation>
+    </message>
+    <message>
+      <source>⚠️ No leaf files selected to retag.</source>
+      <translation>⚠️ Keine Leaf-Dateien zum neu Taggen ausgewählt.</translation>
+    </message>
+    <message>
+      <source>⚠️ No light files to register!</source>
+      <translation>⚠️ Keine Light-Dateien zum Registrieren!</translation>
+    </message>
+    <message>
+      <source>⚠️ No light frames available for stacking!</source>
+      <translation>⚠️ Keine Light-Frames für Stacking verfügbar!</translation>
+    </message>
+    <message>
+      <source>⚠️ No registered images found!</source>
+      <translation>⚠️ Keine registrierten Bilder gefunden!</translation>
+    </message>
+    <message>
+      <source>⚠️ No usable transform for {0} – skipping</source>
+      <translation>⚠️ Keine verwendbare Transformation für {0} – überspringe</translation>
+    </message>
+    <message>
+      <source>⚠️ No valid frames to compute reference median; aborting star-trail.</source>
+      <translation>⚠️ Keine gültigen Bilder zum Berechnen des Referenzmedians; breche Strichspur ab.</translation>
+    </message>
+    <message>
+      <source>⚠️ No valid previews in this chunk (couldn't find image data in any HDU).</source>
+      <translation>⚠️ Keine gültigen Vorschauen in diesem Chunk (konnte keine Bilddaten in einer HDU finden).</translation>
+    </message>
+    <message>
+      <source>⚠️ No valid previews in this chunk (couldn’t find image data in any HDU).</source>
+      <translation>⚠️ Keine gültigen Vorschauen in diesem Chunk (konnte keine Bilddaten in einer HDU finden).</translation>
+    </message>
+    <message>
+      <source>⚠️ No valid previews in this chunk.</source>
+      <translation>⚠️ Keine gültigen Vorschauen in diesem Chunk.</translation>
+    </message>
+    <message>
+      <source>⚠️ Not enough frames with valid comet centroids; skipping comet stack.</source>
+      <translation>⚠️ Nicht genügend Bilder mit gültigen Kometen-Zentroiden; überspringe Kometen-Stack.</translation>
+    </message>
+    <message>
+      <source>⚠️ Not enough valid frames in group '{0}' to stack.</source>
+      <translation>⚠️ Nicht genügend gültige Bilder in Gruppe '{0}' zum Stacken.</translation>
+    </message>
+    <message>
+      <source>⚠️ Override dark missing on disk; falling back to Auto/None.</source>
+      <translation>⚠️ Override-Dark fehlt auf Festplatte; Fallback auf Auto/Keine.</translation>
+    </message>
+    <message>
+      <source>⚠️ Per-group transform crop failed for '{0}': {1}</source>
+      <translation>⚠️ Gruppenbasierter Transformations-Crop fehlgeschlagen für '{0}': {1}</translation>
+    </message>
+    <message>
+      <source>⚠️ Preview error for {0}: {1}</source>
+      <translation>⚠️ Vorschaufehler für {0}: {1}</translation>
+    </message>
+    <message>
+      <source>⚠️ PyTorch reports no GPU but you have an NVIDIA card – restarting may help.</source>
+      <translation>⚠️ PyTorch meldet keine GPU, obwohl Sie eine NVIDIA-Karte haben – ein Neustart könnte helfen.</translation>
+    </message>
+    <message>
+      <source>⚠️ Reference file '{0}' not found, skipping group.</source>
+      <translation>⚠️ Referenzdatei '{0}' nicht gefunden, überspringe Gruppe.</translation>
+    </message>
+    <message>
+      <source>⚠️ Skipping {0}s ({1}) - Not enough frames to stack.</source>
+      <translation>⚠️ Überspringe {0}s ({1}) - Nicht genügend Bilder zum Stacken.</translation>
+    </message>
+    <message>
+      <source>⚠️ Skipping {0}s ({1}) [{2}] [{3}] - Not enough frames to stack.</source>
+      <translation>⚠️ Überspringe {0}s ({1}) [{2}] [{3}] - Nicht genügend Bilder zum Stacken.</translation>
+    </message>
+    <message>
+      <source>⚠️ Split error on {0}: {1}</source>
+      <translation>⚠️ Split-Fehler bei {0}: {1}</translation>
+    </message>
+    <message>
+      <source>⚠️ Too many open files ({0}); falling back to lazy per-tile reads.</source>
+      <translation>⚠️ Zu viele offene Dateien ({0}); Fallback auf lazilyes Lesen pro Kachel.</translation>
+    </message>
+    <message>
+      <source>⚠️ Transform-based global crop failed ({0}); falling back to mask-based.</source>
+      <translation>⚠️ Transformationsbasierter globaler Crop fehlgeschlagen ({0}); Fallback auf maskenbasiert.</translation>
+    </message>
+    <message>
+      <source>⚠️ Unsupported transform '{0}' – skipping {1}</source>
+      <translation>⚠️ Nicht unterstützte Transformation '{0}' – überspringe {1}</translation>
+    </message>
+    <message>
+      <source>⚠️ WARNING: No Master Calibration Files available.</source>
+      <translation>⚠️ WARNUNG: Keine Master-Kalibrierdateien verfügbar.</translation>
+    </message>
+    <message>
+      <source>⚠️ WARNING: No Master Darks available.</source>
+      <translation>⚠️ WARNUNG: Keine Master-Darks verfügbar.</translation>
+    </message>
+    <message>
+      <source>⚠️ Warning: {0}</source>
+      <translation>⚠️ Warnung: {0}</translation>
+    </message>
+    <message>
+      <source>⚠️ rebuild_flat_tree: could not parse key '{0}': {1}</source>
+      <translation>⚠️ rebuild_flat_tree: Schlüssel '{0}' konnte nicht geparst werden: {1}</translation>
+    </message>
+    <message>
+      <source>⚠️ {0}</source>
+      <translation>⚠️ {0}</translation>
+    </message>
+    <message>
+      <source>⚠️ {0} frame has no aligned counterpart – skipping {1}</source>
+      <translation>⚠️ {0} Bild hat kein ausgerichtetes Gegenstück – überspringe {1}</translation>
+    </message>
+    <message>
+      <source>⚠️ {0} frames failed to align</source>
+      <translation>⚠️ {0} Bilder konnten nicht ausgerichtet werden</translation>
+    </message>
+    <message>
+      <source>⚡ Fast mode: </source>
+      <translation>⚡ Fast mode: </translation>
+    </message>
+    <message>
+      <source>⛔ Master Dark creation cancelled during tile processing.</source>
+      <translation>⛔ Master-Dark-Erstellung während der Kachelverarbeitung abgebrochen.</translation>
+    </message>
+    <message>
+      <source>⛔ Master Dark creation cancelled.</source>
+      <translation>⛔ Master-Dark-Erstellung abgebrochen.</translation>
+    </message>
+    <message>
+      <source>⛔ Master Dark creation cancelled; cleaning up temporary files.</source>
+      <translation>⛔ Master-Dark-Erstellung abgebrochen; bereinige temporäre Dateien.</translation>
+    </message>
+    <message>
+      <source>⛔ Master Flat creation cancelled.</source>
+      <translation>⛔ Master-Flat-Erstellung abgebrochen.</translation>
+    </message>
+    <message>
+      <source>⛔ Master Flat creation cancelled; cleaning up temporary files.</source>
+      <translation>⛔ Master-Flat-Erstellung abgebrochen; bereinige temporäre Dateien.</translation>
+    </message>
+    <message>
+      <source>✂️ (MF) Auto Crop: using transform footprints…</source>
+      <translation>✂️ (MF) Auto Crop: verwende Transformations-Footprints…</translation>
+    </message>
+    <message>
+      <source>✂️ (MF) Auto-crop disabled (no common region).</source>
+      <translation>✂️ (MF) Auto-Crop deaktiviert (keine gemeinsame Region).</translation>
+    </message>
+    <message>
+      <source>✂️ (MF) Mask-based crop → [{0}:{1}]×[{2}:{3}] ({4}×{5})</source>
+      <translation>✂️ (MF) Maskenbasierter Crop → [{0}:{1}]×[{2}:{3}] ({4}×{5})</translation>
+    </message>
+    <message>
+      <source>✂️ (MF) No transforms/geometry available; falling back to mask-based method…</source>
+      <translation>✂️ (MF) Keine Transformationen/Geometrie verfügbar; Fallback auf maskenbasierten Modus…</translation>
+    </message>
+    <message>
+      <source>✂️ (MF) Saved auto-cropped copy → {0}</source>
+      <translation>✂️ (MF) Auto-gecroppte Kopie gespeichert → {0}</translation>
+    </message>
+    <message>
+      <source>✂️ (MF) Transform crop yielded no valid rect; falling back to mask-based method…</source>
+      <translation>✂️ (MF) Transformations-Crop ergab kein gültiges Rechteck; Fallback auf maskenbasierten Modus…</translation>
+    </message>
+    <message>
+      <source>✂️ (MF) Transform crop → [{0}:{1}]×[{2}:{3}] ({4}×{5})</source>
+      <translation>✂️ (MF) Transformations-Crop → [{0}:{1}]×[{2}:{3}] ({4}×{5})</translation>
+    </message>
+    <message>
+      <source>✂️ Auto Crop Enabled. Calculating bounding box…</source>
+      <translation>✂️ Auto Crop aktiviert. Berechne Begrenzungsrahmen…</translation>
+    </message>
+    <message>
+      <source>✂️ Auto-crop: 0/{0} frames had usable transforms; skipping.</source>
+      <translation>✂️ Auto-Crop: 0/{0} Bilder hatten verwendbare Transformationen; überspringe.</translation>
+    </message>
+    <message>
+      <source>✂️ Auto-crop: Loading transforms...</source>
+      <translation>✂️ Auto-Crop: Transformationen werden geladen...</translation>
+    </message>
+    <message>
+      <source>✂️ Auto-crop: could not load first aligned ref.</source>
+      <translation>✂️ Auto-Crop: erste ausgerichtete Referenz konnte nicht geladen werden.</translation>
+    </message>
+    <message>
+      <source>✂️ Auto-crop: no common area found; skipping.</source>
+      <translation>✂️ Auto-Crop: keine gemeinsame Fläche gefunden; überspringe.</translation>
+    </message>
+    <message>
+      <source>✂️ Auto-crop: no transforms file at {0}</source>
+      <translation>✂️ Auto-Crop: keine Transformationsdatei bei {0}</translation>
+    </message>
+    <message>
+      <source>✂️ Auto-crop: rasterized {0}/{1} frames; need {2} per-pixel.</source>
+      <translation>✂️ Auto-Crop: {0}/{1} Bilder gerastert; benötige {2} pro Pixel.</translation>
+    </message>
+    <message>
+      <source>✂️ Auto-crop: threshold produced empty mask.</source>
+      <translation>✂️ Auto-Crop: Schwellenwert ergab leere Maske.</translation>
+    </message>
+    <message>
+      <source>✂️ Auto-cropped to [{0}:{1}]×[{2}:{3}] (scale {4}×)</source>
+      <translation>✂️ Auto-gecroppt auf [{0}:{1}]×[{2}:{3}] (Skala {4}×)</translation>
+    </message>
+    <message>
+      <source>✂️ Drizzle (auto-cropped) saved: {0}</source>
+      <translation>✂️ Drizzle (auto-gecroppt) gespeichert: {0}</translation>
+    </message>
+    <message>
+      <source>✂️ Global crop disabled; will fall back to per-group.</source>
+      <translation>✂️ Globaler Crop deaktiviert; Fallback auf gruppenbasierten Crop.</translation>
+    </message>
+    <message>
+      <source>✂️ Global crop rect={0} → size {1}×{2}</source>
+      <translation>✂️ Globaler Crop rect={0} → Größe {1}×{2}</translation>
+    </message>
+    <message>
+      <source>✂️ Global crop: mask shapes differ across groups.</source>
+      <translation>✂️ Globaler Crop: Maskenformen unterscheiden sich zwischen Gruppen.</translation>
+    </message>
+    <message>
+      <source>✂️ Global crop: no mask for '{0}' → disabling global crop.</source>
+      <translation>✂️ Globaler Crop: keine Maske für '{0}' → deaktiviere globalen Crop.</translation>
+    </message>
+    <message>
+      <source>✂️ Global crop: rect too small; disabling global crop.</source>
+      <translation>✂️ Globaler Crop: Rechteck zu klein; deaktiviere globalen Crop.</translation>
+    </message>
+    <message>
+      <source>✂️ Mask-based crop (global) → [{0}:{1}]×[{2}:{3}] ({4}×{5})</source>
+      <translation>✂️ Maskenbasierter Crop (global) → [{0}:{1}]×[{2}:{3}] ({4}×{5})</translation>
+    </message>
+    <message>
+      <source>✂️ No stable rect found for this group; per-image fallback will be used.</source>
+      <translation>✂️ Kein stabiles Rechteck für diese Gruppe gefunden; bildbasierter Fallback wird verwendet.</translation>
+    </message>
+    <message>
+      <source>✂️ No transforms/geometry available for fast global crop; falling back to mask-based.</source>
+      <translation>✂️ Keine Transformationen/Geometrie für schnellen globalen Crop verfügbar; Fallback auf maskenbasiert.</translation>
+    </message>
+    <message>
+      <source>✂️ Saved CometBlend (auto-cropped) → {0}</source>
+      <translation>✂️ CometBlend (auto-gecroppt) gespeichert → {0}</translation>
+    </message>
+    <message>
+      <source>✂️ Saved CometOnly (auto-cropped) → {0}</source>
+      <translation>✂️ CometOnly (auto-gecroppt) gespeichert → {0}</translation>
+    </message>
+    <message>
+      <source>✂️ Saved auto-cropped image for '{0}': {1}</source>
+      <translation>✂️ Auto-gecropptes Bild gespeichert für '{0}': {1}</translation>
+    </message>
+    <message>
+      <source>✂️ Transform crop (global) → [{0}:{1}]×[{2}:{3}] ({4}×{5})</source>
+      <translation>✂️ Transformations-Crop (global) → [{0}:{1}]×[{2}:{3}] ({4}×{5})</translation>
+    </message>
+    <message>
+      <source>✂️ Transform crop produced no stable global rect; falling back to focus-based.</source>
+      <translation>✂️ Transformations-Crop ergab kein stabiles globales Rechteck; Fallback auf fokusbasiert.</translation>
+    </message>
+    <message>
+      <source>✂️ Using fixed crop rect for '{0}': ({1},{2})–({3},{4})</source>
+      <translation>✂️ Verwende festes Crop-Rechteck für '{0}': ({1},{2})–({3},{4})</translation>
+    </message>
+    <message>
+      <source>✅ </source>
+      <translation>✅ </translation>
+    </message>
+    <message>
+      <source>✅ Added Master {0} -&gt; {1} under {2} with metadata: {3}</source>
+      <translation>✅ Master {0} -&gt; {1} unter {2} mit Metadaten hinzugefügt: {3}</translation>
+    </message>
+    <message>
+      <source>✅ Added {0} as {1}</source>
+      <translation>✅ {0} als {1} hinzugefügt</translation>
+    </message>
+    <message>
+      <source>✅ Added {0} file(s)</source>
+      <translation>✅ {0} Datei(en) hinzugefügt</translation>
+    </message>
+    <message>
+      <source>✅ Aligned {0} frames successfully</source>
+      <translation>✅ {0} Bilder erfolgreich ausgerichtet</translation>
+    </message>
+    <message>
+      <source>✅ All chunks complete! Measured {0} frames total.</source>
+      <translation>✅ Alle Chunks vollständig! Insgesamt {0} Bilder gemessen.</translation>
+    </message>
+    <message>
+      <source>✅ All frames registered successfully!</source>
+      <translation>✅ Alle Bilder erfolgreich registriert!</translation>
+    </message>
+    <message>
+      <source>✅ Auto-accept measured reference is enabled; using the measured best frame.</source>
+      <translation>✅ Automatische Annahme der gemessenen Referenz ist aktiviert; verwende das am besten gemessene Bild.</translation>
+    </message>
+    <message>
+      <source>✅ Calibrated {0} frames</source>
+      <translation>✅ {0} Bilder kalibriert</translation>
+    </message>
+    <message>
+      <source>✅ Calibration Complete!</source>
+      <translation>✅ Kalibrierung abgeschlossen!</translation>
+    </message>
+    <message>
+      <source>✅ Chunked stacking {0} group(s)...</source>
+      <translation>✅ Chunk-basiertes Stacking von {0} Gruppe(n)...</translation>
+    </message>
+    <message>
+      <source>✅ Comet seed set. Proceeding with registration…</source>
+      <translation>✅ Kometen-Seed gesetzt. Registrierung wird fortgesetzt…</translation>
+    </message>
+    <message>
+      <source>✅ DEBUG: Added Master {0} -&gt; {1} under {2} with metadata: {3}</source>
+      <translation>✅ DEBUG: Master {0} -&gt; {1} unter {2} mit Metadaten hinzugefügt: {3}</translation>
+    </message>
+    <message>
+      <source>✅ Drizzle (original) saved: {0}</source>
+      <translation>✅ Drizzle (Original) gespeichert: {0}</translation>
+    </message>
+    <message>
+      <source>✅ Dual-band split complete: Ha={0}, SII={1}, OIII={2}, Hb={3} (drizzle seeded on {4} new group(s))</source>
+      <translation>✅ Dual-Band-Split abgeschlossen: Ha={0}, SII={1}, OIII={2}, Hb={3} (Drizzle-Seeds auf {4} neuen Gruppen)</translation>
+    </message>
+    <message>
+      <source>✅ Frame weights computed!</source>
+      <translation>✅ Bildgewichtungen berechnet!</translation>
+    </message>
+    <message>
+      <source>✅ Group '{0}' not set for drizzle. Integrated image already saved.</source>
+      <translation>✅ Gruppe '{0}' nicht für Drizzle festgelegt. Integriertes Bild bereits gespeichert.</translation>
+    </message>
+    <message>
+      <source>✅ Group '{0}' stacked {1} frame(s)! Saved: {2}</source>
+      <translation>✅ Gruppe '{0}' hat {1} Bild(er) gestackt! Gespeichert: {2}</translation>
+    </message>
+    <message>
+      <source>✅ MFDeconv complete for all groups. Skipping normal integration as requested.</source>
+      <translation>✅ MFDeconv für alle Gruppen abgeschlossen. Normale Integration wie angefordert übersprungen.</translation>
+    </message>
+    <message>
+      <source>✅ MFDeconv complete for all groups. Skipping normal integration.</source>
+      <translation>✅ MFDeconv für alle Gruppen abgeschlossen. Normale Integration übersprungen.</translation>
+    </message>
+    <message>
+      <source>✅ Master Dark saved and added to UI: {0}</source>
+      <translation>✅ Master-Dark gespeichert und zur UI hinzugefügt: {0}</translation>
+    </message>
+    <message>
+      <source>✅ Master Dark saved: {0}</source>
+      <translation>✅ Master-Dark gespeichert: {0}</translation>
+    </message>
+    <message>
+      <source>✅ Master Flat saved: {0}</source>
+      <translation>✅ Master-Flat gespeichert: {0}</translation>
+    </message>
+    <message>
+      <source>✅ Master Light saved for group '{0}': {1}</source>
+      <translation>✅ Master-Light für Gruppe '{0}' gespeichert: {1}</translation>
+    </message>
+    <message>
+      <source>✅ Master bias saved</source>
+      <translation>✅ Master-Bias gespeichert</translation>
+    </message>
+    <message>
+      <source>✅ Master dark saved</source>
+      <translation>✅ Master-Dark gespeichert</translation>
+    </message>
+    <message>
+      <source>✅ Master flat saved</source>
+      <translation>✅ Master-Flat gespeichert</translation>
+    </message>
+    <message>
+      <source>✅ Ready</source>
+      <translation>✅ Bereit</translation>
+    </message>
+    <message>
+      <source>✅ Removed {0} file(s)</source>
+      <translation>✅ {0} Datei(en) entfernt</translation>
+    </message>
+    <message>
+      <source>✅ SASD v2: loaded {0} transform(s).</source>
+      <translation>✅ SASD v2: {0} Transformation(en) geladen.</translation>
+    </message>
+    <message>
+      <source>✅ Saved CometBlend → {0}</source>
+      <translation>✅ CometBlend gespeichert → {0}</translation>
+    </message>
+    <message>
+      <source>✅ Saved CometOnly → {0}</source>
+      <translation>✅ CometOnly gespeichert → {0}</translation>
+    </message>
+    <message>
+      <source>✅ Saved integrated image (original) for '{0}': {1}</source>
+      <translation>✅ Integriertes Bild (Original) gespeichert für '{0}': {1}</translation>
+    </message>
+    <message>
+      <source>✅ Saved integrated image (single-HDU) for '{0}': {1}</source>
+      <translation>✅ Integriertes Bild (Single-HDU) gespeichert für '{0}': {1}</translation>
+    </message>
+    <message>
+      <source>✅ Saved integrated image (with rejection layers) for '{0}': {1}</source>
+      <translation>✅ Integriertes Bild (mit Rejektions-Layern) gespeichert für '{0}': {1}</translation>
+    </message>
+    <message>
+      <source>✅ Saved rejection map to {0}</source>
+      <translation>✅ Rejektionskarte gespeichert unter {0}</translation>
+    </message>
+    <message>
+      <source>✅ Saved stacking settings.</source>
+      <translation>✅ Stacking-Einstellungen gespeichert.</translation>
+    </message>
+    <message>
+      <source>✅ Star‐Trail image written to {0}</source>
+      <translation>✅ Strichspur-Bild geschrieben nach {0}</translation>
+    </message>
+    <message>
+      <source>✅ Transform file saved as alignment_transforms.sasd (v2)</source>
+      <translation>✅ Transformationsdatei gespeichert als alignment_transforms.sasd (v2)</translation>
+    </message>
+    <message>
+      <source>✅ Transform file saved as {0}</source>
+      <translation>✅ Transformationsdatei gespeichert als {0}</translation>
+    </message>
+    <message>
+      <source>✅ Updated self.light_files to use debayered, normalized *_n.fit frames.</source>
+      <translation>✅ self.light_files aktualisiert, um debayerte, normalisierte *_n.fit-Bilder zu verwenden.</translation>
+    </message>
+    <message>
+      <source>✅ User reference is locked; skipping reference review dialog.</source>
+      <translation>✅ Benutzerreferenz ist gesperrt; Referenzprüfungsdialog wird übersprungen.</translation>
+    </message>
+    <message>
+      <source>✅ {0}</source>
+      <translation>✅ {0}</translation>
+    </message>
+    <message>
+      <source>✖ Star-trail save cancelled.</source>
+      <translation>✖ Strichspur-Speicherung abgebrochen.</translation>
+    </message>
+    <message>
+      <source>✨ Comet star removal enabled — pre-processing frames…</source>
+      <translation>✨ Kometen-Stern-Entfernung aktiviert — Bilder werden vorverarbeitet…</translation>
+    </message>
+    <message>
+      <source>✨ Using comet-aligned STARLESS frames for stack ({0} files).</source>
+      <translation>✨ Stacke kometenausgerichtete STERNLOSE Bilder ({0} Dateien).</translation>
+    </message>
+    <message>
+      <source>❌ </source>
+      <translation>❌ </translation>
+    </message>
+    <message>
+      <source>❌ ERROR: Could not read FITS header for {0} - {1}</source>
+      <translation>❌ FEHLER: FITS-Header für {0} - {1} konnte nicht gelesen werden</translation>
+    </message>
+    <message>
+      <source>❌ ERROR: Failed to load {0}</source>
+      <translation>❌ FEHLER: Laden von {0} fehlgeschlagen</translation>
+    </message>
+    <message>
+      <source>❌ Error: {0}</source>
+      <translation>❌ Fehler: {0}</translation>
+    </message>
+    <message>
+      <source>❌ Failed to load reference {0}</source>
+      <translation>❌ Laden von Referenz {0} fehlgeschlagen</translation>
+    </message>
+    <message>
+      <source>❌ Failed to memmap dark frames: {0}</source>
+      <translation>❌ Memmap von Dark-Frames fehlgeschlagen: {0}</translation>
+    </message>
+    <message>
+      <source>❌ Failed to memmap flat frames: {0}</source>
+      <translation>❌ Memmap von Flat-Frames fehlgeschlagen: {0}</translation>
+    </message>
+    <message>
+      <source>❌ GPU Acceleration install aborted: unsupported Python version.</source>
+      <translation>❌ GPU-Beschleunigungs-Installation abgebrochen: nicht unterstützte Python-Version.</translation>
+    </message>
+    <message>
+      <source>❌ MFDeconv failed for '{0}': {1}</source>
+      <translation>❌ MFDeconv fehlgeschlagen für '{0}': {1}</translation>
+    </message>
+    <message>
+      <source>❌ Operation cancelled</source>
+      <translation>❌ Vorgang abgebrochen</translation>
+    </message>
+    <message>
+      <source>❌ Registration cancelled (no comet seed).</source>
+      <translation>❌ Registrierung abgebrochen (kein Kometen-Seed).</translation>
+    </message>
+    <message>
+      <source>❌ {0}</source>
+      <translation>❌ {0}</translation>
+    </message>
+    <message>
+      <source>⤴ {0}: {1} files</source>
+      <translation>⤴ {0}: {1} Dateien</translation>
+    </message>
+    <message>
+      <source>⭐ Stacking in progress…</source>
+      <translation>⭐ Stacking läuft…</translation>
+    </message>
+    <message>
+      <source>⭐ Star-Trail Mode disabled: other options re-enabled.</source>
+      <translation>⭐ Strichspur-Modus deaktiviert: andere Optionen wieder aktiviert.</translation>
+    </message>
+    <message>
+      <source>⭐ Star-Trail Mode enabled: Drizzle, Comet stack, and MFDeconv disabled.</source>
+      <translation>⭐ Strichspur-Modus aktiviert: Drizzle, Kometen-Stack und MFDeconv deaktiviert.</translation>
+    </message>
+    <message>
+      <source>🌀 Normalizing chunk {0}/{1} ({2} frames)…</source>
+      <translation>🌀 Normalisiere Chunk {0}/{1} ({2} Bilder)…</translation>
+    </message>
+    <message>
+      <source>🌈 Splitting dual-band OSC frames into Ha / SII / OIII...</source>
+      <translation>🌈 Dual-Band-OSC-Bilder werden in Ha / SII / OIII gesplittet...</translation>
+    </message>
+    <message>
+      <source>🌍 Loading {0} images in parallel for normalization (up to {1} threads)…</source>
+      <translation>🌍 Lade {0} Bilder parallel für Normalisierung (bis zu {1} Threads)…</translation>
+    </message>
+    <message>
+      <source>🌍 Loading {0} previews in parallel (up to {1} threads)...</source>
+      <translation>🌍 Lade {0} Vorschauen parallel (bis zu {1} Threads)...</translation>
+    </message>
+    <message>
+      <source>🌍 Measuring global means in parallel...</source>
+      <translation>🌍 Messen der globalen Mittelwerte erfolgt parallel...</translation>
+    </message>
+    <message>
+      <source>🌓 This flat group: using AUTO dark → {0}</source>
+      <translation>🌓 Diese Flat-Gruppe: verwende AUTO Dark → {0}</translation>
+    </message>
+    <message>
+      <source>🌓 This flat group: using OVERRIDE dark → {0}</source>
+      <translation>🌓 Diese Flat-Gruppe: verwende OVERRIDE Dark → {0}</translation>
+    </message>
+    <message>
+      <source>🌠 Comet anchor in reference frame: ({0:.1f}, {1:.1f})</source>
+      <translation>🌠 Kometen-Anker im Referenzbild: ({0:.1f}, {1:.1f})</translation>
+    </message>
+    <message>
+      <source>🌠 Comet mode enabled for this group</source>
+      <translation>🌠 Kometen-Modus für diese Gruppe aktiviert</translation>
+    </message>
+    <message>
+      <source>🌠 Comet mode: please click the comet center to continue…</source>
+      <translation>🌠 Kometen-Modus: bitte Kometenzentrum anklicken, um fortzufahren…</translation>
+    </message>
+    <message>
+      <source>🌠 Comet seed set on {0} at ({1:.1f}, {2:.1f}).</source>
+      <translation>🌠 Kometen-Seed gesetzt auf {0} bei ({1:.1f}, {2:.1f}).</translation>
+    </message>
+    <message>
+      <source>🌠 Create comet stack (comet-aligned)</source>
+      <translation>🌠 Kometen-Stack erstellen (kometenausgerichtet)</translation>
+    </message>
+    <message>
+      <source>🌠 Star-Trail Mode enabled: skipping registration &amp; using max-value stack</source>
+      <translation>🌠 Strichspur-Modus aktiviert: Registrierung übersprungen &amp; Max-Value-Stack verwendet</translation>
+    </message>
+    <message>
+      <source>🎉 CUDA: torch.cuda.is_available() → True, GPU ready.</source>
+      <translation>🎉 CUDA: torch.cuda.is_available() → True, GPU bereit.</translation>
+    </message>
+    <message>
+      <source>🎯 Stacking complete!</source>
+      <translation>🎯 Stacking abgeschlossen!</translation>
+    </message>
+    <message>
+      <source>🎯 Target pixel scale (hi-res): {0:.3f}"/px × {1:.3f}"/px</source>
+      <translation>🎯 Zielpixelskala (hi-res): {0:.3f}"/px × {1:.3f}"/px</translation>
+    </message>
+    <message>
+      <source>🎯 Target pixel scale unknown (no WCS/pixel size). Will skip scale normalization.</source>
+      <translation>🎯 Zielpixelskala unbekannt (keine WCS/Pixelgröße). Überspringe Skalennormalisierung.</translation>
+    </message>
+    <message>
+      <source>💡 For best results with CFA drizzle, aim for &gt;65% fill.</source>
+      <translation>💡 Für beste Ergebnisse mit CFA-Drizzle streben Sie eine Füllung von &gt;65 % an.</translation>
+    </message>
+    <message>
+      <source>💾 Saving result…</source>
+      <translation>💾 Ergebnis wird gespeichert…</translation>
+    </message>
+    <message>
+      <source>📁 Calibrated files saved to: {0}</source>
+      <translation>📁 Kalibrierte Dateien gespeichert unter: {0}</translation>
+    </message>
+    <message>
+      <source>📁 Output saved to: {0}</source>
+      <translation>📁 Ausgabe gespeichert unter: {0}</translation>
+    </message>
+    <message>
+      <source>📁 Post-align: {0} group(s), {1} aligned frame(s).</source>
+      <translation>📁 Post-align: {0} Gruppe(n), {1} ausgerichtete(s) Bild(er).</translation>
+    </message>
+    <message>
+      <source>📂 DEBUG: Master Files Stored: {0}</source>
+      <translation>📂 DEBUG: Master-Dateien gespeichert: {0}</translation>
+    </message>
+    <message>
+      <source>📂 Loaded stacking profile: {0}</source>
+      <translation>📂 Stacking-Profil geladen: {0}</translation>
+    </message>
+    <message>
+      <source>📂 Preparing to stack {0} frames in {1} groups.</source>
+      <translation>📂 Bereite Stacking von {0} Bildern in {1} Gruppen vor.</translation>
+    </message>
+    <message>
+      <source>📂 {0} → StarCount={1}, Ecc={2:.4f}, Mean={3:.4f}, Weight={4:.4f}</source>
+      <translation>📂 {0} → Sternanzahl={1}, Exc={2:.4f}, Mittelw={3:.4f}, Gew={4:.4f}</translation>
+    </message>
+    <message>
+      <source>📈 Dark groups summary:</source>
+      <translation>📈 Dark-Gruppen Zusammenfassung:</translation>
+    </message>
+    <message>
+      <source>📈 Flat groups summary:</source>
+      <translation>📈 Flat-Gruppen Zusammenfassung:</translation>
+    </message>
+    <message>
+      <source>📈 Light groups summary:</source>
+      <translation>📈 Light-Gruppen Zusammenfassung:</translation>
+    </message>
+    <message>
+      <source>📊 (New) reference median: {0:.4f}</source>
+      <translation>📊 (Neuer) Referenzmedian: {0:.4f}</translation>
+    </message>
+    <message>
+      <source>📊 Calculating statistics…</source>
+      <translation>📊 Statistiken werden berechnet…</translation>
+    </message>
+    <message>
+      <source>📊 Found {0} aligned/normalized frames. Measuring in parallel previews…</source>
+      <translation>📊 {0} ausgerichtete/normalisierte Bilder gefunden. Messen erfolgt in parallelen Vorschauen…</translation>
+    </message>
+    <message>
+      <source>📊 Found {0} total frames. Now measuring in parallel batches...</source>
+      <translation>📊 Insgesamt {0} Bilder gefunden. Messen erfolgt nun in parallelen Batches...</translation>
+    </message>
+    <message>
+      <source>📊 Group '{0}' has {1} aligned file(s).</source>
+      <translation>📊 Gruppe '{0}' hat {1} ausgerichtete Datei(en).</translation>
+    </message>
+    <message>
+      <source>📊 Reference (debayered) median: {0:.4f}</source>
+      <translation>📊 Referenz-Median (debayered): {0:.4f}</translation>
+    </message>
+    <message>
+      <source>📊 Reference min={0:.6f}, normalized-median={1:.6f}</source>
+      <translation>📊 Referenz Min={0:.6f}, normalized-median={1:.6f}</translation>
+    </message>
+    <message>
+      <source>📊 Stacking group '{0}' with {1}</source>
+      <translation>📊 Stacke Gruppe '{0}' mit {1}</translation>
+    </message>
+    <message>
+      <source>📊 Stacking group '{0}' with {1}{2}</source>
+      <translation>📊 Stacke Gruppe '{0}' mit {1}{2}</translation>
+    </message>
+    <message>
+      <source>📊 Stacking {0} frames</source>
+      <translation>📊 Stacke {0} Bilder</translation>
+    </message>
+    <message>
+      <source>📌 Auto-selected reference: {0}</source>
+      <translation>📌 Automatisch gewählte Referenz: {0}</translation>
+    </message>
+    <message>
+      <source>📌 Auto-selected reference: {0} {1}</source>
+      <translation>📌 Automatisch gewählte Referenz: {0} {1}</translation>
+    </message>
+    <message>
+      <source>📌 Comet reference pixel @ {0} → ({1:.2f},{2:.2f})</source>
+      <translation>📌 Kometen-Referenzpixel @ {0} → ({1:.2f},{2:.2f})</translation>
+    </message>
+    <message>
+      <source>📌 Reference for alignment (verbatim): {0}</source>
+      <translation>📌 Referenz für Ausrichtung (wörtlich): {0}</translation>
+    </message>
+    <message>
+      <source>📌 Using user-specified reference (locked): {0}</source>
+      <translation>📌 Verwende benutzerspezifische Referenz (gesperrt): {0}</translation>
+    </message>
+    <message>
+      <source>📌 Using user-specified reference: {0}</source>
+      <translation>📌 Verwende benutzerspezifische Referenz: {0}</translation>
+    </message>
+    <message>
+      <source>📏 Pixel-scale normalize {0:.3f}"/{1:.3f}" → {2:.3f}"/{3:.3f}" | size {4}×{5} → {6}×{7}</source>
+      <translation>📏 Pixel-Skala normalisiert {0:.3f}"/{1:.3f}" → {2:.3f}"/{3:.3f}" | Größe {4}×{5} → {6}×{7}</translation>
+    </message>
+    <message>
+      <source>📐 Applying geometric correction…</source>
+      <translation>📐 Geometrische Korrektur wird angewendet…</translation>
+    </message>
+    <message>
+      <source>📐 Drizzle for '{0}' at {1}× (drop={2}) using {3} frame(s).</source>
+      <translation>📐 Drizzle für '{0}' bei {1}× (Drop={2}) unter Verwendung von {3} Bild(ern).</translation>
+    </message>
+    <message>
+      <source>📜 Reading metadata for {0} files…</source>
+      <translation>📜 Metadaten für {0} Dateien werden gelesen…</translation>
+    </message>
+    <message>
+      <source>📦 Debayering reference frame…</source>
+      <translation>📦 Referenzbild wird debayert…</translation>
+    </message>
+    <message>
+      <source>📦 Debayering {0}…</source>
+      <translation>📦 {0} wird debayert…</translation>
+    </message>
+    <message>
+      <source>📦 Measuring chunk {0}/{1} ({2} frames)</source>
+      <translation>📦 Messe Chunk {0}/{1} ({2} Bilder)</translation>
+    </message>
+    <message>
+      <source>📦 {0} tiles to process for this group (chunk {1}×{2}).</source>
+      <translation>📦 {0} Kacheln für diese Gruppe zu verarbeiten (Chunk {1}×{2}).</translation>
+    </message>
+    <message>
+      <source>📷 Applying bias subtraction…</source>
+      <translation>📷 Bias-Subtraktion wird angewendet…</translation>
+    </message>
+    <message>
+      <source>📷 Applying dark subtraction…</source>
+      <translation>📷 Dark-Subtraktion wird angewendet…</translation>
+    </message>
+    <message>
+      <source>📷 Applying flat correction…</source>
+      <translation>📷 Flat-Korrektur wird angewendet…</translation>
+    </message>
+    <message>
+      <source>🔀 Computing transforms…</source>
+      <translation>🔀 Transformationen werden berechnet…</translation>
+    </message>
+    <message>
+      <source>🔁 Restarting Stacking Suite to apply {0}…</source>
+      <translation>🔁 Stacking Suite wird neu gestartet, um {0} anzuwenden…</translation>
+    </message>
+    <message>
+      <source>🔄 Aligning frame {0}…</source>
+      <translation>🔄 Bild {0} wird ausgerichtet…</translation>
+    </message>
+    <message>
+      <source>🔄 Image Registration Started...</source>
+      <translation>🔄 Bildregistrierung gestartet...</translation>
+    </message>
+    <message>
+      <source>🔄 Integrating Previously Registered Images…</source>
+      <translation>🔄 Zuvor registrierte Bilder werden integriert…</translation>
+    </message>
+    <message>
+      <source>🔄 Normalizing frame {0}/{1}</source>
+      <translation>🔄 Normalisiere Bild {0}/{1}</translation>
+    </message>
+    <message>
+      <source>🔄 Processing files…</source>
+      <translation>🔄 Dateien werden verarbeitet…</translation>
+    </message>
+    <message>
+      <source>🔍 Detected {0} stars</source>
+      <translation>🔍 {0} Sterne erkannt</translation>
+    </message>
+    <message>
+      <source>🔍 Detecting stars in reference frame…</source>
+      <translation>🔍 Sterne im Referenzbild werden erkannt…</translation>
+    </message>
+    <message>
+      <source>🔎 CFA drizzle sub-pixel phase fill (8×8): {0:.1f}%</source>
+      <translation>🔎 CFA-Drizzle Subpixel Phasenfüllung (8×8): {0:.1f}%</translation>
+    </message>
+    <message>
+      <source>🔎 Discovered {0} flat groups ({1} eligible to stack) — {2} files total.</source>
+      <translation>🔎 {0} Flat-Gruppen entdeckt ({1} zum Stacken geeignet) — insgesamt {2} Dateien.</translation>
+    </message>
+    <message>
+      <source>🔎 Discovered {0} grouped exposures ({1} eligible to stack) — {2} files total.</source>
+      <translation>🔎 {0} gruppierte Belichtungen entdeckt ({1} zum Stacken geeignet) — insgesamt {2} Dateien.</translation>
+    </message>
+    <message>
+      <source>🔎 Scanning {0} file(s)…</source>
+      <translation>🔎 {0} Datei(en) werden gescannt…</translation>
+    </message>
+    <message>
+      <source>🔢 Processing frame {0} of {1}</source>
+      <translation>🔢 Verarbeite Bild {0} von {1}</translation>
+    </message>
+    <message>
+      <source>🔥🚀Register and Integrate Images🔥🚀</source>
+      <translation>🔥🚀Bilder registrieren und integrieren🔥🚀</translation>
+    </message>
+    <message>
+      <source>🔧 Applying corrections…</source>
+      <translation>🔧 Korrekturen werden angewendet…</translation>
+    </message>
+    <message>
+      <source>🔧 Calibrating frame {0}…</source>
+      <translation>🔧 Bild {0} wird kalibriert…</translation>
+    </message>
+    <message>
+      <source>🔧 Comet stack chunk {0}×{1}</source>
+      <translation>🔧 Kometen-Stack Chunk {0}×{1}</translation>
+    </message>
+    <message>
+      <source>🔧 Resampled for binning {0}×{1} → {2}×{3} size {4}×{5} → {6}×{7}</source>
+      <translation>🔧 Resampling für Binning {0}×{1} → {2}×{3} Größe {4}×{5} → {6}×{7}</translation>
+    </message>
+    <message>
+      <source>🔧 Using chunk size {0}×{1} for {2}</source>
+      <translation>🔧 Verwende Chunk-Größe {0}×{1} für {2}</translation>
+    </message>
+    <message>
+      <source>🔨 Creating master bias from {0} frames…</source>
+      <translation>🔨 Erstelle Master-Bias aus {0} Bildern…</translation>
+    </message>
+    <message>
+      <source>🔨 Creating master dark from {0} frames…</source>
+      <translation>🔨 Erstelle Master-Dark aus {0} Bildern…</translation>
+    </message>
+    <message>
+      <source>🔨 Creating master flat from {0} frames…</source>
+      <translation>🔨 Erstelle Master-Flat aus {0} Bildern…</translation>
+    </message>
+    <message>
+      <source>🔬 Drizzle factor: {0}x</source>
+      <translation>🔬 Drizzle-Faktor: {0}x</translation>
+    </message>
+    <message>
+      <source>🔬 Drizzle integration complete</source>
+      <translation>🔬 Drizzle-Integration abgeschlossen</translation>
+    </message>
+    <message>
+      <source>🔬 Output resolution: {0}x{1}</source>
+      <translation>🔬 Ausgaberesolution: {0}x{1}</translation>
+    </message>
+    <message>
+      <source>🔬 Using {0} kernel</source>
+      <translation>🔬 Verwende {0}-Kernel</translation>
+    </message>
+    <message>
+      <source>🔭 Drizzle stacking for group '{0}' with {1} total rejected pixels.</source>
+      <translation>🔭 Drizzle-Stacking für Gruppe '{0}' mit insgesamt {1} verworfenen Pixeln.</translation>
+    </message>
+    <message>
+      <source>🔹 [{0}/{1}] Integrating '{2}' with {3} file(s)…</source>
+      <translation>🔹 [{0}/{1}] Integriere '{2}' mit {3} Datei(en)…</translation>
+    </message>
+    <message>
+      <source>🗂️ Creating temp memmap: {0} (shape={1}×{2}×{3}, dtype=float32)</source>
+      <translation>🗂️ Erstelle temporäres Memmap: {0} (shape={1}×{2}×{3}, dtype=float32)</translation>
+    </message>
+    <message>
+      <source>🚀 Calibrate Light Frames 🚀</source>
+      <translation>🚀 Light-Frames kalibrieren 🚀</translation>
+    </message>
+    <message>
+      <source>🚨 Could not load reference {0}. Aborting.</source>
+      <translation>🚨 Referenz {0} konnte nicht geladen werden. Abbrechung.</translation>
+    </message>
+    <message>
+      <source>🚨 Reference file does not exist: {0}</source>
+      <translation>🚨 Referenzdatei existiert nicht: {0}</translation>
+    </message>
+    <message>
+      <source>🚨 Rejected {0} frame(s) due to shift &gt; {1}px.</source>
+      <translation>🚨 {0} Bild(er) verworfen aufgrund von Verschiebung &gt; {1}px.</translation>
+    </message>
+    <message>
+      <source>🟠 Comet-aligned integration…</source>
+      <translation>🟠 Kometenausgerichtete Integration…</translation>
+    </message>
+    <message>
+      <source>🟡 Blending Stars+Comet (screen after 5% stretch; mix={0:.2f})…</source>
+      <translation>🟡 Blende Sterne+Komet (Screen nach 5% Stretch; Mix={0:.2f})…</translation>
+    </message>
+    <message>
+      <source>🟢 Assigned session '{0}' to group '{1}'</source>
+      <translation>🟢 Sitzung '{0}' der Gruppe '{1}' zugewiesen</translation>
+    </message>
+    <message>
+      <source>🟢 Assigned session '{0}' to {1} file(s).</source>
+      <translation>🟢 Sitzung '{0}' {1} Datei(en) zugewiesen.</translation>
+    </message>
+    <message>
+      <source>🟢 Measuring comet centers (template match)…</source>
+      <translation>🟢 Messen der Kometenzentren (Template Match)…</translation>
+    </message>
+    <message>
+      <source>🟢 Processing {0} darks for {1}s ({2}) exposure…</source>
+      <translation>🟢 Verarbeite {0} Darks für {1}s ({2}) Belichtung…</translation>
+    </message>
+    <message>
+      <source>🟢 Processing {0} flats for {1} ({2}) [{3}] in session '{4}'…</source>
+      <translation>🟢 Verarbeite {0} Flats für {1} ({2}) [{3}] in Sitzung ‚{4}‘…</translation>
+    </message>
+    <message>
+      <source>🧠 Selecting reference optimized for AstroAlign (starcount/(median*ecc))…</source>
+      <translation>🧠 Wähle für AstroAlign optimierte Referenz (Starcount/(Median*Exc))…</translation>
+    </message>
+    <message>
+      <source>🧩 Bayer flat group detected: {0}</source>
+      <translation>🧩 Bayer-Flat-Gruppe erkannt: {0}</translation>
+    </message>
+    <message>
+      <source>🧪 Multi-frame PSF-aware deconvolution path enabled.</source>
+      <translation>🧪 Multi-Frame PSF-aware Deconvolution-Pfad aktiviert.</translation>
+    </message>
+    <message>
+      <source>🧭 Drizzle uses {0} for {1}</source>
+      <translation>🧭 Drizzle verwendet {0} für {1}</translation>
+    </message>
+    <message>
+      <source>🧭 Total tiles to process: {0} (base chunk preference {1}×{2})</source>
+      <translation>🧭 Kacheln gesamt: {0} (Basis-Chunk-Präferenz {1}×{2})</translation>
+    </message>
+    <message>
+      <source>🧮 Binning summary → target={0}×{1} (range observed: x=[{2}..{3}], y=[{4}..{5}])</source>
+      <translation>🧮 Binning-Zusammenfassung → Ziel={0}×{1} (beobachteter Bereich: x=[{2}..{3}], y=[{4}..{5}])</translation>
+    </message>
+    <message>
+      <source>🧹 Clearing selection…</source>
+      <translation>🧹 Auswahl wird geleert…</translation>
+    </message>
+  </context>
+  <context>
+    <name>StarSpikesDialogPro</name>
+    <message>
+      <source>Aperture</source>
+      <translation>Apertur</translation>
+    </message>
+    <message>
+      <source>Aperture Help</source>
+      <translation>Apertur Hilfe</translation>
+    </message>
+    <message>
+      <source>Aperture Type:</source>
+      <translation>Apertur-Typ:</translation>
+    </message>
+    <message>
+      <source>Apply to Active Document</source>
+      <translation>Auf aktives Dokument anwenden</translation>
+    </message>
+    <message>
+      <source>Detection Threshold (σ):</source>
+      <translation>Erkennungsschwelle (σ):</translation>
+    </message>
+    <message>
+      <source>Diffraction Spikes</source>
+      <translation>Diffraktions-Spikes</translation>
+    </message>
+    <message>
+      <source>Fit to Preview</source>
+      <translation>An Vorschau anpassen</translation>
+    </message>
+    <message>
+      <source>Flux Min:</source>
+      <translation>Minimaler Fluss:</translation>
+    </message>
+    <message>
+      <source>Generate Spikes</source>
+      <translation>Spikes generieren</translation>
+    </message>
+    <message>
+      <source>Number of Vanes:</source>
+      <translation>Anzahl der Streben:</translation>
+    </message>
+    <message>
+      <source>Obstruction:</source>
+      <translation>Obstruktion:</translation>
+    </message>
+    <message>
+      <source>PSF &amp; Synthesis</source>
+      <translation>PSF &amp; Synthese</translation>
+    </message>
+    <message>
+      <source>PSF Blur Sigma:</source>
+      <translation>PSF-Unschärfe Sigma:</translation>
+    </message>
+    <message>
+      <source>Pupil Radius:</source>
+      <translation>Pupillenradius:</translation>
+    </message>
+    <message>
+      <source>Ready</source>
+      <translation>Bereit</translation>
+    </message>
+    <message>
+      <source>Rotation (deg):</source>
+      <translation>Rotation (Grad):</translation>
+    </message>
+    <message>
+      <source>Spike Boost:</source>
+      <translation>Spike-Boost:</translation>
+    </message>
+    <message>
+      <source>Star Detection</source>
+      <translation>Sternerkennung</translation>
+    </message>
+    <message>
+      <source>Vane Width:</source>
+      <translation>Strebenbreite:</translation>
+    </message>
+    <message>
+      <source>Zoom In</source>
+      <translation>Vergrößern</translation>
+    </message>
+    <message>
+      <source>Zoom Out</source>
+      <translation>Verkleinern</translation>
+    </message>
+  </context>
+  <context>
+    <name>StarStretchDialog</name>
+    <message>
+      <source>Apply to Document</source>
+      <translation>Auf Dokument anwenden</translation>
+    </message>
+    <message>
+      <source>Color Boost:</source>
+      <translation>Farbboost:</translation>
+    </message>
+    <message>
+      <source>Fit to Preview</source>
+      <translation>An Vorschau anpassen</translation>
+    </message>
+    <message>
+      <source>Preview</source>
+      <translation>Vorschau</translation>
+    </message>
+    <message>
+      <source>Remove Green via SCNR (Optional)</source>
+      <translation>Grün per SCNR entfernen (Optional)</translation>
+    </message>
+    <message>
+      <source>Star Stretch</source>
+      <translation>Sternstretch</translation>
+    </message>
+    <message>
+      <source>Stretch Amount:</source>
+      <translation>Stretch-Betrag:</translation>
+    </message>
+    <message>
+      <source>Zoom In</source>
+      <translation>Vergrößern</translation>
+    </message>
+    <message>
+      <source>Zoom Out</source>
+      <translation>Verkleinern</translation>
+    </message>
+  </context>
+  <context>
+    <name>StatisticalStretchDialog</name>
+    <message>
+      <source>Apply</source>
+      <translation>Anwenden</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Schließen</translation>
+    </message>
+    <message>
+      <source>Curves boost</source>
+      <translation>Kurven-Boost</translation>
+    </message>
+    <message>
+      <source>Linked channels</source>
+      <translation>Verknüpfte Kanäle</translation>
+    </message>
+    <message>
+      <source>Normalize to [0..1]</source>
+      <translation>Auf [0..1] normalisieren</translation>
+    </message>
+    <message>
+      <source>Preview</source>
+      <translation>Vorschau</translation>
+    </message>
+    <message>
+      <source>Statistical Stretch</source>
+      <translation>Statistischer Stretch</translation>
+    </message>
+    <message>
+      <source>Strength:</source>
+      <translation>Stärke:</translation>
+    </message>
+    <message>
+      <source>Target median:</source>
+      <translation>Zielmedian:</translation>
+    </message>
+  </context>
+  <context>
+    <name>StatisticsDialog</name>
+    <message>
+      <source>App Statistics</source>
+      <translation>App-Statistiken</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Schließen</translation>
+    </message>
+    <message>
+      <source>Days</source>
+      <translation>Tage</translation>
+    </message>
+    <message>
+      <source>Hours</source>
+      <translation>Stunden</translation>
+    </message>
+    <message>
+      <source>Images Opened:</source>
+      <translation>Geöffnete Bilder:</translation>
+    </message>
+    <message>
+      <source>Minutes</source>
+      <translation>Minuten</translation>
+    </message>
+    <message>
+      <source>Time Spent:</source>
+      <translation>Zeit verbracht:</translation>
+    </message>
+    <message>
+      <source>Tools Opened:</source>
+      <translation>Geöffnete Werkzeuge:</translation>
+    </message>
+  </context>
+  <context>
+    <name>StatusLogWindow</name>
+    <message>
+      <source>Clear</source>
+      <translation>Löschen</translation>
+    </message>
+    <message>
+      <source>Stacking Suite Log</source>
+      <translation>Stacking Suite Log</translation>
+    </message>
+  </context>
+  <context>
+    <name>SupernovaAsteroidHunterDialog</name>
+    <message>
+      <source>Images (*.png *.tif *.tiff *.fits *.fit *.xisf)</source>
+      <translation>Bilder (*.png *.tif *.tiff *.fits *.fit *.xisf)</translation>
+    </message>
+  </context>
+  <context>
+    <name>SurfaceDialog</name>
+    <message>
+      <source>Close</source>
+      <translation>Schließen</translation>
+    </message>
+    <message>
+      <source>Span: {0:.2f} … {1:.2f} {2}</source>
+      <translation>Bereich: {0:.2f} … {1:.2f} {2}</translation>
+    </message>
+  </context>
+  <context>
+    <name>TableSubWindow</name>
+    <message>
+      <source>CSV Files (*.csv)</source>
+      <translation>CSV-Dateien (*.csv)</translation>
+    </message>
+    <message>
+      <source>Export CSV</source>
+      <translation>CSV exportieren</translation>
+    </message>
+    <message>
+      <source>Export CSV…</source>
+      <translation>CSV exportieren…</translation>
+    </message>
+    <message>
+      <source>Failed to copy CSV:
+{0}</source>
+      <translation>Kopieren der CSV fehlgeschlagen:
+{0}</translation>
+    </message>
+    <message>
+      <source>Failed to export CSV:
+{0}</source>
+      <translation>Exportieren der CSV fehlgeschlagen:
+{0}</translation>
+    </message>
+    <message>
+      <source>Save CSV As…</source>
+      <translation>CSV speichern unter…</translation>
+    </message>
+  </context>
+  <context>
+    <name>TiltDialog</name>
+    <message>
+      <source>Close</source>
+      <translation>Schließen</translation>
+    </message>
+    <message>
+      <source>Corner</source>
+      <translation>Ecke</translation>
+    </message>
+    <message>
+      <source>Tilt span: {0:.1f} µm … {1:.1f} µm</source>
+      <translation>Neigungsbereich: {0:.1f} µm … {1:.1f} µm</translation>
+    </message>
+    <message>
+      <source>Δ µm</source>
+      <translation>Δ µm</translation>
+    </message>
+  </context>
+  <context>
+    <name>ToolMixin</name>
+    <message>
+      <source>White Balance...</source>
+      <translation>Weißabgleich...</translation>
+    </message>
+    <message>
+      <source>Write a ready-to-edit sample script into the scripts folder</source>
+      <translation>Schreiben Sie ein bearbeitungsfertiges Beispielskript in den Skriptordner</translation>
+    </message>
+    <message>
+      <source>Zoom In</source>
+      <translation>Vergrößern</translation>
+    </message>
+    <message>
+      <source>Zoom Out</source>
+      <translation>Verkleinern</translation>
+    </message>
+    <message>
+      <source>Zoom in</source>
+      <translation>Vergrößern</translation>
+    </message>
+    <message>
+      <source>Zoom out</source>
+      <translation>Verkleinern</translation>
+    </message>
+    <message>
+      <source>Zoom to 100% (pixel-for-pixel)</source>
+      <translation>Auf 100 % zoomen (Pixel für Pixel)</translation>
+    </message>
+  </context>
+  <context>
+    <name>ToolbarMixin</name>
+    <message>
+      <source>&amp;Exit</source>
+      <translation>&amp;Beenden</translation>
+    </message>
+    <message>
+      <source>1:1</source>
+      <translation>1:1</translation>
+    </message>
+    <message>
+      <source>ABE...</source>
+      <translation>ABE...</translation>
+    </message>
+    <message>
+      <source>Aberration Correction (AI)...</source>
+      <translation>Aberrationskorrektur (KI)...</translation>
+    </message>
+    <message>
+      <source>Add Stars...</source>
+      <translation>Sterne hinzufügen...</translation>
+    </message>
+    <message>
+      <source>Add diffraction spikes to detected stars</source>
+      <translation>Diffraktions-Spikes zu erkannten Sternen hinzufügen</translation>
+    </message>
+    <message>
+      <source>Add signatures/overlays and bake them into the active image</source>
+      <translation>Signaturen/Overlays hinzufügen und in das aktive Bild einbetten</translation>
+    </message>
+    <message>
+      <source>Adjust specific hue ranges with CMY/RGB controls</source>
+      <translation>Bestimmte Farbbereichsbereiche mit CMY/RGB-Steuerelementen anpassen</translation>
+    </message>
+    <message>
+      <source>Advanced diffraction spikes with halos, flares and rainbow effects</source>
+      <translation>Fortgeschrittene Diffraktions-Spikes mit Halos, Flares und Regenbogeneffekten</translation>
+    </message>
+    <message>
+      <source>Align R and B channels to G using astroalign (affine/homography/poly)</source>
+      <translation>R- und B-Kanäle an G mit Astroalign ausrichten (affin/homografie/poly)</translation>
+    </message>
+    <message>
+      <source>Align images via astroalign / triangles</source>
+      <translation>Bilder über Astroalign / Dreiecke ausrichten</translation>
+    </message>
+    <message>
+      <source>Apply Mask</source>
+      <translation>Maske anwenden</translation>
+    </message>
+    <message>
+      <source>Apply a mask document to the active image</source>
+      <translation>Ein Maskendokument auf das aktive Bild anwenden</translation>
+    </message>
+    <message>
+      <source>Apply the current Display-Stretch to the image and add an undo step</source>
+      <translation>Wenden Sie den aktuellen Display-Stretch auf das Bild an und fügen Sie einen Rückgängig-Schritt hinzu</translation>
+    </message>
+    <message>
+      <source>Apply the same stretch to all RGB channels</source>
+      <translation>Wenden Sie den gleichen Stretch auf alle RGB-Kanäle an</translation>
+    </message>
+    <message>
+      <source>Apply white balance (Star-Based, Manual, or Auto)</source>
+      <translation>Weißabgleich anwenden (Sternbasiert, Manuell oder Automatisch)</translation>
+    </message>
+    <message>
+      <source>Arcsinh star stretch with optional SCNR and color boost</source>
+      <translation>Arcsinh-Sternstretch mit optionalem SCNR und Farbboost</translation>
+    </message>
+    <message>
+      <source>Arrange subwindows in a near-square grid</source>
+      <translation>Unterfenster in einem fast quadratischen Raster anordnen</translation>
+    </message>
+    <message>
+      <source>AstroBin Exporter...</source>
+      <translation>AstroBin-Exporter...</translation>
+    </message>
+    <message>
+      <source>AstroSpike...</source>
+      <translation>AstroSpike...</translation>
+    </message>
+    <message>
+      <source>Auto-fit on Resize</source>
+      <translation>Automatische Anpassung bei Größenänderung</translation>
+    </message>
+    <message>
+      <source>Automatic Background Extraction</source>
+      <translation>Automatische Hintergrundextraktion</translation>
+    </message>
+    <message>
+      <source>Background Neutralization...</source>
+      <translation>Hintergrundneutralisierung...</translation>
+    </message>
+    <message>
+      <source>Batch Converter...</source>
+      <translation>Batch-Konverter...</translation>
+    </message>
+    <message>
+      <source>Batch Modify FITS Headers</source>
+      <translation>FITS-Header stapelweise ändern</translation>
+    </message>
+    <message>
+      <source>Batch Rename from FITS...</source>
+      <translation>Batch-Umbenennung aus FITS...</translation>
+    </message>
+    <message>
+      <source>Batch-align frames to a reference</source>
+      <translation>Frames stapelweise an einer Referenz ausrichten</translation>
+    </message>
+    <message>
+      <source>Blemish Blaster...</source>
+      <translation>Blemish Blaster...</translation>
+    </message>
+    <message>
+      <source>Blend a starless view with a stars-only view</source>
+      <translation>Eine sternlose Ansicht mit einer Nur-Sterne-Ansicht mischen</translation>
+    </message>
+    <message>
+      <source>Blend two open images (replace A or create new)</source>
+      <translation>Zwei offene Bilder mischen (A ersetzen oder neu erstellen)</translation>
+    </message>
+    <message>
+      <source>Blink Comparator...</source>
+      <translation>Blink-Komparator...</translation>
+    </message>
+    <message>
+      <source>Build mosaics from overlapping frames</source>
+      <translation>Mosaike aus überlappenden Frames erstellen</translation>
+    </message>
+    <message>
+      <source>Bundles</source>
+      <translation>Bundles</translation>
+    </message>
+    <message>
+      <source>CLAHE...</source>
+      <translation>CLAHE...</translation>
+    </message>
+    <message>
+      <source>Cascade Views</source>
+      <translation>Ansichten kaskadieren</translation>
+    </message>
+    <message>
+      <source>Cascade all subwindows</source>
+      <translation>Alle Unterfenster kaskadieren</translation>
+    </message>
+    <message>
+      <source>Check for Updates...</source>
+      <translation>Nach Updates suchen...</translation>
+    </message>
+    <message>
+      <source>Clear All Views</source>
+      <translation>Alle Ansichten schließen</translation>
+    </message>
+    <message>
+      <source>Close all views and clear shortcuts</source>
+      <translation>Alle Ansichten schließen und Tastenkürzel löschen</translation>
+    </message>
+    <message>
+      <source>Close all views and documents, keep desktop shortcuts</source>
+      <translation>Alle Ansichten und Dokumente schließen, Desktop-Verknüpfungen beibehalten</translation>
+    </message>
+    <message>
+      <source>Combine narrowband to RGB with optional OSC stars</source>
+      <translation>Narrowband mit optionalen OSC-Sternen zu RGB kombinieren</translation>
+    </message>
+    <message>
+      <source>Combine three mono images into RGB</source>
+      <translation>Drei Mono-Bilder zu RGB kombinieren</translation>
+    </message>
+    <message>
+      <source>Compare a stack of images by blinking</source>
+      <translation>Einen Stapel von Bildern durch Blinken vergleichen</translation>
+    </message>
+    <message>
+      <source>Continuum Subtract (NB - scaled broadband)</source>
+      <translation>Kontinuum-Subtraktion (NB - skalierte Breitband)</translation>
+    </message>
+    <message>
+      <source>Continuum Subtract...</source>
+      <translation>Kontinuum-Subtraktion...</translation>
+    </message>
+    <message>
+      <source>Contrast Limited Adaptive Histogram Equalization</source>
+      <translation>Kontrastbegrenzte adaptive Histogramm-Equalisierung</translation>
+    </message>
+    <message>
+      <source>Convolution / Deconvolution...</source>
+      <translation>Faltung / Dekonvolution...</translation>
+    </message>
+    <message>
+      <source>Copy Astrometric Solution...</source>
+      <translation>Astrometrische Lösung kopieren...</translation>
+    </message>
+    <message>
+      <source>Copy View (zoom/pan)</source>
+      <translation>Ansicht kopieren (Zoom/Pan)</translation>
+    </message>
+    <message>
+      <source>Cosmic Clarity</source>
+      <translation>Cosmic Clarity</translation>
+    </message>
+    <message>
+      <source>Cosmic Clarity Satellite...</source>
+      <translation>Cosmic Clarity Satellite...</translation>
+    </message>
+    <message>
+      <source>Cosmic Clarity UI...</source>
+      <translation>Cosmic Clarity UI...</translation>
+    </message>
+    <message>
+      <source>Create Mask...</source>
+      <translation>Maske erstellen...</translation>
+    </message>
+    <message>
+      <source>Create Sample Scripts...</source>
+      <translation>Beispielskripte erstellen...</translation>
+    </message>
+    <message>
+      <source>Create a mask from the active image</source>
+      <translation>Eine Maske aus dem aktiven Bild erstellen</translation>
+    </message>
+    <message>
+      <source>Create a new mono document using the selected luminance method</source>
+      <translation>Ein neues Mono-Dokument mit der ausgewählten Luminanzmethode erstellen</translation>
+    </message>
+    <message>
+      <source>Create and run bundles of functions/shortcuts</source>
+      <translation>Bundles von Funktionen/Tastenkürzeln erstellen und ausführen</translation>
+    </message>
+    <message>
+      <source>Create bundles of views; drop shortcuts to apply to all</source>
+      <translation>Bundles von Ansichten erstellen; Tastenkürzel ablegen, um sie auf alle anzuwenden</translation>
+    </message>
+    <message>
+      <source>Crop / rotate with handles</source>
+      <translation>Zuschneiden / Drehen mit Griffen</translation>
+    </message>
+    <message>
+      <source>Crop...</source>
+      <translation>Zuschneiden...</translation>
+    </message>
+    <message>
+      <source>Curves Editor...</source>
+      <translation>Kurven-Editor...</translation>
+    </message>
+    <message>
+      <source>Debayer...</source>
+      <translation>Debayer...</translation>
+    </message>
+    <message>
+      <source>Demosaic a Bayer-mosaic mono image to RGB</source>
+      <translation>Ein Bayer-Mosaik-Mono-Bild zu RGB demosaikieren</translation>
+    </message>
+    <message>
+      <source>Detect exoplanet transits from time-series subs</source>
+      <translation>Exoplaneten-Transite aus Zeitreihen-Subs erkennen</translation>
+    </message>
+    <message>
+      <source>Diffraction Spikes...</source>
+      <translation>Diffraktions-Spikes...</translation>
+    </message>
+    <message>
+      <source>Display-Stretch</source>
+      <translation>Display-Stretch</translation>
+    </message>
+    <message>
+      <source>Documentation...</source>
+      <translation>Dokumentation...</translation>
+    </message>
+    <message>
+      <source>Enhance faint/dark structures with wavelet-guided masking</source>
+      <translation>Schwache/dunkle Strukturen mit wavelet-geführter Maskierung verbessern</translation>
+    </message>
+    <message>
+      <source>Erosion, dilation, opening, and closing.</source>
+      <translation>Erosion, Dilatation, Öffnen und Schließen.</translation>
+    </message>
+    <message>
+      <source>Evaluate expressions using open view names</source>
+      <translation>Ausdrücke unter Verwendung offener Ansichtsnamen auswerten</translation>
+    </message>
+    <message>
+      <source>Exoplanet Detector...</source>
+      <translation>Exoplaneten-Detektor...</translation>
+    </message>
+    <message>
+      <source>Extract Luminance</source>
+      <translation>Luminanz extrahieren</translation>
+    </message>
+    <message>
+      <source>Extract R/G/B as three mono documents</source>
+      <translation>R/G/B als drei Mono-Dokumente extrahieren</translation>
+    </message>
+    <message>
+      <source>FITS Header Batch Modifier...</source>
+      <translation>FITS-Header Batch-Modifikator...</translation>
+    </message>
+    <message>
+      <source>FITS Header Modifier...</source>
+      <translation>FITS-Header-Modifikator...</translation>
+    </message>
+    <message>
+      <source>Find transients/anomalies across frames</source>
+      <translation>Transienten/Anomalien über Frames hinweg finden</translation>
+    </message>
+    <message>
+      <source>Fit</source>
+      <translation>Einpassen</translation>
+    </message>
+    <message>
+      <source>Fit galaxy isophotes and reveal residuals</source>
+      <translation>Galaxien-Isophoten einpassen und Residuen aufdecken</translation>
+    </message>
+    <message>
+      <source>Fit image to current window</source>
+      <translation>Bild an das aktuelle Fenster anpassen</translation>
+    </message>
+    <message>
+      <source>Flip Horizontal</source>
+      <translation>Horizontal spiegeln</translation>
+    </message>
+    <message>
+      <source>Flip Vertical</source>
+      <translation>Vertikal spiegeln</translation>
+    </message>
+    <message>
+      <source>Flip image left&lt;-&gt;right</source>
+      <translation>Bild links&lt;-&gt;rechts spiegeln</translation>
+    </message>
+    <message>
+      <source>Flip image top&lt;-&gt;bottom</source>
+      <translation>Bild oben&lt;-&gt;unten spiegeln</translation>
+    </message>
+    <message>
+      <source>Frequency Separation...</source>
+      <translation>Frequenzteilung...</translation>
+    </message>
+    <message>
+      <source>Function Bundles...</source>
+      <translation>Funktions-Bundles...</translation>
+    </message>
+    <message>
+      <source>Functions</source>
+      <translation>Funktionen</translation>
+    </message>
+    <message>
+      <source>GLIMR -- Isophote Modeler...</source>
+      <translation>GLIMR -- Isophoten-Modellierer...</translation>
+    </message>
+    <message>
+      <source>Generalized hyperbolic stretch (α/beta/gamma, LP/HP, pivot)</source>
+      <translation>Verallgemeinerter hyperbolischer Stretch (α/beta/gamma, LP/HP, Pivot)</translation>
+    </message>
+    <message>
+      <source>Geometry</source>
+      <translation>Geometrie</translation>
+    </message>
+    <message>
+      <source>Halo-B-Gon...</source>
+      <translation>Halo-B-Gon...</translation>
+    </message>
+    <message>
+      <source>Hard (target 0.50, σ 2)</source>
+      <translation>Hart (Ziel 0.50, σ 2)</translation>
+    </message>
+    <message>
+      <source>Hard-Display-Stretch</source>
+      <translation>Harter Display-Stretch</translation>
+    </message>
+    <message>
+      <source>Hide Mask Overlay</source>
+      <translation>Masken-Overlay ausblenden</translation>
+    </message>
+    <message>
+      <source>Histogram...</source>
+      <translation>Histogramm...</translation>
+    </message>
+    <message>
+      <source>History Explorer...</source>
+      <translation>Verlaufs-Explorer...</translation>
+    </message>
+    <message>
+      <source>Hyperbolic Stretch...</source>
+      <translation>Hyperbolischer Stretch...</translation>
+    </message>
+    <message>
+      <source>Identify objects in a plate-solved frame</source>
+      <translation>Objekte in einem gelösten Frame identifizieren</translation>
+    </message>
+    <message>
+      <source>Image Combine...</source>
+      <translation>Bilder kombinieren...</translation>
+    </message>
+    <message>
+      <source>Image Inspector and Focal Plane Analysis</source>
+      <translation>Bildinspektor und Brennebene-Analyse</translation>
+    </message>
+    <message>
+      <source>Image Peeker...</source>
+      <translation>Image Peeker...</translation>
+    </message>
+    <message>
+      <source>Inspect and restore from the slot's history</source>
+      <translation>Aus dem Verlauf des Slots inspizieren und wiederherstellen</translation>
+    </message>
+    <message>
+      <source>Inspect star PSF/HFR and flux histograms (SEP)</source>
+      <translation>Stern PSF/HFR und Flusshistogramme inspizieren (SEP)</translation>
+    </message>
+    <message>
+      <source>Interactive blemish removal on the active view</source>
+      <translation>Interaktive Fleckenentfernung in der aktiven Ansicht</translation>
+    </message>
+    <message>
+      <source>Invert</source>
+      <translation>Invertieren</translation>
+    </message>
+    <message>
+      <source>Invert Mask</source>
+      <translation>Maske invertieren</translation>
+    </message>
+    <message>
+      <source>Invert image colors</source>
+      <translation>Bildfarben invertieren</translation>
+    </message>
+    <message>
+      <source>Linear Fit...</source>
+      <translation>Linearer Fit...</translation>
+    </message>
+    <message>
+      <source>Link Pan/Zoom</source>
+      <translation>Pan/Zoom verknüpfen</translation>
+    </message>
+    <message>
+      <source>Link RGB channels</source>
+      <translation>RGB-Kanäle verknüpfen</translation>
+    </message>
+    <message>
+      <source>Live Stacking...</source>
+      <translation>Live-Stacking...</translation>
+    </message>
+    <message>
+      <source>Live monitor and stack incoming frames</source>
+      <translation>Eingehende Frames live überwachen und stapeln</translation>
+    </message>
+    <message>
+      <source>Load Project...</source>
+      <translation>Projekt laden...</translation>
+    </message>
+    <message>
+      <source>Load a .sas project (views, histories, shortcuts)</source>
+      <translation>Ein .sas-Projekt laden (Ansichten, Verläufe, Tastenkürzel)</translation>
+    </message>
+    <message>
+      <source>Make Display-Stretch Permanent</source>
+      <translation>Display-Stretch permanent machen</translation>
+    </message>
+    <message>
+      <source>Masks</source>
+      <translation>Masken</translation>
+    </message>
+    <message>
+      <source>Match image levels using Linear Fit</source>
+      <translation>Bildpegel mit linearem Fit anpassen</translation>
+    </message>
+    <message>
+      <source>Mid (target 0.40, σ 3)</source>
+      <translation>Mittel (Ziel 0.40, σ 3)</translation>
+    </message>
+    <message>
+      <source>Morphological Operations...</source>
+      <translation>Morphologische Operationen...</translation>
+    </message>
+    <message>
+      <source>Mosaic Master...</source>
+      <translation>Mosaik-Meister...</translation>
+    </message>
+    <message>
+      <source>Multiscale Decomposition...</source>
+      <translation>Multiskalen-Dekomposition...</translation>
+    </message>
+    <message>
+      <source>Multiscale detail/residual decomposition with per-layer controls</source>
+      <translation>Multiskalen-Detail-/Residuum-Dekomposition mit Steuerelementen pro Ebene</translation>
+    </message>
+    <message>
+      <source>NB-&gt;RGB Stars...</source>
+      <translation>NB-&gt;RGB Sterne...</translation>
+    </message>
+    <message>
+      <source>Neutralize background color balance using a sampled region</source>
+      <translation>Hintergrundfarbbalance mit einer abgetasteten Region neutralisieren</translation>
+    </message>
+    <message>
+      <source>New Project</source>
+      <translation>Neues Projekt</translation>
+    </message>
+    <message>
+      <source>Normal (target 0.30, σ 5)</source>
+      <translation>Normal (Ziel 0.30, σ 5)</translation>
+    </message>
+    <message>
+      <source>Open Convolution / Deconvolution</source>
+      <translation>Konvolution / Dekonvolution öffnen</translation>
+    </message>
+    <message>
+      <source>Open SFCC (Pickles + Filters + Sensor QE)</source>
+      <translation>SFCC öffnen (Pickles + Filter + Sensor QE)</translation>
+    </message>
+    <message>
+      <source>Open Scripts Folder...</source>
+      <translation>Skriptordner öffnen...</translation>
+    </message>
+    <message>
+      <source>Open Scripts Forum (Discord)...</source>
+      <translation>Skriptforum öffnen (Discord)...</translation>
+    </message>
+    <message>
+      <source>Open User Scripts (GitHub)...</source>
+      <translation>Benutzerskripte öffnen (GitHub)...</translation>
+    </message>
+    <message>
+      <source>Open image(s)</source>
+      <translation>Bild(er) öffnen</translation>
+    </message>
+    <message>
+      <source>Open the Curves Editor for the active image</source>
+      <translation>Den Kurven-Editor für das aktive Bild öffnen</translation>
+    </message>
+    <message>
+      <source>Open the SASpro user scripts folder</source>
+      <translation>Den SASpro-Benutzerskriptordner öffnen</translation>
+    </message>
+    <message>
+      <source>Open the Seti Astro Suite Pro online documentation</source>
+      <translation>Die Online-Dokumentation von Seti Astro Suite Pro öffnen</translation>
+    </message>
+    <message>
+      <source>Open the built-in script editor</source>
+      <translation>Den integrierten Skripteditor öffnen</translation>
+    </message>
+    <message>
+      <source>Open...</source>
+      <translation>Öffnen...</translation>
+    </message>
+    <message>
+      <source>PSF Viewer...</source>
+      <translation>PSF-Viewer...</translation>
+    </message>
+    <message>
+      <source>Paste View</source>
+      <translation>Ansicht einfügen</translation>
+    </message>
+    <message>
+      <source>Perfect Palette Picker...</source>
+      <translation>Perfekter Paletten-Picker...</translation>
+    </message>
+    <message>
+      <source>Pick the perfect palette for your image</source>
+      <translation>Wählen Sie die perfekte Palette für Ihr Bild</translation>
+    </message>
+    <message>
+      <source>Pixel Math...</source>
+      <translation>Pixel Math...</translation>
+    </message>
+    <message>
+      <source>Plan targets by altitude, transit time, and lunar separation</source>
+      <translation>Ziele nach Höhe, Transitzeit und Mondseparation planen</translation>
+    </message>
+    <message>
+      <source>Plate Solver...</source>
+      <translation>Plate Solver...</translation>
+    </message>
+    <message>
+      <source>Presets</source>
+      <translation>Voreinstellungen</translation>
+    </message>
+    <message>
+      <source>RGB Align...</source>
+      <translation>RGB-Ausrichtung...</translation>
+    </message>
+    <message>
+      <source>RGB Combination...</source>
+      <translation>RGB-Kombination...</translation>
+    </message>
+    <message>
+      <source>RGB Extract</source>
+      <translation>RGB extrahieren</translation>
+    </message>
+    <message>
+      <source>Recombine Luminance...</source>
+      <translation>Luminanz rekombinieren...</translation>
+    </message>
+    <message>
+      <source>Redo</source>
+      <translation>Wiederholen</translation>
+    </message>
+    <message>
+      <source>Reload Scripts</source>
+      <translation>Skripte neu laden</translation>
+    </message>
+    <message>
+      <source>Remove Active Mask</source>
+      <translation>Aktive Maske entfernen</translation>
+    </message>
+    <message>
+      <source>Remove Gradient (GraXpert)...</source>
+      <translation>Gradient entfernen (GraXpert)...</translation>
+    </message>
+    <message>
+      <source>Remove Green...</source>
+      <translation>Grün entfernen...</translation>
+    </message>
+    <message>
+      <source>Remove Pedestal</source>
+      <translation>Pedestal entfernen</translation>
+    </message>
+    <message>
+      <source>Remove Stars...</source>
+      <translation>Sterne entfernen...</translation>
+    </message>
+    <message>
+      <source>Remove the active mask from the active image</source>
+      <translation>Die aktive Maske vom aktiven Bild entfernen</translation>
+    </message>
+    <message>
+      <source>Remove those pesky halos around your stars</source>
+      <translation>Entfernen Sie diese lästigen Halos um Ihre Sterne</translation>
+    </message>
+    <message>
+      <source>Replace the active image's luminance from another view</source>
+      <translation>Ersetzen Sie die Luminanz des aktiven Bildes durch eine andere Ansicht</translation>
+    </message>
+    <message>
+      <source>Rescale image by a factor</source>
+      <translation>Bild um einen Faktor skalieren</translation>
+    </message>
+    <message>
+      <source>Rescale...</source>
+      <translation>Skalieren...</translation>
+    </message>
+    <message>
+      <source>Rescan the scripts folder and reload .py files</source>
+      <translation>Skriptordner neu scannen und .py-Dateien neu laden</translation>
+    </message>
+    <message>
+      <source>Rotate 180°</source>
+      <translation>Um 180° drehen</translation>
+    </message>
+    <message>
+      <source>Rotate 90° Clockwise</source>
+      <translation>Um 90° im Uhrzeigersinn drehen</translation>
+    </message>
+    <message>
+      <source>Rotate 90° Counterclockwise</source>
+      <translation>Um 90° gegen den Uhrzeigersinn drehen</translation>
+    </message>
+    <message>
+      <source>Rotate image 180°</source>
+      <translation>Bild um 180° drehen</translation>
+    </message>
+    <message>
+      <source>Rotate image 90° clockwise</source>
+      <translation>Bild um 90° im Uhrzeigersinn drehen</translation>
+    </message>
+    <message>
+      <source>Rotate image 90° counterclockwise</source>
+      <translation>Bild um 90° gegen den Uhrzeigersinn drehen</translation>
+    </message>
+    <message>
+      <source>Run GraXpert background extraction on the active image</source>
+      <translation>Führen Sie die GraXpert-Hintergrundextraktion auf das aktive Bild aus</translation>
+    </message>
+    <message>
+      <source>Run star removal on the active image</source>
+      <translation>Sterne aus dem aktiven Bild entfernen</translation>
+    </message>
+    <message>
+      <source>SCNR-style green channel removal.</source>
+      <translation>Entfernung des Grünkanals im SCNR-Stil.</translation>
+    </message>
+    <message>
+      <source>Save As...</source>
+      <translation>Speichern unter...</translation>
+    </message>
+    <message>
+      <source>Save Project...</source>
+      <translation>Projekt speichern...</translation>
+    </message>
+    <message>
+      <source>Save all views, histories, and shortcuts to a .sas file</source>
+      <translation>Alle Ansichten, Verläufe und Tastenkürzel in einer .sas-Datei speichern</translation>
+    </message>
+    <message>
+      <source>Save the active image</source>
+      <translation>Das aktive Bild speichern</translation>
+    </message>
+    <message>
+      <source>Script Editor...</source>
+      <translation>Skripteditor...</translation>
+    </message>
+    <message>
+      <source>Selective Color Correction...</source>
+      <translation>Selektive Farbkorrektur...</translation>
+    </message>
+    <message>
+      <source>Set Sigma...</source>
+      <translation>Sigma einstellen...</translation>
+    </message>
+    <message>
+      <source>Set Target Median...</source>
+      <translation>Zielmedian einstellen...</translation>
+    </message>
+    <message>
+      <source>Set the sigma for Display-Stretch (e.g., 5.0)</source>
+      <translation>Stellen Sie das Sigma für den Display-Stretch ein (z. B. 5.0)</translation>
+    </message>
+    <message>
+      <source>Set the target median for Display-Stretch (e.g., 0.30)</source>
+      <translation>Stellen Sie den Zielmedian für den Display-Stretch ein (z. B. 0.30)</translation>
+    </message>
+    <message>
+      <source>Show Mask Overlay</source>
+      <translation>Masken-Overlay anzeigen</translation>
+    </message>
+    <message>
+      <source>Signature / Insert...</source>
+      <translation>Signatur / Einfügen...</translation>
+    </message>
+    <message>
+      <source>Smart Grid</source>
+      <translation>Smart-Grid</translation>
+    </message>
+    <message>
+      <source>Solve WCS/SIP for the active image or a file</source>
+      <translation>WCS/SIP für das aktive Bild oder eine Datei lösen</translation>
+    </message>
+    <message>
+      <source>Spectral Flux Color Calibration...</source>
+      <translation>Spektrale Flussfarbkalibrierung...</translation>
+    </message>
+    <message>
+      <source>Split into LF/HF and enhance HF (scale, wavelet, denoise)</source>
+      <translation>In LF/HF aufteilen und HF verbessern (Skala, Wavelet, Denoise)</translation>
+    </message>
+    <message>
+      <source>Split the workspace into equal horizontal rows</source>
+      <translation>Den Arbeitsbereich in gleiche horizontale Zeilen aufteilen</translation>
+    </message>
+    <message>
+      <source>Split the workspace into equal vertical columns</source>
+      <translation>Den Arbeitsbereich in gleiche vertikale Spalten aufteilen</translation>
+    </message>
+    <message>
+      <source>Stacking Suite...</source>
+      <translation>Stacking-Suite...</translation>
+    </message>
+    <message>
+      <source>Stacking! Darks, Flats, Lights, Calibration, Drizzle, and more!!</source>
+      <translation>Stacking! Darks, Flats, Lights, Kalibrierung, Drizzle und mehr!!</translation>
+    </message>
+    <message>
+      <source>Star Stretch...</source>
+      <translation>Sternstretch...</translation>
+    </message>
+    <message>
+      <source>Star Stuff</source>
+      <translation>Stern-Sachen</translation>
+    </message>
+    <message>
+      <source>Statistical Stretch...</source>
+      <translation>Statistischer Stretch...</translation>
+    </message>
+    <message>
+      <source>Stellar Alignment...</source>
+      <translation>Sternausrichtung...</translation>
+    </message>
+    <message>
+      <source>Stellar Register...</source>
+      <translation>Sternregistrierung...</translation>
+    </message>
+    <message>
+      <source>Stretch the image using median/SD statistics</source>
+      <translation>Das Bild mit Median/SD-Statistiken stretchen</translation>
+    </message>
+    <message>
+      <source>Subtract per-channel minimum.
 Click: active view
-Alt+Drag: drop onto a view</source><translation>Minimum pro Kanal subtrahieren.
+Alt+Drag: drop onto a view</source>
+      <translation>Minimum pro Kanal subtrahieren.
 Klick: aktive Ansicht
-Alt+Ziehen: auf eine Ansicht ablegen</translation></message><message><source>Supernova / Asteroid Hunter...</source><translation>Supernova- / Asteroiden-Jäger...</translation></message><message><source>Tile Horizontally</source><translation>Horizontal kacheln</translation></message><message><source>Tile Vertically</source><translation>Vertikal kacheln</translation></message><message><source>Tile Views</source><translation>Ansichten kacheln</translation></message><message><source>Tile all subwindows</source><translation>Alle Unterfenster kacheln</translation></message><message><source>Toggle display auto-stretch for the active window</source><translation>Auto-Stretch-Anzeige für das aktive Fenster umschalten</translation></message><message><source>Toggle hard profile for Display-Stretch (H)</source><translation>Hartes Profil für Display-Stretch umschalten (H)</translation></message><message><source>Tools</source><translation>Werkzeuge</translation></message><message><source>Undo</source><translation>Rückgängig</translation></message><message><source>View Bundles...</source><translation>Bundles anzeigen...</translation></message><message><source>View histogram and basic stats for the active image</source><translation>Histogramm und Basisstatistiken für das aktive Bild anzeigen</translation></message><message><source>View/Edit FITS headers</source><translation>FITS-Header anzeigen/bearbeiten</translation></message><message><source>Wave-scale HDR with luminance-masked starlet</source><translation>Wave-Scale-HDR mit luminanzmaskiertem Starlet</translation></message><message><source>WaveScale Dark Enhancer...</source><translation>WaveScale Dark Enhancer...</translation></message><message><source>WaveScale HDR...</source><translation>WaveScale HDR...</translation></message><message><source>What's In My Image...</source><translation>Was ist in meinem Bild...</translation></message><message><source>What's In My Sky...</source><translation>Was ist in meinem Himmel...</translation></message><message><source>What's In My...</source><translation>Was ist in meinem...</translation></message><message><source>White Balance...</source><translation>Weißabgleich...</translation></message><message><source>Write a ready-to-edit sample script into the scripts folder</source><translation>Schreiben Sie ein bearbeitungsfertiges Beispielskript in den Skriptordner</translation></message><message><source>Zoom In</source><translation>Vergrößern</translation></message><message><source>Zoom Out</source><translation>Verkleinern</translation></message><message><source>Zoom in</source><translation>Vergrößern</translation></message><message><source>Zoom out</source><translation>Verkleinern</translation></message><message><source>Zoom to 100% (pixel-for-pixel)</source><translation>Auf 100 % zoomen (Pixel für Pixel)</translation></message></context><context><name>ToolMixin</name><message><source>White Balance...</source><translation>Weißabgleich...</translation></message><message><source>Write a ready-to-edit sample script into the scripts folder</source><translation>Schreiben Sie ein bearbeitungsfertiges Beispielskript in den Skriptordner</translation></message><message><source>Zoom In</source><translation>Vergrößern</translation></message><message><source>Zoom Out</source><translation>Verkleinern</translation></message><message><source>Zoom in</source><translation>Vergrößern</translation></message><message><source>Zoom out</source><translation>Verkleinern</translation></message><message><source>Zoom to 100% (pixel-for-pixel)</source><translation>Auf 100 % zoomen (Pixel für Pixel)</translation></message></context><context><name>UpdateMixin</name><message><source>A new version ({0}) is available!</source><translation>Eine neue Version ({0}) ist verfügbar!</translation></message><message><source>A new version is available</source><translation>Eine neue Version ist verfügbar</translation></message><message><source>Check for Updates</source><translation>Nach Updates suchen</translation></message><message><source>Checking for updates...</source><translation>Suche nach Updates...</translation></message><message><source>Could not download update:
-{0}</source><translation>Update konnte nicht heruntergeladen werden:
-{0}</translation></message><message><source>Could not extract update zip:
-{0}</source><translation>Update-Zip konnte nicht extrahiert werden:
-{0}</translation></message><message><source>Could not save update to disk:
-{0}</source><translation>Update konnte nicht auf Festplatte gespeichert werden:
-{0}</translation></message><message><source>Could not start installer:
-{0}</source><translation>Installer konnte nicht gestartet werden:
-{0}</translation></message><message><source>Current version</source><translation>Aktuelle Version</translation></message><message><source>Download</source><translation>Herunterladen</translation></message><message><source>Download and install</source><translation>Herunterladen und installieren</translation></message><message><source>Download complete</source><translation>Download abgeschlossen</translation></message><message><source>Download failed</source><translation>Download fehlgeschlagen</translation></message><message><source>Downloaded ZIP did not contain an .exe installer.
-Folder: {0}</source><translation>Die heruntergeladene ZIP enthielt keinen .exe-Installer.
-Ordner: {0}</translation></message><message><source>Downloading update...</source><translation>Update wird heruntergeladen...</translation></message><message><source>Downloading update... {0:.1f} KB / {1:.1f} KB</source><translation>Update wird heruntergeladen... {0:.1f} KB / {1:.1f} KB</translation></message><message><source>Failed to check for updates</source><translation>Suche nach Updates fehlgeschlagen</translation></message><message><source>Installing update...</source><translation>Update wird installiert...</translation></message><message><source>Invalid response from server</source><translation>Ungültige Antwort vom Server</translation></message><message><source>Network error</source><translation>Netzwerkfehler</translation></message><message><source>New version</source><translation>Neue Version</translation></message><message><source>No download link available for this platform.</source><translation>Kein Download-Link für diese Plattform verfügbar.</translation></message><message><source>No updates available</source><translation>Keine Updates verfügbar</translation></message><message><source>Release Notes:
-{0}</source><translation>Versionshinweise:
-{0}</translation></message><message><source>Release notes</source><translation>Versionshinweise</translation></message><message><source>Remind me later</source><translation>Später erinnern</translation></message><message><source>Restart later</source><translation>Später neustarten</translation></message><message><source>Restart now</source><translation>Jetzt neustarten</translation></message><message><source>Restart required</source><translation>Neustart erforderlich</translation></message><message><source>Run Installer</source><translation>Installer ausführen</translation></message><message><source>Skip this version</source><translation>Diese Version überspringen</translation></message><message><source>The update has been downloaded.
+Alt+Ziehen: auf eine Ansicht ablegen</translation>
+    </message>
+    <message>
+      <source>Supernova / Asteroid Hunter...</source>
+      <translation>Supernova- / Asteroiden-Jäger...</translation>
+    </message>
+    <message>
+      <source>Tile Horizontally</source>
+      <translation>Horizontal kacheln</translation>
+    </message>
+    <message>
+      <source>Tile Vertically</source>
+      <translation>Vertikal kacheln</translation>
+    </message>
+    <message>
+      <source>Tile Views</source>
+      <translation>Ansichten kacheln</translation>
+    </message>
+    <message>
+      <source>Tile all subwindows</source>
+      <translation>Alle Unterfenster kacheln</translation>
+    </message>
+    <message>
+      <source>Toggle display auto-stretch for the active window</source>
+      <translation>Auto-Stretch-Anzeige für das aktive Fenster umschalten</translation>
+    </message>
+    <message>
+      <source>Toggle hard profile for Display-Stretch (H)</source>
+      <translation>Hartes Profil für Display-Stretch umschalten (H)</translation>
+    </message>
+    <message>
+      <source>Tools</source>
+      <translation>Werkzeuge</translation>
+    </message>
+    <message>
+      <source>Undo</source>
+      <translation>Rückgängig</translation>
+    </message>
+    <message>
+      <source>View Bundles...</source>
+      <translation>Bundles anzeigen...</translation>
+    </message>
+    <message>
+      <source>View histogram and basic stats for the active image</source>
+      <translation>Histogramm und Basisstatistiken für das aktive Bild anzeigen</translation>
+    </message>
+    <message>
+      <source>View/Edit FITS headers</source>
+      <translation>FITS-Header anzeigen/bearbeiten</translation>
+    </message>
+    <message>
+      <source>Wave-scale HDR with luminance-masked starlet</source>
+      <translation>Wave-Scale-HDR mit luminanzmaskiertem Starlet</translation>
+    </message>
+    <message>
+      <source>WaveScale Dark Enhancer...</source>
+      <translation>WaveScale Dark Enhancer...</translation>
+    </message>
+    <message>
+      <source>WaveScale HDR...</source>
+      <translation>WaveScale HDR...</translation>
+    </message>
+    <message>
+      <source>What's In My Image...</source>
+      <translation>Was ist in meinem Bild...</translation>
+    </message>
+    <message>
+      <source>What's In My Sky...</source>
+      <translation>Was ist in meinem Himmel...</translation>
+    </message>
+    <message>
+      <source>What's In My...</source>
+      <translation>Was ist in meinem...</translation>
+    </message>
+    <message>
+      <source>White Balance...</source>
+      <translation>Weißabgleich...</translation>
+    </message>
+    <message>
+      <source>Write a ready-to-edit sample script into the scripts folder</source>
+      <translation>Schreiben Sie ein bearbeitungsfertiges Beispielskript in den Skriptordner</translation>
+    </message>
+    <message>
+      <source>Zoom In</source>
+      <translation>Vergrößern</translation>
+    </message>
+    <message>
+      <source>Zoom Out</source>
+      <translation>Verkleinern</translation>
+    </message>
+    <message>
+      <source>Zoom in</source>
+      <translation>Vergrößern</translation>
+    </message>
+    <message>
+      <source>Zoom out</source>
+      <translation>Verkleinern</translation>
+    </message>
+    <message>
+      <source>Zoom to 100% (pixel-for-pixel)</source>
+      <translation>Auf 100 % zoomen (Pixel für Pixel)</translation>
+    </message>
+  </context>
+  <context>
+    <name>UpdateMixin</name>
+    <message>
+      <source>A new version ({0}) is available!</source>
+      <translation>Eine neue Version ({0}) ist verfügbar!</translation>
+    </message>
+    <message>
+      <source>A new version is available</source>
+      <translation>Eine neue Version ist verfügbar</translation>
+    </message>
+    <message>
+      <source>Check for Updates</source>
+      <translation>Nach Updates suchen</translation>
+    </message>
+    <message>
+      <source>Checking for updates...</source>
+      <translation>Suche nach Updates...</translation>
+    </message>
+    <message>
+      <source>Could not download update:
+{0}</source>
+      <translation>Update konnte nicht heruntergeladen werden:
+{0}</translation>
+    </message>
+    <message>
+      <source>Could not extract update zip:
+{0}</source>
+      <translation>Update-Zip konnte nicht extrahiert werden:
+{0}</translation>
+    </message>
+    <message>
+      <source>Could not save update to disk:
+{0}</source>
+      <translation>Update konnte nicht auf Festplatte gespeichert werden:
+{0}</translation>
+    </message>
+    <message>
+      <source>Could not start installer:
+{0}</source>
+      <translation>Installer konnte nicht gestartet werden:
+{0}</translation>
+    </message>
+    <message>
+      <source>Current version</source>
+      <translation>Aktuelle Version</translation>
+    </message>
+    <message>
+      <source>Download</source>
+      <translation>Herunterladen</translation>
+    </message>
+    <message>
+      <source>Download and install</source>
+      <translation>Herunterladen und installieren</translation>
+    </message>
+    <message>
+      <source>Download complete</source>
+      <translation>Download abgeschlossen</translation>
+    </message>
+    <message>
+      <source>Download failed</source>
+      <translation>Download fehlgeschlagen</translation>
+    </message>
+    <message>
+      <source>Downloaded ZIP did not contain an .exe installer.
+Folder: {0}</source>
+      <translation>Die heruntergeladene ZIP enthielt keinen .exe-Installer.
+Ordner: {0}</translation>
+    </message>
+    <message>
+      <source>Downloading update...</source>
+      <translation>Update wird heruntergeladen...</translation>
+    </message>
+    <message>
+      <source>Downloading update... {0:.1f} KB / {1:.1f} KB</source>
+      <translation>Update wird heruntergeladen... {0:.1f} KB / {1:.1f} KB</translation>
+    </message>
+    <message>
+      <source>Failed to check for updates</source>
+      <translation>Suche nach Updates fehlgeschlagen</translation>
+    </message>
+    <message>
+      <source>Installing update...</source>
+      <translation>Update wird installiert...</translation>
+    </message>
+    <message>
+      <source>Invalid response from server</source>
+      <translation>Ungültige Antwort vom Server</translation>
+    </message>
+    <message>
+      <source>Network error</source>
+      <translation>Netzwerkfehler</translation>
+    </message>
+    <message>
+      <source>New version</source>
+      <translation>Neue Version</translation>
+    </message>
+    <message>
+      <source>No download link available for this platform.</source>
+      <translation>Kein Download-Link für diese Plattform verfügbar.</translation>
+    </message>
+    <message>
+      <source>No updates available</source>
+      <translation>Keine Updates verfügbar</translation>
+    </message>
+    <message>
+      <source>Release Notes:
+{0}</source>
+      <translation>Versionshinweise:
+{0}</translation>
+    </message>
+    <message>
+      <source>Release notes</source>
+      <translation>Versionshinweise</translation>
+    </message>
+    <message>
+      <source>Remind me later</source>
+      <translation>Später erinnern</translation>
+    </message>
+    <message>
+      <source>Restart later</source>
+      <translation>Später neustarten</translation>
+    </message>
+    <message>
+      <source>Restart now</source>
+      <translation>Jetzt neustarten</translation>
+    </message>
+    <message>
+      <source>Restart required</source>
+      <translation>Neustart erforderlich</translation>
+    </message>
+    <message>
+      <source>Run Installer</source>
+      <translation>Installer ausführen</translation>
+    </message>
+    <message>
+      <source>Skip this version</source>
+      <translation>Diese Version überspringen</translation>
+    </message>
+    <message>
+      <source>The update has been downloaded.
 
-Run the installer now? (SAS wird geschlossen.)</source><translation>Das Update wurde heruntergeladen.
+Run the installer now? (SAS wird geschlossen.)</source>
+      <translation>Das Update wurde heruntergeladen.
 
-Installer jetzt ausführen? (SAS wird geschlossen.)</translation></message><message><source>Unable to check for updates.
+Installer jetzt ausführen? (SAS wird geschlossen.)</translation>
+    </message>
+    <message>
+      <source>Unable to check for updates.
 
-{err}</source><translation>Suche nach Updates nicht möglich.
+{err}</source>
+      <translation>Suche nach Updates nicht möglich.
 
-{err}</translation></message><message><source>Up to Date</source><translation>Auf dem neuesten Stand</translation></message><message><source>Update Available</source><translation>Update verfügbar</translation></message><message><source>Update Check Failed</source><translation>Update-Prüfung fehlgeschlagen</translation></message><message><source>Update Failed</source><translation>Update fehlgeschlagen</translation></message><message><source>Update JSON is invalid.
+{err}</translation>
+    </message>
+    <message>
+      <source>Up to Date</source>
+      <translation>Auf dem neuesten Stand</translation>
+    </message>
+    <message>
+      <source>Update Available</source>
+      <translation>Update verfügbar</translation>
+    </message>
+    <message>
+      <source>Update Check Failed</source>
+      <translation>Update-Prüfung fehlgeschlagen</translation>
+    </message>
+    <message>
+      <source>Update Failed</source>
+      <translation>Update fehlgeschlagen</translation>
+    </message>
+    <message>
+      <source>Update JSON is invalid.
 
-{je}</source><translation>Update-JSON ist ungültig.
+{je}</source>
+      <translation>Update-JSON ist ungültig.
 
-{je}</translation></message><message><source>Update JSON missing the 'version' field.</source><translation>Update-JSON fehlt das Feld 'version'.</translation></message><message><source>Update available</source><translation>Update verfügbar</translation></message><message><source>Update available: {0}</source><translation>Update verfügbar: {0}</translation></message><message><source>Update installed</source><translation>Update installiert</translation></message><message><source>What's new</source><translation>Was ist neu</translation></message><message><source>You are running the latest version</source><translation>Sie verwenden die neueste Version</translation></message><message><source>You're already running the latest version.</source><translation>Sie verwenden bereits die neueste Version.</translation></message></context><context><name>WhatsInMyImage</name><message><source>Analyze Image</source><translation>Bild analysieren</translation></message><message><source>Analyzing...</source><translation>Analysiere...</translation></message><message><source>Annotation color</source><translation>Anmerkungsfarbe</translation></message><message><source>Annotation size</source><translation>Anmerkungsgröße</translation></message><message><source>Annotation style</source><translation>Anmerkungsstil</translation></message><message><source>Arrow</source><translation>Pfeil</translation></message><message><source>Asteroids</source><translation>Asteroiden</translation></message><message><source>Circle</source><translation>Kreis</translation></message><message><source>Comets</source><translation>Kometen</translation></message><message><source>Constellation</source><translation>Sternbild</translation></message><message><source>Crosshair</source><translation>Fadenkreuz</translation></message><message><source>Dark nebulae</source><translation>Dunkelnebel</translation></message><message><source>Distance</source><translation>Entfernung</translation></message><message><source>Export catalog</source><translation>Katalog exportieren</translation></message><message><source>Found Objects</source><translation>Gefundene Objekte</translation></message><message><source>Galaxies</source><translation>Galaxien</translation></message><message><source>Globular clusters</source><translation>Kugelsternhaufen</translation></message><message><source>Hide annotations</source><translation>Anmerkungen ausblenden</translation></message><message><source>Label</source><translation>Bezeichnung</translation></message><message><source>Magnitude</source><translation>Helligkeit</translation></message><message><source>Maximum magnitude</source><translation>Maximale Helligkeit</translation></message><message><source>Minimum magnitude</source><translation>Minimale Helligkeit</translation></message><message><source>Nebulae</source><translation>Nebel</translation></message><message><source>No WCS data</source><translation>Keine WCS-Daten</translation></message><message><source>No objects found</source><translation>Keine Objekte gefunden</translation></message><message><source>Object Name</source><translation>Objektname</translation></message><message><source>Object types</source><translation>Objekttypen</translation></message><message><source>Open clusters</source><translation>Offene Sternhaufen</translation></message><message><source>Planetary nebulae</source><translation>Planetarische Nebel</translation></message><message><source>Please plate solve the image first</source><translation>Bitte führen Sie zuerst ein Plate Solving des Bildes durch</translation></message><message><source>Quasars</source><translation>Quasare</translation></message><message><source>RA/Dec</source><translation>Rektaszension/Deklination</translation></message><message><source>Search radius</source><translation>Suchradius</translation></message><message><source>Settings</source><translation>Einstellungen</translation></message><message><source>Show annotations</source><translation>Anmerkungen anzeigen</translation></message><message><source>Show distance</source><translation>Entfernung anzeigen</translation></message><message><source>Show magnitude</source><translation>Helligkeit anzeigen</translation></message><message><source>Show on image</source><translation>Auf Bild anzeigen</translation></message><message><source>Show type</source><translation>Typ anzeigen</translation></message><message><source>Size</source><translation>Größe</translation></message><message><source>Star clusters</source><translation>Sternhaufen</translation></message><message><source>Stars</source><translation>Sterne</translation></message><message><source>Type</source><translation>Typ</translation></message><message><source>What's In My Image</source><translation>Was ist in meinem Bild</translation></message></context><context><name>WhatsInMySky</name><message><source>Add to imaging plan</source><translation>Zum Aufnahmeplan hinzufügen</translation></message><message><source>Altitude</source><translation>Höhe</translation></message><message><source>Altitude chart</source><translation>Höhendiagramm</translation></message><message><source>Astronomical twilight</source><translation>Astronomische Dämmerung</translation></message><message><source>Azimuth</source><translation>Azimut</translation></message><message><source>Civil twilight</source><translation>Bürgerliche Dämmerung</translation></message><message><source>Custom time</source><translation>Benutzerdefinierte Zeit</translation></message><message><source>Dark time</source><translation>Dunkelzeit</translation></message><message><source>Date</source><translation>Datum</translation></message><message><source>Date &amp; Time</source><translation>Datum &amp; Uhrzeit</translation></message><message><source>Enter coordinates</source><translation>Koordinaten eingeben</translation></message><message><source>Excellent</source><translation>Exzellent</translation></message><message><source>Export list</source><translation>Liste exportieren</translation></message><message><source>Fair</source><translation>Passabel</translation></message><message><source>Filter by type</source><translation>Nach Typ filtern</translation></message><message><source>First quarter</source><translation>Erstes Viertel</translation></message><message><source>Full moon</source><translation>Vollmond</translation></message><message><source>Good</source><translation>Gut</translation></message><message><source>Illumination</source><translation>Beleuchtung</translation></message><message><source>Imaging time</source><translation>Aufnahmezeit</translation></message><message><source>Imaging window</source><translation>Aufnahmefenster</translation></message><message><source>Last quarter</source><translation>Letztes Viertel</translation></message><message><source>Latitude</source><translation>Breitengrad</translation></message><message><source>Location</source><translation>Ort</translation></message><message><source>Longitude</source><translation>Längengrad</translation></message><message><source>Maximum moon separation</source><translation>Maximale Mondseparation</translation></message><message><source>Minimum altitude</source><translation>Minimale Höhe</translation></message><message><source>Minimum transit altitude</source><translation>Minimale Transithöhe</translation></message><message><source>Moon Separation</source><translation>Mondseparation</translation></message><message><source>Moon phase</source><translation>Mondphase</translation></message><message><source>Moon separation</source><translation>Mondseparation</translation></message><message><source>Moonrise</source><translation>Mondaufgang</translation></message><message><source>Moonset</source><translation>Monduntergang</translation></message><message><source>Name</source><translation>Name</translation></message><message><source>Nautical twilight</source><translation>Nautische Dämmerung</translation></message><message><source>New moon</source><translation>Neumond</translation></message><message><source>Not visible</source><translation>Nicht sichtbar</translation></message><message><source>Object Name</source><translation>Objektname</translation></message><message><source>Poor</source><translation>Schlecht</translation></message><message><source>Rise Time</source><translation>Aufgangszeit</translation></message><message><source>Search</source><translation>Suchen</translation></message><message><source>Search targets</source><translation>Ziele suchen</translation></message><message><source>Set Time</source><translation>Untergangszeit</translation></message><message><source>Show chart</source><translation>Diagramm anzeigen</translation></message><message><source>Sky chart</source><translation>Sternkarte</translation></message><message><source>Sort by</source><translation>Sortieren nach</translation></message><message><source>Sunset</source><translation>Sonnenuntergang</translation></message><message><source>Time</source><translation>Zeit</translation></message><message><source>Time Zone</source><translation>Zeitzone</translation></message><message><source>Tomorrow night</source><translation>Morgen Nacht</translation></message><message><source>Tonight</source><translation>Heute Nacht</translation></message><message><source>Transit Time</source><translation>Transitzeit</translation></message><message><source>Transit time</source><translation>Transitzeit</translation></message><message><source>Type</source><translation>Typ</translation></message><message><source>Use current location</source><translation>Aktuellen Standort verwenden</translation></message><message><source>Use current time</source><translation>Aktuelle Zeit verwenden</translation></message><message><source>Visibility</source><translation>Sichtbarkeit</translation></message><message><source>Visible Objects</source><translation>Sichtbare Objekte</translation></message><message><source>Waning</source><translation>Abnehmend</translation></message><message><source>Waxing</source><translation>Zunehmend</translation></message><message><source>What's In My Sky</source><translation>Was ist in meinem Himmel</translation></message></context><context><name>_AstrobinIdDelegate</name><message><source>Enter AstroBin ID</source><translation>AstroBin-ID eingeben</translation></message><message><source>Invalid ID format</source><translation>Ungültiges ID-Format</translation></message><message><source>e.g. 4408</source><translation>z. B. 4408</translation></message></context><context><name>_DragTab</name><message><source>Close all tabs</source><translation>Alle Registerkarten schließen</translation></message><message><source>Close other tabs</source><translation>Andere Registerkarten schließen</translation></message><message><source>Close tab</source><translation>Registerkarte schließen</translation></message><message><source>Close tabs to the right</source><translation>Registerkarten rechts schließen</translation></message><message><source>Drag to duplicate/copy view.
+{je}</translation>
+    </message>
+    <message>
+      <source>Update JSON missing the 'version' field.</source>
+      <translation>Update-JSON fehlt das Feld 'version'.</translation>
+    </message>
+    <message>
+      <source>Update available</source>
+      <translation>Update verfügbar</translation>
+    </message>
+    <message>
+      <source>Update available: {0}</source>
+      <translation>Update verfügbar: {0}</translation>
+    </message>
+    <message>
+      <source>Update installed</source>
+      <translation>Update installiert</translation>
+    </message>
+    <message>
+      <source>What's new</source>
+      <translation>Was ist neu</translation>
+    </message>
+    <message>
+      <source>You are running the latest version</source>
+      <translation>Sie verwenden die neueste Version</translation>
+    </message>
+    <message>
+      <source>You're already running the latest version.</source>
+      <translation>Sie verwenden bereits die neueste Version.</translation>
+    </message>
+  </context>
+  <context>
+    <name>ViewBundleDialog</name>
+    <message>
+      <source>Add Directory (Recursive)…</source>
+      <translation>Verzeichnis hinzufügen (rekursiv)…</translation>
+    </message>
+    <message>
+      <source>Add Files…</source>
+      <translation>Dateien hinzufügen…</translation>
+    </message>
+    <message>
+      <source>Add from Open…</source>
+      <translation>Von Offenen hinzufügen…</translation>
+    </message>
+    <message>
+      <source>Clear Views</source>
+      <translation>Ansichten leeren</translation>
+    </message>
+    <message>
+      <source>Compress to Chip</source>
+      <translation>Zu Chip komprimieren</translation>
+    </message>
+    <message>
+      <source>Delete</source>
+      <translation>Löschen</translation>
+    </message>
+    <message>
+      <source>Duplicate</source>
+      <translation>Duplizieren</translation>
+    </message>
+    <message>
+      <source>New Bundle</source>
+      <translation>Neues Paket</translation>
+    </message>
+    <message>
+      <source>Remove Selected</source>
+      <translation>Auswahl entfernen</translation>
+    </message>
+    <message>
+      <source>View Bundles</source>
+      <translation>Ansichts-Pakete</translation>
+    </message>
+    <message>
+      <source>Choose views to add:</source>
+      <translation>Ansichten zum Hinzufügen wählen:</translation>
+    </message>
+    <message>
+      <source>Select all open views</source>
+      <translation>Alle offenen Ansichten wählen</translation>
+    </message>
+    <message>
+      <source>Drop views here to add • Drop shortcuts here to apply to THIS bundle</source>
+      <translation>Ansichten hier ablegen zum Hinzufügen • Verknüpfungen hier ablegen zum Anwenden</translation>
+    </message>
+    <message>
+      <source>Bundles</source>
+      <translation>Pakete</translation>
+    </message>
+    <message>
+      <source>Views in Selected Bundle</source>
+      <translation>Ansichten im gewählten Paket</translation>
+    </message>
+    <message>
+      <source>Delete Chip</source>
+      <translation>Chip löschen</translation>
+    </message>
+    <message>
+      <source>Drag to move · Ctrl+drag to apply · Drop views/shortcuts here</source>
+      <translation>Ziehen zum Bewegen · Strg+Ziehen zum Anwenden · Hier ablegen</translation>
+    </message>
+  </context>
+  <context>
+    <name>WhatsInMyImage</name>
+    <message>
+      <source>Analyze Image</source>
+      <translation>Bild analysieren</translation>
+    </message>
+    <message>
+      <source>Analyzing...</source>
+      <translation>Analysiere...</translation>
+    </message>
+    <message>
+      <source>Annotation color</source>
+      <translation>Anmerkungsfarbe</translation>
+    </message>
+    <message>
+      <source>Annotation size</source>
+      <translation>Anmerkungsgröße</translation>
+    </message>
+    <message>
+      <source>Annotation style</source>
+      <translation>Anmerkungsstil</translation>
+    </message>
+    <message>
+      <source>Arrow</source>
+      <translation>Pfeil</translation>
+    </message>
+    <message>
+      <source>Asteroids</source>
+      <translation>Asteroiden</translation>
+    </message>
+    <message>
+      <source>Circle</source>
+      <translation>Kreis</translation>
+    </message>
+    <message>
+      <source>Comets</source>
+      <translation>Kometen</translation>
+    </message>
+    <message>
+      <source>Constellation</source>
+      <translation>Sternbild</translation>
+    </message>
+    <message>
+      <source>Crosshair</source>
+      <translation>Fadenkreuz</translation>
+    </message>
+    <message>
+      <source>Dark nebulae</source>
+      <translation>Dunkelnebel</translation>
+    </message>
+    <message>
+      <source>Distance</source>
+      <translation>Entfernung</translation>
+    </message>
+    <message>
+      <source>Export catalog</source>
+      <translation>Katalog exportieren</translation>
+    </message>
+    <message>
+      <source>Found Objects</source>
+      <translation>Gefundene Objekte</translation>
+    </message>
+    <message>
+      <source>Galaxies</source>
+      <translation>Galaxien</translation>
+    </message>
+    <message>
+      <source>Globular clusters</source>
+      <translation>Kugelsternhaufen</translation>
+    </message>
+    <message>
+      <source>Hide annotations</source>
+      <translation>Anmerkungen ausblenden</translation>
+    </message>
+    <message>
+      <source>Label</source>
+      <translation>Bezeichnung</translation>
+    </message>
+    <message>
+      <source>Magnitude</source>
+      <translation>Helligkeit</translation>
+    </message>
+    <message>
+      <source>Maximum magnitude</source>
+      <translation>Maximale Helligkeit</translation>
+    </message>
+    <message>
+      <source>Minimum magnitude</source>
+      <translation>Minimale Helligkeit</translation>
+    </message>
+    <message>
+      <source>Nebulae</source>
+      <translation>Nebel</translation>
+    </message>
+    <message>
+      <source>No WCS data</source>
+      <translation>Keine WCS-Daten</translation>
+    </message>
+    <message>
+      <source>No objects found</source>
+      <translation>Keine Objekte gefunden</translation>
+    </message>
+    <message>
+      <source>Object Name</source>
+      <translation>Objektname</translation>
+    </message>
+    <message>
+      <source>Object types</source>
+      <translation>Objekttypen</translation>
+    </message>
+    <message>
+      <source>Open clusters</source>
+      <translation>Offene Sternhaufen</translation>
+    </message>
+    <message>
+      <source>Planetary nebulae</source>
+      <translation>Planetarische Nebel</translation>
+    </message>
+    <message>
+      <source>Please plate solve the image first</source>
+      <translation>Bitte führen Sie zuerst ein Plate Solving des Bildes durch</translation>
+    </message>
+    <message>
+      <source>Quasars</source>
+      <translation>Quasare</translation>
+    </message>
+    <message>
+      <source>RA/Dec</source>
+      <translation>Rektaszension/Deklination</translation>
+    </message>
+    <message>
+      <source>Search radius</source>
+      <translation>Suchradius</translation>
+    </message>
+    <message>
+      <source>Settings</source>
+      <translation>Einstellungen</translation>
+    </message>
+    <message>
+      <source>Show annotations</source>
+      <translation>Anmerkungen anzeigen</translation>
+    </message>
+    <message>
+      <source>Show distance</source>
+      <translation>Entfernung anzeigen</translation>
+    </message>
+    <message>
+      <source>Show magnitude</source>
+      <translation>Helligkeit anzeigen</translation>
+    </message>
+    <message>
+      <source>Show on image</source>
+      <translation>Auf Bild anzeigen</translation>
+    </message>
+    <message>
+      <source>Show type</source>
+      <translation>Typ anzeigen</translation>
+    </message>
+    <message>
+      <source>Size</source>
+      <translation>Größe</translation>
+    </message>
+    <message>
+      <source>Star clusters</source>
+      <translation>Sternhaufen</translation>
+    </message>
+    <message>
+      <source>Stars</source>
+      <translation>Sterne</translation>
+    </message>
+    <message>
+      <source>Type</source>
+      <translation>Typ</translation>
+    </message>
+    <message>
+      <source>What's In My Image</source>
+      <translation>Was ist in meinem Bild</translation>
+    </message>
+  </context>
+  <context>
+    <name>WhatsInMySky</name>
+    <message>
+      <source>Add to imaging plan</source>
+      <translation>Zum Aufnahmeplan hinzufügen</translation>
+    </message>
+    <message>
+      <source>Altitude</source>
+      <translation>Höhe</translation>
+    </message>
+    <message>
+      <source>Altitude chart</source>
+      <translation>Höhendiagramm</translation>
+    </message>
+    <message>
+      <source>Astronomical twilight</source>
+      <translation>Astronomische Dämmerung</translation>
+    </message>
+    <message>
+      <source>Azimuth</source>
+      <translation>Azimut</translation>
+    </message>
+    <message>
+      <source>Civil twilight</source>
+      <translation>Bürgerliche Dämmerung</translation>
+    </message>
+    <message>
+      <source>Custom time</source>
+      <translation>Benutzerdefinierte Zeit</translation>
+    </message>
+    <message>
+      <source>Dark time</source>
+      <translation>Dunkelzeit</translation>
+    </message>
+    <message>
+      <source>Date</source>
+      <translation>Datum</translation>
+    </message>
+    <message>
+      <source>Date &amp; Time</source>
+      <translation>Datum &amp; Uhrzeit</translation>
+    </message>
+    <message>
+      <source>Enter coordinates</source>
+      <translation>Koordinaten eingeben</translation>
+    </message>
+    <message>
+      <source>Excellent</source>
+      <translation>Exzellent</translation>
+    </message>
+    <message>
+      <source>Export list</source>
+      <translation>Liste exportieren</translation>
+    </message>
+    <message>
+      <source>Fair</source>
+      <translation>Passabel</translation>
+    </message>
+    <message>
+      <source>Filter by type</source>
+      <translation>Nach Typ filtern</translation>
+    </message>
+    <message>
+      <source>First quarter</source>
+      <translation>Erstes Viertel</translation>
+    </message>
+    <message>
+      <source>Full moon</source>
+      <translation>Vollmond</translation>
+    </message>
+    <message>
+      <source>Good</source>
+      <translation>Gut</translation>
+    </message>
+    <message>
+      <source>Illumination</source>
+      <translation>Beleuchtung</translation>
+    </message>
+    <message>
+      <source>Imaging time</source>
+      <translation>Aufnahmezeit</translation>
+    </message>
+    <message>
+      <source>Imaging window</source>
+      <translation>Aufnahmefenster</translation>
+    </message>
+    <message>
+      <source>Last quarter</source>
+      <translation>Letztes Viertel</translation>
+    </message>
+    <message>
+      <source>Latitude</source>
+      <translation>Breitengrad</translation>
+    </message>
+    <message>
+      <source>Location</source>
+      <translation>Ort</translation>
+    </message>
+    <message>
+      <source>Longitude</source>
+      <translation>Längengrad</translation>
+    </message>
+    <message>
+      <source>Maximum moon separation</source>
+      <translation>Maximale Mondseparation</translation>
+    </message>
+    <message>
+      <source>Minimum altitude</source>
+      <translation>Minimale Höhe</translation>
+    </message>
+    <message>
+      <source>Minimum transit altitude</source>
+      <translation>Minimale Transithöhe</translation>
+    </message>
+    <message>
+      <source>Moon Separation</source>
+      <translation>Mondseparation</translation>
+    </message>
+    <message>
+      <source>Moon phase</source>
+      <translation>Mondphase</translation>
+    </message>
+    <message>
+      <source>Moon separation</source>
+      <translation>Mondseparation</translation>
+    </message>
+    <message>
+      <source>Moonrise</source>
+      <translation>Mondaufgang</translation>
+    </message>
+    <message>
+      <source>Moonset</source>
+      <translation>Monduntergang</translation>
+    </message>
+    <message>
+      <source>Name</source>
+      <translation>Name</translation>
+    </message>
+    <message>
+      <source>Nautical twilight</source>
+      <translation>Nautische Dämmerung</translation>
+    </message>
+    <message>
+      <source>New moon</source>
+      <translation>Neumond</translation>
+    </message>
+    <message>
+      <source>Not visible</source>
+      <translation>Nicht sichtbar</translation>
+    </message>
+    <message>
+      <source>Object Name</source>
+      <translation>Objektname</translation>
+    </message>
+    <message>
+      <source>Poor</source>
+      <translation>Schlecht</translation>
+    </message>
+    <message>
+      <source>Rise Time</source>
+      <translation>Aufgangszeit</translation>
+    </message>
+    <message>
+      <source>Search</source>
+      <translation>Suchen</translation>
+    </message>
+    <message>
+      <source>Search targets</source>
+      <translation>Ziele suchen</translation>
+    </message>
+    <message>
+      <source>Set Time</source>
+      <translation>Untergangszeit</translation>
+    </message>
+    <message>
+      <source>Show chart</source>
+      <translation>Diagramm anzeigen</translation>
+    </message>
+    <message>
+      <source>Sky chart</source>
+      <translation>Sternkarte</translation>
+    </message>
+    <message>
+      <source>Sort by</source>
+      <translation>Sortieren nach</translation>
+    </message>
+    <message>
+      <source>Sunset</source>
+      <translation>Sonnenuntergang</translation>
+    </message>
+    <message>
+      <source>Time</source>
+      <translation>Zeit</translation>
+    </message>
+    <message>
+      <source>Time Zone</source>
+      <translation>Zeitzone</translation>
+    </message>
+    <message>
+      <source>Tomorrow night</source>
+      <translation>Morgen Nacht</translation>
+    </message>
+    <message>
+      <source>Tonight</source>
+      <translation>Heute Nacht</translation>
+    </message>
+    <message>
+      <source>Transit Time</source>
+      <translation>Transitzeit</translation>
+    </message>
+    <message>
+      <source>Transit time</source>
+      <translation>Transitzeit</translation>
+    </message>
+    <message>
+      <source>Type</source>
+      <translation>Typ</translation>
+    </message>
+    <message>
+      <source>Use current location</source>
+      <translation>Aktuellen Standort verwenden</translation>
+    </message>
+    <message>
+      <source>Use current time</source>
+      <translation>Aktuelle Zeit verwenden</translation>
+    </message>
+    <message>
+      <source>Visibility</source>
+      <translation>Sichtbarkeit</translation>
+    </message>
+    <message>
+      <source>Visible Objects</source>
+      <translation>Sichtbare Objekte</translation>
+    </message>
+    <message>
+      <source>Waning</source>
+      <translation>Abnehmend</translation>
+    </message>
+    <message>
+      <source>Waxing</source>
+      <translation>Zunehmend</translation>
+    </message>
+    <message>
+      <source>What's In My Sky</source>
+      <translation>Was ist in meinem Himmel</translation>
+    </message>
+  </context>
+  <context>
+    <name>WindowShelf</name>
+    <message>
+      <source>Minimized Views</source>
+      <translation>Minimierte Ansichten</translation>
+    </message>
+    <message>
+      <source>Untitled</source>
+      <translation>Unbenannt</translation>
+    </message>
+  </context>
+  <context>
+    <name>_AstrobinIdDelegate</name>
+    <message>
+      <source>Enter AstroBin ID</source>
+      <translation>AstroBin-ID eingeben</translation>
+    </message>
+    <message>
+      <source>Invalid ID format</source>
+      <translation>Ungültiges ID-Format</translation>
+    </message>
+    <message>
+      <source>e.g. 4408</source>
+      <translation>z. B. 4408</translation>
+    </message>
+  </context>
+  <context>
+    <name>_DragTab</name>
+    <message>
+      <source>Close all tabs</source>
+      <translation>Alle Registerkarten schließen</translation>
+    </message>
+    <message>
+      <source>Close other tabs</source>
+      <translation>Andere Registerkarten schließen</translation>
+    </message>
+    <message>
+      <source>Close tab</source>
+      <translation>Registerkarte schließen</translation>
+    </message>
+    <message>
+      <source>Close tabs to the right</source>
+      <translation>Registerkarten rechts schließen</translation>
+    </message>
+    <message>
+      <source>Drag to duplicate/copy view.
 Hold Alt while dragging to LINK this view with another (live pan/zoom sync).
 Hold Shift while dragging to drop this image as a mask onto another view.
-Hold Ctrl while dragging to copy the astrometric solution (WCS) to another view.</source><translation>Ziehen zum Duplizieren/Kopieren der Ansicht.
+Hold Ctrl while dragging to copy the astrometric solution (WCS) to another view.</source>
+      <translation>Ziehen zum Duplizieren/Kopieren der Ansicht.
 Halten Sie Alt beim Ziehen gedrückt, um diese Ansicht mit einer anderen zu VERKNÜPFEN (Live-Pan/Zoom-Synchronisation).
 Halten Sie die Umschalttaste beim Ziehen gedrückt, um dieses Bild als Maske auf eine andere Ansicht abzulegen.
-Halten Sie Strg beim Ziehen gedrückt, um die astrometrische Lösung (WCS) in eine andere Ansicht zu kopieren.</translation></message><message><source>Drag to reorder</source><translation>Ziehen zum Neuanordnen</translation></message></context><context><name>_MaskWindow</name><message><source>Apply</source><translation>Anwenden</translation></message><message><source>Blur</source><translation>Weichzeichnen</translation></message><message><source>Close</source><translation>Schließen</translation></message><message><source>Contract</source><translation>Verkleinern</translation></message><message><source>Dark Mask</source><translation>Dunkle Maske</translation></message><message><source>Expand</source><translation>Erweitern</translation></message><message><source>Feather</source><translation>Weiche Kante</translation></message><message><source>Invert</source><translation>Invertieren</translation></message><message><source>Mask</source><translation>Maske</translation></message><message><source>Mask Preview</source><translation>Maskenvorschau</translation></message><message><source>Reset</source><translation>Zurücksetzen</translation></message></context><context><name>_Progress</name><message><source>Cancel</source><translation>Abbrechen</translation></message><message><source>Cancelled</source><translation>Abgebrochen</translation></message><message><source>Completed</source><translation>Abgeschlossen</translation></message><message><source>Failed</source><translation>Fehlgeschlagen</translation></message><message><source>Please wait...</source><translation>Bitte warten...</translation></message><message><source>Processing...</source><translation>Wird verarbeitet...</translation></message><message><source>Progress</source><translation>Fortschritt</translation></message></context><context><name>_SimplePickDialog</name><message><source>1:1</source><translation>1:1</translation></message><message><source>Cancel</source><translation>Abbrechen</translation></message><message><source>Click the comet center</source><translation>Klicken Sie auf das Kometenzentrum</translation></message><message><source>Disable Autostretch</source><translation>Autostretch deaktivieren</translation></message><message><source>Enable Autostretch</source><translation>Autostretch aktivieren</translation></message><message><source>Fit</source><translation>Einpassen</translation></message><message><source>OK</source><translation>OK</translation></message><message><source>Select</source><translation>Auswählen</translation></message><message><source>Zoom In</source><translation>Vergrößern</translation></message><message><source>Zoom Out</source><translation>Verkleinern</translation></message></context><context><name>_SolveStatusPopup</name><message><source>Apply WCS</source><translation>WCS anwenden</translation></message><message><source>Cancelled</source><translation>Abgebrochen</translation></message><message><source>Close</source><translation>Schließen</translation></message><message><source>Copy to clipboard</source><translation>In Zwischenablage kopieren</translation></message><message><source>Dec</source><translation>Dek</translation></message><message><source>Failed</source><translation>Fehlgeschlagen</translation></message><message><source>Field size</source><translation>Feldgröße</translation></message><message><source>Hide</source><translation>Ausblenden</translation></message><message><source>Plate Solve Status</source><translation>Plate-Solve-Status</translation></message><message><source>Plate Solving</source><translation>Plate Solving</translation></message><message><source>RA</source><translation>Rek</translation></message><message><source>RMS error</source><translation>RMS-Fehler</translation></message><message><source>Rotation</source><translation>Rotation</translation></message><message><source>Scale</source><translation>Skala</translation></message><message><source>Solving...</source><translation>Wird gelöst...</translation></message><message><source>Stars matched</source><translation>Sterne abgeglichen</translation></message><message><source>Starting…</source><translation>Startet…</translation></message><message><source>Success</source><translation>Erfolg</translation></message><message><source>View in Aladin</source><translation>In Aladin anzeigen</translation></message></context><context><name>StatisticsDialog</name><message><source>App Statistics</source><translation>App-Statistiken</translation></message><message><source>Time Spent:</source><translation>Zeit verbracht:</translation></message><message><source>Images Opened:</source><translation>Geöffnete Bilder:</translation></message><message><source>Tools Opened:</source><translation>Geöffnete Werkzeuge:</translation></message><message><source>Days</source><translation>Tage</translation></message><message><source>Hours</source><translation>Stunden</translation></message><message><source>Minutes</source><translation>Minuten</translation></message><message><source>Close</source><translation>Schließen</translation></message></context></TS>
+Halten Sie Strg beim Ziehen gedrückt, um die astrometrische Lösung (WCS) in eine andere Ansicht zu kopieren.</translation>
+    </message>
+    <message>
+      <source>Drag to reorder</source>
+      <translation>Ziehen zum Neuanordnen</translation>
+    </message>
+  </context>
+  <context>
+    <name>_MaskWindow</name>
+    <message>
+      <source>Apply</source>
+      <translation>Anwenden</translation>
+    </message>
+    <message>
+      <source>Blur</source>
+      <translation>Weichzeichnen</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Schließen</translation>
+    </message>
+    <message>
+      <source>Contract</source>
+      <translation>Verkleinern</translation>
+    </message>
+    <message>
+      <source>Dark Mask</source>
+      <translation>Dunkle Maske</translation>
+    </message>
+    <message>
+      <source>Expand</source>
+      <translation>Erweitern</translation>
+    </message>
+    <message>
+      <source>Feather</source>
+      <translation>Weiche Kante</translation>
+    </message>
+    <message>
+      <source>Invert</source>
+      <translation>Invertieren</translation>
+    </message>
+    <message>
+      <source>Mask</source>
+      <translation>Maske</translation>
+    </message>
+    <message>
+      <source>Mask Preview</source>
+      <translation>Maskenvorschau</translation>
+    </message>
+    <message>
+      <source>Reset</source>
+      <translation>Zurücksetzen</translation>
+    </message>
+  </context>
+  <context>
+    <name>_Progress</name>
+    <message>
+      <source>Cancel</source>
+      <translation>Abbrechen</translation>
+    </message>
+    <message>
+      <source>Cancelled</source>
+      <translation>Abgebrochen</translation>
+    </message>
+    <message>
+      <source>Completed</source>
+      <translation>Abgeschlossen</translation>
+    </message>
+    <message>
+      <source>Failed</source>
+      <translation>Fehlgeschlagen</translation>
+    </message>
+    <message>
+      <source>Please wait...</source>
+      <translation>Bitte warten...</translation>
+    </message>
+    <message>
+      <source>Processing...</source>
+      <translation>Wird verarbeitet...</translation>
+    </message>
+    <message>
+      <source>Progress</source>
+      <translation>Fortschritt</translation>
+    </message>
+  </context>
+  <context>
+    <name>_SimplePickDialog</name>
+    <message>
+      <source>1:1</source>
+      <translation>1:1</translation>
+    </message>
+    <message>
+      <source>Cancel</source>
+      <translation>Abbrechen</translation>
+    </message>
+    <message>
+      <source>Click the comet center</source>
+      <translation>Klicken Sie auf das Kometenzentrum</translation>
+    </message>
+    <message>
+      <source>Disable Autostretch</source>
+      <translation>Autostretch deaktivieren</translation>
+    </message>
+    <message>
+      <source>Enable Autostretch</source>
+      <translation>Autostretch aktivieren</translation>
+    </message>
+    <message>
+      <source>Fit</source>
+      <translation>Einpassen</translation>
+    </message>
+    <message>
+      <source>OK</source>
+      <translation>OK</translation>
+    </message>
+    <message>
+      <source>Select</source>
+      <translation>Auswählen</translation>
+    </message>
+    <message>
+      <source>Zoom In</source>
+      <translation>Vergrößern</translation>
+    </message>
+    <message>
+      <source>Zoom Out</source>
+      <translation>Verkleinern</translation>
+    </message>
+  </context>
+  <context>
+    <name>_SolveStatusPopup</name>
+    <message>
+      <source>Apply WCS</source>
+      <translation>WCS anwenden</translation>
+    </message>
+    <message>
+      <source>Cancelled</source>
+      <translation>Abgebrochen</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Schließen</translation>
+    </message>
+    <message>
+      <source>Copy to clipboard</source>
+      <translation>In Zwischenablage kopieren</translation>
+    </message>
+    <message>
+      <source>Dec</source>
+      <translation>Dek</translation>
+    </message>
+    <message>
+      <source>Failed</source>
+      <translation>Fehlgeschlagen</translation>
+    </message>
+    <message>
+      <source>Field size</source>
+      <translation>Feldgröße</translation>
+    </message>
+    <message>
+      <source>Hide</source>
+      <translation>Ausblenden</translation>
+    </message>
+    <message>
+      <source>Plate Solve Status</source>
+      <translation>Plate-Solve-Status</translation>
+    </message>
+    <message>
+      <source>Plate Solving</source>
+      <translation>Plate Solving</translation>
+    </message>
+    <message>
+      <source>RA</source>
+      <translation>Rek</translation>
+    </message>
+    <message>
+      <source>RMS error</source>
+      <translation>RMS-Fehler</translation>
+    </message>
+    <message>
+      <source>Rotation</source>
+      <translation>Rotation</translation>
+    </message>
+    <message>
+      <source>Scale</source>
+      <translation>Skala</translation>
+    </message>
+    <message>
+      <source>Solving...</source>
+      <translation>Wird gelöst...</translation>
+    </message>
+    <message>
+      <source>Stars matched</source>
+      <translation>Sterne abgeglichen</translation>
+    </message>
+    <message>
+      <source>Starting…</source>
+      <translation>Startet…</translation>
+    </message>
+    <message>
+      <source>Success</source>
+      <translation>Erfolg</translation>
+    </message>
+    <message>
+      <source>View in Aladin</source>
+      <translation>In Aladin anzeigen</translation>
+    </message>
+  </context>
+  <context>
+    <name>WIMIDialog</name>
+    <message>
+      <source>Add Text</source>
+      <translation>Text hinzufügen</translation>
+    </message>
+    <message>
+      <source>Clear Annotations</source>
+      <translation>Anmerkungen löschen</translation>
+    </message>
+    <message>
+      <source>Clear Results</source>
+      <translation>Ergebnisse löschen</translation>
+    </message>
+    <message>
+      <source>Copy Object Information</source>
+      <translation>Objektinformationen kopieren</translation>
+    </message>
+    <message>
+      <source>Delete Selected Items</source>
+      <translation>Ausgewählte Elemente löschen</translation>
+    </message>
+    <message>
+      <source>Delete Selected Object(s)</source>
+      <translation>Ausgewählte(s) Objekt(e) löschen</translation>
+    </message>
+    <message>
+      <source>Legend</source>
+      <translation>Legende</translation>
+    </message>
+    <message>
+      <source>Open Website</source>
+      <translation>Website öffnen</translation>
+    </message>
+    <message>
+      <source>Select Annotation Color</source>
+      <translation>Anmerkungsfarbe wählen</translation>
+    </message>
+    <message>
+      <source>Select Annotation Font</source>
+      <translation>Anmerkungsschriftart wählen</translation>
+    </message>
+    <message>
+      <source>Select Color</source>
+      <translation>Farbe wählen</translation>
+    </message>
+    <message>
+      <source>Select Font</source>
+      <translation>Schriftart wählen</translation>
+    </message>
+    <message>
+      <source>Show Annotation Tools</source>
+      <translation>Anmerkungswerkzeuge anzeigen</translation>
+    </message>
+    <message>
+      <source>Show Object Names</source>
+      <translation>Objektnamen anzeigen</translation>
+    </message>
+    <message>
+      <source>Show Visible Objects Only</source>
+      <translation>Nur sichtbare Objekte anzeigen</translation>
+    </message>
+    <message>
+      <source>Undo</source>
+      <translation>Rückgängig</translation>
+    </message>
+    <message>
+      <source>Zoom to Object</source>
+      <translation>Zum Objekt zoomen</translation>
+    </message>
+    <message>
+      <source>Copy RA/Dec to Clipboard</source>
+      <translation>RA/Dec in die Zwischenablage kopieren</translation>
+    </message>
+    <message>
+      <source>Save Plate Solved Fits</source>
+      <translation>Gelöstes FITS speichern</translation>
+    </message>
+    <message>
+      <source>RA: N/A</source>
+      <translation>RA: N/V</translation>
+    </message>
+    <message>
+      <source>Dec: N/A</source>
+      <translation>Dec: N/V</translation>
+    </message>
+    <message>
+      <source>Orientation: N/A°</source>
+      <translation>Ausrichtung: N/V°</translation>
+    </message>
+    <message>
+      <source>Mini Preview</source>
+      <translation>Minivorschau</translation>
+    </message>
+    <message>
+      <source>Zoom In</source>
+      <translation>Vergrößern</translation>
+    </message>
+    <message>
+      <source>Zoom Out</source>
+      <translation>Verkleinern</translation>
+    </message>
+    <message>
+      <source>Save Annotated Image</source>
+      <translation>Annotiertes Bild speichern</translation>
+    </message>
+    <message>
+      <source>Save Collage of Objects</source>
+      <translation>Objektcollage speichern</translation>
+    </message>
+    <message>
+      <source>3D Distance Model</source>
+      <translation>3D-Abstandsmodell</translation>
+    </message>
+    <message>
+      <source>H-R Diagram</source>
+      <translation>H-R-Diagramm</translation>
+    </message>
+    <message>
+      <source>Objects Found: 0</source>
+      <translation>Objekte gefunden: 0</translation>
+    </message>
+    <message>
+      <source>Right Click a Row for More Options</source>
+      <translation>Rechtsklick auf Zeile für Optionen</translation>
+    </message>
+    <message>
+      <source>Ctrl+Click to add items, Alt+Click to measure distance</source>
+      <translation>Strg+Klick hinzufügen, Alt+Klick messen</translation>
+    </message>
+    <message>
+      <source>Draw Ellipse</source>
+      <translation>Ellipse zeichnen</translation>
+    </message>
+    <message>
+      <source>Freehand (Lasso)</source>
+      <translation>Freihand (Lasso)</translation>
+    </message>
+    <message>
+      <source>Draw Rectangle</source>
+      <translation>Rechteck zeichnen</translation>
+    </message>
+    <message>
+      <source>Draw Arrow</source>
+      <translation>Pfeil zeichnen</translation>
+    </message>
+    <message>
+      <source>Place Celestial Compass</source>
+      <translation>Himmelskompass platzieren</translation>
+    </message>
+    <message>
+      <source>Advanced Search Parameters</source>
+      <translation>Erweiterte Suchparameter</translation>
+    </message>
+    <message>
+      <source>Object Type</source>
+      <translation>Objekttyp</translation>
+    </message>
+    <message>
+      <source>Description</source>
+      <translation>Beschreibung</translation>
+    </message>
+    <message>
+      <source>Toggle All</source>
+      <translation>Alle umschalten</translation>
+    </message>
+    <message>
+      <source>Save List…</source>
+      <translation>Liste speichern…</translation>
+    </message>
+    <message>
+      <source>Load List…</source>
+      <translation>Liste laden…</translation>
+    </message>
+    <message>
+      <source>Search Defined Region</source>
+      <translation>Definierte Region suchen</translation>
+    </message>
+    <message>
+      <source>Search Entire Image</source>
+      <translation>Ganzes Bild suchen</translation>
+    </message>
+    <message>
+      <source>Minor Planets / Comets</source>
+      <translation>Kleinplaneten / Kometen</translation>
+    </message>
+    <message>
+      <source>Database: not downloaded</source>
+      <translation>Datenbank: nicht heruntergeladen</translation>
+    </message>
+    <message>
+      <source>Download Catalog</source>
+      <translation>Katalog herunterladen</translation>
+    </message>
+    <message>
+      <source>Search Minor Bodies</source>
+      <translation>Kleinkörper suchen</translation>
+    </message>
+    <message>
+      <source>Search scope:</source>
+      <translation>Suchbereich:</translation>
+    </message>
+    <message>
+      <source>Defined Region</source>
+      <translation>Definierte Region</translation>
+    </message>
+    <message>
+      <source>Entire Image</source>
+      <translation>Ganzes Bild</translation>
+    </message>
+    <message>
+      <source>Asteroid H ≤</source>
+      <translation>Asteroid H ≤</translation>
+    </message>
+    <message>
+      <source>Max asteroids:</source>
+      <translation>Max Asteroiden:</translation>
+    </message>
+    <message>
+      <source>Comet H ≤</source>
+      <translation>Komet H ≤</translation>
+    </message>
+    <message>
+      <source>Max comets:</source>
+      <translation>Max Kometen:</translation>
+    </message>
+    <message>
+      <source>Target (optional):</source>
+      <translation>Ziel (optional):</translation>
+    </message>
+    <message>
+      <source>Count Objects Brighter Than Limits</source>
+      <translation>Objekte heller als Limits zählen</translation>
+    </message>
+    <message>
+      <source>Time offset (hours):</source>
+      <translation>Zeitversatz (Stunden):</translation>
+    </message>
+    <message>
+      <source>Caution - Deep Vizier Search</source>
+      <translation>Vorsicht - Tiefe Vizier-Suche</translation>
+    </message>
+    <message>
+      <source>Search M.A.S.T Database</source>
+      <translation>M.A.S.T Datenbank suchen</translation>
+    </message>
+    <message>
+      <source>Load Image File</source>
+      <translation>Bilddatei laden</translation>
+    </message>
+    <message>
+      <source>Load from View</source>
+      <translation>Aus Ansicht laden</translation>
+    </message>
+    <message>
+      <source>AutoStretch</source>
+      <translation>AutoStretch</translation>
+    </message>
+    <message>
+      <source>Shift+Click to define a search region</source>
+      <translation>Umschalt+Klick um Suchbereich zu definieren</translation>
+    </message>
+    <message>
+      <source>Query Simbad</source>
+      <translation>Simbad abfragen</translation>
+    </message>
+    <message>
+      <source>Save CSV</source>
+      <translation>CSV speichern</translation>
+    </message>
+    <message>
+      <source>Advanced Search</source>
+      <translation>Erweiterte Suche</translation>
+    </message>
+    <message>
+      <source>Status: Ready</source>
+      <translation>Status: Bereit</translation>
+    </message>
+  </context>
+  <context>
+    <name>WhatsInMySkyDialog</name>
+    <message>
+      <source>What's In My Sky</source>
+      <translation>Was ist in meinem Himmel</translation>
+    </message>
+    <message>
+      <source>Latitude:</source>
+      <translation>Breitengrad:</translation>
+    </message>
+    <message>
+      <source>Longitude (E+, W−):</source>
+      <translation>Längengrad (O+, W−):</translation>
+    </message>
+    <message>
+      <source>Date (YYYY-MM-DD):</source>
+      <translation>Datum (JJJJ-MM-TT):</translation>
+    </message>
+    <message>
+      <source>Time (HH:MM):</source>
+      <translation>Zeit (HH:MM):</translation>
+    </message>
+    <message>
+      <source>Time Zone:</source>
+      <translation>Zeitzone:</translation>
+    </message>
+    <message>
+      <source>Min Altitude (0–90°):</source>
+      <translation>Min. Höhe (0–90°):</translation>
+    </message>
+    <message>
+      <source>Catalog Filters:</source>
+      <translation>Katalogfilter:</translation>
+    </message>
+    <message>
+      <source>Degrees</source>
+      <translation>Grad</translation>
+    </message>
+    <message>
+      <source>H:M:S / D:M:S</source>
+      <translation>H:M:S / G:M:S</translation>
+    </message>
+    <message>
+      <source>RA/Dec Format:</source>
+      <translation>RA/Dec Format:</translation>
+    </message>
+    <message>
+      <source>Calculate</source>
+      <translation>Berechnen</translation>
+    </message>
+    <message>
+      <source>Status: Idle</source>
+      <translation>Status: Leerlauf</translation>
+    </message>
+    <message>
+      <source>Local Sidereal Time: 0.000</source>
+      <translation>Lokale Sternzeit: 0.000</translation>
+    </message>
+    <message>
+      <source>Lunar Phase: N/A</source>
+      <translation>Mondphase: N/V</translation>
+    </message>
+    <message>
+      <source>Name</source>
+      <translation>Name</translation>
+    </message>
+    <message>
+      <source>RA</source>
+      <translation>RA</translation>
+    </message>
+    <message>
+      <source>Dec</source>
+      <translation>Dec</translation>
+    </message>
+    <message>
+      <source>Altitude</source>
+      <translation>Höhe</translation>
+    </message>
+    <message>
+      <source>Azimuth</source>
+      <translation>Azimut</translation>
+    </message>
+    <message>
+      <source>Minutes to Transit</source>
+      <translation>Minuten bis Transit</translation>
+    </message>
+    <message>
+      <source>Before/After Transit</source>
+      <translation>Vor/Nach Transit</translation>
+    </message>
+    <message>
+      <source>Degrees from Moon</source>
+      <translation>Grad vom Mond</translation>
+    </message>
+    <message>
+      <source>Alt Name</source>
+      <translation>Alt Name</translation>
+    </message>
+    <message>
+      <source>Type</source>
+      <translation>Typ</translation>
+    </message>
+    <message>
+      <source>Magnitude</source>
+      <translation>Magnitude</translation>
+    </message>
+    <message>
+      <source>Size (arcmin)</source>
+      <translation>Größe (Bogenmin)</translation>
+    </message>
+    <message>
+      <source>Add Custom Object</source>
+      <translation>Eigenes Objekt hinzufügen</translation>
+    </message>
+    <message>
+      <source>Save to CSV</source>
+      <translation>Als CSV speichern</translation>
+    </message>
+    <message>
+      <source>Settings</source>
+      <translation>Einstellungen</translation>
+    </message>
+    <message>
+      <source>Enter number of objects to display:</source>
+      <translation>Anzahl der anzuzeigenden Objekte:</translation>
+    </message>
+    <message>
+      <source>Enter object name:</source>
+      <translation>Objektname eingeben:</translation>
+    </message>
+    <message>
+      <source>Enter RA (deg):</source>
+      <translation>RA eingeben (Grad):</translation>
+    </message>
+    <message>
+      <source>Enter Dec (deg):</source>
+      <translation>Dec eingeben (Grad):</translation>
+    </message>
+    <message>
+      <source>Added custom object: {}</source>
+      <translation>Eigenes Objekt hinzugefügt: {}</translation>
+    </message>
+    <message>
+      <source>Could not update catalog:
+{}</source>
+      <translation>Katalog konnte nicht aktualisiert werden:
+{}</translation>
+    </message>
+    <message>
+      <source>Save CSV File</source>
+      <translation>CSV-Datei speichern</translation>
+    </message>
+    <message>
+      <source>CSV files (*.csv);;All Files (*)</source>
+      <translation>CSV-Dateien (*.csv);;Alle Dateien (*)</translation>
+    </message>
+    <message>
+      <source>Data saved to {}</source>
+      <translation>Daten gespeichert in {}</translation>
+    </message>
+    <message>
+      <source>Invalid input: {}</source>
+      <translation>Ungültige Eingabe: {}</translation>
+    </message>
+    <message>
+      <source> Please verify your longitude/timezone.</source>
+      <translation> Bitte Längengrad/Zeitzone überprüfen.</translation>
+    </message>
+    <message>
+      <source>Inputs look consistent.</source>
+      <translation>Eingaben scheinen konsistent.</translation>
+    </message>
+    <message>
+      <source>Calculating…</source>
+      <translation>Berechne…</translation>
+    </message>
+    <message>
+      <source>Lunar Phase: {}% illuminated</source>
+      <translation>Mondphase: {}% beleuchtet</translation>
+    </message>
+    <message>
+      <source>Status: {}</source>
+      <translation>Status: {}</translation>
+    </message>
+  </context>
+</TS>

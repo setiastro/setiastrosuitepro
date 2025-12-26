@@ -467,7 +467,7 @@ class SelectiveColorCorrection(QDialog):
 
         self.img = np.clip(self.document.image.astype(np.float32), 0.0, 1.0)
         self.preview_img = self.img.copy()
-
+        self._syncing_hue = False
         self._imported_mask_full = None     # full-res mask (H x W) float32 0..1
         self._imported_mask_name = None     # nice label to show in UI
         self._use_imported_mask = False     # checkbox state mirror
@@ -555,6 +555,36 @@ class SelectiveColorCorrection(QDialog):
         self.hue_wheel.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Minimum)
         gl.addWidget(self.hue_wheel, 1, 0, 7, 2)
 
+        # Wheel -> sliders/spins (so dragging wheel updates UI and mask)
+        def _wheel_to_sliders(s: int, e: int):
+            # If user is dragging the wheel, we’re now custom
+            if not self._setting_preset and self.dd_preset.currentText() != "Custom":
+                self.dd_preset.blockSignals(True)
+                self.dd_preset.setCurrentText("Custom")
+                self.dd_preset.blockSignals(False)
+
+            # Update BOTH sliders and spins, without ping-pong
+            self._syncing_hue = True
+            try:
+                s = int(s) % 360
+                e = int(e) % 360
+
+                for w, val in (
+                    (self.sl_h1, s), (self.sp_h1, s),
+                    (self.sl_h2, e), (self.sp_h2, e),
+                ):
+                    w.blockSignals(True)
+                    w.setValue(val)
+                    w.blockSignals(False)
+            finally:
+                self._syncing_hue = False
+
+            self._schedule_mask()
+
+        self.hue_wheel.rangeChanged.connect(_wheel_to_sliders)
+
+
+
         # Helper: integer slider + spin (0..360)
         def _deg_pair(grid: QGridLayout, label: str, row: int):
             grid.addWidget(QLabel(label), row, 2)
@@ -574,7 +604,8 @@ class SelectiveColorCorrection(QDialog):
 
         # Row 3: chroma + lightness
         gl.addWidget(QLabel("Min chroma:"), 3, 2)
-        self.ds_minC = QDoubleSpinBox(); self.ds_minC.setRange(0,1); self.ds_minC.setSingleStep(0.05); self.ds_minC.setValue(0.0)
+        self.ds_minC = QDoubleSpinBox(); self.ds_minC.setRange(0,1); self.ds_minC.setSingleStep(0.05); self.ds_minC.setValue(0.05)
+
         self.ds_minC.valueChanged.connect(self._recompute_mask_and_preview)
         gl.addWidget(self.ds_minC, 3, 3)
 
@@ -741,10 +772,12 @@ class SelectiveColorCorrection(QDialog):
         right.addLayout(zoom_row)
 
         self.lbl_help = QLabel(
-            "🖱️ <b>Click</b>: pick hue  &nbsp;•&nbsp; "
+            "🖱️ <b>Click</b>: show hue  &nbsp;•&nbsp; "
+            "<b>Shift + Click</b>: select that color  &nbsp;•&nbsp; "
             "<b>Ctrl + Click & Drag</b>: pan  &nbsp;•&nbsp; "
             "<b>Ctrl + Wheel</b>: zoom"
         )
+
         self.lbl_help.setWordWrap(True)
         self.lbl_help.setTextFormat(Qt.TextFormat.RichText)
         self.lbl_help.setStyleSheet("color: #888; font-size: 11px;")
@@ -797,11 +830,19 @@ class SelectiveColorCorrection(QDialog):
             w.valueChanged.connect(self._schedule_adjustments)
 
         def _sliders_to_wheel(_=None):
+            if getattr(self, "_syncing_hue", False):
+                return
+
             if not self._setting_preset and self.dd_preset.currentText() != "Custom":
+                self.dd_preset.blockSignals(True)
                 self.dd_preset.setCurrentText("Custom")
-            s = int(self.sp_h1.value()); e = int(self.sp_h2.value())
+                self.dd_preset.blockSignals(False)
+
+            s = int(self.sp_h1.value())
+            e = int(self.sp_h2.value())
             self.hue_wheel.setRange(s, e, notify=False)
             self._schedule_mask()
+
 
         self.sp_h1.valueChanged.connect(_sliders_to_wheel)
         self.sp_h2.valueChanged.connect(_sliders_to_wheel)
@@ -973,7 +1014,7 @@ class SelectiveColorCorrection(QDialog):
                 w.setValue(int(val))
             w.blockSignals(False)
 
-        setv(self.ds_minC, 0.0)
+        setv(self.ds_minC, 0.05)
         setv(self.ds_minL, 0.0)
         setv(self.ds_maxL, 1.0)
         setv(self.ds_smooth, 10.0)
@@ -1018,23 +1059,27 @@ class SelectiveColorCorrection(QDialog):
         self._recompute_mask_and_preview()
 
 
-    def _schedule_adjustments(self, delay_ms: int | None = None):
+    def _schedule_adjustments(self, *_, delay_ms: int | None = None):
         if delay_ms is None:
             delay_ms = getattr(self, "_adj_delay_ms", 200)
-        # if called very early, just no-op safely
+
         if not hasattr(self, "_adj_timer"):
             return
+
+        ms = max(1, int(delay_ms))  # never allow 0/negative
         self._adj_timer.stop()
-        self._adj_timer.start(int(delay_ms))
+        self._adj_timer.start(ms)
 
-
-    def _schedule_mask(self, delay_ms: int | None = None):
-        """Debounce mask recomputation for hue changes."""
+    def _schedule_mask(self, *_, delay_ms: int | None = None):
         if delay_ms is None:
-            delay_ms = self._mask_delay_ms
-        # restart the timer on every change
+            delay_ms = getattr(self, "_mask_delay_ms", 200)
+
+        if not hasattr(self, "_mask_timer"):
+            return
+
+        ms = max(1, int(delay_ms))
         self._mask_timer.stop()
-        self._mask_timer.start(int(delay_ms))
+        self._mask_timer.start(ms)
 
 
     def _sample_hue_deg_from_base(self, x: int, y: int) -> float | None:
@@ -1190,15 +1235,29 @@ class SelectiveColorCorrection(QDialog):
                 intervals = _PRESETS.get(txt, [])
                 if intervals:
                     lo, hi = (intervals[0][0], intervals[-1][1]) if len(intervals) > 1 else intervals[0]
-                    self.hue_wheel.setRange(int(lo), int(hi), notify=False)  # update wheel silently
-                    self.hue_wheel.update()  # ensure repaint
-                    self.sp_h1.blockSignals(True); self.sp_h2.blockSignals(True)
-                    self.sp_h1.setValue(int(lo));  self.sp_h2.setValue(int(hi))
-                    self.sp_h1.blockSignals(False); self.sp_h2.blockSignals(False)
+
+                    # --- NEW: keep wheel + sliders + spins all in sync ---
+                    self._syncing_hue = True
+                    try:
+                        # update wheel silently
+                        self.hue_wheel.setRange(int(lo), int(hi), notify=False)
+
+                        # update both sliders and spins (no ping-pong)
+                        for w, val in (
+                            (self.sl_h1, int(lo)), (self.sp_h1, int(lo)),
+                            (self.sl_h2, int(hi)), (self.sp_h2, int(hi)),
+                        ):
+                            w.blockSignals(True)
+                            w.setValue(val)
+                            w.blockSignals(False)
+
+                        self.hue_wheel.update()  # ensure repaint
+                    finally:
+                        self._syncing_hue = False
+
             self._recompute_mask_and_preview()
         finally:
             self._setting_preset = False
-
 
     def _downsample(self, img, max_dim=1024):
         h, w = img.shape[:2]

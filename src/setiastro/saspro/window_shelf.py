@@ -17,7 +17,7 @@ def _dbg(owner, msg: str):
 
 class WindowShelf(QDockWidget):
     def __init__(self, parent=None):
-        super().__init__("Minimized Views", parent)
+        super().__init__(self.tr("Minimized Views"), parent)
 
         # PyQt6 dock area enum
         self.setAllowedAreas(Qt.DockWidgetArea.AllDockWidgetAreas)
@@ -53,7 +53,7 @@ class WindowShelf(QDockWidget):
         if sub is None or sub.widget() is None:
             return
 
-        title = sub.windowTitle() or "Untitled"
+        title = sub.windowTitle() or self.tr("Untitled")
         # strip leading dot and Active prefix for the shelf display text only
 
         # Remove any number of leading glyphs like ■ ● ◆ ▲ etc.
