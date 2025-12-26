@@ -154,64 +154,107 @@ _FITS_EXTS = ('.fits', '.fit', '.fts', '.fits.gz', '.fit.gz', '.fts.gz', '.fz')
 
 def get_valid_header(path: str):
     """
-    Return a robust FITS header for both normal and compressed FITS.
+    Fast header-only FITS peek with a targeted fallback:
 
-    - Opens the HDU list and picks the first image-like HDU (ndim >= 2).
-    - Forces NAXIS, NAXIS1, NAXIS2 from the actual data.shape if possible.
-    - Falls back to ZNAXIS1/2 for tile-compressed images.
+    1) Header-only scan (lazy_load_hdus=True, never touches .data)
+    2) If NAXIS1/2 still missing/invalid, fallback to reading ONE image HDU's data
+       to get shape, then patch NAXIS/NAXIS1/NAXIS2.
+
+    Returns: (hdr, ok_bool)
     """
     try:
         from astropy.io import fits
 
-        with fits.open(path, memmap=False) as hdul:
+        def _is_good_dim(v):
+            try:
+                return int(v) > 0
+            except Exception:
+                return False
+
+        # ---------------------------
+        # Pass 1: header-only
+        # ---------------------------
+        with fits.open(path, mode="readonly", memmap=True, lazy_load_hdus=True) as hdul:
             science_hdu = None
 
-            # Prefer the first HDU that actually has 2D+ image data
             for hdu in hdul:
-                data = getattr(hdu, "data", None)
-                if data is None:
-                    continue
-                if getattr(data, "ndim", 0) >= 2:
+                hdr = hdu.header
+
+                # Prefer HDUs that *declare* 2D+ via header
+                naxis = hdr.get("NAXIS", None)
+                znaxis = hdr.get("ZNAXIS", None)
+
+                looks_2d = False
+                try:
+                    if naxis is not None and int(naxis) >= 2:
+                        looks_2d = True
+                except Exception:
+                    pass
+                try:
+                    if znaxis is not None and int(znaxis) >= 2:
+                        looks_2d = True
+                except Exception:
+                    pass
+
+                if looks_2d:
                     science_hdu = hdu
                     break
 
             if science_hdu is None:
-                # Fallback: just use primary
                 science_hdu = hdul[0]
 
             hdr = science_hdu.header.copy()
-            data = science_hdu.data
 
-            # --- Ensure NAXIS / NAXIS1 / NAXIS2 are real numbers ---
-            try:
-                if data is not None and getattr(data, "ndim", 0) >= 2:
-                    shape = data.shape
-                    # FITS: final axes are X, Y
-                    ny, nx = shape[-2], shape[-1]
-                    hdr["NAXIS"] = int(data.ndim)
-                    hdr["NAXIS1"] = int(nx)
-                    hdr["NAXIS2"] = int(ny)
-            except Exception:
-                pass
+            # Prefer normal NAXISn; fallback to ZNAXISn for tile-compressed
+            if not _is_good_dim(hdr.get("NAXIS1")) and _is_good_dim(hdr.get("ZNAXIS1")):
+                hdr["NAXIS1"] = int(hdr["ZNAXIS1"])
+            if not _is_good_dim(hdr.get("NAXIS2")) and _is_good_dim(hdr.get("ZNAXIS2")):
+                hdr["NAXIS2"] = int(hdr["ZNAXIS2"])
 
-            # --- Extra fallback from ZNAXISn (tile-compressed FITS) ---
-            for ax in (1, 2):
-                key = f"NAXIS{ax}"
-                zkey = f"ZNAXIS{ax}"
-                val = hdr.get(key, None)
-                if (val is None or (isinstance(val, str) and not val.strip())) and zkey in hdr:
-                    try:
-                        hdr[key] = int(hdr[zkey])
-                    except Exception:
-                        pass
+            # If we already have good dims, we are done (FAST PATH)
+            if _is_good_dim(hdr.get("NAXIS1")) and _is_good_dim(hdr.get("NAXIS2")):
+                return hdr, True
 
-        return hdr, True
+        # ---------------------------
+        # Pass 2: slow fallback (ONLY if needed)
+        # ---------------------------
+        # Re-open without lazy semantics and read ONE image-like HDU's data to infer shape.
+        with fits.open(path, mode="readonly", memmap=False) as hdul:
+            target_hdu = None
+            for hdu in hdul:
+                # data access is expensive; try to choose wisely by header first
+                naxis = hdu.header.get("NAXIS", 0)
+                znaxis = hdu.header.get("ZNAXIS", 0)
+
+                try:
+                    if int(naxis) >= 2 or int(znaxis) >= 2:
+                        target_hdu = hdu
+                        break
+                except Exception:
+                    continue
+
+            if target_hdu is None:
+                target_hdu = hdul[0]
+
+            # Now (and only now) touch data
+            data = getattr(target_hdu, "data", None)
+
+            hdr2 = target_hdu.header.copy()
+            if data is not None and getattr(data, "ndim", 0) >= 2:
+                try:
+                    ny, nx = data.shape[-2], data.shape[-1]
+                    hdr2["NAXIS"] = int(getattr(data, "ndim", hdr2.get("NAXIS", 2)))
+                    hdr2["NAXIS1"] = int(nx)
+                    hdr2["NAXIS2"] = int(ny)
+                    return hdr2, True
+                except Exception:
+                    pass
+
+            # If still unknown, return header anyway (caller can show "Unknown")
+            return hdr2, True
 
     except Exception:
         return None, False
-
-
-
 
 def _read_tile_stack(file_list, y0, y1, x0, x1, channels, out_buf):
     """
@@ -3916,7 +3959,11 @@ class StackingSuiteDialog(QDialog):
         self._wrench_path = wrench_path
         self._spinner_path = spinner_path
         self._post_progress_label = None
-
+        self._dark_group_item = {}   # key -> QTreeWidgetItem
+        self._flat_filter_item = {}  # filter_name -> QTreeWidgetItem
+        self._flat_exp_item = {}     # (filter_name, want_label) -> QTreeWidgetItem
+        self._light_filter_item = {} # filter_name -> QTreeWidgetItem
+        self._light_exp_item = {}    # (filter_name, want_label) -> QTreeWidgetItem
 
         self.setWindowTitle(self.tr("Stacking Suite"))
         self.setGeometry(300, 200, 800, 600)
@@ -10000,24 +10047,32 @@ class StackingSuiteDialog(QDialog):
             manual_session_name = self._resolve_manual_session_name_for_ingest()
 
         added = 0
-        for i, path in enumerate(paths, start=1):
-            if dlg.wasCanceled():
-                break
-            try:
-                base = os.path.basename(path)
-                dlg.setLabelText(f"{base}  ({i}/{total})")
+        tree.setUpdatesEnabled(False)
+        tree.blockSignals(True)
+        try:        
+            for i, path in enumerate(paths, start=1):
+                if dlg.wasCanceled():
+                    break
+                try:
+                    base = os.path.basename(path)
+                    dlg.setLabelText(f"{base}  ({i}/{total})")
+                    QCoreApplication.processEvents()
+
+                    self.process_fits_header(
+                        path, tree, expected_type,
+                        manual_session_name=manual_session_name
+                    )
+                    added += 1
+                except Exception:
+                    pass
+
+                dlg.setValue(i)
                 QCoreApplication.processEvents()
+        finally:
+            tree.blockSignals(False)
+            tree.setUpdatesEnabled(True)
+            tree.viewport().update()
 
-                self.process_fits_header(
-                    path, tree, expected_type,
-                    manual_session_name=manual_session_name
-                )
-                added += 1
-            except Exception:
-                pass
-
-            dlg.setValue(i)
-            QCoreApplication.processEvents()
 
         dlg.setValue(total)
         QCoreApplication.processEvents()
@@ -10220,16 +10275,16 @@ class StackingSuiteDialog(QDialog):
             if expected_type_u == "DARK":
                 key = f"{exposure_text} ({image_size})"
                 self.dark_files.setdefault(key, []).append(path)
-                self.session_tags[path] = session_tag  # not strictly needed, but consistent
 
-                items = tree.findItems(key, Qt.MatchFlag.MatchExactly, 0)
-                exposure_item = items[0] if items else QTreeWidgetItem([key])
-                if not items:
+                exposure_item = self._dark_group_item.get(key)
+                if exposure_item is None:
+                    exposure_item = QTreeWidgetItem([key])
                     tree.addTopLevelItem(exposure_item)
+                    self._dark_group_item[key] = exposure_item
 
                 leaf = QTreeWidgetItem([os.path.basename(path), meta_text])
                 leaf.setData(0, Qt.ItemDataRole.UserRole, path)
-                leaf.setData(0, Qt.ItemDataRole.UserRole + 1, session_tag)  # ✅ helpful later for retag/rekey
+                leaf.setData(0, Qt.ItemDataRole.UserRole + 1, session_tag)
                 exposure_item.addChild(leaf)
 
             # === FLATs ===
@@ -10239,20 +10294,20 @@ class StackingSuiteDialog(QDialog):
                 self.flat_files.setdefault(composite_key, []).append(path)
                 self.session_tags[path] = session_tag
 
-                filter_items = tree.findItems(filter_name, Qt.MatchFlag.MatchExactly, 0)
-                filter_item = filter_items[0] if filter_items else QTreeWidgetItem([filter_name])
-                if not filter_items:
+                filter_item = self._flat_filter_item.get(filter_name)
+                if filter_item is None:
+                    filter_item = QTreeWidgetItem([filter_name])
                     tree.addTopLevelItem(filter_item)
+                    self._flat_filter_item[filter_name] = filter_item
 
                 want_label = f"{exposure_text} ({image_size})"
-                exposure_item = None
-                for i in range(filter_item.childCount()):
-                    if filter_item.child(i).text(0) == want_label:
-                        exposure_item = filter_item.child(i)
-                        break
+                exp_key = (filter_name, want_label)
+
+                exposure_item = self._flat_exp_item.get(exp_key)
                 if exposure_item is None:
                     exposure_item = QTreeWidgetItem([want_label])
                     filter_item.addChild(exposure_item)
+                    self._flat_exp_item[exp_key] = exposure_item
 
                 leaf = QTreeWidgetItem([os.path.basename(path), meta_text])
                 leaf.setData(0, Qt.ItemDataRole.UserRole, path)
@@ -10266,23 +10321,25 @@ class StackingSuiteDialog(QDialog):
                 self.light_files.setdefault(composite_key, []).append(path)
                 self.session_tags[path] = session_tag
 
-                filter_items = tree.findItems(filter_name, Qt.MatchFlag.MatchExactly, 0)
-                filter_item = filter_items[0] if filter_items else QTreeWidgetItem([filter_name])
-                if not filter_items:
+                # Cached filter item
+                filter_item = self._light_filter_item.get(filter_name)
+                if filter_item is None:
+                    filter_item = QTreeWidgetItem([filter_name])
                     tree.addTopLevelItem(filter_item)
+                    self._light_filter_item[filter_name] = filter_item
 
                 want_label = f"{exposure_text} ({image_size})"
-                exposure_item = None
-                for i in range(filter_item.childCount()):
-                    if filter_item.child(i).text(0) == want_label:
-                        exposure_item = filter_item.child(i)
-                        break
+                exp_key = (filter_name, want_label)
+
+                # Cached exposure item
+                exposure_item = self._light_exp_item.get(exp_key)
                 if exposure_item is None:
                     exposure_item = QTreeWidgetItem([want_label])
                     filter_item.addChild(exposure_item)
+                    self._light_exp_item[exp_key] = exposure_item
 
                 leaf = QTreeWidgetItem([os.path.basename(path), meta_text])
-                leaf.setData(0, Qt.ItemDataRole.UserRole, path)          # ✅ needed for date-aware flat fallback
+                leaf.setData(0, Qt.ItemDataRole.UserRole, path)          # ✅ keep this
                 leaf.setData(0, Qt.ItemDataRole.UserRole + 1, session_tag)
                 exposure_item.addChild(leaf)
 
