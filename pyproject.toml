@@ -1,10 +1,6 @@
 [tool.poetry]
 name = "setiastrosuitepro"
-<<<<<<< HEAD
-version = "1.6.2.post1"
-=======
 version = "1.6.3"
->>>>>>> dev
 description = "Seti Astro Suite Pro - Advanced astrophotography toolkit for image calibration, stacking, registration, photometry, and visualization"
 authors = ["Franklin Marek <info@setiastro.com>"]
 readme = "README.md"
