@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
     QProgressDialog, QApplication
 )
 from contextlib import contextmanager
+from setiastro.saspro.resources import get_resources
 try:
     cv2.setUseOptimized(True)
     cv2.setNumThreads(0)  # 0 = let OpenCV decide
@@ -332,17 +333,17 @@ class MultiscaleDecompDialog(QDialog):
         self.busy_label.hide()
         # --- Spinner (animated) ---
         self.busy_spinner = QLabel()
-        self.busy_spinner.setFixedSize(20, 20)     # keep it compact
+        self.busy_spinner.setFixedSize(20, 20)
         self.busy_spinner.setToolTip("Computing…")
         self.busy_spinner.setVisible(False)
 
-        # Load animated gif
-        gif_path = os.path.join(os.path.dirname(__file__), "..", "images", "spinner_16.gif")
+        gif_path = get_resources().SPINNER_GIF  # <- canonical, works frozen/dev
         gif_path = os.path.normpath(gif_path)
 
         self._busy_movie = QMovie(gif_path)
         self._busy_movie.setScaledSize(self.busy_spinner.size())
         self.busy_spinner.setMovie(self._busy_movie)
+
         self._busy_show_timer = QTimer(self)
         self._busy_show_timer.setSingleShot(True)
         self._busy_show_timer.timeout.connect(self._show_busy_overlay)
@@ -760,6 +761,7 @@ class MultiscaleDecompDialog(QDialog):
 
     def _rebuild_preview(self):
         self._spinner_on()
+        QApplication.processEvents()
         #self._begin_busy()
         try:
             # ROI preview can't work until we have *some* pixmap in the scene to derive visible rects from.
