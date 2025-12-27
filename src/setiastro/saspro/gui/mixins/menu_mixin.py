@@ -185,6 +185,7 @@ class MenuMixin:
         m_geom.addAction(self.act_geom_rot_cw)
         m_geom.addAction(self.act_geom_rot_ccw)
         m_geom.addAction(self.act_geom_rot_180)   
+        m_geom.addAction(self.act_geom_rot_any) 
         m_geom.addSeparator()
         m_geom.addAction(self.act_geom_rescale)
         m_geom.addSeparator()

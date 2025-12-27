@@ -1,4 +1,4 @@
-# pro/doc_manager.py
+# saspro/doc_manager.py
 from __future__ import annotations
 from PyQt6.QtCore import QObject, pyqtSignal, Qt, QTimer
 from PyQt6.QtWidgets import QApplication, QMessageBox
