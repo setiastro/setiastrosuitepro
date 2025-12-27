@@ -53,6 +53,8 @@ except ImportError:
 
 from setiastro.saspro.wcs_update import update_wcs_after_crop
 
+import cv2
+import math
 
 if TYPE_CHECKING:
     pass
@@ -205,6 +207,44 @@ class GeometryMixin:
         except Exception as e:
             QMessageBox.critical(self, "Rotate 180°", str(e))
 
+    def _exec_geom_rot_any(self):
+        sw = self.mdi.activeSubWindow() if hasattr(self, "mdi") else None
+        view = sw.widget() if sw else None
+        doc = getattr(view, "document", None)
+        if doc is None or getattr(doc, "image", None) is None:
+            QMessageBox.information(self, self.tr("Rotate..."), self.tr("Active view has no image."))
+            return
+
+        if cv2 is None:
+            QMessageBox.warning(self, self.tr("Rotate..."), self.tr("OpenCV (cv2) is required for arbitrary rotation."))
+            return
+
+        dlg = QInputDialog(self)
+        dlg.setWindowTitle(self.tr("Rotate..."))
+        dlg.setLabelText(self.tr("Angle in degrees (positive = CCW):"))
+        dlg.setInputMode(QInputDialog.InputMode.DoubleInput)
+        dlg.setDoubleRange(-360.0, 360.0)
+        dlg.setDoubleDecimals(2)
+        dlg.setDoubleValue(0.0)
+        dlg.setWindowFlag(Qt.WindowType.Window, True)
+
+        try:
+            from setiastro.saspro.resources import rotatearbitrary_path
+            dlg.setWindowIcon(QIcon(rotatearbitrary_path))
+        except Exception:
+            pass
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        angle = float(dlg.doubleValue())
+        try:
+            self._apply_geom_rot_any_to_doc(doc, angle_deg=angle)
+            self._log(f"Rotate ({angle:g}°) applied to active view")
+        except Exception as e:
+            QMessageBox.critical(self, self.tr("Rotate..."), str(e))
+
+
     def _exec_geom_rescale(self):
         """Execute rescale operation on active view with dialog."""
         sw = self.mdi.activeSubWindow() if hasattr(self, "mdi") else None
@@ -329,6 +369,70 @@ class GeometryMixin:
         ], dtype=float)
 
         self._apply_geom_with_wcs(doc, out, M_src_to_dst=M, step_name="Rotate 180°")
+
+    def _apply_geom_rot_any_to_doc(self, doc, *, angle_deg: float):
+        if cv2 is None:
+            raise RuntimeError("cv2 is required for arbitrary rotation")
+
+        src = np.asarray(doc.image, dtype=np.float32, order="C")
+        h, w = src.shape[:2]
+
+        # Rotation about center
+        cx = (w - 1) * 0.5
+        cy = (h - 1) * 0.5
+
+        # OpenCV uses CCW degrees
+        A2 = cv2.getRotationMatrix2D((cx, cy), angle_deg, 1.0)  # 2x3
+
+        # Convert to 3x3
+        M = np.array([
+            [A2[0,0], A2[0,1], A2[0,2]],
+            [A2[1,0], A2[1,1], A2[1,2]],
+            [0.0,     0.0,     1.0    ],
+        ], dtype=np.float32)
+
+        # Compute output bounds by rotating the four corners
+        corners = np.array([
+            [0.0, 0.0, 1.0],
+            [w - 1.0, 0.0, 1.0],
+            [w - 1.0, h - 1.0, 1.0],
+            [0.0, h - 1.0, 1.0],
+        ], dtype=np.float32).T  # 3x4
+
+        rc = (M @ corners)  # 3x4
+        xs = rc[0, :]
+        ys = rc[1, :]
+
+        min_x = float(xs.min())
+        max_x = float(xs.max())
+        min_y = float(ys.min())
+        max_y = float(ys.max())
+
+        out_w = int(math.ceil(max_x - min_x + 1.0))
+        out_h = int(math.ceil(max_y - min_y + 1.0))
+        if out_w <= 0 or out_h <= 0:
+            raise RuntimeError("Invalid output size after rotation")
+
+        # Shift so that min corner maps to (0,0)
+        T = np.array([
+            [1.0, 0.0, -min_x],
+            [0.0, 1.0, -min_y],
+            [0.0, 0.0, 1.0],
+        ], dtype=np.float32)
+
+        M = (T @ M).astype(np.float32)  # final src->dst 3x3
+
+        # Warp
+        # cv2.warpPerspective expects (W,H)
+        flags = cv2.INTER_LANCZOS4
+        if src.ndim == 2:
+            out = cv2.warpPerspective(src, M, (out_w, out_h), flags=flags)
+        else:
+            # warpPerspective works on multi-channel too
+            out = cv2.warpPerspective(src, M, (out_w, out_h), flags=flags)
+
+        self._apply_geom_with_wcs(doc, out, M_src_to_dst=M, step_name=f"Rotate ({angle_deg:g}°)")
+
 
     def _apply_geom_rescale_to_doc(self, doc, *, factor: float):
         """Apply rescale to document with WCS update."""

@@ -224,6 +224,7 @@ class Icons:
     ROTATE_CW = property(lambda self: _resource_path('rotateclockwise.png'))
     ROTATE_CCW = property(lambda self: _resource_path('rotatecounterclockwise.png'))
     ROTATE_180 = property(lambda self: _resource_path('rotate180.png'))
+    ROTATE_ANY      = property(lambda self: _resource_path('rotatearbitrary.png'))
     RESCALE = property(lambda self: _resource_path('rescale.png'))
     
     # Masks
@@ -409,6 +410,7 @@ def _init_legacy_paths():
         'rotateclockwise_path': get_icon_path('rotateclockwise.png'),
         'rotatecounterclockwise_path': get_icon_path('rotatecounterclockwise.png'),
         'rotate180_path': get_icon_path('rotate180.png'),
+        'rotatearbitrary_path': get_icon_path('rotatearbitrary.png'),
         'maskcreate_path': get_icon_path('maskcreate.png'),
         'maskapply_path': get_icon_path('maskapply.png'),
         'maskremove_path': get_icon_path('maskremove.png'),

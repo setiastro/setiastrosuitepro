@@ -23,7 +23,7 @@ from setiastro.saspro.resources import (
     LInsert_path, rgbcombo_path, rgbextract_path, graxperticon_path,
     cropicon_path, openfile_path, abeicon_path, undoicon_path, redoicon_path,
     blastericon_path, hdr_path, invert_path, fliphorizontal_path,
-    flipvertical_path, rotateclockwise_path, rotatecounterclockwise_path,
+    flipvertical_path, rotateclockwise_path, rotatecounterclockwise_path,rotatearbitrary_path,
     rotate180_path, maskcreate_path, maskapply_path, maskremove_path,
     pixelmath_path, histogram_path, mosaic_path, rescale_path, staralign_path,
     platesolve_path, psf_path, supernova_path, starregistration_path,
@@ -280,6 +280,7 @@ class ToolbarMixin:
         tb_geom.addAction(self.act_geom_rot_cw)
         tb_geom.addAction(self.act_geom_rot_ccw)
         tb_geom.addAction(self.act_geom_rot_180)
+        tb_geom.addAction(self.act_geom_rot_any)
         tb_geom.addSeparator()
         tb_geom.addAction(self.act_geom_rescale)
         tb_geom.addSeparator()
@@ -885,6 +886,12 @@ class ToolbarMixin:
         self.act_geom_rot_180.setStatusTip(self.tr("Rotate image 180°"))
         self.act_geom_rot_180.triggered.connect(self._exec_geom_rot_180)
 
+        self.act_geom_rot_any = QAction(QIcon(rotatearbitrary_path), self.tr("Rotate..."), self)
+        self.act_geom_rot_any.setIconVisibleInMenu(True)
+        self.act_geom_rot_any.setStatusTip(self.tr("Rotate image by an arbitrary angle (degrees)"))
+        self.act_geom_rot_any.triggered.connect(self._exec_geom_rot_any)
+
+
         self.act_geom_rescale = QAction(QIcon(rescale_path), self.tr("Rescale..."), self)
         self.act_geom_rescale.setIconVisibleInMenu(True)
         self.act_geom_rescale.setStatusTip(self.tr("Rescale image by a factor"))
@@ -1208,6 +1215,7 @@ class ToolbarMixin:
         reg("geom_rotate_clockwise",       self.act_geom_rot_cw)
         reg("geom_rotate_counterclockwise",self.act_geom_rot_ccw)
         reg("geom_rotate_180",             self.act_geom_rot_180) 
+        reg("geom_rotate_any", self.act_geom_rot_any)
         reg("geom_rescale",                self.act_geom_rescale)        
         reg("project_new",  self.act_project_new)
         reg("project_save", self.act_project_save)

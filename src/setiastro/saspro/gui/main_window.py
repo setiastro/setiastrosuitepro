@@ -187,7 +187,7 @@ from setiastro.saspro.resources import (
     platesolve_path, psf_path, supernova_path, starregistration_path,
     stacking_path, pedestal_icon_path, starspike_path, aperture_path,
     jwstpupil_path, signature_icon_path, livestacking_path, hrdiagram_path,
-    convoicon_path, spcc_icon_path, sasp_data_path, exoicon_path, peeker_icon,
+    convoicon_path, spcc_icon_path, sasp_data_path, exoicon_path, peeker_icon,rotatearbitrary_path,
     dse_icon_path, astrobin_filters_csv_path, isophote_path, statstretch_path,
     starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path,
     nbtorgb_path, freqsep_path, contsub_path, halo_path, cosmic_path,
@@ -5555,6 +5555,10 @@ class AstroSuiteProMainWindow(
                 "rotate_180": "geom_rotate_180",
                 "geom_rotate_180": "geom_rotate_180",
 
+                "rotate_any": "geom_rotate_any",
+                "rotate_arbitrary": "geom_rotate_any",
+                "geom_rotate_any": "geom_rotate_any",
+
                 "invert": "geom_invert",
                 "geom_invert": "geom_invert",
 
@@ -6553,6 +6557,17 @@ class AstroSuiteProMainWindow(
                 self._log(f"Rotate 180Â deg applied to '{target_sw.windowTitle()}'")
             except Exception as e:
                 QMessageBox.warning(self, "Rotate 180Â deg", str(e))
+            return
+
+        if cid == "geom_rotate_any":
+            try:
+                angle = float(preset.get("angle_deg", preset.get("angle", 0.0)))
+                called = _call_any(["_apply_geom_rot_any_to_doc"], doc, angle_deg=angle)
+                if not called:
+                    raise RuntimeError("No rotate-any apply method found")
+                self._log(f"Rotate ({angle:g}°) applied to '{target_sw.windowTitle()}'")
+            except Exception as e:
+                QMessageBox.warning(self, "Rotate...", str(e))
             return
 
         if cid == "geom_rescale":

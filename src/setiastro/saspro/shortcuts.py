@@ -555,7 +555,7 @@ _PRESET_UI_IDS = {
     "remove_green","star_align","background_neutral","white_balance","clahe",
     "morphology","pixel_math","rgb_align","signature_insert","signature_adder",
     "signature","halo_b_gon","geom_rescale","rescale","debayer","image_combine",
-    "star_spikes","diffraction_spikes", "multiscale_decomp",
+    "star_spikes","diffraction_spikes", "multiscale_decomp","geom_rotate_any",
 }
 
 def _has_preset_editor_for_command(command_id: str) -> bool:
@@ -585,6 +585,12 @@ def _open_preset_editor_for_command(parent, command_id: str, initial: dict | Non
             "mode": "margins",
             "margins": {"top": 0, "right": 0, "bottom": 0, "left": 0},
             "create_new_view": False
+        })
+        return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
+
+    if command_id == "geom_rotate_any":
+        dlg = _GeomRotateAnyPresetDialog(parent, initial=cur or {
+            "angle_deg": 0.0,
         })
         return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
 
@@ -3081,3 +3087,30 @@ class _RGBAlignPresetDialog(QDialog):
             "new_doc": bool(self.chk_new.isChecked()),
         }
 
+class _GeomRotateAnyPresetDialog(QDialog):
+    def __init__(self, parent=None, initial: dict | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Arbitrary Rotation — Preset")
+        init = dict(initial or {})
+
+        self.spin_angle = QDoubleSpinBox()
+        self.spin_angle.setRange(-360.0, 360.0)
+        self.spin_angle.setDecimals(2)
+        self.spin_angle.setSingleStep(0.25)
+        self.spin_angle.setValue(float(init.get("angle_deg", init.get("angle", 0.0))))
+
+        form = QFormLayout(self)
+        form.addRow("Angle (degrees):", self.spin_angle)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            parent=self
+        )
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        form.addRow(btns)
+
+    def result_dict(self) -> dict:
+        return {
+            "angle_deg": float(self.spin_angle.value()),
+        }
