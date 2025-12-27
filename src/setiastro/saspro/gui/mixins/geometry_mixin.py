@@ -51,11 +51,7 @@ except ImportError:
         return cv2.resize(arr, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
 
 
-# Try to import WCS update function
-try:
-    from setiastro.saspro.wcs_utils import update_wcs_after_crop
-except ImportError:
-    update_wcs_after_crop = None
+from setiastro.saspro.wcs_update import update_wcs_after_crop
 
 
 if TYPE_CHECKING:
