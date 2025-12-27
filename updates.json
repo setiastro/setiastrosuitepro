@@ -1,9 +1,9 @@
 {
-  "version": "1.6.3",
+  "version": "1.6.4",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.6.3/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.6.3/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.6.3/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.6.4/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.6.4/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.6.4/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.6.3 Bug fix and Optimization update: Multiscale decomp, stacking suite loading, blink items, crop items, background neutralization, system monitor fixes, and others."
+  "notes": "Seti Astro Suite Pro V1.6.4 New Geometry Function: Rotate (Arbitrary Angle), it will auto update the WCS as well. Stellar Alignment: Much Faster through downsampling the image and uplifting the transformation. Stacking Suite loading Darks, Flats, and Lights is now comically faster. Various Bug Fixes."
 }
