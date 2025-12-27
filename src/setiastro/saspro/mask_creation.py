@@ -525,42 +525,57 @@ class LivePreviewDialog(QDialog):
         self.base_pixmap = _to_qpixmap01(image01)
 
 # ---------- Preview (push-as-doc) ----------
-
 class MaskPreviewDialog(QDialog):
     """Scrollable preview + 'Push as New Document…'."""
     def __init__(self, mask01: np.ndarray, parent=None):
         super().__init__(parent)
         self.setWindowTitle(self.tr("Mask Preview"))
         self.mask = np.clip(mask01, 0, 1).astype(np.float32)
+
+        # --- drag-pan state ---
         self._dragging = False
         self._drag_start = None
         self._h_start = 0
         self._v_start = 0
-        self.label.setMouseTracking(True)
-        self.label.installEventFilter(self)
-        self.scroll = QScrollArea(self); self.scroll.setWidgetResizable(False)
+
+        # Build UI first
+        self.scroll = QScrollArea(self)
+        self.scroll.setWidgetResizable(False)
         self.scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
         self.label = QLabel(alignment=Qt.AlignmentFlag.AlignCenter)
         self.label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
-        self.pixmap = self._to_pixmap(self.mask); self.label.setPixmap(self.pixmap)
+
+        self.pixmap = self._to_pixmap(self.mask)
+        self.label.setPixmap(self.pixmap)
+        self.label.resize(self.pixmap.size())
+
         self.scroll.setWidget(self.label)
+
+        # Enable mouse drag panning on the label (NOW label exists)
+        self.label.setMouseTracking(True)
+        self.label.installEventFilter(self)
 
         btns = QHBoxLayout()
         b_in   = themed_toolbtn("zoom-in", "Zoom In")
         b_out  = themed_toolbtn("zoom-out", "Zoom Out")
         b_fit  = themed_toolbtn("zoom-fit-best", "Fit to Preview")
-
-
         b_push = QPushButton(self.tr("Push as New Document…"))
+
         b_in.clicked.connect(lambda: self._zoom(1.2))
         b_out.clicked.connect(lambda: self._zoom(1/1.2))
         b_fit.clicked.connect(self._fit)
         b_push.clicked.connect(self.push_as_new_document)
+
         for b in (b_in, b_out, b_fit, b_push):
             btns.addWidget(b)
 
-        lay = QVBoxLayout(self); lay.addWidget(self.scroll); lay.addLayout(btns)
-        self.scale = 1.0; self.setMinimumSize(600, 400)
+        lay = QVBoxLayout(self)
+        lay.addWidget(self.scroll)
+        lay.addLayout(btns)
+
+        self.scale = 1.0
+        self.setMinimumSize(600, 400)
 
     def _to_pixmap(self, mask01: np.ndarray) -> QPixmap:
         m8 = (np.clip(mask01, 0, 1) * 255).astype(np.uint8)
@@ -570,10 +585,27 @@ class MaskPreviewDialog(QDialog):
 
     def _zoom(self, factor: float):
         self.scale *= factor
-        scaled = self.pixmap.scaled(self.pixmap.size() * self.scale,
-                                    Qt.AspectRatioMode.KeepAspectRatio,
-                                    Qt.TransformationMode.SmoothTransformation)
-        self.label.setPixmap(scaled); self.label.resize(scaled.size())
+        scaled = self.pixmap.scaled(
+            self.pixmap.size() * self.scale,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation
+        )
+        self.label.setPixmap(scaled)
+        self.label.resize(scaled.size())
+
+    def _fit(self):
+        vp = self.scroll.viewport().size()
+        if self.pixmap.width() and self.pixmap.height():
+            s = min(vp.width()/self.pixmap.width(), vp.height()/self.pixmap.height())
+            self.scale = max(0.05, s)
+            # re-render at the new scale (don’t multiply again)
+            scaled = self.pixmap.scaled(
+                self.pixmap.size() * self.scale,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation
+            )
+            self.label.setPixmap(scaled)
+            self.label.resize(scaled.size())
 
     def eventFilter(self, obj, ev):
         if obj is self.label:
@@ -599,15 +631,6 @@ class MaskPreviewDialog(QDialog):
                 return True
 
         return super().eventFilter(obj, ev)
-
-
-
-    def _fit(self):
-        vp = self.scroll.viewport().size()
-        if self.pixmap.width() and self.pixmap.height():
-            s = min(vp.width()/self.pixmap.width(), vp.height()/self.pixmap.height())
-            self.scale = max(0.05, s)
-            self._zoom(1.0)
 
     def push_as_new_document(self):
         if self.mask is None:
