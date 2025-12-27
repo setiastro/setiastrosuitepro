@@ -17,7 +17,7 @@ except Exception:
 from PyQt6.QtCore import Qt, QPointF, QRectF, QTimer, QEvent
 from PyQt6.QtGui import (
     QImage, QPixmap, QPainter, QColor, QPen, QBrush,
-    QPainterPath, QWheelEvent, QPolygonF
+    QPainterPath, QWheelEvent, QPolygonF, QMouseEvent
 )
 from PyQt6.QtWidgets import (
     QInputDialog, QMessageBox, QFileDialog,   # QFileDialog only used if you later add “export”
@@ -32,7 +32,7 @@ from PyQt6.QtWidgets import (
 
 from .masks_core import MaskLayer
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
-
+from setiastro.saspro.imageops.stretch import stretch_color_image
 
 # ---------- small utils ----------
 
@@ -47,6 +47,38 @@ def _to_qpixmap01(img01: np.ndarray) -> QPixmap:
         h, w, _ = buf.shape
         qimg = QImage(buf.data, w, h, buf.strides[0], QImage.Format.Format_RGB888)
     return QPixmap.fromImage(qimg)
+
+def _display_stretch(img01: np.ndarray) -> np.ndarray:
+    """
+    Display-only stretch. Does NOT modify underlying data used for mask creation.
+    Returns float32 in [0,1].
+    """
+    a = np.asarray(img01, dtype=np.float32)
+    a = np.clip(a, 0.0, 1.0)
+
+    # Color: use your existing stretch if available
+    if a.ndim == 3 and a.shape[2] == 3 and stretch_color_image is not None:
+        try:
+            return np.clip(stretch_color_image(a, 0.25, linked=False, normalize=False), 0.0, 1.0).astype(np.float32)
+        except Exception:
+            pass
+
+    # Mono (or fallback): simple robust stretch around median
+    # (keeps it predictable and fast; display-only)
+    m = float(np.nanmedian(a))
+    if not np.isfinite(m):
+        return a.astype(np.float32, copy=False)
+
+    # Simple gamma-like lift using median anchor
+    # If median is tiny, boost; if already bright, minimal change.
+    target = 0.25
+    eps = 1e-8
+    scale = target / max(m, eps)
+    out = np.clip(a * scale, 0.0, 1.0)
+
+    # Gentle midtone curve
+    out = np.sqrt(out)
+    return np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
 
 
 def _find_main_window(w):
@@ -248,10 +280,14 @@ class MaskCanvas(QGraphicsView):
         super().__init__(parent)
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
 
+        self._base_image01 = np.asarray(image01, dtype=np.float32)
+        self._display_stretch_enabled = False
+
         # scene + background image
         self.scene = QGraphicsScene(self)
         self.setScene(self.scene)
-        self.bg_item = QGraphicsPixmapItem(_to_qpixmap01(image01))
+
+        self.bg_item = QGraphicsPixmapItem(_to_qpixmap01(self._base_image01))
         self.scene.addItem(self.bg_item)
 
         # --- NEW: basic zoom state ---
@@ -305,6 +341,38 @@ class MaskCanvas(QGraphicsView):
             return
         super().wheelEvent(ev)
     # ----------------- END: Zoom API ---------------------
+
+    def set_display_stretch_enabled(self, enabled: bool):
+        enabled = bool(enabled)
+        if enabled == self._display_stretch_enabled:
+            return
+        self._display_stretch_enabled = enabled
+        self._refresh_background_pixmap(keep_view=True)
+
+    def display_stretch_enabled(self) -> bool:
+        return bool(self._display_stretch_enabled)
+
+    def current_display_image01(self) -> np.ndarray:
+        """Returns the image currently used for *display* (not for mask math)."""
+        if self._display_stretch_enabled:
+            return _display_stretch(self._base_image01)
+        return self._base_image01
+
+    def _refresh_background_pixmap(self, keep_view: bool = True):
+        # Preserve current view transform/center so toggling doesn't “jump”
+        old_transform = self.transform()
+        old_center = self.mapToScene(self.viewport().rect().center())
+
+        disp = self.current_display_image01()
+        self.bg_item.setPixmap(_to_qpixmap01(disp))
+
+        # Ensure scene rect still matches image pixels
+        self.setSceneRect(self.bg_item.boundingRect())
+
+        if keep_view:
+            self.setTransform(old_transform)
+            self.centerOn(old_center)
+
 
     def set_mode(self, mode: str):
         assert mode in ('polygon', 'ellipse', 'select')
@@ -453,6 +521,8 @@ class LivePreviewDialog(QDialog):
                                            Qt.AspectRatioMode.KeepAspectRatio,
                                            Qt.TransformationMode.SmoothTransformation))
 
+    def set_base_image(self, image01: np.ndarray):
+        self.base_pixmap = _to_qpixmap01(image01)
 
 # ---------- Preview (push-as-doc) ----------
 
@@ -462,7 +532,12 @@ class MaskPreviewDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(self.tr("Mask Preview"))
         self.mask = np.clip(mask01, 0, 1).astype(np.float32)
-
+        self._dragging = False
+        self._drag_start = None
+        self._h_start = 0
+        self._v_start = 0
+        self.label.setMouseTracking(True)
+        self.label.installEventFilter(self)
         self.scroll = QScrollArea(self); self.scroll.setWidgetResizable(False)
         self.scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.label = QLabel(alignment=Qt.AlignmentFlag.AlignCenter)
@@ -499,6 +574,33 @@ class MaskPreviewDialog(QDialog):
                                     Qt.AspectRatioMode.KeepAspectRatio,
                                     Qt.TransformationMode.SmoothTransformation)
         self.label.setPixmap(scaled); self.label.resize(scaled.size())
+
+    def eventFilter(self, obj, ev):
+        if obj is self.label:
+            if ev.type() == QEvent.Type.MouseButtonPress and ev.button() == Qt.MouseButton.LeftButton:
+                self._dragging = True
+                self._drag_start = ev.globalPosition().toPoint()
+                self._h_start = self.scroll.horizontalScrollBar().value()
+                self._v_start = self.scroll.verticalScrollBar().value()
+                self.setCursor(Qt.CursorShape.ClosedHandCursor)
+                return True
+
+            if ev.type() == QEvent.Type.MouseMove and self._dragging:
+                p = ev.globalPosition().toPoint()
+                d = p - self._drag_start
+                self.scroll.horizontalScrollBar().setValue(self._h_start - d.x())
+                self.scroll.verticalScrollBar().setValue(self._v_start - d.y())
+                return True
+
+            if ev.type() == QEvent.Type.MouseButtonRelease and ev.button() == Qt.MouseButton.LeftButton:
+                self._dragging = False
+                self._drag_start = None
+                self.unsetCursor()
+                return True
+
+        return super().eventFilter(obj, ev)
+
+
 
     def _fit(self):
         vp = self.scroll.viewport().size()
@@ -600,6 +702,18 @@ class MaskCreationDialog(QDialog):
         z_fit.clicked.connect(self._fit_canvas)
         zoom_bar.addWidget(z_out); zoom_bar.addWidget(z_in); zoom_bar.addWidget(z_fit)
         layout.addLayout(zoom_bar)
+
+        # Display stretch toggle (display-only; never modifies image data)
+        self.btn_disp_stretch = QPushButton(self.tr("Toggle Display Stretch"))
+        self.btn_disp_stretch.setCheckable(True)
+        self.btn_disp_stretch.setToolTip(
+            "Display-only stretch for easier masking on linear images.\n"
+            "This does NOT change the image data or the generated mask."
+        )
+        self.btn_disp_stretch.toggled.connect(self._toggle_display_stretch)
+        self.btn_disp_stretch.setChecked(False)
+        self.btn_disp_stretch.setText("Enable Display Stretch")
+        zoom_bar.addWidget(self.btn_disp_stretch)
 
         # Canvas
         self.canvas = MaskCanvas(self.image)
@@ -706,6 +820,24 @@ class MaskCreationDialog(QDialog):
     def _on_linked(self, v: int):
         if self.link_cb.isChecked():
             self.upper_sl.setValue(v)
+
+    def _toggle_display_stretch(self, enabled: bool):
+        try:
+            self.canvas.set_display_stretch_enabled(bool(enabled))
+
+            # keep button label in sync
+            self.btn_disp_stretch.setText(
+                self.tr("Disable Display Stretch") if enabled else self.tr("Enable Display Stretch")
+            )
+
+            # Keep the live preview background in sync (Range Selection uses it)
+            if hasattr(self, "live_preview") and self.live_preview is not None:
+                self.live_preview.set_base_image(self.canvas.current_display_image01())
+                if self.live_preview.isVisible():
+                    self._update_live_preview()
+        except Exception:
+            pass
+
 
     # ---- generators
     def _component_lightness(self) -> np.ndarray:

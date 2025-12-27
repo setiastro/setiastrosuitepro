@@ -24,7 +24,7 @@ from setiastro.saspro.legacy.image_manager import load_image, save_image
 from setiastro.saspro.legacy.numba_utils import bulk_cosmetic_correction_numba
 from setiastro.saspro.imageops.stretch import stretch_mono_image, stretch_color_image
 from setiastro.saspro.star_alignment import PolyGradientRemoval 
-from pro import minorbodycatalog as mbc
+from setiastro.saspro import minorbodycatalog as mbc
 from setiastro.saspro.plate_solver import PlateSolverDialog as PlateSolver
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 
