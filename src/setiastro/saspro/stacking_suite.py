@@ -8920,9 +8920,13 @@ class StackingSuiteDialog(QDialog):
         # ensure attrs exist
         if not hasattr(self, "_reg_excluded_files"):
             self._reg_excluded_files = set()
-        if not hasattr(self, "deleted_calibrated_files"):
-            self.deleted_calibrated_files = []
 
+        # Track "removed from Registration tab" for this session so stacking won't use them
+        if (not hasattr(self, "deleted_calibrated_files")) or (self.deleted_calibrated_files is None):
+            self.deleted_calibrated_files = set()
+        elif isinstance(self.deleted_calibrated_files, list):
+            # backward compat if you previously used list
+            self.deleted_calibrated_files = set(self.deleted_calibrated_files)
         removed_paths = []
 
         for item in selected_items:
@@ -8978,17 +8982,22 @@ class StackingSuiteDialog(QDialog):
         # If you want a separate "Exclude" feature later, keep _reg_excluded_files for that.
         # For now, removing should be reversible via "Add Light Files".
 
+        # Persist "removed from registration" list (session)
+        dead = {os.path.normcase(os.path.abspath(p)) for p in removed_paths if isinstance(p, str)}
+        if dead:
+            self.deleted_calibrated_files |= dead
+
         # Also prune manual list so it doesn't re-inject removed files *in this session*
         if hasattr(self, "manual_light_files") and self.manual_light_files:
-            dead = {os.path.normcase(os.path.abspath(p)) for p in removed_paths if isinstance(p, str)}
             self.manual_light_files = [
                 p for p in self.manual_light_files
                 if os.path.normcase(os.path.abspath(p)) not in dead
             ]
 
         # refresh UI
-        self.populate_calibrated_lights()
+        # IMPORTANT: do NOT call populate_calibrated_lights() here, it can resurrect removed items
         self._refresh_reg_tree_summaries()
+
 
     def rebuild_flat_tree(self):
         """Regroup flat frames in the flat_tree based on the exposure tolerance."""
@@ -13634,6 +13643,24 @@ class StackingSuiteDialog(QDialog):
 
             self.update_status(self.tr("🔄 Image Registration Started..."))
             self.extract_light_files_from_tree(debug=True)
+
+            # --- Apply "removed from Registration tab" exclusions (session-level) ---
+            dead = set()
+            if hasattr(self, "deleted_calibrated_files") and self.deleted_calibrated_files:
+                dead = set(self.deleted_calibrated_files)
+
+            if dead:
+                for g in list(self.light_files.keys()):
+                    self.light_files[g] = [
+                        p for p in self.light_files[g]
+                        if os.path.normcase(os.path.abspath(p)) not in dead
+                    ]
+                    if not self.light_files[g]:
+                        del self.light_files[g]
+
+                self.update_status(self.tr(f"🚫 Excluding {len(dead)} removed frame(s) from registration/stacking."))
+                QApplication.processEvents()
+
 
             comet_mode = bool(getattr(self, "comet_cb", None) and self.comet_cb.isChecked())
             if comet_mode:
