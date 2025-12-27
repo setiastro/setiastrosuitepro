@@ -9343,6 +9343,22 @@ class StackingSuiteDialog(QDialog):
         return (f"Drizzle: True, Scale: {scale:g}x, Drop: {drop:.2f}"
                 if enabled else "Drizzle: False")
 
+    def _get_group_key(self, top_item) -> str:
+        """Stable key for a group item; survives UI text decoration."""
+        key = top_item.data(0, Qt.ItemDataRole.UserRole)
+        if key:
+            return str(key)
+        # fallback to visible text if older items don't have it yet
+        return str(top_item.text(0)).strip()
+
+    def _ensure_group_key(self, top_item, group_key: str | None = None) -> str:
+        """Set canonical key on item if missing."""
+        if group_key is None:
+            group_key = str(top_item.text(0)).strip()
+        if not top_item.data(0, Qt.ItemDataRole.UserRole):
+            top_item.setData(0, Qt.ItemDataRole.UserRole, group_key)
+        return str(group_key)
+
     def _set_drizzle_on_items(self, items, enabled: bool, scale: float, drop: float):
         txt_on  = self._format_drizzle_text(True,  scale, drop)
         txt_off = self._format_drizzle_text(False, scale, drop)
@@ -9350,7 +9366,8 @@ class StackingSuiteDialog(QDialog):
             # dedupe child selection → parent group
             if it.parent() is not None:
                 it = it.parent()
-            group_key = it.text(0)
+            # Canonical key stored on the item (NOT display label)
+            group_key = self._ensure_group_key(it)
             it.setText(2, txt_on if enabled else txt_off)
             self.per_group_drizzle[group_key] = {
                 "enabled": bool(enabled),
@@ -9375,11 +9392,10 @@ class StackingSuiteDialog(QDialog):
             return
 
         for item in selected_items:
-            # If the user selected a child row, go up to its parent group
             if item.parent() is not None:
                 item = item.parent()
 
-            group_key = item.text(0)
+            group_key = self._ensure_group_key(item)  # ✅ stable key
 
             if drizzle_enabled:
                 # Show scale + drop shrink
@@ -9411,7 +9427,7 @@ class StackingSuiteDialog(QDialog):
             seen, targets = set(), []
             for it in sel:
                 top = it if it.parent() is None else it.parent()
-                key = top.text(0)
+                key = self._ensure_group_key(top)
                 if key not in seen:
                     seen.add(key); targets.append(top)
         else:
@@ -9434,7 +9450,7 @@ class StackingSuiteDialog(QDialog):
 
         out = {}
         for top in self._iter_group_items():
-            group_key = top.text(0)
+            group_key = self._ensure_group_key(top)   # ✅ stable key
             state = self.per_group_drizzle.get(group_key)
             if not state:
                 state = {"enabled": global_enabled, "scale": global_scale, "drop": global_drop}
@@ -15274,6 +15290,14 @@ class StackingSuiteDialog(QDialog):
             # Snapshot UI-dependent settings (your existing code)
             # ----------------------------
             drizzle_dict = self.gather_drizzle_settings_from_tree()
+            try:
+                self.update_status(self.tr(
+                    "🧾 Drizzle dict: " + ", ".join(f"{k}:{'ON' if v.get('drizzle_enabled') else 'off'}"
+                                                for k, v in drizzle_dict.items())
+                ))
+            except Exception:
+                pass
+            QApplication.processEvents()
             try:
                 autocrop_enabled = self.autocrop_cb.isChecked()
                 autocrop_pct = float(self.autocrop_pct.value())
