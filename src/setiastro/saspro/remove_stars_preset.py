@@ -12,7 +12,7 @@ from setiastro.saspro.legacy.image_manager import save_image, load_image
 # Reuse helpers & plumbing from the interactive module
 from .remove_stars import (
     _ProcThread, _ProcDialog,
-    _stat_stretch_rgb, _stat_unstretch_rgb,
+    _mtf_params_unlinked, _apply_mtf_unlinked_rgb, _invert_mtf_unlinked_rgb,
     _active_mask3_from_doc, _mask_blend_with_doc_mask, _push_as_new_doc,
     _ensure_exec_bit,
 )
@@ -125,24 +125,48 @@ def _run_starnet_headless(main, doc, p):
     processing_image = processing_image.astype(np.float32, copy=False)
 
     is_linear = bool(p.get("linear", True))
-    did_stretch = False
-    stretch_params = None
+    did_stretch = is_linear
+
+    # sanitize + normalize if needed (keep exactly like interactive)
+    processing_image = np.nan_to_num(processing_image, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
+
+    scale_factor = float(np.max(processing_image)) if processing_image.size else 1.0
+    processing_norm = (processing_image / scale_factor) if scale_factor > 1.0 else processing_image
+    processing_norm = np.clip(processing_norm, 0.0, 1.0)
+
+    img_for_starnet = processing_norm
+
     if is_linear:
-        processing_image, stretch_params = _stat_stretch_rgb(processing_image)
-        did_stretch = True
-        setattr(main, "_starnet_last_stretch_params", stretch_params)
+        mtf_params = _mtf_params_unlinked(processing_norm, shadows_clipping=-2.8, targetbg=0.25)
+        img_for_starnet = _apply_mtf_unlinked_rgb(processing_norm, mtf_params)
+
+        # stash for inverse step (same keys as interactive)
+        try:
+            setattr(main, "_starnet_stat_meta", {
+                "scheme": "siril_mtf",
+                "s": np.asarray(mtf_params["s"], dtype=np.float32),
+                "m": np.asarray(mtf_params["m"], dtype=np.float32),
+                "h": np.asarray(mtf_params["h"], dtype=np.float32),
+                "scale": float(scale_factor),
+            })
+        except Exception:
+            pass
     else:
-        if hasattr(main, "_starnet_last_stretch_params"):
-            delattr(main, "_starnet_last_stretch_params")
+        try:
+            if hasattr(main, "_starnet_stat_meta"):
+                delattr(main, "_starnet_stat_meta")
+        except Exception:
+            pass
+
 
     starnet_dir = os.path.dirname(exe) or os.getcwd()
     in_path  = os.path.join(starnet_dir, "imagetoremovestars.tif")
     out_path = os.path.join(starnet_dir, "starless.tif")
 
     try:
-        save_image(processing_image, in_path, original_format="tif",
-                   bit_depth="16-bit", original_header=None, is_mono=False,
-                   image_meta=None, file_meta=None)
+        save_image(img_for_starnet, in_path, original_format="tif",
+                bit_depth="16-bit", original_header=None, is_mono=False,
+                image_meta=None, file_meta=None)
     except Exception as e:
         QMessageBox.critical(main, "StarNet", f"Failed to write input TIFF:\n{e}")
         return
@@ -179,11 +203,29 @@ def _finish_starnet(main, doc, rc, dlg, in_path, out_path, did_stretch):
     starless_rgb = starless_rgb.astype(np.float32, copy=False)
 
     if did_stretch:
+        meta = getattr(main, "_starnet_stat_meta", None)
+        if isinstance(meta, dict) and meta.get("scheme") == "siril_mtf":
+            try:
+                p = {
+                    "s": np.asarray(meta.get("s"), dtype=np.float32),
+                    "m": np.asarray(meta.get("m"), dtype=np.float32),
+                    "h": np.asarray(meta.get("h"), dtype=np.float32),
+                }
+                inv = _invert_mtf_unlinked_rgb(starless_rgb, p)
+                sc = float(meta.get("scale", 1.0))
+                if sc > 1.0:
+                    inv *= sc
+                starless_rgb = np.clip(inv, 0.0, 1.0).astype(np.float32, copy=False)
+            except Exception:
+                pass
+
+        # cleanup so it can't leak
         try:
-            params = getattr(main, "_starnet_last_stretch_params", None)
-            if params: starless_rgb = _stat_unstretch_rgb(starless_rgb, params)
+            if hasattr(main, "_starnet_stat_meta"):
+                delattr(main, "_starnet_stat_meta")
         except Exception:
             pass
+
 
     # original as RGB
     orig = np.asarray(doc.image)
