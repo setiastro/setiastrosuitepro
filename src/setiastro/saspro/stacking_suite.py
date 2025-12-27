@@ -5170,8 +5170,9 @@ class StackingSuiteDialog(QDialog):
         disto_form.addRow(self.tr("Max control points:"), self.align_max_cp)
 
         self.align_downsample = QSpinBox()
-        self.align_downsample.setRange(1, 8)
-        self.align_downsample.setValue(self.settings.value("stacking/align/downsample", 2, type=int))
+        self.align_downsample.setRange(1, 64)  # or 1..32; 64 if you want “any integer”
+        self.align_downsample.setValue(self.settings.value("stacking/align/downsample", 3, type=int))
+        self.align_downsample.setToolTip(self.tr("Alignment solve downsample. 1 = full res; higher = faster but less accurate."))
         disto_form.addRow(self.tr("Solve downsample:"), self.align_downsample)
 
         # Homography / Similarity-specific RANSAC reprojection threshold
@@ -6059,12 +6060,19 @@ class StackingSuiteDialog(QDialog):
                 w.blockSignals(True); w.setValue(v); w.blockSignals(False)
 
     def _get_drizzle_scale(self) -> float:
-        # Accepts "1x/2x/3x" or numeric
-        val = self.settings.value("stacking/drizzle_scale", "2x", type=str)
-        if isinstance(val, str) and val.endswith("x"):
-            try: return float(val[:-1])
-            except: return 2.0
-        return float(val)
+        val = self.settings.value("stacking/drizzle_scale", "2x")
+        if isinstance(val, (int, float)):
+            return float(val)
+        if isinstance(val, str):
+            s = val.strip().lower()
+            if s.endswith("x"):
+                s = s[:-1]
+            try:
+                return float(s)
+            except Exception:
+                return 2.0
+        return 2.0
+
 
     def _set_drizzle_scale(self, r: float | str) -> None:
         if isinstance(r, str):
@@ -6080,6 +6088,25 @@ class StackingSuiteDialog(QDialog):
                 self.drizzle_scale_combo.setCurrentText(txt)
                 self.drizzle_scale_combo.blockSignals(False)
 
+    def _get_drizzle_enabled(self) -> bool:
+        # UI checkbox wins if it exists (most “live” truth)
+        cb = getattr(self, "drizzle_checkbox", None)
+        if cb is not None:
+            try:
+                return bool(cb.isChecked())
+            except Exception:
+                pass
+        # fallback to settings (headless / older flows)
+        return bool(self.settings.value("stacking/drizzle_enabled", False, type=bool))
+
+    def _set_drizzle_enabled(self, on: bool) -> None:
+        on = bool(on)
+        self.settings.setValue("stacking/drizzle_enabled", on)
+        cb = getattr(self, "drizzle_checkbox", None)
+        if cb is not None and cb.isChecked() != on:
+            cb.blockSignals(True)
+            cb.setChecked(on)
+            cb.blockSignals(False)
 
     def closeEvent(self, e):
         # Graceful shutdown for any running workers
@@ -12898,6 +12925,20 @@ class StackingSuiteDialog(QDialog):
             "drop": float(self.drizzle_drop_shrink_spin.value())
         }
 
+    def _global_drizzle_state(self) -> dict:
+        # UI is the source of truth at runtime
+        enabled = bool(self.drizzle_checkbox.isChecked())
+
+        # Scale from combo text like "1x", "2x", "3x"
+        try:
+            scale = float(self.drizzle_scale_combo.currentText().replace("x", "", 1).strip())
+        except Exception:
+            scale = 1.0
+
+        drop = float(self.drizzle_drop_shrink_spin.value())
+
+        return {"enabled": enabled, "scale": scale, "drop": drop}
+
     def _split_dual_band_osc(self, selected_groups=None):
         """
         Create mono Ha/SII/OIII frames from dual-band OSC files and
@@ -15712,6 +15753,22 @@ class StackingSuiteDialog(QDialog):
 
         self._set_registration_busy(False)
 
+    def _on_after_align_finished(self, success: bool, message: str):
+        # Stop thread/progress UI first (whatever you already do)
+
+        if success:
+            QMessageBox.information(
+                self,
+                self.tr("Stacking Complete"),
+                message
+            )
+        else:
+            QMessageBox.critical(
+                self,
+                self.tr("Stacking Failed"),
+                message
+            )
+
     def _on_mf_progress(self, s: str):
         # Mirror non-token messages
         if not s.startswith("__PROGRESS__"):
@@ -15740,25 +15797,48 @@ class StackingSuiteDialog(QDialog):
 
     @pyqtSlot(bool, str)
     def _on_post_pipeline_finished(self, ok: bool, message: str):
+        # ---- close progress dialog ----
         try:
-            if getattr(self, "post_progress", None):
+            if getattr(self, "post_progress", None) is not None:
                 self.post_progress.close()
+                self.post_progress.deleteLater()
                 self.post_progress = None
         except Exception:
             pass
 
+        # ---- stop thread ----
         try:
-            self.post_thread.quit()
-            self.post_thread.wait()
-        except Exception:
-            pass
-        try:
-            self.post_worker.deleteLater()
-            self.post_thread.deleteLater()
+            if getattr(self, "post_thread", None) is not None:
+                self.post_thread.quit()
+                self.post_thread.wait()
         except Exception:
             pass
 
-        self.update_status(self.tr(message))
+        # ---- cleanup objects ----
+        try:
+            if getattr(self, "post_worker", None) is not None:
+                self.post_worker.deleteLater()
+                self.post_worker = None
+            if getattr(self, "post_thread", None) is not None:
+                self.post_thread.deleteLater()
+                self.post_thread = None
+        except Exception:
+            pass
+
+        # ---- update status (keep this behavior) ----
+        try:
+            # message already includes "Post-alignment complete..." text
+            self.update_status(self.tr(message))
+        except Exception:
+            pass
+
+        # ---- popup summary ----
+        # (Do this after progress dialog is gone so it doesn't hide behind it)
+        if ok:
+            QMessageBox.information(self, self.tr("Post-Alignment Complete"), message)
+        else:
+            QMessageBox.critical(self, self.tr("Post-Alignment Failed"), message)
+
         self._cfa_for_this_run = None
         QApplication.processEvents()
 
@@ -15864,6 +15944,8 @@ class StackingSuiteDialog(QDialog):
         n_frames = sum(len(v) for v in grouped_files.values())
         log(f"📁 Post-align: {n_groups} group(s), {n_frames} aligned frame(s).")
         QApplication.processEvents()
+
+        drizzle_enabled_global = self._get_drizzle_enabled()
 
         # Precompute a single global crop rect if enabled (pure computation, no UI).
         global_rect = None
@@ -16298,8 +16380,7 @@ class StackingSuiteDialog(QDialog):
                             log(f"✂️ Saved CometBlend (auto-cropped) → {blend_path_crop}")
 
             # ---- Drizzle bookkeeping for this group ----
-            dconf = drizzle_dict.get(group_key, {})
-            if dconf.get("drizzle_enabled", False):
+            if drizzle_enabled_global:
                 sasr_path = os.path.join(self.stacking_directory, f"{group_key}_rejections.sasr")
                 self.save_rejection_map_sasr(rejection_map, sasr_path)
                 log(f"✅ Saved rejection map to {sasr_path}")
@@ -16331,17 +16412,17 @@ class StackingSuiteDialog(QDialog):
             originals_by_group[group] = orig_list
         # ---- Drizzle pass (only for groups with drizzle enabled) ----
         for group_key, file_list in grouped_files.items():
-            dconf = drizzle_dict.get(group_key)
-            if not (dconf and dconf.get("drizzle_enabled", False)):
-                log(f"✅ Group '{group_key}' not set for drizzle. Integrated image already saved.")
+            if not drizzle_enabled_global:
+                log(f"✅ Drizzle disabled (checkbox off). Group '{group_key}' integrated image already saved.")
                 continue
 
+            # Use your existing getters (they can read UI/settings)
             scale_factor = self._get_drizzle_scale()
             drop_shrink  = self._get_drizzle_pixfrac()
 
-            # Optional: also read kernel for logging/branching
             kernel = (self.settings.value("stacking/drizzle_kernel", "square", type=str) or "square").lower()
-            status_cb(f"Drizzle cfg → scale={scale_factor}×, pixfrac={drop_shrink:.3f}, kernel={kernel}")
+            log(f"Drizzle cfg → scale={scale_factor}×, pixfrac={drop_shrink:.3f}, kernel={kernel}")
+
             rejections_for_group = group_integration_data[group_key]["rejection_map"]
             n_frames_group = group_integration_data[group_key]["n_frames"]
 
@@ -16349,8 +16430,8 @@ class StackingSuiteDialog(QDialog):
 
             self.drizzle_stack_one_group(
                 group_key=group_key,
-                file_list=file_list,                          # registered (for headers/labels)
-                original_list=originals_by_group.get(group_key, []),  # <-- NEW
+                file_list=file_list,
+                original_list=originals_by_group.get(group_key, []),
                 transforms_dict=transforms_dict,
                 frame_weights=frame_weights,
                 scale_factor=scale_factor,

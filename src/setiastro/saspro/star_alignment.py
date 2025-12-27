@@ -159,7 +159,7 @@ def _align_prefs(settings: QSettings | None = None) -> dict:
     prefs = {
         "model":       model,                 # "affine" | "homography" | "poly3" | "poly4"
         "max_cp":      _get("max_cp", 250, int),
-        "downsample":  _get("downsample", 2, int),
+        "downsample":  _get("downsample", 3, int),
         "h_reproj":    _get("h_reproj", 3.0, float),
 
         # Star detection / solve limits
@@ -2619,7 +2619,7 @@ class StarRegistrationThread(QThread):
         self.det_sigma   = float(self.align_prefs.get("det_sigma", 12.0))
         self.limit_stars = int(self.align_prefs.get("limit_stars", 500))
         self.minarea     = int(self.align_prefs.get("minarea", 10))
-        self.downsample = int(self.align_prefs.get("downsample", 2))
+        self.downsample = int(self.align_prefs.get("downsample", 3))
         self.drizzle_xforms = {}  # {orig_norm_path: (kind, matrix)}
 
     @staticmethod
