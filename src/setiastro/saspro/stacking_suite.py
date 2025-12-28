@@ -152,6 +152,115 @@ _WINDOWS_RESERVED = {
 
 _FITS_EXTS = ('.fits', '.fit', '.fts', '.fits.gz', '.fit.gz', '.fts.gz', '.fz')
 
+def _coerce_fits_value(v):
+    """Convert XISF keyword 'value' strings to reasonable python scalars."""
+    if v is None:
+        return None
+    if isinstance(v, (int, float, bool)):
+        return v
+    s = str(v).strip()
+
+    # PixInsight often uses 'T'/'F'
+    if s in ("T", "TRUE", "True", "true"):
+        return True
+    if s in ("F", "FALSE", "False", "false"):
+        return False
+
+    # int?
+    try:
+        if s.isdigit() or (s.startswith(("+", "-")) and s[1:].isdigit()):
+            return int(s)
+    except Exception:
+        pass
+
+    # float?
+    try:
+        # handles "8.9669e+03", etc.
+        return float(s)
+    except Exception:
+        pass
+
+    # keep as string (strip surrounding quotes if present)
+    if (len(s) >= 2) and ((s[0] == s[-1]) and s[0] in ("'", '"')):
+        s = s[1:-1]
+    return s
+
+
+def xisf_fits_header(path: str, image_index: int = 0) -> fits.Header:
+    """
+    Extract FITS keywords from XISF file into astropy.io.fits.Header.
+
+    Your XISF structure has:
+      ims[0]["FITSKeywords"][KEY] = [ {"value": "...", "comment": "..."}, ... ]
+    Sometimes nested under ims[0]["xisf_meta"] (dict or stringified dict).
+    """
+    hdr = fits.Header()
+    if XISF is None:
+        return hdr
+
+    x = XISF(path)
+    ims = x.get_images_metadata() or []
+    if not ims:
+        return hdr
+
+    im = ims[min(max(image_index, 0), len(ims) - 1)]
+
+    # 1) direct
+    kw = im.get("FITSKeywords")
+
+    # 2) nested inside xisf_meta dict
+    if kw is None:
+        xm = im.get("xisf_meta")
+        if isinstance(xm, dict):
+            kw = xm.get("FITSKeywords")
+
+    # 3) xisf_meta stringified dict (your dump shows this exact situation)
+    if kw is None:
+        xm = im.get("xisf_meta")
+        if isinstance(xm, str) and "FITSKeywords" in xm:
+            try:
+                xm2 = ast.literal_eval(xm)
+                if isinstance(xm2, dict):
+                    kw = xm2.get("FITSKeywords")
+            except Exception:
+                kw = None
+
+    if not isinstance(kw, dict):
+        return hdr
+
+    # Build header
+    for key, entries in kw.items():
+        try:
+            k = str(key).strip()
+            if not k:
+                continue
+
+            # entries is usually a list of dicts: [{"value": "...", "comment":"..."}]
+            if isinstance(entries, list) and entries:
+                e0 = entries[0]
+                if isinstance(e0, dict):
+                    val = _coerce_fits_value(e0.get("value"))
+                    com = e0.get("comment")
+                else:
+                    val = _coerce_fits_value(e0)
+                    com = None
+            elif isinstance(entries, dict):
+                val = _coerce_fits_value(entries.get("value"))
+                com = entries.get("comment")
+            else:
+                val = _coerce_fits_value(entries)
+                com = None
+
+            if com is not None:
+                hdr[k] = (val, str(com))
+            else:
+                hdr[k] = val
+        except Exception:
+            # never let one bad keyword kill header extraction
+            pass
+
+    return hdr
+
 def get_valid_header(path: str):
     """
     Fast header-only peek with targeted fallback.
@@ -172,74 +281,34 @@ def get_valid_header(path: str):
     try:
         lp = (path or "").lower()
 
-        # ---------------------------
-        # XISF path (header-only)
-        # ---------------------------
         if lp.endswith(".xisf"):
-            try:
-                # Adjust import to your actual module path
-                # (you said this xisf.py is what you already use in load_image)
-                from setiastro.saspro.xisf import XISF
-            except Exception:
-                # Fallback import if it lives elsewhere in your tree
-                from xisf import XISF  # noqa
+            from astropy.io import fits
 
-            def _first_kw(meta, key):
-                """
-                XISF stores FITS keywords like:
-                  meta["FITSKeywords"][KEY] = [ {"value": "...", "comment": "..."}, ... ]
-                We use the first occurrence.
-                """
-                try:
-                    lst = (meta.get("FITSKeywords") or {}).get(key)
-                    if not lst:
-                        return None
-                    return lst[0].get("value")
-                except Exception:
-                    return None
+            # Grab FITS keywords from the XISF
+            hdr = xisf_fits_header(path)
 
-            def _to_float(v):
-                if v is None:
-                    return None
-                try:
-                    return float(v)
-                except Exception:
-                    return None
-
-            x = XISF(path)                      # reads signature + XML header only
+            # Still need geometry for NAXISn
+            x = XISF(path)
             ims = x.get_images_metadata() or []
-            if not ims:
-                # Valid XISF but no image blocks
-                return {"NAXIS1": 0, "NAXIS2": 0}, True
+            if ims:
+                im = ims[0]
+                w, h, chc = im.get("geometry", (0, 0, 0))
+                w = int(w or 0)
+                h = int(h or 0)
+                c = int(chc or 0)
 
-            im = ims[0]                         # assume first image core element
-            w, h, chc = im.get("geometry", (0, 0, 0))
+                hdr["NAXIS"]  = 3 if c > 1 else 2
+                hdr["NAXIS1"] = w
+                hdr["NAXIS2"] = h
+                if c > 1:
+                    hdr["NAXIS3"] = c
 
-            # Prefer explicit FITS keywords if present; fall back gracefully
-            exptime = _first_kw(im, "EXPOSURE") or _first_kw(im, "EXPTIME")
-            imagetyp = _first_kw(im, "IMAGETYP")
-            filt = _first_kw(im, "FILTER")
+            # Normalize exposure keyword convenience
+            if "EXPTIME" not in hdr and "EXPOSURE" in hdr:
+                hdr["EXPTIME"] = hdr["EXPOSURE"]
+            if "EXPOSURE" not in hdr and "EXPTIME" in hdr:
+                hdr["EXPOSURE"] = hdr["EXPTIME"]
 
-            # Build a "header-like" dict with keys your ingest code expects
-            hdr = {
-                "NAXIS": 3 if int(chc or 0) > 1 else 2,
-                "NAXIS1": int(w) if int(w or 0) > 0 else 0,
-                "NAXIS2": int(h) if int(h or 0) > 0 else 0,
-                "NAXIS3": int(chc) if int(chc or 0) > 0 else None,
-
-                # keep same names your code probes
-                "EXPOSURE": _to_float(exptime),
-                "EXPTIME":  _to_float(exptime),
-
-                "IMAGETYP": imagetyp,
-                "FILTER": filt or "Unknown",
-
-                # Optional: stash raw metadata for later (harmless)
-                "_XISF_IMAGE_META": im,
-                "_XISF_FILE_META": x.get_file_metadata(),
-            }
-
-            # Consider it "ok" even if dims are unknown; caller shows "Unknown"
             return hdr, True
 
         # ---------------------------
@@ -12834,9 +12903,13 @@ class StackingSuiteDialog(QDialog):
 
                     # Annotate header
                     try:
-                        hdr['HISTORY'] = 'Calibrated: bias/dark sub, flat division'
-                        hdr['CALMIN']  = (min_val, 'Min pixel before save (float)')
-                        hdr['CALMAX']  = (max_val, 'Max pixel before save (float)')
+                        if hasattr(hdr, "add_history"):
+                            hdr.add_history("Calibrated: bias/dark sub, flat division")
+                        else:
+                            hdr["HISTORY"] = "Calibrated: bias/dark sub, flat division"
+
+                        hdr["CALMIN"] = (min_val, "Min pixel before save (float)")
+                        hdr["CALMAX"] = (max_val, "Max pixel before save (float)")
                     except Exception:
                         pass
 
