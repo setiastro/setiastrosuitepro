@@ -3015,17 +3015,17 @@ class AstroSuiteProMainWindow(
 
         self.convo_window.show()
 
-    
-
     def _apply_extract_luminance_preset_to_doc(self, doc, preset=None):
-
         from PyQt6.QtWidgets import QMessageBox
-        from setiastro.saspro.luminancerecombine import compute_luminance, _LUMA_REC709, _LUMA_REC601, _LUMA_REC2020
-        from setiastro.saspro.headless_utils import normalize_headless_main, unwrap_docproxy
+        from setiastro.saspro.luminancerecombine import (
+            compute_luminance,
+            resolve_luma_profile_weights,
+        )
+        from setiastro.saspro.headless_utils import unwrap_docproxy
+        import numpy as np
 
         doc = unwrap_docproxy(doc)
         p = dict(preset or {})
-        mode = (p.get("mode") or "rec709").lower()
 
         if doc is None or getattr(doc, "image", None) is None:
             QMessageBox.information(self, "Extract Luminance", "No target image.")
@@ -3033,52 +3033,43 @@ class AstroSuiteProMainWindow(
 
         img = np.asarray(doc.image)
 
-        # pick weights
-        if mode == "rec601":
-            w = _LUMA_REC601
-        elif mode == "rec2020":
-            w = _LUMA_REC2020
-        elif mode == "max":
-            w = None
-        else:
-            w = _LUMA_REC709
+        mode = str(p.get("mode", "rec709")).strip()
+        resolved_method, w, profile_name = resolve_luma_profile_weights(mode)
 
-        L = compute_luminance(img, method=mode, weights=w)
+        L = compute_luminance(img, method=resolved_method, weights=w)
 
         dm = getattr(self, "doc_manager", None)
         if dm is None:
-            # headless fallback: just overwrite active doc
             doc.apply_edit(L.astype(np.float32), step_name="Extract Luminance")
             return
 
-        # normal behavior: create a new mono document
+        meta = {
+            "step_name": "Extract Luminance",
+            "luma_method": resolved_method,
+        }
+        if w is not None:
+            meta["luma_weights"] = np.asarray(w, dtype=np.float32).tolist()
+        if profile_name:
+            meta["luma_profile"] = str(profile_name)
+
         try:
+            suffix = f"{profile_name}" if profile_name else resolved_method
             new_doc = dm.create_document_from_array(
                 L.astype(np.float32),
-                name=f"{doc.display_name()} -- Luminance ({mode})",
+                name=f"{doc.display_name()} -- Luminance ({suffix})",
                 is_mono=True,
-                metadata={"step_name":"Extract Luminance", "luma_method":mode}
+                metadata=meta,
             )
             dm.add_document(new_doc)
         except Exception:
-            # safe fallback
             doc.apply_edit(L.astype(np.float32), step_name="Extract Luminance")
 
-
     def _extract_luminance(self, doc=None, preset: dict | None = None):
-        from setiastro.saspro.luminancerecombine import _LUMA_REC709, _LUMA_REC601, _LUMA_REC2020
-        """
-        If doc is None, uses the active subwindow's document.
-        Otherwise, run on the provided doc (for drag-and-drop to a specific view).
-        Creates a new mono document (float32, [0..1]) and spawns a subwindow.
+        from PyQt6.QtWidgets import QMessageBox
+        from PyQt6.QtGui import QIcon
+        from setiastro.saspro.luminancerecombine import compute_luminance, resolve_luma_profile_weights
 
-        Preset schema:
-        {
-            "mode": "rec709" | "rec601" | "rec2020" | "max" | "snr" | "equal" | "median",
-            # aliases accepted: method, luma_method, nb_max -> "max", snr_unequal -> "snr"
-        }
-        """
-        # 1) resolve source document
+
         sw = None
         if doc is None:
             sw = self.mdi.activeSubWindow()
@@ -3097,70 +3088,19 @@ class AstroSuiteProMainWindow(
             QMessageBox.information(self, "Extract Luminance", "Luminance extraction requires an RGB image.")
             return
 
-        # 2) normalize to [0,1] float32
-        a = img.astype(np.float32, copy=False)
-        if a.size:
-            m = float(np.nanmax(a))
-            if np.isfinite(m) and m > 1.0:
-                a = a / m
-        a = np.clip(a, 0.0, 1.0)
-
-        # 3) choose luminance method
         p = dict(preset or {})
-        method = str(
+        mode = str(
             p.get("mode",
             p.get("method",
             p.get("luma_method",
                 getattr(self, "luma_method", "rec709"))))
-        ).strip().lower()
+        ).strip()
 
-        # aliases
-        alias = {
-            "rec.709": "rec709",
-            "rec-709": "rec709",
-            "rgb": "rec709",
-            "k": "rec709",
-            "rec.601": "rec601",
-            "rec-601": "rec601",
-            "rec.2020": "rec2020",
-            "rec-2020": "rec2020",
-            "nb_max": "max",
-            "narrowband": "max",
-            "snr_unequal": "snr",
-            "unequal_noise": "snr",
-        }
-        method = alias.get(method, method)
+        resolved_method, w, profile_name = resolve_luma_profile_weights(mode)
 
-        # 4) compute luminance per selected method
-        luma_weights = None
-        if method == "rec601":
-            luma_weights = _LUMA_REC601
-            y = np.tensordot(a, _LUMA_REC601, axes=([2],[0]))
-        elif method == "rec2020":
-            luma_weights = _LUMA_REC2020
-            y = np.tensordot(a, _LUMA_REC2020, axes=([2],[0]))
-        elif method == "max":
-            y = a.max(axis=2)
-        elif method == "median":
-            y = np.median(a, axis=2)
-        elif method == "equal":
-            luma_weights = np.array([1/3, 1/3, 1/3], dtype=np.float32)
-            y = a.mean(axis=2)
-        elif method == "snr":
-            from setiastro.saspro.luminancerecombine import _estimate_noise_sigma_per_channel
-            sigma = _estimate_noise_sigma_per_channel(a)
-            w = 1.0 / (sigma[:3]**2 + 1e-12)
-            w = w / w.sum()
-            luma_weights = w.astype(np.float32)
-            y = np.tensordot(a[..., :3], luma_weights, axes=([2],[0]))
-        else:  # "rec709" default
-            method = "rec709"
-            luma_weights = _LUMA_REC709
-            y = np.tensordot(a, _LUMA_REC709, axes=([2],[0]))
+        y = compute_luminance(img, method=resolved_method, weights=w)
 
-        y = np.clip(y.astype(np.float32, copy=False), 0.0, 1.0)
-
-        # 5) metadata & title
+        # ---- metadata & title ----
         base_meta = {}
         try:
             base_meta = dict(getattr(doc, "metadata", {}) or {})
@@ -3172,13 +3112,16 @@ class AstroSuiteProMainWindow(
             "source": "ExtractLuminance",
             "is_mono": True,
             "bit_depth": "32f",
-            "luma_method": method,
+            "luma_method": resolved_method,
         }
-        if luma_weights is not None:
-            meta["luma_weights"] = np.asarray(luma_weights, dtype=np.float32).tolist()
+        if w is not None:
+            meta["luma_weights"] = np.asarray(w, dtype=np.float32).tolist()
+        if profile_name:
+            meta["luma_profile"] = str(profile_name)
 
         base_title = sw.windowTitle() if sw else (getattr(doc, "title", getattr(doc, "name", "")) or "Untitled")
-        title = f"{base_title} -- Luminance"
+        suffix = f"{profile_name}" if profile_name else resolved_method
+        title = f"{base_title} -- Luminance ({suffix})"
 
         dm = getattr(self, "docman", None)
         if dm is None:
@@ -3206,18 +3149,18 @@ class AstroSuiteProMainWindow(
         except Exception:
             pass
 
-        # ðŸ" Remember for Replay (optional but consistent)
         try:
             remember = getattr(self, "remember_last_headless_command", None) or getattr(self, "_remember_last_headless_command", None)
             if callable(remember):
-                remember("extract_luminance", {"mode": method}, description="Extract Luminance")
+                remember("extract_luminance", {"mode": mode}, description="Extract Luminance")
         except Exception:
             pass
 
         if hasattr(self, "_log"):
-            self._log(f"Extract Luminance ({method}) -> new mono document created.")
+            self._log(f"Extract Luminance ({suffix}) -> new mono document created.")
 
         return new_doc
+
 
     def _subwindow_docs(self):
         docs = []

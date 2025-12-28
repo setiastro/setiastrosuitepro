@@ -203,16 +203,16 @@ class ToolbarMixin:
         tb_fn.addAction(self.act_convo)
         tb_fn.addAction(self.act_extract_luma)
 
-        btn_luma = tb_fn.widgetForAction(self.act_extract_luma)
-        if isinstance(btn_luma, QToolButton):
-            luma_menu = QMenu(btn_luma)
-            luma_menu.addActions(self._luma_group.actions())
-            btn_luma.setMenu(luma_menu)
-            btn_luma.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
-            btn_luma.setStyleSheet("""
-                QToolButton { color: #dcdcdc; }
-                QToolButton:pressed, QToolButton:checked { color: #DAA520; font-weight: 600; }
-            """)
+        #btn_luma = tb_fn.widgetForAction(self.act_extract_luma)
+        #if isinstance(btn_luma, QToolButton):
+        #    luma_menu = QMenu(btn_luma)
+        #    luma_menu.addActions(self._luma_group.actions())
+        #    btn_luma.setMenu(luma_menu)
+        #    btn_luma.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+        #    btn_luma.setStyleSheet("""
+        #        QToolButton { color: #dcdcdc; }
+        #        QToolButton:pressed, QToolButton:checked { color: #DAA520; font-weight: 600; }
+        #    """)
 
         tb_fn.addAction(self.act_recombine_luma)
         tb_fn.addAction(self.act_rgb_extract)
@@ -372,7 +372,9 @@ class ToolbarMixin:
             except Exception:
                 pass
 
+        # Rebind ALL dropdowns after reorder/membership moves
         self._rebind_view_dropdowns()
+        self._rebind_extract_luma_dropdown()
 
     def _toolbar_containing_action(self, action: QAction):
         from setiastro.saspro.shortcuts import DraggableToolBar
@@ -380,6 +382,140 @@ class ToolbarMixin:
             if action in tb.actions():
                 return tb
         return None
+
+    def _rebind_extract_luma_dropdown(self):
+        from PyQt6.QtWidgets import QMenu, QToolButton
+        from setiastro.saspro.luminancerecombine import LUMA_PROFILES
+
+        tb = self._toolbar_containing_action(self.act_extract_luma)
+        if not tb:
+            return
+
+        btn = tb.widgetForAction(self.act_extract_luma)
+        if not isinstance(btn, QToolButton):
+            return
+
+        menu = QMenu(btn)
+
+        # Ensure cache exists (created in _create_actions(), but be defensive)
+        if not hasattr(self, "_luma_sensor_actions"):
+            self._luma_sensor_actions = {}  # key -> QAction
+
+        cur_method = str(getattr(self, "luma_method", "rec709"))
+
+        # ============================================================
+        # PATCH SITE #1 (Standard menu)  <-- THIS IS WHERE "C" GOES
+        # Find your old block:
+        #
+        #   # ---- Standard (use your QActionGroup, keep it simple) ----
+        #   if getattr(self, "_luma_group", None) is not None:
+        #       std_menu = QMenu(self.tr("Standard"), menu)
+        #       std_menu.addActions(self._luma_group.actions())
+        #       menu.addMenu(std_menu)
+        #
+        # Replace it with the block below.
+        # ============================================================
+        if getattr(self, "_luma_group", None) is not None:
+            # Sync standard checked states from self.luma_method
+            for a in self._luma_group.actions():
+                data = str(a.data() or "")
+                if data.startswith("sensor:"):
+                    continue  # standards only in Standard menu
+                a.blockSignals(True)
+                try:
+                    a.setChecked(data == cur_method)
+                finally:
+                    a.blockSignals(False)
+
+            # Add ONLY standard actions to the Standard menu (exclude sensors)
+            std_menu = QMenu(self.tr("Standard"), menu)
+            for a in self._luma_group.actions():
+                data = str(a.data() or "")
+                if data.startswith("sensor:"):
+                    continue
+                std_menu.addAction(a)
+            menu.addMenu(std_menu)
+
+        # ---- Sensors (nested by category path) ----
+        sensors_root = QMenu(self.tr("Sensors"), menu)
+
+        # Build tree of submenus keyed by "Sensors/<path>"
+        submenu_cache: dict[str, QMenu] = {}
+
+        def get_or_make_path(root_menu: QMenu, path: str) -> QMenu:
+            parts = [p for p in path.split("/") if p.strip()]
+            cur = root_menu
+            acc = ""
+            for part in parts:
+                acc = f"{acc}/{part}" if acc else part
+                if acc not in submenu_cache:
+                    sm = QMenu(self.tr(part), cur)
+                    cur.addMenu(sm)
+                    submenu_cache[acc] = sm
+                cur = submenu_cache[acc]
+            return cur
+
+        any_sensor = False
+        for key, prof in LUMA_PROFILES.items():
+            if not str(key).startswith("sensor:"):
+                continue
+
+            cat = str(prof.get("category", "Sensors/Other"))
+            group_path = cat.split("Sensors/", 1)[1] if "Sensors/" in cat else cat
+            parent_menu = get_or_make_path(sensors_root, group_path)
+
+            display_name = key.split("sensor:", 1)[1].strip()
+            desc = str(prof.get("description", display_name))
+            info = str(prof.get("info", "")).strip()
+
+            # ============================================================
+            # PATCH SITE #2 (Sensors become mutually exclusive with standards)
+            # - Cache the QAction so we don't pile up connections/actions
+            # - Add it to the SAME QActionGroup (exclusive) as standards
+            # - Do NOT use _pick_sensor; rely on QActionGroup.triggered
+            # ============================================================
+            act = self._luma_sensor_actions.get(key)
+            if act is None:
+                act = parent_menu.addAction(self.tr(display_name))
+                act.setCheckable(True)
+                act.setData(key)  # IMPORTANT: enables group.triggered to set luma_method
+
+                # Put sensors into the SAME exclusive group so selecting one
+                # deselects everything else (standards and other sensors).
+                if getattr(self, "_luma_group", None) is not None:
+                    self._luma_group.addAction(act)
+
+                self._luma_sensor_actions[key] = act
+            else:
+                # Reuse action, but re-add it to the correct submenu location
+                parent_menu.addAction(act)
+                act.setText(self.tr(display_name))
+
+            # Update UI info each bind (safe if translations change)
+            if info:
+                act.setStatusTip(info)
+                act.setToolTip(f"{desc}\n{info}")
+            else:
+                act.setToolTip(desc)
+
+            # Checked state reflects current selection
+            act.blockSignals(True)
+            try:
+                act.setChecked(cur_method == str(key))
+            finally:
+                act.blockSignals(False)
+
+            any_sensor = True
+
+        if any_sensor:
+            menu.addMenu(sensors_root)
+
+        btn.setMenu(menu)
+        btn.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+        btn.setStyleSheet("""
+            QToolButton { color: #dcdcdc; }
+            QToolButton:pressed, QToolButton:checked { color: #DAA520; font-weight: 600; }
+        """)
 
 
     def _rebind_view_dropdowns(self):
@@ -767,6 +903,7 @@ class ToolbarMixin:
         self.luma_method = getattr(self, "luma_method", "rec709")  # default
         self._luma_group = QActionGroup(self)
         self._luma_group.setExclusive(True)
+        self._luma_sensor_actions = {}  # key -> QAction
 
         def _mk(method_key, text):
             act = QAction(text, self, checkable=True)
@@ -786,8 +923,10 @@ class ToolbarMixin:
 
         # update method when user picks from the menu
         def _on_luma_pick(act):
-            self.luma_method = act.data()
-            # (optional) persist
+            key = act.data()
+            if key is None:
+                return
+            self.luma_method = str(key)
             try:
                 self.settings.setValue("ui/luminance_method", self.luma_method)
             except Exception:
