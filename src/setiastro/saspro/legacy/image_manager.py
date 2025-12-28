@@ -986,6 +986,124 @@ def _fill_hdr_from_raw_metadata(raw, hdr: fits.Header | None = None) -> fits.Hea
 
 from astropy.wcs import WCS
 
+import ast
+
+def _coerce_fits_value(v):
+    if v is None:
+        return None
+    if isinstance(v, (int, float, bool)):
+        return v
+    s = str(v).strip()
+
+    # PixInsight T/F
+    if s in ("T", "TRUE", "True", "true"):
+        return True
+    if s in ("F", "FALSE", "False", "false"):
+        return False
+
+    # int?
+    try:
+        if s.isdigit() or (s.startswith(("+", "-")) and s[1:].isdigit()):
+            return int(s)
+    except Exception:
+        pass
+
+    # float? (handles 8.9669e+03 etc)
+    try:
+        return float(s)
+    except Exception:
+        pass
+
+    # strip quotes
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in ("'", '"'):
+        s = s[1:-1]
+    return s
+
+
+def xisf_fits_header_from_meta(image_meta: dict, file_meta: dict | None = None) -> fits.Header:
+    """
+    Robustly extract FITSKeywords from XISF wrappers matching your real structure.
+
+    Handles:
+      - image_meta["FITSKeywords"]
+      - image_meta["xisf_meta"]["FITSKeywords"]
+      - image_meta["xisf_meta"] as a stringified dict containing FITSKeywords
+      - file_meta FITSKeywords (only fills missing keys)
+    """
+    hdr = fits.Header()
+
+    def _get_kw_dict(meta: dict):
+        if not isinstance(meta, dict):
+            return None
+
+        # direct
+        kw = meta.get("FITSKeywords")
+        if isinstance(kw, dict):
+            return kw
+
+        # nested dict
+        xm = meta.get("xisf_meta")
+        if isinstance(xm, dict):
+            kw = xm.get("FITSKeywords")
+            if isinstance(kw, dict):
+                return kw
+
+        # stringified dict
+        if isinstance(xm, str) and "FITSKeywords" in xm:
+            try:
+                xm2 = ast.literal_eval(xm)
+                if isinstance(xm2, dict) and isinstance(xm2.get("FITSKeywords"), dict):
+                    return xm2["FITSKeywords"]
+            except Exception:
+                pass
+
+        return None
+
+    def _apply_kw_dict(kw: dict, only_missing: bool):
+        for key, entries in kw.items():
+            try:
+                k = str(key).strip()
+                if not k:
+                    continue
+                if only_missing and (k in hdr):
+                    continue
+
+                # your structure: KEY: [ {"value": "...", "comment": "..."} ]
+                val = None
+                com = None
+                if isinstance(entries, list) and entries:
+                    e0 = entries[0]
+                    if isinstance(e0, dict):
+                        val = _coerce_fits_value(e0.get("value"))
+                        com = e0.get("comment")
+                    else:
+                        val = _coerce_fits_value(e0)
+                elif isinstance(entries, dict):
+                    val = _coerce_fits_value(entries.get("value"))
+                    com = entries.get("comment")
+                else:
+                    val = _coerce_fits_value(entries)
+
+                if com is not None:
+                    hdr[k] = (val, str(com))
+                else:
+                    hdr[k] = val
+            except Exception:
+                pass
+
+    # First: image-level FITSKeywords (authoritative)
+    kw_img = _get_kw_dict(image_meta) or {}
+    if isinstance(kw_img, dict):
+        _apply_kw_dict(kw_img, only_missing=False)
+
+    # Then: file-level FITSKeywords (fill gaps only)
+    kw_file = _get_kw_dict(file_meta or {}) or {}
+    if isinstance(kw_file, dict):
+        _apply_kw_dict(kw_file, only_missing=True)
+
+    return hdr
+
+
 def attach_wcs_to_metadata(meta: dict, hdr: fits.Header | dict | None) -> dict:
     """
     If hdr contains WCS, create an astropy.wcs.WCS and stash in metadata.
@@ -1378,7 +1496,7 @@ def load_image(filename, max_retries=3, wait_seconds=3, return_metadata: bool = 
 
                 # ─── Build FITS header from PixInsight XISFProperties ─────────────────
                 # ─── Build FITS header from XISFProperties, then fallback to FITSKeywords & Pixel‐Scale ─────────────────
-                props = image_meta.get('XISFProperties', {})
+
                 def _dump_astrometric_keys(props, image_meta, file_meta):
                     print("🔎 [XISF] XISFProperties AstrometricSolution-related keys:")
                     for k in sorted(props.keys()):
@@ -1395,31 +1513,39 @@ def load_image(filename, max_retries=3, wait_seconds=3, return_metadata: bool = 
 
                     _dump_fk(image_meta, "image_meta")
                     _dump_fk(file_meta, "file_meta")          
-                #_dump_astrometric_keys(props, image_meta, file_meta)          
-                hdr   = fits.Header()
+                # Build base header from FITSKeywords (typed) first
+                hdr = xisf_fits_header_from_meta(image_meta, file_meta)   # your new helper
+                _filled = set(hdr.keys())
+
+                # Now get XISFProperties (for PI grids + fallback)
+                props = (image_meta.get("XISFProperties", {}) or
+                        file_meta.get("XISFProperties", {}) or {})
                 _filled = set()
 
-                # 1) PixInsight astrometric solution
+                # 1) PixInsight astrometric solution (fallback only)
                 try:
-                    im0, im1 = props['PCL:AstrometricSolution:ReferenceImageCoordinates']['value']
-                    w0,  w1  = props['PCL:AstrometricSolution:ReferenceCelestialCoordinates']['value']
-                    hdr['CRPIX1'], hdr['CRPIX2'] = float(im0), float(im1)
-                    hdr['CRVAL1'], hdr['CRVAL2'] = float(w0), float(w1)
-                    hdr['CTYPE1'], hdr['CTYPE2'] = 'RA---TAN-SIP','DEC--TAN-SIP'
-                    _filled |= {'CRPIX1','CRPIX2','CRVAL1','CRVAL2','CTYPE1','CTYPE2'}
-                    print("🔷 Injected CRPIX/CRVAL from XISFProperties")
+                    if not all(k in hdr for k in ("CRPIX1","CRPIX2","CRVAL1","CRVAL2")):
+                        im0, im1 = props['PCL:AstrometricSolution:ReferenceImageCoordinates']['value']
+                        w0,  w1  = props['PCL:AstrometricSolution:ReferenceCelestialCoordinates']['value']
+                        hdr['CRPIX1'], hdr['CRPIX2'] = float(im0), float(im1)
+                        hdr['CRVAL1'], hdr['CRVAL2'] = float(w0), float(w1)
+                        hdr.setdefault('CTYPE1', 'RA---TAN-SIP')
+                        hdr.setdefault('CTYPE2', 'DEC--TAN-SIP')
+                        _filled |= {'CRPIX1','CRPIX2','CRVAL1','CRVAL2','CTYPE1','CTYPE2'}
+                        print("🔷 Injected CRPIX/CRVAL from XISFProperties (fallback)")
                 except KeyError:
-                    print("⚠️ Missing reference coords in XISFProperties")
+                    pass
 
-                # 2) CD matrix
+                # 2) CD matrix (fallback only)
                 try:
-                    lin = np.asarray(props['PCL:AstrometricSolution:LinearTransformationMatrix']['value'], float)
-                    hdr['CD1_1'], hdr['CD1_2'] = lin[0,0], lin[0,1]
-                    hdr['CD2_1'], hdr['CD2_2'] = lin[1,0], lin[1,1]
-                    _filled |= {'CD1_1','CD1_2','CD2_1','CD2_2'}
-                    print("🔷 Injected CD matrix from XISFProperties")
+                    if not all(k in hdr for k in ("CD1_1","CD1_2","CD2_1","CD2_2")):
+                        lin = np.asarray(props['PCL:AstrometricSolution:LinearTransformationMatrix']['value'], float)
+                        hdr['CD1_1'], hdr['CD1_2'] = float(lin[0,0]), float(lin[0,1])
+                        hdr['CD2_1'], hdr['CD2_2'] = float(lin[1,0]), float(lin[1,1])
+                        _filled |= {'CD1_1','CD1_2','CD2_1','CD2_2'}
+                        print("🔷 Injected CD matrix from XISFProperties (fallback)")
                 except KeyError:
-                    print("⚠️ Missing CD matrix in XISFProperties")
+                    pass
 
                 # 3) SIP polynomial fitting  (CORRECTED for PI ImageToNative grids)
                 def _try_inject_sip_from_fitskeywords(hdr, image_meta, file_meta):

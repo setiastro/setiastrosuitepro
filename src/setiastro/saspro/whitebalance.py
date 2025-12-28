@@ -88,7 +88,7 @@ def plot_star_color_ratios_comparison(raw_pixels: np.ndarray, after_pixels: np.n
 
     plt.suptitle("Star Color Ratios with RGB Mapping", fontsize=14)
     plt.tight_layout()
-    plt.show()
+    plt.show(block=False)
 
 def apply_manual_white_balance(img: np.ndarray, r_gain: float, g_gain: float, b_gain: float) -> np.ndarray:
     """Simple per-channel gain, clipped to [0,1]."""
@@ -394,7 +394,8 @@ class WhiteBalanceDialog(QDialog):
                 # Use the headless helper so doc metadata is consistent
                 apply_white_balance_to_doc(self.doc, preset)
                 # Dialog stays open - refresh document for next operation
-                self._refresh_document_from_active()
+                self._finish_and_close()
+                return
 
             elif mode == "Auto":
                 preset = {"mode": "auto"}
@@ -404,7 +405,8 @@ class WhiteBalanceDialog(QDialog):
 
                 apply_white_balance_to_doc(self.doc, preset)
                 # Dialog stays open - refresh document for next operation
-                self._refresh_document_from_active()
+                self._finish_and_close()
+                return
 
             else:  # --- Star-Based: compute here so we can plot like SASv2 ---
                 thr   = float(self.thr_slider.value())
@@ -472,7 +474,8 @@ class WhiteBalanceDialog(QDialog):
                     self.tr("Star-Based WB applied.\nDetected {0} stars.").format(int(star_count)),
                 )
                 # Dialog stays open - refresh document for next operation
-                self._refresh_document_from_active()
+                self._finish_and_close()
+                return
 
         except Exception as e:
             QMessageBox.critical(self, self.tr("White Balance"), self.tr("Failed to apply White Balance:\n{0}").format(e))
@@ -490,3 +493,21 @@ class WhiteBalanceDialog(QDialog):
                     self.doc = new_doc
         except Exception:
             pass
+
+    def _finish_and_close(self):
+        """
+        Close this dialog after a successful apply.
+        Use accept() so it behaves like a successful completion.
+        """
+        try:
+            self.accept()
+        except Exception:
+            self.close()
+
+    def closeEvent(self, ev):
+        try:
+            if hasattr(self._main, "currentDocumentChanged"):
+                self._main.currentDocumentChanged.disconnect(self._on_active_doc_changed)
+        except Exception:
+            pass
+        super().closeEvent(ev)

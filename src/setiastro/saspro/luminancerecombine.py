@@ -1,3 +1,4 @@
+#src/setiastro/saspro/luminancerecombine.py
 from __future__ import annotations
 import numpy as np
 import cv2
@@ -13,12 +14,184 @@ from setiastro.saspro.widgets.image_utils import (
     to_float01_strict as _to_float01_strict,
 )
 
-# Linear luma weights
 _LUMA_REC709  = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
 _LUMA_REC601  = np.array([0.2990, 0.5870, 0.1140], dtype=np.float32)
 _LUMA_REC2020 = np.array([0.2627, 0.6780, 0.0593], dtype=np.float32)
 
+# ---- Luma profiles (UI selectable) ----
+# Key = what the UI stores in self.luma_method / preset["mode"]
+# weights must be length-3 (RGB), assumed linear
+LUMA_PROFILES: dict[str, dict] = {
+    # --- Standard ---
+    "rec709": {"method": "rec709", "weights": _LUMA_REC709, "category": "Standard", "description": "Broadband RGB (Rec.709)"},
+    "rec601": {"method": "rec601", "weights": _LUMA_REC601, "category": "Standard", "description": "Rec.601"},
+    "rec2020": {"method": "rec2020", "weights": _LUMA_REC2020, "category": "Standard", "description": "Rec.2020"},
+    "equal": {"method": "equal", "weights": None, "category": "Standard", "description": "Equal RGB"},
+    "max": {"method": "max", "weights": None, "category": "Standard", "description": "Max (Narrowband mappings)"},
+    "median": {"method": "median", "weights": None, "category": "Standard", "description": "Median RGB"},
+    "snr": {"method": "snr", "weights": None, "category": "Standard", "description": "Unequal Noise (SNR)"},
+
+    # --- Sensors (examples — paste your whole list here) ---
+    "sensor:Sony IMX571 (ASI2600/QHY268)": {
+        "method": "custom",
+        "weights": np.array([0.2944, 0.5021, 0.2035], dtype=np.float32),
+        "category": "Sensors/Sony Modern BSI",
+        "description": "Sony IMX571 26MP APS-C BSI (STARVIS)",
+        "info": "Gold standard APS-C. Excellent balance for broadband.",
+    },
+    "sensor:Sony IMX533 (ASI533)": {
+        "method": "custom",
+        "weights": np.array([0.2910, 0.5072, 0.2018], dtype=np.float32),
+        "category": "Sensors/Sony Modern BSI",
+        "description": "Sony IMX533 9MP 1\" Square BSI (STARVIS)",
+        "info": "Popular square format. Very low noise.",
+    },
+    "sensor:Sony IMX455 (ASI6200/QHY600)": {
+        "weights": (0.2987, 0.5001, 0.2013),
+        "description": "Sony IMX455 61MP Full Frame BSI (STARVIS)",
+        "info": "Full frame reference sensor.",
+        "category": "Sony / Modern BSI",
+    },
+    "sensor:Sony IMX294 (ASI294)": {
+        "weights": (0.3068, 0.5008, 0.1925),
+        "description": "Sony IMX294 11.7MP 4/3\" BSI",
+        "info": "High sensitivity 4/3 format.",
+        "category": "Sony / Modern BSI",
+    },
+    "sensor:Sony IMX183 (ASI183)": {
+        "weights": (0.2967, 0.4983, 0.2050),
+        "description": "Sony IMX183 20MP 1\" BSI",
+        "info": "High resolution 1-inch sensor.",
+        "category": "Sony / Modern BSI",
+    },
+    "sensor:Sony IMX178 (ASI178)": {
+        "weights": (0.2346, 0.5206, 0.2448),
+        "description": "Sony IMX178 6.4MP 1/1.8\" BSI",
+        "info": "High resolution entry-level sensor.",
+        "category": "Sony / Modern BSI",
+    },
+    "sensor:Sony IMX224 (ASI224)": {
+        "weights": (0.3402, 0.4765, 0.1833),
+        "description": "Sony IMX224 1.27MP 1/3\" BSI",
+        "info": "Classic planetary sensor. High Red response.",
+        "category": "Sony / Modern BSI",
+    },
+
+    # --- SONY STARVIS 2 (NIR Optimized) ---
+    "sensor:Sony IMX585 (ASI585) - STARVIS 2": {
+        "weights": (0.3431, 0.4822, 0.1747),
+        "description": "Sony IMX585 8.3MP 1/1.2\" BSI (STARVIS 2)",
+        "info": "NIR optimized. Excellent for H-Alpha/Narrowband.",
+        "category": "Sony / STARVIS 2",
+    },
+    "sensor:Sony IMX662 (ASI662) - STARVIS 2": {
+        "weights": (0.3430, 0.4821, 0.1749),
+        "description": "Sony IMX662 2.1MP 1/2.8\" BSI (STARVIS 2)",
+        "info": "Planetary/Guiding. High Red/NIR sensitivity.",
+        "category": "Sony / STARVIS 2",
+    },
+    "sensor:Sony IMX678/715 - STARVIS 2": {
+        "weights": (0.3426, 0.4825, 0.1750),
+        "description": "Sony IMX678/715 BSI (STARVIS 2)",
+        "info": "High resolution planetary/security sensors.",
+        "category": "Sony / STARVIS 2",
+    },
+
+    # --- PANASONIC / OTHERS ---
+    "sensor:Panasonic MN34230 (ASI1600/QHY163)": {
+        "weights": (0.2650, 0.5250, 0.2100),
+        "description": "Panasonic MN34230 4/3\" CMOS",
+        "info": "Classic Mono/OSC sensor. Optimized weights.",
+        "category": "Panasonic",
+    },
+
+    # --- CANON DSLR (Averaged Profiles) ---
+    "sensor:Canon EOS (Modern - 60D/6D/R)": {
+        "weights": (0.2550, 0.5250, 0.2200),
+        "description": "Canon CMOS Profile (Modern)",
+        "info": "Balanced profile for most Canon EOS cameras (60D, 6D, 5D, R-series).",
+        "category": "Canon",
+    },
+    "sensor:Canon EOS (Legacy - 300D/40D)": {
+        "weights": (0.2400, 0.5400, 0.2200),
+        "description": "Canon CMOS Profile (Legacy)",
+        "info": "For older Canon models (Digic 2/3 era).",
+        "category": "Canon",
+    },
+
+    # --- NIKON DSLR (Averaged Profiles) ---
+    "sensor:Nikon DSLR (Modern - D5300/D850)": {
+        "weights": (0.2600, 0.5100, 0.2300),
+        "description": "Nikon CMOS Profile (Modern)",
+        "info": "Balanced profile for Nikon Expeed 4+ cameras.",
+        "category": "Nikon",
+    },
+
+    # --- SMART TELESCOPES ---
+    "sensor:ZWO Seestar S50": {
+        "weights": (0.3333, 0.4866, 0.1801),
+        "description": "ZWO Seestar S50 (IMX462)",
+        "info": "Specific profile for Seestar S50 smart telescope.",
+        "category": "Smart Telescopes",
+    },
+    "sensor:ZWO Seestar S30": {
+        "weights": (0.2928, 0.5053, 0.2019),
+        "description": "ZWO Seestar S30",
+        "info": "Specific profile for Seestar S30 smart telescope.",
+        "category": "Smart Telescopes",
+    },
+}
+
+
 # ---------- helpers ----------
+def resolve_luma_profile_weights(mode: str | None):
+    """
+    Returns (resolved_method, weights_or_None, profile_name_or_None)
+
+    - Standard modes return (mode, None or standard weights, None)
+    - Sensor profiles return ("custom", weights, <profile display name>)
+    """
+    if mode is None:
+        mode = "rec709"
+    key = str(mode).strip()
+
+    # common aliases
+    alias = {
+        "rec.709": "rec709",
+        "rec-709": "rec709",
+        "rgb": "rec709",
+        "k": "rec709",
+        "rec.601": "rec601",
+        "rec-601": "rec601",
+        "rec.2020": "rec2020",
+        "rec-2020": "rec2020",
+        "nb_max": "max",
+        "narrowband": "max",
+        "snr_unequal": "snr",
+        "unequal_noise": "snr",
+    }
+    key = alias.get(key.lower(), key)
+
+    prof = LUMA_PROFILES.get(key)
+    if not prof:
+        # fallback
+        return ("rec709", _LUMA_REC709, None)
+
+    method = str(prof.get("method", "rec709")).strip().lower()
+    w = prof.get("weights", None)
+    if w is not None:
+        w = np.asarray(w, dtype=np.float32)
+
+    if key.startswith("sensor:"):
+        # Use "custom" path in compute_luminance by passing weights
+        # We'll return resolved_method="rec709" (ignored) and weights=w
+        # BUT to keep your API simple: return ("rec709", w, profile_name)
+        profile_name = key.split("sensor:", 1)[1].strip()
+        return ("rec709", w, profile_name)
+
+    # Standard modes
+    return (key, w, None)
+
 
 def _estimate_noise_sigma_per_channel(img01: np.ndarray) -> np.ndarray:
     # unchanged (but call with strict input)
@@ -83,6 +256,10 @@ def compute_luminance(
         lum = f.max(axis=2)
     elif method == "median":
         lum = np.median(f, axis=2)
+    elif method == "rec601":
+        lum = np.tensordot(f[..., :3], _LUMA_REC601, axes=([2],[0]))
+    elif method == "rec2020":
+        lum = np.tensordot(f[..., :3], _LUMA_REC2020, axes=([2],[0]))
     else:  # default rec709
         lum = np.tensordot(f[..., :3], _LUMA_REC709, axes=([2],[0]))
 
@@ -159,41 +336,65 @@ def apply_recombine_to_doc(
     """
     base = _to_float01_strict(np.asarray(target_doc.image))
 
-    # Decide weights for both compute+recombine
-    if method == "rec601":
-        w = _LUMA_REC601
-    elif method == "rec2020":
-        w = _LUMA_REC2020
-    elif weights is not None:
-        w = np.asarray(weights, dtype=np.float32)
+    # Resolve profile (sensor profiles return weights w)
+    resolved_method, w, profile_name = resolve_luma_profile_weights(method)
+
+    # Caller override for weights wins (useful for custom UI / scripts)
+    if weights is not None:
+        w = np.asarray(weights, dtype=np.float32).reshape(-1)
         if w.size != 3:
-            raise ValueError("Custom weights must be length-3.")
-    else:
-        w = _LUMA_REC709
+            raise ValueError("weights must be a 3-element RGB vector")
+    elif w is not None:
+        w = np.asarray(w, dtype=np.float32).reshape(-1)
+        if w.size != 3:
+            w = None  # ignore bad profile weights defensively
 
     # Build L (mono source passes through; RGB is weighted)
     src = _to_float01_strict(luminance_source_img)
     if src.ndim == 2 or (src.ndim == 3 and src.shape[2] == 1):
         L = src if src.ndim == 2 else src[..., 0]
+        # For mono L sources, we still want recombine weights to match the selected method/profile.
     else:
+        # Noise sigma: if caller provided, use it; otherwise estimate when needed
         ns = None
-        if method == "snr":
-            ns = _estimate_noise_sigma_per_channel(src)
-        L = compute_luminance(src, method=method, weights=w if weights is not None else None, noise_sigma=ns)
+        if resolved_method == "snr":
+            if noise_sigma is not None:
+                ns = np.asarray(noise_sigma, dtype=np.float32).reshape(-1)
+            else:
+                ns = _estimate_noise_sigma_per_channel(src)
 
-    replaced = recombine_luminance_linear_scale(base, L, weights=w, blend=blend, highlight_soft_knee=soft_knee)
+        # compute_luminance respects weights override; for sensor/custom profiles w is used
+        L = compute_luminance(src, method=resolved_method, weights=w, noise_sigma=ns)
 
-    # destination-mask blend if active
-    m = _active_mask_array_from_doc(target_doc)
-    if m is not None:
-        m3 = np.repeat(m[..., None], 3, axis=2).astype(np.float32)
-        replaced = base * (1.0 - m3) + replaced * m3
+    # For scaling recombine, we need an actual RGB weight vector.
+    # If we don't have one from the chosen mode/profile, fall back sensibly.
+    if w is not None and w.size == 3:
+        recombine_w = w
+    else:
+        # If your resolver returns w=None for rec709/rec601/rec2020, fill explicitly here:
+        if resolved_method == "rec601":
+            recombine_w = _LUMA_REC601
+        elif resolved_method == "rec2020":
+            recombine_w = _LUMA_REC2020
+        else:
+            recombine_w = _LUMA_REC709
 
-    target_doc.apply_edit(
-        replaced,
-        metadata={"step_name": "Recombine Luminance", "luma_method": method, "luma_weights": w.tolist()},
-        step_name="Recombine Luminance",
+    replaced = recombine_luminance_linear_scale(
+        base,
+        L,
+        weights=recombine_w,
+        blend=float(blend),
+        highlight_soft_knee=float(soft_knee),
     )
+
+    # Metadata
+    md = {"step_name": "Recombine Luminance", "luma_method": resolved_method}
+    if profile_name:
+        md["luma_profile"] = profile_name
+    if w is not None:
+        md["luma_weights"] = np.asarray(w, dtype=np.float32).tolist()
+
+    target_doc.apply_edit(replaced.astype(np.float32, copy=False), metadata=md, step_name="Recombine Luminance")
 
 
 def run_recombine_luminance_via_preset(main_or_ctx, preset=None, target_doc=None):
