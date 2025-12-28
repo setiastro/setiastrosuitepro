@@ -1634,20 +1634,19 @@ class ImageSubWindow(QWidget):
         vbar = self.scroll.verticalScrollBar()
 
         state = {
-            "doc_ptr": id(self.document),                      # legacy
+            "doc_ptr": id(self.document),
             "scale": float(self.scale),
             "hval": int(hbar.value()),
             "vval": int(vbar.value()),
             "autostretch": bool(self.autostretch_enabled),
             "autostretch_target": float(self.autostretch_target),
         }
-        state.update(self._drag_identity_fields())             # uid + base_uid + file_path
+        state.update(self._drag_identity_fields())
 
-        # --- NEW: annotate ROI/source_kind so drop knows this came from a Preview tab
         roi = None
         try:
             if hasattr(self, "has_active_preview") and self.has_active_preview():
-                r = self.current_preview_roi()  # (x,y,w,h) in full-image coords
+                r = self.current_preview_roi()
                 if r and len(r) == 4:
                     roi = tuple(map(int, r))
         except Exception:
@@ -1670,9 +1669,20 @@ class ImageSubWindow(QWidget):
 
         drag = QDrag(self)
         drag.setMimeData(md)
-        if self.label.pixmap():
-            drag.setPixmap(self.label.pixmap())
-        drag.exec()
+
+        pm = self.label.pixmap()
+        if pm and not pm.isNull():
+            drag.setPixmap(
+                pm.scaled(
+                    96, 96,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
+            drag.setHotSpot(QPoint(16, 16))  # optional, but feels nicer
+
+        drag.exec(Qt.DropAction.CopyAction)
+
 
 
 
