@@ -1,9 +1,9 @@
 {
-  "version": "1.6.4",
+  "version": "1.6.5",
   "downloads": {
-    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.6.4/setiastrosuitepro_windows.zip",
-    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.6.4/setiastrosuitepro_mac.tar.gz",
-    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.6.4/setiastrosuitepro_linux.tar.xz"
+    "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.6.5/setiastrosuitepro_windows.zip",
+    "macOS": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.6.5/setiastrosuitepro_mac.tar.gz",
+    "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.6.5/setiastrosuitepro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro V1.6.4 New Geometry Function: Rotate (Arbitrary Angle), it will auto update the WCS as well. Stellar Alignment: Much Faster through downsampling the image and uplifting the transformation. Stacking Suite loading Darks, Flats, and Lights is now comically faster. Various Bug Fixes."
+  "notes": "Seti Astro Suite Pro V1.6.5 Native XISF support in Stacking Suite. Much Improved Zoom on the main Views. Additional Lum extraction and recombination types. Other Bug Fixes"
 }
