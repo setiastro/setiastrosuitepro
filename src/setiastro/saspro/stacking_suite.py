@@ -4246,7 +4246,7 @@ class StackingSuiteDialog(QDialog):
         self.image_integration_tab = self.create_image_registration_tab()
 
         # Add tabs
-        self.tabs.addTab(self.conversion_tab, self.tr("Convert Non-FITS Formats"))
+        self.tabs.addTab(self.conversion_tab, self.tr("Convert Camera RAW/TIFF Formats"))
         self.tabs.addTab(self.dark_tab, self.tr("Darks"))
         self.tabs.addTab(self.flat_tab, self.tr("Flats"))
         self.tabs.addTab(self.light_tab, self.tr("Lights"))
