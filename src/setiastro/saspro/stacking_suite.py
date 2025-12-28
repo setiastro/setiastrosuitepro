@@ -154,15 +154,97 @@ _FITS_EXTS = ('.fits', '.fit', '.fts', '.fits.gz', '.fit.gz', '.fts.gz', '.fz')
 
 def get_valid_header(path: str):
     """
-    Fast header-only FITS peek with a targeted fallback:
+    Fast header-only peek with targeted fallback.
 
-    1) Header-only scan (lazy_load_hdus=True, never touches .data)
-    2) If NAXIS1/2 still missing/invalid, fallback to reading ONE image HDU's data
-       to get shape, then patch NAXIS/NAXIS1/NAXIS2.
+    FITS/FITS-like:
+      1) Header-only scan (lazy_load_hdus=True, never touches .data)
+      2) If NAXIS1/2 still missing/invalid, fallback to reading ONE image HDU's data
+         to infer shape, then patch NAXIS/NAXIS1/NAXIS2.
 
-    Returns: (hdr, ok_bool)
+    XISF:
+      - Parse XML header only (no pixel decode)
+      - Synthesize a FITS-like header dict with keys used by stacking ingest:
+        NAXIS1, NAXIS2, (optional NAXIS3), EXPOSURE/EXPTIME, IMAGETYP, FILTER, etc.
+
+    Returns: (hdr_like, ok_bool)
+      - hdr_like is an astropy Header for FITS, or a dict for XISF
     """
     try:
+        lp = (path or "").lower()
+
+        # ---------------------------
+        # XISF path (header-only)
+        # ---------------------------
+        if lp.endswith(".xisf"):
+            try:
+                # Adjust import to your actual module path
+                # (you said this xisf.py is what you already use in load_image)
+                from setiastro.saspro.xisf import XISF
+            except Exception:
+                # Fallback import if it lives elsewhere in your tree
+                from xisf import XISF  # noqa
+
+            def _first_kw(meta, key):
+                """
+                XISF stores FITS keywords like:
+                  meta["FITSKeywords"][KEY] = [ {"value": "...", "comment": "..."}, ... ]
+                We use the first occurrence.
+                """
+                try:
+                    lst = (meta.get("FITSKeywords") or {}).get(key)
+                    if not lst:
+                        return None
+                    return lst[0].get("value")
+                except Exception:
+                    return None
+
+            def _to_float(v):
+                if v is None:
+                    return None
+                try:
+                    return float(v)
+                except Exception:
+                    return None
+
+            x = XISF(path)                      # reads signature + XML header only
+            ims = x.get_images_metadata() or []
+            if not ims:
+                # Valid XISF but no image blocks
+                return {"NAXIS1": 0, "NAXIS2": 0}, True
+
+            im = ims[0]                         # assume first image core element
+            w, h, chc = im.get("geometry", (0, 0, 0))
+
+            # Prefer explicit FITS keywords if present; fall back gracefully
+            exptime = _first_kw(im, "EXPOSURE") or _first_kw(im, "EXPTIME")
+            imagetyp = _first_kw(im, "IMAGETYP")
+            filt = _first_kw(im, "FILTER")
+
+            # Build a "header-like" dict with keys your ingest code expects
+            hdr = {
+                "NAXIS": 3 if int(chc or 0) > 1 else 2,
+                "NAXIS1": int(w) if int(w or 0) > 0 else 0,
+                "NAXIS2": int(h) if int(h or 0) > 0 else 0,
+                "NAXIS3": int(chc) if int(chc or 0) > 0 else None,
+
+                # keep same names your code probes
+                "EXPOSURE": _to_float(exptime),
+                "EXPTIME":  _to_float(exptime),
+
+                "IMAGETYP": imagetyp,
+                "FILTER": filt or "Unknown",
+
+                # Optional: stash raw metadata for later (harmless)
+                "_XISF_IMAGE_META": im,
+                "_XISF_FILE_META": x.get_file_metadata(),
+            }
+
+            # Consider it "ok" even if dims are unknown; caller shows "Unknown"
+            return hdr, True
+
+        # ---------------------------
+        # FITS path (your existing logic)
+        # ---------------------------
         from astropy.io import fits
 
         def _is_good_dim(v):
@@ -211,18 +293,16 @@ def get_valid_header(path: str):
             if not _is_good_dim(hdr.get("NAXIS2")) and _is_good_dim(hdr.get("ZNAXIS2")):
                 hdr["NAXIS2"] = int(hdr["ZNAXIS2"])
 
-            # If we already have good dims, we are done (FAST PATH)
+            # FAST PATH
             if _is_good_dim(hdr.get("NAXIS1")) and _is_good_dim(hdr.get("NAXIS2")):
                 return hdr, True
 
         # ---------------------------
         # Pass 2: slow fallback (ONLY if needed)
         # ---------------------------
-        # Re-open without lazy semantics and read ONE image-like HDU's data to infer shape.
         with fits.open(path, mode="readonly", memmap=False) as hdul:
             target_hdu = None
             for hdu in hdul:
-                # data access is expensive; try to choose wisely by header first
                 naxis = hdu.header.get("NAXIS", 0)
                 znaxis = hdu.header.get("ZNAXIS", 0)
 
@@ -236,10 +316,9 @@ def get_valid_header(path: str):
             if target_hdu is None:
                 target_hdu = hdul[0]
 
-            # Now (and only now) touch data
             data = getattr(target_hdu, "data", None)
-
             hdr2 = target_hdu.header.copy()
+
             if data is not None and getattr(data, "ndim", 0) >= 2:
                 try:
                     ny, nx = data.shape[-2], data.shape[-1]
@@ -250,11 +329,11 @@ def get_valid_header(path: str):
                 except Exception:
                     pass
 
-            # If still unknown, return header anyway (caller can show "Unknown")
             return hdr2, True
 
     except Exception:
         return None, False
+
 
 def _read_tile_stack(file_list, y0, y1, x0, x1, channels, out_buf):
     """
@@ -3947,6 +4026,17 @@ def _bias_to_match_light(light_data, master_bias):
         if b.shape[-1] == 1:
             return b[:, :, 0][None, :, :]  # (H,W,1) -> (1,H,W)
     return b
+
+def _read_center_patch_via_mmimage(path: str, y0: int, y1: int, x0: int, x1: int):
+    src = _MMImage(path)
+    try:
+        sub = src.read_tile(y0, y1, x0, x1)
+        return sub
+    finally:
+        try:
+            src.close()
+        except Exception:
+            pass
 
 
 class StackingSuiteDialog(QDialog):
@@ -9653,7 +9743,10 @@ class StackingSuiteDialog(QDialog):
     def load_master_dark(self):
         """ Loads a Master Dark and updates the UI. """
         last_dir = self.settings.value("last_opened_folder", "", type=str)  # Get last folder
-        files, _ = QFileDialog.getOpenFileNames(self, "Select Master Dark", last_dir, "FITS Files (*.fits *.fit)")
+        files, _ = QFileDialog.getOpenFileNames(
+            self, "Select Master Dark", last_dir,
+            "Master Calibration (*.fits *.fit *.xisf);;All Files (*)"
+        )
         
         if files:
             self.settings.setValue("last_opened_folder", os.path.dirname(files[0]))  # Save last used folder
@@ -9681,7 +9774,7 @@ class StackingSuiteDialog(QDialog):
         last_dir = self.settings.value("last_opened_folder", "", type=str)
         files, _ = QFileDialog.getOpenFileNames(
             self, title, last_dir,
-            "FITS Files (*.fits *.fit *.fts *.fits.gz *.fit.gz *.fz)"
+            "Images (*.fits *.fit *.fts *.fits.gz *.fit.gz *.fz *.xisf);;All Files (*)"
         )
         if not files:
             return
@@ -9760,7 +9853,7 @@ class StackingSuiteDialog(QDialog):
 
     # --- Directory walking ---------------------------------------------------------
     def _collect_fits_paths(self, root: str, recursive: bool = True) -> list[str]:
-        exts = (".fits", ".fit", ".fts", ".fits.gz", ".fit.gz", ".fz")
+        exts = (".fits", ".fit", ".fts", ".fits.gz", ".fit.gz", ".fz", ".xisf")
         paths = []
         if recursive:
             for d, _subdirs, files in os.walk(root):
@@ -10203,14 +10296,14 @@ class StackingSuiteDialog(QDialog):
         try:
             expected_type_u = (expected_type or "").upper()
 
-            # Ensure caches exist
             if not hasattr(self, "_mismatch_policy") or self._mismatch_policy is None:
                 self._mismatch_policy = {}
             if not hasattr(self, "session_tags") or self.session_tags is None:
                 self.session_tags = {}
 
-            # --- Read header only (fast) ---
-            header, _ = get_valid_header(path)
+            header, ok = get_valid_header(path)
+            if not ok or header is None:
+                raise RuntimeError("Header read failed")
 
             # --- Basic image size ---
             try:
@@ -10218,7 +10311,9 @@ class StackingSuiteDialog(QDialog):
                 height = int(header.get("NAXIS2", 0))
                 image_size = f"{width}x{height}" if (width > 0 and height > 0) else "Unknown"
             except Exception as e:
-                self.update_status(self.tr(f"Warning: Could not read dimensions for {os.path.basename(path)}: {e}"))
+                self.update_status(self.tr(
+                    f"Warning: Could not read dimensions for {os.path.basename(path)}: {e}"
+                ))
                 width = height = None
                 image_size = "Unknown"
 
@@ -10235,7 +10330,6 @@ class StackingSuiteDialog(QDialog):
                     exposure_text = f"{fexp:g}s"
                 except Exception:
                     exposure_text = str(exp_val)
-
             # --- Mismatch prompt (redirect/keep/skip with 'apply to all') ---
             if expected_type_u == "DARK":
                 forbidden = ["light", "flat"]
@@ -10308,17 +10402,11 @@ class StackingSuiteDialog(QDialog):
 
             # --- Resolve session tag (auto vs keyword-driven) ---
             auto_session = self.settings.value("stacking/auto_session", True, type=bool)
-
             if auto_session:
                 session_tag = self._auto_session_from_path(path, header) or "Default"
             else:
-                # NOTE: this is a keyword now, not a literal session name
                 keyword = self.settings.value("stacking/session_keyword", "Default", type=str)
                 session_tag = self._session_from_manual_keyword(path, keyword) or "Default"
-
-            # --- Filter name normalization ---
-            filter_name_raw = header.get("FILTER", "Unknown")
-            filter_name     = self._sanitize_name(filter_name_raw)
 
             # --- Common metadata string for leaf rows ---
             meta_text = f"Size: {image_size} | Session: {session_tag}"
@@ -10341,6 +10429,9 @@ class StackingSuiteDialog(QDialog):
 
             # === FLATs ===
             elif expected_type_u == "FLAT":
+                filter_name_raw = header.get("FILTER") or "Unknown"
+                filter_name = self._sanitize_name(filter_name_raw)
+
                 flat_key = f"{filter_name} - {exposure_text} ({image_size})"
                 composite_key = (flat_key, session_tag)
                 self.flat_files.setdefault(composite_key, []).append(path)
@@ -10368,12 +10459,14 @@ class StackingSuiteDialog(QDialog):
 
             # === LIGHTs ===
             elif expected_type_u == "LIGHT":
+                filter_name_raw = header.get("FILTER") or "Unknown"
+                filter_name = self._sanitize_name(filter_name_raw)
+
                 light_key = f"{filter_name} - {exposure_text} ({image_size})"
                 composite_key = (light_key, session_tag)
                 self.light_files.setdefault(composite_key, []).append(path)
                 self.session_tags[path] = session_tag
 
-                # Cached filter item
                 filter_item = self._light_filter_item.get(filter_name)
                 if filter_item is None:
                     filter_item = QTreeWidgetItem([filter_name])
@@ -10383,7 +10476,6 @@ class StackingSuiteDialog(QDialog):
                 want_label = f"{exposure_text} ({image_size})"
                 exp_key = (filter_name, want_label)
 
-                # Cached exposure item
                 exposure_item = self._light_exp_item.get(exp_key)
                 if exposure_item is None:
                     exposure_item = QTreeWidgetItem([want_label])
@@ -10391,7 +10483,7 @@ class StackingSuiteDialog(QDialog):
                     self._light_exp_item[exp_key] = exposure_item
 
                 leaf = QTreeWidgetItem([os.path.basename(path), meta_text])
-                leaf.setData(0, Qt.ItemDataRole.UserRole, path)          # ✅ keep this
+                leaf.setData(0, Qt.ItemDataRole.UserRole, path)
                 leaf.setData(0, Qt.ItemDataRole.UserRole + 1, session_tag)
                 exposure_item.addChild(leaf)
 
@@ -10411,7 +10503,7 @@ class StackingSuiteDialog(QDialog):
         for file_path in files:
             try:
                 # Read only the FITS header (fast)
-                header = fits.getheader(file_path)
+                header, _kind = get_valid_header(file_path)
                 
                 # Check for both EXPOSURE and EXPTIME
                 exposure = header.get("EXPOSURE", header.get("EXPTIME", "Unknown"))
@@ -10427,7 +10519,13 @@ class StackingSuiteDialog(QDialog):
                 
                 # Construct key based on file type
                 if file_type.upper() == "DARK":
-                    key = f"{exposure}s ({image_size})"
+                    try:
+                        exposure_f = float(exposure)
+                        exposure_text = f"{exposure_f:g}s"
+                    except Exception:
+                        exposure_text = f"{exposure}s" if str(exposure).endswith("s") else str(exposure)
+
+                    key = f"{exposure_text} ({image_size})"
                     self.master_files[key] = file_path  # Store master dark
                     self.master_sizes[file_path] = image_size  # Store size
                 elif file_type.upper() == "FLAT":
@@ -11256,22 +11354,17 @@ class StackingSuiteDialog(QDialog):
             dark_data: np.ndarray | None,
             pattern: str,
         ):
-            """
-            Returns scales shape (N,4): [R, G1, G2, B] where scale = frame_plane_median / group_plane_median.
-            """
             pat = (pattern or "RGGB").strip().upper()
             if pat not in ("RGGB", "BGGR", "GRBG", "GBRG"):
                 pat = "RGGB"
 
-            # Central patch
             th = min(512, H); tw = min(512, W)
             y0 = (H - th) // 2; y1 = y0 + th
             x0 = (W - tw) // 2; x1 = x0 + tw
 
             N = len(file_list)
-            meds = np.empty((N, 4), dtype=np.float64)  # R,G1,G2,B
+            meds = np.empty((N, 4), dtype=np.float64)
 
-            # parity → plane label
             if pat == "RGGB":
                 m = {(0,0):"R",  (0,1):"G1", (1,0):"G2", (1,1):"B"}
             elif pat == "BGGR":
@@ -11288,9 +11381,24 @@ class StackingSuiteDialog(QDialog):
                 d = float(np.median(v))
                 return d if np.isfinite(d) and d > 0 else 1.0
 
+            # Make dark/bias subtractor into 2D for bayer mosaics (important for XISF HWC darks)
+            dd2 = None
+            if dark_data is not None:
+                dd2 = dark_data
+                if dd2.ndim == 3:
+                    # CHW -> HWC
+                    if dd2.shape[0] in (1, 3):
+                        dd2 = dd2.transpose(1, 2, 0)
+                    # HWC -> take first plane for mosaic subtraction
+                    dd2 = dd2[:, :, 0]
+                dd2 = dd2.astype(np.float32, copy=False)
+
             from concurrent.futures import ThreadPoolExecutor, as_completed
             with ThreadPoolExecutor(max_workers=min(os.cpu_count() or 4, 8)) as exe:
-                fut2i = {exe.submit(load_fits_tile, fp, y0, y1, x0, x1): i for i, fp in enumerate(file_list)}
+                fut2i = {
+                    exe.submit(_read_center_patch_via_mmimage, fp, y0, y1, x0, x1): i
+                    for i, fp in enumerate(file_list)
+                }
                 for fut in as_completed(fut2i):
                     i = fut2i[fut]
                     sub = fut.result()
@@ -11299,16 +11407,14 @@ class StackingSuiteDialog(QDialog):
                         continue
 
                     # Ensure 2D mosaic
-                    if sub.ndim == 3 and sub.shape[0] in (1, 3):
-                        sub = sub[0] if sub.shape[0] == 1 else sub.transpose(1, 2, 0)[:, :, 0]
+                    if sub.ndim == 3:
+                        if sub.shape[0] in (1, 3):  # CHW
+                            sub = sub.transpose(1, 2, 0)
+                        sub = sub[:, :, 0]  # first plane
                     sub = sub.astype(np.float32, copy=False)
 
-                    # Dark subtract patch if present
-                    if dark_data is not None:
-                        dd = dark_data
-                        if dd.ndim == 3 and dd.shape[0] in (1, 3):
-                            dd = dd.transpose(1, 2, 0)[:, :, 0]
-                        d_tile = dd[y0:y1, x0:x1].astype(np.float32, copy=False)
+                    if dd2 is not None:
+                        d_tile = dd2[y0:y1, x0:x1].astype(np.float32, copy=False)
                         sub = sub - d_tile
 
                     planes = {
@@ -11327,15 +11433,11 @@ class StackingSuiteDialog(QDialog):
             gmed = np.median(meds, axis=0)
             gmed = np.where(np.isfinite(gmed) & (gmed > 0), gmed, 1.0)
 
-            scales = meds / gmed  # (N,4)
-            scales = np.clip(scales, 1e-3, 1e3).astype(np.float32)
-            return scales
+            scales = meds / gmed
+            return np.clip(scales, 1e-3, 1e3).astype(np.float32)
+
 
         def _estimate_flat_scales(file_list: list[str], H: int, W: int, C: int, dark_data: np.ndarray | None):
-            """
-            Read one central patch (min(512, H/W)) from each frame, subtract dark (if present),
-            compute per-frame median, and normalize scales to overall median.
-            """
             th = min(512, H); tw = min(512, W)
             y0 = (H - th) // 2; y1 = y0 + th
             x0 = (W - tw) // 2; x1 = x0 + tw
@@ -11343,9 +11445,20 @@ class StackingSuiteDialog(QDialog):
             N = len(file_list)
             meds = np.empty((N,), dtype=np.float64)
 
+            # Normalize subtractor to HWC or 2D
+            dd = None
+            if dark_data is not None:
+                dd = dark_data
+                if dd.ndim == 3 and dd.shape[0] in (1, 3):  # CHW -> HWC
+                    dd = dd.transpose(1, 2, 0)
+                dd = dd.astype(np.float32, copy=False)
+
             from concurrent.futures import ThreadPoolExecutor, as_completed
             with ThreadPoolExecutor(max_workers=min(os.cpu_count() or 4, 8)) as exe:
-                fut2i = {exe.submit(load_fits_tile, fp, y0, y1, x0, x1): i for i, fp in enumerate(file_list)}
+                fut2i = {
+                    exe.submit(_read_center_patch_via_mmimage, fp, y0, y1, x0, x1): i
+                    for i, fp in enumerate(file_list)
+                }
                 for fut in as_completed(fut2i):
                     i = fut2i[fut]
                     sub = fut.result()
@@ -11360,22 +11473,22 @@ class StackingSuiteDialog(QDialog):
                         sub = sub.transpose(1, 2, 0)
                     sub = sub.astype(np.float32, copy=False)
 
-                    if dark_data is not None:
-                        dd = dark_data
-                        if dd.ndim == 3 and dd.shape[0] in (1, 3):
-                            dd = dd.transpose(1, 2, 0)
-                        d_tile = dd[y0:y1, x0:x1].astype(np.float32, copy=False)
+                    if dd is not None:
+                        d_tile = dd[y0:y1, x0:x1]
                         if d_tile.ndim == 2 and sub.shape[2] == 3:
                             d_tile = np.repeat(d_tile[..., None], 3, axis=2)
-                        sub = sub - d_tile
+                        elif d_tile.ndim == 3 and sub.shape[2] == 1:
+                            d_tile = d_tile[:, :, :1]
+                        sub = sub - d_tile.astype(np.float32, copy=False)
 
-                    meds[i] = np.median(sub, axis=(0, 1, 2))
+                    meds[i] = float(np.median(sub))
 
-            gmed = np.median(meds) if np.all(np.isfinite(meds)) else 1.0
-            gmed = 1.0 if gmed == 0.0 else gmed
+            gmed = float(np.median(meds)) if np.all(np.isfinite(meds)) else 1.0
+            if not np.isfinite(gmed) or gmed == 0.0:
+                gmed = 1.0
             scales = meds / gmed
-            scales = np.clip(scales, 1e-3, 1e3).astype(np.float32)
-            return scales
+            return np.clip(scales, 1e-3, 1e3).astype(np.float32)
+
 
         def _apply_bayer_scales_stack_inplace(ts_np: np.ndarray, scales4: np.ndarray, pat: str, y0: int, x0: int):
             """
@@ -12109,22 +12222,57 @@ class StackingSuiteDialog(QDialog):
 
 
     def override_selected_master_dark(self):
-        """ Override Dark for selected Light exposure group or individual files. """
+        """Override Dark for selected Light exposure group or individual files."""
         selected_items = self.light_tree.selectedItems()
         if not selected_items:
             print("⚠️ No light item selected for dark frame override.")
             return
 
-        file_path, _ = QFileDialog.getOpenFileName(self, "Select Master Dark", "", "FITS Files (*.fits *.fit)")
+        # --- pick a good starting directory ---
+        last_dir = self.settings.value("stacking/last_master_dark_dir", "", type=str) if hasattr(self, "settings") else ""
+        if not last_dir:
+            # try stacking dir
+            last_dir = getattr(self, "stacking_directory", "") or ""
+
+        # try selected leaf path folder (best UX)
+        try:
+            it0 = selected_items[0]
+            # leaf stores path in UserRole, groups do not
+            p0 = it0.data(0, Qt.ItemDataRole.UserRole)
+            if isinstance(p0, str) and os.path.exists(p0):
+                last_dir = os.path.dirname(p0)
+        except Exception:
+            pass
+
+        if not last_dir:
+            last_dir = os.path.expanduser("~")
+
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Master Dark",
+            last_dir,
+            "Master Calibration (*.fits *.fit *.xisf);;All Files (*)"
+        )
         if not file_path:
             return
 
+        # remember for next time
+        try:
+            if hasattr(self, "settings"):
+                self.settings.setValue("stacking/last_master_dark_dir", os.path.dirname(file_path))
+        except Exception:
+            pass
+
+        # Ensure dict exists
+        if not hasattr(self, "manual_dark_overrides") or self.manual_dark_overrides is None:
+            self.manual_dark_overrides = {}
+
         for item in selected_items:
-            # If the user clicked a group (exposure row), push override to all leaves:
+            # If the user clicked an exposure row under a filter
             if item.parent() and item.childCount() > 0:
-                # exposure row under a filter
                 filter_name = item.parent().text(0)
                 exposure_text = item.text(0)
+
                 # store override under BOTH keys
                 self.manual_dark_overrides[f"{filter_name} - {exposure_text}"] = file_path
                 self.manual_dark_overrides[exposure_text] = file_path
@@ -12132,16 +12280,19 @@ class StackingSuiteDialog(QDialog):
                 for i in range(item.childCount()):
                     leaf = item.child(i)
                     leaf.setText(2, os.path.basename(file_path))
-            # If the user clicked a leaf, just set that leaf and still store under both keys
+
+            # If the user clicked a leaf under an exposure row
             elif item.parent() and item.parent().parent():
                 exposure_item = item.parent()
                 filter_name = exposure_item.parent().text(0)
                 exposure_text = exposure_item.text(0)
+
                 self.manual_dark_overrides[f"{filter_name} - {exposure_text}"] = file_path
                 self.manual_dark_overrides[exposure_text] = file_path
                 item.setText(2, os.path.basename(file_path))
 
         print("✅ DEBUG: Light Dark override applied.")
+
 
     def _auto_pick_master_dark(self, image_size: str, exposure_time: float):
         best_path, best_diff = None, float("inf")

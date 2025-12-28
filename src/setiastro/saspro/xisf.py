@@ -34,7 +34,14 @@ import sys
 from datetime import datetime
 import ast
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
+
+def _is_attached_or_inline_property(p_dict):
+    return "location" in p_dict  # location implies inline/embedded/attachment
+
+def _make_lazy(p_dict):
+    p_dict["_lazy"] = True
+    return p_dict
 
 class XISF:
     """Implements an baseline XISF Decoder and a simple baseline Encoder.
@@ -340,7 +347,7 @@ class XISF:
     def _read_embedded_data_block(elem):
         assert elem["location"][0] == "embedded"
         data_elem = ET.fromstring(elem["value"])
-        encoding, data = data.attrib["encoding"], data_elem.text
+        encoding, data = data_elem.attrib["encoding"], data_elem.text
         return XISF._decode_inline_or_embedded_data(encoding, data, elem)
 
     @staticmethod
@@ -741,11 +748,13 @@ class XISF:
                 # Keep original string value if parsing fails
                 p_dict["datetime"] = None
         elif p_dict["type"] == "String":
-            p_dict["value"] = p_et.text
+            # NOTE: currently does: p_dict["value"] = p_et.text; then if location -> read block now
+            p_dict["value"] = p_et.text  # may be None
             if "location" in p_dict:
-                # Process location and compression attributes to find data block
                 self._process_location_compression(p_dict)
-                p_dict["value"] = self._read_data_block(p_dict).decode("utf-8")
+                # LAZY: do NOT read block here
+                return _make_lazy(p_dict)
+            return p_dict
         elif p_dict["type"] == "Boolean":
             # Boolean valid values are "true" and "false"
             p_dict["value"] = p_dict["value"] == "true"
@@ -757,23 +766,104 @@ class XISF:
             p_dict["length"] = int(p_dict["length"])
             p_dict["dtype"] = self._parse_vector_dtype(p_dict["type"])
             self._process_location_compression(p_dict)
-            raw_data = self._read_data_block(p_dict)
-            p_dict["value"] = np.frombuffer(raw_data, dtype=p_dict["dtype"], count=p_dict["length"])
+            # LAZY: do NOT read block here
+            return _make_lazy(p_dict)
+
         elif "Matrix" in p_dict["type"]:
             p_dict["value"] = p_et.text
             p_dict["rows"] = int(p_dict["rows"])
             p_dict["columns"] = int(p_dict["columns"])
-            length = p_dict["rows"] * p_dict["columns"]
             p_dict["dtype"] = self._parse_vector_dtype(p_dict["type"])
             self._process_location_compression(p_dict)
-            raw_data = self._read_data_block(p_dict)
-            p_dict["value"] = np.frombuffer(raw_data, dtype=p_dict["dtype"], count=length)
-            p_dict["value"] = p_dict["value"].reshape((p_dict["rows"], p_dict["columns"]))
+            # LAZY: do NOT read block here
+            return _make_lazy(p_dict)
         else:
             print(f"Unsupported Property type {p_dict['type']}: {p_et}")
             p_dict = False
 
         return p_dict
+
+    def resolve_property(self, p_dict):
+        """
+        Resolve a lazy property (String/Vector/Matrix with a data block).
+        Mutates p_dict in place and returns decoded 'value'.
+        """
+        if not p_dict.get("_lazy"):
+            return p_dict.get("value")
+
+        raw = self._read_data_block(p_dict)
+
+        t = p_dict["type"]
+        if t == "String":
+            val = raw.decode("utf-8")
+        elif "Vector" in t:
+            val = np.frombuffer(raw, dtype=p_dict["dtype"], count=p_dict["length"])
+        elif "Matrix" in t:
+            length = p_dict["rows"] * p_dict["columns"]
+            val = np.frombuffer(raw, dtype=p_dict["dtype"], count=length).reshape((p_dict["rows"], p_dict["columns"]))
+        else:
+            # if something else ever gets marked lazy
+            val = raw
+
+        p_dict["value"] = val
+        p_dict["_lazy"] = False
+        return val
+
+    def can_partial_read_image(self, n=0):
+        meta = self._images_meta[n]
+        if meta["location"][0] != "attachment":
+            return False
+        if "compression" in meta:
+            return False
+        return True
+
+    def read_image_roi(self, n=0, x0=0, y0=0, x1=None, y1=None, channels=None, data_format="channels_last"):
+        meta = self._images_meta[n]
+        if meta["location"][0] != "attachment":
+            raise NotImplementedError("ROI read only supported for attachment blocks")
+        if "compression" in meta:
+            raise NotImplementedError("ROI read not supported for compressed image blocks")
+
+        w, h, chc = meta["geometry"]
+        dtype = meta["dtype"]
+        itemsize = dtype.itemsize
+
+        if x1 is None: x1 = w
+        if y1 is None: y1 = h
+        x0 = max(0, min(w, x0)); x1 = max(0, min(w, x1))
+        y0 = max(0, min(h, y0)); y1 = max(0, min(h, y1))
+        if x1 <= x0 or y1 <= y0:
+            raise ValueError("Empty ROI")
+
+        if channels is None:
+            channels = list(range(chc))
+        else:
+            channels = list(channels)
+
+        _, pos, _size = meta["location"]
+        roi_w = x1 - x0
+        roi_h = y1 - y0
+
+        out = np.empty((len(channels), roi_h, roi_w), dtype=dtype)
+
+        row_bytes = w * itemsize
+        roi_bytes = roi_w * itemsize
+        plane_bytes = h * row_bytes
+
+        with open(self._fname, "rb") as f:
+            for ci, c in enumerate(channels):
+                if c < 0 or c >= chc:
+                    raise IndexError(f"channel {c} out of range")
+                plane_base = pos + c * plane_bytes
+                for r, y in enumerate(range(y0, y1)):
+                    offset = plane_base + y * row_bytes + x0 * itemsize
+                    f.seek(offset)
+                    out[ci, r, :] = np.frombuffer(f.read(roi_bytes), dtype=dtype, count=roi_w)
+
+        if data_format == "channels_last":
+            return np.transpose(out, (1, 2, 0))
+        return out
+
 
     @staticmethod
     def _process_location_compression(p_dict):
