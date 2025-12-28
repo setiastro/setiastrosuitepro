@@ -2088,6 +2088,12 @@ class ImageSubWindow(QWidget):
         """
         Render the current view.
 
+        Fast path:
+        - rebuild=False: only rescale already-built pixmap/QImage (NO numpy work).
+        Slow path:
+        - rebuild=True: rebuild visualization (autostretch, 8-bit conversion, overlays),
+                        refresh QImage/QPixmap cache, then present.
+
         Rules:
         - If a Preview is active, FIRST sync that preview's stored arr from the
         DocManager's ROI document (the thing tools actually modify), then render.
@@ -2097,46 +2103,53 @@ class ImageSubWindow(QWidget):
         # ---- GUARD: widget/label may be deleted but document.changed still fires ----
         try:
             from PyQt6 import sip as _sip
-            # If the whole widget or its label is gone, bail immediately
             if _sip.isdeleted(self):
                 return
             lbl = getattr(self, "label", None)
             if lbl is None or _sip.isdeleted(lbl):
                 return
         except Exception:
-            # If sip or label is missing for any reason, play it safe
             if not hasattr(self, "label"):
                 return
-        # ---------------------------------------------------------------------------        
+        # ---------------------------------------------------------------------------
+
+        # ---------------------------------------------------------------------------
+        # FAST PATH: if we're not rebuilding content and we already have a source pixmap,
+        # just present scaled (fast). This is the key to smooth zoom.
+        # ---------------------------------------------------------------------------
+        if (not rebuild) and getattr(self, "_pm_src", None) is not None:
+            self._present_scaled(interactive=True)
+            return
+
         # ---------------------------
         # 1) Choose & sync source arr
         # ---------------------------
         base_img = None
         if self._active_source_kind == "preview" and self._active_preview_id is not None:
             src = next((p for p in self._previews if p["id"] == self._active_preview_id), None)
-            #print("[ImageSubWindow] _render: preview mode, id =", self._active_preview_id, "src =", src is not None)
             if src is not None:
                 # Pull the *edited* ROI image from DocManager, if available
                 if hasattr(self, "_docman") and self._docman is not None:
-                    #print("[ImageSubWindow] _render: pulling edited ROI from DocManager")
                     try:
                         roi_doc = self._docman.get_document_for_view(self)
                         roi_img = getattr(roi_doc, "image", None)
+                        # IMPORTANT: only copy on rebuild; zoom should not trigger a copy
                         if roi_img is not None:
-                            # Replace the preview’s static copy with the edited ROI buffer
-                            src["arr"] = np.asarray(roi_img).copy()
+                            if rebuild or ("arr" not in src) or (src.get("arr") is None):
+                                src["arr"] = np.asarray(roi_img).copy()
                     except Exception:
                         print("[ImageSubWindow] _render: failed to pull edited ROI from DocManager")
-                        pass
                 base_img = src.get("arr", None)
         else:
-            #print("[ImageSubWindow] _render: full image mode")
             base_img = self._display_override if (self._display_override is not None) else (
                 getattr(self.document, "image", None)
             )
 
         if base_img is None:
             self._qimg_src = None
+            self._pm_src = None
+            self._pm_src_wcs = None
+            self._buf8 = None
             self.label.clear()
             return
 
@@ -2145,7 +2158,6 @@ class ImageSubWindow(QWidget):
         # ---------------------------------------
         # 2) Normalize dimensionality and dtype
         # ---------------------------------------
-        # Scalar → 1x1; 1D → 1xN; (H,W,1) → mono (H,W)
         if arr.ndim == 0:
             arr = arr.reshape(1, 1)
         elif arr.ndim == 1:
@@ -2166,7 +2178,7 @@ class ImageSubWindow(QWidget):
             else:
                 arr_f = arr.astype(np.float32, copy=False)
                 mx = float(arr_f.max()) if arr_f.size else 1.0
-                if mx > 5.0:  # compress absurdly large ranges
+                if mx > 5.0:
                     arr_f = arr_f / mx
 
             vis = autostretch(
@@ -2202,7 +2214,7 @@ class ImageSubWindow(QWidget):
             buf8 = np.stack([buf8.squeeze()] * 3, axis=-1)
 
         # ---------------------------------------
-        # 5) Optional mask overlay
+        # 5) Optional mask overlay (baked into buf8)
         # ---------------------------------------
         if getattr(self, "show_mask_overlay", False):
             m = self._active_mask_array()
@@ -2225,9 +2237,9 @@ class ImageSubWindow(QWidget):
         # ---------------------------------------
         if buf8.dtype != np.uint8:
             buf8 = buf8.astype(np.uint8)
+
         buf8 = ensure_contiguous(buf8)
         h, w, c = buf8.shape
-        # Be explicit. RGB888 means 3 bytes per pixel, full stop.
         bytes_per_line = int(w * 3)
 
         self._buf8 = buf8  # keep alive
@@ -2236,11 +2248,9 @@ class ImageSubWindow(QWidget):
             addr = int(self._buf8.ctypes.data)
             ptr  = sip.voidptr(addr)
             qimg = QImage(ptr, w, h, bytes_per_line, QImage.Format.Format_RGB888)
-            # Defensive: if Qt ever decides the buffer looks wrong, force-copy once
             if qimg is None or qimg.isNull():
                 raise RuntimeError("QImage null")
         except Exception:
-            # One safe fall-back copy (still fast, avoids crashes)
             buf8c = np.array(self._buf8, copy=True, order="C")
             self._buf8 = buf8c
             addr = int(self._buf8.ctypes.data)
@@ -2249,215 +2259,325 @@ class ImageSubWindow(QWidget):
 
         self._qimg_src = qimg
         if qimg is None or qimg.isNull():
+            self._pm_src = None
+            self._pm_src_wcs = None
             self.label.clear()
             return
 
-        # ---------------------------------------
-        # 7) Scale & present
-        # ---------------------------------------
-        sw = max(1, int(qimg.width() * self.scale))
-        sh = max(1, int(qimg.height() * self.scale))
-        scaled = qimg.scaled(
-            sw, sh,
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation
-        )
+        # Cache unscaled pixmap ONCE per rebuild
+        self._pm_src = QPixmap.fromImage(self._qimg_src)
 
-        # ── NEW: WCS grid overlay (draw on the scaled pixmap so lines stay 1px) ──
+        # Invalidate any cached “WCS baked” pixmap on rebuild
+        self._pm_src_wcs = None
+
+        # Present final-quality after rebuild
+        self._present_scaled(interactive=False)
+
+
+    def _present_scaled(self, interactive: bool):
+        """
+        Present the cached source pixmap scaled to current self.scale.
+
+        interactive=True:
+        - Fast scaling
+        - No WCS draw
+        interactive=False:
+        - Smooth scaling
+        - Optionally draw WCS overlay once
+        """
+        if getattr(self, "_pm_src", None) is None:
+            return
+
+        pm_base = self._pm_src
+
+        sw = max(1, int(pm_base.width() * self.scale))
+        sh = max(1, int(pm_base.height() * self.scale))
+
+        mode = Qt.TransformationMode.FastTransformation if interactive else Qt.TransformationMode.SmoothTransformation
+        pm_scaled = pm_base.scaled(sw, sh, Qt.AspectRatioMode.KeepAspectRatio, mode)
+
+        # If interactive, skip WCS overlay entirely (this is the biggest speed win)
+        if interactive:
+            self.label.setPixmap(pm_scaled)
+            self.label.resize(pm_scaled.size())
+            return
+
+        # Non-interactive: (optionally) draw WCS grid.
         if getattr(self, "_show_wcs_grid", False):
-            wcs2 = self._get_celestial_wcs()
-            if wcs2 is not None:
-                from PyQt6.QtGui import QPainter, QPen, QColor, QFont, QBrush
-                from PyQt6.QtCore import QSettings
-                from astropy.wcs.utils import proj_plane_pixel_scales
-                import numpy as _np
+            # Cache a baked WCS pixmap at *this* scale to avoid re-drawing
+            # if _present_scaled(False) is called multiple times at same scale.
+            cache_key = (sw, sh, float(self.scale))
+            if getattr(self, "_pm_src_wcs_key", None) != cache_key or getattr(self, "_pm_src_wcs", None) is None:
+                pm_scaled = self._draw_wcs_grid_on_pixmap(pm_scaled)
+                self._pm_src_wcs = pm_scaled
+                self._pm_src_wcs_key = cache_key
+            else:
+                pm_scaled = self._pm_src_wcs
 
-                pm = QPixmap.fromImage(scaled)
-
-                # Read user prefs (fallback to defaults if not set)
-                _settings = getattr(self, "_settings", None) or QSettings()
-                pref_enabled   = _settings.value("wcs_grid/enabled", True, type=bool)
-                pref_mode      = _settings.value("wcs_grid/mode", "auto", type=str)      # "auto" | "fixed"
-                pref_step_unit = _settings.value("wcs_grid/step_unit", "deg", type=str)  # "deg" | "arcmin"
-                pref_step_val  = _settings.value("wcs_grid/step_value", 1.0, type=float)
-
-                if not pref_enabled:
-                    # User disabled the grid in Preferences — skip overlay
-                    self.label.setPixmap(QPixmap.fromImage(scaled))
-                    self.label.resize(scaled.size())
-                    return
-
-                display_h, display_w = base_img.shape[:2]
-
-                # Pixel scales and FOV using celestial WCS
-                px_scales_deg = proj_plane_pixel_scales(wcs2)  # deg/pix for the two celestial axes
-                px_deg = float(max(px_scales_deg[0], px_scales_deg[1]))
-
-                H_full, W_full = display_h, display_w
-                fov_deg = px_deg * float(max(W_full, H_full))
-
-                # Choose grid spacing from prefs (or auto heuristic)
-                if pref_mode == "fixed":
-                    step_deg = float(pref_step_val if pref_step_unit == "deg" else (pref_step_val / 60.0))
-                    step_deg = max(1e-6, min(step_deg, 90.0))  # clamp to sane range
-                else:
-                    # Auto spacing (your previous logic)
-                    nice = [0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30]
-                    target_lines = 8
-                    desired = max(fov_deg / target_lines, px_deg * 100)
-                    step_deg = min((n for n in nice if n >= desired), default=30)
-
-                # World rect from image corners using celestial WCS
-                corners = _np.array([[0, 0], [W_full-1, 0], [0, H_full-1], [W_full-1, H_full-1]], dtype=float)
-                try:
-                    ra_c, dec_c = wcs2.pixel_to_world_values(corners[:,0], corners[:,1])
-                    ra_min = float(_np.nanmin(ra_c));  ra_max = float(_np.nanmax(ra_c))
-                    dec_min = float(_np.nanmin(dec_c)); dec_max = float(_np.nanmax(dec_c))
-                    if ra_max - ra_min > 300:
-                        ra_c_wrapped = _np.mod(ra_c + 180.0, 360.0)
-                        ra_min = float(_np.nanmin(ra_c_wrapped)); ra_max = float(_np.nanmax(ra_c_wrapped))
-                        ra_shift = 180.0
-                    else:
-                        ra_shift = 0.0
-                except Exception:
-                    ra_min, ra_max, dec_min, dec_max, ra_shift = 0.0, 360.0, -90.0, 90.0, 0.0
-
-                p = QPainter(pm)
-                pen = QPen(); pen.setWidth(1); pen.setColor(QColor(255, 255, 255, 140))
-                p.setPen(pen)
-                s = float(self.scale)
-                img_w = int(W_full * s)
-                img_h = int(H_full * s)
-                Wf, Hf = float(W_full), float(H_full)
-                margin = float(max(Wf, Hf) * 2.0)  # 2x image size margin                
-                def draw_world_poly(xs_world, ys_world):
-                    try:
-                        px, py = wcs2.world_to_pixel_values(xs_world, ys_world)
-                    except Exception:
-                        return
-
-                    px = _np.asarray(px, dtype=float)
-                    py = _np.asarray(py, dtype=float)
-
-                    # --- validity mask ---
-                    ok = _np.isfinite(px) & _np.isfinite(py)
-
-                    # Allow a margin around the image so near-edge lines still draw
-                    margin = float(max(Wf, Hf) * 2.0)  # 2x image size margin
-                    ok &= (px > -margin) & (px < (Wf - 1.0 + margin))
-                    ok &= (py > -margin) & (py < (Hf - 1.0 + margin))
-
-                    for i in range(1, len(px)):
-                        if not (ok[i-1] and ok[i]):
-                            continue
-
-                        x0 = float(px[i-1]) * s
-                        y0 = float(py[i-1]) * s
-                        x1 = float(px[i])   * s
-                        y1 = float(py[i])   * s
-
-                        # Final sanity gate before int() -> Qt 32-bit
-                        if max(abs(x0), abs(y0), abs(x1), abs(y1)) > 2.0e9:
-                            continue
-
-                        p.drawLine(int(x0), int(y0), int(x1), int(y1))
+        self.label.setPixmap(pm_scaled)
+        self.label.resize(pm_scaled.size())
 
 
-                ra_samples = _np.linspace(ra_min, ra_max, 512, dtype=float)
-                ra_samples_wrapped = _np.mod(ra_samples + ra_shift, 360.0) if ra_shift else ra_samples
-                dec_samples = _np.linspace(dec_min, dec_max, 512, dtype=float)
+    def _draw_wcs_grid_on_pixmap(self, pm_scaled: QPixmap) -> QPixmap:
+        """
+        Your existing WCS painter logic, moved to operate on a QPixmap (already scaled).
+        Runs ONLY on non-interactive redraw.
+        """
+        wcs2 = self._get_celestial_wcs()
+        if wcs2 is None:
+            return pm_scaled
 
-                # DEC lines (horiz-ish)
-                def _frange(a,b,s):
-                    out=[]; x=a
-                    while x <= b + 1e-9:
-                        out.append(x); x += s
-                    return out
-                def _round_to(x,s): return s * round(x/s)
+        from PyQt6.QtGui import QPainter, QPen, QColor, QFont, QBrush
+        from PyQt6.QtCore import QSettings, QRect
+        from astropy.wcs.utils import proj_plane_pixel_scales
+        import numpy as _np
 
-                ra_start  = _round_to(ra_min, step_deg)
-                dec_start = _round_to(dec_min, step_deg)
-                for dec in _frange(dec_start, dec_max, step_deg):
-                    dec_arr = _np.full_like(ra_samples_wrapped, dec)
-                    draw_world_poly(ra_samples_wrapped, dec_arr)
+        _settings = getattr(self, "_settings", None) or QSettings()
+        pref_enabled   = _settings.value("wcs_grid/enabled", True, type=bool)
+        pref_mode      = _settings.value("wcs_grid/mode", "auto", type=str)
+        pref_step_unit = _settings.value("wcs_grid/step_unit", "deg", type=str)
+        pref_step_val  = _settings.value("wcs_grid/step_value", 1.0, type=float)
 
-                # RA lines (vert-ish)
-                for ra in _frange(ra_start, ra_max, step_deg):
-                    ra_arr = _np.full_like(dec_samples, (ra + ra_shift) % 360.0)
-                    draw_world_poly(ra_arr, dec_samples)
+        if not pref_enabled:
+            return pm_scaled
 
-                # ── LABELS for RA/Dec lines ─────────────────────────────────
-                # Font & box style
-                font = QFont(); font.setPixelSize(11)  # screen-consistent
-                p.setFont(font)
-                text_pen  = QPen(QColor(255, 255, 255, 230))
-                box_brush = QBrush(QColor(0, 0, 0, 140))
-                p.setPen(text_pen)
+        # Determine full image geometry from the CURRENT SOURCE buffer (not pm_scaled)
+        # We can infer W/H from qimg src (original)
+        if getattr(self, "_qimg_src", None) is None:
+            return pm_scaled
+        H_full = int(self._qimg_src.height())
+        W_full = int(self._qimg_src.width())
 
-                def _draw_label(x, y, txt, anchor="lt"):
-                    if not _np.isfinite([x, y]).all():
-                        return
-                    fm = p.fontMetrics()
-                    wtxt = fm.horizontalAdvance(txt) + 6
-                    htxt = fm.height() + 4
+        # Pixel scales/FOV
+        px_scales_deg = proj_plane_pixel_scales(wcs2)
+        px_deg = float(max(px_scales_deg[0], px_scales_deg[1]))
+        fov_deg = px_deg * float(max(W_full, H_full))
 
-                    # initial placement with a little padding
-                    if anchor == "lt":      # left-top
-                        rx, ry = int(x) + 4, int(y) + 3
-                    elif anchor == "rt":    # right-top
-                        rx, ry = int(x) - wtxt - 4, int(y) + 3
-                    elif anchor == "lb":    # left-bottom
-                        rx, ry = int(x) + 4, int(y) - htxt - 3
-                    else:                   # center-top
-                        rx, ry = int(x) - wtxt // 2, int(y) + 3
+        if pref_mode == "fixed":
+            step_deg = float(pref_step_val if pref_step_unit == "deg" else (pref_step_val / 60.0))
+            step_deg = max(1e-6, min(step_deg, 90.0))
+        else:
+            nice = [0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30]
+            target_lines = 8
+            desired = max(fov_deg / target_lines, px_deg * 100)
+            step_deg = min((n for n in nice if n >= desired), default=30)
 
-                    # clamp entirely inside the image
-                    rx = max(0, min(rx, img_w - wtxt - 1))
-                    ry = max(0, min(ry, img_h - htxt - 1))
+        # World bounds from corners
+        corners = _np.array([[0, 0], [W_full-1, 0], [0, H_full-1], [W_full-1, H_full-1]], dtype=float)
+        try:
+            ra_c, dec_c = wcs2.pixel_to_world_values(corners[:,0], corners[:,1])
+            ra_min = float(_np.nanmin(ra_c));  ra_max = float(_np.nanmax(ra_c))
+            dec_min = float(_np.nanmin(dec_c)); dec_max = float(_np.nanmax(dec_c))
+            if ra_max - ra_min > 300:
+                ra_c_wrapped = _np.mod(ra_c + 180.0, 360.0)
+                ra_min = float(_np.nanmin(ra_c_wrapped)); ra_max = float(_np.nanmax(ra_c_wrapped))
+                ra_shift = 180.0
+            else:
+                ra_shift = 0.0
+        except Exception:
+            ra_min, ra_max, dec_min, dec_max, ra_shift = 0.0, 360.0, -90.0, 90.0, 0.0
 
-                    rect = QRect(rx, ry, wtxt, htxt)
-                    p.save()
-                    p.setBrush(box_brush)
-                    p.setPen(Qt.PenStyle.NoPen)
-                    p.drawRoundedRect(rect, 4, 4)
-                    p.restore()
-                    p.drawText(rect.adjusted(3, 2, -3, -2),
-                            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, txt)
+        pm = QPixmap(pm_scaled)  # copy so we don’t mutate caller
+        p = QPainter(pm)
+        pen = QPen(QColor(255, 255, 255, 140))
+        pen.setWidth(1)
+        p.setPen(pen)
+
+        # Scale factor between full-res image and pm_scaled
+        s = float(pm.width()) / float(max(1, W_full))
+
+        Wf, Hf = float(W_full), float(H_full)
+
+        def draw_world_poly(xs_world, ys_world):
+            try:
+                px, py = wcs2.world_to_pixel_values(xs_world, ys_world)
+            except Exception:
+                return
+
+            px = _np.asarray(px, dtype=float)
+            py = _np.asarray(py, dtype=float)
+
+            ok = _np.isfinite(px) & _np.isfinite(py)
+            margin = float(max(Wf, Hf) * 2.0)
+            ok &= (px > -margin) & (px < (Wf - 1.0 + margin))
+            ok &= (py > -margin) & (py < (Hf - 1.0 + margin))
+
+            for i in range(1, len(px)):
+                if not (ok[i-1] and ok[i]):
+                    continue
+                x0 = float(px[i-1]) * s
+                y0 = float(py[i-1]) * s
+                x1 = float(px[i])   * s
+                y1 = float(py[i])   * s
+                if max(abs(x0), abs(y0), abs(x1), abs(y1)) > 2.0e9:
+                    continue
+                p.drawLine(int(x0), int(y0), int(x1), int(y1))
+
+        ra_samples = _np.linspace(ra_min, ra_max, 512, dtype=float)
+        ra_samples_wrapped = _np.mod(ra_samples + ra_shift, 360.0) if ra_shift else ra_samples
+        dec_samples = _np.linspace(dec_min, dec_max, 512, dtype=float)
+
+        def _frange(a, b, sstep):
+            out = []
+            x = a
+            while x <= b + 1e-9:
+                out.append(x)
+                x += sstep
+            return out
+
+        def _round_to(x, sstep):
+            return sstep * round(x / sstep)
+
+        ra_start  = _round_to(ra_min, step_deg)
+        dec_start = _round_to(dec_min, step_deg)
+
+        for dec in _frange(dec_start, dec_max, step_deg):
+            dec_arr = _np.full_like(ra_samples_wrapped, dec)
+            draw_world_poly(ra_samples_wrapped, dec_arr)
+
+        for ra in _frange(ra_start, ra_max, step_deg):
+            ra_arr = _np.full_like(dec_samples, (ra + ra_shift) % 360.0)
+            draw_world_poly(ra_arr, dec_samples)
+
+        # Labels
+        font = QFont()
+        font.setPixelSize(11)
+        p.setFont(font)
+        text_pen  = QPen(QColor(255, 255, 255, 230))
+        box_brush = QBrush(QColor(0, 0, 0, 140))
+        p.setPen(text_pen)
+
+        img_w = pm.width()
+        img_h = pm.height()
+
+        def _draw_label(x, y, txt, anchor="lt"):
+            if not _np.isfinite([x, y]).all():
+                return
+            fm = p.fontMetrics()
+            wtxt = fm.horizontalAdvance(txt) + 6
+            htxt = fm.height() + 4
+
+            if anchor == "lt":
+                rx, ry = int(x) + 4, int(y) + 3
+            elif anchor == "rt":
+                rx, ry = int(x) - wtxt - 4, int(y) + 3
+            elif anchor == "lb":
+                rx, ry = int(x) + 4, int(y) - htxt - 3
+            else:
+                rx, ry = int(x) - wtxt // 2, int(y) + 3
+
+            rx = max(0, min(rx, img_w - wtxt - 1))
+            ry = max(0, min(ry, img_h - htxt - 1))
+
+            rect = QRect(rx, ry, wtxt, htxt)
+            p.save()
+            p.setBrush(box_brush)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawRoundedRect(rect, 4, 4)
+            p.restore()
+            p.drawText(rect.adjusted(3, 2, -3, -2),
+                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, txt)
+
+        # DEC labels on left edge
+        for dec in _frange(dec_start, dec_max, step_deg):
+            try:
+                x_pix, y_pix = wcs2.world_to_pixel_values((ra_min + ra_shift) % 360.0, dec)
+                if not _np.isfinite([x_pix, y_pix]).all():
+                    continue
+                x_pix = min(max(x_pix, 0.0), Wf - 1.0)
+                y_pix = min(max(y_pix, 0.0), Hf - 1.0)
+                _draw_label(x_pix * s, y_pix * s, self._deg_to_dms(dec), anchor="lt")
+            except Exception:
+                pass
+
+        # RA labels on top edge
+        for ra in _frange(ra_start, ra_max, step_deg):
+            ra_wrapped = (ra + ra_shift) % 360.0
+            try:
+                x_pix, y_pix = wcs2.world_to_pixel_values(ra_wrapped, dec_min)
+                if not _np.isfinite([x_pix, y_pix]).all():
+                    continue
+                x_pix = min(max(x_pix, 0.0), Wf - 1.0)
+                y_pix = min(max(y_pix, 0.0), Hf - 1.0)
+                _draw_label(x_pix * s, y_pix * s, self._deg_to_hms(ra_wrapped), anchor="ct")
+            except Exception:
+                pass
+
+        p.end()
+        return pm
 
 
-                # DEC labels on left edge
-                for dec in _frange(dec_start, dec_max, step_deg):
-                    try:
-                        x_pix, y_pix = wcs2.world_to_pixel_values((ra_min + ra_shift) % 360.0, dec)
-                        if not _np.isfinite([x_pix, y_pix]).all():
-                            continue
-                        # clamp to image bounds before scaling
-                        x_pix = min(max(x_pix, 0.0), Wf - 1.0)
-                        y_pix = min(max(y_pix, 0.0), Hf - 1.0)
-                        _draw_label(x_pix * s, y_pix * s, self._deg_to_dms(dec), anchor="lt")
-                    except Exception:
-                        pass
+    # ---------- interaction ----------
+    def _zoom_at_anchor(self, factor: float):
+        if getattr(self, "_qimg_src", None) is None and getattr(self, "_pm_src", None) is None:
+            return
 
-                # RA labels on top edge
-                for ra in _frange(ra_start, ra_max, step_deg):
-                    ra_wrapped = (ra + ra_shift) % 360.0
-                    try:
-                        x_pix, y_pix = wcs2.world_to_pixel_values(ra_wrapped, dec_min)
-                        if not _np.isfinite([x_pix, y_pix]).all():
-                            continue
-                        x_pix = min(max(x_pix, 0.0), Wf - 1.0)
-                        y_pix = min(max(y_pix, 0.0), Hf - 1.0)
-                        _draw_label(x_pix * s, y_pix * s, self._deg_to_hms(ra_wrapped), anchor="ct")
-                    except Exception:
-                        pass
+        old_scale = float(self.scale)
+        new_scale = max(self._min_scale, min(old_scale * float(factor), self._max_scale))
+        if abs(new_scale - old_scale) < 1e-8:
+            return
 
-                p.end()
-                scaled = pm.toImage()
+        vp = self.scroll.viewport()
+        hbar = self.scroll.horizontalScrollBar()
+        vbar = self.scroll.verticalScrollBar()
 
-        # ── end WCS grid overlay ────────────────────────────────────────────────
+        try:
+            anchor_vp = vp.mapFromGlobal(QCursor.pos())
+        except Exception:
+            anchor_vp = None
 
-        self.label.setPixmap(QPixmap.fromImage(scaled))
-        self.label.resize(scaled.size())
+        if (anchor_vp is None) or (not vp.rect().contains(anchor_vp)):
+            anchor_vp = QPoint(vp.width() // 2, vp.height() // 2)
+
+        x_label_pre = hbar.value() + anchor_vp.x()
+        y_label_pre = vbar.value() + anchor_vp.y()
+
+        xi = x_label_pre / max(old_scale, 1e-12)
+        yi = y_label_pre / max(old_scale, 1e-12)
+
+        # Apply new scale
+        self.scale = new_scale
+
+        # FAST present (no rebuild)
+        self._present_scaled(interactive=True)
+
+        # Keep anchor stable
+        x_label_post = xi * new_scale
+        y_label_post = yi * new_scale
+
+        new_h = int(round(x_label_post - anchor_vp.x()))
+        new_v = int(round(y_label_post - anchor_vp.y()))
+
+        new_h = max(hbar.minimum(), min(new_h, hbar.maximum()))
+        new_v = max(vbar.minimum(), min(new_v, vbar.maximum()))
+
+        hbar.setValue(new_h)
+        vbar.setValue(new_v)
+
+        # Defer one final smooth redraw (and WCS overlay) after the burst
+        self._request_zoom_redraw()
+
+
+    def _request_zoom_redraw(self):
+        if getattr(self, "_zoom_timer", None) is None:
+            self._zoom_timer = QTimer(self)
+            self._zoom_timer.setSingleShot(True)
+            self._zoom_timer.timeout.connect(self._apply_zoom_redraw)
+
+        # 60–120ms feels better than 16ms for “zoom burst collapse”
+        # but keep your 16ms if you prefer.
+        self._zoom_timer.start(90)
+
+
+    def _apply_zoom_redraw(self):
+        """
+        Final “settled” redraw:
+        - SmoothTransformation
+        - Optional WCS grid overlay
+        """
+        if getattr(self, "_pm_src", None) is None:
+            return
+        self._present_scaled(interactive=False)
 
 
 
@@ -2480,57 +2600,6 @@ class ImageSubWindow(QWidget):
         return None if src is None else src["name"]
 
 
-    # ---------- interaction ----------
-    def _zoom_at_anchor(self, factor: float):
-        if self._qimg_src is None:
-            return
-        old_scale = self.scale
-        # clamp with new max
-        new_scale = max(self._min_scale, min(old_scale * factor, self._max_scale))
-        if abs(new_scale - old_scale) < 1e-8:
-            return
-
-        vp = self.scroll.viewport()
-        hbar = self.scroll.horizontalScrollBar()
-        vbar = self.scroll.verticalScrollBar()
-
-        # Anchor in viewport coordinates via global cursor (robust)
-        try:
-            anchor_vp = vp.mapFromGlobal(QCursor.pos())
-        except Exception:
-            anchor_vp = None
-
-        if (anchor_vp is None) or (not vp.rect().contains(anchor_vp)):
-            anchor_vp = QPoint(vp.width() // 2, vp.height() // 2)
-
-        # Current label coords under the anchor
-        x_label_pre = hbar.value() + anchor_vp.x()
-        y_label_pre = vbar.value() + anchor_vp.y()
-
-        # Convert to image coords at old scale
-        xi = x_label_pre / max(old_scale, 1e-12)
-        yi = y_label_pre / max(old_scale, 1e-12)
-
-        # Apply scale and redraw (updates label size + scrollbar ranges)
-        self.scale = new_scale
-        self._render(rebuild=False)
-
-        # Reproject that image point to label coords at new scale
-        x_label_post = xi * new_scale
-        y_label_post = yi * new_scale
-
-        # Desired scrollbar values to keep point under the cursor
-        new_h = int(round(x_label_post - anchor_vp.x()))
-        new_v = int(round(y_label_post - anchor_vp.y()))
-
-        # Clamp to valid range
-        new_h = max(hbar.minimum(), min(new_h, hbar.maximum()))
-        new_v = max(vbar.minimum(), min(new_v, vbar.maximum()))
-
-        # Apply
-        hbar.setValue(new_h)
-        vbar.setValue(new_v)
-        self._schedule_emit_view_transform()
 
     def _find_main_window(self):
         p = self.parent()
