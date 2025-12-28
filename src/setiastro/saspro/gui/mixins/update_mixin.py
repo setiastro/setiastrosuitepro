@@ -15,6 +15,8 @@ from PyQt6.QtCore import QUrl
 from PyQt6.QtNetwork import QNetworkRequest, QNetworkReply
 from PyQt6.QtWidgets import QMessageBox, QApplication
 
+from PyQt6.QtNetwork import QSslSocket
+
 if TYPE_CHECKING:
     pass
 
@@ -44,27 +46,39 @@ class UpdateMixin:
         return str(v or "0.0.0")
 
     def _ensure_network_manager(self):
-        """Ensure the network access manager exists."""
         from PyQt6.QtNetwork import QNetworkAccessManager
-        
-        if not hasattr(self, "_nam") or self._nam is None:
+        if getattr(self, "_nam", None) is None:
             self._nam = QNetworkAccessManager(self)
             self._nam.finished.connect(self._on_update_reply)
 
     def _kick_update_check(self, *, interactive: bool):
         """
         Start an update check request.
-        
-        Args:
-            interactive: If True, show UI feedback for the check
         """
         self._ensure_network_manager()
         url_str = self.settings.value("updates/url", self._updates_url, type=str) or self._updates_url
+
+        # ---- TLS availability guard (prevents crash on OpenSSL mismatch) ----
+        if url_str.lower().startswith("https://"):
+            try:
+                if not QSslSocket.supportsSsl():
+                    msg = "TLS unavailable in Qt (QSslSocket.supportsSsl()=False). Skipping update check."
+                    if self.statusBar():
+                        self.statusBar().showMessage(self.tr("Update check unavailable (TLS missing)."), 5000)
+                    if interactive:
+                        QMessageBox.information(self, self.tr("Update Check"),
+                                                self.tr("Update check is unavailable because TLS is not available on this system."))
+                    else:
+                        print(f"[updates] {msg}")
+                    return
+            except Exception as e:
+                # If QtNetwork is in a weird state, fail safe (do not attempt TLS)
+                print(f"[updates] TLS probe failed ({e}); skipping update check.")
+                return
+
         req = QNetworkRequest(QUrl(url_str))
-        req.setRawHeader(
-            b"User-Agent",
-            f"SASPro/{self._current_version_str}".encode("utf-8")
-        )
+        req.setRawHeader(b"User-Agent", f"SASPro/{self._current_version_str}".encode("utf-8"))
+
         reply = self._nam.get(req)
         reply.setProperty("interactive", interactive)
 
