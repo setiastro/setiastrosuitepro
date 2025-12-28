@@ -553,8 +553,9 @@ class AberrationAIDialog(QDialog):
 
 
     def _on_failed(self, msg: str):
-        self._log(f"❌ Aberration AI failed: {msg}")   # NEW
+        self._log(f"❌ Aberration AI failed: {msg}")
         QMessageBox.critical(self, "ONNX Error", msg)
+        self.reject()   # closes the dialog
 
     def _on_ok(self, out: np.ndarray):
         doc = self.get_active_doc()
@@ -680,15 +681,18 @@ class AberrationAIDialog(QDialog):
         )
 
         self.progress.setValue(100)
-        # Dialog stays open so user can apply to other images
+        # NEW: close this UI after a successful run
+        self.accept()   # or self.close()
+        return
 
     def _on_worker_finished(self):
-        # If dialog is already gone, this method is never called because the receiver (self)
-        # has been destroyed and Qt auto-disconnects the signal.
+        # Dialog might have been closed by _on_ok()
+        if not self.isVisible():
+            return
+
         if hasattr(self, "btn_run"):
             try:
                 self.btn_run.setEnabled(True)
             except RuntimeError:
-                # Button already deleted; ignore
                 pass
         self._worker = None
