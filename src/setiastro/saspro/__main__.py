@@ -11,6 +11,19 @@ called via the `main()` function when invoked as an entry point.
 
 import sys
 import os
+
+from pathlib import Path
+
+if sys.platform.startswith("win"):
+    exe_dir = Path(sys.executable).resolve().parent
+    internal = exe_dir / "_internal"
+    if internal.is_dir():
+        try:
+            os.add_dll_directory(str(internal))
+        except Exception:
+            pass
+        os.environ["PATH"] = str(internal) + os.pathsep + os.environ.get("PATH", "")
+        
 from PyQt6.QtCore import QCoreApplication
 
 # ---- Linux Qt stability guard (must run BEFORE any PyQt6 import) ----
