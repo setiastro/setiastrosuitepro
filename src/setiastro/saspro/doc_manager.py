@@ -1555,6 +1555,8 @@ def debug_dump_metadata_print(meta: dict, context: str = ""):
 
         print("===== END METADATA DUMP ({}) =====".format(context))
 
+import time
+
 class DocManager(QObject):
     documentAdded = pyqtSignal(object)   # ImageDocument
     documentRemoved = pyqtSignal(object) # ImageDocument

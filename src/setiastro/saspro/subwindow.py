@@ -1,4 +1,4 @@
-# pro/subwindow.py
+# src/setiastro/saspro/subwindow.py
 from __future__ import annotations
 from PyQt6.QtCore import Qt, QPoint, pyqtSignal, QSize, QEvent, QByteArray, QMimeData, QSettings, QTimer, QRect, QPoint, QMargins
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QScrollArea, QLabel, QToolButton, QHBoxLayout, QMessageBox, QMdiSubWindow, QMenu, QInputDialog, QApplication, QTabWidget, QRubberBand
@@ -2085,6 +2085,7 @@ class ImageSubWindow(QWidget):
 
     # ---------- rendering ----------
     def _render(self, rebuild: bool = False):
+        #print("[ImageSubWindow] _render called, rebuild =", rebuild)
         """
         Render the current view.
 
@@ -2272,6 +2273,8 @@ class ImageSubWindow(QWidget):
 
         # Present final-quality after rebuild
         self._present_scaled(interactive=False)
+
+        rebuild = False  # done
 
 
     def _present_scaled(self, interactive: bool):

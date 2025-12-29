@@ -285,6 +285,67 @@ from setiastro.saspro.gui.mixins import (
     ThemeMixin, GeometryMixin, ViewMixin, HeaderMixin, MaskMixin, UpdateMixin
 )
 
+import time
+import sys
+import threading
+import traceback
+from PyQt6.QtCore import QObject, QTimer
+
+class UiStallDetector(QObject):
+    """
+    Detects UI stalls by watching QTimer tick drift.
+    On stall, prints stack traces for all threads using print().
+    (No faulthandler / no fileno() required.)
+    """
+
+    def __init__(self, parent=None, interval_ms: int = 50, threshold_ms: int = 300):
+        super().__init__(parent)
+        self.interval_ms = int(interval_ms)
+        self.threshold_ms = int(threshold_ms)
+        self._last = time.perf_counter()
+        self._stall_seq = 0
+
+        self._timer = QTimer(self)
+        self._timer.setInterval(self.interval_ms)
+        self._timer.timeout.connect(self._tick)
+
+    def start(self):
+        self._last = time.perf_counter()
+        self._timer.start()
+
+    def stop(self):
+        self._timer.stop()
+
+    def _dump_all_threads_print(self):
+        self._stall_seq += 1
+        seq = self._stall_seq
+        print(f"\n[UI STALL] ===== traceback dump #{seq} (all threads) =====", flush=True)
+
+        frames = sys._current_frames()  # {thread_ident: frame}
+        id_to_name = {t.ident: t.name for t in threading.enumerate()}
+
+        for tid, frame in frames.items():
+            tname = id_to_name.get(tid, "unknown")
+            print(f"\n--- Thread {tid} ({tname}) ---", flush=True)
+            try:
+                stack = traceback.format_stack(frame)
+                for line in stack:
+                    # line already ends with newline
+                    print(line, end="", flush=True)
+            except Exception as e:
+                print(f"(failed to dump thread {tid}: {e})", flush=True)
+
+        print(f"[UI STALL] ===== end dump #{seq} =====\n", flush=True)
+
+    def _tick(self):
+        now = time.perf_counter()
+        elapsed_ms = (now - self._last) * 1000.0
+        self._last = now
+
+        late_ms = elapsed_ms - self.interval_ms
+        if late_ms >= self.threshold_ms:
+            print(f"[UI STALL] tick late by {late_ms:.0f} ms (elapsed={elapsed_ms:.0f} ms)", flush=True)
+            self._dump_all_threads_print()
 
 class AstroSuiteProMainWindow(
     DockMixin, MenuMixin, ToolbarMixin, FileMixin,
@@ -299,7 +360,8 @@ class AstroSuiteProMainWindow(
         # Prevent white flash: start strictly transparent and force dark bg
         self.setWindowOpacity(0.0)
         self.setStyleSheet("QMainWindow { background-color: #0F0F19; }")
-
+        #self._stall = UiStallDetector(self, interval_ms=50, threshold_ms=250)
+        #self._stall.start()
         # --- Usage Stats ---
         self._session_start_time = time.time()
         self._stats_timer = QTimer(self)
