@@ -8321,13 +8321,18 @@ class StackingSuiteDialog(QDialog):
         mf_row3.addWidget(self.mf_Huber_hint)
 
         mf_row3.addSpacing(16)
+
         self.mf_use_star_mask_cb = QCheckBox(self.tr("Auto Star Mask"))
         self.mf_use_noise_map_cb = QCheckBox(self.tr("Auto Noise Map"))
-        self.mf_use_star_mask_cb.setChecked(self.settings.value("stacking/mfdeconv/use_star_masks", False, type=bool))
-        self.mf_use_noise_map_cb.setChecked(self.settings.value("stacking/mfdeconv/use_noise_maps", False, type=bool))
+
+        # Always ON by default (session-only toggles)
+        self.mf_use_star_mask_cb.setChecked(True)
+        self.mf_use_noise_map_cb.setChecked(True)
+
         mf_row3.addWidget(self.mf_use_star_mask_cb)
         mf_row3.addWidget(self.mf_use_noise_map_cb)
         mf_row3.addStretch(1)
+
         mf_v.addLayout(mf_row3)
 
         # persist
@@ -13894,23 +13899,23 @@ class StackingSuiteDialog(QDialog):
         self.update_status(self.tr("🧹 Doing a little tidying up..."))
         user_ref_locked = bool(getattr(self, "_user_ref_locked", False))
 
-        # Only clear derived geometry/maps when NOT locked
+        # ALWAYS clear derived geometry/maps for this run (mapping is run-specific)
+        self._norm_target_hw = None
+        self._orig2norm = {}
+
+        # Only clear the UI reference label when NOT locked
         if not user_ref_locked:
-            self._norm_target_hw = None
-            self._orig2norm = {}
             try:
                 if hasattr(self, "ref_frame_path") and self.ref_frame_path:
                     self.ref_frame_path.setText("Auto (not set)")
             except Exception:
                 pass
         else:
-            # Keep the UI showing the user’s chosen ref (basename for display)
             try:
                 if hasattr(self, "ref_frame_path") and self.ref_frame_path and self.reference_frame:
                     self.ref_frame_path.setText(os.path.basename(self.reference_frame))
             except Exception:
                 pass
-
         # 🚫 Do NOT remove persisted user ref here; that defeats locking.
         # (No settings.remove() and no reference_frame = None if locked)
 
@@ -14795,7 +14800,28 @@ class StackingSuiteDialog(QDialog):
 
             from os import path
             ref_path = path.normpath(self.reference_frame)
-            self.update_status(self.tr(f"📌 Reference for alignment (verbatim): {ref_path}"))
+            from os import path
+
+            # Prefer the normalized FIT reference if we produced one
+            ref_key = path.normcase(path.normpath(self.reference_frame))
+            ref_norm = self._orig2norm.get(ref_key)
+
+            # If mapping missing, attempt the predictable filename in norm_dir
+            if not ref_norm:
+                base = os.path.basename(self.reference_frame)
+                if base.lower().endswith(".fits"):
+                    n_name = base[:-5] + "_n.fit"
+                elif base.lower().endswith(".fit"):
+                    n_name = base[:-4] + "_n.fit"
+                else:
+                    n_name = base + "_n.fit"
+                candidate = path.normpath(path.join(norm_dir, n_name))
+                if path.exists(candidate):
+                    ref_norm = candidate
+
+            ref_path = path.normpath(ref_norm or self.reference_frame)
+
+            self.update_status(self.tr(f"📌 Reference for alignment: {ref_path}"))
             if not path.exists(ref_path):
                 self.update_status(self.tr(f"🚨 Reference file does not exist: {ref_path}"))
                 return
@@ -14810,6 +14836,14 @@ class StackingSuiteDialog(QDialog):
             shift_tol = self.settings.value("stacking/shift_tolerance", 0.2, type=float)
 
             normalized_files = [path.normpath(p) for p in normalized_files]
+
+            ref_key = path.normcase(path.normpath(self.reference_frame))
+            ref_path = self._orig2norm.get(ref_key, path.normpath(self.reference_frame))
+
+            self.update_status(self.tr(f"📌 Reference for alignment (normalized if available): {ref_path}"))
+            if not path.exists(ref_path):
+                self.update_status(self.tr(f"🚨 Reference file does not exist: {ref_path}"))
+                return
 
             self.alignment_thread = StarRegistrationThread(
                 ref_path,  
@@ -17685,6 +17719,87 @@ class StackingSuiteDialog(QDialog):
 
             self.update_status(self.tr(f"📊 Found {len(cand)} aligned/normalized frames. Measuring in parallel previews…"))
 
+            # ─────────────────────────────────────────────────────────────────────
+            # XISF safety: convert any .xisf to float32 FITS once up-front so the
+            # downstream integration pipeline is guaranteed to be FITS-based.
+            # ─────────────────────────────────────────────────────────────────────
+            prep_dir = os.path.join(self.stacking_directory, "Prepared_Registered")
+            os.makedirs(prep_dir, exist_ok=True)
+
+            orig2prep = {}  # optional, for debugging or later mapping
+
+            def _prep_path_for(fp: str) -> str:
+                base = os.path.basename(fp)
+                stem, _ext = os.path.splitext(base)
+                return os.path.normpath(os.path.join(prep_dir, stem + "_prep.fit"))
+
+            prepared = []
+            for fp in cand:
+                ext = os.path.splitext(fp)[1].lower()
+                if ext != ".xisf":
+                    prepared.append(fp)
+                    continue
+
+                outp = _prep_path_for(fp)
+
+                # reuse if already created this run
+                if os.path.exists(outp):
+                    orig2prep[os.path.normcase(os.path.normpath(fp))] = outp
+                    prepared.append(outp)
+                    continue
+
+                try:
+                    img, hdr = self._load_image_any(fp)   # must support XISF
+                    if img is None:
+                        self.update_status(self.tr(f"⚠️ Could not read XISF: {fp}"))
+                        continue
+
+                    img = _to_writable_f32(img)
+                    if img.ndim == 3 and img.shape[-1] == 1:
+                        img = np.squeeze(img, axis=-1)
+
+                    # Minimal header: keep what you can if hdr is a fits.Header
+                    try:
+                        h = hdr if isinstance(hdr, fits.Header) else fits.Header()
+                    except Exception:
+                        h = fits.Header()
+
+                    h["SAS_PREP"] = (True, "Prepared from XISF for integration")
+                    h["SRCFILE"]  = (os.path.basename(fp), "Original source filename")
+                    if isinstance(img, np.ndarray) and img.ndim == 3 and img.shape[-1] == 3:
+                        h["DEBAYERED"] = (True, "Color frame")
+                    else:
+                        h["DEBAYERED"] = (False, "Mono frame")
+
+                    fits.PrimaryHDU(data=img.astype(np.float32), header=h).writeto(outp, overwrite=True)
+
+                    orig2prep[os.path.normcase(os.path.normpath(fp))] = outp
+                    prepared.append(outp)
+
+                except Exception as e:
+                    self.update_status(self.tr(f"⚠️ XISF→FITS prepare failed for {fp}: {e}"))
+
+            # Swap cand to prepared paths
+            cand = prepared
+
+            # Also update light_files to match these prepared paths so the rest of the
+            # pipeline only ever sees FITS paths.
+            prep_map = orig2prep
+            new_light_files = {}
+            for g, lst in self.light_files.items():
+                out = []
+                for p in lst:
+                    k = os.path.normcase(os.path.normpath(p))
+                    out.append(prep_map.get(k, p))
+                new_light_files[g] = out
+            self.light_files = new_light_files
+
+            # If reference_frame was set and is XISF, redirect it too
+            if getattr(self, "reference_frame", None):
+                k = os.path.normcase(os.path.normpath(self.reference_frame))
+                if k in prep_map:
+                    self.reference_frame = prep_map[k]
+
             # 2) Chunked preview measurement (mean + star count/ecc)
             self.frame_weights = {}
             mean_values = {}
@@ -17714,7 +17829,8 @@ class StackingSuiteDialog(QDialog):
                 paths_ok = []
 
                 def _preview_job(fp: str):
-                    return _quick_preview_from_path(fp, target_xbin=1, target_ybin=1)
+                    # Use the unified reader (FITS/XISF/TIFF/etc) like registration does
+                    return self._quick_preview_any(fp, target_xbin=1, target_ybin=1)
 
                 with ThreadPoolExecutor(max_workers=max_workers) as ex:
                     futs = {ex.submit(_preview_job, fp): fp for fp in chunk}

@@ -1520,21 +1520,29 @@ def load_image(filename, max_retries=3, wait_seconds=3, return_metadata: bool = 
                 # Now get XISFProperties (for PI grids + fallback)
                 props = (image_meta.get("XISFProperties", {}) or
                         file_meta.get("XISFProperties", {}) or {})
-                _filled = set()
+                #_filled = set()
 
+                # 1) PixInsight astrometric solution (fallback only)
                 # 1) PixInsight astrometric solution (fallback only)
                 try:
                     if not all(k in hdr for k in ("CRPIX1","CRPIX2","CRVAL1","CRVAL2")):
-                        im0, im1 = props['PCL:AstrometricSolution:ReferenceImageCoordinates']['value']
-                        w0,  w1  = props['PCL:AstrometricSolution:ReferenceCelestialCoordinates']['value']
-                        hdr['CRPIX1'], hdr['CRPIX2'] = float(im0), float(im1)
-                        hdr['CRVAL1'], hdr['CRVAL2'] = float(w0), float(w1)
+                        ref_img = props['PCL:AstrometricSolution:ReferenceImageCoordinates']['value']
+                        ref_sky = props['PCL:AstrometricSolution:ReferenceCelestialCoordinates']['value']
+
+                        # Some files store extra values; only first two are CRPIX/CRVAL
+                        im0, im1 = float(ref_img[0]), float(ref_img[1])
+                        w0,  w1  = float(ref_sky[0]), float(ref_sky[1])
+
+                        hdr['CRPIX1'], hdr['CRPIX2'] = im0, im1
+                        hdr['CRVAL1'], hdr['CRVAL2'] = w0, w1
                         hdr.setdefault('CTYPE1', 'RA---TAN-SIP')
                         hdr.setdefault('CTYPE2', 'DEC--TAN-SIP')
                         _filled |= {'CRPIX1','CRPIX2','CRVAL1','CRVAL2','CTYPE1','CTYPE2'}
                         print("🔷 Injected CRPIX/CRVAL from XISFProperties (fallback)")
                 except KeyError:
                     pass
+                except Exception as e:
+                    print(f"⚠️ XISFProperties CRPIX/CRVAL parse failed; skipping. Reason: {e}")
 
                 # 2) CD matrix (fallback only)
                 try:

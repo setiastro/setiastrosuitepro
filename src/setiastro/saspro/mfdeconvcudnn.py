@@ -311,14 +311,20 @@ def _probe_hw(path: str) -> tuple[int, int, int | None]:
     raise ValueError(f"Unsupported ndim={a.ndim} for {path}")
 
 def _common_hw_from_paths(paths: list[str]) -> tuple[int, int]:
-    """
-    Replacement for the old FITS-only version: min(H), min(W) across files.
-    """
     Hs, Ws = [], []
     for p in paths:
         h, w, _ = _probe_hw(p)
-        Hs.append(int(h)); Ws.append(int(w))
-    return int(min(Hs)), int(min(Ws))
+        h = int(h); w = int(w)
+        if h > 0 and w > 0:
+            Hs.append(h); Ws.append(w)
+
+    if not Hs:
+        raise ValueError("Could not determine any valid frame sizes.")
+    Ht = min(Hs); Wt = min(Ws)
+    if Ht < 8 or Wt < 8:
+        raise ValueError(f"Intersection too small: {Ht}x{Wt}")
+    return Ht, Wt
+
 
 def _to_chw_float32(img: np.ndarray, color_mode: str) -> np.ndarray:
     """
@@ -1186,25 +1192,81 @@ SOFT_SIGMA          = 2.0
 ELLIPSE_SCALE       = 1.2
 
 def _sep_background_precompute(img_2d: np.ndarray, bw: int = 64, bh: int = 64):
-    """One-time SEP background build; returns (sky_map, rms_map, err_scalar)."""
-    if sep is None:
-        # robust fallback
-        med = float(np.median(img_2d))
-        mad = float(np.median(np.abs(img_2d - med))) + 1e-6
-        sky  = np.full_like(img_2d, med, dtype=np.float32)
-        rmsm = np.full_like(img_2d, 1.4826 * mad, dtype=np.float32)
-        return sky, rmsm, float(np.median(rmsm))
+    """
+    One-time SEP background build; returns (sky_map, rms_map, err_scalar).
 
-    a = np.ascontiguousarray(img_2d.astype(np.float32))
-    b = sep.Background(a, bw=int(bw), bh=int(bh), fw=3, fh=3)
-    sky  = np.asarray(b.back(), dtype=np.float32)
+    Guarantees:
+      - Always returns a 3-tuple (sky, rms, err)
+      - sky/rms are float32 and same shape as img_2d
+      - Robust to sep missing, sep errors, NaNs/Infs, and tiny frames
+    """
+    a = np.asarray(img_2d, dtype=np.float32)
+    if a.ndim != 2:
+        # be strict; callers expect 2D
+        raise ValueError(f"_sep_background_precompute expects 2D, got shape={a.shape}")
+
+    H, W = int(a.shape[0]), int(a.shape[1])
+    if H == 0 or W == 0:
+        # should never happen, but don't return empty tuple
+        sky = np.zeros((H, W), dtype=np.float32)
+        rms = np.ones((H, W), dtype=np.float32)
+        return sky, rms, 1.0
+
+    # --- robust fallback builder (works for any input) ---
+    def _fallback():
+        # Use finite-only stats if possible
+        finite = np.isfinite(a)
+        if finite.any():
+            vals = a[finite]
+            med = float(np.median(vals))
+            mad = float(np.median(np.abs(vals - med))) + 1e-6
+        else:
+            med = 0.0
+            mad = 1.0
+        sky = np.full((H, W), med, dtype=np.float32)
+        rms = np.full((H, W), 1.4826 * mad, dtype=np.float32)
+        err = float(np.median(rms))
+        return sky, rms, err
+
+    # If sep isn't available, always fallback
+    if sep is None:
+        return _fallback()
+
+    # SEP is present: sanitize input and clamp tile sizes
+    # sep can choke on NaNs/Infs
+    if not np.isfinite(a).all():
+        # replace non-finite with median of finite values (or 0)
+        finite = np.isfinite(a)
+        fill = float(np.median(a[finite])) if finite.any() else 0.0
+        a = np.where(finite, a, fill).astype(np.float32, copy=False)
+
+    a = np.ascontiguousarray(a, dtype=np.float32)
+
+    # Clamp bw/bh to image size; SEP doesn't like bw/bh > dims
+    bw = int(max(8, min(int(bw), W)))
+    bh = int(max(8, min(int(bh), H)))
+
     try:
-        rmsm = np.asarray(b.rms(), dtype=np.float32)
-        err  = float(b.globalrms)
+        b = sep.Background(a, bw=bw, bh=bh, fw=3, fh=3)
+
+        sky = np.asarray(b.back(), dtype=np.float32)
+        rms = np.asarray(b.rms(), dtype=np.float32)
+
+        # Ensure shape sanity (SEP should match, but be paranoid)
+        if sky.shape != a.shape or rms.shape != a.shape:
+            return _fallback()
+
+        # globalrms sometimes isn't available depending on SEP build
+        err = float(getattr(b, "globalrms", np.nan))
+        if not np.isfinite(err) or err <= 0:
+            # robust scalar: median rms
+            err = float(np.median(rms)) if rms.size else 1.0
+
+        return sky, rms, err
+
     except Exception:
-        rmsm = np.full_like(a, float(np.median(b.rms())), dtype=np.float32)
-        err  = float(np.median(rmsm))
-    return sky, rmsm, err
+        # If SEP blows up for any reason, degrade gracefully
+        return _fallback()
 
 
 def _star_mask_from_precomputed(
