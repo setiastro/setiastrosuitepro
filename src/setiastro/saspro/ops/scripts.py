@@ -678,6 +678,9 @@ class ScriptManager(QObject):
 
         self._log(f"[Scripts] Loaded {len(self.registry)} script(s) from {scripts_dir}")
 
+    def load_script_from_path(self, path: Path) -> ScriptEntry | None:
+        scripts_root = get_scripts_dir()
+        return self._load_one_script(path, scripts_root)
 
     def _load_one_script(self, path: Path, scripts_root: Path) -> ScriptEntry | None:
         """
