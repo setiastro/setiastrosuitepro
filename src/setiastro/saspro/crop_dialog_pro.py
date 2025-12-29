@@ -277,9 +277,15 @@ class CropDialogPro(QDialog):
         self._main = parent
         self.doc = document
 
-        # Connect to active document change signal
+        self._follow_conn = False
         if hasattr(self._main, "currentDocumentChanged"):
-            self._main.currentDocumentChanged.connect(self._on_active_doc_changed)
+            try:
+                self._main.currentDocumentChanged.connect(self._on_active_doc_changed)
+                self._follow_conn = True
+            except Exception:
+                self._follow_conn = False
+
+        self.finished.connect(self._cleanup_connections)
 
         self._rect_item: Optional[ResizableRotatableRectItem] = None
         self._pix_item: Optional[QGraphicsPixmapItem] = None
@@ -415,7 +421,7 @@ class CropDialogPro(QDialog):
         self.btn_prev.clicked.connect(self._load_previous)
         self.btn_apply.clicked.connect(self._apply_one)
         self.btn_batch.clicked.connect(self._apply_batch)
-        self.btn_close.clicked.connect(self.accept)
+        self.btn_close.clicked.connect(self.close)
 
         # seed image
         self._load_from_doc()
@@ -865,7 +871,7 @@ class CropDialogPro(QDialog):
             self.doc.apply_edit(out.copy(), metadata={**new_meta, "step_name": "Crop"}, step_name="Crop")
             self._maybe_notify_wcs_update(new_meta)
             self.crop_applied.emit(out)
-            self.accept()
+            self.close()
         except Exception as e:
             QMessageBox.critical(self, self.tr("Apply failed"), str(e))
 
@@ -951,7 +957,7 @@ class CropDialogPro(QDialog):
         QMessageBox.information(self, self.tr("Batch Crop"), self.tr("Applied crop to all open images. Any Astrometric Solutions has been updated."))
         if last_cropped is not None:
             self.crop_applied.emit(last_cropped)
-        self.accept()
+        self.close()
 
     def _maybe_notify_wcs_update(self, meta: dict, batch_note: str | None = None):
         dbg = (meta or {}).get("__wcs_debug__")
@@ -981,3 +987,16 @@ class CropDialogPro(QDialog):
         except Exception:
             # Be quiet if formatting fails
             pass
+
+    def _cleanup_connections(self):
+        try:
+            if self._follow_conn and hasattr(self._main, "currentDocumentChanged"):
+                self._main.currentDocumentChanged.disconnect(self._on_active_doc_changed)
+        except Exception:
+            pass
+        self._follow_conn = False
+
+
+    def closeEvent(self, ev):
+        self._cleanup_connections()
+        super().closeEvent(ev)

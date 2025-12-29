@@ -5,93 +5,122 @@ import psutil
 from PyQt6.QtCore import Qt, QUrl, QTimer, QObject, pyqtProperty, pyqtSignal, QThread
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QFrame
 from PyQt6.QtQuickWidgets import QQuickWidget
-
+import time
+import subprocess
 from setiastro.saspro.memory_utils import get_memory_usage_mb
 from setiastro.saspro.resources import _get_base_path
 
+
 class GPUWorker(QThread):
-    """Background worker to monitor GPU without blocking the UI."""
     resultReady = pyqtSignal(float)
 
     def __init__(self, has_nvidia: bool, parent=None):
         super().__init__(parent)
         self._has_nvidia = has_nvidia
-        self._last_val = 0.0
+
+        # cache + throttle (Windows PowerShell is expensive)
+        self._last_win_poll = 0.0
+        self._cached_win_val = 0.0
+
+        self._last_emit = 0.0
+        self._last_emitted_val = None
+
+    def _startupinfo_hidden(self):
+        if os.name != "nt":
+            return None
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = 0
+        return si
 
     def _get_windows_gpu_load(self) -> float:
-        if os.name != 'nt':
+        if os.name != "nt":
             return 0.0
+
+        now = time.monotonic()
+
+        # THROTTLE: run this at most once every 1.5 seconds
+        if (now - self._last_win_poll) < 1.5:
+            return self._cached_win_val
+
+        self._last_win_poll = now
+
         try:
-            import subprocess
-            # Aggregation logic to match Task Manager:
-            # 1. Group by unique engine (Adapter LUID + Engine Type/Index).
-            # 2. Sum utilization of all processes sharing that engine.
-            # 3. Take the Maximum of these sums as the overall GPU load.
-            # Aggregation logic to match Task Manager:
-            # 1. Group by unique engine (Adapter LUID + Engine Type/Index).
-            # 2. Sum utilization of all processes sharing that engine.
-            # 3. Take the Maximum of these sums as the overall GPU load.
-            cmd = (
-                "powershell -NoProfile -ExecutionPolicy Bypass -Command \""
-                "$groups = Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine -ErrorAction SilentlyContinue | "
-                "Group-Object -Property { $_.Name -replace '^pid_\\d+_', '' }; "
-                "$res_list = $groups | ForEach-Object { ($_.Group | Measure-Object -Property UtilizationPercentage -Sum).Sum }; "
-                "$max_val = ($res_list | Measure-Object -Maximum).Maximum; "
-                "if ($max_val) { [math]::Round($max_val, 1) } else { 0 }\""
+            # Use explicit powershell.exe and make it non-interactive + hidden
+            cmd = [
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy", "Bypass",
+                "-Command",
+                (
+                    "$groups = Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine "
+                    "-ErrorAction SilentlyContinue | "
+                    "Group-Object -Property { $_.Name -replace '^pid_\\d+_', '' }; "
+                    "$res_list = $groups | ForEach-Object { ($_.Group | Measure-Object -Property UtilizationPercentage -Sum).Sum }; "
+                    "$max_val = ($res_list | Measure-Object -Maximum).Maximum; "
+                    "if ($max_val) { [math]::Round($max_val, 1) } else { 0 }"
+                ),
+            ]
+
+            out = subprocess.check_output(
+                cmd,
+                startupinfo=self._startupinfo_hidden(),
+                timeout=1.0,               # IMPORTANT: don’t allow 5s hangs
+                stderr=subprocess.DEVNULL,  # keep it quiet
             )
-            startupinfo = subprocess.STARTUPINFO()
-            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            startupinfo.wShowWindow = 0 
-            
-            out = subprocess.check_output(cmd, startupinfo=startupinfo, timeout=5.0)
-            val_str = out.decode("utf-8").strip()
-            
-            if not val_str: return 0.0
-            return float(val_str.replace(",", "."))
+            val_str = out.decode("utf-8", errors="ignore").strip()
+
+            val = float(val_str.replace(",", ".")) if val_str else 0.0
+            self._cached_win_val = val
+            return val
         except Exception:
-            return 0.0
+            # keep last known value instead of spamming 0.0
+            return self._cached_win_val
 
     def _get_gpu_load(self) -> float:
         nv_val = 0.0
         win_val = 0.0
-        
-        # 1. Check NVIDIA (Discrete)
+
+        # NVIDIA (fast, keep it)
         if self._has_nvidia:
             try:
-                import subprocess
-                startupinfo = None
-                if os.name == 'nt':
-                    startupinfo = subprocess.STARTUPINFO()
-                    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                    startupinfo.wShowWindow = 0 
-
                 out = subprocess.check_output(
                     ["nvidia-smi", "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"],
-                    startupinfo=startupinfo,
-                    timeout=0.6
+                    startupinfo=self._startupinfo_hidden(),
+                    timeout=0.6,
+                    stderr=subprocess.DEVNULL,
                 )
-                line = out.decode("utf-8").strip().split('\n')[0]
+                line = out.decode("utf-8", errors="ignore").strip().split("\n")[0]
                 nv_val = float(line)
             except Exception:
-                pass 
-        
-        # 2. Check Universal (Integrated)
-        if os.name == 'nt':
+                pass
+
+        # Windows integrated (slow, throttled)
+        if os.name == "nt":
             win_val = self._get_windows_gpu_load()
-            
+
         return max(nv_val, win_val)
 
     def run(self):
         while not self.isInterruptionRequested():
             try:
                 val = self._get_gpu_load()
-                self.resultReady.emit(val)
-                # Sleep between measurements. 250ms as requested.
-                # Note: PowerShell queries might take longer than 250ms, 
-                # but this loop will run as fast as the hardware allows without blocking UI.
+
+                # Optional: emit only if value changed a bit, or once per 250ms max
+                now = time.monotonic()
+                if (
+                    self._last_emitted_val is None
+                    or abs(val - self._last_emitted_val) >= 1.0
+                    or (now - self._last_emit) >= 0.5
+                ):
+                    self._last_emit = now
+                    self._last_emitted_val = val
+                    self.resultReady.emit(val)
+
                 self.msleep(250)
             except Exception:
-                self.msleep(1000) # Error backoff on failure
+                self.msleep(1000)
 
 class ResourceBackend(QObject):
     """Backend logic for the QML Resource Monitor."""
@@ -218,15 +247,22 @@ class SystemMonitorWidget(QQuickWidget):
         # Let's re-write the QML loading part to use a safer 'initialProperties' approach or just signal/slots.
         #
         # EASIEST: QML binds to `root.cpuUsage`. Python sets `root.cpuUsage`.
-        
-        self.backend.cpuChanged.connect(self._push_data_to_qml)
-        self.backend.ramChanged.connect(self._push_data_to_qml)
-        self.backend.gpuChanged.connect(self._push_data_to_qml)
-        self.backend.appRamChanged.connect(self._push_data_to_qml)
+
         
         # Load QML
         qml_path = os.path.join(_get_base_path(), "qml", "ResourceMonitor.qml")
         self.setSource(QUrl.fromLocalFile(qml_path))
+
+    def _schedule_qml_push(self):
+        if self._qml_push_pending:
+            return
+        self._qml_push_pending = True
+        QTimer.singleShot(0, self._push_data_to_qml_coalesced)
+
+    def _push_data_to_qml_coalesced(self):
+        self._qml_push_pending = False
+        self._push_data_to_qml()
+
 
     def _push_data_to_qml(self):
         root = self.rootObject()

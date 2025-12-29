@@ -135,8 +135,14 @@ class StarStretchDialog(QDialog):
         self._preview: np.ndarray | None = None
 
         # Connect to active document change signal
+        self._connected_current_doc_changed = False
         if hasattr(self._main, "currentDocumentChanged"):
-            self._main.currentDocumentChanged.connect(self._on_active_doc_changed)
+            try:
+                self._main.currentDocumentChanged.connect(self._on_active_doc_changed)
+                self._connected_current_doc_changed = True
+            except Exception:
+                self._connected_current_doc_changed = False
+
         self._pix: QPixmap | None = None
         self._zoom = 0.25
         self._panning = False
@@ -345,7 +351,8 @@ class StarStretchDialog(QDialog):
         
         # Dialog stays open so user can apply to other images
         # Refresh document reference for next operation
-        self._refresh_document_from_active()
+        self.close()
+        return
 
     def _refresh_document_from_active(self):
         """
@@ -492,6 +499,31 @@ class StarStretchDialog(QDialog):
             src = src[..., 0]  # collapse to mono
 
         return (m * out + (1.0 - m) * src).astype(np.float32, copy=False)
+
+    def closeEvent(self, ev):
+        # 1) Disconnect active-doc tracking (Fabio hook)
+        try:
+            if self._connected_current_doc_changed and hasattr(self._main, "currentDocumentChanged"):
+                self._main.currentDocumentChanged.disconnect(self._on_active_doc_changed)
+        except Exception:
+            pass
+        self._connected_current_doc_changed = False
+
+        # 2) Stop any background preview worker/thread if you have one
+        # (names may differ in your file; keep what matches your implementation)
+        try:
+            if getattr(self, "_worker", None) is not None:
+                try:
+                    self._worker.requestInterruption()
+                except Exception:
+                    pass
+            if getattr(self, "_thread", None) is not None:
+                self._thread.quit()
+                self._thread.wait(500)
+        except Exception:
+            pass
+
+        super().closeEvent(ev)
 
 
 def _guess_spinner_path() -> str | None:

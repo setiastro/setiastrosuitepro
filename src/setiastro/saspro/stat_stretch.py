@@ -34,9 +34,14 @@ class StatisticalStretchDialog(QDialog):
         self.doc = document
         self._last_preview = None
 
-        # Connect to active document change signal
+        self._follow_conn = None
         if hasattr(self._main, "currentDocumentChanged"):
-            self._main.currentDocumentChanged.connect(self._on_active_doc_changed)
+            try:
+                # store connection so we can cleanly disconnect
+                self._main.currentDocumentChanged.connect(self._on_active_doc_changed)
+                self._follow_conn = True
+            except Exception:
+                self._follow_conn = None
         self._panning = False
         self._pan_last = None  # QPoint
         self._preview_scale = 1.0       # NEW: zoom factor for preview
@@ -446,9 +451,8 @@ class StatisticalStretchDialog(QDialog):
                 # optional debug
                 print("Statistical Stretch: replay recording suppressed for this apply()")
 
-            # Dialog stays open so user can apply to other images
-            # Update the document reference to reflect the now-active document
-            self._refresh_document_from_active()
+            self.close()
+            return
 
 
         except Exception as e:
@@ -470,6 +474,15 @@ class StatisticalStretchDialog(QDialog):
                     self._preview_qimg = None
         except Exception:
             pass
+
+    def closeEvent(self, ev):
+        # disconnect the “follow active document” hook
+        try:
+            if self._follow_conn and hasattr(self._main, "currentDocumentChanged"):
+                self._main.currentDocumentChanged.disconnect(self._on_active_doc_changed)
+        except Exception:
+            pass
+        super().closeEvent(ev)
 
 
     def _update_preview_scaled(self):

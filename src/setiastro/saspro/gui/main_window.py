@@ -285,8 +285,8 @@ from setiastro.saspro.gui.mixins import (
     ThemeMixin, GeometryMixin, ViewMixin, HeaderMixin, MaskMixin, UpdateMixin
 )
 
-import time
 import sys
+import time
 import threading
 import traceback
 from PyQt6.QtCore import QObject, QTimer
@@ -305,6 +305,9 @@ class UiStallDetector(QObject):
         self._last = time.perf_counter()
         self._stall_seq = 0
 
+        # cooldown state (instance-level)
+        self._last_dump_t = 0.0
+
         self._timer = QTimer(self)
         self._timer.setInterval(self.interval_ms)
         self._timer.timeout.connect(self._tick)
@@ -317,25 +320,36 @@ class UiStallDetector(QObject):
         self._timer.stop()
 
     def _dump_all_threads_print(self):
-        self._stall_seq += 1
-        seq = self._stall_seq
-        print(f"\n[UI STALL] ===== traceback dump #{seq} (all threads) =====", flush=True)
+        now = time.perf_counter()
+        if now - self._last_dump_t < 2.0:  # 2s cooldown
+            print("[UI STALL] dump skipped (cooldown)", flush=True)
+            return
+        self._last_dump_t = now
 
-        frames = sys._current_frames()  # {thread_ident: frame}
-        id_to_name = {t.ident: t.name for t in threading.enumerate()}
+        frames = sys._current_frames()
+        main_ident = threading.main_thread().ident
 
-        for tid, frame in frames.items():
-            tname = id_to_name.get(tid, "unknown")
-            print(f"\n--- Thread {tid} ({tname}) ---", flush=True)
-            try:
-                stack = traceback.format_stack(frame)
-                for line in stack:
-                    # line already ends with newline
-                    print(line, end="", flush=True)
-            except Exception as e:
-                print(f"(failed to dump thread {tid}: {e})", flush=True)
+        print("[UI STALL] ===== lightweight dump (all threads) =====", flush=True)
 
-        print(f"[UI STALL] ===== end dump #{seq} =====\n", flush=True)
+        # Main thread: full stack
+        if main_ident in frames:
+            print("\n--- MainThread (full) ---", flush=True)
+            print("".join(traceback.format_stack(frames[main_ident])), flush=True)
+
+        # Other threads: only top-frame summary
+        for t in threading.enumerate():
+            if t.ident is None or t.ident == main_ident:
+                continue
+            f = frames.get(t.ident)
+            if not f:
+                continue
+            code = f.f_code
+            print(
+                f"--- Thread {t.ident} ({t.name}) top --- {code.co_filename}:{f.f_lineno} in {code.co_name}",
+                flush=True,
+            )
+
+        print("[UI STALL] ===== end lightweight dump =====", flush=True)
 
     def _tick(self):
         now = time.perf_counter()

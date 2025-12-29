@@ -496,9 +496,14 @@ class ABEDialog(QDialog):
         self._main = parent
         self.doc = document
 
-        # Connect to active document change signal
+        self._follow_conn = None
         if hasattr(self._main, "currentDocumentChanged"):
-            self._main.currentDocumentChanged.connect(self._on_active_doc_changed)
+            try:
+                # store connection so we can cleanly disconnect
+                self._main.currentDocumentChanged.connect(self._on_active_doc_changed)
+                self._follow_conn = True
+            except Exception:
+                self._follow_conn = None
 
         self._preview_scale = 1.0
         self._preview_qimg = None
@@ -844,11 +849,37 @@ class ABEDialog(QDialog):
             self._set_status("Done")
             # Dialog stays open so user can apply to other images
             # Refresh to use the now-active document for next operation
-            self._refresh_document_from_active()
+            self.close()
+            return
 
         except Exception as e:
             self._set_status("Error")
             QMessageBox.critical(self, "Apply failed", str(e))
+
+    def closeEvent(self, ev):
+        # 1) Disconnect active-doc tracking (Fabio hook)
+        try:
+            if self._connected_current_doc_changed and hasattr(self._main, "currentDocumentChanged"):
+                self._main.currentDocumentChanged.disconnect(self._on_active_doc_changed)
+        except Exception:
+            pass
+        self._connected_current_doc_changed = False
+
+        # 2) Stop any background preview worker/thread if you have one
+        # (names may differ in your file; keep what matches your implementation)
+        try:
+            if getattr(self, "_worker", None) is not None:
+                try:
+                    self._worker.requestInterruption()
+                except Exception:
+                    pass
+            if getattr(self, "_thread", None) is not None:
+                self._thread.quit()
+                self._thread.wait(500)
+        except Exception:
+            pass
+
+        super().closeEvent(ev)
 
     def _refresh_document_from_active(self):
         """

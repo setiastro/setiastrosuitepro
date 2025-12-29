@@ -251,9 +251,16 @@ class BackgroundNeutralizationDialog(QDialog):
         self._main = parent
         self.doc = doc
 
-        # Connect to active document change signal
+        self._connected_current_doc_changed = False
         if hasattr(self._main, "currentDocumentChanged"):
-            self._main.currentDocumentChanged.connect(self._on_active_doc_changed)
+            try:
+                self._main.currentDocumentChanged.connect(self._on_active_doc_changed)
+                self._connected_current_doc_changed = True
+            except Exception:
+                self._connected_current_doc_changed = False
+
+        self.finished.connect(self._cleanup_connections)
+        #self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
 
         if icon:
             self.setWindowIcon(icon)
@@ -316,7 +323,7 @@ class BackgroundNeutralizationDialog(QDialog):
 
         # Events
         self.btn_apply.clicked.connect(self._on_apply)
-        self.btn_cancel.clicked.connect(self.reject)
+        self.btn_cancel.clicked.connect(self.close)
         self.btn_toggle_stretch.clicked.connect(self._toggle_auto_stretch)
         self.btn_find_bg.clicked.connect(self._on_find_background)
         self.btn_zoom_out.clicked.connect(self.zoom_out)
@@ -536,15 +543,33 @@ class BackgroundNeutralizationDialog(QDialog):
         )
         # Dialog stays open so user can apply to other images
         # Refresh to use the now-active document for next operation
-        self.accept()   # or: self.close()
+        self.close()
 
-    def closeEvent(self, e):
+    def closeEvent(self, ev):
+        self._cleanup_connections()
+        super().closeEvent(ev)
+
+    def _cleanup_connections(self):
+        # Disconnect active-doc tracking (Fabio hook)
         try:
-            if hasattr(self._main, "currentDocumentChanged"):
+            if self._connected_current_doc_changed and hasattr(self._main, "currentDocumentChanged"):
                 self._main.currentDocumentChanged.disconnect(self._on_active_doc_changed)
         except Exception:
             pass
-        super().closeEvent(e)
+        self._connected_current_doc_changed = False
+
+        # If you ever add threads/workers later, stop them here too (safe no-ops now)
+        try:
+            if getattr(self, "_worker", None) is not None:
+                try:
+                    self._worker.requestInterruption()
+                except Exception:
+                    pass
+            if getattr(self, "_thread", None) is not None:
+                self._thread.quit()
+                self._thread.wait(500)
+        except Exception:
+            pass
 
 
     def _refresh_document_from_active(self):
