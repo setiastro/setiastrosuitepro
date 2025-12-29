@@ -15450,6 +15450,41 @@ class StackingSuiteDialog(QDialog):
         # Threshold is only used in normal mode
         accept_thresh = float(self.settings.value("stacking/accept_shift_px", 2.0, type=float))
 
+        def _mf_ref_path_for_masks() -> str | None:
+            """
+            Return the best reference path for MFDeconv star masks:
+            aligned FITS if possible, else normalized FITS, else original.
+            """
+            if not getattr(self, "reference_frame", None):
+                return None
+
+            from os import path
+            ref_orig = path.normpath(self.reference_frame)
+            ref_key  = path.normcase(ref_orig)
+
+            # original -> normalized
+            ref_norm = self._orig2norm.get(ref_key)
+
+            # normalized -> aligned
+            ref_aligned = None
+            if ref_norm:
+                ref_aligned = self.valid_transforms.get(path.normpath(ref_norm))
+
+            # If we couldn’t map via orig->norm (e.g. user picked a normalized path already)
+            if not ref_norm and ref_orig in self.valid_transforms:
+                ref_norm = ref_orig
+                ref_aligned = self.valid_transforms.get(ref_norm)
+
+            # Prefer aligned if it exists on disk
+            if ref_aligned and path.exists(ref_aligned):
+                return ref_aligned
+            if ref_norm and path.exists(ref_norm):
+                return ref_norm
+            if path.exists(ref_orig):
+                return ref_orig
+            return None
+
+
         def _accept(k: str) -> bool:
             """Accept criteria for a frame."""
             if all_transforms.get(k) is None:
@@ -15833,7 +15868,9 @@ class StackingSuiteDialog(QDialog):
                     }
 
                     self._mf_thread = QThread(self)
-                    star_mask_ref = self.reference_frame if use_star_masks else None
+                    star_mask_ref = _mf_ref_path_for_masks() if use_star_masks else None
+                    if use_star_masks:
+                        self.update_status(self.tr(f"🌟 MFDeconv star-mask reference → {star_mask_ref or '(none)'}"))                    
 
                     # ── choose engine plainly (Normal / cuDNN-free / High Octane) ─────────────
                     # Expect a setting saved by your radio buttons: "normal" | "cudnn" | "sport"
