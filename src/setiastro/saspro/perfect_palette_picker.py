@@ -227,6 +227,7 @@ class PerfectPalettePicker(QWidget):
         self.sii  = None
         self.osc1 = None
         self.osc2 = None
+        self._dim_mismatch_accepted = False
 
         # stretched cache (per input name → stretched array)
         self._stretched: dict[str, np.ndarray] = {}
@@ -675,10 +676,42 @@ class PerfectPalettePicker(QWidget):
             oo = g2b2 if oo is None else 0.5*oo + 0.5*g2b2
 
         # shapes must match for full-size
-        shapes = [x.shape for x in (ha, oo, si) if x is not None]
+        # shapes must match for full-size
+        shapes = [x.shape[:2] for x in (ha, oo, si) if x is not None]
         if len(shapes) and len(set(shapes)) > 1 and not for_thumbs:
-            QMessageBox.critical(self, "Size Mismatch", f"Channel sizes differ: {set(shapes)}")
-            return None, None, None
+            # pick a reference size (prefer Ha, then OIII, then SII)
+            ref = ha if ha is not None else (oo if oo is not None else si)
+            ref_name = "Ha" if ha is not None else ("OIII" if oo is not None else "SII")
+            ref_h, ref_w = ref.shape[:2]
+
+            # Only prompt once per session unless you want every time
+            if not self._dim_mismatch_accepted:
+                msg = (
+                    "The loaded channels have different image dimensions.\n\n"
+                    f"• Ha:   {None if ha is None else ha.shape}\n"
+                    f"• OIII: {None if oo is None else oo.shape}\n"
+                    f"• SII:  {None if si is None else si.shape}\n\n"
+                    f"SASpro can resize (warp) the channels to match the reference frame:\n"
+                    f"• Reference: {ref_name}\n"
+                    f"• Target size: ({ref_w} × {ref_h})\n\n"
+                    "Proceed and resize mismatched channels?"
+                )
+                ret = QMessageBox.question(
+                    self,
+                    "Channel Size Mismatch",
+                    msg,
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.Yes
+                )
+                if ret != QMessageBox.StandardButton.Yes:
+                    return None, None, None
+
+                self._dim_mismatch_accepted = True
+
+            # resize to reference
+            ha = self._resize_to(ha, (ref_w, ref_h)) if ha is not None else None
+            oo = self._resize_to(oo, (ref_w, ref_h)) if oo is not None else None
+            si = self._resize_to(si, (ref_w, ref_h)) if si is not None else None
 
         # thumbnails: crop AFTER stretch/synth
         if for_thumbs:
@@ -953,6 +986,7 @@ class PerfectPalettePicker(QWidget):
     def _clear_channels(self):
         self.ha = self.oiii = self.sii = self.osc1 = self.osc2 = None
         self._stretched.clear()
+        self._dim_mismatch_accepted = False
         self.final = None
         self.preview.clear()
         for which in ("Ha","OIII","SII","OSC1","OSC2"):
