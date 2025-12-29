@@ -147,14 +147,26 @@ class LiveStackSettingsDialog(QDialog):
           (bootstrap_frames, clip_threshold,
            max_fwhm, max_ecc, min_star_count, delay)
         """
-        bs      = self.bs_spin.value
+        bs      = int(self.bs_spin.value())
         sigma   = self.sigma_spin.value()
         fwhm    = self.fwhm_spin.value()
         ecc     = self.ecc_spin.value()
-        stars   = self.star_spin.value
+        stars   = int(self.star_spin.value())
         mapping = self.mapping_combo.currentText()
         delay = self.delay_spin.value()
         return bs, sigma, fwhm, ecc, stars, mapping, delay
+
+def _qget(settings: QSettings, key: str, default, typ):
+    try:
+        return settings.value(key, default, type=typ)
+    except TypeError:
+        # Key contains junk (likely from earlier method-object save). Reset it.
+        try:
+            settings.remove(key)
+        except Exception:
+            pass
+        settings.setValue(key, default)
+        return default
 
 
 
@@ -385,13 +397,14 @@ class LiveStackWindow(QDialog):
 
         # ── Load persisted settings ───────────────────────────────
         s = QSettings()
-        self.bootstrap_frames    = s.value("LiveStack/bootstrap_frames",    24,     type=int)
-        self.clip_threshold      = s.value("LiveStack/clip_threshold",      3.5,    type=float)
-        self.max_fwhm            = s.value("LiveStack/max_fwhm",            15.0,   type=float)
-        self.max_ecc             = s.value("LiveStack/max_ecc",             0.9,    type=float)
-        self.min_star_count      = s.value("LiveStack/min_star_count",      5,      type=int)
-        self.narrowband_mapping  = s.value("LiveStack/narrowband_mapping",  "Natural", type=str)
-        self.star_trail_mode = s.value("LiveStack/star_trail_mode", False, type=bool)
+        self.bootstrap_frames   = _qget(s, "LiveStack/bootstrap_frames",   24,    int)
+        self.clip_threshold     = _qget(s, "LiveStack/clip_threshold",     3.5,   float)
+        self.max_fwhm           = _qget(s, "LiveStack/max_fwhm",           15.0,  float)
+        self.max_ecc            = _qget(s, "LiveStack/max_ecc",            0.9,   float)
+        self.min_star_count     = _qget(s, "LiveStack/min_star_count",     5,     int)
+        self.narrowband_mapping = _qget(s, "LiveStack/narrowband_mapping", "Natural", str)
+        self.star_trail_mode    = _qget(s, "LiveStack/star_trail_mode",    False, bool)
+        self.FILE_STABLE_SECS   = _qget(s, "LiveStack/file_stable_secs",   3.0,   float)
 
 
         self.total_exposure = 0.0  # seconds

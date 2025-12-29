@@ -37,7 +37,7 @@ class CustomSpinBox(QWidget):
         self.minimum = minimum
         self.maximum = maximum
         self.step = step
-        self._value = initial
+        self._value = int(initial)
 
         # Line edit for value display/entry
         self.lineEdit = QLineEdit(str(initial))
@@ -77,14 +77,13 @@ class CustomSpinBox(QWidget):
 
         self._update_button_states()
 
-    @property
     def value(self) -> int:
-        """Get the current value."""
-        return self._value
+        """Qt-style getter."""
+        return int(self._value)
 
     def setValue(self, val: int) -> None:
-        """Set the value, clamping to min/max."""
-        val = max(self.minimum, min(self.maximum, val))
+        val = int(val)
+        val = max(int(self.minimum), min(int(self.maximum), val))
         if val != self._value:
             self._value = val
             self.lineEdit.setText(str(val))
@@ -144,7 +143,6 @@ class CustomSpinBox(QWidget):
         return self._value
 
     def _update_button_states(self) -> None:
-        """Enable/disable buttons at limits."""
         self.upButton.setEnabled(self._value < self.maximum)
         self.downButton.setEnabled(self._value > self.minimum)
 
@@ -175,7 +173,7 @@ class CustomDoubleSpinBox(QWidget):
         self.maximum = maximum
         self.step = step
         self.decimals = decimals
-        self._value = initial
+        self._value = float(initial)
 
         # Line edit for value display/entry
         self.lineEdit = QLineEdit(f"{initial:.{decimals}f}")
@@ -215,14 +213,13 @@ class CustomDoubleSpinBox(QWidget):
 
         self._update_button_states()
 
-    @property
     def value(self) -> float:
-        """Get the current value."""
-        return self._value
+        """Qt-style getter."""
+        return float(self._value)
 
     def setValue(self, val: float) -> None:
-        """Set the value, clamping to min/max."""
-        val = max(self.minimum, min(self.maximum, val))
+        val = float(val)
+        val = max(float(self.minimum), min(float(self.maximum), val))
         if abs(val - self._value) > 1e-10:
             self._value = val
             self.lineEdit.setText(f"{val:.{self.decimals}f}")
