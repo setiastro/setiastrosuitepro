@@ -17611,7 +17611,37 @@ class StackingSuiteDialog(QDialog):
 
             # Thread + worker
             self._mf_thread = QThread(self)
-            star_mask_ref = self.reference_frame if use_star_masks else None
+
+            def _pick_mf_ref_from_frames(frames: list[str]) -> str | None:
+                """Pick a reference path for MFDeconv masks from the aligned frames list."""
+                from os import path
+                if not frames:
+                    return None
+
+                # Prefer the weighted-best frame if weights exist
+                w = getattr(self, "frame_weights", None) or {}
+                best = None
+                bestw = -1.0
+                for p in frames:
+                    pn = path.normpath(p)
+                    if not path.exists(pn):
+                        continue
+                    ww = float(w.get(pn, w.get(p, 0.0)) or 0.0)
+                    if ww > bestw:
+                        bestw, best = ww, pn
+
+                # Otherwise fall back to first existing frame
+                if best:
+                    return best
+                for p in frames:
+                    pn = path.normpath(p)
+                    if path.exists(pn):
+                        return pn
+                return None
+
+            star_mask_ref = _pick_mf_ref_from_frames(frames) if use_star_masks else None
+            if use_star_masks:
+                self.update_status(self.tr(f"🌟 MFDeconv star-mask reference → {star_mask_ref or '(none)'}"))
 
             # ── choose engine plainly (Normal / cuDNN-free / High Octane) ─────────────
             # Expect a setting saved by your radio buttons: "normal" | "cudnn" | "sport"
