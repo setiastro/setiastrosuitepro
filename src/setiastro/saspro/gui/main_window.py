@@ -7588,10 +7588,20 @@ class AstroSuiteProMainWindow(
                 pass
 
     def _pretty_title(self, doc, *, linked: bool | None = None) -> str:
-        name = getattr(doc, "display_name", lambda: "Untitled")()
-        name = name.replace("[LINK] ", "").strip()
+        md = (getattr(doc, "metadata", {}) or {})
+        fp = md.get("file_path")
+
+        if fp:
+            name = os.path.splitext(os.path.basename(fp))[0]
+        else:
+            name = getattr(doc, "display_name", lambda: "Untitled")()
+            name = name.replace("[LINK] ", "").strip()
+            base, ext = os.path.splitext(name)
+            if ext and len(ext) <= 10:
+                name = base
+
         if linked is None:
-            linked = hasattr(doc, "_parent_doc")  # ROI proxy -> linked
+            linked = hasattr(doc, "_parent_doc")
         return f"[LINK] {name}" if linked else name
 
     def _build_subwindow_title_for_doc(self, doc) -> str:
