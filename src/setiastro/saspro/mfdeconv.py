@@ -373,22 +373,36 @@ def _compute_frame_assets(i, arr, hdr, *, make_masks, make_varmaps,
         f_whm = 2.5
     k_auto = _auto_ksize_from_fwhm(f_whm)
 
-    # --- Star-derived PSF with retries ---
-    tried, psf = [], None
-    for k_try in [k_auto, max(k_auto - 4, 11), 21, 17, 15, 13, 11]:
-        if k_try in tried: continue
-        tried.append(k_try)
-        try:
-            out = compute_psf_kernel_for_image(arr, ksize=k_try, det_sigma=6.0, max_stars=80)
-            psf_try = out[0] if (isinstance(out, tuple) and len(out) >= 1) else out
-            if psf_try is not None:
-                psf = psf_try
-                break
-        except Exception:
-            psf = None
+    # --- Star-derived PSF with retries (dynamic det_sigma ladder) ---
+    psf = None
+
+    # Your existing ksize ladder
+    k_ladder = [k_auto, max(k_auto - 4, 11), 21, 17, 15, 13, 11]
+
+    # New: start high to avoid detecting 10k stars; step down only if needed
+    sigma_ladder = [50.0, 25.0, 12.0, 6.0]
+
+    tried = set()
+    for det_sigma in sigma_ladder:
+        for k_try in k_ladder:
+            if (det_sigma, k_try) in tried:
+                continue
+            tried.add((det_sigma, k_try))
+            try:
+                out = compute_psf_kernel_for_image(arr, ksize=k_try, det_sigma=det_sigma, max_stars=80)
+                psf_try = out[0] if (isinstance(out, tuple) and len(out) >= 1) else out
+                if psf_try is not None:
+                    psf = psf_try
+                    break
+            except Exception:
+                psf = None
+        if psf is not None:
+            break
+
     if psf is None:
         psf = _gaussian_psf(f_whm, ksize=k_auto)
-    psf = _soften_psf(_normalize_psf(psf.astype(np.float32, copy=False)), sigma_px=0.0)
+
+    psf = _soften_psf(_normalize_psf(psf.astype(np.float32, copy=False)), sigma_px=0.25)
 
     mask = None
     var  = None
@@ -430,6 +444,7 @@ def _compute_frame_assets(i, arr, hdr, *, make_masks, make_varmaps,
     logs.insert(0, f"MFDeconv: PSF{i}: ksize={psf.shape[0]} | FWHM≈{fwhm_est:.2f}px")
 
     return i, psf, mask, var, logs
+
 
 def _compute_one_worker(args):
     """

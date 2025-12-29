@@ -401,15 +401,12 @@ def _safe_primary_header(path: str) -> fits.Header:
     except Exception:
         return fits.Header()
 
-
 def _compute_frame_assets(i, arr, hdr, *, make_masks, make_varmaps,
                           star_mask_cfg, varmap_cfg, status_sink=lambda s: None):
     """
     Worker function: compute PSF and optional star mask / varmap for one frame.
-    Returns (index, psf, mask_or_None, var_or_None, var_path_or_None, log_lines)
+    Returns (index, psf, mask_or_None, var_or_None, log_lines)
     """
-
-
     logs = []
     def log(s): logs.append(s)
 
@@ -421,36 +418,48 @@ def _compute_frame_assets(i, arr, hdr, *, make_masks, make_varmaps,
         f_whm = 2.5
     k_auto = _auto_ksize_from_fwhm(f_whm)
 
-    # --- Star-derived PSF with retries ---
-    tried, psf = [], None
-    for k_try in [k_auto, max(k_auto - 4, 11), 21, 17, 15, 13, 11]:
-        if k_try in tried:
-            continue
-        tried.append(k_try)
-        try:
-            out = compute_psf_kernel_for_image(arr, ksize=k_try, det_sigma=6.0, max_stars=80)
-            psf_try = out[0] if (isinstance(out, tuple) and len(out) >= 1) else out
-            if psf_try is not None:
-                psf = psf_try
-                break
-        except Exception:
-            psf = None
+    # --- Star-derived PSF with retries (dynamic det_sigma ladder) ---
+    psf = None
+
+    # Your existing ksize ladder
+    k_ladder = [k_auto, max(k_auto - 4, 11), 21, 17, 15, 13, 11]
+
+    # New: start high to avoid detecting 10k stars; step down only if needed
+    sigma_ladder = [50.0, 25.0, 12.0, 6.0]
+
+    tried = set()
+    for det_sigma in sigma_ladder:
+        for k_try in k_ladder:
+            if (det_sigma, k_try) in tried:
+                continue
+            tried.add((det_sigma, k_try))
+            try:
+                out = compute_psf_kernel_for_image(arr, ksize=k_try, det_sigma=det_sigma, max_stars=80)
+                psf_try = out[0] if (isinstance(out, tuple) and len(out) >= 1) else out
+                if psf_try is not None:
+                    psf = psf_try
+                    break
+            except Exception:
+                psf = None
+        if psf is not None:
+            break
+
     if psf is None:
         psf = _gaussian_psf(f_whm, ksize=k_auto)
+
     psf = _soften_psf(_normalize_psf(psf.astype(np.float32, copy=False)), sigma_px=0.25)
 
     mask = None
     var  = None
-    var_path = None
 
     if make_masks or make_varmaps:
+        # one background per frame (reused by both)
         luma = _to_luma_local(arr)
         vmc = (varmap_cfg or {})
         sky_map, rms_map, err_scalar = _sep_background_precompute(
             luma, bw=int(vmc.get("bw", 64)), bh=int(vmc.get("bh", 64))
         )
 
-        # ---------- Star mask ----------
         if make_masks:
             smc = star_mask_cfg or {}
             mask = _star_mask_from_precomputed(
@@ -465,44 +474,22 @@ def _compute_frame_assets(i, arr, hdr, *, make_masks, make_varmaps,
                 max_side     = smc.get("max_side", STAR_MASK_MAXSIDE),
                 status_cb    = log,
             )
-            # keep masks compact
-            if mask is not None and mask.dtype != np.uint8:
-                mask = (mask > 0.5).astype(np.uint8, copy=False)
 
-        # ---------- Variance map (memmap path; Option B) ----------
         if make_varmaps:
             vmc = varmap_cfg or {}
-            def _vprog(frac: float, msg: str = ""):
-                try: log(f"__PROGRESS__ {0.16 + 0.02*float(frac):.4f} {msg}")
-                except Exception as e:
-                    import logging
-                    logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
-
-            var_path = _variance_map_from_precomputed_memmap(
+            var = _variance_map_from_precomputed(
                 luma, sky_map, rms_map, hdr,
-                smooth_sigma = float(vmc.get("smooth_sigma", 1.0)),
-                floor        = float(vmc.get("floor", 1e-8)),
-                tile_hw      = tuple(vmc.get("tile_hw", (512, 512))),
-                scratch_dir  = vmc.get("scratch_dir", None),
-                tag          = f"varmap_{i:04d}",
+                smooth_sigma = vmc.get("smooth_sigma", 1.0),
+                floor        = vmc.get("floor", 1e-8),
                 status_cb    = log,
-                progress_cb  = _vprog,
             )
-            var = None  # Option B: don't keep an open memmap handle
 
-        # 🔻 free heavy temporaries immediately
-        try:
-            del luma
-            del sky_map
-            del rms_map
-        except Exception:
-            pass
-        gc.collect()
-
-    # per-frame summary
+    # small per-frame summary
     fwhm_est = _psf_fwhm_px(psf)
     logs.insert(0, f"MFDeconv: PSF{i}: ksize={psf.shape[0]} | FWHM≈{fwhm_est:.2f}px")
-    return i, psf, mask, var, var_path, logs
+
+    return i, psf, mask, var, logs
+
 
 def _compute_one_worker(args):
     """
