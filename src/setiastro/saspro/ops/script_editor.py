@@ -1058,7 +1058,8 @@ class ScriptEditorDock(QDockWidget):
             if man is None:
                 raise RuntimeError("ScriptManager not initialized on main window.")
 
-            entry = man._load_one_script(self._current_path)
+            entry = man.load_script_from_path(self._current_path)
+
             if entry is None or entry.run is None:
                 raise RuntimeError("Script has no run(ctx).")
 
@@ -1074,7 +1075,9 @@ class ScriptEditorDock(QDockWidget):
             self.output.appendPlainText(tb)
             self._log("Script ERROR:\n" + tb)
 
-
+    def load_script_from_path(self, path: Path) -> ScriptEntry | None:
+        scripts_root = get_scripts_dir()
+        return self._load_one_script(path, scripts_root)
 
     # ------------------------------------------------------------------
     # ui helpers
