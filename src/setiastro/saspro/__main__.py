@@ -92,9 +92,15 @@ def _init_splash():
     # Create QApplication
     _app = QApplication(sys.argv)
     
+    try:
+        _app.setQuitOnLastWindowClosed(True)
+    except Exception:
+        pass
+
     if sys.platform.startswith("linux"):
         try:
             print("Qt platform:", _app.platformName())
+            print("QuitOnLastWindowClosed:", _app.quitOnLastWindowClosed())
             print("XDG_SESSION_TYPE:", os.environ.get("XDG_SESSION_TYPE"))
             print("QT_QPA_PLATFORM:", os.environ.get("QT_QPA_PLATFORM"))
             print("QT_OPENGL:", os.environ.get("QT_OPENGL"))

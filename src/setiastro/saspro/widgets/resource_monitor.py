@@ -226,6 +226,7 @@ class SystemMonitorWidget(QQuickWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_AlwaysStackOnTop, False)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setClearColor(Qt.GlobalColor.transparent)
+        self._qml_push_pending = False
 
         # Connect Backend
         self.backend = ResourceBackend(self)
@@ -275,10 +276,23 @@ class SystemMonitorWidget(QQuickWidget):
     # --- Drag & Drop Support ---
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
+            # Wayland-friendly: ask compositor to move the window
+            wh = self.windowHandle()
+            if wh is not None:
+                try:
+                    # Works best for frameless overlays on Wayland
+                    wh.startSystemMove()
+                    event.accept()
+                    return
+                except Exception:
+                    pass
+
+            # Fallback (Windows/X11): manual move tracking
             self._drag_start_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
             event.accept()
-        else:
-            super().mousePressEvent(event)
+            return
+
+        super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
         if event.buttons() & Qt.MouseButton.LeftButton:
