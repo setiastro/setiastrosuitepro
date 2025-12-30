@@ -491,19 +491,21 @@ class ABEDialog(QDialog):
         # Non-modal: allow user to switch between images while dialog is open
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
-        #self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        try:
+            self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        except Exception:
+            pass  # older PyQt6 versions
 
         self._main = parent
         self.doc = document
 
-        self._follow_conn = None
+        self._connected_current_doc_changed = False
         if hasattr(self._main, "currentDocumentChanged"):
             try:
-                # store connection so we can cleanly disconnect
                 self._main.currentDocumentChanged.connect(self._on_active_doc_changed)
-                self._follow_conn = True
+                self._connected_current_doc_changed = True
             except Exception:
-                self._follow_conn = None
+                self._connected_current_doc_changed = False
 
         self._preview_scale = 1.0
         self._preview_qimg = None

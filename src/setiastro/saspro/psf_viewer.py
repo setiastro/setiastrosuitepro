@@ -108,7 +108,10 @@ class PSFViewer(QDialog):
         # Accept either a view (with .document) or a doc directly
         doc = getattr(view_or_doc, "document", None)
         self.doc = doc if doc is not None else view_or_doc
-
+        try:
+            self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        except Exception:
+            pass  # older PyQt6 versions
         # Image + state
         self.image = self._grab_image()
         self.zoom_factor = 1.0

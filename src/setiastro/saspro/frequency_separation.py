@@ -41,7 +41,10 @@ class FrequencySeperationThread(QThread):
         self.method = method
         self.radius = float(radius)
         self.tolerance = int(tolerance)
-
+        try:
+            self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        except Exception:
+            pass  # older PyQt6 versions
     def run(self):
         try:
             if self.image.ndim == 3 and self.image.shape[2] == 3:

@@ -202,7 +202,10 @@ class WaveScaleHDRDialogPro(QDialog):
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
-
+        try:
+            self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        except Exception:
+            pass  # older PyQt6 versions
         self._doc = doc
         base = getattr(doc, "image", None)
         if base is None:

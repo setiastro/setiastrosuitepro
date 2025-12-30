@@ -631,7 +631,10 @@ class StellarAlignmentDialog(QDialog):
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
-        #self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        try:
+            self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        except Exception:
+            pass  # older PyQt6 versions
 
         self.settings = settings
         self.parent_window = parent

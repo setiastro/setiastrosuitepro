@@ -1029,7 +1029,10 @@ class CurvesDialogPro(QDialog):
                 self._follow_conn = True
             except Exception:
                 self._follow_conn = False
-
+        try:
+            self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        except Exception:
+            pass  # older PyQt6 versions
         self.finished.connect(self._cleanup_connections)
         self._preview_img = None     # downsampled float01
         self._full_img = None        # full-res float01

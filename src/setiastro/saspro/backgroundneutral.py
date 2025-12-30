@@ -260,7 +260,10 @@ class BackgroundNeutralizationDialog(QDialog):
                 self._connected_current_doc_changed = False
 
         self.finished.connect(self._cleanup_connections)
-        #self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        try:
+            self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        except Exception:
+            pass  # older PyQt6 versions
 
         if icon:
             self.setWindowIcon(icon)

@@ -458,7 +458,10 @@ class SelectiveColorCorrection(QDialog):
         self.setWindowTitle(self.tr("Selective Color Correction"))
         if window_icon:
             self.setWindowIcon(window_icon)
-
+        try:
+            self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        except Exception:
+            pass  # older PyQt6 versions
         self.docman = doc_manager
         self.document = document
         if self.document is None or getattr(self.document, "image", None) is None:

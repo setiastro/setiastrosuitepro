@@ -122,7 +122,10 @@ class CLAHEDialogPro(QDialog):
             except Exception as e:
                 import logging
                 logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
-
+        try:
+            self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        except Exception:
+            pass  # older PyQt6 versions
         self.doc = doc
         self.orig = np.clip(np.asarray(doc.image, dtype=np.float32), 0.0, 1.0)
         disp = self.orig

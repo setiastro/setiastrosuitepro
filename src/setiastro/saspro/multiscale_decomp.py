@@ -219,6 +219,10 @@ class MultiscaleDecompDialog(QDialog):
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
+        try:
+            self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        except Exception:
+            pass  # older PyQt6 versions        
         self.setMinimumSize(1050, 700)
         self.residual_enabled = True
         self._layer_noise = None  # list[float] per detail layer

@@ -43,7 +43,10 @@ class _BlemishWorker(QRunnable):
         self.opacity = float(opacity)
         self.channels_to_process = channels_to_process
         self.signals = _BBWorkerSignals()
-
+        try:
+            self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        except Exception:
+            pass  # older PyQt6 versions
     @pyqtSlot()
     def run(self):
         out = self._remove_blemish(

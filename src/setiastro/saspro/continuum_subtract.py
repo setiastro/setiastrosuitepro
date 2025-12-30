@@ -105,7 +105,10 @@ class ContinuumSubtractTab(QWidget):
         self.processing_thread = None
         self.original_header = None
         self._clickable_images = {}
-
+        try:
+            self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        except Exception:
+            pass  # older PyQt6 versions
 
     def initUI(self):
         self.spinnerLabel = QLabel("")                # starts empty

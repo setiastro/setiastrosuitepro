@@ -286,7 +286,10 @@ class CropDialogPro(QDialog):
                 self._follow_conn = False
 
         self.finished.connect(self._cleanup_connections)
-
+        try:
+            self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        except Exception:
+            pass  # older PyQt6 versions
         self._rect_item: Optional[ResizableRotatableRectItem] = None
         self._pix_item: Optional[QGraphicsPixmapItem] = None
         self._drawing = False

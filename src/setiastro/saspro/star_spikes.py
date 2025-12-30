@@ -53,6 +53,10 @@ class StarSpikesDialogPro(QDialog):
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
+        try:
+            self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        except Exception:
+            pass  # older PyQt6 versions        
         self.docman = doc_manager
         self.doc = initial_doc or (self.docman.get_active_document() if self.docman else None)
         self.jwstpupil_path = jwstpupil_path

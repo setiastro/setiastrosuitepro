@@ -29,7 +29,10 @@ class StatisticalStretchDialog(QDialog):
         self.setWindowModality(Qt.WindowModality.NonModal)
         # Don’t let the generic modal flag override the explicit modality
         self.setModal(False)
-
+        try:
+            self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        except Exception:
+            pass  # older PyQt6 versions
         self._main = parent
         self.doc = document
         self._last_preview = None

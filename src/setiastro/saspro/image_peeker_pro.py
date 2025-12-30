@@ -1317,6 +1317,10 @@ class ImagePeekerDialogPro(QDialog):
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
+        try:
+            self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        except Exception:
+            pass  # older PyQt6 versions        
         self.document = self._coerce_doc(document)   # <- ensure we hold a real doc
         self.settings = settings
         # status / progress line

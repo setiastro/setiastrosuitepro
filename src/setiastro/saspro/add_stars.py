@@ -231,7 +231,10 @@ class AddStarsDialog(QDialog):
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         #self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-
+        try:
+            self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        except Exception:
+            pass  # older PyQt6 versions
         self.main = main
         self.starless = None
         self.stars_only = None

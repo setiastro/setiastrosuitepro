@@ -133,7 +133,10 @@ class StarStretchDialog(QDialog):
         self._main = parent
         self.doc = document
         self._preview: np.ndarray | None = None
-
+        try:
+            self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        except Exception:
+            pass  # older PyQt6 versions
         # Connect to active document change signal
         self._connected_current_doc_changed = False
         if hasattr(self._main, "currentDocumentChanged"):

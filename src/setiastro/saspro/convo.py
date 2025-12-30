@@ -151,7 +151,10 @@ class ConvoDeconvoDialog(QDialog):
         # Only follow global active-doc changes if we *weren't* given a doc
         if hasattr(self._main, "currentDocumentChanged") and self._doc_override is None:
             self._main.currentDocumentChanged.connect(self._on_active_doc_changed)
-
+        try:
+            self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        except Exception:
+            pass  # older PyQt6 versions
         self.setWindowTitle(self.tr("Convolution / Deconvolution"))
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.setWindowModality(Qt.WindowModality.NonModal)
