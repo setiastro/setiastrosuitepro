@@ -361,8 +361,24 @@ class ToolbarMixin:
         except Exception:
             pass
 
+
+        tb_hidden = DraggableToolBar(self.tr("Hidden"), self)
+        tb_hidden.setObjectName("Hidden")
+        tb_hidden.setSettingsKey("Toolbar/Hidden")
+        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_hidden)
+        tb_hidden.setVisible(False)  # <- always hidden
+
         # This can move actions between toolbars, so do it after each toolbar has its base order restored.
         self._restore_toolbar_memberships()
+
+        # Migrate legacy per-toolbar Hidden lists into the new Hidden toolbar
+        self._migrate_old_hidden_sets_to_hidden_toolbar()
+
+        # (Optional) Re-apply per-toolbar order after migration (since we removed actions)
+        for _tb in self.findChildren(DraggableToolBar):
+            key = getattr(_tb, "_settings_key", None)
+            if key:
+                self._restore_toolbar_order(_tb, str(key))
 
         # Re-apply hidden state AFTER memberships (actions may have moved toolbars).
         # This also guarantees correctness even if any toolbar was rebuilt/adjusted internally.
@@ -1494,6 +1510,188 @@ class ToolbarMixin:
             key = getattr(tb, "_settings_key", None)
             if key:
                 self._restore_toolbar_order(tb, str(key))
+
+    def _hidden_toolbar(self):
+        from setiastro.saspro.shortcuts import DraggableToolBar
+        for tb in self.findChildren(DraggableToolBar):
+            if getattr(tb, "_settings_key", None) == "Toolbar/Hidden" or tb.objectName() == "Hidden":
+                return tb
+        return None
+
+    def _toolbar_by_settings_key(self, key: str):
+        from setiastro.saspro.shortcuts import DraggableToolBar
+        for tb in self.findChildren(DraggableToolBar):
+            if getattr(tb, "_settings_key", None) == key:
+                return tb
+        return None
+
+    def _action_cid(self, act):
+        return str(act.property("command_id") or act.objectName() or "")
+
+    def _hide_action_to_hidden_toolbar(self, act):
+        """
+        Move action to the Hidden toolbar, remembering where it came from.
+        """
+        tb_hidden = self._hidden_toolbar()
+        if not tb_hidden:
+            return
+
+        cid = self._action_cid(act)
+        if not cid:
+            return
+
+        # Find current toolbar (if any) and remember it
+        cur_tb = self._toolbar_containing_action(act)
+        if cur_tb and getattr(cur_tb, "_settings_key", None) and cur_tb is not tb_hidden:
+            prev_key = str(cur_tb._settings_key)
+
+            # Persist "previous toolbar" so unhide can restore
+            try:
+                raw = self.settings.value("Toolbar/HiddenPrev", "", type=str) or ""
+            except Exception:
+                raw = ""
+            try:
+                prev = json.loads(raw) if raw else {}
+            except Exception:
+                prev = {}
+            prev[cid] = prev_key
+            self.settings.setValue("Toolbar/HiddenPrev", json.dumps(prev))
+
+        # Remove from all toolbars, add to hidden
+        from setiastro.saspro.shortcuts import DraggableToolBar
+        for t in self.findChildren(DraggableToolBar):
+            if act in t.actions():
+                t.removeAction(act)
+
+        tb_hidden.addAction(act)
+
+        # Update assignment mapping so restore works on next launch
+        tb_hidden._update_assignment_for_action(act)
+
+        # Persist ordering (optional but nice)
+        try:
+            tb_hidden._persist_order()
+        except Exception:
+            pass
+        if cur_tb:
+            try:
+                cur_tb._persist_order()
+            except Exception:
+                pass
+
+    def _unhide_action_from_hidden_toolbar(self, act):
+        """
+        Move action out of Hidden toolbar back to its remembered toolbar.
+        Falls back to Toolbar/View if missing.
+        """
+        tb_hidden = self._hidden_toolbar()
+        if not tb_hidden:
+            return
+
+        cid = self._action_cid(act)
+        if not cid:
+            return
+
+        # Load prev mapping
+        try:
+            raw = self.settings.value("Toolbar/HiddenPrev", "", type=str) or ""
+        except Exception:
+            raw = ""
+        try:
+            prev = json.loads(raw) if raw else {}
+        except Exception:
+            prev = {}
+
+        target_key = prev.get(cid) or "Toolbar/View"
+        tb_target = self._toolbar_by_settings_key(target_key) or self._toolbar_by_settings_key("Toolbar/View")
+        if not tb_target:
+            return
+
+        tb_hidden.removeAction(act)
+        tb_target.addAction(act)
+
+        # Update assignment mapping
+        tb_target._update_assignment_for_action(act)
+
+        # Cleanup prev mapping (optional)
+        if cid in prev:
+            prev.pop(cid, None)
+            self.settings.setValue("Toolbar/HiddenPrev", json.dumps(prev))
+
+        try:
+            tb_target._persist_order()
+            tb_hidden._persist_order()
+        except Exception:
+            pass
+
+    def _migrate_old_hidden_sets_to_hidden_toolbar(self):
+        """
+        One-time migration:
+        Old system: per-toolbar QSettings lists at "<ToolbarKey>/Hidden" storing action IDs
+        New system: move those actions into the dedicated Hidden toolbar (Toolbar/Hidden)
+                    and persist membership via Toolbar/Assignments.
+        """
+        if not hasattr(self, "settings"):
+            return
+
+        # Run once
+        if self.settings.value("Toolbar/HiddenMigrationDone", False, type=bool):
+            return
+
+        tb_hidden = self._hidden_toolbar()
+        if not tb_hidden:
+            return
+
+        from setiastro.saspro.shortcuts import DraggableToolBar
+
+        # If Hidden toolbar already has actions, assume user is already on new system
+        # but we still can migrate any remaining old keys.
+        # (We won't early-return.)
+
+        for tb in self.findChildren(DraggableToolBar):
+            k = getattr(tb, "_settings_key", None)
+            if not k or str(k) == "Toolbar/Hidden":
+                continue
+
+            # Old storage key
+            old_key = f"{k}/Hidden"
+
+            # Read old hidden list (Qt backend may return list OR str)
+            try:
+                raw = self.settings.value(old_key, [], type=list)
+            except Exception:
+                raw = self.settings.value(old_key, [])  # fallback
+
+            if not raw:
+                continue
+
+            if isinstance(raw, str):
+                raw_list = [raw]
+            else:
+                try:
+                    raw_list = list(raw)
+                except Exception:
+                    raw_list = []
+
+            hidden_ids = {str(x) for x in raw_list if str(x).strip()}
+            if not hidden_ids:
+                # Clear junk so we don’t keep trying
+                self.settings.setValue(old_key, [])
+                continue
+
+            # Move matching actions into Hidden toolbar
+            for act in list(tb.actions()):
+                if act is None or act.isSeparator():
+                    continue
+                cid = str(act.property("command_id") or act.objectName() or "")
+                if cid and cid in hidden_ids:
+                    self._hide_action_to_hidden_toolbar(act)
+
+            # Clear old storage so you don't keep re-migrating
+            self.settings.setValue(old_key, [])
+
+        # Mark migration complete
+        self.settings.setValue("Toolbar/HiddenMigrationDone", True)
 
 
     def update_undo_redo_action_labels(self):

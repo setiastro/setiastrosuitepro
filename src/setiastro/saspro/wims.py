@@ -38,6 +38,8 @@ def _app_root() -> str:
 def imgs_path(*parts) -> str:
     return os.path.join(_app_root(), "imgs", *parts)
 
+from setiastro.saspro.resources import get_icon_path
+
 getcontext().prec = 24
 warnings.filterwarnings("ignore")
 
@@ -472,11 +474,19 @@ class WhatsInMySkyDialog(QDialog):
 
     def update_lunar_phase(self, phase_percentage: int, phase_image_name: str):
         self.lunar_phase_label.setText(self.tr("Lunar Phase: {}% illuminated").format(phase_percentage))
-        pth = imgs_path(phase_image_name)
+
+        pth = get_icon_path(phase_image_name)  # phase_image_name already includes .png
         if os.path.exists(pth):
-            pm = QPixmap(pth).scaled(100, 100, Qt.AspectRatioMode.KeepAspectRatio,
-                                     Qt.TransformationMode.SmoothTransformation)
+            pm = QPixmap(pth).scaled(
+                100, 100,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation
+            )
             self.lunar_phase_image_label.setPixmap(pm)
+        else:
+            # super helpful while debugging
+            self.lunar_phase_image_label.clear()
+            self.update_status(self.tr("Moon icon missing: {}").format(pth))
 
     def on_calculation_complete(self, df: pd.DataFrame, message: str):
         self.update_status(message)

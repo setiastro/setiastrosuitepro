@@ -245,6 +245,39 @@ class Icons:
     LIVE_STACKING = property(lambda self: _resource_path('livestacking.png'))
     IMAGE_COMBINE = property(lambda self: _resource_path('imagecombine.png'))
     
+    # Moon phase (WIMS)
+    MOON_NEW            = property(lambda self: _resource_path('new_moon.png'))
+    MOON_WAXING_CRES_1  = property(lambda self: _resource_path('waxing_crescent_1.png'))
+    MOON_WAXING_CRES_2  = property(lambda self: _resource_path('waxing_crescent_2.png'))
+    MOON_WAXING_CRES_3  = property(lambda self: _resource_path('waxing_crescent_3.png'))
+    MOON_WAXING_CRES_4  = property(lambda self: _resource_path('waxing_crescent_4.png'))
+    MOON_WAXING_CRES_5  = property(lambda self: _resource_path('waxing_crescent_5.png'))
+
+    MOON_FIRST_QUARTER  = property(lambda self: _resource_path('first_quarter.png'))
+
+    MOON_WAXING_GIB_1   = property(lambda self: _resource_path('waxing_gibbous_1.png'))
+    MOON_WAXING_GIB_2   = property(lambda self: _resource_path('waxing_gibbous_2.png'))
+    MOON_WAXING_GIB_3   = property(lambda self: _resource_path('waxing_gibbous_3.png'))
+    MOON_WAXING_GIB_4   = property(lambda self: _resource_path('waxing_gibbous_4.png'))
+    MOON_WAXING_GIB_5   = property(lambda self: _resource_path('waxing_gibbous_5.png'))
+
+    MOON_FULL           = property(lambda self: _resource_path('full_moon.png'))
+
+    MOON_WANING_GIB_1   = property(lambda self: _resource_path('waning_gibbous_1.png'))
+    MOON_WANING_GIB_2   = property(lambda self: _resource_path('waning_gibbous_2.png'))
+    MOON_WANING_GIB_3   = property(lambda self: _resource_path('waning_gibbous_3.png'))
+    MOON_WANING_GIB_4   = property(lambda self: _resource_path('waning_gibbous_4.png'))
+    MOON_WANING_GIB_5   = property(lambda self: _resource_path('waning_gibbous_5.png'))
+
+    MOON_LAST_QUARTER   = property(lambda self: _resource_path('last_quarter.png'))
+
+    MOON_WANING_CRES_1  = property(lambda self: _resource_path('waning_crescent_1.png'))
+    MOON_WANING_CRES_2  = property(lambda self: _resource_path('waning_crescent_2.png'))
+    MOON_WANING_CRES_3  = property(lambda self: _resource_path('waning_crescent_3.png'))
+    MOON_WANING_CRES_4  = property(lambda self: _resource_path('waning_crescent_4.png'))
+    MOON_WANING_CRES_5  = property(lambda self: _resource_path('waning_crescent_5.png'))
+
+
     # Special features
     SUPERNOVA = property(lambda self: _resource_path('supernova.png'))
     PEDESTAL = property(lambda self: _resource_path('pedestal.png'))
@@ -393,6 +426,38 @@ def _init_legacy_paths():
         'slot7_path': get_icon_path('slot7.png'),
         'slot8_path': get_icon_path('slot8.png'),
         'slot9_path': get_icon_path('slot9.png'),
+
+        'moon_new_path': get_icon_path('new_moon.png'),
+        'moon_waxing_crescent_1_path': get_icon_path('waxing_crescent_1.png'),
+        'moon_waxing_crescent_2_path': get_icon_path('waxing_crescent_2.png'),
+        'moon_waxing_crescent_3_path': get_icon_path('waxing_crescent_3.png'),
+        'moon_waxing_crescent_4_path': get_icon_path('waxing_crescent_4.png'),
+        'moon_waxing_crescent_5_path': get_icon_path('waxing_crescent_5.png'),
+
+        'moon_first_quarter_path': get_icon_path('first_quarter.png'),
+
+        'moon_waxing_gibbous_1_path': get_icon_path('waxing_gibbous_1.png'),
+        'moon_waxing_gibbous_2_path': get_icon_path('waxing_gibbous_2.png'),
+        'moon_waxing_gibbous_3_path': get_icon_path('waxing_gibbous_3.png'),
+        'moon_waxing_gibbous_4_path': get_icon_path('waxing_gibbous_4.png'),
+        'moon_waxing_gibbous_5_path': get_icon_path('waxing_gibbous_5.png'),
+
+        'moon_full_path': get_icon_path('full_moon.png'),
+
+        'moon_waning_gibbous_1_path': get_icon_path('waning_gibbous_1.png'),
+        'moon_waning_gibbous_2_path': get_icon_path('waning_gibbous_2.png'),
+        'moon_waning_gibbous_3_path': get_icon_path('waning_gibbous_3.png'),
+        'moon_waning_gibbous_4_path': get_icon_path('waning_gibbous_4.png'),
+        'moon_waning_gibbous_5_path': get_icon_path('waning_gibbous_5.png'),
+
+        'moon_last_quarter_path': get_icon_path('last_quarter.png'),
+
+        'moon_waning_crescent_1_path': get_icon_path('waning_crescent_1.png'),
+        'moon_waning_crescent_2_path': get_icon_path('waning_crescent_2.png'),
+        'moon_waning_crescent_3_path': get_icon_path('waning_crescent_3.png'),
+        'moon_waning_crescent_4_path': get_icon_path('waning_crescent_4.png'),
+        'moon_waning_crescent_5_path': get_icon_path('waning_crescent_5.png'),
+
         'rgbcombo_path': get_icon_path('rgbcombo.png'),
         'rgbextract_path': get_icon_path('rgbextract.png'),
         'copyslot_path': get_icon_path('copyslot.png'),
