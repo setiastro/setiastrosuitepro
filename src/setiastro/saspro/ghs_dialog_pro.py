@@ -127,14 +127,16 @@ class GhsDialogPro(QDialog):
         main.addLayout(right, 1)
 
         # ---------- wiring ----------
-        self.editor.setPreviewCallback(lambda _lut8: self._quick_preview())
+        self._suppress_editor_preview = False
+        self.editor.setPreviewCallback(lambda _lut8: self._on_editor_preview())
         self.editor.setSymmetryCallback(self._on_symmetry_pick)
 
-        self.sA.valueChanged.connect(self._rebuild_from_params)
-        self.sB.valueChanged.connect(self._rebuild_from_params)
-        self.sG.valueChanged.connect(self._rebuild_from_params)
-        self.sLP.valueChanged.connect(self._rebuild_from_params)
-        self.sHP.valueChanged.connect(self._rebuild_from_params)
+        for s in (self.sA, self.sB, self.sG, self.sLP, self.sHP):
+            s.valueChanged.connect(self._schedule_rebuild_from_params)
+
+            # Track dragging so we can “flush” on release
+            s.sliderPressed.connect(self._on_any_slider_pressed)
+            s.sliderReleased.connect(self._on_any_slider_released)
         self.cmb_ch.currentTextChanged.connect(self._recolor_curve)
 
         self.btn_apply.clicked.connect(self._apply)
@@ -152,6 +154,12 @@ class GhsDialogPro(QDialog):
         # start with Fit to Preview (avoids offset issues)
         QTimer.singleShot(0, self._fit)
         
+        self._rebuild_debounce = QTimer(self)
+        self._rebuild_debounce.setSingleShot(True)
+        self._rebuild_debounce.setInterval(75)   # 50–120ms feels good; 75 is a nice default
+        self._rebuild_debounce.timeout.connect(self._rebuild_from_params_now)
+
+        self._slider_dragging = False        
 
         # first curve
         self._rebuild_from_params()
@@ -198,12 +206,53 @@ class GhsDialogPro(QDialog):
         self.editor.setSymmetryPoint(u * 360.0, 0.0)
         self._rebuild_from_params()
 
+    def _on_editor_preview(self):
+        if getattr(self, "_suppress_editor_preview", False):
+            return
+        self._quick_preview()
+
+    def _on_any_slider_pressed(self):
+        self._slider_dragging = True
+
+    def _on_any_slider_released(self):
+        self._slider_dragging = False
+        # Flush immediately to final value
+        if self._rebuild_debounce.isActive():
+            self._rebuild_debounce.stop()
+        self._rebuild_from_params_now()
+
+    def _schedule_rebuild_from_params(self):
+        """
+        Called on every valueChanged tick. Updates labels fast, but defers the heavy work.
+        """
+        # lightweight label updates (no LUT/preview work here)
+        a = self.sA.value() / 50.0
+        b = self.sB.value() / 50.0
+        g = self.sG.value() / 100.0
+        self.labA.setText(f"{a:.2f}")
+        self.labB.setText(f"{b:.2f}")
+        self.labG.setText(f"{g:.2f}")
+        self.labLP.setText(f"{self.sLP.value()/360.0:.2f}")
+        self.labHP.setText(f"{self.sHP.value()/360.0:.2f}")
+
+        # debounce heavy rebuild
+        self._rebuild_debounce.start()
+
+    def _rebuild_from_params(self):
+        """
+        Keep existing call sites working (hist pivot, symmetry pick, etc).
+        For non-slider callers we generally WANT immediate rebuild.
+        """
+        if self._rebuild_debounce.isActive():
+            self._rebuild_debounce.stop()
+        self._rebuild_from_params_now()
+
 
     def _on_symmetry_pick(self, u, v):
         self._sym_u = float(u)
         self._rebuild_from_params()
 
-    def _rebuild_from_params(self):
+    def _rebuild_from_params_now(self):
         a = self.sA.value()/50.0
         b = self.sB.value()/50.0
         g = self.sG.value()/100.0
@@ -271,12 +320,17 @@ class GhsDialogPro(QDialog):
         ys = (1.0 - vp) * 360.0
         pts = list(zip(xs.astype(float), ys.astype(float)))
 
-        cps_sorted = sorted(self.editor.control_points, key=lambda p: p.scenePos().x())
-        for p, (x, y) in zip(cps_sorted, pts):
-            p.setPos(x, y)
+        self._suppress_editor_preview = True
+        try:
+            cps_sorted = sorted(self.editor.control_points, key=lambda p: p.scenePos().x())
+            for p, (x, y) in zip(cps_sorted, pts):
+                p.setPos(x, y)
 
-        self._recolor_curve()
-        self.editor.updateCurve()
+            self._recolor_curve()
+            self.editor.updateCurve()
+        finally:
+            self._suppress_editor_preview = False
+
         self._quick_preview()
 
 
@@ -658,10 +712,17 @@ class GhsDialogPro(QDialog):
 
         return (m * out + (1.0 - m) * src).astype(np.float32, copy=False)
 
-
     def _reset(self):
-        self.sA.setValue(50); self.sB.setValue(50); self.sG.setValue(100)
-        self.sLP.setValue(0);  self.sHP.setValue(0)
+        for s in (self.sA, self.sB, self.sG, self.sLP, self.sHP):
+            s.blockSignals(True)
+        try:
+            self.sA.setValue(50); self.sB.setValue(50); self.sG.setValue(100)
+            self.sLP.setValue(0);  self.sHP.setValue(0)
+        finally:
+            for s in (self.sA, self.sB, self.sG, self.sLP, self.sHP):
+                s.blockSignals(False)
+
         self._sym_u = 0.5
         self.editor.clearSymmetryLine()
-        self._rebuild_from_params()
+        self._rebuild_from_params()   # immediate
+

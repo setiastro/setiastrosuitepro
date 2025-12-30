@@ -493,7 +493,8 @@ class DraggableToolBar(QToolBar):
         cid = self._action_id(act)
         if cid:
             m.addSeparator()
-            m.addAction(self.tr("Hide this icon"), lambda: self._set_action_hidden(act, True))
+            m.addAction(self.tr("Hide this icon"), lambda: self.window()._hide_action_to_hidden_toolbar(act))
+
 
         # (Optional) teach users about Alt+Drag:
         m.addSeparator()
@@ -521,16 +522,19 @@ class DraggableToolBar(QToolBar):
         m.addSeparator()
 
         # Submenu listing hidden actions for this toolbar
-        hidden = self._load_hidden_set()
         sub = m.addMenu(self.tr("Show hidden…"))
 
-        # Build list from actions that are currently invisible
+        mw = self.window()
+        tb_hidden = getattr(mw, "_hidden_toolbar", lambda: None)()
         any_hidden = False
-        for act in self.actions():
-            cid = self._action_id(act)
-            if cid and (cid in hidden) and (not act.isVisible()):
+        if tb_hidden:
+            for act in tb_hidden.actions():
+                # Skip separators
+                if act.isSeparator():
+                    continue
                 any_hidden = True
-                sub.addAction(act.text() or cid, lambda a=act: self._set_action_hidden(a, False))
+                sub.addAction(act.text() or (act.property("command_id") or act.objectName() or "item"),
+                              lambda a=act: mw._unhide_action_from_hidden_toolbar(a))
 
         if not any_hidden:
             sub.setEnabled(False)
@@ -541,10 +545,15 @@ class DraggableToolBar(QToolBar):
         m.exec(ev.globalPos())
 
     def _reset_hidden_icons(self):
-        # Show everything and clear hidden list
-        for act in self.actions():
-            act.setVisible(True)
-        self._save_hidden_set(set())
+        mw = self.window()
+        tb_hidden = getattr(mw, "_hidden_toolbar", lambda: None)()
+        if not tb_hidden:
+            return
+        # copy list because we'll mutate
+        acts = [a for a in tb_hidden.actions() if not a.isSeparator()]
+        for a in acts:
+            mw._unhide_action_from_hidden_toolbar(a)
+
 
 
 _PRESET_UI_IDS = {
