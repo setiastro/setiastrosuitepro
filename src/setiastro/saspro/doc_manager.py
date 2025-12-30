@@ -2268,6 +2268,46 @@ class DocManager(QObject):
         if hasattr(doc, "changed"):
             doc.changed.emit()
 
+    def _current_view_title_for_doc(self, source_doc: ImageDocument) -> str | None:
+        """
+        If the active MDI subwindow is showing 'source_doc' (or its parent/base),
+        return the current view's title (windowTitle), otherwise None.
+        """
+        sw = self._active_subwindow()
+        if sw is None:
+            return None
+
+        try:
+            w = sw.widget()
+        except Exception:
+            w = None
+
+        # Resolve what doc the active view corresponds to (base doc)
+        try:
+            base = (
+                getattr(w, "base_document", None)
+                or getattr(w, "_base_document", None)
+                or getattr(w, "document", None)
+                or getattr(sw, "document", None)
+            )
+            parent = getattr(base, "_parent_doc", None)
+            if isinstance(parent, ImageDocument):
+                base = parent
+        except Exception:
+            base = None
+
+        if base is not source_doc:
+            return None
+
+        # Prefer the actual subwindow title (includes [View N], etc.)
+        try:
+            title = sw.windowTitle()
+            title = title.strip() if isinstance(title, str) else ""
+            return title or None
+        except Exception:
+            return None
+
+
     def duplicate_document(self, source_doc: ImageDocument, new_name: str | None = None) -> ImageDocument:
         # DEBUG: log the source doc WCS before we touch anything
         if _DEBUG_WCS:
@@ -2284,10 +2324,15 @@ class DocManager(QObject):
         img_ref = source_doc.image  # Shared reference, no copy
 
         meta = dict(source_doc.metadata or {})
-        base = source_doc.display_name()
+
+        # ✅ Use CURRENT VIEW NAME if this doc is what's active; else fall back to doc display_name()
+        base = self._current_view_title_for_doc(source_doc) or source_doc.display_name()
+
         dup_title = (new_name or f"{base}_duplicate")
+
         # 🚫 strip any lingering emojis / link markers
         dup_title = dup_title.replace("🔗", "").strip()
+
         meta["display_name"] = dup_title
 
         # Remove anything that makes the view look "linked/preview"

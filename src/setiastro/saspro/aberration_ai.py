@@ -13,7 +13,7 @@ IS_APPLE_ARM = (sys.platform == "darwin" and platform.machine() == "arm64")
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QStandardPaths, QSettings
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFileDialog,
-    QComboBox, QSpinBox, QProgressBar, QMessageBox, QCheckBox
+    QComboBox, QSpinBox, QProgressBar, QMessageBox, QCheckBox, QLineEdit
 )
 from PyQt6.QtGui import QIcon
 from setiastro.saspro.config import Config
@@ -315,11 +315,29 @@ class AberrationAIDialog(QDialog):
         row.addWidget(QLabel(self.tr("Model:")))
         self.model_label = QLabel("—")
         self.model_label.setToolTip("")
-        btn_browse = QPushButton(self.tr("Browse…")); btn_browse.clicked.connect(self._browse_model)
+        btn_browse = QPushButton(self.tr("Browse…")); btn_browse.clicked.connect(self._browse_active_model)
         row.addWidget(self.model_label, 1)
         row.addWidget(btn_browse)
         v.addLayout(row)
+        # Custom model row (NEW)
+        row_custom = QHBoxLayout()
+        self.chk_use_custom = QCheckBox(self.tr("Use custom model file"))
+        self.chk_use_custom.setChecked(False)
+        self.chk_use_custom.toggled.connect(self._on_use_custom_toggled)
 
+        self.le_custom_model = QLineEdit()
+        self.le_custom_model.setReadOnly(True)
+        self.le_custom_model.setPlaceholderText(self.tr("No custom model selected"))
+        self.le_custom_model.setToolTip("")
+
+        btn_custom_clear = QPushButton(self.tr("Clear"))
+        btn_custom_clear.clicked.connect(self._clear_custom_model)
+
+        row_custom.addWidget(self.chk_use_custom)
+        row_custom.addWidget(self.le_custom_model, 1)
+
+        row_custom.addWidget(btn_custom_clear)
+        v.addLayout(row_custom)
         # Providers row
         row2 = QHBoxLayout()
         self.chk_auto = QCheckBox(self.tr("Auto GPU (if available)"))
@@ -373,7 +391,9 @@ class AberrationAIDialog(QDialog):
         self._model_path = None
         self._refresh_providers()
         self._load_last_model_from_settings()
-
+        self._load_last_custom_model_from_settings()
+        use_custom = QSettings().value("AberrationAI/use_custom_model", False, type=bool)
+        self.chk_use_custom.setChecked(bool(use_custom))
         if IS_APPLE_ARM:
             self.chk_auto.setChecked(False)
             self.chk_auto.setEnabled(False)
@@ -395,11 +415,73 @@ class AberrationAIDialog(QDialog):
         if p and os.path.isfile(p):
             self._set_model_path(p)
 
-    def _browse_model(self):
-        start_dir = _app_model_dir()
+    def _browse_active_model(self):
+        """
+        Single Browse button.
+        - If user picks a file inside the app model folder -> treat as "downloaded" selection (use_custom_model=False)
+        - If user picks a file outside -> treat as "custom" (use_custom_model=True)
+        """
+        app_dir = os.path.abspath(_app_model_dir())
+
+        # Start in last-used folder if possible
+        last_custom = QSettings().value("AberrationAI/custom_model_path", type=str) or ""
+        last_downloaded = QSettings().value("AberrationAI/model_path", type=str) or ""
+        start_dir = None
+        for candidate in (last_custom, last_downloaded):
+            if candidate and os.path.isfile(candidate):
+                d = os.path.dirname(candidate)
+                if os.path.isdir(d):
+                    start_dir = d
+                    break
+        if start_dir is None:
+            start_dir = app_dir
+
         p, _ = QFileDialog.getOpenFileName(self, "Select ONNX model", start_dir, "ONNX (*.onnx)")
-        if p:
-            self._set_model_path(p)
+        if not p:
+            return
+
+        p_abs = os.path.abspath(p)
+        # Determine if picked file is inside app model folder
+        in_app_dir = False
+        try:
+            in_app_dir = os.path.commonpath([app_dir, p_abs]) == app_dir
+        except Exception:
+            in_app_dir = p_abs.startswith(app_dir)
+
+        if in_app_dir:
+            # "Downloaded" selection
+            self._set_model_path(p_abs)
+            self._set_custom_model_path(None)
+            QSettings().setValue("AberrationAI/use_custom_model", False)
+            if hasattr(self, "chk_use_custom"):
+                self.chk_use_custom.setChecked(False)
+        else:
+            # "Custom" selection
+            self._set_custom_model_path(p_abs)
+            QSettings().setValue("AberrationAI/use_custom_model", True)
+            if hasattr(self, "chk_use_custom"):
+                self.chk_use_custom.setChecked(True)
+
+        # Keep visuals in sync
+        self._refresh_model_label()
+        self._refresh_custom_row_visibility()
+
+
+    def _refresh_model_label(self):
+        downloaded = QSettings().value("AberrationAI/model_path", type=str) or ""
+        custom     = QSettings().value("AberrationAI/custom_model_path", type=str) or ""
+        use_custom = QSettings().value("AberrationAI/use_custom_model", False, type=bool)
+
+        if use_custom and custom:
+            self.model_label.setText(f"Custom: {os.path.basename(custom)}")
+            self.model_label.setToolTip(custom)
+        elif downloaded:
+            self.model_label.setText(f"Downloaded: {os.path.basename(downloaded)}")
+            self.model_label.setToolTip(downloaded)
+        else:
+            self.model_label.setText("—")
+            self.model_label.setToolTip("")
+
 
     def _open_model_folder(self):
         d = _app_model_dir()
@@ -412,6 +494,108 @@ class AberrationAIDialog(QDialog):
                 import subprocess; subprocess.Popen(["xdg-open", d])
         except Exception:
             webbrowser.open(f"file://{d}")
+    # ----- custom model helpers (NEW) -----
+    def _set_custom_model_path(self, p: str | None):
+        if p:
+            self.le_custom_model.setText(os.path.basename(p))
+            self.le_custom_model.setToolTip(p)
+            QSettings().setValue("AberrationAI/custom_model_path", p)
+        else:
+            self.le_custom_model.clear()
+            self.le_custom_model.setToolTip("")
+            QSettings().remove("AberrationAI/custom_model_path")
+
+    def _load_last_custom_model_from_settings(self):
+        p = QSettings().value("AberrationAI/custom_model_path", type=str)
+        if p:
+            if os.path.isfile(p):
+                self._set_custom_model_path(p)
+            else:
+                # Keep the broken path visible in tooltip for debugging
+                if hasattr(self, "le_custom_model"):
+                    self.le_custom_model.setText(os.path.basename(p) + "  (missing)")
+                    self.le_custom_model.setToolTip(p)
+
+        # After both loads, sync labels/visibility
+        self._refresh_model_label()
+        self._refresh_custom_row_visibility()
+
+    def _refresh_custom_row_visibility(self):
+        """
+        If you keep the custom row in the UI, hide the path field unless custom is enabled.
+        """
+        if not hasattr(self, "le_custom_model"):
+            return
+        use_custom = QSettings().value("AberrationAI/use_custom_model", False, type=bool)
+        self.le_custom_model.setVisible(bool(use_custom))
+
+
+    def _refresh_model_label(self):
+        downloaded = QSettings().value("AberrationAI/model_path", type=str) or ""
+        custom     = QSettings().value("AberrationAI/custom_model_path", type=str) or ""
+        use_custom = QSettings().value("AberrationAI/use_custom_model", False, type=bool)
+
+        # Prefer custom only if enabled AND the file exists
+        if use_custom and custom:
+            if os.path.isfile(custom):
+                self.model_label.setText(f"Custom: {os.path.basename(custom)}")
+                self.model_label.setToolTip(custom)
+                return
+            else:
+                self.model_label.setText(f"Custom: {os.path.basename(custom)}  (missing)")
+                self.model_label.setToolTip(custom)
+                return
+
+        # Otherwise show downloaded if valid
+        if downloaded and os.path.isfile(downloaded):
+            self.model_label.setText(f"Downloaded: {os.path.basename(downloaded)}")
+            self.model_label.setToolTip(downloaded)
+        else:
+            self.model_label.setText("—")
+            self.model_label.setToolTip("")
+
+
+    def _browse_custom_model(self):
+        # Start at last dir if possible, else app model dir
+        last = QSettings().value("AberrationAI/custom_model_path", type=str) or ""
+        start_dir = os.path.dirname(last) if last and os.path.isdir(os.path.dirname(last)) else _app_model_dir()
+        p, _ = QFileDialog.getOpenFileName(self, "Select custom ONNX model", start_dir, "ONNX (*.onnx)")
+        if p:
+            self._set_custom_model_path(p)
+            QSettings().setValue("AberrationAI/use_custom_model", True)
+            if not self.chk_use_custom.isChecked():
+                self.chk_use_custom.setChecked(True)
+
+    def _clear_custom_model(self):
+        self._set_custom_model_path(None)
+        QSettings().setValue("AberrationAI/use_custom_model", False)
+        if hasattr(self, "chk_use_custom"):
+            self.chk_use_custom.setChecked(False)
+
+        self._refresh_model_label()
+        self._refresh_custom_row_visibility()
+
+
+    def _on_use_custom_toggled(self, on: bool):
+        QSettings().setValue("AberrationAI/use_custom_model", bool(on))
+
+        if on:
+            p = QSettings().value("AberrationAI/custom_model_path", type=str) or ""
+            if not (p and os.path.isfile(p)):
+                # Don’t spawn another browse button path; use the ONE browse if they want
+                QMessageBox.information(
+                    self,
+                    self.tr("Custom model"),
+                    self.tr("Custom model is enabled, but no custom file is selected.\n"
+                            "Click Browse… to choose a model file.")
+                )
+                # Optional: auto-open the single browse:
+                # self._browse_active_model()
+                # return
+
+        self._refresh_model_label()
+        self._refresh_custom_row_visibility()
+
 
     # ----- provider UI -----
     def _log(self, msg: str):  # NEW
@@ -477,7 +661,15 @@ class AberrationAIDialog(QDialog):
     def _on_download_ok(self, path: str):
         self.progress.setValue(100)
         self._set_model_path(path)
+
+        # Download becomes the active model unless custom is explicitly enabled
+        if not QSettings().value("AberrationAI/use_custom_model", False, type=bool):
+            self._set_custom_model_path(None)
+
         QMessageBox.information(self, "Model", f"Downloaded: {os.path.basename(path)}")
+
+        self._refresh_model_label()
+        self._refresh_custom_row_visibility()
 
     # ----- run -----
     def _run(self):
@@ -489,7 +681,22 @@ class AberrationAIDialog(QDialog):
                 "Please try installing an earlier version (for example 1.19.x) and try again."
             )
             return
-        if not self._model_path or not os.path.isfile(self._model_path):
+        
+        # Choose model path (normal vs custom)
+        use_custom = QSettings().value("AberrationAI/use_custom_model", False, type=bool)
+        downloaded = QSettings().value("AberrationAI/model_path", type=str) or ""
+        custom     = QSettings().value("AberrationAI/custom_model_path", type=str) or ""
+
+        model_path = custom if use_custom else downloaded
+        if self.chk_use_custom.isChecked():
+            cp = QSettings().value("AberrationAI/custom_model_path", type=str)
+            if cp and os.path.isfile(cp):
+                model_path = cp
+            else:
+                QMessageBox.warning(self, "Model", "Custom model is enabled but the file is missing. Please browse to a valid .onnx.")
+                return
+
+        if not model_path or not os.path.isfile(model_path):
             QMessageBox.warning(self, "Model", "Please select or download a valid .onnx model first.")
             return
 
@@ -516,7 +723,7 @@ class AberrationAIDialog(QDialog):
                 providers = [sel] if sel else ["CPUExecutionProvider"]
 
         # --- make patch match the model's requirement (if fixed) ---
-        req = _model_required_patch(self._model_path)
+        req = _model_required_patch(model_path)
         if req and req > 0:
             patch = req
             try:
@@ -537,14 +744,16 @@ class AberrationAIDialog(QDialog):
 
         self._t_start = time.perf_counter()
         prov_txt = ("auto" if self.chk_auto.isChecked() else self.cmb_provider.currentText() or "CPU")
-        self._log(f"🚀 Aberration AI: model={os.path.basename(self._model_path)}, "
+        self._log(f"🚀 Aberration AI: model={os.path.basename(model_path)}, "
                   f"provider={prov_txt}, patch={patch}, overlap={overlap}")
+        
+        self._effective_model_path = model_path
 
         # -------- run worker --------
         self.progress.setValue(0)
         self.btn_run.setEnabled(False)
 
-        self._worker = _ONNXWorker(self._model_path, img, patch, overlap, providers)
+        self._worker = _ONNXWorker(model_path, img, patch, overlap, providers)
         self._worker.progressed.connect(self.progress.setValue)
         self._worker.failed.connect(self._on_failed)
         self._worker.finished_ok.connect(self._on_ok)
@@ -553,11 +762,15 @@ class AberrationAIDialog(QDialog):
 
 
     def _on_failed(self, msg: str):
+        model_path = getattr(self, "_effective_model_path", self._model_path)
         self._log(f"❌ Aberration AI failed: {msg}")
         QMessageBox.critical(self, "ONNX Error", msg)
         self.reject()   # closes the dialog
 
     def _on_ok(self, out: np.ndarray):
+        used = getattr(self._worker, "used_provider", None) or \
+            (self.cmb_provider.currentText() if not self.chk_auto.isChecked() else "auto")        
+        model_path = getattr(self, "_effective_model_path", self._model_path)
         doc = self.get_active_doc()
         if doc is None or getattr(doc, "image", None) is None:
             QMessageBox.warning(self, "Image", "No active image.")
@@ -579,11 +792,10 @@ class AberrationAIDialog(QDialog):
             "processing_parameters": {
                 **(getattr(doc, "metadata", {}) or {}).get("processing_parameters", {}),
                 "AberrationAI": {
-                    "model_path": self._model_path,
+                    "model_path": model_path,
                     "patch_size": int(self.spin_patch.value()),
                     "overlap": int(self.spin_overlap.value()),
-                    "provider": (self.cmb_provider.currentText()
-                                if not self.chk_auto.isChecked() else "auto"),
+                    "provider": used,
                     "border_px": BORDER_PX,
                 }
             }
@@ -616,7 +828,7 @@ class AberrationAIDialog(QDialog):
             if main is not None:
                 auto_gpu = bool(self.chk_auto.isChecked())
                 preset = {
-                    "model": self._model_path,
+                    "model": model_path,
                     "patch": int(self.spin_patch.value()),
                     "overlap": int(self.spin_overlap.value()),
                     "border_px": int(BORDER_PX),
@@ -675,7 +887,7 @@ class AberrationAIDialog(QDialog):
         BORDER_PX = 10  # same value used above
         self._log(
             f"✅ Aberration AI applied "
-            f"(model={os.path.basename(self._model_path)}, provider={used}, "
+            f"(model={os.path.basename(model_path)}, provider={used}, "
             f"patch={int(self.spin_patch.value())}, overlap={int(self.spin_overlap.value())}, "
             f"border={BORDER_PX}px, time={dt:.2f}s)"
         )
