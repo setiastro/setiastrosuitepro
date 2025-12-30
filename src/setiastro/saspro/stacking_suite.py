@@ -9835,7 +9835,10 @@ class StackingSuiteDialog(QDialog):
 
     def load_master_flat(self):
         last_dir = self.settings.value("last_opened_folder", "", type=str)
-        files, _ = QFileDialog.getOpenFileNames(self, "Select Master Flat", last_dir, "FITS Files (*.fits *.fit)")
+        files, _ = QFileDialog.getOpenFileNames(
+            self, "Select Master Flat", last_dir,
+            "Master Calibration (*.fits *.fit *.xisf);;All Files (*)"
+        )
 
         if files:
             self.settings.setValue("last_opened_folder", os.path.dirname(files[0]))
