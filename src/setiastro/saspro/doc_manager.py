@@ -1556,6 +1556,7 @@ def debug_dump_metadata_print(meta: dict, context: str = ""):
         print("===== END METADATA DUMP ({}) =====".format(context))
 
 import time
+_DEBUG_DND_DUP = False
 
 class DocManager(QObject):
     documentAdded = pyqtSignal(object)   # ImageDocument
@@ -2317,7 +2318,15 @@ class DocManager(QObject):
                 name = "<src>"
             
             _debug_log_wcs_context("  source.metadata", getattr(source_doc, "metadata", {}))
-
+        if _DEBUG_DND_DUP:
+            try:
+                src_dn = source_doc.display_name() if hasattr(source_doc, "display_name") else None
+            except Exception:
+                src_dn = None
+            print("\n[DNDDBG:DUPLICATE_DOCUMENT]")
+            print("  source_doc:", source_doc, "id:", id(source_doc), "uid:", getattr(source_doc,"uid",None))
+            print("  source_doc.display_name():", src_dn)
+            print("  new_name arg:", new_name)
         # COPY-ON-WRITE: Share the source image instead of copying immediately.
         # The duplicate's apply_edit will copy when it first modifies the image.
         # This saves memory when duplicates are created but not modified.
@@ -2334,7 +2343,8 @@ class DocManager(QObject):
         dup_title = dup_title.replace("🔗", "").strip()
 
         meta["display_name"] = dup_title
-
+        if _DEBUG_DND_DUP:
+            print("  dup_title computed:", dup_title)
         # Remove anything that makes the view look "linked/preview"
         imi = dict(meta.get("image_meta") or {})
         for k in ("readonly", "view_kind", "derived_from", "layer", "layer_index", "linked"):
@@ -2358,7 +2368,13 @@ class DocManager(QObject):
         # Mark this duplicate as sharing image data with source
         dup._cow_source = source_doc
         self._register_doc(dup)
-
+        if _DEBUG_DND_DUP:
+            try:
+                dn = dup.display_name() if hasattr(dup, "display_name") else None
+            except Exception:
+                dn = None
+            print("  dup.metadata.display_name:", (dup.metadata or {}).get("display_name"))
+            print("  dup.display_name():", dn)
         # DEBUG: log the duplicate doc WCS
         if _DEBUG_WCS:
             try:

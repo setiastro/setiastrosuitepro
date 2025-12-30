@@ -311,7 +311,26 @@ def _compute_cropped_wcs(parent_hdr_like, x, y, w, h):
     base["SASKIND"] = "ROI-CROP"
     return base
 
+def _dnd_dbg_dump_state(tag: str, state: dict):
+    try:
+        import json
+        # Keep it readable but complete
+        keys = sorted(state.keys())
+        print(f"\n[DNDDBG:{tag}] keys={keys}")
+        for k in keys:
+            v = state.get(k)
+            # avoid huge blobs
+            if isinstance(v, (dict, list)) and len(str(v)) > 400:
+                print(f"  {k} = <{type(v).__name__} len={len(v)}>")
+            else:
+                print(f"  {k} = {v!r}")
+        # show json size
+        raw = json.dumps(state).encode("utf-8")
+        print(f"[DNDDBG:{tag}] json_bytes={len(raw)} head={raw[:120]!r}")
+    except Exception as e:
+        print(f"[DNDDBG:{tag}] dump failed: {e}")
 
+_DEBUG_DND_DUP = False
 
 class ImageSubWindow(QWidget):
     aboutToClose = pyqtSignal(object)
@@ -741,15 +760,6 @@ class ImageSubWindow(QWidget):
         enabled = bool(has_preview and (has_history or has_last))
         btn.setEnabled(enabled)
 
-        # DEBUG:
-        try:
-            print(
-                f"[Replay] _update_replay_button: view id={id(self)} "
-                f"enabled={enabled}, has_preview={has_preview}, "
-                f"history_len={len(history)}"
-            )
-        except Exception:
-            pass
 
     def _replay_history_index(self, index: int):
         """
@@ -809,11 +819,7 @@ class ImageSubWindow(QWidget):
         except Exception:
             pass
 
-        # Emit self so the main window can locate our QMdiSubWindow wrapper.
-        try:
-            print(f"[Replay] Emitting replayOnBaseRequested from view id={id(self)}")
-        except Exception:
-            pass
+
         self.replayOnBaseRequested.emit(self)
 
 
@@ -880,33 +886,32 @@ class ImageSubWindow(QWidget):
         # make the buttons correct right now
         self._refresh_local_undo_buttons()
 
-    def _drag_identity_fields(self):
-        """
-        Returns a dict with identity hints for DnD:
-        doc_uid (preferred), base_doc_uid (parent/full), and file_path.
-        Falls back gracefully if fields are missing.
-        """
-        doc = getattr(self, "document", None)
-        base = getattr(self, "base_document", None) or doc
+    def _drag_identity_fields(self) -> dict:
+        st = {}
 
-        # If DocManager maps preview/ROI views, prefer the true backing doc as base
-        dm = getattr(self, "_docman", None)
+        # existing identity (whatever you already do)
         try:
-            if dm and hasattr(dm, "get_document_for_view"):
-                back = dm.get_document_for_view(self)
-                if back is not None:
-                    base = back
+            doc = getattr(self, "document", None)
+            st["doc_ptr"] = id(doc) if doc is not None else None
+            st["doc_uid"] = getattr(doc, "uid", None)
+            meta = getattr(doc, "metadata", {}) or {}
+            st["file_path"] = (meta.get("file_path") or "").strip()
+            st["base_doc_uid"] = meta.get("base_doc_uid") or st["doc_uid"]
+            st["source_kind"] = meta.get("source_kind") or "full"
         except Exception:
             pass
 
-        meta = (getattr(doc, "metadata", None) or {})
-        base_meta = (getattr(base, "metadata", None) or {})
+        # ✅ NEW: add the current user-visible view title
+        st["source_view_title"] = self._current_view_title_for_drag()
 
-        return {
-            "doc_uid": getattr(doc, "uid", None),
-            "base_doc_uid": getattr(base, "uid", None),
-            "file_path": meta.get("file_path") or base_meta.get("file_path") or "",
-        }
+        # (optional) also include the subwindow title raw, for debugging/forensics
+        try:
+            sw = self._mdi_subwindow()
+            st["source_sw_title_raw"] = (sw.windowTitle() if sw is not None else "")
+        except Exception:
+            st["source_sw_title_raw"] = ""
+
+        return st
 
 
     def _on_local_undo(self):
@@ -1664,6 +1669,10 @@ class ImageSubWindow(QWidget):
         else:
             state["source_kind"] = "full"
 
+        if _DEBUG_DND_DUP:
+            _dnd_dbg_dump_state("DRAG_START:dragtab", state)
+
+
         md = QMimeData()
         md.setData(MIME_VIEWSTATE, QByteArray(json.dumps(state).encode("utf-8")))
 
@@ -1785,6 +1794,55 @@ class ImageSubWindow(QWidget):
 
 
     # ---- DnD 'view tab' -------------------------------------------------
+
+    def _mdi_subwindow(self):
+        """Return the QMdiSubWindow that hosts this view, or None."""
+        try:
+            from PyQt6.QtWidgets import QMdiSubWindow
+            p = self.parent()
+            while p is not None:
+                if isinstance(p, QMdiSubWindow):
+                    return p
+                p = p.parent()
+        except Exception:
+            pass
+        return None
+
+    def _current_view_title_for_drag(self) -> str:
+        """
+        The *actual* user-visible view title (what they renamed to),
+        NOT the document/file name.
+        """
+        title = ""
+        try:
+            sw = self._mdi_subwindow()
+            if sw is not None:
+                title = (sw.windowTitle() or "").strip()
+        except Exception:
+            title = ""
+
+        if not title:
+            try:
+                title = (self.windowTitle() or "").strip()
+            except Exception:
+                title = ""
+
+        if not title:
+            # absolute fallback
+            try:
+                title = (self.document.display_name() or "").strip()
+            except Exception:
+                title = ""
+
+        # Optional: strip [LINK], glyphs, etc if your title includes those
+        try:
+            title = _strip_ui_decorations(title)
+        except Exception:
+            pass
+
+        return title or "Untitled"
+
+
     def _install_view_tab(self):
         self._view_tab = QToolButton(self)
         self._view_tab.setText(self.tr("View"))
@@ -1804,19 +1862,28 @@ class ImageSubWindow(QWidget):
         if ev.button() != Qt.MouseButton.LeftButton:
             return QToolButton.mousePressEvent(self._view_tab, ev)
 
-        # build the SAME payload schema used by _start_viewstate_drag()
         hbar = self.scroll.horizontalScrollBar()
         vbar = self.scroll.verticalScrollBar()
+
+        # NEW: capture the *current view title* the user sees
+        view_title = self._current_view_display_name()
+
         state = {
             "doc_ptr": id(self.document),
+            "doc_uid": getattr(self.document, "uid", None),   # harmless even if None
+            "file_path": (getattr(self.document, "metadata", {}) or {}).get("file_path", ""),
             "scale": float(self.scale),
             "hval": int(hbar.value()),
             "vval": int(vbar.value()),
             "autostretch": bool(self.autostretch_enabled),
             "autostretch_target": float(self.autostretch_target),
+
+            # NEW: this is what we will use for naming duplicates
+            "source_view_title": view_title,
         }
         state.update(self._drag_identity_fields())
-
+        if _DEBUG_DND_DUP:
+            _dnd_dbg_dump_state("DRAG_START:viewtab", state)
         mime = QMimeData()
         mime.setData(MIME_VIEWSTATE, QByteArray(json.dumps(state).encode("utf-8")))
 
@@ -1825,10 +1892,13 @@ class ImageSubWindow(QWidget):
 
         pm = self.label.pixmap()
         if pm:
-            drag.setPixmap(pm.scaled(96, 96,
-                                    Qt.AspectRatioMode.KeepAspectRatio,
-                                    Qt.TransformationMode.SmoothTransformation))
+            drag.setPixmap(pm.scaled(
+                96, 96,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation
+            ))
             drag.setHotSpot(QCursor.pos() - self.mapToGlobal(self._view_tab.pos()))
+
         drag.exec(Qt.DropAction.CopyAction)
 
     def _viewtab_mouse_double(self, _ev):
@@ -1933,6 +2003,42 @@ class ImageSubWindow(QWidget):
             return
 
         ev.ignore()
+
+    def _current_view_display_name(self) -> str:
+        """
+        Best-effort: the exact title the user sees for THIS subwindow/view.
+        Prefer QMdiSubWindow title, fallback to document display_name.
+        """
+        # 1) QMdiSubWindow title (what user sees)
+        try:
+            sw = self._mdi_subwindow()
+            if sw is not None:
+                t = (sw.windowTitle() or "").strip()
+                if t:
+                    return t
+        except Exception:
+            pass
+
+        # 2) This widget's own windowTitle (sometimes used)
+        try:
+            t = (self.windowTitle() or "").strip()
+            if t:
+                return t
+        except Exception:
+            pass
+
+        # 3) Document display name fallback
+        try:
+            d = getattr(self, "document", None)
+            if d is not None and hasattr(d, "display_name"):
+                t = (d.display_name() or "").strip()
+                if t:
+                    return t
+        except Exception:
+            pass
+
+        return "Untitled"
+
 
     # keep the tab visible if the widget resizes
     def resizeEvent(self, ev):

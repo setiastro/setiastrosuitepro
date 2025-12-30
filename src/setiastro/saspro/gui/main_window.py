@@ -168,7 +168,7 @@ except Exception:
 
 
 
-
+_DEBUG_DND_DUP = False
 
 
 
@@ -932,7 +932,18 @@ class AstroSuiteProMainWindow(
         dm = self.doc_manager
         doc = None
 
+        if _DEBUG_DND_DUP:
+            import json
+            print("\n[DNDDBG:DROP_ENTER] raw st dict:")
+            try:
+                # st is already a dict here
+                for k in sorted(st.keys()):
+                    print(f"  {k}: {st.get(k)!r}")
+            except Exception as e:
+                print("[DNDDBG:DROP_ENTER] failed printing st:", e)
 
+            # sanity: show which fields are present
+            print("[DNDDBG:DROP_ENTER] has source_view_title?", "source_view_title" in st)
 
         # Prefer *stable* identifiers over the proxy pointer
         uid     = st.get("doc_uid")
@@ -1035,7 +1046,21 @@ class AstroSuiteProMainWindow(
             print("[VIEWSTATE_DROP] EXIT (no doc)")
             return
 
-
+        if _DEBUG_DND_DUP:
+            try:
+                dname = doc.display_name() if hasattr(doc, "display_name") else None
+            except Exception:
+                dname = None
+            try:
+                meta = getattr(doc, "metadata", {}) or {}
+            except Exception:
+                meta = {}
+            print("\n[DNDDBG:DOC_RESOLVED]")
+            print("  doc_obj:", doc, "type:", type(doc).__name__, "id:", id(doc))
+            print("  doc.uid:", getattr(doc, "uid", None))
+            print("  doc.display_name():", dname)
+            print("  meta.display_name:", meta.get("display_name"))
+            print("  meta.file_path:", meta.get("file_path"))
 
         # ----------------------------------------
         # 4) Peek at metadata to see if this is a
@@ -1126,34 +1151,35 @@ class AstroSuiteProMainWindow(
         #      copy the view transform.
         # ----------------------------------------
         if force_new:
-            # We're here only if:
-            #  - it's NOT a preview (normal full or promoted ROI), or
-            #  - ROI promotion didn't apply and we fell through.
             base_doc = doc
 
-            # 1) Duplicate the underlying document
-            try:
-                base_name = ""
+            # 1) Prefer the dragged view's title
+            base_name = (st.get("source_view_title") or "").strip()
+
+            # 2) Fallback to document display name
+            if not base_name:
                 try:
                     base_name = base_doc.display_name() or "Untitled"
                 except Exception:
                     base_name = "Untitled"
 
-                try:
-                    base_name = _strip_ui_decorations(base_name)
-                except Exception:
-                    # minimal fallback: remove known glyph prefixes and "Active View: "
-                    while len(base_name) >= 2 and base_name[1] == " " and base_name[0] in "â- â--â--†â-²â-ªâ-«â€¢â--¼â--»â--¾â--½":
-                        base_name = base_name[2:]
-                    if base_name.startswith("Active View: "):
-                        base_name = base_name[len("Active View: "):]
+            # 3) Clean it (strip glyphs / "Active View" / etc.)
+            try:
+                base_name = _strip_ui_decorations(base_name)
+            except Exception:
+                if base_name.startswith("Active View: "):
+                    base_name = base_name[len("Active View: "):]
 
-                new_doc = self.docman.duplicate_document(
-                    base_doc, new_name=f"{base_name}_duplicate"
-                )
-            except Exception as e:
-                print("[Main] viewstate_drop: duplicate_document failed, falling back to original doc:", e)
-                new_doc = base_doc  # worst-case: still just reuse
+            if _DEBUG_DND_DUP:
+                print("\n[DNDDBG:NAME_COMPUTE]")
+                print("  st.source_view_title:", (st.get("source_view_title") or "").strip())
+                print("  base_doc.display_name():", (base_doc.display_name() if hasattr(base_doc,"display_name") else None))
+                print("  base_name(after fallbacks/strip):", base_name)
+                print("  new_name passed:", f"{base_name}_duplicate")
+
+            new_doc = self.docman.duplicate_document(
+                base_doc, new_name=f"{base_name}_duplicate"
+            )
 
             # 2) Let doc_manager's documentAdded handler create the subwindow.
             #    We just wait for it to show up and then apply the view state.
@@ -1279,14 +1305,6 @@ class AstroSuiteProMainWindow(
             return False
 
     def _on_document_added(self, doc):
-        # Helpful debug:
-        try:
-            is_table = (getattr(doc, "metadata", {}).get("doc_type") == "table") or \
-                    (hasattr(doc, "rows") and hasattr(doc, "headers"))
-            self._log(f"[documentAdded] {type(doc).__name__}  table={is_table}  name={getattr(doc, 'display_name', lambda:'?')()}")
-        except Exception:
-            pass
-
         self._spawn_subwindow_for(doc)
 
     # --- UI scaffolding ---
@@ -4604,12 +4622,6 @@ class AstroSuiteProMainWindow(
         if max_len and len(hist) > max_len:
             del hist[:-max_len]
 
-        # Logging as before
-        try:
-            self._log(f"[Replay] Last action stored: {desc} (command_id={command_id})")
-        except Exception:
-            print(f"[Replay] Last action stored: {desc} (command_id={command_id})")
-
 
 
     def _remember_last_headless_command(self, command_id: str, preset: dict | None = None, description: str = ""):
@@ -4665,17 +4677,6 @@ class AstroSuiteProMainWindow(
         """
         payload = getattr(self, "_last_headless_command", None)
 
-        # DEBUG
-        try:
-            self._log(
-                f"[Replay] replay_last_action_on_subwindow: payload={bool(payload)}, "
-                f"target_sw={id(target_sw) if target_sw else None}"
-            )
-        except Exception:
-            print(
-                f"[Replay] replay_last_action_on_subwindow: payload={bool(payload)}, "
-                f"target_sw={id(target_sw) if target_sw else None}"
-            )
 
         if not payload:
             QMessageBox.information(
@@ -4707,17 +4708,6 @@ class AstroSuiteProMainWindow(
         """
         payload = getattr(self, "_last_headless_command", None) or {}
 
-        # DEBUG
-        try:
-            self._log(
-                f"[Replay] replay_last_action_on_base: payload={bool(payload)}, "
-                f"target_sw={id(target_sw) if target_sw else None}"
-            )
-        except Exception:
-            print(
-                f"[Replay] replay_last_action_on_base: payload={bool(payload)}, "
-                f"target_sw={id(target_sw) if target_sw else None}"
-            )
 
         if not payload:
             QMessageBox.information(
@@ -4743,17 +4733,6 @@ class AstroSuiteProMainWindow(
             QMessageBox.information(self, "Replay Last Action", "No base image to apply the action to.")
             return
 
-        # Small debug about which doc we're hitting
-        try:
-            view = target_sw.widget()
-            cur_doc = getattr(view, "document", None)
-            self._log(
-                f"[Replay] base_doc id={id(base_doc)}, "
-                f"view.document id={id(cur_doc)}, "
-                f"same={base_doc is cur_doc}"
-            )
-        except Exception:
-            pass
 
         # ---- Extract cid + preset from payload (support both old + new schemas) ----
         cid_raw = payload.get("command_id")
@@ -7665,20 +7644,31 @@ class AstroSuiteProMainWindow(
 
     def _pretty_title(self, doc, *, linked: bool | None = None) -> str:
         md = (getattr(doc, "metadata", {}) or {})
-        fp = md.get("file_path")
 
-        if fp:
-            name = os.path.splitext(os.path.basename(fp))[0]
-        else:
+        # ✅ 1) Prefer explicit display_name (what duplicate/rename intends)
+        name = (md.get("display_name") or "").strip()
+
+        # 2) Fallback to file_path (but only if display_name is missing)
+        if not name:
+            fp = (md.get("file_path") or "").strip()
+            if fp:
+                name = os.path.splitext(os.path.basename(fp))[0]
+
+        # 3) Fallback to doc.display_name()
+        if not name:
             name = getattr(doc, "display_name", lambda: "Untitled")()
-            name = name.replace("[LINK] ", "").strip()
+            name = (name or "Untitled").replace("[LINK] ", "").strip()
+
+            # If it looks like a filename, drop extension
             base, ext = os.path.splitext(name)
             if ext and len(ext) <= 10:
                 name = base
 
+        # linked marker logic
         if linked is None:
             linked = hasattr(doc, "_parent_doc")
         return f"[LINK] {name}" if linked else name
+
 
     def _build_subwindow_title_for_doc(self, doc) -> str:
         """
@@ -7746,6 +7736,36 @@ class AstroSuiteProMainWindow(
             if cand not in existing:
                 return cand
             n += 1
+
+    def _doc_window_title(self, doc) -> str:
+        """
+        Best-effort human title for a subwindow.
+        Prefer metadata['display_name'] (what duplication sets),
+        then doc.display_name(), then basename(file_path).
+        """
+        md = getattr(doc, "metadata", {}) or {}
+
+        t = (md.get("display_name") or "").strip()
+        if not t:
+            try:
+                t = (doc.display_name() or "").strip()
+            except Exception:
+                t = ""
+
+        if not t:
+            fp = (md.get("file_path") or "").strip()
+            if fp:
+                import os
+                t = os.path.basename(fp)
+
+        t = t or "Untitled"
+
+        # strip glyphs etc
+        try:
+            t = _strip_ui_decorations(t)
+        except Exception:
+            pass
+        return t
 
 
     def _spawn_subwindow_for(self, doc, *, force_new: bool = False):
@@ -7850,10 +7870,7 @@ class AstroSuiteProMainWindow(
         if replay_sig is not None:
             try:
                 replay_sig.connect(self._on_view_replay_last_requested)
-                try:
-                    self._log(f"[Replay] Connected {sig_name_used} for view id={id(view)}")
-                except Exception:
-                    print(f"[Replay] Connected {sig_name_used} for view id={id(view)}")
+
             except Exception as e:
                 try:
                     self._log(f"[Replay] FAILED to connect {sig_name_used} for view id={id(view)}: {e}")
@@ -7861,7 +7878,8 @@ class AstroSuiteProMainWindow(
                     print(f"[Replay] FAILED to connect {sig_name_used} for view id={id(view)}: {e}")
 
         self._hook_preview_awareness(view)
-        base_title = self._pretty_title(doc, linked=False)
+
+        base_title  = self._doc_window_title(doc)      # ✅ use metadata display_name
         final_title = self._unique_window_title(base_title)
 
         # -- 6) Add subwindow and set chrome
