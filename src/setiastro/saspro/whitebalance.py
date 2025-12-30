@@ -193,10 +193,13 @@ class WhiteBalanceDialog(QDialog):
         super().__init__(parent)
         self._main = parent
         self.doc = doc
-
-        # Connect to active document change signal
+        self._active_doc_conn = False
         if hasattr(self._main, "currentDocumentChanged"):
-            self._main.currentDocumentChanged.connect(self._on_active_doc_changed)
+            try:
+                self._main.currentDocumentChanged.connect(self._on_active_doc_changed)
+                self._active_doc_conn = True
+            except Exception:
+                self._active_doc_conn = False
         if icon:
             self.setWindowIcon(icon)
         self.setWindowTitle(self.tr("White Balance"))
@@ -213,6 +216,8 @@ class WhiteBalanceDialog(QDialog):
         self._update_mode_widgets()
         # kick off a first detection preview
         QTimer.singleShot(200, self._update_star_preview)
+        self.finished.connect(lambda *_: self._cleanup())
+
 
     # ---- UI construction ------------------------------------------------
     def _build_ui(self):
@@ -327,11 +332,16 @@ class WhiteBalanceDialog(QDialog):
             )
             self.star_count.setText(self.tr("Detected {0} stars.").format(count))
             # to pixmap
-            h, w, _ = overlay.shape
-            qimg = QImage((overlay * 255).astype(np.uint8).data, w, h, 3 * w, QImage.Format.Format_RGB888)
-            pm = QPixmap.fromImage(qimg).scaled(self.preview.width(), self.preview.height(),
-                                                Qt.AspectRatioMode.KeepAspectRatio,
-                                                Qt.TransformationMode.SmoothTransformation)
+            overlay8 = np.ascontiguousarray(np.clip(overlay * 255.0, 0, 255).astype(np.uint8))
+            h, w, _ = overlay8.shape
+            qimg = QImage(overlay8.data, w, h, 3 * w, QImage.Format.Format_RGB888)
+
+            # Make sure the numpy buffer stays alive until QPixmap is created
+            pm = QPixmap.fromImage(qimg.copy()).scaled(
+                self.preview.width(), self.preview.height(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation
+            )
             self.preview.setPixmap(pm)
         except Exception as e:
             self.star_count.setText(self.tr("Detection failed."))
@@ -504,10 +514,23 @@ class WhiteBalanceDialog(QDialog):
         except Exception:
             self.close()
 
-    def closeEvent(self, ev):
+    def _cleanup(self):
+        # Disconnect active-doc signal so the main window doesn't keep us alive
         try:
-            if hasattr(self._main, "currentDocumentChanged"):
+            if self._active_doc_conn and hasattr(self._main, "currentDocumentChanged"):
                 self._main.currentDocumentChanged.disconnect(self._on_active_doc_changed)
         except Exception:
             pass
+        self._active_doc_conn = False
+
+        # Stop debounce timer
+        try:
+            if getattr(self, "_debounce", None) is not None:
+                self._debounce.stop()
+        except Exception:
+            pass
+
+
+    def closeEvent(self, ev):
+        self._cleanup()
         super().closeEvent(ev)

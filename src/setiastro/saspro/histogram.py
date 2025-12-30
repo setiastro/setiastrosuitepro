@@ -39,7 +39,7 @@ class HistogramDialog(QDialog):
         self.zoom_factor = 1.0   # 1.0 = 100%
         self.log_scale   = False # log X
         self.log_y       = False # log Y
-        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        #self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self._eps_log         = 1e-6      # first log bin edge (for labels)
 
         # for mapping clicks → normalized x

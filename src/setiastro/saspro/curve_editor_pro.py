@@ -1022,15 +1022,15 @@ class CurvesDialogPro(QDialog):
         self._main = parent
         self.doc = document
 
-        self._follow_conn = None
+        self._follow_conn = False
         if hasattr(self._main, "currentDocumentChanged"):
             try:
-                # store connection so we can cleanly disconnect
                 self._main.currentDocumentChanged.connect(self._on_active_doc_changed)
                 self._follow_conn = True
             except Exception:
-                self._follow_conn = None
+                self._follow_conn = False
 
+        self.finished.connect(self._cleanup_connections)
         self._preview_img = None     # downsampled float01
         self._full_img = None        # full-res float01
         self._pix = None
@@ -2184,29 +2184,42 @@ class CurvesDialogPro(QDialog):
         return (m * out + (1.0 - m) * src).astype(np.float32, copy=False)
 
     def closeEvent(self, ev):
-        # 1) Disconnect active-doc tracking (Fabio hook)
+        self._cleanup_connections()
+        super().closeEvent(ev)
+
+    def _cleanup_connections(self):
+        # disconnect the "follow active doc" hook
         try:
-            if self._connected_current_doc_changed and hasattr(self._main, "currentDocumentChanged"):
+            if self._follow_conn and hasattr(self._main, "currentDocumentChanged"):
                 self._main.currentDocumentChanged.disconnect(self._on_active_doc_changed)
         except Exception:
             pass
-        self._connected_current_doc_changed = False
+        self._follow_conn = False
 
-        # 2) Stop any background preview worker/thread if you have one
-        # (names may differ in your file; keep what matches your implementation)
+        # stop/kill any running worker thread(s)
         try:
-            if getattr(self, "_worker", None) is not None:
+            thr = getattr(self, "_thr", None)
+            if thr is not None:
                 try:
-                    self._worker.requestInterruption()
+                    thr.requestInterruption()
                 except Exception:
                     pass
-            if getattr(self, "_thread", None) is not None:
-                self._thread.quit()
-                self._thread.wait(500)
+                try:
+                    thr.quit()
+                except Exception:
+                    pass
+                try:
+                    thr.wait(250)
+                except Exception:
+                    pass
         except Exception:
             pass
 
-        super().closeEvent(ev)
+        # optional: drop refs that can keep things alive
+        try:
+            self._thr = None
+        except Exception:
+            pass
 
 
     # zoom/pan

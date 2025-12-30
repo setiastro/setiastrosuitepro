@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
 )
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 
-from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QObject
+from PyQt6.QtCore import QThread, pyqtSignal, QObject
 from PyQt6.QtWidgets import QWidget
 
 class _ProcessingOverlay(QWidget):
@@ -124,12 +124,19 @@ class PSFViewer(QDialog):
         self.threshold_timer.timeout.connect(self._applyThreshold)
 
         # Auto-update when the document changes
+
+        self._psf_thread = None
+        self._psf_worker = None
+        self._doc_conn = False
         if hasattr(self.doc, "changed"):
             try:
                 self.doc.changed.connect(self._on_doc_changed)
+                self._doc_conn = True
             except Exception:
-                pass
+                self._doc_conn = False
 
+        # cleanup no matter how the dialog is dismissed (accept/reject/done)
+        self.finished.connect(self._cleanup)
         self._build_ui()
         # Defer first compute until after the dialog is shown/layouted
         QTimer.singleShot(0, self._applyThreshold)
@@ -235,7 +242,7 @@ class PSFViewer(QDialog):
 
         # Close
         close_btn = QPushButton("Close", self)
-        close_btn.clicked.connect(self.accept)
+        close_btn.clicked.connect(self.close)
         main_layout.addWidget(close_btn)
 
         self.setLayout(main_layout)
@@ -279,7 +286,6 @@ class PSFViewer(QDialog):
         self.hist_label.resize(scaled.size())
 
     def _applyThreshold(self):
-        # kick off worker
         if self.image is None:
             self.star_list = None
             self.status_label.setText("Status: No image.")
@@ -288,46 +294,72 @@ class PSFViewer(QDialog):
 
         self._show_processing("Processing… extracting stars / PSFs")
 
-        # kill previous run if any
-        if hasattr(self, "_psf_thread") and self._psf_thread is not None:
-            try:
-                self._psf_thread.quit()
-                self._psf_thread.wait(50)
-            except Exception:
-                pass
+        # stop any previous run cleanly
+        self._stop_psf_worker()
 
         self._psf_thread = QThread(self)
         self._psf_worker = _PSFWorker(self.image, self.detection_threshold)
         self._psf_worker.moveToThread(self._psf_thread)
 
         self._psf_thread.started.connect(self._psf_worker.run)
+        self._psf_worker.finished.connect(self._on_psf_done)
+        self._psf_worker.failed.connect(self._on_psf_fail)
 
-        def _done(tbl, status):
-            self.star_list = tbl
-            self.status_label.setText(status)
-            self._hide_processing()
-            self.drawHistogram()
-            self._psf_thread.quit()
-            self._psf_thread.wait(100)
+        # ensure thread quits once worker reports anything
+        self._psf_worker.finished.connect(lambda *_: self._stop_psf_worker(quit_only=False))
+        self._psf_worker.failed.connect(lambda *_: self._stop_psf_worker(quit_only=False))
 
-        def _fail(msg):
-            self.star_list = None
-            self.status_label.setText(f"Status: {msg}")
-            self._hide_processing()
-            self.drawHistogram()
-            self._psf_thread.quit()
-            self._psf_thread.wait(100)
-
-        self._psf_worker.finished.connect(_done)
-        self._psf_worker.failed.connect(_fail)
 
         self._psf_thread.start()
+
+    def _stop_psf_worker(self, quit_only: bool = False):
+        thr = getattr(self, "_psf_thread", None)
+        wkr = getattr(self, "_psf_worker", None)
+
+        if thr is None:
+            return
+
+        try:
+            thr.quit()
+        except Exception:
+            pass
+        try:
+            thr.wait(250)
+        except Exception:
+            pass
+
+        if not quit_only:
+            try:
+                if wkr is not None:
+                    wkr.deleteLater()
+            except Exception:
+                pass
+            try:
+                thr.deleteLater()
+            except Exception:
+                pass
+            self._psf_worker = None
+            self._psf_thread = None
+
+    def _on_psf_done(self, tbl, status: str):
+        # tbl is an astropy Table or None
+        self.star_list = tbl
+        self.status_label.setText(status)
+        self._hide_processing()
+        self.drawHistogram()
+
+    def _on_psf_fail(self, msg: str):
+        self.star_list = None
+        self.status_label.setText(f"Status: {msg}")
+        self._hide_processing()
+        self.drawHistogram()
 
 
     def updateImage(self, new_image):
         self.image = np.asarray(new_image) if new_image is not None else None
-        self.compute_star_list()
-        self.drawHistogram()
+        if self.threshold_timer.isActive():
+            self.threshold_timer.stop()
+        self.threshold_timer.start()
 
     def updateZoom(self, _=None):
         self._apply_hist_zoom()
@@ -538,12 +570,59 @@ class PSFViewer(QDialog):
                 it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.stats_table.setItem(ri, ci, it)
 
+
+    def _cleanup(self):
+        # stop debounce timer
+        try:
+            if getattr(self, "threshold_timer", None) is not None:
+                self.threshold_timer.stop()
+        except Exception:
+            pass
+
+        # disconnect doc listener
+        try:
+            if self._doc_conn and hasattr(self.doc, "changed"):
+                self.doc.changed.disconnect(self._on_doc_changed)
+        except Exception:
+            pass
+        self._doc_conn = False
+
+        # stop worker/thread
+        try:
+            thr = getattr(self, "_psf_thread", None)
+            wkr = getattr(self, "_psf_worker", None)
+
+            if wkr is not None:
+                try:
+                    wkr.deleteLater()
+                except Exception:
+                    pass
+
+            if thr is not None:
+                try:
+                    thr.requestInterruption()
+                except Exception:
+                    pass
+                try:
+                    thr.quit()
+                except Exception:
+                    pass
+                try:
+                    thr.wait(250)
+                except Exception:
+                    pass
+                try:
+                    thr.deleteLater()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        self._psf_worker = None
+        self._psf_thread = None
+
     # ---------- lifecycle ----------
     def closeEvent(self, e):
-        # Best-effort disconnect
-        if hasattr(self.doc, "changed"):
-            try:
-                self.doc.changed.disconnect(self._on_doc_changed)
-            except Exception:
-                pass
+        self._cleanup()
         super().closeEvent(e)
+
