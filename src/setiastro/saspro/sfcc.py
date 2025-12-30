@@ -375,6 +375,7 @@ class SFCCDialog(QDialog):
         self.lp_filter_combo2.currentIndexChanged.connect(self.save_lp2_setting)
         self.sens_combo.currentIndexChanged.connect(self.save_sensor_setting)
         self.star_combo.currentIndexChanged.connect(self.save_star_setting)
+        self.finished.connect(lambda *_: self._cleanup())
 
         self.grad_method = "poly3"
         self.grad_method_combo.currentTextChanged.connect(lambda m: setattr(self, "grad_method", m))
@@ -528,12 +529,12 @@ class SFCCDialog(QDialog):
         self.remove_curve_btn = QPushButton(self.tr("Remove Filter/Sensor Curve…"))
         self.remove_curve_btn.clicked.connect(self.remove_custom_curve); row4.addWidget(self.remove_curve_btn)
         row4.addStretch()
-        self.close_btn = QPushButton(self.tr("Close")); self.close_btn.clicked.connect(self.close); row4.addWidget(self.close_btn)
+        self.close_btn = QPushButton(self.tr("Close")); self.close_btn.clicked.connect(self.reject); row4.addWidget(self.close_btn)
 
         self.count_label = QLabel(""); layout.addWidget(self.count_label)
 
         self.figure = Figure(figsize=(6, 4)); self.canvas = FigureCanvas(self.figure); self.canvas.setVisible(False); layout.addWidget(self.canvas, stretch=1)
-        self.reset_btn = QPushButton(self.tr("Reset View/Close")); self.reset_btn.clicked.connect(self.close); layout.addWidget(self.reset_btn)
+        self.reset_btn = QPushButton(self.tr("Reset View/Close")); self.reset_btn.clicked.connect(self.reject); layout.addWidget(self.reset_btn)
 
         # hide gradient controls by default (enable if you like)
         self.run_grad_btn.hide(); self.grad_method_combo.hide()
@@ -1454,11 +1455,64 @@ class SFCCDialog(QDialog):
         self.sasp_viewer_window.show()
         self.sasp_viewer_window.destroyed.connect(self._on_sasp_closed)
 
+    def _cleanup(self):
+        # 1) Close/cleanup child window (SaspViewer)
+        try:
+            if getattr(self, "sasp_viewer_window", None) is not None:
+                try:
+                    self.sasp_viewer_window.destroyed.disconnect(self._on_sasp_closed)
+                except Exception:
+                    pass
+                try:
+                    self.sasp_viewer_window.close()
+                except Exception:
+                    pass
+                self.sasp_viewer_window = None
+        except Exception:
+            pass
+
+        # 2) Disconnect any long-lived external signals (add these if/when used)
+        # Example patterns:
+        try:
+            self.doc_manager.activeDocumentChanged.disconnect(self._on_active_doc_changed)
+        except Exception:
+            pass
+        try:
+            self.main_win.currentDocumentChanged.disconnect(self._on_active_doc_changed)
+        except Exception:
+            pass
+
+        # 3) Release large caches/refs (important since dialog may not be deleted)
+        try:
+            self.current_image = None
+            self.current_header = None
+            self.star_list = []
+            self._last_matched = []
+            if hasattr(self, "wcs"):
+                self.wcs = None
+            if hasattr(self, "wcs_header"):
+                self.wcs_header = None
+        except Exception:
+            pass
+
+        # 4) Matplotlib cleanup
+        try:
+            if getattr(self, "figure", None) is not None:
+                self.figure.clf()
+            if getattr(self, "canvas", None) is not None:
+                self.canvas.setVisible(False)
+                self.canvas.draw_idle()
+        except Exception:
+            pass
+
+
     def _on_sasp_closed(self, _=None):
         # Called when the SaspViewer window is destroyed
         self.sasp_viewer_window = None
+        self._cleanup()
 
     def closeEvent(self, event):
+        self._cleanup()
         super().closeEvent(event)
 
 
