@@ -106,7 +106,7 @@ class AstroCatalogueViewerExporterDialog(QDialog):
 
         self.cmb_fmt = QComboBox(self)
         # keep these lower-case as “extensions”
-        self.cmb_fmt.addItems(["jpg", "png", "tif", "fit"])
+        self.cmb_fmt.addItems(["jpg", "png", "tif"])
 
         self.btn_export = QPushButton(_tr("Export"), self)
         self.btn_export.clicked.connect(self._on_export)
