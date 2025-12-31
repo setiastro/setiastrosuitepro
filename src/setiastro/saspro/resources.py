@@ -317,6 +317,7 @@ class Icons:
     CSV = property(lambda self: _resource_path('cvs.png'))
     PPP = property(lambda self: _resource_path('ppp.png'))
     SCRIPT = property(lambda self: _resource_path('script.png'))
+    ACV = property(lambda self: _resource_path('acv_icon.png'))
     
     # Blink & comparison
     BLINK = property(lambda self: _resource_path('blink.png'))
@@ -426,6 +427,7 @@ def _init_legacy_paths():
         'slot7_path': get_icon_path('slot7.png'),
         'slot8_path': get_icon_path('slot8.png'),
         'slot9_path': get_icon_path('slot9.png'),
+        'acv_icon_path': get_icon_path('acv_icon.png'),
 
         'moon_new_path': get_icon_path('new_moon.png'),
         'moon_waxing_crescent_1_path': get_icon_path('waxing_crescent_1.png'),

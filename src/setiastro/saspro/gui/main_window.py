@@ -194,7 +194,7 @@ from setiastro.saspro.resources import (
     satellite_path, imagecombine_path, wrench_path, eye_icon_path,multiscale_decomp_path,
     disk_icon_path, nuke_path, hubble_path, collage_path, annotated_path,
     colorwheel_path, font_path, csv_icon_path, spinner_path, wims_path,
-    wimi_path, linearfit_path, debayer_path, aberration_path,
+    wimi_path, linearfit_path, debayer_path, aberration_path, acv_icon_path,
     functionbundles_path, viewbundles_path, selectivecolor_path, rgbalign_path,
     background_path, script_icon_path
 )
@@ -4505,6 +4505,48 @@ class AstroSuiteProMainWindow(
         dlg = CopyAstrometryDialog(parent=self, target=sw)
         dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         dlg.show()
+
+    def _open_acv_exporter(self):
+        from setiastro.saspro.acv_exporter import AstroCatalogueViewerExporterDialog
+
+        dm = getattr(self, "doc_manager", None) or getattr(self, "docman", None)
+        if dm is None:
+            QMessageBox.information(self, "Astro Catalogue Viewer Exporter", "No document manager available.")
+            return
+
+        sw = self.mdi.activeSubWindow()
+        if not sw:
+            QMessageBox.information(self, "Astro Catalogue Viewer Exporter", "Open an image first.")
+            return
+
+        view = sw.widget()
+        active_doc = None
+
+        # Prefer ROI-aware resolution
+        try:
+            if hasattr(dm, "get_document_for_view"):
+                active_doc = dm.get_document_for_view(view)
+        except Exception:
+            active_doc = None
+
+        # Fallback
+        if active_doc is None:
+            try:
+                active_doc = getattr(view, "document", None)
+            except Exception:
+                active_doc = None
+
+        if active_doc is None or getattr(active_doc, "image", None) is None:
+            QMessageBox.information(self, "Astro Catalogue Viewer Exporter", "No active image.")
+            return
+
+        dlg = AstroCatalogueViewerExporterDialog(self, dm, active_doc)
+        try:
+            dlg.setWindowIcon(QIcon(acv_icon_path))
+        except Exception:
+            pass
+        dlg.show()
+
 
     def _open_linear_fit(self):
         from setiastro.saspro.linear_fit import LinearFitDialog

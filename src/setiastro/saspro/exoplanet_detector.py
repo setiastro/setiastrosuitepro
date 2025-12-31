@@ -27,6 +27,7 @@ from astropy.coordinates import SkyCoord
 import astropy.units as u
 from astropy.wcs import WCS
 from astropy.timeseries import LombScargle, BoxLeastSquares
+import re
 
 from astroquery.simbad import Simbad
 from astroquery.vizier import Vizier
@@ -152,6 +153,41 @@ def _estimate_scale_arcsec_per_pix(h: fits.Header):
 
     return None
 
+_TZ_RE = re.compile(r'([+-])(\d{2})(\d{2})$')  # -0700 -> -07:00
+
+def _fix_iso_tz(s: str) -> str:
+    s = s.strip()
+    m = _TZ_RE.search(s)
+    if m:
+        s = s[:m.start()] + f"{m.group(1)}{m.group(2)}:{m.group(3)}"
+    return s
+
+def _parse_obs_time_from_header(hdr) -> Time | None:
+    # hdr can be fits.Header or your dict-ish header
+    def _get(key):
+        try:
+            return hdr.get(key)
+        except Exception:
+            return None
+
+    # 1) Prefer UT-OBS if present (already “UTC-ish”)
+    for key in ("UT-OBS", "DATE-OBS", "DATE-END"):
+        v = _get(key)
+        if isinstance(v, str) and v.strip():
+            try:
+                return Time(_fix_iso_tz(v), format="isot", scale="utc")
+            except Exception:
+                pass
+
+    # 2) MJD-OBS is super reliable
+    v = _get("MJD-OBS")
+    if v is not None:
+        try:
+            return Time(float(v), format="mjd", scale="utc")
+        except Exception:
+            pass
+
+    return None
 
 def _estimate_fov_deg(img_shape, scale_arcsec):
     """Rough FOV (deg) from image size and scale (max of X/Y)."""
@@ -646,9 +682,12 @@ class ExoPlanetWindow(QDialog):
         self.measure_btn.setVisible(is_raw)
 
     def load_and_measure_subs(self):
+        before = len(getattr(self, "image_paths", []))
         self.load_aligned_subs()
+        after = len(getattr(self, "image_paths", []))
+        if after == 0 or after == before and not self._cached_images:
+            return
         self.detect_stars()
-
     # --------------- I/O + Calibration ----------------
 
     def load_raw_subs(self):
@@ -682,13 +721,38 @@ class ExoPlanetWindow(QDialog):
                     ds      = hdr0.get('DATE-OBS')
                 except:
                     ds = None
+
+            # Use robust header time parsing (UT-OBS -> DATE-OBS -> MJD-OBS fallback)
             t = None
-            if isinstance(ds, str):
-                try:
-                    t = Time(ds, format='isot', scale='utc')
-                except Exception as e:
-                    print(f"[DEBUG] Failed to parse DATE-OBS for {p}: {e}")
+            try:
+                if ext == ".xisf":
+                    # Build a tiny dict-like header for the helper
+                    hdr_like = {}
+                    try:
+                        xisf     = XISF(p)
+                        img_meta = xisf.get_images_metadata()[0]
+                        kw       = img_meta.get("FITSKeywords", {}) or {}
+                        # XISF FITSKeywords layout: key -> [ {value: ...}, ... ]
+                        for k in ("UT-OBS", "DATE-OBS", "DATE-END", "MJD-OBS"):
+                            if k in kw and kw[k]:
+                                hdr_like[k] = kw[k][0].get("value")
+                    except Exception:
+                        hdr_like = {}
+                    t = _parse_obs_time_from_header(hdr_like)
+
+                elif ext in (".fit", ".fits", ".fz"):
+                    hdr0, _ = get_valid_header(p)
+                    t = _parse_obs_time_from_header(hdr0)
+
+                else:
+                    # TIFF etc. may not have FITS-like time headers; leave None
+                    t = None
+
+            except Exception as e:
+                print(f"[DEBUG] Failed to parse obs time for {p}: {e}")
+
             datelist.append((p, t))
+
             self.progress_bar.setValue(i)
             QApplication.processEvents()
 
@@ -768,24 +832,28 @@ class ExoPlanetWindow(QDialog):
             self.progress_bar.setValue(i)
             QApplication.processEvents()
 
-        iso_strs, mask_arr = [], []
-        for _, t in datelist:
-            if t is not None:
-                iso_strs.append(t.isot); mask_arr.append(False)
-            else:
-                iso_strs.append('');     mask_arr.append(True)
-        ma_strs = np.ma.MaskedArray(iso_strs, mask=mask_arr)
-        self.times = Time(ma_strs, format='isot', scale='utc', out_subfmt='date')
+        # Keep full timestamps (DO NOT truncate to date-only)
+        tlist = [t for _, t in datelist if t is not None]
+        if tlist:
+            self.times = Time(tlist)   # already utc scale from helper
+        else:
+            self.times = None
 
         self.progress_bar.setVisible(False)
         loaded = sum(1 for im in self._cached_images if im is not None)
         self.status_label.setText(f"Loaded {loaded}/{len(sorted_paths)} raw frames")
 
-    def load_aligned_subs(self):
+    def load_aligned_subs(self) -> bool:
         settings = QSettings()
         start_dir = settings.value("ExoPlanet/lastAlignedFolder", os.path.expanduser("~"), type=str)
-        paths, _ = QFileDialog.getOpenFileNames(self, "Select Aligned Frames", start_dir, "FITS or TIFF (*.fit *.fits *.tif *.tiff *.xisf)")
-        if not paths: return
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "Select Aligned Frames", start_dir,
+            "FITS or TIFF (*.fit *.fits *.tif *.tiff *.xisf)"
+        )
+        if not paths:
+            self.status_label.setText("Load canceled.")
+            return False
+
         settings.setValue("ExoPlanet/lastAlignedFolder", os.path.dirname(paths[0]))
 
         self.status_label.setText("Reading metadata from aligned frames…")
@@ -809,10 +877,35 @@ class ExoPlanetWindow(QDialog):
                     hdr0, _ = get_valid_header(p)
                     ds      = hdr0.get('DATE-OBS')
                 except: ds = None
+            # Use robust header time parsing (UT-OBS -> DATE-OBS -> MJD-OBS fallback)
             t = None
-            if isinstance(ds, str):
-                try: t = Time(ds, format='isot', scale='utc')
-                except Exception as e: print(f"[DEBUG] Failed to parse DATE-OBS for {p}: {e}")
+            try:
+                if ext == ".xisf":
+                    # Build a tiny dict-like header for the helper
+                    hdr_like = {}
+                    try:
+                        xisf     = XISF(p)
+                        img_meta = xisf.get_images_metadata()[0]
+                        kw       = img_meta.get("FITSKeywords", {}) or {}
+                        # XISF FITSKeywords layout: key -> [ {value: ...}, ... ]
+                        for k in ("UT-OBS", "DATE-OBS", "DATE-END", "MJD-OBS"):
+                            if k in kw and kw[k]:
+                                hdr_like[k] = kw[k][0].get("value")
+                    except Exception:
+                        hdr_like = {}
+                    t = _parse_obs_time_from_header(hdr_like)
+
+                elif ext in (".fit", ".fits", ".fz"):
+                    hdr0, _ = get_valid_header(p)
+                    t = _parse_obs_time_from_header(hdr0)
+
+                else:
+                    # TIFF etc. may not have FITS-like time headers; leave None
+                    t = None
+
+            except Exception as e:
+                print(f"[DEBUG] Failed to parse obs time for {p}: {e}")
+
             datelist.append((p, t))
             self.progress_bar.setValue(i)
             QApplication.processEvents()
@@ -889,18 +982,17 @@ class ExoPlanetWindow(QDialog):
             self.progress_bar.setValue(i)
             QApplication.processEvents()
 
-        iso_strs, mask_arr = [], []
-        for _, t in datelist:
-            if t is not None:
-                iso_strs.append(t.isot); mask_arr.append(False)
-            else:
-                iso_strs.append('');     mask_arr.append(True)
-        ma_strs = np.ma.MaskedArray(iso_strs, mask=mask_arr)
-        self.times = Time(ma_strs, format='isot', scale='utc', out_subfmt='date')
+        # Keep full timestamps (DO NOT truncate to date-only)
+        tlist = [t for _, t in datelist if t is not None]
+        if tlist:
+            self.times = Time(tlist)   # already utc scale from helper
+        else:
+            self.times = None
 
         self.progress_bar.setVisible(False)
         loaded = sum(1 for im in self._cached_images if im is not None)
         self.status_label.setText(f"Loaded {loaded}/{len(sorted_paths)} aligned frames")
+        return loaded > 0
 
     def load_masters(self):
         settings = QSettings()

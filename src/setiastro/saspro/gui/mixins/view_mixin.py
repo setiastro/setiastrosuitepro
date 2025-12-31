@@ -193,6 +193,7 @@ class ViewMixin:
         if hasattr(view, "set_scale") and callable(view.set_scale):
             try:
                 view.set_scale(float(scale))
+                self._ensure_smooth_resample(view)
                 self._center_view(view)
                 return
             except Exception:
@@ -208,6 +209,47 @@ class ViewMixin:
                 return
         except Exception:
             pass
+
+    def _ensure_smooth_resample(self, view):
+        """
+        Make sure the view is using smooth interpolation for the current scale.
+        Different view widgets in SASpro may implement this differently, so we
+        try a few known hooks safely.
+        """
+        # 1) Best case: explicit API
+        for name in ("set_smooth_scaling", "set_interpolation", "set_smooth", "enable_smooth_scaling"):
+            fn = getattr(view, name, None)
+            if callable(fn):
+                try:
+                    fn(True)
+                    return
+                except Exception:
+                    pass
+
+        # 2) Some views store a mode flag
+        for attr in ("smooth_scaling", "_smooth_scaling", "_use_smooth_scaling", "use_smooth_scaling"):
+            if hasattr(view, attr):
+                try:
+                    setattr(view, attr, True)
+                    # kick a repaint/update if available
+                    try:
+                        view.update()
+                    except Exception:
+                        pass
+                    return
+                except Exception:
+                    pass
+
+        # 3) QLabel pixmap scaling: if you have a custom "rebuild pixmap" method, call it
+        for name in ("_rebuild_pixmap", "_update_pixmap", "_render_scaled", "rebuild_pixmap"):
+            fn = getattr(view, name, None)
+            if callable(fn):
+                try:
+                    fn()
+                    return
+                except Exception:
+                    pass
+
 
     def _infer_image_size(self, view):
         """Return (img_w, img_h) in device-independent pixels (ints), best-effort."""
