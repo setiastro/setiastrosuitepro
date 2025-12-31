@@ -229,6 +229,7 @@ class MenuMixin:
 
 
         m_header = mb.addMenu(self.tr("&Header Mods && Misc"))
+        m_header.addAction(self.act_acv_exporter)        
         m_header.addAction(self.act_astrobin_exporter)
         m_header.addAction(self.act_batch_convert)
         m_header.addAction(self.act_batch_renamer)

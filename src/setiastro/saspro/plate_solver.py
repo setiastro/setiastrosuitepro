@@ -116,15 +116,14 @@ def _status_popup_update(text: str):
         _STATUS_POPUP.update_text(text)
 
 def _status_popup_close():
-    """Hide (but do not destroy) the singleton status popup if it exists."""
     global _STATUS_POPUP
+    if _STATUS_POPUP is None:
+        return
     try:
-        if _STATUS_POPUP is not None:
-            _STATUS_POPUP.hide()
-            # keep instance for reuse (fast re-open)
+        _STATUS_POPUP.hide()
     except Exception:
-        # Completely safe to ignore; worst case the popup was already gone.
         pass
+
 
 def _sleep_ui(ms: int):
     """Non-blocking sleep that keeps the UI responsive."""
@@ -137,53 +136,37 @@ def _with_events():
     QApplication.processEvents()
 
 def _set_status_ui(parent, text: str):
-    """
-    Update dialog/main-window status or batch log; if neither exists (headless),
-    show/update a small modeless popup. Always pumps events for responsiveness.
-    """
     try:
         updated_any = False
 
-        def _do():
-            nonlocal updated_any
-            target = None
-            # Dialog status label?
-            if hasattr(parent, "status") and isinstance(getattr(parent, "status"), QLabel):
-                target = parent.status
-            # Named child fallback
-            if target is None and hasattr(parent, "findChild"):
-                target = parent.findChild(QLabel, "status_label")
-            if target is not None:
-                target.setText(text)
+        target = None
+        if hasattr(parent, "status") and isinstance(getattr(parent, "status"), QLabel):
+            target = parent.status
+        if target is None and hasattr(parent, "findChild"):
+            target = parent.findChild(QLabel, "status_label")
+        if target is not None:
+            target.setText(text)
+            updated_any = True
+
+        logw = getattr(parent, "log", None)
+        if logw and hasattr(logw, "append"):
+            tr_status = QCoreApplication.translate("PlateSolver", "Status:")
+            if text and (text.startswith("Status:") or text.startswith(tr_status) or text.startswith("▶") or text.startswith("✔") or text.startswith("❌")):
+                logw.append(text)
                 updated_any = True
 
-            # Batch log?
-            logw = getattr(parent, "log", None)
-            if logw and hasattr(logw, "append"):
-                tr_status = QCoreApplication.translate("PlateSolver", "Status:")
-                if text and (text.startswith("Status:") or text.startswith(tr_status) or text.startswith("▶") or text.startswith("✔") or text.startswith("❌")):
-                    logw.append(text)
-                    updated_any = True
-
-            # If we couldn't update any inline widget, use the headless popup.
-            if not updated_any:
-                _status_popup_open(parent, text)
-            else:
-                # If inline widgets exist and popup is visible, keep it quiet.
-                _status_popup_update(text)
-
-            QApplication.processEvents()
-
-        if isinstance(parent, QWidget):
-            QTimer.singleShot(0, _do)
+        if not updated_any:
+            _status_popup_open(parent, text)
         else:
-            _do()
+            _status_popup_update(text)
+
+        QApplication.processEvents()
     except Exception:
-        # Last-resort popup if even the above failed
         try:
             _status_popup_open(parent, text)
         except Exception:
             pass
+
 
 def _wait_process(proc: QProcess, timeout_ms: int, parent=None) -> bool:
     """
@@ -1817,7 +1800,8 @@ def _debug_dump_meta(label: str, meta: dict):
         print(f"  {k}: {type(v).__name__}")
     print("================================\n")
 
-
+def tr(s: str) -> str:
+    return QCoreApplication.translate("PlateSolver", s)
 
 def plate_solve_doc_inplace(parent, doc, settings) -> Tuple[bool, Header | str]:
     img = getattr(doc, "image", None)
@@ -1874,8 +1858,9 @@ def plate_solve_doc_inplace(parent, doc, settings) -> Tuple[bool, Header | str]:
         (hasattr(parent, "findChild") and parent.findChild(QLabel, "status_label") is not None)
     )
     if headless:
-        _status_popup_open(parent, QCoreApplication.translate("PlateSolver", "Status: Preparing plate solve…"))
+        _status_popup_open(parent, tr("Status: Preparing plate solve…"))
 
+    ok_solve = False
     try:
         ok, res = _solve_numpy_with_fallback(parent, settings, img, seed_h)
         if not ok:
@@ -1929,11 +1914,18 @@ def plate_solve_doc_inplace(parent, doc, settings) -> Tuple[bool, Header | str]:
         if hasattr(parent, "currentDocumentChanged"):
             QTimer.singleShot(0, lambda: parent.currentDocumentChanged.emit(doc))
 
-        _set_status_ui(parent, QCoreApplication.translate("PlateSolver", "Status: Plate solve completed."))
-        _status_popup_close()
+        _set_status_ui(parent, tr("Status: Plate solve completed."))
+
+
+        ok_solve = True
+        if headless:
+            QTimer.singleShot(1200, _status_popup_close)
+        else:
+            _status_popup_close()
         return True, hdr
     finally:
-        _status_popup_close()
+        if not ok_solve:
+            _status_popup_close()
 
 
 

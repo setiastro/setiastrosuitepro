@@ -1612,8 +1612,14 @@ class ImageSubWindow(QWidget):
         if abs(s - self.scale) < 1e-9:
             return
         self.scale = s
-        self._render()                 # only scale needs a redraw
+        self._render()                 # fast present happens here
         self._schedule_emit_view_transform()
+
+        # ✅ NEW: ensure we do the final smooth redraw (same as manual zoom)
+        try:
+            self._request_zoom_redraw()
+        except Exception:
+            pass
 
 
 

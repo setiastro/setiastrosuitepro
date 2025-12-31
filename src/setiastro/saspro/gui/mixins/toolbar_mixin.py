@@ -1260,6 +1260,13 @@ class ToolbarMixin:
         self.act_copy_astrometry = QAction(self.tr("Copy Astrometric Solution..."), self)
         self.act_copy_astrometry.triggered.connect(self._open_copy_astrometry)
 
+        self.act_acv_exporter = QAction(self.tr("Astro Catalogue Viewer Exporter..."), self)
+        self.act_acv_exporter.setIconVisibleInMenu(True)
+        self.act_acv_exporter.setStatusTip(self.tr("Export current view into Astro Catalogue Viewer folders"))
+        self.act_acv_exporter.triggered.connect(self._open_acv_exporter)
+
+
+
         # Create Mask
         self.act_create_mask = QAction(QIcon(maskcreate_path), self.tr("Create Mask..."), self)
         self.act_create_mask.setIconVisibleInMenu(True)
