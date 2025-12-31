@@ -234,10 +234,53 @@ def _get_solvefield_exe(settings) -> str:
     return cand[0]  # may be empty (used to decide web vs. local)
 
 def _get_astrometry_api_key(settings) -> str:
-    return settings.value("astrometry/api_key", "", type=str) or ""
+    """
+    Canonical key: 'api/astrometry_key' (matches SettingsDialog).
+    Also check older legacy keys for backward compatibility.
+    """
+    if settings is None:
+        return ""
 
-def _set_astrometry_api_key(settings, key: str):
-    settings.setValue("astrometry/api_key", key or "")
+    # ✅ canonical
+    key = settings.value("api/astrometry_key", "", type=str) or ""
+    key = key.strip()
+    if key:
+        return key
+
+    # 🔁 legacy fallbacks (if you ever stored them differently)
+    for k in (
+        "api/astrometry",          # old guess
+        "astrometry/api_key",
+        "astrometry/key",
+        "astrometry_key",
+        "plate_solver/astrometry_key",
+    ):
+        v = settings.value(k, "", type=str) or ""
+        v = v.strip()
+        if v:
+            # migrate forward so it works next time
+            settings.setValue("api/astrometry_key", v)
+            try:
+                settings.remove(k)
+            except Exception:
+                pass
+            try:
+                settings.sync()
+            except Exception:
+                pass
+            return v
+
+    return ""
+
+
+def _set_astrometry_api_key(settings, key: str) -> None:
+    if settings is None:
+        return
+    settings.setValue("api/astrometry_key", (key or "").strip())
+    try:
+        settings.sync()
+    except Exception:
+        pass
 
 def _wcs_header_from_astrometry_calib(calib: dict, image_shape: tuple[int, ...]) -> Header:
     """
